@@ -1,6 +1,6 @@
-BinaryAnimator.tick	port	crates/horizon-client/src/mobs/axolotl.rs::Animation::tick	one axolotl Animation holds the four animators; old/value pair and the clamp to 10 as vanilla
-BinaryAnimator.getFactor	port	crates/horizon-client/src/mobs/axolotl.rs::Animation::factor	lerp of old and value over 10, then the IN_OUT_SINE curve as vanilla
-BlockUtil.packDifferenceInPositionInternal	port	crates/horizon-client/src/mobs/shulker.rs::pack_diff	gap: minor: radius fixed at 8 on each axis; the dragon egg packs (16, 8, 16) inline in crates/horizon-world/src/level/interact.rs::Sim::dragon_egg_teleport
+BinaryAnimator.tick	port	crates/horizon-client-lib/src/mobs/axolotl.rs::Animation::tick	one axolotl Animation holds the four animators; old/value pair and the clamp to 10 as vanilla
+BinaryAnimator.getFactor	port	crates/horizon-client-lib/src/mobs/axolotl.rs::Animation::factor	lerp of old and value over 10, then the IN_OUT_SINE curve as vanilla
+BlockUtil.packDifferenceInPositionInternal	port	crates/horizon-client-lib/src/mobs/shulker.rs::pack_diff	gap: minor: radius fixed at 8 on each axis; the dragon egg packs (16, 8, 16) inline in crates/horizon-world/src/level/interact.rs::Sim::dragon_egg_teleport
 BlockUtil.checkDifferenceInBounds	skip:other		range guard inside packDifferenceInPosition; radii of 8 and 16 cannot exceed 127
 ByIdMap.createMap	skip:java		id-to-value lookup table; Horizon enums match their own ids
 ByIdMap.sparse	skip:java		id-to-value lookup table; Horizon enums match their own ids
@@ -61,8 +61,8 @@ DependencySorter.visitDependenciesAndElement	port	crates/horizon-world/src/world
 DependencySorter.isCyclic	port	crates/horizon-world/src/worldgen/tags.rs::reaches	reach test used to refuse a cyclic edge
 DependencySorter.addDependencyIfNotCyclic	inline	crates/horizon-world/src/worldgen/tags.rs::TagDefinitions::build	adds the edge only when reaches is false
 DependencySorter.orderByDependencies	inline	crates/horizon-world/src/worldgen/tags.rs::TagDefinitions::build	required edges first, then optional ones, then the visit order
-DirectoryLock.create	port	crates/horizon-client/src/save.rs::SessionLock::acquire	exclusive file lock on session.lock with the two-byte snowman content
-DirectoryLock.isLocked	port	crates/horizon-client/src/save.rs::SessionLock::is_locked	trying for the world's session.lock tells a locked world; title.rs uses it to flag the entry
+DirectoryLock.create	port	crates/horizon-client-lib/src/save.rs::SessionLock::acquire	exclusive file lock on session.lock with the two-byte snowman content
+DirectoryLock.isLocked	port	crates/horizon-client-lib/src/save.rs::SessionLock::is_locked	trying for the world's session.lock tells a locked world; title.rs uses it to flag the entry
 Ease.inBack	missing		a named easing only a datapack's timeline can reach: the four shipped timelines ask for constant, cubic_bezier or no ease, and environment.rs::Environment::load_dimension reads those two
 Ease.inElastic	missing		a named easing only a datapack's timeline can reach: the four shipped timelines ask for constant, cubic_bezier or no ease, and environment.rs::Environment::load_dimension reads those two
 Ease.inExpo	missing		a named easing only a datapack's timeline can reach: the four shipped timelines ask for constant, cubic_bezier or no ease, and environment.rs::Environment::load_dimension reads those two
@@ -116,7 +116,7 @@ FastBufferedInputStream.read	skip:java		buffered stream helper; Rust readers do 
 FastBufferedInputStream.skip	skip:java		buffered stream helper; Rust readers do their own buffering
 FastBufferedInputStream.fill	skip:java		buffered stream helper; Rust readers do their own buffering
 FileSystemUtil.safeGetPath	skip:other		opens a jar or zip filesystem for a URI; Horizon reads archives with the zip crate
-FileUtil.sanitizeName	port	crates/horizon-client/src/title.rs::Title::target_folder	gap: minor: replaces every non-alphanumeric character with _; vanilla only replaces illegal file characters, dots, slashes and quotes
+FileUtil.sanitizeName	port	crates/horizon-client-lib/src/title.rs::Title::target_folder	gap: minor: replaces every non-alphanumeric character with _; vanilla only replaces illegal file characters, dots, slashes and quotes
 FileUtil.isPathPortable	port	crates/horizon-client/src/game/structure_blocks.rs::portable_path	the structure path's check: no empty, `.` or `..` segment; vanilla also tests the part's characters (isPathPartPortable)
 FileUtil.decomposePath	skip:data		resource path handling; Horizon reads its data from tables and files
 FileUtil.resolvePath	skip:data		resource path handling; Horizon reads its data from tables and files

@@ -42,8 +42,8 @@ def main():
                lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock',
                lab.ROOT / 'crates/horizon-client/src/game/lan.rs',
                lab.ROOT / 'crates/horizon-client/src/game/remote_mob_data.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs.rs',
-               lab.ROOT / 'crates/horizon-client/src/lan/entity.rs',
+               lab.ROOT / 'crates/horizon-client-lib/src/mobs.rs',
+               lab.ROOT / 'crates/horizon-client-lib/src/lan/entity.rs',
                lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaMobAirOracle.java']
     hashes = base.source_hashes(sources)
     rows = list(cases())

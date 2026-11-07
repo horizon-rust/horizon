@@ -46,7 +46,7 @@ Game workspace (root `Cargo.toml`); `launcher/` and `crates/horizon-telemetry-se
 | Crate | Owns |
 |---|---|
 | `horizon-client` | Gameplay library (`src/lib.rs`: `game.rs` + `game/`, `entry.rs`) and thin executable (`src/main.rs`). Also the dedicated server (`--dedicated`). Re-exports `horizon-client-lib` for existing mod paths. |
-| `horizon-client-lib` | Reusable client systems, `horizon-ctl`, probes and their tests. Its manifest points to the existing sources under `crates/horizon-client/`; the library root is `src/client_lib.rs`. It never depends on gameplay. |
+| `horizon-client-lib` | Reusable client systems, `horizon-ctl`, probes and their tests. It never depends on gameplay. |
 | `horizon-items` | Blocks and items below gameplay: `blocks.rs` (block facts), `items.rs`, `item_data.rs` (components), `enchant.rs`, `cooldowns.rs`, `bundle.rs`, `item_nbt.rs`. Re-exported as `horizon_client::items`... |
 | `horizon-command` | Command parsing (Brigadier): the vanilla tree, argument types, selectors, suggestions, the tree's network form. Re-exported as `horizon_client::command` |
 | `horizon-client-core` | The client lib's bottom layer: `text.rs`, `lang.rs`, `snbt.rs`, `nbt_path.rs`, `component.rs`, `scoreboard.rs`, `bossbar.rs`, `gamerules.rs`, `block_entity_nbt.rs`, registry/particle/sound tables. Re-exported under the old paths (`horizon_client::text`...) |
@@ -117,9 +117,8 @@ python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
 - Harness selection uses Cargo dep-info and reachable-code narrowing (`tools/parity_reach.py`).
   `horizon-client-lib` builds the control tool and client probes without gameplay; their dep-info
   excludes `game.rs` and `game/`, so gameplay edits do not rebuild or select those probes.
-  Source paths remain in `crates/horizon-client/`. Measure actual harness selection on refreshed
-  records with `tools/parity.py --changed-files paths.txt --list`; historical counts are not a guarantee.
-- Rust integration tests: `crates/horizon-client/tests/` (`lan_bot.rs`, `generation_saves.rs`, `streaming_meshes.rs`).
+  Measure actual harness selection on refreshed records with `tools/parity.py --changed-files paths.txt --list`; historical counts are not a guarantee.
+- Rust integration tests: `crates/horizon-client-lib/tests/` (`lan_bot.rs`, `generation_saves.rs`, `streaming_meshes.rs`).
 - Linux needs `libasound2-dev libudev-dev`; `--no-default-features` drops audio and controllers (the server build).
 - Run and drive the game (starts the `horizon-client` beside `horizon-ctl`; other arguments go to the game):
   `target/fast/horizon-ctl --socket $PWD/ctl.sock launch --world W --creative --offscreen --wait --resources $PWD/.local/horizon-client/26.3`,
@@ -142,7 +141,7 @@ python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
 
 ## horizon-client: where things live
 
-`L:` = lib (`crates/horizon-client/src/`, or `crates/horizon-client-render/src/` for the modules that crate holds, under
+`L:` = lib (`crates/horizon-client-lib/src/`, or `crates/horizon-client-render/src/` for the modules that crate holds, under
 the same `horizon_client::<module>` paths), `G:` = gameplay (`crates/horizon-client/src/game/`), also in the lib in normal builds.
 Gameplay keeps its `horizon_client::<module>` imports through a self-crate alias. The executable
 contains only the allocator, mod API marker and a call to `entry::main`. For unit tests, the lib

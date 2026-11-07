@@ -5,20 +5,20 @@ SectionStorage.getOrCreate	skip:other		no POI record to create; PoiSections::get
 SectionStorage.prefetch	skip:java		async prefetch of POI files; nothing is loaded from disk, so there is nothing to prefetch
 SectionStorage.unpackChunk	missing		minor: POI region files are never read back; POI come from blocks (poi_sections.rs), so saved POI claims are not restored
 SectionStorage.tryRead	missing		minor: POI region files are never read back; POI come from blocks (poi_sections.rs), so saved POI claims are not restored
-SectionStorage.writeChunk	port	crates/horizon-client/src/save.rs::SaveDir::save_poi	queues the chunk's POI records to the region writer; claims kept by resolve_poi
+SectionStorage.writeChunk	port	crates/horizon-client-lib/src/save.rs::SaveDir::save_poi	queues the chunk's POI records to the region writer; claims kept by resolve_poi
 SectionStorage.setDirty	inline	crates/horizon-client/src/game.rs::Game::update_world	the chunk modified list marks chunks to save together with their POI
 SectionStorage.PackedChunk.parse	missing		minor: POI region files are never read back, so POI ticket claims are not restored on load
-SerializableChunkData.parse	port	crates/horizon-client/src/save.rs::decode_column	gap: minor: entity tags are read by Persistent::load (load_entities), not here
+SerializableChunkData.parse	port	crates/horizon-client-lib/src/save.rs::decode_column	gap: minor: entity tags are read by Persistent::load (load_entities), not here
 SerializableChunkData.logErrors	skip:debug		logs load problems; Horizon warns with log::warn where a problem is found
 SerializableChunkData.copyOf	skip:java		snapshot copy for the async writer; Horizon shares the chunk as Arc<Chunk> in Record::Chunk
-SerializableChunkData.saveTicks	port	crates/horizon-client/src/save.rs::tick_list	builds the block_ticks and fluid_ticks tags
-SerializableChunkData.getChunkStatusFromTag	inline	crates/horizon-client/src/save.rs::decode_with	gap: minor: decode_with only checks that Status is full and does not return the status; partial statuses go to decode_proto
-SerializableChunkData.postLoadChunk	inline	crates/horizon-client/src/save.rs::decode_column	gap: minor: decodes the block entities here; entity tags are attached by Persistent::load
-SerializableChunkData.packStructureData	inline	crates/horizon-client/src/save.rs::encode_with	writes structures.starts and structures.References
+SerializableChunkData.saveTicks	port	crates/horizon-client-lib/src/save.rs::tick_list	builds the block_ticks and fluid_ticks tags
+SerializableChunkData.getChunkStatusFromTag	inline	crates/horizon-client-lib/src/save.rs::decode_with	gap: minor: decode_with only checks that Status is full and does not return the status; partial statuses go to decode_proto
+SerializableChunkData.postLoadChunk	inline	crates/horizon-client-lib/src/save.rs::decode_column	gap: minor: decodes the block entities here; entity tags are attached by Persistent::load
+SerializableChunkData.packStructureData	inline	crates/horizon-client-lib/src/save.rs::encode_with	writes structures.starts and structures.References
 SerializableChunkData.unpackStructureStart	skip:other		starts are written but not read back; worldgen regenerates them from the seed (vanillagen.rs)
-SerializableChunkData.unpackStructureReferences	inline	crates/horizon-client/src/save.rs::decode_column	gap: minor: reads the references but does not drop ones more than 8 chunks away
-SerializableChunkData.packOffsets	inline	crates/horizon-client/src/save.rs::encode_proto	packs the PostProcessing marks per section
-SimpleRegionStorage.write	port	crates/horizon-client/src/save.rs::SaveDir::queue	queues the record for the region writer thread
+SerializableChunkData.unpackStructureReferences	inline	crates/horizon-client-lib/src/save.rs::decode_column	gap: minor: reads the references but does not drop ones more than 8 chunks away
+SerializableChunkData.packOffsets	inline	crates/horizon-client-lib/src/save.rs::encode_proto	packs the PostProcessing marks per section
+SimpleRegionStorage.write	port	crates/horizon-client-lib/src/save.rs::SaveDir::queue	queues the record for the region writer thread
 DimensionType.<init>	skip:data		validates a dimension type's numbers when datapack data loads; Horizon uses fixed dimension data
 DimensionType.createDirectCodec	skip:java		codec for the dimension type JSON
 EnderDragonFight.createDefault	inline	crates/horizon-client/src/game/dragon.rs::Game::load_fight	the defaults load_fight uses when no saved fight exists (scan on, no gateways yet)
@@ -139,9 +139,9 @@ TreeDecorator.Context.placeVine	port	crates/horizon-world/src/worldgen/tree/deco
 TreeDecorator.Context.isWaterOrWaterNearby	inline	crates/horizon-world/src/worldgen/tree/decorator.rs::Decorate::mushroom_replaceable	the water test over the centre and four sides
 TrunkPlacer.placeBelowTrunkBlock	port	crates/horizon-world/src/worldgen/tree/trunk.rs::TrunkPlacer::place_below_trunk	places the block below the trunk when the provider gives one
 FlatLevelGeneratorSettings.validateHeight	skip:java		codec check that layers total at most 4064; flat.rs clamps each layer to that instead
-FlatLevelGeneratorSettings.withBiomeAndLayers	port	crates/horizon-client/src/title/flat.rs::FlatSettings::parse	gap: minor: builds the layers and biome from the preset text; structure overrides and decorations come from the base
-FlatLevelGeneratorSettings.adjustGenerationSettings	port	crates/horizon-client/src/flatgen.rs::decoration_features	the world's biome features by step, without the structure steps and the lakes step when they are excluded
-FlatLevelGeneratorSettings.updateLayers	port	crates/horizon-client/src/flatgen.rs::FlatTerrain::from_settings	the layers expand into block ids and an all-air list is the void generator
+FlatLevelGeneratorSettings.withBiomeAndLayers	port	crates/horizon-client-lib/src/title/flat.rs::FlatSettings::parse	gap: minor: builds the layers and biome from the preset text; structure overrides and decorations come from the base
+FlatLevelGeneratorSettings.adjustGenerationSettings	port	crates/horizon-client-lib/src/flatgen.rs::decoration_features	the world's biome features by step, without the structure steps and the lakes step when they are excluded
+FlatLevelGeneratorSettings.updateLayers	port	crates/horizon-client-lib/src/flatgen.rs::FlatTerrain::from_settings	the layers expand into block ids and an all-air list is the void generator
 MaterialRuleContext.getBiome	port	crates/horizon-world/src/worldgen/material_condition.rs::Context::biome	the biome at the position, cached per column
 MaterialRuleContext.getMinSurfaceLevel	port	crates/horizon-world/src/worldgen/material_condition.rs::Context::minimum_surface_level	the preliminary surface level minus the depth, cached per column
 MaterialRuleContext.getNoiseSampler	port	crates/horizon-world/src/worldgen/material_condition.rs::Context::bind_noise	binds a noise by name and dimension, once

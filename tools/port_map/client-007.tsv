@@ -1,17 +1,17 @@
-PiglinModel.setupAttackAnimation	port	crates/horizon-client/src/mobs/anim.rs::humanoid	melee swing branch via weapon_swing, which piglin_pose sets
-PiglinModel.holdWeaponHigh	port	crates/horizon-client/src/mobs/piglin.rs::piglin_pose	holdWeaponHigh arm pose when the swing is at rest
-ZombifiedPiglinModel.setupAttackAnimation	port	crates/horizon-client/src/mobs/anim.rs::humanoid	zombie arm raise via the zombie flag (Anim::ZombifiedPiglin)
+PiglinModel.setupAttackAnimation	port	crates/horizon-client-lib/src/mobs/anim.rs::humanoid	melee swing branch via weapon_swing, which piglin_pose sets
+PiglinModel.holdWeaponHigh	port	crates/horizon-client-lib/src/mobs/piglin.rs::piglin_pose	holdWeaponHigh arm pose when the swing is at rest
+ZombifiedPiglinModel.setupAttackAnimation	port	crates/horizon-client-lib/src/mobs/anim.rs::humanoid	zombie arm raise via the zombie flag (Anim::ZombifiedPiglin)
 RavagerModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 ShulkerModel.createShellMesh	skip:data		layer baked into entity-models.json, loaded by key
 ShulkerModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 SilverfishModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 BoggedModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
-BoggedModel.setupAnim	inline	crates/horizon-client/src/mobs/anim.rs::setup	the mushrooms part comes off once the bogged is sheared
+BoggedModel.setupAnim	inline	crates/horizon-client-lib/src/mobs/anim.rs::setup	the mushrooms part comes off once the bogged is sheared
 SkeletonModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 SkeletonModel.createDefaultSkeletonMesh	skip:data		layer baked into entity-models.json, loaded by key
 SkeletonModel.createSingleModelDualBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
-SkeletonModel.setupAnim	port	crates/horizon-client/src/mobs/anim.rs::setup	skeleton melee pose in the Skeleton branch of setup
-SkeletonModel.translateToHand	port	crates/horizon-client/src/mobs/render.rs::hand_base	held item hand offset for skeletons (plus or minus one pixel)
+SkeletonModel.setupAnim	port	crates/horizon-client-lib/src/mobs/anim.rs::setup	skeleton melee pose in the Skeleton branch of setup
+SkeletonModel.translateToHand	port	crates/horizon-client-lib/src/mobs/render.rs::hand_base	held item hand offset for skeletons (plus or minus one pixel)
 MagmaCubeModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 SlimeModel.createOuterBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 SlimeModel.createInnerBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
@@ -20,31 +20,31 @@ SmallSulfurCubeModel.createInnerBodyLayer	skip:data		layer baked into entity-mod
 SulfurCubeModel.createOuterBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 SulfurCubeModel.createInnerBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 SpiderModel.createSpiderBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
-SpiderModel.setupAnim	port	crates/horizon-client/src/mobs/anim.rs::setup	Spider branch of setup: four leg pairs swing and step
-AdultStriderModel.customAnimations	port	crates/horizon-client/src/mobs/body_anim.rs::strider	adult bristles on z, body and leg bob, shared with the baby
-BabyStriderModel.customAnimations	port	crates/horizon-client/src/mobs/body_anim.rs::strider	baby bristles on x, body and leg bob, ridden flag not used
+SpiderModel.setupAnim	port	crates/horizon-client-lib/src/mobs/anim.rs::setup	Spider branch of setup: four leg pairs swing and step
+AdultStriderModel.customAnimations	port	crates/horizon-client-lib/src/mobs/body_anim.rs::strider	adult bristles on z, body and leg bob, shared with the baby
+BabyStriderModel.customAnimations	port	crates/horizon-client-lib/src/mobs/body_anim.rs::strider	baby bristles on x, body and leg bob, ridden flag not used
 VexModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
-VexModel.setArmsCharging	inline	crates/horizon-client/src/mobs/vex.rs::anim	charging arm pose inside the flag branch of vex anim
+VexModel.setArmsCharging	inline	crates/horizon-client-lib/src/mobs/vex.rs::anim	charging arm pose inside the flag branch of vex anim
 WardenModel.createBioluminescentLayer	skip:data		layer baked into entity-models.json, loaded by key
 WardenModel.createPulsatingSpotsLayer	skip:data		layer baked into entity-models.json, loaded by key
-WardenModel.animateHeadLookTarget	inline	crates/horizon-client/src/mobs/warden.rs::anim	head yaw and pitch set first in warden anim
-WardenModel.animateIdlePose	inline	crates/horizon-client/src/mobs/warden.rs::anim	head and body wobble in warden anim
-WardenModel.animateWalk	inline	crates/horizon-client/src/mobs/warden.rs::anim	walk swing, arm and body tilt in warden anim
-WardenModel.resetArmPoses	inline	crates/horizon-client/src/mobs/warden.rs::anim	arm rest positions reset in warden anim
-WardenModel.animateTendrils	inline	crates/horizon-client/src/mobs/warden.rs::anim	tendril sway from the tendril animation value
+WardenModel.animateHeadLookTarget	inline	crates/horizon-client-lib/src/mobs/warden.rs::anim	head yaw and pitch set first in warden anim
+WardenModel.animateIdlePose	inline	crates/horizon-client-lib/src/mobs/warden.rs::anim	head and body wobble in warden anim
+WardenModel.animateWalk	inline	crates/horizon-client-lib/src/mobs/warden.rs::anim	walk swing, arm and body tilt in warden anim
+WardenModel.resetArmPoses	inline	crates/horizon-client-lib/src/mobs/warden.rs::anim	arm rest positions reset in warden anim
+WardenModel.animateTendrils	inline	crates/horizon-client-lib/src/mobs/warden.rs::anim	tendril sway from the tendril animation value
 WitchModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
-WitherBossModel.setupHeadRotation	inline	crates/horizon-client/src/mobs/wither.rs::anim	side head yaw minus body yaw in wither anim
+WitherBossModel.setupHeadRotation	inline	crates/horizon-client-lib/src/mobs/wither.rs::anim	side head yaw minus body yaw in wither anim
 BabyZombieModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 BabyZombieVillagerModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 BabyZombieVillagerModel.createNoHatLayer	skip:data		layer baked into entity-models.json, loaded by key
 DrownedModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
-DrownedModel.setupAttackAnimation	port	crates/horizon-client/src/mobs/anim.rs::humanoid	zombie arm raise via the zombie flag (Anim::Drowned)
-GiantZombieModel.setupAttackAnimation	port	crates/horizon-client/src/mobs/anim.rs::humanoid	giant is Humanoid with zombie_arms, same zombie arm raise
+DrownedModel.setupAttackAnimation	port	crates/horizon-client-lib/src/mobs/anim.rs::humanoid	zombie arm raise via the zombie flag (Anim::Drowned)
+GiantZombieModel.setupAttackAnimation	port	crates/horizon-client-lib/src/mobs/anim.rs::humanoid	giant is Humanoid with zombie_arms, same zombie arm raise
 ZombieVillagerModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 ZombieVillagerModel.createNoHatLayer	skip:data		layer baked into entity-models.json, loaded by key
 ZombieVillagerModel.createArmorLayerSet	skip:data		layer baked into entity-models.json, loaded by key
 ZombieVillagerModel.createBaseArmorMesh	skip:data		layer baked into entity-models.json, loaded by key
-ZombieVillagerModel.setupAttackAnimation	port	crates/horizon-client/src/mobs/anim.rs::humanoid	zombie arm raise via the zombie flag (Anim::ZombieVillager)
+ZombieVillagerModel.setupAttackAnimation	port	crates/horizon-client-lib/src/mobs/anim.rs::humanoid	zombie arm raise via the zombie flag (Anim::ZombieVillager)
 BabyVillagerModel.createBodyModel	skip:data		layer baked into entity-models.json, loaded by key
 VillagerModel.createBodyModel	skip:data		layer baked into entity-models.json, loaded by key
 ArmorStandArmorModel.createArmorLayerSet	skip:data		layer baked into entity-models.json, loaded by key
@@ -82,13 +82,13 @@ PiglinHeadModel.setupAnim	inline	crates/horizon-client-render/src/block_entity_r
 SkullModel.createHeadModel	skip:data		layer baked into entity-models.json, loaded by key
 SkullModel.createHumanoidHeadLayer	skip:data		layer baked into entity-models.json, loaded by key
 SkullModel.setupAnim	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	head yaw and pitch in the skull branch of render_one
-PlayerCapeModel.createCapeLayer	port	crates/horizon-client/src/mobs/render.rs::cape	the layer is the baked player#cape model, posed and drawn there
-PlayerCapeModel.setupAnim	port	crates/horizon-client/src/mobs/render.rs::cape	the cape part turned by the flap and the two leans
-PlayerEarsModel.createEarsLayer	port	crates/horizon-client/src/mobs/render.rs::ears	the layer is the baked player#ears model, drawn there
+PlayerCapeModel.createCapeLayer	port	crates/horizon-client-lib/src/mobs/render.rs::cape	the layer is the baked player#cape model, posed and drawn there
+PlayerCapeModel.setupAnim	port	crates/horizon-client-lib/src/mobs/render.rs::cape	the cape part turned by the flap and the two leans
+PlayerEarsModel.createEarsLayer	port	crates/horizon-client-lib/src/mobs/render.rs::ears	the layer is the baked player#ears model, drawn there
 PlayerModel.createMesh	skip:data		layer baked into entity-models.json, loaded by key
 PlayerModel.createArmorMeshSet	skip:data		layer baked into entity-models.json, loaded by key
-PlayerModel.setupAnim	port	crates/horizon-client/src/mobs/anim.rs::setup	gap: player: hat, jacket, sleeve and pant toggles (modelPart options) are not read, so a hidden layer still draws; humanoid pose is in the Humanoid branch
-PlayerModel.translateToHand	port	crates/horizon-client/src/mobs/render.rs::hand_base	gap: minor: slim-arm 0.5 pixel hand offset not applied
+PlayerModel.setupAnim	port	crates/horizon-client-lib/src/mobs/anim.rs::setup	gap: player: hat, jacket, sleeve and pant toggles (modelPart options) are not read, so a hidden layer still draws; humanoid pose is in the Humanoid branch
+PlayerModel.translateToHand	port	crates/horizon-client-lib/src/mobs/render.rs::hand_base	gap: minor: slim-arm 0.5 pixel hand offset not applied
 BlockModelLighter.prepareQuadAmbientOcclusion	port	crates/horizon-client-render/src/mesher/lighting.rs::ambient_occlusion	per-vertex AO brightness and smooth light from the corner samples
 BlockModelLighter.prepareQuadFlat	port	crates/horizon-client-render/src/mesher/lighting.rs::flat	light only; the directional colour is applied in Mesher::face
 BlockModelLighter.prepareQuadShape	port	crates/horizon-client-render/src/mesher/lighting.rs::shape	face bounds, partial and cubic flags

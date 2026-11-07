@@ -365,7 +365,7 @@ def yaw(start, end):
 # Horizon -------------------------------------------------------------------
 
 def control_path():
-    """Where the game opens its control endpoint (crates/horizon-client/src/control.rs): a Unix socket, or,
+    """Where the game opens its control endpoint (crates/horizon-client-lib/src/control.rs): a Unix socket, or,
     where Python has none (Windows), a JSON file in which the game names a localhost TCP port and a token."""
     if hasattr(socket, "AF_UNIX"):
         return Path("/tmp") / f"horizon-bench-{os.getpid()}.sock"

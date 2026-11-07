@@ -108,9 +108,9 @@ class PrReadyTests(unittest.TestCase):
 
     def test_shared_client_sources_select_the_library_without_gameplay(self):
         packages = {**PACKAGES, "horizon-client-lib": "crates/horizon-client-lib"}
-        for path in ["src/client_lib.rs", "src/health.rs", "src/lan/hub.rs", "src/bin/horizon-ctl/main.rs",
+        for path in ["src/lib.rs", "src/health.rs", "src/lan/hub.rs", "src/bin/horizon-ctl/main.rs",
                      "examples/probe/main.rs", "tests/lan_bot.rs"]:
-            self.assertEqual(pr_ready.touched_crates({f"crates/horizon-client/{path}"}, packages),
+            self.assertEqual(pr_ready.touched_crates({f"crates/horizon-client-lib/{path}"}, packages),
                              ["horizon-client-lib"])
         for path in ["src/lib.rs", "src/main.rs", "src/entry.rs", "src/game.rs", "src/game/combat.rs",
                      "tests/launch_api.rs", "Cargo.toml", "build.rs"]:
@@ -150,7 +150,7 @@ class PrReadyTests(unittest.TestCase):
                 steps = pr_ready.plan(args(quick=True), "origin/main", {path}, PACKAGES, LIBRARIES, DEPENDENCIES)
             return {step.name: step for step in steps}["content root tests"]
         self.assertEqual(content_step("crates/horizon-client/src/game.rs").skip, "content root untouched")
-        for path in ["crates/horizon-client/src/mod_content.rs", "crates/horizon-client/src/mod_content_tests.rs",
+        for path in ["crates/horizon-client-lib/src/mod_content.rs", "crates/horizon-client-lib/src/mod_content_tests.rs",
                      "crates/horizon-mods/src/content.rs", "crates/horizon-assets/src/lib.rs", "Cargo.lock"]:
             with self.subTest(path=path):
                 step = content_step(path)

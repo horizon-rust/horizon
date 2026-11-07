@@ -37,8 +37,8 @@ Camera.setPosition	inline	crates/horizon-client-render/src/camera.rs::Camera::al
 Camera.getViewRotationMatrix	port	crates/horizon-client-render/src/camera.rs::view_matrix	
 Camera.NearPlane.getPointOnPlane	inline	crates/horizon-client/src/game/fishing.rs::Game::fishing_line	only the fishing line's anchor uses it
 ClientBootstrap.bootstrap	skip:data		registry bootstrap
-ClientRecipeBook.rebuildCollections	port	crates/horizon-client/src/recipe_book.rs::ClientBook::collections	tab collections built per call
-ClientRecipeBook.categorizeAndGroupRecipes	port	crates/horizon-client/src/recipe_book.rs::ClientBook::collections	grouping by category and group id
+ClientRecipeBook.rebuildCollections	port	crates/horizon-client-lib/src/recipe_book.rs::ClientBook::collections	tab collections built per call
+ClientRecipeBook.categorizeAndGroupRecipes	port	crates/horizon-client-lib/src/recipe_book.rs::ClientBook::collections	grouping by category and group id
 CommandHistory.addCommand	port	crates/horizon-client-render/src/chat.rs::Chat::add_recent	no repeats; keeps the last 50 saved commands
 CommandHistory.save	inline	crates/horizon-client-render/src/chat.rs::Chat::add_recent	writes command_history.txt there
 ComponentCollector.getResult	skip:java		collector helper
@@ -46,10 +46,10 @@ DebugQueryHandler.handleResponse	port	crates/horizon-client/src/game/debug_keys.
 DebugQueryHandler.startTransaction	port	crates/horizon-client/src/game/debug_keys.rs::DebugQuery::start	
 DebugQueryHandler.queryEntityTag	inline	crates/horizon-client/src/game/debug_keys.rs::Game::copy_recreate_command	the query waits in Remote.debug_query
 DebugQueryHandler.queryBlockEntityTag	inline	crates/horizon-client/src/game/debug_keys.rs::Game::copy_recreate_command	the query waits in Remote.debug_query
-DeltaTracker.Timer.pause	port	crates/horizon-client/src/clock.rs::Timer::update_pause_state	residual kept while paused
-DeltaTracker.Timer.unPause	port	crates/horizon-client/src/clock.rs::Timer::update_pause_state	residual restored on resume
+DeltaTracker.Timer.pause	port	crates/horizon-client-lib/src/clock.rs::Timer::update_pause_state	residual kept while paused
+DeltaTracker.Timer.unPause	port	crates/horizon-client-lib/src/clock.rs::Timer::update_pause_state	residual restored on resume
 GameNarrator	home	crates/horizon-narrator/src/lib.rs,crates/horizon-client/src/game/narrator.rs	the struct with its say_* methods in lib.rs; the game-side glue (start, option sync, Ctrl+B, the toast) in game/narrator.rs
-HotbarManager.get	port	crates/horizon-client/src/hotbar.rs::load	file loaded when the creative hotbar opens (creative_hotbar.rs)
+HotbarManager.get	port	crates/horizon-client-lib/src/hotbar.rs::load	file loaded when the creative hotbar opens (creative_hotbar.rs)
 KeyMapping.forAllKeyMappings	port	crates/horizon-client-input/src/keybinds.rs::KeyBinds::mappings_for	one key drives every mapping bound to it
 KeyMapping.setAll	port	crates/horizon-client/src/game.rs::handle_window_event_inner	WindowEvent::Focused(false) drops every held key and mouse button, so nothing sticks across alt-tab; ModifiersChanged reconciles the rest
 KeyMapping.resetMapping	skip:other		no lookup table to rebuild; mappings_for reads the current keys
@@ -87,7 +87,7 @@ Minecraft.resizeGui	port	crates/horizon-client-input/src/window.rs::calculate_sc
 Minecraft.emergencySave	missing		unsure: no world save before a crash report was found; the panic path only writes the report
 Minecraft.debugClientMetricsStart	skip:debug		metrics recording
 Minecraft.archiveProfilingReport	skip:debug		profiling archive
-Minecraft.isLevelRunningNormally	port	crates/horizon-client/src/clock.rs::TickRateManager::runs_normally	
+Minecraft.isLevelRunningNormally	port	crates/horizon-client-lib/src/clock.rs::TickRateManager::runs_normally	
 Minecraft.isMultiplayerServer	skip:other		no single predicate; remote and LAN code test their own state
 Minecraft.getQuickActionsDialog	port	crates/horizon-client/src/game/quick_actions.rs::Game::open_quick_actions	key.quickActions opens the tag's dialog, or minecraft:quick_actions when it names several
 Minecraft.disconnectFromWorld	port	crates/horizon-client/src/game/remote.rs::Game::leave_server	gap: minor: only the remote exit; local worlds exit via close_world
@@ -118,9 +118,9 @@ Minecraft.getGameProfile	skip:service		Mojang profile fetch; Horizon's account i
 Minecraft.showOnlyReducedInfo	port	crates/horizon-client/src/game/debug_keys.rs::Game::reduced_debug_info	
 Minecraft.grabPanoramixScreenshot	skip:debug		only runs with SharedConstants.DEBUG_PANORAMA_SCREENSHOT
 Minecraft.onTextInputFocusChange	inline	crates/horizon-client/src/game/ime.rs::Game::sync_ime	the IME is synced to the focused widget each frame
-Minecraft.getTickTargetMillis	port	crates/horizon-client/src/clock.rs::TickRateManager::milliseconds_per_tick	gap: minor: the max with the default tick time is not in this fn
+Minecraft.getTickTargetMillis	port	crates/horizon-client-lib/src/clock.rs::TickRateManager::milliseconds_per_tick	gap: minor: the max with the default tick time is not in this fn
 MouseHandler.fillMousePositionDetails	skip:debug		crash report mouse details
-MouseHandler.onDrop	port	crates/horizon-client/src/title.rs::Title::drop_file	a file dropped on the window joins the create screen's data packs
+MouseHandler.onDrop	port	crates/horizon-client-lib/src/title.rs::Title::drop_file	a file dropped on the window joins the create screen's data packs
 MouseHandler.getScaledYPos	port	crates/horizon-client-input/src/window.rs::scaled_pos	
 MouseHandler.resyncMousePosition	skip:other		winit reports the cursor position; no SDL global-state resync
 MouseHandler.releaseMouse	port	crates/horizon-client/src/game.rs::Game::capture	release path (capture false)

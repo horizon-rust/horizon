@@ -569,14 +569,13 @@ fn catalog_hooks(
 }
 
 /// The crate folder and module path of a hook target that is a free function
-/// outside `Game`. `horizon-client-lib` builds from `horizon-client/src`
-/// (`client_lib.rs`); `menu` and `breathing` are also accepted under their
-/// older `horizon_client::` names.
+/// outside `Game`. `menu` and `breathing` are also accepted under their older
+/// `horizon_client::` names.
 fn free_function_source(target: &str) -> Option<(&'static str, String)> {
     let prefixes = [
         ("horizon_world::", "horizon-world"),
         ("horizon_client_render::", "horizon-client-render"),
-        ("horizon_client_lib::", "horizon-client"),
+        ("horizon_client_lib::", "horizon-client-lib"),
     ];
     prefixes
         .into_iter()
@@ -585,7 +584,7 @@ fn free_function_source(target: &str) -> Option<(&'static str, String)> {
             ["menu", "breathing"].into_iter().find_map(|module| {
                 target
                     .strip_prefix(&format!("horizon_client::{module}::"))
-                    .map(|p| ("horizon-client", format!("{module}::{p}")))
+                    .map(|p| ("horizon-client-lib", format!("{module}::{p}")))
             })
         })
 }
@@ -1684,12 +1683,18 @@ mod tests {
         ] {
             assert_eq!(
                 super::free_function_source(target),
-                Some(("horizon-client", "menu::native_menu_slot_rules".to_owned()))
+                Some((
+                    "horizon-client-lib",
+                    "menu::native_menu_slot_rules".to_owned()
+                ))
             );
         }
         assert_eq!(
             super::free_function_source("horizon_client_lib::crafting::native_ingredient"),
-            Some(("horizon-client", "crafting::native_ingredient".to_owned()))
+            Some((
+                "horizon-client-lib",
+                "crafting::native_ingredient".to_owned()
+            ))
         );
         assert_eq!(
             super::free_function_source(

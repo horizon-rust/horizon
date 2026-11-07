@@ -9,9 +9,6 @@ license.workspace = true
 rust-version = "1.90"
 description = "Reusable client systems, control tool and parity probes"
 
-[lib]
-path = "../horizon-client/src/client_lib.rs"
-
 [dependencies]
 horizon-assets = { path = "../horizon-assets" }
 horizon-client-core = { path = "../horizon-client-core" }
@@ -136,104 +133,104 @@ naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-
 
 [[bin]]
 name = "horizon-ctl"
-path = "../horizon-client/src/bin/horizon-ctl/main.rs"
+path = "src/bin/horizon-ctl/main.rs"
 
 [[example]]
 name = "chunk_load_bench"
-path = "../horizon-client/examples/chunk_load_bench.rs"
+path = "examples/chunk_load_bench.rs"
 
 [[example]]
 name = "gen_light_bench"
-path = "../horizon-client/examples/gen_light_bench.rs"
+path = "examples/gen_light_bench.rs"
 
 [[example]]
 name = "gameplay_decode_profile"
-path = "../horizon-client/examples/gameplay_decode_profile.rs"
+path = "examples/gameplay_decode_profile.rs"
 
 [[example]]
 name = "json_load_bench"
-path = "../horizon-client/examples/json_load_bench.rs"
+path = "examples/json_load_bench.rs"
 
 [[example]]
 name = "mod_port_probe"
-path = "../horizon-client/examples/mod_port_probe.rs"
+path = "examples/mod_port_probe.rs"
 
 [[example]]
 name = "model_library_bench"
-path = "../horizon-client/examples/model_library_bench.rs"
+path = "examples/model_library_bench.rs"
 
 [[example]]
 name = "model_states_bench"
-path = "../horizon-client/examples/model_states_bench.rs"
+path = "examples/model_states_bench.rs"
 
 [[example]]
 name = "old_world_fixture"
-path = "../horizon-client/examples/old_world_fixture.rs"
+path = "examples/old_world_fixture.rs"
 
 [[example]]
 name = "portal_scan_bench"
-path = "../horizon-client/examples/portal_scan_bench.rs"
+path = "examples/portal_scan_bench.rs"
 
 [[example]]
 name = "random_tick_eligibility_bench"
-path = "../horizon-client/examples/random_tick_eligibility_bench.rs"
+path = "examples/random_tick_eligibility_bench.rs"
 
 [[example]]
 name = "resource_memory"
-path = "../horizon-client/examples/resource_memory.rs"
+path = "examples/resource_memory.rs"
 
 [[example]]
 name = "save_batch_bench"
-path = "../horizon-client/examples/save_batch_bench.rs"
+path = "examples/save_batch_bench.rs"
 
 [[example]]
 name = "shared_json_startup_profile"
-path = "../horizon-client/examples/shared_json_startup_profile.rs"
+path = "examples/shared_json_startup_profile.rs"
 
 [[example]]
 name = "sprite_cache_parity"
-path = "../horizon-client/examples/sprite_cache_parity.rs"
+path = "examples/sprite_cache_parity.rs"
 
 [[example]]
 name = "client_probe"
-path = "../horizon-client/examples/probe/main.rs"
+path = "examples/probe/main.rs"
 
 [[test]]
 name = "custom_component_api"
-path = "../horizon-client/tests/custom_component_api.rs"
+path = "tests/custom_component_api.rs"
 
 [[test]]
 name = "custom_component_unregistered"
-path = "../horizon-client/tests/custom_component_unregistered.rs"
+path = "tests/custom_component_unregistered.rs"
 
 [[test]]
 name = "custom_component_wire"
-path = "../horizon-client/tests/custom_component_wire.rs"
+path = "tests/custom_component_wire.rs"
 
 [[test]]
 name = "forced_chunks"
-path = "../horizon-client/tests/forced_chunks.rs"
+path = "tests/forced_chunks.rs"
 
 [[test]]
 name = "generation_saves"
-path = "../horizon-client/tests/generation_saves.rs"
+path = "tests/generation_saves.rs"
 
 [[test]]
 name = "lan_bot"
-path = "../horizon-client/tests/lan_bot.rs"
+path = "tests/lan_bot.rs"
 
 [[test]]
 name = "streaming_meshes"
-path = "../horizon-client/tests/streaming_meshes.rs"
+path = "tests/streaming_meshes.rs"
 
 [[test]]
 name = "tall_column"
-path = "../horizon-client/tests/tall_column.rs"
+path = "tests/tall_column.rs"
 
 [[test]]
 name = "wide_states"
-path = "../horizon-client/tests/wide_states.rs"
+path = "tests/wide_states.rs"
 
 [[example]]
 name = "chunk_encoding_bench"
-path = "../horizon-client/examples/chunk_encoding_bench.rs"
+path = "examples/chunk_encoding_bench.rs"

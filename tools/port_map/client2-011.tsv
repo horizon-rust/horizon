@@ -20,7 +20,7 @@ MultilineTextField.reflowDisplayLines	port	crates/horizon-client/src/game/books.
 MultilineTextField.truncateFullText	port	crates/horizon-client-render/src/ui.rs::EditBox::set_value	truncates to max_length characters
 MultilineTextField.truncateInsertionText	inline	crates/horizon-client-render/src/ui.rs::EditBox::insert_text	room left under max_length
 MultilineTextField.overflowsLineLimit	port	crates/horizon-client/src/game/books.rs::Game::page_keep	counts page_rows, which adds the row after a trailing newline as vanilla does
-ObjectSelectionList.nextFocusPath	inline	crates/horizon-client/src/title.rs::Title::arrow_key	arrow keys move the world list's selection; multiplayer.rs::Screen::arrow does the server list; pack lists take no keyboard
+ObjectSelectionList.nextFocusPath	inline	crates/horizon-client-lib/src/title.rs::Title::arrow_key	arrow keys move the world list's selection; multiplayer.rs::Screen::arrow does the server list; pack lists take no keyboard
 ObjectSelectionList.updateWidgetNarration	skip:other		screen-reader narration; Horizon has no narration output
 OptionsList.addBig	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	Row::Big: 310 wide at width/2 - 155
 OptionsList.addHeader	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	gap: minor: the header is centred text, not a focusable widget
@@ -32,7 +32,7 @@ OptionsList.Entry.small	port	crates/horizon-client-render/src/options_ui.rs::opt
 OptionsList.Entry.extractContent	inline	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	positions the row's widgets; OptionsUi::draw paints them
 OptionsList.Entry.findOption	skip:ui		widget lookup only; rows are rebuilt from Settings each frame
 OptionsList.HeaderEntry.extractContent	inline	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	header centred on the row (Row::Header)
-PlainTextButton.extractContents	inline	crates/horizon-client/src/title.rs::Title::draw_with_items	the bottom notice is the plain text button, underlined while hovered; Title::click opens the credits
+PlainTextButton.extractContents	inline	crates/horizon-client-lib/src/title.rs::Title::draw_with_items	the bottom notice is the plain text button, underlined while hovered; Title::click opens the credits
 PlayerFaceExtractor.extractHat	port	crates/horizon-client-render/src/tab_list.rs::face	hat layer: UV 40, flipped for Dinnerbone and Grumm
 PlayerFaceWidget.extractWidgetRenderState	skip:service		head in the friends list (AbstractFriendsEntryContainerWidget)
 PlayerSkinWidget.extractWidgetRenderState	skip:service		skin preview on the chat report screen (SkinReportScreen)
@@ -60,19 +60,19 @@ ScrollableLayout.Container.setY	skip:ui		positions set by each screen's layout
 ScrollableLayout.Container.setScrollAmount	inline	crates/horizon-client/src/game/server_links.rs::Game::server_links_scroll	gap: minor: clamps the server links list only; other scroll areas clamp in their own code
 SelectableEntry.mouseOverIcon	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::entry_click	32 px icon of a pack row; the world row's icon uses the same test in Title::click_action
 SelectableEntry.mouseOverLeftHalf	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::entry_click	left 16 px of the pack icon (unselect)
-SelectableEntry.mouseOverRightHalf	port	crates/horizon-client/src/multiplayer.rs::over_right_half	join half of a server row
+SelectableEntry.mouseOverRightHalf	port	crates/horizon-client-lib/src/multiplayer.rs::over_right_half	join half of a server row
 SelectableEntry.mouseOverTopRightQuarter	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::entry_click	move-up arrow of a pack row
 SelectableEntry.mouseOverBottomRightQuarter	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::entry_click	move-down arrow of a pack row
-SelectableEntry.mouseOverTopLeftQuarter	port	crates/horizon-client/src/multiplayer.rs::over_top_left	move-up arrow of a server row
-SelectableEntry.mouseOverBottomLeftQuarter	port	crates/horizon-client/src/multiplayer.rs::over_bottom_left	move-down arrow of a server row
-SplashRenderer.extractRenderState	inline	crates/horizon-client/src/title.rs::Title::draw_with_items	the rolled splash is drawn and rotated beside the logo (choose_splash)
+SelectableEntry.mouseOverTopLeftQuarter	port	crates/horizon-client-lib/src/multiplayer.rs::over_top_left	move-up arrow of a server row
+SelectableEntry.mouseOverBottomLeftQuarter	port	crates/horizon-client-lib/src/multiplayer.rs::over_bottom_left	move-down arrow of a server row
+SplashRenderer.extractRenderState	inline	crates/horizon-client-lib/src/title.rs::Title::draw_with_items	the rolled splash is drawn and rotated beside the logo (choose_splash)
 SpriteIconButton.setLoading	skip:service		the loading state is used only by the friends buttons (AddFriendWidget, FriendEntry)
-SpriteIconButton.extractSprite	port	crates/horizon-client/src/title.rs::Title::draw	draws the title's icon buttons (language, accessibility); the loading state is service-only
+SpriteIconButton.extractSprite	port	crates/horizon-client-lib/src/title.rs::Title::draw	draws the title's icon buttons (language, accessibility); the loading state is service-only
 SpriteIconButton.extractLoadingStateIfLoading	skip:service		loading spinner only for the friends buttons
 SpriteIconButton.Builder.sprite	skip:java		builder setter; Horizon draws its icon buttons with fixed sprites
 SpriteIconButton.Builder.build	skip:java		builder; no object is needed
 SpriteIconButton.CenteredIcon.extractContents	skip:service		FriendsButton (social)
-SpriteIconButton.TextAndIcon.extractContents	port	crates/horizon-client/src/title.rs::Button::draw_label_at	the Accessibility screen's Music & Sounds, Accessibility Settings and Language buttons (AccessibilityOnboardingScreen): the label in x + 2 .. x + width - icon - 4 centred on the button's middle, the icon drawn in Title::draw
+SpriteIconButton.TextAndIcon.extractContents	port	crates/horizon-client-lib/src/title.rs::Button::draw_label_at	the Accessibility screen's Music & Sounds, Accessibility Settings and Language buttons (AccessibilityOnboardingScreen): the label in x + 2 .. x + width - icon - 4 centred on the button's middle, the icon drawn in Title::draw
 StringWidget.setMaxWidth	port	crates/horizon-client-render/src/screen_draw.rs::string_widget	clips at max_width (CLAMPED)
 StringWidget.getWidth	port	crates/horizon-client-render/src/screen_draw.rs::label_width	the smaller of max width and text width
 StringWidget.visitLines	port	crates/horizon-client-render/src/screen_draw.rs::string_widget	gap: minor: SCROLLING overflow (scrolling text) is not ported; CLAMPED draws "..."
@@ -93,26 +93,26 @@ DebugEntryDetailedMemory.display	skip:java		JVM heap and non-heap readout (Memor
 DebugEntryDetailedMemory.printMemoryUsage	skip:java		JVM memory format for the heap readout
 DebugEntryFps.display	port	crates/horizon-client/src/game/debug_keys.rs::Game::draw_debug_overlay	first line: fps, framerate cap (inf), present mode and refresh rate
 DebugEntryFps.presentModeName	port	crates/horizon-client/src/game/debug_keys.rs::Game::draw_debug_overlay	present mode suffix (immediate, mailbox, fifo)
-DebugEntryGpuUtilization.display	inline	crates/horizon-client/src/debug_overlay.rs::gpu_line	the rounded percentage, red past 100
+DebugEntryGpuUtilization.display	inline	crates/horizon-client-lib/src/debug_overlay.rs::gpu_line	the rounded percentage, red past 100
 DebugEntryHeightmap.display	port	crates/horizon-client/src/game/debug_lines.rs::Game::debug_heightmap_lines	the client chunk's heightmaps at the feet and the server chunk's
-DebugEntryLight.display	inline	crates/horizon-client/src/debug_overlay.rs::light_line	gap: minor: the client's line only; Horizon draws no server light values
+DebugEntryLight.display	inline	crates/horizon-client-lib/src/debug_overlay.rs::light_line	gap: minor: the client's line only; Horizon draws no server light values
 DebugEntryLocalDifficulty.display	inline	crates/horizon-client/src/game/debug_lines.rs::Game::debug_entry_lines	the server thread's difficulty line
 DebugEntryLookingAt.display	port	crates/horizon-client/src/game/debug_lines.rs::Game::debug_looking_at_block	the targeted block's state or its tags
-DebugEntryLookingAt.addTagEntries	inline	crates/horizon-client/src/debug_overlay.rs::tag_lines	the block's tags, one line each
-DebugEntryLookingAt.DebugEntryLookingAtState.extractInfo	port	crates/horizon-client/src/debug_overlay.rs::state_lines	the targeted block and its state
-DebugEntryLookingAt.DebugEntryLookingAtState.addStateProperties	inline	crates/horizon-client/src/debug_overlay.rs::state_lines	the state's properties, one line each
-DebugEntryLookingAt.DebugEntryLookingAtState.getPropertyValueString	inline	crates/horizon-client/src/debug_overlay.rs::state_lines	the property values in the state lines
+DebugEntryLookingAt.addTagEntries	inline	crates/horizon-client-lib/src/debug_overlay.rs::tag_lines	the block's tags, one line each
+DebugEntryLookingAt.DebugEntryLookingAtState.extractInfo	port	crates/horizon-client-lib/src/debug_overlay.rs::state_lines	the targeted block and its state
+DebugEntryLookingAt.DebugEntryLookingAtState.addStateProperties	inline	crates/horizon-client-lib/src/debug_overlay.rs::state_lines	the state's properties, one line each
+DebugEntryLookingAt.DebugEntryLookingAtState.getPropertyValueString	inline	crates/horizon-client-lib/src/debug_overlay.rs::state_lines	the property values in the state lines
 DebugEntryLookingAtEntity.display	inline	crates/horizon-client/src/game/debug_lines.rs::Game::debug_entry_lines	crosshair_entity_type names the targeted entity
 DebugEntryLookingAtEntityTags.display	inline	crates/horizon-client/src/game/debug_lines.rs::Game::debug_entry_lines	entity tags through debug_overlay::tag_lines
 DebugEntryMemory.display	skip:java		JVM heap and allocation counters (Runtime, GC); Rust has none
 DebugEntryMemory.AllocationRateCalculator.bytesAllocatedPerSecond	skip:java		JVM allocation counter from GC data
 DebugEntryMemory.AllocationRateCalculator.gcCounts	skip:java		JVM garbage collector counts
 DebugEntryPlayerSpeed.display	inline	crates/horizon-client/src/game/debug_lines.rs::Game::debug_entry_lines	Speed: %.3f blocks/tick from the known movement
-DebugEntryPosition.display	port	crates/horizon-client/src/debug_overlay.rs::position	XYZ, block, chunk and facing lines
+DebugEntryPosition.display	port	crates/horizon-client-lib/src/debug_overlay.rs::position	XYZ, block, chunk and facing lines
 DebugEntryPostEffects.display	inline	crates/horizon-client/src/game/debug_lines.rs::Game::debug_entry_lines	the applied post effect chain
-DebugEntrySectionPosition.display	port	crates/horizon-client/src/debug_overlay.rs::position	section-relative line
-DebugEntrySoundCache.display	inline	crates/horizon-client/src/debug_overlay.rs::sound_cache_line	the decoded buffers and their size
-DebugEntrySoundMood.display	inline	crates/horizon-client/src/debug_overlay.rs::sound_mood_line	the used channels and the mood
+DebugEntrySectionPosition.display	port	crates/horizon-client-lib/src/debug_overlay.rs::position	section-relative line
+DebugEntrySoundCache.display	inline	crates/horizon-client-lib/src/debug_overlay.rs::sound_cache_line	the decoded buffers and their size
+DebugEntrySoundMood.display	inline	crates/horizon-client-lib/src/debug_overlay.rs::sound_mood_line	the used channels and the mood
 DebugEntrySpawnCounts.display	inline	crates/horizon-client/src/game/debug_lines.rs::Game::debug_entry_lines	the server thread's spawn counts
 DebugEntrySystemSpecs.getCpuInfo	port	crates/horizon-client/src/game/debug_keys.rs::Game::draw_debug_overlay	CPU name line
 DebugEntrySystemSpecs.display	port	crates/horizon-client/src/game/debug_keys.rs::Game::draw_debug_overlay	gap: minor: no Java version line; CPU, display, window and GPU lines are drawn
@@ -124,21 +124,21 @@ DebugScreenEntryList.setStatus	skip:debug		F3 profile editor (developer tooling)
 DebugScreenEntryList.toggleStatus	skip:debug		F3 profile editor (developer tooling)
 DebugScreenEntryList.rebuildCurrentList	skip:debug		F3 profile editor (developer tooling)
 DebugScreenEntryList.save	skip:debug		F3 profile editor (developer tooling)
-AbstractDebugChart.extractSampleBars	port	crates/horizon-client/src/debug_chart.rs::Chart::bars	one bar per sample
-AbstractDebugChart.extractMainSampleBar	port	crates/horizon-client/src/debug_chart.rs::Chart::bars	the main value's bar (dimension 0)
-BandwidthDebugChart.extractLabeledLineAtValue	port	crates/horizon-client/src/debug_chart.rs::Chart::lines_and_labels	
-BandwidthDebugChart.extractLineWithLabel	port	crates/horizon-client/src/debug_chart.rs::Chart::lines_and_labels	
-FpsDebugChart.extractAdditionalLinesAndLabels	port	crates/horizon-client/src/debug_chart.rs::Chart::lines_and_labels	
-FpsDebugChart.toDisplayString	port	crates/horizon-client/src/debug_chart.rs::Chart::display	
-FpsDebugChart.getSampleColor	port	crates/horizon-client/src/debug_chart.rs::Chart::color	
-PingDebugChart.extractAdditionalLinesAndLabels	port	crates/horizon-client/src/debug_chart.rs::Chart::lines_and_labels	
-PingDebugChart.toDisplayString	port	crates/horizon-client/src/debug_chart.rs::Chart::display	
-PingDebugChart.getSampleColor	port	crates/horizon-client/src/debug_chart.rs::Chart::color	
+AbstractDebugChart.extractSampleBars	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::bars	one bar per sample
+AbstractDebugChart.extractMainSampleBar	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::bars	the main value's bar (dimension 0)
+BandwidthDebugChart.extractLabeledLineAtValue	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::lines_and_labels	
+BandwidthDebugChart.extractLineWithLabel	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::lines_and_labels	
+FpsDebugChart.extractAdditionalLinesAndLabels	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::lines_and_labels	
+FpsDebugChart.toDisplayString	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::display	
+FpsDebugChart.getSampleColor	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::color	
+PingDebugChart.extractAdditionalLinesAndLabels	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::lines_and_labels	
+PingDebugChart.toDisplayString	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::display	
+PingDebugChart.getSampleColor	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::color	
 ProfilerPieChart.extractRenderState	missing		minor: F3+1 profiler pie chart is not drawn; the chart toggle always reads hidden
 ProfilerPieChart.splitNodeName	missing		minor: profiler node names for the pie chart not ported
 ProfilerPieChart.profilerPieChartKeyPress	missing		minor: profiler pie keys are not handled
-TpsDebugChart.extractAdditionalLinesAndLabels	port	crates/horizon-client/src/debug_chart.rs::Chart::lines_and_labels	
-TpsDebugChart.getValueForAggregation	port	crates/horizon-client/src/debug_chart.rs::Chart::aggregated	tick time without its idle part
-TpsDebugChart.toDisplayString	port	crates/horizon-client/src/debug_chart.rs::Chart::display	
-TpsDebugChart.getSampleHeight	port	crates/horizon-client/src/debug_chart.rs::Chart::height	
-TpsDebugChart.getSampleColor	port	crates/horizon-client/src/debug_chart.rs::Chart::color	
+TpsDebugChart.extractAdditionalLinesAndLabels	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::lines_and_labels	
+TpsDebugChart.getValueForAggregation	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::aggregated	tick time without its idle part
+TpsDebugChart.toDisplayString	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::display	
+TpsDebugChart.getSampleHeight	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::height	
+TpsDebugChart.getSampleColor	port	crates/horizon-client-lib/src/debug_chart.rs::Chart::color	

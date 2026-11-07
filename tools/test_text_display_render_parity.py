@@ -113,7 +113,7 @@ def main():
     (build / 'report.json').unlink(missing_ok=True)
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
-    sources = [PARITY / 'VanillaTextDisplayRenderOracle.java', lab.ROOT / 'crates/horizon-client/src/text_display.rs',
+    sources = [PARITY / 'VanillaTextDisplayRenderOracle.java', lab.ROOT / 'crates/horizon-client-lib/src/text_display.rs',
                lab.ROOT / 'crates/horizon-client-render/src/hud.rs', lab.ROOT / 'crates/horizon-client-render/src/font.rs']
     tested = base.source_hashes(sources)
     chosen = cases(args.count)

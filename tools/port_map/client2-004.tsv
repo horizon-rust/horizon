@@ -1,32 +1,32 @@
 FeatureRenderDispatcher.PreparedFrame	skip:other		render-pass order and draw-group plumbing of vanilla's feature renderer; Horizon orders its own passes
 FeatureRenderDispatcher.PreparedGroup	skip:other		runs one feature group through its renderer; the per-feature draws are mapped by their own renderers
 FeatureRendererMap	skip:java		type-indexed lookup table of feature renderers
-FlameFeatureRenderer.buildGroup	port	crates/horizon-client/src/fire_render.rs::flames	loop over burning entities
-FlameFeatureRenderer.prepare	port	crates/horizon-client/src/fire_render.rs::flames	two alternating fire sprites stacked up the entity
-FlameFeatureRenderer.fireVertex	inline	crates/horizon-client/src/fire_render.rs::flames	vertex push folded into flames
-GizmoFeatureRenderer.buildGroup	port	crates/horizon-client/src/gizmos.rs::camera_relative	gap: minor: lines, cuboid fills and billboard texts are drawn; points and triangle fans have no kind
+FlameFeatureRenderer.buildGroup	port	crates/horizon-client-lib/src/fire_render.rs::flames	loop over burning entities
+FlameFeatureRenderer.prepare	port	crates/horizon-client-lib/src/fire_render.rs::flames	two alternating fire sprites stacked up the entity
+FlameFeatureRenderer.fireVertex	inline	crates/horizon-client-lib/src/fire_render.rs::flames	vertex push folded into flames
+GizmoFeatureRenderer.buildGroup	port	crates/horizon-client-lib/src/gizmos.rs::camera_relative	gap: minor: lines, cuboid fills and billboard texts are drawn; points and triangle fans have no kind
 GizmoFeatureRenderer.buildTexts	inline	crates/horizon-client/src/game/debug_renderers.rs::Game::debug_renderer_geometry	the debug renderers' billboard texts become centred quads at billboard_text_unit scale, without a background; the game-test markers draw theirs the same way, and a text from any other gizmo source has no kind
 GizmoFeatureRenderer.buildTriangleFans	missing		minor: debug triangle fans are not drawn; Gizmos has no fan kind
 GizmoFeatureRenderer.buildQuads	inline	crates/horizon-client/src/game/debug_renderers.rs::Game::debug_renderer_geometry	the colour fill of a cuboid gizmo becomes four vertices per quad, for the debug renderers that fill; no free quad is submitted anywhere
 GizmoFeatureRenderer.buildPoints	missing		minor: debug points are not drawn; Gizmos has no point kind
-ItemFeatureRenderer.buildGroup	port	crates/horizon-client/src/item_render.rs::ItemRenderState::submit	loop over item submits
-ItemFeatureRenderer.prepareSubmit	port	crates/horizon-client/src/item_render.rs::ItemRenderState::submit	layer loop, quads or special model
+ItemFeatureRenderer.buildGroup	port	crates/horizon-client-lib/src/item_render.rs::ItemRenderState::submit	loop over item submits
+ItemFeatureRenderer.prepareSubmit	port	crates/horizon-client-lib/src/item_render.rs::ItemRenderState::submit	layer loop, quads or special model
 ItemFeatureRenderer.prepareOutlineSubmit	port	crates/horizon-client/src/game/glowing.rs::Game::mark_outline	gap: minor: outline colour is only applied to dropped items (item_draw.rs dropped_item_geometry); held-item outlines not checked
 ItemFeatureRenderer.computeFoilDecalPose	missing		minor: unsure: the 0.5 GUI and 0.75 first-person foil decal scale is not found; glint scale is per context in item_render.rs Glint
-ItemFeatureRenderer.getLayerColorSafe	port	crates/horizon-client/src/item_render.rs::submit_quads	tint index past the tints draws white, both overloads
+ItemFeatureRenderer.getLayerColorSafe	port	crates/horizon-client-lib/src/item_render.rs::submit_quads	tint index past the tints draws white, both overloads
 LeashFeatureRenderer.buildGroup	port	crates/horizon-client/src/game/leads.rs::Game::leash_geometry	loop over leash submits
 LeashFeatureRenderer.prepare	port	crates/horizon-client/src/game/leads.rs::Game::leash_geometry	gap: player: rope never sags when slack (vanilla droops the rope); no slack state in the leash render
 LeashFeatureRenderer.addVertexPair	inline	crates/horizon-client/src/game/leads.rs::Game::leash_geometry	vertex pair with block and sky light lerp folded into leash_geometry
-ModelFeatureRenderer.buildGroup	port	crates/horizon-client/src/mobs.rs::render_model	loop over model submits
-ModelFeatureRenderer.prepareModel	port	crates/horizon-client/src/mobs.rs::render_model	gap: minor: setupAnim is done by the mob code, and the sheeted decal and uv wrap are not checked
+ModelFeatureRenderer.buildGroup	port	crates/horizon-client-lib/src/mobs.rs::render_model	loop over model submits
+ModelFeatureRenderer.prepareModel	port	crates/horizon-client-lib/src/mobs.rs::render_model	gap: minor: setupAnim is done by the mob code, and the sheeted decal and uv wrap are not checked
 MovingBlockFeatureRenderer.buildGroup	port	crates/horizon-client/src/game/moving_pistons.rs::Game::moving_piston_geometry	moving piston block and base geometry
 MovingBlockFeatureRenderer.putBakedQuad	port	crates/horizon-client/src/game/moving_pistons.rs::Game::moving_block_vertices	quad placed at the moving offset
 QuadParticleFeatureRenderer	skip:other		GPU batching and draw plumbing of particle quads; Horizon's particle pass lives in particles.rs and gfx/pack_entities.rs
 RenderTypeFeatureRenderer	skip:other		GPU render-type batching; Horizon batches its own draws in gfx/entity_batch.rs
 RenderTypeFeatureRenderer.Group	skip:other		GPU render-type batching, as above
-ShadowFeatureRenderer.buildGroup	port	crates/horizon-client/src/shadows.rs::shadow	loop over shadow submits
-ShadowFeatureRenderer.prepare	port	crates/horizon-client/src/shadows.rs::shadow	shadow quads per piece, clamped by the block below
-ShadowFeatureRenderer.shadowVertex	inline	crates/horizon-client/src/shadows.rs::shadow	vertex push folded into shadow
+ShadowFeatureRenderer.buildGroup	port	crates/horizon-client-lib/src/shadows.rs::shadow	loop over shadow submits
+ShadowFeatureRenderer.prepare	port	crates/horizon-client-lib/src/shadows.rs::shadow	shadow quads per piece, clamped by the block below
+ShadowFeatureRenderer.shadowVertex	inline	crates/horizon-client-lib/src/shadows.rs::shadow	vertex push folded into shadow
 ShapeOutlineFeatureRenderer.buildGroup	port	crates/horizon-client-render/src/gfx.rs::outline_vertices	block selection outline edges as line vertices
 TextFeatureRenderer.buildGroup	skip:other		dispatch over text and background submits; each kind is covered below or by Horizon's text draw
 TextFeatureRenderer.renderText	port	crates/horizon-client-render/src/block_entity_render.rs::draw_text	the outline as the eight one-pixel offsets NORMAL under the text POLYGON_OFFSET; both share a mesh here, so the text is lifted 0.05 of a font pixel instead of z-fighting
@@ -49,10 +49,10 @@ MobEffectFogEnvironment.isApplicable	inline	crates/horizon-client/src/game/rende
 PowderedSnowFogEnvironment.setupFog	port	crates/horizon-client-render/src/fog.rs::setup_fog	gap: player: spectator case (-8 start, half render distance) is not applied
 WaterFogEnvironment.setupFog	port	crates/horizon-client-render/src/fog.rs::setup_fog	gap: minor: water fog start is fixed at -8; vanilla reads the WATER_FOG_START_DISTANCE attribute
 DrawableGizmoPrimitives.addPoint	missing		minor: debug points are not drawn; Gizmos has no point kind
-DrawableGizmoPrimitives.addLine	port	crates/horizon-client/src/gizmos.rs::Gizmos::line	
+DrawableGizmoPrimitives.addLine	port	crates/horizon-client-lib/src/gizmos.rs::Gizmos::line	
 DrawableGizmoPrimitives.addTriangleFan	missing		minor: debug triangle fans are not drawn
-DrawableGizmoPrimitives.addQuad	inline	crates/horizon-client/src/gizmos.rs::cuboid_fill_quads	a cuboid's six fill quads, which the debug renderers push into their fill list; there is no general quad kind
-DrawableGizmoPrimitives.addText	inline	crates/horizon-client/src/gizmos.rs::billboard_text_unit	one font pixel's world size for a text scale, which the debug renderers' and game-test markers' billboard text quads are built at (name_tag_quads)
+DrawableGizmoPrimitives.addQuad	inline	crates/horizon-client-lib/src/gizmos.rs::cuboid_fill_quads	a cuboid's six fill quads, which the debug renderers push into their fill list; there is no general quad kind
+DrawableGizmoPrimitives.addText	inline	crates/horizon-client-lib/src/gizmos.rs::billboard_text_unit	one font pixel's world size for a text scale, which the debug renderers' and game-test markers' billboard text quads are built at (name_tag_quads)
 DrawableGizmoPrimitives.submit	port	crates/horizon-client/src/game.rs::Game::render	gap: minor: lines of both lists go to camera_relative in Game::render; the fills and texts of the debug renderers are built as vertices in debug_renderers::Game::debug_renderer_geometry instead
 BundleSelectedItemSpecialRenderer.update	port	crates/horizon-assets/src/item_model.rs::Resolve::node	bundle selected item layers via the BundleSelectedItem arm
 CompositeModel.update	port	crates/horizon-assets/src/item_model.rs::Resolve::node	composite arm: each child in order
@@ -65,20 +65,20 @@ ConditionalItemModel.Unbaked.swapContext	skip:data		registry remap of a property
 CuboidItemModelWrapper.update	port	crates/horizon-assets/src/item_model.rs::Resolve::node	model layer: foil, tints, transform and quads
 CuboidItemModelWrapper.validateAtlasUsage	skip:other		load-time check that a model uses only the item and block atlases; throws on bad data, nothing at play time
 CuboidItemModelWrapper.hasSpecialAnimatedTexture	inline	crates/horizon-assets/src/item_model.rs::Resolve::node	clock and compass tag give special foil, folded into the model arm
-ItemModelResolver.updateForLiving	port	crates/horizon-client/src/item_render.rs::ItemRenderer::resolve	gap: minor: the seed is passed in by the caller; the entity id plus display ordinal seed is not checked here
-ItemModelResolver.updateForNonLiving	port	crates/horizon-client/src/item_render.rs::ItemRenderer::resolve	gap: minor: the seed is passed in by the caller; the entity id seed is not checked here
+ItemModelResolver.updateForLiving	port	crates/horizon-client-lib/src/item_render.rs::ItemRenderer::resolve	gap: minor: the seed is passed in by the caller; the entity id plus display ordinal seed is not checked here
+ItemModelResolver.updateForNonLiving	port	crates/horizon-client-lib/src/item_render.rs::ItemRenderer::resolve	gap: minor: the seed is passed in by the caller; the entity id seed is not checked here
 ItemStackRenderState.ensureCapacity	skip:java		layer array capacity; Horizon builds layer lists per frame
 ItemStackRenderState.newLayer	skip:java		layer array allocation
 ItemStackRenderState.clear	skip:java		resets the per-frame layer list
-ItemStackRenderState.visitExtents	port	crates/horizon-client/src/item_render.rs::ItemRenderState::bounding_box	extents transformed per layer
-ItemStackRenderState.getModelBoundingBox	port	crates/horizon-client/src/item_render.rs::ItemRenderState::bounding_box	bounding box from the layer extents
+ItemStackRenderState.visitExtents	port	crates/horizon-client-lib/src/item_render.rs::ItemRenderState::bounding_box	extents transformed per layer
+ItemStackRenderState.getModelBoundingBox	port	crates/horizon-client-lib/src/item_render.rs::ItemRenderState::bounding_box	bounding box from the layer extents
 ItemStackRenderState.LayerRenderState.clear	skip:java		resets one layer's fields
 ItemStackRenderState.LayerRenderState.tintLayers	skip:java		lazy list allocation for tint values
-ItemStackRenderState.LayerRenderState.submit	port	crates/horizon-client/src/item_render.rs::ItemRenderState::submit	special renderer or quads per layer
+ItemStackRenderState.LayerRenderState.submit	port	crates/horizon-client-lib/src/item_render.rs::ItemRenderState::submit	special renderer or quads per layer
 MissingItemModel.update	port	crates/horizon-assets/src/item_model.rs::Resolve::missing	missing-model layer
 MissingItemModel.withTransform	port	crates/horizon-assets/src/item_model.rs::Resolve::missing	missing-model layer under the given transform
 ModelRenderProperties.fromResolvedModel	port	crates/horizon-assets/src/item_bake.rs::bake_item_model	particle sprite and GUI light taken at bake
-ModelRenderProperties.applyToLayer	port	crates/horizon-client/src/item_render.rs::ItemRenderer::resolve	uses block light, particle and display transform on the layer
+ModelRenderProperties.applyToLayer	port	crates/horizon-client-lib/src/item_render.rs::ItemRenderer::resolve	uses block light, particle and display transform on the layer
 RangeSelectItemModel.update	port	crates/horizon-assets/src/item_model.rs::Resolve::node	range dispatch arm picks the entry
 RangeSelectItemModel.Unbaked.bake	port	crates/horizon-assets/src/item_model.rs::ItemModelNode::decode	entries built at load time
 SelectItemModel.update	port	crates/horizon-assets/src/item_model.rs::Resolve::node	select arm picks the case

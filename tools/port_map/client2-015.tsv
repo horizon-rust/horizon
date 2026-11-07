@@ -1,7 +1,7 @@
-WinScreen.wrapCreditsIO	port	crates/horizon-client/src/win_screen.rs::WinScreen::new	reads the credits texts from the resource root; a failed read is logged and skipped
-WinScreen.extractRenderState	port	crates/horizon-client/src/win_screen.rs::WinScreen::draw	logo, lines scrolled up, last line stops mid-screen; background and vignette are drawn here too
-WinScreen.extractVignette	inline	crates/horizon-client/src/win_screen.rs::WinScreen::draw	credits_vignette sprite stretched over the screen
-WinScreen.extractMenuBackground	port	crates/horizon-client/src/win_screen.rs::WinScreen::menu_background	menu background tiled and scrolled at half the text speed
+WinScreen.wrapCreditsIO	port	crates/horizon-client-lib/src/win_screen.rs::WinScreen::new	reads the credits texts from the resource root; a failed read is logged and skipped
+WinScreen.extractRenderState	port	crates/horizon-client-lib/src/win_screen.rs::WinScreen::draw	logo, lines scrolled up, last line stops mid-screen; background and vignette are drawn here too
+WinScreen.extractVignette	inline	crates/horizon-client-lib/src/win_screen.rs::WinScreen::draw	credits_vignette sprite stretched over the screen
+WinScreen.extractMenuBackground	port	crates/horizon-client-lib/src/win_screen.rs::WinScreen::menu_background	menu background tiled and scrolled at half the text speed
 WorldOptionsScreen.init	port	crates/horizon-client/src/game/lan_screen.rs::Game::open_world_options	reads difficulty, lock, LAN port and command/force settings when opened; layout is WorldOptions::buttons
 WorldOptionsScreen.createGameRulesButton	inline	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	GameRules arm opens the rules view; enabled state is in WorldOptions::active
 WorldOptionsScreen.createGameModeButton	inline	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	Default and Personal mode arms cycle the mode; enabled state is in WorldOptions::active
@@ -104,7 +104,7 @@ DebugOptionsScreen.OptionEntry.setValue	port	crates/horizon-client/src/game/debu
 DebugOptionsScreen.OptionEntry.extractContent	port	crates/horizon-client/src/game/debug_options.rs::Game::draw_debug_options	the entry's path and its three status buttons, the current one highlighted
 DebugOptionsScreen.OptionEntry.refreshEntry	port	crates/horizon-client/src/game/debug_options.rs::Game::draw_debug_options	the row is redrawn from debug_entries.status every frame, so set_status needs no refresh
 DebugOptionsScreen.OptionList.updateSearch	port	crates/horizon-client/src/game/debug_options.rs::rows	the list is rebuilt from debug_entries::search(search box) on every draw, click and scroll
-GameModeSwitcherScreen.getDefaultSelected	port	crates/horizon-client/src/game_mode_switcher.rs::GameModeSwitcher::new	previous mode, else the opposite of the current one
+GameModeSwitcherScreen.getDefaultSelected	port	crates/horizon-client-lib/src/game_mode_switcher.rs::GameModeSwitcher::new	previous mode, else the opposite of the current one
 GameModeSwitcherScreen.init	port	crates/horizon-client/src/game/gamemode_switcher.rs::Game::open_gamemode_switcher	opens with the selection state; slot positions are computed in draw
 GameModeSwitcherScreen.extractRenderState	port	crates/horizon-client/src/game/gamemode_switcher.rs::Game::draw_gamemode_switcher	title, help line, slots, selection and hover
 GameModeSwitcherScreen.extractBackground	port	crates/horizon-client/src/game/gamemode_switcher.rs::Game::draw_gamemode_switcher	background sprite centred above the slots
@@ -112,38 +112,38 @@ GameModeSwitcherScreen.switchToHoveredGameMode	port	crates/horizon-client/src/ga
 GameModeSwitcherScreen.keyPressed	port	crates/horizon-client/src/game/debug_keys.rs::Game::debug_key	the switch key cycles the selection
 GameModeSwitcherScreen.keyReleased	port	crates/horizon-client/src/game/debug_keys.rs::Game::debug_key	releasing the debug modifier applies and closes
 GameModeSwitcherScreen.mouseReleased	missing		minor: a debug modifier bound to a mouse button does not close the switcher; debug keys are keyboard only
-GameModeSwitcherScreen.GameModeIcon.getNext	port	crates/horizon-client/src/game_mode_switcher.rs::GameModeSwitcher::cycle	creative, survival, adventure, spectator, then creative
+GameModeSwitcherScreen.GameModeIcon.getNext	port	crates/horizon-client-lib/src/game_mode_switcher.rs::GameModeSwitcher::cycle	creative, survival, adventure, spectator, then creative
 GameModeSwitcherScreen.GameModeIcon.getFromGameType	inline	crates/horizon-client/src/game/gamemode_switcher.rs::Game::close_gamemode_switcher	compares the chosen mode with the current one before sending
 GameModeSwitcherScreen.GameModeSlot.extractWidgetRenderState	inline	crates/horizon-client/src/game/gamemode_switcher.rs::Game::draw_gamemode_switcher	slot, selection frame and icon per mode
 GameModeSwitcherScreen.GameModeSlot.extractSlot	inline	crates/horizon-client/src/game/gamemode_switcher.rs::Game::draw_gamemode_switcher	slot sprite
 GameModeSwitcherScreen.GameModeSlot.extractSelection	inline	crates/horizon-client/src/game/gamemode_switcher.rs::Game::draw_gamemode_switcher	selection sprite
-ButtonListDialogScreen.populateBodyElements	port	crates/horizon-client/src/dialog_screen.rs::columns	action buttons packed into the dialog's columns
-ButtonListDialogScreen.updateHeaderAndFooter	port	crates/horizon-client/src/dialog_screen.rs::Layout::new	exit button in the footer, else a 5 pixel footer
-DialogControlSet.addInput	port	crates/horizon-client/src/dialog_screen.rs::input	gap: player: single-option and number-range inputs get no control, so their value cannot be changed
-DialogControlSet.createDialogButton	port	crates/horizon-client/src/dialog_screen.rs::Layout::new	button width from the dialog; gap: minor: no button tooltips
-DialogControlSet.bindAction	port	crates/horizon-client/src/dialog.rs::Action::click	reads the inputs' current values into the action when clicked
+ButtonListDialogScreen.populateBodyElements	port	crates/horizon-client-lib/src/dialog_screen.rs::columns	action buttons packed into the dialog's columns
+ButtonListDialogScreen.updateHeaderAndFooter	port	crates/horizon-client-lib/src/dialog_screen.rs::Layout::new	exit button in the footer, else a 5 pixel footer
+DialogControlSet.addInput	port	crates/horizon-client-lib/src/dialog_screen.rs::input	gap: player: single-option and number-range inputs get no control, so their value cannot be changed
+DialogControlSet.createDialogButton	port	crates/horizon-client-lib/src/dialog_screen.rs::Layout::new	button width from the dialog; gap: minor: no button tooltips
+DialogControlSet.bindAction	port	crates/horizon-client-lib/src/dialog.rs::Action::click	reads the inputs' current values into the action when clicked
 DialogControlSet.createActionButton	port	crates/horizon-client/src/game/dialogs.rs::Game::dialog_click	button press runs the action through run_dialog_action
-DialogListDialogScreen.createDialogClickAction	port	crates/horizon-client/src/dialog.rs::Dialog::set_list	each listed dialog is a button whose action is Click::ShowDialog; game/dialogs.rs run_dialog_action opens it
+DialogListDialogScreen.createDialogClickAction	port	crates/horizon-client-lib/src/dialog.rs::Dialog::set_list	each listed dialog is a button whose action is Click::ShowDialog; game/dialogs.rs run_dialog_action opens it
 DialogScreen.repositionElements	skip:ui		layout only: body scroll height and warning clamp, both in Layout::new
 DialogScreen.createTitleWithWarningButton	skip:ui		layout only: title row, warning button 10 px right of the title in Layout::new
-DialogScreen.makeSureWarningButtonIsInBounds	port	crates/horizon-client/src/dialog_screen.rs::Layout::in_bounds	moves the warning button on screen when it is off
+DialogScreen.makeSureWarningButtonIsInBounds	port	crates/horizon-client-lib/src/dialog_screen.rs::Layout::in_bounds	moves the warning button on screen when it is off
 DialogScreen.createWarningButton	port	crates/horizon-client/src/game/dialogs.rs::Game::dialog_click	warning rect opens the warning; gap: minor: no hover tooltip
 DialogScreen.handleDialogClickEvent	port	crates/horizon-client/src/game/dialogs.rs::Game::run_dialog_action	gap: player: open-URL, suggest-command and change-page buttons only log and do nothing
 DialogScreens.createFromData	port	crates/horizon-client/src/game/dialogs.rs::Game::show_dialog	picks the screen from the dialog's kind
 DialogScreens.bootstrap	skip:data		registers screen factories by codec
 ServerLinksDialogScreen.createListActions	port	crates/horizon-client/src/game/server_links.rs::Game::server_links	the server's links
 ServerLinksDialogScreen.createDialogClickAction	port	crates/horizon-client/src/game/server_links.rs::Game::click_link	opens the link (prompt or browser by setting)
-SimpleDialogScreen.updateHeaderAndFooter	port	crates/horizon-client/src/dialog_screen.rs::Layout::new	main action buttons side by side in the footer, 8 px apart
-WaitingForResponseScreen.init	port	crates/horizon-client/src/dialog_screen.rs::waiting_button	Back button starts hidden and inactive
-WaitingForResponseScreen.tick	port	crates/horizon-client/src/dialog_screen.rs::waiting_button	Back shows after a second with a countdown label, works after five seconds
-DialogBodyHandlers.createBodyElement	port	crates/horizon-client/src/dialog_screen.rs::Layout::new	gap: player: item bodies are dropped (Body::Item gives no element)
+SimpleDialogScreen.updateHeaderAndFooter	port	crates/horizon-client-lib/src/dialog_screen.rs::Layout::new	main action buttons side by side in the footer, 8 px apart
+WaitingForResponseScreen.init	port	crates/horizon-client-lib/src/dialog_screen.rs::waiting_button	Back button starts hidden and inactive
+WaitingForResponseScreen.tick	port	crates/horizon-client-lib/src/dialog_screen.rs::waiting_button	Back shows after a second with a countdown label, works after five seconds
+DialogBodyHandlers.createBodyElement	port	crates/horizon-client-lib/src/dialog_screen.rs::Layout::new	gap: player: item bodies are dropped (Body::Item gives no element)
 DialogBodyHandlers.bootstrap	skip:data		registers body handlers
 DialogBodyHandlers.runActionOnParent	port	crates/horizon-client/src/game/dialogs.rs::Game::dialog_click	a press on a message or description line reads the hovered style (dialog_screen::line_style_at) and runs its click event
-DialogBodyHandlers.ItemHandler.createControls	port	crates/horizon-client/src/dialog_screen.rs::item	the item widget with its description 2 to the right, centred on each other vertically
-DialogBodyHandlers.PlainMessageHandler.createControls	port	crates/horizon-client/src/dialog_screen.rs::message	centred wrapped text; gap: player: text clicks do nothing
-InputControlHandlers.createHandler	port	crates/horizon-client/src/dialog_screen.rs::input	dispatch by control type; unknown types are dropped
+DialogBodyHandlers.ItemHandler.createControls	port	crates/horizon-client-lib/src/dialog_screen.rs::item	the item widget with its description 2 to the right, centred on each other vertically
+DialogBodyHandlers.PlainMessageHandler.createControls	port	crates/horizon-client-lib/src/dialog_screen.rs::message	centred wrapped text; gap: player: text clicks do nothing
+InputControlHandlers.createHandler	port	crates/horizon-client-lib/src/dialog_screen.rs::input	dispatch by control type; unknown types are dropped
 InputControlHandlers.bootstrap	skip:data		registers input handlers
-InputControlHandlers.BooleanHandler.addControl	port	crates/horizon-client/src/dialog_screen.rs::input	checkbox with its label; toggled in dialog_click
-InputControlHandlers.NumberRangeHandler.addControl	port	crates/horizon-client/src/dialog_screen.rs::input	Control::NumberRange lays out a 20 high Part::Slider of the input's width
-InputControlHandlers.SingleOptionHandler.addControl	port	crates/horizon-client/src/dialog_screen.rs::input	Control::SingleOption lays out a 20 high Part::Cycle of the input's width
-InputControlHandlers.TextInputHandler.addControl	port	crates/horizon-client/src/dialog_screen.rs::input	gap: player: multiline inputs are drawn as one 20 px line and the line limit is not used
+InputControlHandlers.BooleanHandler.addControl	port	crates/horizon-client-lib/src/dialog_screen.rs::input	checkbox with its label; toggled in dialog_click
+InputControlHandlers.NumberRangeHandler.addControl	port	crates/horizon-client-lib/src/dialog_screen.rs::input	Control::NumberRange lays out a 20 high Part::Slider of the input's width
+InputControlHandlers.SingleOptionHandler.addControl	port	crates/horizon-client-lib/src/dialog_screen.rs::input	Control::SingleOption lays out a 20 high Part::Cycle of the input's width
+InputControlHandlers.TextInputHandler.addControl	port	crates/horizon-client-lib/src/dialog_screen.rs::input	gap: player: multiline inputs are drawn as one 20 px line and the line limit is not used

@@ -98,7 +98,7 @@ SubmitNodeCollection.canRenderAsSolid	inline	crates/horizon-client/src/game/name
 SubmitNodeCollection.submitText	port	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	world text (text displays)
 SubmitNodeCollection.submitTextBackground	inline	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	background quad of a text display
 SubmitNodeCollection.submitTextPart	inline	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	the see-through or opaque choice for a text part
-SubmitNodeCollection.submitFlame	port	crates/horizon-client/src/fire_render.rs::flames	entity fire flames
+SubmitNodeCollection.submitFlame	port	crates/horizon-client-lib/src/fire_render.rs::flames	entity fire flames
 SubmitNodeCollection.submitLeash	port	crates/horizon-client/src/game/leads.rs::Game::leash_geometry	lead rope from a leashed mob to its holder
 SubmitNodeCollection.submitModel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	mob models
 SubmitNodeCollection.submitCrumblingOverlay	port	crates/horizon-client/src/game.rs::Game::cracks	block break cracks (destroy_stage sprites) over a block
@@ -108,7 +108,7 @@ SubmitNodeCollection.getOutlineRenderType	inline	crates/horizon-client-render/sr
 SubmitNodeCollection.submitBreakingBlockModel	port	crates/horizon-client/src/game.rs::Game::cracks	gap: minor: drawn as cracks; the block model itself is not redrawn
 SubmitNodeCollection.submitShapeOutline	port	crates/horizon-client-render/src/gfx.rs::Renderer::draw_outline	block shape outline (selection box)
 SubmitNodeCollection.submitItem	port	crates/horizon-client/src/game/item_draw.rs::Game::dropped_item_geometry	dropped item entities
-SubmitNodeCollection.submitCustomGeometry	port	crates/horizon-client/src/mobs/guardian.rs::beam_geometry	gap: minor: the guardian beam only; screen overlay quads are built in ScreenEffects::build
+SubmitNodeCollection.submitCustomGeometry	port	crates/horizon-client-lib/src/mobs/guardian.rs::beam_geometry	gap: minor: the guardian beam only; screen overlay quads are built in ScreenEffects::build
 SubmitNodeCollection.submitGizmoPrimitives	skip:debug		debug gizmo overlay
 SubmitNodeStorage.setUseImprovedTransparency	skip:other		storage toggle for the transparency path; Horizon fixes its path in Renderer::new
 SubmitNodeStorage.order	skip:other		per-order submit collection; Horizon draws in fixed passes

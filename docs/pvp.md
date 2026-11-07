@@ -183,7 +183,7 @@ own rules. Melee hits follow 1.8.9's `EntityPlayer.attackTargetEntityWithCurrent
   resistance is a chance to take none instead of a cut; the sprint and Knockback push is added on top (0.1 up)
   instead of halving the motion first.
 
-Code: `crates/horizon-client/src/legacy_combat.rs` (the formulas, with their 1.8.9 sources),
+Code: `crates/horizon-client-lib/src/legacy_combat.rs` (the formulas, with their 1.8.9 sources),
 `game/legacy_rules.rs`; `lan_e2e.py --check legacy-pvp` measures it between two games.
 
 It is only the look: the client sends a server exactly what Modern sends (same attacks, same timing, no

@@ -14,7 +14,7 @@ class LivingKnockbackHookTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_attacker_versions_cancellation_and_validation(self):
         hooks = (ROOT / "crates/horizon-client/src/game/native_hooks.rs").read_text(encoding="utf-8")
-        health = (ROOT / "crates/horizon-client/src/health.rs").read_text(encoding="utf-8")
+        health = (ROOT / "crates/horizon-client-lib/src/health.rs").read_text(encoding="utf-8")
         context_start = health.index("thread_local! {")
         context = health[context_start:health.index("/// Whether [", context_start)]
         functions = hooks.replace("pub(super) fn", "fn").replace("\nfn ", "\n    fn ")

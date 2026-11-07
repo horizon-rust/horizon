@@ -55,16 +55,16 @@ CompressionDecoder.decode	port	crates/horizon-protocol/src/frame.rs::decompress	
 CompressionDecoder.setupInflaterInput	skip:java		ByteBuffer plumbing for the inflater
 CompressionDecoder.inflate	inline	crates/horizon-protocol/src/frame.rs::decompress	zlib inflate with the declared-length check
 net/minecraft/network/Connection#channelActive	skip:other		Netty channel open; the blocking Connection is connected before use
-net/minecraft/network/Connection#exceptionCaught	port	crates/horizon-client/src/net.rs::connection_lost	Timed out for a read timeout (READ_TIMEOUT, ReadTimeoutHandler(30)), Internal Exception: ... for other failures
-net/minecraft/network/Connection#channelRead0	port	crates/horizon-client/src/net.rs::receive_play	play-phase dispatch; gap: minor: configuration packets dispatch in configure
+net/minecraft/network/Connection#exceptionCaught	port	crates/horizon-client-lib/src/net.rs::connection_lost	Timed out for a read timeout (READ_TIMEOUT, ReadTimeoutHandler(30)), Internal Exception: ... for other failures
+net/minecraft/network/Connection#channelRead0	port	crates/horizon-client-lib/src/net.rs::receive_play	play-phase dispatch; gap: minor: configuration packets dispatch in configure
 net/minecraft/network/Connection#validateListener	skip:other		the per-phase decode enums fix the listener's side and protocol
 net/minecraft/network/Connection#syncAfterConfigurationChange	skip:other		Netty future sync
-net/minecraft/network/Connection#setupInboundProtocol	inline	crates/horizon-client/src/net.rs::run	phase switch: the decode enum used for each phase
-net/minecraft/network/Connection#setupOutboundProtocol	inline	crates/horizon-client/src/net.rs::run	phase switch: the encode enum used for each phase
-net/minecraft/network/Connection#setListenerForServerboundHandshake	inline	crates/horizon-client/src/lan/conn.rs::serve_connection	the handshake intent picks the path
-net/minecraft/network/Connection#initiateServerboundPlayConnection	port	crates/horizon-client/src/net.rs::run	handshake intention and login hello; transfer intent via the TRANSFER flag
-net/minecraft/network/Connection#initiateServerboundConnection	port	crates/horizon-client/src/net.rs::run	handshake intention and login hello
-net/minecraft/network/Connection#runOnceConnected	inline	crates/horizon-client/src/net.rs::run	the action runs at once: the socket is connected before run sends
+net/minecraft/network/Connection#setupInboundProtocol	inline	crates/horizon-client-lib/src/net.rs::run	phase switch: the decode enum used for each phase
+net/minecraft/network/Connection#setupOutboundProtocol	inline	crates/horizon-client-lib/src/net.rs::run	phase switch: the encode enum used for each phase
+net/minecraft/network/Connection#setListenerForServerboundHandshake	inline	crates/horizon-client-lib/src/lan/conn.rs::serve_connection	the handshake intent picks the path
+net/minecraft/network/Connection#initiateServerboundPlayConnection	port	crates/horizon-client-lib/src/net.rs::run	handshake intention and login hello; transfer intent via the TRANSFER flag
+net/minecraft/network/Connection#initiateServerboundConnection	port	crates/horizon-client-lib/src/net.rs::run	handshake intention and login hello
+net/minecraft/network/Connection#runOnceConnected	inline	crates/horizon-client-lib/src/net.rs::run	the action runs at once: the socket is connected before run sends
 net/minecraft/network/Connection#sendPacket	port	crates/horizon-protocol/src/connection.rs::ConnWriter::send	compression framing, then the write
 net/minecraft/network/Connection#doSendPacket	port	crates/horizon-protocol/src/connection.rs::ConnWriter::send_contents	write, count and encrypt
 net/minecraft/network/Connection#flushChannel	inline	crates/horizon-protocol/src/connection.rs::ConnWriter::send_contents	every send writes at once (TCP_NODELAY); no flush step
@@ -72,8 +72,8 @@ net/minecraft/network/Connection#flush	inline	crates/horizon-protocol/src/connec
 net/minecraft/network/Connection#flushQueue	skip:other		pending actions exist only while disconnected; run is always connected
 net/minecraft/network/Connection#tick	skip:other		the receive thread blocks in recv instead of ticking
 net/minecraft/network/Connection#tickSecond	skip:debug		packet averages for the F3 screen; debug_keys samples raw counters per tick
-net/minecraft/network/Connection#getLoggableAddress	port	crates/horizon-client/src/lan/conn.rs::user_name	gap: minor: name with address or withheld; no local form
-net/minecraft/network/Connection#disconnect	port	crates/horizon-client/src/lan/conn.rs::PlayerSender::disconnect	gap: minor: server-side kick; the client's own close is Session::disconnect
+net/minecraft/network/Connection#getLoggableAddress	port	crates/horizon-client-lib/src/lan/conn.rs::user_name	gap: minor: name with address or withheld; no local form
+net/minecraft/network/Connection#disconnect	port	crates/horizon-client-lib/src/lan/conn.rs::PlayerSender::disconnect	gap: minor: server-side kick; the client's own close is Session::disconnect
 net/minecraft/network/Connection#isMemoryConnection	port	crates/horizon-protocol/src/connection.rs::Connection::is_memory	in-memory pipe
 net/minecraft/network/Connection#connectToServer	port	crates/horizon-protocol/src/connection.rs::Connection::connect_addresses	gap: minor: the SRV lookup is in connect_server
 net/minecraft/network/Connection#configurePacketHandler	skip:other		Netty handler workaround
@@ -82,9 +82,9 @@ net/minecraft/network/Connection#createFrameDecoder	skip:other		Netty frame deco
 net/minecraft/network/Connection#connectToLocalServer	port	crates/horizon-protocol/src/connection.rs::Connection::local	the pipe comes from lan/mod.rs Lan::connect_local
 net/minecraft/network/Connection#fromChannel	port	crates/horizon-protocol/src/connection.rs::Connection::from_stream	gap: minor: the 30 s read timeout is set in lan/conn.rs::serve_connection
 net/minecraft/network/Connection#setEncryptionKey	port	crates/horizon-protocol/src/connection.rs::Connection::enable_encryption	CFB8 both directions
-net/minecraft/network/Connection#isConnected	inline	crates/horizon-client/src/net.rs::Session::send	no connected flag: sends stop once the writer is gone
+net/minecraft/network/Connection#isConnected	inline	crates/horizon-client-lib/src/net.rs::Session::send	no connected flag: sends stop once the writer is gone
 net/minecraft/network/Connection#setupCompression	port	crates/horizon-protocol/src/connection.rs::Connection::set_compression	negative threshold turns compression off
-net/minecraft/network/Connection#handleDisconnection	inline	crates/horizon-client/src/net.rs::Session::start	the thread ends and reports Disconnected with the reason
+net/minecraft/network/Connection#handleDisconnection	inline	crates/horizon-client-lib/src/net.rs::Session::start	the thread ends and reports Disconnected with the reason
 FriendlyByteBuf.readWithCodec	skip:java		DataFixer codec plumbing; Horizon has its typed Codec trait
 FriendlyByteBuf.writeWithCodec	skip:java		DataFixer codec plumbing; Horizon has its typed Codec trait
 FriendlyByteBuf.readLenientJsonWithCodec	skip:java		codec plumbing for lenient JSON
@@ -132,19 +132,19 @@ FriendlyByteBuf.toString	skip:java		Netty buffer text
 FriendlyByteBuf.retain	skip:java		Netty reference counting
 FriendlyByteBuf.touch	skip:java		Netty leak detection
 HashedPatchMap.create	port	crates/horizon-protocol/src/item.rs::Hashed::of	component hashes are sent for every component the client keeps (item/hash/); gap: minor: a container or bundle_contents predicate whose nested exact components hold a byte no Codec.BOOL field names is left unhashed
-HashedPatchMap.matches	port	crates/horizon-client/src/lan/containers.rs::Hub::hashed_matches	gap: minor: compares item id and count only, not the component patch
+HashedPatchMap.matches	port	crates/horizon-client-lib/src/lan/containers.rs::Hub::hashed_matches	gap: minor: compares item id and count only, not the component patch
 HashedStack.create	port	crates/horizon-protocol/src/item.rs::Hashed::of	component hashes are sent for every component the client keeps (item/hash/); gap: minor: a container or bundle_contents predicate whose nested exact components hold a byte no Codec.BOOL field names is left unhashed
-HashedStack.ActualItem.matches	port	crates/horizon-client/src/lan/containers.rs::Hub::hashed_matches	gap: minor: compares item id and count only, not the component patch
+HashedStack.ActualItem.matches	port	crates/horizon-client-lib/src/lan/containers.rs::Hub::hashed_matches	gap: minor: compares item id and count only, not the component patch
 HiddenByteBuf.pack	skip:java		Netty in-memory channel wrapper
 HiddenByteBuf.unpack	skip:java		Netty in-memory channel wrapper
 HiddenByteBuf.retain	skip:java		Netty reference counting
 HiddenByteBuf.touch	skip:java		Netty leak detection
 MonitoredLocalFrameDecoder.channelRead	port	crates/horizon-protocol/src/connection.rs::ConnReader::recv	bytes_in counter for the bandwidth chart
-PacketBundlePacker.decode	inline	crates/horizon-client/src/net.rs::receive_play	gap: minor: BundleDelimiter is dropped; bundled packets are dispatched one by one
-PacketBundleUnpacker.encode	port	crates/horizon-client/src/lan/entity.rs::ServerEntity::send_changes	gap: minor: delimiters only around the projectile motion and power pair
+PacketBundlePacker.decode	inline	crates/horizon-client-lib/src/net.rs::receive_play	gap: minor: BundleDelimiter is dropped; bundled packets are dispatched one by one
+PacketBundleUnpacker.encode	port	crates/horizon-client-lib/src/lan/entity.rs::ServerEntity::send_changes	gap: minor: delimiters only around the projectile motion and power pair
 PacketDecoder.decode	port	crates/horizon-protocol/src/packets/mod.rs::decode	rejects leftover bytes (larger than expected)
 PacketEncoder.encode	port	crates/horizon-protocol/src/packets/mod.rs::encode	gap: minor: no error log and no skippable-packet path
 PacketListener.fillCrashReport	skip:debug		crash report category
-PacketProcessor.scheduleIfPossible	port	crates/horizon-client/src/lan/conn.rs::read_loop	gap: minor: no shutdown rejection here; the hand-off is Hub::poll
-PacketProcessor.processQueuedPackets	port	crates/horizon-client/src/lan/hub.rs::Hub::process_inbox	per guest; at most 400 packets per tick, the rest wait
-PacketProcessor.ListenerAndPacket.handle	inline	crates/horizon-client/src/lan/hub.rs::Hub::process_inbox	gap: minor: no per-packet error catch; a failing handler does not become a disconnect
+PacketProcessor.scheduleIfPossible	port	crates/horizon-client-lib/src/lan/conn.rs::read_loop	gap: minor: no shutdown rejection here; the hand-off is Hub::poll
+PacketProcessor.processQueuedPackets	port	crates/horizon-client-lib/src/lan/hub.rs::Hub::process_inbox	per guest; at most 400 packets per tick, the rest wait
+PacketProcessor.ListenerAndPacket.handle	inline	crates/horizon-client-lib/src/lan/hub.rs::Hub::process_inbox	gap: minor: no per-packet error catch; a failing handler does not become a disconnect

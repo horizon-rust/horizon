@@ -230,13 +230,13 @@ def main():
     lock, jars, libraries = base.verify_artifacts()
     resources = lab.RESOURCES
     oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaNaturalSpawnOracle.java'
-    sources = [oracle, Path(__file__), lab.ROOT / 'crates/horizon-client/examples/probe/natural_spawn_fixture.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/spawner.rs',
+    sources = [oracle, Path(__file__), lab.ROOT / 'crates/horizon-client-lib/examples/probe/natural_spawn_fixture.rs',
+               lab.ROOT / 'crates/horizon-client-lib/src/mobs/spawner.rs',
                lab.ROOT / 'crates/horizon-client-render/src/chunk/block_entity.rs',
                lab.ROOT / 'crates/horizon-client-core/src/identifier.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/spawn_selection.rs',
+               lab.ROOT / 'crates/horizon-client-lib/src/mobs/spawn_selection.rs',
                lab.ROOT / 'crates/horizon-client-render/src/biome.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/spawn_rules.rs']
+               lab.ROOT / 'crates/horizon-client-lib/src/mobs/spawn_rules.rs']
     tested = base.source_hashes(sources)
     inputs = build / 'inputs.txt'
     cases = corpus()

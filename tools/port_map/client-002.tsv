@@ -91,7 +91,7 @@ ClientPacketListener.handleSetChunkCacheRadius	port	crates/horizon-client/src/ga
 ClientPacketListener.handleSetSimulationDistance	inline	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SetSimulationDistance arm: ClientLevel.serverSimulationDistance
 ClientPacketListener.handleSetChunkCacheCenter	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SetChunkCacheCenter arm
 ClientPacketListener.handleBlockChangedAck	port	crates/horizon-client/src/game/remote.rs::Game::end_predictions	
-ClientPacketListener.handleBundlePacket	inline	crates/horizon-client/src/net.rs::receive_play	bundle delimiters are dropped; the packets inside arrive as a stream and are handled one by one, in order
+ClientPacketListener.handleBundlePacket	inline	crates/horizon-client-lib/src/net.rs::receive_play	bundle delimiters are dropped; the packets inside arrive as a stream and are handled one by one, in order
 ClientPacketListener.handleProjectilePowerPacket	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	ProjectilePower arm: a hurting projectile's acceleration power, by id
 ClientPacketListener.handleChunkBatchFinished	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	ChunkBatchFinished arm; gap: minor: answers with a fixed 64 chunks per tick, not a measured rate
 ClientPacketListener.handleTestInstanceBlockStatus	skip:debug		status for the test instance block editor (developer blocks); Horizon has no editor
@@ -136,7 +136,7 @@ MultiPlayerGameMode.performUseItemOn	port	crates/horizon-client/src/game/remote.
 MultiPlayerGameMode.createPlayer	port	crates/horizon-client/src/game/remote.rs::Game::remote_teleport	gap: minor: the player is created on the first position packet, not at login
 MultiPlayerGameMode.handleCreativeModeItemAdd	inline	crates/horizon-client/src/game/remote.rs::Game::remote_send_state	gap: minor: the creative inventory is sent as a per-tick diff, with no feature-flag check
 MultiPlayerGameMode.handleCreativeModeItemDrop	port	crates/horizon-client/src/game/remote.rs::Game::remote_creative_drop	gap: minor: no check that another container screen is open
-MultiPlayerGameMode.getDestroyStage	port	crates/horizon-client/src/first_person.rs::Destroying::stage	
+MultiPlayerGameMode.getDestroyStage	port	crates/horizon-client-lib/src/first_person.rs::Destroying::stage	
 RegistryDataCollector.appendContents	skip:data		registry data for the configuration handshake; Horizon reads its own tables
 RegistryDataCollector.appendTags	skip:data		registry tags for the configuration handshake; Horizon reads its own tables
 RegistryDataCollector.loadNewElementsAndTags	skip:data		registry loading for the configuration handshake; Horizon reads its own tables

@@ -79,12 +79,12 @@ VoxelShape.isCubeLike	port	crates/horizon-core/src/geometry/shape/face.rs::Voxel
 VoxelShape.isCubeLikeAlong	port	crates/horizon-core/src/geometry/shape/face.rs::VoxelShape::cube_like_along	-
 Objective.pack	port	crates/horizon-client-core/src/scoreboard.rs::Scoreboard::pack	objectives are written inside the saved scoreboard
 PlayerTeam.pack	port	crates/horizon-client-core/src/scoreboard.rs::Scoreboard::pack	teams are written inside the saved scoreboard
-PlayerTeam.setPlayerPrefix	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	the team.modify prefix path; the null-to-empty rule is not repeated here
-PlayerTeam.setPlayerSuffix	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	the team.modify suffix path
-PlayerTeam.packOptions	port	crates/horizon-client/src/lan/scoreboard.rs::View::of	the friendly fire and see-invisible flags as the team options byte
+PlayerTeam.setPlayerPrefix	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	the team.modify prefix path; the null-to-empty rule is not repeated here
+PlayerTeam.setPlayerSuffix	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	the team.modify suffix path
+PlayerTeam.packOptions	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::of	the friendly fire and see-invisible flags as the team options byte
 PlayerTeam.unpackOptions	port	crates/horizon-client/src/game/remote.rs::Game::remote_team	the two option bits are read from the team packet
-ScoreHolder.getFeedbackDisplayName	port	crates/horizon-client/src/scoreboard_cmd.rs::Holder::named	gap: minor: the hover with the scoreboard name is set where a holder is built from an entity, not here
-ScoreHolder.forNameOnly	port	crates/horizon-client/src/scoreboard_cmd.rs::Holder::named	gap: minor: "*" is not a wildcard holder; game/scoreboard.rs maps it to the player name
+ScoreHolder.getFeedbackDisplayName	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::Holder::named	gap: minor: the hover with the scoreboard name is set where a holder is built from an entity, not here
+ScoreHolder.forNameOnly	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::Holder::named	gap: minor: "*" is not a wildcard holder; game/scoreboard.rs maps it to the player name
 Scoreboard.getOrCreatePlayerScore	port	crates/horizon-client-core/src/scoreboard.rs::Scoreboard::score_mut	gap: minor: the read-only criteria check is in scoreboard_cmd.rs, not here
 Scoreboard.getPlayerScoreInfo	port	crates/horizon-client-core/src/scoreboard.rs::Scoreboard::score	-
 Scoreboard.listPlayerScores	port	crates/horizon-client-core/src/scoreboard.rs::Scoreboard::list_scores	-
@@ -126,23 +126,23 @@ Timeline.createTrackSampler	missing		unsure: no environment attribute track samp
 Timeline.Builder.addModifierTrack	skip:data		timeline builder used by data bootstrap
 Timeline.Builder.addTimeMarker	skip:data		timeline builder used by data bootstrap
 Timeline.Builder.build	skip:data		timeline builder used by data bootstrap
-TrackedWaypoint.AzimuthWaypoint.update	port	crates/horizon-client/src/locator_bar.rs::ClientWaypoints::apply	only the same kind of waypoint moves
-TrackedWaypoint.AzimuthWaypoint.pitchDirectionToCamera	port	crates/horizon-client/src/locator_bar.rs::View::pitch_direction	-
-TrackedWaypoint.ChunkWaypoint.update	port	crates/horizon-client/src/locator_bar.rs::ClientWaypoints::apply	only the same kind of waypoint moves
-TrackedWaypoint.ChunkWaypoint.yawAngleToCamera	port	crates/horizon-client/src/locator_bar.rs::View::yaw_angle	-
-TrackedWaypoint.ChunkWaypoint.pitchDirectionToCamera	port	crates/horizon-client/src/locator_bar.rs::View::pitch_direction	-
-TrackedWaypoint.Vec3iWaypoint.update	port	crates/horizon-client/src/locator_bar.rs::ClientWaypoints::apply	only the same kind of waypoint moves
+TrackedWaypoint.AzimuthWaypoint.update	port	crates/horizon-client-lib/src/locator_bar.rs::ClientWaypoints::apply	only the same kind of waypoint moves
+TrackedWaypoint.AzimuthWaypoint.pitchDirectionToCamera	port	crates/horizon-client-lib/src/locator_bar.rs::View::pitch_direction	-
+TrackedWaypoint.ChunkWaypoint.update	port	crates/horizon-client-lib/src/locator_bar.rs::ClientWaypoints::apply	only the same kind of waypoint moves
+TrackedWaypoint.ChunkWaypoint.yawAngleToCamera	port	crates/horizon-client-lib/src/locator_bar.rs::View::yaw_angle	-
+TrackedWaypoint.ChunkWaypoint.pitchDirectionToCamera	port	crates/horizon-client-lib/src/locator_bar.rs::View::pitch_direction	-
+TrackedWaypoint.Vec3iWaypoint.update	port	crates/horizon-client-lib/src/locator_bar.rs::ClientWaypoints::apply	only the same kind of waypoint moves
 TrackedWaypoint.Vec3iWaypoint.writeContents	port	crates/horizon-protocol/src/packets/play.rs::TrackedWaypoint::write	the block target is written as three varints
-TrackedWaypoint.Vec3iWaypoint.yawAngleToCamera	port	crates/horizon-client/src/locator_bar.rs::View::yaw_angle	-
-TrackedWaypoint.Vec3iWaypoint.pitchDirectionToCamera	port	crates/horizon-client/src/locator_bar.rs::View::pitch_direction	-
+TrackedWaypoint.Vec3iWaypoint.yawAngleToCamera	port	crates/horizon-client-lib/src/locator_bar.rs::View::yaw_angle	-
+TrackedWaypoint.Vec3iWaypoint.pitchDirectionToCamera	port	crates/horizon-client-lib/src/locator_bar.rs::View::pitch_direction	-
 Waypoint.addHideAttribute	skip:data		item property for the waypoint item, set in item registration
 Waypoint.Icon.hasData	missing		unsure: LivingEntity.java:798 tracks only entities whose icon has data; lan/waypoints.rs make() has no such gate
-WaypointTransmitter.EntityAzimuthConnection.isBroken	port	crates/horizon-client/src/lan/waypoints.rs::Tick::broken	-
-WaypointTransmitter.EntityAzimuthConnection.connect	port	crates/horizon-client/src/lan/waypoints.rs::Tick::connect	-
-WaypointTransmitter.EntityAzimuthConnection.update	port	crates/horizon-client/src/lan/waypoints.rs::Tick::update	-
-WaypointTransmitter.EntityBlockConnection.connect	port	crates/horizon-client/src/lan/waypoints.rs::Tick::connect	-
-WaypointTransmitter.EntityBlockConnection.update	port	crates/horizon-client/src/lan/waypoints.rs::Tick::update	-
-WaypointTransmitter.EntityBlockConnection.isBroken	port	crates/horizon-client/src/lan/waypoints.rs::Tick::broken	-
-WaypointTransmitter.EntityChunkConnection.connect	port	crates/horizon-client/src/lan/waypoints.rs::Tick::connect	-
-WaypointTransmitter.EntityChunkConnection.update	port	crates/horizon-client/src/lan/waypoints.rs::Tick::update	-
-WaypointTransmitter.EntityChunkConnection.isBroken	port	crates/horizon-client/src/lan/waypoints.rs::Tick::broken	-
+WaypointTransmitter.EntityAzimuthConnection.isBroken	port	crates/horizon-client-lib/src/lan/waypoints.rs::Tick::broken	-
+WaypointTransmitter.EntityAzimuthConnection.connect	port	crates/horizon-client-lib/src/lan/waypoints.rs::Tick::connect	-
+WaypointTransmitter.EntityAzimuthConnection.update	port	crates/horizon-client-lib/src/lan/waypoints.rs::Tick::update	-
+WaypointTransmitter.EntityBlockConnection.connect	port	crates/horizon-client-lib/src/lan/waypoints.rs::Tick::connect	-
+WaypointTransmitter.EntityBlockConnection.update	port	crates/horizon-client-lib/src/lan/waypoints.rs::Tick::update	-
+WaypointTransmitter.EntityBlockConnection.isBroken	port	crates/horizon-client-lib/src/lan/waypoints.rs::Tick::broken	-
+WaypointTransmitter.EntityChunkConnection.connect	port	crates/horizon-client-lib/src/lan/waypoints.rs::Tick::connect	-
+WaypointTransmitter.EntityChunkConnection.update	port	crates/horizon-client-lib/src/lan/waypoints.rs::Tick::update	-
+WaypointTransmitter.EntityChunkConnection.isBroken	port	crates/horizon-client-lib/src/lan/waypoints.rs::Tick::broken	-

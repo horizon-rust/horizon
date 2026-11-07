@@ -41,7 +41,7 @@ MatchBlock.getReferencedContextParams	skip:data		validation metadata for context
 MatchBlock.test	port	crates/horizon-items/src/items.rs::LootContext::condition	match_block arm: block id, state and property ranges; gap: minor: the block-entity part of the predicate is not read
 MatchTool.test	port	crates/horizon-items/src/items.rs::LootContext::condition	match_tool arm; gap: minor: item ids, tags and enchantment levels only, other ItemPredicate parts are not read
 TimeCheck	missing		no `time_check` arm in `loot.rs::condition`; no vanilla data file uses it, so only a datapack reaches it
-WeatherCheck.test	port	crates/horizon-client/src/advancements.rs::conditions	named command predicates compare both optional fields against Game View's effective weather; channeling remains a separate thunder-only caller
+WeatherCheck.test	port	crates/horizon-client-lib/src/advancements.rs::conditions	named command predicates compare both optional fields against Game View's effective weather; channeling remains a separate thunder-only caller
 NbtProviders	skip:data		registry bootstrap
 AggregateProvider	skip:java		codec only
 BinaryProvider.mapCodec	skip:java		codec
@@ -129,7 +129,7 @@ Vec2.dot	skip:other		2D vector maths; Horizon has no Vec2 type and keeps 2D math
 Vec2.length	skip:other		2D vector maths; Horizon has no Vec2 type and keeps 2D maths in its callers
 Vec2.lengthSquared	skip:other		2D vector maths; Horizon has no Vec2 type and keeps 2D maths in its callers
 Vec2.normalized	skip:other		2D vector maths; Horizon has no Vec2 type and keeps 2D maths in its callers
-Vec2.rotate	port	crates/horizon-client/src/mobs/sulfur_cube.rs::rotate	x cos - y sin, x sin + y cos in floats, for the sulfur cube's 2D maths; the other Vec2 rows stay arithmetic in their callers
+Vec2.rotate	port	crates/horizon-client-lib/src/mobs/sulfur_cube.rs::rotate	x cos - y sin, x sin + y cos in floats, for the sulfur cube's 2D maths; the other Vec2 rows stay arithmetic in their callers
 Vec2.scale	skip:other		2D vector maths; Horizon has no Vec2 type and keeps 2D maths in its callers
 Vec2.equals	skip:java		Object equality; Rust derives it
 Vec2.hashCode	skip:java		Object hashing; Rust derives it
