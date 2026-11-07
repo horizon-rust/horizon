@@ -2034,6 +2034,35 @@ impl Game<'_> {
             p.velocity = Vec3::ZERO;
         }
     }
+    /// `EntityType.createDefaultStackConfig` on a cart an item placed or a
+    /// dispenser dropped: the item's `custom_name` and `custom_data`, then its
+    /// `entity_data` loaded into the cart (an op-only type's data only for an
+    /// op, never for a dispenser). What the cart does not model stays in the
+    /// entity's saved extras.
+    pub(super) fn configure_cart_from_stack(
+        &mut self,
+        cart: &mut Minecart,
+        stack: &ItemStack,
+        op: bool,
+    ) {
+        let own = cart.to_nbt([0; 4], None);
+        let mut raw = horizon_client::block_entity_item::stack_configured_vehicle(
+            stack,
+            cart.kind.id(),
+            &own,
+            op,
+        );
+        if raw == own {
+            return;
+        }
+        if cart.load(&raw).is_none() {
+            return;
+        }
+        if let horizon_world::nbt::Tag::Compound(map) = &mut raw {
+            map.remove(&"UUID".into());
+        }
+        self.persist.raw.insert(cart.id, raw);
+    }
     /// `MinecartItem.useOn`: a cart on the clicked rail.
     pub(super) fn place_minecart(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
         let Some(kind) = CartKind::from_id(&stack.item) else {
@@ -2049,7 +2078,10 @@ impl Game<'_> {
             f64::from(hit.pos[2]) + 0.5,
         );
         self.next_entity += 1;
-        let cart = Minecart::new(self.next_entity, kind, at);
+        let mut cart = Minecart::new(self.next_entity, kind, at);
+        // `MinecartItem.useOn`: `createDefaultStackConfig` with the placing player.
+        let op = self.acting_player_is_op();
+        self.configure_cart_from_stack(&mut cart, stack, op);
         self.world
             .modified
             .insert((hit.pos[0] >> 4, hit.pos[2] >> 4));

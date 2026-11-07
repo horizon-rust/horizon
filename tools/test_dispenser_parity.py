@@ -36,6 +36,15 @@ def plain(item, count=1):
     return '{id:"minecraft:%s",count:%d}' % (item, count)
 
 
+def configured(item, components):
+    """An item with components, as `/give` writes it."""
+    return '{id:"minecraft:%s",count:1,components:{%s}}' % (item, components)
+
+
+def entity_data(item, data):
+    return configured(item, '"minecraft:entity_data":{id:"minecraft:%s",%s}' % (item, data))
+
+
 WOODS = ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'cherry', 'dark_oak', 'mangrove', 'pale_oak', 'poplar']
 
 # Items with the blocks and entities in front that exercise their behaviour:
@@ -57,7 +66,16 @@ ITEMS = {
               plain('shears'), plain('brush')],
     'vehicle': [plain('oak_boat'), plain('bamboo_raft'), plain('bamboo_chest_raft'), plain('minecart'), plain('chest_minecart'),
                 plain('furnace_minecart'), plain('tnt_minecart'), plain('hopper_minecart'), plain('command_block_minecart'),
-                plain('armor_stand', 2), 'BOAT', 'CHEST_BOAT'],
+                plain('armor_stand', 2), 'BOAT', 'CHEST_BOAT',
+                # createDefaultStackConfig: the item's custom name and entity_data go onto the new vehicle
+                # (an op-only type's data never, from a dispenser).
+                configured('minecart', '"minecraft:custom_name":"Rail Rider"'),
+                configured('chest_minecart', '"minecraft:custom_name":"Cargo","minecraft:custom_data":{k:1b}'),
+                entity_data('tnt_minecart', 'fuse:80'),
+                configured('tnt_minecart', '"minecraft:custom_name":"Boom","minecraft:entity_data":{id:"minecraft:tnt_minecart",fuse:40}'),
+                entity_data('command_block_minecart', 'Command:"say hi"'),
+                configured('furnace_minecart', '"minecraft:entity_data":{id:"minecraft:minecart"}'),
+                'NAMED_BOAT', 'NAMED_CHEST_BOAT'],
     'spawn': [plain('pig_spawn_egg'), plain('sheep_spawn_egg', 2), plain('zombie_spawn_egg'), plain('cow_spawn_egg'),
               plain('chicken_spawn_egg'), plain('skeleton_spawn_egg'), plain('creeper_spawn_egg'), plain('villager_spawn_egg'),
               plain('wolf_spawn_egg'), plain('horse_spawn_egg'), plain('squid_spawn_egg'), plain('slime_spawn_egg'),
@@ -158,6 +176,10 @@ def item_choice(rng, kind):
         return plain(rng.choice(WOODS) + '_boat')
     if item == 'CHEST_BOAT':
         return plain(rng.choice(WOODS) + '_chest_boat')
+    if item == 'NAMED_BOAT':
+        return configured(rng.choice(WOODS) + '_boat', '"minecraft:custom_name":"Skipper"')
+    if item == 'NAMED_CHEST_BOAT':
+        return configured(rng.choice(WOODS) + '_chest_boat', '"minecraft:custom_name":"Hauler"')
     return item
 
 

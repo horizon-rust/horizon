@@ -472,6 +472,10 @@ public final class VanillaDispenserOracle {
             line.append(' ').append(num(v.x)).append(' ').append(num(v.y)).append(' ').append(num(v.z));
             if (e instanceof ItemEntity item) line.append(' ').append(ParityData.canon(item.getItem()));
             if (e instanceof PrimedTnt tnt) line.append(" fuse=").append(tnt.getFuse());
+            // createDefaultStackConfig on a dispensed vehicle: the item's name and entity_data.
+            if (e.hasCustomName()) line.append(" name=").append(e.getCustomName().getString());
+            if (e instanceof net.minecraft.world.entity.vehicle.minecart.MinecartTNT cart) line.append(" cart_fuse=").append(cart.getFuse());
+            if (e instanceof net.minecraft.world.entity.vehicle.minecart.MinecartCommandBlock cart) line.append(" cmd=").append(cart.getCommandBlock().getCommand());
             // An orb that took others in (ExperienceOrb.tryMergeToExisting) prints once per
             // count: whether orbs merge depends on entity ids, which Horizon doesn't share.
             for (int n = e instanceof ExperienceOrb orb ? orbCount(orb) : 1; n > 0; n--) result.add(line.toString());
