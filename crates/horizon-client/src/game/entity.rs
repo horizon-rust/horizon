@@ -257,6 +257,14 @@ pub(super) trait Entity: EntityRules {
     fn is_vehicle(&self) -> bool {
         false
     }
+    /// `Entity.getDimensionChangingDelay`, overridden by vehicles and projectiles.
+    fn dimension_changing_delay(&self) -> i32 {
+        horizon_client::nether_portal::ENTITY_DELAY
+    }
+    /// Whether movement applies portal block effects before Entity's base tick.
+    fn portal_after_move(&self) -> bool {
+        false
+    }
     /// Where it stood at the start of its tick, for the kinds that store it
     /// (None: `portals.before` has it).
     fn portal_from(&self) -> Option<Vec3> {
@@ -906,7 +914,13 @@ macro_rules! save_lists {
     (($game:expr, $keys:expr, $out:expr)
      $($kind:ident($ty:ty) $field:ident: $($list:ident).+,)*) => {
         $(for i in 0..$game$(.$list)+.len() {
-            if let Some((key, tag)) = <$ty as $crate::game::entity::Entity>::save_nbt($game, i, $keys) {
+            if let Some((key, mut tag)) = <$ty as $crate::game::entity::Entity>::save_nbt($game, i, $keys) {
+                let id = $game$(.$list)+[i].id();
+                if $game$(.$list)+[i].portal_size().is_some()
+                    || $game.end.gateways.contains_key(&id)
+                {
+                    $game.write_portal_cooldown(id, &mut tag);
+                }
                 $out.entry(key).or_default().push((
                     $game$(.$list)+[i].join_seq(),
                     tag,
@@ -1260,6 +1274,9 @@ impl Entity for ExperienceOrb {
 }
 
 impl Entity for Boat {
+    fn dimension_changing_delay(&self) -> i32 {
+        10
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1331,6 +1348,9 @@ impl Entity for Boat {
 }
 
 impl Entity for Minecart {
+    fn dimension_changing_delay(&self) -> i32 {
+        10
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1626,6 +1646,16 @@ impl Entity for FallingBlock {
 }
 
 impl Entity for Projectile {
+    fn portal_after_move(&self) -> bool {
+        !matches!(
+            self.kind,
+            horizon_client::projectiles::ProjectileKind::LlamaSpit
+                | horizon_client::projectiles::ProjectileKind::ShulkerBullet { .. }
+        )
+    }
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1727,6 +1757,9 @@ impl Entity for Projectile {
 }
 
 impl Entity for Rocket {
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
@@ -1784,6 +1817,12 @@ impl Entity for Rocket {
 }
 
 impl Entity for ThrownTrident {
+    fn portal_after_move(&self) -> bool {
+        true
+    }
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
