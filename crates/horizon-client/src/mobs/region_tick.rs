@@ -458,7 +458,7 @@ impl RegionExecutor {
     }
     /// `f` of every region's list on the workers, one task for each: unlike
     /// [`Self::map`], which keeps short runs together, a region is a lot of work.
-    fn each_region<T: Sync, R: Send>(
+    pub fn each_region<T: Sync, R: Send>(
         &self,
         lists: &[T],
         f: impl Fn(&T) -> R + Send + Sync,

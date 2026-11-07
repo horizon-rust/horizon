@@ -161,6 +161,8 @@ pub(super) struct ServerCoordination {
     pub walk_log: Option<Vec<String>>,
     /// `HORIZON_PARALLEL_COMMIT=0` keeps every round on the serial walk.
     parallel_commit: bool,
+    /// `HORIZON_REGION_SPAWNING=0` keeps natural spawning in one pass.
+    region_spawning: bool,
 }
 
 pub(super) use horizon_client::mobs::region_tick::RegionStats as TickStats;
@@ -197,6 +199,7 @@ impl Default for ServerCoordination {
             #[cfg(test)]
             walk_log: None,
             parallel_commit: std::env::var("HORIZON_PARALLEL_COMMIT").as_deref() != Ok("0"),
+            region_spawning: std::env::var("HORIZON_REGION_SPAWNING").as_deref() != Ok("0"),
         }
     }
 }
@@ -262,6 +265,20 @@ impl ServerCoordination {
         };
         self.workers = workers.max(1);
         self.executor = Default::default();
+    }
+    /// The workers a natural spawn pass splits its chunks over, a region on
+    /// each with a random of its own (`Game::spawn_natural`). Verify mode
+    /// keeps the one pass in vanilla's order, which it compares against.
+    pub fn spawn_executor(
+        &self,
+        regions: usize,
+        mobs: usize,
+    ) -> Option<&horizon_client::mobs::region_tick::RegionExecutor> {
+        if !self.region_spawning || self.verifies() {
+            return None;
+        }
+        self.executor(regions, mobs)
+            .filter(|executor| executor.parallel())
     }
     /// Whether a clean round may be applied on `executor`'s workers.
     pub fn commits_in_parallel(

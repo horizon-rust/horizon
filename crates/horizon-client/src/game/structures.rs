@@ -16,37 +16,7 @@ impl Game<'_> {
         pos: [i32; 3],
         wanted: &dyn Fn(&str) -> bool,
     ) -> Vec<(String, bool)> {
-        let Some(chunk) = self
-            .simulation
-            .world
-            .chunks
-            .get(&(pos[0] >> 4, pos[2] >> 4))
-        else {
-            return Vec::new();
-        };
-        if chunk.structure_refs.is_empty() {
-            return Vec::new();
-        }
-        let Some(locator) = self.end.locator() else {
-            return Vec::new();
-        };
-        let mut out: Vec<(String, bool)> = Vec::new();
-        for (id, (sx, sz)) in &chunk.structure_refs {
-            if !wanted(id) {
-                continue;
-            }
-            for start in locator.starts_at(*sx, *sz) {
-                if *start.name != **id || !start.bounding_box.is_inside(pos) {
-                    continue;
-                }
-                let piece = start.pieces.iter().any(|p| p.bounding_box().is_inside(pos));
-                match out.iter_mut().find(|(n, _)| *n == start.name) {
-                    Some(e) => e.1 |= piece,
-                    None => out.push((start.name.clone(), piece)),
-                }
-            }
-        }
-        out
+        structures_reaching_in(&self.simulation.world, || self.end.locator(), pos, wanted)
     }
     /// The structures with a piece containing `pos`.
     pub(super) fn structures_at(&self, pos: [i32; 3]) -> Vec<String> {
@@ -56,4 +26,40 @@ impl Game<'_> {
             .map(|(n, _)| n)
             .collect()
     }
+}
+
+/// `Game::structures_reaching_where` from the level's parts: `locator` is
+/// asked for only when the chunk holds a reference.
+pub(super) fn structures_reaching_in(
+    world: &horizon_client::world::World,
+    locator: impl FnOnce() -> Option<std::sync::Arc<horizon_client::vanillagen::VanillaTerrain>>,
+    pos: [i32; 3],
+    wanted: &dyn Fn(&str) -> bool,
+) -> Vec<(String, bool)> {
+    let Some(chunk) = world.chunks.get(&(pos[0] >> 4, pos[2] >> 4)) else {
+        return Vec::new();
+    };
+    if chunk.structure_refs.is_empty() {
+        return Vec::new();
+    }
+    let Some(locator) = locator() else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, bool)> = Vec::new();
+    for (id, (sx, sz)) in &chunk.structure_refs {
+        if !wanted(id) {
+            continue;
+        }
+        for start in locator.starts_at(*sx, *sz) {
+            if *start.name != **id || !start.bounding_box.is_inside(pos) {
+                continue;
+            }
+            let piece = start.pieces.iter().any(|p| p.bounding_box().is_inside(pos));
+            match out.iter_mut().find(|(n, _)| *n == start.name) {
+                Some(e) => e.1 |= piece,
+                None => out.push((start.name.clone(), piece)),
+            }
+        }
+    }
+    out
 }
