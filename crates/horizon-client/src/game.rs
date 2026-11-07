@@ -330,6 +330,8 @@ mod pick_entity;
 mod pickups;
 mod piglins;
 mod piston_push;
+#[cfg(test)]
+mod place_feature_tests;
 mod play_input;
 mod player_equip;
 mod pointer_capture;
