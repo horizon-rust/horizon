@@ -1253,5 +1253,7 @@
   "{host} has no horizon-server. Install it there first, as the hosting guide says.": "{host} has no horizon-server. Install it there first, as the hosting guide says.",
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
-  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}."
+  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Downloading a ready-made build of these mods: {done}%": "Se descarga una compilazzion pronta de quij mod chì: {done}%",
+  "No ready-made build of these mods yet: building them on this computer.": "Gh'è anmò minga una compilazzion pronta de quij mod chì: hinn compilaa su quell computer chì."
 }

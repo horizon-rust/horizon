@@ -1922,17 +1922,47 @@ whole file, **Open full log** opens it outside the launcher, **Show in folder** 
 refresh, not a live stream: a running build's later output appears only on the next refresh. Nothing is
 uploaded; the log stays on the player's computer.
 
-## Prebuilt builds (in progress)
+## Prebuilt builds
 
 Most players can't wait 30 to 60 minutes for a first build, so the registry builds sets of its native mods itself
-and signs them (#11859). The launcher's own pipeline makes them in CI:
+and signs them (#11859). With `horizon-launcher settings native-prebuilt on` (off by default until the registry's
+signing pipeline has been checked end to end; turning it on for everyone is a separate change), before compiling an
+instance's mods, the launcher looks for a ready-made build of exactly that set:
+
+- **Only registry files.** Every native mod turned on in the instance must be a file the registry's index lists, by
+  its SHA-256, and none may have been taken down (`revoked.toml`). A mod installed from GitHub or by hand is built
+  here, and so is a build forced off its pins, a `dev` profile, or a FOLDER given on the command line.
+- **The request.** The target (the Rust triple the launcher builds for), the commit of the release or Nightly the
+  instance plays, and each mod's id, version and file SHA-256, sorted by id
+  (`horizon_release_sign::native_build::Request`). Its SHA-256 is the build's key.
+- **Where.** The release `native-builds-<commit12>` of horizon-rust/horizon-mods, assets `<key16>-<target>.sig`
+  and `<key16>-<target>.tar.gz`, fetched by direct link (no GitHub API call). No signature there: no build of this
+  set yet.
+- **Checked before anything is written** (`native_prebuilt::check`):
+  - one of the keys in `crates/horizon-release-sign/native-build-keys.txt` signed `horizon native build <key>
+    <target>`, the archive's SHA-256 and its name. These keys are not the release keys: the registry compiles
+    other people's code, so its key can sign nothing else;
+  - the archive holds only `horizon-client`, `native-mods.json` and `request.txt`;
+  - its `request.txt` is this request, and its record builds no mod the request doesn't name.
+- **Installed** as a build of these mods is (`native-<commit>-<key12>`, a copy of the base version's folder with the
+  downloaded program), its `native-mods.json` naming the build it came from (`prebuilt`). The instance plays it, and
+  the Mods page reads it as up to date.
+- **Otherwise it compiles**, as before: the row says "No ready-made build of these mods yet: building them on this
+  computer.", and a build that fails a check is logged (`native/build.log`) and compiled instead.
+
+The warning before a build stays the same: a prebuilt build skips the compiler, not the decision to trust the mods.
+`horizon-launcher native-build --prebuilt auto|never|only` picks per build (`only` fails rather than compile);
+`horizon-launcher settings native-prebuilt on|off|default` sets the default (`default` and `off` always compile, for
+now).
+
+**How the registry makes them** (horizon-mods' `native-build.yml`): one run per set, on GitHub's runners. The
+launcher's own pipeline builds it:
 `horizon-launcher native-build --prebuilt-out DIR --version <Nightly> --profile release --trust-native-code FOLDER`
 builds every `.hnmod` in FOLDER as a player's launcher would (the same pins, hook points and left-out mods), on the
-Nightly's source, without the player's game files. It writes the program, its `native-mods.json` and `request.txt`
-into DIR instead of installing anything. `request.txt` names the build: the target, the Nightly's commit and each
-mod's id, version and file SHA-256 (`horizon_release_sign::native_build::Request`), the text whose SHA-256 the
-launcher computes to look the build up. A set with a post-build step is never exported, because that step runs on
-the player's own game files. Downloading and checking the signed builds in the launcher comes next.
+Nightly's source, without the player's game files, and writes the program, its `native-mods.json` and `request.txt`
+into DIR. A set with a post-build step is never exported, because that step runs on the player's own game files.
+The build job holds no secret and shares no cache. A separate job signs, with the key the `native-builds`
+environment holds, the request the plan computed, never one a build reports.
 
 ## Rebuilds stay on the instance's Horizon
 

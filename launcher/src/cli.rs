@@ -9,6 +9,7 @@ use horizon_launcher::i18n::{tr, trf};
 use horizon_launcher::instances;
 use horizon_launcher::loaders;
 use horizon_launcher::native_mods;
+use horizon_launcher::native_prebuilt;
 use horizon_launcher::native_status;
 use horizon_launcher::other_launchers;
 use horizon_launcher::server_list;
@@ -843,6 +844,11 @@ enum Cmd {
         /// game). Default: the native-profile setting
         #[arg(long, value_parser = ["performance", "dev", "release"])]
         profile: Option<String>,
+        /// The registry's prebuilt build of the instance's mods (#11859): auto (download it when
+        /// there is one, else compile), never (always compile), only (never compile). Default:
+        /// the native-prebuilt setting (on: auto; off, the default for now: never)
+        #[arg(long, value_parser = ["auto", "never", "only"])]
+        prebuilt: Option<String>,
     },
     /// Show a release's patch notes (default: the newest)
     Notes { tag: Option<String> },
@@ -1014,7 +1020,7 @@ pub fn command() -> clap::Command {
 pub const AI_COMMANDS: [&str; 2] = ["mcp", "agent-config"];
 
 /// The keys `settings` sets.
-const SETTING_KEYS: [&str; 15] = [
+const SETTING_KEYS: [&str; 16] = [
     "selected-version",
     "minecraft-dir",
     "server-dir",
@@ -1030,6 +1036,7 @@ const SETTING_KEYS: [&str; 15] = [
     "background",
     "native-profile",
     "native-cache-gib",
+    "native-prebuilt",
 ];
 
 fn on_off(value: &str) -> Result<bool, String> {
@@ -1118,6 +1125,12 @@ fn set_setting(s: &mut backend::Settings, key: &str, value: &str) -> Result<(), 
                 ),
             };
         }
+        "native-prebuilt" => {
+            s.native_prebuilt = match value {
+                "default" => None,
+                _ => Some(on_off(value)?),
+            };
+        }
         "native-profile" => {
             // "default", as for the other settings, goes back to `performance`.
             s.native_profile = match value {
@@ -1163,6 +1176,7 @@ fn settings_json(s: &backend::Settings) -> serde_json::Value {
         "background": horizon_launcher::themes::background(&backend::data_dir(), s.background.as_deref()),
         "native_profile": native_mods::Profile::chosen(s).name(),
         "native_cache_gib": s.native_cache_gib.unwrap_or(native_mods::DEFAULT_CACHE_GIB),
+        "native_prebuilt": s.native_prebuilt.unwrap_or(false),
         "no_ai": backend::no_ai(),
     })
 }
@@ -1332,6 +1346,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             allow_version_mismatch,
             ignore_pins,
             profile,
+            prebuilt,
         } => {
             if !trust_native_code {
                 return Err("Native mods run with full access to this computer. Read their source, then pass --trust-native-code.".into());
@@ -1353,9 +1368,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                     None => native_mods::base_for(None, &backend::installed(), false)
                         .ok_or_else(backend::no_version_installed)?,
                 };
-                let made = horizon_launcher::native_prebuilt::export(
-                    &base, &folder, &out, profile, steps,
-                )?;
+                let made = native_prebuilt::export(&base, &folder, &out, profile, steps)?;
                 let left: Vec<&str> = made.left_out.iter().map(|l| l.id.as_str()).collect();
                 println!(
                     "{}",
@@ -1427,6 +1440,10 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 Some(folder) => folder,
                 None => native_mods::installed_mods(&target.home)?,
             };
+            let prebuilt = match prebuilt.as_deref().and_then(native_prebuilt::Mode::parse) {
+                Some(mode) => mode,
+                None => native_prebuilt::Mode::chosen(&backend::Settings::load()),
+            };
             let built = native_mods::build(
                 &base,
                 &folder,
@@ -1434,6 +1451,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 allow_version_mismatch,
                 ignore_pins,
                 profile,
+                prebuilt,
                 steps,
             )
             .map_err(|e| match e.starts_with(native_mods::MISMATCH) {

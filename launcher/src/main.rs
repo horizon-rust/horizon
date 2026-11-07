@@ -1049,6 +1049,7 @@ impl Launcher {
         self.native_started = Some((Instant::now(), 0));
         self.native_done = None;
         let profile = native_mods::Profile::chosen(&self.settings);
+        let prebuilt = horizon_launcher::native_prebuilt::Mode::chosen(&self.settings);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = native_mods::build(
@@ -1058,6 +1059,7 @@ impl Launcher {
                 anyway,
                 on_base,
                 profile,
+                prebuilt,
                 |step| {
                     let _ = tx.send(Msg::NativeProgress(step.label()));
                 },

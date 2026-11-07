@@ -1253,5 +1253,7 @@
   "{host} has no horizon-server. Install it there first, as the hosting guide says.": "{host} has no horizon-server. Install it there first, as the hosting guide says.",
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
-  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}."
+  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Downloading a ready-made build of these mods: {done}%": "이 모드들의 미리 빌드된 버전을 내려받는 중: {done}%",
+  "No ready-made build of these mods yet: building them on this computer.": "이 모드들의 미리 빌드된 버전이 아직 없습니다: 이 컴퓨터에서 빌드합니다."
 }

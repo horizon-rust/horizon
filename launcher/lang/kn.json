@@ -1253,5 +1253,7 @@
   "{host} has no horizon-server. Install it there first, as the hosting guide says.": "{host} has no horizon-server. Install it there first, as the hosting guide says.",
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
-  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}."
+  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Downloading a ready-made build of these mods: {done}%": "ಈ ಮಾಡ್‌ಗಳ ಸಿದ್ಧ ಬಿಲ್ಡ್ ಡೌನ್‌ಲೋಡ್ ಆಗುತ್ತಿದೆ: {done}%",
+  "No ready-made build of these mods yet: building them on this computer.": "ಈ ಮಾಡ್‌ಗಳ ಸಿದ್ಧ ಬಿಲ್ಡ್ ಇನ್ನೂ ಇಲ್ಲ: ಇವುಗಳನ್ನು ಈ ಕಂಪ್ಯೂಟರ್‌ನಲ್ಲಿ ನಿರ್ಮಿಸಲಾಗುತ್ತಿದೆ."
 }

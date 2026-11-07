@@ -36,7 +36,7 @@ mod isolate;
 
 pub use isolate::LeftOut;
 
-const PREFIX: &str = "native-";
+pub(crate) const PREFIX: &str = "native-";
 /// horizon-mixins, for bundles that don't name the revision they were tested with.
 const MIXINS_GIT: &str = "https://github.com/horizon-rust/horizon-mixins";
 pub const MIXINS_REV: &str = "5a64af938ec86b00d53d16a408aabc0038fb3e57";
@@ -623,8 +623,31 @@ pub const INSTALLED: &str = "horizon-native-mods";
 /// The native mods turned on in the game folder `home`, unpacked into a folder [`build`] takes.
 /// Each `.hnmod` is checked again as the registry checks it (Rust and TOML under
 /// `mixins/<id>/`, plus files under its `data/`, nothing run).
+/// Where [`installed_mods`] unpacks an instance's mods.
+fn installed_folder() -> PathBuf {
+    root().join("installed.incoming")
+}
+
+/// The registry's prebuilt build of `instance`'s turned-on mods on official version `base`,
+/// installed (`native_prebuilt`): None when one of them isn't a registry file or the registry
+/// has none of this set.
+fn prebuilt_for(base: &str, instance: &Instance) -> Result<Option<String>, String> {
+    let index = crate::browser::horizon::index()?;
+    let target = build_target(base)?;
+    let Some(request) = crate::native_prebuilt::instance_request(
+        &instance.home,
+        target,
+        &revision_of(base)?,
+        &index,
+    )?
+    else {
+        return Ok(None);
+    };
+    crate::native_prebuilt::install(base, &request, &|_| {})
+}
+
 pub fn installed_mods(home: &Path) -> Result<PathBuf, String> {
-    let out = root().join("installed.incoming");
+    let out = installed_folder();
     let _ = fs::remove_dir_all(&out);
     let mut paths: Vec<PathBuf> = fs::read_dir(home.join(INSTALLED))
         .map(|dir| dir.flatten().map(|e| e.path()).collect())
@@ -1633,6 +1656,10 @@ pub enum Step {
     /// A mod's post-build step running in the new build's folder.
     PostBuild(String),
     Install,
+    /// The registry's prebuilt build of these mods being downloaded (`native_prebuilt`).
+    Prebuilt(f32),
+    /// The registry has no prebuilt build of these mods: they are compiled here.
+    NoPrebuilt,
     /// This mod was left out of the build.
     LeftOut(LeftOut),
     /// The build ended: seconds it took.
@@ -1689,6 +1716,13 @@ impl Step {
             Self::PostBuildCompile(id) => trf("Building {name}'s post-build step", &[("name", id)]),
             Self::PostBuild(id) => trf("Running {name}'s post-build step", &[("name", id)]),
             Self::Install => tr("Installing the build").into(),
+            Self::Prebuilt(done) => trf(
+                "Downloading a ready-made build of these mods: {done}%",
+                &[("done", &format!("{:.0}", done * 100.0))],
+            ),
+            Self::NoPrebuilt => {
+                tr("No ready-made build of these mods yet: building them on this computer.").into()
+            }
             Self::LeftOut(left) => left.label(),
             Self::Done {
                 secs,
@@ -2711,6 +2745,7 @@ fn isolated(
 /// with the newest horizon-mixins they name, only when the player agreed to try (`anyway`): else
 /// the error starts with [`MISMATCH`] and says which. With `on_base`, every mod builds on `base`'s
 /// own commit, pinned or not: the player's Rebuild on Horizon.
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     base: &str,
     folder: &Path,
@@ -2718,10 +2753,37 @@ pub fn build(
     anyway: bool,
     on_base: bool,
     profile: Profile,
+    prebuilt: crate::native_prebuilt::Mode,
     progress: impl Fn(Step),
 ) -> Result<String, String> {
     if let Some(error) = backend::native_mod_architecture_error() {
         return Err(error);
+    }
+    use crate::native_prebuilt::Mode;
+    // The instance's own mods, as the registry builds them: a folder, a developer profile or a
+    // build forced off its pins is compiled here.
+    let registry_set =
+        folder == installed_folder() && profile != Profile::Dev && !anyway && !on_base;
+    if registry_set && prebuilt != Mode::Never {
+        let origin = about(base).map_or(base.to_owned(), |a| a.base);
+        match prebuilt_for(&origin, instance) {
+            Ok(Some(version)) => {
+                instances::edit(&instance.id, |meta| meta.version = Some(version.clone()))?;
+                prune(&version);
+                return Ok(version);
+            }
+            Ok(None) if prebuilt == Mode::Only => {
+                return Err("The registry has no prebuilt build of these mods.".into())
+            }
+            Err(e) if prebuilt == Mode::Only => return Err(e),
+            Ok(None) => progress(Step::NoPrebuilt),
+            Err(e) => {
+                log_warning(&format!("The prebuilt build was not used: {e}"));
+                progress(Step::NoPrebuilt);
+            }
+        }
+    } else if prebuilt == Mode::Only {
+        return Err("Only the instance's registry mods, with the performance or release profile, have prebuilt builds.".into());
     }
     logged(|| {
         let built = isolated(
@@ -2977,6 +3039,23 @@ fn install(
         return Err(e);
     }
     fs::write(dir.join(".installed"), "").map_err(|e| e.to_string())
+}
+
+/// Installs a checked prebuilt `binary` as version `version` on installed version `base`, with
+/// record `about` (`native_prebuilt::install`).
+pub(crate) fn install_prebuilt(
+    base: &str,
+    version: &str,
+    binary: &Path,
+    about: &serde_json::Value,
+) -> Result<(), String> {
+    install(base, version, Target::Client, binary, about, |_| Ok(()))
+}
+
+/// Whether game build `version` is installed; if so, it counts as the newest kept ([`prune`]).
+pub(crate) fn reuse_installed(version: &str) -> bool {
+    let installed = Target::Client.directory(version).join(".installed");
+    installed.is_file() && fs::write(&installed, "").is_ok()
 }
 
 /// Copies version folder `from` into `to` but for what a new build of `target` makes its own

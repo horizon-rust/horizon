@@ -4460,6 +4460,10 @@ pub struct Settings {
     /// automatic cleanup. Installed native versions and player data are not this cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_cache_gib: Option<u64>,
+    /// Whether a native build first downloads the registry's prebuilt build of the instance's
+    /// mods (`native_prebuilt::Mode::chosen`); unset is off for now (#11859).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_prebuilt: Option<bool>,
     /// An older file's switch for the release profile, read when `native_profile` is unset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_release: bool,
