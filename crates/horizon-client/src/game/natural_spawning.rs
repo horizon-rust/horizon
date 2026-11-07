@@ -1099,7 +1099,7 @@ mod tests {
                 let mut chunk = horizon_client::chunk::Chunk::empty(cx, cz);
                 for qx in 0..4 {
                     for qz in 0..4 {
-                        for qy in -16..80 {
+                        for qy in 0..chunk.sections.len() as i32 * 4 {
                             chunk.set_biome_cell(qx, qy, qz, plains);
                         }
                     }
