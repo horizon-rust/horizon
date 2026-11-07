@@ -41,6 +41,21 @@ pub fn enabled() -> bool {
     *ON.get_or_init(|| !std::env::var("HORIZON_TAA").is_ok_and(|v| v == "0"))
 }
 
+/// `HORIZON_TAA_BLIT=1` copies the resolved frame back over the scene every frame, as before:
+/// otherwise only when something draws over it after the resolve (`Inputs::copy_back`).
+fn always_copy_back() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_TAA_BLIT").is_ok_and(|v| v == "1"))
+}
+
+/// Whether the clipping box's floor follows the neighbourhood's light where it is dark
+/// (taa.wgsl `DARK_FLOOR`): on unless `HORIZON_TAA_DARK_FLOOR=0`, which keeps the fixed floor that
+/// let a cave's history trail every motion.
+fn dark_floor() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_TAA_DARK_FLOOR").map_or(true, |v| v != "0"))
+}
+
 /// The `index`th number of the Halton sequence in `base`, in [0, 1).
 fn halton(mut index: u32, base: u32) -> f32 {
     let (mut result, mut fraction) = (0.0, 1.0);
@@ -141,6 +156,10 @@ pub struct Inputs<'a> {
     /// This frame's view-projection without the jitter, and the camera it is relative to.
     pub view_proj: Mat4,
     pub camera: DVec3,
+    /// Something draws over the resolved scene before it is tone mapped (the rain, the hand, the
+    /// screen effects...): the resolved frame is copied back over the scene. Else the scene keeps
+    /// the frame as drawn, and what reads it next reads the history instead (`resolve`'s result).
+    pub copy_back: bool,
 }
 
 pub struct Taa {
@@ -201,7 +220,8 @@ impl Taa {
         let pipeline = |label,
                         layout: &wgpu::BindGroupLayout,
                         fragment,
-                        targets: &[Option<wgpu::ColorTargetState>]| {
+                        targets: &[Option<wgpu::ColorTargetState>],
+                        constants: &[(&str, f64)]| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(
@@ -223,7 +243,10 @@ impl Taa {
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(fragment),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants,
+                        ..Default::default()
+                    },
                     targets,
                 }),
                 multiview_mask: None,
@@ -243,12 +266,14 @@ impl Taa {
                 &resolve_layout,
                 "fs_resolve",
                 &[target(super::tonemap::SCENE_FORMAT), target(AUX_FORMAT)],
+                &[("DARK_FLOOR", f64::from(u8::from(dark_floor())))],
             ),
             blit: pipeline(
                 "Horizon TAA blit",
                 &blit_layout,
                 "fs_blit",
                 &[target(super::tonemap::SCENE_FORMAT)],
+                &[],
             ),
             resolve_layout,
             blit_layout,
@@ -297,15 +322,17 @@ impl Taa {
         self.views.clear();
     }
 
-    /// Resolves `inputs.color` in place: the frame blended into the view's history, written over
-    /// the scene for what reads it next.
+    /// Resolves `inputs.color`: the frame blended into the view's history, written back over the
+    /// scene with `inputs.copy_back`. Without, the resolved frame is returned instead, for the tone
+    /// mapping to read in the scene's place: the copy back was a full-size target written an eye
+    /// for nothing when nothing draws over it (in VR, 15 million pixels of half floats each).
     pub fn resolve(
         &mut self,
         device: &wgpu::Device,
         uploads: &mut Uploads,
         encoder: &mut wgpu::CommandEncoder,
         inputs: Inputs,
-    ) {
+    ) -> Option<wgpu::TextureView> {
         if self.views.len() <= inputs.view {
             self.views.resize_with(inputs.view + 1, || None);
         }
@@ -382,12 +409,13 @@ impl Taa {
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
         }
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Horizon TAA blit"),
-            layout: &self.blit_layout,
-            entries: &[view(6, &history.color[next])],
-        });
-        {
+        let copy_back = inputs.copy_back || always_copy_back();
+        if copy_back {
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Horizon TAA blit"),
+                layout: &self.blit_layout,
+                entries: &[view(6, &history.color[next])],
+            });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Horizon TAA blit"),
                 color_attachments: &[attachment(inputs.color)],
@@ -400,6 +428,7 @@ impl Taa {
         history.last = next;
         history.frame = history.frame.wrapping_add(1);
         history.camera = Some((inputs.view_proj, inputs.camera));
+        (!copy_back).then(|| history.color[next].clone())
     }
 }
 

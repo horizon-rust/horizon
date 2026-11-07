@@ -202,6 +202,9 @@ struct ViewMasks {
     reflection: wgpu::TextureView,
     refraction: wgpu::TextureView,
     light: [wgpu::TextureView; 2],
+    /// VR's second eye: where its light is the first eye's, the first eye's texel
+    /// (shadow_rays.wgsl `taken_out`), for its denoiser.
+    taken: wgpu::TextureView,
     /// The mask the next pass writes.
     next: usize,
     /// The last pass's view projection and camera.
@@ -235,7 +238,9 @@ const HARDWARE: &str = concat!(
 );
 const NO_HARDWARE: &str = "
 const HW: bool = false;
+const GI_HW_VISIBILITY: bool = false;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> { return vec3(-1.0); }
+fn hw_visible(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> bool { return true; }
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     return HwHit(-1.0, vec3(0.0), vec3(0.0), vec3(1.0));
 }
@@ -252,11 +257,20 @@ pub fn source(hardware: bool, split: u32) -> String {
             HARDWARE.to_string()
         };
         format!(
-            "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {split}u;\n{}{hardware}",
+            "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {split}u;\n\
+             const FIRST_HIT: u32 = {}u;\nconst GI_HW_VISIBILITY: bool = {};\n\
+             const SHARE_CHECK: bool = {};\n{}{hardware}",
+            first_hit_flag(),
+            !gi_dda(),
+            share_check(),
             include_str!("shadow_rays.wgsl")
         )
     } else {
-        format!("{}{NO_HARDWARE}", include_str!("shadow_rays.wgsl"))
+        format!(
+            "const SHARE_CHECK: bool = {};\n{}{NO_HARDWARE}",
+            share_check(),
+            include_str!("shadow_rays.wgsl")
+        )
     }
 }
 
@@ -271,7 +285,30 @@ pub fn force_opaque() -> bool {
 
 /// `text`'s ray queries with the force-opaque ray flag (`0x1`) in place of none (`0x0`).
 pub fn with_forced_opaque(text: &str) -> String {
-    text.replace("RayDesc(0x0u,", "RayDesc(0x1u,")
+    text.replace("RayDesc(0x0u", "RayDesc(0x1u")
+}
+
+/// The ray flag the hardware shadow rays take (`FIRST_HIT` in shadow_rays_hw.wgsl and
+/// froxels_hw.wgsl): terminate on the first hit (`0x4`), so the first opaque triangle a shadow ray
+/// meets ends its search rather than the nearest one being looked for. `HORIZON_RT_FIRST_HIT=0`
+/// traces them as before (`0x0`).
+pub fn first_hit_flag() -> u32 {
+    static FLAG: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| {
+        if std::env::var("HORIZON_RT_FIRST_HIT").is_ok_and(|v| v == "0") {
+            0
+        } else {
+            4
+        }
+    })
+}
+
+/// `HORIZON_RT_GI_DDA=1`: ReSTIR GI's visibility ray toward a reused sample goes through the voxel
+/// grid, as before, rather than against the hardware's triangles (shadow_rays_hw.wgsl
+/// `hw_visible`) that the sample was found on.
+fn gi_dda() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_GI_DDA").is_ok_and(|v| v == "1"))
 }
 
 /// RT lighting's radiance cache's cells (a power of two).
@@ -280,6 +317,34 @@ const CACHE_CELLS: usize = 1 << 20;
 /// The denoiser's passes' tap spacings (denoise.wgsl): 3x3 taps each, reaching 31 pixels as four
 /// passes of 5x5 did, for 45 taps a pixel rather than 100.
 const DENOISE_STEPS: [i32; 5] = [1, 2, 4, 8, 16];
+
+/// Whether the denoiser filters VR's periphery by its 4x4 blocks of texels sharing a ray, from
+/// the passes of 4 on (denoise.wgsl `span`): on unless `HORIZON_RT_DENOISE_FOVEA=0`. The screen's
+/// rays are sharp all over, untouched either way.
+fn denoise_fovea() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_DENOISE_FOVEA").map_or(true, |v| v != "0"))
+}
+
+/// Whether VR's second eye takes the first eye's denoised light where it takes its light
+/// (shadow_rays.wgsl `taken_out`, denoise.wgsl `taken`): the denoiser then filters only what the
+/// second eye traced itself. On unless `HORIZON_RT_SHARE_DENOISED=0`, which denoises the second eye
+/// whole again, its taken light as the first eye accumulated it.
+fn share_denoised() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_SHARE_DENOISED").map_or(true, |v| v != "0"))
+}
+
+/// Whether VR's second eye, where a block of its periphery takes the first eye's denoised light
+/// (`share_denoised`), takes each texel's from where the first eye shows that texel's own surface
+/// (shadow_rays.wgsl `first_texel_of`), and filters the texels the first eye doesn't show from its
+/// own light. On unless `HORIZON_RT_SHARE_CHECK=0`, which shifts the block's centre's texel onto
+/// all sixteen unchecked, as before (a block standing out of the first eye's view at the second
+/// eye's edge came out black).
+fn share_check() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_SHARE_CHECK").map_or(true, |v| v != "0"))
+}
 
 /// The RTX 4090 build's pipeline passes for a view (`ShadowRays::run`'s `sun_pass`): given the
 /// encoder, the kernel's uniform and the mask's size, the sun pass's texture and the bounce pass's
@@ -365,13 +430,20 @@ fn kernel(
         .and_then(|v| v.parse::<u32>().ok())
         .filter(|v| *v >= 3)
         .map_or(0.0, f64::from);
+    let centre = f64::from(u8::from(
+        std::env::var("HORIZON_RT_SUN_CENTRE").is_ok_and(|v| v != "0"),
+    ));
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Ray-traced shadows"),
         layout: Some(layout),
         module: shader,
         entry_point: Some(entry),
         compilation_options: wgpu::PipelineCompilationOptions {
-            constants: &[("DEBUG", debug), ("SKIP", f64::from(skip))],
+            constants: &[
+                ("DEBUG", debug),
+                ("SKIP", f64::from(skip)),
+                ("SUN_CENTRE", centre),
+            ],
             ..Default::default()
         },
         cache: None,
@@ -381,7 +453,8 @@ fn kernel(
 impl ShadowRays {
     /// Makes the kernel again leaving out what `skip` says (shadow_rays.wgsl `SKIP`: 1 the sun's
     /// ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 16 the bounced light's turns; 32 VR's second
-    /// eye's own light, `SHARE_EYES`; 64 the far field, 128 the translucent tint), in a running game, to time each part alone
+    /// eye's own light, `SHARE_EYES`; 64 the far field, 128 the translucent tint, 32768 a dark history
+    /// left to climb by itself), in a running game, to time each part alone
     /// (`horizon-ctl rt-skip`); 0 traces it all again.
     pub fn set_skip(&mut self, device: &wgpu::Device, skip: u32) {
         SHARE_EYES.store(skip & 32 == 0, std::sync::atomic::Ordering::Relaxed);
@@ -551,6 +624,14 @@ impl ShadowRays {
                 entry(32, last),
                 entry(33, output),
                 entry(34, output),
+                entry(
+                    35,
+                    wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::R32Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                ),
                 entry(38, cache_binding),
                 entry(39, storage),
                 entry(47, cache_binding),
@@ -564,6 +645,7 @@ impl ShadowRays {
                 entry(55, last),
                 entry(56, last_uint),
                 entry(57, first_depth),
+                entry(64, last),
                 entry(58, last),
                 entry(59, last),
                 entry(60, last),
@@ -662,6 +744,25 @@ impl ShadowRays {
                 entry(4, output),
                 entry(5, read),
                 entry(6, read),
+                // The rays' uniform, for where VR's periphery shares a ray a block.
+                entry(
+                    7,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                // VR's second eye: where it took the first eye's light, and that eye's denoised.
+                entry(
+                    8,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(9, read),
             ],
         });
         let denoise = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -675,15 +776,35 @@ impl ShadowRays {
             ),
             module: &denoise_shader,
             entry_point: Some("cs_denoise"),
-            compilation_options: Default::default(),
+            // `HORIZON_RT_DEBUG=12`: what VR's second eye took (denoise.wgsl `debug_share`).
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &[
+                    (
+                        "DEBUG",
+                        std::env::var("HORIZON_RT_DEBUG")
+                            .ok()
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .map_or(0.0, f64::from),
+                    ),
+                    // `HORIZON_RT_SHARE_GUARD=1`, a trial (denoise.wgsl `takes`).
+                    (
+                        "SHARE_GUARD",
+                        f64::from(u8::from(
+                            std::env::var("HORIZON_RT_SHARE_GUARD").is_ok_and(|v| v == "1"),
+                        )),
+                    ),
+                ],
+                ..Default::default()
+            },
             cache: None,
         });
         let denoise_params = std::array::from_fn(|i| {
             use wgpu::util::DeviceExt;
             let last = i32::from(i == DENOISE_STEPS.len() - 1);
+            let fovea = i32::from(denoise_fovea());
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("RT lighting's denoiser"),
-                contents: bytemuck::cast_slice(&[DENOISE_STEPS[i], last, 0, 0]),
+                contents: bytemuck::cast_slice(&[DENOISE_STEPS[i], last, fovea, 0]),
                 usage: wgpu::BufferUsages::UNIFORM,
             })
         });
@@ -854,6 +975,7 @@ impl ShadowRays {
                     reflection: mask(),
                     refraction: mask(),
                     light: [mask(), mask()],
+                    taken: Self::texture(device, size, wgpu::TextureFormat::R32Uint),
                     next: 0,
                     last: None,
                     frame: 0,
@@ -944,6 +1066,9 @@ impl ShadowRays {
         far: Option<[&wgpu::TextureView; 3]>,
         hardware: Option<Hardware<'_>>,
         first_depth: Option<&wgpu::TextureView>,
+        // The translucent terrain's cover over `depth` (gfx.rs `draw_cover`): where water or glass
+        // lies in front, the only texels whose mirrors and refraction look for it.
+        cover: Option<&wgpu::TextureView>,
         // The RTX 4090 build's ray tracing pipeline (horizon-rtx `sun`): which of its passes run
         // (`rt.mode.w`'s bits: 1 the sun, 2 the bounce), and what records them for this view once
         // the uniform is written, given the encoder, the uniform and the mask's size, giving the
@@ -979,8 +1104,14 @@ impl ShadowRays {
                     v.gi[i][0].clone(),
                     v.gi[i][1].clone(),
                 ],
+                v.light[i].clone(),
             ))
         });
+        // The first eye's denoised light, where the second eye takes it whole (`share_denoised`).
+        let first_light = first
+            .as_ref()
+            .filter(|_| share_denoised())
+            .map(|(_, _, light)| light.clone());
         let masks = self.masks(device, view, mask_size);
         let mask = masks.masks[masks.next].clone();
         let blocks = masks.blocks[masks.next].clone();
@@ -1001,6 +1132,7 @@ impl ShadowRays {
         let scratch = masks.scratch.clone();
         let light = masks.light[masks.next].clone();
         let last_light = masks.light[1 - masks.next].clone();
+        let taken = masks.taken.clone();
         let last = masks.last.replace((view_proj, camera));
         masks.next = 1 - masks.next;
         masks.frame = masks.frame.wrapping_add(1);
@@ -1023,7 +1155,11 @@ impl ShadowRays {
             mode: [
                 f32::from(u8::from(rays.lighting)),
                 f32::from(u8::from(rays.shadows)),
-                f32::from(u8::from(first.is_some())),
+                match (&first, &first_light) {
+                    (Some(_), Some(_)) => 2.0,
+                    (Some(_), None) => 1.0,
+                    (None, _) => 0.0,
+                },
                 sun_pass.as_ref().map_or(0.0, |(bits, _)| *bits as f32),
             ],
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
@@ -1035,7 +1171,12 @@ impl ShadowRays {
                 None => [0.0; 4],
             },
             sun: rays.sun,
-            frame: [(self.frame % 65536) as f32, rays.glass, view_frame, 0.0],
+            frame: [
+                (self.frame % 65536) as f32,
+                rays.glass,
+                view_frame,
+                f32::from(u8::from(cover.is_some())),
+            ],
             sun_light: rays.sun_light,
             water: rays.water,
             hw_offset: rays.hw_offset,
@@ -1051,10 +1192,10 @@ impl ShadowRays {
             rain_sun: rays.rain_sun,
             first_view_proj: first
                 .as_ref()
-                .map_or([[0.0; 4]; 4], |(m, _)| m.to_cols_array_2d()),
+                .map_or([[0.0; 4]; 4], |(m, _, _)| m.to_cols_array_2d()),
             first_inverse_view_proj: first
                 .as_ref()
-                .map_or([[0.0; 4]; 4], |(m, _)| m.inverse().to_cols_array_2d()),
+                .map_or([[0.0; 4]; 4], |(m, _, _)| m.inverse().to_cols_array_2d()),
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
         // The sun pass, after the uniform it reads is written and before the kernel reads it.
@@ -1084,7 +1225,7 @@ impl ShadowRays {
             self.sparse = Self::sparse_rays(device, needed);
         }
         // Without the first eye's, this view's own last masks stand in, unread.
-        let first_views = first.map(|(_, t)| t).unwrap_or_else(|| {
+        let first_views = first.map(|(_, t, _)| t).unwrap_or_else(|| {
             [
                 last_mask.clone(),
                 last_blocks.clone(),
@@ -1144,6 +1285,9 @@ impl ShadowRays {
             view(32, &last_fast),
             view(33, &reflection),
             view(34, &refraction),
+            view(35, &taken),
+            // Unread without a cover (`frame.w` 0): the sun pass's stand-in.
+            view(64, cover.unwrap_or(&self.no_sun_pass)),
             wgpu::BindGroupEntry {
                 binding: 38,
                 resource: visibility.as_entire_binding(),
@@ -1266,6 +1410,14 @@ impl ShadowRays {
                     view(4, to),
                     view(5, &blocks),
                     view(6, &sun),
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: self.uniform.as_entire_binding(),
+                    },
+                    view(8, &taken),
+                    // Unread unless the second eye takes it (`mode.z` 2): this view's last light
+                    // stands in, which no pass writes.
+                    view(9, first_light.as_ref().unwrap_or(&last_light)),
                 ],
             });
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1304,16 +1456,62 @@ mod tests {
     }
 
     #[test]
+    fn the_denoiser_reads_the_rays_uniform_as_it_is_laid_out() {
+        // denoise.wgsl's `Rt` is the uniform's start, as far as the fovea (`sharp_block`) and the
+        // mode (`taken`).
+        let source = include_str!("denoise.wgsl");
+        let module = naga::front::wgsl::parse_str(source).expect("the denoiser");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("the denoiser: {e:?}"));
+        let (_, rt) = module
+            .types
+            .iter()
+            .find(|(_, t)| t.name.as_deref() == Some("Rt"))
+            .expect("the rays' uniform");
+        let naga::TypeInner::Struct { members, .. } = &rt.inner else {
+            panic!("Rt is a struct");
+        };
+        let offsets: Vec<(String, u32)> = members
+            .iter()
+            .map(|m| (m.name.clone().unwrap_or_default(), m.offset))
+            .collect();
+        let expected = [
+            (
+                "inverse_view_proj",
+                std::mem::offset_of!(super::Uniform, inverse_view_proj),
+            ),
+            ("light", std::mem::offset_of!(super::Uniform, light)),
+            ("camera", std::mem::offset_of!(super::Uniform, camera)),
+            ("fraction", std::mem::offset_of!(super::Uniform, fraction)),
+            ("grid", std::mem::offset_of!(super::Uniform, grid)),
+            ("size", std::mem::offset_of!(super::Uniform, size)),
+            ("fovea", std::mem::offset_of!(super::Uniform, fovea)),
+            ("mode", std::mem::offset_of!(super::Uniform, mode)),
+        ]
+        .map(|(name, offset)| (name.to_string(), offset as u32));
+        assert_eq!(offsets, expected);
+    }
+
+    #[test]
     fn the_forced_opaque_flag_reaches_every_hardware_ray() {
-        // Every ray query of the hybrid and of the froxels spells its flags `RayDesc(0x0u,`, so
-        // that `HORIZON_RT_FORCE_OPAQUE` turns them all.
+        // Every ray query of the hybrid and of the froxels spells its flags from `RayDesc(0x0u`
+        // (a shadow ray's `| FIRST_HIT` after it), so that `HORIZON_RT_FORCE_OPAQUE` turns them all.
         for text in [super::HARDWARE, include_str!("froxels_hw.wgsl")] {
             let rays = text.matches("RayDesc(").count();
             assert!(rays > 0);
-            assert_eq!(text.matches("RayDesc(0x0u,").count(), rays);
+            assert_eq!(text.matches("RayDesc(0x0u").count(), rays);
             let forced = super::with_forced_opaque(text);
-            assert_eq!(forced.matches("RayDesc(0x1u,").count(), rays);
-            assert!(!forced.contains("RayDesc(0x0u,"));
+            assert_eq!(forced.matches("RayDesc(0x1u").count(), rays);
+            assert!(!forced.contains("RayDesc(0x0u"));
+        }
+        // The shadow rays (the sun's, the light sources', the froxels', GI's visibility) end on
+        // their first hit; the rays that look for what they meet don't.
+        for text in [super::HARDWARE, include_str!("froxels_hw.wgsl")] {
+            assert!(text.contains("RayDesc(0x0u | FIRST_HIT"));
         }
     }
 

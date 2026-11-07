@@ -237,9 +237,10 @@ fn sprite_grad(uv: vec2<f32>, layer: u32, dx: vec2<f32>, dy: vec2<f32>) -> vec4<
 }
 
 struct TerrainOut {
-    // Invariant: the solid terrain's depth prepasses (`fs_depth`) and the world's draws give each
-    // fragment the same depth to the bit, so the world can test against them for equality.
-    @builtin(position) @invariant clip: vec4<f32>,
+    // Made invariant where the world tests against a depth prepass for equality
+    // (`HORIZON_WORLD_PREPASS`, gfx.rs `terrain_source`), so that both give each fragment the same
+    // depth to the bit; not else, as it measured costly on the RTX 4090.
+    @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) layer: u32,
     @location(2) color: vec4<f32>,
@@ -970,6 +971,9 @@ fn rt_sky_level(level: f32) -> f32 {
 // The material `m` (on a face of normal `geo`, camera-relative `pos`) lit, before the fog; `light`
 // its sky and block light levels (0 to 15), `v` the rays' visibility, `traced` the light sources'.
 const FIREFLY_LUMINANCE: f32 = 5.0;
+// HORIZON_RT_DEBUG=14 (`rt_terms_view`): the last `rt_shade`'s sun (with its highlight), its light
+// around, how much of that is traced (`traced`'s alpha), its reflection; luminances.
+var<private> rt_terms: vec4<f32>;
 fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: vec3<f32>,
     traced: vec4<f32>, tint: vec3<f32>) -> vec3<f32> {
     let n = m.normal;
@@ -1033,6 +1037,11 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     if rt_mirror.a > 0.5 { reflected = rt_mirror.rgb * ambient_f; }
     // The rain's impacts (`rt_spray`): their broken crests scatter the sky's light.
     let spray = rt_sky(vec3(0.0, 1.0, 0.0)) * seen * (RAIN_SPRAY * rt_spray);
+    if globals.rt_mode.y > 6.5 && globals.rt_mode.y < 7.5 {
+        let y = vec3(0.2126, 0.7152, 0.0722);
+        rt_terms = vec4(dot(sun * (direct + through) + highlight, y),
+            dot(diffuse * (1.0 - ambient_f) * around, y), traced.a, dot(reflected, y));
+    }
     return sun * (direct + through) + highlight + diffuse * (1.0 - ambient_f) * around + reflected
         + m.albedo * m.emission * MATERIAL_EMISSION + spray;
 }
@@ -1840,7 +1849,7 @@ fn rt_wet(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>
     // HORIZON_RT_DEBUG=10: where the rain reaches (red), the puddles (green), the rain map's
     // columns known (blue).
     // 11: how wet (red), how porous (green), how glossy (blue).
-    if globals.rt_mode.y > 3.5 {
+    if globals.rt_mode.y > 3.5 && globals.rt_mode.y < 5.5 {
         let known = select(0.0, 1.0, rain_cell(vec2<i32>(floor(world.xz))) != 0u);
         m.albedo = select(vec3(exposure, rt_puddle, known), vec3(wet, p, 1.0 - m.roughness),
             globals.rt_mode.y > 4.5);
@@ -1883,6 +1892,38 @@ fn rt_lit(albedo: vec3<f32>, in: TerrainOut, n: vec3<f32>) -> vec3<f32> {
     let m = rt_wet(rt_plain(albedo, n), n, in.pos, in.clip.xy, in.light.x, -1.0, 0.5);
     return rt_material_lit(m, n, in.pos, in.clip.xy, in.light, in.spherical, in.cylindrical);
 }
+// Whether every component is a finite number (by the bits: fast maths may drop `x != x`).
+fn rt_finite4(v: vec4<f32>) -> bool {
+    let bits = bitcast<vec4<u32>>(v) & vec4(0x7f800000u);
+    return all(bits != vec4(0x7f800000u));
+}
+// HORIZON_RT_DEBUG=13: the RT lit colour `c` at the fragment at `pixel` (camera-relative `pos`),
+// or which of its inputs is not a finite number, read as the colour read them (`rt_taps`): red
+// the rays' mask (`rt_visibility`), blue the denoised light (`rt_traced`), green the sun's tint;
+// yellow the colour itself from finite inputs, cyan the colour below 0, magenta the colour too dark
+// to show (under 1e-3 paper white).
+fn rt_checked(c: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
+    let v = rt_visibility(pos, pixel);
+    let traced = rt_traced(pixel);
+    let tint = rt_sun_colour(pixel, v.x);
+    if !rt_finite4(vec4(v, 0.0)) { return vec3(4.0, 0.0, 0.0); }
+    if !rt_finite4(traced) { return vec3(0.0, 0.0, 4.0); }
+    if !rt_finite4(vec4(tint, 0.0)) { return vec3(0.0, 4.0, 0.0); }
+    if !rt_finite4(vec4(c, 0.0)) { return vec3(4.0, 4.0, 0.0); }
+    if any(c < vec3(0.0)) { return vec3(0.0, 4.0, 4.0); }
+    if dot(c, vec3(0.2126, 0.7152, 0.0722)) < 1e-3 { return vec3(4.0, 0.0, 4.0); }
+    return c;
+}
+// A luminance on a log scale for the debug views: 1e-4 paper white and less 0, 1 and more 1.
+fn rt_log(x: f32) -> f32 {
+    return clamp(1.0 + 0.0752575 * log2(max(x, 1e-12)), 0.0, 1.0);
+}
+// HORIZON_RT_DEBUG=14: the parts of the lit colour (`rt_terms`), red the sun's and green the light
+// around's on a log scale (1e-4 to 1 paper white), blue how much of the light around is traced (the
+// denoised light's alpha: 0 the light levels alone, as past the grid).
+fn rt_terms_view() -> vec3<f32> {
+    return vec3(rt_log(rt_terms.x), rt_log(rt_terms.y), clamp(rt_terms.z, 0.0, 1.0));
+}
 // The face's normal toward the camera, from the fragment's position (faces are flat: exact).
 fn face_normal(pos: vec3<f32>) -> vec3<f32> {
     let n = normalize(cross(dpdx(pos), dpdy(pos)));
@@ -1908,7 +1949,12 @@ fn face_normal(pos: vec3<f32>) -> vec3<f32> {
         if globals.rt_mode.y > 0.5 && globals.rt_mode.y < 1.5 {
             return vec4(max(rt_visibility(in.pos, in.clip.xy), vec3(0.0)), 1.0);
         }
-        return vec4(rt_lit(texel.rgb * in.tint, in, n), 1.0);
+        let lit = rt_lit(texel.rgb * in.tint, in, n);
+        if globals.rt_mode.y > 5.5 && globals.rt_mode.y < 6.5 {
+            return vec4(rt_checked(lit, in.pos, in.clip.xy), 1.0);
+        }
+        if globals.rt_mode.y > 6.5 && globals.rt_mode.y < 7.5 { return vec4(rt_terms_view(), 1.0); }
+        return vec4(lit, 1.0);
     }
     // RT lighting: a light-emitting block is lit as any other, and only its burning texels
     // shine (a torch's flame and embers, not its stick: `rt_burning`).
@@ -1984,6 +2030,12 @@ fn rt_dither(pixel: vec2<f32>) -> f32 {
 @fragment fn fs_depth(in: TerrainOut) {
     let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
     if (color.a < 0.5 && (in.layer & 0x8000u) == 0u) || faded_out(in.fade, in.clip.xy) { discard; }
+}
+// RT lighting's cover of the translucent terrain (gfx.rs `draw_cover`): where water or glass lies
+// in front of the prepass's depth, every quad of it whole (no alpha test, no fade), for the rays'
+// mirrors and refraction to look for it only there (shadow_rays_hw.wgsl `hw_reflect`).
+@fragment fn fs_cover() -> @location(0) vec4<f32> {
+    return vec4(1.0);
 }
 // RT lighting's glass (shadow_rays_hw.wgsl `hw_glass`: Remix's translucent material as RTX Remix
 // for Minecraft gives the block atlas): stained glass, panes, plain glass and every translucent

@@ -21,7 +21,8 @@ struct Rt {
     // zone's half angle; below -1 the whole view is sharp (the screen, the quad views' insets).
     fovea: vec4<f32>,
     // x: RT lighting (the mask also holds the distance), y: the sun's shadows traced, z: VR's
-    // second eye takes the first eye's light where both see the surface (`from_first`).
+    // second eye takes the first eye's light where both see the surface (`from_first`): 1 as it
+    // was accumulated, then denoised again; 2 its denoised light too (`taken_out`).
     mode: vec4<f32>,
     // RT lighting's accumulation over frames: the view's last view projection (clip space from
     // world space relative to its camera) and the camera's move since (xyz, w 1 when the last
@@ -32,7 +33,7 @@ struct Rt {
     sun: vec4<f32>,
     // x: this frame's number (the rays' directions change with it), y: the plain glass's sprite
     // layers, packed (shadow_rays_hw.wgsl `hw_glass`), z: this view's own frame number (what rests
-    // in turn, `trace`).
+    // in turn, `trace`), w: 1 when the translucent terrain's cover is bound (`psr_cover`).
     frame: vec4<f32>,
     // rgb: the light the rays trace toward (the sun's through the atmosphere, or the moon's), in
     // paper whites, for the light bouncing off what the rays hit; w its disc's angular radius.
@@ -377,6 +378,12 @@ var<private> fast_out: vec4<f32>;
 // The same for what the water refracts (shadow_rays_psr.wgsl `hw_refract`): rgb its light, a the
 // distance the ray runs in the water (0: none).
 @group(0) @binding(34) var refraction: texture_storage_2d<rgba16float, write>;
+// VR's second eye, when it takes the first eye's denoised light too (`rt.mode.z` 2): where its light
+// is the first eye's (`from_first`), the first eye's mask texel there (`pack_texel`), 0 where it
+// traced its own; the denoiser (denoise.wgsl) copies the first eye's light there and filters the rest.
+@group(0) @binding(35) var taken_out: texture_storage_2d<r32uint, write>;
+// The first eye's mask texel `from_first` found, while it holds.
+var<private> first_texel: vec2<i32>;
 // Where `hw_reflect` met the water: its normal toward the camera (xyz) and distance (w, below 0
 // none), for `hw_refract`.
 var<private> water_at: vec4<f32>;
@@ -553,8 +560,12 @@ override DEBUG: u32 = 0u;
 // sources' (ReSTIR DI), 8 the mirrors and water (PSR); 16 traces the bounced light every frame
 // instead of in turns (`trace`), to measure what the turns save and what they change; 64 the far
 // field (`far_light`, `far_sky`); 128 the translucent candidates' tint (glass, water, ice pass the
-// light untinted: what their shading costs against the force-opaque floor).
+// light untinted: what their shading costs against the force-opaque floor); 32768 leaves a dark
+// history to climb by itself when the light comes on (`accumulate`), as it did before.
 override SKIP: u32 = 0u;
+// `HORIZON_RT_SUN_CENTRE=1`: RT lighting traces the ray toward the sun's centre too, which it
+// never reads (`trace`), as before 8121f258f, to tell what leaving it out changed.
+override SUN_CENTRE: u32 = 0u;
 
 // Ray-traced shadows (gfx/voxels.rs, docs/raytracing.md): whether world block `v` is in the grid.
 fn in_grid(v: vec3<i32>) -> bool {
@@ -1062,7 +1073,16 @@ fn restir_gi(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i32>,
         let to = chosen.at - pos;
         let d = length(to);
         let reach = select(d - 0.05, 1e30, d > 4000.0);
-        if ray(pos, to / d, SKY_BUDGET, reach) < 0.5 {
+        // With hardware rays against the triangles the sample was found on (`hw_visible`), else
+        // (and with `HORIZON_RT_GI_DDA=1`) through the voxel grid, a long cave's ray taken as
+        // stopped once its budget is spent.
+        var visible = true;
+        if HW && GI_HW_VISIBILITY {
+            visible = hw_visible(pos, to / d, min(reach, 4096.0));
+        } else {
+            visible = ray(pos, to / d, SKY_BUDGET, reach) >= 0.5;
+        }
+        if !visible {
             chosen = own;
             aim = gi_target(own, pos, n);
             weight = select(0.0, 3.14159265 * luminance(own.light) / aim, aim > 0.0);
@@ -1663,7 +1683,7 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
     // The sun's shadows alone (without RT lighting, or their debug view). RT lighting's sun is
     // `sun_through` below, a ray toward a point of the disc: this ray toward its centre went
     // unused there, traced for nothing unless the compiler dropped it (a ray query's loop).
-    if shadows && (!lit_mode || DEBUG == 5u) {
+    if shadows && (!lit_mode || DEBUG == 5u || SUN_CENTRE == 1u) {
         let v = sun_visibility(lifted, n);
         if DEBUG == 5u { return Traced(vec4(v), none.blocks, none.direct, none.sun, none.reservoir); }
         sun = mix(1.0, mix(far_facing, v * beyond, edge), rt.light.w);
@@ -1830,7 +1850,20 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     let sigma = sqrt(max(fast_out.a - mean * mean, 0.0));
     let held = luminance(slow_blocks + slow_direct);
     let bound = clamp(held, mean - CLAMP_SIGMA * sigma, mean + CLAMP_SIGMA * sigma);
-    if held > 1e-5 && bound != held {
+    if bound > held && (SKIP & 32768u) == 0u {
+        // Darker than the last frames saw: a light come on, or a torch carried onto rock the
+        // history holds black. No factor lifts a black history (it was left to climb by 1/31 a
+        // frame, the lit patch's leading edge trailing half a second behind a torch in a cave);
+        // the light it lacks is added in this frame's colours, the new light's.
+        let lacking = bound - held;
+        let lit_blocks = max(v.blocks.rgb, vec3(0.0));
+        let lit_direct = max(v.direct.rgb, vec3(0.0));
+        let lit = luminance(lit_blocks + lit_direct);
+        if lit > 1e-6 {
+            slow_blocks += lit_blocks * (lacking / lit);
+            slow_direct += lit_direct * (lacking / lit);
+        }
+    } else if held > 1e-5 && bound != held {
         slow_blocks *= bound / held;
         slow_direct *= bound / held;
     }
@@ -1889,12 +1922,38 @@ fn from_first(p: vec2<i32>) -> FromFirst {
         return out;
     }
     out.found = true;
+    first_texel = t;
     out.v = Traced(vec4(m.rgb, d), b, l, textureLoad(first_sun, t, 0),
         textureLoad(first_reservoirs, t, 0));
     fast_out = textureLoad(first_fast, t, 0);
     gi_out_a = textureLoad(first_gi_a, t, 0);
     gi_out_b = textureLoad(first_gi_b, t, 0);
     return out;
+}
+// VR's second eye away from the sharp zone, in a 4x4 block that took the first eye's light from
+// its centre (`cs_sparse`): the first eye's mask texel showing mask texel `texel`'s own surface
+// (`pack_texel`), 0 where the first eye doesn't show it (out of its view, past an edge): the
+// denoiser then filters the texel from this eye's light (the block's), as without
+// `taken_out`. The block's centre shifted onto every texel (`HORIZON_RT_SHARE_CHECK=0`) put the
+// light of whatever the first eye shows there on a texel past an edge: a block standing out of
+// the first eye's view against the sky took the sky's black.
+fn first_texel_of(texel: vec2<i32>) -> u32 {
+    let p = pixel_of(texel);
+    if f32(p.x) >= rt.size.x || f32(p.y) >= rt.size.y { return 0u; }
+    if textureLoad(depth, p, 0) <= 0.0 { return 0u; }
+    let pos = surface_at(p);
+    let c = rt.first_view_proj * vec4(pos, 1.0);
+    if c.w <= 0.0 { return 0u; }
+    let ndc = c.xy / c.w;
+    if any(abs(ndc) >= vec2(1.0)) { return 0u; }
+    let q = vec2<i32>(vec2((ndc.x * 0.5 + 0.5) * rt.size.x, (0.5 - ndc.y * 0.5) * rt.size.y));
+    let t = q / i32(rt.size.z);
+    // The first eye's mask holds the distance from the camera both eyes share (`trace`).
+    let d = length(pos);
+    let m = textureLoad(first_mask, t, 0);
+    if m.a < 0.0 || abs(m.a - d) > 0.05 + 0.02 * d { return 0u; }
+    if textureLoad(first_blocks, t, 0).a < 0.0 { return 0u; }
+    return pack_texel(t);
 }
 // The depth pixel at the centre of mask texel `texel`.
 fn pixel_of(texel: vec2<i32>) -> vec2<i32> {
@@ -1921,12 +1980,17 @@ struct SparseRay {
     gi_a: vec4<f32>,
     gi_b: vec4<u32>,
     // VR's second eye: x 1 when the block's light is the first eye's (`from_first`, already
-    // accumulated over frames), with its fast history.
+    // accumulated over frames), with its fast history; y the first eye's texel for the block's
+    // centre (`pack_texel`).
     taken: vec4<u32>,
     fast: vec4<f32>,
 }
 // The sparse blocks' rays, row by row of blocks.
 @group(0) @binding(47) var<storage, read_write> sparse: array<SparseRay>;
+// A first eye's mask texel as `taken_out` holds it: x + 1 in the low 16 bits, y in the high ones.
+fn pack_texel(t: vec2<i32>) -> u32 {
+    return u32(t.x + 1) | (u32(t.y) << 16u);
+}
 fn blocks_across() -> i32 {
     return (i32(textureDimensions(mask).x) + 3) / 4;
 }
@@ -1940,7 +2004,8 @@ fn blocks_across() -> i32 {
         if seen.found {
             let v = seen.v;
             sparse[block.y * blocks_across() + block.x] = SparseRay(v.rays, v.blocks, v.direct,
-                v.sun, v.reservoir, gi_out_a, gi_out_b, vec4(1u), fast_out);
+                v.sun, v.reservoir, gi_out_a, gi_out_b, vec4(1u, pack_texel(first_texel), 0u, 0u),
+                fast_out);
             return;
         }
     }
@@ -1988,10 +2053,12 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
     // VR's second eye: the first eye's light where it sees the surface, already accumulated over
     // its frames (in the periphery a block's, `cs_sparse`).
     var taken = false;
+    var taken_from = 0u;
     if fine && rt.mode.z > 0.5 && inside {
         let seen = from_first(pixel_of(texel));
         taken = seen.found;
         v = seen.v;
+        if taken { taken_from = pack_texel(first_texel); }
     }
     if fine && !taken {
         sun_from_pass = true;
@@ -2001,7 +2068,17 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
         let s = sparse[(corner.y / 4) * blocks_across() + corner.x / 4];
         v = Traced(s.rays, s.blocks, s.direct, s.sun, s.reservoir);
         taken = s.taken.x == 1u;
-        if taken { fast_out = s.fast; }
+        if taken {
+            fast_out = s.fast;
+            if rt.mode.z > 1.5 && SHARE_CHECK {
+                taken_from = first_texel_of(texel);
+            } else {
+                // The block's texels shifted as its centre is from the first eye's.
+                let centre = vec2<i32>(i32(s.taken.y & 0xffffu) - 1, i32(s.taken.y >> 16u));
+                let size = vec2<i32>(textureDimensions(mask));
+                taken_from = pack_texel(clamp(centre + texel - (corner + 2), vec2(0), size - 1));
+            }
+        }
         // The block's GI reservoir is its corner's; the other texels keep none.
         if all(texel == corner) {
             gi_out_a = s.gi_a;
@@ -2012,8 +2089,10 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
     if DEBUG == 3u { v.rays = vec4(textureLoad(depth, pixel_of(texel), 0) * 20.0 + 0.25); }
     if all(vec2<u32>(texel) < textureDimensions(mask)) {
         v.rays = finite4(v.rays);
-        v.blocks = finite4(v.blocks);
-        v.direct = finite4(v.direct);
+        // Light is never below 0: a negative bounce would come back through the last frame's light
+        // (`last_light`) and the history's clamp (`accumulate`) larger each frame.
+        v.blocks = finite4(vec4(max(v.blocks.rgb, vec3(0.0)), v.blocks.a));
+        v.direct = finite4(vec4(max(v.direct.rgb, vec3(0.0)), v.direct.a));
         v.sun = finite4(v.sun);
         fast_out = finite4(fast_out);
         textureStore(mask, texel, v.rays);
@@ -2027,6 +2106,9 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
             textureStore(fast, texel, fast_out);
             textureStore(reflection, texel, reflected);
             textureStore(refraction, texel, refracted);
+        }
+        if rt.mode.z > 1.5 {
+            textureStore(taken_out, texel, vec4(taken_from, 0u, 0u, 0u));
         }
     }
 }

@@ -425,7 +425,14 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
     if parallax_rt(in) {
         let s = parallax_surface(in, true);
         if s.texel.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
-        return vec4(parallax_rt_lit(in, s), 1.0);
+        let lit = parallax_rt_lit(in, s);
+        // HORIZON_RT_DEBUG=13 and 14 (terrain.wgsl `rt_checked`, `rt_terms_view`).
+        let debug = horizon_terrain_globals.rt_mode.y;
+        if debug > 5.5 && debug < 6.5 {
+            return vec4(horizon_terrain_rt_checked(lit, in.position, in.clip.xy), 1.0);
+        }
+        if debug > 6.5 && debug < 7.5 { return vec4(horizon_terrain_rt_terms_view(), 1.0); }
+        return vec4(lit, 1.0);
     }
     // RT lighting: a light-emitting block lit as any other, its burning texels shining
     // (terrain.wgsl `rt_burning`).

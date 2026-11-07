@@ -231,8 +231,10 @@ var<private> hw_caustic: vec4<f32>;
 var<private> hw_caustic_sea: f32;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     var q: ray_query;
-    // The instances stand around their anchor (gfx/hw_rays.rs): the camera's offset from it.
-    rayQueryInitialize(&q, terrain, RayDesc(0x0u, 0xffu, 0.0, reach, pos + rt.hw_offset.xyz, l));
+    // The instances stand around their anchor (gfx/hw_rays.rs): the camera's offset from it. The
+    // first opaque triangle met ends the search (`FIRST_HIT`): a shadow ray needs no nearer one.
+    rayQueryInitialize(&q, terrain,
+        RayDesc(0x0u | FIRST_HIT, 0xffu, 0.0, reach, pos + rt.hw_offset.xyz, l));
     var through = vec3(1.0);
     hw_caustic_on = false;
     while rayQueryProceed(&q) {
@@ -252,6 +254,23 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
             hw_caustic_sea);
     }
     return through;
+}
+// Whether nothing opaque lies from camera-relative `pos` along `l` (unit) within `reach`: water,
+// glass and ice let it through, a cutout's opaque texel stops it, the first such hit ends the
+// search. ReSTIR GI's visibility ray toward a sample taken from elsewhere (shadow_rays.wgsl
+// `restir_gi`), against the triangles its samples are found on.
+fn hw_visible(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> bool {
+    var q: ray_query;
+    rayQueryInitialize(&q, terrain,
+        RayDesc(0x0u | FIRST_HIT, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
+    while rayQueryProceed(&q) {
+        let c = rayQueryGetCandidateIntersection(&q);
+        if c.geometry_index != instances[c.instance_custom_data].at.w && hw_opaque(c) {
+            rayQueryConfirmIntersection(&q);
+            rayQueryTerminate(&q);
+        }
+    }
+    return rayQueryGetCommittedIntersection(&q).kind == RAY_QUERY_INTERSECTION_NONE;
 }
 // RT lighting's water (terrain.wgsl `rt_water`, shadow_rays_hw.wgsl `hw_tint` and `hw_reflect`): the
 // surface's waves at world `p` (x, z) and `t` seconds, a sum of sixteen plane waves of every
@@ -519,6 +538,21 @@ fn hw_position(v: u32) -> vec3<f32> {
 // glass, ice), turns off it (off the waves on water's top) and meets what it reflects,
 // lit by the sun's shadow ray and the radiance cache (or the last frame's screen) there; rgb that
 // light, a 1, or a 0 where the reflection reaches the sky or no water is met.
+// The translucent terrain's cover over the depth (gfx.rs `draw_cover`), at its size: 1 where
+// water or glass lies in front of the solid terrain, when `rt.frame.w` says it is bound.
+@group(0) @binding(64) var psr_cover: texture_2d<f32>;
+// Whether water or glass may lie in front of depth pixel `p` (`psr_cover`), or of the pixel before
+// it on either axis: VR's periphery traces a 2x2 quad's from its last pixel (`cs_shadow`).
+fn psr_covered(p: vec2<i32>) -> bool {
+    if rt.frame.w < 0.5 { return true; }
+    let top = vec2<i32>(rt.size.xy) - 1;
+    var seen = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let q = clamp(p - vec2(i & 1, i >> 1u), vec2(0), top);
+        seen = max(seen, textureLoad(psr_cover, q, 0).r);
+    }
+    return seen > 0.5;
+}
 fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     let size = rt.size.xy;
     var d = textureLoad(depth, clamp(p, vec2(0), vec2<i32>(size) - 1), 0);
@@ -528,6 +562,13 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     let c = rt.inverse_view_proj * vec4(ndc, d, 1.0);
     let far = c.xyz / c.w;
     let ray = normalize(far);
+    // No water or glass in front by the cover: no ray to look for it (maybe a puddle).
+    if !psr_covered(p) {
+        water_at = vec4(0.0, 0.0, 0.0, -1.0);
+        glass_at = vec4(0.0, 0.0, 0.0, -1.0);
+        if solid { return hw_puddle(far, ray); }
+        return vec4(0.0);
+    }
     let reach = select(4096.0, length(far), solid);
     var q: ray_query;
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, rt.hw_offset.xyz, ray));

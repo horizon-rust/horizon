@@ -841,6 +841,7 @@ unsafe extern "system" fn create_session(
 }
 
 unsafe extern "system" fn destroy_session(_session: sys::Session) -> XrResult {
+    finish_writes();
     let mut s = state();
     s.write_report();
     let swapchains: Vec<u64> = s.swapchains.keys().copied().collect();
@@ -1335,7 +1336,9 @@ unsafe extern "system" fn end_frame(
             }
         }
     }
-    let capture = latest || s.settings.capture.contains(&frame) || timed.is_some();
+    let asked = s.settings.capture.contains(&frame) || timed.is_some();
+    // A periodic capture while the last one is still being written waits for the next.
+    let capture = asked || (latest && !writing());
     let tag = if let Some(t) = timed {
         format!("t{t}")
     } else if latest && !s.settings.capture.contains(&frame) {
@@ -1343,7 +1346,9 @@ unsafe extern "system" fn end_frame(
     } else {
         format!("frame{frame}")
     };
-    // What the composite captures need: each eye and each quad.
+    // Each eye and each quad read back now (the images are the application's again after
+    // this call); their PNGs and the composites are written on a thread of their own.
+    let mut images: Vec<(String, Result<Image, String>)> = Vec::new();
     let mut eyes = Vec::new();
     let mut quads = Vec::new();
     for (i, &layer) in layers.iter().enumerate() {
@@ -1362,36 +1367,33 @@ unsafe extern "system" fn end_frame(
                 let p = unsafe { &*(layer as *const sys::CompositionLayerProjection) };
                 let views = unsafe { std::slice::from_raw_parts(p.views, p.view_count as usize) };
                 for (eye, v) in views.iter().enumerate() {
+                    eyes.push((v.pose, v.fov, images.len()));
                     let name = format!("{tag}-layer{i}-eye{eye}.png");
-                    capture_image(&mut s, &v.sub_image, &name);
-                    eyes.push((v.pose, v.fov, v.sub_image));
+                    images.push((name, read_image(&s, &v.sub_image)));
                 }
             }
             sys::StructureType::COMPOSITION_LAYER_QUAD => {
                 let q = unsafe { &*(layer as *const sys::CompositionLayerQuad) };
+                quads.push((q.pose, q.size, images.len()));
                 let name = format!("{tag}-layer{i}-quad.png");
-                capture_image(&mut s, &q.sub_image, &name);
-                quads.push((q.pose, q.size, q.sub_image));
+                images.push((name, read_image(&s, &q.sub_image)));
             }
             _ => {}
         }
     }
-    if !quads.is_empty() {
-        for (eye, view) in eyes.iter().enumerate() {
-            let name = format!("{tag}-eye{eye}-composite.png");
-            let result = composite(&s, view, &quads)
-                .and_then(|(w, h, rgba)| write_png(&s.settings.out.join(&name), w, h, &rgba));
-            match result {
-                Ok(()) => {
-                    if !s.report.captures.contains(&name) {
-                        s.report.captures.push(name);
-                    }
-                }
-                Err(e) => s.report.errors.push(format!("capture {name}: {e}")),
-            }
-        }
+    if capture {
+        let out = s.settings.out.clone();
+        let writer = std::thread::spawn(move || write_captures(&out, &tag, images, &eyes, &quads));
+        WRITERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(writer);
     }
     if s.settings.frames.is_some_and(|n| frame == n) {
+        // The run ends: the captures being written are finished first.
+        drop(s);
+        finish_writes();
+        s = state();
         s.report.exit_requested = true;
         s.set_session_state(sys::SessionState::STOPPING);
     }
@@ -1415,26 +1417,96 @@ fn capture_image(s: &mut State, sub: &sys::SwapchainSubImage, name: &str) {
     }
 }
 
+/// An image read back: width, height, RGBA rows (top first).
+type Image = (u32, u32, Vec<u8>);
+
+/// Captures being written on threads of their own (`end_frame`): at 4400x3520 an eye, the PNGs
+/// and the composites took about 2.5 s inside xrEndFrame, a stall in every timing every
+/// `capture_every` frames.
+static WRITERS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Whether a capture is still being written.
+fn writing() -> bool {
+    let mut writers = WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+    writers.retain(|w| !w.is_finished());
+    !writers.is_empty()
+}
+
+/// Waits for the captures being written.
+fn finish_writes() {
+    let writers = std::mem::take(&mut *WRITERS.lock().unwrap_or_else(|e| e.into_inner()));
+    for w in writers {
+        let _ = w.join();
+    }
+}
+
+/// Writes one capture's images, and with quads each eye's composite (`{tag}-eyeN-composite`),
+/// then adds them to the report.
+fn write_captures(
+    out: &std::path::Path,
+    tag: &str,
+    images: Vec<(String, Result<Image, String>)>,
+    eyes: &[(sys::Posef, sys::Fovf, usize)],
+    quads: &[(sys::Posef, sys::Extent2Df, usize)],
+) {
+    let mut written = Vec::new();
+    let mut errors = Vec::new();
+    for (name, image) in &images {
+        match image
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|(w, h, rgba)| write_png(&out.join(name), *w, *h, rgba))
+        {
+            Ok(()) => written.push(name.clone()),
+            Err(e) => errors.push(format!("capture {name}: {e}")),
+        }
+    }
+    if !quads.is_empty() {
+        let read: Option<Vec<_>> = quads
+            .iter()
+            .map(|&(pose, size, i)| Some((pose, size, images[i].1.as_ref().ok()?)))
+            .collect();
+        for (eye, &(pose, fov, i)) in eyes.iter().enumerate() {
+            let name = format!("{tag}-eye{eye}-composite.png");
+            let result = match (&images[i].1, &read) {
+                (Ok(image), Some(quads)) => {
+                    let (w, h, rgba) = composite((pose, fov), image, quads);
+                    write_png(&out.join(&name), w, h, &rgba)
+                }
+                _ => Err("an image was not read".to_owned()),
+            };
+            match result {
+                Ok(()) => written.push(name),
+                Err(e) => errors.push(format!("capture {name}: {e}")),
+            }
+        }
+    }
+    let mut s = state();
+    for name in written {
+        if !s.report.captures.contains(&name) {
+            s.report.captures.push(name);
+        }
+    }
+    s.report.errors.extend(errors);
+}
+
 /// One eye's image with each quad drawn over it as a compositor would: each pixel's ray
 /// meets each quad's plane (either side), later quads on top, premultiplied alpha. RGBA
 /// rows, top first.
 fn composite(
-    s: &State,
-    (pose, fov, sub): &(sys::Posef, sys::Fovf, sys::SwapchainSubImage),
-    quads: &[(sys::Posef, sys::Extent2Df, sys::SwapchainSubImage)],
-) -> Result<(u32, u32, Vec<u8>), String> {
-    let (w, h, mut out) = read_image(s, sub)?;
-    let images = quads
-        .iter()
-        .map(|(_, _, sub)| read_image(s, sub))
-        .collect::<Result<Vec<_>, _>>()?;
+    (pose, fov): (sys::Posef, sys::Fovf),
+    eye: &Image,
+    quads: &[(sys::Posef, sys::Extent2Df, &Image)],
+) -> Image {
+    let (w, h, mut out) = eye.clone();
+    let images: Vec<&Image> = quads.iter().map(|q| q.2).collect();
     let (l, r) = (fov.angle_left.tan(), fov.angle_right.tan());
     let (d, u) = (fov.angle_down.tan(), fov.angle_up.tan());
     // Each quad's frame, with the eye's position and turn in it.
     let frames: Vec<_> = quads
         .iter()
         .map(|(q, size, _)| {
-            let p = script::compose(script::inverse(*q), *pose);
+            let p = script::compose(script::inverse(*q), pose);
             (
                 p.orientation,
                 [p.position.x, p.position.y, p.position.z],
@@ -1448,7 +1520,7 @@ fn composite(
             let fy = (py as f32 + 0.5) / h as f32;
             let ray = [l + fx * (r - l), u - fy * (u - d), -1.0];
             let at = ((py * w + px) * 4) as usize;
-            for ((turn, from, size), (qw, qh, image)) in frames.iter().zip(&images) {
+            for ((turn, from, size), &(qw, qh, image)) in frames.iter().zip(&images) {
                 let dir = script::rotate(*turn, ray);
                 if dir[2].abs() < 1e-6 {
                     continue;
@@ -1473,7 +1545,7 @@ fn composite(
             }
         }
     }
-    Ok((w, h, out))
+    (w, h, out)
 }
 
 /// The image a layer shows, read back as RGBA rows (top first). The application leaves it

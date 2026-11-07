@@ -458,7 +458,10 @@ RTX 4090, with the copy of NVIDIA's RTX Demo world (the player at its spawn), NV
 **How it was timed.** `HORIZON_GPU_PASSES=1` (`gfx/gpu_passes.rs`) writes a GPU timestamp between the frame's
 stages and logs each stage's median every 60 frames, per view (`desktop`, `eye1`, `eye2`); `tools/gpu_passes_report.py
 game.log` sums the reports (`--by-look` one a head pose, `--best 0.25` the shortest-framed ones, for a run that
-shares the GPU). `HORIZON_RT_SKIP` (a mask: 1 the sun's ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 64 the far field; 2048, read at start, the mesh clouds instead of the dome's) leaves parts of the
+shares the GPU). The medians take only frames whose head pose stayed put, and each stage only the frames it ran in,
+so their sum need not be the GPU time the VR line logs every 300 frames: beside that line, `Horizon VR: GPU means`
+gives each view's stages' means over the same frames (a stage that did not run counts 0), and the time between the
+views of a frame (other submissions' work, or the GPU idle). `HORIZON_RT_SKIP` (a mask: 1 the sun's ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 64 the far field; 2048, read at start, the mesh clouds instead of the dome's) leaves parts of the
 trace kernel out to time each alone, `HORIZON_RT_SHARP` (degrees) moves the foveation's sharp zone (0: sparse all over,
 180: sharp all over). `HORIZON_RT_FORCE_OPAQUE=1` traces every hardware ray (the trace kernel's and the froxels') with
 the force-opaque ray flag, so no candidate hit comes back to the shader for its alpha test (cutouts shadow as squares,
@@ -617,6 +620,81 @@ wind):
    frustum) and, for each eye, the mirrors and the refraction. Both eyes' grain is then the same. The second eye's
    trace 4.9 to 2.7 ms (3.3 to 1.2 without the mirrors), its frame 9.45 to 7.35; no light bleeds at the near
    edges in the captures. It needs 8's multiview.
+10. **The second eye takes the first eye's denoised light too** (shadow_rays.wgsl `taken_out`, denoise.wgsl `taken`,
+   `HORIZON_RT_SHARE_DENOISED=0` for the old): where 9 took a texel's light, the kernel writes the first eye's texel
+   there (in the periphery, where a block took its centre's light, the first eye's texel showing each texel's own
+   surface, `first_texel_of`; none where the first eye doesn't show it), and the second eye's denoiser
+   copies the first eye's light as its five passes left it on the first pass, into the other texture they write on
+   the second, and leaves those texels be on the three after. Only what the second eye traced itself is filtered,
+   the copied light among its taps. A surface's diffuse light being the same from either eye, both eyes then show the
+   same denoised light; before, the second eye filtered the taken light again. Its denoiser 0.59 to 0.25 ms at
+   4400x3520 on the RTX 4090 (109a15996), the frame 9.44 to 9.19 ms (68218d890). The periphery's blocks first shifted
+   their centre's texel onto all sixteen (`HORIZON_RT_SHARE_CHECK=0`): a texel past an edge took the light of
+   whatever the first eye showed there, and a block at the second eye's edge, standing out of the first eye's view
+   against the sky, came out black. The denoiser also keeps its light finite and within half floats
+   (`usable`): one texel of infinity would spread NaNs through every pass after. Measured on 93137e0d4: the check
+   costs nothing (9.13 and 9.20 ms a frame against 9.16 without it), but a large zone at the right eye's right edge
+   stays black where `HORIZON_RT_SHARE_DENOISED=0` shows stone and a leaf shadow (38 levels of 255). Being looked
+   into: `HORIZON_RT_DEBUG=12` colours the second eye's light by what it took (taken from the first eye: green lit,
+   cyan black though the accumulated light there isn't, blue both; its own: red lit, yellow black from the filter
+   though its accumulated light isn't, magenta both), and `HORIZON_RT_SHARE_GUARD=1` is a trial that copies the
+   first eye's light only where it isn't under a quarter of the texel's accumulated light. On a60b1747f the zone is
+   red (the second eye's own light, lit at the last pass's input) and the guard changes nothing; but 12 writes its
+   colours into the light the next frame's bounces read. The kernel and the denoiser now keep their light from going below 0
+   (a light below 0 would blacken the terrain past its sun, as the zone is); `HORIZON_RT_DEBUG=8` shows the light
+   the terrain reads, untouched. On cd49cc97e the zone stays black, its sun included, though 8 shows its light grey
+   there: the black comes from another of the terrain's inputs, and a NaN in the lit colour turns black at the TAA
+   (`load_scene`). `HORIZON_RT_DEBUG=13` (terrain.wgsl `rt_checked`) shows the lit colour, or red where the
+   sun's mask isn't finite, blue the traced light, green the sun's tint, yellow the colour though its inputs are,
+   cyan a colour below 0 and magenta one too dark to show (under 1e-3 paper white: ACES's toe turns it black).
+   On e8b54293e (threshold 1e-6 then) the zone shows none of these, still black. `HORIZON_RT_DEBUG=14`
+   (`rt_terms_view`) shows the lit colour's parts: red the sun's and green the light around's, on a log scale from
+   1e-4 to 1 paper white, blue the denoised light's alpha (how much of the light around is traced, the light
+   levels standing in for the rest). On 3aec3cf47, 14 showed the cause: the sun's part 0 in the zone in both modes,
+   the light around lower. The second eye's own hardware rays left from the structures' anchor, not from the
+   camera's offset to it (`hw_offset`, set with the structures' update, which since 4956cf386 the first eye alone
+   runs): wherever the second eye traced itself, its rays started from the wrong place. Every view takes the offset
+   again (29c78b580). Measured there at the fixed pose: the zone as the left eye shows it, 0.16 of 255 from
+   `HORIZON_RT_SHARE_DENOISED=0`; 9.51 ms a frame against 9.88 without the shared light.
+11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
+   shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
+   quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary
+   ray over the whole structure, though most of a view has none. After the rays' prepass the translucent terrain's
+   draws (every quad whole, back faces culled as the world draws them) are drawn into a cover of the prepass's size
+   (one pass for both eyes in VR), tested against its depth; where the cover and its neighbours on the quad's side are
+   empty, the kernel skips that ray (a puddle still reflects). The GPU stage `rays: translucent cover` times it:
+   0.05 ms for both eyes, against 0.09 ms of the first eye's trace and 0.05 of the second's in a view without water
+   (109a15996).
+12. **The TAA's resolved frame goes back over the scene only when something draws over it** (taa.rs
+   `Inputs::copy_back`, `HORIZON_TAA_BLIT=1` for the old): the resolve writes the next history, which a blit copied
+   back over the scene for what reads it after. Before the tone mapping only the rain, the heat haze, a pack, the
+   hand, the glowing outline, the screen effects and the debug crosshair draw over it, and HDR output without the
+   grading reads it: with none of them the tone mapping reads the history itself (tonemap.rs `run`'s `source`), one
+   full-size write of half floats an eye less (VR's eyes being 15 million pixels each, that write is the blit's cost
+   whatever the shading rate).
+13. **ReSTIR GI's visibility ray with hardware rays** (shadow_rays_hw.wgsl `hw_visible`, `HORIZON_RT_GI_DDA=1` for
+   the old): a sample reused from the last frame or a neighbour is kept only if the pixel sees it, a ray that went
+   through the voxel grid (24 bricks of budget, a long cave's taken as stopped) though the sample was found on the
+   hardware's triangles. It goes against those now, translucent surfaces letting it through, cutouts alpha-tested,
+   ended by the first opaque hit. ReSTIR GI was 0.27 ms of the first eye's 0.76 ms trace at 4400x3520
+   (`HORIZON_RT_SKIP=2`, 109a15996). Back to back at one pose (68218d890) the two cost the same, and the captures
+   are the same in the open; kept for its triangles.
+14. **Shadow rays end on their first hit** (`FIRST_HIT`, the ray flag `0x4`; `HORIZON_RT_FIRST_HIT=0` for the old): the
+   sun's, the light sources', the froxels' and GI's visibility rays let the hardware commit the first opaque triangle
+   they meet and stop, where it went on looking for a nearer one no shadow needs. What they return is the same.
+   Measured on dd9002142: about 0.05 ms on the froxels' inject and on the trace. Item 12 there: the TAA 0.38 to 0.25
+   ms an eye, but not while the vignette shows (it draws over the scene, item 15); item 13 within the noise, kept for
+   its triangles.
+15. **The vignette draws over the finished frame, in the tone mapping's pass** (tonemap.rs `Vignette`,
+   `HORIZON_VIGNETTE_CURVE=0` for the old): a full-size quad blended over the scene's light before the tone mapping,
+   0.087 ms an eye in VR, and the reason the TAA copied its frame back (item 12) wherever the vignette showed (at
+   night, underground). When the grading and the curve draw in one pass and the vignette is the last screen effect
+   (vanilla's other camera overlays draw after it), that pass multiplies its output by 1 - the sprite times its
+   colour: vanilla's own blend, over the frame as the screen shows it, where the quad darkened the light before the
+   curve. Measured on 68218d890 with the vignette forced (`/worldborder warning distance 2147483647`, its red at
+   once whatever the light): the frame 9.66 ms with the old, 9.18 and 9.30 with the new, the stage `hand, outline, screen effects` 0.081 to
+   0.001. The two looks differ: darkened before the ACES curve, the old one's edges came out more saturated and
+   redder (9 to 14 levels of 255 on average) than vanilla's blend over the finished frame.
 
 **Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
 loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks

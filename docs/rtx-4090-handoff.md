@@ -97,6 +97,92 @@ layouts in the descriptor writes (`DEPTH_STENCIL_READ_ONLY_OPTIMAL` for the dept
 sprites and atlas, `GENERAL` for the output: what wgpu-hal's `derive_image_layout` gives the states asked for), the
 barriers' stages, a buffer whose usage lacks what the transition needs.
 
+## Update, 6 November: toward 90 fps in the headset (PR #2)
+
+The target is now 90 fps in VR, both eyes at 4400x3520 (KRVR's RenderResolution 4400 on the user's Apple Vision Pro;
+the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay4`, based on this branch) holds:
+
+- **VR's device gets the RTX extensions** (micromaps, SER, ray tracing pipelines: `horizon-xr` `rtx_extensions`).
+- **In VR only the first eye touches `hw_rays`' state** (`hw_update`, raw builds, the TLAS): the second eye's raw BLAS
+  builds used to replace the first's before submission, which lost the device with micromaps (4956cf386). Keep it so.
+- **Measured at 3132x3016** (fake runtime, `--hz 1000`, look_around, ~9000 frames): GPU 8.60 ms a frame with micromaps,
+  9.01 without; CPU median 6.3. First eye 4.75 ms: both eyes' depth prepass 0.96, raster 0.60, structures 0.59,
+  trace 0.49, froxels inject 0.41, denoiser 0.40, integrate 0.31, TAA 0.26. Second eye 2.23 ms. The per-eye tables are
+  in the project files (`vr-4956-report.txt`).
+- **Switches added for the A/B** (each gain on by default, the variable restores the old behaviour):
+  `HORIZON_RT_FAR_EVERY_FRAME=1` (the far field reran every frame, twice a VR frame: now when a shadow would move),
+  `HORIZON_RT_PREPASS_SPLIT=0` (the rays' prepass drew every quad through the alpha test: now the opaque ones without a
+  fragment shader), `HORIZON_FROXEL_TILE` (16 by default; the VR eye has 3.1 times the screen's froxels at 4400x3520),
+  `HORIZON_WORLD_PREPASS=1|2` (the world over a depth prepass, off by default until measured).
+- **Measured at 4400x3520** (GPU a frame): 4956cf386 12.03 ms, the prepass split 11.85 (11.98 without), the far field
+  gate -0.5, froxels of 24 pixels 11.16 (now VR's default, e60ba36e5), 97ffe98c7 11.00. A later session read 12.58
+  for a build with no relevant change: its tables showed the hand drawn, `froxels: apply` doubled (fog) and the raster
+  up 0.5 an eye, another scene. Compare VR builds back to back, the time and the weather fixed
+  (`/time set 6000`, `doDaylightCycle false`, `/weather clear`, `doWeatherCycle false`).
+- **Measured on integ-final** (PRs #2 to #12 merged, 4400x3520): 11.14 ms a frame. The denoiser filtering VR's
+  periphery by its 4x4 blocks (2db53a830, `HORIZON_RT_DENOISE_FOVEA=0` for the old) gives 0.11 ms; VR's rays' prepass
+  at the rays' resolution, 2200x1760 an eye (486eb379a, `HORIZON_RT_PREPASS_HALF=0` for the old), gives 0.76 ms.
+- **VR stalls, closed:** the fake runtime froze a frame about 2.5 s every 180 frames, writing its captures inside
+  `xrEndFrame`; it writes them on a thread of its own now. KRVR's own log shows no such waits. Without them, integ-final
+  is at 10.10 ms a frame (eye 1 6.37, eye 2 3.67), the means of `Horizon VR: GPU means` over the same frames.
+- **Desktop, closed:** between b5b5252a7 and 482620a06 the rays' prepass read 0.33 ms more, `world: phase 1` 0.9 to
+  1.1, the forest's trace 0.65. An A-B-A run with the clocks logged found the game capped at 30 fps, the GPU down to
+  1635 MHz for f05270165 against 2200 to 2300 for b5b5252a7: at the same clock the prepass is 0.06 ms more.
+  integ-final's trace read 0.9 ms more at 1905 MHz, not yet compared at one clock. Compare uncapped, or with the
+  clocks locked and logged.
+- **The second eye's denoiser** (0.53 to 0.63 ms) filters only what that eye traced itself: where it took the first
+  eye's light, it copies the first eye's denoised light (`HORIZON_RT_SHARE_DENOISED=0` for the old, docs/raytracing.md
+  item 10). Measured on 109a15996: that denoiser 0.59 to 0.25 ms.
+- **The grading and the ACES curve in one pass** when nothing reads the graded light after (no HDR output,
+  screenshot or video): one full-size float target written and read less an eye; the stages `grading` and
+  `tone curve` become `grading and tone curve (ACES)` (`HORIZON_GRADE_FUSED=0` for the old). Measured on 109a15996:
+  0.168 to 0.062 ms an eye in VR.
+- **The mirrors' search ray only where water or glass lies in front** (docs/raytracing.md item 11): a cover of the
+  translucent terrain over the rays' prepass, and the kernel skips the camera ray that looked for water or glass
+  elsewhere (`HORIZON_RT_PSR_COVER=0` for the old; `HORIZON_RT_SKIP=8` drops the mirrors whole, the upper bound).
+  Measured on 109a15996, a view without water: the first eye's trace 0.09 ms less, the second's 0.05, the cover
+  0.05 ms (for both eyes).
+- **Measured on 109a15996** (VR 4400x3520, fake runtime without captures, 6000, clear, GPU unlocked at 2880 MHz, ten
+  runs back to back): **8.96 ms a frame** (eye 1 5.88, eye 2 2.98), under the 11.1 of 90 Hz. Without VRS 11.36. The
+  first eye's largest stages: the world's raster 1.17, both eyes' rays' prepass 1.02, the trace 0.76 (ReSTIR GI 0.27
+  of it, `HORIZON_RT_SKIP=2`; the sun, the light sources, the mirrors and the far field in the noise), the denoiser
+  0.6, structures 0.58, TAA 0.32. Run to run noise about 0.3 ms; the first run of a series is the slowest. The
+  per-stage table is `pr2-item0-109a.txt` in the project files.
+- **The TAA's copy back only when something draws over the scene** (docs/raytracing.md item 12,
+  `HORIZON_TAA_BLIT=1` for the old), **ReSTIR GI's visibility ray with hardware rays** (item 13,
+  `HORIZON_RT_GI_DDA=1`), **shadow rays ending on their first hit** (item 14, `HORIZON_RT_FIRST_HIT=0`). Measured on
+  dd9002142 (`pr2-dd90.txt`): 8.31 ms a frame (eye 1 5.38, eye 2 2.82); the TAA 0.38 to 0.25 ms an eye while no
+  vignette shows; the first hit about 0.05 ms; the visibility within the noise. Two runs of the defaults differ by
+  0.6 ms at one clock: the fake world's spawn moves from launch to launch, so captures at a fixed pose need a
+  teleport to fixed coordinates (`spreadplayers` failed there).
+- **The vignette in the tone mapping's pass, over the finished frame as vanilla draws it** (item 15,
+  `HORIZON_VIGNETTE_CURVE=0` for the old): its quad was 0.087 ms an eye and kept the TAA's copy back. Measured on
+  68218d890 at a fixed pose (a platform at 160 120 160, the vignette forced with `/worldborder warning distance
+  2147483647`): 9.18 and 9.30 ms a frame against 9.66, the screen effects' stage 0.081 to 0.001 ms. The old look was
+  redder at the edges than vanilla's. At the same pose `HORIZON_RT_GI_DDA=1` costs the same as the default, and
+  `HORIZON_RT_SHARE_DENOISED=0` 9.44 against 9.19.
+- **The shared denoised light, checked texel by texel** (docs/raytracing.md item 10, `HORIZON_RT_SHARE_CHECK=0` for
+  the old): with 68218d890 a block at the right eye's right edge, which the left eye doesn't see, came out black
+  with the shared light on and lit with `HORIZON_RT_SHARE_DENOISED=0`. The periphery's blocks shifted their centre's
+  first-eye texel onto all sixteen texels, unchecked, so a texel past an edge took the sky's light. Each texel now
+  takes the first eye's texel showing its own surface, or is filtered from its own light. Measured on 93137e0d4: no
+  cost, but the black zone stays (nearly the same with `HORIZON_RT_SHARE_CHECK=0`), so it is not the periphery's
+  shift. `HORIZON_RT_DEBUG=12` shows what the second eye took, and `HORIZON_RT_SHARE_GUARD=1` is a trial guard
+  (docs/raytracing.md item 10).
+- **The right eye's black zone, fixed** (29c78b580): since 4956cf386 the camera's offset to the ray structures' anchor
+  (`hw_offset`) was set only with the structures' update, which the first eye alone runs, so the second eye's own
+  hardware rays left from the wrong place: its sun shadowed, its light around low, wherever the left eye doesn't
+  show the surface. The shared light only hid it. `HORIZON_RT_DEBUG=14` (the lit colour's parts) found it; 13
+  checks the colour's inputs. Measured on 29c78b580 at the fixed pose: the zone as the left eye (64 62 60), 0.16 of
+  255 from `HORIZON_RT_SHARE_DENOISED=0`; 9.510 and 9.517 ms a frame against 9.880 without the shared light (eye 2's
+  denoiser 0.209 against 0.454 ms; tables in the project files' `pr2-29c7-means.txt`).
+- **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
+  meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
+  cutout gaps); the TAA's blit folded into its resolve (the hand and the rain draw over the resolved scene, so the
+  history needs its own copy). **Still open:** VR's world raster over the prepass (needs one matrix for both, the
+  jitter), occlusion culling in the eyes (the eyes can't share a depth-based cull: it would test against both layers
+  of the multiview prepass).
+
 ## Open questions, with the way to answer them
 
 1. **Why did the opaque geometries give 0.3 ms of the 1.3 to 1.7 the floor promised?** The log line "Horizon RT

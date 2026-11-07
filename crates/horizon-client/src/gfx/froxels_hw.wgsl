@@ -172,7 +172,9 @@ var<private> hw_caustic_sea: f32;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     var q: ray_query;
     // The instances stand around their anchor (gfx/hw_rays.rs): the camera's offset from it.
-    rayQueryInitialize(&q, terrain, RayDesc(0x0u, 0xffu, 0.0, reach, pos + fx.hw_offset.xyz, l));
+    // The first opaque triangle met ends the search (`FIRST_HIT`).
+    rayQueryInitialize(&q, terrain,
+        RayDesc(0x0u | FIRST_HIT, 0xffu, 0.0, reach, pos + fx.hw_offset.xyz, l));
     var through = vec3(1.0);
     hw_caustic_on = false;
     while rayQueryProceed(&q) {

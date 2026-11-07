@@ -456,7 +456,9 @@ impl Renderer {
         let mut xr = shared.lock().map_err(|_| "VR session poisoned")?;
         let size = [self.config.width, self.config.height];
         if xr.quad_sizes[PANEL] != size {
-            xr.create_quad(PANEL, size, self.config.format)?;
+            crate::spans::time("vr_panel_create", || {
+                xr.create_quad(PANEL, size, self.config.format)
+            })?;
         }
         // The HUD changes now and then: the panel is drawn again only when it did.
         let hud = {
@@ -470,49 +472,55 @@ impl Renderer {
         if unchanged && !frame.hud.vertices.is_empty() {
             xr_frame.quads[PANEL] = Some(self.place_panel(&xr_frame, size));
         } else if !frame.hud.vertices.is_empty()
-            && let Some(texture) = xr.quad_texture(PANEL, &mut xr_frame)?
+            && let Some(texture) =
+                crate::spans::time("vr_panel_image", || xr.quad_texture(PANEL, &mut xr_frame))?
         {
+            crate::spans::time("vr_panel_draw", || self.draw_panel(frame, &texture, size));
             self.xr_state.panel_hud = Some(hud);
-            let view = texture.create_view(&wgpu::TextureViewDescriptor {
-                format: Some(self.config.format.remove_srgb_suffix()),
-                ..Default::default()
-            });
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("VR panel"),
-                });
-            super::gpu_passes::begin(&self.device, &mut encoder, "vr panel");
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("VR panel clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            self.hud.draw_range(
-                &mut encoder,
-                &view,
-                &self.depth,
-                frame.hud,
-                size,
-                0..frame.hud.vertices.len() as u32,
-            );
-            super::gpu_passes::stamp(&mut encoder, "panel: clear and HUD");
-            super::gpu_passes::end(&mut encoder);
-            self.queue.submit([encoder.finish()]);
-            super::gpu_passes::submitted();
             xr_frame.quads[PANEL] = Some(self.place_panel(&xr_frame, size));
         }
-        self.point(&mut xr, &mut xr_frame, size)?;
-        xr.end_frame(xr_frame)?;
+        crate::spans::time("vr_point", || self.point(&mut xr, &mut xr_frame, size))?;
+        crate::spans::time("vr_end_frame", || xr.end_frame(xr_frame))?;
         Ok(())
+    }
+
+    /// The HUD onto the panel's image `texture`, over a clear one.
+    fn draw_panel(&mut self, frame: &Frame, texture: &wgpu::Texture, size: [u32; 2]) {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.config.format.remove_srgb_suffix()),
+            ..Default::default()
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("VR panel"),
+            });
+        super::gpu_passes::begin(&self.device, &mut encoder, "vr panel");
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("VR panel clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        self.hud.draw_range(
+            &mut encoder,
+            &view,
+            &self.depth,
+            frame.hud,
+            size,
+            0..frame.hud.vertices.len() as u32,
+        );
+        super::gpu_passes::stamp(&mut encoder, "panel: clear and HUD");
+        super::gpu_passes::end(&mut encoder);
+        self.queue.submit([encoder.finish()]);
+        super::gpu_passes::submitted();
     }
 
     /// Where each hand's ray meets the panel, and the pointing hand's laser while a menu is
@@ -751,6 +759,10 @@ impl Renderer {
             times.gpu_samples,
             frames * views,
         );
+        // With HORIZON_GPU_PASSES, what that GPU time is made of over the same frames.
+        for line in super::gpu_passes::take_means() {
+            log::info!("Horizon VR: {line}");
+        }
         *times = Times::default();
     }
 

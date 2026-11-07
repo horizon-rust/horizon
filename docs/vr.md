@@ -31,7 +31,8 @@ headset the game logs why and starts as usual.
 5. The HUD and menus go onto a panel (an OpenXR quad layer) 1.4 m wide, 1.5 m ahead and a little below the
    eyes; it is drawn again only when the HUD changed. While playing it follows the head once it turns 40 degrees
    away. When a menu, a screen or the title opens it is put in front of the head, and it stays there until it
-   closes.
+   closes. The spans `vr_panel_create`, `vr_panel_image`, `vr_panel_draw`, `vr_point` and `vr_end_frame` time
+   its calls (`HORIZON_SPIKES`).
 6. In a menu, the pointing hand's laser is a second quad layer: a thin strip from the controller's aim pose
    to where its ray meets the panel (1 m long when it misses), turned about the ray to face the head.
 
@@ -207,7 +208,9 @@ runtime through `XR_RUNTIME_JSON` for that process only. `vr-run/report.json` ha
 panel. `--title` stays on the title screen (`--frames` instead of a world). A script moves the controllers with
 `T pose /user/hand/right/input/aim/pose YAW PITCH X Y Z` (untracked until then); `--capture-seconds` captures at
 script times (`t6-*.png`), and every capture with a quad shown also writes `*-eyeN-composite.png`: each eye with
-the panel and the laser drawn over it, as a headset shows them. `vr_backdrop_check.py` checks the title's
+the panel and the laser drawn over it, as a headset shows them. The images are read back in `xrEndFrame` and written on a thread of
+their own (a periodic `--capture-every` capture waits while the last is still being written): written in the frame,
+they stalled it about 2.5 s at 4400x3520 an eye, every 180 frames. `vr_backdrop_check.py` checks the title's
 backdrop from the captures: the left eye turned 20 degrees, warped back through the fake headset's field of view,
 matches the eye before the turn (it would not if the backdrop followed the head), and the floor in front shifts
 more between the eyes than the sky does (1600x1600 an eye: 36 pixels against 2, and a warp error of 0.007
