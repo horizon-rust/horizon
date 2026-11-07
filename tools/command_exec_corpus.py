@@ -932,6 +932,152 @@ def item_command_damage():
     return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
 
 
+def vehicle_item_stack_config():
+    """MinecartItem.useOn, BoatItem.use and the dispenser's MinecartDispenseItemBehavior /
+    BoatDispenseItemBehavior apply EntityType.createDefaultStackConfig: the item's custom name
+    (applyComponentsFromItemStack), then minecraft:entity_data (updateCustomEntityTag) when its
+    id is the vehicle's; command block and spawner minecarts take it from an op player only, never
+    from a dispenser. (The op case by a player is left out: this harness's owner is an op in vanilla
+    and not in Horizon.)"""
+    ops = setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 199 15 stone', '/fill 0 200 0 15 203 15 air',
+                '/gamemode creative', '/tp @s 4.5 200 4.5 0 0')
+    ops += [{'op': 'settle'}]
+    near = '@e[type={kind},x={x}.5,y=200,z={z}.5,distance=..1.5,limit=1]'
+    # Placed on a rail by the player.
+    for i, (kind, item, reads) in enumerate((
+        ('minecart', 'minecart[custom_name="Cart A"]', ('CustomName',)),
+        ('tnt_minecart', 'tnt_minecart[entity_data={id:"minecraft:tnt_minecart",fuse:80,Tags:["item_data"]}]',
+         ('Tags', 'fuse')),
+        ('minecart', 'minecart[custom_name="Named",entity_data={id:"minecraft:minecart",Tags:["both"]}]',
+         ('CustomName', 'Tags')),
+        ('minecart', 'minecart[entity_data={id:"minecraft:tnt_minecart",Tags:["wrong_id"]}]', ('Tags',)),
+        # Entity.applyImplicitComponent's other component, saved as `data`; entity_data's merges over it.
+        ('minecart', 'minecart[custom_data={a:1b},entity_data={id:"minecraft:minecart",data:{b:2b}}]', ('data',)),
+    )):
+        x, z = 1 + i * 2, 7
+        ops += setup(f'/setblock {x} 200 {z} rail', f'/item replace entity @s weapon.mainhand with minecraft:{item}')
+        ops += [{'op': 'use_block', 'pos': [x, 200, z], 'face': 1}]
+        sel = near.format(kind=kind, x=x, z=z)
+        ops += [cmd(f'/execute if entity {sel}')]
+        ops += [cmd(f'/data get entity {sel} {r}') for r in reads]
+    ops += setup('/kill @e[type=#minecraft:boat]', '/kill @e[type=minecraft:command_block_minecart]',
+                 '/kill @e[type=minecraft:minecart]', '/kill @e[type=minecraft:tnt_minecart]')
+    # A boat, used looking down ahead at the floor (BoatItem refuses a spot that overlaps the player).
+    ops += setup('/tp @s 8.5 200 3.5 0 45',
+                 '/item replace entity @s weapon.mainhand with minecraft:oak_boat[custom_name="Boaty",'
+                 'entity_data={id:"minecraft:oak_boat",Tags:["boat_data"],Rotation:[90f,10f]}]')
+    # The packet's rotation, on both sides (the plain use_item op sends 0, 0 to Horizon).
+    ops += [{'op': 'use_item', 'sequence': 1, 'yaw': 0.0, 'pitch': 45.0}]
+    boat = '@e[type=minecraft:oak_boat,x=8.5,y=200,z=5,distance=..2,limit=1]'
+    # BoatItem.use turns the boat to the player's yaw after the data loads.
+    ops += [cmd(f'/execute if entity {boat}'), cmd(f'/data get entity {boat} CustomName'),
+            cmd(f'/data get entity {boat} Tags'), cmd(f'/data get entity {boat} Rotation[0] 10')]
+    # Dispensed: a minecart onto a rail and a boat into the air, then a powered dispenser.
+    for i, (item, kind, front) in enumerate((
+        ('tnt_minecart[custom_name="Disp",entity_data={id:"minecraft:tnt_minecart",Tags:["disp_data"]}]',
+         'tnt_minecart', 'rail'),
+        ('oak_boat[custom_name="DispBoat",entity_data={id:"minecraft:oak_boat",Tags:["disp_boat"],Rotation:[90f,0f]}]',
+         'oak_boat', 'air'),
+        ('command_block_minecart[entity_data={id:"minecraft:command_block_minecart",Command:"say no"}]',
+         'command_block_minecart', 'rail'),
+    )):
+        x = 3 + i * 4
+        ops += setup(f'/setblock {x} 200 12 dispenser[facing=south]{{Items:[{{Slot:0b,id:"minecraft:{item.split("[")[0]}",'
+                     f'count:1,components:{{{components(item)}}}}}]}}',
+                     f'/setblock {x} 200 13 {front}', f'/setblock {x} 199 13 {"water" if kind == "oak_boat" else "stone"}',
+                     f'/setblock {x} 201 12 redstone_block')
+        ops += [{'op': 'tick', 'n': 6}]
+        sel = f'@e[type=minecraft:{kind},x={x}.5,y=200,z=13.5,distance=..1.5,limit=1]'
+        ops += [cmd(f'/execute if entity {sel}'), cmd(f'/data get entity {sel} CustomName'),
+                cmd(f'/data get entity {sel} Tags')]
+        if kind == 'command_block_minecart':
+            ops += [cmd(f'/data get entity {sel} Command')]
+        if kind == 'oak_boat':
+            ops += [cmd(f'/data get entity {sel} Rotation[0] 10')]
+    ops += setup('/kill @e[type=#minecraft:boat]', '/kill @e[type=minecraft:command_block_minecart]',
+                 '/kill @e[type=minecraft:tnt_minecart]', '/kill @e[type=minecraft:minecart]',
+                 '/fill 0 200 0 15 203 15 air', '/gamemode survival', '/forceload remove 0 0 15 15')
+    return ops
+
+
+def hanging_item_stack_config():
+    """HangingEntityItem.useOn (item frame, glow item frame, painting) and ArmorStandItem.useOn apply
+    EntityType.createDefaultStackConfig: the item's custom name and custom data
+    (applyComponentsFromItemStack, saved as `CustomName` and `data`), then minecraft:entity_data
+    (updateCustomEntityTag, merged over the entity) when its id is the entity's. A hanging entity's
+    survives() runs on the configured entity; the stand turns to the player's yaw, pitch 0, after."""
+    ops = setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 199 15 stone', '/fill 0 200 0 15 203 15 air',
+                '/fill 0 200 7 9 201 7 stone', '/gamemode creative', '/tp @s 4.5 200 4.5 0 0')
+    ops += [{'op': 'settle'}]
+    for kind, item, (x, y, face), reads in (
+        # On the wall's north face: frames low, paintings above them.
+        ('item_frame', 'item_frame[custom_name="Framed",custom_data={a:1b}]', (1, 200, 2),
+         ('CustomName', 'data')),
+        ('glow_item_frame', 'glow_item_frame[entity_data={id:"minecraft:glow_item_frame",Invisible:1b,Fixed:1b,'
+         'Tags:["frame_data"]}]', (3, 200, 2), ('Invisible', 'Fixed', 'Tags')),
+        # The item's name stays when the data has none (the data merges over the named entity).
+        ('item_frame', 'item_frame[custom_name="Kept",entity_data={id:"minecraft:item_frame",Tags:["kept"]}]',
+         (5, 200, 2), ('CustomName', 'Tags')),
+        ('item_frame', 'item_frame[entity_data={id:"minecraft:painting",Tags:["wrong_id"]}]', (7, 200, 2),
+         ('Tags',)),
+        ('painting', 'painting[painting/variant="minecraft:kebab",custom_name="Pic",custom_data={p:1b}]',
+         (2, 201, 2), ('CustomName', 'data', 'variant')),
+        ('painting', 'painting[painting/variant="minecraft:kebab",entity_data={id:"minecraft:painting",'
+         'Tags:["pic_data"]}]', (4, 201, 2), ('Tags', 'variant')),
+        ('painting', 'painting[entity_data={id:"minecraft:painting",variant:"minecraft:aztec"}]', (6, 201, 2),
+         ('variant',)),
+        # The data's 4x4 variant does not fit the two-block wall: survives() refuses it, nothing is placed.
+        ('painting', 'painting[painting/variant="minecraft:kebab",entity_data={id:"minecraft:painting",'
+         'variant:"minecraft:pointer"}]', (8, 201, 2), ()),
+        # BlockAttachedEntity.readAdditionalSaveData refuses a block_pos 16 blocks or more away.
+        ('painting', 'painting[painting/variant="minecraft:kebab",entity_data={id:"minecraft:painting",'
+         'block_pos:[I;100,201,6],Tags:["far"]}]', (0, 201, 2), ('Tags', 'block_pos')),
+        # An unreadable variant is skipped; the rest of the data loads.
+        ('painting', 'painting[painting/variant="minecraft:kebab",entity_data={id:"minecraft:painting",'
+         'variant:1b,Tags:["bad_variant"]}]', (9, 201, 2), ('Tags', 'variant')),
+        # On the floor.
+        ('armor_stand', 'armor_stand[custom_name="Stan",custom_data={s:1b}]', (1, 199, 1), ('CustomName', 'data')),
+        ('armor_stand', 'armor_stand[entity_data={id:"minecraft:armor_stand",ShowArms:1b,Small:1b,'
+         'Rotation:[90f,10f],Tags:["stand_data"]}]', (7, 199, 1), ('ShowArms', 'Small', 'Tags', 'Rotation')),
+    ):
+        z = 7 if face == 2 else 2
+        ops += setup(f'/item replace entity @s weapon.mainhand with minecraft:{item}')
+        ops += [{'op': 'use_block', 'pos': [x, y, z], 'face': face}]
+        at = (x, y, z - 1) if face == 2 else (x, y + 1, z)
+        sel = f'@e[type=minecraft:{kind},x={at[0]}.5,y={at[1]},z={at[2]}.5,distance=..1.2,limit=1]'
+        ops += [cmd(f'/execute if entity {sel}')]
+        ops += [cmd(f'/data get entity {sel} {r}') for r in reads]
+    # Dispensed (ArmorStandDispenseItemBehavior): the dispenser's yaw, then the config with no user.
+    item = ('armor_stand[custom_name={text:"Disp",color:"red"},entity_data={id:"minecraft:armor_stand",'
+            'ShowArms:1b,Rotation:[45f,0f]}]')
+    ops += setup(f'/setblock 12 200 3 dispenser[facing=south]{{Items:[{{Slot:0b,id:"minecraft:armor_stand",'
+                 f'count:1,components:{{{components(item)}}}}}]}}', '/setblock 12 201 3 redstone_block')
+    ops += [{'op': 'tick', 'n': 6}]
+    sel = '@e[type=minecraft:armor_stand,x=12.5,y=200,z=4.5,distance=..1.2,limit=1]'
+    ops += [cmd(f'/execute if entity {sel}')]
+    ops += [cmd(f'/data get entity {sel} {r}') for r in ('CustomName', 'ShowArms', 'Rotation[0]')]
+    ops += setup('/kill @e[type=minecraft:item_frame]', '/kill @e[type=minecraft:glow_item_frame]',
+                 '/kill @e[type=minecraft:painting]', '/kill @e[type=minecraft:armor_stand]',
+                 '/fill 0 200 0 15 203 15 air', '/gamemode survival', '/forceload remove 0 0 15 15')
+    return ops
+
+
+def components(item):
+    """An item argument's components, `a=x,b=y`, as a components compound's body."""
+    body = item[item.index('[') + 1:-1]
+    out, depth, start = [], 0, 0
+    for i, ch in enumerate(body):
+        if ch in '{[':
+            depth += 1
+        elif ch in '}]':
+            depth -= 1
+        elif ch == ',' and depth == 0:
+            out.append(body[start:i])
+            start = i + 1
+    out.append(body[start:])
+    return ','.join(f'"minecraft:{k}":{v}' for k, v in (part.split('=', 1) for part in out))
+
+
 def enderman_command_damage():
     """DamageCommand -> Enderman.hurtServer: with no living entity behind the damage,
     random.nextInt(10) != 0 teleports the enderman then and there (teleport()), also when
@@ -6021,6 +6167,8 @@ def groups():
         ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
         ('dragon command damage', dragon_command_damage()),
+        ('vehicle item stack config', vehicle_item_stack_config()),
+        ('hanging item stack config', hanging_item_stack_config()),
         ('enderman command damage', enderman_command_damage()),
         ('SNBT trailing commas', snbt_trailing_commas()),
         ('execute', execute()),

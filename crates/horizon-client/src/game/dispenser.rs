@@ -1179,14 +1179,18 @@ impl Game<'_> {
         // EntityType.create rolls a yaw from the level random before the stack config turns it.
         let _ = self.world.random.next_float();
         self.next_entity += 1;
-        let mut stand =
+        let stand =
             horizon_client::entities::ArmorStand::new(self.next_entity, foot, y_rot(facing));
-        // Entity.applyImplicitComponents: a name from an anvil names the stand.
-        if let Some(name) = stack.custom_name() {
-            stand.custom_name = Some(horizon_client::text::Text::literal(name));
-        }
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
         self.armor_stands.push(stand);
+        // EntityType.appendDefaultStackConfig: the dispenser's yaw first, then
+        // the item's createDefaultStackConfig with no user.
+        self.apply_item_stack_config(
+            super::commands::Target::Stand(self.next_entity),
+            "minecraft:armor_stand",
+            &stack,
+            false,
+        );
         (shrink(stack), CLICK)
     }
     /// A tame donkey, mule or llama in front without a chest gets it.
@@ -1251,7 +1255,12 @@ impl Game<'_> {
             boat = boat.with_chest();
         }
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
+        let (id, kind, yaw) = (boat.id, boat.entity_type(), boat.yaw);
         self.boats.push(boat);
+        // BoatDispenseItemBehavior: createDefaultStackConfig with no user,
+        // then setYRot(direction.toYRot()).
+        self.apply_item_stack_config(super::commands::Target::Boat(id), &kind, &stack, false);
+        self.set_boat_yaw(id, yaw);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let boat = self.boats.last().unwrap();
             self.native_vehicle_create(
@@ -1298,6 +1307,9 @@ impl Game<'_> {
         );
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
         self.carts.push(cart);
+        // AbstractMinecart.createMinecart: createDefaultStackConfig with no user.
+        let id = self.next_entity;
+        self.apply_item_stack_config(super::commands::Target::Cart(id), kind.id(), &stack, false);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let cart = self.carts.last().unwrap();
             self.native_vehicle_create(
