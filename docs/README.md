@@ -29,6 +29,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Extras](extras.md): optional zoom, minimap, FPS and keystroke overlays and auto-reconnect, all off by default.
 - [PvP & HUD](pvp.md): optional client settings for PvP players (custom crosshair, block outline, hit color, HUD widgets), fair-play boundaries, and why each is off by default.
 - [Cosmetics](cosmetics.md): wearable items drawn only by Horizon clients (hats, back items, shoulder pets, name tag styles), with no gameplay effect, client-side visibility toggles and the JSON item format.
+- [Forking](forking.md): the `horizon-extras` feature that holds Horizon's own extras (cosmetics, Friends, its settings pages...), and building the game without them.
 - [Narrator](narrator.md): vanilla's text-to-speech (Ctrl+B): the voices per platform, how screens record what they narrate, `horizon-ctl narration`, and where it still differs from vanilla.
 - [Ray tracing](raytracing.md): the tilted sun path, the ray-traced shadows spike and the plan for them.
 - [The RTX 4090 build](rtx-4090.md): the one-machine branch's target (VR at 90 Hz), its measurements and phases.
@@ -73,6 +74,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Design system](design-system.md): shared tokens and interface rules for the launcher, website and Horizon-only game overlays.
 - [Offscreen frame compositor](design/compositor.md): sharing a window surface between views, clipping and the standalone splitscreen compositor example.
 - [Linear light for HDR and shader packs](design/hdr-linear-light.md): the proposed shader API 0.2 colour contract and frame format for HDR output.
+- [Live mod reloading](design/mod-hotload.md): loading, enabling and updating mods from inside the game without a restart.
 - [Mod registry v2](design/registry-v2.md): project kinds, metadata, installation locations and the registry rollout.
 - [Shared audio output](design/shared-audio.md): sound engines on one output, listener ownership and duplicate world-sound handling.
 

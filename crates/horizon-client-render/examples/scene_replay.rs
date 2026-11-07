@@ -225,6 +225,8 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         false,
         false,
         false,
+        false,
+        false,
     ))?;
     drop(pixels);
     render.pixels.pack();
