@@ -1947,29 +1947,37 @@ impl Streaming {
                         })
                     })
             };
-            let keys: Vec<(i32, i32)> = self
-                .protos
-                .iter()
-                .filter(|(k, p)| p.is_some() && wants(self, k.0, k.1))
-                .map(|(k, _)| *k)
-                .collect();
-            let mut wanted: Vec<(u64, i64, i32, i32)> = keys
-                .into_iter()
-                .map(|(x, z)| (0, self.distance(x, z), x, z))
-                .collect();
-            // Chunks no ticket reached (forced and extra areas) go last, nearest first.
-            wanted.sort_unstable_by_key(|w| w.1);
-            for w in &mut wanted {
-                w.0 = self.decoration_order.rank_or_append(w.2, w.3);
+            // Chunks decorate in rank order, and no two share a rank: only the
+            // chunks without one yet need their distance. A server with players
+            // spread over the map holds tens of thousands of proto chunks, and
+            // measured and sorted them all every tick.
+            let mut wanted: Vec<std::cmp::Reverse<(u64, i32, i32)>> = Vec::new();
+            let mut fresh: Vec<(i64, i32, i32)> = Vec::new();
+            for (&(x, z), proto) in &self.protos {
+                if proto.is_none() || !wants(self, x, z) {
+                    continue;
+                }
+                match self.decoration_order.rank(x, z) {
+                    Some(rank) => wanted.push(std::cmp::Reverse((rank, x, z))),
+                    None => fresh.push((self.distance(x, z), x, z)),
+                }
             }
-            wanted.sort_unstable();
+            // Chunks no ticket reached (forced and extra areas) go last, nearest first.
+            fresh.sort_unstable();
+            for (_, x, z) in fresh {
+                let rank = self.decoration_order.rank_or_append(x, z);
+                wanted.push(std::cmp::Reverse((rank, x, z)));
+            }
+            // Lowest rank first. The pass stops once the workers are busy,
+            // usually long before the last: a heap orders only what it takes.
+            let mut wanted = std::collections::BinaryHeap::from(wanted);
             // Most wanted chunks are blocked, and the same neighbours are
             // asked about for each of them: what `waits_for` says is kept for
             // the pass (nothing it reads changes in it but `decorated`, which
             // updates the entry). Without it, scheduling at render distance 32
             // took most of the thread that runs it while the world loaded.
             let waiting: std::cell::RefCell<FxHashMap<(i32, i32), bool>> = Default::default();
-            for (_, _, x, z) in wanted {
+            while let Some(std::cmp::Reverse((_, x, z))) = wanted.pop() {
                 if self.decorating >= workers * 2 {
                     break;
                 }
