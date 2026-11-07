@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    include!("block_clone_item_tests.rs");
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -63,9 +64,15 @@ mod tests {
         pub(super) struct ModContainer;
         pub(super) struct MerchantOffer;
         pub(super) struct ModFluidTanks;
+        #[derive(Clone, Copy)]
+        pub(super) struct NativeFluidAction;
+        pub(super) struct NativeFluidDrain;
+        pub(super) struct NativeFluidStack;
+        pub(super) struct NativeFluidTankView;
         pub(super) struct ModEnergyBuffer;
         pub(super) struct Mob;
         pub(super) struct LootStack;
+        pub(super) struct SoundPlayback<'a>(pub &'a ());
         pub(super) struct NativeLootContext<'a>(pub &'a ());
         pub(super) struct NativeDataMapType;
         pub(super) struct NativeConfig;
@@ -129,6 +136,18 @@ mod tests {
             pub mod hud_layout {
                 pub struct HealthInputs;
                 pub struct GuiDraw;
+            }
+        }
+        mod horizon_client_core {
+            pub mod text {
+                pub struct Text;
+            }
+        }
+        mod horizon_protocol {
+            pub mod packets {
+                pub mod login {
+                    pub struct Property;
+                }
             }
         }
         include!(concat!(env!("OUT_DIR"), "/mod_api_generated.rs"));

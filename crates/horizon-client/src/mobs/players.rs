@@ -45,7 +45,7 @@ fn player_for_with(
     // An iron golem's anger is for the player who hit it (`NeutralMob` keeps
     // the angry-at UUID), and outlasts the 100 ticks of `getLastHurtByMob`:
     // while it lasts, the golem keeps that player, not whoever is nearest.
-    let angry = m.species() == Species::IronGolem && m.extra.anger > 0;
+    let angry = m.species() == Species::IronGolem && m.extra.angry_at == Some(Who::Player);
     let targeting = m.ai.target == Some(Who::Player)
         || angry
         || m.ai.last_hurt_by == Some(Who::Player) && m.age as i32 - m.ai.last_hurt_by_time <= 100;

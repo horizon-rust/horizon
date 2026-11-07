@@ -46,7 +46,7 @@ pub(super) fn acts_on_player(e: &MobEvent) -> bool {
                 target: Who::Player,
                 ..
             }
-            | MobEvent::Launch {
+            | MobEvent::IronGolemHit {
                 target: Who::Player,
                 ..
             }
@@ -490,11 +490,13 @@ mod tests {
         golem.ai.last_hurt_by_time = 100;
         golem.ai.target = None;
         golem.extra.anger = 300;
+        golem.extra.angry_at = Some(Who::Player);
         // The attacker (conn 7) ran off; a bystander (conn 8) is nearer.
         let guests = vec![(7, view(30.0, false)), (8, view(3.0, false))];
         assert_eq!(player_for(&golem, None, &guests, Some(7)), Some(7));
-        // Calm again: the nearest player is seen.
+        // Calm again (`stopBeingAngry`): the nearest player is seen.
         golem.extra.anger = 0;
+        golem.extra.angry_at = None;
         assert_eq!(player_for(&golem, None, &guests, Some(7)), Some(8));
     }
 }

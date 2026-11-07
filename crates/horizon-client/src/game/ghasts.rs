@@ -94,7 +94,7 @@ impl Game<'_> {
         if harnessed && !sneaking {
             // doPlayerRide.
             let id = self.simulation.mobs[index].id;
-            if !self.may_board() || !self.native_may_board(id) {
+            if !self.native_may_board(id) {
                 return true;
             }
             self.break_leash(id, true, false);

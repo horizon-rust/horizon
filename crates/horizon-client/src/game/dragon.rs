@@ -191,6 +191,20 @@ pub(super) struct Crystal {
     pub invulnerable: bool,
 }
 impl Crystal {
+    /// The start of `time` (the spin and bob) for a crystal at `position`: the random draw
+    /// vanilla makes, or under `HORIZON_STILL` one seeded from the position alone. Which crystal
+    /// gets which draw, and a server's entity ids, follow the order chunks load in, which differs
+    /// between launches; the position is the same in every copy of the world. The draw is made
+    /// either way, so the random stays where it would be.
+    pub(super) fn start_time(position: Vec3, drawn: i32, still: bool) -> i32 {
+        if still {
+            horizon_client::mobs::entity_random(0, position)
+                .next_int_bound(100_000)
+                .unwrap_or(0)
+        } else {
+            drawn
+        }
+    }
     /// `EntityType.END_CRYSTAL`: 2 x 2.
     pub(super) fn bounds(&self) -> Aabb {
         let p = self.position;
@@ -1275,12 +1289,13 @@ impl Game<'_> {
             {
                 continue;
             }
-            let time = self
+            let drawn = self
                 .simulation
                 .world
                 .random
                 .next_int_bound(100_000)
                 .unwrap_or(0);
+            let time = Crystal::start_time(at, drawn, self.clock.still());
             // EndCrystal's constructor takes an id from the entity counter.
             self.simulation_server.next_entity += 1;
             self.simulation.crystals.push(Crystal {
@@ -2623,15 +2638,17 @@ impl Game<'_> {
     pub(super) fn dragon_target(&self) -> Option<(u32, horizon_client::mobs::TargetInfo)> {
         let d = self.simulation.dragon.as_ref().filter(|d| d.alive())?;
         let p = d.position;
+        let bounds = Aabb::new(
+            Vec3::new(p.x - 8.0, p.y, p.z - 8.0),
+            Vec3::new(p.x + 8.0, p.y + 8.0, p.z + 8.0),
+        );
         Some((
             d.id,
             horizon_client::mobs::TargetInfo {
                 position: p,
                 eye_y: p.y + 6.8,
-                bounds: Aabb::new(
-                    Vec3::new(p.x - 8.0, p.y, p.z - 8.0),
-                    Vec3::new(p.x + 8.0, p.y + 8.0, p.z + 8.0),
-                ),
+                bounds,
+                hitbox: bounds,
                 alive: true,
                 can_be_seen_as_enemy: true,
                 is_player: false,
@@ -3961,15 +3978,17 @@ impl Game<'_> {
             return false;
         }
         // EndCrystal's constructor: `this.random.nextInt(100000)`, the crystal's own random.
-        let time = super::dispenser::entity_random()
+        let drawn = super::dispenser::entity_random()
             .next_int_bound(100_000)
             .unwrap_or(0);
+        let at = Vec3::new(x + 0.5, y, z + 0.5);
+        let time = Crystal::start_time(at, drawn, self.clock.still());
         // EndCrystal's constructor takes an id from the entity counter, so
         // the crystal is an entity a command can name (`@e[type=end_crystal]`).
         self.simulation_server.next_entity += 1;
         self.simulation.crystals.push(Crystal {
             id: self.simulation_server.next_entity,
-            position: Vec3::new(x + 0.5, y, z + 0.5),
+            position: at,
             show_bottom: false,
             time,
             beam: None,
@@ -4273,12 +4292,13 @@ impl Game<'_> {
         self.simulation
             .crystals
             .retain(|c| c.position.distance_squared(at) > 0.01);
-        let time = self
+        let drawn = self
             .simulation
             .world
             .random
             .next_int_bound(100_000)
             .unwrap_or(0);
+        let time = Crystal::start_time(at, drawn, self.clock.still());
         self.simulation.crystals.push(Crystal {
             id: 0,
             position: at,
@@ -4965,6 +4985,31 @@ mod tests {
         )
     }
 
+    /// Under `HORIZON_STILL` a crystal's spin and bob start from its position, whichever order
+    /// the crystals load in; without it each takes the next draw, as vanilla's do.
+    #[test]
+    fn a_still_crystal_starts_from_its_position_in_any_load_order() {
+        let spikes = [Vec3::new(42.5, 77.0, 0.5), Vec3::new(-33.5, 95.0, 24.5)];
+        let starts = |order: [usize; 2], still: bool| {
+            let mut random = LegacyRandom::new(5);
+            let mut times = [0; 2];
+            for i in order {
+                let drawn = random.next_int_bound(100_000).unwrap();
+                times[i] = Crystal::start_time(spikes[i], drawn, still);
+            }
+            times
+        };
+        let still = starts([0, 1], true);
+        assert_eq!(still, starts([1, 0], true));
+        assert_ne!(still[0], still[1], "each crystal keeps its own phase");
+        let first = LegacyRandom::new(5).next_int_bound(100_000).unwrap();
+        assert_eq!(starts([0, 1], false)[0], first);
+        assert_eq!(
+            starts([1, 0], false)[1],
+            first,
+            "the first loaded takes the first draw"
+        );
+    }
     /// `Mth.wrapDegrees`: `% 360` then one step of 360, exact for a negative angle
     /// (a remainder made positive and back again loses the float's low bits).
     #[test]

@@ -659,6 +659,28 @@ pub struct CleanContext<'a> {
     pub index: &'a crate::fast_hash::FxHashMap<u32, u32>,
 }
 
+/// A body going this tick: (id, feet, width, height, split).
+pub type GoneBody = (u32, Vec3, f64, f64, Option<Mob>);
+
+/// `LivingEntity.tickDeath` removes `m`'s body. `AbstractCubeMob.remove` splits a
+/// grown cube into its smaller halves then, twenty ticks after the death. The
+/// parent leaves the list before the split runs, so its size, position, kind and
+/// persistence are captured here, as they are at the removal.
+pub fn gone_body(m: &Mob) -> GoneBody {
+    let split = (matches!(
+        m.species(),
+        Species::Slime | Species::MagmaCube | Species::SulfurCube
+    ) && m.extra.size > 1)
+        .then(|| m.clone());
+    (
+        m.id,
+        m.position,
+        f64::from(m.width()),
+        f64::from(m.height()),
+        split,
+    )
+}
+
 /// What the walk leaves for the rest of the tick.
 pub struct WalkOutput<'a> {
     pub keep: &'a mut Vec<bool>,
@@ -666,7 +688,7 @@ pub struct WalkOutput<'a> {
     pub guest_events: &'a mut Vec<(u32, u32, MobEvent)>,
     pub dead: &'a mut Vec<Mob>,
     pub corpses: &'a mut Vec<Mob>,
-    pub gone: &'a mut Vec<(u32, Vec3, f64, f64)>,
+    pub gone: &'a mut Vec<GoneBody>,
     pub pushes: &'a mut PendingPushes,
     pub died: &'a mut crate::fast_hash::FxHashSet<u32>,
     pub bindings: &'a mut crate::fast_hash::FxHashMap<u32, u32>,
@@ -717,7 +739,7 @@ pub struct CleanRehearsal {
     guest_events: Vec<(u32, u32, MobEvent)>,
     dead: Vec<Mob>,
     corpses: Vec<Mob>,
-    gone: Vec<(u32, Vec3, f64, f64)>,
+    gone: Vec<GoneBody>,
     pushes: PendingPushes,
     died: crate::fast_hash::FxHashSet<u32>,
     bindings: crate::fast_hash::FxHashMap<u32, u32>,
@@ -1037,8 +1059,7 @@ impl TickRound {
                 walk.pushes.push(id, velocity);
             }
             if slot.gone {
-                let (width, height) = (f64::from(m.width()), f64::from(m.height()));
-                walk.gone.push((m.id, m.position, width, height));
+                walk.gone.push(gone_body(m));
             }
             walk.guest_events.append(&mut slot.guest_events);
             if slot.dead && walk.died.insert(m.id) {

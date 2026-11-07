@@ -400,6 +400,67 @@ fn clean_commit_matches_the_serial_walk() {
         );
     }
 
+    // A grown cube's body going in a clean round: its halves come from what the
+    // commit captured (`AbstractCubeMob.remove`), on every path.
+    fn grown_slime_at_its_last_tick(m: &mut Mob) {
+        horizon_client::mobs::cube::set_size(m, 4);
+        m.health = 0.0;
+        m.death_time = 19;
+    }
+    let scene = Scene {
+        name: "cube split",
+        chunks: three_regions,
+        ticks: 3,
+        mobs: vec![
+            (
+                "minecraft:slime",
+                [8.0, 64.0, 8.0],
+                grown_slime_at_its_last_tick,
+            ),
+            ("minecraft:zombie", [136.0, 64.0, 8.0], plain),
+        ],
+        died: &[1],
+        guest_at: None,
+    };
+    let (clean, _) = both_paths(game, &scene);
+    assert!(clean.clean_rounds() > 0);
+    let halves = game
+        .simulation
+        .mobs
+        .iter()
+        .filter(|m| m.species() == horizon_client::mobs::Species::Slime && m.extra.size == 2)
+        .count();
+    assert!((2..=4).contains(&halves), "{halves} halves");
+
+    // An iron golem's hit on a mob lands when its event is handled, after the
+    // walk, so it writes nothing that a prediction could have read.
+    fn hunts_the_zombie(m: &mut Mob) {
+        m.ai.target = Some(horizon_client::mobs::Who::Mob(2));
+    }
+    let scene = Scene {
+        name: "iron golem hit",
+        chunks: three_regions,
+        ticks: 60,
+        mobs: vec![
+            ("minecraft:iron_golem", [8.0, 64.0, 8.0], hunts_the_zombie),
+            ("minecraft:zombie", [9.0, 64.0, 8.0], plain),
+            ("minecraft:zombie", [136.0, 64.0, 8.0], plain),
+        ],
+        died: &[],
+        guest_at: None,
+    };
+    let (clean, walk) = both_paths(game, &scene);
+    assert!(
+        walk.walks.iter().any(|log| log.contains("IronGolemHit")),
+        "the golem should swing at the zombie"
+    );
+    assert!(clean.clean_rounds() > 0);
+    assert!(
+        !clean.fell_back_for(NotClean::BrainWrite),
+        "{:?}",
+        clean.stats.iter().map(|s| s.fallback).collect::<Vec<_>>()
+    );
+
     // A guest hit: a zombie reaches the guest beside it.
     fn hunting(m: &mut Mob) {
         m.ai.target = Some(horizon_client::mobs::Who::Player);

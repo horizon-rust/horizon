@@ -208,11 +208,12 @@ impl Game<'_> {
         let Some(vehicle) = self.simulation.mobs.iter().find(|m| m.id == root) else {
             return;
         };
-        let (position, yaw, width, attachment) = (
+        let (position, yaw, width, attachment, vehicle_box) = (
             vehicle.position,
             vehicle.yaw,
             vehicle.width(),
             riders::passenger_attachment(vehicle),
+            vehicle.bounds(),
         );
         let mut children = Vec::new();
         for m in self
@@ -221,12 +222,9 @@ impl Game<'_> {
             .iter_mut()
             .filter(|m| m.extra.mount == Some(root))
         {
-            m.position = riders::seat(
-                attachment,
-                riders::vehicle_attachment(m, width),
-                position,
-                yaw,
-            );
+            let offset = riders::vehicle_attachment(m, width);
+            m.seated(root, offset, vehicle_box);
+            m.position = riders::seat(attachment, offset, position, yaw);
             m.previous = m.position;
             children.push(m.id);
         }
@@ -361,6 +359,7 @@ impl Game<'_> {
                         at,
                         rotation: Some(rotation),
                         vehicle: game.vehicle_by_uuid(mount),
+                        cause: None,
                     });
             }
             game.native_joins_flush(false, 0);
