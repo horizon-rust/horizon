@@ -2818,6 +2818,7 @@ impl Game<'_> {
                 count: 1,
                 ticks: 0,
                 health: 5,
+                following: None,
             });
         }
         if let Some(t) = mob_type {
