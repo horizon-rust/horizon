@@ -315,8 +315,15 @@ impl Game<'_> {
                 },
                 |id| self.mob_display_name(id),
             );
-            let result = self
-                .with_hive_emptying_blast(|g| g.server_explode_from(center, power, interaction, false, super::explosion::ExplosionSource::default().with_portal_proof(used_portal)));
+            let result = self.with_hive_emptying_blast(|g| {
+                g.server_explode_from(
+                    center,
+                    power,
+                    interaction,
+                    false,
+                    super::explosion::ExplosionSource::default().with_portal_proof(used_portal),
+                )
+            });
             self.combat.blast_owner = None;
             self.combat.blast_guest = None;
             self.combat.explosion_in_water = false;
@@ -1208,23 +1215,49 @@ mod tests {
         use horizon_client::mobs::Mob;
         use horizon_client::nether_portal::PortalState;
         let mut game = server_game().expect("set HORIZON_TEST_RESOURCES");
-        let portal = game.pack.assets.registry.default_state("minecraft:nether_portal").unwrap();
+        let portal = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:nether_portal")
+            .unwrap();
         for cooldown in [1, 0, -1] {
             game.world.set(8, 64, 8, portal).unwrap();
-            let kind = game.res.mob_types().get("minecraft:sulfur_cube").unwrap().clone();
+            let kind = game
+                .res
+                .mob_types()
+                .get("minecraft:sulfur_cube")
+                .unwrap()
+                .clone();
             let mut cube = Mob::new(9123, kind, Vec3::new(8.5, 64.0, 8.5), 0.0);
             cube.extra.body = Some("minecraft:tnt".into());
             cube.extra.counter2 = 2; // fuse 1: explodes on this tick.
             game.mobs.push(cube);
-            game.portals.entities.insert(9123, PortalState { cooldown, process: None });
+            game.portals.entities.insert(
+                9123,
+                PortalState {
+                    cooldown,
+                    process: None,
+                },
+            );
             // The actual level tick orders the portal pass before the mob pass.
             game.handle_entity_portals();
             game.tick_creatures().unwrap();
-            assert_eq!(game.world.block(8, 64, 8) == portal, cooldown > 0, "cooldown {cooldown}");
+            assert_eq!(
+                game.world.block(8, 64, 8) == portal,
+                cooldown > 0,
+                "cooldown {cooldown}"
+            );
         }
         // An unrelated native/sourceless blast never inherits the cube's calculator.
         game.world.set(8, 64, 8, portal).unwrap();
-        game.server_explode([8.5, 64.0625, 8.5], 4.0, super::super::explosion::BlockInteraction::Destroy, false).unwrap();
+        game.server_explode(
+            [8.5, 64.0625, 8.5],
+            4.0,
+            super::super::explosion::BlockInteraction::Destroy,
+            false,
+        )
+        .unwrap();
         assert_ne!(game.world.block(8, 64, 8), portal);
     }
 
@@ -1247,14 +1280,26 @@ mod tests {
                     for y in -4i32..=4 {
                         for z in -4i32..=4 {
                             let distance = x.abs().max(y.abs()).max(z.abs());
-                            let state = if distance <= 1 { center } else if distance == 3 { glass } else { air };
+                            let state = if distance <= 1 {
+                                center
+                            } else if distance == 3 {
+                                glass
+                            } else {
+                                air
+                            };
                             game.world.set(8 + x, 64 + y, 8 + z, state).unwrap();
                         }
                     }
                 }
                 game.world.random = LegacyRandom::new(seed);
-                game.server_explode_from([8.5, 64.5, 8.5], 2.0, BlockInteraction::Destroy, false,
-                    ExplosionSource::default().with_portal_proof(true)).unwrap();
+                game.server_explode_from(
+                    [8.5, 64.5, 8.5],
+                    2.0,
+                    BlockInteraction::Destroy,
+                    false,
+                    ExplosionSource::default().with_portal_proof(true),
+                )
+                .unwrap();
                 let mut remaining = Vec::new();
                 for x in -3i32..=3 {
                     for y in -3i32..=3 {
@@ -1267,9 +1312,18 @@ mod tests {
                 }
                 outcomes.push(remaining);
             }
-            assert!(outcomes[0].iter().any(|&solid| !solid), "blast reaches the shell");
-            assert!(outcomes[0].iter().any(|&solid| solid), "shell also extends beyond the blast");
-            assert_eq!(outcomes[0], outcomes[1], "seed {seed}: portal must not attenuate rays");
+            assert!(
+                outcomes[0].iter().any(|&solid| !solid),
+                "blast reaches the shell"
+            );
+            assert!(
+                outcomes[0].iter().any(|&solid| solid),
+                "shell also extends beyond the blast"
+            );
+            assert_eq!(
+                outcomes[0], outcomes[1],
+                "seed {seed}: portal must not attenuate rays"
+            );
         }
     }
 

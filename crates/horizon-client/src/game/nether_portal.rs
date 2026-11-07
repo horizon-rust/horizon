@@ -670,7 +670,9 @@ impl Game<'_> {
         });
         // SulfurCube.tickFuse runs before Entity.handlePortal. A cube removed
         // there must neither decrement its cooldown nor travel before its blast.
-        let removed_before_portal: std::collections::HashSet<u32> = self.mobs.iter()
+        let removed_before_portal: std::collections::HashSet<u32> = self
+            .mobs
+            .iter()
             .filter(|_| !vehicles)
             .filter(|m| horizon_client::mobs::sulfur_cube::removes_before_portal_tick(m))
             .map(|m| m.id)

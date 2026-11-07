@@ -12745,7 +12745,12 @@ impl Game<'_> {
     }
     /// `SulfurCube.tickFuse`: `ExplosionInteraction.TNT` (the
     /// tnt_explosion_drop_decay rule) with mobGriefing, `NONE` without.
-    fn explode_sulfur_cube(&mut self, center: [f64; 3], radius: f32, source: explosion::ExplosionSource) -> Result<()> {
+    fn explode_sulfur_cube(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        source: explosion::ExplosionSource,
+    ) -> Result<()> {
         let interaction = if !self.ui.rules.bool("mob_griefing") {
             explosion::BlockInteraction::Keep
         } else {

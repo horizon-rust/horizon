@@ -357,8 +357,7 @@ impl Game<'_> {
                             && (self.rail(pos[0], pos[1], pos[2]).is_some()
                                 || self.rail(pos[0], pos[1] + 1, pos[2]).is_some());
                         // Optional.empty skips even the base resistance deduction.
-                        let portal =
-                            portal_proof && &*f.name == "minecraft:nether_portal";
+                        let portal = portal_proof && &*f.name == "minecraft:nether_portal";
                         match resists {
                             _ if portal => {}
                             Some((at, resistance)) if at == pos => {
@@ -893,7 +892,15 @@ impl Game<'_> {
         damage_type: &str,
         resists: Option<([i32; 3], f32)>,
     ) -> Result<()> {
-        self.server_explode_as_source(center, radius, interaction, fire, damage_type, resists, ExplosionSource::default())
+        self.server_explode_as_source(
+            center,
+            radius,
+            interaction,
+            fire,
+            damage_type,
+            resists,
+            ExplosionSource::default(),
+        )
     }
     /// `PrimedTnt.USED_PORTAL_DAMAGE_CALCULATOR`, selected for this call only.
     pub(super) fn server_explode_from(

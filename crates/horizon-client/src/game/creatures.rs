@@ -2421,7 +2421,12 @@ impl Game<'_> {
                         Species::Creeper | Species::Wither => {
                             self.with_hive_emptying_blast(|g| g.explode(at, radius))
                         }
-                        Species::SulfurCube => self.explode_sulfur_cube(at, radius, super::explosion::ExplosionSource::default().with_portal_proof(portal_proof)),
+                        Species::SulfurCube => self.explode_sulfur_cube(
+                            at,
+                            radius,
+                            super::explosion::ExplosionSource::default()
+                                .with_portal_proof(portal_proof),
+                        ),
                         _ => self.explode(at, radius),
                     };
                     self.combat.explosion_source = None;
