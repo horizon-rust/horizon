@@ -54,9 +54,14 @@ struct Params {
     // The world pass's view projection, TAA's jitter included (gfx.rs
     // `globals.view_proj`).
     view_proj: mat4x4<f32>,
-    // The Hi-Z pyramid (hiz.rs): the depth it was seeded from, its levels and
-    // its level-0 side. Zero levels: no pyramid yet, and no test.
+    // The Hi-Z pyramid (hiz.rs): the depth it was seeded from, its levels, and
+    // whether the test acts on its verdict or only counts it. Zero levels: no
+    // pyramid yet, and no test.
     hiz: vec4<u32>,
+    // The view projection the frame that BUILT the pyramid drew with, which is
+    // the screen space the pyramid is in. `hiz_hidden` projects with this and
+    // not with `view_proj`: see there.
+    hiz_view_proj: mat4x4<f32>,
 }
 
 // gpu_culling.rs `Record`.
@@ -127,14 +132,16 @@ const HIDDEN_QUADS: u32 = 3u;
 const BOX: u32 = 4u;
 const HIDDEN: u32 = 9u;
 const DRAWN2: u32 = 10u;
-// Report-only Hi-Z (hiz.rs): the sections it tested and those it would hide.
+// Hi-Z (hiz.rs): the sections it tested, those it found an occluder in front of
+// and did not draw, and the quads involved. HIZ_RUN_QUADS counts every section
+// the test ran on, so the share it takes off the frame follows from the pair.
 const HIZ_TESTED: u32 = 12u;
 const HIZ_HIDDEN: u32 = 13u;
 // Diagnostic: tests whose footprint found any occluder at all.
 const HIZ_OCCLUDER: u32 = 14u;
 // Diagnostic: the largest pyramid and box depths seen, scaled by 1e9.
-const HIZ_MAX_W: u32 = 15u;
-const HIZ_MAX_NEAR: u32 = 16u;
+const HIZ_RUN_QUADS: u32 = 15u;
+const HIZ_DROP_QUADS: u32 = 16u;
 // gpu_culling.rs `rounded_box` for a box past what its codes hold: no plane
 // rejects it.
 const UNBOUNDED: u32 = 0x80000000u;
@@ -348,7 +355,18 @@ fn hiz_hidden(o: vec3<f32>, b: u32) -> bool {
     var hi = vec2(-1e30);
     var nearest = -1e30;
     for (var c = 0u; c < 8u; c++) {
-        let p = params.view_proj * vec4(box_corner(o, b, c), 1.0);
+        // Projected with the view the PYRAMID was built from, not this frame's.
+        // The pyramid is a picture of the last frame's screen, so a box has to
+        // be put where that frame would have seen it; projecting with this
+        // frame's view reads the old depth at new screen positions, which is
+        // two different screens compared texel for texel. Done that way, a
+        // camera that jumped from inside terrain (where every texel is a near
+        // occluder) into open air read the whole view as occluded and dropped
+        // the terrain under it for a frame. Projected with the old view, a box
+        // that was not in that frame at all falls outside the clip square and
+        // the test refuses it, which is the right answer: the pyramid knows
+        // nothing about it.
+        let p = params.hiz_view_proj * vec4(box_corner(o, b, c), 1.0);
         if !(p.z < NEAR_DEPTH * p.w) {
             return false;
         }
@@ -389,8 +407,6 @@ fn hiz_hidden(o: vec3<f32>, b: u32) -> bool {
     if w > 0.0 {
         atomicAdd(&counts[HIZ_OCCLUDER], 1u);
     }
-    atomicMax(&counts[HIZ_MAX_W], u32(clamp(w, 0.0, 4.0) * 1e9));
-    atomicMax(&counts[HIZ_MAX_NEAR], u32(clamp(nearest, 0.0, 4.0) * 1e9));
     return nearest < w;
 }
 
@@ -495,12 +511,40 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     if n == 0u {
         return;
     }
-    // Report only, for now: what a Hi-Z test would hide, counted without
-    // hiding it, so the gain can be measured before a frame draws less.
+    // The quads these runs draw, for the Hi-Z counters below.
+    var run_quads = 0u;
+    for (var k = 0u; k < n; k++) {
+        run_quads += runs[at + 2u + 2u * k];
+    }
+    // The Hi-Z test (`hiz.rs`), which stands on its own: a section the pyramid
+    // the last frame left finds an occluder in front of is not drawn, whether
+    // or not this frame runs occlusion culling's phases. That is the point --
+    // cull.rs's box test needs a draw pass, a readback three frames late and a
+    // gate over how much it is hiding (`cull::gate`), and spends most frames
+    // switched off at ground level; the pyramid costs one texture read and is
+    // never gated.
+    //
+    // The pyramid is a frame old, so a camera that moves out from behind an
+    // occluder can leave a section hidden for one frame. It corrects itself in
+    // the next: a section not drawn is not in the depth either, so the pyramid
+    // built from that depth sees whatever is behind it, further away, and stops
+    // calling it hidden. `hiz_hidden` also refuses any box with a corner at or
+    // behind the near plane, which is where a moving camera is least like the
+    // frame before.
+    //
+    // `params.hiz.w` is clear under `HORIZON_HIZ=report`, which keeps the
+    // counts and draws everything, so the two can be compared in one build.
     if params.hiz.z != 0u {
         atomicAdd(&counts[HIZ_TESTED], 1u);
+        atomicAdd(&counts[HIZ_RUN_QUADS], run_quads);
         if hiz_hidden(bitcast<vec3<f32>>(origin.xyz), s.a.z) {
             atomicAdd(&counts[HIZ_HIDDEN], 1u);
+            atomicAdd(&counts[HIZ_DROP_QUADS], run_quads);
+            if params.hiz.w != 0u {
+                // `runs[at]` is already clear, as it is for a section with no
+                // runs at all, so nothing draws it.
+                return;
+            }
         }
     }
     var flags = 0u;

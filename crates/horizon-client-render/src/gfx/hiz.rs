@@ -1,5 +1,6 @@
 //! A Hi-Z depth pyramid of the world pass's depth, for the occlusion test in
-//! `gpu_culling`'s `cull` pass.
+//! `gpu_culling`'s `cull` pass, which sends the sections it finds an occluder
+//! in front of to phase 2 rather than drawing them in phase 1.
 //!
 //! The `cull` pass runs before the frame draws anything, so the only depth it
 //! can test against is the one the last frame left: the pyramid is built after
@@ -14,6 +15,20 @@
 //! Level 0 is half the depth's size and no level is padded to a power of two;
 //! hiz.wgsl says why that is safe and what it saves.
 
+/// How far the camera may have moved, in blocks, since the pyramid was built
+/// and still be tested against it.
+///
+/// Turning is safe however far it goes: a box the old view did not hold falls
+/// outside its clip square and `hiz_hidden` refuses it. Moving is not. A box
+/// can be buried in rock from where the camera was and in plain sight from
+/// where it is, and the pyramid, which only knows the old place, calls it
+/// hidden. Over a frame of ordinary movement the error is a sliver at the edge
+/// of an occluder and gone the next frame; over a teleport it is most of the
+/// view. Elytra flight is about 33 blocks a second, half a block in a frame at
+/// 60 FPS, so this lets every way of moving through a world past and catches
+/// the jumps -- a teleport, a respawn, a portal -- that do real damage.
+const MOVED: f64 = 4.0;
+
 /// Level 0 below this many texels a side: no pyramid, and no test. Under it the
 /// whole thing is cheaper to skip than to set up.
 const MIN_SIDE: u32 = 32;
@@ -24,6 +39,14 @@ const MIN_SIDE: u32 = 32;
 pub fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_HIZ").as_deref() != Ok("0"))
+}
+
+/// Whether the occlusion test acts on the pyramid or only counts what it would
+/// do: `HORIZON_HIZ=report` keeps the counts (`hiz_report`) and sends nothing
+/// to phase 2, so the frame time either way can be measured in one build.
+pub fn hiding() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_HIZ").as_deref() != Ok("report"))
 }
 
 /// hiz.wgsl's `Shape`: the depth's size, level 0's, and the sizes of the level
@@ -71,6 +94,11 @@ struct Pyramid {
     reduce_groups: Vec<wgpu::BindGroup>,
     /// What the depth it was seeded from measured, so a resize rebuilds.
     depth_size: (u32, u32),
+    /// The view projection the frame that seeded it drew with: the screen
+    /// space the pyramid is in, which is what a reader has to project into.
+    view_proj: glam::Mat4,
+    /// Where the camera was then, for `MOVED`.
+    camera: glam::DVec3,
 }
 
 /// One level's readback, in flight.
@@ -209,12 +237,35 @@ impl HiZ {
         self.texture.as_ref().map(|p| &p.all)
     }
 
-    /// What `cull` needs to read it: the depth it was seeded from and how many
-    /// levels the pyramid holds. Zero levels means no pyramid, and no test;
-    /// level 0's size follows from the depth's, so it is not sent.
-    pub fn shape_for_shader(&self) -> [u32; 4] {
+    /// The view projection the frame that built it drew with. A reader has to
+    /// project boxes with this and not with its own frame's, or it compares two
+    /// different screens texel for texel (gpu_culling.wgsl's `hiz_hidden`).
+    pub fn view_proj(&self) -> glam::Mat4 {
+        self.texture.as_ref().map_or(glam::Mat4::ZERO, |p| p.view_proj)
+    }
+
+    /// Whether a frame whose camera is at `camera` may hide what the pyramid
+    /// calls hidden, rather than only count it: not when the camera has moved
+    /// more than `MOVED` since the pyramid was built.
+    fn usable_from(&self, camera: glam::DVec3) -> bool {
+        self.texture
+            .as_ref()
+            .is_some_and(|p| p.camera.distance_squared(camera) <= MOVED * MOVED)
+    }
+
+    /// What `cull` needs to read it: the depth it was seeded from, how many
+    /// levels the pyramid holds, and whether to act on the test or only count
+    /// it (`hiding`). Zero levels means no pyramid, and no test; level 0's size
+    /// follows from the depth's, so it is not sent.
+    pub fn shape_for_shader(&self, camera: glam::DVec3) -> [u32; 4] {
+        let hide = hiding() && self.usable_from(camera);
         self.texture.as_ref().map_or([0; 4], |p| {
-            [p.depth_size.0, p.depth_size.1, p.sizes.len() as u32, 0]
+            [
+                p.depth_size.0,
+                p.depth_size.1,
+                p.sizes.len() as u32,
+                u32::from(hide),
+            ]
         })
     }
 
@@ -330,6 +381,8 @@ impl HiZ {
             seed_depth: depth.clone(),
             reduce_groups,
             depth_size: (w, h),
+            view_proj: glam::Mat4::ZERO,
+            camera: glam::DVec3::ZERO,
         });
     }
 
@@ -343,8 +396,13 @@ impl HiZ {
         depth: &wgpu::TextureView,
         width: u32,
         height: u32,
+        view_proj: glam::Mat4,
+        camera: glam::DVec3,
     ) {
         self.ensure(device, depth, width, height);
+        if let Some(p) = &mut self.texture {
+            (p.view_proj, p.camera) = (view_proj, camera);
+        }
         let Some(p) = &self.texture else { return };
         // One `Shape` a level: the seed's names the depth it reduces, each
         // reduction's the level below it and its own.

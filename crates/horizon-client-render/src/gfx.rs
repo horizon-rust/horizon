@@ -5056,9 +5056,11 @@ impl Renderer {
     pub fn gpu_occluding(&self) -> bool {
         self.gpu_frame && self.gpu_culling.as_ref().is_some_and(|g| g.occluding())
     }
-    /// Report-only Hi-Z (`hiz.rs`): of the sections GPU culling kept, how many
-    /// it tested against the depth pyramid and how many it would have hidden.
-    /// Nothing is hidden yet; this measures what hiding them would be worth.
+    /// Hi-Z (`hiz.rs`): of the sections GPU culling kept, how many it tested
+    /// against the depth pyramid and how many it found an occluder in front
+    /// of. Those go to occlusion culling's phase 2, which draws them only if
+    /// this frame's own box test sees them (`HORIZON_HIZ=report` counts them
+    /// and sends none).
     pub fn hiz_report(&self) -> [usize; 5] {
         self.gpu_culling
             .as_ref()
@@ -7597,7 +7599,8 @@ impl Renderer {
                 view_proj: jittered,
                 occlude: self.cull_on,
                 hiz: self.hiz.view(),
-                hiz_shape: self.hiz.shape_for_shader(),
+                hiz_shape: self.hiz.shape_for_shader(frame.camera),
+                hiz_view_proj: self.hiz.view_proj(),
             };
             let prepared = crate::spans::time("gpu culling", || {
                 gpu.prepare(
@@ -10356,8 +10359,18 @@ impl Renderer {
                 .size()
                 .unwrap_or([self.config.width, self.config.height]);
             crate::spans::time("hi-z", || {
-                self.hiz
-                    .build(&self.device, &self.queue, &mut encoder, world_depth, w, h);
+                // `jittered` is what the world pass drew this depth with, and
+                // so the screen space the pyramid will be in.
+                self.hiz.build(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    world_depth,
+                    w,
+                    h,
+                    jittered,
+                    frame.camera,
+                );
             });
         }
         if let Some((color, depth)) = &scaled

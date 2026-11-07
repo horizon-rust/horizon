@@ -280,10 +280,14 @@ struct Params {
     /// The world pass's view projection, which the test draws its boxes with.
     view_proj: [[f32; 4]; 4],
     /// The Hi-Z pyramid (`hiz.rs`): the width and height of the depth it was
-    /// seeded from, then its levels, then nothing -- level 0 is half the
-    /// depth, so the shader works out every level's size. Zero levels means no
-    /// pyramid yet, and `cull` makes no Hi-Z test.
+    /// seeded from, then its levels, then whether the test acts on its verdict
+    /// or only counts it (`hiz::hiding`). Level 0 is half the depth, so the
+    /// shader works out every level's size. Zero levels means no pyramid yet,
+    /// and `cull` makes no Hi-Z test.
     hiz: [u32; 4],
+    /// The view projection the frame that built the pyramid drew with, which
+    /// is the screen space it is in (the shader's `hiz_hidden`).
+    hiz_view_proj: [[f32; 4]; 4],
 }
 
 /// Counts before the pages' (the shader's `STATS`): the sections `cull` kept,
@@ -292,13 +296,16 @@ struct Params {
 /// gate's share), the box draw (its instances: the boxes tested), and the
 /// boxes not seen.
 const STATS: u64 = 17;
-/// Report-only Hi-Z: the sections `cull` tested against the pyramid and those
-/// it would hide (the shader's `HIZ_TESTED` and `HIZ_HIDDEN`).
+/// Hi-Z: the sections `cull` tested against the pyramid and those it found
+/// something in front of (the shader's `HIZ_TESTED` and `HIZ_HIDDEN`), which
+/// it sends to phase 2 unless `HORIZON_HIZ=report`.
 const HIZ_TESTED: usize = 12;
 const HIZ_HIDDEN: usize = 13;
 const HIZ_OCCLUDER: usize = 14;
-const HIZ_MAX_W: usize = 15;
-const HIZ_MAX_NEAR: usize = 16;
+/// Quads of the sections the test ran on, and of those it did not draw: their
+/// ratio is the share of the frame's quads the test took off.
+const HIZ_RUN_QUADS: usize = 15;
+const HIZ_DROP_QUADS: usize = 16;
 const QUADS: usize = 2;
 const HIDDEN_QUADS: usize = 3;
 const BOX: u64 = 4;
@@ -376,6 +383,8 @@ pub(super) struct FrameInputs<'a> {
     /// still needs whatever the state.
     pub hiz: Option<&'a wgpu::TextureView>,
     pub hiz_shape: [u32; 4],
+    /// The view projection the frame that built it drew with (`HiZ::view_proj`).
+    pub hiz_view_proj: Mat4,
 }
 
 /// What `GpuCulling::prepare` made of a frame.
@@ -1403,6 +1412,7 @@ impl GpuCulling {
             params.flags |= REACH | if r.sky_reached { SKY } else { 0 };
         }
         params.hiz = input.hiz_shape;
+        params.hiz_view_proj = input.hiz_view_proj.to_cols_array_2d();
         uploads.buffer(encoder, &self.params, 0, bytemuck::bytes_of(&params));
         // A frame that occludes reads phase 2's blocks too; the boxes to test
         // are written before they are read.
@@ -1650,8 +1660,8 @@ impl GpuCulling {
                             words[HIZ_TESTED] as usize,
                             words[HIZ_HIDDEN] as usize,
                             words[HIZ_OCCLUDER] as usize,
-                            words[HIZ_MAX_W] as usize,
-                            words[HIZ_MAX_NEAR] as usize,
+                            words[HIZ_RUN_QUADS] as usize,
+                            words[HIZ_DROP_QUADS] as usize,
                         ],
                     );
                 }
@@ -1777,6 +1787,7 @@ mod tests {
             occlude: false,
             hiz: None,
             hiz_shape: [0; 4],
+            hiz_view_proj: Mat4::ZERO,
         }
     }
 
@@ -2194,6 +2205,8 @@ mod tests {
             ("eyes", offset_of!(Params, eyes)),
             ("occl", offset_of!(Params, occl)),
             ("view_proj", offset_of!(Params, view_proj)),
+            ("hiz", offset_of!(Params, hiz)),
+            ("hiz_view_proj", offset_of!(Params, hiz_view_proj)),
         ] {
             assert!(members.contains(&(name.into(), offset)), "Params.{name}");
         }
@@ -2214,8 +2227,9 @@ mod tests {
         ];
         assert_eq!(layout("Update"), (size_of::<Update>(), named(&id)));
         assert_eq!((size_of::<Record>(), size_of::<Update>()), (80, 96));
-        // 224 since the Hi-Z pyramid added a vec4<u32> (`hiz`).
-        assert_eq!(size_of::<Params>(), 224);
+        // 288 since the Hi-Z pyramid added a vec4<u32> (`hiz`) and the view
+        // projection it was built with (`hiz_view_proj`).
+        assert_eq!(size_of::<Params>(), 288);
         let constant = |name: &str| {
             let (_, c) = module
                 .constants
@@ -3080,6 +3094,7 @@ mod tests {
                 occlude: false,
                 hiz: None,
                 hiz_shape: [0; 4],
+                hiz_view_proj: Mat4::ZERO,
             };
             if case == 7 {
                 // Planes past the integers: the CPU draws that frame, nothing is
@@ -3466,6 +3481,7 @@ struct Quad {
                 occlude: false,
                 hiz: None,
                 hiz_shape: [0; 4],
+                hiz_view_proj: Mat4::ZERO,
             };
             let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &input);
             assert_eq!(prepared, Prepared::Gpu, "frame {frame}");
