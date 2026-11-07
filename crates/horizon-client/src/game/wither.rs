@@ -189,7 +189,14 @@ impl Game<'_> {
             // (no withering) and stays alive (no heal).
             Some(Who::Mob(id)) if id >= super::dragon::SPECIAL => {
                 let by_player = live_owner == Some(Who::Player);
-                self.hit_special(id, amount, by_player, kind, Some(&p.kind));
+                self.hit_special(
+                    id,
+                    amount,
+                    by_player,
+                    kind,
+                    Some(&p.kind),
+                    self.projectile_explosion_cause(p),
+                );
             }
             Some(Who::Mob(id)) => {
                 let owner_species = owner

@@ -1235,6 +1235,7 @@ impl Game<'_> {
                     true,
                     horizon_client::mobs::DamageKind::PlayerAttack,
                     None,
+                    self.explosion_cause(super::commands::Target::Player),
                 );
                 ok()
             }

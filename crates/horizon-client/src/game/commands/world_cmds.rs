@@ -352,11 +352,15 @@ impl Game<'_> {
                 .iter()
                 .position(|b| b.id == id)
                 .is_some_and(|i| self.hurt_boat_result(i, amount, creative).is_some()),
-            Target::Cart(_) => self
-                .carts
-                .iter()
-                .position(|c| c.id == id)
-                .is_some_and(|i| self.hurt_cart_result(i, amount, creative, ignites)),
+            Target::Cart(_) => self.carts.iter().position(|c| c.id == id).is_some_and(|i| {
+                self.hurt_cart_from(
+                    i,
+                    amount,
+                    creative,
+                    ignites,
+                    causing.and_then(|t| self.explosion_cause(t)),
+                )
+            }),
             _ => false,
         }
     }
