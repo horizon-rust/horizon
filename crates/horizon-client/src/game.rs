@@ -361,6 +361,7 @@ mod screens;
 mod screenshot_sequence;
 mod sculk;
 mod sculk_fixture;
+mod seats;
 mod server_links;
 mod server_packs;
 mod server_travel;
