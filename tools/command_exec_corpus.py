@@ -2686,6 +2686,14 @@ def experience_orb_fall():
     ]
 
 
+def shulker_lock_drop_cases():
+    try:
+        from .shulker_lock_drop_corpus import cases
+    except ImportError:
+        from shulker_lock_drop_corpus import cases
+    return cases(cmd)
+
+
 def creative_shulker_drops():
     """ShulkerBoxBlock.playerWillDestroy: Creative keeps a filled box as one item,
     even with block_drops off. Empty boxes and survival use the ordinary drop rules."""
@@ -5891,7 +5899,8 @@ ISOLATED_MACRO_TYPE = frozenset({'macro source type error'})
 ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
 ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH
+ISOLATED_SHULKER_LOCK = frozenset({'shulker external lock drop'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_SHULKER_LOCK
 
 
 def groups():
@@ -6078,6 +6087,7 @@ def groups():
         ('wither breaks', wither_breaks()),
         ('tnt minecart rails', tnt_minecart_rails()),
         ('creative shulker drops', creative_shulker_drops()),
+        ('shulker external lock drop', shulker_lock_drop_cases()),
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
         ('summoned dragon hovers', summoned_dragon_hovers()),
