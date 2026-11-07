@@ -559,6 +559,9 @@ pub struct Streaming {
     cover: Option<ExtraCover>,
     prepared_ranges: Option<PreparedRanges>,
     prepared_ranges_active: bool,
+    /// Set while `update` runs, after it refreshed `cover`: nothing else can
+    /// change `extra` meanwhile, so `cover` answers without comparing them.
+    cover_current: bool,
     /// Mesh the sections for drawing (false on a server thread).
     pub mesh: bool,
     /// The pregeneration band (`set_band`).
@@ -1202,6 +1205,7 @@ impl Streaming {
             cover: None,
             prepared_ranges: None,
             prepared_ranges_active: false,
+            cover_current: false,
             mesh: true,
             band: None,
             band_ranked: None,
@@ -1701,6 +1705,7 @@ impl Streaming {
         self.prepared_ranges_active = true;
         let edits = crate::spans::guard("streaming_edits");
         ExtraCover::refresh(&mut self.cover, &self.extra);
+        self.cover_current = true;
         // The sweeps below walk every loaded column and proto chunk. Run them
         // at once when the view moves and every eighth tick otherwise: a
         // column can stay a little past the edge without anyone noticing.
@@ -1915,7 +1920,7 @@ impl Streaming {
                 extra: &self.extra,
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
-                cover: ExtraCover::matching(&self.cover, &self.extra),
+                cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
                 band: self.band.as_ref(),
             };
             let (protos, generating) = (&self.protos, &self.generating);
@@ -2083,6 +2088,7 @@ impl Streaming {
         if !self.mesh {
             world.dirty_sections.clear();
             self.prepared_ranges_active = false;
+            self.cover_current = false;
             self.prepared_ranges = None;
             return (uploads, removed);
         }
@@ -2104,7 +2110,7 @@ impl Streaming {
                 extra: &self.extra,
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
-                cover: ExtraCover::matching(&self.cover, &self.extra),
+                cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
                 band: self.band.as_ref(),
             };
             self.waiting.retain(|&(x, sy, z)| {
@@ -2192,6 +2198,7 @@ impl Streaming {
             }
         }
         self.prepared_ranges_active = false;
+        self.cover_current = false;
         self.prepared_ranges = None;
         (uploads, removed)
     }
@@ -2203,7 +2210,7 @@ impl Streaming {
                 extra: &self.extra,
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
-                cover: ExtraCover::matching(&self.cover, &self.extra),
+                cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
                 band: self.band.as_ref(),
             },
             world,
@@ -2359,7 +2366,7 @@ impl Streaming {
             extra: &self.extra,
             forced: &self.forced,
             mod_forced: &self.mod_forced,
-            cover: ExtraCover::matching(&self.cover, &self.extra),
+            cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
             band: self.band.as_ref(),
         }
     }
@@ -2734,6 +2741,20 @@ impl ExtraCover {
         extra: &[((i32, i32), i32)],
     ) -> Option<&'a ExtraCover> {
         cover.as_ref().filter(|c| c.extra == extra)
+    }
+    /// [`Self::matching`], told whether `cover` is known to match: the
+    /// comparison reads every area, and `update` asks for each column it
+    /// looks at (a server holds an area per player).
+    fn current<'a>(
+        cover: &'a Option<ExtraCover>,
+        extra: &[((i32, i32), i32)],
+        known: bool,
+    ) -> Option<&'a ExtraCover> {
+        if known {
+            debug_assert!(cover.as_ref().is_none_or(|c| c.extra == extra));
+            return cover.as_ref();
+        }
+        Self::matching(cover, extra)
     }
     /// Rebuild the coverage index if `extra` changed; none for one area or none
     /// (a scan is as quick).
