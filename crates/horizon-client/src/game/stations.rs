@@ -984,7 +984,10 @@ impl Game<'_> {
         );
         if !creative
             && anvil
-            && self.player.as_mut().is_some_and(|p| p.random.next_float() < 0.12)
+            && self
+                .player
+                .as_mut()
+                .is_some_and(|p| p.random.next_float() < 0.12)
         {
             match &*name {
                 "minecraft:anvil" => {
