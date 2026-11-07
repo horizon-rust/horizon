@@ -5904,6 +5904,10 @@ def groups():
     except ImportError:
         from item_health_load_corpus import cases as item_health_load
     try:
+        from .vehicle_container_corpus import vehicle_containers
+    except ImportError:
+        from vehicle_container_corpus import vehicle_containers
+    try:
         from .data_literal_corpus import storage_literals
     except ImportError:
         from data_literal_corpus import storage_literals
@@ -5949,6 +5953,7 @@ def groups():
         ('setup', group_setup()),
         ('spectral saved duration', spectral_saved_duration(cmd, setup)),
         ('item Health short load', item_health_load(cmd, setup)),
+        ('vehicle container saved fields', vehicle_containers(cmd)),
         ('macro source type error', macro_source_type_error()),
         ('stand saved fall distance', stand_saved_fall()),
         ('orb saved UUID', orb_saved_uuid()),
