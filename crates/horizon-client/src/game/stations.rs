@@ -37,6 +37,9 @@ use horizon_client::{
 };
 use horizon_core::random::{LegacyRandom, RandomSource};
 
+#[cfg(test)]
+mod anvil_level_rng_tests;
+
 /// The book above the enchanting table's offers: `EnchantmentScreen`'s
 /// `time`, `flip`, `oFlip`, `flipT`, `flipA`, `open`, `oOpen` and `last`.
 pub(super) struct EnchantBook {
@@ -979,7 +982,13 @@ impl Game<'_> {
             &*name,
             "minecraft:anvil" | "minecraft:chipped_anvil" | "minecraft:damaged_anvil"
         );
-        if !creative && anvil && self.world.random.next_float() < 0.12 {
+        if !creative
+            && anvil
+            && self
+                .player
+                .as_mut()
+                .is_some_and(|p| p.random.next_float() < 0.12)
+        {
             match &*name {
                 "minecraft:anvil" => {
                     let _ = self.set_state_named(pos, "minecraft:chipped_anvil", &["facing"]);

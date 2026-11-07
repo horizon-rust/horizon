@@ -451,6 +451,10 @@ impl Game<'_> {
                 host.hub.guests[i].position[2],
             );
             host.hub.guests[i].motion = PlayerMotion::new(self.motion, p).ok().map(Box::new);
+            let entity_id = host.hub.guests[i].entity_id as u32;
+            if let Some(motion) = host.hub.guests[i].motion.as_mut() {
+                motion.random = horizon_client::mobs::entity_random(entity_id, p);
+            }
             // The first body after joining burns, breathes and falls on as saved.
             let g = &mut host.hub.guests[i];
             if let Some(saved) = g.loaded_body.take()

@@ -279,6 +279,10 @@ pub enum MotionEvent {
 }
 #[derive(Clone)]
 pub struct PlayerMotion {
+    /// Entity-owned random stream, independent of the level. Like mobs, a new
+    /// body seeds it from its initial identity/position without drawing from the
+    /// level. It lives with this body (including guest turns), not player NBT.
+    pub random: horizon_core::random::LegacyRandom,
     pub swimming: bool,
     /// `Entity.isPassenger()`: this body rides a vehicle. `Entity.updateSwimming`
     /// needs it false, so the server's copy of a guest who boards a boat while
@@ -547,6 +551,7 @@ impl PlayerMotion {
         .map_err(attribute_error)?;
         Ok(Self {
             health: crate::health::PlayerHealth::new(&resources.health, &mut attributes)?,
+            random: crate::mobs::entity_random(0, position),
             status: crate::effects::StatusFlags::default(),
             impulse: ImpulseContext::default(),
             spawn_extra_particles_on_fall: false,

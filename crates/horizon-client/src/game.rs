@@ -5844,7 +5844,10 @@ impl Game<'_> {
                             1045 | 1046 | 1047 | 1052 => {
                                 self.particles.level_random().next_float() * 0.1 + 0.9
                             }
-                            1029 | 1030 | 1042 | 1043 | 1044 | 1053 | 1054 => {
+                            // Anvil wear uses the player's random; its sound
+                            // pitch is a separate client-level draw.
+                            1029 | 1030 => self.particles.level_random().next_float() * 0.1 + 0.9,
+                            1042 | 1043 | 1044 | 1053 | 1054 => {
                                 self.world.random.next_float() * 0.1 + 0.9
                             }
                             1026 | 1027 => {
