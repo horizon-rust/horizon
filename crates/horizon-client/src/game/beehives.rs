@@ -17,13 +17,29 @@ use horizon_world::{nbt::Tag, registry::BlockStateId};
 
 struct GameHive<'g, 'a> {
     game: &'g mut Game<'a>,
+    /// `bees_stay_in_hive`, once asked: the time and weather it reads hold
+    /// for the hive's turn, and every occupant whose time is up asks.
+    stay: std::cell::Cell<Option<bool>>,
+}
+impl<'g, 'a> GameHive<'g, 'a> {
+    fn new(game: &'g mut Game<'a>) -> Self {
+        Self {
+            game,
+            stay: Default::default(),
+        }
+    }
 }
 impl HiveHost for GameHive<'_, '_> {
     fn random(&mut self) -> &mut LegacyRandom {
         &mut self.game.simulation.world.random
     }
     fn bees_stay_in_hive(&self, _at: [i32; 3]) -> bool {
-        bee::bees_stay_in_hive(&self.game.mob_world_base(&[]))
+        if let Some(stay) = self.stay.get() {
+            return stay;
+        }
+        let stay = bee::bees_stay_in_hive(&self.game.mob_world_base(&[]));
+        self.stay.set(Some(stay));
+        stay
     }
     fn blocked(&self, at: [i32; 3]) -> bool {
         !self
@@ -116,7 +132,7 @@ impl Game<'_> {
                 .block(at[0] + d[0], at[1] + d[1], at[2] + d[2]);
             &*self.res.facts().get(state).name == "minecraft:fire"
         });
-        let mut host = GameHive { game: self };
+        let mut host = GameHive::new(self);
         if fire && !hive.bees.is_empty() {
             hive.release_all(at, facing, honey, Release::Emergency, &mut host);
         }
@@ -153,7 +169,7 @@ impl Game<'_> {
         else {
             return;
         };
-        let stored = hive.add_occupant(at, tag, flower, &mut GameHive { game: self });
+        let stored = hive.add_occupant(at, tag, flower, &mut GameHive::new(self));
         self.simulation
             .world
             .block_entities
@@ -179,7 +195,7 @@ impl Game<'_> {
         else {
             return;
         };
-        hive.release_all(at, facing, None, status, &mut GameHive { game: self });
+        hive.release_all(at, facing, None, status, &mut GameHive::new(self));
         self.simulation
             .world
             .block_entities
@@ -200,7 +216,7 @@ impl Game<'_> {
             facing,
             honey,
             Release::Emergency,
-            &mut GameHive { game: self },
+            &mut GameHive::new(self),
         );
         let sedated = beehive::smokey(&self.mob_world_base(&[]), at);
         if let Some(p) = self.player_view().map(|p| p.position) {
@@ -310,7 +326,7 @@ impl Game<'_> {
                 facing,
                 None,
                 Release::Emergency,
-                &mut GameHive { game: self },
+                &mut GameHive::new(self),
             );
             self.simulation
                 .world
