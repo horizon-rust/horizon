@@ -258,7 +258,8 @@ def main():
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--settle', type=int, default=20, help='seconds after the teleports, for chunks to load')
     parser.add_argument('--view-distance', type=int, default=2,
-                        help='a player loads 2N+1 chunks across: keep --spacing above (2N+2)*16 for separate regions')
+                        help='chunks stay loaded N+2 around a player (2N+5 across): keep --spacing above (2N+6)*16 '
+                             'for separate regions')
     parser.add_argument('--simulation-distance', type=int, default=2)
     parser.add_argument('--warmup', type=int, default=15, help='simulation seconds, stepped as exactly N*20 frozen ticks')
     parser.add_argument('--seconds', type=int, default=20)
