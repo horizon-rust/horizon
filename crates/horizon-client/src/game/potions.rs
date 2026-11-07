@@ -1966,11 +1966,9 @@ impl Game<'_> {
                 [at.x - 0.125 - 4.0, at.y - 2.0, at.z - 0.125 - 4.0],
                 [at.x + 0.125 + 4.0, at.y + 0.25 + 2.0, at.z + 0.125 + 4.0],
             );
-            for m in self
-                .mobs
-                .iter_mut()
-                .filter(|m| m.species() == horizon_client::mobs::Species::Axolotl && !m.removed)
-            {
+            for m in self.mobs.iter_mut().filter(|m| {
+                m.species() == horizon_client::mobs::Species::Axolotl && !m.is_removed()
+            }) {
                 let (w, h, _) = m.dims();
                 let half = w / 2.0;
                 let (x, y, z) = (m.position.x, m.position.y, m.position.z);

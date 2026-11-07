@@ -183,7 +183,7 @@ impl Game<'_> {
         let mut out = Vec::new();
         for t in self.level_candidates() {
             if let Target::Mob(id) = t
-                && !self.mobs.iter().any(|m| m.id == id && !m.removed)
+                && !self.mobs.iter().any(|m| m.id == id && !m.is_removed())
             {
                 continue;
             }

@@ -128,7 +128,7 @@ impl Game<'_> {
         let Some(i) = self
             .mobs
             .iter()
-            .position(|m| m.id == mob && m.alive() && !m.removed)
+            .position(|m| m.id == mob && m.alive() && !m.is_removed())
         else {
             return;
         };
@@ -166,7 +166,7 @@ impl Game<'_> {
                 .name
                 .clone();
             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
-                m.removed = true;
+                m.set_removed(horizon_client::mobs::RemovalReason::Discarded);
             }
             self.native_entity_enter_block(mob, &kind, at, &block);
         }
@@ -354,7 +354,7 @@ impl Game<'_> {
             .filter(|&i| {
                 let m = &self.mobs[i];
                 m.species() == horizon_client::mobs::Species::Bee
-                    && !m.removed
+                    && !m.is_removed()
                     && m.bounds().intersects(area)
             })
             .collect();

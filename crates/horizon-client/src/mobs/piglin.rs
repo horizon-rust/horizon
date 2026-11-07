@@ -1849,7 +1849,7 @@ pub fn ai_step(
                 kind,
                 params,
             });
-            m.removed = true;
+            m.set_removed(super::RemovalReason::Discarded);
         }
     } else {
         m.extra.counter2 = 0;

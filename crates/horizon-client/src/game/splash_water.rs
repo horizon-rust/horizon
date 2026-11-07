@@ -146,7 +146,7 @@ impl Game<'_> {
         if hurts || extinguishes {
             let source =
                 Damage::indirect_magic(by_player.then_some(Who::Player), [at.x, at.y, at.z]);
-            for m in self.mobs.iter_mut().filter(|m| !m.removed) {
+            for m in self.mobs.iter_mut().filter(|m| !m.is_removed()) {
                 // WATER_SENSITIVE_OR_ON_FIRE.
                 let sensitive = m.kind.flags.water_sensitive;
                 if !(sensitive || m.is_on_fire())
@@ -203,7 +203,7 @@ impl Game<'_> {
             for m in self
                 .mobs
                 .iter_mut()
-                .filter(|m| m.species() == Species::Axolotl && !m.removed)
+                .filter(|m| m.species() == Species::Axolotl && !m.is_removed())
             {
                 let (w, h, _) = m.dims();
                 let half = w / 2.0;

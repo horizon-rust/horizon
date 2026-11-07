@@ -746,7 +746,7 @@ impl Game<'_> {
             .mobs
             .iter()
             .enumerate()
-            .filter(|(_, m)| !m.removed && overlaps(m.bounds(), block))
+            .filter(|(_, m)| !m.is_removed() && overlaps(m.bounds(), block))
             .map(|(i, m)| (m.id, Target::Mob(i)))
             .collect();
         found.extend(
@@ -1890,7 +1890,7 @@ impl Game<'_> {
             *slot = None;
         }
         let id = mob.id;
-        self.mobs[index].removed = true;
+        self.mobs[index].set_removed(horizon_client::mobs::RemovalReason::Discarded);
         self.mobs.push(mob);
         self.native_mobs_joined(self.mobs.len() - 1, false);
         self.native_entity_transform(old_id, &old_kind, id, kind);
@@ -2076,7 +2076,7 @@ impl Game<'_> {
             .iter()
             .enumerate()
             .filter(|(_, m)| {
-                !m.removed && m.extra.leash == Some(holder) && overlaps(m.bounds(), area)
+                !m.is_removed() && m.extra.leash == Some(holder) && overlaps(m.bounds(), area)
             })
             .map(|(j, m)| (m.id, j))
             .collect();

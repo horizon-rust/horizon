@@ -287,6 +287,27 @@ pub fn stop_riding(m: &mut Mob, at: Option<Vec3>) {
         m.previous = at;
     }
 }
+/// `Entity.ejectPassengers`: every mob riding `vehicle` leaves it.
+pub fn eject_passengers(mobs: &mut [Mob], vehicle: u32) {
+    for m in mobs.iter_mut() {
+        if m.extra.mount == Some(vehicle) {
+            stop_riding(m, None);
+        }
+    }
+    if let Some(v) = mobs.iter_mut().find(|m| m.id == vehicle) {
+        v.extra.rider = None;
+        v.rider = None;
+    }
+}
+/// `Entity.setRemoved` for a mob in a list of mobs: keeps the first reason it is given;
+/// calls `stop_riding()` when `reason.should_destroy()`, and has every passenger stop riding too.
+pub fn set_removed_in_list(mobs: &mut [Mob], index: usize, reason: super::RemovalReason) {
+    let id = mobs[index].id;
+    mobs[index].set_removed(reason);
+    if reason.should_destroy() {
+        eject_passengers(mobs, id);
+    }
+}
 /// `Animal.getDismountLocationForPassenger` for a standing passenger of
 /// `width` by `height`: on the floor of the first block around the
 /// vehicle's, going right, left, behind right, behind left, ahead right,

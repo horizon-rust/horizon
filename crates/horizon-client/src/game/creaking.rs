@@ -44,13 +44,13 @@ impl HeartHost for Host<'_> {
         self.mobs
             .iter()
             .chain(self.added.iter())
-            .find(|m| m.id == id && !m.removed)
+            .find(|m| m.id == id && !m.is_removed())
     }
     fn mob_mut(&mut self, id: u32) -> Option<&mut Mob> {
         self.mobs
             .iter_mut()
             .chain(self.added.iter_mut())
-            .find(|m| m.id == id && !m.removed)
+            .find(|m| m.id == id && !m.is_removed())
     }
     fn mob_for_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
         self.uuids

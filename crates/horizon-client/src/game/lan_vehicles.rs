@@ -71,7 +71,7 @@ impl Game<'_> {
             .or_else(|| {
                 self.mobs
                     .iter()
-                    .find(|m| m.id == id && !m.removed)
+                    .find(|m| m.id == id && !m.is_removed())
                     .map(|m| (at(m.position), true))
             })
     }

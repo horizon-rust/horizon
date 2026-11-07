@@ -127,7 +127,7 @@ pub fn update_weathering(
     lr: &mut impl RandomSource,
     events: &mut Vec<MobEvent>,
 ) {
-    if !m.alive() || m.removed {
+    if !m.alive() || m.is_removed() {
         return;
     }
     let now = w.game_time;

@@ -283,7 +283,7 @@ impl Game<'_> {
 
     /// `Level.getEntityCount` over the entities Horizon keeps.
     fn debug_entity_count(&self) -> usize {
-        self.mobs.iter().filter(|m| !m.removed).count()
+        self.mobs.iter().filter(|m| !m.is_removed()).count()
             + self.dropped.len()
             + self.orbs.len()
             + self.paintings.len()
@@ -301,7 +301,7 @@ impl Game<'_> {
         let sections: HashSet<[i32; 3]> = self
             .mobs
             .iter()
-            .filter(|m| !m.removed)
+            .filter(|m| !m.is_removed())
             .map(|m| [m.position.x, m.position.y, m.position.z])
             .chain(
                 self.dropped

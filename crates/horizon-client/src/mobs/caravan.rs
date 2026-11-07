@@ -268,6 +268,6 @@ pub fn trader_llama_tick(m: &mut Mob, w: &MobWorld) {
     m.extra.ints[0] = trader.unwrap_or(m.extra.ints[0]) - 1;
     if m.extra.ints[0] <= 0 {
         super::leash::remove(m);
-        m.removed = true;
+        m.set_removed(super::RemovalReason::Discarded);
     }
 }

@@ -141,7 +141,7 @@ fn actual_item_interact_mob_fallback_priority_and_filters() {
     }));
     assert!(game.interact_entity(target(42)).unwrap());
     assert!(probe.calls.lock().unwrap().is_empty());
-    assert!(!game.mobs[0].removed);
+    assert!(!game.mobs[0].is_removed());
     assert_eq!(
         game.station
             .as_ref()
@@ -175,7 +175,7 @@ fn actual_item_interact_mob_fallback_priority_and_filters() {
     setup(&mut game, &probe, "minecraft:blaze", 42);
     probe.discard.store(true, Ordering::Relaxed);
     assert!(game.interact_entity(None).unwrap());
-    assert!(game.mobs[0].removed);
+    assert!(game.mobs[0].is_removed());
     assert!(game.dropped.is_empty());
     assert_eq!(game.swings_started, 0);
     assert_eq!(probe.calls.lock().unwrap().len(), 1);
@@ -202,7 +202,7 @@ fn actual_item_interact_mob_fallback_priority_and_filters() {
         setup(&mut game, &probe, "minecraft:zombie", 42);
         match invalid {
             "dead" => game.mobs[0].health = 0.0,
-            "removed" => game.mobs[0].removed = true,
+            "removed" => game.mobs[0].set_removed(horizon_client::mobs::RemovalReason::Discarded),
             "riding" => game.riding = Some(42),
             "empty" => game.inventory[0] = None,
             "zero" => game.inventory[0].as_mut().unwrap().count = 0,

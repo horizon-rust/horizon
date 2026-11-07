@@ -48,7 +48,7 @@ impl Game<'_> {
                     .map(|(id, _)| *id)?;
                 let t = g.level_entity(i32::try_from(id).ok()?)?;
                 if let Target::Mob(m) = t
-                    && !g.mobs.iter().any(|x| x.id == m && !x.removed)
+                    && !g.mobs.iter().any(|x| x.id == m && !x.is_removed())
                 {
                     return None;
                 }
@@ -107,7 +107,7 @@ impl Game<'_> {
                 return false;
             };
             let turns = match t {
-                Target::Mob(id) => g.mobs.iter().any(|m| m.id == id && !m.removed),
+                Target::Mob(id) => g.mobs.iter().any(|m| m.id == id && !m.is_removed()),
                 Target::Other(_)
                 | Target::Stand(_)
                 | Target::Boat(_)
@@ -199,7 +199,7 @@ impl Game<'_> {
         self.npc_in_level(dimension, |g| {
             g.mobs
                 .iter()
-                .any(|m| m.id == mob && !m.removed && m.alive() && m.ai.nav.is_in_progress())
+                .any(|m| m.id == mob && !m.is_removed() && m.alive() && m.ai.nav.is_in_progress())
         })
         .unwrap_or(false)
     }
@@ -237,7 +237,7 @@ impl Game<'_> {
     }
     /// `native_mob_attack` in the level in place.
     fn npc_mob_attack(&mut self, mob: u32, target: u32) -> bool {
-        let live = |m: &Mob, id: u32| m.id == id && !m.removed && m.alive();
+        let live = |m: &Mob, id: u32| m.id == id && !m.is_removed() && m.alive();
         let Some(i) = self.mobs.iter().position(|m| live(m, mob)) else {
             return false;
         };
@@ -304,7 +304,7 @@ impl Game<'_> {
             let i = g
                 .mobs
                 .iter()
-                .position(|m| m.id == mob && !m.removed && m.alive())?;
+                .position(|m| m.id == mob && !m.is_removed() && m.alive())?;
             let mut mobs = std::mem::take(&mut g.mobs);
             let out = f(&mut mobs[i], &g.mob_world_base(&[]));
             g.mobs = mobs;
@@ -327,7 +327,7 @@ impl Game<'_> {
         }
         let t = self.level_entity(i32::try_from(id).ok()?)?;
         if let Target::Mob(m) = t
-            && !self.mobs.iter().any(|x| x.id == m && !x.removed)
+            && !self.mobs.iter().any(|x| x.id == m && !x.is_removed())
         {
             return None;
         }

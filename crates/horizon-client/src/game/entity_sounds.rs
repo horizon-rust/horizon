@@ -100,7 +100,7 @@ impl Game<'_> {
             .map(|m| SoundEntityState {
                 position: [m.position.x, m.position.y, m.position.z],
                 silent: m.silent,
-                removed: m.removed,
+                removed: m.is_removed(),
             })
     }
 }

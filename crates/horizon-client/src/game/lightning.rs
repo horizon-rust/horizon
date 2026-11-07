@@ -594,7 +594,7 @@ impl Game<'_> {
             let at = [m.position.x, m.position.y, m.position.z];
             match m.species() {
                 Species::Pig if !peaceful && !keep => {
-                    m.removed = true;
+                    m.set_removed(horizon_client::mobs::RemovalReason::Discarded);
                     events.push(MobEvent::SpawnKind {
                         kind: "minecraft:zombified_piglin".into(),
                         at,
@@ -603,7 +603,7 @@ impl Game<'_> {
                     continue;
                 }
                 Species::Villager if !peaceful && !keep => {
-                    m.removed = true;
+                    m.set_removed(horizon_client::mobs::RemovalReason::Discarded);
                     events.push(MobEvent::SpawnKind {
                         kind: "minecraft:witch".into(),
                         at,

@@ -103,7 +103,7 @@ impl Game<'_> {
     /// ridden (`PiercingWeapon.canHitEntity`), with their index.
     pub(super) fn hittable_mob_boxes(&self) -> Vec<(usize, Aabb)> {
         (self.mobs.iter().enumerate())
-            .filter(|(_, m)| m.alive() && !m.removed && self.riding != Some(m.id))
+            .filter(|(_, m)| m.alive() && !m.is_removed() && self.riding != Some(m.id))
             .map(|(i, m)| (i, m.bounds()))
             .collect()
     }

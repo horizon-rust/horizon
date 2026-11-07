@@ -4249,7 +4249,11 @@ mod tests {
             let mut events = Vec::new();
             for tick in 1..=boundary {
                 crate::mobs::hostile::creeper_tick(&mut mob, &mut events);
-                assert_eq!(mob.removed, tick == boundary, "Fuse={fuse:?}, tick={tick}");
+                assert_eq!(
+                    mob.is_removed(),
+                    tick == boundary,
+                    "Fuse={fuse:?}, tick={tick}"
+                );
             }
             assert_eq!(
                 events

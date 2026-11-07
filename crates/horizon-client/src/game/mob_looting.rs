@@ -30,7 +30,7 @@ impl Game<'_> {
             let m = &self.mobs[i];
             if !m.can_pick_up_loot()
                 || !m.alive()
-                || m.removed
+                || m.is_removed()
                 || !self.creatures.ticked.contains(&m.id)
             {
                 continue;

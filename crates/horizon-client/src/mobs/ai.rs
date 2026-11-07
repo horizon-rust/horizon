@@ -614,12 +614,12 @@ pub fn tick(
     level_random: &mut LegacyRandom,
     events: &mut Vec<MobEvent>,
 ) -> bool {
-    if m.removed {
+    if m.is_removed() {
         return false;
     }
     // ServerLevel.tick checks despawning before ticking the entity.
     if !check_despawn(m, w) {
-        m.removed = true;
+        m.set_removed(super::RemovalReason::Discarded);
         return false;
     }
     // `Entity.computeSpeed`: what it moved in the last tick.
@@ -639,7 +639,7 @@ pub fn tick(
     drop_invalid_player_target(m, w);
     // Mob.tick pre-update hooks (Creeper.tick swells before super.tick).
     pre_tick(m, w, events);
-    if m.removed {
+    if m.is_removed() {
         return false;
     }
     if m.species() == Species::ZombieVillager {
@@ -1997,7 +1997,7 @@ fn endermite_lifetime(m: &mut Mob) {
         m.extra.counter += 1;
     }
     if m.extra.counter >= 2400 {
-        m.removed = true;
+        m.set_removed(super::RemovalReason::Discarded);
     }
 }
 fn species_ai_step(
@@ -2070,11 +2070,11 @@ fn species_ai_step(
 /// `Entity.checkDespawn` alone, for a mob outside the entity-ticking
 /// chunks. Returns false when the mob is gone.
 pub fn despawn_check(m: &mut Mob, w: &MobWorld) -> bool {
-    if m.removed {
+    if m.is_removed() {
         return false;
     }
     if !check_despawn(m, w) {
-        m.removed = true;
+        m.set_removed(super::RemovalReason::Discarded);
         return false;
     }
     true

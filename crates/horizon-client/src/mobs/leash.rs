@@ -320,7 +320,7 @@ pub fn can_be_leashed(m: &Mob) -> bool {
         // block in its body takes a lead. Its category is a monster's, which
         // `Mob.canBeLeashed`'s `!(this instanceof Enemy)` rule would refuse.
         S::SulfurCube => super::sulfur_cube::has_body(m),
-        _ => !m.hostile() && !m.removed,
+        _ => !m.hostile() && !m.is_removed(),
     }
 }
 /// `Leashable.tickLeash` at the end of `Entity.baseTick`.

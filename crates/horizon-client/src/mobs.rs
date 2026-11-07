@@ -1418,6 +1418,35 @@ impl BoxReach {
     }
 }
 
+/// Vanilla 26.3 `Entity$RemovalReason`: why an entity was removed from the world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RemovalReason {
+    /// Destroyed and not saved (`KILLED`).
+    Killed,
+    /// Destroyed and not saved (`DISCARDED`).
+    Discarded,
+    /// Kept for the chunk to save (`UNLOADED_TO_CHUNK`).
+    UnloadedToChunk,
+    /// Unloaded with the player and not saved (`UNLOADED_WITH_PLAYER`).
+    UnloadedWithPlayer,
+    /// Moving across dimensions and not saved here (`CHANGED_DIMENSION`).
+    ChangedDimension,
+}
+
+impl RemovalReason {
+    /// `RemovalReason.shouldDestroy`: true for KILLED and DISCARDED.
+    #[inline]
+    pub const fn should_destroy(self) -> bool {
+        matches!(self, Self::Killed | Self::Discarded)
+    }
+
+    /// `RemovalReason.shouldSave`: true only for UNLOADED_TO_CHUNK.
+    #[inline]
+    pub const fn should_save(self) -> bool {
+        matches!(self, Self::UnloadedToChunk)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Mob {
     /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
@@ -1524,8 +1553,8 @@ pub struct Mob {
     pub last_direct: Option<&'static str>,
     /// `LivingEntity.combatTracker`: the hits taken lately.
     pub combat: combat::Tracker,
-    /// Set by `remove`: the mob disappears without dying (conversion, despawn, pickup).
-    pub removed: bool,
+    /// Vanilla `Entity.removalReason`: why the mob was removed, or None while still in the world.
+    pub removal_reason: Option<RemovalReason>,
     /// Client-side animation clocks (attack swing, eating, shaking...).
     pub anim: anim::AnimState,
     /// Attribute values that differ per mob (slime size, babies, effects).
@@ -3194,7 +3223,7 @@ impl Mob {
             last_damage: None,
             last_direct: None,
             combat: combat::Tracker::default(),
-            removed: false,
+            removal_reason: None,
             custom_name: None,
             custom_name_text: None,
             name_visible: false,
@@ -3322,6 +3351,37 @@ impl Mob {
     pub fn alive(&self) -> bool {
         self.health > 0.0
     }
+    /// `Entity.isRemoved`: true once any removal reason has been set.
+    #[inline]
+    pub fn is_removed(&self) -> bool {
+        self.removal_reason.is_some()
+    }
+    /// `Entity.getRemovalReason`: why the mob was removed, or None while still in the world.
+    #[inline]
+    pub fn removal_reason(&self) -> Option<RemovalReason> {
+        self.removal_reason
+    }
+    /// `Entity.setRemoved`: keeps the first reason it is given; calls `stop_riding()`
+    /// when the reason `should_destroy()`.
+    pub fn set_removed(&mut self, reason: RemovalReason) {
+        if self.removal_reason.is_none() {
+            self.removal_reason = Some(reason);
+            if reason.should_destroy() {
+                self.stop_riding();
+            }
+        }
+    }
+    /// `LivingEntity.stopRiding` for this mob: leaves its vehicle and clears riders.
+    pub fn stop_riding(&mut self) {
+        riders::stop_riding(self, None);
+        self.rider = None;
+        self.extra.rider = None;
+    }
+    /// `Entity.shouldBeSaved`: false when a removal reason is set whose `should_save` is false.
+    #[inline]
+    pub fn should_be_saved(&self) -> bool {
+        self.removal_reason.is_none_or(RemovalReason::should_save)
+    }
     pub fn hostile(&self) -> bool {
         self.kind.category == "monster"
     }
@@ -3417,7 +3477,7 @@ impl Mob {
     /// past the flag. The guard every damage hook runs after (`LivingIncomingDamageEvent`).
     pub fn refuses_damage(&self, source: &Damage) -> bool {
         !self.alive()
-            || self.removed
+            || self.is_removed()
             || (self.invulnerable_flag && !source.kind.bypasses_invulnerability())
     }
     /// `LivingEntity.hurtServer`'s partial mob adapter, with health reductions inline.
@@ -3455,7 +3515,7 @@ impl Mob {
         // follows `super.hurtServer` whatever it answered (a hurt cooldown, a
         // dead enderman), its hurt sound's pitch included.
         let enderman = self.species() == Species::Enderman
-            && !self.removed
+            && !self.is_removed()
             && !(self.invulnerable_flag && !source.kind.bypasses_invulnerability());
         let hurt = self.hurt_server(amount, source, armor_effectiveness, player_uuid);
         if enderman {
@@ -3753,7 +3813,7 @@ impl Mob {
         // a lingering cloud's `indirect_magic` goes through it.
         let cloud = self.species() == Species::Enderman
             && direct == "minecraft:area_effect_cloud"
-            && !self.removed
+            && !self.is_removed()
             && !(self.invulnerable_flag && !source.kind.bypasses_invulnerability());
         let hurt = self.damage(amount, source);
         if cloud {
@@ -4938,7 +4998,7 @@ pub(crate) mod sensor_scan_tests {
                 .iter()
                 .map(|&q| {
                     mobs.iter()
-                        .any(|m| m.alive() && !m.removed && m.bounds().intersects(q))
+                        .any(|m| m.alive() && !m.is_removed() && m.bounds().intersects(q))
                 })
                 .collect();
             let before = t.elapsed().as_secs_f64() * 1e3;
@@ -6183,5 +6243,164 @@ mod visibility_percent_tests {
             sneaking.visibility_percent(Some("minecraft:skeleton"), Some(&items)),
             0.4
         );
+    }
+}
+
+#[cfg(test)]
+mod removal_reason_tests {
+    use super::sensor_scan_tests::kind;
+    use super::*;
+    use horizon_core::geometry::Vec3;
+
+    fn test_mob(id: u32) -> Mob {
+        Mob::new(id, kind(), Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn removal_reason_flag_semantics_match_vanilla() {
+        // Vanilla 26.3 Entity$RemovalReason table:
+        // KILLED: destroy=true, save=false
+        assert!(RemovalReason::Killed.should_destroy());
+        assert!(!RemovalReason::Killed.should_save());
+
+        // DISCARDED: destroy=true, save=false
+        assert!(RemovalReason::Discarded.should_destroy());
+        assert!(!RemovalReason::Discarded.should_save());
+
+        // UNLOADED_TO_CHUNK: destroy=false, save=true
+        assert!(!RemovalReason::UnloadedToChunk.should_destroy());
+        assert!(RemovalReason::UnloadedToChunk.should_save());
+
+        // UNLOADED_WITH_PLAYER: destroy=false, save=false
+        assert!(!RemovalReason::UnloadedWithPlayer.should_destroy());
+        assert!(!RemovalReason::UnloadedWithPlayer.should_save());
+
+        // CHANGED_DIMENSION: destroy=false, save=false
+        assert!(!RemovalReason::ChangedDimension.should_destroy());
+        assert!(!RemovalReason::ChangedDimension.should_save());
+    }
+
+    #[test]
+    fn set_removed_keeps_first_reason() {
+        let mut mob = test_mob(1);
+        assert!(!mob.is_removed());
+        assert_eq!(mob.removal_reason(), None);
+        assert!(mob.should_be_saved());
+
+        // First set reason is recorded
+        mob.set_removed(RemovalReason::UnloadedToChunk);
+        assert!(mob.is_removed());
+        assert_eq!(mob.removal_reason(), Some(RemovalReason::UnloadedToChunk));
+        assert!(mob.should_be_saved());
+
+        // Subsequent calls are ignored (first-reason-wins)
+        mob.set_removed(RemovalReason::Killed);
+        assert_eq!(mob.removal_reason(), Some(RemovalReason::UnloadedToChunk));
+        assert!(mob.should_be_saved());
+
+        mob.set_removed(RemovalReason::Discarded);
+        assert_eq!(mob.removal_reason(), Some(RemovalReason::UnloadedToChunk));
+        assert!(mob.should_be_saved());
+    }
+
+    #[test]
+    fn save_filter_only_saves_unloaded_to_chunk_among_removed() {
+        let unremoved = test_mob(1);
+        assert!(unremoved.should_be_saved());
+
+        let mut unloaded_chunk = test_mob(2);
+        unloaded_chunk.set_removed(RemovalReason::UnloadedToChunk);
+        assert!(
+            unloaded_chunk.should_be_saved(),
+            "UNLOADED_TO_CHUNK must be saved"
+        );
+
+        let mut killed = test_mob(3);
+        killed.set_removed(RemovalReason::Killed);
+        assert!(!killed.should_be_saved(), "KILLED must not be saved");
+
+        let mut discarded = test_mob(4);
+        discarded.set_removed(RemovalReason::Discarded);
+        assert!(!discarded.should_be_saved(), "DISCARDED must not be saved");
+
+        let mut unloaded_player = test_mob(5);
+        unloaded_player.set_removed(RemovalReason::UnloadedWithPlayer);
+        assert!(
+            !unloaded_player.should_be_saved(),
+            "UNLOADED_WITH_PLAYER must not be saved"
+        );
+
+        let mut changed_dim = test_mob(6);
+        changed_dim.set_removed(RemovalReason::ChangedDimension);
+        assert!(
+            !changed_dim.should_be_saved(),
+            "CHANGED_DIMENSION must not be saved"
+        );
+    }
+
+    #[test]
+    fn stop_riding_on_destroy_only() {
+        // Destroying reason (Killed) stops riding
+        let mut riding_killed = test_mob(10);
+        riding_killed.extra.mount = Some(99);
+        riding_killed.extra.passenger = true;
+        riding_killed.set_removed(RemovalReason::Killed);
+        assert_eq!(riding_killed.extra.mount, None);
+        assert!(!riding_killed.extra.passenger);
+
+        // Destroying reason (Discarded) stops riding
+        let mut riding_discarded = test_mob(11);
+        riding_discarded.extra.mount = Some(99);
+        riding_discarded.extra.passenger = true;
+        riding_discarded.set_removed(RemovalReason::Discarded);
+        assert_eq!(riding_discarded.extra.mount, None);
+        assert!(!riding_discarded.extra.passenger);
+
+        // Non-destroying reason (UnloadedToChunk) preserves mount
+        let mut riding_unloaded = test_mob(12);
+        riding_unloaded.extra.mount = Some(99);
+        riding_unloaded.extra.passenger = true;
+        riding_unloaded.set_removed(RemovalReason::UnloadedToChunk);
+        assert_eq!(riding_unloaded.extra.mount, Some(99));
+        assert!(riding_unloaded.extra.passenger);
+
+        // Non-destroying reason (ChangedDimension) preserves mount
+        let mut riding_dim = test_mob(13);
+        riding_dim.extra.mount = Some(99);
+        riding_dim.extra.passenger = true;
+        riding_dim.set_removed(RemovalReason::ChangedDimension);
+        assert_eq!(riding_dim.extra.mount, Some(99));
+        assert!(riding_dim.extra.passenger);
+    }
+
+    #[test]
+    fn stop_riding_and_eject_passengers_in_list() {
+        let mut mobs = vec![test_mob(1), test_mob(2)];
+        // mob 2 rides mob 1
+        mobs[1].extra.mount = Some(1);
+        mobs[1].extra.passenger = true;
+        mobs[0].extra.rider = Some(2);
+
+        // Non-destroying reason retains passengers
+        riders::set_removed_in_list(&mut mobs, 0, RemovalReason::UnloadedToChunk);
+        assert_eq!(
+            mobs[0].removal_reason(),
+            Some(RemovalReason::UnloadedToChunk)
+        );
+        assert_eq!(mobs[1].extra.mount, Some(1));
+        assert!(mobs[1].extra.passenger);
+
+        // New vehicle and rider
+        let mut mobs2 = vec![test_mob(10), test_mob(20)];
+        mobs2[1].extra.mount = Some(10);
+        mobs2[1].extra.passenger = true;
+        mobs2[0].extra.rider = Some(20);
+
+        // Destroying reason ejects passengers
+        riders::set_removed_in_list(&mut mobs2, 0, RemovalReason::Discarded);
+        assert_eq!(mobs2[0].removal_reason(), Some(RemovalReason::Discarded));
+        assert_eq!(mobs2[0].extra.rider, None);
+        assert_eq!(mobs2[1].extra.mount, None);
+        assert!(!mobs2[1].extra.passenger);
     }
 }

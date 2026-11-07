@@ -281,7 +281,7 @@ impl Game<'_> {
         let reach = attack_reach(range, self.creative);
         let camera = self.remote_camera_id();
         let boxes: Vec<(usize, Aabb)> = (self.mobs.iter().enumerate())
-            .filter(|(_, m)| !m.removed && Some(m.id) != self.riding && Some(m.id) != camera)
+            .filter(|(_, m)| !m.is_removed() && Some(m.id) != self.riding && Some(m.id) != camera)
             .map(|(i, m)| (i, m.bounds()))
             .collect();
         let clip = |from: Vec3, to: Vec3| {

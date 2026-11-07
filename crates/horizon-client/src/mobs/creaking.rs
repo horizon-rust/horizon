@@ -100,7 +100,7 @@ pub fn tear_down(m: &mut Mob, events: &mut Vec<MobEvent>) {
         ],
     });
     m.voice("entity.creaking.death", events);
-    m.removed = true;
+    m.set_removed(super::RemovalReason::Discarded);
 }
 /// `Creaking.hurtServer` for a heart-bound creaking: no damage, only the
 /// invulnerability animation and the heart's reaction. Returns whether the

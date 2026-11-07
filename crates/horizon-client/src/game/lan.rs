@@ -1929,7 +1929,7 @@ impl Game<'_> {
         let idle_at = |p: horizon_core::geometry::Vec3| {
             !levels.in_entity_ticking_range((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4)
         };
-        for m in self.mobs.iter().filter(|m| !m.removed && m.id > after) {
+        for m in self.mobs.iter().filter(|m| !m.is_removed() && m.id > after) {
             // The lead's holder: the player the mob sees, another mob or a
             // fence knot (game/lan_entities.rs).
             let player_entity = || {

@@ -17,7 +17,7 @@ pub struct Frame {
 /// Wings push even while perched and even when teams forbid damage.
 /// The normal mob damage handler owns armor, invulnerability frames and last-attacker bookkeeping.
 pub fn contact(m: &mut Mob, f: &Frame, teams_allow: bool) {
-    if f.recently_hurt || m.removed || m.id == f.dragon_id {
+    if f.recently_hurt || m.is_removed() || m.id == f.dragon_id {
         return;
     }
     let bounds = m.bounds();

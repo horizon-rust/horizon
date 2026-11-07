@@ -22,7 +22,7 @@ impl Game<'_> {
             let m = &self.mobs[i];
             if m.species() != Species::Fox
                 || !m.alive()
-                || m.removed
+                || m.is_removed()
                 || !self.creatures.ticked.contains(&m.id)
             {
                 continue;
@@ -88,7 +88,7 @@ impl Game<'_> {
             let m = &self.mobs[i];
             if m.species() != Species::Dolphin
                 || !m.alive()
-                || m.removed
+                || m.is_removed()
                 || !self.creatures.ticked.contains(&m.id)
             {
                 continue;

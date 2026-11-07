@@ -270,8 +270,8 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             // Tadpole.aiStep: growing up into a frog after 24000 ticks.
             if m.extra.age >= 0 && !m.extra.age_locked {
                 m.extra.age += 1;
-                if m.extra.age >= 24_000 && !m.removed {
-                    m.removed = true;
+                if m.extra.age >= 24_000 && !m.is_removed() {
+                    m.set_removed(super::RemovalReason::Discarded);
                     // Tadpole.ageUp: playSound at its feet, volume 0.15 (not
                     // when silent: Entity.playSound).
                     if !m.silent {
@@ -750,7 +750,10 @@ fn can_be_followed(s: Species, followers: i32) -> bool {
 /// `startFollowing` on a recruit, applied after the recruiter's tick. A fish
 /// another leader took this tick (its snapshot was older) stays with it.
 pub fn start_following(mobs: &mut [Mob], fish: u32, leader: u32) {
-    let alive = |mobs: &[Mob], id: u32| mobs.iter().any(|m| m.id == id && m.alive() && !m.removed);
+    let alive = |mobs: &[Mob], id: u32| {
+        mobs.iter()
+            .any(|m| m.id == id && m.alive() && !m.is_removed())
+    };
     let Some(current) = mobs.iter().find(|m| m.id == fish).map(|m| m.extra.leader) else {
         return;
     };

@@ -588,7 +588,7 @@ impl Game<'_> {
             for m in self
                 .mobs
                 .iter()
-                .filter(|m| m.species() == Species::Wither && m.alive() && !m.removed)
+                .filter(|m| m.species() == Species::Wither && m.alive() && !m.is_removed())
             {
                 let (dx, dz) = (m.position.x - viewer.at[0], m.position.z - viewer.at[2]);
                 if dx * dx + dz * dz > range * range {

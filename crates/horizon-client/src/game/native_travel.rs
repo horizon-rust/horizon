@@ -140,7 +140,7 @@ impl Game<'_> {
         } else if self
             .mobs
             .iter()
-            .any(|m| m.id == id && !m.removed && m.alive())
+            .any(|m| m.id == id && !m.is_removed() && m.alive())
         {
             Some(Target::Mob(id))
         } else {
@@ -254,7 +254,7 @@ impl Game<'_> {
         }
         self.mobs
             .iter()
-            .any(|m| m.id == entity && !m.removed && m.alive())
+            .any(|m| m.id == entity && !m.is_removed() && m.alive())
             .then_some(Target::Mob(entity))
     }
 

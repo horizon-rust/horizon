@@ -724,7 +724,7 @@ impl B {
                 } else {
                     sound(m, "entity.warden.agitated", 5.0, 1.0, cx.events);
                     // `stop` without `doStop`: discarded, still running.
-                    m.removed = true;
+                    m.set_removed(super::RemovalReason::Discarded);
                 }
                 true
             }
@@ -1042,7 +1042,7 @@ impl B {
                 }
             }
             B::Digging(t) => {
-                if now > t.end || m.removed {
+                if now > t.end || m.is_removed() {
                     self.do_stop(m, cx);
                 }
             }
@@ -1117,7 +1117,7 @@ impl B {
             }
             B::Digging(t) => {
                 t.running = false;
-                m.removed = true;
+                m.set_removed(super::RemovalReason::Discarded);
             }
             B::RunOne(g) => {
                 g.running = false;

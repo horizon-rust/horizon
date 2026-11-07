@@ -339,7 +339,7 @@ impl MobBoxes {
         let entries: Vec<_> = mobs
             .iter()
             .enumerate()
-            .filter(|(_, m)| !m.removed)
+            .filter(|(_, m)| !m.is_removed())
             .map(|(i, m)| mob_box(i, m))
             .collect();
         let grid = SeenGrid::new(entries.iter().map(|e| e.1));
@@ -366,7 +366,7 @@ impl GameLevel<'_, '_> {
                     .mobs
                     .iter()
                     .enumerate()
-                    .filter(|(_, m)| !m.removed)
+                    .filter(|(_, m)| !m.is_removed())
                     .map(|(i, m)| mob_box(i, m)),
             );
         }

@@ -35,7 +35,7 @@ impl Game<'_> {
             death_protection_of(models, item, stack)
                 .map(|component| horizon_client::items::death_effects(&component))
         };
-        for m in self.mobs.iter_mut().filter(|m| !m.removed) {
+        for m in self.mobs.iter_mut().filter(|m| !m.is_removed()) {
             if m.extra.main_hand.is_none() && m.extra.off_hand.is_none() {
                 m.extra.hand_protection = None;
                 continue;

@@ -236,7 +236,7 @@ impl Game<'_> {
             out.push(PLAYER);
         }
         for m in &self.mobs {
-            if !m.removed && m.bounds().intersects(area) {
+            if !m.is_removed() && m.bounds().intersects(area) {
                 out.push(u64::from(m.id));
             }
         }
@@ -254,7 +254,7 @@ impl Game<'_> {
             .unwrap_or_default();
         for m in &mut self.mobs {
             if m.alive()
-                && !m.removed
+                && !m.is_removed()
                 && nearby.contains(&u64::from(m.id))
                 && closer_to_center_than(pos, [m.position.x, m.position.y, m.position.z], 32.0)
             {
@@ -332,7 +332,7 @@ impl Game<'_> {
             let m = mobs.iter().find(|m| u64::from(m.id) == h)?;
             Some(BellEntity {
                 position: [m.position.x, m.position.y, m.position.z],
-                alive: m.alive() && !m.removed,
+                alive: m.alive() && !m.is_removed(),
                 raider: raiders.contains(&m.kind.id),
             })
         };
@@ -703,7 +703,7 @@ impl Game<'_> {
             Some(id) => self
                 .mobs
                 .iter()
-                .find(|m| m.id == id && !m.removed)
+                .find(|m| m.id == id && !m.is_removed())
                 .filter(|m| {
                     let at = [m.position.x, m.position.y, m.position.z].map(|v| v.floor() as i64);
                     m.alive()
@@ -738,7 +738,7 @@ impl Game<'_> {
         let near: Vec<(u32, bool, Vec3, f64)> = self
             .mobs
             .iter()
-            .filter(|m| m.hostile() && !m.removed && m.bounds().intersects(area))
+            .filter(|m| m.hostile() && !m.is_removed() && m.bounds().intersects(area))
             .map(|m| {
                 let top = m.position.y + f64::from(m.height());
                 (m.id, m.fluids.in_water, m.position, top)
@@ -762,7 +762,7 @@ impl Game<'_> {
     /// The conduit's `destroyTarget` as the client draws it.
     fn conduit_target(&self, pos: [i32; 3]) -> Option<ConduitTarget> {
         let id = self.be_anims.conduit_servers.get(&pos)?.target?;
-        let m = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
+        let m = self.mobs.iter().find(|m| m.id == id && !m.is_removed())?;
         Some(ConduitTarget {
             position: [m.position.x, m.position.y, m.position.z],
             eye_y: m.eye_y(),

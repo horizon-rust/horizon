@@ -57,7 +57,7 @@ impl Game<'_> {
         if !is_zombie(self.mobs[k].species())
             || self.mobs[v].species() != Species::Villager
             || self.mobs[v].alive()
-            || self.mobs[v].removed
+            || self.mobs[v].is_removed()
         {
             return;
         }
@@ -68,7 +68,7 @@ impl Game<'_> {
         }
         // The villager is gone without dying: no drops, no death animation.
         let old = self.mobs[v].clone();
-        self.mobs[v].removed = true;
+        self.mobs[v].set_removed(horizon_client::mobs::RemovalReason::Discarded);
         self.mobs[v].health = 0.0;
         let at = [old.position.x, old.position.y, old.position.z];
         let Some(id) = self.spawn_mob("minecraft:zombie_villager", at, old.persistent) else {
@@ -131,11 +131,11 @@ impl Game<'_> {
         let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
             return;
         };
-        if self.mobs[i].removed || zombie_villager::cure(&self.mobs[i]).is_none() {
+        if self.mobs[i].is_removed() || zombie_villager::cure(&self.mobs[i]).is_none() {
             return;
         }
         let old = self.mobs[i].clone();
-        self.mobs[i].removed = true;
+        self.mobs[i].set_removed(horizon_client::mobs::RemovalReason::Discarded);
         let at = [old.position.x, old.position.y, old.position.z];
         let Some(vid) = self.spawn_mob("minecraft:villager", at, old.persistent) else {
             return;

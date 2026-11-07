@@ -1244,7 +1244,7 @@ impl GameLevel<'_> {
             )
             .chain(&self.cart_boxes)
             .map(boxed)
-            .chain(b.mobs.iter().filter(|m| !m.removed).map(Mob::bounds))
+            .chain(b.mobs.iter().filter(|m| !m.is_removed()).map(Mob::bounds))
             .chain(
                 b.armor_stands
                     .iter()
@@ -6847,7 +6847,7 @@ impl Game<'_> {
             return false;
         };
         let mob = &self.mobs[index];
-        if mob.removed || !mob.alive() {
+        if mob.is_removed() || !mob.alive() {
             return false;
         }
         let (entity, kind) = (
@@ -11598,7 +11598,7 @@ impl Game<'_> {
         for m in &self.mobs {
             // Blaze.isOnFire: a charged blaze burns.
             let blazing = m.species() == horizon_client::mobs::Species::Blaze && m.extra.flag;
-            if (m.is_on_fire() || blazing) && !m.removed {
+            if (m.is_on_fire() || blazing) && !m.is_removed() {
                 let at = m.previous.lerp(m.position, alpha);
                 if !fire_visible([at.x, at.y, at.z], m.width(), m.height()) {
                     continue;
@@ -12442,7 +12442,8 @@ impl Game<'_> {
             // camera entity the pick starts from. EntitySelector.CAN_BE_PICKED
             // is isPickable — `!isRemoved`, not alive: a health-0 fake player
             // still answers a click.
-            if m.removed || Some(m.id) == self.riding || Some(m.id) == self.remote_camera_id() {
+            if m.is_removed() || Some(m.id) == self.riding || Some(m.id) == self.remote_camera_id()
+            {
                 continue;
             }
             if let Some(t) = ray_box(eye, dir, reach, m.bounds())

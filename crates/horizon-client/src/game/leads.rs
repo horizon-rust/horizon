@@ -298,8 +298,9 @@ impl Game<'_> {
         // Only this level's: the others' mobs aren't in place.
         if !self.lead_killers.is_empty() {
             let (mobs, dim) = (&self.mobs, self.dim);
-            self.lead_killers
-                .retain(|id, (_, at)| *at != dim || mobs.iter().any(|m| m.id == *id && !m.removed));
+            self.lead_killers.retain(|id, (_, at)| {
+                *at != dim || mobs.iter().any(|m| m.id == *id && !m.is_removed())
+            });
         }
         let player_uuid = self.level.player_uuid.unwrap_or([0, 0, 0, 1]);
         let owner_uuid = self

@@ -502,7 +502,7 @@ impl Game<'_> {
     /// A raid's members (`groupRaiderMap`): the living raiders it counts.
     fn raid_members(&self, id: i32) -> impl Iterator<Item = &Mob> {
         self.mobs.iter().filter(move |m| {
-            m.alive() && !m.removed && raider::state(m).is_some_and(|s| s.raid_id == Some(id))
+            m.alive() && !m.is_removed() && raider::state(m).is_some_and(|s| s.raid_id == Some(id))
         })
     }
     /// `getHealthOfLivingRaiders`, leaving out one raider.
@@ -534,7 +534,7 @@ impl Game<'_> {
     fn raider_infos(&self) -> HashMap<i32, Vec<RaiderInfo>> {
         let mut out: HashMap<i32, Vec<RaiderInfo>> = HashMap::new();
         for m in &self.mobs {
-            if !m.alive() || m.removed {
+            if !m.alive() || m.is_removed() {
                 continue;
             }
             let Some(s) = raider::state(m) else { continue };
@@ -563,7 +563,7 @@ impl Game<'_> {
         let pending: Vec<(u32, i32, i32, f32, bool)> = self
             .mobs
             .iter()
-            .filter(|m| m.alive() && !m.removed)
+            .filter(|m| m.alive() && !m.is_removed())
             .filter_map(|m| {
                 let s = raider::state(m)?;
                 (!s.registered).then_some(())?;

@@ -702,7 +702,7 @@ impl Game<'_> {
         };
         // CAN_BE_PICKED's isPickable (`!isRemoved`): a dead-but-tracked mob
         // — a fake player the server keeps at health 0 — is still here.
-        for m in self.mobs.iter().filter(|m| !m.removed) {
+        for m in self.mobs.iter().filter(|m| !m.is_removed()) {
             let mut v = json!({ "id": m.id, "kind": "mob", "health": m.health, "baby": m.is_baby(), "hurt_time": m.hurt_time });
             // VillagerData as this game knows it: on a client, what the
             // server's synched data says.

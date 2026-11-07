@@ -65,7 +65,7 @@ impl Game<'_> {
             let mobs = self
                 .mobs
                 .iter()
-                .filter(|m| !m.removed)
+                .filter(|m| !m.is_removed())
                 .filter_map(move |m| {
                     let (level, item) = brighter(
                         lum,

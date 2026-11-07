@@ -476,7 +476,7 @@ impl HeartHost for Host<'_> {
     }
     fn mob_for_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
         self.mob(uuid[3] as u32)
-            .filter(|m| !m.removed)
+            .filter(|m| !m.is_removed())
             .map(|m| m.id)
     }
     fn uuid_for(&mut self, id: u32) -> [i32; 4] {
@@ -657,7 +657,7 @@ fn player_hurt(player: Option<&PlayerView>, e: &MobEvent) -> bool {
 /// killed this tick).
 fn print(out: &mut String, t: i32, i: usize, m: &Mob, player_down: bool, now: i64) {
     let _ = write!(out, "{t} {i}");
-    if m.removed {
+    if m.is_removed() {
         // Entity.RemovalReason: the end of the death animation, else a discard.
         let reason = if m.alive() { "DISCARDED" } else { "KILLED" };
         let _ = writeln!(out, " removed {reason}");
@@ -1276,7 +1276,8 @@ pub fn main() -> horizon_client::Result<()> {
                 p.look = [f64::from(sin), -0.0, f64::from(cos)];
                 p.yaw = yaw;
             }
-            let mut snapshot: Vec<Seen> = mobs.iter().filter(|m| !m.removed).map(seen).collect();
+            let mut snapshot: Vec<Seen> =
+                mobs.iter().filter(|m| !m.is_removed()).map(seen).collect();
             // The snapshot by position, kept as the game keeps it.
             let mut grid = SeenGrid::new(snapshot.iter().map(|e| e.bounds));
             let w = mob_world!(&snapshot);
@@ -1284,7 +1285,7 @@ pub fn main() -> horizon_client::Result<()> {
             let mut heart_events = Vec::new();
             let mut added = Vec::new();
             for &(tick, i) in &s.hurts {
-                if tick != t || i >= mobs.len() || mobs[i].removed {
+                if tick != t || i >= mobs.len() || mobs[i].is_removed() {
                     continue;
                 }
                 let at = player
@@ -1328,7 +1329,7 @@ pub fn main() -> horizon_client::Result<()> {
             }
             for (tick, i, item) in &s.feeds {
                 let (tick, i) = (*tick, *i);
-                if tick != t || i >= mobs.len() || mobs[i].removed {
+                if tick != t || i >= mobs.len() || mobs[i].is_removed() {
                     continue;
                 }
                 // Horse.mobInteract's held-item branch (makeMad).
@@ -1353,7 +1354,7 @@ pub fn main() -> horizon_client::Result<()> {
             let mut pushes = horizon_client::mobs::PendingPushes::default();
             let mut born = Vec::new();
             for i in 0..mobs.len() {
-                if mobs[i].removed {
+                if mobs[i].is_removed() {
                     continue;
                 }
                 let w = mob_world!(&snapshot, Some(&grid));
@@ -1372,7 +1373,7 @@ pub fn main() -> horizon_client::Result<()> {
                 }
                 horizon_client::mobs::take_mob_pushes(&mut events, from, &mut pushes);
                 if !alive {
-                    m.removed = true;
+                    m.set_removed(horizon_client::mobs::RemovalReason::Killed);
                 }
                 // Apply the same detach/drop event as Game::break_leash.
                 for event in &events[from..] {
@@ -1498,14 +1499,14 @@ pub fn main() -> horizon_client::Result<()> {
                     };
                     world.block_entities.insert(key, BlockEntity::Beehive(hive));
                     if stored {
-                        mobs[i].removed = true;
+                        mobs[i].set_removed(horizon_client::mobs::RemovalReason::Discarded);
                     }
                 }
                 // ServerLevel ticks entities one after another: the ones
                 // after this mob see it as it is now.
                 if let Some(k) = snapshot.iter().position(|e| e.id == mobs[i].id) {
                     snapshot[k] = seen(&mobs[i]);
-                    snapshot[k].alive &= !mobs[i].removed;
+                    snapshot[k].alive &= !mobs[i].is_removed();
                     grid.update(k, snapshot[k].bounds);
                 }
             }

@@ -696,7 +696,7 @@ pub fn golem_summoners(mobs: &[Mob], i: usize, now: i64, needed: usize) -> Optio
         .iter()
         .enumerate()
         .filter(|(_, m)| {
-            m.species() == Species::Villager && !m.removed && m.bounds().intersects(area)
+            m.species() == Species::Villager && !m.is_removed() && m.bounds().intersects(area)
         })
         .map(|(j, _)| j)
         .collect();

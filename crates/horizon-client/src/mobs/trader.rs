@@ -318,7 +318,7 @@ pub fn ai_step(m: &mut Mob, _w: &MobWorld) {
     if m.extra.ints[5] > 0 && !m.extra.flag2 {
         m.extra.ints[5] -= 1;
         if m.extra.ints[5] == 0 {
-            m.removed = true;
+            m.set_removed(super::RemovalReason::Discarded);
         }
     }
 }

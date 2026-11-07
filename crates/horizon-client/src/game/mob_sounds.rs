@@ -16,7 +16,7 @@ impl Game<'_> {
     pub(super) fn start_riding_sound(&mut self) -> Option<RiddenSound> {
         let ridden = self
             .riding
-            .and_then(|id| self.mobs.iter().find(|m| m.id == id && !m.removed))
+            .and_then(|id| self.mobs.iter().find(|m| m.id == id && !m.is_removed()))
             .map(|m| {
                 let species = m.species();
                 let sound = RiddenSound {
@@ -64,7 +64,7 @@ impl Game<'_> {
             .mobs
             .iter()
             .filter(|m| {
-                !m.removed
+                !m.is_removed()
                     && matches!(
                         m.species(),
                         Species::Bee

@@ -605,7 +605,7 @@ impl Game<'_> {
                     .map(|m| (m, m.bounds()))
                     .filter(|(m, b)| {
                         close(b)
-                            && !m.removed
+                            && !m.is_removed()
                             && m.extra.mount != Some(c.id)
                             && (m.pushable()
                                 || m.species() == horizon_client::mobs::Species::Shulker
@@ -754,7 +754,7 @@ impl Game<'_> {
             || self
                 .mobs
                 .iter()
-                .any(|m| !m.removed && m.extra.mount == Some(id))
+                .any(|m| !m.is_removed() && m.extra.mount == Some(id))
     }
     /// `OldMinecartBehavior.moveAlongTrack`.
     fn move_along_track(&mut self, c: &mut Minecart, pos: [i32; 3], rail: &Rail, intent: [f64; 2]) {
@@ -1584,7 +1584,7 @@ impl Game<'_> {
             .iter()
             .enumerate()
             .filter(|(_, m)| {
-                !m.removed
+                !m.is_removed()
                     && m.alive()
                     && m.species() != Species::Bat
                     && pushable_by(teams.of(Who::Mob(m.id)), None, true)
@@ -1705,7 +1705,7 @@ impl Game<'_> {
             .filter(|&j| {
                 let m = &self.mobs[j];
                 // The box first: it turns away nearly every mob of the level.
-                if m.removed || m.extra.mount == Some(id) || !hitbox.intersects(m.bounds()) {
+                if m.is_removed() || m.extra.mount == Some(id) || !hitbox.intersects(m.bounds()) {
                     return false;
                 }
                 m.pushable() && pushable_by(None, teams.of(Who::Mob(m.id)), true)

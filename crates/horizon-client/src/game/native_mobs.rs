@@ -32,7 +32,7 @@ impl Game<'_> {
         }
         let ticking = self.entity_ticking_area();
         let mut changes = Vec::new();
-        for m in self.mobs.iter_mut().filter(|m| !m.removed) {
+        for m in self.mobs.iter_mut().filter(|m| !m.is_removed()) {
             if !ticking(m.position.x.floor() as i32, m.position.z.floor() as i32) {
                 continue;
             }
@@ -225,7 +225,7 @@ impl Game<'_> {
         if !self.native_mob_level(dimension) {
             return None;
         }
-        let mob = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
+        let mob = self.mobs.iter().find(|m| m.id == id && !m.is_removed())?;
         mob.alive().then(|| self.native_mob_of(mob))
     }
     /// The living mobs in the level in place, `dimension`; none on a client's
@@ -236,7 +236,7 @@ impl Game<'_> {
         }
         self.mobs
             .iter()
-            .filter(|m| !m.removed && m.alive())
+            .filter(|m| !m.is_removed() && m.alive())
             .map(|m| self.native_mob_of(m))
             .collect()
     }
@@ -247,7 +247,7 @@ impl Game<'_> {
         if !self.native_mob_level(dimension) || !spawnable(pos) {
             return false;
         }
-        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.is_removed()) else {
             return false;
         };
         let to = Vec3::new(pos[0], pos[1], pos[2]);
@@ -269,7 +269,7 @@ impl Game<'_> {
         if !self.native_mob_level(dimension) || !finite(velocity) {
             return false;
         }
-        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.is_removed()) else {
             return false;
         };
         m.velocity = Vec3::new(
@@ -290,7 +290,7 @@ impl Game<'_> {
         let Some(m) = self
             .mobs
             .iter_mut()
-            .find(|m| m.id == id && !m.removed && m.alive())
+            .find(|m| m.id == id && !m.is_removed() && m.alive())
         else {
             return false;
         };
@@ -313,10 +313,10 @@ impl Game<'_> {
         if !self.native_mob_level(dimension) {
             return false;
         }
-        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.is_removed()) else {
             return false;
         };
-        m.removed = true;
+        m.set_removed(horizon_client::mobs::RemovalReason::Discarded);
         true
     }
     fn native_mob_of(&self, m: &horizon_client::mobs::Mob) -> NativeMob {

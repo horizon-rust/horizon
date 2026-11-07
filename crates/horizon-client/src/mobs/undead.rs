@@ -601,7 +601,7 @@ fn convert(m: &mut Mob, kind: &'static str, cx: &mut Cx) {
         kind,
         params: super::conversion::Params::KEEP_ALL,
     });
-    m.removed = true;
+    m.set_removed(super::RemovalReason::Discarded);
 }
 pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
     if m.species() == Species::Skeleton && m.alive() && !m.no_ai {
@@ -1337,7 +1337,7 @@ mod conversion_tests {
                 events: &mut events,
             };
             custom_server_ai_step(&mut m, &mut cx);
-            assert!(m.removed, "the {kind} is discarded");
+            assert!(m.is_removed(), "the {kind} is discarded");
             let new = events.iter().find_map(|e| resolve(e, types));
             out = Some(new.expect("the conversion makes a new mob"));
         });

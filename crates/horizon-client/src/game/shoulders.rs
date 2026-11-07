@@ -35,11 +35,9 @@ impl Game<'_> {
     /// `ServerPlayer.setEntityOnShoulder` for a parrot that touched its
     /// owner: stored in the first free slot, the parrot gone from the world.
     pub(super) fn parrot_to_shoulder(&mut self, mob: u32) {
-        let Some(i) = self
-            .mobs
-            .iter()
-            .position(|m| m.id == mob && m.alive() && !m.removed && m.species() == Species::Parrot)
-        else {
+        let Some(i) = self.mobs.iter().position(|m| {
+            m.id == mob && m.alive() && !m.is_removed() && m.species() == Species::Parrot
+        }) else {
             return;
         };
         let Some(p) = self.player.as_ref() else {
@@ -70,7 +68,7 @@ impl Game<'_> {
         }
         let (uuid, now) = (self.acting_uuid(), self.world.game_time);
         self.creatures.shoulder_time.insert(uuid, now);
-        self.mobs[i].removed = true;
+        self.mobs[i].set_removed(horizon_client::mobs::RemovalReason::Discarded);
     }
 
     /// `ServerPlayer.handleShoulderEntities`: the parrots leave the shoulder
@@ -131,7 +129,7 @@ impl Game<'_> {
         let nearby: Vec<_> = self
             .mobs
             .iter()
-            .filter(|m| m.alive() && !m.removed && m.bounds().intersects(area))
+            .filter(|m| m.alive() && !m.is_removed() && m.bounds().intersects(area))
             .map(|m| (m.species(), m.silent))
             .collect();
         let peaceful = self.ui.difficulty == 0;

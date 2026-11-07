@@ -227,7 +227,7 @@ impl Goal for SilverfishMergeWithStone {
                 infested: true,
                 poof: Some(m.id),
             });
-            m.removed = true;
+            m.set_removed(super::RemovalReason::Discarded);
         }
     }
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
@@ -426,6 +426,6 @@ pub fn creeper_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
                 color,
             });
         }
-        m.removed = true;
+        m.set_removed(super::RemovalReason::Discarded);
     }
 }

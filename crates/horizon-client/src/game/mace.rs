@@ -455,7 +455,10 @@ impl Game<'_> {
         let heavy = if fall > HEAVY_THRESHOLD { 2.0 } else { 1.0 };
         let player = Some(self.acting_uuid());
         for m in self.mobs.iter_mut().filter(|m| {
-            target != Spared::Mob(m.id) && m.alive() && !m.removed && !ally_of_player(m, player)
+            target != Spared::Mob(m.id)
+                && m.alive()
+                && !m.is_removed()
+                && !ally_of_player(m, player)
         }) {
             let resistance = m.knockback_resistance();
             smash_push(center, heavy, m.position, &mut m.velocity, resistance);
@@ -576,7 +579,7 @@ impl Game<'_> {
         for m in &self.mobs {
             if spared != Spared::Mob(m.id)
                 && m.alive()
-                && !m.removed
+                && !m.is_removed()
                 && !allies.contains(&m.id)
                 && !ally_of_player(m, uuid)
                 && m.bounds().intersects(area)

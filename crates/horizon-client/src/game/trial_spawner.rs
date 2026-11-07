@@ -66,14 +66,14 @@ impl TrialSpawnerLevel for GameLevel<'_, '_> {
     fn entity_block(&self, uuid: Uuid) -> Option<[i32; 3]> {
         let (id, _) = self.game.persist.uuids.iter().find(|(_, u)| **u == uuid)?;
         let m = self.game.mobs.iter().find(|m| m.id == *id)?;
-        (!m.removed && m.alive())
+        (!m.is_removed() && m.alive())
             .then(|| [m.position.x, m.position.y, m.position.z].map(|v| v.floor() as i32))
     }
     fn entity_box(&self, uuid: Uuid) -> Option<([f64; 3], f32)> {
         let (id, _) = self.game.persist.uuids.iter().find(|(_, u)| **u == uuid)?;
         let m = self.game.mobs.iter().find(|m| m.id == *id)?;
         let b = m.bounds();
-        (!m.removed && m.alive()).then(|| {
+        (!m.is_removed() && m.alive()).then(|| {
             (
                 [m.position.x, m.position.y, m.position.z],
                 (b.max_position().y - b.min_position().y) as f32,
@@ -253,7 +253,7 @@ impl Game<'_> {
                     if let Some((id, _)) = id
                         && let Some(m) = self.mobs.iter_mut().find(|m| m.id == *id)
                     {
-                        m.removed = true;
+                        m.set_removed(horizon_client::mobs::RemovalReason::Discarded);
                     }
                 }
                 TrialEvent::SoundAt(name, at, pitch) => self.audio.play(

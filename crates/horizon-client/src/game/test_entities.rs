@@ -39,13 +39,13 @@ impl Game<'_> {
     pub(super) fn discard_entities_in(&mut self, bounds: Aabb) {
         let at = |v: horizon_core::geometry::Vec3| [v.x, v.y, v.z];
         for m in &mut self.mobs {
-            if !m.removed
+            if !m.is_removed()
                 && intersects(
                     standing(at(m.position), f64::from(m.width()), f64::from(m.height())),
                     bounds,
                 )
             {
-                m.removed = true;
+                m.set_removed(horizon_client::mobs::RemovalReason::Discarded);
             }
         }
         // EntityType.ITEM and EXPERIENCE_ORB.

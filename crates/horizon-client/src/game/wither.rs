@@ -134,7 +134,7 @@ impl Game<'_> {
     ) -> horizon_client::Result<()> {
         // Projectile.getOwner: none once the owner is gone.
         let live_owner = match p.owner {
-            Some(Who::Mob(id)) if self.mobs.iter().any(|m| m.id == id && !m.removed) => {
+            Some(Who::Mob(id)) if self.mobs.iter().any(|m| m.id == id && !m.is_removed()) => {
                 Some(Who::Mob(id))
             }
             Some(Who::Mob(_)) => None,

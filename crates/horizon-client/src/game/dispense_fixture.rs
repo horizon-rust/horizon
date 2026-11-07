@@ -1141,7 +1141,7 @@ impl Game<'_> {
                     return line + "removed";
                 };
                 line.push_str(&m.kind.id);
-                if m.removed || !m.alive() {
+                if m.is_removed() || !m.alive() {
                     line.push_str(" removed");
                 }
                 let s = m.species();

@@ -84,7 +84,7 @@ impl Game<'_> {
                 .iter()
                 .filter(|m| {
                     m.species() == Species::CopperGolem
-                        && !m.removed
+                        && !m.is_removed()
                         && m.extra
                             .opened_chest
                             .is_some_and(|o| o == p || Some(o) == other)
@@ -184,7 +184,7 @@ impl Game<'_> {
             self.break_leash(m.id, true, false);
             m.extra.leash = None;
         }
-        m.removed = true;
+        m.set_removed(horizon_client::mobs::RemovalReason::Discarded);
         self.audio.play(
             "minecraft:entity.copper_golem_become_statue",
             Some([m.position.x, m.position.y, m.position.z]),

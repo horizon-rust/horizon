@@ -229,7 +229,7 @@ impl Game<'_> {
         };
         // A source entity that is gone reads as none (VibrationInfo.getEntity).
         let alive = |w: Option<Who>| match w {
-            Some(Who::Mob(id)) if !self.mobs.iter().any(|m| m.id == id && !m.removed) => None,
+            Some(Who::Mob(id)) if !self.mobs.iter().any(|m| m.id == id && !m.is_removed()) => None,
             other => other,
         };
         format!(

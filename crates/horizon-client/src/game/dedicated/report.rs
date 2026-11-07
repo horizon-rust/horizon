@@ -300,7 +300,7 @@ impl Game<'_> {
                     world: &horizon_client::world::World,
                     mobs: &[horizon_client::mobs::Mob]| {
             let mut by_type: BTreeMap<&str, usize> = BTreeMap::new();
-            for m in mobs.iter().filter(|m| !m.removed) {
+            for m in mobs.iter().filter(|m| !m.is_removed()) {
                 *by_type.entry(&m.kind.id).or_default() += 1;
             }
             let mut by_type: Vec<_> = by_type.into_iter().collect();
@@ -309,7 +309,7 @@ impl Game<'_> {
                 "dimension": dim.id(),
                 "chunks": world.chunks.len(),
                 "block_entities": world.block_entities.len(),
-                "mobs": mobs.iter().filter(|m| !m.removed).count(),
+                "mobs": mobs.iter().filter(|m| !m.is_removed()).count(),
                 "mobs_by_type": by_type.into_iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
             })
         };

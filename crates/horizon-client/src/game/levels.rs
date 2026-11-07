@@ -176,7 +176,7 @@ impl Levels {
     pub(super) fn parked_entity_count(&self, dim: Dim) -> Option<usize> {
         let l = self.parked.get(&dim)?;
         Some(
-            l.mobs.iter().filter(|m| !m.removed).count()
+            l.mobs.iter().filter(|m| !m.is_removed()).count()
                 + l.dropped.len()
                 + l.orbs.len()
                 + l.projectiles.len()

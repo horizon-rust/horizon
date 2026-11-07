@@ -136,7 +136,7 @@ fn has_required_logs(b: &Blocks, state: BlockStateId, pos: [i32; 3]) -> bool {
 pub fn protector(heart: &mut CreakingHeart, host: &impl HeartHost) -> Option<u32> {
     let (id, uuid) = heart.creaking?;
     if let Some(id) = id {
-        if host.mob(id).is_some_and(|m| !m.removed) {
+        if host.mob(id).is_some_and(|m| !m.is_removed()) {
             return Some(id);
         }
         // setCreakingInfo(uuid)

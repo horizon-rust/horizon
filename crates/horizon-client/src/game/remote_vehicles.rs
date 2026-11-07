@@ -583,7 +583,7 @@ impl Game<'_> {
             mob.tick(&world, &mut random, &mut events);
         }
         // Only the server's packets take the mount away.
-        mob.removed = false;
+        mob.removal_reason = None;
         self.world.random = random;
         self.mobs.insert(i, mob);
         // #4821: footstep, gallop, breathe, splash and landing sounds from mob.tick

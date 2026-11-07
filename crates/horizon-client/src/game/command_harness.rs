@@ -327,7 +327,7 @@ impl Game<'_> {
                         let m = g
                             .mobs
                             .iter()
-                            .find(|m| m.id == id && m.alive() && !m.removed)
+                            .find(|m| m.id == id && m.alive() && !m.is_removed())
                             .ok_or("anger state: missing live actor")?;
                         if Some(m.kind.id.as_str()) != op["kind"].as_str() {
                             return Err("anger state: wrong actor type".into());

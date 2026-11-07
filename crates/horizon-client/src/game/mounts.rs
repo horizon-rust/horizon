@@ -153,7 +153,7 @@ impl Game<'_> {
             || self
                 .mobs
                 .iter()
-                .any(|r| r.alive() && !r.removed && r.extra.mount == Some(id))
+                .any(|r| r.alive() && !r.is_removed() && r.extra.mount == Some(id))
         {
             return Some(false);
         }
@@ -287,7 +287,7 @@ impl Game<'_> {
             && self
                 .mobs
                 .iter()
-                .any(|p| p.extra.mount == Some(id) && !p.removed && p.alive())
+                .any(|p| p.extra.mount == Some(id) && !p.is_removed() && p.alive())
         {
             return false;
         }

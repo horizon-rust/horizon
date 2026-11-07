@@ -118,7 +118,7 @@ fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
         "after_uuid": game.target_with_uuid(removed_uuid).is_some(),
         "after_enumeration": after_enumeration,
         "after_save": saved.values().any(|tags| !tags.is_empty()),
-        "removed": game.mobs[0].removed,
+        "removed": game.mobs[0].is_removed(),
     });
     if let Some(path) = std::env::var_os("HORIZON_DISCARD_REPORT") {
         std::fs::write(path, serde_json::to_vec(&report).unwrap()).unwrap();

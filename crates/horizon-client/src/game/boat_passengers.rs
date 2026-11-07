@@ -32,13 +32,13 @@ fn carries(m: &Mob) -> bool {
 /// `Mob::pushable` plus the shulkers it leaves out (they take no push, but
 /// count), less a ridden horse (`AbstractHorse.isPushable`).
 fn pushable(m: &Mob) -> bool {
-    !m.removed
+    !m.is_removed()
         && (m.pushable() || m.species() == Species::Shulker && m.alive())
         && !(equine::is_equine(m.species()) && carries(m))
 }
 /// Whether `Entity.push` moves the mob: it is pushable and carries no one.
 fn moved_by_push(m: &Mob) -> bool {
-    !m.removed && m.pushable() && !carries(m)
+    !m.is_removed() && m.pushable() && !carries(m)
 }
 /// `Entity.push(Entity)`: the push `other` gets from `this` (which takes the
 /// opposite one), or None when they stand on nearly the same spot.
@@ -101,7 +101,7 @@ impl Game<'_> {
         (0..self.mobs.len())
             .filter(|&j| {
                 let m = &self.mobs[j];
-                m.extra.mount == Some(id) && !m.removed && m.alive()
+                m.extra.mount == Some(id) && !m.is_removed() && m.alive()
             })
             .collect()
     }
@@ -405,7 +405,7 @@ impl Game<'_> {
                 .into_iter()
                 .flatten()
                 .copied()
-                .filter(|&j| !self.mobs[j].removed && self.mobs[j].alive())
+                .filter(|&j| !self.mobs[j].is_removed() && self.mobs[j].alive())
                 .collect();
             if mobs.is_empty() {
                 continue;

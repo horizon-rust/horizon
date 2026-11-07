@@ -1342,7 +1342,7 @@ impl Game<'_> {
             || self
                 .mobs
                 .iter()
-                .any(|m| !m.removed && m.alive() && m.bounds().intersects(bounds))
+                .any(|m| !m.is_removed() && m.alive() && m.bounds().intersects(bounds))
         {
             return false;
         }

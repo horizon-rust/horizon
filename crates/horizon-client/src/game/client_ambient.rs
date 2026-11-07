@@ -23,7 +23,7 @@ impl Game<'_> {
         let following = self.remote.is_some();
         let mut events = Vec::new();
         let random = self.particles.level_random();
-        for m in self.mobs.iter_mut().filter(|m| !m.removed) {
+        for m in self.mobs.iter_mut().filter(|m| !m.is_removed()) {
             ambient::client_ai_step(m, &mut events);
             ambient::client_particles(m, random, &mut events);
             if following && m.species() == horizon_client::mobs::Species::Wither {

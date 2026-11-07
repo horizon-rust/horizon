@@ -52,7 +52,7 @@ impl Game<'_> {
         let id = gm.merchant.mob?;
         self.mobs
             .iter()
-            .find(|m| m.id == id && m.alive() && !m.removed)?;
+            .find(|m| m.id == id && m.alive() && !m.is_removed())?;
         let stack = |s: &Option<ItemStack>| s.as_ref().map(|s| json!([s.item.as_ref(), s.count]));
         let session = &gm.merchant.session;
         Some((

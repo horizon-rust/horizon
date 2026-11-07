@@ -1056,7 +1056,7 @@ impl Entity for Mob {
     /// `PersistentEntitySectionManager.Callback.onRemove`: discard stops
     /// section enumeration immediately, before the entity list is swept.
     fn selector_target(&self) -> Option<Target> {
-        (!self.removed && self.death_time == 0).then_some(Target::Mob(self.id))
+        (!self.is_removed() && self.death_time == 0).then_some(Target::Mob(self.id))
     }
     fn bounds(&self) -> Aabb {
         Mob::bounds(self)
@@ -1068,10 +1068,10 @@ impl Entity for Mob {
         self.kind.step_height as f32
     }
     fn is_alive(&self) -> bool {
-        !self.removed && self.alive()
+        !self.is_removed() && self.alive()
     }
     fn is_removed(&self) -> bool {
-        self.removed
+        self.is_removed()
     }
     fn is_living(&self) -> bool {
         true
