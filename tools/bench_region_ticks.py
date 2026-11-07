@@ -76,7 +76,7 @@ def run(mode, args, out):
     port = lab.free_port()
     properties = dict(bench.PROPERTIES, **{
         'server-port': str(port), 'server-ip': '127.0.0.1',
-        'view-distance': '2', 'simulation-distance': '2',
+        'view-distance': str(args.view_distance), 'simulation-distance': str(args.simulation_distance),
         'level-type': 'minecraft\\:flat', 'generate-structures': 'false',
         'gamemode': 'survival', 'difficulty': 'normal', 'allow-flight': 'true',
     })
@@ -117,7 +117,7 @@ def run(mode, args, out):
         bots = subprocess.Popen([
             str(args.bin / 'horizon-bots'), '--server', f'127.0.0.1:{port}',
             '--bots', str(args.players), '--behaviour', args.behaviour, '--name', 'RegionBot',
-            '--join-every', '.1', '--seconds', '1200', '--view-distance', '2',
+            '--join-every', '.1', '--seconds', '1200', '--view-distance', str(args.view_distance),
             '--ground', '--seed', '12345', '--report', '-',
             # Walkers stay on the flat ground, within 48 blocks of their own teleport.
             *(['--height', '0', '--walk-from-teleport'] if args.behaviour == 'walk' else []),
@@ -256,7 +256,10 @@ def main():
     parser.add_argument('--species', default='zombie', help='comma-separated: a mixed population takes turns')
     parser.add_argument('--spacing', type=int, default=512)
     parser.add_argument('--workers', type=int, default=8)
-    parser.add_argument('--settle', type=int, default=20)
+    parser.add_argument('--settle', type=int, default=20, help='seconds after the teleports, for chunks to load')
+    parser.add_argument('--view-distance', type=int, default=2,
+                        help='a player loads 2N+1 chunks across: keep --spacing above (2N+2)*16 for separate regions')
+    parser.add_argument('--simulation-distance', type=int, default=2)
     parser.add_argument('--warmup', type=int, default=15, help='simulation seconds, stepped as exactly N*20 frozen ticks')
     parser.add_argument('--seconds', type=int, default=20)
     parser.add_argument('--modes', default='legacy,parallel')
