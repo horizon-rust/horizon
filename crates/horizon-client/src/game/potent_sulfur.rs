@@ -13,7 +13,8 @@ use horizon_client::{
     block_entities::Pos,
     containers::BlockEntity,
     effects::EffectInstance,
-    mobs::Mob,
+    join_seq::{JoinList, ListStamp},
+    mobs::{Mob, seen_grid::SeenGrid},
     particles::{ParticleLevel, ParticleOptions, ParticleType as T},
     potent_sulfur::{
         can_be_reached_by_noxious_gas, find_noxious_gas_source_block, unobstructed_block_count,
@@ -25,6 +26,22 @@ use horizon_core::{
     random::{PositionalRandom, RandomSource, XoroshiroRandom},
 };
 use horizon_world::{level::flags, registry::BlockStateId};
+
+/// The mobs' boxes for one block entity pass, built when a geyser's gas first
+/// looks for mobs and kept until the mob list's next write (a spawner's mob, a
+/// launch), so every geyser of the pass reads its neighbours, not every mob.
+#[derive(Default)]
+pub(super) struct PassMobs {
+    grid: Option<(ListStamp, SeenGrid)>,
+}
+impl PassMobs {
+    /// The list was written without moving, adding or removing a mob.
+    fn wrote(&mut self, mobs: &JoinList<Mob>) {
+        if let Some((stamp, _)) = &mut self.grid {
+            *stamp = mobs.stamp();
+        }
+    }
+}
 
 /// `PotentSulfurBlockEntity.GEYSER_SALT`.
 const GEYSER_SALT: i64 = -904_011_478;
@@ -172,24 +189,58 @@ impl Game<'_> {
         {
             self.as_fight_player(player.who, |g| g.apply_nausea_effect_to_player(source));
         }
+        let mut near = Vec::new();
+        if !self.mobs_in_pass(area, &mut near) {
+            near.extend(0..self.simulation.mobs.len() as u32);
+        }
         let level = ParticleLevel {
             world: &self.simulation.world,
             facts: self.res.facts(),
             collision: self.collision,
             player: None,
         };
-        let tags = &self.res.stations().enchantments.entity_tags;
-        for mob in self
-            .simulation
-            .mobs
-            .iter_mut()
-            .filter(|m| m.alive() && m.bounds().intersects(area))
-        {
-            let eye = [mob.position.x, mob.eye_y(), mob.position.z];
-            if can_be_reached_by_noxious_gas(&level, source, eye) {
-                apply_nausea_effect_to_mob(mob, tags);
-            }
+        // The gas reads blocks only, so the mobs it reaches can be found
+        // before any gets its effect.
+        near.retain(|&j| {
+            let mob = &self.simulation.mobs[j as usize];
+            mob.alive()
+                && mob.bounds().intersects(area)
+                && can_be_reached_by_noxious_gas(
+                    &level,
+                    source,
+                    [mob.position.x, mob.eye_y(), mob.position.z],
+                )
+        });
+        if near.is_empty() {
+            return;
         }
+        let tags = &self.res.stations().enchantments.entity_tags;
+        for j in near {
+            apply_nausea_effect_to_mob(&mut self.simulation.mobs[j as usize], tags);
+        }
+        // An effect moves no mob and changes no list: the grid still holds.
+        if let Some(pass) = self.pass_mobs.as_mut() {
+            pass.wrote(&self.simulation.mobs);
+        }
+    }
+
+    /// The slots of the mobs whose box may meet `area`, from a grid kept for
+    /// the block entity pass; false outside the pass: scan them all.
+    fn mobs_in_pass(&mut self, area: Aabb, out: &mut Vec<u32>) -> bool {
+        let Some(pass) = self.pass_mobs.as_mut() else {
+            return false;
+        };
+        let mobs = &self.simulation.mobs;
+        if pass
+            .grid
+            .as_ref()
+            .is_none_or(|(stamp, _)| *stamp != mobs.stamp())
+        {
+            pass.grid = Some((mobs.stamp(), SeenGrid::new(mobs.iter().map(Mob::bounds))));
+        }
+        pass.grid
+            .as_ref()
+            .is_some_and(|(_, grid)| grid.candidates(area, out))
     }
 
     /// `PotentSulfurBlockEntity.applyNauseaEffect` on the player acting (a
@@ -314,14 +365,18 @@ impl Game<'_> {
         let area = launch_area(pos, height);
         let limit = f64::from(0.3f32) + f64::from(water_blocks) * 0.1;
         let push = f64::from(0.2f32);
+        let mut near = Vec::new();
+        if !self.mobs_in_pass(area, &mut near) {
+            near.extend(0..self.simulation.mobs.len() as u32);
+        }
+        near.retain(|&j| {
+            let m = &self.simulation.mobs[j as usize];
+            m.alive() && m.bounds().intersects(area)
+        });
         let tags = &self.res.stations().enchantments.entity_tags;
         let immune = tags.get("minecraft:not_affected_by_geysers");
-        for mob in self
-            .simulation
-            .mobs
-            .iter_mut()
-            .filter(|m| m.alive() && m.bounds().intersects(area))
-        {
+        for &j in &near {
+            let mob = &mut self.simulation.mobs[j as usize];
             // Entity.checkFallDistanceAccumulation.
             if mob.velocity.y > -0.5 && mob.fall_distance > 1.0 {
                 mob.fall_distance = 1.0;
@@ -332,6 +387,12 @@ impl Game<'_> {
             {
                 mob.velocity.y += push;
             }
+        }
+        // A push changes velocities, not boxes: the grid still holds.
+        if !near.is_empty()
+            && let Some(pass) = self.pass_mobs.as_mut()
+        {
+            pass.wrote(&self.simulation.mobs);
         }
         for item in self
             .simulation
