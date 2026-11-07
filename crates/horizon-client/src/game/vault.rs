@@ -17,22 +17,27 @@ use horizon_core::random::LegacyRandom;
 
 type Pos = (i32, i32, i32);
 
-/// What a vault reads: the game time and the players.
-struct Players {
+/// What a vault reads: the game time and the players. A vault looks for
+/// players once a second at most (`STATE_DELAY`), so the list is only made
+/// when it asks.
+struct Players<'g, 'a> {
     time: i64,
-    players: Vec<VaultPlayer>,
+    game: &'g Game<'a>,
+    players: std::cell::OnceCell<Vec<VaultPlayer>>,
 }
-impl VaultLevel for Players {
+impl VaultLevel for Players<'_, '_> {
     fn game_time(&self) -> i64 {
         self.time
     }
     fn players(&self) -> Vec<VaultPlayer> {
-        self.players.clone()
+        self.players
+            .get_or_init(|| self.game.vault_players())
+            .clone()
     }
 }
 
 impl Game<'_> {
-    fn vault_players(&self) -> Players {
+    fn vault_players(&self) -> Vec<VaultPlayer> {
         let host = self.player.as_ref().map(|p| VaultPlayer {
             uuid: self.acting_uuid(),
             block: [p.position.x, p.position.y, p.position.z].map(|v| v.floor() as i32),
@@ -43,10 +48,7 @@ impl Game<'_> {
             block: g.position.map(|v| v.floor() as i32),
             spectator: g.spectator,
         });
-        Players {
-            time: self.simulation.world.game_time,
-            players: host.into_iter().chain(guests).collect(),
-        }
+        host.into_iter().chain(guests).collect()
     }
     /// The vault at `key` with its block's state and ominous flag.
     pub(super) fn take_vault(&mut self, key: Pos) -> Option<(Box<Vault>, VaultState, bool)> {
@@ -83,7 +85,6 @@ impl Game<'_> {
         ) -> T,
     ) -> Option<Result<T>> {
         let (mut vault, current, ominous) = self.take_vault(key)?;
-        let players = self.vault_players();
         let mut random = std::mem::replace(&mut self.simulation.world.random, LegacyRandom::new(0));
         let mut sequences = std::mem::take(&mut self.rand_sequences);
         let loot = horizon_client::structure_blocks::loot_data(
@@ -107,6 +108,11 @@ impl Game<'_> {
                     .iter()
                     .map(horizon_client::structure_blocks::loot_item_with_components)
                     .collect()
+            };
+            let players = Players {
+                time: self.simulation.world.game_time,
+                game: self,
+                players: std::cell::OnceCell::new(),
             };
             f(
                 &mut vault,
