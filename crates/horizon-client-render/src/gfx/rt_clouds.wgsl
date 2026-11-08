@@ -161,9 +161,10 @@ fn weather_at(xz: vec2<f32>) -> vec2<f32> {
     let rising = smoothstep(0.3, 0.7, field);
     let thick = clouds.camera.w;
     let bias = clouds.sun.w;
-    // Gaps between the cumulus on a fair day, more of them, and taller, on a cloudier one or in
-    // the rain.
-    let lo = 0.56 - 0.14 * bias - 0.22 * thick + 0.16 * (1.0 - thick) * (0.5 - rising) * 2.0;
+    // Gaps between the cumulus on a fair day, more of them, and taller, on a cloudier one; the
+    // rain and the snow close them into an overcast (nearly whole once it falls in earnest).
+    let fair = 0.56 - 0.14 * bias + 0.16 * (1.0 - thick) * (0.5 - rising) * 2.0;
+    let lo = mix(fair, -0.3, smoothstep(0.0, 0.8, thick));
     let cover = saturate(remap(c.x, lo, lo + 0.3));
     let kind = saturate(c.y * 1.5 - 0.55 + 0.45 * rising + 0.25 * bias + 0.6 * thick);
     return vec2(cover, kind);
