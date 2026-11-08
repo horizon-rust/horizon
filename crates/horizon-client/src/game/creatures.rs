@@ -1184,7 +1184,7 @@ impl Game<'_> {
             let w = self.mob_world_base(&[]);
             let rebuild = mob_islands::hookless(&w);
             // Each mob's answer reads only the blocks: helper threads give the same.
-            mob_islands::par_map(&self.mobs, lanes, 512, |part, out| {
+            mob_islands::par_map(&self.mobs, lanes, 2048, |part, out| {
                 let w = rebuild();
                 out.extend(part.iter().map(|m| m.on_climbable(&w)));
             })
@@ -1193,9 +1193,14 @@ impl Game<'_> {
             m.on_climbable = climbing;
         }
         let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
-        snapshot.extend(mob_islands::par_map(&self.mobs, lanes, 512, |part, out| {
-            out.extend(part.iter().map(|m| seen(m, uuid)));
-        }));
+        snapshot.extend(mob_islands::par_map(
+            &self.mobs,
+            lanes,
+            2048,
+            |part, out| {
+                out.extend(part.iter().map(|m| seen(m, uuid)));
+            },
+        ));
         let mut events = std::mem::take(&mut self.creatures.event_buf);
         events.clear();
         // SulfurCube.primeWhenOnPoweredPosition runs before super.tick adopts
@@ -1380,9 +1385,19 @@ impl Game<'_> {
                         .into_iter()
                         .zip(randoms)
                         .map(|(members, random)| {
-                            let group_mobs = members
+                            let group_mobs: Vec<Mob> = members
                                 .iter()
                                 .map(|&k| slots[k].take().expect("a mob is in one group"))
+                                .collect();
+                            // A group reads and writes only its own mobs' bindings and deaths.
+                            let group_bindings = group_mobs
+                                .iter()
+                                .filter_map(|m| bindings.get(&m.id).map(|&conn| (m.id, conn)))
+                                .collect();
+                            let group_died = group_mobs
+                                .iter()
+                                .filter(|m| died.contains(&m.id))
+                                .map(|m| m.id)
                                 .collect();
                             let group_seen = members.iter().map(|&k| snapshot[k].clone()).collect();
                             let group_nearest =
@@ -1396,8 +1411,8 @@ impl Game<'_> {
                                 random,
                                 guests.clone(),
                                 player.clone(),
-                                bindings.clone(),
-                                died.clone(),
+                                group_bindings,
+                                group_died,
                                 Some(whole),
                             )
                         })

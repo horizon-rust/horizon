@@ -151,7 +151,7 @@ impl RandomTickSections {
                 .map(|(_, i, chunk)| Self::candidate_mask(&chunk.sections[*i], candidate))
                 .collect()
         };
-        let masks: Vec<RandomTickMask> = if lanes <= 1 || todo.len() < 32 {
+        let masks: Vec<RandomTickMask> = if lanes <= 1 || todo.len() < 128 {
             build(&todo)
         } else {
             let size = todo.len().div_ceil(lanes);

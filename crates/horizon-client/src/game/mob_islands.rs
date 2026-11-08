@@ -35,7 +35,7 @@ use std::{
 };
 
 /// Fewer ticking mobs than this tick serially: the plan would cost more than it saves.
-const MIN_TICKING: usize = 64;
+const MIN_TICKING: usize = 256;
 /// The plan's cell size, in blocks.
 const CELL: f64 = 16.0;
 /// Cell visits one plan may spend before the tick runs serially instead.

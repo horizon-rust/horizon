@@ -1183,7 +1183,7 @@ impl Entities {
     /// How many threads the clients' tracking passes take: one, unless the parallel server tick
     /// is on ([`parallel_tick`]) and there are clients enough to share out.
     fn lanes(viewers: usize, entities: usize) -> usize {
-        if parallel_tick() == 0 || viewers < 8 || entities < 64 {
+        if parallel_tick() == 0 || viewers < 16 || entities < 512 {
             return 1;
         }
         horizon_threads::worker_count().min(viewers / 4).clamp(1, 8)

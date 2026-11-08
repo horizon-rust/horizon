@@ -2015,7 +2015,7 @@ impl Game<'_> {
         let parts = super::mob_islands::par_map(
             &full,
             super::mob_islands::thread_lanes(),
-            256,
+            1024,
             |part, done| {
                 let mut speeds = super::lan_attributes::SpeedByType::default();
                 for &(slot, index, player) in part {
