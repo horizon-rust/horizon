@@ -5,8 +5,12 @@
 mod pufferfish_player;
 
 use super::{
-    Dim, Game, Hand, InteractTarget, entity_culling::EntityCullDecision,
-    native_mob_draw::NativePlayerRender, native_projectiles::Impact, view_vector,
+    Dim, Game, Hand, InteractTarget,
+    entity_culling::EntityCullDecision,
+    mob_islands::{self, Role},
+    native_mob_draw::NativePlayerRender,
+    native_projectiles::Impact,
+    view_vector,
 };
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::actions::Action;
@@ -110,9 +114,6 @@ pub(super) struct Creatures {
     seen_buf: Vec<Seen>,
     /// Per-tick scratch retained between creature ticks.
     event_buf: Vec<MobEvent>,
-    /// The targets the mobs had before their ticks, kept between ticks
-    /// (empty) as `seen_buf` is: `native_living_change_target` hears a change.
-    target_buf: Vec<Option<Who>>,
     /// The mobs whose own tick ran in the last `tick_creature_entities`:
     /// `ServerLevel.tick` ticks only the entities in entity-ticking range, so
     /// what the passes after the loop do for a mob's `aiStep`, goals or brain
@@ -311,6 +312,8 @@ fn flame_geometry(
         ss += 1;
     }
 }
+/// A mob whose body goes this tick: (id, feet, width, height, the grown cube it splits into).
+pub(super) type Gone = (u32, Vec3, f64, f64, Option<Mob>);
 pub(super) fn seen(m: &Mob, player: Option<[i32; 4]>) -> Seen {
     m.seen(player)
 }
@@ -319,7 +322,7 @@ pub(super) fn seen(m: &Mob, player: Option<[i32; 4]>) -> Seen {
 /// `Who::Player` is the guest the mob sees (`seen`, a connection) or, with
 /// none, the host's own player (`host`); a guest's entity (`guest_ids`, by
 /// connection) is that guest.
-fn target_named(
+pub(super) fn target_named(
     target: Option<Who>,
     seen: Option<u32>,
     guests: &super::lan_mobs::GuestViews,
@@ -345,7 +348,7 @@ fn target_named(
 }
 /// Whether `e`, from a mob's tick, is a hit it deals `target`: a melee hit
 /// (with its effect), a sting, a sonic boom.
-fn hits_target(e: &MobEvent, want: Who) -> bool {
+pub(super) fn hits_target(e: &MobEvent, want: Who) -> bool {
     match (e, want) {
         (
             MobEvent::AttackPlayer(..)
@@ -1043,6 +1046,7 @@ impl Game<'_> {
             } else {
                 None
             },
+            foreign: None,
             border: Some(self.border.geometry()),
             // The first player in the level: a server has no player of its own.
             difficulty: self.local_difficulty(
@@ -1191,21 +1195,16 @@ impl Game<'_> {
         let primable = self.sulfur_cubes_adopted_explosive();
         let mut mobs = std::mem::take(&mut self.mobs);
         // Each mob's target as the mods last heard it, by its place in `mobs`
-        // (`native_living_change_target`).
-        let mut targets = std::mem::take(&mut self.creatures.target_buf);
-        targets.clear();
-        targets.extend(mobs.iter().map(|m| m.ai.target));
-        let mut dead = Vec::new();
-        let mut corpses = Vec::new();
+        // (`native_living_change_target`; each `mob_islands::Group` keeps its mobs').
+        let targets: Vec<Option<Who>>;
+        let dead: Vec<Mob>;
+        let corpses: Vec<Mob>;
         let mut died = std::mem::take(&mut self.died);
         let mut ticked = std::mem::take(&mut self.creatures.ticked);
         ticked.clear();
         let ticking = self.entity_ticking_area();
         // With guests on, each mob sees its nearest player (game/lan_mobs.rs).
         let mut guests = self.lan_guest_views();
-        // What stands in a guest's slot while a mob holds that guest's view for
-        // its tick (see `lent` below).
-        let mut spare = guests.first().map(|g| g.1.clone());
         let players = self.level_players();
         let nearest = super::natural_spawning::NearestPlayers::new(&players);
         let mut bindings = match self.lan.as_mut() {
@@ -1223,23 +1222,19 @@ impl Game<'_> {
                 .collect(),
             _ => Vec::new(),
         };
-        let mut guest_events = Vec::new();
+        let guest_events: Vec<(u32, u32, MobEvent)>;
         // The block writes since the last tick: mobs re-path around them.
         let path_writes = std::mem::take(self.world.path_writes.get_or_insert_with(Vec::new));
         // The mobs whose bodies go this tick: (id, feet, width, height, split).
         // 🤖 Agent: the last field is the grown slime, magma cube or sulfur
         // cube the body leaves behind (`AbstractCubeMob.remove`), captured as
         // the body goes because it has left the list by the time it splits.
-        let mut gone = Vec::new();
+        let gone: Vec<Gone>;
         let level_random;
         {
             // The level random, lent to the mobs (brain behaviours draw from
             // it) and taken back after their ticks.
-            let mut scratch = self.world.random.clone();
-            let mut pushes = horizon_client::mobs::PendingPushes::default();
-            let mut keep = Vec::with_capacity(mobs.len());
-            let mut grid =
-                horizon_client::mobs::seen_grid::SeenGrid::new(snapshot.iter().map(|s| s.bounds));
+            let scratch = self.world.random.clone();
             // All but the snapshot is the same for every mob of the tick, so
             // build it once: the player view and the teams scan every UUID.
             self.leash_boats = self
@@ -1249,246 +1244,251 @@ impl Game<'_> {
                 .collect();
             let mut base = self.mob_world_base(&[]);
             let path_changes = horizon_client::mobs::collision_changes(&base, &path_writes);
-            // Each mob keeps its snapshot slot all tick; the first slot of an
-            // id answers, as a scan would.
-            let mut index = horizon_client::fast_hash::FxHashMap::<u32, u32>::default();
-            let mut villager_slots = Vec::new();
-            let mut solid_slots = Vec::new();
-            for (i, s) in snapshot.iter().enumerate() {
-                index.entry(s.id).or_insert(i as u32);
-                if s.species == horizon_client::mobs::Species::Villager {
-                    villager_slots.push(i as u32);
-                }
-                if s.may_block_mobs() {
-                    solid_slots.push(i as u32);
-                }
-            }
-            laps.lap("creature_prepare");
-            let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
-            for i in 0..mobs.len() {
-                let m = &mut mobs[i];
-                let (bx, bz) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
-                let seen_guest = if guests.is_empty() {
-                    None
+            // Where each mob stands in the loop, and the nearest player its despawn check reads.
+            let roles: Vec<Role> = mobs
+                .iter()
+                .map(|m| {
+                    let (bx, bz) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
+                    if !base.world.loaded(bx, bz) {
+                        Role::Unloaded
+                    } else if !ticking(bx, bz) {
+                        Role::Resting
+                    } else {
+                        Role::Ticking
+                    }
+                })
+                .collect();
+            let nearest_players: Vec<Option<Vec3>> = mobs
+                .iter()
+                .zip(&roles)
+                .map(|(m, role)| {
+                    (*role != Role::Unloaded)
+                        .then(|| {
+                            nearest
+                                .nearest(m.position.x, m.position.y, m.position.z)
+                                .map(|p| p.position)
+                        })
+                        .flatten()
+                })
+                .collect();
+            let shared = mob_islands::Shared {
+                uuid,
+                host_uuid: if self.player.is_some() {
+                    self.level.player_uuid
                 } else {
-                    let bound = bindings.get(&m.id).copied();
-                    let conn = super::lan_mobs::player_for(m, base.player.as_ref(), &guests, bound);
-                    match conn {
-                        Some(conn) => {
-                            bindings.insert(m.id, conn);
-                        }
-                        None => {
-                            bindings.remove(&m.id);
-                        }
-                    }
-                    conn
-                };
-                if !base.world.loaded(bx, bz) {
-                    keep.push(!m.hostile() || m.persistent);
-                    continue;
-                }
-                let nearest_player = nearest
-                    .nearest(m.position.x, m.position.y, m.position.z)
-                    .map(|p| p.position);
-                // ServerLevel.tick: every loaded entity checks despawning, but
-                // only those in entity-ticking chunks (within the simulation
-                // distance) tick. The despawn check reads the nearest player
-                // and the difficulty, not the player the mob sees.
-                if !ticking(bx, bz) {
-                    let w = MobWorld {
-                        others: &snapshot,
-                        others_grid: Some(&grid),
-                        others_index: Some(&index),
-                        others_villagers: Some(&villager_slots),
-                        others_solid: Some(&solid_slots),
-                        nearest_player,
-                        player: None,
-                        teams: std::sync::Arc::clone(&base.teams),
-                        ..base
-                    };
-                    let kept = horizon_client::mobs::ai::despawn_check(m, &w);
-                    if !kept {
-                        died.remove(&m.id);
-                        snapshot[i].alive = false;
-                    }
-                    keep.push(kept);
-                    continue;
-                }
-                let controlling_player_movement = horizon_client::mobs::equine::controlled(m)
-                    .then(|| {
-                        base.player
-                            .as_ref()
-                            .filter(|p| p.riding_vehicle == Some(m.id))
-                            .map(|p| p.velocity)
-                            .or_else(|| {
-                                guests
-                                    .iter()
-                                    .find(|(_, p)| p.riding_vehicle == Some(m.id))
-                                    .map(|(_, p)| p.velocity)
-                            })
-                    })
-                    .flatten();
-                // A mod canceled its tick: it stays as it is.
-                if round.canceled(m.id) {
-                    keep.push(true);
-                    continue;
-                }
-                // getCurrentDifficultyAt(blockPosition()): the mob's own chunk,
-                // not the local player's (a server thread has no player).
-                let chunk_key = (bx >> 4, bz >> 4);
-                let difficulty = match cached_difficulty {
-                    Some((key, difficulty)) if key == chunk_key => difficulty,
-                    _ => {
-                        let difficulty =
-                            self.local_difficulty([m.position.x, m.position.y, m.position.z]);
-                        cached_difficulty = Some((chunk_key, difficulty));
-                        difficulty
-                    }
-                };
-                horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
-                horizon_client::mobs::blocks_changed(m, &path_changes);
-                let from = events.len();
-                // The guest's view is lent to the mob for its tick, not copied:
-                // the tick only reads it (`&MobWorld`), and it goes back to the
-                // guest's slot straight after.
-                let lent = seen_guest.and_then(|conn| guests.iter().position(|g| g.0 == conn));
-                let active_player = match (seen_guest, lent) {
-                    (None, _) => base.player.take(),
-                    (Some(_), Some(k)) => spare
-                        .take()
-                        .map(|stand_in| std::mem::replace(&mut guests[k].1, stand_in)),
-                    (Some(_), None) => None,
-                };
-                let mut w = MobWorld {
-                    others: &snapshot,
-                    others_grid: Some(&grid),
-                    others_index: Some(&index),
-                    others_villagers: Some(&villager_slots),
-                    others_solid: Some(&solid_slots),
-                    difficulty,
-                    nearest_player,
-                    player: active_player,
-                    teams: std::sync::Arc::clone(&base.teams),
-                    ..base
-                };
-                w.controlling_player_movement = controlling_player_movement;
-                ticked.insert(mobs[i].id);
-                // `horizon-report`'s cost by mob type (tick_profile.rs).
-                let sampled = super::tick_profile::start().map(|t| (t, mobs[i].kind.clone()));
-                let kept =
-                    horizon_client::mobs::riders::tick(&mut mobs, i, &w, &mut scratch, &mut events);
-                if let Some((started, kind)) = sampled {
-                    super::tick_profile::add(level_id, &kind, started);
-                }
-                let m = &mut mobs[i];
-                if seen_guest.is_none() {
-                    base.player = w.player;
-                } else if let Some(k) = lent {
-                    spare = w.player.map(|v| std::mem::replace(&mut guests[k].1, v));
-                }
-                // Its tick changed its target: the mods may keep the one it had
-                // (`native_living_change_target`), and then what the tick did to
-                // the new one is not dealt.
-                if let Some(&before) = targets.get(i)
-                    && m.ai.target != before
-                {
-                    let named = target_named(
-                        m.ai.target,
-                        seen_guest,
-                        &guests,
-                        &guest_ids,
-                        base.player.as_ref(),
-                    );
-                    if let Some((player, mob)) = named {
-                        let kind = super::native_hooks::mob_kind(m);
-                        let mut cancel = false;
-                        Self::native_living_change_target(
-                            level_id,
-                            m.id,
-                            &kind,
-                            player,
-                            mob,
-                            &mut cancel,
+                    None
+                },
+                level_id,
+                path_changes: &path_changes,
+                guest_ids: &guest_ids,
+                roles: &roles,
+                mods: round.listening() || !horizon_client::mod_api::mods().is_empty(),
+            };
+            // The mobs in islands on several threads (mob_islands.rs), or all of them in one
+            // group, in order, on this one.
+            let lanes = if mob_islands::enabled()
+                && !shared.mods
+                && super::tick_profile::start().is_none()
+                && !horizon_client::random_source::repeating_per_thread()
+            {
+                horizon_threads::worker_count().clamp(1, 8)
+            } else {
+                1
+            };
+            let plan = if lanes > 1 {
+                mob_islands::plan(&mobs, &snapshot, &roles, lanes)
+            } else {
+                None
+            };
+            let player = base.player.take();
+            let n = mobs.len();
+            let mut draws = None;
+            let mut verify_against = None;
+            let mut groups = match plan {
+                None => vec![mob_islands::Group::new(
+                    (0..n).collect(),
+                    Vec::from(std::mem::take(&mut mobs)),
+                    std::mem::take(&mut snapshot),
+                    nearest_players,
+                    std::mem::take(&mut events),
+                    scratch,
+                    std::mem::take(&mut guests),
+                    player,
+                    std::mem::take(&mut bindings),
+                    std::mem::take(&mut died),
+                    None,
+                )],
+                Some(plan) => {
+                    // `HORIZON_MOB_ISLANDS=verify`: the serial loop on copies, compared below.
+                    if mob_islands::verify() {
+                        let mut serial = mob_islands::Group::new(
+                            (0..n).collect(),
+                            Vec::from(mobs.clone()),
+                            snapshot.clone(),
+                            nearest_players.clone(),
+                            Vec::new(),
+                            scratch.clone(),
+                            guests.clone(),
+                            player.clone(),
+                            bindings.clone(),
+                            died.clone(),
+                            None,
                         );
-                        if cancel {
-                            if let Some(new) = m.ai.target {
-                                let mut k = from;
-                                while k < events.len() {
-                                    if hits_target(&events[k], new) {
-                                        events.remove(k);
-                                    } else {
-                                        k += 1;
-                                    }
+                        let mut cached: Option<((i32, i32), spawning::LocalDifficulty)> = None;
+                        let mut difficulty = |_: usize, at: [f64; 3]| {
+                            let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
+                            match cached {
+                                Some((k, d)) if k == key => d,
+                                _ => {
+                                    let d = self.local_difficulty(at);
+                                    cached = Some((key, d));
+                                    d
                                 }
                             }
-                            m.ai.target = before;
+                        };
+                        // Both runs take the same seeds: no clock in them, and the counter back.
+                        horizon_client::random_source::pin_seeds(true);
+                        let seeds = horizon_client::random_source::uniquifier();
+                        serial.run(&base, &shared, &mut difficulty, &|_| false);
+                        horizon_client::random_source::restore_uniquifier(seeds);
+                        verify_against = Some(mob_islands::merge(
+                            vec![serial],
+                            n,
+                            None,
+                            Default::default(),
+                            Default::default(),
+                        ));
+                    }
+                    // The whole list's grid, as each group's must answer.
+                    let whole = horizon_client::mobs::seen_grid::SeenGrid::new(
+                        snapshot.iter().map(|s| s.bounds),
+                    )
+                    .bounds();
+                    let (shared_random, randoms) = mob_islands::lanes(&scratch, plan.groups.len());
+                    draws = Some(shared_random);
+                    let mut slots: Vec<Option<Mob>> =
+                        std::mem::take(&mut mobs).into_iter().map(Some).collect();
+                    plan.groups
+                        .into_iter()
+                        .zip(randoms)
+                        .map(|(members, random)| {
+                            let group_mobs = members
+                                .iter()
+                                .map(|&k| slots[k].take().expect("a mob is in one group"))
+                                .collect();
+                            let group_seen = members.iter().map(|&k| snapshot[k].clone()).collect();
+                            let group_nearest =
+                                members.iter().map(|&k| nearest_players[k]).collect();
+                            mob_islands::Group::new(
+                                members,
+                                group_mobs,
+                                group_seen,
+                                group_nearest,
+                                Vec::new(),
+                                random,
+                                guests.clone(),
+                                player.clone(),
+                                bindings.clone(),
+                                died.clone(),
+                                Some(whole),
+                            )
+                        })
+                        .collect()
+                }
+            };
+            laps.lap("creature_prepare");
+            if let [group] = groups.as_mut_slice() {
+                let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
+                let mut difficulty = |_: usize, at: [f64; 3]| {
+                    let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
+                    match cached_difficulty {
+                        Some((k, d)) if k == key => d,
+                        _ => {
+                            let d = self.local_difficulty(at);
+                            cached_difficulty = Some((key, d));
+                            d
                         }
                     }
-                    targets[i] = m.ai.target;
-                }
-                // A killed mob's body is removed: its effects that act on
-                // death run (`LivingEntity.remove` with KILLED).
-                if !kept && !m.alive() && !m.removed && !m.extra.effects.is_empty() {
-                    corpses.push(m.clone());
-                }
-                horizon_client::mobs::take_mob_pushes(&mut events, from, &mut pushes);
-                // LivingEntity.tickDeath: after twenty ticks the body is removed.
-                if !kept && !m.removed && !m.alive() && m.death_time >= 20 {
-                    let (width, height) = (f64::from(m.width()), f64::from(m.height()));
-                    // 🤖 Agent: `AbstractCubeMob.remove` splits a grown cube into
-                    // its smaller halves when it is removed, twenty ticks after
-                    // the death. The parent leaves the list before the split
-                    // runs, so its size, position, kind and persistence are
-                    // captured here, as they are at the removal.
-                    let split = if matches!(
-                        m.species(),
-                        Species::Slime | Species::MagmaCube | Species::SulfurCube
-                    ) && m.extra.size > 1
-                    {
-                        Some(m.clone())
-                    } else {
-                        None
-                    };
-                    gone.push((m.id, m.position, width, height, split));
-                }
-                if let Some(conn) = seen_guest {
-                    // ShulkerBullet.finalTarget is the guest's entity: the
-                    // bullet homes on it while the projectiles tick, where
-                    // `Who::Player` is the host's own player.
-                    if let Some(&(_, id)) = guest_ids.iter().find(|g| g.0 == conn) {
-                        for e in &mut events[from..] {
-                            if let MobEvent::Projectile(p) = e
-                                && let ProjectileKind::ShulkerBullet { target, .. } = &mut p.kind
-                                && *target == Some(Who::Player)
-                            {
-                                *target = Some(Who::Mob(id));
-                            }
-                        }
-                    }
-                    let mut k = from;
-                    while k < events.len() {
-                        if super::lan_mobs::acts_on_player(&events[k]) {
-                            guest_events.push((conn, m.id, events.remove(k)));
-                        } else {
-                            k += 1;
+                };
+                group.run(&base, &shared, &mut difficulty, &|id| round.canceled(id));
+            } else {
+                // getCurrentDifficultyAt for each ticking mob's chunk, before the threads start.
+                let mut by_chunk = horizon_client::fast_hash::FxHashMap::default();
+                let mut difficulties = vec![base.difficulty; n];
+                for g in &groups {
+                    for (k, m) in g.global.iter().zip(&g.mobs) {
+                        if roles[*k] == Role::Ticking {
+                            let at = [m.position.x, m.position.y, m.position.z];
+                            let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
+                            difficulties[*k] = *by_chunk
+                                .entry(key)
+                                .or_insert_with(|| self.local_difficulty(at));
                         }
                     }
                 }
-                // Killed during its own tick (drowning, burning, falling...).
-                if !m.alive() && !m.removed && died.insert(m.id) {
-                    dead.push(m.clone());
-                }
-                if !kept {
-                    died.remove(&m.id);
-                }
-                keep.push(kept);
-                // ServerLevel ticks entities one after another: the ones
-                // after this mob see it as it is now.
-                snapshot[i] = seen(m, uuid);
-                snapshot[i].alive &= kept;
-                grid.update(i, snapshot[i].bounds);
-                horizon_client::mobs::apply_brain_events(&mut mobs, &mut events, from);
+                let board = mob_islands::Board::new(
+                    std::mem::take(&mut snapshot),
+                    &groups,
+                    std::sync::Arc::clone(draws.as_ref().expect("groups share the level random")),
+                );
+                mob_islands::run_parallel(&mut groups, &board, &base, &shared, &|k| {
+                    difficulties[k]
+                });
             }
+            let groups_ran = groups.len();
+            // `HORIZON_MOB_ISLANDS=verify`: each mob's group and place in the list, for a log.
+            let group_of: horizon_client::fast_hash::FxHashMap<u32, (usize, usize)> =
+                if verify_against.is_some() {
+                    groups
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(gi, g)| {
+                            g.global
+                                .iter()
+                                .zip(&g.mobs)
+                                .map(move |(&k, m)| (m.id, (gi, k)))
+                        })
+                        .collect()
+                } else {
+                    Default::default()
+                };
+            let merged = mob_islands::merge(
+                groups,
+                n,
+                draws.as_deref(),
+                std::mem::take(&mut bindings),
+                std::mem::take(&mut died),
+            );
+            if let Some(serial) = &verify_against {
+                horizon_client::random_source::pin_seeds(false);
+                let diff = mob_islands::difference(serial, &merged);
+                let reader = diff
+                    .as_ref()
+                    .and_then(|d| d.strip_prefix("mob "))
+                    .and_then(|d| d.split(' ').next())
+                    .and_then(|d| d.parse::<u32>().ok());
+                mob_islands::report_check(diff, groups_ran, || {
+                    reader.map_or_else(String::new, |id| {
+                        mob_islands::describe(id, &merged.mobs, &group_of, &roles)
+                    })
+                });
+            }
+            mobs = merged.mobs.into();
+            snapshot = merged.snapshot;
+            events = merged.events;
+            guests = merged.guests;
+            base.player = merged.player;
+            bindings = merged.bindings;
+            died = merged.died;
+            targets = merged.targets;
+            dead = merged.dead;
+            corpses = merged.corpses;
+            gone = merged.gone;
+            guest_events = merged.guest_events;
+            ticked.extend(merged.ticked);
+            let keep = merged.keep;
+            let mut pushes = merged.pushes;
+            let scratch = merged.random;
             // Targets changed after the mob's own tick (another mob's alert):
             // heard now, and a cancel puts the old one back before its next tick.
             for (i, m) in mobs.iter_mut().enumerate() {
@@ -1557,8 +1557,6 @@ impl Game<'_> {
         snapshot.clear();
         self.creatures.seen_buf = snapshot;
         self.creatures.ticked = ticked;
-        targets.clear();
-        self.creatures.target_buf = targets;
         self.native_tick_post_batch(round);
         // ... and entity event 60 goes out as it is: the poof.
         // 🤖 Agent: the split follows the poof, as `LivingEntity.tickDeath`
@@ -9066,6 +9064,7 @@ mod pearl_tests {
             dragon: None,
             leash_boats: &[],
             who_lookup: None,
+            foreign: None,
             others_grid: None,
             others_index: None,
             others_villagers: None,

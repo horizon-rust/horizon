@@ -97,7 +97,7 @@ impl BabyFollowAdult {
         );
         let ids: Vec<(u32, f64)> =
             cx.w.others_near(area)
-                .filter(|s| s.alive && !s.baby && s.species == species)
+                .filter(|s| s.alive && !s.baby && s.species == species && s.bounds.intersects(area))
                 .map(|s| (s.id, m.distance_sqr(s.position)))
                 .collect();
         let mut best: Option<(u32, f64)> = None;

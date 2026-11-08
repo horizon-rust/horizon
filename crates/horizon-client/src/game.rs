@@ -243,6 +243,7 @@ mod mob_blocks;
 mod mob_discard_tests;
 mod mob_gear;
 mod mob_index;
+mod mob_islands;
 mod mob_looting;
 mod mob_sounds;
 mod mod_api_host;

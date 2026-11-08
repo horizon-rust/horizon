@@ -15,6 +15,8 @@ pub struct SeenGrid {
     /// The widest box (along x or z) the grid has held: no box reaches
     /// further than this past its minimum corner.
     reach: f64,
+    /// The fewest columns past which a query scans every entry instead (at least the grid's own).
+    columns: usize,
 }
 
 fn column(x: f64, z: f64) -> (i32, i32) {
@@ -38,6 +40,18 @@ impl SeenGrid {
             grid.cell_of.push(at);
         }
         grid
+    }
+    /// The widest box and the column count it has, for a grid of part of its entries that must
+    /// meet the same entries in the same order (`game/mob_islands.rs`).
+    pub fn bounds(&self) -> (f64, usize) {
+        (self.reach, self.cells.len().max(self.columns))
+    }
+    /// Answer queries as a grid of `bounds` would: as wide a margin, and a scan past as many
+    /// columns.
+    pub fn answering_as(mut self, (reach, columns): (f64, usize)) -> Self {
+        self.reach = self.reach.max(reach);
+        self.columns = columns;
+        self
     }
     /// Entry `i`'s box is now `b` (the mob moved or resized).
     pub fn update(&mut self, i: usize, b: Aabb) {
@@ -66,7 +80,8 @@ impl SeenGrid {
         let hi = column(area.max(Axis::X), area.max(Axis::Z));
         let span = |a: i32, b: i32| i64::from(b) - i64::from(a) + 1;
         let (nx, nz) = (span(lo.0, hi.0), span(lo.1, hi.1));
-        if nx < 1 || nz < 1 || nx.saturating_mul(nz) > self.cells.len() as i64 {
+        let held = self.cells.len().max(self.columns) as i64;
+        if nx < 1 || nz < 1 || nx.saturating_mul(nz) > held {
             return false;
         }
         for x in lo.0..=hi.0 {
