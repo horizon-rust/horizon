@@ -9,6 +9,7 @@ import os
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 try:
     from . import lab, test_rust_parity as base
@@ -37,6 +38,28 @@ def child_env(scratch, resources=None):
     if resources is not None:
         env["HORIZON_TEST_RESOURCES"] = str(resources)
     return env
+
+
+def compile_tests(build, scratch):
+    """Keep build artifacts and expose compiler diagnostics in the CI harness log."""
+    command = ["cargo", "test", "--locked", "--manifest-path", str(lab.ROOT / "Cargo.toml"),
+               "-p", "horizon-client", "--lib", "--no-run", "--message-format=json"]
+    with (build / "compile.jsonl").open("w", encoding="utf-8") as output, \
+            (build / "compile.log").open("w", encoding="utf-8") as errors:
+        result = subprocess.run(command, cwd=lab.ROOT, env=child_env(scratch),
+                                stdout=output, stderr=errors)
+    if result.returncode:
+        print((build / "compile.log").read_text(encoding="utf-8"), file=sys.stderr, end="")
+        for line in (build / "compile.jsonl").read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("reason") == "compiler-message":
+                diagnostic = row.get("message", {}).get("rendered")
+                if diagnostic:
+                    print(diagnostic, file=sys.stderr, end="")
+        result.check_returncode()
 
 
 def main():
@@ -71,12 +94,7 @@ def main():
         raise AssertionError("Expected six actual vanilla calculator queries")
     with tempfile.TemporaryDirectory(prefix="horizon-portal-compile-") as directory:
         scratch = Path(directory)
-        with (build / "compile.jsonl").open("w", encoding="utf-8") as output, \
-                (build / "compile.log").open("w", encoding="utf-8") as errors:
-            subprocess.run(["cargo", "test", "--locked", "--manifest-path", str(lab.ROOT / "Cargo.toml"),
-                            "-p", "horizon-client", "--lib", "--no-run", "--message-format=json"],
-                           cwd=lab.ROOT, env=child_env(scratch), check=True,
-                           stdout=output, stderr=errors)
+        compile_tests(build, scratch)
     artifacts = []
     for line in (build / "compile.jsonl").read_text(encoding="utf-8").splitlines():
         try:
