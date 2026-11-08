@@ -1315,25 +1315,51 @@ impl Game<'_> {
             };
             let player = base.player.take();
             let n = mobs.len();
-            let mut draws = None;
-            let mut verify_against = None;
-            let mut groups = match plan {
-                None => vec![mob_islands::Group::new(
-                    (0..n).collect(),
-                    Vec::from(std::mem::take(&mut mobs)),
-                    std::mem::take(&mut snapshot),
-                    nearest_players,
-                    std::mem::take(&mut events),
-                    scratch,
-                    std::mem::take(&mut guests),
-                    player,
-                    std::mem::take(&mut bindings),
-                    std::mem::take(&mut died),
-                    None,
-                )],
+            let serial_difficulty =
+                |cache: &mut Option<((i32, i32), spawning::LocalDifficulty)>, at: [f64; 3]| {
+                    let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
+                    match *cache {
+                        Some((k, d)) if k == key => d,
+                        _ => {
+                            let d = self.local_difficulty(at);
+                            *cache = Some((key, d));
+                            d
+                        }
+                    }
+                };
+            let merged = match plan {
+                // All the mobs in one group, in order, on this thread: the loop as it has always run.
+                None => {
+                    let mut group = mob_islands::Group::new(
+                        (0..n).collect(),
+                        Vec::from(std::mem::take(&mut mobs)),
+                        std::mem::take(&mut snapshot),
+                        nearest_players,
+                        std::mem::take(&mut events),
+                        scratch,
+                        std::mem::take(&mut guests),
+                        player,
+                        std::mem::take(&mut bindings),
+                        std::mem::take(&mut died),
+                        None,
+                    );
+                    laps.lap("creature_prepare");
+                    let mut cache = None;
+                    group.run(
+                        &base,
+                        &shared,
+                        &mut |_, at| serial_difficulty(&mut cache, at),
+                        &|id| round.canceled(id),
+                    );
+                    let (merged, back) = mob_islands::merge_one(group);
+                    mobs = back.into();
+                    merged
+                }
+                // Islands on several threads (mob_islands.rs), each group borrowing its mobs in
+                // place.
                 Some(plan) => {
                     // `HORIZON_PARALLEL_TICK=verify`: the serial loop on copies, compared below.
-                    if mob_islands::verify() {
+                    let verify_against = mob_islands::verify().then(|| {
                         let mut serial = mob_islands::Group::new(
                             (0..n).collect(),
                             Vec::from(mobs.clone()),
@@ -1347,45 +1373,44 @@ impl Game<'_> {
                             died.clone(),
                             None,
                         );
-                        let mut cached: Option<((i32, i32), spawning::LocalDifficulty)> = None;
-                        let mut difficulty = |_: usize, at: [f64; 3]| {
-                            let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
-                            match cached {
-                                Some((k, d)) if k == key => d,
-                                _ => {
-                                    let d = self.local_difficulty(at);
-                                    cached = Some((key, d));
-                                    d
-                                }
-                            }
-                        };
                         // Both runs take the same seeds: no clock in them, and the counter back.
                         horizon_client::random_source::pin_seeds(true);
                         let seeds = horizon_client::random_source::uniquifier();
-                        serial.run(&base, &shared, &mut difficulty, &|_| false);
+                        let mut cache = None;
+                        serial.run(
+                            &base,
+                            &shared,
+                            &mut |_, at| serial_difficulty(&mut cache, at),
+                            &|_| false,
+                        );
                         horizon_client::random_source::restore_uniquifier(seeds);
-                        verify_against = Some(mob_islands::merge(
-                            vec![serial],
-                            n,
-                            None,
-                            Default::default(),
-                            Default::default(),
-                        ));
-                    }
+                        mob_islands::merge_one(serial)
+                    });
                     // The whole list's grid, as each group's must answer.
                     let whole = horizon_client::mobs::seen_grid::SeenGrid::new(
                         snapshot.iter().map(|s| s.bounds),
                     )
                     .bounds();
-                    let (shared_random, randoms) = mob_islands::lanes(&scratch, plan.groups.len());
-                    draws = Some(shared_random);
-                    let mut slots: Vec<Option<Mob>> =
-                        std::mem::take(&mut mobs).into_iter().map(Some).collect();
-                    plan.groups
+                    let (draws, randoms) = mob_islands::lanes(&scratch, plan.groups.len());
+                    // getCurrentDifficultyAt for each ticking mob's chunk, before the threads start.
+                    let mut by_chunk = horizon_client::fast_hash::FxHashMap::default();
+                    let mut difficulties = vec![base.difficulty; n];
+                    for (k, m) in mobs.iter().enumerate() {
+                        if roles[k] == Role::Ticking {
+                            let at = [m.position.x, m.position.y, m.position.z];
+                            let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
+                            difficulties[k] = *by_chunk
+                                .entry(key)
+                                .or_insert_with(|| self.local_difficulty(at));
+                        }
+                    }
+                    let mut slots: Vec<Option<&mut Mob>> = mobs.iter_mut().map(Some).collect();
+                    let mut groups: Vec<mob_islands::Group<&mut Mob>> = plan
+                        .groups
                         .into_iter()
                         .zip(randoms)
                         .map(|(members, random)| {
-                            let group_mobs: Vec<Mob> = members
+                            let group_mobs: Vec<&mut Mob> = members
                                 .iter()
                                 .map(|&k| slots[k].take().expect("a mob is in one group"))
                                 .collect();
@@ -1416,87 +1441,57 @@ impl Game<'_> {
                                 Some(whole),
                             )
                         })
-                        .collect()
+                        .collect();
+                    laps.lap("creature_prepare");
+                    let board = mob_islands::Board::new(
+                        std::mem::take(&mut snapshot),
+                        &groups,
+                        Arc::clone(&draws),
+                    );
+                    mob_islands::run_parallel(&mut groups, &board, &base, &shared, &|k| {
+                        difficulties[k]
+                    });
+                    let groups_ran = groups.len();
+                    // `HORIZON_PARALLEL_TICK=verify`: each mob's group and place in the list, for a log.
+                    let group_of: horizon_client::fast_hash::FxHashMap<u32, (usize, usize)> =
+                        if verify_against.is_some() {
+                            groups
+                                .iter()
+                                .enumerate()
+                                .flat_map(|(gi, g)| {
+                                    g.global
+                                        .iter()
+                                        .zip(&g.mobs)
+                                        .map(move |(&k, m)| (m.id, (gi, k)))
+                                })
+                                .collect()
+                        } else {
+                            Default::default()
+                        };
+                    let merged = mob_islands::merge(
+                        groups,
+                        n,
+                        &draws,
+                        std::mem::take(&mut bindings),
+                        std::mem::take(&mut died),
+                    );
+                    if let Some((serial, serial_mobs)) = &verify_against {
+                        horizon_client::random_source::pin_seeds(false);
+                        let diff = mob_islands::difference(serial, serial_mobs, &merged, &mobs);
+                        let reader = diff
+                            .as_ref()
+                            .and_then(|d| d.strip_prefix("mob "))
+                            .and_then(|d| d.split(' ').next())
+                            .and_then(|d| d.parse::<u32>().ok());
+                        mob_islands::report_check(diff, groups_ran, || {
+                            reader.map_or_else(String::new, |id| {
+                                mob_islands::describe(id, &mobs, &group_of, &roles)
+                            })
+                        });
+                    }
+                    merged
                 }
             };
-            laps.lap("creature_prepare");
-            if let [group] = groups.as_mut_slice() {
-                let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
-                let mut difficulty = |_: usize, at: [f64; 3]| {
-                    let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
-                    match cached_difficulty {
-                        Some((k, d)) if k == key => d,
-                        _ => {
-                            let d = self.local_difficulty(at);
-                            cached_difficulty = Some((key, d));
-                            d
-                        }
-                    }
-                };
-                group.run(&base, &shared, &mut difficulty, &|id| round.canceled(id));
-            } else {
-                // getCurrentDifficultyAt for each ticking mob's chunk, before the threads start.
-                let mut by_chunk = horizon_client::fast_hash::FxHashMap::default();
-                let mut difficulties = vec![base.difficulty; n];
-                for g in &groups {
-                    for (k, m) in g.global.iter().zip(&g.mobs) {
-                        if roles[*k] == Role::Ticking {
-                            let at = [m.position.x, m.position.y, m.position.z];
-                            let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
-                            difficulties[*k] = *by_chunk
-                                .entry(key)
-                                .or_insert_with(|| self.local_difficulty(at));
-                        }
-                    }
-                }
-                let board = mob_islands::Board::new(
-                    std::mem::take(&mut snapshot),
-                    &groups,
-                    std::sync::Arc::clone(draws.as_ref().expect("groups share the level random")),
-                );
-                mob_islands::run_parallel(&mut groups, &board, &base, &shared, &|k| {
-                    difficulties[k]
-                });
-            }
-            let groups_ran = groups.len();
-            // `HORIZON_PARALLEL_TICK=verify`: each mob's group and place in the list, for a log.
-            let group_of: horizon_client::fast_hash::FxHashMap<u32, (usize, usize)> =
-                if verify_against.is_some() {
-                    groups
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(gi, g)| {
-                            g.global
-                                .iter()
-                                .zip(&g.mobs)
-                                .map(move |(&k, m)| (m.id, (gi, k)))
-                        })
-                        .collect()
-                } else {
-                    Default::default()
-                };
-            let merged = mob_islands::merge(
-                groups,
-                n,
-                draws.as_deref(),
-                std::mem::take(&mut bindings),
-                std::mem::take(&mut died),
-            );
-            if let Some(serial) = &verify_against {
-                horizon_client::random_source::pin_seeds(false);
-                let diff = mob_islands::difference(serial, &merged);
-                let reader = diff
-                    .as_ref()
-                    .and_then(|d| d.strip_prefix("mob "))
-                    .and_then(|d| d.split(' ').next())
-                    .and_then(|d| d.parse::<u32>().ok());
-                mob_islands::report_check(diff, groups_ran, || {
-                    reader.map_or_else(String::new, |id| {
-                        mob_islands::describe(id, &merged.mobs, &group_of, &roles)
-                    })
-                });
-            }
-            mobs = merged.mobs.into();
             snapshot = merged.snapshot;
             events = merged.events;
             guests = merged.guests;

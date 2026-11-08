@@ -21,8 +21,8 @@ use super::lan_mobs::GuestViews;
 use horizon_client::{
     fast_hash::{FxHashMap, FxHashSet},
     mobs::{
-        ForeignSeen, Mob, MobEvent, MobWorld, PendingPushes, PlayerView, Seen, Species, Who, leash,
-        seen_grid::SeenGrid, spawning::LocalDifficulty,
+        ForeignSeen, Mob, MobEvent, MobSlot, MobWorld, PendingPushes, PlayerView, Seen, Species,
+        Who, leash, seen_grid::SeenGrid, spawning::LocalDifficulty,
     },
 };
 use horizon_core::{
@@ -358,10 +358,10 @@ pub(super) struct Shared<'a> {
 
 /// One group's mobs and everything the loop keeps for them, in their list order. The serial
 /// loop is one group holding every mob.
-pub(super) struct Group {
+pub(super) struct Group<M: MobSlot> {
     /// Each member's place in the whole list.
     pub global: Vec<usize>,
-    pub mobs: Vec<Mob>,
+    pub mobs: Vec<M>,
     pub snapshot: Vec<Seen>,
     grid: SeenGrid,
     index: FxHashMap<u32, u32>,
@@ -387,12 +387,12 @@ pub(super) struct Group {
     pub guest_events: Vec<(usize, (u32, u32, MobEvent))>,
 }
 
-impl Group {
+impl<M: MobSlot> Group<M> {
     /// A group of `mobs`, whose snapshot entries are `snapshot` and nearest players `nearest`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         global: Vec<usize>,
-        mobs: Vec<Mob>,
+        mobs: Vec<M>,
         snapshot: Vec<Seen>,
         nearest: Vec<Option<Vec3>>,
         events: Vec<MobEvent>,
@@ -426,7 +426,7 @@ impl Group {
         // What stands in a guest's slot while a mob holds that guest's view for
         // its tick (see `lent` in `tick`).
         let spare = guests.first().map(|g| g.1.clone());
-        let targets = mobs.iter().map(|m| m.ai.target).collect();
+        let targets = mobs.iter().map(|m| m.mob().ai.target).collect();
         let n = mobs.len();
         Self {
             global,
@@ -502,7 +502,7 @@ impl Group {
         canceled: &impl Fn(u32) -> bool,
     ) {
         let at = self.global[i];
-        let m = &mut self.mobs[i];
+        let m = self.mobs[i].mob_mut();
         let seen_guest = if self.guests.is_empty() {
             None
         } else {
@@ -597,9 +597,9 @@ impl Group {
             ..*base
         };
         w.controlling_player_movement = controlling_player_movement;
-        self.ticked.push(self.mobs[i].id);
+        self.ticked.push(self.mobs[i].mob().id);
         // `horizon-report`'s cost by mob type (tick_profile.rs).
-        let sampled = super::tick_profile::start().map(|t| (t, self.mobs[i].kind.clone()));
+        let sampled = super::tick_profile::start().map(|t| (t, self.mobs[i].mob().kind.clone()));
         let kept = horizon_client::mobs::riders::tick(
             &mut self.mobs,
             i,
@@ -610,7 +610,7 @@ impl Group {
         if let Some((started, kind)) = sampled {
             super::tick_profile::add(shared.level_id, &kind, started);
         }
-        let m = &mut self.mobs[i];
+        let m = self.mobs[i].mob_mut();
         if seen_guest.is_none() {
             self.player = w.player;
         } else if let Some(k) = lent {
@@ -746,7 +746,11 @@ pub(super) struct Board {
     draws: Arc<OrderedDraws>,
 }
 impl Board {
-    pub(super) fn new(frozen: Vec<Seen>, groups: &[Group], draws: Arc<OrderedDraws>) -> Self {
+    pub(super) fn new<M: MobSlot>(
+        frozen: Vec<Seen>,
+        groups: &[Group<M>],
+        draws: Arc<OrderedDraws>,
+    ) -> Self {
         let mut index = FxHashMap::default();
         for (i, s) in frozen.iter().enumerate() {
             index.entry(s.id).or_insert(i as u32);
@@ -952,7 +956,7 @@ pub(super) fn thread_lanes() -> usize {
 /// can't leave this thread: native mod effects (none: groups only run without native mods) and
 /// the UUID lookup ([`LoopLookup`], the same answers).
 pub(super) fn run_parallel(
-    groups: &mut [Group],
+    groups: &mut [Group<&mut Mob>],
     board: &Board,
     base: &MobWorld,
     shared: &Shared,
@@ -962,7 +966,7 @@ pub(super) fn run_parallel(
     let tnt = horizon_client::mobs::sulfur_cube::tnt_explodes();
     let rebuild = hookless(base);
     let host = shared.host_uuid;
-    let run = |g: &mut Group| {
+    let run = |g: &mut Group<&mut Mob>| {
         let lookup = LoopLookup(host);
         let foreign = Foreign {
             board,
@@ -1004,7 +1008,6 @@ pub(super) fn lanes(
 
 /// The groups' results put back in list order, as one serial loop would have left them.
 pub(super) struct Merged {
-    pub mobs: Vec<Mob>,
     pub snapshot: Vec<Seen>,
     pub keep: Vec<bool>,
     pub events: Vec<MobEvent>,
@@ -1022,21 +1025,14 @@ pub(super) struct Merged {
     pub guest_events: Vec<(u32, u32, MobEvent)>,
 }
 
-/// Merge `groups` (one group: it is the whole list) over `n` mobs. `draws` is the shared level
-/// random of several groups; `bindings` and `died` are the loop's maps from before it, which the
-/// groups each worked on a copy of.
-pub(super) fn merge(
-    mut groups: Vec<Group>,
-    n: usize,
-    draws: Option<&OrderedDraws>,
-    mut bindings: FxHashMap<u32, u32>,
-    mut died: FxHashSet<u32>,
-) -> Merged {
-    let strip = |v: Vec<(usize, Mob)>| v.into_iter().map(|(_, m)| m).collect::<Vec<_>>();
-    if groups.len() == 1 {
-        let g = groups.pop().expect("one group");
-        return Merged {
-            mobs: g.mobs,
+fn strip(v: Vec<(usize, Mob)>) -> Vec<Mob> {
+    v.into_iter().map(|(_, m)| m).collect()
+}
+
+/// The serial loop's one group, as it left everything, and its mobs.
+pub(super) fn merge_one(g: Group<Mob>) -> (Merged, Vec<Mob>) {
+    (
+        Merged {
             snapshot: g.snapshot,
             keep: g.keep,
             events: g.events,
@@ -1052,8 +1048,21 @@ pub(super) fn merge(
             corpses: strip(g.corpses),
             gone: g.gone.into_iter().map(|(_, x)| x).collect(),
             guest_events: g.guest_events.into_iter().map(|(_, x)| x).collect(),
-        };
-    }
+        },
+        g.mobs,
+    )
+}
+
+/// Merge the `groups` over `n` mobs, which ticked their mobs in place: what the serial loop would
+/// have left, in list order. `draws` is their shared level random; `bindings` and `died` are the
+/// loop's maps from before it, of which each group held its own mobs' entries.
+pub(super) fn merge<M: MobSlot>(
+    mut groups: Vec<Group<M>>,
+    n: usize,
+    draws: &OrderedDraws,
+    mut bindings: FxHashMap<u32, u32>,
+    mut died: FxHashSet<u32>,
+) -> Merged {
     // Where each mob of the list went: (group, place in it).
     let mut place = vec![(0u32, 0u32); n];
     for (gi, g) in groups.iter().enumerate() {
@@ -1073,7 +1082,7 @@ pub(super) fn merge(
     }
     // Each member's binding and death mark as its group left them.
     for g in &groups {
-        for m in &g.mobs {
+        for m in g.mobs.iter().map(MobSlot::mob) {
             match g.bindings.get(&m.id) {
                 Some(&conn) => {
                     bindings.insert(m.id, conn);
@@ -1098,8 +1107,6 @@ pub(super) fn merge(
     let first = groups.first_mut().expect("groups");
     let guests = std::mem::take(&mut first.guests);
     let player = first.player.take();
-    let mut slots: Vec<Option<Mob>> = (0..n).map(|_| None).collect();
-    let mut seen: Vec<Option<Seen>> = (0..n).map(|_| None).collect();
     for g in groups {
         ticked.extend(g.ticked);
         dead.extend(g.dead);
@@ -1107,10 +1114,6 @@ pub(super) fn merge(
         gone.extend(g.gone);
         guest_events.extend(g.guest_events);
         pushes.append(g.pushes);
-        for ((k, m), s) in g.global.into_iter().zip(g.mobs).zip(g.snapshot) {
-            slots[k] = Some(m);
-            seen[k] = Some(s);
-        }
     }
     // Stable: one mob's own entries keep their order.
     dead.sort_by_key(|e| e.0);
@@ -1118,12 +1121,12 @@ pub(super) fn merge(
     gone.sort_by_key(|e| e.0);
     guest_events.sort_by_key(|e| e.0);
     Merged {
-        mobs: slots.into_iter().map(|m| m.expect("every mob")).collect(),
-        snapshot: seen.into_iter().map(|s| s.expect("every entry")).collect(),
+        // The snapshot buffer the next tick fills: the groups' entries are this tick's only.
+        snapshot: Vec::new(),
         keep,
         events,
         pushes,
-        random: draws.expect("groups share the level random").finish(),
+        random: draws.finish(),
         guests,
         player,
         bindings,
@@ -1138,12 +1141,17 @@ pub(super) fn merge(
 }
 
 /// The first difference between the serial loop's result and the groups', if any.
-pub(super) fn difference(serial: &Merged, grouped: &Merged) -> Option<String> {
-    if serial.mobs.len() != grouped.mobs.len() {
+pub(super) fn difference(
+    serial: &Merged,
+    serial_mobs: &[Mob],
+    grouped: &Merged,
+    grouped_mobs: &[Mob],
+) -> Option<String> {
+    if serial_mobs.len() != grouped_mobs.len() {
         return Some(format!(
             "{} mobs serially, {} in groups",
-            serial.mobs.len(),
-            grouped.mobs.len()
+            serial_mobs.len(),
+            grouped_mobs.len()
         ));
     }
     // `section_seq` comes from one counter the copies and the groups both take from: only the
@@ -1153,7 +1161,7 @@ pub(super) fn difference(serial: &Merged, grouped: &Merged) -> Option<String> {
         m.extra.section_seq = 0;
         format!("{m:?}")
     };
-    for (ma, b) in serial.mobs.iter().zip(&grouped.mobs) {
+    for (ma, b) in serial_mobs.iter().zip(grouped_mobs) {
         let (a, b) = (plain(ma), plain(b));
         if a != b {
             let what = format!("mob {} ({}) at {:?}", ma.id, ma.kind.id, ma.position);

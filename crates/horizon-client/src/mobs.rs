@@ -2938,25 +2938,51 @@ pub fn apply_mob_pushes(m: &mut Mob, pending: &mut PendingPushes) {
 /// Applies the brain memories a mob's tick set on other mobs (from event
 /// index `from` on), at once: vanilla sets them on the other entity during
 /// the tick, before the mobs after it tick.
-pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: usize) {
+/// A mob a list hands out: the list's own, or a borrow of one in a larger list (a group of the
+/// server's parallel mob loop, `game/mob_islands.rs`, works on its mobs in place).
+pub trait MobSlot {
+    fn mob(&self) -> &Mob;
+    fn mob_mut(&mut self) -> &mut Mob;
+}
+impl MobSlot for Mob {
+    #[inline]
+    fn mob(&self) -> &Mob {
+        self
+    }
+    #[inline]
+    fn mob_mut(&mut self) -> &mut Mob {
+        self
+    }
+}
+impl MobSlot for &mut Mob {
+    #[inline]
+    fn mob(&self) -> &Mob {
+        self
+    }
+    #[inline]
+    fn mob_mut(&mut self) -> &mut Mob {
+        self
+    }
+}
+pub fn apply_brain_events<M: MobSlot>(mobs: &mut [M], events: &mut Vec<MobEvent>, from: usize) {
     let mut i = from;
     while i < events.len() {
         match events[i] {
             MobEvent::BreedTarget { mob, partner } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == mob) {
                     animal_brain::set_breed_partner(m, partner);
                 }
                 events.remove(i);
             }
             MobEvent::LockGaze { mob, partner } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == mob) {
                     animal_brain::lock_gaze(m, partner);
                     villager_brain::lock_gaze_half(m, Who::Mob(partner));
                 }
                 events.remove(i);
             }
             MobEvent::Retreat { mob, from, at } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == mob) {
                     piglin::receive_retreat(m, from, at);
                 }
                 events.remove(i);
@@ -2970,7 +2996,7 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                 events.remove(i);
             }
             MobEvent::SchoolSize { leader, by } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == leader) {
+                if let Some(m) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == leader) {
                     m.extra.followers += by;
                 }
                 events.remove(i);
@@ -2980,7 +3006,7 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
             MobEvent::Breed {
                 parent, partner, ..
             } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == partner) {
+                if let Some(m) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == partner) {
                     m.extra.age = 6000;
                     m.extra.in_love = 0;
                     animal_brain::forget_breed_target(m, parent);
@@ -3002,6 +3028,7 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                 let mut raised = Vec::new();
                 let (aim, fish_pos, fish_silent) = mobs
                     .iter()
+                    .map(MobSlot::mob)
                     .find(|m| m.id == mob)
                     .map(|m| {
                         (
@@ -3016,7 +3043,7 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                     })
                     .map(|(aim, pos, silent)| (Some(aim), Some(pos), silent))
                     .unwrap_or((None, None, true));
-                if let Some(t) = mobs.iter_mut().find(|m| m.id == target)
+                if let Some(t) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == target)
                     && t.damage_aimed(amount, source, aim)
                 {
                     t.add_effect("minecraft:poison", poison_ticks, 0);
