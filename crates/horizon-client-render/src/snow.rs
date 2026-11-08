@@ -12,8 +12,8 @@
 //!   flutters on its own spiral. They scatter light as small white bodies (a diffuse sphere's
 //!   phase, the crystals' forward lobe toward the sun, now and then a crystal's glint), not as
 //!   lenses; one that lands rests a moment on the ground before it joins the cover.
-//! - **The veil** far away is the froxels' snow medium: snow hides the distance far more than rain
-//!   of the same water ([`extinction`], from the visibility it leaves).
+//! - **The veil** far away is the froxels' snow medium: snow hides the distance more than rain of
+//!   the same water, a blizzard 1.5 km away ([`extinction`], from the visibility it leaves).
 //! - **The cover** builds up while it snows, about ten times the water's depth in fresh snow, the
 //!   game's time running 72 times the real one ([`Cover`]); the sun melts it once it stops. Where
 //!   it snows, the tops of the columns whiten in patches first (grass and leaves need more to
@@ -65,14 +65,15 @@ pub fn terminal_velocity(diameter_mm: f32) -> f32 {
 }
 
 /// The light the falling snow takes out of a beam a metre: 3.912 over the visibility it leaves,
-/// about 3 km in light snow (1 mm/h), 2 km in vanilla's snow and some 800 m in a blizzard (the
-/// visibility goes about as the rate to the -0.8, Rasmussen et al. 1999; a denser veil washed the
-/// whole view out).
+/// about 2.5 km in light snow (1 mm/h), 2.2 km in vanilla's snow and 1.5 km in a blizzard. Real
+/// snow's visibility goes as the rate to the -0.8 (Rasmussen et al. 1999: some 800 m in a
+/// blizzard), but at that a storm drowned the land a hundred blocks away in white: here it goes
+/// as the rate to the -0.3.
 pub fn extinction(rate_mm_h: f32) -> f32 {
     if rate_mm_h <= 0.0 {
         return 0.0;
     }
-    3.912 / (3000.0 * rate_mm_h.powf(-0.8))
+    3.912 / (2500.0 * rate_mm_h.powf(-0.3))
 }
 
 /// The snow this frame, for the renderer: its rate (0: none, or vanilla's snow) and how deep its
@@ -142,9 +143,12 @@ mod tests {
 
     #[test]
     fn snow_hides_the_distance_more_than_rain() {
-        // About 3 km's visibility at 1 mm/h, under a kilometre in a blizzard.
-        assert!((extinction(1.0) - 0.001304).abs() < 1e-6);
-        assert!(3.912 / extinction(BLIZZARD_MM_H) < 1000.0);
+        // About 2.5 km's visibility at 1 mm/h, still 1.5 km in a blizzard: a storm hides the
+        // distance, not the next hill.
+        assert!((extinction(1.0) - 0.001565).abs() < 1e-6);
+        let blizzard = 3.912 / extinction(BLIZZARD_MM_H);
+        assert!(blizzard > 1400.0 && blizzard < 1700.0, "{blizzard}");
+        assert!(extinction(BLIZZARD_MM_H) > extinction(SNOW_MM_H));
         // Rain of the same water.
         assert!(extinction(SNOW_MM_H) > crate::rain::extinction(SNOW_MM_H));
         assert_eq!(extinction(0.0), 0.0);
