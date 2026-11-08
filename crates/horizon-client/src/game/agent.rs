@@ -448,6 +448,7 @@ impl Game<'_> {
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world-options",
             Screen::Friends => "friends",
+            Screen::FriendsOverlay => "friends-overlay",
             Screen::Social => "social",
             Screen::ServerLinks => "server-links",
             Screen::ConfirmLink => "confirm-link",
@@ -698,6 +699,7 @@ impl Game<'_> {
             }
             Mode::Multiplayer(_) => json!({ "mode": "multiplayer" }),
             Mode::Realms(_) => json!({ "mode": "realms" }),
+            Mode::Friends(_) => json!({ "mode": "friends" }),
             Mode::MultiplayerWarning { check } => {
                 json!({ "mode": "multiplayer-warning", "check": check })
             }

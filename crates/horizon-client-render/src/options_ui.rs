@@ -1140,6 +1140,7 @@ impl Opt {
                 let n = next(s.file.int("sharePresence").clamp(0, 2) as u8, 3);
                 s.file
                     .set("sharePresence", crate::options_file::V::Int(i32::from(n)));
+                crate::social::set_share_presence(crate::social::SharePresence::of(n));
             }
             Opt::MusicToast => {
                 let n = next(s.file.int("musicToast").clamp(0, 2) as u8, 3);
@@ -1408,6 +1409,13 @@ enum Act {
     PlayMusicTrack(String, String),
     /// The Music page: turn this track off, or back on.
     MusicTrackOn(String, bool),
+    /// Online Options' friends list switch (`options.friendsList`): on asks first
+    /// (`FriendsListConfirmScreen`), off writes both flags.
+    FriendsList,
+    /// Online Options' `options.allowFriendRequests`, written with the list's flag.
+    FriendRequests,
+    /// Online Options' Xbox privacy and safety link (`options.online.xboxSettings`).
+    FriendsPrivacy,
 }
 enum WKind {
     Button {
@@ -1559,6 +1567,9 @@ pub enum Event {
     OpenStudioFolder,
     /// Start playback from the selected Studio recording.
     OpenStudioReplay(std::path::PathBuf),
+    /// Online Options' Xbox privacy and safety link: confirm and open
+    /// `CommonLinks.PRIVACY_AND_ONLINE_SETTINGS`.
+    FriendsPrivacy,
 }
 /// A row of the Music page: the track, and the pool it is played from.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1649,6 +1660,9 @@ pub struct OptionsUi {
     data_pack_stamp: (Vec<(String, Option<std::time::SystemTime>)>, Instant),
     /// A reload failure, dismissed before returning to the current page.
     pub resource_error: Option<String>,
+    /// `FriendsListConfirmScreen`: the question before the friends list turns on
+    /// (`options.friendsList`), over the Online page.
+    friends_confirm: bool,
     /// When the pack screen's search box took the focus (its cursor blink).
     pack_focus: Instant,
     /// The selection carried over from a pack screen made again over a changed pack list
@@ -1734,6 +1748,7 @@ impl Default for OptionsUi {
             data_pack_resources: Default::default(),
             data_pack_stamp: (Vec::new(), Instant::now()),
             resource_error: None,
+            friends_confirm: false,
             pack_focus: Instant::now(),
             pack_reselected: false,
             in_world: false,
@@ -1787,6 +1802,11 @@ fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
     // OptionsSubScreen.addContents: the narrator button is active only while
     // the narrator is (`narratorButton.active = narrator.isActive()`).
     if !opt.available() || opt == Opt::Narrator && !horizon_narrator::is_active() {
+        return inactive(button(x, y, w, opt.label(s), Act::Cycle(opt)));
+    }
+    // `OnlineOptionsScreen.updateFriendListDependentButtons`: in-game notifications
+    // and presence sharing wait for the friends list.
+    if matches!(opt, Opt::InGameNotification | Opt::SharePresence) && !crate::social::is_enabled() {
         return inactive(button(x, y, w, opt.label(s), Act::Cycle(opt)));
     }
     // VideoSettingsScreen.tick: Max Anisotropy only works with Anisotropic filtering.
@@ -1894,6 +1914,7 @@ fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
     }
     let key = match act {
         Act::Cycle(opt) => Some(opt.tooltip_key(s)),
+        Act::FriendRequests => Some("options.allowFriendRequests.tooltip".into()),
         Act::Push(Page::Language) => Some("options.language.tooltip".into()),
         Act::Push(Page::Accessibility) => Some("options.accessibility.tooltip".into()),
         Act::PvpPreset => Some("horizon.pvp.preset.tooltip".into()),
@@ -2888,9 +2909,41 @@ impl OptionsUi {
                 pairs(&opts)
             }
             Page::Online => {
-                // OnlineOptionsScreen without the Xbox and friends-list parts.
+                // OnlineOptionsScreen: the friends switches (the list's first), the
+                // Xbox link, then the servers and Realms sections.
+                let available = crate::social::available();
+                let enabled = crate::social::is_enabled();
                 let mut rows = vec![Row::Header("options.online.friends.header")];
+                let friends = button(0.0, 0.0, 150.0, on_off(enabled), Act::FriendsList);
+                let friends = if available {
+                    friends
+                } else {
+                    inactive(friends)
+                };
+                let requests = button(
+                    0.0,
+                    0.0,
+                    150.0,
+                    on_off(crate::social::allow_requests()),
+                    Act::FriendRequests,
+                );
+                let requests = if available && enabled {
+                    requests
+                } else {
+                    inactive(requests)
+                };
+                rows.push(Row::Buttons(friends, Some(requests)));
                 rows.extend(pairs(&[Opt::InGameNotification, Opt::SharePresence]));
+                rows.push(Row::Buttons(
+                    button(
+                        0.0,
+                        0.0,
+                        310.0,
+                        tr("options.online.xboxSettings"),
+                        Act::FriendsPrivacy,
+                    ),
+                    None,
+                ));
                 rows.push(Row::Header("options.online.servers.header"));
                 rows.push(Row::Big(Opt::AllowServerListing));
                 rows.push(Row::Header("options.online.realms.header"));
@@ -3621,6 +3674,61 @@ impl OptionsUi {
             Narratable::container_list(self.row_bands.len(), hovered_row, rect).key(key)
         });
     }
+    /// `FriendsListConfirmScreen`: the question before the friends list turns on,
+    /// centred as `ConfirmScreen`'s column.
+    fn draw_friends_confirm(
+        &self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        cursor: (f32, f32),
+        (w, h): (f32, f32),
+    ) {
+        ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.in_world);
+        let title = tr("options.friendsList.confirm.title");
+        let title_w = atlas.font.width_text(&title);
+        batch.text_styled(
+            atlas,
+            &title,
+            ((w - title_w) / 2.0).floor(),
+            h / 2.0 - 50.0,
+            u32::MAX,
+            true,
+        );
+        let message = tr("options.friendsList.confirm.message");
+        let lines = atlas.font.split(&message, (w - 50.0).max(1.0));
+        for (i, line) in lines.iter().enumerate() {
+            let width = atlas.font.width_text(line);
+            batch.text_styled(
+                atlas,
+                line,
+                ((w - width) / 2.0).floor(),
+                h / 2.0 - 28.0 + i as f32 * 9.0,
+                u32::MAX,
+                false,
+            );
+        }
+        let y = h / 2.0 + 20.0;
+        for (i, label) in [
+            tr("options.friendsList.confirm.turnOn"),
+            tr("options.friendsList.confirm.turnOff"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let x = w / 2.0 - 154.0 + i as f32 * 154.0;
+            ui::button(
+                batch,
+                atlas,
+                x,
+                y,
+                150.0,
+                20.0,
+                &label,
+                true,
+                ui::hovered(cursor, x, y, 150.0, 20.0),
+            );
+        }
+    }
     pub fn draw(
         &mut self,
         s: &Settings,
@@ -3629,6 +3737,10 @@ impl OptionsUi {
         cursor: (f32, f32),
     ) {
         let (w, h) = (batch.width, batch.height);
+        if self.friends_confirm {
+            self.draw_friends_confirm(batch, atlas, cursor, (w, h));
+            return;
+        }
         if let Some(error) = &self.resource_error {
             ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.in_world);
             let title = tr("resourcePack.load_fail");
@@ -3976,6 +4088,23 @@ impl OptionsUi {
         drag: bool,
         right: bool,
     ) -> Vec<Event> {
+        if self.friends_confirm {
+            if !drag && !right {
+                let (w, h) = (size.0.ceil(), size.1.ceil());
+                let y = h / 2.0 + 20.0;
+                // `applyFriendSettings(minecraft, true, true, ..)` on Turn On.
+                if ui::hovered((x, y), w / 2.0 - 154.0, y, 150.0, 20.0) {
+                    self.friends_confirm = false;
+                    crate::social::update_settings_async(true, true);
+                    return vec![Event::ButtonClick];
+                }
+                if ui::hovered((x, y), w / 2.0, y, 150.0, 20.0) {
+                    self.friends_confirm = false;
+                    return vec![Event::ButtonClick];
+                }
+            }
+            return Vec::new();
+        }
         if self.resource_error.is_some() {
             if !drag
                 && !right
@@ -4307,6 +4436,25 @@ impl OptionsUi {
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
                         Act::ToggleRecording => events.push(Event::ToggleRecording),
                         Act::ExportRepro => events.push(Event::ExportRepro),
+                        // `OnlineOptionsScreen.onFriendsListToggled`: on asks first; off
+                        // writes both flags (`applyFriendSettings`).
+                        Act::FriendsList => {
+                            if crate::social::is_enabled() {
+                                s.file
+                                    .set("inGameNotification", crate::options_file::V::Bool(false));
+                                crate::social::update_settings_async(false, false);
+                                events.push(Event::Changed);
+                            } else {
+                                self.friends_confirm = true;
+                            }
+                        }
+                        Act::FriendRequests => {
+                            crate::social::update_settings_async(
+                                crate::social::is_enabled(),
+                                !crate::social::allow_requests(),
+                            );
+                        }
+                        Act::FriendsPrivacy => events.push(Event::FriendsPrivacy),
                         Act::None => {}
                     }
                 }
@@ -4824,6 +4972,18 @@ impl OptionsUi {
         shift: bool,
     ) -> Vec<Event> {
         use winit::keyboard::KeyCode as K;
+        if self.friends_confirm {
+            // `ConfirmScreen.keyPressed`: Escape answers no, Enter answers yes.
+            match key {
+                K::Escape => self.friends_confirm = false,
+                K::Enter | K::NumpadEnter => {
+                    self.friends_confirm = false;
+                    crate::social::update_settings_async(true, true);
+                }
+                _ => {}
+            }
+            return Vec::new();
+        }
         if self.page() == Page::HdrCalibration
             && let Some(c) = &mut self.calibration
         {
@@ -5220,6 +5380,25 @@ impl OptionsUi {
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
                         Act::ToggleRecording => events.push(Event::ToggleRecording),
                         Act::ExportRepro => events.push(Event::ExportRepro),
+                        // `OnlineOptionsScreen.onFriendsListToggled`: on asks first; off
+                        // writes both flags (`applyFriendSettings`).
+                        Act::FriendsList => {
+                            if crate::social::is_enabled() {
+                                s.file
+                                    .set("inGameNotification", crate::options_file::V::Bool(false));
+                                crate::social::update_settings_async(false, false);
+                                events.push(Event::Changed);
+                            } else {
+                                self.friends_confirm = true;
+                            }
+                        }
+                        Act::FriendRequests => {
+                            crate::social::update_settings_async(
+                                crate::social::is_enabled(),
+                                !crate::social::allow_requests(),
+                            );
+                        }
+                        Act::FriendsPrivacy => events.push(Event::FriendsPrivacy),
                         Act::None => {}
                     }
                     return events;

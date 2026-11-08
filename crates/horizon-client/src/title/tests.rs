@@ -107,7 +107,8 @@ mod multiplayer_parent_navigation {
     #[test]
     fn friend_cancel_returns_to_title() {
         let mut f = Fixture::new();
-        f.click("Friends");
+        // Horizon's sharing entry is its own icon beside vanilla's friends.
+        f.click("Play with Friends");
         assert!(matches!(
             f.title.mode,
             Mode::Multiplayer(Screen::Friend { .. })
@@ -119,7 +120,7 @@ mod multiplayer_parent_navigation {
     #[test]
     fn friend_escape_returns_to_title() {
         let mut f = Fixture::new();
-        f.click("Friends");
+        f.click("Play with Friends");
         assert!(matches!(
             f.title.mode,
             Mode::Multiplayer(Screen::Friend { .. })
@@ -2623,4 +2624,27 @@ fn native_field_visitor_excludes_preparing_and_game_rule_editors() {
         f.title
             .edit_focused_text_field(|field| assert_eq!(field.value, "safe"))
     );
+}
+
+/// `CommonButtons.friends`: the first icon opens the vanilla friends overlay.
+#[test]
+fn the_friends_icon_opens_the_friends_overlay() {
+    let mut f = Fixture::new();
+    let action = f.title.click_action(0.0, 0.0, (480.0, 262.0), Some(5));
+    assert!(matches!(action, Action::None));
+    assert!(matches!(f.title.mode, Mode::Friends(_)));
+    let _ = fs::remove_dir_all(&f.root);
+}
+
+/// Horizon's Play with Friends keeps its own icon beside vanilla's.
+#[test]
+fn horizon_friends_keep_their_own_button() {
+    let mut f = Fixture::new();
+    let action = f.title.click_action(0.0, 0.0, (480.0, 262.0), Some(9));
+    assert!(matches!(action, Action::None));
+    assert!(matches!(
+        f.title.mode,
+        Mode::Multiplayer(crate::multiplayer::Screen::Friend { .. })
+    ));
+    let _ = fs::remove_dir_all(&f.root);
 }

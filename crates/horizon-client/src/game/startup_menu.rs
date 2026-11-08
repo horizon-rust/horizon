@@ -644,6 +644,11 @@ impl Loading {
                 Event::AccessibilityHelp => {
                     super::packs::open_uri(super::options::ACCESSIBILITY_HELP_LINK)
                 }
+                // OnlineOptionsScreen's Xbox link: the menu has no screen stack for
+                // ConfirmLinkScreen, so it opens directly as its other links do.
+                Event::FriendsPrivacy => {
+                    super::packs::open_uri(super::options::PRIVACY_AND_ONLINE_LINK)
+                }
                 // Mods' settings pages open only in a running game.
                 // The HUD editor needs a world: its button is inactive here.
                 Event::NativeSettings(_) | Event::NativeButton(..) | Event::HudEditor => {}

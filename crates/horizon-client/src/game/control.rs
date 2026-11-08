@@ -250,6 +250,10 @@ impl Game<'_> {
                     self.social_backspace();
                     return Ok(());
                 }
+                Screen::FriendsOverlay => {
+                    self.friends_overlay_backspace();
+                    return Ok(());
+                }
                 _ => {}
             }
         }
@@ -296,6 +300,7 @@ impl Game<'_> {
             Screen::Chat => self.chat_type(text),
             Screen::CommandBlock => self.command_block_type(text),
             Screen::Social => self.social_type(text),
+            Screen::FriendsOverlay => self.friends_overlay_type(text),
             Screen::BlockEditor => self.block_editor_type(text),
             Screen::DebugOptions => self.debug_options_type(text),
             Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
@@ -1371,6 +1376,7 @@ impl Game<'_> {
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world-options",
             Screen::Friends => "friends",
+            Screen::FriendsOverlay => "friends-overlay",
             Screen::Social => "social",
             Screen::ServerLinks => "server-links",
             Screen::ConfirmLink => "confirm-link",

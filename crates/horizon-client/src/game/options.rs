@@ -13,6 +13,8 @@ use winit::{event::MouseButton, keyboard::KeyCode, window::Fullscreen};
 
 /// `CommonLinks.ACCESSIBILITY_HELP`, the Accessibility page's footer link.
 pub(super) const ACCESSIBILITY_HELP_LINK: &str = "https://aka.ms/MinecraftJavaAccessibility";
+/// `CommonLinks.PRIVACY_AND_ONLINE_SETTINGS`, the Online page's Xbox link.
+pub(super) const PRIVACY_AND_ONLINE_LINK: &str = "https://aka.ms/MinecraftJavaXboxPrivacyAndSafety";
 
 pub(super) const CONTROL_HELP: &[&str] = &[
     "options-get [KEY...]           options.txt values by key, with their type, range or choices",
@@ -476,6 +478,11 @@ impl Game<'_> {
                 // back to the options screen.
                 Event::AccessibilityHelp => {
                     self.confirm_trusted_link(ACCESSIBILITY_HELP_LINK, Screen::Options)
+                }
+                // OnlineOptionsScreen's Xbox link: PrivacyConfirmLinkScreen, back to
+                // the options screen.
+                Event::FriendsPrivacy => {
+                    self.confirm_trusted_link(PRIVACY_AND_ONLINE_LINK, Screen::Options)
                 }
                 Event::Narrator => self.narrator_status_changed(),
                 Event::OpenStudioReplay(path) => {

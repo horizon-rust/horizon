@@ -17,11 +17,15 @@ pub struct BanDetails {
     pub reason_message: Option<String>,
 }
 
-/// authlib's `UserProperties`, as far as the title screen reads it.
+/// authlib's `UserProperties`, as far as the title screen and the friends list read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserProperties {
     /// `UserFlag.SERVERS_ALLOWED` (`privileges.multiplayerServer.enabled`).
     pub servers_allowed: bool,
+    /// `UserFlag.FRIENDS_ENABLED` (`friendsPreferences.friends`).
+    pub friends_enabled: bool,
+    /// `UserFlag.ACCEPT_FRIEND_INVITES` (`friendsPreferences.acceptInvites`).
+    pub accept_friend_invites: bool,
     /// `bannedScopes.get("MULTIPLAYER")`.
     pub multiplayer_ban: Option<BanDetails>,
 }
@@ -30,6 +34,8 @@ impl Default for UserProperties {
     fn default() -> Self {
         Self {
             servers_allowed: true,
+            friends_enabled: false,
+            accept_friend_invites: false,
             multiplayer_ban: None,
         }
     }
@@ -209,6 +215,14 @@ pub fn parse_properties(body: &str) -> Option<UserProperties> {
         .pointer("/privileges/multiplayerServer/enabled")
         .and_then(|e| e.as_bool())
         .unwrap_or(false);
+    let friends_enabled = v
+        .pointer("/friendsPreferences/friends")
+        .and_then(|f| f.as_str())
+        .is_some_and(|f| f.eq_ignore_ascii_case("ENABLED"));
+    let accept_friend_invites = v
+        .pointer("/friendsPreferences/acceptInvites")
+        .and_then(|f| f.as_str())
+        .is_some_and(|f| f.eq_ignore_ascii_case("ENABLED"));
     let multiplayer_ban = v
         .pointer("/banStatus/bannedScopes/MULTIPLAYER")
         .filter(|b| b.is_object())
@@ -222,6 +236,8 @@ pub fn parse_properties(body: &str) -> Option<UserProperties> {
         });
     Some(UserProperties {
         servers_allowed,
+        friends_enabled,
+        accept_friend_invites,
         multiplayer_ban,
     })
 }
@@ -297,6 +313,7 @@ mod tests {
             properties: UserProperties {
                 servers_allowed: true,
                 multiplayer_ban: Some(ban.clone()),
+                ..Default::default()
             },
             actions: ProfileActions {
                 forced_name_change: true,
@@ -317,7 +334,7 @@ mod tests {
         let no_servers = AccountStatus {
             properties: UserProperties {
                 servers_allowed: false,
-                multiplayer_ban: None,
+                ..Default::default()
             },
             ..Default::default()
         };

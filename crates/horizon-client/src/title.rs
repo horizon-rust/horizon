@@ -337,6 +337,8 @@ pub enum Mode {
     },
     Multiplayer(crate::multiplayer::Screen),
     Realms(crate::realms::Screen),
+    /// `FriendsOverlayScreen`: the account's friends and requests over the title.
+    Friends(crate::friends_overlay::Screen),
     /// SafetyScreen: the warning before the first Multiplayer click, with its
     /// "Do not show this screen again" box.
     MultiplayerWarning {
@@ -762,6 +764,7 @@ impl Mode {
         match self {
             Self::Main => "title",
             Self::Realms(_) => "realms",
+            Self::Friends(_) => "friends",
             Self::Select { .. } => "world_select",
             Self::Create { .. } => "world_create",
             Self::CreateFlat { .. } => "world_create_flat",
@@ -1221,6 +1224,10 @@ impl Title {
             screen.wheel(delta, cursor, size);
             return false;
         }
+        if let Mode::Friends(screen) = &mut self.mode {
+            screen.scroll(delta, size);
+            return false;
+        }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
             flat::wheel(flat, delta, cursor, size);
             return false;
@@ -1288,6 +1295,11 @@ impl Title {
         self.poll_realms();
         self.poll_onboarding(std::time::Instant::now());
         self.poll_account();
+        if let Mode::Friends(screen) = &mut self.mode {
+            screen.tick();
+        } else {
+            crate::social::set_foreground(false);
+        }
         self.poll_optimize();
         if !self.backup_shown.get() {
             return;
@@ -1862,8 +1874,8 @@ impl Title {
                     )
                     .does(crate::widgets::Action::Exit),
                 ];
-                // CommonButtons' icon buttons; Horizon's Join a Friend (an
-                // invite code) sits behind vanilla's Friends button.
+                // CommonButtons' icon buttons; the last is Horizon's own Play with
+                // Friends (the invite code), beside vanilla's friends overlay.
                 for (i, (key, plain, id, icon)) in [
                     ("gui.friends.open", "Friends", 5, "friends/friends"),
                     ("options.language", "Language...", 6, "icon/language"),
@@ -1873,16 +1885,25 @@ impl Title {
                         7,
                         "icon/accessibility",
                     ),
+                    (
+                        "horizon.friends.play",
+                        "Play with Friends",
+                        9,
+                        "icon/invite",
+                    ),
                 ]
                 .into_iter()
                 .enumerate()
                 {
+                    // `CommonButtons.friends`' `friendsAvailable`: the vanilla friends
+                    // list needs a signed-in account; Horizon's sharing does not.
+                    let enabled = id != 5 || crate::social::available();
                     let mut button = b(
-                        cx - 34.0 + i as f32 * 24.0,
+                        cx - 46.0 + i as f32 * 24.0,
                         y + 72.0,
                         20.0,
                         &lang::get_or(key, plain),
-                        true,
+                        enabled,
                         id,
                     );
                     button.icon = Some((icon, 15.0));
@@ -2300,6 +2321,15 @@ impl Title {
                     btn
                 })
                 .collect(),
+            Mode::Friends(screen) => screen
+                .buttons((w, h))
+                .into_iter()
+                .map(|(x, y, bw, label, enabled, id, icon)| {
+                    let mut btn = b(x, y, bw, &label, enabled, id);
+                    btn.icon = icon;
+                    btn
+                })
+                .collect(),
         }
     }
     /// The screen this mode is, as the narrator reads it: its id and
@@ -2498,6 +2528,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     None => info,
                 }
             }
+            Mode::Friends(_) => ScreenInfo::new("friends", lang::get("gui.friends.open")),
             Mode::Multiplayer(_) => return None,
         };
         Some(info)
@@ -2530,6 +2561,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             7 => icon(
                 "accessibility.onboarding.accessibility.button.narration",
                 "options.accessibility.tooltip",
+            ),
+            9 => icon(
+                "horizon.friends.play.narration",
+                "horizon.friends.play.tooltip",
             ),
             _ => Narratable::button(b.label.clone(), rect, b.enabled),
         };
@@ -3274,6 +3309,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 h,
                 self.focused_button.is_none(),
             ),
+            Mode::Friends(screen) => screen.draw(atlas, batch, cursor, (w, h)),
         }
         for b in self.buttons(w, h) {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
@@ -3648,6 +3684,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     crate::realms::Outcome::None => Action::None,
                 }
             }
+            (Mode::Friends(screen), hit) => {
+                screen.click(hit, (x, y), (w, h));
+                Action::None
+            }
             (Mode::MultiplayerWarning { .. }, Some(71)) => {
                 self.mode = Mode::Main;
                 Action::None
@@ -3663,6 +3703,13 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 crate::multiplayer::Outcome::None => Action::None,
             },
             (Mode::Main, Some(5)) => {
+                // `CommonButtons.friends`: the vanilla friends overlay, whose list is
+                // turned on first when it is off (`OnlineOptionsScreen.confirmFriendsListEnabled`).
+                self.mode = Mode::Friends(crate::friends_overlay::Screen::new_gated());
+                Action::None
+            }
+            (Mode::Main, Some(9)) => {
+                // Horizon's own Play with Friends, behind a second icon.
                 self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend(true));
                 Action::None
             }
@@ -4006,6 +4053,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         match &mut self.mode {
             Mode::Multiplayer(screen) => screen.focused_text(),
             Mode::Realms(screen) => screen.focused_text(),
+            Mode::Friends(screen) => screen.focused_text(),
             mode => caret_field(mode, self.search_focused, &mut self.search),
         }
     }
@@ -4084,6 +4132,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 .map(|(_, rect)| rect),
             Mode::Multiplayer(screen) => screen.focused_box((w, h)),
             Mode::Realms(screen) => screen.focused_box((w, h)),
+            Mode::Friends(screen) => screen.focused_box((w, h)),
             Mode::CreateBuffet { buffet, .. } if buffet.query_focused => {
                 Some(buffet::search_box(w))
             }
@@ -4206,6 +4255,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 return (action, true);
             }
             return (Action::None, false);
+        }
+        // `AddFriendWidget`'s EditBox: Enter sends the name in it.
+        if let Mode::Friends(screen) = &mut self.mode {
+            screen.enter();
+            return (Action::None, true);
         }
         match &self.mode {
             Mode::Create { .. } => {
@@ -4782,6 +4836,12 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             return;
         };
         self.allows_multiplayer = status.allows_multiplayer();
+        // `Minecraft.getPlayerSocialManager()`: the account's `friendsPreferences` start
+        // the friends list (`RemoteFriendListUpdateHandler.start` when enabled).
+        crate::social::init(
+            status.properties.friends_enabled,
+            status.properties.accept_friend_invites,
+        );
         if !QUEUED.swap(true, Ordering::Relaxed) {
             self.ban_queue
                 .extend(initial_notices(status, &session.name));
@@ -4820,6 +4880,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         {
             return;
         }
+        if let Mode::Friends(screen) = &mut self.mode
+            && !screen.escape()
+        {
+            return;
+        }
         match &self.mode {
             // OptimizeWorldScreen: `shouldCloseOnEsc` is false; the Backup wait takes no input.
             Mode::Backup { .. } | Mode::Optimize { .. } => {}
@@ -4853,6 +4918,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             }
             Mode::CreateBuffet { .. } => self.close_buffet(false),
             Mode::Create { .. } => self.cancel_create(),
+            // `FriendsOverlayScreen.onClose`: the screen behind (the title).
+            Mode::Friends(_) => self.mode = Mode::Main,
             // Screen.keyPressed: Escape closes the screen, which fades out.
             Mode::Onboarding(_) => self.onboarding_close(),
             // ConfirmScreen.keyPressed: Escape answers no, which runs `next`.
@@ -4917,6 +4984,7 @@ fn caret_field<'a>(
         },
         Mode::Multiplayer(screen) => screen.focused_text(),
         Mode::Realms(screen) => screen.focused_text(),
+        Mode::Friends(screen) => screen.focused_text(),
         Mode::CreateFlat { flat, .. } if flat.page == flat::Page::Presets && flat.share_focused => {
             Some((FLAT_SHARE, &mut flat.share, 1230))
         }
@@ -5179,18 +5247,26 @@ mod classic_tests {
             let buttons = title.buttons(w, h);
             let cx = (w / 2.0).floor();
             let y = (h / 4.0).floor() + 48.0;
+            let friends_available = crate::social::available();
             for (id, x, enabled, icon) in [
-                (5, cx - 34.0, true, "friends/friends"),
-                (6, cx - 10.0, true, "icon/language"),
-                (7, cx + 14.0, true, "icon/accessibility"),
+                (5, cx - 46.0, friends_available, "friends/friends"),
+                (6, cx - 22.0, true, "icon/language"),
+                (7, cx + 2.0, true, "icon/accessibility"),
+                (9, cx + 26.0, true, "icon/invite"),
             ] {
                 let b = buttons.iter().find(|b| b.id == id).unwrap();
                 assert_eq!(
                     (b.x, b.y, b.w, b.enabled, b.icon),
                     (x, y + 72.0, 20.0, enabled, Some((icon, 15.0)))
                 );
+                let click = title.click(x + 10.0, y + 82.0, (w, h));
+                if id == 5 && !friends_available {
+                    // `friendsAvailable`: no signed-in account, no friends list.
+                    assert_eq!(click, (Action::None, false));
+                    continue;
+                }
                 assert_eq!(
-                    title.click(x + 10.0, y + 82.0, (w, h)),
+                    click,
                     match id {
                         6 => (Action::Language, true),
                         7 => (Action::Accessibility, true),
@@ -5198,6 +5274,10 @@ mod classic_tests {
                     }
                 );
                 if id == 5 {
+                    assert!(matches!(title.mode, Mode::Friends(_)));
+                    title.mode = Mode::Main;
+                }
+                if id == 9 {
                     assert!(matches!(
                         title.mode,
                         Mode::Multiplayer(crate::multiplayer::Screen::Friend { .. })
@@ -5210,7 +5290,7 @@ mod classic_tests {
             }
             // The four-pixel gaps around icons must not activate a button.
             assert_eq!(
-                title.click(cx + 12.0, y + 82.0, (w, h)),
+                title.click(cx - 24.0, y + 82.0, (w, h)),
                 (Action::None, false)
             );
             assert_eq!(
@@ -5303,7 +5383,7 @@ mod classic_tests {
                 .iter()
                 .find(|quad| quad[0].uv == [0.25 + i as f32 * 0.125, 0.0])
                 .unwrap();
-            let x = cx - 34.0 + i as f32 * 24.0 + 3.0;
+            let x = cx - 46.0 + i as f32 * 24.0 + 3.0;
             let y = (batch.height / 4.0).floor() + 48.0 + 72.0 + 3.0;
             assert_eq!(quad[0].pos, [x, y]);
             assert_eq!(quad[2].pos, [x + 15.0, y + 15.0]);

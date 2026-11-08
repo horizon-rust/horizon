@@ -240,6 +240,119 @@ impl Game<'_> {
         }
     }
 
+    /// `CommonButtons.friends` on the pause screen: `FriendsOverlayScreen` over the
+    /// paused world. Its list is turned on first when it is off
+    /// (`OnlineOptionsScreen.confirmFriendsListEnabled`).
+    pub(super) fn open_friends_overlay(&mut self) {
+        self.friends_overlay = Some(crate::friends_overlay::Screen::new_gated());
+        self.pause_focus = None;
+        self.screen = super::Screen::FriendsOverlay;
+    }
+
+    pub(super) fn close_friends_overlay(&mut self) {
+        self.friends_overlay = None;
+        crate::social::set_foreground(false);
+        self.screen = super::Screen::Paused;
+    }
+
+    pub(super) fn draw_friends_overlay(&mut self, batch: &mut HudBatch) {
+        if let Some(screen) = self.friends_overlay.as_mut() {
+            screen.tick();
+        }
+        horizon_client::widgets::begin_screen(|| {
+            horizon_client::widgets::ScreenInfo::new(
+                "friends_overlay",
+                crate::lang::get("gui.friends.open"),
+            )
+        });
+        let size = self.gui_size();
+        let cursor = self.cursor;
+        let atlas = &self.gui.atlas;
+        if let Some(screen) = self.friends_overlay.as_ref() {
+            screen.draw(atlas, batch, cursor, size);
+        }
+    }
+
+    pub(super) fn friends_overlay_click(&mut self) {
+        let size = self.gui_size();
+        let cursor = self.cursor;
+        let shift = self.has_shift_down();
+        let atlas = &self.gui.atlas;
+        let Some(screen) = self.friends_overlay.as_mut() else {
+            return;
+        };
+        let hit = screen
+            .buttons(size)
+            .into_iter()
+            .find(|b| b.4 && crate::ui::hovered(cursor, b.0, b.1, b.2, 20.0))
+            .map(|b| b.5);
+        if hit.is_some() {
+            self.audio.play_button_click();
+        }
+        screen.click(hit, cursor, size);
+        let mut close = false;
+        if hit.is_none() {
+            screen.press_field(atlas, cursor, size, shift);
+            // `FriendsOverlayScreen.mouseClicked`: a click outside the panel closes it.
+            if !screen.contains(cursor, size) && screen.escape() {
+                close = true;
+            }
+        }
+        if close {
+            self.close_friends_overlay();
+        }
+    }
+
+    pub(super) fn friends_overlay_key(&mut self, event: &winit::event::KeyEvent) {
+        if event.state != winit::event::ElementState::Pressed {
+            return;
+        }
+        let winit::keyboard::PhysicalKey::Code(key) = event.physical_key else {
+            return;
+        };
+        let (ctrl, shift, types) = (
+            self.has_control_down(),
+            self.has_shift_down(),
+            self.types_text(),
+        );
+        let Some(screen) = self.friends_overlay.as_mut() else {
+            return;
+        };
+        let mut close = false;
+        match key {
+            winit::keyboard::KeyCode::Escape => close = screen.escape(),
+            winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter => {
+                screen.enter()
+            }
+            _ => {
+                // `EditBox.keyPressed`: Backspace, Delete, the arrows, Home and End.
+                if !screen.key(key, ctrl, shift)
+                    && types
+                    && let Some(text) = event.text.as_deref()
+                {
+                    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+                    screen.type_text(&text);
+                }
+            }
+        }
+        if close {
+            self.close_friends_overlay();
+        }
+    }
+
+    pub(super) fn friends_overlay_type(&mut self, text: &str) {
+        if let Some(screen) = self.friends_overlay.as_mut() {
+            let text: String = text.chars().filter(|c| !c.is_control()).collect();
+            screen.type_text(&text);
+        }
+    }
+
+    pub(super) fn friends_overlay_backspace(&mut self) {
+        if let Some(screen) = self.friends_overlay.as_mut() {
+            screen.key(winit::keyboard::KeyCode::Backspace, false, false);
+        }
+    }
+
     /// What Play with Friends shows.
     pub(super) fn friends_view(&self) -> FriendsView {
         let guests = match &self.lan {
