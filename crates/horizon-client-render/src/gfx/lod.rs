@@ -103,7 +103,7 @@ pub(super) fn resort_step(distance: f64) -> i32 {
 }
 
 /// The Earth's radius the distant terrain bends by (`Renderer::earth_curvature`), in blocks.
-pub(super) const EARTH_RADIUS: f64 = 6_371_000.0;
+pub(super) const EARTH_RADIUS: f64 = crate::lod::EARTH_RADIUS;
 
 /// How far a distant tile's point `horizontal` blocks from the eye sinks under the Earth's
 /// curvature counted from `flat_radius` (the loaded chunks', which stay flat): terrain.wgsl

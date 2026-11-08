@@ -109,6 +109,7 @@ pub enum H {
     ShootingStars,
     AerialPerspective,
     EarthCurvature,
+    HorizonCulling,
     NaturalFog,
     SmoothFluids,
     Upscaling,
@@ -468,6 +469,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Distant terrain and clouds curve away with the Earth: islands sink.",
                         ),
                         h(
+                            H::HorizonCulling,
+                            None,
+                            "With Earth Curvature, far terrain stops where it sinks under the horizon.",
+                        ),
+                        h(
                             H::NaturalFog,
                             None,
                             "RT Lighting: valley fog at sunrise, mist over cold water.",
@@ -764,6 +770,15 @@ const LOD_STEPS: [u32; 24] = [
     2097152,
     crate::lod::MAX_CHUNKS,
 ];
+/// The LOD Distance slider's stops for these settings: `LOD_STEPS` up to
+/// `Graphics::lod_distance_max`, which ends it (the curved horizon's
+/// `lod::HORIZON_MAX_CHUNKS` while Earth Curvature is on).
+fn lod_steps(g: &crate::graphics::Graphics) -> Vec<u32> {
+    let max = g.lod_distance_max();
+    let mut steps: Vec<u32> = LOD_STEPS.iter().copied().filter(|&d| d < max).collect();
+    steps.push(max);
+    steps
+}
 
 /// Whether the system set HDR up for the display, and whether the player kept it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -872,11 +887,12 @@ impl H {
                 Some(i as f32 / (UPLOAD_STEPS.len() - 1) as f32)
             }
             H::LodDistance => {
-                let i = LOD_STEPS
+                let steps = lod_steps(g);
+                let i = steps
                     .iter()
                     .position(|&d| d >= g.lod_distance)
-                    .unwrap_or(LOD_STEPS.len() - 1);
-                Some(i as f32 / (LOD_STEPS.len() - 1) as f32)
+                    .unwrap_or(steps.len() - 1);
+                Some(i as f32 / (steps.len() - 1) as f32)
             }
             H::Workers => Some(g.workers as f32 / max_workers() as f32),
             H::ResolutionScale => Some((g.resolution_scale as f32 - 50.0) / 150.0),
@@ -1051,6 +1067,7 @@ impl H {
                 },
             ),
             H::EarthCurvature => labelled("Earth Curvature", on_off(g.earth_curvature)),
+            H::HorizonCulling => labelled("Horizon Culling", on_off(g.horizon_culling)),
             H::SmoothFluids => labelled("Smooth Fluids", on_off(g.smooth_fluids)),
             H::Hdr => labelled("HDR", on_off(g.hdr)),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s) {
@@ -1116,7 +1133,8 @@ impl H {
                     UPLOAD_STEPS[(v * (UPLOAD_STEPS.len() - 1) as f32).round() as usize]
             }
             H::LodDistance => {
-                g.lod_distance = LOD_STEPS[(v * (LOD_STEPS.len() - 1) as f32).round() as usize]
+                let steps = lod_steps(g);
+                g.lod_distance = steps[(v * (steps.len() - 1) as f32).round() as usize]
             }
             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
             H::ResolutionScale => g.resolution_scale = (50.0 + (v * 30.0).round() * 5.0) as u32,
@@ -1224,7 +1242,12 @@ impl H {
             H::ShootingStars => {
                 g.shooting_stars = (g.shooting_stars + if back { 2 } else { 1 }) % 3
             }
-            H::EarthCurvature => g.earth_curvature = !g.earth_curvature,
+            H::EarthCurvature => {
+                g.earth_curvature = !g.earth_curvature;
+                // The LOD Distance slider stops at the curved horizon.
+                g.lod_distance = g.lod_distance.min(g.lod_distance_max());
+            }
+            H::HorizonCulling => g.horizon_culling = !g.horizon_culling,
             H::NaturalFog => g.natural_fog = (g.natural_fog + if back { 2 } else { 1 }) % 3,
             H::SmoothFluids => g.smooth_fluids = !g.smooth_fluids,
             H::Hdr => g.hdr = !g.hdr,
@@ -1304,6 +1327,9 @@ impl Item {
             {
                 Some("Your GPU or graphics API doesn't support it.")
             }
+            Item::Horizon(H::HorizonCulling) if !s.horizon.earth_curvature => {
+                Some("Turn Earth Curvature on to use it.")
+            }
             Item::Horizon(H::EntityCullingPrecheck)
                 if s.horizon.entity_culling != EntityCullingMode::Asynchronous =>
             {
@@ -1353,6 +1379,7 @@ impl Item {
             Item::Horizon(H::RtLighting) => g.rt_lighting,
             Item::Horizon(H::NightVision) => g.night_vision,
             Item::Horizon(H::EarthCurvature) => g.earth_curvature,
+            Item::Horizon(H::HorizonCulling) => g.horizon_culling,
             Item::Horizon(H::SmoothFluids) => g.smooth_fluids,
             Item::Horizon(H::DitherCutoutMips) => g.dither_cutout_mips,
             Item::Horizon(H::Hdr) => g.hdr,
@@ -2862,8 +2889,42 @@ mod tests {
     }
 
     #[test]
+    fn lod_distance_stops_at_the_curved_horizon() {
+        use crate::lod::{HORIZON_MAX_CHUNKS, MAX_CHUNKS};
+        let mut s = Settings::default();
+        assert!(s.horizon.earth_curvature);
+        let item = Item::Horizon(H::LodDistance);
+        // The doubling stops up to 4096, then the horizon ends the slider.
+        item.set_slider(&mut s, 1.0);
+        assert_eq!(s.horizon.lod_distance, HORIZON_MAX_CHUNKS);
+        assert_eq!(item.slider(&s), Some(1.0));
+        assert_eq!(
+            item.label(&s).plain(),
+            format!("LOD Distance: {HORIZON_MAX_CHUNKS} chunks")
+        );
+        let steps = lod_steps(&s.horizon);
+        assert_eq!(steps[steps.len() - 2], 4096);
+        item.set_slider(&mut s, (steps.len() - 2) as f32 / (steps.len() - 1) as f32);
+        assert_eq!(s.horizon.lod_distance, 4096);
+        // Flat, the slider reaches the world; curved again, it comes back.
+        let curvature = Item::Horizon(H::EarthCurvature);
+        curvature.cycle(&mut s, false, [1920, 1080]);
+        assert!(!s.horizon.earth_curvature);
+        item.set_slider(&mut s, 1.0);
+        assert_eq!(s.horizon.lod_distance, MAX_CHUNKS);
+        // Horizon Culling has nothing to cull on a flat world.
+        assert!(Item::Horizon(H::HorizonCulling).blocked(&s).is_some());
+        curvature.cycle(&mut s, false, [1920, 1080]);
+        assert_eq!(s.horizon.lod_distance, HORIZON_MAX_CHUNKS);
+        assert!(Item::Horizon(H::HorizonCulling).blocked(&s).is_none());
+    }
+
+    #[test]
     fn lod_distance_slides_after_render_distance_without_changing_it() {
         let mut s = Settings::default();
+        // A flat world: the slider goes as far as the world
+        // (`lod_distance_stops_at_the_curved_horizon` for a curved one).
+        s.horizon.earth_curvature = false;
         let item = Item::Horizon(H::LodDistance);
         let near = s.render_distance;
         assert_eq!(item.label(&s).plain(), "LOD Distance: Off");
