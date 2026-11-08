@@ -117,6 +117,61 @@ impl RandomTickSections {
         });
         Some((y, mask.clone()))
     }
+    /// Build, on up to `lanes` threads, the masks the random tick loop will ask for in `keys`'
+    /// chunks as they are now (`chunk_of`), so the loop finds them built. A mask only tells the
+    /// loop which drawn blocks to read: the draws and the ticks are the same either way, and an
+    /// edit before the loop reaches a section drops its mask as usual.
+    pub fn prepare_masks(
+        &mut self,
+        keys: &[(i32, i32)],
+        chunk_of: impl Fn((i32, i32)) -> Option<Arc<Chunk>>,
+        facts: &BlockFacts,
+        candidate: &(impl Fn(u32) -> bool + Sync),
+        lanes: usize,
+    ) {
+        let mut todo: Vec<((i32, i32), usize, Arc<Chunk>)> = Vec::new();
+        for &key in keys {
+            let Some(chunk) = chunk_of(key) else {
+                continue;
+            };
+            let cached = Self::refresh(&mut self.chunks, key, &chunk, &mut |id| {
+                facts.get(BlockStateId(id)).random_ticks
+            });
+            for i in cached.sections.mask.iter() {
+                if cached.masks.get(i).is_some_and(Option::is_none) {
+                    todo.push((key, i, Arc::clone(&chunk)));
+                }
+            }
+        }
+        if todo.is_empty() {
+            return;
+        }
+        let build = |part: &[((i32, i32), usize, Arc<Chunk>)]| -> Vec<RandomTickMask> {
+            part.iter()
+                .map(|(_, i, chunk)| Self::candidate_mask(&chunk.sections[*i], candidate))
+                .collect()
+        };
+        let masks: Vec<RandomTickMask> = if lanes <= 1 || todo.len() < 32 {
+            build(&todo)
+        } else {
+            let size = todo.len().div_ceil(lanes);
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = todo
+                    .chunks(size)
+                    .map(|part| scope.spawn(move || build(part)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|h| h.join().expect("a mask build panicked"))
+                    .collect()
+            })
+        };
+        for ((key, i, _), mask) in todo.into_iter().zip(masks) {
+            if let Some(cached) = self.chunks.get_mut(&key) {
+                cached.masks[i] = Some(Rc::new(mask));
+            }
+        }
+    }
     fn candidate_mask(section: &Section, mut candidate: impl FnMut(u32) -> bool) -> RandomTickMask {
         let blocks = &section.blocks;
         let mut ids = [0u16; 4096];
