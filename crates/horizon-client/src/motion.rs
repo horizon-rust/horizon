@@ -2147,7 +2147,13 @@ impl MotionWorld<'_, '_, '_> {
         // compares the delta before the move with the one after it, which
         // `Entity.move` leaves as the movement it resolved. `move_entity` does
         // not write that back, so the distance actually travelled stands in.
-        if self.player.collision.horizontal {
+        // Players with creative/invulnerable or mayfly abilities take no wall
+        // damage and play no fall damage sound, like Player.causeFallDamage.
+        if self.player.collision.horizontal
+            && !self.player.invulnerable
+            && !self.player.may_fly
+            && !self.player.spectator
+        {
             let travelled = self.player.position.subtract(before);
             let new_h = (travelled.x * travelled.x + travelled.z * travelled.z).sqrt();
             let dmg = fly_into_wall_damage(move_h, new_h);
@@ -4094,6 +4100,57 @@ mod tests {
             "a client's own glide does not hurt it: {:?}",
             w.player.hurt_log
         );
+        assert_eq!(w.player.health.health(), 20.0);
+    }
+
+    /// A creative or invulnerable player's glide into a wall does not hurt or
+    /// play the fall damage sound.
+    #[test]
+    fn a_creative_glide_into_a_wall_plays_no_sound_and_does_not_hurt() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 1).unwrap();
+        let stone = assets.registry.default_state("minecraft:stone").unwrap();
+        for y in 4..=5 {
+            for z in 19..=21 {
+                scene.set(23, y, z, stone).unwrap();
+            }
+        }
+        let mut player = PlayerMotion::new(&resources, Vec3::new(22.0, 4.0, 20.5)).unwrap();
+        player.client_side = true;
+        player.fall_flying = true;
+        player.invulnerable = true;
+        player.may_fly = true;
+        player.yaw = -90.0;
+        player.pitch = 0.0;
+        player.carry_client_movement(Vec3::new(1.2, 0.0, 0.0));
+        let mut w = MotionWorld {
+            entities: &[],
+            player: &mut player,
+            scene: &mut scene,
+            assets: &assets,
+            collision_binding: &binding,
+            resources: &resources,
+            health: &resources.health,
+        };
+        w.travel_fall_flying().unwrap();
+        assert!(
+            !w.player.events.iter().any(|e| matches!(
+                e,
+                MotionEvent::Fall(crate::landing::FallEvent::Sound { .. })
+            )),
+            "creative glide into wall should play no fall sound: {:?}",
+            w.player.events
+        );
+        assert!(w.player.hurt_log.is_empty());
         assert_eq!(w.player.health.health(), 20.0);
     }
 
