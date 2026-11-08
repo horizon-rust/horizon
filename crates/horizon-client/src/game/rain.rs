@@ -77,7 +77,9 @@ impl Game<'_> {
         let (x, z) = (camera.x.floor() as i32, camera.z.floor() as i32);
         let mut map = std::mem::take(&mut self.rain.map);
         let w = self.rain.wetness;
-        map.set_idle(rain.rate <= 0.0 && w.wet.max(w.wet_sun).max(w.puddles).max(w.puddles_sun) <= 0.0);
+        map.set_idle(
+            rain.rate <= 0.0 && w.wet.max(w.wet_sun).max(w.puddles).max(w.puddles_sun) <= 0.0,
+        );
         map.update(
             x,
             z,

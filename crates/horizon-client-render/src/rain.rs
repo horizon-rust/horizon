@@ -420,7 +420,7 @@ impl RainMap {
         // The sweep waits while a crossing fills, so a frame pays for one or the other. MAP is a
         // multiple of SWEEP_ROWS: its rows never wrap.
         self.frame = self.frame.wrapping_add(1);
-        if !crossed && (!self.idle || self.frame % IDLE_SWEEP == 0) {
+        if !crossed && (!self.idle || self.frame.is_multiple_of(IDLE_SWEEP)) {
             self.fill(x0, z0 + self.sweep, MAP, SWEEP_ROWS, height, column);
             self.sweep = (self.sweep + SWEEP_ROWS) % MAP;
         }
