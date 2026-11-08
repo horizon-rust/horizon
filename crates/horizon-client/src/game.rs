@@ -4673,10 +4673,13 @@ impl Game<'_> {
             }
             // ItemEntity.tick's noPhysics (servers only): out of a block
             // placed on it, towards the closest open side (#1252).
-            let worked = ahead
-                .get_mut(i)
-                .and_then(Option::take)
-                .filter(|a| a.still_fits(item));
+            let worked = ahead.get_mut(i).and_then(Option::take);
+            if super::game::mob_islands::verify() && !ahead.is_empty() {
+                super::game::mob_islands::count_item_ahead(
+                    worked.as_ref().map(|a| a.still_fits(item)),
+                );
+            }
+            let worked = worked.filter(|a| a.still_fits(item));
             let (no_physics, alive, discarded, entered) = match worked {
                 // `HORIZON_PARALLEL_TICK=verify`: the move at its turn, on a copy, must match.
                 Some(a) if super::game::mob_islands::verify() => {

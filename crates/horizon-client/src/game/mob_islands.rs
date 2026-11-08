@@ -1345,3 +1345,25 @@ pub(super) fn report_item_check(same: bool, id: u32) {
         );
     }
 }
+
+/// `HORIZON_PARALLEL_TICK=verify`: how the items' moves worked out ahead were used (none worked out,
+/// still fitting, changed by a merge), logged every 20,000 items.
+pub(super) fn count_item_ahead(fits: Option<bool>) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    let k = match fits {
+        None => 0,
+        Some(true) => 1,
+        Some(false) => 2,
+    };
+    COUNTS[k].fetch_add(1, Ordering::Relaxed);
+    let n: u64 = COUNTS.iter().map(|c| c.load(Ordering::Relaxed)).sum();
+    if n.is_multiple_of(20_000) {
+        log::info!(
+            "parallel items: {} not worked out, {} used, {} changed by a merge",
+            COUNTS[0].load(Ordering::Relaxed),
+            COUNTS[1].load(Ordering::Relaxed),
+            COUNTS[2].load(Ordering::Relaxed)
+        );
+    }
+}
