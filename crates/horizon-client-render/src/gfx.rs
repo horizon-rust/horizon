@@ -8971,6 +8971,7 @@ impl Renderer {
                 self.lava_layers,
             ],
             glass: self.glass_layers,
+            ice: self.ice_layers + 1.0,
             // Set after the hybrid's structures are made this frame (`hw_update`).
             hw_offset: [0.0; 4],
             moving: {

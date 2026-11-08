@@ -39,6 +39,24 @@ fn hw_refract(p: vec2<i32>) -> vec4<f32> {
 // toward the camera (xyz) and distance (w, below 0 none), and its attenuation a block.
 var<private> glass_at: vec4<f32>;
 var<private> glass_sigma: vec3<f32>;
+// Whether that glass is ice (`hw_ice`: 1 ice, 2 packed ice, 0 neither), and its frost's colour.
+var<private> glass_ice: f32;
+var<private> glass_frost: vec3<f32>;
+// Ice is not thin-walled: the faces between two ice blocks are culled, so a ray that enters ice
+// runs through all of it to the face it leaves by, however deep, and the ice's body acts along
+// that whole length (Beer-Lambert, a block): clear ice absorbs red most (glacier blue) and
+// scatters a little, packed ice (compressed snow full of air) scatters most within a block or
+// two. What is lost is made up by the light its bubbles scatter toward the eye: its frost's colour,
+// a deeper blue, lit as the face it entered by. A pillar shows what lies behind it, deep blue; a
+// hill of ice or packed ice is opaque.
+// Their extinction a block: shadow_rays_hw.wgsl `ICE_EXTINCTION`.
+fn ice_body(entry: vec3<f32>, n: vec3<f32>, through: vec3<f32>, inside: f32) -> vec3<f32> {
+    let sigma = select(ICE_EXTINCTION, PACKED_ICE_EXTINCTION, glass_ice > 1.5);
+    let t = exp(-sigma * inside);
+    let lit = sun_on(entry + n * 0.02, n) + hw_seen_light(entry, n);
+    let scattered = glass_frost * vec3(0.75, 0.9, 1.0) * lit;
+    return through * t + scattered * (1.0 - luminance(t));
+}
 // A face the ray from camera-relative `pos` along `l` meets first within `reach`: its distance (-1
 // none), its quad's normal (as wound: outward) and whether it is a solid one (the ray then meets
 // the terrain there, not the glass's far side).
@@ -89,9 +107,16 @@ fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
     // The near wall (its Fresnel is the shader's): its colour over its thickness along the bent ray.
     var absorbed = exp(-g.rgb * GLASS_WALL / max(-dot(dir, n), 0.05));
     var out = false;
+    // The length run inside (ice's body, `ice_body`).
+    var inside = 0.0;
     for (var i = 0u; i < 4u; i++) {
         let f = hw_face(pos, dir, 32.0);
-        if f.t < 0.0 { break; }
+        if f.t < 0.0 {
+            // Ice deeper than 32 blocks: its body hides all that lies beyond.
+            inside += 32.0;
+            break;
+        }
+        inside += f.t;
         if f.solid {
             pos += dir * max(f.t - 0.01, 0.0);
             out = true;
@@ -115,7 +140,10 @@ fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
         out = true;
         break;
     }
-    if !out { return vec4(0.0); }
+    if !out {
+        if glass_ice > 0.0 { return vec4(ice_body(entry, n, vec3(0.0), 64.0), 1.0); }
+        return vec4(0.0);
+    }
     // The sun's beam on the far face, where the sun is behind the glass on the side the eye looks
     // (its light through the glass reaches the eye only near the sun's direction).
     var beam = 0.0;
@@ -123,11 +151,19 @@ fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
     if rt.light.w > 0.0 && dot(n, l) < 0.0 && dot(ray, l) > 0.3 && dot(pos - entry, n) < 0.0 {
         beam = luminance(hw_light(pos, l, 4096.0));
     }
-    let h = hw_hit(pos, dir, 256.0);
-    if h.t < 0.0 {
-        return vec4(absorbed * (sky_at(dir) * h.through + hw_water_glint(h, dir)), 1.0 + beam);
+    if glass_ice > 0.0 {
+        let sigma = select(ICE_EXTINCTION, PACKED_ICE_EXTINCTION, glass_ice > 1.5);
+        beam *= luminance(exp(-sigma * inside));
     }
-    let seen = pos + dir * h.t;
-    let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
-    return vec4(absorbed * (h.through * hw_surface(h, seen, light) + hw_water_glint(h, dir)), 1.0 + beam);
+    let h = hw_hit(pos, dir, 256.0);
+    var seen_light = vec3(0.0);
+    if h.t < 0.0 {
+        seen_light = absorbed * (sky_at(dir) * h.through + hw_water_glint(h, dir));
+    } else {
+        let seen = pos + dir * h.t;
+        let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
+        seen_light = absorbed * (h.through * hw_surface(h, seen, light) + hw_water_glint(h, dir));
+    }
+    if glass_ice > 0.0 { seen_light = ice_body(entry, n, seen_light, inside); }
+    return vec4(seen_light, 1.0 + beam);
 }

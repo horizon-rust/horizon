@@ -143,6 +143,9 @@ pub struct Rays {
     pub water: [f32; 4],
     /// The plain glass's sprite layers, packed (`Renderer::set_glass_layers`; -1 none).
     pub glass: f32,
+    /// The ice's and the packed ice's sprite layers, packed plus one (`Renderer::set_ice_layers`;
+    /// 0 none, the default), for the refraction through ice (shadow_rays_psr.wgsl).
+    pub ice: f32,
     /// The camera's offset from the hardware rays' instances' anchor (`HwRays::offset`).
     pub hw_offset: [f32; 4],
     /// RT lighting's moving lights (a held torch, a burning mob, a dropped lantern: Remix's held
@@ -1213,7 +1216,7 @@ impl ShadowRays {
                 rays.moving_count.min(MOVING_LIGHTS) as f32,
                 rays.aldhani[0],
                 rays.aldhani[1],
-                0.0,
+                rays.ice,
             ],
             far: rays.far,
             moving: rays.moving,

@@ -259,6 +259,16 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>, focus: bool) -> vec
     let p0 = hw_position(base);
     let f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
     if dot(f, f) < 1e-12 { return vec3(1.0); }
+    // Ice's body along the sun's shadow ray (`hw_light`): the faces as wound face out, so the
+    // length inside is what the ray runs to the faces it leaves by less what it runs to those it
+    // enters by, in whatever order the hits come (a ray from inside the ice enters by none).
+    if focus {
+        let ice = hw_ice(layer);
+        if ice > 0.0 {
+            let run = select(-c.t, c.t, dot(f, l) > 0.0);
+            if ice > 1.5 { hw_ice_run.y += run; } else { hw_ice_run.x += run; }
+        }
+    }
     return glass_wall(hw_glass(c, base), abs(dot(normalize(f), l)));
 }
 // RT lighting's glass, Remix's translucent material as RTX Remix for Minecraft gives the block
@@ -288,6 +298,19 @@ fn glass_wall(g: vec4<f32>, cosine: f32) -> vec3<f32> {
 // cosine of the angle on the air's side.
 fn glass_fresnel(cosine: f32) -> f32 {
     return 0.0426 + 0.9574 * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
+}
+// Ice's body, its extinction a block (shadow_rays_psr.wgsl `ice_body`): clear ice absorbs red
+// most, packed ice scatters most of the light within a block or two.
+const ICE_EXTINCTION: vec3<f32> = vec3(0.14, 0.08, 0.06);
+const PACKED_ICE_EXTINCTION: vec3<f32> = vec3(0.75, 0.66, 0.6);
+// RT lighting's ice (terrain.wgsl `rt_ice`): 1 where sprite `layer` is the ice's, 2 the packed
+// ice's, 0 neither (`rt.held.w`, packed plus one).
+fn hw_ice(layer: f32) -> f32 {
+    let packed = rt.held.w - 1.0;
+    if packed < 0.0 { return 0.0; }
+    let p = floor(packed / 4096.0);
+    if layer == packed - p * 4096.0 { return 1.0; }
+    return select(0.0, 2.0, layer == p);
 }
 fn hw_glass_plain(layer: f32) -> bool {
     let packed = rt.frame.y;
@@ -320,6 +343,8 @@ var<private> hw_caustic_on: bool;
 var<private> hw_water_t: f32 = -1.0;
 var<private> hw_caustic: vec4<f32>;
 var<private> hw_caustic_sea: f32;
+// The length the sun's shadow ray runs inside ice (x) and packed ice (y): `hw_tint`.
+var<private> hw_ice_run: vec2<f32>;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     var q: ray_query;
     // The instances stand around their anchor (gfx/hw_rays.rs): the camera's offset from it. The
@@ -329,6 +354,7 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     var through = vec3(1.0);
     hw_caustic_on = false;
     hw_water_t = -1.0;
+    hw_ice_run = vec2(0.0);
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index == instances[c.instance_custom_data].at.w {
@@ -341,6 +367,11 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     }
     let hit = rayQueryGetCommittedIntersection(&q);
     if hit.kind != RAY_QUERY_INTERSECTION_NONE { return vec3(0.0); }
+    // Ice's body (shadow_rays_psr.wgsl `ice_body`): the light a hill of ice lets through.
+    if rt.held.w > 0.5 {
+        through *= exp(-ICE_EXTINCTION * max(hw_ice_run.x, 0.0)
+            - PACKED_ICE_EXTINCTION * max(hw_ice_run.y, 0.0));
+    }
     if hw_caustic_on {
         through *= water_caustics(hw_caustic.xy, hw_caustic.z, l, rt.water.z, hw_caustic.w,
             hw_caustic_sea);
@@ -712,6 +743,7 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     let hit = rayQueryGetCommittedIntersection(&q);
     water_at = vec4(0.0, 0.0, 0.0, -1.0);
     glass_at = vec4(0.0, 0.0, 0.0, -1.0);
+    glass_ice = 0.0;
     // The opaque geometries' hits the hardware commits itself (gfx/hw_rays.rs): the solid terrain
     // the depth already shows, no water or glass in front of it.
     if hit.kind == RAY_QUERY_INTERSECTION_NONE
@@ -754,6 +786,13 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     if layer != rt.water.x && layer != rt.water.y {
         glass_at = vec4(n, hit.t);
         glass_sigma = hw_glass(hit, base).rgb;
+        glass_ice = hw_ice(layer);
+        if glass_ice > 0.0 {
+            let texel = hw_texel(hit, base);
+            let colour = select(vec3(0.7, 0.8, 0.95), pow(max(texel.rgb, vec3(0.0)), vec3(2.2)),
+                texel.a >= 0.0);
+            glass_frost = mix(clamp(colour, vec3(0.0), vec3(1.0)), vec3(0.86, 0.93, 1.0), 0.5);
+        }
     }
     var r = reflect(ray, n);
     if dot(r, n) < 0.0 { r = normalize(r - n * 2.0 * dot(r, n)); }

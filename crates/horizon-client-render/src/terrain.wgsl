@@ -2832,16 +2832,19 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
     }
     var added = fresnel * reflected;
     var shows = vec3(1.0 - fresnel);
-    // Ice's frost (`rt_ice`): its diffuse layer's opacity, more on the texture's light streaks
-    // (bubbles, cracks), and the ice's body over the length the eye sees through (up to what
-    // lies behind, at most 6 blocks of clear ice, 2.5 of packed ice): what its bubbles scatter
-    // adds to the frost, what it absorbs (red most, glacier blue) dims what shows through. A
-    // block of clear ice in the open is about a third frost, of packed ice about three quarters.
+    // Ice's frost (`rt_ice`): its face's diffuse layer's opacity, more on the texture's light
+    // streaks (bubbles, cracks). Traced, the ice's body is the rays' (shadow_rays_psr.wgsl
+    // `ice_body`: Beer-Lambert over the whole length the ray runs inside the ice, so a hill of it
+    // is opaque). Untraced, it is guessed from what lies behind (at most 6 blocks of clear ice,
+    // 2.5 of packed ice): what its bubbles scatter adds to the frost, what it absorbs (red most,
+    // glacier blue) dims what shows through.
     var frost = 0.0;
     var body = vec3(1.0);
     if ice > 0u {
         let streak = smoothstep(0.3, 0.85, dot(g.albedo, vec3(0.2126, 0.7152, 0.0722)));
-        if ice == 1u {
+        if refracted.a > 0.0 {
+            frost = select(0.3, 0.1, ice == 1u) + 0.25 * streak;
+        } else if ice == 1u {
             let through = min(behind, 6.0);
             frost = 0.15 + 0.3 * streak;
             body = exp(-vec3(0.06, 0.022, 0.01) * through);

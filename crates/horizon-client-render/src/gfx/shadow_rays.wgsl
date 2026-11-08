@@ -44,7 +44,8 @@ struct Rt {
     // The camera's offset from the hardware rays' instances' anchor (gfx/hw_rays.rs).
     hw_offset: vec4<f32>,
     // x: how many of `moving` are set, y: the seconds into the Eye of Aldhani (below 0 none), z: a
-    // full moon's light overhead (paper whites), its meteors' light's unit.
+    // full moon's light overhead (paper whites), its meteors' light's unit; w the ice's and the
+    // packed ice's sprite layers, packed plus one (0 none: shadow_rays_hw.wgsl `hw_ice`).
     held: vec4<f32>,
     // The far field (gfx/far_heights.rs): its window's first texel (x, z), 1 once built (z), the
     // highest top in it (w, a world Y).
