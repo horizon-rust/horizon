@@ -48,7 +48,7 @@ const COVERAGE: f32 = 16384.0;
 // The extinction at density 1 (per metre), and how far the march and the haze go.
 const SIGMA: f32 = 0.06;
 const ALBEDO: f32 = 0.99;
-const HAZE: f32 = 16000.0;
+const HAZE: f32 = 22000.0;
 const ITERATIONS: i32 = 288;
 // The light the octaves leave out (the higher orders of scattering, which make a thick cloud's
 // lit side about as bright as a white surface facing the sun, and its belly a light grey).
@@ -138,13 +138,13 @@ fn dome_uv(d: vec3<f32>) -> vec2<f32> {
 }
 
 // How far the cumulus reach (the Cloud Distance setting, 40 km on Auto), and the haze's scale:
-// 16 km, stretched past 40 km so the farther clouds still show through the air.
+// the air between washes the far clouds out as it would, however far they are drawn.
 fn reach() -> f32 {
     return clouds.layers.y;
 }
 
 fn haze_scale() -> f32 {
-    return max(HAZE, reach() * 0.4);
+    return HAZE;
 }
 
 fn remap(v: f32, lo: f32, hi: f32) -> f32 {
@@ -155,21 +155,28 @@ fn remap(v: f32, lo: f32, hi: f32) -> f32 {
 // there, y their type (0 a flat stratocumulus, 1 a towering congestus).
 fn weather_at(xz: vec2<f32>) -> vec2<f32> {
     let c = textureSampleLevel(coverage_noise, repeat_sampler, xz / COVERAGE, 0.0).rg;
+    // Fields of cloud and wide clear stretches between, tens of kilometres across: the cumulus
+    // gather, more and taller where the air rises, instead of an even carpet.
+    let field = textureSampleLevel(coverage_noise, repeat_sampler, xz / 98304.0 + vec2(0.29, 0.71), 0.0).g;
+    let rising = smoothstep(0.3, 0.7, field);
     let thick = clouds.camera.w;
     let bias = clouds.sun.w;
     // Gaps between the cumulus on a fair day, more of them, and taller, on a cloudier one or in
     // the rain.
-    let lo = 0.56 - 0.14 * bias - 0.22 * thick;
+    let lo = 0.56 - 0.14 * bias - 0.22 * thick + 0.16 * (1.0 - thick) * (0.5 - rising) * 2.0;
     let cover = saturate(remap(c.x, lo, lo + 0.3));
-    let kind = saturate(c.y * 1.5 - 0.35 + 0.25 * bias + 0.6 * thick);
+    let kind = saturate(c.y * 1.5 - 0.55 + 0.45 * rising + 0.25 * bias + 0.6 * thick);
     return vec2(cover, kind);
 }
 
 // How much of a cloud of type `kind` there is at height share `h` (0..1) of the slab: a flat
 // base, a rounded top, higher for a taller type.
 fn profile(h: f32, kind: f32) -> f32 {
-    let top = mix(0.2, 1.0, kind);
-    return smoothstep(0.0, 0.07, h) * (1.0 - smoothstep(top * 0.4, top, h));
+    let top = mix(0.35, 1.0, kind);
+    // A flat base and a dome: full most of the way up, rounding over near the top (a ramp from
+    // 40 % of it cut the clouds into loaves and pyramids).
+    let x = saturate(h / top);
+    return smoothstep(0.0, 0.1, h) * sqrt(saturate(1.0 - x * x * x));
 }
 
 // How much of the finest erosion octave the march's samples get: 1 near the eye, 0 past 5 km,

@@ -1451,7 +1451,7 @@ mod tests {
             })
             .unwrap_or(0.0);
         let mut shadows = Shadows::new(&device, &queue);
-        let skies: [(&str, f32, f32, f32, f32, f64, f32); 8] = [
+        let skies: [(&str, f32, f32, f32, f32, f64, f32); 9] = [
             ("noon", 60.0, 30.0, 0.0, 12.0, 200.0, 0.0),
             ("afternoon_toward_sun", 25.0, 0.0, 0.0, 10.0, 1500.0, 0.0),
             ("afternoon_away", 25.0, 0.0, 180.0, 12.0, 1500.0, 0.0),
@@ -1460,6 +1460,8 @@ mod tests {
             ("rain", 40.0, 30.0, 90.0, 10.0, 600.0, 0.8),
             ("cirrus", 35.0, 200.0, 0.0, 25.0, cirrus_day, 0.0),
             ("altocumulus", 30.0, 160.0, 0.0, 30.0, alto_day, 0.0),
+            // Toward a high sun through a cirrus day, as a player looks out over the land.
+            ("toward_sun_cirrus", 45.0, 200.0, 0.0, 12.0, cirrus_day, 0.0),
         ];
         for (name, elevation, azimuth, yaw, pitch, time, rain) in skies {
             if only.as_deref().is_some_and(|o| o != name) {
