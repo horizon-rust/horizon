@@ -619,24 +619,14 @@ impl Game<'_> {
                 return (false, true);
             }
         }
-        item.finish_move_block_effects(
-            &self.world,
-            self.res.facts(),
-            no_physics,
-            Some(&self.res.motion().blocks),
-            step,
-        );
-        item.push_by_bubble_column(
-            &self.world,
-            self.pack.assets.registry,
-            self.res.facts(),
-            self.collision,
-        );
-        let alive = item.tick_settle(&self.world, self.res.facts(), no_physics, step);
-        // ItemEntity.tick refreshes immersion and splashes on water entry.
-        let (water, _) = item.push_by_fluid(&self.world, &self.res.motion().fluids);
-        item.water_entry(water > 0.0, false, splash);
-        (alive, false)
+        let tables = ItemTables {
+            world: &self.world,
+            facts: self.res.facts(),
+            collision: self.collision,
+            motion: self.res.motion(),
+            registry: self.pack.assets.registry,
+        };
+        item_physics_after_contact(&tables, item, no_physics, step, splash)
     }
 
     /// Keep new joins after the active batch, so they tick next time.
@@ -2175,5 +2165,132 @@ mod set_rotation_tests {
         assert_eq!(orb.rotation(), [90.0, 10.0]);
         orb.set_rotation([0.0, 200.0]);
         assert_eq!(orb.rotation(), [0.0, 90.0]);
+    }
+}
+
+/// What an item's own tick reads (its move and block effects): plain tables a helper thread can
+/// hold (`tick_dropped_items` speculates the items' moves on several threads).
+pub(super) struct ItemTables<'a> {
+    pub world: &'a horizon_client::world::World,
+    pub facts: &'a horizon_client::blocks::BlockFacts,
+    pub collision: &'a horizon_world::block_collision::BlockCollisionRegistry<'a>,
+    pub motion: &'a horizon_client::motion::MotionResources,
+    pub registry: &'a horizon_world::registry::BlockRegistry,
+}
+
+/// [`Game::tick_item_with_block_contacts`] while no native mod is loaded (its vertical-contact hook
+/// then changes nothing): the item's whole move, from the tables alone.
+pub(super) fn item_physics_free(
+    tables: &ItemTables,
+    border: &horizon_core::geometry::border::BorderGeometry,
+    item: &mut ItemEntity,
+    entity_boxes: &[Aabb],
+    splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
+) -> (bool, bool) {
+    let heights = item.push_by_fluid(tables.world, &tables.motion.fluids);
+    item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
+    let step = item.tick_move_before_block_effects(
+        tables.world,
+        tables.facts,
+        tables.collision,
+        false,
+        None,
+        heights,
+        entity_boxes,
+        Some(border),
+    );
+    if item
+        .vertical_contact(tables.world, tables.collision, &tables.motion.blocks, step)
+        .is_some()
+        && item.stack.count == 0
+    {
+        return (false, true);
+    }
+    item_physics_after_contact(tables, item, false, step, splash)
+}
+
+/// The rest of an item's tick after its vertical contact: block effects, bubble columns, settling
+/// and the water entry.
+fn item_physics_after_contact(
+    tables: &ItemTables,
+    item: &mut ItemEntity,
+    no_physics: bool,
+    step: horizon_client::entities::ItemStep,
+    splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
+) -> (bool, bool) {
+    item.finish_move_block_effects(
+        tables.world,
+        tables.facts,
+        no_physics,
+        Some(&tables.motion.blocks),
+        step,
+    );
+    item.push_by_bubble_column(
+        tables.world,
+        tables.registry,
+        tables.facts,
+        tables.collision,
+    );
+    let alive = item.tick_settle(tables.world, tables.facts, no_physics, step);
+    // ItemEntity.tick refreshes immersion and splashes on water entry.
+    let (water, _) = item.push_by_fluid(tables.world, &tables.motion.fluids);
+    item.water_entry(water > 0.0, false, splash);
+    (alive, false)
+}
+
+/// `getEntityCollisions(entity, bounds.expandTowards(movement))`: how far around an item's box its
+/// tick looks for boxes (a block of slack for the next velocity).
+pub(super) fn item_reach(item: &ItemEntity) -> Vec3 {
+    Vec3::new(
+        item.velocity.x.abs() + 1.0,
+        item.velocity.y.abs() + 1.0,
+        item.velocity.z.abs() + 1.0,
+    )
+}
+
+/// An item's move worked out ahead of its turn, on a copy (`tick_dropped_items`).
+pub(super) struct ItemAhead {
+    moved: ItemEntity,
+    alive: bool,
+    discarded: bool,
+    splashes: Vec<horizon_client::entities::ItemSplash>,
+    /// What a merge before its turn can change: its count, age and pickup delay as it started.
+    started: (u32, i32, i64),
+}
+impl ItemAhead {
+    /// Whether the item is still as it was when its move was worked out.
+    pub(super) fn still_fits(&self, item: &ItemEntity) -> bool {
+        self.started == (item.stack.count, item.age, item.pickup_delay)
+    }
+    /// The item as its turn's move leaves it: (no physics, alive, discarded, its splashes).
+    pub(super) fn apply(
+        self,
+        item: &mut ItemEntity,
+    ) -> (bool, bool, bool, Vec<horizon_client::entities::ItemSplash>) {
+        *item = self.moved;
+        (false, self.alive, self.discarded, self.splashes)
+    }
+}
+
+/// `item`'s move this tick on a copy, from the tables alone (no native mod loaded).
+pub(super) fn item_ahead(
+    tables: &ItemTables,
+    border: &horizon_core::geometry::border::BorderGeometry,
+    obstacles: &horizon_client::entities::ObstacleGrid,
+    item: &ItemEntity,
+    found: &mut Vec<u32>,
+    near: &mut Vec<Aabb>,
+) -> ItemAhead {
+    let mut moved = item.clone();
+    obstacles.near_shared(moved.bounds().inflate(item_reach(&moved)), found, near);
+    let mut splashes = Vec::new();
+    let (alive, discarded) =
+        item_physics_free(tables, border, &mut moved, near, &mut |s| splashes.push(s));
+    ItemAhead {
+        moved,
+        alive,
+        discarded,
+        splashes,
+        started: (item.stack.count, item.age, item.pickup_delay),
     }
 }

@@ -1326,3 +1326,22 @@ pub(super) fn describe(
     }
     out
 }
+
+/// `HORIZON_PARALLEL_TICK=verify`: log an item whose move worked out ahead differs from its move
+/// at its turn, and how many were checked, every 10,000.
+pub(super) fn report_item_check(same: bool, id: u32) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CHECKED: AtomicU64 = AtomicU64::new(0);
+    static DIFFERED: AtomicU64 = AtomicU64::new(0);
+    if !same {
+        DIFFERED.fetch_add(1, Ordering::Relaxed);
+        log::error!("parallel items: item {id}'s move worked out ahead differs from its turn's");
+    }
+    let n = CHECKED.fetch_add(1, Ordering::Relaxed) + 1;
+    if n == 1 || n.is_multiple_of(10_000) {
+        log::info!(
+            "parallel items: {n} item moves checked against their turns, {} differed",
+            DIFFERED.load(Ordering::Relaxed)
+        );
+    }
+}

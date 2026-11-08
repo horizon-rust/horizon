@@ -4601,6 +4601,54 @@ impl Game<'_> {
             horizon_client::entities::ObstacleGrid::new(self.item_entity_collisions());
         let mut nearby = Vec::new();
         let mut bubble_tops = Vec::new();
+        // The items' own moves, worked out ahead on helper threads (the parallel tick): an item's
+        // move reads only itself and the level, which the items don't change, so it is the move its
+        // turn would make. One whose count, age or pickup delay a merge changed before its turn, or
+        // that starts inside a block (its escape draws the level random), moves at its turn instead.
+        let mut ahead: Vec<Option<entity::ItemAhead>> = Vec::new();
+        if super::game::mob_islands::enabled()
+            && !round.listening()
+            && horizon_client::mod_api::mods().is_empty()
+            && items.len() >= 256
+        {
+            let todo: Vec<usize> = (0..items.len())
+                .filter(|&i| {
+                    let it = &items[i];
+                    !(merging && self.joined_during_entity_pass(it.id))
+                        && ticking(it.position.x.floor() as i32, it.position.z.floor() as i32)
+                        && !(merging && it.inside_block(&self.world, self.collision))
+                })
+                .collect();
+            let tables = entity::ItemTables {
+                world: &self.world,
+                facts: self.res.facts(),
+                collision: self.collision,
+                motion: self.res.motion(),
+                registry: self.pack.assets.registry,
+            };
+            let border = self.border.geometry();
+            let (grid, list) = (&obstacles, &items);
+            let done = super::game::mob_islands::par_map(
+                &todo,
+                super::game::mob_islands::thread_lanes(),
+                64,
+                |part, out| {
+                    let (mut found, mut near) = (Vec::new(), Vec::new());
+                    for &i in part {
+                        out.push((
+                            i,
+                            entity::item_ahead(
+                                &tables, border, grid, &list[i], &mut found, &mut near,
+                            ),
+                        ));
+                    }
+                },
+            );
+            ahead = (0..items.len()).map(|_| None).collect();
+            for (i, a) in done {
+                ahead[i] = Some(a);
+            }
+        }
         // `ItemUtils.onContainerDestroyed`: what a destroyed item held, and
         // where it lay, for adding to the level once its own tick is done.
         let mut destroyed: Vec<(ItemStack, Vec3)> = Vec::new();
@@ -4625,24 +4673,53 @@ impl Game<'_> {
             }
             // ItemEntity.tick's noPhysics (servers only): out of a block
             // placed on it, towards the closest open side (#1252).
-            let no_physics = merging && item.inside_block(&self.world, self.collision);
-            let escape_speed = no_physics.then(|| self.world.random.next_float() * 0.2 + 0.1);
-            // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
-            // where the item can reach this tick (a block of slack for the next velocity).
-            let reach = Vec3::new(
-                item.velocity.x.abs() + 1.0,
-                item.velocity.y.abs() + 1.0,
-                item.velocity.z.abs() + 1.0,
-            );
-            obstacles.near(item.bounds().inflate(reach), &mut nearby);
-            let mut entered = Vec::new();
-            let (alive, discarded) = self.tick_item_with_block_contacts(
-                item,
-                escape_speed,
-                &nearby,
-                false,
-                &mut |splash| entered.push(splash),
-            );
+            let worked = ahead
+                .get_mut(i)
+                .and_then(Option::take)
+                .filter(|a| a.still_fits(item));
+            let (no_physics, alive, discarded, entered) = match worked {
+                // `HORIZON_PARALLEL_TICK=verify`: the move at its turn, on a copy, must match.
+                Some(a) if super::game::mob_islands::verify() => {
+                    let mut serial = item.clone();
+                    obstacles.near(
+                        serial.bounds().inflate(entity::item_reach(&serial)),
+                        &mut nearby,
+                    );
+                    let mut entered = Vec::new();
+                    let (alive, discarded) = self.tick_item_with_block_contacts(
+                        &mut serial,
+                        None,
+                        &nearby,
+                        false,
+                        &mut |splash| entered.push(splash),
+                    );
+                    let got = a.apply(item);
+                    let same = format!("{serial:?}") == format!("{item:?}")
+                        && (alive, discarded) == (got.1, got.2)
+                        && format!("{entered:?}") == format!("{:?}", got.3);
+                    super::game::mob_islands::report_item_check(same, item.id);
+                    got
+                }
+                Some(a) => a.apply(item),
+                None => {
+                    let no_physics = merging && item.inside_block(&self.world, self.collision);
+                    let escape_speed =
+                        no_physics.then(|| self.world.random.next_float() * 0.2 + 0.1);
+                    // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes
+                    // around where the item can reach this tick (a block of slack for the next
+                    // velocity).
+                    obstacles.near(item.bounds().inflate(entity::item_reach(item)), &mut nearby);
+                    let mut entered = Vec::new();
+                    let (alive, discarded) = self.tick_item_with_block_contacts(
+                        item,
+                        escape_speed,
+                        &nearby,
+                        false,
+                        &mut |splash| entered.push(splash),
+                    );
+                    (no_physics, alive, discarded, entered)
+                }
+            };
             // Entity.doWaterSplashEffect: the server plays the sound (broadcast
             // to clients). Its addParticle is empty.
             for splash in entered {

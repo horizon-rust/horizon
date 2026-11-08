@@ -1154,6 +1154,15 @@ impl ObstacleGrid {
     /// [`Self::with_roots`]): `Entity.canCollideWith` leaves out
     /// `isPassengerOfSameVehicle`, so a stand's riders do not stop it.
     pub fn near_except(&mut self, area: Aabb, vehicle: Option<u32>, out: &mut Vec<Aabb>) {
+        let mut found = std::mem::take(&mut self.found);
+        self.near_with(area, vehicle, &mut found, out);
+        self.found = found;
+    }
+    /// [`Self::near`] with scratch of the caller's, so several threads can ask one grid.
+    pub fn near_shared(&self, area: Aabb, found: &mut Vec<u32>, out: &mut Vec<Aabb>) {
+        self.near_with(area, None, found, out);
+    }
+    fn near_with(&self, area: Aabb, vehicle: Option<u32>, found: &mut Vec<u32>, out: &mut Vec<Aabb>) {
         out.clear();
         if self.boxes.is_empty() {
             return;
@@ -1177,19 +1186,19 @@ impl ObstacleGrid {
             );
             return;
         }
-        self.found.clear();
+        found.clear();
         for x in lo.0..=hi.0 {
             for y in lo.1..=hi.1 {
                 for z in lo.2..=hi.2 {
                     if let Some(list) = self.cells.get(&(x, y, z)) {
-                        self.found.extend(list);
+                        found.extend(list);
                     }
                 }
             }
         }
-        self.found.sort_unstable();
-        self.found.dedup();
-        for &i in &self.found {
+        found.sort_unstable();
+        found.dedup();
+        for &i in found.iter() {
             let b = self.boxes[i as usize];
             if kept(i as usize) && b.intersects(area) {
                 out.push(b);
