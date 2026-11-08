@@ -66,12 +66,21 @@ const ATMOSPHERE_HEIGHT: f32 = 100000.0;
 const RAYLEIGH_HEIGHT: f32 = 8000.0;
 const MIE_HEIGHT: f32 = 1200.0;
 const BETA_R: vec3<f32> = vec3<f32>(5.5e-6, 13.0e-6, 22.4e-6);
-const BETA_M: f32 = 21.0e-6;
-const SUN_MIE_HALO_BOOST: f32 = 10.35;
+// A clear day's aerosols (6e-6, near Hillaire's 4e-6, where Remix's 21e-6 is a hazy one: that
+// haze whitened the sky round the sun and browned the twilight), and the ozone layer's
+// absorption (a tent 30 km wide about 25 km up), which keeps the twilight's zenith blue.
+const BETA_M: f32 = 6.0e-6;
+const BETA_O: vec3<f32> = vec3<f32>(0.650e-6, 1.881e-6, 0.085e-6);
+const SUN_MIE_HALO_BOOST: f32 = 2.0;
 const MOON_MIE_HALO_BOOST: f32 = 1.0;
 const MULTIPLE_SCATTERING_SCALE: f32 = 0.65;
 const GROUND_HORIZON_SCALE: f32 = 0.9;
 const GROUND_NADIR_SCALE: f32 = 0.3;
+
+// The ozone's density (0..1) at `height` metres.
+fn ozone(height: f32) -> f32 {
+    return max(0.0, 1.0 - abs(height - 25000.0) / 15000.0);
+}
 
 fn ray_sphere(origin: vec3<f32>, direction: vec3<f32>, radius: f32) -> f32 {
     let b = 2.0 * dot(origin, direction);
@@ -118,7 +127,7 @@ fn build_transmittance_lut(pixel: vec2<i32>) {
         let height = max(0.0, length(sample_position) - EARTH_RADIUS);
         let density_r = exp(-height / RAYLEIGH_HEIGHT) * step_size;
         let density_m = exp(-height / MIE_HEIGHT) * step_size;
-        optical_r += BETA_R * density_r;
+        optical_r += BETA_R * density_r + BETA_O * (ozone(height) * step_size);
         optical_m += BETA_M * density_m;
     }
     textureStore(
@@ -217,7 +226,7 @@ fn generate_single_scattering(pixel: vec2<i32>) {
         let height = max(0.0, radius - EARTH_RADIUS);
         let density_r = exp(-height / RAYLEIGH_HEIGHT) * step_size;
         let density_m = exp(-height / MIE_HEIGHT) * step_size;
-        optical_r += BETA_R * density_r;
+        optical_r += BETA_R * density_r + BETA_O * (ozone(height) * step_size);
         optical_m += BETA_M * density_m;
         let view_transmittance = exp(-(optical_r + vec3<f32>(optical_m)));
         accumulate_light(

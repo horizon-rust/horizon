@@ -39,7 +39,9 @@ const ATMOSPHERE_RADIUS: f32 = 6_471_000.0;
 const RAYLEIGH_HEIGHT: f32 = 8000.0;
 const MIE_HEIGHT: f32 = 1200.0;
 const BETA_R: Vec3 = Vec3::new(5.5e-6, 13.0e-6, 22.4e-6);
-const BETA_M: f32 = 21.0e-6;
+// A clear day's aerosols, and the ozone's absorption (sky_atmosphere.wgsl `BETA_M`, `BETA_O`).
+const BETA_M: f32 = 6.0e-6;
+const BETA_O: Vec3 = Vec3::new(0.650e-6, 1.881e-6, 0.085e-6);
 const LIGHT_STEPS: usize = 16;
 /// The Mie scattering's anisotropy (`AtmosphereParameters.x`, which Remix's mod sets; not in the
 /// shader): the usual 0.8.
@@ -70,7 +72,8 @@ fn transmittance_lut(r: f32, mu: f32) -> Vec3 {
         // The point `along` the ray from (0, r, 0) toward (sin, mu, 0).
         let point = Vec3::new(sin * along, r + mu * along, 0.0);
         let height = (point.length() - EARTH_RADIUS).max(0.0);
-        optical_r += BETA_R * ((-height / RAYLEIGH_HEIGHT).exp() * step);
+        let ozone = (1.0 - (height - 25_000.0).abs() / 15_000.0).max(0.0);
+        optical_r += BETA_R * ((-height / RAYLEIGH_HEIGHT).exp() * step) + BETA_O * (ozone * step);
         optical_m += BETA_M * (-height / MIE_HEIGHT).exp() * step;
     }
     (-(optical_r + Vec3::splat(optical_m))).exp()
