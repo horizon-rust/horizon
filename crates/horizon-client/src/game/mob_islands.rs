@@ -950,47 +950,20 @@ pub(super) fn hookless<'w>(base: &MobWorld<'w>) -> impl Fn() -> MobWorld<'w> + S
     }
 }
 
-/// `f` over `items` on up to `lanes` threads (this one included), in order: the results as one
-/// thread would give them. One thread for fewer than `min` items.
+/// `f` over `items` on the tick's helper pool (`horizon_client::parallel`), in order: the results as
+/// one thread would give them. One thread for fewer than `min` items, or while `lanes` is 1.
 pub(super) fn par_map<T: Sync, R: Send>(
     items: &[T],
     lanes: usize,
     min: usize,
     f: impl Fn(&[T], &mut Vec<R>) + Sync,
 ) -> Vec<R> {
-    let mut out = Vec::with_capacity(items.len());
     if lanes <= 1 || items.len() < min {
+        let mut out = Vec::with_capacity(items.len());
         f(items, &mut out);
         return out;
     }
-    let size = items.len().div_ceil(lanes);
-    let parts: Vec<Vec<R>> = std::thread::scope(|s| {
-        let f = &f;
-        let mut chunks = items.chunks(size);
-        let first = chunks.next().unwrap_or(&[]);
-        let handles: Vec<_> = chunks
-            .map(|c| {
-                s.spawn(move || {
-                    let mut part = Vec::with_capacity(c.len());
-                    f(c, &mut part);
-                    part
-                })
-            })
-            .collect();
-        let mut head = Vec::with_capacity(first.len());
-        f(first, &mut head);
-        std::iter::once(head)
-            .chain(
-                handles
-                    .into_iter()
-                    .map(|h| h.join().expect("a helper thread panicked")),
-            )
-            .collect()
-    });
-    for p in parts {
-        out.extend(p);
-    }
-    out
+    horizon_client::parallel::par_map(items, min, f)
 }
 
 /// The threads a parallel phase of the tick may take (`horizon-threads`' count, at most 8), or 1

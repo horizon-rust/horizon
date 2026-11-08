@@ -151,20 +151,10 @@ impl RandomTickSections {
                 .map(|(_, i, chunk)| Self::candidate_mask(&chunk.sections[*i], candidate))
                 .collect()
         };
-        let masks: Vec<RandomTickMask> = if lanes <= 1 || todo.len() < 128 {
+        let masks: Vec<RandomTickMask> = if lanes <= 1 {
             build(&todo)
         } else {
-            let size = todo.len().div_ceil(lanes);
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = todo
-                    .chunks(size)
-                    .map(|part| scope.spawn(move || build(part)))
-                    .collect();
-                handles
-                    .into_iter()
-                    .flat_map(|h| h.join().expect("a mask build panicked"))
-                    .collect()
-            })
+            crate::parallel::par_map(&todo, 128, |part, out| out.extend(build(part)))
         };
         for ((key, i, _), mask) in todo.into_iter().zip(masks) {
             if let Some(cached) = self.chunks.get_mut(&key) {

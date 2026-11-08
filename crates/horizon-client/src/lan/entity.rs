@@ -1186,7 +1186,7 @@ impl Entities {
         if parallel_tick() == 0 || viewers < 16 || entities < 512 {
             return 1;
         }
-        horizon_threads::worker_count().min(viewers / 4).clamp(1, 8)
+        crate::parallel::lanes().min(viewers / 4).max(1)
     }
     /// `ChunkMap.addEntity` after this tick's tracking pass: pair now without
     /// running sendChanges or advancing either clock. The first sendChanges
@@ -1456,13 +1456,14 @@ impl Entities {
             (pairs, tracked)
         } else {
             let size = viewers.len().div_ceil(lanes);
-            let parts: Vec<(Vec<bool>, Vec<bool>)> = std::thread::scope(|scope| {
-                let handles: Vec<_> = viewers
-                    .chunks_mut(size)
-                    .zip(self.flags.chunks_mut(size))
-                    .map(|(vs, fs)| {
-                        let pass = &pass;
-                        scope.spawn(move || {
+            let parts: Vec<(Vec<bool>, Vec<bool>)> = {
+                use rayon::prelude::*;
+                let pass = &pass;
+                crate::parallel::pool().install(|| {
+                    viewers
+                        .par_chunks_mut(size)
+                        .zip(self.flags.par_chunks_mut(size))
+                        .map(|(vs, fs)| {
                             let (mut pairs, mut tracked) = (vec![false; n], vec![false; n]);
                             let mut held = Vec::new();
                             for (v, flags) in vs.iter_mut().zip(fs) {
@@ -1470,13 +1471,9 @@ impl Entities {
                             }
                             (pairs, tracked)
                         })
-                    })
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|h| h.join().expect("a client's tracking pass panicked"))
-                    .collect()
-            });
+                        .collect()
+                })
+            };
             let (mut pairs, mut tracked) = (vec![false; n], vec![false; n]);
             for (p, t) in parts {
                 for (a, b) in pairs.iter_mut().zip(p) {
@@ -1553,15 +1550,17 @@ impl Entities {
             }
         } else {
             let size = viewers.len().div_ceil(lanes);
-            std::thread::scope(|scope| {
-                for (vs, fs) in viewers.chunks_mut(size).zip(self.flags.chunks(size)) {
-                    let sent = &sent;
-                    scope.spawn(move || {
+            use rayon::prelude::*;
+            let (sent, flags) = (&sent, &self.flags);
+            crate::parallel::pool().install(|| {
+                viewers
+                    .par_chunks_mut(size)
+                    .zip(flags.par_chunks(size))
+                    .for_each(|(vs, fs)| {
                         for (v, flags) in vs.iter_mut().zip(fs) {
                             deliver(v, flags, sent);
                         }
                     });
-                }
             });
         }
         self.states.retain(|_, s| s.seen == now);
