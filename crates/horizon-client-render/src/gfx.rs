@@ -26,6 +26,13 @@ const CRUMBLING_BLEND: wgpu::BlendState = wgpu::BlendState {
     },
     alpha: wgpu::BlendComponent::REPLACE,
 };
+/// ENTITY_SOLID's reversed-depth bias. HDR replays of first-person geometry must
+/// use the same bias as the draw that populated depth, or the replay fails depth.
+const ENTITY_DEPTH_BIAS: wgpu::DepthBiasState = wgpu::DepthBiasState {
+    constant: 128,
+    slope_scale: 0.0,
+    clamp: 0.0,
+};
 /// `TerrainVertex` for `vs_terrain`: position, UV, layer, light, colour.
 const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
     wgpu::vertex_attr_array![0=>Float32x3,1=>Uint16x2,2=>Uint16,4=>Uint8x2,3=>Unorm8x4];
@@ -1178,6 +1185,8 @@ pub struct Renderer {
     static_entity_catalog_revision: u64,
     static_entity_frame_stats: StaticCacheFrameStats,
     hdr_mark_pipeline: wgpu::RenderPipeline,
+    /// First-person geometry was drawn with ENTITY_SOLID's depth bias, so its HDR marks need it too.
+    hdr_hand_mark_pipeline: wgpu::RenderPipeline,
     hdr_hand_unmark_pipeline: wgpu::RenderPipeline,
     hdr_mark_lightning_pipeline: wgpu::RenderPipeline,
     weather: weather::Weather,
@@ -3906,11 +3915,7 @@ impl Renderer {
             None,
             true,
             wgpu::CompareFunction::GreaterEqual,
-            wgpu::DepthBiasState {
-                constant: 128,
-                slope_scale: 0.0,
-                clamp: 0.0,
-            },
+            ENTITY_DEPTH_BIAS,
             alpha_blend,
             false,
         );
@@ -3982,12 +3987,23 @@ impl Renderer {
             "fs_hdr_mark",
             wgpu::ColorWrites::ALPHA,
         );
+        let hdr_hand_mark_pipeline = entity_pipeline_with(
+            "HDR hand mark",
+            None,
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            ENTITY_DEPTH_BIAS,
+            wgpu::BlendState::REPLACE,
+            false,
+            "fs_hdr_mark",
+            wgpu::ColorWrites::ALPHA,
+        );
         let hdr_hand_unmark_pipeline = entity_pipeline_with(
             "HDR hand unmark",
             None,
             false,
             wgpu::CompareFunction::GreaterEqual,
-            Default::default(),
+            ENTITY_DEPTH_BIAS,
             wgpu::BlendState::REPLACE,
             false,
             "fs_hdr_hand_unmark",
@@ -4690,6 +4706,7 @@ impl Renderer {
             entity_pipeline,
             static_entity_pipeline,
             hdr_mark_pipeline,
+            hdr_hand_mark_pipeline,
             hdr_hand_unmark_pipeline,
             hdr_mark_lightning_pipeline,
             weather,
@@ -4887,7 +4904,7 @@ impl Renderer {
         pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
         if self.hdr.is_some() {
             // Drawn into the world: the light sources it holds are marked as the world's are.
-            pass.set_pipeline(&self.hdr_mark_pipeline);
+            pass.set_pipeline(&self.hdr_hand_mark_pipeline);
             pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
         }
     }
@@ -11139,7 +11156,7 @@ impl Renderer {
                     let quads = 0..overlay.hand_quads * 6;
                     pass.set_pipeline(&self.hdr_hand_unmark_pipeline);
                     pass.draw_indexed(quads.clone(), overlay.first_hand_vertex, 0..1);
-                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.set_pipeline(&self.hdr_hand_mark_pipeline);
                     pass.draw_indexed(quads, overlay.first_hand_vertex, 0..1);
                 }
             }
