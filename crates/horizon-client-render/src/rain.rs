@@ -292,6 +292,10 @@ pub struct RainMap {
     /// The column the window is centred on (a multiple of 16), once filled.
     centre: Option<(i32, i32)>,
     sweep: i32,
+    /// While dry and not raining (`set_idle`) the sweep runs one frame in `IDLE_SWEEP`: the map
+    /// then only serves the shore's wet sand, whose blocks seldom change.
+    idle: bool,
+    frame: u32,
     /// Each texel row's changed columns since the last upload, `lo..hi` (empty when equal).
     dirty: Vec<(u16, u16)>,
     /// The heights of the rectangle being filled and its one-column border, reused.
@@ -303,12 +307,21 @@ impl Default for RainMap {
             cells: vec![0; (MAP * MAP) as usize],
             centre: None,
             sweep: 0,
+            idle: false,
+            frame: 0,
             dirty: vec![(0, 0); MAP as usize],
             heights: Vec::new(),
         }
     }
 }
+/// Frames between two sweeps while the map is idle (`RainMap::set_idle`).
+const IDLE_SWEEP: u32 = 8;
 impl RainMap {
+    /// Whether nothing is wet and it doesn't rain: the sweep that catches changed blocks slows down
+    /// (one frame in `IDLE_SWEEP`); a chunk crossing still fills its strips at once.
+    pub fn set_idle(&mut self, idle: bool) {
+        self.idle = idle;
+    }
     /// The packed columns, row by row (z), each row MAP columns (x), wrapped.
     pub fn cells(&self) -> &[u32] {
         &self.cells
@@ -402,7 +415,8 @@ impl RainMap {
         self.centre = Some(centre);
         // The sweep waits while a crossing fills, so a frame pays for one or the other. MAP is a
         // multiple of SWEEP_ROWS: its rows never wrap.
-        if !crossed {
+        self.frame = self.frame.wrapping_add(1);
+        if !crossed && (!self.idle || self.frame % IDLE_SWEEP == 0) {
             self.fill(x0, z0 + self.sweep, MAP, SWEEP_ROWS, height, column);
             self.sweep = (self.sweep + SWEEP_ROWS) % MAP;
         }
