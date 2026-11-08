@@ -978,6 +978,7 @@ impl Game<'_> {
             others_index: None,
             others_villagers: None,
             others_solid: None,
+            villager_tickets: None,
             daylight: self.dim != Dim::Nether && self.sky_darken() < 4,
             // day.json: false from tick 12542, true from 23460 (a step track).
             monsters_burn: self.dimension_type().has_timeline("minecraft:day")
@@ -1141,6 +1142,7 @@ impl Game<'_> {
         let level_id = self.dim.id();
         let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
         snapshot.extend(self.mobs.iter().map(|m| seen(m, uuid)));
+        let mut villager_tickets = horizon_client::mobs::villager_brain::tickets_for(&snapshot);
         let mut events = Vec::new();
         let mut mobs = std::mem::take(&mut self.mobs);
         // Each mob's target as the mods last heard it, by its place in `mobs`
@@ -1265,6 +1267,7 @@ impl Game<'_> {
                         others_index: Some(&index),
                         others_villagers: Some(&villager_slots),
                         others_solid: Some(&solid_slots),
+                        villager_tickets: Some(&villager_tickets),
                         nearest_player,
                         player: None,
                         teams: std::sync::Arc::clone(&base.teams),
@@ -1333,6 +1336,7 @@ impl Game<'_> {
                     others_index: Some(&index),
                     others_villagers: Some(&villager_slots),
                     others_solid: Some(&solid_slots),
+                    villager_tickets: Some(&villager_tickets),
                     difficulty,
                     nearest_player,
                     player: active_player,
@@ -1349,11 +1353,13 @@ impl Game<'_> {
                     super::tick_profile::add(level_id, &kind, started);
                 }
                 let m = &mut mobs[i];
+                let returned_player = w.player.take();
                 if seen_guest.is_none() {
-                    base.player = w.player;
+                    base.player = returned_player;
                 } else if let Some(k) = lent {
-                    spare = w.player.map(|v| std::mem::replace(&mut guests[k].1, v));
+                    spare = returned_player.map(|v| std::mem::replace(&mut guests[k].1, v));
                 }
+                drop(w);
                 // Its tick changed its target: the mods may keep the one it had
                 // (`native_living_change_target`), and then what the tick did to
                 // the new one is not dealt.
@@ -1452,8 +1458,15 @@ impl Game<'_> {
                 keep.push(kept);
                 // ServerLevel ticks entities one after another: the ones
                 // after this mob see it as it is now.
-                snapshot[i] = seen(m, uuid);
-                snapshot[i].alive &= kept;
+                let old_snapshot = snapshot[i].clone();
+                let mut new_snapshot = seen(m, uuid);
+                new_snapshot.alive &= kept;
+                horizon_client::mobs::villager_brain::update_tickets(
+                    &mut villager_tickets,
+                    &old_snapshot,
+                    &new_snapshot,
+                );
+                snapshot[i] = new_snapshot;
                 grid.update(i, snapshot[i].bounds);
                 horizon_client::mobs::apply_brain_events_indexed(
                     &mut mobs,
@@ -8945,6 +8958,7 @@ mod pearl_tests {
             others_index: None,
             others_villagers: None,
             others_solid: None,
+            villager_tickets: None,
             daylight: true,
             monsters_burn: false,
             game_time: 1000,
