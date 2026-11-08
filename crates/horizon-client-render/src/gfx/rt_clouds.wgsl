@@ -38,7 +38,8 @@ const TOP: f32 = 2200.0;
 const CIRRUS: f32 = 8000.0;
 // The altocumulus' thin layer: small cells, a mackerel sky.
 const ALTO_BASE: f32 = 3800.0;
-const ALTO_TOP: f32 = 4250.0;
+const ALTO_STEPS = 24;
+const ALTO_TOP: f32 = 3950.0;
 const WRAP: f32 = 32768.0;
 const SHAPE_XZ: f32 = 4096.0;
 const SHAPE_Y: f32 = 4096.0;
@@ -313,10 +314,15 @@ fn alto_density(p: vec3<f32>) -> f32 {
     // The cells: the shape's Worley octaves, small; each rounded top and bottom.
     let s = textureSampleLevel(shape_noise, repeat_sampler, vec3(q.x / 3400.0, q.y / 1800.0, q.z / 3400.0), 0.0);
     let cells = s.b * 0.7 + s.a * 0.3;
-    let lens = sqrt(4.0 * h * (1.0 - h));
-    let base = saturate(remap(cells * lens, 1.0 - cover, 1.0));
+    // Each cell a flattened dome: a strong one fills more of the layer's height, a weak one
+    // only its middle (straight-sided cells looked like pillars seen edge on, near the horizon).
+    let r = (h - 0.45) / 0.55;
+    let base = saturate(remap(cells - r * r * 0.7, 1.0 - cover, 1.0));
     let d = textureSampleLevel(detail_noise, repeat_sampler, q / 300.0, 0.0);
-    return saturate(remap(base, (d.r * 0.6 + d.g * 0.4) * 0.35, 1.0)) * 0.6;
+    let eroded = saturate(remap(base, (d.r * 0.6 + d.g * 0.4) * 0.35, 1.0));
+    // No faint veil: below a floor the cell is clear air, so its edge is the cell's round
+    // outline and not the patch's (whose bilinear texels drew straight-edged sheets).
+    return smoothstep(0.15, 0.4, eroded) * eroded * 0.6;
 }
 
 // The altocumulus along the camera-relative ray from `origin` toward `d`, before what is behind.
@@ -338,11 +344,16 @@ fn altocumulus(origin: vec3<f32>, d: vec3<f32>, noise: f32, behind: Marched) -> 
     let l = clouds.light.xyz;
     let c = dot(d, l);
     let up_sky = sky_at(vec3(0.0, 1.0, 0.0)) * 0.7 + sky_at(normalize(vec3(d.x, 0.3, d.z))) * 0.3;
-    let step_length = (range.y - range.x) / 8.0;
+    // Steps of about 100 blocks: a ray grazing the layer crosses many cells, and a few long
+    // steps hit them only now and then (a grainy veil between the clouds).
+    let steps = i32(clamp(ceil((range.y - range.x) / 100.0), 8.0, f32(ALTO_STEPS)));
+    let step_length = (range.y - range.x) / f32(steps);
     var light = vec3(0.0);
     var transmittance = 1.0;
-    for (var i = 0; i < 8; i++) {
-        let t = range.x + (f32(i) + noise) * step_length;
+    for (var i = 0; i < steps; i++) {
+        // Each step jittered on its own, so no slices line up across neighbouring pixels.
+        let jitter = fract(noise + f32(i) * 0.618034);
+        let t = range.x + (f32(i) + jitter) * step_length;
         let q = start + d * t + vec3(0.0, bend * t * t, 0.0);
         let rho = alto_density(q);
         if rho <= 0.003 { continue; }
@@ -465,8 +476,11 @@ fn march(origin: vec3<f32>, d: vec3<f32>, noise: f32) -> Marched {
             continue;
         }
         near_detail = 1.0 - smoothstep(2000.0, 5000.0, t);
-        let rho = density(q, h, w, true);
+        let raw = density(q, h, w, true);
         near_detail = 0.0;
+        // No dust: the thinnest wisps fade to clear air (a scattering of them, hit by one sample
+        // in a few, drew grainy veils darker than the sky between the clouds).
+        let rho = raw * smoothstep(0.0, 0.06, raw);
         if rho <= 0.003 {
             empty++;
             if empty >= 6 { fine_mode = false; }
@@ -584,19 +598,31 @@ const DOME_HISTORY: f32 = 10.0;
     }
     var out = current;
     var out_distance = current_distance;
-    var age = 1.0;
+    // A texel only filled from its square's march (no history yet) takes its own march whole
+    // when its turn comes.
+    var age = select(0.0, 1.0, fresh);
     if clouds.motion.w > 0.5 {
         // The texel's direction seen from the history's camera, at the distance it held.
-        let d = dome_dir((vec2<f32>(p) + 0.5) / clouds.size.xy);
+        let uv = (vec2<f32>(p) + 0.5) / clouds.size.xy;
+        let d = dome_dir(uv);
         let held = textureLoad(dome_history_data, p, 0).r;
         let distance = select(6.0, held, held > 0.0) * 1000.0;
         let moved = normalize(d * distance + clouds.motion.xyz);
-        let at = dome_uv(moved);
+        // As the difference of two mappings, so the trigonometry's rounding (some drivers' asin
+        // is off by a tenth of a row) cancels instead of sliding the history down each frame.
+        var shift = dome_uv(moved) - dome_uv(d);
+        shift.x -= round(shift.x);
+        let at = uv + shift;
         if at.y >= 0.0 && at.y <= 1.0 {
             var past = textureSampleLevel(dome_history, dome_sampler, at, 0.0);
             let data = textureSampleLevel(dome_history_data, dome_sampler, at, 0.0);
+            // The neighbours bound the history only as far as it moved: a texel's own history,
+            // still, is better than its square's few samples this frame (which miss the small
+            // altocumulus cells and clamped them away, in grainy veils and streaks).
+            let moved_by = shift * clouds.size.xy;
+            let trust = saturate(length(moved_by) - 0.5);
             let margin = (hi - lo) * 0.3 + 0.02;
-            let bounded = clamp(past, lo - margin, hi + margin);
+            let bounded = mix(past, clamp(past, lo - margin, hi + margin), trust);
             age = data.g;
             // A history the neighbours disagree with starts again (mostly).
             if any(abs(bounded - past) > vec4(0.05)) { age = min(age, 2.0); }

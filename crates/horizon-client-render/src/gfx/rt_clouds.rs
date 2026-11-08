@@ -210,6 +210,7 @@ impl Params {
         let (cirrus, alto) = match std::env::var("HORIZON_CLOUD_STILL_WITHOUT").as_deref() {
             Ok("cirrus") => (0.0, alto),
             Ok("alto") => (cirrus, 0.0),
+            Ok("both") => (0.0, 0.0),
             _ => (cirrus, alto),
         };
         let drift = |speed: f64| (self.time * speed).rem_euclid(WRAP) as f32;
@@ -1482,7 +1483,9 @@ mod tests {
             };
             let camera = DVec3::new(1000.0, 90.0, -400.0);
             clouds.dome = None;
-            let frames = 48;
+            // Two seconds at 90 fps: the dome's history settled, as a player sees it (fewer frames
+            // leave the first frame's squares showing).
+            let frames = 180;
             for frame in 0..frames {
                 let mut uploads = Uploads::new(&device);
                 let mut encoder = device.create_command_encoder(&Default::default());
