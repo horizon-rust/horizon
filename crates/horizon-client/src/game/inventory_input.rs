@@ -2,6 +2,33 @@
 //! drags, throws and the press/release of a slot click.
 use super::*;
 
+/// `key.hotbar.1` to `key.hotbar.9` in a menu.
+const HOTBAR_DIGITS: [KeyCode; 9] = [
+    KeyCode::Digit1,
+    KeyCode::Digit2,
+    KeyCode::Digit3,
+    KeyCode::Digit4,
+    KeyCode::Digit5,
+    KeyCode::Digit6,
+    KeyCode::Digit7,
+    KeyCode::Digit8,
+    KeyCode::Digit9,
+];
+/// The other keys `InputConstants.Key.getNumericKeyValue` gives a digit.
+const NUMERIC_KEYS: [KeyCode; 11] = [
+    KeyCode::Digit0,
+    KeyCode::Numpad0,
+    KeyCode::Numpad1,
+    KeyCode::Numpad2,
+    KeyCode::Numpad3,
+    KeyCode::Numpad4,
+    KeyCode::Numpad5,
+    KeyCode::Numpad6,
+    KeyCode::Numpad7,
+    KeyCode::Numpad8,
+    KeyCode::Numpad9,
+];
+
 impl Game<'_> {
     /// `CreativeModeInventoryScreen.keyPressed` on the search tab: a hotbar
     /// key over a slot swaps before the search box sees it.

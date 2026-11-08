@@ -328,6 +328,7 @@ mod native_server;
 mod native_shaders;
 mod native_slot_roles;
 mod native_structures;
+pub(crate) mod native_tasks;
 mod native_terrain_model;
 pub mod native_text_field;
 mod native_ticks;
@@ -2662,6 +2663,7 @@ struct Game<'a> {
     /// The camera the last frame drew from (position, yaw, pitch, fov), for the locator bar.
     locator_camera: Option<([f64; 3], f32, f32, f32)>,
     native_camera_frame: Option<horizon_client::mod_api::NativeCamera>,
+    native_tasks: native_tasks::NativeTasks,
     /// The yaw and pitch a native mod's camera drew the last frame from (`native_camera_pose`),
     /// none when it drew from vanilla's.
     posed_rotation: Option<(f32, f32)>,
@@ -13047,6 +13049,7 @@ impl<'a> Game<'a> {
             waypoints: Default::default(),
             locator_camera: None,
             native_camera_frame: None,
+            native_tasks: native_tasks::NativeTasks::new(),
             posed_rotation: None,
             post_effects: Vec::new(),
             polytone_post_ticks: 0.0,
@@ -13317,33 +13320,6 @@ impl<'a> Game<'a> {
 }
 
 impl Game<'_> {}
-
-/// `key.hotbar.1` to `key.hotbar.9` in a menu.
-const HOTBAR_DIGITS: [KeyCode; 9] = [
-    KeyCode::Digit1,
-    KeyCode::Digit2,
-    KeyCode::Digit3,
-    KeyCode::Digit4,
-    KeyCode::Digit5,
-    KeyCode::Digit6,
-    KeyCode::Digit7,
-    KeyCode::Digit8,
-    KeyCode::Digit9,
-];
-/// The other keys `InputConstants.Key.getNumericKeyValue` gives a digit.
-const NUMERIC_KEYS: [KeyCode; 11] = [
-    KeyCode::Digit0,
-    KeyCode::Numpad0,
-    KeyCode::Numpad1,
-    KeyCode::Numpad2,
-    KeyCode::Numpad3,
-    KeyCode::Numpad4,
-    KeyCode::Numpad5,
-    KeyCode::Numpad6,
-    KeyCode::Numpad7,
-    KeyCode::Numpad8,
-    KeyCode::Numpad9,
-];
 
 fn load_world_rest(
     root: &std::path::Path,

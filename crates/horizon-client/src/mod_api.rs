@@ -1136,6 +1136,11 @@ mod generated_host {
 }
 pub use generated_host::Host;
 
+/// A deferred main-thread callback for native mods.
+pub type TaskCallback = Box<dyn FnOnce(&mut dyn Host) + Send + 'static>;
+
+pub use crate::game::native_tasks::{defer_main_thread, spawn_background_job, spawn_task};
+
 pub use crate::game::native_client_services::HudMode;
 
 /// Result of accessing or decoding an attachment.
