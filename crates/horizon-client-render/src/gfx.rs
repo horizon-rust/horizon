@@ -1358,7 +1358,15 @@ pub struct Renderer {
     screen_pipelines: [wgpu::RenderPipeline; 16],
     /// The shared 2D atlas the screen effects read, and their samplers (nearest, linear), for the
     /// vignette the tone mapping draws (tonemap.rs `Vignette`).
+    #[expect(
+        dead_code,
+        reason = "its caller in gfx.rs (68218d890, the vignette in the grading's pass) was lost merging main into final-all; kept to port it back"
+    )]
     screen_atlas: wgpu::TextureView,
+    #[expect(
+        dead_code,
+        reason = "its caller in gfx.rs (68218d890, the vignette in the grading's pass) was lost merging main into final-all; kept to port it back"
+    )]
     screen_samplers: [wgpu::Sampler; 2],
     screen_buffer: wgpu::Buffer,
     screen_capacity: u64,

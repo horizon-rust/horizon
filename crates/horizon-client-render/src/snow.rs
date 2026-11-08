@@ -52,9 +52,9 @@ pub fn slope(rate_mm_h: f32) -> f32 {
 }
 
 /// A flake's diameter (mm) for its melted diameter (mm): a loose aggregate of dendrites, about a
-/// twenty-fifth as dense as water, is three times as wide as its water.
+/// sixtieth as dense as water, is four times as wide as its water.
 pub fn flake_diameter(melted_mm: f32) -> f32 {
-    3.0 * melted_mm
+    4.0 * melted_mm
 }
 
 /// An aggregate's terminal velocity in m/s for its diameter in millimetres (Locatelli and Hobbs
@@ -65,13 +65,14 @@ pub fn terminal_velocity(diameter_mm: f32) -> f32 {
 }
 
 /// The light the falling snow takes out of a beam a metre: 3.912 over the visibility it leaves,
-/// about a kilometre in moderate snow (1 mm/h) and some 250 m in a blizzard (Rasmussen et al.
-/// 1999: the visibility goes about as the rate to the -0.8).
+/// about 3 km in light snow (1 mm/h), 2 km in vanilla's snow and some 800 m in a blizzard (the
+/// visibility goes about as the rate to the -0.8, Rasmussen et al. 1999; a denser veil washed the
+/// whole view out).
 pub fn extinction(rate_mm_h: f32) -> f32 {
     if rate_mm_h <= 0.0 {
         return 0.0;
     }
-    3.912 / (1000.0 * rate_mm_h.powf(-0.8))
+    3.912 / (3000.0 * rate_mm_h.powf(-0.8))
 }
 
 /// The snow this frame, for the renderer: its rate (0: none, or vanilla's snow) and how deep its
@@ -135,17 +136,17 @@ mod tests {
     fn heavier_snow_has_larger_flakes() {
         assert!(1.0 / slope(0.5) < 1.0 / slope(1.5));
         assert!(1.0 / slope(1.5) < 1.0 / slope(5.0));
-        // About 0.4 mm of water on average in moderate snow: flakes over a millimetre wide.
-        assert!(flake_diameter(1.0 / slope(1.0)) > 1.0 && flake_diameter(1.0 / slope(1.0)) < 1.3);
+        // About 0.4 mm of water on average in moderate snow: flakes about 1.6 mm wide.
+        assert!(flake_diameter(1.0 / slope(1.0)) > 1.4 && flake_diameter(1.0 / slope(1.0)) < 1.8);
     }
 
     #[test]
     fn snow_hides_the_distance_more_than_rain() {
-        // About a kilometre's visibility at 1 mm/h, a quarter of it in a blizzard.
-        assert!((extinction(1.0) - 0.003912).abs() < 1e-6);
-        assert!(3.912 / extinction(BLIZZARD_MM_H) < 300.0);
-        // Rain's heaviest vanilla shower against moderate snow.
-        assert!(extinction(SNOW_MM_H) > crate::rain::extinction(crate::rain::RAIN_MM_H));
+        // About 3 km's visibility at 1 mm/h, under a kilometre in a blizzard.
+        assert!((extinction(1.0) - 0.001304).abs() < 1e-6);
+        assert!(3.912 / extinction(BLIZZARD_MM_H) < 1000.0);
+        // Rain of the same water.
+        assert!(extinction(SNOW_MM_H) > crate::rain::extinction(SNOW_MM_H));
         assert_eq!(extinction(0.0), 0.0);
     }
 

@@ -20,7 +20,7 @@ const BLOCKS: usize = 4;
 /// How far a ray is traced from the sound and from each bounce.
 pub const RAY_LENGTH: f64 = 256.0;
 /// The golden ratio spacing of the rays around a sound.
-const PHI: f32 = 1.618_034;
+const PHI: f32 = std::f32::consts::GOLDEN_RATIO;
 
 /// The settings, with Sound Physics Remastered's names and defaults (its
 /// `soundphysics.properties`), stored in `horizon-extras.txt` as

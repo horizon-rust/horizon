@@ -1314,7 +1314,10 @@ unsafe extern "system" fn end_frame(
     let frame = s.report.frames;
     let info = unsafe { &*info };
     let layers = unsafe { std::slice::from_raw_parts(info.layers, info.layer_count as usize) };
-    let latest = s.settings.capture_every.is_some_and(|n| frame % n == 0);
+    let latest = s
+        .settings
+        .capture_every
+        .is_some_and(|n| frame.is_multiple_of(n));
     let now_s = s.seconds();
     let timed = s
         .settings
@@ -1397,7 +1400,7 @@ unsafe extern "system" fn end_frame(
         s.report.exit_requested = true;
         s.set_session_state(sys::SessionState::STOPPING);
     }
-    if frame % 90 == 0 {
+    if frame.is_multiple_of(90) {
         s.write_report();
     }
     XrResult::SUCCESS
@@ -1717,7 +1720,7 @@ fn read_image(s: &State, sub: &sys::SwapchainSubImage) -> Result<(u32, u32, Vec<
                 format,
                 vk::Format::B8G8R8A8_SRGB | vk::Format::B8G8R8A8_UNORM
             ) {
-                for p in pixels.chunks_exact_mut(4) {
+                for p in pixels.as_chunks_mut::<4>().0 {
                     p.swap(0, 2);
                 }
             }
@@ -1757,7 +1760,7 @@ fn from_scrgb(halves: &[u8]) -> Vec<u8> {
     };
     let (mut peak, mut above) = (0.0f32, 0usize);
     let mut out = Vec::with_capacity(halves.len() / 2);
-    for p in halves.chunks_exact(8) {
+    for p in halves.as_chunks::<8>().0 {
         let [r, g, b, a] = [0, 2, 4, 6].map(|i| half(&p[i..i + 2]));
         let max = r.max(g).max(b);
         peak = peak.max(max);

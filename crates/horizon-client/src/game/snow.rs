@@ -16,6 +16,8 @@ pub(super) struct SnowState {
     last: Option<Instant>,
     /// Whether a frame has run since the world opened (one opened in the snow starts covered).
     started: bool,
+    /// Whether the physical snow was on at the last frame, to log when it changes.
+    logged: Option<bool>,
 }
 
 /// Whether `HORIZON_RT_SKIP` has the snow's bit, or `HORIZON_PHYSICAL_SNOW=0`.
@@ -52,7 +54,23 @@ impl Game<'_> {
             .last
             .replace(now)
             .map_or(0.0, |t| now.duration_since(t).as_secs_f32().min(1.0));
-        if !self.physical_snow() {
+        let on = self.physical_snow();
+        if self.snow.logged != Some(on) {
+            self.snow.logged = Some(on);
+            let s = &self.settings.horizon;
+            log::info!(
+                "Horizon snow: physical snow {} (RT lighting {}, Linear Light {}, Weather {}, \
+                 Overworld {}, skipped {}); vanilla's snow columns {}",
+                if on { "on" } else { "off" },
+                s.rt_lighting,
+                s.linear_light,
+                s.weather,
+                self.dim == super::Dim::Overworld,
+                snow_skipped(),
+                if on { "hidden" } else { "drawn" }
+            );
+        }
+        if !on {
             self.snow.cover = Cover::default();
             self.snow.share = 0.0;
             self.snow.started = false;

@@ -268,6 +268,10 @@ impl EntityOutline {
     }
 
     /// Whether `draw` draws anything this frame (glowing entities in view).
+    #[expect(
+        dead_code,
+        reason = "its caller in gfx.rs (1df247284, the TAA's copy back only when something draws over the resolved frame) was lost merging main into final-all; kept to port it back"
+    )]
     pub(super) fn draws(&self) -> bool {
         self.targets.is_some() && self.quads > 0
     }
