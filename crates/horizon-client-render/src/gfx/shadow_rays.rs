@@ -287,17 +287,20 @@ const SPRITE_SPLIT: u32 = {split}u;
              const FIRST_HIT: u32 = {}u;
 const GI_HW_VISIBILITY: bool = {};
              const SHARE_CHECK: bool = {};
+const GI_TURN_BITS: u32 = {}u;
 {}{hardware}{}{wind}",
             first_hit_flag(),
             !gi_dda(),
             share_check(),
+            gi_turn_bits(),
             include_str!("shadow_rays.wgsl"),
             lava_look()
         )
     } else {
         format!(
-            "const SHARE_CHECK: bool = {};\n{}{NO_HARDWARE}",
+            "const SHARE_CHECK: bool = {};\nconst GI_TURN_BITS: u32 = {}u;\n{}{NO_HARDWARE}",
             share_check(),
+            gi_turn_bits(),
             include_str!("shadow_rays.wgsl")
         )
     }
@@ -370,6 +373,16 @@ fn share_denoised() -> bool {
 /// own light. On unless `HORIZON_RT_SHARE_CHECK=0`, which shifts the block's centre's texel onto
 /// all sixteen unchecked, as before (a block standing out of the first eye's view at the second
 /// eye's edge came out black).
+/// How many frames the bounced light (ReSTIR GI) takes turns over, as the bits of its tile
+/// pattern (shadow_rays.wgsl `GI_TURN_BITS`): `HORIZON_RT_GI_TURNS=8` traces each 8x8 tile one
+/// frame in eight (3) instead of four (2, the default).
+fn gi_turn_bits() -> u32 {
+    static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BITS.get_or_init(|| match std::env::var("HORIZON_RT_GI_TURNS").as_deref() {
+        Ok("8") => 3,
+        _ => 2,
+    })
+}
 fn share_check() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_RT_SHARE_CHECK").map_or(true, |v| v != "0"))

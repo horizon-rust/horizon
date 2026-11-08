@@ -5476,8 +5476,9 @@ impl Renderer {
         });
         // HDR output's mark on lightning bolts: fs_hdr_mark over the bolts' own vertex layout,
         // as hdr_mark_pipeline marks entities and particles (only alpha written).
+        // The world's format, as the bolts' own pass (Linear Light's scene in RGBA16F).
         let mark_targets = [Some(wgpu::ColorTargetState {
-            format: frame_format,
+            format: world_format,
             blend: Some(wgpu::BlendState::REPLACE),
             write_mask: wgpu::ColorWrites::ALPHA,
         })];

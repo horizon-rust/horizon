@@ -1773,7 +1773,9 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         // lit by the radiance cache): one frame in eight, a 4x2 pattern, to keep the cache fed.
         let t = vec2<u32>(texel) >> vec2(3u);
         let frame = u32(rt.frame.z);
-        var rest = tile_of(t, 2u) != (frame & 3u);
+        // `GI_TURN_BITS` (shadow_rays.rs `gi_turn_bits`, `HORIZON_RT_GI_TURNS`): 2 one frame in
+        // four, 3 one in eight.
+        var rest = tile_of(t, GI_TURN_BITS) != (frame & ((1u << GI_TURN_BITS) - 1u));
         if behind_psr { rest = tile_of(t, 3u) != (frame & 7u); }
         // A surface whose history the anti-lag cut (`accumulate`: its light changed) traces every
         // frame until its history is long again, so a light switched on, a torch drawn or a
