@@ -1309,7 +1309,9 @@ impl Game<'_> {
                 1
             };
             let plan = if group_lanes > 1 {
-                mob_islands::plan(&mobs, &snapshot, &roles, group_lanes)
+                horizon_client::spans::time("islands_plan", || {
+                    mob_islands::plan(&mobs, &snapshot, &roles, group_lanes)
+                })
             } else {
                 None
             };
@@ -1404,6 +1406,7 @@ impl Game<'_> {
                                 .or_insert_with(|| self.local_difficulty(at));
                         }
                     }
+                    let building = horizon_client::spans::guard("islands_groups");
                     let mut slots: Vec<Option<&mut Mob>> = mobs.iter_mut().map(Some).collect();
                     let mut groups: Vec<mob_islands::Group<&mut Mob>> = plan
                         .groups
@@ -1442,6 +1445,7 @@ impl Game<'_> {
                             )
                         })
                         .collect();
+                    drop(building);
                     laps.lap("creature_prepare");
                     let board = mob_islands::Board::new(
                         std::mem::take(&mut snapshot),
@@ -1468,6 +1472,7 @@ impl Game<'_> {
                         } else {
                             Default::default()
                         };
+                    let merging = horizon_client::spans::guard("islands_merge");
                     let merged = mob_islands::merge(
                         groups,
                         n,
@@ -1475,6 +1480,7 @@ impl Game<'_> {
                         std::mem::take(&mut bindings),
                         std::mem::take(&mut died),
                     );
+                    drop(merging);
                     if let Some((serial, serial_mobs)) = &verify_against {
                         horizon_client::random_source::pin_seeds(false);
                         let diff = mob_islands::difference(serial, serial_mobs, &merged, &mobs);

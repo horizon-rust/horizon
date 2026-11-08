@@ -209,15 +209,28 @@ pub(super) fn plan(mobs: &[Mob], snapshot: &[Seen], roles: &[Role], lanes: usize
     let n = mobs.len();
     let mut budget = PLAN_BUDGET;
     let mut sets = Sets::new(n);
-    // Every mob is a body others may read (a mob that doesn't tick still answers queries, and
-    // a resting one can be despawned). A ticking one's body is grown by the most it can move.
-    let mut bodies = Cells::default();
-    let mut grown = Vec::with_capacity(n);
-    let mut villagers = Cells::default();
+    // Joining two mobs that can't reach each other only costs parallelism, never the result, so
+    // the plan works in columns of CELL blocks: every mob of a column is one island, and a column
+    // joins every column its mobs' reaches meet. A column holds the box around its mobs' bodies
+    // (each grown by the most it can move: every mob is a body others may read, and a resting one
+    // can be despawned), around its ticking mobs' reads, around its villagers' points of interest
+    // and around the village reads of the mobs that make them.
+    #[derive(Clone, Copy)]
+    struct Column {
+        first: u32,
+        body: Option<Aabb>,
+        sense: Option<Aabb>,
+        villagers: Option<Aabb>,
+        village_reads: Option<Aabb>,
+    }
+    let widen = |a: Option<Aabb>, b: Aabb| Some(a.map_or(b, |a| union_box(a, b)));
+    let mut columns: Vec<Column> = Vec::new();
+    let mut column_of = FxHashMap::<(i32, i32), u32>::default();
     let mut index = FxHashMap::<u32, u32>::default();
     for (i, (m, s)) in mobs.iter().zip(snapshot).enumerate() {
         index.entry(s.id).or_insert(i as u32);
-        let motion = if roles[i] == Role::Ticking {
+        let ticks = roles[i] == Role::Ticking;
+        let motion = if ticks {
             if global(s.species) {
                 return None;
             }
@@ -227,8 +240,35 @@ pub(super) fn plan(mobs: &[Mob], snapshot: &[Seen], roles: &[Role], lanes: usize
             0.0
         };
         let body = grow(s.bounds, motion);
-        bodies.insert(i as u32, body, &mut budget)?;
-        grown.push(body);
+        let (x, z) = (s.position.x, s.position.z);
+        if !(x.is_finite() && z.is_finite()) {
+            return None;
+        }
+        let key = ((x / CELL).floor() as i32, (z / CELL).floor() as i32);
+        let next = columns.len() as u32;
+        let c = *column_of.entry(key).or_insert(next);
+        if c == next {
+            columns.push(Column {
+                first: i as u32,
+                body: None,
+                sense: None,
+                villagers: None,
+                village_reads: None,
+            });
+        } else {
+            sets.join(columns[c as usize].first, i as u32);
+        }
+        let col = &mut columns[c as usize];
+        col.body = widen(col.body, body);
+        if ticks {
+            col.sense = widen(
+                col.sense,
+                grow(body, m.attrs.follow_range.max(MIN_SENSE) + SLACK),
+            );
+            if reads_villages(s.species) {
+                col.village_reads = widen(col.village_reads, grow(body, VILLAGE_SENSE));
+            }
+        }
         if s.species == Species::Villager {
             // Its claims, and the ones it may make this tick.
             let mut foot = grow(body, POI_CLAIM);
@@ -238,7 +278,36 @@ pub(super) fn plan(mobs: &[Mob], snapshot: &[Seen], roles: &[Role], lanes: usize
             {
                 foot = union_box(foot, point_box(p));
             }
-            villagers.insert(i as u32, foot, &mut budget)?;
+            col.villagers = widen(col.villagers, foot);
+        }
+    }
+    // Columns by the cells their boxes cover.
+    let mut bodies = Cells::default();
+    let mut villagers = Cells::default();
+    for (c, col) in columns.iter().enumerate() {
+        if let Some(b) = col.body {
+            bodies.insert(c as u32, b, &mut budget)?;
+        }
+        if let Some(v) = col.villagers {
+            villagers.insert(c as u32, v, &mut budget)?;
+        }
+    }
+    for col in &columns {
+        if let Some(sense) = col.sense {
+            bodies.query(sense, &mut budget, |j| {
+                let other = &columns[j as usize];
+                if other.body.is_some_and(|b| b.intersects(sense)) {
+                    sets.join(col.first, other.first);
+                }
+            })?;
+        }
+        if let Some(reads) = col.village_reads {
+            villagers.query(reads, &mut budget, |j| {
+                let other = &columns[j as usize];
+                if other.villagers.is_some_and(|v| v.intersects(reads)) {
+                    sets.join(col.first, other.first);
+                }
+            })?;
         }
     }
     let link = |sets: &mut Sets, i: usize, id: u32| {
@@ -284,23 +353,6 @@ pub(super) fn plan(mobs: &[Mob], snapshot: &[Seen], roles: &[Role], lanes: usize
         if let Some(raid) = horizon_client::mobs::raider::state(m).and_then(|r| r.raid_id) {
             let first = *raids.entry(raid).or_insert(i as u32);
             sets.join(first, i as u32);
-        }
-        if roles[i] != Role::Ticking {
-            continue;
-        }
-        let motion_and_reads = grown[i];
-        let sense = grow(
-            motion_and_reads,
-            m.attrs.follow_range.max(MIN_SENSE) + SLACK,
-        );
-        bodies.query(sense, &mut budget, |j| {
-            if grown[j as usize].intersects(sense) {
-                sets.join(i as u32, j);
-            }
-        })?;
-        if reads_villages(s.species) {
-            let reach = grow(motion_and_reads, VILLAGE_SENSE);
-            villagers.query(reach, &mut budget, |j| sets.join(i as u32, j))?;
         }
     }
     // Islands, in the order of their first mob; their ticking mobs are their weight.
