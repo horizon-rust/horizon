@@ -540,6 +540,12 @@ impl Game<'_> {
             self.settings.horizon.dither_cutout_mips,
         ) {
             self.reload_packs();
+        } else if (self.settings.horizon.parallax || self.settings.horizon.rt_lighting)
+            && !horizon_client::sprites::labpbr_maps()
+        {
+            // The relief or RT lighting turned on without the LabPBR maps loaded: load them.
+            horizon_client::sprites::set_labpbr_maps(true);
+            self.reload_packs();
         }
         self.apply_fullscreen();
         let s = &self.settings;
