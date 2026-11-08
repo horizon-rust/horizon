@@ -12973,8 +12973,12 @@ impl Renderer {
         let translucent_pipeline = material.map_or(&self.translucent, |(m, ..)| &m.translucent);
         let pack_flat = material.and_then(|(m, ..)| m.flat.as_ref());
         // A material stage's translucent pass reads a copy of the depth the solid terrain
-        // left: it is stored across the pass that ends before the copy.
-        let keep_depth = keep_depth || material.is_some();
+        // left: it is stored across the pass that ends before the copy. The ray-traced shadows,
+        // the froxels (the natural fogs, the rain's mist) and the TAA read it after the world
+        // too, whichever pass ends it: the passes after the visibility buffer, GPU culling's
+        // occlusion test and the native copy kept it only for `keep_depth`, so with GPU culling
+        // (VR) the fog drew over the near trees.
+        let keep_depth = keep_depth || material.is_some() || shadows || froxels_now || taa_now;
         // GPU culling's occlusion test splits the world pass as cull.rs's does.
         let gpu_occluding = gpu_frame && self.gpu_culling.as_ref().is_some_and(|g| g.occluding());
         let pack_frame = |pass: &mut wgpu::RenderPass<'_>| {
