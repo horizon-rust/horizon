@@ -4139,10 +4139,10 @@ const SNOW_FAR_TRACKS: u32 = 24u;
 const SNOW_NEAR_BAND: f32 = 12.0;
 const SNOW_FAR_BAND: f32 = 24.0;
 // The smallest flake drawn and the largest, as their water's diameter (mm): the smaller ones only
-// veil the distance (the froxels' snow medium). A flake is three times as wide (snow.rs
-// `flake_diameter`).
-const SNOW_MELT_MIN: f32 = 0.4;
-const SNOW_MELT_MAX: f32 = 3.0;
+// veil the distance (the froxels' snow medium). A flake is four times as wide (snow.rs
+// `flake_diameter`): 4 mm to 2 cm.
+const SNOW_MELT_MIN: f32 = 1.0;
+const SNOW_MELT_MAX: f32 = 5.0;
 // The rate whose flakes fill every track (mm/h of water: a blizzard).
 const SNOW_HEAVIEST: f32 = 5.0;
 // A flake's blur is its path over the eye's exposure (s), shorter than a drop's streak.
@@ -4238,7 +4238,7 @@ fn snow_flake_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32, see
     let slope = 2.55 * pow(rate, -0.48);
     let span = 1.0 - exp(-slope * (SNOW_MELT_MAX - SNOW_MELT_MIN));
     let melted = SNOW_MELT_MIN - log(1.0 - rain_rand(seed + 1u) * span) / slope;
-    let diameter = 3.0 * melted;
+    let diameter = 4.0 * melted;
     // Locatelli and Hobbs' aggregates (snow.rs `terminal_velocity`), each a little its own.
     let speed = 0.8 * pow(diameter, 0.16) * (0.85 + 0.3 * rain_rand(seed + 5u));
     let t = globals.rt_water.z;
@@ -4301,6 +4301,9 @@ fn snow_flake_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32, see
     fade *= smoothstep(0.15, 0.6, distance) * rest;
     if fade <= 0.0 { return out; }
     let pixel = rain_footprint(rel);
+    // A flake well under a pixel is left to the froxels' veil: drawn, the far ones would lay a
+    // grey haze of faint dots over the whole view.
+    if diameter * 0.001 < 0.4 * pixel { return out; }
     let toward = rel / max(distance, 1e-4);
     out.colour = snow_flake_light(head, toward, column, ground, seed, near);
     // HORIZON_RT_DEBUG=10: the flakes in cyan.
