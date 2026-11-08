@@ -48,9 +48,8 @@ const COVERAGE: f32 = 16384.0;
 // The extinction at density 1 (per metre), and how far the march and the haze go.
 const SIGMA: f32 = 0.06;
 const ALBEDO: f32 = 0.99;
-const MAX_DISTANCE: f32 = 40000.0;
 const HAZE: f32 = 16000.0;
-const ITERATIONS: i32 = 192;
+const ITERATIONS: i32 = 288;
 // The light the octaves leave out (the higher orders of scattering, which make a thick cloud's
 // lit side about as bright as a white surface facing the sun, and its belly a light grey).
 const SUN_GAIN: f32 = 2.0;
@@ -82,7 +81,8 @@ struct Clouds {
     // xy the jitter inside a march texel (-0.5..0.5), z the texels' scale on the view's (the dome:
     // its checkerboard's side), w the dome's texel this frame marches in each square (x + y * z).
     jitter: vec4<f32>,
-    // x the altocumulus' amount (0..1); the shadow map: z its texels' side in blocks.
+    // x the altocumulus' amount (0..1), y how far the cumulus reach (blocks); the shadow map: z
+    // its texels' side in blocks.
     layers: vec4<f32>,
     // xy the altocumulus' drift, zw the cirrus' (wrapped; they move faster than the cumulus).
     drifts: vec4<f32>,
@@ -135,6 +135,16 @@ fn dome_uv(d: vec3<f32>) -> vec2<f32> {
     let f = (asin(clamp(d.y, -1.0, 1.0)) - E_MIN) / (0.5 * PI - E_MIN);
     let v = (sqrt(1.0 + 8.0 * max(f, 0.0)) - 1.0) * 0.5;
     return vec2(u, select(v, -0.01, f < 0.0));
+}
+
+// How far the cumulus reach (the Cloud Distance setting, 40 km on Auto), and the haze's scale:
+// 16 km, stretched past 40 km so the farther clouds still show through the air.
+fn reach() -> f32 {
+    return clouds.layers.y;
+}
+
+fn haze_scale() -> f32 {
+    return max(HAZE, reach() * 0.4);
 }
 
 fn remap(v: f32, lo: f32, hi: f32) -> f32 {
@@ -260,10 +270,10 @@ fn slab(origin_y: f32, d: vec3<f32>) -> vec2<f32> {
         if under.x <= under.y {
             range = select(vec2(under.y, below_top.y), vec2(below_top.x, under.x), under.x > 0.0);
         }
-        return vec2(max(range.x, 0.0), min(range.y, MAX_DISTANCE));
+        return vec2(max(range.x, 0.0), min(range.y, reach()));
     }
     var near = 0.0;
-    var far = MAX_DISTANCE;
+    var far = reach();
     if abs(d.y) < 1e-5 {
         if origin_y < BASE || origin_y > TOP { return vec2(1.0, 0.0); }
         return vec2(near, far);
@@ -339,7 +349,8 @@ fn altocumulus(origin: vec3<f32>, d: vec3<f32>, noise: f32, behind: Marched) -> 
         return behind;
     }
     range.y = min(range.y, range.x + 2500.0);
-    if range.x <= 0.0 || range.x > 70000.0 { return behind; }
+    let cut = max(70000.0, reach());
+    if range.x <= 0.0 || range.x > cut { return behind; }
     let start = vec3(clouds.camera.x + origin.x, origin_y, clouds.camera.z + origin.z);
     let l = clouds.light.xyz;
     let c = dot(d, l);
@@ -371,8 +382,8 @@ fn altocumulus(origin: vec3<f32>, d: vec3<f32>, noise: f32, behind: Marched) -> 
     }
     if transmittance >= 0.999 { return behind; }
     let distance = range.x;
-    let haze = 1.0 - exp(-distance / (HAZE * 1.8));
-    let gone = smoothstep(40000.0, 70000.0, distance);
+    let haze = 1.0 - exp(-distance / (haze_scale() * 1.8));
+    let gone = smoothstep(cut * 0.57, cut, distance);
     let opacity = (1.0 - transmittance) * (1.0 - gone);
     let tinted = mix(light * (1.0 - gone), sky_at(d) * opacity, haze);
     var out: Marched;
@@ -396,7 +407,8 @@ fn cirrus(origin: vec3<f32>, d: vec3<f32>) -> Marched {
     } else if d.y > 1e-4 {
         t = (CIRRUS - origin_y) / d.y;
     }
-    if t <= 0.0 || t > 90000.0 { return none; }
+    let cut = max(90000.0, reach() * 1.4);
+    if t <= 0.0 || t > cut { return none; }
     let dens = cirrus_density(vec2(clouds.camera.x + origin.x, clouds.camera.z + origin.z) + d.xz * t);
     if dens <= 0.0 { return none; }
     // A thin sheet: its optical depth along the ray grows as the ray grazes it.
@@ -409,9 +421,9 @@ fn cirrus(origin: vec3<f32>, d: vec3<f32>) -> Marched {
     let sky = sky_at(vec3(0.0, 1.0, 0.0)) * 0.7 + sky_at(normalize(vec3(d.x, 0.2, d.z))) * 0.3;
     var light = (sun + sky) * ALBEDO * opacity;
     // The air between, much more of it toward the horizon.
-    let haze = 1.0 - exp(-t / (HAZE * 2.5));
+    let haze = 1.0 - exp(-t / (haze_scale() * 2.5));
     light = mix(light, sky_at(d) * opacity, haze);
-    let gone = smoothstep(55000.0, 90000.0, t);
+    let gone = smoothstep(cut * 0.61, cut, t);
     var out: Marched;
     out.light = vec4(light * (1.0 - gone), 1.0 - opacity * (1.0 - gone));
     out.distance = t;
@@ -530,8 +542,8 @@ fn march(origin: vec3<f32>, d: vec3<f32>, noise: f32) -> Marched {
     // Aerial perspective: toward the horizon a cloud takes the sky's colour (the air between)
     // and fades out.
     let distance = weighted / weight;
-    let haze = 1.0 - exp(-distance / HAZE);
-    let gone = smoothstep(26000.0, MAX_DISTANCE, distance);
+    let haze = 1.0 - exp(-distance / haze_scale());
+    let gone = smoothstep(reach() * 0.65, reach(), distance);
     let opacity = (1.0 - transmittance) * (1.0 - gone);
     let tinted = mix(light * (1.0 - gone), sky_at(d) * opacity, haze);
     // The cirrus behind, through what the cumulus let pass.

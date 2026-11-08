@@ -161,6 +161,9 @@ pub struct Params {
     pub thick: f32,
     /// The Earth's curvature the slab bends by: 1 / its diameter, 0 off.
     pub curvature: f32,
+    /// How far the cumulus reach, in blocks (`Graphics::cloud_distance_blocks`); the haze and the
+    /// layers aloft stretch with it past 40 km.
+    pub distance: f32,
 }
 
 /// The day's weather at `time` (seconds): the cumulus' coverage bias (-1 fewer and flatter, 1 more
@@ -230,7 +233,7 @@ impl Params {
                 self.thick,
             ],
             drift: [drift(WIND[0]), drift(WIND[1])],
-            layers: [alto, 0.0, SHADOW_TEXEL, 0.0],
+            layers: [alto, self.distance.max(1000.0), SHADOW_TEXEL, 0.0],
             drifts: [
                 drift(WIND[0] * ALTO_WIND),
                 drift(WIND[1] * ALTO_WIND),
@@ -1480,6 +1483,10 @@ mod tests {
                 time: time + f64::from(frame) / 90.0,
                 thick: rain,
                 curvature: 0.5 / 6_371_000.0,
+                distance: std::env::var("HORIZON_CLOUD_STILL_DISTANCE")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(crate::graphics::AUTO_CLOUD_DISTANCE),
             };
             let camera = DVec3::new(1000.0, 90.0, -400.0);
             clouds.dome = None;

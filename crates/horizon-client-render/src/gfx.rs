@@ -1739,6 +1739,8 @@ pub struct Renderer {
     /// The Earth's curvature on the distant terrain, the clouds and the sky's horizon (Horizon
     /// setting; terrain.wgsl `earth_drop`): drawn only, the world stays flat.
     pub earth_curvature: bool,
+    /// How far RT lighting's volumetric clouds reach, in blocks (`Graphics::cloud_distance_blocks`).
+    pub cloud_distance: f32,
     present_modes: Vec<wgpu::PresentMode>,
     /// CPU copies of the section and far tile meshes uploaded while `render-capture` is on
     /// (`keep_capture_copies`, or `HORIZON_RENDER_CAPTURE` at creation); `None` otherwise.
@@ -6408,6 +6410,7 @@ impl Renderer {
             fullbright: false,
             animated_textures: true,
             earth_curvature: true,
+            cloud_distance: crate::graphics::AUTO_CLOUD_DISTANCE,
             present_modes,
             capture_copies: std::env::var_os("HORIZON_RENDER_CAPTURE")
                 .is_some()
@@ -14230,6 +14233,7 @@ impl Renderer {
                 time: (input.time as f64 + input.partial_tick) / 20.0,
                 thick: rain_level.clamp(0.0, 1.0),
                 curvature: earth_bend,
+                distance: self.cloud_distance,
             };
             // Their shadows, for the terrain the next frame (and the other eyes this one).
             if self.eye.is_none_or(|e| e.view_index <= 1) {

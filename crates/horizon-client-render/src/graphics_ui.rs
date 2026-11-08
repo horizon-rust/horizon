@@ -67,6 +67,7 @@ impl Page {
 pub enum H {
     Preset,
     LodDistance,
+    CloudDistance,
     FarDetail,
     BlueMapAutoDetect,
     BlueMapRadius,
@@ -285,6 +286,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Cloud layer: off, flat (fast) or 3D (fancy).",
                         ),
                         v(Opt::CloudRange, Low, "How far clouds reach, in chunks."),
+                        h(
+                            H::CloudDistance,
+                            Low,
+                            "How far RT Lighting's clouds reach. Auto: 40 km, or as far as LOD Distance.",
+                        ),
                         h(H::Sky, Low, "Draws the sky, sun, moon and stars."),
                         h(
                             H::SunPathTilt,
@@ -941,6 +947,10 @@ impl H {
                 0 => labelled("LOD Distance", "Off"),
                 n => labelled("LOD Distance", lang::tr("%s chunks", &[&n])),
             },
+            H::CloudDistance => match g.cloud_distance {
+                0 => labelled("RT Cloud Distance", "Auto"),
+                n => labelled("RT Cloud Distance", format!("{n} chunks")),
+            },
             H::FarDetail => labelled("Far Detail", g.far_detail.label()),
             H::BlueMapAutoDetect => labelled("Find BlueMap", on_off(g.blue_map.auto_detect)),
             H::BlueMapRadius => labelled(
@@ -1173,6 +1183,20 @@ impl H {
         }
         let g = &mut s.horizon;
         match self {
+            H::CloudDistance => {
+                g.cloud_distance = step(
+                    &[
+                        0,
+                        512,
+                        1024,
+                        2048,
+                        4096,
+                        crate::graphics::MAX_CLOUD_DISTANCE,
+                    ],
+                    g.cloud_distance,
+                    back,
+                )
+            }
             H::FarDetail => {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
             }

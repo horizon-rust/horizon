@@ -612,10 +612,29 @@ pub fn lod_distance_capped(distance: u32, info: &wgpu::AdapterInfo) -> u32 {
         distance
     }
 }
+/// RT lighting's clouds' reach on Auto when the far terrain ends nearer, in blocks.
+pub const AUTO_CLOUD_DISTANCE: f32 = 40_000.0;
+/// The farthest RT Cloud Distance, in chunks: the far terrain's with the Earth's curvature
+/// (115 km; cumulus at 800 blocks sink under the horizon about there).
+pub const MAX_CLOUD_DISTANCE: u32 = 7168;
 impl Graphics {
     /// `lod_distance` as far terrain uses it on this adapter.
     pub fn lod_distance_on(&self, info: &wgpu::AdapterInfo) -> u32 {
         lod_distance_capped(self.lod_distance.min(self.lod_distance_max()), info)
+    }
+    /// How far RT lighting's volumetric clouds reach, in blocks: the RT Cloud Distance picked,
+    /// or on Auto the farther of 40 km and the far terrain, at most `MAX_CLOUD_DISTANCE` chunks.
+    pub fn cloud_distance_blocks(&self, info: &wgpu::AdapterInfo) -> f32 {
+        let chunks = match self.cloud_distance {
+            0 => self.lod_distance_on(info),
+            chunks => chunks,
+        };
+        let blocks = chunks.min(MAX_CLOUD_DISTANCE) as f32 * 16.0;
+        if self.cloud_distance == 0 {
+            blocks.max(AUTO_CLOUD_DISTANCE)
+        } else {
+            blocks
+        }
     }
     /// How far the LOD Distance slider goes: no farther than the curved
     /// horizon while Earth Curvature is on (`lod::HORIZON_MAX_CHUNKS`), the
@@ -687,6 +706,9 @@ pub struct Graphics {
     pub preset: Preset,
     /// Distant surface terrain range, in chunks; 0 disables LODs.
     pub lod_distance: u32,
+    /// How far RT lighting's volumetric clouds reach, in chunks; 0 Auto
+    /// (`cloud_distance_blocks`). Vanilla's clouds keep Cloud Distance (`cloudRange`).
+    pub cloud_distance: u32,
     /// How finely far terrain is drawn; Full unless the player picks Reduced.
     pub far_detail: FarDetail,
     /// Far terrain from servers' BlueMap web maps; no server has one unless
@@ -878,6 +900,7 @@ impl Default for Graphics {
         Self {
             preset: Preset::Custom,
             lod_distance: 0,
+            cloud_distance: 0,
             far_detail: FarDetail::Full,
             blue_map: crate::bluemap::Settings::default(),
             cave_culling: true,
@@ -986,6 +1009,9 @@ impl Graphics {
                 "preset" => g.preset = Preset::parse(value),
                 "lodDistance" => {
                     g.lod_distance = number(g.lod_distance).min(crate::lod::MAX_CHUNKS)
+                }
+                "cloudDistance" => {
+                    g.cloud_distance = number(g.cloud_distance).min(MAX_CLOUD_DISTANCE)
                 }
                 "farDetail" => g.far_detail = FarDetail::parse(value),
                 "blueMapRadius" => {
@@ -1111,9 +1137,10 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nrtRays:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nhorizonCulling:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\ncloudDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nrtRays:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nhorizonCulling:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
+            self.cloud_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
             self.entity_culling.name(),
