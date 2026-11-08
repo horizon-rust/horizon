@@ -1,0 +1,109 @@
+name: Compile Starling APK with 10 Native Mods (.hnmod)
+
+on:
+  workflow_dispatch:
+    inputs:
+      starling_repo:
+        description: "Starling repository to build (JuanLuci/starling or starling-client/starling)"
+        required: false
+        default: "JuanLuci/starling"
+      starling_ref:
+        description: "Branch or tag (android for JuanLuci/starling, starling for starling-client/starling)"
+        required: false
+        default: "android"
+  push:
+    paths:
+      - "hnmods/**"
+      - "scripts/compile_hnmods_for_starling.py"
+      - ".github/workflows/compile-starling-hnmods.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  compile-starling-with-hnmods:
+    name: Build Starling arm64-v8a + 10 .hnmod Native Mods
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout Mod Bundle Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11 & Pillow
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python build helpers
+        run: |
+          python3 -m pip install --upgrade pip pillow tomli
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "25"
+
+      - name: Set up Android SDK (Platform 36, Build-Tools 35.0.0, NDK r28c)
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK Platform 36, Build-Tools 35.0.0 & NDK r28c (28.2.13676358)
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> $GITHUB_ENV
+          echo "NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> $GITHUB_ENV
+
+      - name: Install Rust Toolchain (Nightly / 1.90+) & cargo-ndk
+        run: |
+          rustup toolchain install nightly --profile minimal --target aarch64-linux-android
+          rustup default nightly
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk --locked
+
+      - name: Clone Starling & Horizon-Mixins
+        run: |
+          REPO="${{ github.event.inputs.starling_repo || 'JuanLuci/starling' }}"
+          REF="${{ github.event.inputs.starling_ref || 'android' }}"
+          git clone --depth 50 --branch "$REF" "https://github.com/${REPO}.git" /tmp/starling_src || \
+            git clone --depth 50 "https://github.com/${REPO}.git" /tmp/starling_src
+          git clone --depth 20 "https://github.com/horizon-rust/horizon-mixins.git" /tmp/horizon_mixins
+
+      - name: Adapt & Apply 10 .hnmod Native Mods onto Starling Source
+        run: |
+          python3 scripts/compile_hnmods_for_starling.py \
+            "$PWD/hnmods" \
+            "/tmp/starling_src" \
+            "/tmp/horizon_mixins" \
+            "$PWD/dist"
+
+      - name: Build Starling Lowbudget Setup Pack & Compile Modded APK (aarch64-linux-android)
+        working-directory: /tmp/starling_src
+        run: |
+          if [ -f "packaging/lowbudget/make.py" ]; then
+            python3 packaging/lowbudget/make.py
+          fi
+          # If Starling includes its own Android packaging script or Gradle project, run it;
+          # otherwise compile libhorizon_android.so via cargo-ndk.
+          if [ -f "packaging/android/build.py" ]; then
+            python3 packaging/android/build.py --release
+          elif [ -f "gradlew" ]; then
+            chmod +x gradlew
+            ./gradlew assembleRelease assembleDebug
+          else
+            cargo ndk -t arm64-v8a -o "$GITHUB_WORKSPACE/dist/jniLibs" build --release -p horizon-android || \
+            cargo ndk -t arm64-v8a -o "$GITHUB_WORKSPACE/dist/jniLibs" build --release
+          fi
+          find /tmp/starling_src -name "*.apk" -o -name "libhorizon_android.so" | while read -r f; do
+            cp -v "$f" "$GITHUB_WORKSPACE/dist/" || true
+          done
+
+      - name: Upload Compiled Modded Starling APK & Adapted .hnmod Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: starling-10-hnmods-compiled-bundle
+          path: |
+            dist/**
+            hnmods/**
+          if-no-files-found: warn

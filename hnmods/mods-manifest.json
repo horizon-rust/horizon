@@ -1,0 +1,66 @@
+{
+  "target_launcher": "JuanLuci/starling",
+  "target_branch": "android",
+  "mods": [
+    {
+      "file": "accurate_block_placement-1.0.0.hnmod",
+      "id": "accurate_block_placement",
+      "version": "1.0.0",
+      "name": "Accurate Block Placement"
+    },
+    {
+      "file": "appleskin-0.1.3.hnmod",
+      "id": "appleskin",
+      "version": "0.1.3",
+      "name": "AppleSkin"
+    },
+    {
+      "file": "baritone-1.1.38.hnmod",
+      "id": "baritone",
+      "version": "1.1.38",
+      "name": "Baritone"
+    },
+    {
+      "file": "connected_textures-0.1.2.hnmod",
+      "id": "connected_textures",
+      "version": "0.1.2",
+      "name": "Connected Textures"
+    },
+    {
+      "file": "freecam_plus-1.0.1.hnmod",
+      "id": "freecam_plus",
+      "version": "1.0.1",
+      "name": "Freecam Plus"
+    },
+    {
+      "file": "jade-26.3.6.hnmod",
+      "id": "jade",
+      "version": "26.3.6",
+      "name": "Jade"
+    },
+    {
+      "file": "orbital-0.5.10.hnmod",
+      "id": "orbital",
+      "version": "0.5.10",
+      "name": "Orbital"
+    },
+    {
+      "file": "resourcify-0.1.1.hnmod",
+      "id": "resourcify",
+      "version": "0.1.1",
+      "name": "Resourcify"
+    },
+    {
+      "file": "smartf3-0.1.0.hnmod",
+      "id": "smartf3",
+      "version": "0.1.0",
+      "name": "SmartF3"
+    },
+    {
+      "file": "zoom-2.0.0.hnmod",
+      "id": "zoom",
+      "version": "2.0.0",
+      "name": "Zoom"
+    }
+  ]
+}
