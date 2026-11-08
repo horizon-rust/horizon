@@ -1395,21 +1395,25 @@ fn rt_sun_disc(d: vec3<f32>) -> vec3<f32> {
     let light = select(globals.rt_sun_light.rgb, vec3(0.0), globals.rt_mode.z > 0.5);
     return min(light * (limb / (3.14159265 * radius * radius)), vec3(30000.0));
 }
-// RT lighting: the eye's veiling glare around the sun (by night the moon) toward `d`, what makes
-// a disc half a degree across look as big as it does: Stiles and Holladay's law, a luminance of
-// 10 E / theta^2 at theta degrees from a source of illuminance E (here E the light a white face
-// turned to it gets, times pi), faded out past 30 degrees and inside the disc.
+// RT lighting: the eye's glare around the sun (by night the moon) toward `d`, what makes a disc
+// half a degree across look as big as it does: the CIE glare spread function's near term, a
+// luminance of 10 E / theta^3 at theta degrees from a source of illuminance E (here E the light a
+// white face turned to it gets, times pi), faded out from 3 to 15 degrees. Stiles and Holladay's
+// 10 E / theta^2, used before, is the whole veil a real eye adds over tens of degrees: painted
+// into the scene, then thresholded into the bloom on top, it lit a white blob some 20 degrees
+// across around the sun (in VR, where it fills the view, a "bloom de folie"). The bloom's own
+// spread of the disc gives the wider halo.
 fn rt_glare(d: vec3<f32>) -> vec3<f32> {
     let toward = normalize(select(globals.rt_sun.xyz, globals.rt_moon.xyz, globals.rt_mode.z > 0.5));
     if toward.y < -0.05 { return vec3(0.0); }
     let theta = degrees(acos(clamp(dot(d, toward), -1.0, 1.0)));
     let radius = degrees(globals.rt_sun_light.w);
     let at = max(theta, radius);
-    let fade = 1.0 - smoothstep(10.0, 30.0, theta);
+    let fade = 1.0 - smoothstep(3.0, 15.0, theta);
     // The moon's a tenth as much: under the night sky the eye sees it sharp, its glare would hide
     // the disc the night's exposure lifts.
     let eye = select(1.0, 0.1, globals.rt_mode.z > 0.5);
-    return globals.rt_sun_light.rgb * (10.0 * 3.14159265 * eye / (at * at)) * fade
+    return globals.rt_sun_light.rgb * (10.0 * 3.14159265 * eye / (at * at * at)) * fade
         * smoothstep(-0.05, 0.02, toward.y);
 }
 // RT lighting: the real moon's disc toward `d` (0.52 degrees across, times the Moon Size
