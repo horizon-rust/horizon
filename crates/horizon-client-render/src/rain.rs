@@ -245,22 +245,26 @@ fn is_metal(id: &str) -> bool {
 
 /// One column of the rain map: its rain height (MOTION_BLOCKING's, one above the top block), its
 /// top block's surface, the block light just above it, whether it rains there (not snow, not a dry
-/// biome), and how many of its four neighbours stand higher (a hollow, where puddles gather).
+/// biome), whether it snows there (`crate::snow`), and how many of its four neighbours stand
+/// higher (a hollow, where puddles gather).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Column {
     pub height: i32,
     pub surface: Surface,
     pub light: u8,
     pub rains: bool,
+    pub snows: bool,
     pub higher: u8,
 }
 impl Column {
-    /// Packed for the GPU (terrain.wgsl `rain_cell`): the height + 2048 in 12 bits, the surface in
-    /// 4, the block light in 4, whether it rains in 1, the higher neighbours in 3, and bits 8..12
-    /// of x and z (each 4) to tell a stale texel of the wrapped map.
+    /// Packed for the GPU (terrain.wgsl `rain_cell`): the height + 1024 in 11 bits (-1024 to
+    /// 1023, past any world's build limit), whether it snows in 1, the surface in 4, the block
+    /// light in 4, whether it rains in 1, the higher neighbours in 3, and bits 8..12 of x and z
+    /// (each 4) to tell a stale texel of the wrapped map.
     pub fn pack(self, x: i32, z: i32) -> u32 {
-        let height = (self.height + 2048).clamp(0, 4095) as u32;
+        let height = (self.height + 1024).clamp(0, 2047) as u32;
         height
+            | u32::from(self.snows) << 11
             | (self.surface as u32) << 12
             | u32::from(self.light.min(15)) << 16
             | u32::from(self.rains) << 20
@@ -375,7 +379,7 @@ impl RainMap {
         x: i32,
         z: i32,
         height: impl Fn(i32, i32) -> i32,
-        column: impl Fn(i32, i32, i32) -> (Surface, u8, bool),
+        column: impl Fn(i32, i32, i32) -> (Surface, u8, bool, bool),
     ) {
         crate::spans::time("rain_map", || self.update_inner(x, z, &height, &column));
     }
@@ -384,7 +388,7 @@ impl RainMap {
         x: i32,
         z: i32,
         height: &impl Fn(i32, i32) -> i32,
-        column: &impl Fn(i32, i32, i32) -> (Surface, u8, bool),
+        column: &impl Fn(i32, i32, i32) -> (Surface, u8, bool, bool),
     ) {
         let centre = (x.div_euclid(16) * 16, z.div_euclid(16) * 16);
         let half = MAP / 2;
@@ -429,7 +433,7 @@ impl RainMap {
         w: i32,
         h: i32,
         height: &impl Fn(i32, i32) -> i32,
-        column: &impl Fn(i32, i32, i32) -> (Surface, u8, bool),
+        column: &impl Fn(i32, i32, i32) -> (Surface, u8, bool, bool),
     ) {
         if w <= 0 || h <= 0 {
             return;
@@ -455,7 +459,7 @@ impl RainMap {
             for dx in 0..w {
                 let cx = x0 + dx;
                 let hh = at(dx, dz);
-                let (surface, light, rains) = column(cx, cz, hh);
+                let (surface, light, rains, snows) = column(cx, cz, hh);
                 let higher = [(1, 0), (-1, 0), (0, 1), (0, -1)]
                     .iter()
                     .filter(|&&(ex, ez)| at(dx + ex, dz + ez) > hh)
@@ -465,6 +469,7 @@ impl RainMap {
                     surface,
                     light,
                     rains,
+                    snows,
                     higher,
                 }
                 .pack(cx, cz);
@@ -647,10 +652,12 @@ mod tests {
             surface: Surface::Grass,
             light: 14,
             rains: true,
+            snows: true,
             higher: 3,
         };
         let p = c.pack(-1, 300);
-        assert_eq!(p & 4095, 2048 - 64);
+        assert_eq!(p & 2047, 1024 - 64);
+        assert_eq!(p >> 11 & 1, 1);
         assert_eq!(p >> 12 & 15, Surface::Grass as u32);
         assert_eq!(p >> 16 & 15, 14);
         assert_eq!(p >> 20 & 1, 1);
@@ -662,12 +669,12 @@ mod tests {
     #[test]
     fn the_map_follows_the_camera_and_fills_new_strips() {
         let mut map = RainMap::default();
-        let column = |_: i32, _: i32, _: i32| (Surface::Stone, 0, true);
+        let column = |_: i32, _: i32, _: i32| (Surface::Stone, 0, true, false);
         map.update(0, 0, |x, _| x, column);
         let at = |map: &RainMap, x: i32, z: i32| {
             map.cells()[(z.rem_euclid(MAP) * MAP + x.rem_euclid(MAP)) as usize]
         };
-        assert_eq!(at(&map, 100, 5) & 4095, 2148);
+        assert_eq!(at(&map, 100, 5) & 2047, 1124);
         assert_eq!(
             at(&map, 100, 5) >> 21 & 7,
             1,
@@ -675,7 +682,7 @@ mod tests {
         );
         // 160 blocks east: the columns past the old window are filled, wrapped onto old texels.
         map.update(160, 0, |x, _| x, column);
-        assert_eq!(at(&map, 250, 5) & 4095, 2048 + 250);
+        assert_eq!(at(&map, 250, 5) & 2047, 1024 + 250);
         assert_eq!(at(&map, 250, 5) >> 24 & 15, 0);
         assert!(map.take_upload().is_some());
     }
@@ -703,6 +710,7 @@ mod tests {
                 },
                 (x.rem_euclid(16)) as u8,
                 z % 2 == 0,
+                z % 2 != 0 && x % 3 == 0,
             )
         };
         let mut map = RainMap::default();
@@ -732,7 +740,7 @@ mod tests {
 
     #[test]
     fn standing_still_uploads_only_what_changed() {
-        let column = |_: i32, _: i32, _: i32| (Surface::Stone, 0, true);
+        let column = |_: i32, _: i32, _: i32| (Surface::Stone, 0, true, false);
         let mut map = RainMap::default();
         let mut gpu = vec![0; (MAP * MAP) as usize];
         map.update(0, 0, |_, _| 64, column);
@@ -752,13 +760,13 @@ mod tests {
         }
         assert!(gpu == map.cells());
         assert_eq!(sent, 5, "the column and its four neighbours");
-        assert_eq!(map.cells()[(20 * MAP + 10) as usize] & 4095, 2048 + 65);
+        assert_eq!(map.cells()[(20 * MAP + 10) as usize] & 2047, 1024 + 65);
         assert_eq!(map.cells()[(20 * MAP + 11) as usize] >> 21 & 7, 1);
     }
 
     #[test]
     fn a_crossing_uploads_its_strip_not_the_map() {
-        let column = |_: i32, _: i32, _: i32| (Surface::Stone, 0, true);
+        let column = |_: i32, _: i32, _: i32| (Surface::Stone, 0, true, false);
         let mut map = RainMap::default();
         map.update(0, 0, |x, _| x, column);
         map.take_upload();
