@@ -10,6 +10,8 @@
 
 // The vertex arena's pages (gfx/arena.rs): `TerrainVertex`, six words each, position, then the
 // texture coordinate (two halves, `UV_STEPS` a unit), then the layer and the light, the colour.
+// A moving vertex's words (mesher::Vertex, gfx/hw_rays.rs checks it): its stride in `dynamics`.
+const uint DYN_WORDS = 11u;
 layout(set = 0, binding = 4) readonly buffer Arena0 { uint w[]; } arena0;
 layout(set = 0, binding = 5) readonly buffer Arena1 { uint w[]; } arena1;
 layout(set = 0, binding = 6) readonly buffer Arena2 { uint w[]; } arena2;
@@ -24,7 +26,7 @@ layout(set = 0, binding = 12) uniform texture2DArray sprites;
 // arena page or kind, the solid and translucent quads' first vertices, the translucent geometry's
 // index (none: u32 max), then each solid geometry's first quad, 16 bits each.
 layout(set = 0, binding = 13) readonly buffer Instances { uvec4 rows[]; } instances;
-// The moving geometry's vertices (the entity pipeline's `Vertex`, nine words) and the atlas.
+// The moving geometry's vertices (the entity pipeline's `Vertex`, `DYN_WORDS` words) and the atlas.
 layout(set = 0, binding = 14) readonly buffer Dynamics { uint w[]; } dynamics;
 layout(set = 0, binding = 15) uniform texture2D entity_atlas;
 // Sprite layers past the first array are taken as opaque (the kernel's `SPRITE_SPLIT`).
@@ -73,12 +75,12 @@ vec4 hw_entity_texel(uint base) {
     vec2 b = bary;
     uint v1 = base + (second ? 2u : 1u);
     uint v2 = base + (second ? 3u : 2u);
-    vec2 uv = uintBitsToFloat(uvec2(dynamics.w[base * 9u + 3u], dynamics.w[base * 9u + 4u])) * (1.0 - b.x - b.y)
-        + uintBitsToFloat(uvec2(dynamics.w[v1 * 9u + 3u], dynamics.w[v1 * 9u + 4u])) * b.x
-        + uintBitsToFloat(uvec2(dynamics.w[v2 * 9u + 3u], dynamics.w[v2 * 9u + 4u])) * b.y;
+    vec2 uv = uintBitsToFloat(uvec2(dynamics.w[base * DYN_WORDS + 3u], dynamics.w[base * DYN_WORDS + 4u])) * (1.0 - b.x - b.y)
+        + uintBitsToFloat(uvec2(dynamics.w[v1 * DYN_WORDS + 3u], dynamics.w[v1 * DYN_WORDS + 4u])) * b.x
+        + uintBitsToFloat(uvec2(dynamics.w[v2 * DYN_WORDS + 3u], dynamics.w[v2 * DYN_WORDS + 4u])) * b.y;
     ivec2 size = textureSize(entity_atlas, 0);
     ivec2 texel = clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1);
-    vec4 color = unpackUnorm4x8(dynamics.w[base * 9u + 6u]);
+    vec4 color = unpackUnorm4x8(dynamics.w[base * DYN_WORDS + 6u]);
     return texelFetch(entity_atlas, texel, 0) * color;
 }
 // The quad this hit is on: its first arena vertex, or none on a page past those bound.

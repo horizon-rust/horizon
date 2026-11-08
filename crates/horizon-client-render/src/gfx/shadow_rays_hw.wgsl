@@ -49,18 +49,21 @@ struct HwInstance {
 }
 @group(0) @binding(23) var<storage, read> instances: array<HwInstance>;
 // The moving geometry (gfx/hw_rays.rs `finish`): the entities' and the view model's vertices, the
-// entity pipeline's `Vertex` (nine words: position, texture coordinate in the shared atlas, layer,
+// entity pipeline's `Vertex` (`DYN_WORDS` words: position, texture coordinate in the shared atlas, layer,
 // colour, light, normal), and the atlas. An instance whose row starts with `DYN_ENTITY` holds
 // quads from the vertex in its second word; one with `DYN_CLOUD` is a cloud tile (opaque, and
 // left out of the bounce rays by their mask: `NO_CLOUDS`).
 @group(0) @binding(36) var<storage, read> dynamics: array<u32>;
 @group(0) @binding(37) var entity_atlas: texture_2d<f32>;
+// A moving vertex's words (`mesher::Vertex`: position, texture coordinate, layer, colour, light,
+// normal, glint coordinate), its stride in `dynamics` (gfx/hw_rays.rs checks it).
+const DYN_WORDS: u32 = 11u;
 const DYN_ENTITY: u32 = 0xfffffff0u;
 const NO_CLOUDS: u32 = 0xfbu;
 const NO_QUAD: u32 = 0xffffffffu;
 // Moving vertex `v`'s position, camera-relative as drawn.
 fn dyn_position(v: u32) -> vec3<f32> {
-    return bitcast<vec3<f32>>(vec3(dynamics[v * 9u], dynamics[v * 9u + 1u], dynamics[v * 9u + 2u]));
+    return bitcast<vec3<f32>>(vec3(dynamics[v * DYN_WORDS], dynamics[v * DYN_WORDS + 1u], dynamics[v * DYN_WORDS + 2u]));
 }
 // The entity or view model quad candidate hit `c` is on: its first vertex in `dynamics`, or none.
 fn hw_entity_quad(c: RayIntersection) -> u32 {
@@ -76,12 +79,12 @@ fn hw_entity_texel(c: RayIntersection, base: u32) -> vec4<f32> {
     let b = c.barycentrics;
     let v1 = base + select(1u, 2u, second);
     let v2 = base + select(2u, 3u, second);
-    let uv = bitcast<vec2<f32>>(vec2(dynamics[base * 9u + 3u], dynamics[base * 9u + 4u])) * (1.0 - b.x - b.y)
-        + bitcast<vec2<f32>>(vec2(dynamics[v1 * 9u + 3u], dynamics[v1 * 9u + 4u])) * b.x
-        + bitcast<vec2<f32>>(vec2(dynamics[v2 * 9u + 3u], dynamics[v2 * 9u + 4u])) * b.y;
+    let uv = bitcast<vec2<f32>>(vec2(dynamics[base * DYN_WORDS + 3u], dynamics[base * DYN_WORDS + 4u])) * (1.0 - b.x - b.y)
+        + bitcast<vec2<f32>>(vec2(dynamics[v1 * DYN_WORDS + 3u], dynamics[v1 * DYN_WORDS + 4u])) * b.x
+        + bitcast<vec2<f32>>(vec2(dynamics[v2 * DYN_WORDS + 3u], dynamics[v2 * DYN_WORDS + 4u])) * b.y;
     let size = vec2<i32>(textureDimensions(entity_atlas));
     let texel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2(0), size - 1);
-    let color = unpack4x8unorm(dynamics[base * 9u + 6u]);
+    let color = unpack4x8unorm(dynamics[base * DYN_WORDS + 6u]);
     return textureLoad(entity_atlas, texel, 0) * color;
 }
 // The quad candidate hit `c` is on: its first arena vertex (`arena_at`), or none (`u32` max) on a

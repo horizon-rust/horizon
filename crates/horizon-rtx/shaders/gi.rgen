@@ -26,6 +26,8 @@
 #extension GL_NV_shader_invocation_reorder : require
 #extension GL_EXT_samplerless_texture_functions : require
 
+// A moving vertex's words (mesher::Vertex, gfx/hw_rays.rs checks it): its stride in `dynamics`.
+const uint DYN_WORDS = 11u;
 layout(std140, set = 0, binding = 0) uniform Rt {
     mat4 inverse_view_proj;
     vec4 light;
@@ -113,7 +115,7 @@ vec3 hw_position(uint v) {
     return uintBitsToFloat(uvec3(arena_at(v, 0u), arena_at(v, 1u), arena_at(v, 2u)));
 }
 vec3 dyn_position(uint v) {
-    return uintBitsToFloat(uvec3(dynamics.w[v * 9u], dynamics.w[v * 9u + 1u], dynamics.w[v * 9u + 2u]));
+    return uintBitsToFloat(uvec3(dynamics.w[v * DYN_WORDS], dynamics.w[v * DYN_WORDS + 1u], dynamics.w[v * DYN_WORDS + 2u]));
 }
 
 // The hit's place in the structures (`RayIntersection`'s fields the kernel reads).
@@ -136,12 +138,12 @@ vec4 hw_entity_texel(Hit h, uint base) {
     bool second = (h.primitive & 1u) == 1u;
     uint v1 = base + (second ? 2u : 1u);
     uint v2 = base + (second ? 3u : 2u);
-    vec2 uv = uintBitsToFloat(uvec2(dynamics.w[base * 9u + 3u], dynamics.w[base * 9u + 4u])) * (1.0 - h.b.x - h.b.y)
-        + uintBitsToFloat(uvec2(dynamics.w[v1 * 9u + 3u], dynamics.w[v1 * 9u + 4u])) * h.b.x
-        + uintBitsToFloat(uvec2(dynamics.w[v2 * 9u + 3u], dynamics.w[v2 * 9u + 4u])) * h.b.y;
+    vec2 uv = uintBitsToFloat(uvec2(dynamics.w[base * DYN_WORDS + 3u], dynamics.w[base * DYN_WORDS + 4u])) * (1.0 - h.b.x - h.b.y)
+        + uintBitsToFloat(uvec2(dynamics.w[v1 * DYN_WORDS + 3u], dynamics.w[v1 * DYN_WORDS + 4u])) * h.b.x
+        + uintBitsToFloat(uvec2(dynamics.w[v2 * DYN_WORDS + 3u], dynamics.w[v2 * DYN_WORDS + 4u])) * h.b.y;
     ivec2 size = textureSize(entity_atlas, 0);
     ivec2 texel = clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1);
-    vec4 color = unpackUnorm4x8(dynamics.w[base * 9u + 6u]);
+    vec4 color = unpackUnorm4x8(dynamics.w[base * DYN_WORDS + 6u]);
     return texelFetch(entity_atlas, texel, 0) * color;
 }
 uint hw_quad(Hit h) {

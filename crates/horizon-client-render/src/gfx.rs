@@ -15234,7 +15234,16 @@ impl Renderer {
             let keep_graded = self.hdr.is_some()
                 || self.screenshot.is_some()
                 || self.recording.as_ref().is_some_and(|r| r.wants());
-            t.run(&self.device, encoder, size, view_target, mask, keep_graded, None, None);
+            t.run(
+                &self.device,
+                encoder,
+                size,
+                view_target,
+                mask,
+                keep_graded,
+                None,
+                None,
+            );
             if let Some(hdr) = &self.hdr {
                 hdr.keep_world(encoder, timing.as_mut());
             }

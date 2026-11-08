@@ -32,6 +32,13 @@ use super::rt_cloud_mesh::{CloudTile, TileKey};
 use crate::mesher::Vertex;
 use std::collections::HashMap;
 
+/// The moving vertices' stride in words, as the shaders read `dynamics` (shadow_rays_hw.wgsl,
+/// horizon-rtx's gi.rgen and sun.rahit, `DYN_WORDS`). A field added to `Vertex` must change
+/// them too: read with the old stride, every entity quad's texel came from another vertex, and
+/// the alpha test cut their shadows into grey streaks.
+pub const DYN_WORDS: usize = 11;
+const _: () = assert!(std::mem::size_of::<Vertex>() == DYN_WORDS * 4);
+
 /// The RTX 4090 build's raw top-level build (crate `horizon-rtx`, the game's `rtx` feature,
 /// docs/rtx-4090.md): the instances in a buffer of its own, written where they change, the build
 /// one raw Vulkan command on `tlas`. Without the feature wgpu builds it from `tlas`'s own
