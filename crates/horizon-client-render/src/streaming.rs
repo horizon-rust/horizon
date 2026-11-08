@@ -392,6 +392,10 @@ impl Ord for Queued {
 }
 struct Shared {
     queue: Mutex<BinaryHeap<Queued>>,
+    /// Latest queued mesh sequence per section. Workers use this only to skip
+    /// jobs superseded while they were waiting in the queue; an active worker
+    /// still completes and its result sequence is checked on the game thread.
+    mesh_tokens: Mutex<FxHashMap<(i32, i32, i32), u64>>,
     /// What meshing reads (block models and sprites), swapped when resource
     /// packs reload; each mesh job takes the current one.
     context: RwLock<Arc<WorkerContext>>,
@@ -878,6 +882,13 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
         let Some(job) = self.shared.queue.lock().unwrap().pop() else {
             return false;
         };
+        if let Job::Mesh(x, sy, z, _, seq, _) = &job.job {
+            let mut tokens = self.shared.mesh_tokens.lock().unwrap();
+            if !take_mesh_token(&mut tokens, (*x, *sy, *z), *seq) {
+                job_stats::stale_mesh();
+                return true;
+            }
+        }
         if self
             .shared
             .aborted
@@ -1077,6 +1088,7 @@ impl Streaming {
     ) -> Self {
         let shared = Arc::new(Shared {
             queue: Mutex::new(BinaryHeap::new()),
+            mesh_tokens: Mutex::new(FxHashMap::default()),
             context: RwLock::new(context.clone()),
             done: Mailbox::default(),
             meshes: Mutex::new(MeshPool::default()),
@@ -1304,6 +1316,11 @@ impl Streaming {
         {
             release_columns(&mut queue, gone);
         }
+        if !gone.is_empty()
+            && let Ok(mut tokens) = self.shared.mesh_tokens.lock()
+        {
+            tokens.retain(|key, _| !gone.contains(&(key.0, key.2)));
+        }
         let mut chunks = Vec::with_capacity(gone.len());
         for &(x, z) in gone {
             self.lit.remove(&(x, z));
@@ -1320,6 +1337,13 @@ impl Streaming {
     fn submit(&mut self, at: Option<(i32, i32)>, bias: i64, job: Job) {
         self.order += 1;
         let priority = at.map_or(i64::MIN, |(x, z)| self.distance(x, z) * 4 + bias);
+        if let Job::Mesh(x, sy, z, _, seq, _) = &job {
+            self.shared
+                .mesh_tokens
+                .lock()
+                .unwrap()
+                .insert((*x, *sy, *z), *seq);
+        }
         let mut queue = self.shared.queue.lock().unwrap();
         queue.push(Queued {
             priority,
@@ -2330,6 +2354,7 @@ impl Streaming {
             }
             *queue = std::collections::BinaryHeap::from(saves);
         }
+        self.shared.mesh_tokens.lock().unwrap().clear();
         self.generating.clear();
         self.decorating = 0;
         self.decorating_finals.clear();
@@ -3016,6 +3041,18 @@ fn release_columns(queue: &mut BinaryHeap<Queued>, gone: &FxHashSet<(i32, i32)>)
     *queue = BinaryHeap::from(kept);
     released
 }
+
+fn take_mesh_token(
+    tokens: &mut FxHashMap<(i32, i32, i32), u64>,
+    key: (i32, i32, i32),
+    sequence: u64,
+) -> bool {
+    if tokens.get(&key).copied() != Some(sequence) {
+        return false;
+    }
+    tokens.remove(&key);
+    true
+}
 /// Whether the 3x3 a light job for (x, z) reads is all there: every
 /// neighbour a finished column, or a decorated proto chunk past the area
 /// (the last FULL ring lights against neighbours at FEATURES, as
@@ -3504,6 +3541,17 @@ mod tests {
         let moved = ranges((19, 0));
         rank_again(&mut queue, |x, z| moved.priority(x, z));
         assert_eq!(queue.pop().and_then(|q| q.at), Some((20, 0)));
+    }
+
+    #[test]
+    fn queued_mesh_token_rejects_superseded_jobs() {
+        let key = (3, 4, 5);
+        let mut tokens = FxHashMap::default();
+        tokens.insert(key, 1);
+        tokens.insert(key, 2);
+        assert!(!take_mesh_token(&mut tokens, key, 1));
+        assert!(take_mesh_token(&mut tokens, key, 2));
+        assert!(!take_mesh_token(&mut tokens, key, 2));
     }
 
     /// `ChunkTaskPriorityQueue.release`: a column that unloaded keeps no queued job, so
