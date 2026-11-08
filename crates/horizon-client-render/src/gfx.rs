@@ -12405,12 +12405,15 @@ impl Renderer {
         }
         let pack_reads_world = pack_post || native_post;
         laps.lap("r_uploads");
-        // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
+        // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it;
+        // so do RT lighting's clouds, drawn last where it holds no terrain (a discarded depth
+        // put them over the trees, in VR where nothing else kept it).
         let keep_depth = pack_reads_world
             || (taa && self.world_post.taa)
             || oit_on
             || native_render::render_needs().world_depth
-            || fg;
+            || fg
+            || rt_clouds_on;
         // The pack's program reads the vertices this frame's draws bind.
         let pack_draws_terrain = pack_terrain && flat_frame == self.pack_terrain_flat;
         // The shadow camera's lists, drawn by the pack's shadow programs.
