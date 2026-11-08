@@ -14624,6 +14624,14 @@ impl Game<'_> {
                     self.streaming.radius.min(r.sent_radius())
                 });
                 let camera = [player.position.x, player.position.y, player.position.z];
+                // Horizon Culling: no tile past where the tallest terrain sinks
+                // under the curved horizon seen from the eye, the loaded chunks
+                // flat to the render distance as the renderer draws them.
+                let lod_distance = self.settings.horizon.horizon_culled(
+                    lod_distance,
+                    player.position.y + 1.62,
+                    f64::from(self.streaming.radius * 16),
+                );
                 let meshes = horizon_client::spans::time("lod_update", || {
                     lod.update(camera, detail, lod_distance, covered, lod_aim)
                 });

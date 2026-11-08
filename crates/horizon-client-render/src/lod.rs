@@ -195,6 +195,42 @@ const WORLD_SPLIT: i32 = 3;
 const RETURN: (i64, i64) = (20, 19);
 /// The farthest `Plan` reaches, in chunks.
 pub const MAX_CHUNKS: u32 = 1 << 22;
+/// The Earth's radius Earth Curvature draws the distant terrain on, in blocks
+/// (`gfx::lod::earth_drop`).
+pub const EARTH_RADIUS: f64 = 6_371_000.0;
+/// The overworld's sea, which the curved horizon is measured from.
+const SEA_LEVEL: f64 = 63.0;
+/// The highest terrain a far tile can hold: the build limit, 257 blocks above
+/// the sea. A peak this tall sinks under the horizon last.
+const HIGHEST_TERRAIN: f64 = 320.0;
+/// Horizon Culling's distances are rounded up to this many chunks, so a player
+/// climbing or falling replans the far terrain every few dozen blocks, not on
+/// every one.
+const HORIZON_STEP: u32 = 64;
+/// How far LOD Distance goes while Earth Curvature is on, in chunks: past it,
+/// even a peak at the build limit seen from the build limit lies under the
+/// horizon (`horizon_chunks(320, ..)`, 114 km).
+pub const HORIZON_MAX_CHUNKS: u32 = 7168;
+
+/// How far far terrain can be seen over the curved Earth from an eye at
+/// `eye_y`, in chunks: past it the tallest terrain (`HIGHEST_TERRAIN`) has
+/// sunk under the horizon and Horizon Culling stops planning tiles.
+///
+/// Measured on the Earth as it is drawn, not the real one: the loaded chunks
+/// stay flat out to `flat_radius` blocks and the curvature starts there
+/// (`earth_drop`), the true sphere raised by `flat_radius^2 / 2R`. The eye's
+/// line grazes that surface `sqrt(2Rh - f^2)` away (or the flat chunks' edge
+/// when the eye is lower), and a peak `H` tall stands over it until
+/// `sqrt(2RH)` past that point. `sqrt(2Rh) + sqrt(2RH + f^2)` bounds both
+/// cases from above, so no visible tile is dropped.
+pub fn horizon_chunks(eye_y: f64, flat_radius: f64) -> u32 {
+    let eye = (eye_y - SEA_LEVEL).max(0.0);
+    let peak = HIGHEST_TERRAIN - SEA_LEVEL;
+    let f2 = flat_radius * flat_radius;
+    let blocks = (2.0 * EARTH_RADIUS * eye).sqrt() + (2.0 * EARTH_RADIUS * peak + f2).sqrt();
+    let chunks = (blocks / 16.0).ceil().min(f64::from(MAX_CHUNKS)) as u32;
+    chunks.div_ceil(HORIZON_STEP) * HORIZON_STEP
+}
 /// The coarsest tile level whose chunks are generated in full (trees,
 /// structures) rather than sampled: cells of up to 4 blocks, out to about
 /// 1024 blocks at Full far detail.
@@ -3233,6 +3269,45 @@ fn retiring_detail<'a>(
 }
 #[cfg(test)]
 mod tests {
+    /// Horizon Culling stops where the tallest terrain sinks under the drawn
+    /// Earth's horizon: 3 900 chunks (62 km) from the shore, as far as LOD
+    /// Distance goes with Earth Curvature from the build limit.
+    #[test]
+    fn the_horizon_hides_the_tallest_terrain_past_horizon_chunks() {
+        use super::{EARTH_RADIUS, HORIZON_MAX_CHUNKS, horizon_chunks};
+        assert_eq!(horizon_chunks(64.6, 512.0), 3904);
+        // Under the sea or in a cave, as from its surface.
+        assert_eq!(horizon_chunks(-40.0, 512.0), horizon_chunks(63.0, 512.0));
+        assert_eq!(horizon_chunks(320.0, 1024.0), HORIZON_MAX_CHUNKS);
+        assert!(horizon_chunks(320.0, 2048.0) <= HORIZON_MAX_CHUNKS);
+        assert!(horizon_chunks(1000.0, 512.0) > HORIZON_MAX_CHUNKS);
+        // Exact on the drawn Earth (flat to `f`, then `earth_drop`): the
+        // eye's line over the sea passes above a 257-block peak at that range.
+        let r = EARTH_RADIUS;
+        for (eye_y, f) in [
+            (64.6, 512.0),
+            (63.0, 512.0),
+            (63.05, 2048.0),
+            (200.0, 256.0),
+            (320.0, 1024.0),
+        ] {
+            let (h, peak) = (eye_y - 63.0_f64, 257.0);
+            let tangent = 2.0 * r * h - f * f;
+            let slope = if tangent > 0.0 {
+                tangent.sqrt() / r
+            } else {
+                h / f
+            };
+            let d = f64::from(horizon_chunks(eye_y, f)) * 16.0;
+            let line = h - slope * d;
+            let top = peak - (d * d - f * f) / (2.0 * r);
+            assert!(
+                top < line,
+                "eye {eye_y}: the peak at {d} stands over the horizon"
+            );
+        }
+    }
+
     /// A spyglass or the zoom mod magnifies only what the narrowed view
     /// covers, so `ZoomAim` asks for finer tiles there and nowhere else. Without
     /// that cone the same request would reach the whole circle, which at the

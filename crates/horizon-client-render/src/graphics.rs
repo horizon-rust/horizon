@@ -615,7 +615,27 @@ pub fn lod_distance_capped(distance: u32, info: &wgpu::AdapterInfo) -> u32 {
 impl Graphics {
     /// `lod_distance` as far terrain uses it on this adapter.
     pub fn lod_distance_on(&self, info: &wgpu::AdapterInfo) -> u32 {
-        lod_distance_capped(self.lod_distance, info)
+        lod_distance_capped(self.lod_distance.min(self.lod_distance_max()), info)
+    }
+    /// How far the LOD Distance slider goes: no farther than the curved
+    /// horizon while Earth Curvature is on (`lod::HORIZON_MAX_CHUNKS`), the
+    /// whole world otherwise.
+    pub fn lod_distance_max(&self) -> u32 {
+        if self.earth_curvature {
+            crate::lod::HORIZON_MAX_CHUNKS
+        } else {
+            crate::lod::MAX_CHUNKS
+        }
+    }
+    /// Far terrain's distance `distance` for an eye at `eye_y` with the loaded
+    /// chunks flat to `flat_radius` blocks: Horizon Culling stops it where the
+    /// tallest terrain sinks under the curved horizon (`lod::horizon_chunks`).
+    pub fn horizon_culled(&self, distance: u32, eye_y: f64, flat_radius: f64) -> u32 {
+        if self.earth_curvature && self.horizon_culling {
+            distance.min(crate::lod::horizon_chunks(eye_y, flat_radius))
+        } else {
+            distance
+        }
     }
     /// Whether the selected packs leave vanilla's block models in place.
     /// Horizon's occlusion assumptions (entity and leaf culling) hold only
@@ -785,6 +805,12 @@ pub struct Graphics {
     /// far islands sink behind the sea (21 m at 16 km). Drawn only: the world stays flat for the
     /// game. On by default: vanilla has no distant terrain to bend.
     pub earth_curvature: bool,
+    /// Horizon Culling (`lod::horizon_chunks`): with Earth Curvature on, far terrain is planned
+    /// only as far as the tallest terrain can still stand over the horizon from the eye's
+    /// height (62 km from the shore, 114 km from the build limit); past it every tile is
+    /// under the sea's horizon and costs work for nothing. On by default: nothing visible
+    /// changes.
+    pub horizon_culling: bool,
     /// RT lighting's natural fogs (`gfx/natural_fog.rs`): a morning's valley fog in the hollows
     /// and steam fog over cold water. 0 off, 1 light, 2 normal (the default).
     pub natural_fog: u32,
@@ -895,6 +921,7 @@ impl Default for Graphics {
             shooting_stars: 1,
             aerial_perspective: DEFAULT_AERIAL_PERSPECTIVE,
             earth_curvature: true,
+            horizon_culling: true,
             natural_fog: 2,
             smooth_fluids: false,
             taa: false,
@@ -1034,6 +1061,7 @@ impl Graphics {
                 "shootingStars" => g.shooting_stars = number(g.shooting_stars).min(2),
                 "aerialPerspective" => g.aerial_perspective = number(g.aerial_perspective).min(64),
                 "earthCurvature" => g.earth_curvature = flag(g.earth_curvature),
+                "horizonCulling" => g.horizon_culling = flag(g.horizon_culling),
                 "naturalFog" => g.natural_fog = number(g.natural_fog).min(2),
                 "smoothFluids" => g.smooth_fluids = flag(g.smooth_fluids),
                 "taa" => g.taa = flag(g.taa),
@@ -1083,7 +1111,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nrtRays:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nrtRays:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nhorizonCulling:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1137,6 +1165,7 @@ impl Graphics {
             self.shooting_stars,
             self.aerial_perspective,
             bool_text(self.earth_curvature),
+            bool_text(self.horizon_culling),
             self.natural_fog,
             bool_text(self.smooth_fluids),
             bool_text(self.hdr),
@@ -1348,6 +1377,7 @@ mod tests {
             shooting_stars: 1,
             aerial_perspective: 32,
             earth_curvature: false,
+            horizon_culling: false,
             natural_fog: 1,
             smooth_fluids: true,
             taa: true,
@@ -1575,6 +1605,49 @@ mod tests {
                     .contains(&format!("{INTEGRATED_LOD_DISTANCE} chunks"))),
             "the LOD Distance description names the cap"
         );
+    }
+
+    #[test]
+    fn earth_curvature_bounds_far_terrain_by_the_horizon() {
+        use crate::lod::{HORIZON_MAX_CHUNKS, MAX_CHUNKS};
+        let discrete = wgpu::AdapterInfo {
+            name: "NVIDIA GeForce RTX 4090".into(),
+            vendor: 0,
+            device: 0,
+            device_type: wgpu::DeviceType::DiscreteGpu,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        };
+        let mut g = Graphics {
+            lod_distance: MAX_CHUNKS,
+            ..Graphics::default()
+        };
+        assert!(g.earth_curvature && g.horizon_culling);
+        // A saved whole-world distance stops at the curved horizon.
+        assert_eq!(g.lod_distance_max(), HORIZON_MAX_CHUNKS);
+        assert_eq!(g.lod_distance_on(&discrete), HORIZON_MAX_CHUNKS);
+        // From the shore, nearer still; a short distance stays as chosen.
+        assert_eq!(g.horizon_culled(HORIZON_MAX_CHUNKS, 64.6, 512.0), 3904);
+        assert_eq!(g.horizon_culled(1024, 64.6, 512.0), 1024);
+        g.horizon_culling = false;
+        assert_eq!(
+            g.horizon_culled(HORIZON_MAX_CHUNKS, 64.6, 512.0),
+            HORIZON_MAX_CHUNKS
+        );
+        // A flat world goes as far as the world.
+        g.earth_curvature = false;
+        g.horizon_culling = true;
+        assert_eq!(g.lod_distance_max(), MAX_CHUNKS);
+        assert_eq!(g.lod_distance_on(&discrete), MAX_CHUNKS);
+        assert_eq!(g.horizon_culled(MAX_CHUNKS, 64.6, 512.0), MAX_CHUNKS);
+        // Saved and read back.
+        assert!(!Graphics::parse("horizonCulling:false\n").horizon_culling);
     }
 
     #[test]

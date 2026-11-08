@@ -88,9 +88,12 @@ impl Game<'_> {
     pub(super) fn far_terrain_choice(&self) -> (u32, bool) {
         let g = &self.settings.horizon;
         let reduced = g.far_detail == horizon_client::graphics::FarDetail::Reduced;
+        // No farther than the curved horizon with Earth Curvature on, whatever
+        // an older file saved (`Graphics::lod_distance_max`).
+        let chosen = g.lod_distance.min(g.lod_distance_max());
         let distance = match self.server_far_terrain() {
-            Some(offer) => g.lod_distance.min(offer.distance),
-            None => g.lod_distance,
+            Some(offer) => chosen.min(offer.distance),
+            None => chosen,
         };
         (distance, reduced)
     }
