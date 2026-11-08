@@ -1319,7 +1319,7 @@ impl Game<'_> {
                     None,
                 )],
                 Some(plan) => {
-                    // `HORIZON_MOB_ISLANDS=verify`: the serial loop on copies, compared below.
+                    // `HORIZON_PARALLEL_TICK=verify`: the serial loop on copies, compared below.
                     if mob_islands::verify() {
                         let mut serial = mob_islands::Group::new(
                             (0..n).collect(),
@@ -1436,7 +1436,7 @@ impl Game<'_> {
                 });
             }
             let groups_ran = groups.len();
-            // `HORIZON_MOB_ISLANDS=verify`: each mob's group and place in the list, for a log.
+            // `HORIZON_PARALLEL_TICK=verify`: each mob's group and place in the list, for a log.
             let group_of: horizon_client::fast_hash::FxHashMap<u32, (usize, usize)> =
                 if verify_against.is_some() {
                     groups

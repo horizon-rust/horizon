@@ -14,7 +14,7 @@
 //! [`OrderedDraws`], so a mob's first draw waits until every mob before it in the list has ticked,
 //! and the draws come out in the serial order (horizon-core `random/ordered.rs`).
 //!
-//! `HORIZON_MOB_ISLANDS=1` turns it on (off by default). The tick stays serial with native mods
+//! `HORIZON_PARALLEL_TICK=1` turns it on (off by default; `horizon_client::lan::entity::parallel_tick`). The tick stays serial with native mods
 //! loaded (their hooks can touch anything), on a tick a performance report samples, with few
 //! ticking mobs, with a mob whose reach is the whole level, or when one island holds most of them.
 use super::lan_mobs::GuestViews;
@@ -52,23 +52,13 @@ const POI_CLAIM: f64 = 48.0;
 /// Margin added to every reach.
 const SLACK: f64 = 2.0;
 
-/// `HORIZON_MOB_ISLANDS`: off (unset), on (`1`), or `verify`: on, and every grouped tick also runs
-/// serially on copies, with the first difference logged.
-fn setting() -> u8 {
-    static ON: OnceLock<u8> = OnceLock::new();
-    *ON.get_or_init(|| match std::env::var("HORIZON_MOB_ISLANDS").as_deref() {
-        Ok("1" | "on" | "true") => 1,
-        Ok("verify") => 2,
-        _ => 0,
-    })
-}
 /// Whether the mob phase may run in groups.
 pub(super) fn enabled() -> bool {
-    setting() > 0
+    horizon_client::lan::entity::parallel_tick() > 0
 }
 /// Whether each grouped tick is checked against the serial loop.
 pub(super) fn verify() -> bool {
-    setting() == 2
+    horizon_client::lan::entity::parallel_tick() == 2
 }
 
 /// A mob's place in the loop, as the serial loop decides it.
@@ -1150,7 +1140,7 @@ pub(super) fn difference(serial: &Merged, grouped: &Merged) -> Option<String> {
     None
 }
 
-/// `HORIZON_MOB_ISLANDS=verify`: log a grouped tick that differs from the serial loop, and how
+/// `HORIZON_PARALLEL_TICK=verify`: log a grouped tick that differs from the serial loop, and how
 /// many grouped ticks were checked, every 100.
 pub(super) fn report_check(
     difference: Option<String>,
