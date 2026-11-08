@@ -195,8 +195,17 @@ struct Moving {
     address: u64,
 }
 
+/// Frames a replaced or dropped section's structure is kept alive: the raw top-level build
+/// references it by device address, which wgpu doesn't track, so freeing it the frame it goes
+/// lost the device while a frame in flight (or the other eye's) still traced it. A full remesh
+/// (a world opened again, a setting changed) replaced thousands at once.
+const GRAVE_FRAMES: u64 = 8;
+
 pub struct HwRays {
     built: HashMap<SectionKey, Built>,
+    /// Structures gone from `built`, kept `GRAVE_FRAMES` frames (by `frames`).
+    graveyard: std::collections::VecDeque<(u64, Built)>,
+    frames: u64,
     /// Sections meshed again whose old structure stands in until the new one is built, and the
     /// frames it has stood in: the section never leaves the rays between its two meshes (it
     /// would let the light through it for a frame, the world flickering as a block is placed).
@@ -440,6 +449,8 @@ impl HwRays {
         let raw = RawTlas::new(device, &mut tlas, MAX_INSTANCES);
         Self {
             built: HashMap::new(),
+            graveyard: std::collections::VecDeque::new(),
+            frames: 0,
             stale: HashMap::new(),
             tlas,
             raw,
@@ -537,14 +548,35 @@ impl HwRays {
                 gone.push(*key);
             }
         }
+        self.frames += 1;
+        while self
+            .graveyard
+            .front()
+            .is_some_and(|(at, _)| at + GRAVE_FRAMES <= self.frames)
+        {
+            self.graveyard.pop_front();
+        }
+        let now = self.frames;
         for key in gone {
             self.stale.remove(&key);
-            self.built.remove(&key);
+            if let Some(old) = self.built.remove(&key) {
+                self.graveyard.push_back((now, old));
+            }
         }
         for t in todo {
             self.stale.remove(&t.key);
         }
-        self.built.retain(|key, _| Self::near(center, *key));
+        let far: Vec<SectionKey> = self
+            .built
+            .keys()
+            .filter(|key| !Self::near(center, **key))
+            .copied()
+            .collect();
+        for key in far {
+            if let Some(old) = self.built.remove(&key) {
+                self.graveyard.push_back((now, old));
+            }
+        }
         self.micromaps.frame();
         self.micromaps.retain(|key| Self::near(center, key));
         self.changed |= self.built.len() != before || !todo.is_empty();
@@ -681,7 +713,7 @@ impl HwRays {
         for (((t, (blas, address)), (solid, _)), hold) in
             todo.iter().zip(made).zip(&layouts).zip(&mut holds)
         {
-            self.built.insert(
+            let old = self.built.insert(
                 t.key,
                 Built {
                     blas,
@@ -694,6 +726,9 @@ impl HwRays {
                     _micromap: hold.take(),
                 },
             );
+            if let Some(old) = old {
+                self.graveyard.push_back((self.frames, old));
+            }
         }
         for ((((t, size), buffer), (_, parts)), raw) in todo
             .iter()
