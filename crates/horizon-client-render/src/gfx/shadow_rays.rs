@@ -375,12 +375,12 @@ fn share_denoised() -> bool {
 /// eye's edge came out black).
 /// How many frames the bounced light (ReSTIR GI) takes turns over, as the bits of its tile
 /// pattern (shadow_rays.wgsl `GI_TURN_BITS`): `HORIZON_RT_GI_TURNS=8` traces each 8x8 tile one
-/// frame in eight (3) instead of four (2, the default).
+/// frame in eight (3, the default) instead of four (`HORIZON_RT_GI_TURNS=4`, 2).
 fn gi_turn_bits() -> u32 {
     static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *BITS.get_or_init(|| match std::env::var("HORIZON_RT_GI_TURNS").as_deref() {
-        Ok("8") => 3,
-        _ => 2,
+        Ok("4") => 2,
+        _ => 3,
     })
 }
 fn share_check() -> bool {
@@ -753,7 +753,7 @@ impl ShadowRays {
         let skip = std::env::var("HORIZON_RT_SKIP")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
+            .unwrap_or(64); // Far field off by default: since main its shadows fall in 16-block squares.
         let pipeline = kernel(device, &pipeline_layout, &shader, "cs_shadow", skip);
         // The sparse zone's rays, a thread a block, before `pipeline`.
         let sparse_pipeline = kernel(device, &pipeline_layout, &shader, "cs_sparse", skip);

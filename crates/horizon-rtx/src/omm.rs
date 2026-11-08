@@ -17,9 +17,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use wgpu::hal::api::Vulkan;
 
-/// Whether the micromaps are wanted: on with the crate (the `rtx` feature), unless `HORIZON_RT_OMM=0`.
+/// Whether the micromaps are wanted: off unless `HORIZON_RT_OMM=1`. A full remesh (a world
+/// opened again) filled their pool and lost the device on FIXE01 (2026-11-08), and they saved
+/// nothing measurable on the RTX 4090 (11.08 against 11.01 ms a frame).
 pub fn wanted() -> bool {
-    !std::env::var("HORIZON_RT_OMM").is_ok_and(|v| v == "0")
+    std::env::var("HORIZON_RT_OMM").is_ok_and(|v| v == "1")
 }
 
 /// The micromaps' pool.
