@@ -356,7 +356,9 @@ pub fn source(hardware: bool, sprite_split: u32) -> String {
         include_str!("froxels_hw.wgsl").to_string()
     };
     format!(
-        "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {sprite_split}u;\n{}{hardware}{}",
+        "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {sprite_split}u;\n\
+         const FIRST_HIT: u32 = {}u;\n{}{hardware}{}",
+        super::shadow_rays::first_hit_flag(),
         &text[..begin],
         &text[end..]
     )

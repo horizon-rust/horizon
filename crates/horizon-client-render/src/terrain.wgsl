@@ -158,6 +158,10 @@ fn rt_reflection(pixel: vec2<f32>, pos: vec3<f32>) -> vec4<f32> {
 // The view's last resolved frame (gfx/taa.rs `last_color`, linear light; 1x1 without the temporal
 // resolve), for the screen-space reflections.
 @group(0) @binding(24) var rt_scene: texture_2d<f32>;
+// RT lighting's clouds' shadows (gfx/rt_clouds.rs `shadow`): the light's transmittance through the
+// clouds by where its ray crosses their base, world x and z modulo 4096 blocks; 1x1 white without.
+@group(0) @binding(27) var rt_cloud_shadows: texture_2d<f32>;
+@group(0) @binding(28) var rt_cloud_sampler: sampler;
 // A screen-space reflection, where the rays have none (past the 8 chunks their structures hold, or
 // a ray that found nothing there): the reflected ray from camera-relative `pos` along `dir`
 // marched across the screen in growing steps (half a block to a kilometre) against this frame's
@@ -1539,9 +1543,42 @@ fn rt_fresnel(f0: vec3<f32>, cosine: f32) -> vec3<f32> {
 fn rt_sky_level(level: f32) -> f32 {
     return pow(clamp(level / 15.0, 0.0, 1.0), 2.0);
 }
+// RT lighting: how much of the sun's (or the moon's) light the clouds let through to the
+// camera-relative `pos` (gfx/rt_clouds.rs `shadow`), softened by the penumbra the light's disc
+// casts from as high as the clouds are: a few blocks under the cumulus at noon, tens at sunset.
+const CLOUD_SHADOW_BASE: f32 = 800.0;
+const CLOUD_SHADOW_SIDE: f32 = 4096.0;
+fn rt_cloud_shadow(pos: vec3<f32>) -> f32 {
+    let l = globals.rt_light.xyz;
+    if l.y <= 0.03 || textureDimensions(rt_cloud_shadows).x < 2u { return 1.0; }
+    var world = globals.rt_camera.xyz + pos;
+    // The camera's height is wrapped too: below the bedrock's floor it comes back near the top.
+    if globals.rt_camera.y > 3500.0 { world.y -= 4096.0; }
+    let rise = max(CLOUD_SHADOW_BASE - world.y, 0.0);
+    let q = world.xz + l.xz / l.y * rise;
+    // The light's disc seen from the point spans this much at the clouds' middle (a few hundred
+    // blocks into the slab), never under a texel.
+    let reach = (rise + 400.0) / l.y;
+    let radius = max(reach * globals.rt_sun_light.w, 4.0) / CLOUD_SHADOW_SIDE;
+    let uv = q / CLOUD_SHADOW_SIDE;
+    var sum = textureSampleLevel(rt_cloud_shadows, rt_cloud_sampler, uv, 0.0).r * 0.28;
+    for (var i = 0; i < 6; i++) {
+        let a = f32(i) * 1.0471976 + 0.3;
+        let o = vec2(cos(a), sin(a)) * radius;
+        sum += textureSampleLevel(rt_cloud_shadows, rt_cloud_sampler, uv + o, 0.0).r * 0.12;
+    }
+    // The map holds the 4096 blocks around where the camera's own column meets the clouds: past
+    // 2 km from there it wraps, so the shadows fade out first.
+    let camera_y = select(globals.rt_camera.y, globals.rt_camera.y - 4096.0, globals.rt_camera.y > 3500.0);
+    let center = globals.rt_camera.xz + l.xz / l.y * max(CLOUD_SHADOW_BASE - camera_y, 0.0);
+    return mix(sum, 1.0, smoothstep(1500.0, 1950.0, length(q - center)));
+}
 // The material `m` (on a face of normal `geo`, camera-relative `pos`) lit, before the fog; `light`
 // its sky and block light levels (0 to 15), `v` the rays' visibility, `traced` the light sources'.
 const FIREFLY_LUMINANCE: f32 = 5.0;
+// HORIZON_RT_DEBUG=14 (`rt_terms_view`): the last `rt_shade`'s sun (with its highlight), its light
+// around, how much of that is traced (`traced`'s alpha), its reflection; luminances.
+var<private> rt_terms: vec4<f32>;
 fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: vec3<f32>,
     traced: vec4<f32>, tint: vec3<f32>) -> vec3<f32> {
     let n = m.normal;
@@ -1549,7 +1586,8 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     let nv = max(dot(n, view), 1e-3);
     let l = globals.rt_light.xyz;
     // The real sun's light through the atmosphere, or the moon's (gfx/atmosphere.rs).
-    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x * tint * rt_relief_sun;
+    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x * tint * rt_relief_sun
+        * rt_cloud_shadow(pos);
     let diffuse = m.albedo * (1.0 - m.metal);
     // The sun: lit where the face (not only its normal map) turns to it.
     let gate = smoothstep(0.0, 0.15, dot(geo, l));
@@ -1614,6 +1652,11 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     reflected = mix(reflected, rt_fresnel(m.f0, nv) * around, lobe);
     // The rain's impacts (`rt_spray`): their broken crests scatter the sky's light.
     let spray = rt_sky(vec3(0.0, 1.0, 0.0)) * seen * (RAIN_SPRAY * rt_spray);
+    if globals.rt_mode.y > 6.5 && globals.rt_mode.y < 7.5 {
+        let y = vec3(0.2126, 0.7152, 0.0722);
+        rt_terms = vec4(dot(sun * (direct + through) + highlight, y),
+            dot(diffuse * (1.0 - ambient_f) * around, y), traced.a, dot(reflected, y));
+    }
     return sun * (direct + through) + highlight + diffuse * (1.0 - ambient_f) * around + reflected
         + m.albedo * m.emission * MATERIAL_EMISSION + spray;
 }
@@ -1988,7 +2031,7 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     let v = rt_visibility(in.pos, in.clip);
     let sky_seen = select(rt_sky_level(in.light.x), max(v.z, 0.0),
         v.z >= 0.0);
-    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x;
+    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x * rt_cloud_shadow(in.pos);
     // Reflected: the sky that way, and the sun's glint (GGX, a calm surface).
     var reflected = rt_sky(mirrored) * max(sky_seen, 0.15 * v.x);
     // The Eye of Aldhani's streaks in it, blurred by the waves over a few pixels.
@@ -2430,7 +2473,7 @@ fn rt_wet(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>
     // HORIZON_RT_DEBUG=10: where the rain reaches (red), the puddles (green), the rain map's
     // columns known (blue).
     // 11: how wet (red), how porous (green), how glossy (blue).
-    if globals.rt_mode.y > 3.5 {
+    if globals.rt_mode.y > 3.5 && globals.rt_mode.y < 5.5 {
         let known = select(0.0, 1.0, rain_cell(vec2<i32>(floor(world.xz))) != 0u);
         m.albedo = select(vec3(exposure, rt_puddle, known), vec3(wet, p, 1.0 - m.roughness),
             globals.rt_mode.y > 4.5);
@@ -2473,6 +2516,38 @@ fn rt_lit(albedo: vec3<f32>, in: TerrainOut, n: vec3<f32>) -> vec3<f32> {
     let m = rt_wet(rt_plain(albedo, n), n, in.pos, in.clip.xy, in.light.x, -1.0, 0.5);
     return rt_material_lit(m, n, in.pos, in.clip.xy, in.light, in.spherical, in.cylindrical);
 }
+// Whether every component is a finite number (by the bits: fast maths may drop `x != x`).
+fn rt_finite4(v: vec4<f32>) -> bool {
+    let bits = bitcast<vec4<u32>>(v) & vec4(0x7f800000u);
+    return all(bits != vec4(0x7f800000u));
+}
+// HORIZON_RT_DEBUG=13: the RT lit colour `c` at the fragment at `pixel` (camera-relative `pos`),
+// or which of its inputs is not a finite number, read as the colour read them (`rt_taps`): red
+// the rays' mask (`rt_visibility`), blue the denoised light (`rt_traced`), green the sun's tint;
+// yellow the colour itself from finite inputs, cyan the colour below 0, magenta the colour too dark
+// to show (under 1e-3 paper white).
+fn rt_checked(c: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
+    let v = rt_visibility(pos, pixel);
+    let traced = rt_traced(pixel);
+    let tint = rt_sun_colour(pixel, v.x);
+    if !rt_finite4(vec4(v, 0.0)) { return vec3(4.0, 0.0, 0.0); }
+    if !rt_finite4(traced) { return vec3(0.0, 0.0, 4.0); }
+    if !rt_finite4(vec4(tint, 0.0)) { return vec3(0.0, 4.0, 0.0); }
+    if !rt_finite4(vec4(c, 0.0)) { return vec3(4.0, 4.0, 0.0); }
+    if any(c < vec3(0.0)) { return vec3(0.0, 4.0, 4.0); }
+    if dot(c, vec3(0.2126, 0.7152, 0.0722)) < 1e-3 { return vec3(4.0, 0.0, 4.0); }
+    return c;
+}
+// A luminance on a log scale for the debug views: 1e-4 paper white and less 0, 1 and more 1.
+fn rt_log(x: f32) -> f32 {
+    return clamp(1.0 + 0.0752575 * log2(max(x, 1e-12)), 0.0, 1.0);
+}
+// HORIZON_RT_DEBUG=14: the parts of the lit colour (`rt_terms`), red the sun's and green the light
+// around's on a log scale (1e-4 to 1 paper white), blue how much of the light around is traced (the
+// denoised light's alpha: 0 the light levels alone, as past the grid).
+fn rt_terms_view() -> vec3<f32> {
+    return vec3(rt_log(rt_terms.x), rt_log(rt_terms.y), clamp(rt_terms.z, 0.0, 1.0));
+}
 // The face's normal toward the camera, from the fragment's position (faces are flat: exact).
 fn face_normal(pos: vec3<f32>) -> vec3<f32> {
     let n = normalize(cross(dpdx(pos), dpdy(pos)));
@@ -2498,7 +2573,12 @@ fn rt_solid(in: TerrainOut, texel: vec4<f32>) -> vec4<f32> {
         if globals.rt_mode.y > 0.5 && globals.rt_mode.y < 1.5 {
             return vec4(max(rt_visibility(in.pos, in.clip.xy), vec3(0.0)), 1.0);
         }
-        return vec4(rt_lit(texel.rgb * in.tint.rgb, in, n), 1.0);
+        let lit = rt_lit(texel.rgb * in.tint.rgb, in, n);
+        if globals.rt_mode.y > 5.5 && globals.rt_mode.y < 6.5 {
+            return vec4(rt_checked(lit, in.pos, in.clip.xy), 1.0);
+        }
+        if globals.rt_mode.y > 6.5 && globals.rt_mode.y < 7.5 { return vec4(rt_terms_view(), 1.0); }
+        return vec4(lit, 1.0);
     }
     let lit = rt_lit(texel.rgb * in.tint.rgb, in, n);
     // Without the per-layer flags (parallax.rs `thin_layers`) a block's emission is its own
@@ -2686,7 +2766,7 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
     let v = rt_visibility(g.pos, g.clip);
     let sky_seen = select(rt_sky_level(g.light.x), max(v.z, 0.0),
         v.z >= 0.0);
-    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x;
+    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x * rt_cloud_shadow(g.pos);
     // Reflected: the sky that way, faded as it dips under the face, or what the rays met off the
     // face, read where the facet's normal sends the reflection instead (as far off as a few
     // blocks away would be).

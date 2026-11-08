@@ -143,6 +143,8 @@ struct Uniform {
     motion: [f32; 4],
     size: [f32; 4],
     jitter: [f32; 4],
+    layers: [f32; 4],
+    drifts: [f32; 4],
 }
 
 /// A frame's light and weather for the clouds.
@@ -162,44 +164,150 @@ pub struct Params {
 }
 
 /// The day's weather at `time` (seconds): the cumulus' coverage bias (-1 fewer and flatter, 1 more
-/// and taller) and the cirrus' amount (0..1), drifting from one day's to the next over the day.
-pub fn weather(time: f64) -> (f32, f32) {
+/// and taller), the cirrus' amount and the altocumulus' (0..1), drifting from one day's to the
+/// next over the day.
+pub fn weather(time: f64) -> (f32, f32, f32) {
     let day = (time / DAY).floor();
     let into = ((time / DAY) - day) as f32;
     let of = |day: f64| {
         let h = hash(day as i32, 7, 3, 101);
         let bias = unit(h) * 2.0 - 1.0;
-        // Many days a little cirrus, some a lot, some none.
+        // Many days a little cirrus, some a lot, some none; altocumulus one day in three or so.
         let cirrus = (unit(h.rotate_left(13) ^ 0x51ed_270b) * 1.4 - 0.2).clamp(0.0, 1.0);
-        (bias, cirrus)
+        let alto = (unit(h.rotate_left(23) ^ 0x2545_f491) * 2.2 - 1.2).clamp(0.0, 1.0);
+        (bias, cirrus, alto)
     };
     let (a, b) = (of(day), of(day + 1.0));
     let t = into * into * (3.0 - 2.0 * into);
-    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+    (
+        a.0 + (b.0 - a.0) * t,
+        a.1 + (b.1 - a.1) * t,
+        a.2 + (b.2 - a.2) * t,
+    )
+}
+
+/// How fast the altocumulus and the cirrus drift against the cumulus (winds aloft are stronger).
+const ALTO_WIND: f64 = 1.6;
+const CIRRUS_WIND: f64 = 2.5;
+
+/// The uniform's rows the march reads (`Uniform`'s light, light_color, sun, camera, the wind's
+/// drift, layers and drifts).
+struct Rows {
+    light: [f32; 4],
+    light_color: [f32; 4],
+    sun: [f32; 4],
+    camera: [f32; 4],
+    drift: [f32; 2],
+    layers: [f32; 4],
+    drifts: [f32; 4],
 }
 
 impl Params {
     /// The uniform's rows the march reads, for a camera at `camera`.
-    fn rows(&self, camera: DVec3) -> ([f32; 4], [f32; 4], [f32; 4], [f32; 4], [f32; 2]) {
-        let (bias, cirrus) = weather(self.time);
+    fn rows(&self, camera: DVec3) -> Rows {
+        let (bias, cirrus, alto) = weather(self.time);
+        #[cfg(test)]
+        let (cirrus, alto) = match std::env::var("HORIZON_CLOUD_STILL_WITHOUT").as_deref() {
+            Ok("cirrus") => (0.0, alto),
+            Ok("alto") => (cirrus, 0.0),
+            _ => (cirrus, alto),
+        };
         let drift = |speed: f64| (self.time * speed).rem_euclid(WRAP) as f32;
-        (
-            [self.light.x, self.light.y, self.light.z, self.curvature],
-            [
+        Rows {
+            light: [self.light.x, self.light.y, self.light.z, self.curvature],
+            light_color: [
                 self.light_color[0],
                 self.light_color[1],
                 self.light_color[2],
                 cirrus,
             ],
-            [self.sun.x, self.sun.y, self.sun.z, bias],
-            [
+            sun: [self.sun.x, self.sun.y, self.sun.z, bias],
+            camera: [
                 camera.x.rem_euclid(WRAP) as f32,
                 camera.y as f32,
                 camera.z.rem_euclid(WRAP) as f32,
                 self.thick,
             ],
-            [drift(WIND[0]), drift(WIND[1])],
-        )
+            drift: [drift(WIND[0]), drift(WIND[1])],
+            layers: [alto, 0.0, SHADOW_TEXEL, 0.0],
+            drifts: [
+                drift(WIND[0] * ALTO_WIND),
+                drift(WIND[1] * ALTO_WIND),
+                drift(WIND[0] * CIRRUS_WIND),
+                drift(WIND[1] * CIRRUS_WIND),
+            ],
+        }
+    }
+}
+
+/// The clouds' shadow map's side in texels, and a texel's in blocks: it wraps every 4096 blocks
+/// (terrain.wgsl `CLOUD_SHADOW_SIDE`, the period `Globals::rt_camera` wraps at).
+const SHADOW_SIZE: u32 = 1024;
+const SHADOW_TEXEL: f32 = 4.0;
+
+/// The clouds' shadows the terrain reads (terrain.wgsl `rt_cloud_shadow`): the light's
+/// transmittance through the clouds by where its ray crosses the cumulus' base, x and z modulo
+/// 4096 blocks, 4 blocks a texel, made by [`RtClouds::update_shadows`] a sixteenth at a time; white
+/// (1x1) where the clouds are not volumes.
+pub struct Shadows {
+    pub view: wgpu::TextureView,
+    pub sampler: wgpu::Sampler,
+    /// The last update's camera and time, and how many updates it has made.
+    last: Option<(DVec3, f64)>,
+    frame: u32,
+}
+
+impl Shadows {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        let volume = matches!(mode(), Mode::Dome | Mode::March);
+        let side = if volume { SHADOW_SIZE } else { 1 };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Cloud shadows"),
+            size: wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        // White until the first update: 1.0 in half floats is 0x3c00.
+        let one = 0x3c00u16.to_le_bytes();
+        let white: Vec<u8> = (0..side * side * 4).flat_map(|_| one).collect();
+        queue.write_texture(
+            texture.as_image_copy(),
+            &white,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(side * 8),
+                rows_per_image: Some(side),
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+        );
+        Self {
+            view: texture.create_view(&Default::default()),
+            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Cloud shadows"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::Repeat,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            }),
+            last: None,
+            frame: 0,
+        }
     }
 }
 
@@ -245,8 +353,10 @@ pub struct RtClouds {
     dome_resolve_layout: wgpu::BindGroupLayout,
     dome_composite: wgpu::RenderPipeline,
     dome_composite_layout: wgpu::BindGroupLayout,
+    shadow: wgpu::ComputePipeline,
     uniform: wgpu::Buffer,
     dome_uniform: wgpu::Buffer,
+    shadow_uniform: wgpu::Buffer,
     shape: wgpu::TextureView,
     detail: wgpu::TextureView,
     weather: wgpu::TextureView,
@@ -448,6 +558,7 @@ impl RtClouds {
             &march_layout,
             "cs_dome_march",
         );
+        let shadow = compute_pipeline("RT lighting's clouds, shadows", &march_layout, "cs_shadow");
         let dome_resolve = compute_pipeline(
             "RT lighting's clouds, dome resolve",
             &dome_resolve_layout,
@@ -542,8 +653,10 @@ impl RtClouds {
             dome_resolve_layout,
             dome_composite,
             dome_composite_layout,
+            shadow,
             uniform: uniform_buffer("RT lighting's clouds"),
             dome_uniform: uniform_buffer("RT lighting's clouds, dome"),
+            shadow_uniform: uniform_buffer("RT lighting's clouds, shadows"),
             shape,
             detail,
             weather,
@@ -643,14 +756,17 @@ impl RtClouds {
             textures.history[written].clone(),
             textures.history[past].clone(),
         );
-        let (light, light_color, sun, camera_row, drift) = params.rows(camera);
+        let rows = params.rows(camera);
+        let drift = rows.drift;
         let uniform = Uniform {
             inverse_view_proj: view_proj.inverse().to_cols_array_2d(),
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
-            light,
-            light_color,
-            sun,
-            camera: camera_row,
+            light: rows.light,
+            light_color: rows.light_color,
+            sun: rows.sun,
+            camera: rows.camera,
+            layers: rows.layers,
+            drifts: rows.drifts,
             wind: [drift[0], drift[1], (frame % 4096) as f32, BLEND],
             motion: match last {
                 Some((_, last_camera)) => {
@@ -739,14 +855,17 @@ impl RtClouds {
             let m = (camera - last_camera + wind).as_vec3();
             (m.length() < TELEPORT && elapsed.abs() < 5.0).then_some([m.x, m.y, m.z, 1.0])
         });
-        let (light, light_color, sun, camera_row, drift) = params.rows(camera);
+        let rows = params.rows(camera);
+        let drift = rows.drift;
         let uniform = Uniform {
             inverse_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             prev_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-            light,
-            light_color,
-            sun,
-            camera: camera_row,
+            light: rows.light,
+            light_color: rows.light_color,
+            sun: rows.sun,
+            camera: rows.camera,
+            layers: rows.layers,
+            drifts: rows.drifts,
             wind: [drift[0], drift[1], (frame % 4096) as f32, 0.0],
             motion: motion.unwrap_or([0.0; 4]),
             size: [
@@ -796,6 +915,75 @@ impl RtClouds {
         pass.set_pipeline(&self.dome_resolve);
         pass.set_bind_group(0, &resolve, &[]);
         pass.dispatch_workgroups(dome.size[0].div_ceil(8), dome.size[1].div_ceil(8), 1);
+    }
+
+    /// Marches this frame's sixteenth of the clouds' shadow map `shadows` around `camera` (all of
+    /// it after a jump): once a frame, by the first view (`depth` as [`Self::update_dome`]'s).
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_shadows(
+        &self,
+        device: &wgpu::Device,
+        uploads: &mut Uploads,
+        encoder: &mut wgpu::CommandEncoder,
+        depth: &wgpu::TextureView,
+        camera: DVec3,
+        params: &Params,
+        sky: &wgpu::TextureView,
+        shadows: &mut Shadows,
+    ) {
+        if shadows.view.texture().width() < 2 {
+            return;
+        }
+        shadows.frame = shadows.frame.wrapping_add(1);
+        let last = shadows.last.replace((camera, params.time));
+        let whole = last.is_none_or(|(c, t)| {
+            (c - camera).length() > f64::from(TELEPORT) || (params.time - t).abs() > 5.0
+        });
+        let checker = if whole { 1 } else { 4 };
+        let order = checker_order(checker);
+        let slot = order[shadows.frame as usize % order.len()];
+        let low = SHADOW_SIZE / checker;
+        let rows = params.rows(camera);
+        let uniform = Uniform {
+            inverse_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            prev_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            light: rows.light,
+            light_color: rows.light_color,
+            sun: rows.sun,
+            camera: rows.camera,
+            wind: [rows.drift[0], rows.drift[1], 0.0, 0.0],
+            motion: [0.0; 4],
+            size: [
+                SHADOW_SIZE as f32,
+                SHADOW_SIZE as f32,
+                low as f32,
+                low as f32,
+            ],
+            jitter: [0.0, 0.0, checker as f32, slot as f32],
+            layers: rows.layers,
+            drifts: rows.drifts,
+        };
+        uploads.buffer(
+            encoder,
+            &self.shadow_uniform,
+            0,
+            bytemuck::bytes_of(&uniform),
+        );
+        let group = self.march_group(
+            device,
+            &self.shadow_uniform,
+            depth,
+            sky,
+            &shadows.view,
+            &self.no_distance,
+        );
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("RT lighting's clouds, shadows"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.shadow);
+        pass.set_bind_group(0, &group, &[]);
+        pass.dispatch_workgroups(low.div_ceil(8), low.div_ceil(8), 1);
     }
 
     /// Draws the dome's clouds onto `target`, the scene of `size` whose `depth` shows the sky, seen
@@ -1195,12 +1383,13 @@ mod tests {
             assert_eq!(seen, (0..side * side).collect::<Vec<_>>());
         }
         for i in 0..2000 {
-            let (bias, cirrus) = weather(i as f64 * 37.3);
+            let (bias, cirrus, alto) = weather(i as f64 * 37.3);
             assert!((-1.0..=1.0).contains(&bias) && (0.0..=1.0).contains(&cirrus));
+            assert!((0.0..=1.0).contains(&alto));
         }
         // A day's weather drifts into the next's without a jump.
-        let (a, _) = weather(DAY * 5.0 - 0.01);
-        let (b, _) = weather(DAY * 5.0 + 0.01);
+        let (a, _, _) = weather(DAY * 5.0 - 0.01);
+        let (b, _, _) = weather(DAY * 5.0 + 0.01);
         assert!((a - b).abs() < 1e-3, "{a} {b}");
     }
 
@@ -1246,11 +1435,19 @@ mod tests {
         let cirrus_day = (0..400)
             .map(|d| f64::from(d) * DAY + DAY * 0.5)
             .find(|t| {
-                let (bias, cirrus) = weather(*t);
+                let (bias, cirrus, _) = weather(*t);
                 cirrus > 0.85 && bias < -0.3
             })
             .unwrap_or(0.0);
-        let skies: [(&str, f32, f32, f32, f32, f64, f32); 7] = [
+        let alto_day = (0..400)
+            .map(|d| f64::from(d) * DAY + DAY * 0.5)
+            .find(|t| {
+                let (bias, _, alto) = weather(*t);
+                alto > 0.85 && bias < 0.0
+            })
+            .unwrap_or(0.0);
+        let mut shadows = Shadows::new(&device, &queue);
+        let skies: [(&str, f32, f32, f32, f32, f64, f32); 8] = [
             ("noon", 60.0, 30.0, 0.0, 12.0, 200.0, 0.0),
             ("afternoon_toward_sun", 25.0, 0.0, 0.0, 10.0, 1500.0, 0.0),
             ("afternoon_away", 25.0, 0.0, 180.0, 12.0, 1500.0, 0.0),
@@ -1258,6 +1455,7 @@ mod tests {
             ("overhead", 45.0, 120.0, 0.0, 70.0, 4200.0, 0.0),
             ("rain", 40.0, 30.0, 90.0, 10.0, 600.0, 0.8),
             ("cirrus", 35.0, 200.0, 0.0, 25.0, cirrus_day, 0.0),
+            ("altocumulus", 30.0, 160.0, 0.0, 30.0, alto_day, 0.0),
         ];
         for (name, elevation, azimuth, yaw, pitch, time, rain) in skies {
             if only.as_deref().is_some_and(|o| o != name) {
@@ -1300,6 +1498,28 @@ mod tests {
                 uploads.finish(&encoder);
                 queue.submit([encoder.finish()]);
                 device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            }
+            if name == "noon" {
+                // The shadow map, whole (the first update), as the ground sees it from above.
+                let mut uploads = Uploads::new(&device);
+                let mut encoder = device.create_command_encoder(&Default::default());
+                shadows.last = None;
+                clouds.update_shadows(
+                    &device,
+                    &mut uploads,
+                    &mut encoder,
+                    &depth,
+                    camera,
+                    &params(0),
+                    &atmosphere.view,
+                    &mut shadows,
+                );
+                uploads.finish(&encoder);
+                queue.submit([encoder.finish()]);
+                let side = SHADOW_SIZE;
+                let map = read_rgba16f(&device, &queue, &shadows.view, [side, side]);
+                let grey: Vec<[f32; 3]> = map.iter().map(|t| [t[0] * 0.9; 3]).collect();
+                write_png(&folder.join("shadows.png"), &grey, [side, side]);
             }
             let dome = clouds.dome.as_ref().unwrap();
             let size = dome.size;

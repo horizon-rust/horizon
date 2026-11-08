@@ -242,7 +242,9 @@ const HARDWARE: &str = concat!(
 const NO_HARDWARE: &str = "
 const HW: bool = false;
 var<private> hw_caustic_on: bool = false;
+const GI_HW_VISIBILITY: bool = false;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> { return vec3(-1.0); }
+fn hw_visible(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> bool { return true; }
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     return HwHit(-1.0, vec3(0.0), vec3(0.0), vec3(1.0), false, -1.0);
 }
@@ -279,12 +281,22 @@ pub fn source(hardware: bool, split: u32) -> String {
         format!(
             "enable wgpu_ray_query;
 const SPRITE_SPLIT: u32 = {split}u;
+             const FIRST_HIT: u32 = {}u;
+const GI_HW_VISIBILITY: bool = {};
+             const SHARE_CHECK: bool = {};
 {}{hardware}{}{wind}",
+            first_hit_flag(),
+            !gi_dda(),
+            share_check(),
             include_str!("shadow_rays.wgsl"),
             lava_look()
         )
     } else {
-        format!("{}{NO_HARDWARE}", include_str!("shadow_rays.wgsl"))
+        format!(
+            "const SHARE_CHECK: bool = {};\n{}{NO_HARDWARE}",
+            share_check(),
+            include_str!("shadow_rays.wgsl")
+        )
     }
 }
 
@@ -299,7 +311,30 @@ pub fn force_opaque() -> bool {
 
 /// `text`'s ray queries with the force-opaque ray flag (`0x1`) in place of none (`0x0`).
 pub fn with_forced_opaque(text: &str) -> String {
-    text.replace("RayDesc(0x0u,", "RayDesc(0x1u,")
+    text.replace("RayDesc(0x0u", "RayDesc(0x1u")
+}
+
+/// The ray flag the hardware shadow rays take (`FIRST_HIT` in shadow_rays_hw.wgsl and
+/// froxels_hw.wgsl): terminate on the first hit (`0x4`), so the first opaque triangle a shadow ray
+/// meets ends its search rather than the nearest one being looked for. `HORIZON_RT_FIRST_HIT=0`
+/// traces them as before (`0x0`).
+pub fn first_hit_flag() -> u32 {
+    static FLAG: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| {
+        if std::env::var("HORIZON_RT_FIRST_HIT").is_ok_and(|v| v == "0") {
+            0
+        } else {
+            4
+        }
+    })
+}
+
+/// `HORIZON_RT_GI_DDA=1`: ReSTIR GI's visibility ray toward a reused sample goes through the voxel
+/// grid, as before, rather than against the hardware's triangles (shadow_rays_hw.wgsl
+/// `hw_visible`) that the sample was found on.
+fn gi_dda() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_GI_DDA").is_ok_and(|v| v == "1"))
 }
 
 /// RT lighting's radiance cache's cells (a power of two).
@@ -324,6 +359,17 @@ fn denoise_fovea() -> bool {
 fn share_denoised() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_RT_SHARE_DENOISED").map_or(true, |v| v != "0"))
+}
+
+/// Whether VR's second eye, where a block of its periphery takes the first eye's denoised light
+/// (`share_denoised`), takes each texel's from where the first eye shows that texel's own surface
+/// (shadow_rays.wgsl `first_texel_of`), and filters the texels the first eye doesn't show from its
+/// own light. On unless `HORIZON_RT_SHARE_CHECK=0`, which shifts the block's centre's texel onto
+/// all sixteen unchecked, as before (a block standing out of the first eye's view at the second
+/// eye's edge came out black).
+fn share_check() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_SHARE_CHECK").map_or(true, |v| v != "0"))
 }
 
 /// The RTX 4090 build's pipeline passes for a view (`ShadowRays::run`'s `sun_pass`): given the
@@ -759,7 +805,26 @@ impl ShadowRays {
             ),
             module: &denoise_shader,
             entry_point: Some("cs_denoise"),
-            compilation_options: Default::default(),
+            // `HORIZON_RT_DEBUG=12`: what VR's second eye took (denoise.wgsl `debug_share`).
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &[
+                    (
+                        "DEBUG",
+                        std::env::var("HORIZON_RT_DEBUG")
+                            .ok()
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .map_or(0.0, f64::from),
+                    ),
+                    // `HORIZON_RT_SHARE_GUARD=1`, a trial (denoise.wgsl `takes`).
+                    (
+                        "SHARE_GUARD",
+                        f64::from(u8::from(
+                            std::env::var("HORIZON_RT_SHARE_GUARD").is_ok_and(|v| v == "1"),
+                        )),
+                    ),
+                ],
+                ..Default::default()
+            },
             cache: None,
         });
         let denoise_params = std::array::from_fn(|i| {
@@ -1485,15 +1550,20 @@ mod tests {
 
     #[test]
     fn the_forced_opaque_flag_reaches_every_hardware_ray() {
-        // Every ray query of the hybrid and of the froxels spells its flags `RayDesc(0x0u,`, so
-        // that `HORIZON_RT_FORCE_OPAQUE` turns them all.
+        // Every ray query of the hybrid and of the froxels spells its flags from `RayDesc(0x0u`
+        // (a shadow ray's `| FIRST_HIT` after it), so that `HORIZON_RT_FORCE_OPAQUE` turns them all.
         for text in [super::HARDWARE, include_str!("froxels_hw.wgsl")] {
             let rays = text.matches("RayDesc(").count();
             assert!(rays > 0);
-            assert_eq!(text.matches("RayDesc(0x0u,").count(), rays);
+            assert_eq!(text.matches("RayDesc(0x0u").count(), rays);
             let forced = super::with_forced_opaque(text);
-            assert_eq!(forced.matches("RayDesc(0x1u,").count(), rays);
-            assert!(!forced.contains("RayDesc(0x0u,"));
+            assert_eq!(forced.matches("RayDesc(0x1u").count(), rays);
+            assert!(!forced.contains("RayDesc(0x0u"));
+        }
+        // The shadow rays (the sun's, the light sources', the froxels', GI's visibility) end on
+        // their first hit; the rays that look for what they meet don't.
+        for text in [super::HARDWARE, include_str!("froxels_hw.wgsl")] {
+            assert!(text.contains("RayDesc(0x0u | FIRST_HIT"));
         }
     }
 

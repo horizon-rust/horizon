@@ -5,8 +5,9 @@
 // pixel wide averages into the pixels it covers instead of flickering.
 //
 //   fs_resolve  the new frame against the history, into the next history and its aux (depth, age);
-//   fs_blit     the resolved frame back over the scene, for what reads it next (exposure, bloom, tone
-//               mapping).
+//   fs_blit     the resolved frame back over the scene, when something draws over it before the
+//               exposure, the bloom and the tone mapping read it (gfx/taa.rs `Inputs::copy_back`; else
+//               they read the history).
 //
 // The scene's alpha is the terrain's sun share, which the tone mapping reads: it is resolved like a
 // colour channel.

@@ -267,6 +267,11 @@ impl EntityOutline {
         });
     }
 
+    /// Whether `draw` draws anything this frame (glowing entities in view).
+    pub(super) fn draws(&self) -> bool {
+        self.targets.is_some() && self.quads > 0
+    }
+
     /// `LevelRenderer.executeOutline`, the post chain and `blitEntityOutline` onto `frame`.
     pub(super) fn draw(
         &self,

@@ -36,6 +36,9 @@ const PI: f32 = 3.14159265;
 const BASE: f32 = 800.0;
 const TOP: f32 = 2200.0;
 const CIRRUS: f32 = 8000.0;
+// The altocumulus' thin layer: small cells, a mackerel sky.
+const ALTO_BASE: f32 = 3800.0;
+const ALTO_TOP: f32 = 4250.0;
 const WRAP: f32 = 32768.0;
 const SHAPE_XZ: f32 = 4096.0;
 const SHAPE_Y: f32 = 4096.0;
@@ -50,7 +53,7 @@ const ITERATIONS: i32 = 192;
 // The light the octaves leave out (the higher orders of scattering, which make a thick cloud's
 // lit side about as bright as a white surface facing the sun, and its belly a light grey).
 const SUN_GAIN: f32 = 2.0;
-const AMBIENT_GAIN: f32 = 1.0;
+const AMBIENT_GAIN: f32 = 1.8;
 const LIGHT_STEPS: i32 = 6;
 // The lowest elevation the dome holds (radians): the slab bends below the horizon far away when the
 // Earth's curvature is on.
@@ -78,6 +81,10 @@ struct Clouds {
     // xy the jitter inside a march texel (-0.5..0.5), z the texels' scale on the view's (the dome:
     // its checkerboard's side), w the dome's texel this frame marches in each square (x + y * z).
     jitter: vec4<f32>,
+    // x the altocumulus' amount (0..1); the shadow map: z its texels' side in blocks.
+    layers: vec4<f32>,
+    // xy the altocumulus' drift, zw the cirrus' (wrapped; they move faster than the cumulus).
+    drifts: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> clouds: Clouds;
 @group(0) @binding(1) var depth: texture_2d<f32>; // a depth view read as unfilterable float, which GLSL can translate
@@ -274,6 +281,95 @@ struct Marched {
     distance: f32,
 }
 
+// The cirrus' density (0..1) at world `xz` (wrapped): fibres along the wind, the sheet's
+// coordinates turned to it and stretched along it, the large patches from the weather map, the
+// fibres from two lookups of the Worley octaves.
+fn cirrus_density(xz: vec2<f32>) -> f32 {
+    let amount = clouds.light_color.w;
+    if amount <= 0.0 { return 0.0; }
+    let p = xz + clouds.drifts.zw;
+    let along = normalize(vec2(0.92, 0.38));
+    var r = vec2(dot(p, along), dot(p, vec2(-along.y, along.x)));
+    let large = textureSampleLevel(coverage_noise, repeat_sampler, r / vec2(40000.0, 14000.0) + 0.37, 0.0);
+    // The fibres bend with the large patches.
+    r += (large.g - 0.5) * vec2(0.0, 1200.0);
+    let a = textureSampleLevel(shape_noise, repeat_sampler, vec3(r.x / 24000.0, 0.41, r.y / 1500.0), 0.0);
+    let b = textureSampleLevel(shape_noise, repeat_sampler, vec3(r.x / 9000.0, 0.73, r.y / 600.0), 0.0);
+    let fine = a.g * 0.55 + b.b * 0.3 + b.a * 0.15;
+    let cover = saturate(remap(large.r, 0.8 - 0.55 * amount, 1.05)) * amount;
+    return smoothstep(0.0, 0.6, saturate(remap(fine, 1.0 - cover, 1.0))) * cover;
+}
+
+// The altocumulus' density at `p` (world, wrapped): rounded cells a few hundred metres across in
+// patches, in a thin lens of a layer.
+fn alto_density(p: vec3<f32>) -> f32 {
+    let amount = clouds.layers.x;
+    let h = (p.y - ALTO_BASE) / (ALTO_TOP - ALTO_BASE);
+    if amount <= 0.0 || h <= 0.0 || h >= 1.0 { return 0.0; }
+    let q = p + vec3(clouds.drifts.x, 0.0, clouds.drifts.y);
+    let patches = textureSampleLevel(coverage_noise, repeat_sampler, q.xz / 26000.0 + vec2(0.61, 0.13), 0.0).g;
+    let cover = saturate(remap(patches, 0.75 - 0.55 * amount, 0.95)) * amount;
+    if cover <= 0.0 { return 0.0; }
+    // The cells: the shape's Worley octaves, small; each rounded top and bottom.
+    let s = textureSampleLevel(shape_noise, repeat_sampler, vec3(q.x / 3400.0, q.y / 1800.0, q.z / 3400.0), 0.0);
+    let cells = s.b * 0.7 + s.a * 0.3;
+    let lens = sqrt(4.0 * h * (1.0 - h));
+    let base = saturate(remap(cells * lens, 1.0 - cover, 1.0));
+    let d = textureSampleLevel(detail_noise, repeat_sampler, q / 300.0, 0.0);
+    return saturate(remap(base, (d.r * 0.6 + d.g * 0.4) * 0.35, 1.0)) * 0.6;
+}
+
+// The altocumulus along the camera-relative ray from `origin` toward `d`, before what is behind.
+fn altocumulus(origin: vec3<f32>, d: vec3<f32>, noise: f32, behind: Marched) -> Marched {
+    let origin_y = clouds.camera.y + origin.y;
+    if clouds.layers.x <= 0.0 || origin_y >= ALTO_BASE { return behind; }
+    let bend = clouds.light.w * dot(d.xz, d.xz);
+    var range = vec2(0.0);
+    if bend > 1e-12 {
+        range = vec2(rise_at(ALTO_BASE - origin_y, d.y, bend).y, rise_at(ALTO_TOP - origin_y, d.y, bend).y);
+    } else if d.y > 1e-4 {
+        range = vec2(ALTO_BASE - origin_y, ALTO_TOP - origin_y) / d.y;
+    } else {
+        return behind;
+    }
+    range.y = min(range.y, range.x + 2500.0);
+    if range.x <= 0.0 || range.x > 70000.0 { return behind; }
+    let start = vec3(clouds.camera.x + origin.x, origin_y, clouds.camera.z + origin.z);
+    let l = clouds.light.xyz;
+    let c = dot(d, l);
+    let up_sky = sky_at(vec3(0.0, 1.0, 0.0)) * 0.7 + sky_at(normalize(vec3(d.x, 0.3, d.z))) * 0.3;
+    let step_length = (range.y - range.x) / 8.0;
+    var light = vec3(0.0);
+    var transmittance = 1.0;
+    for (var i = 0; i < 8; i++) {
+        let t = range.x + (f32(i) + noise) * step_length;
+        let q = start + d * t + vec3(0.0, bend * t * t, 0.0);
+        let rho = alto_density(q);
+        if rho <= 0.003 { continue; }
+        let od = rho * SIGMA * step_length;
+        let step_transmittance = exp(-od);
+        // Thin: two steps toward the light, the rest of the layer above toward the sky.
+        let tau = (alto_density(q + l * 40.0) * 80.0 + alto_density(q + l * 160.0) * 160.0) * SIGMA;
+        let above = saturate((ALTO_TOP - q.y) / (ALTO_TOP - ALTO_BASE));
+        let tau_sky = rho * SIGMA * above * (ALTO_TOP - ALTO_BASE) * 0.5;
+        let sun = (exp(-tau) * phase(c, 1.0) + 0.5 * exp(-tau * 0.4) * phase(c, 0.6)) * PI * SUN_GAIN;
+        let scattered = clouds.light_color.rgb * sun + up_sky * (AMBIENT_GAIN * (exp(-tau_sky) * 0.7 + 0.3));
+        light += transmittance * (1.0 - step_transmittance) * scattered * ALBEDO;
+        transmittance *= step_transmittance;
+        if transmittance < 0.02 { break; }
+    }
+    if transmittance >= 0.999 { return behind; }
+    let distance = range.x;
+    let haze = 1.0 - exp(-distance / (HAZE * 1.8));
+    let gone = smoothstep(40000.0, 70000.0, distance);
+    let opacity = (1.0 - transmittance) * (1.0 - gone);
+    let tinted = mix(light * (1.0 - gone), sky_at(d) * opacity, haze);
+    var out: Marched;
+    out.light = vec4(tinted + behind.light.rgb * (1.0 - opacity), (1.0 - opacity) * behind.light.a);
+    out.distance = distance;
+    return out;
+}
+
 // The cirrus sheet along the ray from the camera at `origin_y` toward `d`, behind the cumulus.
 fn cirrus(origin: vec3<f32>, d: vec3<f32>) -> Marched {
     var none: Marched;
@@ -290,20 +386,7 @@ fn cirrus(origin: vec3<f32>, d: vec3<f32>) -> Marched {
         t = (CIRRUS - origin_y) / d.y;
     }
     if t <= 0.0 || t > 90000.0 { return none; }
-    // Fibres along the wind: the sheet's coordinates turned to it, stretched along it, the large
-    // patches from the weather map, the fibres from two lookups of the Worley octaves.
-    let p = vec2(clouds.camera.x + origin.x, clouds.camera.z + origin.z) + d.xz * t
-        + clouds.wind.xy * 2.5;
-    let along = normalize(vec2(0.92, 0.38));
-    var r = vec2(dot(p, along), dot(p, vec2(-along.y, along.x)));
-    let large = textureSampleLevel(coverage_noise, repeat_sampler, r / vec2(40000.0, 14000.0) + 0.37, 0.0);
-    // The fibres bend with the large patches.
-    r += (large.g - 0.5) * vec2(0.0, 1200.0);
-    let a = textureSampleLevel(shape_noise, repeat_sampler, vec3(r.x / 24000.0, 0.41, r.y / 1500.0), 0.0);
-    let b = textureSampleLevel(shape_noise, repeat_sampler, vec3(r.x / 9000.0, 0.73, r.y / 600.0), 0.0);
-    let fine = a.g * 0.55 + b.b * 0.3 + b.a * 0.15;
-    let cover = saturate(remap(large.r, 0.8 - 0.55 * amount, 1.05)) * amount;
-    let dens = smoothstep(0.0, 0.6, saturate(remap(fine, 1.0 - cover, 1.0))) * cover;
+    let dens = cirrus_density(vec2(clouds.camera.x + origin.x, clouds.camera.z + origin.z) + d.xz * t);
     if dens <= 0.0 { return none; }
     // A thin sheet: its optical depth along the ray grows as the ray grazes it.
     let slant = clamp(t / max(CIRRUS - origin_y, 1.0), 1.0, 6.0);
@@ -311,9 +394,9 @@ fn cirrus(origin: vec3<f32>, d: vec3<f32>) -> Marched {
     let opacity = 1.0 - exp(-tau);
     // Ice crystals: a sharp forward lobe, the sky's light from all round.
     let c = dot(d, clouds.light.xyz);
-    let sun = clouds.light_color.rgb * (PI * mix(hg(c, 0.7), hg(c, -0.15), 0.35));
+    let sun = clouds.light_color.rgb * (PI * SUN_GAIN * mix(hg(c, 0.7), hg(c, -0.15), 0.35));
     let sky = sky_at(vec3(0.0, 1.0, 0.0)) * 0.7 + sky_at(normalize(vec3(d.x, 0.2, d.z))) * 0.3;
-    var light = (sun + sky * 0.6) * ALBEDO * opacity;
+    var light = (sun + sky) * ALBEDO * opacity;
     // The air between, much more of it toward the horizon.
     let haze = 1.0 - exp(-t / (HAZE * 2.5));
     light = mix(light, sky_at(d) * opacity, haze);
@@ -330,7 +413,7 @@ fn march(origin: vec3<f32>, d: vec3<f32>, noise: f32) -> Marched {
     out.light = vec4(0.0, 0.0, 0.0, 1.0);
     out.distance = 0.0;
     let range = slab(clouds.camera.y + origin.y, d);
-    let behind = cirrus(origin, d);
+    let behind = altocumulus(origin, d, noise, cirrus(origin, d));
     if range.y <= range.x { return behind; }
     let start = vec3(clouds.camera.x + origin.x + clouds.wind.x, clouds.camera.y + origin.y,
         clouds.camera.z + origin.z + clouds.wind.y);
@@ -543,6 +626,52 @@ const DOME_HISTORY: f32 = 10.0;
     if uv.y < 0.0 { discard; }
     let c = textureSampleLevel(dome_light, dome_sampler, uv, 0.0);
     return vec4(max(c.rgb, vec3(0.0)), clamp(c.a, 0.0, 1.0));
+}
+
+// ---- The shadow map ----
+
+// The light's transmittance through the clouds by where its ray crosses the cumulus' base: a
+// map wrapping every SHADOW_SIDE blocks of world x and z (terrain.wgsl `rt_cloud_shadow` reads it),
+// one texel in each checkerboard square a frame (`dome_texel`), the march's output its texture.
+const SHADOW_SIDE: f32 = 4096.0;
+
+fn wrap_near(x: vec2<f32>, side: f32) -> vec2<f32> {
+    return x - side * floor(x / side + 0.5);
+}
+
+@compute @workgroup_size(8, 8) fn cs_shadow(@builtin(global_invocation_id) id: vec3<u32>) {
+    let low = vec2<u32>(clouds.size.zw);
+    if id.x >= low.x || id.y >= low.y { return; }
+    let texel = dome_texel(id.xy);
+    let l = clouds.light.xyz;
+    var out = vec4(1.0, 0.0, 0.0, 1.0);
+    if l.y > 0.03 {
+        let camera = clouds.camera.xyz;
+        let across = l.xz / l.y;
+        // The texel stands for the place nearest to where the camera's own column meets the base.
+        let center = camera.xz + across * (BASE - camera.y);
+        let q = center + wrap_near((vec2<f32>(texel) + 0.5) * clouds.layers.z - center, SHADOW_SIDE);
+        let length = min((TOP - BASE) / l.y, 12000.0);
+        let s = length / 20.0;
+        let wind = vec3(clouds.wind.x, 0.0, clouds.wind.y);
+        var tau = 0.0;
+        for (var i = 0; i < 20; i++) {
+            let p = vec3(q.x, BASE, q.y) + l * (s * (f32(i) + 0.5)) + wind;
+            tau += density_at(p, true) * s;
+        }
+        tau *= SIGMA;
+        // The layers above, each at its middle.
+        let mid = 0.5 * (ALTO_BASE + ALTO_TOP);
+        let a = q + across * (mid - BASE);
+        tau += alto_density(vec3(a.x, mid, a.y)) * SIGMA * min((ALTO_TOP - ALTO_BASE) / l.y, 3000.0);
+        tau += cirrus_density(q + across * (CIRRUS - BASE)) * 0.5 * min(1.0 / l.y, 6.0);
+        // A thick cloud still lets a little light through, scattered forward.
+        var t = mix(exp(-tau), exp(-tau * 0.25), 0.25);
+        // The shadows fade as the light reaches the horizon (they would stretch for kilometres).
+        t = mix(1.0, t, smoothstep(0.03, 0.12, l.y));
+        out = vec4(t, tau, 0.0, 1.0);
+    }
+    textureStore(raw_out, vec2<i32>(texel), out);
 }
 
 // ---- Per view ----

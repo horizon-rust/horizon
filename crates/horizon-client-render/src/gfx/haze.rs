@@ -30,7 +30,7 @@ pub const MAX_FLAMES: usize = 32;
 
 /// Off by default for now (too coarse, and it lags the camera when it turns); `HORIZON_HAZE=1`
 /// turns it on.
-fn enabled() -> bool {
+pub(super) fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_HAZE").is_ok_and(|v| v != "0"))
 }

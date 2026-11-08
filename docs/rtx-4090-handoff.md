@@ -132,14 +132,50 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
   clocks locked and logged.
 - **The second eye's denoiser** (0.53 to 0.63 ms) filters only what that eye traced itself: where it took the first
   eye's light, it copies the first eye's denoised light (`HORIZON_RT_SHARE_DENOISED=0` for the old, docs/raytracing.md
-  item 10). Not yet measured.
+  item 10). Measured on 109a15996: that denoiser 0.59 to 0.25 ms.
 - **The grading and the ACES curve in one pass** when nothing reads the graded light after (no HDR output,
   screenshot or video): one full-size float target written and read less an eye; the stages `grading` and
-  `tone curve` become `grading and tone curve (ACES)` (`HORIZON_GRADE_FUSED=0` for the old). Not yet measured.
+  `tone curve` become `grading and tone curve (ACES)` (`HORIZON_GRADE_FUSED=0` for the old). Measured on 109a15996:
+  0.168 to 0.062 ms an eye in VR.
 - **The mirrors' search ray only where water or glass lies in front** (docs/raytracing.md item 11): a cover of the
   translucent terrain over the rays' prepass, and the kernel skips the camera ray that looked for water or glass
   elsewhere (`HORIZON_RT_PSR_COVER=0` for the old; `HORIZON_RT_SKIP=8` drops the mirrors whole, the upper bound).
-  Not yet measured.
+  Measured on 109a15996, a view without water: the first eye's trace 0.09 ms less, the second's 0.05, the cover
+  0.05 ms (for both eyes).
+- **Measured on 109a15996** (VR 4400x3520, fake runtime without captures, 6000, clear, GPU unlocked at 2880 MHz, ten
+  runs back to back): **8.96 ms a frame** (eye 1 5.88, eye 2 2.98), under the 11.1 of 90 Hz. Without VRS 11.36. The
+  first eye's largest stages: the world's raster 1.17, both eyes' rays' prepass 1.02, the trace 0.76 (ReSTIR GI 0.27
+  of it, `HORIZON_RT_SKIP=2`; the sun, the light sources, the mirrors and the far field in the noise), the denoiser
+  0.6, structures 0.58, TAA 0.32. Run to run noise about 0.3 ms; the first run of a series is the slowest. The
+  per-stage table is `pr2-item0-109a.txt` in the project files.
+- **The TAA's copy back only when something draws over the scene** (docs/raytracing.md item 12,
+  `HORIZON_TAA_BLIT=1` for the old), **ReSTIR GI's visibility ray with hardware rays** (item 13,
+  `HORIZON_RT_GI_DDA=1`), **shadow rays ending on their first hit** (item 14, `HORIZON_RT_FIRST_HIT=0`). Measured on
+  dd9002142 (`pr2-dd90.txt`): 8.31 ms a frame (eye 1 5.38, eye 2 2.82); the TAA 0.38 to 0.25 ms an eye while no
+  vignette shows; the first hit about 0.05 ms; the visibility within the noise. Two runs of the defaults differ by
+  0.6 ms at one clock: the fake world's spawn moves from launch to launch, so captures at a fixed pose need a
+  teleport to fixed coordinates (`spreadplayers` failed there).
+- **The vignette in the tone mapping's pass, over the finished frame as vanilla draws it** (item 15,
+  `HORIZON_VIGNETTE_CURVE=0` for the old): its quad was 0.087 ms an eye and kept the TAA's copy back. Measured on
+  68218d890 at a fixed pose (a platform at 160 120 160, the vignette forced with `/worldborder warning distance
+  2147483647`): 9.18 and 9.30 ms a frame against 9.66, the screen effects' stage 0.081 to 0.001 ms. The old look was
+  redder at the edges than vanilla's. At the same pose `HORIZON_RT_GI_DDA=1` costs the same as the default, and
+  `HORIZON_RT_SHARE_DENOISED=0` 9.44 against 9.19.
+- **The shared denoised light, checked texel by texel** (docs/raytracing.md item 10, `HORIZON_RT_SHARE_CHECK=0` for
+  the old): with 68218d890 a block at the right eye's right edge, which the left eye doesn't see, came out black
+  with the shared light on and lit with `HORIZON_RT_SHARE_DENOISED=0`. The periphery's blocks shifted their centre's
+  first-eye texel onto all sixteen texels, unchecked, so a texel past an edge took the sky's light. Each texel now
+  takes the first eye's texel showing its own surface, or is filtered from its own light. Measured on 93137e0d4: no
+  cost, but the black zone stays (nearly the same with `HORIZON_RT_SHARE_CHECK=0`), so it is not the periphery's
+  shift. `HORIZON_RT_DEBUG=12` shows what the second eye took, and `HORIZON_RT_SHARE_GUARD=1` is a trial guard
+  (docs/raytracing.md item 10).
+- **The right eye's black zone, fixed** (29c78b580): since 4956cf386 the camera's offset to the ray structures' anchor
+  (`hw_offset`) was set only with the structures' update, which the first eye alone runs, so the second eye's own
+  hardware rays left from the wrong place: its sun shadowed, its light around low, wherever the left eye doesn't
+  show the surface. The shared light only hid it. `HORIZON_RT_DEBUG=14` (the lit colour's parts) found it; 13
+  checks the colour's inputs. Measured on 29c78b580 at the fixed pose: the zone as the left eye (64 62 60), 0.16 of
+  255 from `HORIZON_RT_SHARE_DENOISED=0`; 9.510 and 9.517 ms a frame against 9.880 without the shared light (eye 2's
+  denoiser 0.209 against 0.454 ms; tables in the project files' `pr2-29c7-means.txt`).
 - **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
   meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
   cutout gaps); the TAA's blit folded into its resolve (the hand and the rain draw over the resolved scene, so the

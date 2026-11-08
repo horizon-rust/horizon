@@ -1352,6 +1352,10 @@ pub struct Renderer {
     /// Screen effects: alpha-blended, then vignette (`dst * (1 - src)`)
     /// pipelines, each for every sampling (index `blend * 4 + sampling`).
     screen_pipelines: [wgpu::RenderPipeline; 16],
+    /// The shared 2D atlas the screen effects read, and their samplers (nearest, linear), for the
+    /// vignette the tone mapping draws (tonemap.rs `Vignette`).
+    screen_atlas: wgpu::TextureView,
+    screen_samplers: [wgpu::Sampler; 2],
     screen_buffer: wgpu::Buffer,
     screen_capacity: u64,
     entity_group: wgpu::BindGroup,
@@ -1570,6 +1574,8 @@ pub struct Renderer {
     rain: rain::Rain,
     /// Bound in place of RT lighting's sun through tinting glass while there is none: all of it.
     rt_sun_unused: wgpu::TextureView,
+    /// RT lighting's clouds' shadows, which the terrain reads (`rt_clouds::Shadows`).
+    cloud_shadows: rt_clouds::Shadows,
     /// Bound in place of RT lighting's depth prepass while there is none.
     rt_depth_unused: wgpu::TextureView,
     /// RT lighting's sun and sky.
@@ -1935,6 +1941,7 @@ fn terrain_group(
     rain: &wgpu::Buffer,
     scene: &wgpu::TextureView,
     wind: &wgpu::Buffer,
+    cloud_shadows: &rt_clouds::Shadows,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -1992,6 +1999,11 @@ fn terrain_group(
                 resource: wind.as_entire_binding(),
             },
             view(26, emission_thresholds),
+            view(27, &cloud_shadows.view),
+            wgpu::BindGroupEntry {
+                binding: 28,
+                resource: wgpu::BindingResource::Sampler(&cloud_shadows.sampler),
+            },
         ],
     })
 }
@@ -3546,6 +3558,21 @@ impl Renderer {
                         multisampled: false,
                     },
                 ),
+                // RT lighting's clouds' shadows (`rt_clouds::Shadows`), filtered, wrapping.
+                entry(
+                    27,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(
+                    28,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
                 // The sky table: the stars read it where they are (vs_rt_star).
                 entry(
                     14,
@@ -4547,6 +4574,7 @@ impl Renderer {
             .create_view(&Default::default());
         let emission_stats =
             hdr_stats::EmissionStats::new(&device, split, sprite_textures.len() as u32);
+        let cloud_shadows = rt_clouds::Shadows::new(&device, &queue);
         let group = terrain_group(
             &device,
             "Horizon terrain resources",
@@ -4570,6 +4598,7 @@ impl Renderer {
             rain.map(),
             &rt_history_unused,
             &wind.buffer,
+            &cloud_shadows,
         );
         let fluid_sampler = device.create_sampler(&fluid::SAMPLER);
         let fluid_group = terrain_group(
@@ -4595,6 +4624,7 @@ impl Renderer {
             rain.map(),
             &rt_history_unused,
             &wind.buffer,
+            &cloud_shadows,
         );
         let terrain_model_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Native cutout model (unmipped)"),
@@ -4624,6 +4654,7 @@ impl Renderer {
             rain.map(),
             &rt_history_unused,
             &wind.buffer,
+            &cloud_shadows,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -4648,6 +4679,7 @@ impl Renderer {
             rain.map(),
             &rt_history_unused,
             &wind.buffer,
+            &cloud_shadows,
         );
         let mirror_group = terrain_group(
             &device,
@@ -4672,6 +4704,7 @@ impl Renderer {
             rain.map(),
             &rt_history_unused,
             &wind.buffer,
+            &cloud_shadows,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -6166,6 +6199,8 @@ impl Renderer {
             border_uniform,
             border_vertices,
             screen_pipelines,
+            screen_atlas: atlas_view.clone(),
+            screen_samplers: [atlas_sampler.clone(), lightmap_sampler.clone()],
             screen_buffer,
             screen_capacity,
             entity_group,
@@ -6297,6 +6332,7 @@ impl Renderer {
             aldhani,
             rain,
             rt_sun_unused,
+            cloud_shadows,
             rt_depth_unused,
             atmosphere,
             rt_clouds: None,
@@ -8856,6 +8892,7 @@ impl Renderer {
                 self.rain.map(),
                 scene,
                 &self.wind.buffer,
+                &self.cloud_shadows,
             )
         };
         let terrain = group(
@@ -10641,6 +10678,11 @@ impl Renderer {
                     // 10: the rain's reach and puddles (terrain.wgsl `rt_wet`).
                     10 => 4.0,
                     11 => 5.0,
+                    // 13: the RT lit colour, or which of its inputs isn't finite (terrain.wgsl
+                    // `rt_checked`).
+                    13 => 6.0,
+                    // 14: the parts of the RT lit colour (terrain.wgsl `rt_terms_view`).
+                    14 => 7.0,
                     _ => 0.0,
                 },
                 // The light the rays trace toward is the moon's.
@@ -14188,6 +14230,19 @@ impl Renderer {
                 thick: rain_level.clamp(0.0, 1.0),
                 curvature: earth_bend,
             };
+            // Their shadows, for the terrain the next frame (and the other eyes this one).
+            if self.eye.is_none_or(|e| e.view_index <= 1) {
+                clouds.update_shadows(
+                    &self.device,
+                    &mut self.uploads,
+                    &mut encoder,
+                    world_depth,
+                    frame.camera,
+                    &params,
+                    &self.atmosphere.view,
+                    &mut self.cloud_shadows,
+                );
+            }
             if rt_clouds::mode() == rt_clouds::Mode::Dome && rt_clouds::dome_sees(frame.camera) {
                 // One march a frame for every view (both eyes see clouds alike): the first view
                 // updates the dome, each view looks it up.
@@ -14281,6 +14336,7 @@ impl Renderer {
                     size: world_size,
                     view_proj: clean_view_proj,
                     camera: frame.camera,
+                    copy_back: true,
                 },
             );
             gpu_passes::stamp(&mut encoder, "taa");
@@ -15178,7 +15234,7 @@ impl Renderer {
             let keep_graded = self.hdr.is_some()
                 || self.screenshot.is_some()
                 || self.recording.as_ref().is_some_and(|r| r.wants());
-            t.run(&self.device, encoder, size, view_target, mask, keep_graded);
+            t.run(&self.device, encoder, size, view_target, mask, keep_graded, None, None);
             if let Some(hdr) = &self.hdr {
                 hdr.keep_world(encoder, timing.as_mut());
             }

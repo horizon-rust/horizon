@@ -1099,7 +1099,16 @@ fn restir_gi(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i32>,
         let to = chosen.at - pos;
         let d = length(to);
         let reach = select(d - 0.05, 1e30, d > 4000.0);
-        if ray(pos, to / d, SKY_BUDGET, reach) < 0.5 {
+        // With hardware rays against the triangles the sample was found on (`hw_visible`), else
+        // (and with `HORIZON_RT_GI_DDA=1`) through the voxel grid, a long cave's ray taken as
+        // stopped once its budget is spent.
+        var visible = true;
+        if HW && GI_HW_VISIBILITY {
+            visible = hw_visible(pos, to / d, min(reach, 4096.0));
+        } else {
+            visible = ray(pos, to / d, SKY_BUDGET, reach) >= 0.5;
+        }
+        if !visible {
             chosen = own;
             aim = gi_target(own, pos, n);
             weight = select(0.0, 3.14159265 * luminance(own.light) / aim, aim > 0.0);
@@ -2111,6 +2120,31 @@ fn from_first(p: vec2<i32>) -> FromFirst {
     gi_out_b = textureLoad(first_gi_b, t, 0);
     return out;
 }
+// VR's second eye away from the sharp zone, in a 4x4 block that took the first eye's light from
+// its centre (`cs_sparse`): the first eye's mask texel showing mask texel `texel`'s own surface
+// (`pack_texel`), 0 where the first eye doesn't show it (out of its view, past an edge): the
+// denoiser then filters the texel from this eye's light (the block's), as without
+// `taken_out`. The block's centre shifted onto every texel (`HORIZON_RT_SHARE_CHECK=0`) put the
+// light of whatever the first eye shows there on a texel past an edge: a block standing out of
+// the first eye's view against the sky took the sky's black.
+fn first_texel_of(texel: vec2<i32>) -> u32 {
+    let p = pixel_of(texel);
+    if f32(p.x) >= rt.size.x || f32(p.y) >= rt.size.y { return 0u; }
+    if textureLoad(depth, p, 0) <= 0.0 { return 0u; }
+    let pos = surface_at(p);
+    let c = rt.first_view_proj * vec4(pos, 1.0);
+    if c.w <= 0.0 { return 0u; }
+    let ndc = c.xy / c.w;
+    if any(abs(ndc) >= vec2(1.0)) { return 0u; }
+    let q = vec2<i32>(vec2((ndc.x * 0.5 + 0.5) * rt.size.x, (0.5 - ndc.y * 0.5) * rt.size.y));
+    let t = q / i32(rt.size.z);
+    // The first eye's mask holds the distance from the camera both eyes share (`trace`).
+    let d = length(pos);
+    let m = textureLoad(first_mask, t, 0);
+    if m.a < 0.0 || abs(m.a - d) > 0.05 + 0.02 * d { return 0u; }
+    if textureLoad(first_blocks, t, 0).a < 0.0 { return 0u; }
+    return pack_texel(t);
+}
 // The depth pixel at the centre of mask texel `texel`.
 fn pixel_of(texel: vec2<i32>) -> vec2<i32> {
     let scale = i32(rt.size.z);
@@ -2227,10 +2261,14 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
         taken = s.taken.x == 1u;
         if taken {
             fast_out = s.fast;
-            // The block's texels shifted as its centre is from the first eye's.
-            let centre = vec2<i32>(i32(s.taken.y & 0xffffu) - 1, i32(s.taken.y >> 16u));
-            let size = vec2<i32>(textureDimensions(mask));
-            taken_from = pack_texel(clamp(centre + texel - (corner + 2), vec2(0), size - 1));
+            if rt.mode.z > 1.5 && SHARE_CHECK {
+                taken_from = first_texel_of(texel);
+            } else {
+                // The block's texels shifted as its centre is from the first eye's.
+                let centre = vec2<i32>(i32(s.taken.y & 0xffffu) - 1, i32(s.taken.y >> 16u));
+                let size = vec2<i32>(textureDimensions(mask));
+                taken_from = pack_texel(clamp(centre + texel - (corner + 2), vec2(0), size - 1));
+            }
         }
         // The block's GI reservoir is its corner's; the other texels keep none.
         if all(texel == corner) {
@@ -2242,8 +2280,10 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
     if DEBUG == 3u { v.rays = vec4(textureLoad(depth, pixel_of(texel), 0) * 20.0 + 0.25); }
     if all(vec2<u32>(texel) < textureDimensions(mask)) {
         v.rays = finite4(v.rays);
-        v.blocks = finite4(v.blocks);
-        v.direct = finite4(v.direct);
+        // Light is never below 0: a negative bounce would come back through the last frame's light
+        // (`last_light`) and the history's clamp (`accumulate`) larger each frame.
+        v.blocks = finite4(vec4(max(v.blocks.rgb, vec3(0.0)), v.blocks.a));
+        v.direct = finite4(vec4(max(v.direct.rgb, vec3(0.0)), v.direct.a));
         v.sun = finite4(v.sun);
         fast_out = finite4(fast_out);
         textureStore(mask, texel, v.rays);
