@@ -411,6 +411,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         rain: Default::default(),
         wetness: Default::default(),
         rain_map: None,
+        snow: Default::default(),
         sun_path_tilt: 0.0,
         rt_body: &[],
         moon_phase: 0,

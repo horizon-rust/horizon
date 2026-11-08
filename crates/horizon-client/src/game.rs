@@ -399,6 +399,7 @@ mod shoulders;
 mod sign_edit;
 mod skin_models;
 mod sniffers;
+mod snow;
 mod social;
 mod sound_physics;
 mod spawner;
@@ -2347,6 +2348,8 @@ struct Game<'a> {
     weather_parameters: horizon_client::weather::ParameterCache,
     /// Physical rain with RT lighting (`game/rain.rs`).
     rain: rain::RainState,
+    /// Physical snow with RT lighting (`game/snow.rs`).
+    snow: snow::SnowState,
     panorama_rotation: horizon_client::gfx::panorama::Rotation,
     world: World,
     /// The biome table the world plays with: the game's own with the world's
@@ -12815,6 +12818,7 @@ impl Game<'_> {
             camera.z.floor() as i32,
         );
         let physical = self.physical_rain();
+        let physical_snow = self.physical_snow();
         // The 32x32 direction table supports at most a 15-block radius.
         let radius = self.settings.weather_radius.clamp(0, 15);
         let eye = camera.to_array();
@@ -12832,8 +12836,9 @@ impl Game<'_> {
                 let Some(snow) = self.precipitation(x, cy, z) else {
                     continue;
                 };
-                // The renderer draws physical rain instead (game/rain.rs); snow stays vanilla's.
-                if !snow && physical {
+                // The renderer draws physical rain instead (game/rain.rs), and physical snow
+                // (game/snow.rs) unless skipped.
+                if if snow { physical_snow } else { physical } {
                     continue;
                 }
                 let parameters = self.weather_parameters.get(x, z);
@@ -13997,7 +14002,12 @@ impl Game<'_> {
                 sky.sun_angle,
                 self.settings.horizon.sun_path_tilt as f32,
             );
-            Some(self.rain_frame(camera, alpha as f32, sun.y))
+            let rain = self.rain_frame(camera, alpha as f32, sun.y);
+            Some((rain, self.snow_frame(camera, alpha as f32, sun.y)))
+        };
+        let (rain, snow) = match rain {
+            Some((r, s)) => (Some(r), s),
+            None => (None, Default::default()),
         };
         let shadow_only = std::mem::take(self.shadow_only_vertices.get_mut());
         let skin = std::mem::take(self.skin_frame.get_mut());
@@ -14005,6 +14015,7 @@ impl Game<'_> {
             rain: rain.as_ref().map_or(Default::default(), |r| r.rain),
             wetness: rain.as_ref().map_or(Default::default(), |r| r.wetness),
             rain_map: rain.as_ref().and_then(|r| r.cells.as_deref()),
+            snow,
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
             nether_lighting: self.dim == Dim::Nether,
@@ -14197,6 +14208,7 @@ impl Game<'_> {
                         sky_light: f32::from(self.world.light(at.x, at.y, at.z) >> 4),
                         rain: frame.pack.rain.max(rain),
                         thunder: frame.pack.thunder.max(thunder),
+                        snow: self.snow.share(),
                     },
                 );
                 horizon_client::spans::time("renderer", || renderer.render(&frame))
@@ -16238,6 +16250,7 @@ impl<'a> Game<'a> {
             item_activation: Default::default(),
             weather_parameters: Default::default(),
             rain: Default::default(),
+            snow: Default::default(),
             panorama_rotation: Default::default(),
             world,
             streaming,

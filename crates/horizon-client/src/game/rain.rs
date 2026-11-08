@@ -116,12 +116,12 @@ impl Game<'_> {
     }
 
     /// A column of the rain map: its top block's surface, the block light above it, whether it
-    /// rains (not snows) there.
-    fn rain_column(&self, x: i32, z: i32, height: i32) -> (Surface, u8, bool) {
+    /// rains there, whether it snows there (game/snow.rs).
+    fn rain_column(&self, x: i32, z: i32, height: i32) -> (Surface, u8, bool, bool) {
         if !self.world.chunks.contains_key(&(x >> 4, z >> 4))
             || height <= horizon_client::chunk::MIN_Y
         {
-            return (Surface::Unknown, 0, false);
+            return (Surface::Unknown, 0, false, false);
         }
         let state = self.world.block(x, height - 1, z);
         let f = self.res.facts().get(state);
@@ -135,7 +135,7 @@ impl Game<'_> {
         let water = f.fluid == Fluid::Water && !f.full_collision;
         let surface = classify(&f.name, &f.sounds.step, top, water, f.fluid == Fluid::Lava);
         let light = self.world.light(x, height, z) & 15;
-        let rains = self.precipitation(x, height, z) == Some(false);
-        (surface, light, rains)
+        let fall = self.precipitation(x, height, z);
+        (surface, light, fall == Some(false), fall == Some(true))
     }
 }

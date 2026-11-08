@@ -150,6 +150,24 @@ impl Medium {
         }
     }
 
+    /// The open air with snow of `rate` mm/h (water) falling through it: the air's medium plus the
+    /// flakes' extinction (`snow::extinction`, from the visibility snow leaves, several times the
+    /// rain's for the same water). Ice scatters nearly all it takes (albedo 0.98), less forward
+    /// than the rain's drops for its size but more than the air's haze would say (g 0.5).
+    pub fn snowing(rate: f32) -> Self {
+        let air = Self::air();
+        let flakes = crate::snow::extinction(rate);
+        if flakes <= 0.0 {
+            return air;
+        }
+        let share = flakes / (flakes + air.sigma_t.x);
+        Self {
+            sigma_t: air.sigma_t + Vec3::splat(flakes),
+            albedo: air.albedo.lerp(Vec3::splat(0.98), share),
+            anisotropy: air.anisotropy + (0.5 - air.anisotropy) * share,
+        }
+    }
+
     /// The open air by day, a thin default (Remix's is the runtime's, its own atmosphere being off):
     /// 0.95 of the light through 100 m (about 88 % over the 256 m the grid reaches), no
     /// absorption, scattering forward (g 0.7) so the sun's shafts show past shadows and toward it
@@ -202,6 +220,9 @@ pub struct CameraMedium {
     /// The rain and thunder levels, 0 to 1 (`Frame::weather`'s, as `pack.rain`, `pack.thunder`).
     pub rain: f32,
     pub thunder: f32,
+    /// How much of what falls at the camera is snow (0 to 1, eased across a biome's edge), with
+    /// RT lighting's physical snow on: its medium in place of the rain's.
+    pub snow: f32,
 }
 
 impl Default for CameraMedium {
@@ -212,6 +233,7 @@ impl Default for CameraMedium {
             sky_light: 15.0,
             rain: 0.0,
             thunder: 0.0,
+            snow: 0.0,
         }
     }
 }
@@ -224,7 +246,11 @@ impl CameraMedium {
         if self.in_water {
             return Medium::water();
         }
-        let weather = Medium::falling(crate::rain::rate_mm_h(self.rain, self.thunder));
+        let mut weather = Medium::falling(crate::rain::rate_mm_h(self.rain, self.thunder));
+        if self.snow > 0.0 {
+            let snow = Medium::snowing(crate::snow::rate_mm_h(self.rain, self.thunder));
+            weather = weather.mix(snow, self.snow.clamp(0.0, 1.0));
+        }
         let open = ((self.sky_light - 3.0) / 6.0).clamp(0.0, 1.0);
         let open = open * open * (3.0 - 2.0 * open);
         Medium::cave().mix(weather, open)
@@ -1166,6 +1192,9 @@ mod tests {
         // The drops' extinction over the air's, a storm's beyond Remix's thunder.
         assert!(rain.medium().sigma_t.x > air + Medium::rain().sigma_t.x);
         assert!(storm.medium().sigma_t.x > air + Medium::thunder().sigma_t.x);
+        // Snow hides more than the rain of the same levels.
+        let snow = CameraMedium { snow: 1.0, ..rain };
+        assert!(snow.medium().sigma_t.x > rain.medium().sigma_t.x);
     }
 
     #[test]

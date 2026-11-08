@@ -129,8 +129,10 @@ fn rain_cell(c: vec2<i32>) -> u32 {
     return w;
 }
 // A column's rain height (one above its top block), its surface (rain.rs `Surface`), whether it
-// rains there, how many of its neighbours stand higher, the block light above it.
-fn rain_height(w: u32) -> f32 { return f32(i32(w & 4095u) - 2048); }
+// rains there, whether it snows there (snow.rs), how many of its neighbours stand higher, the block
+// light above it.
+fn rain_height(w: u32) -> f32 { return f32(i32(w & 2047u) - 1024); }
+fn snow_falls(w: u32) -> bool { return ((w >> 11u) & 1u) == 1u; }
 fn rain_surface(w: u32) -> u32 { return (w >> 12u) & 15u; }
 fn rain_falls(w: u32) -> bool { return ((w >> 20u) & 1u) == 1u; }
 fn rain_higher(w: u32) -> f32 { return f32((w >> 21u) & 7u); }

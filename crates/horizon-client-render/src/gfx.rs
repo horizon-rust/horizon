@@ -49,6 +49,7 @@ mod fluid;
 #[cfg(test)]
 mod inter_stage_tests;
 mod rain;
+mod snow;
 mod terrain_model;
 #[cfg(test)]
 pub(crate) mod test_gpu;
@@ -1030,6 +1031,9 @@ pub struct Frame<'a> {
     pub rain: crate::rain::Rain,
     pub wetness: crate::rain::Wetness,
     pub rain_map: Option<&'a [u32]>,
+    /// RT lighting's physical snow (`snow`): its rate (none when vanilla's draws) and how deep its
+    /// cover lies.
+    pub snow: crate::snow::Snow,
     /// Horizon Extras' dynamic lights, nearest first (`dynamic_light::select`); empty when off.
     pub dynamic_lights: &'a [[f32; 4]],
     pub colored_lights: &'a [crate::dynamic_light::Colored],
@@ -1572,6 +1576,8 @@ pub struct Renderer {
     aldhani: aldhani::Aldhani,
     /// RT lighting's physical rain: its map and its drops (`rain`).
     rain: rain::Rain,
+    /// RT lighting's physical snow: its flakes (`snow`).
+    snow: snow::Snow,
     /// Bound in place of RT lighting's sun through tinting glass while there is none: all of it.
     rt_sun_unused: wgpu::TextureView,
     /// RT lighting's clouds' shadows, which the terrain reads (`rt_clouds::Shadows`).
@@ -4554,6 +4560,7 @@ impl Renderer {
         };
         let aldhani = aldhani::Aldhani::new(&device);
         let rain = rain::Rain::new(&device, world_format, &layout, &shader);
+        let snow = snow::Snow::new(&device, world_format, &layout, &shader);
         // Bound in place of RT lighting's last light while there is none.
         let moon_map = moon_map(&device, &queue);
         let milky_way_map = milky_way_map(&device, &queue);
@@ -6333,6 +6340,7 @@ impl Renderer {
             milky_way_map,
             aldhani,
             rain,
+            snow,
             rt_sun_unused,
             cloud_shadows,
             rt_depth_unused,
@@ -10560,6 +10568,8 @@ impl Renderer {
             .then_some(f64::from(frame.detail_distance));
         // RT lighting's physical rain draws its drops (the wet surfaces need only the wetness).
         let rain_drops = frame.rain.rate > 0.0 && self.rt_lighting && world_linear && !frame.title;
+        // And its physical snow its flakes (the cover needs only its depth).
+        let snow_flakes = frame.snow.rate > 0.0 && self.rt_lighting && world_linear && !frame.title;
         let globals = Globals {
             view_proj: jittered.to_cols_array_2d(),
             fog_color,
@@ -10743,12 +10753,18 @@ impl Renderer {
                 frame.rain.wind[0],
                 frame.rain.wind[1],
             ],
-            // x: Linear Light; y: the plain glass's sprite layers (terrain.wgsl `rt_glass_plain`).
+            // x: Linear Light; y: the plain glass's sprite layers (terrain.wgsl `rt_glass_plain`);
+            // z the snow's rate in mm/h of water (0 without the flakes), w its cover's depth in
+            // centimetres (terrain.wgsl `rt_snow`).
             linear: [
                 f32::from(u8::from(world_linear)),
                 self.glass_layers,
-                0.0,
-                0.0,
+                if snow_flakes { frame.snow.rate } else { 0.0 },
+                if self.rt_lighting && world_linear && !frame.title {
+                    frame.snow.cover
+                } else {
+                    0.0
+                },
             ],
         };
         self.uploads
@@ -14349,7 +14365,8 @@ impl Renderer {
         // RT lighting's physical rain (`rain`): the drops over the resolved scene, depth tested
         // against the world's. Before the resolve the TAA's history (a sixteenth new a frame) would
         // wash out thin streaks that move every frame; they take the still matrix, as the rays do.
-        if rain_drops && !pack_draws_weather {
+        // The snow's flakes (`snow`) in the same pass.
+        if (rain_drops || snow_flakes) && !pack_draws_weather {
             let view_proj_offset = std::mem::offset_of!(Globals, view_proj) as u64;
             if taa_now {
                 self.uploads.buffer(
@@ -14381,7 +14398,12 @@ impl Renderer {
                     }),
                     ..Default::default()
                 });
-                self.rain.draw(&mut pass, &self.group);
+                if rain_drops {
+                    self.rain.draw(&mut pass, &self.group);
+                }
+                if snow_flakes {
+                    self.snow.draw(&mut pass, &self.group);
+                }
             }
             if taa_now {
                 self.uploads.buffer(

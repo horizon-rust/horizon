@@ -1657,7 +1657,10 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
         rt_terms = vec4(dot(sun * (direct + through) + highlight, y),
             dot(diffuse * (1.0 - ambient_f) * around, y), traced.a, dot(reflected, y));
     }
-    return sun * (direct + through) + highlight + diffuse * (1.0 - ambient_f) * around + reflected
+    // The snow's crystals that catch the sun toward the eye (`rt_snow`).
+    let sparkle = sun * (rt_sparkle * gate);
+    return sun * (direct + through) + highlight + sparkle + diffuse * (1.0 - ambient_f) * around
+        + reflected
         + m.albedo * m.emission * MATERIAL_EMISSION + spray;
 }
 // RT lighting: material `m`'s linear colour, lit by the model and fogged. The fog scatters the
@@ -2150,8 +2153,10 @@ fn rain_cell(c: vec2<i32>) -> u32 {
     return w;
 }
 // A column's rain height (one above its top block), its surface (rain.rs `Surface`), whether it
-// rains there, how many of its neighbours stand higher, the block light above it.
-fn rain_height(w: u32) -> f32 { return f32(i32(w & 4095u) - 2048); }
+// rains there, whether it snows there (snow.rs), how many of its neighbours stand higher, the block
+// light above it.
+fn rain_height(w: u32) -> f32 { return f32(i32(w & 2047u) - 1024); }
+fn snow_falls(w: u32) -> bool { return ((w >> 11u) & 1u) == 1u; }
 fn rain_surface(w: u32) -> u32 { return (w >> 12u) & 15u; }
 fn rain_falls(w: u32) -> bool { return ((w >> 20u) & 1u) == 1u; }
 fn rain_higher(w: u32) -> f32 { return f32((w >> 21u) & 7u); }
@@ -2403,7 +2408,7 @@ fn rt_puddle_reflection(pixel: vec2<f32>) -> vec4<f32> {
 // drinks the water (sand, wool) or runs off (metal, glass: a film). Sunlit surfaces dry first
 // (`rain_sun`). On the tops of the columns that hold them, puddles (`relief`, the pack's depth
 // there, 0.5 unknown): flat water, the rain's ripples on it while it falls.
-fn rt_wet(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>, sky: f32,
+fn rt_wet_rain(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>, sky: f32,
     porosity: f32, relief: f32) -> RtMaterial {
     var m = material;
     rt_puddle = 0.0;
@@ -2509,6 +2514,110 @@ fn rt_shore(world: vec3<f32>, geo: vec3<f32>, pos: vec3<f32>) -> f32 {
         }
     }
     return wet;
+}
+// RT lighting's weather on a surface: wet as the rain left it (`rt_wet_rain`), then under the snow's
+// cover where it snows (`rt_snow`). The terrain's and the parallax terrain's shading call it.
+fn rt_wet(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>, sky: f32,
+    porosity: f32, relief: f32) -> RtMaterial {
+    return rt_snow(rt_wet_rain(material, geo, pos, pixel, sky, porosity, relief), geo, pos);
+}
+// How brightly the snow's crystals at the fragment being lit catch the sun toward the eye
+// (`rt_shade` adds the sun's light times it): a mirror-flat facet now and then among the grains.
+var<private> rt_sparkle: f32 = 0.0;
+// Fresh snow, linear: nearly white (its blue in the shade is the sky's light).
+const SNOW_ALBEDO: vec3<f32> = vec3(0.88, 0.9, 0.92);
+// How deep the snow must lie to hide a column's top surface (rain.rs `Surface`), in centimetres:
+// grass blades and leaves poke through longer, metal and glass shed it; none on water, nor on the
+// dry surfaces (snow and ice already, lava, magma) or where the map knows nothing.
+fn snow_full(s: u32) -> f32 {
+    switch s {
+        case 1u, 2u, 3u, 11u: { return 1.5; }
+        case 4u, 5u: { return 1.0; }
+        case 6u: { return 5.0; }
+        case 7u: { return 2.5; }
+        case 8u: { return 2.0; }
+        case 9u: { return 3.0; }
+        default: { return 0.0; }
+    }
+}
+// Three octaves of the rain's value noise, 0 to 1.
+fn snow_noise(p: vec2<f32>) -> f32 {
+    return 0.55 * rain_noise(p * 1.7) + 0.3 * rain_noise(p * 4.3 + 11.0)
+        + 0.15 * rain_noise(p * 13.0 + 5.0);
+}
+// RT lighting's snow cover (snow.rs `Cover`, `Globals::linear` w its depth in centimetres) on
+// material `m`, a face of normal `geo` at camera-relative `pos`, where the rain map says it snows:
+// - the top faces of a column's top block, in patches first (the noise against how deep it lies
+//   over how deep that surface needs: grass and leaves longer, metal longest), then whole;
+// - the top edge of that block's sides where they stand clear (the cover's thickness over the
+//   edge, ragged);
+// - the walls that face the wind, wherever they stand clear of the next column: snow plastered on
+//   them in drifts, more the harder it blows (the prevailing wind, `Globals::rain_sun` zw).
+// The snow is white, rough, flat (it fills the normal map's relief) and opaque to the light from
+// behind a leaf; its crystals glint (`rt_sparkle`) where a pixel is small enough to see them.
+fn rt_snow(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>) -> RtMaterial {
+    var m = material;
+    rt_sparkle = 0.0;
+    let depth = globals.linear.w;
+    if depth <= 0.0 { return m; }
+    let world = rain_world(pos);
+    let own = rain_cell(vec2<i32>(floor(world.xz - geo.xz * 0.49)));
+    if own == 0u || !snow_falls(own) { return m; }
+    let full = snow_full(rain_surface(own));
+    if full <= 0.0 { return m; }
+    let top = rain_top(own);
+    var cover = 0.0;
+    if geo.y > 0.7 {
+        if world.y > top - 1.01 && world.y < top + 0.01 {
+            let f = depth / full;
+            cover = smoothstep(0.0, 0.25, f * 1.15 - snow_noise(world.xz));
+        }
+    } else if abs(geo.y) < 0.3 {
+        // The next column the face looks onto: the face stands clear above its top.
+        let next = rain_cell(vec2<i32>(floor(world.xz + geo.xz * 0.51)));
+        let clear = next == 0u || world.y > rain_top(next) - 0.02;
+        if clear {
+            let along = vec2(dot(world.xz, vec2(-geo.z, geo.x)), world.y);
+            let n = snow_noise(along * 2.0);
+            // The rim: the cover's thickness over the top block's edge, once the top is white.
+            if world.y > top - 1.01 && world.y < top + 0.01 {
+                let thick = min(depth, 12.5) * 0.01 * (0.5 + n)
+                    * smoothstep(0.4, 1.0, depth / full);
+                cover = smoothstep(top - thick - 0.01, top - thick + 0.01, world.y);
+            }
+            // Plastered on the windward walls.
+            let wind = globals.rain_sun.zw;
+            let speed = length(wind);
+            if speed > 0.1 {
+                let facing = clamp(dot(geo.xz, -wind / speed), 0.0, 1.0);
+                let amount = facing * clamp(speed / 5.0, 0.0, 1.0) * clamp(depth / 4.0, 0.0, 1.0);
+                cover = max(cover, smoothstep(0.55, 0.75, amount * 0.7 + n * 0.5));
+            }
+        }
+    }
+    if cover <= 0.0 { return m; }
+    m.albedo = mix(m.albedo, SNOW_ALBEDO, cover);
+    m.roughness = mix(m.roughness, 0.7, cover);
+    m.f0 = mix(m.f0, vec3(0.018), cover);
+    m.metal *= 1.0 - cover;
+    m.normal = normalize(mix(m.normal, geo, cover));
+    m.ao = mix(m.ao, 1.0, 0.8 * cover);
+    m.subsurface *= 1.0 - cover;
+    m.emission *= 1.0 - cover;
+    // Its crystals, a few in every 4 cm grain turned at random about the face: the ones that
+    // mirror the sun toward the eye glint, seen only where the pixel is smaller than the grain.
+    let near = 1.0 - smoothstep(0.015, 0.05, rain_footprint(pos));
+    if near > 0.0 {
+        let q = vec3<i32>(floor(world * 24.0));
+        let seed = rain_seed(vec2(q.x + q.y * 7919, q.z), 29u);
+        if rain_rand(seed) < 0.08 {
+            let tilt = vec3(rain_rand(seed + 1u), rain_rand(seed + 2u), rain_rand(seed + 3u)) - 0.5;
+            let facet = normalize(geo + 0.6 * tilt);
+            let h = normalize(globals.rt_light.xyz - normalize(pos));
+            rt_sparkle = cover * near * 1.5 * pow(max(dot(facet, h), 0.0), 400.0);
+        }
+    }
+    return m;
 }
 // RT lighting: a fragment without maps, its albedo (`albedo`, gamma) lit and fogged, wet as the
 // rain left it.
@@ -4013,5 +4122,216 @@ fn rain_drop_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32) -> v
         a *= (1.0 - in.uv.x * in.uv.x) * smoothstep(0.0, 0.12, in.uv.y)
             * (1.0 - smoothstep(0.75, 1.0, in.uv.y));
     }
+    return vec4(in.colour * a, a);
+}
+// RT lighting's snow flakes (gfx/snow.rs, snow.rs): instanced quads, no vertex data. The tracks of
+// SNOW_NEAR² one-block cells, then SNOW_FAR² four-block ones, SNOW_TRACKS (SNOW_FAR_TRACKS) a
+// cell; the cells tile the world (a tile SNOW_NEAR, or 4 SNOW_FAR, blocks wide, and SNOW_*_BAND
+// tall), every tile the same, and each flake is drawn at the copy of its place nearest the camera:
+// the wind blows the field through the grid with no edge to empty from, and the flakes stay put in
+// the world as the head moves (a band that followed the camera would carry them up and down with
+// it, as the rain's does, unseen at 8 m/s, not at 1). Each flake's size, speed and spiral are
+// hashed from its cell in the tile: the same flakes for both eyes.
+const SNOW_NEAR: u32 = 48u;
+const SNOW_FAR: u32 = 32u;
+const SNOW_TRACKS: u32 = 48u;
+const SNOW_FAR_TRACKS: u32 = 24u;
+const SNOW_NEAR_BAND: f32 = 12.0;
+const SNOW_FAR_BAND: f32 = 24.0;
+// The smallest flake drawn and the largest, as their water's diameter (mm): the smaller ones only
+// veil the distance (the froxels' snow medium). A flake is three times as wide (snow.rs
+// `flake_diameter`).
+const SNOW_MELT_MIN: f32 = 0.4;
+const SNOW_MELT_MAX: f32 = 3.0;
+// The rate whose flakes fill every track (mm/h of water: a blizzard).
+const SNOW_HEAVIEST: f32 = 5.0;
+// A flake's blur is its path over the eye's exposure (s), shorter than a drop's streak.
+const SNOW_EXPOSURE: f32 = 0.02;
+// How long (s) the wind's change where a flake is carries it: a gust pushes the flakes it meets
+// from then on, it doesn't move their whole fall at once.
+const SNOW_GUST_MEMORY: f32 = 1.5;
+// How long (s) a flake rests where it lands before it joins the cover.
+const SNOW_REST: f32 = 1.2;
+struct SnowOut {
+    @builtin(position) clip: vec4<f32>,
+    // Across the flake (-1 to 1) and along its blur (0 its head, 1 its tail).
+    @location(0) uv: vec2<f32>,
+    // The light it sends to the eye (paper whites), how much of the pixel it covers at most, and
+    // the share of the quad's length each round end takes.
+    @location(1) colour: vec3<f32>,
+    @location(2) alpha: f32,
+    @location(3) cap: f32,
+}
+// `v` brought within half a `period` of 0, both components.
+fn snow_wrap(v: vec2<f32>, period: f32) -> vec2<f32> { return v - period * floor(v / period + 0.5); }
+// Where the flake of tile cell `start` (world, in the tile) is drawn after falling `fallen` s in
+// the prevailing wind `base` and, for the last SNOW_GUST_MEMORY s, the wind `wind` where it is, its
+// spiral at `flutter`: the copy nearest the camera's `camera` (x, z).
+fn snow_place(start: vec2<f32>, base: vec2<f32>, wind: vec2<f32>, fallen: f32, flutter: vec2<f32>,
+    camera: vec2<f32>, period: f32) -> vec2<f32> {
+    let drift = base * fallen + (wind - base) * min(fallen, SNOW_GUST_MEMORY);
+    return camera + snow_wrap(start + drift + flutter - camera, period);
+}
+// The light a flake at world `p` sends toward the eye along `view` (from the eye): a small white
+// body, not a lens. The sky's light around it (the sky above and the sky behind the eye), the sun
+// (the moon) by a diffuse sphere's phase (Lambert's sphere: full with the sun behind the eye,
+// dark with it behind the flake) plus the crystals' forward lobe (the flakes lit up against the
+// low sun), unless the columns toward it stand above the flake; now and then, near, a crystal's
+// glint as it tumbles; the light sources by the block light above its column and the moving ones.
+fn snow_flake_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32, seed: u32, near: bool)
+    -> vec3<f32> {
+    let sky = rain_sky(vec3(0.0, 1.0, 0.0)) * 0.55
+        + rain_sky(normalize(vec3(-view.x, 0.35, -view.z))) * 0.45;
+    let l = globals.rt_light.xyz;
+    var lit = globals.rt_sun_light.rgb * globals.rt_light.w;
+    for (var k = 1; k <= 6; k++) {
+        let q = p + l * (f32(k) * 2.5);
+        let w = rain_cell(vec2<i32>(floor(q.xz)));
+        if w != 0u && rain_height(w) > q.y {
+            lit = vec3(0.0);
+            break;
+        }
+    }
+    let c = dot(view, l);
+    let a = acos(clamp(-c, -1.0, 1.0));
+    let sphere = (sin(a) + (3.14159265 - a) * cos(a)) / 3.14159265;
+    let g = 0.7;
+    let forward = (1.0 - g * g) / (12.566 * pow(1.0 + g * g - 2.0 * g * c, 1.5));
+    var glint = 0.0;
+    if near {
+        let tick = u32(floor(globals.rt_water.z * 7.0 + 7.0 * rain_rand(seed + 9u)));
+        if rain_rand(seed * 31u + tick) > 0.985 { glint = 3.0; }
+    }
+    var level = rain_light(column) - max(p.y - ground, 0.0);
+    let rel = p - rain_world(vec3(0.0));
+    let count = min(u32(globals.time.z), 16u);
+    for (var i = 0u; i < count; i++) {
+        let d = globals.dynamic_lights[i];
+        level = max(level, d.w - distance(rel, d.xyz));
+    }
+    let torch = BLOCK_LIGHT * pow(clamp(level / 15.0, 0.0, 1.0), 2.0) * 0.8;
+    return 0.9 * (sky + torch) + lit * (0.6 * sphere + 0.5 * forward + glint);
+}
+@vertex fn vs_snow(@builtin(vertex_index) vertex: u32, @builtin(instance_index) id: u32)
+    -> SnowOut {
+    var out: SnowOut;
+    out.clip = vec4(2.0, 2.0, 2.0, 1.0);
+    out.uv = vec2(0.0);
+    out.colour = vec3(0.0);
+    out.alpha = 0.0;
+    out.cap = 0.5;
+    let rate = globals.linear.z;
+    if rate <= 0.0 { return out; }
+    let near_count = SNOW_NEAR * SNOW_NEAR * SNOW_TRACKS;
+    let near = id < near_count;
+    let side = select(SNOW_FAR, SNOW_NEAR, near);
+    let size = select(4.0, 1.0, near);
+    let band = select(SNOW_FAR_BAND, SNOW_NEAR_BAND, near);
+    let local = select(id - near_count, id, near);
+    let tracks = select(SNOW_FAR_TRACKS, SNOW_TRACKS, near);
+    let index = local / tracks;
+    let period = f32(side) * size;
+    let tile = vec2(i32(index % side), i32(index / side));
+    let seed = rain_seed(tile, local % tracks + select(224u, 160u, near));
+    // More flakes the harder it snows, and larger (Gunn and Marshall's sizes, snow.rs `slope`).
+    if rain_rand(seed) > clamp(pow(rate / SNOW_HEAVIEST, 0.6), 0.04, 1.0) { return out; }
+    let slope = 2.55 * pow(rate, -0.48);
+    let span = 1.0 - exp(-slope * (SNOW_MELT_MAX - SNOW_MELT_MIN));
+    let melted = SNOW_MELT_MIN - log(1.0 - rain_rand(seed + 1u) * span) / slope;
+    let diameter = 3.0 * melted;
+    // Locatelli and Hobbs' aggregates (snow.rs `terminal_velocity`), each a little its own.
+    let speed = 0.8 * pow(diameter, 0.16) * (0.85 + 0.3 * rain_rand(seed + 5u));
+    let t = globals.rt_water.z;
+    let camera = rain_world(vec3(0.0));
+    // Its height in its tile's band, falling with the time (`phase` 1 at the band's top, 0 at its
+    // foot), the copy nearest the camera, and the seconds since it left the band's top.
+    let phase = fract(rain_rand(seed + 4u) - t * speed / band);
+    let dy = band * phase - camera.y;
+    let y = camera.y + dy - band * floor(dy / band + 0.5);
+    let fallen = (1.0 - phase) * band / speed;
+    // Its spiral as it tumbles: a few centimetres across, turning one way or the other.
+    let radius = 0.02 + 0.08 * rain_rand(seed + 6u);
+    let spin = (1.5 + 3.0 * rain_rand(seed + 7u)) * select(-1.0, 1.0, rain_rand(seed + 8u) > 0.5);
+    let turn = 6.2831853 * rain_rand(seed + 9u);
+    let flutter = radius * vec2(cos(t * spin + turn), sin(t * spin + turn));
+    let start = (vec2<f32>(tile) + vec2(rain_rand(seed + 2u), rain_rand(seed + 3u))) * size;
+    let base = globals.rain_sun.zw;
+    var wind = base;
+    var xz = snow_place(start, base, base, fallen, flutter, camera.xz, period);
+    // Near, the wind the terrain makes where it is (gfx/wind.rs) and its gust carry it.
+    if near && wind_f(10u) > 0.0 {
+        let here = vec3(xz.x, y, xz.y);
+        let w = wind_at(here - camera, here);
+        wind = w.xz * (0.8 + 0.6 * w.y);
+        xz = snow_place(start, base, wind, fallen, flutter, camera.xz, period);
+    }
+    var column = rain_cell(vec2<i32>(floor(xz)));
+    if column == 0u || !snow_falls(column) { return out; }
+    var ground = rain_top(column);
+    var head = vec3(xz.x, y, xz.y);
+    var vel = vec3(wind.x, -speed, wind.y)
+        + vec3(-flutter.y, 0.0, flutter.x) * spin;
+    var rest = 1.0;
+    if y < ground {
+        // It landed `since` s ago: near, it rests where it landed a moment (not on water, where
+        // it melts), then joins the cover.
+        let since = (ground - y) / speed;
+        if !near || since > SNOW_REST { return out; }
+        let landed = fallen - since;
+        let then = t - since;
+        let still = radius * vec2(cos(then * spin + turn), sin(then * spin + turn));
+        let at = snow_place(start, base, wind, landed, still, camera.xz, period);
+        column = rain_cell(vec2<i32>(floor(at)));
+        if column == 0u || !snow_falls(column) || rain_surface(column) == 10u { return out; }
+        ground = rain_top(column);
+        head = vec3(at.x, ground + 0.004, at.y);
+        vel = vec3(0.0);
+        rest = 1.0 - since / SNOW_REST;
+    }
+    let rel = head - camera;
+    let distance = length(rel);
+    // Faded out toward the tiles' seams (the grid's edge, the band's ends), between the grids,
+    // where its fall wraps (from the band's foot to its top, which moves it sideways) and right at
+    // the eye.
+    let reach = period * 0.5;
+    var fade = 1.0 - smoothstep(reach * 0.7, reach * 0.95, length(rel.xz));
+    if !near { fade *= smoothstep(18.0, 23.0, length(rel.xz)); }
+    fade *= 1.0 - smoothstep(band * 0.36, band * 0.48, abs(rel.y));
+    if rest >= 1.0 { fade *= smoothstep(0.0, 0.06, phase) * (1.0 - smoothstep(0.94, 1.0, phase)); }
+    fade *= smoothstep(0.15, 0.6, distance) * rest;
+    if fade <= 0.0 { return out; }
+    let pixel = rain_footprint(rel);
+    let toward = rel / max(distance, 1e-4);
+    out.colour = snow_flake_light(head, toward, column, ground, seed, near);
+    // HORIZON_RT_DEBUG=10: the flakes in cyan.
+    if globals.rt_mode.y > 3.5 && globals.rt_mode.y < 4.5 { out.colour = vec3(0.0, 4.0, 4.0); }
+    let corner = vec2(f32(vertex & 1u) * 2.0 - 1.0, f32(vertex >> 1u));
+    // A round flake facing the eye, blurred along its path over the exposure as much as the path
+    // crosses the view, a pixel wide at least: its coverage spread over the quad (whose soft disc
+    // fills about 0.6 of it).
+    let d = diameter * 0.001;
+    let width = max(d, pixel);
+    let moving = length(vel);
+    var axis = select(vec3(0.0, -1.0, 0.0), vel / max(moving, 1e-5), moving > 1e-4);
+    axis -= toward * dot(axis, toward);
+    let crossing = length(axis);
+    if crossing > 1e-3 {
+        axis /= crossing;
+    } else {
+        axis = normalize(cross(toward, vec3(1.0, 0.0, 0.0)) + vec3(0.0, 1e-4, 0.0));
+    }
+    let side_axis = normalize(cross(axis, toward));
+    let total = moving * SNOW_EXPOSURE * crossing + width;
+    let at = rel + axis * (width * 0.5 - corner.y * total) + side_axis * (corner.x * width * 0.5);
+    out.clip = globals.view_proj * vec4(at, 1.0);
+    out.uv = corner;
+    out.cap = clamp(width * 0.5 / total, 1e-3, 0.5);
+    out.alpha = min(0.785 * d * d / (width * total) / 0.6, 0.95) * fade;
+    return out;
+}
+@fragment fn fs_snow(in: SnowOut) -> @location(0) vec4<f32> {
+    let along = max(max(in.cap - in.uv.y, in.uv.y - (1.0 - in.cap)), 0.0) / in.cap;
+    let r = length(vec2(in.uv.x, along));
+    let a = in.alpha * (1.0 - smoothstep(0.5, 1.0, r));
     return vec4(in.colour * a, a);
 }

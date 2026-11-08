@@ -211,6 +211,7 @@ pub(super) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         rain: Default::default(),
         wetness: Default::default(),
         rain_map: None,
+        snow: Default::default(),
         weather: &[],
         weather_time: horizon_client::weather::Time::new(0, 0.0),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
