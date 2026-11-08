@@ -1365,6 +1365,7 @@ mod tests {
                 servers: Vec::new(),
             },
             cave_culling: false,
+            cloud_distance: 1024,
             gpu_culling: true,
             entity_culling: EntityCullingMode::Synchronous,
             entity_culling_precheck: 128,

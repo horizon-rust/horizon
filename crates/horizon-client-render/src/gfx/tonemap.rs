@@ -191,6 +191,10 @@ pub struct Vignette<'a> {
 /// Whether the vignette draws in the grading and the curve's pass, over the finished frame as
 /// vanilla draws it (`Vignette`): on unless `HORIZON_VIGNETTE_CURVE=0`, which blends its quad over
 /// the scene's light before the tone mapping, as before.
+#[expect(
+    dead_code,
+    reason = "its caller in gfx.rs (68218d890, the vignette in the grading's pass) was lost merging main into final-all; kept to port it back"
+)]
 pub fn vignette_in_curve() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_VIGNETTE_CURVE").map_or(true, |v| v != "0"))
@@ -968,6 +972,10 @@ impl Tonemap {
 
     /// Whether `run` grades the scene of `size` and draws the curve in the same pass, `keep_graded`
     /// as `run` takes it: the pass that draws a `Vignette`.
+    #[expect(
+        dead_code,
+        reason = "its caller in gfx.rs (68218d890, the vignette in the grading's pass) was lost merging main into final-all; kept to port it back"
+    )]
     pub fn fuses(&self, size: [u32; 2], keep_graded: bool) -> bool {
         self.post
             && self.grading.is_some()

@@ -2506,6 +2506,7 @@ mod tests {
             [
                 Item::Vanilla(Opt::Clouds),
                 Item::Vanilla(Opt::CloudRange),
+                Item::Horizon(H::CloudDistance),
                 Item::Horizon(H::EarthCurvature),
             ]
         );
