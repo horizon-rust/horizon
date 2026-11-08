@@ -103,18 +103,99 @@ impl Game<'_> {
         }
     }
 
+    /// An armor stand's synced instances: movement speed (its first
+    /// `aiStep`), its equipment's modifiers and what `/attribute` changed.
+    pub(super) fn stand_attributes(
+        &self,
+        id: u32,
+        equipment: &[Option<horizon_client::items::ItemStack>; 6],
+    ) -> Vec<AttributeSnapshot> {
+        const KIND: &str = "minecraft:armor_stand";
+        let mut out = Vec::new();
+        if let Some(a) = self.synced_attribute(KIND, "minecraft:movement_speed") {
+            instance(
+                &mut out,
+                a,
+                self.attribute_default(KIND, "minecraft:movement_speed"),
+            );
+        }
+        let slots = horizon_client::entities::ArmorStand::SLOTS
+            .into_iter()
+            .zip(equipment.iter().map(|s| s.as_ref().map(|s| &s.item)));
+        self.attr_sources()
+            .equipment_attributes(KIND, |_| None, slots, &mut out);
+        self.generic_attributes_of(Target::Stand(id), &mut out);
+        out
+    }
+
+    /// The instances a server player's tick creates, and
+    /// `ServerPlayer.updatePlayerAttributes`: a creative player reaches 0.5
+    /// further to blocks and 2 to entities. Its client reads the reach from
+    /// these synced modifiers. (The crouching player's waypoint range is
+    /// server-side only: lan_waypoints.rs hides it.)
+    pub(super) fn update_player_attributes(&mut self) {
+        let creative = self.mode_id() == 1;
+        let Some(p) = self.player.as_mut() else {
+            return;
+        };
+        // LivingEntity.aiStep's removeFrost reads the movement speed instance
+        // every tick, which creates it (and its first sync).
+        if let Some(key) = p.attributes.key("minecraft:movement_speed") {
+            let _ = p.attributes.get_instance(Some(key));
+        }
+        for (attribute, id, amount) in [
+            (
+                "minecraft:block_interaction_range",
+                "minecraft:creative_mode_block_range",
+                0.5,
+            ),
+            (
+                "minecraft:entity_interaction_range",
+                "minecraft:creative_mode_entity_range",
+                2.0,
+            ),
+        ] {
+            let Some(key) = p.attributes.key(attribute) else {
+                continue;
+            };
+            // getAttribute creates the instance, a creative player's or not.
+            if !matches!(p.attributes.get_instance(Some(key.clone())), Ok(Some(_))) {
+                continue;
+            }
+            // addOrUpdateTransientModifier with the same modifier and
+            // removeModifier of a missing one leave the instance clean.
+            let has = p.attributes.has_modifier(Some(key), id).unwrap_or(false);
+            if has != creative {
+                let _ = p.set_modifier(attribute, id, amount, "add_value", creative);
+            }
+        }
+    }
+}
+
+/// What a mob's synced attribute instances are read from: the attribute catalog, the item table
+/// and what `/attribute` changed. Plain tables, so a helper thread can read them
+/// (`lan_entities`).
+#[derive(Clone, Copy)]
+pub(super) struct AttrSources<'a> {
+    catalog: &'a horizon_world::attributes::entity::Catalog,
+    items: &'a horizon_client::items::Items,
+    commands:
+        &'a std::collections::HashMap<Target, horizon_world::attributes::entity::EntityAttributes>,
+}
+
+impl AttrSources<'_> {
     /// The registry id of a client-syncable attribute the entity type has
     /// (`AttributeMap.getInstance` is null for the others), by name.
-    fn synced_attribute(&self, entity: &str, name: &str) -> Option<i32> {
-        let catalog = &self.motion.attributes;
+    pub(super) fn synced_attribute(&self, entity: &str, name: &str) -> Option<i32> {
+        let catalog = self.catalog;
         let id = catalog.id(name)?;
         (catalog.attribute(id).syncable && catalog.default_base(entity, id).is_some())
             .then(|| id.registry_id())
     }
 
     /// The type's base value of an attribute, as the instance starts.
-    fn attribute_default(&self, entity: &str, name: &str) -> f64 {
-        let catalog = &self.motion.attributes;
+    pub(super) fn attribute_default(&self, entity: &str, name: &str) -> f64 {
+        let catalog = self.catalog;
         catalog
             .id(name)
             .and_then(|id| catalog.default_base(entity, id))
@@ -124,7 +205,7 @@ impl Game<'_> {
     /// `LivingEntity.collectEquipmentChanges`: each worn or held item's
     /// attribute modifiers, slot by slot in `EquipmentSlot` order, create
     /// their instances (an instance without a modifier keeps its base).
-    fn equipment_attributes<'a>(
+    pub(super) fn equipment_attributes<'a>(
         &self,
         entity: &str,
         base: impl Fn(&str) -> Option<f64>,
@@ -132,7 +213,7 @@ impl Game<'_> {
         out: &mut Vec<AttributeSnapshot>,
     ) {
         for (slot, item) in slots {
-            let Some(info) = item.and_then(|i| self.items().get(i)) else {
+            let Some(info) = item.and_then(|i| self.items.get(i)) else {
                 continue;
             };
             for (attribute, id, amount, op, group) in &info.modifiers {
@@ -306,79 +387,31 @@ impl Game<'_> {
         }
     }
 
-    /// An armor stand's synced instances: movement speed (its first
-    /// `aiStep`), its equipment's modifiers and what `/attribute` changed.
-    pub(super) fn stand_attributes(
-        &self,
-        id: u32,
-        equipment: &[Option<horizon_client::items::ItemStack>; 6],
-    ) -> Vec<AttributeSnapshot> {
-        const KIND: &str = "minecraft:armor_stand";
-        let mut out = Vec::new();
-        if let Some(a) = self.synced_attribute(KIND, "minecraft:movement_speed") {
-            instance(
-                &mut out,
-                a,
-                self.attribute_default(KIND, "minecraft:movement_speed"),
-            );
-        }
-        let slots = horizon_client::entities::ArmorStand::SLOTS
-            .into_iter()
-            .zip(equipment.iter().map(|s| s.as_ref().map(|s| &s.item)));
-        self.equipment_attributes(KIND, |_| None, slots, &mut out);
-        self.generic_attributes_of(Target::Stand(id), &mut out);
-        out
-    }
-
-    /// The instances a server player's tick creates, and
-    /// `ServerPlayer.updatePlayerAttributes`: a creative player reaches 0.5
-    /// further to blocks and 2 to entities. Its client reads the reach from
-    /// these synced modifiers. (The crouching player's waypoint range is
-    /// server-side only: lan_waypoints.rs hides it.)
-    pub(super) fn update_player_attributes(&mut self) {
-        let creative = self.mode_id() == 1;
-        let Some(p) = self.player.as_mut() else {
-            return;
-        };
-        // LivingEntity.aiStep's removeFrost reads the movement speed instance
-        // every tick, which creates it (and its first sync).
-        if let Some(key) = p.attributes.key("minecraft:movement_speed") {
-            let _ = p.attributes.get_instance(Some(key));
-        }
-        for (attribute, id, amount) in [
-            (
-                "minecraft:block_interaction_range",
-                "minecraft:creative_mode_block_range",
-                0.5,
-            ),
-            (
-                "minecraft:entity_interaction_range",
-                "minecraft:creative_mode_entity_range",
-                2.0,
-            ),
-        ] {
-            let Some(key) = p.attributes.key(attribute) else {
-                continue;
-            };
-            // getAttribute creates the instance, a creative player's or not.
-            if !matches!(p.attributes.get_instance(Some(key.clone())), Ok(Some(_))) {
-                continue;
-            }
-            // addOrUpdateTransientModifier with the same modifier and
-            // removeModifier of a missing one leave the instance clean.
-            let has = p.attributes.has_modifier(Some(key), id).unwrap_or(false);
-            if has != creative {
-                let _ = p.set_modifier(attribute, id, amount, "add_value", creative);
-            }
-        }
-    }
-
     /// The instances `/attribute` created in an entity's generic map
     /// replace the ones derived from its state.
-    fn generic_attributes_of(&self, t: Target, out: &mut Vec<AttributeSnapshot>) {
-        if let Some(map) = self.cmds.attributes.get(&t) {
+    pub(super) fn generic_attributes_of(&self, t: Target, out: &mut Vec<AttributeSnapshot>) {
+        if let Some(map) = self.commands.get(&t) {
             generic_attributes_into(map, out);
         }
+    }
+}
+
+impl Game<'_> {
+    pub(super) fn attr_sources(&self) -> AttrSources<'_> {
+        AttrSources {
+            catalog: &self.motion.attributes,
+            items: self.items(),
+            commands: &self.cmds.attributes,
+        }
+    }
+    fn synced_attribute(&self, entity: &str, name: &str) -> Option<i32> {
+        self.attr_sources().synced_attribute(entity, name)
+    }
+    fn attribute_default(&self, entity: &str, name: &str) -> f64 {
+        self.attr_sources().attribute_default(entity, name)
+    }
+    fn generic_attributes_of(&self, t: Target, out: &mut Vec<AttributeSnapshot>) {
+        self.attr_sources().generic_attributes_of(t, out);
     }
 }
 

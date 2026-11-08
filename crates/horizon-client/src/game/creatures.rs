@@ -1179,15 +1179,23 @@ impl Game<'_> {
         // yet (the first tick after a load, a fresh spawn) or has moved since
         // would be pushed out of a ladder or scaffolding. Refreshed here, from
         // where each mob stands now, before the snapshot others push it by.
+        let lanes = mob_islands::thread_lanes();
         let climbing: Vec<bool> = {
             let w = self.mob_world_base(&[]);
-            self.mobs.iter().map(|m| m.on_climbable(&w)).collect()
+            let rebuild = mob_islands::hookless(&w);
+            // Each mob's answer reads only the blocks: helper threads give the same.
+            mob_islands::par_map(&self.mobs, lanes, 512, |part, out| {
+                let w = rebuild();
+                out.extend(part.iter().map(|m| m.on_climbable(&w)));
+            })
         };
         for (m, climbing) in self.mobs.iter_mut().zip(climbing) {
             m.on_climbable = climbing;
         }
         let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
-        snapshot.extend(self.mobs.iter().map(|m| seen(m, uuid)));
+        snapshot.extend(mob_islands::par_map(&self.mobs, lanes, 512, |part, out| {
+            out.extend(part.iter().map(|m| seen(m, uuid)));
+        }));
         let mut events = std::mem::take(&mut self.creatures.event_buf);
         events.clear();
         // SulfurCube.primeWhenOnPoweredPosition runs before super.tick adopts
@@ -1286,7 +1294,7 @@ impl Game<'_> {
             };
             // The mobs in islands on several threads (mob_islands.rs), or all of them in one
             // group, in order, on this one.
-            let lanes = if mob_islands::enabled()
+            let group_lanes = if mob_islands::enabled()
                 && !shared.mods
                 && super::tick_profile::start().is_none()
                 && !horizon_client::random_source::repeating_per_thread()
@@ -1295,8 +1303,8 @@ impl Game<'_> {
             } else {
                 1
             };
-            let plan = if lanes > 1 {
-                mob_islands::plan(&mobs, &snapshot, &roles, lanes)
+            let plan = if group_lanes > 1 {
+                mob_islands::plan(&mobs, &snapshot, &roles, group_lanes)
             } else {
                 None
             };

@@ -169,6 +169,10 @@ impl States {
         }
         self.len += 1;
     }
+    /// The state added `i`-th since the last clear.
+    pub fn get_mut(&mut self, i: usize) -> &mut EntityState {
+        &mut self.list[..self.len][i]
+    }
     pub fn as_slice(&self) -> &[EntityState] {
         &self.list[..self.len]
     }

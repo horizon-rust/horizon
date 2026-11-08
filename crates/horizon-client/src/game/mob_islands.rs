@@ -796,19 +796,11 @@ impl horizon_client::mobs::WhoLookup for LoopLookup {
     }
 }
 
-/// Run `groups` at once, one thread each (the first on this one), each with the thread-local
-/// settings of this thread. The groups' world is `base` without its hooks into the game, which
-/// can't leave this thread: native mod effects (none: groups only run without native mods) and
-/// the UUID lookup ([`LoopLookup`], the same answers).
-pub(super) fn run_parallel(
-    groups: &mut [Group],
-    board: &Board,
-    base: &MobWorld,
-    shared: &Shared,
-    difficulty: &(impl Fn(usize) -> LocalDifficulty + Sync),
-) {
-    let level = horizon_client::block_contact::current_level();
-    let tnt = horizon_client::mobs::sulfur_cube::tnt_explodes();
+/// `base` without its hooks into the game, which can't leave the server thread, as a recipe a
+/// helper thread builds its own world from: native mod effects (none run on helpers: the phases
+/// that use them stay serial with native mods), the UUID lookup and the foreign mobs (set by the
+/// caller).
+pub(super) fn hookless<'w>(base: &MobWorld<'w>) -> impl Fn() -> MobWorld<'w> + Sync + use<'w> {
     // Every field but the two hooks, named, so that a field added to `MobWorld` is decided here.
     let MobWorld {
         world,
@@ -855,6 +847,120 @@ pub(super) fn run_parallel(
         foreign: _,
         border,
     } = base.clone();
+    move || MobWorld {
+        world,
+        registry,
+        facts,
+        fluid_tables,
+        movement,
+        collision,
+        suffocation,
+        data,
+        player: player.clone(),
+        controlling_player_movement,
+        nearest_player,
+        others,
+        dragon,
+        leash_boats,
+        others_grid,
+        others_index,
+        others_villagers,
+        others_solid,
+        daylight,
+        monsters_burn,
+        game_time,
+        day_time,
+        raining,
+        thundering,
+        level: level_key,
+        block_tags,
+        landing,
+        biomes,
+        mob_griefing,
+        universal_anger,
+        mob_drops,
+        max_entity_cramming,
+        difficulty: base_difficulty,
+        dimension_type,
+        world_seed,
+        sea_level,
+        teams: std::sync::Arc::clone(&teams),
+        items,
+        lid_openers,
+        mod_effects: None,
+        who_lookup: None,
+        foreign: None,
+        border,
+    }
+}
+
+/// `f` over `items` on up to `lanes` threads (this one included), in order: the results as one
+/// thread would give them. One thread for fewer than `min` items.
+pub(super) fn par_map<T: Sync, R: Send>(
+    items: &[T],
+    lanes: usize,
+    min: usize,
+    f: impl Fn(&[T], &mut Vec<R>) + Sync,
+) -> Vec<R> {
+    let mut out = Vec::with_capacity(items.len());
+    if lanes <= 1 || items.len() < min {
+        f(items, &mut out);
+        return out;
+    }
+    let size = items.len().div_ceil(lanes);
+    let parts: Vec<Vec<R>> = std::thread::scope(|s| {
+        let f = &f;
+        let mut chunks = items.chunks(size);
+        let first = chunks.next().unwrap_or(&[]);
+        let handles: Vec<_> = chunks
+            .map(|c| {
+                s.spawn(move || {
+                    let mut part = Vec::with_capacity(c.len());
+                    f(c, &mut part);
+                    part
+                })
+            })
+            .collect();
+        let mut head = Vec::with_capacity(first.len());
+        f(first, &mut head);
+        std::iter::once(head)
+            .chain(
+                handles
+                    .into_iter()
+                    .map(|h| h.join().expect("a helper thread panicked")),
+            )
+            .collect()
+    });
+    for p in parts {
+        out.extend(p);
+    }
+    out
+}
+
+/// The threads a parallel phase of the tick may take (`horizon-threads`' count, at most 8), or 1
+/// while the parallel tick is off.
+pub(super) fn thread_lanes() -> usize {
+    if enabled() {
+        horizon_threads::worker_count().clamp(1, 8)
+    } else {
+        1
+    }
+}
+
+/// Run `groups` at once, one thread each (the first on this one), each with the thread-local
+/// settings of this thread. The groups' world is `base` without its hooks into the game, which
+/// can't leave this thread: native mod effects (none: groups only run without native mods) and
+/// the UUID lookup ([`LoopLookup`], the same answers).
+pub(super) fn run_parallel(
+    groups: &mut [Group],
+    board: &Board,
+    base: &MobWorld,
+    shared: &Shared,
+    difficulty: &(impl Fn(usize) -> LocalDifficulty + Sync),
+) {
+    let level = horizon_client::block_contact::current_level();
+    let tnt = horizon_client::mobs::sulfur_cube::tnt_explodes();
+    let rebuild = hookless(base);
     let host = shared.host_uuid;
     let run = |g: &mut Group| {
         let lookup = LoopLookup(host);
@@ -862,51 +968,9 @@ pub(super) fn run_parallel(
             board,
             reader: Cell::new(0),
         };
-        let base = MobWorld {
-            world,
-            registry,
-            facts,
-            fluid_tables,
-            movement,
-            collision,
-            suffocation,
-            data,
-            player: player.clone(),
-            controlling_player_movement,
-            nearest_player,
-            others,
-            dragon,
-            leash_boats,
-            others_grid,
-            others_index,
-            others_villagers,
-            others_solid,
-            daylight,
-            monsters_burn,
-            game_time,
-            day_time,
-            raining,
-            thundering,
-            level: level_key,
-            block_tags,
-            landing,
-            biomes,
-            mob_griefing,
-            universal_anger,
-            mob_drops,
-            max_entity_cramming,
-            difficulty: base_difficulty,
-            dimension_type,
-            world_seed,
-            sea_level,
-            teams: std::sync::Arc::clone(&teams),
-            items,
-            lid_openers,
-            mod_effects: None,
-            who_lookup: Some(&lookup),
-            foreign: Some(&foreign),
-            border,
-        };
+        let mut base = rebuild();
+        base.who_lookup = Some(&lookup);
+        base.foreign = Some(&foreign);
         g.run_with(
             &base,
             shared,
