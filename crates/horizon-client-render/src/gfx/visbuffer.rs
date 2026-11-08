@@ -22,7 +22,7 @@ use super::pack_timing::PassTiming;
 /// Arena pages one resolve draw reads (`visbuffer.wgsl`'s `vis_page_0`...).
 pub const PAGE_SLOTS: u32 = 16;
 /// Arena pages an ID names (`visbuffer.wgsl`'s `vis_id`): frames with more draw without it.
-pub const MAX_PAGES: u32 = 64;
+pub const MAX_PAGES: u32 = 32;
 /// The resolve binds that many pages, the block tables and the origins by section id.
 const STORAGE_BUFFERS: u32 = PAGE_SLOTS + 2;
 const IDS: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
