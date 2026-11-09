@@ -1,44 +1,73 @@
-//! The acting player's anvil wear and its level events.
-use super::Game;
-use horizon_core::random::RandomSource;
+//! `AnvilScreen`'s rename box: the 50-character `EditBox`, read-only while
+//! the input slot is empty (`AnvilScreen.slotChanged`).
+use super::Station;
 
-impl Game<'_> {
-    /// `AnvilMenu.onTake`'s level part: out of creative a 12% chance
-    /// (`AnvilBlock.damage`) to wear the anvil a stage, or break a damaged one
-    /// (level event 1029); otherwise level event 1030. True when it broke.
-    pub(in crate::game) fn anvil_used(&mut self, pos: [i32; 3], creative: bool) -> bool {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
-        let name = self.res.facts().get(state).name.clone();
-        let anvil = matches!(
-            &*name,
-            "minecraft:anvil" | "minecraft:chipped_anvil" | "minecraft:damaged_anvil"
+/// `AnvilScreen`: `name.setMaxLength(50)`.
+pub(super) const NAME_CHARS: usize = 50;
+
+/// `AnvilScreen.init`: the unbordered box of 50 at the menu's name position,
+/// focused; `slotChanged` makes it editable once the input slot has an item.
+pub(super) fn rename_box() -> horizon_client::ui::EditBox {
+    let mut edit = horizon_client::ui::EditBox::new(0.0, 0.0, 103.0, 12.0);
+    edit.message = super::super::screen_info::tr("container.repair", &[]);
+    edit.bordered = false;
+    edit.max_length = NAME_CHARS;
+    edit.text_color = u32::MAX;
+    // AnvilScreen also sets `setTextColorUneditable(-1)`: white either way.
+    edit.text_color_uneditable = u32::MAX;
+    edit.focused = true;
+    edit.editable = false;
+    edit
+}
+
+/// `AnvilScreen.slotChanged`: the box shows the input's name, and only an
+/// input item makes it editable (`name.setEditable(!itemStack.isEmpty())`).
+/// A read-only box still keeps the focus, the caret keys and copy.
+pub(super) fn input_changed(station: &mut Station, name: String) {
+    station.name = name;
+    let value = station.name.clone();
+    station.rename.set_value(&value);
+    station.rename.editable = station.inputs[0].is_some();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Kind, Station};
+    use super::{input_changed, rename_box};
+
+    #[test]
+    fn the_rename_box_is_read_only_without_an_input_item() {
+        // AnvilScreen.init: no input yet, so the box is read-only but focused.
+        let station_box = rename_box();
+        assert!(station_box.focused && !station_box.editable);
+
+        // slotChanged with an item: editable, and it shows the item's name.
+        let mut station = Station::new_kind(Kind::Anvil, [0; 3]);
+        station.inputs[0] = Some(crate::items::ItemStack::new("minecraft:diamond_sword", 1));
+        input_changed(&mut station, "Diamond Sword".into());
+        assert!(station.rename.editable);
+        assert_eq!(station.rename.value, "Diamond Sword");
+
+        // The input is taken out again: read-only, and slotChanged's
+        // `setValue("")` empties it (the caller passes the empty name).
+        station.inputs[0] = None;
+        input_changed(&mut station, String::new());
+        assert!(!station.rename.editable);
+        assert_eq!(station.rename.value, "");
+        station.rename.set_value("Diamond Sword");
+
+        // A read-only box still keeps the caret keys; Backspace is consumed
+        // without taking a character.
+        assert!(
+            station
+                .rename
+                .key(winit::keyboard::KeyCode::ArrowLeft, false, false)
         );
-        if !creative
-            && anvil
-            && self
-                .player
-                .as_mut()
-                .is_some_and(|p| p.random.next_float() < 0.12)
-        {
-            match &*name {
-                "minecraft:anvil" => {
-                    let _ = self.set_state_named(pos, "minecraft:chipped_anvil", &["facing"]);
-                    self.native_anvil_damaged(self.dim.id(), pos, &name, "minecraft:chipped_anvil");
-                }
-                "minecraft:chipped_anvil" => {
-                    let _ = self.set_state_named(pos, "minecraft:damaged_anvil", &["facing"]);
-                    self.native_anvil_damaged(self.dim.id(), pos, &name, "minecraft:damaged_anvil");
-                }
-                _ => {
-                    let _ = self.world.set(pos[0], pos[1], pos[2], self.world.air);
-                    self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
-                    self.native_anvil_damaged(self.dim.id(), pos, &name, "minecraft:air");
-                    self.level_event_at(1029, pos, 0);
-                    return true;
-                }
-            }
-        }
-        self.level_event_at(1030, pos, 0);
-        false
+        assert!(
+            station
+                .rename
+                .key(winit::keyboard::KeyCode::Backspace, false, false)
+        );
+        assert_eq!(station.rename.value, "Diamond Sword");
     }
 }
