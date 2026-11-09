@@ -7,14 +7,13 @@
 //! follow the vanilla classes; sprite sets come from `particles/*.json`.
 use crate::{
     blocks::{BlockFacts, Fluid},
-    collisions::SceneCollisions,
     hud::Rect,
     mesher::Vertex,
     world::World,
 };
 use glam::{DVec3, Quat, Vec3 as FVec3};
 use horizon_core::{
-    geometry::{Aabb, Axis, Vec3, trig},
+    geometry::{Aabb, Vec3, trig},
     random::{LegacyRandom, RandomSource},
 };
 use horizon_protocol::entity_data::PositionSource;
@@ -27,6 +26,7 @@ use std::{
 
 pub use horizon_client_core::particle_type::ParticleType;
 pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape};
+mod collision;
 mod native;
 pub mod polytone;
 mod polytone_gpu;
@@ -1033,59 +1033,8 @@ impl Particle {
         !self.removed
     }
     /// `Particle.move` with `Entity.collideBoundingBox` against block collision shapes.
-    fn move_by(&mut self, level: &ParticleLevel, d: [f64; 3]) {
-        if self.free_move {
-            self.bb = self.bb.move_by(Vec3::new(d[0], d[1], d[2]));
-            self.set_location_from_bb();
-            return;
-        }
-        if self.stopped_by_collision {
-            return;
-        }
-        let original = d;
-        let mut moved = d;
-        let length2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-        if self.has_physics && length2 != 0.0 && length2 < 100.0 * 100.0 {
-            moved = level.collide(self.bb, d);
-        }
-        if moved != [0.0; 3] {
-            self.bb = self.bb.move_by(Vec3::new(moved[0], moved[1], moved[2]));
-            self.set_location_from_bb();
-        }
-        if original[1].abs() >= f64::from(1.0e-5f32) && moved[1].abs() < f64::from(1.0e-5f32) {
-            self.stopped_by_collision = true;
-        }
-        self.on_ground = original[1] != moved[1] && original[1] < 0.0;
-        if original[0] != moved[0] {
-            self.velocity[0] = 0.0;
-        }
-        if original[2] != moved[2] {
-            self.velocity[2] = 0.0;
-        }
-    }
-    /// `Particle.tick`.
-    fn base_tick(&mut self, level: &ParticleLevel) {
-        self.previous = self.position;
-        let age = self.age;
-        self.age += 1;
-        if age >= self.lifetime {
-            self.removed = true;
-            return;
-        }
-        self.velocity[1] -= 0.04 * f64::from(self.gravity);
-        self.move_by(level, self.velocity);
-        if self.speed_up_when_y_blocked && self.position[1] == self.previous[1] {
-            self.velocity[0] *= 1.1;
-            self.velocity[2] *= 1.1;
-        }
-        let f = f64::from(self.friction);
-        for c in &mut self.velocity {
-            *c *= f;
-        }
-        if self.on_ground {
-            self.velocity[0] *= f64::from(0.7f32);
-            self.velocity[2] *= f64::from(0.7f32);
-        }
+    pub(crate) fn move_by(&mut self, level: &ParticleLevel, d: [f64; 3]) {
+        self.move_by_cached(level, &mut None, d);
     }
     /// `getLightCoords(a)` from the world's smooth sky and block light (0..=240).
     fn light_coords(&self, partial: f32, sky: u32, block: u32) -> (u32, u32) {
@@ -1223,24 +1172,24 @@ pub struct ParticleLevel<'a> {
     /// Local player feet position and vertical velocity (`PlayerCloudParticle`).
     pub player: Option<([f64; 3], f64)>,
 }
+
 impl ParticleLevel<'_> {
-    fn collide(&self, bb: Aabb, d: [f64; 3]) -> [f64; 3] {
-        let mut scene = SceneCollisions {
-            world: self.world,
-            binding: self.collision,
-            subject: None,
-        };
-        let movement = Vec3::new(d[0], d[1], d[2]);
-        // `Entity.collideBoundingBox(null, ...)`: no entity shapes, no border. Where no
-        // block of the swept box's cells can collide, it finds no shape and the
-        // movement stands, as the resolution below would return it.
-        if scene.cells_without_collision(bb.expand_towards(movement)) {
-            return d;
-        }
-        match scene.resolve(bb, movement, 0.0, false) {
-            Ok(v) => [v.x, v.y, v.z],
-            Err(_) => d,
-        }
+    /// The local player's camera position (X, Y, Z) and distance from the viewer.
+    pub fn player_camera(&self) -> Option<([f64; 3], f64)> {
+        self.player
+    }
+    /// A single player in the level (position, eye height).
+    pub fn single_player(&self) -> Option<([f64; 3], f64)> {
+        self.player
+    }
+    /// The camera position and its bounding box's minimum and maximum Y.
+    pub fn camera_and_y(&self) -> [f64; 3] {
+        let (pos, _) = self.player.unwrap_or_default();
+        [
+            pos[0],
+            pos[1] - 0.2, // Rough eye height offset
+            pos[1] + 0.2,
+        ]
     }
     pub(crate) fn block_at(p: [f64; 3]) -> [i32; 3] {
         [
@@ -1249,39 +1198,10 @@ impl ParticleLevel<'_> {
             p[2].floor() as i32,
         ]
     }
-    /// The fluid at a block and `FluidState.getHeight`.
-    fn fluid(&self, b: [i32; 3]) -> (Fluid, f64) {
-        let s = self.facts.get(self.world.block(b[0], b[1], b[2]));
-        if s.fluid == Fluid::None {
-            return (Fluid::None, 0.0);
-        }
-        let above = self.facts.get(self.world.block(b[0], b[1] + 1, b[2]));
-        let height = if above.fluid == s.fluid {
-            1.0
-        } else {
-            f64::from(s.fluid_level) / 9.0
-        };
-        (s.fluid, height)
-    }
     /// The fluid at a block and whether it is a source (`FluidState.isSource`).
     pub(crate) fn fluid_source(&self, b: [i32; 3]) -> (Fluid, bool) {
-        let s = self.facts.get(self.world.block(b[0], b[1], b[2]));
-        (s.fluid, s.fluid_level == 8 && !s.fluid_falling)
-    }
-    /// `getCollisionShape(...).max(Y, x, z)` for cached shapes.
-    fn collision_top(&self, b: [i32; 3], fx: f64, fz: f64) -> f64 {
-        let state = self.world.block(b[0], b[1], b[2]);
-        match self.collision.cached_shapes().cached_shape(state) {
-            Ok(Some(shape)) if !shape.is_empty() => shape.max_at(Axis::Y, fx, fz),
-            Ok(Some(_)) => 0.0,
-            _ => {
-                if self.facts.get(state).full_collision {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-        }
+        let mut cached = None;
+        self.fluid_source_cached(&mut cached, b)
     }
 }
 
@@ -3889,8 +3809,9 @@ impl ParticleEngine {
         self.emitters = emitters;
         let mut particles = std::mem::take(&mut self.particles);
         self.spawned_in_tick = Some(Vec::new());
+        let mut cached = None;
         for p in &mut particles {
-            self.tick_particle(p, level);
+            self.tick_particle_cached(p, level, &mut cached);
         }
         particles.retain(|p| !p.removed);
         self.particles = particles;
@@ -3901,7 +3822,7 @@ impl ParticleEngine {
         for mut p in pending {
             if p.pre_tick {
                 p.pre_tick = false;
-                self.tick_particle(&mut p, level);
+                self.tick_particle_cached(&mut p, level, &mut cached);
                 p.after_constructor_tick();
             }
             // ParticleGroup.add: the last quarter fills with decreasing probability.
@@ -3921,7 +3842,20 @@ impl ParticleEngine {
     /// `ClientExplosionTracker.tick`: throws up to 512 debris particles across all
     /// explosions tracked in this tick, weighted by each explosion's block count.
     fn tick_explosions(&mut self, level: &ParticleLevel) {
-        self.tick_explosions_with(&|b| level.facts.is_air(level.world.block(b[0], b[1], b[2])));
+        let cached = std::cell::Cell::new(None);
+        self.tick_explosions_with(&|b| {
+            let (cx, cz) = (b[0] >> 4, b[2] >> 4);
+            let chunk = match cached.get() {
+                Some(((ccx, ccz), c)) if ccx == cx && ccz == cz => c,
+                _ => {
+                    let c = level.world.chunks.get(&(cx, cz)).map(|c| c.as_ref());
+                    cached.set(Some(((cx, cz), c)));
+                    c
+                }
+            };
+            let state = chunk.map_or(level.world.air, |c| c.block(b[0] & 15, b[1], b[2] & 15));
+            level.facts.is_air(state)
+        });
     }
     fn tick_explosions_with(&mut self, is_air: &dyn Fn([i32; 3]) -> bool) {
         if self.tracked_explosions.is_empty() {
@@ -3995,8 +3929,19 @@ impl ParticleEngine {
     }
     #[allow(clippy::too_many_lines)]
     fn tick_particle(&mut self, p: &mut Particle, level: &ParticleLevel) {
+        let mut cached = None;
+        self.tick_particle_cached(p, level, &mut cached);
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn tick_particle_cached<'b>(
+        &mut self,
+        p: &mut Particle,
+        level: &'b ParticleLevel,
+        cached: &mut Option<((i32, i32), Option<&'b crate::chunk::Chunk>)>,
+    ) {
         match p.behaviour {
-            Behaviour::Base => p.base_tick(level),
+            Behaviour::Base => p.base_tick_cached(level, cached),
             Behaviour::Controlled { .. } => {
                 if let Some(mut controller) = p.controller.take() {
                     let update = controller.tick(p, level);
@@ -4016,24 +3961,24 @@ impl ParticleEngine {
                 }
             }
             Behaviour::Mod { size, alpha } => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 p.size = mod_curve(size, p.age, p.lifetime);
                 p.rgba[3] = mod_curve(alpha, p.age, p.lifetime);
                 self.sprite_from_age(p);
             }
             Behaviour::Animated => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 self.sprite_from_age(p);
             }
             Behaviour::Snowflake => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 self.sprite_from_age(p);
                 p.velocity[0] *= f64::from(0.95f32);
                 p.velocity[1] *= f64::from(0.9f32);
                 p.velocity[2] *= f64::from(0.95f32);
             }
             Behaviour::Lava => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 if !p.removed {
                     let odds = p.age as f32 / p.lifetime as f32;
                     if p.random.next_float() > odds {
@@ -4046,7 +3991,7 @@ impl ParticleEngine {
                 }
             }
             Behaviour::Crit => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 p.rgba[1] *= 0.96;
                 p.rgba[2] *= 0.9;
             }
@@ -4077,7 +4022,7 @@ impl ParticleEngine {
                     return;
                 }
                 p.velocity[1] -= f64::from(p.gravity);
-                p.move_by(level, p.velocity);
+                p.move_by_cached(level, cached, p.velocity);
                 // postMoveUpdate
                 match stage {
                     DripStage::Hang | DripStage::CoolingHang => {
@@ -4106,7 +4051,7 @@ impl ParticleEngine {
                 }
                 if fluid != Fluid::None {
                     let b = ParticleLevel::block_at(p.position);
-                    let (f, height) = level.fluid(b);
+                    let (f, height) = level.fluid_cached(cached, b);
                     if f == fluid && p.position[1] < f64::from(b[1]) + height {
                         p.removed = true;
                     }
@@ -4121,7 +4066,7 @@ impl ParticleEngine {
                     return;
                 }
                 p.velocity[1] -= f64::from(p.gravity);
-                p.move_by(level, p.velocity);
+                p.move_by_cached(level, cached, p.velocity);
                 for c in &mut p.velocity {
                     *c *= f64::from(0.98f32);
                 }
@@ -4133,12 +4078,13 @@ impl ParticleEngine {
                     p.velocity[2] *= f64::from(0.7f32);
                 }
                 let b = ParticleLevel::block_at(p.position);
-                let top = level.collision_top(
+                let top = level.collision_top_cached(
+                    cached,
                     b,
                     p.position[0] - f64::from(b[0]),
                     p.position[2] - f64::from(b[2]),
                 );
-                let offset = top.max(level.fluid(b).1);
+                let offset = top.max(level.fluid_cached(cached, b).1);
                 if offset > 0.0 && p.position[1] < f64::from(b[1]) + offset {
                     p.removed = true;
                 }
@@ -4152,11 +4098,15 @@ impl ParticleEngine {
                     return;
                 }
                 p.velocity[1] += 0.002;
-                p.move_by(level, p.velocity);
+                p.move_by_cached(level, cached, p.velocity);
                 for c in &mut p.velocity {
                     *c *= f64::from(0.85f32);
                 }
-                if level.fluid(ParticleLevel::block_at(p.position)).0 != Fluid::Water {
+                if level
+                    .fluid_cached(cached, ParticleLevel::block_at(p.position))
+                    .0
+                    != Fluid::Water
+                {
                     p.removed = true;
                 }
             }
@@ -4166,8 +4116,9 @@ impl ParticleEngine {
                 size_start,
                 y_prev,
             } => {
-                p.base_tick(level);
-                let (fluid, source) = level.fluid_source(ParticleLevel::block_at(p.position));
+                p.base_tick_cached(level, cached);
+                let (fluid, source) =
+                    level.fluid_source_cached(cached, ParticleLevel::block_at(p.position));
                 if !(p.removed || (fluid == Fluid::Water && source)) {
                     p.removed = true;
                 }
@@ -4184,7 +4135,7 @@ impl ParticleEngine {
                 };
                 p.velocity[0] += wiggle(&mut p.random);
                 p.velocity[2] += wiggle(&mut p.random);
-                p.move_by(level, [p.velocity[0], 0.0, p.velocity[2]]);
+                p.move_by_cached(level, cached, [p.velocity[0], 0.0, p.velocity[2]]);
                 let progress = ((p.position[1] - y_start) / (y_end - y_start)) as f32;
                 p.size = size_start + progress * (0.15 - size_start);
                 p.behaviour = Behaviour::SulfurBubble {
@@ -4195,7 +4146,7 @@ impl ParticleEngine {
                 };
             }
             Behaviour::NoxiousGas { fade_start } => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 self.sprite_from_age(p);
                 if p.age as f32 > fade_start {
                     let frames_since_fade_out_start = p.age as f32 - fade_start;
@@ -4204,7 +4155,7 @@ impl ParticleEngine {
                 }
             }
             Behaviour::NoxiousGasCloud => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 if p.age % 2 == 0 {
                     let source = ParticleLevel::block_at(p.position);
                     let spawn = pick_random_particle_spawn_point(&mut self.level_random, source);
@@ -4214,7 +4165,7 @@ impl ParticleEngine {
                 }
             }
             Behaviour::GeyserEruption { water_blocks, aux } => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 if p.age % 2 == 0 {
                     for _ in 0..2 {
                         self.add(
@@ -4258,7 +4209,7 @@ impl ParticleEngine {
                 max_size,
                 mut done,
             } => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 if !done
                     && (p.velocity[1] < 0.0
                         || p.position[1] > max_y
@@ -4287,8 +4238,12 @@ impl ParticleEngine {
                 };
             }
             Behaviour::BubbleColumnUp => {
-                p.base_tick(level);
-                if !p.removed && level.fluid(ParticleLevel::block_at(p.position)).0 != Fluid::Water
+                p.base_tick_cached(level, cached);
+                if !p.removed
+                    && level
+                        .fluid_cached(cached, ParticleLevel::block_at(p.position))
+                        .0
+                        != Fluid::Water
                 {
                     p.removed = true;
                 }
@@ -4302,7 +4257,7 @@ impl ParticleEngine {
                     return;
                 }
                 p.velocity[1] -= f64::from(p.gravity);
-                p.move_by(level, p.velocity);
+                p.move_by_cached(level, cached, p.velocity);
                 self.sprite_from_age(p);
             }
             Behaviour::CurrentDown { angle } => {
@@ -4317,8 +4272,12 @@ impl ParticleEngine {
                 p.velocity[2] += f64::from(0.6 * angle.sin());
                 p.velocity[0] *= 0.07;
                 p.velocity[2] *= 0.07;
-                p.move_by(level, p.velocity);
-                if level.fluid(ParticleLevel::block_at(p.position)).0 != Fluid::Water || p.on_ground
+                p.move_by_cached(level, cached, p.velocity);
+                if level
+                    .fluid_cached(cached, ParticleLevel::block_at(p.position))
+                    .0
+                    != Fluid::Water
+                    || p.on_ground
                 {
                     p.removed = true;
                 }
@@ -4334,7 +4293,7 @@ impl ParticleEngine {
                     p.removed = true;
                     return;
                 }
-                p.move_by(level, p.velocity);
+                p.move_by_cached(level, cached, p.velocity);
                 for c in &mut p.velocity {
                     *c *= 0.99;
                 }
@@ -4387,14 +4346,14 @@ impl ParticleEngine {
                 ];
             }
             Behaviour::Transition { .. } => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 self.sprite_from_age(p);
             }
             Behaviour::Shriek { delay } => {
                 if delay > 0 {
                     p.behaviour = Behaviour::Shriek { delay: delay - 1 };
                 } else {
-                    p.base_tick(level);
+                    p.base_tick_cached(level, cached);
                 }
             }
             Behaviour::Vibration {
@@ -4506,7 +4465,7 @@ impl ParticleEngine {
                     let dz = r.next_float() / 5000.0 * if r.next_boolean() { 1.0 } else { -1.0 };
                     p.velocity[2] += f64::from(dz);
                     p.velocity[1] -= f64::from(p.gravity);
-                    p.move_by(level, p.velocity);
+                    p.move_by_cached(level, cached, p.velocity);
                     if p.age >= p.lifetime - 60 && p.rgba[3] > 0.01 {
                         p.rgba[3] -= 0.015;
                     }
@@ -4515,7 +4474,7 @@ impl ParticleEngine {
                 }
             }
             Behaviour::SimpleAnimated { fade } => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 self.sprite_from_age(p);
                 if p.age > p.lifetime / 2 {
                     p.rgba[3] = 1.0 - (p.age as f32 - (p.lifetime / 2) as f32) / p.lifetime as f32;
@@ -4531,7 +4490,7 @@ impl ParticleEngine {
                 trail,
                 twinkle,
             } => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 self.sprite_from_age(p);
                 if p.age > p.lifetime / 2 {
                     p.rgba[3] = 1.0 - (p.age as f32 - (p.lifetime / 2) as f32) / p.lifetime as f32;
@@ -4548,7 +4507,7 @@ impl ParticleEngine {
                 }
             }
             Behaviour::Spell { original_alpha } => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 self.sprite_from_age(p);
                 // SpellParticle.tick: alpha 0 while close, else eased back to originalAlpha.
                 if self.close_to_scoping_player(p.position) {
@@ -4558,7 +4517,7 @@ impl ParticleEngine {
                 }
             }
             Behaviour::Cloud => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 if !p.removed {
                     self.sprite_from_age(p);
                     if let Some((player, vy)) = level.player {
@@ -4607,7 +4566,7 @@ impl ParticleEngine {
                     rot_speed += spin / 20.0;
                     p.o_roll = p.roll;
                     p.roll += rot_speed / 20.0;
-                    p.move_by(level, p.velocity);
+                    p.move_by_cached(level, cached, p.velocity);
                     if p.on_ground
                         || p.lifetime < 299 && (p.velocity[0] == 0.0 || p.velocity[2] == 0.0)
                     {
@@ -4645,13 +4604,13 @@ impl ParticleEngine {
                     p.o_roll = 0.0;
                     p.roll = 0.0;
                 }
-                p.move_by(level, p.velocity);
+                p.move_by_cached(level, cached, p.velocity);
                 p.velocity[1] -= f64::from(0.003f32);
                 p.velocity[1] = p.velocity[1].max(f64::from(-0.14f32));
             }
             Behaviour::SquidInk => {
                 // SimpleAnimatedParticle.tick, then SquidInkParticle's.
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 self.sprite_from_age(p);
                 let half = |p: &mut Particle| {
                     if p.age > p.lifetime / 2 {
@@ -4664,15 +4623,21 @@ impl ParticleEngine {
                     self.sprite_from_age(p);
                     half(p);
                     let b = ParticleLevel::block_at(p.position);
-                    if level.facts.is_air(level.world.block(b[0], b[1], b[2])) {
+                    if level
+                        .facts
+                        .is_air(level.cached_block(cached, b[0], b[1], b[2]))
+                    {
                         p.velocity[1] -= f64::from(0.0074f32);
                     }
                 }
             }
             Behaviour::Firefly => {
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 let b = ParticleLevel::block_at(p.position);
-                if !level.facts.is_air(level.world.block(b[0], b[1], b[2])) {
+                if !level
+                    .facts
+                    .is_air(level.cached_block(cached, b[0], b[1], b[2]))
+                {
                     p.removed = true;
                 } else {
                     p.rgba[3] = fade_amount(p.lifetime_progress(p.age as f32), 0.3, 0.5);
@@ -4693,7 +4658,7 @@ impl ParticleEngine {
                     return;
                 }
                 p.velocity[1] -= f64::from(p.gravity);
-                p.move_by(level, p.velocity);
+                p.move_by_cached(level, cached, p.velocity);
                 for c in &mut p.velocity {
                     *c *= f64::from(0.98f32);
                 }
@@ -4709,7 +4674,7 @@ impl ParticleEngine {
             Behaviour::DustPlume => {
                 p.gravity *= 0.88;
                 p.friction *= 0.92;
-                p.base_tick(level);
+                p.base_tick_cached(level, cached);
                 self.sprite_from_age(p);
             }
             Behaviour::FlyStraight { start, colors } => {
@@ -4752,7 +4717,7 @@ impl ParticleEngine {
                 if hit_ground {
                     p.velocity[1] += 0.002;
                 }
-                p.move_by(level, p.velocity);
+                p.move_by_cached(level, cached, p.velocity);
                 if p.position[1] == p.previous[1] {
                     p.velocity[0] *= 1.1;
                     p.velocity[2] *= 1.1;
