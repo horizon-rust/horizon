@@ -4948,6 +4948,7 @@ mod merchant_restock_tests {
     fn restock_refreshes_the_open_guest_menu_and_survives_close() {
         let mut game = super::super::native_machines::tests::server_game();
         game.build_registries();
+        game.set_allow_commands(true);
         let rx = super::world_spawn_sync_tests::host_for(&mut game);
         let mut host = game.lan.take().unwrap();
         host.hub.guests[0].dimension = "minecraft:overworld".into();
