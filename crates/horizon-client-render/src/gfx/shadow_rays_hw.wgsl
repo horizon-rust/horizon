@@ -127,11 +127,13 @@ fn hw_opaque(c: RayIntersection) -> bool {
     let base = hw_quad(c, false);
     if base == 0xffffffffu { return true; }
     if (arena_at(base, 4u) & 0x8000u) != 0u { return true; }
-    // The wind (gfx/wind.rs): the leaves and plants drawn sway, their structures don't; a cutout
-    // quad this near the ray's start is taken for the swaying surface's own copy.
-    if c.t < WIND_SELF_REACH && (SKIP & 4096u) == 0u { return false; }
-    var texel = vec4(-1.0);
+    // The wind (gfx/wind.rs): the leaves and plants drawn sway, their structures don't; a swaying
+    // cutout quad (a wind kind) this near the ray's start is taken for the swaying surface's own
+    // copy. A still cutout (a ladder, a rail, a trapdoor) shadows however near: its kind is read
+    // first, the word that holds its layer is already in hand and every farther hit needs it too.
     let kind = wind_class(arena_at(base, 4u) & 0x7fffu);
+    if kind != 0u && c.t < WIND_SELF_REACH && (SKIP & 4096u) == 0u { return false; }
+    var texel = vec4(-1.0);
     if kind != 0u && (SKIP & (4096u | 131072u)) == 0u {
         texel = hw_swayed_texel(c, base, kind);
     } else {
