@@ -408,6 +408,12 @@ only for attributes the template has; one it lacks stops the content root's buil
 { "template": "minecraft:zombie", "attributes": { "minecraft:max_health": 40.0, "minecraft:movement_speed": 0.3 } }
 ```
 
+`passenger_attachments` sets custom passenger seat positions relative to the mob's feet (`[x, y, z]` or `[y]`, vanilla's `EntityType.Builder.passengerAttachments`), so a mount whose back is lower than its hitbox top can place its rider's seat accurately without changing its box height:
+
+```json
+{ "template": "minecraft:zombie", "passenger_attachments": [0.0, 1.2, -0.3] }
+```
+
 It is a mob of its template's class under its own id, `<id>:<name>`: the template's size, model, texture, sounds and
 behaviour, with its own attributes. It saves what its template's class saves under its own id (a zombie's `IsBaby`,
 `CanBreakDoors` and conversion times) and loads back as itself. Its entity data is its template's class's. Its loot

@@ -30,12 +30,53 @@ fn avatar(m: &Mob) -> bool {
 /// rider's attachment point sits relative to the vehicle's feet, in its
 /// scale (`getDimensions` scales the attachments with the box).
 pub fn passenger_attachment(v: &Mob) -> [f64; 3] {
-    let [x, y, z] = base_attachment(v);
+    passenger_attachment_at(v, 0)
+}
+
+/// rider's attachment point at `seat` relative to the vehicle's feet, in its scale.
+pub fn passenger_attachment_at(v: &Mob, seat: usize) -> [f64; 3] {
+    let [x, y, z] = base_attachment_at(v, seat);
     let s = scale(v);
     // AbstractHorse.getPassengerAttachmentPoint: a rearing horse slides it,
     // after the scaled attachment (`rear_offset` scales with age itself).
     let rear = super::equine::rear_offset(v);
     [x * s + rear[0], y * s + rear[1], z * s + rear[2]]
+}
+
+/// Parses passenger attachment points from `entity-types.json` or raw json values.
+pub fn parse_attachments(v: &serde_json::Value) -> Vec<[f32; 3]> {
+    let Some(arr) = v.as_array() else {
+        if let Some(y) = v.as_f64() {
+            return vec![[0.0, y as f32, 0.0]];
+        }
+        return Vec::new();
+    };
+    if arr.is_empty() {
+        return Vec::new();
+    }
+    if arr.len() == 3 && arr.iter().all(|x| x.is_number()) {
+        let x = arr[0].as_f64().unwrap_or(0.0) as f32;
+        let y = arr[1].as_f64().unwrap_or(0.0) as f32;
+        let z = arr[2].as_f64().unwrap_or(0.0) as f32;
+        return vec![[x, y, z]];
+    }
+    let mut out = Vec::new();
+    for item in arr {
+        if let Some(y) = item.as_f64() {
+            out.push([0.0, y as f32, 0.0]);
+        } else if let Some(pt) = item.as_array() {
+            if pt.len() == 3 {
+                let x = pt[0].as_f64().unwrap_or(0.0) as f32;
+                let y = pt[1].as_f64().unwrap_or(0.0) as f32;
+                let z = pt[2].as_f64().unwrap_or(0.0) as f32;
+                out.push([x, y, z]);
+            } else if pt.len() == 1 {
+                let y = pt[0].as_f64().unwrap_or(0.0) as f32;
+                out.push([0.0, y, 0.0]);
+            }
+        }
+    }
+    out
 }
 /// An `EntityType` attachment point: the builder takes floats, so the double
 /// the position math sees is the float's widening (`Vec3(x, y, z)` of
@@ -61,11 +102,16 @@ pub fn happy_ghast_attachment(index: usize) -> [f64; 3] {
     pt(x, y, z)
 }
 /// `Pig.getDefaultDimensions` and other species' age-specific passenger attachments.
-fn base_attachment(v: &Mob) -> [f64; 3] {
+fn base_attachment_at(v: &Mob, seat: usize) -> [f64; 3] {
     let baby = v.is_baby();
     // Players and mannequins have no `passengerAttachments`: their box top.
     if avatar(v) {
         return [0.0, f64::from(v.height()) / scale(v), 0.0];
+    }
+    if !v.kind.passenger_attachments.is_empty() {
+        let idx = seat.min(v.kind.passenger_attachments.len() - 1);
+        let [x, y, z] = v.kind.passenger_attachments[idx];
+        return pt(x, y, z);
     }
     match v.species() {
         Species::Chicken => pt(0.0, 0.7, -0.1),
@@ -726,6 +772,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn content_mod_entity_types_use_custom_passenger_attachments() {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "ruby:bird".into();
+        kind.species = Species::Zombie;
+        kind.passenger_attachments = vec![[0.0, 1.2, -0.3], [0.0, 1.2, 0.5]];
+        let kind = std::sync::Arc::new(kind);
+        let mut vehicle = Mob::new(1, kind.clone(), Vec3::new(10.0, 64.0, 10.0), 0.0);
+
+        let a0 = passenger_attachment_at(&vehicle, 0);
+        assert!((a0[0] - 0.0).abs() < 1e-6);
+        assert!((a0[1] - 1.2).abs() < 1e-6);
+        assert!((a0[2] - (-0.3)).abs() < 1e-6);
+        assert_eq!(passenger_attachment(&vehicle), a0);
+
+        let a1 = passenger_attachment_at(&vehicle, 1);
+        assert!((a1[0] - 0.0).abs() < 1e-6);
+        assert!((a1[1] - 1.2).abs() < 1e-6);
+        assert!((a1[2] - 0.5).abs() < 1e-6);
+
+        assert_eq!(passenger_attachment_at(&vehicle, 5), a1);
+
+        vehicle.extra.model_scale = 2.0;
+        let scaled_a0 = passenger_attachment_at(&vehicle, 0);
+        assert!((scaled_a0[0] - 0.0).abs() < 1e-6);
+        assert!((scaled_a0[1] - 2.4).abs() < 1e-6);
+        assert!((scaled_a0[2] - (-0.6)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_attachments_handles_formats() {
+        let pts = parse_attachments(&serde_json::json!([0.0, 1.2, -0.3]));
+        assert_eq!(pts, [[0.0, 1.2, -0.3]]);
+        let pts = parse_attachments(&serde_json::json!([[0.0, 1.2, -0.3], [0.0, 1.2, 0.5]]));
+        assert_eq!(pts, [[0.0, 1.2, -0.3], [0.0, 1.2, 0.5]]);
+        let pts = parse_attachments(&serde_json::json!([1.5]));
+        assert_eq!(pts, [[0.0, 1.5, 0.0]]);
+        let pts = parse_attachments(&serde_json::json!(1.75));
+        assert_eq!(pts, [[0.0, 1.75, 0.0]]);
     }
 
     #[test]

@@ -844,13 +844,8 @@ fn read_json(path: &Path) -> Result<J> {
 }
 
 impl Plan<'_> {
-    /// `entity-types.json` with a row for each mod type: its template's, so its
-    /// size, eyes and category are the template's (`execute anchored eyes`,
-    /// spawner checks and the commands' entity type list, `reg.entity_types`),
-    /// with `template` naming it and a living type's own attribute bases
-    /// (`MobTypes` makes the mob from it). The rows are appended as text, each
-    /// value as the template has it: parsed and written back, a float such as
-    /// a zombie's `movement_speed` can come back one ulp off.
+    /// `entity-types.json` with a row for each mod type: its template's values,
+    /// with `template` added and a living type's own attribute bases.
     fn entity_types_json(&self, bytes: &[u8]) -> std::result::Result<Vec<u8>, String> {
         use serde_json::value::RawValue;
         let rows: BTreeMap<String, Box<RawValue>> =
@@ -879,9 +874,8 @@ impl Plan<'_> {
     }
 }
 
-/// A mod entity type's row in `entity-types.json`: its template's `row` with
-/// `template` added and the type's attribute bases in place of the
-/// template's. The other values keep the template's text.
+/// A mod entity type's row in `entity-types.json`: its template's row with
+/// `template` added, attribute bases and passenger attachments.
 fn mod_entity_row(
     row: &serde_json::value::RawValue,
     t: &EntityType,
@@ -909,6 +903,12 @@ fn mod_entity_row(
         fields.insert(
             "attributes".into(),
             to_raw_value(&attributes).map_err(fail)?,
+        );
+    }
+    if !t.passenger_attachments.is_empty() {
+        fields.insert(
+            "passenger_attachments".into(),
+            to_raw_value(&t.passenger_attachments).map_err(fail)?,
         );
     }
     fields.insert("template".into(), to_raw_value(&t.template).map_err(fail)?);

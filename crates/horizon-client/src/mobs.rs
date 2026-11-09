@@ -410,19 +410,18 @@ pub struct MobType {
     pub ambient_interval: i32,
     pub flags: Flags,
     pub model: Arc<Part>,
-    /// Every baked layer of this entity's models keyed by `model#layer`
-    /// (e.g. `sheep#wool`, `zombie_baby#main`).
+    /// Baked layers of this entity's models keyed by `model#layer`.
     pub layers: crate::fast_hash::FxHashMap<String, Arc<Part>>,
     pub texture: String,
     pub brain: Brain,
     pub anim: Anim,
-    /// Ambient, hurt and death sound events (without the namespace).
+    /// Ambient, hurt and death sound events (without namespace).
     pub sounds: [&'static str; 3],
     pub step_sound: Option<&'static str>,
-    /// Animal.isFood items (resolved from the item tag).
+    /// Animal.isFood and TemptGoal items (from item tags).
     pub food: Arc<[String]>,
-    /// TemptGoal items when they differ from the food.
     pub tempt: Arc<[String]>,
+    pub passenger_attachments: Vec<[f32; 3]>,
 }
 impl MobType {
     pub fn inventory_stack_limit(&self, stack: &crate::items::ItemStack) -> u32 {
@@ -707,6 +706,7 @@ impl MobTypes {
                         .or(def.food_tag())
                         .map(tag)
                         .unwrap_or_else(|| Arc::from(Vec::new())),
+                    passenger_attachments: riders::parse_attachments(&t["passenger_attachments"]),
                     category,
                     id,
                 },
@@ -5235,6 +5235,7 @@ pub(crate) mod sensor_scan_tests {
             step_sound: None,
             food: Arc::default(),
             tempt: Arc::default(),
+            passenger_attachments: Vec::new(),
         })
     }
     /// `n` mobs in pens of 20 spread over a square of `side` blocks, as on a

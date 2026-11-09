@@ -1964,21 +1964,15 @@ fn content_root_with_only_an_item_checks_its_identity() {
     let ids = horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap();
     assert!(ids.get("minecraft:item").unwrap().id("gem:opal").is_some());
     assert!(root.join(crate::content_identity::MARKER).exists());
-    assert_ne!(
-        crate::content_identity::identity(&root).unwrap(),
-        crate::content_identity::identity(&base).unwrap()
-    );
+    let id = crate::content_identity::identity;
+    assert_ne!(id(&root).unwrap(), id(&base).unwrap());
     fs::remove_dir_all(&scratch).unwrap();
 }
 
-/// a living mod type's row in `entity-types.json` is its template's with
-/// `template` added and its own attribute bases; every other value keeps the
-/// template's text, to the digit. An attribute the template lacks is refused.
+/// a living mod type's row in `entity-types.json` has `template`, its attribute bases and overrides.
 #[test]
 fn a_living_mod_types_row_is_its_templates_with_its_attributes() {
-    let zombie = r#"{"width":0.6,"height":1.95,"eye_height":1.74,"category":"monster",
-        "fire_immune":false,"attributes":{"minecraft:max_health":20.0,
-        "minecraft:movement_speed":0.23000000417232513,"minecraft:armor":2.0}}"#;
+    let zombie = r#"{"width":0.6,"height":1.95,"eye_height":1.74,"category":"monster","fire_immune":false,"attributes":{"minecraft:max_health":20.0,"minecraft:movement_speed":0.23000000417232513,"minecraft:armor":2.0}}"#;
     let row = serde_json::value::RawValue::from_string(zombie.to_owned()).unwrap();
     let ghoul = |attributes: &[(&str, f64)]| EntityType {
         id: "ruby:ghoul".into(),
@@ -1989,6 +1983,7 @@ fn a_living_mod_types_row_is_its_templates_with_its_attributes() {
             .iter()
             .map(|(a, v)| (a.to_string(), *v))
             .collect(),
+        passenger_attachments: Vec::new(),
     };
     let written = mod_entity_row(&row, &ghoul(&[("minecraft:max_health", 40.0)])).unwrap();
     let written: serde_json::Value = serde_json::from_slice(&written).unwrap();
@@ -1996,15 +1991,23 @@ fn a_living_mod_types_row_is_its_templates_with_its_attributes() {
     expected["attributes"]["minecraft:max_health"] = 40.0.into();
     expected["template"] = "minecraft:zombie".into();
     assert_eq!(written, expected);
-    // the untouched speed keeps the template's text, not a reparsed float.
+    let mount = EntityType {
+        passenger_attachments: vec![[0.0, 1.2, -0.3]],
+        ..ghoul(&[])
+    };
+    let wm: serde_json::Value =
+        serde_json::from_slice(&mod_entity_row(&row, &mount).unwrap()).unwrap();
+    assert_eq!(
+        wm["passenger_attachments"],
+        serde_json::json!([[0.0, 1.2, -0.3]])
+    );
     let text = String::from_utf8(mod_entity_row(&row, &ghoul(&[])).unwrap()).unwrap();
     assert!(text.contains("0.23000000417232513"), "{text}");
     let e = mod_entity_row(&row, &ghoul(&[("minecraft:flying_speed", 1.0)])).unwrap_err();
     assert!(e.contains("not one of minecraft:zombie's"), "{e}");
 }
 
-/// a mod's thrown entity type gets the network id after vanilla's last, the
-/// commands accept it, and it changes the content identity.
+/// a mod's thrown entity type gets the next network id, accepted by commands.
 #[test]
 #[ignore = "full content root: CI and pr_ready run it"]
 fn content_root_registers_a_mod_entity_type() {
@@ -2048,7 +2051,6 @@ fn content_root_registers_a_mod_entity_type() {
     ] {
         assert!(ids.as_array().unwrap().contains(&"example:bolt".into()));
     }
-    // its size and eyes are the snowball's, for `execute anchored eyes` and spawners.
     let types: serde_json::Value =
         serde_json::from_slice(&fs::read(root.join("entity-types.json")).unwrap()).unwrap();
     assert!(types["minecraft:snowball"].is_object());
@@ -2056,16 +2058,14 @@ fn content_root_registers_a_mod_entity_type() {
     assert_eq!(bolt["template"], "minecraft:snowball");
     bolt.as_object_mut().unwrap().remove("template");
     assert_eq!(bolt, types["minecraft:snowball"]);
-    // the rewritten table keeps vanilla's floats to the bit (a zombie's speed).
     let speed = |root: &Path| {
-        let attributes =
-            crate::mobs::exact_attributes(&fs::read(root.join("entity-types.json")).unwrap());
-        attributes["minecraft:zombie"]["minecraft:movement_speed"]
+        crate::mobs::exact_attributes(&fs::read(root.join("entity-types.json")).unwrap())["minecraft:zombie"]
+            ["minecraft:movement_speed"]
     };
     assert_eq!(speed(&root).to_bits(), speed(&base).to_bits());
     assert!(root.join(crate::content_identity::MARKER).exists());
-    let identity = crate::content_identity::identity;
-    assert_ne!(identity(&root).unwrap(), identity(&base).unwrap());
+    let id = crate::content_identity::identity;
+    assert_ne!(id(&root).unwrap(), id(&base).unwrap());
     fs::remove_dir_all(&scratch).unwrap();
 }
 

@@ -229,6 +229,7 @@ fn load_player_type(models: &horizon_client::mobs::EntityModelDocument) -> Optio
             step_sound: None,
             food: Arc::from([]),
             tempt: Arc::from([]),
+            passenger_attachments: Vec::new(),
         })
     })
 }

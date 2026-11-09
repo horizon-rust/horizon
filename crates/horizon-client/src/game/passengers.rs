@@ -208,6 +208,13 @@ impl Game<'_> {
                 };
                 let vehicle = &self.mobs[j];
                 let mut attach = riders::passenger_attachment(vehicle);
+                if !vehicle.kind.passenger_attachments.is_empty() {
+                    let seat = self.mobs[..i]
+                        .iter()
+                        .filter(|r| r.extra.mount == Some(v))
+                        .count();
+                    attach = riders::passenger_attachment_at(vehicle, seat);
+                }
                 if horizon_client::mobs::camel::is_camel(vehicle.species()) {
                     // Camel.getPassengerAttachmentPoint: the seat follows the
                     // rider's place in `getPassengers` (load order).

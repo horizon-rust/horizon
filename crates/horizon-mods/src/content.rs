@@ -492,6 +492,76 @@ pub struct EntityType {
     /// when the content root builds.
     #[serde(default)]
     pub attributes: BTreeMap<String, f64>,
+    /// custom passenger seat attachment points relative to the entity's feet
+    /// (`[x, y, z]` or `[y]`).
+    #[serde(default, deserialize_with = "deserialize_passenger_attachments")]
+    pub passenger_attachments: Vec<[f32; 3]>,
+}
+
+fn deserialize_passenger_attachments<'de, D>(deserializer: D) -> Result<Vec<[f32; 3]>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Visitor};
+    struct AttachmentsVisitor;
+    impl<'de> Visitor<'de> for AttachmentsVisitor {
+        type Value = Vec<[f32; 3]>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("passenger attachment coordinates ([x, y, z] or [y])")
+        }
+        fn visit_f64<E: Error>(self, v: f64) -> Result<Self::Value, E> {
+            Ok(vec![[0.0, v as f32, 0.0]])
+        }
+        fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(vec![[0.0, v as f32, 0.0]])
+        }
+        fn visit_u64<E: Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(vec![[0.0, v as f32, 0.0]])
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut items: Vec<serde_json::Value> = Vec::new();
+            while let Some(val) = seq.next_element()? {
+                items.push(val);
+            }
+            if items.is_empty() {
+                return Ok(Vec::new());
+            }
+            if items.len() == 3 && items.iter().all(|v| v.is_number()) {
+                let x = items[0].as_f64().unwrap() as f32;
+                let y = items[1].as_f64().unwrap() as f32;
+                let z = items[2].as_f64().unwrap() as f32;
+                return Ok(vec![[x, y, z]]);
+            }
+            let mut out = Vec::new();
+            for item in items {
+                match item {
+                    serde_json::Value::Number(n) => {
+                        let y = n.as_f64().ok_or_else(|| Error::custom("invalid number"))? as f32;
+                        out.push([0.0, y, 0.0]);
+                    }
+                    serde_json::Value::Array(arr) => {
+                        if arr.len() == 3 && arr.iter().all(|v| v.is_number()) {
+                            let x = arr[0].as_f64().unwrap() as f32;
+                            let y = arr[1].as_f64().unwrap() as f32;
+                            let z = arr[2].as_f64().unwrap() as f32;
+                            out.push([x, y, z]);
+                        } else if arr.len() == 1 && arr[0].is_number() {
+                            let y = arr[0].as_f64().unwrap() as f32;
+                            out.push([0.0, y, 0.0]);
+                        } else {
+                            return Err(Error::custom("expected [x, y, z] or [y]"));
+                        }
+                    }
+                    _ => return Err(Error::custom("expected number or array of numbers")),
+                }
+            }
+            Ok(out)
+        }
+    }
+    deserializer.deserialize_any(AttachmentsVisitor)
 }
 
 impl EntityType {
@@ -1084,12 +1154,25 @@ impl Content {
                         return Err(format!("{name}: attribute {attribute} is a finite number"));
                     }
                 }
+                for pt in &file.passenger_attachments {
+                    if !pt.iter().all(|c| c.is_finite()) {
+                        return Err(format!(
+                            "{name}: passenger attachment coordinates are finite numbers"
+                        ));
+                    }
+                }
                 self.entity_types.push(EntityType { id: kind, ..file });
                 continue;
             }
             if !file.attributes.is_empty() {
                 return Err(format!(
                     "{name}: only a living type has attributes (its template is {})",
+                    file.template
+                ));
+            }
+            if !file.passenger_attachments.is_empty() {
+                return Err(format!(
+                    "{name}: only a living type has passenger attachments (its template is {})",
                     file.template
                 ));
             }
@@ -2334,6 +2417,11 @@ capabilities = ["registries"]
                 zombie(r#", "attributes": {"minecraft:max_health": "40"}"#),
                 "invalid type",
             ),
+            (
+                "living-attachment-nan",
+                zombie(r#", "passenger_attachments": [0.0, null, 0.0]"#),
+                "expected number or array of numbers",
+            ),
         ] {
             let files: &[(&str, &[u8])] = &[
                 ("data/ruby/horizon/item/gem.json", ITEM),
@@ -2342,6 +2430,66 @@ capabilities = ["registries"]
             let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
             assert!(e.contains(why), "{case}: {e}");
         }
+        let thrown_with_attach = br#"{"template": "minecraft:snowball", "item": "ruby:gem", "passenger_attachments": [1.0]}"#;
+        let files: &[(&str, &[u8])] = &[
+            ("data/ruby/horizon/item/gem.json", ITEM),
+            ("data/ruby/horizon/entity_type/a.json", thrown_with_attach),
+        ];
+        let e = hmod("thrown-attach", MANIFEST_TEXT, files).unwrap_err();
+        assert!(
+            e.contains("only a living type has passenger attachments"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn living_entity_types_accept_passenger_attachments() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/entity_type/bird.json",
+                br#"{"template": "minecraft:zombie", "passenger_attachments": [0.0, 1.2, -0.3]}"#,
+            ),
+            (
+                "data/ruby/horizon/entity_type/tandem.json",
+                br#"{"template": "minecraft:zombie", "passenger_attachments": [[0.0, 1.2, -0.3], [0.0, 1.2, 0.5]]}"#,
+            ),
+            (
+                "data/ruby/horizon/entity_type/high.json",
+                br#"{"template": "minecraft:villager", "passenger_attachments": [1.5]}"#,
+            ),
+            (
+                "data/ruby/horizon/entity_type/scalar.json",
+                br#"{"template": "minecraft:wandering_trader", "passenger_attachments": 1.75}"#,
+            ),
+        ];
+        let content = hmod("attachments", MANIFEST_TEXT, files).unwrap();
+        let bird = content
+            .entity_types
+            .iter()
+            .find(|t| t.id == "ruby:bird")
+            .unwrap();
+        assert_eq!(bird.passenger_attachments, [[0.0, 1.2, -0.3]]);
+        let tandem = content
+            .entity_types
+            .iter()
+            .find(|t| t.id == "ruby:tandem")
+            .unwrap();
+        assert_eq!(
+            tandem.passenger_attachments,
+            [[0.0, 1.2, -0.3], [0.0, 1.2, 0.5]]
+        );
+        let high = content
+            .entity_types
+            .iter()
+            .find(|t| t.id == "ruby:high")
+            .unwrap();
+        assert_eq!(high.passenger_attachments, [[0.0, 1.5, 0.0]]);
+        let scalar = content
+            .entity_types
+            .iter()
+            .find(|t| t.id == "ruby:scalar")
+            .unwrap();
+        assert_eq!(scalar.passenger_attachments, [[0.0, 1.75, 0.0]]);
     }
 
     #[test]

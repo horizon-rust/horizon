@@ -599,6 +599,7 @@ mod tests {
             step_sound: None,
             food: Arc::default(),
             tempt: Arc::default(),
+            passenger_attachments: Vec::new(),
         });
         Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0)
     }
