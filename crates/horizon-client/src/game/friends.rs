@@ -9,6 +9,7 @@
 use super::{Game, lan::LanSettings};
 use horizon_client::{
     Result,
+    clipboard::Clipboard,
     friends_screen::{self, Action, FriendsView},
     hud::HudBatch,
     lang,
@@ -237,6 +238,290 @@ impl Game<'_> {
                 }
             }
             Action::Done => self.screen = super::Screen::Paused,
+        }
+    }
+
+    /// `CommonButtons.friends` on the pause screen: `FriendsOverlayScreen` over the
+    /// paused world. Its list is turned on first when it is off
+    /// (`OnlineOptionsScreen.confirmFriendsListEnabled`).
+    pub(super) fn open_friends_overlay(&mut self) {
+        self.friends_overlay = Some(crate::friends_overlay::Screen::new_gated());
+        self.pause_focus = None;
+        self.screen = super::Screen::FriendsOverlay;
+    }
+
+    pub(super) fn close_friends_overlay(&mut self) {
+        self.friends_overlay = None;
+        crate::social::set_foreground(false);
+        self.screen = super::Screen::Paused;
+    }
+
+    pub(super) fn draw_friends_overlay(&mut self, batch: &mut HudBatch) {
+        // `FriendsOverlayScreen.backgroundScreen`: the pause screen stays behind,
+        // blurred with the rest of the world (`extractBlurredBackground`).
+        self.draw_pause_menu(batch);
+        batch.blur_at = batch.vertices.len() as u32;
+        let multiplier = f64::from(self.settings.notification_display_time);
+        if let Some(screen) = self.friends_overlay.as_mut() {
+            screen.tick(multiplier);
+        }
+        horizon_client::widgets::begin_screen(|| {
+            horizon_client::widgets::ScreenInfo::new(
+                "friends_overlay",
+                crate::lang::get("gui.friends.open"),
+            )
+        });
+        let size = self.gui_size();
+        let cursor = self.cursor;
+        let atlas = &self.gui.atlas;
+        if let Some(screen) = self.friends_overlay.as_ref() {
+            screen.draw_over(atlas, batch, cursor, size);
+        }
+        // `FriendsOverlayScreen`'s buttons: the add-friend Send, each entry's
+        // Remove/accept/revoke and the questions' answers, drawn like the title's
+        // icon buttons (the icon names are relative to `gui/sprites/`).
+        let buttons = self
+            .friends_overlay
+            .as_ref()
+            .map(|screen| screen.buttons(size))
+            .unwrap_or_default();
+        let mut tooltip = None;
+        for (x, y, bw, label, enabled, id, icon) in buttons {
+            let hover = enabled && horizon_client::ui::hovered(cursor, x, y, bw, 20.0);
+            if hover
+                && let Some(key) = self
+                    .friends_overlay
+                    .as_ref()
+                    .and_then(|screen| screen.button_tooltip(id))
+            {
+                tooltip = Some((key, [x, y, bw, 20.0]));
+            }
+            // `FriendsOverlayTabButton`: selected is the enabled sprite, an
+            // unselected tab its disabled one, and hovering any is highlighted.
+            let friends_tab = match &self.friends_overlay {
+                Some(screen) if matches!(id, 1 | 2) => Some(screen.selected_tab() == id),
+                _ => None,
+            };
+            if let Some(selected) = friends_tab {
+                let sprite = if hover {
+                    "gui/sprites/friends/button_highlighted"
+                } else if selected {
+                    "gui/sprites/friends/button"
+                } else {
+                    "gui/sprites/friends/button_disabled"
+                };
+                horizon_client::ui::blit_sprite(batch, atlas, sprite, x, y, bw, 20.0, u32::MAX);
+            } else {
+                horizon_client::ui::button(
+                    batch,
+                    atlas,
+                    x,
+                    y,
+                    bw,
+                    20.0,
+                    &Text::empty(),
+                    enabled,
+                    hover,
+                );
+            }
+            // `SpriteIconButton`/`TabButton` name their widget for the narrator;
+            // the drawing above passes an empty label, so record it here.
+            let narration = if label.is_empty() {
+                self.friends_overlay
+                    .as_ref()
+                    .and_then(|screen| screen.button_tooltip(id))
+                    .map(crate::lang::get)
+                    .unwrap_or_default()
+            } else {
+                label.clone()
+            };
+            horizon_client::widgets::record(&narration, [x, y, bw, 20.0], enabled);
+            horizon_client::widgets::widget_cursor(hover, enabled);
+            let loading = (id == 3 && self.friends_overlay.as_ref().is_some_and(|s| s.loading()))
+                || self
+                    .friends_overlay
+                    .as_ref()
+                    .is_some_and(|s| s.action_loading(id));
+            if loading {
+                // `SpriteIconButton.extractLoadingStateIfLoading`: the disabled
+                // background (already drawn, `enabled` is false) and the animated
+                // 5x2 `friends/loading` sprite centred in the button.
+                batch.sprite_scaled(
+                    atlas,
+                    "gui/sprites/friends/loading",
+                    x + (bw - 5.0) / 2.0,
+                    y + 9.0,
+                    5.0,
+                    2.0,
+                    u32::MAX,
+                );
+            } else if let Some((icon, side)) = icon {
+                // `IncomingEntry`'s accept/reject have highlighted variants.
+                let icon = if hover && icon == "friends/accept" {
+                    "friends/accept_highlighted"
+                } else if hover && icon == "friends/reject" {
+                    "friends/reject_highlighted"
+                } else {
+                    icon
+                };
+                // `friends/remove` is 13x11.
+                let (iw, ih) = if icon == "friends/remove" {
+                    (13.0, 11.0)
+                } else {
+                    (side, side)
+                };
+                batch.sprite_scaled(
+                    atlas,
+                    &format!("gui/sprites/{icon}"),
+                    x + (bw / 2.0).floor() - (iw / 2.0).floor(),
+                    y + 10.0 - (ih / 2.0).floor(),
+                    iw,
+                    ih,
+                    u32::MAX,
+                );
+            } else if !label.is_empty() {
+                let width = HudBatch::text_width(atlas, &label);
+                batch.text(
+                    atlas,
+                    &label,
+                    x + (bw - width) / 2.0,
+                    y + 6.0,
+                    if enabled { u32::MAX } else { 0xFFA0_A0A0 },
+                    true,
+                );
+            }
+        }
+        if let Some((key, rect)) = tooltip {
+            let lines = atlas.font.split(&Text::translate(key, &[]), 170.0);
+            horizon_client::ui::tooltip_menu(batch, atlas, &lines, cursor, rect);
+        }
+        // The toasts are drawn with `ToastManager` after every other screen
+        // widget (`draw_friends_toasts`), not here.
+    }
+
+    /// `ToastManager.extractRenderState`: the overlay's toasts after every other
+    /// toast, in the slots they leave free, and hidden with the HUD (F1).
+    pub(super) fn draw_friends_toasts(&self, batch: &mut HudBatch, hidden: bool) {
+        if hidden {
+            return;
+        }
+        let Some(screen) = &self.friends_overlay else {
+            return;
+        };
+        let slot = self.toast_slots_used().count_ones() as f32;
+        screen.draw_toast_at(&self.gui.atlas, batch, slot * 32.0);
+    }
+
+    pub(super) fn friends_overlay_click(&mut self) {
+        let size = self.gui_size();
+        let cursor = self.cursor;
+        let shift = self.has_shift_down();
+        let atlas = &self.gui.atlas;
+        let mut close = false;
+        let mut link = None;
+        if let Some(screen) = self.friends_overlay.as_mut() {
+            // `AbstractScrollArea.updateScrolling`: the scroller takes the press.
+            if screen.begin_scroll_drag(cursor, size) {
+                return;
+            }
+            let hit = screen
+                .buttons(size)
+                .into_iter()
+                .find(|b| b.4 && crate::ui::hovered(cursor, b.0, b.1, b.2, 20.0))
+                .map(|b| b.5);
+            if hit.is_some() {
+                self.audio.play_button_click();
+            }
+            let question = screen.question_open();
+            screen.click(hit, cursor, size);
+            if let Some(name) = screen.take_profile_copy() {
+                // `PlainTextButton`: copy the profile name, with its click sound.
+                self.clipboard.set(&name);
+                self.audio.play_button_click();
+            }
+            link = screen.take_link_click();
+            if link.is_some() && screen.take_link_sound() {
+                self.audio.play_button_click();
+            }
+            if screen.take_cancelled() {
+                close = true;
+            }
+            if !question && link.is_none() && hit.is_none() && !close {
+                screen.press_field(atlas, cursor, size, shift);
+                // `FriendsOverlayScreen.mouseClicked`: a click outside the panel
+                // returns to the screen behind (the pause menu).
+                if !screen.contains(cursor, size) && screen.escape() {
+                    close = true;
+                }
+            }
+        }
+        if let Some(url) = link {
+            // `MICROSOFT_ACCOUNT_LINK`: `PrivacyConfirmLinkScreen.confirmLinkNow` over
+            // the overlay.
+            self.confirm_privacy_link(url, super::Screen::FriendsOverlay);
+            return;
+        }
+        if close {
+            self.close_friends_overlay();
+        }
+    }
+
+    pub(super) fn friends_overlay_key(&mut self, event: &winit::event::KeyEvent) {
+        if event.state != winit::event::ElementState::Pressed {
+            return;
+        }
+        let winit::keyboard::PhysicalKey::Code(key) = event.physical_key else {
+            return;
+        };
+        let (ctrl, shift, types) = (
+            self.has_control_down(),
+            self.has_shift_down(),
+            self.types_text(),
+        );
+        let Some(screen) = self.friends_overlay.as_mut() else {
+            return;
+        };
+        // `TabNavigationBar.keyPressed`: Ctrl plus a digit or Tab picks a tab.
+        if let Some(changed) = screen.tab_key(key, ctrl, shift) {
+            if changed {
+                self.audio.play_button_click();
+            }
+            return;
+        }
+        let mut close = false;
+        match key {
+            winit::keyboard::KeyCode::Escape => close = screen.escape(),
+            winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter => {
+                if screen.enter() {
+                    self.audio.play_button_click();
+                }
+            }
+            _ => {
+                // `EditBox.keyPressed`: Backspace, Delete, the arrows, Home and End.
+                if !screen.key(key, ctrl, shift)
+                    && types
+                    && let Some(text) = event.text.as_deref()
+                {
+                    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+                    screen.type_text(&text);
+                }
+            }
+        }
+        if close {
+            self.close_friends_overlay();
+        }
+    }
+
+    pub(super) fn friends_overlay_type(&mut self, text: &str) {
+        if let Some(screen) = self.friends_overlay.as_mut() {
+            let text: String = text.chars().filter(|c| !c.is_control()).collect();
+            screen.type_text(&text);
+        }
+    }
+
+    pub(super) fn friends_overlay_backspace(&mut self) {
+        if let Some(screen) = self.friends_overlay.as_mut() {
+            screen.key(winit::keyboard::KeyCode::Backspace, false, false);
         }
     }
 

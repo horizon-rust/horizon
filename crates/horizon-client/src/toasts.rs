@@ -136,25 +136,85 @@ impl SystemToast {
     /// `extractRenderState` at `y`, in from the right edge by the visible
     /// portion (`Toast.xPos`).
     pub fn draw(&self, atlas: &HudAtlas, batch: &mut HudBatch, y: f32) {
-        let width = std::iter::once(&self.title)
-            .chain(&self.message)
+        let (title, message) = self.lines(atlas);
+        let width = title
+            .iter()
+            .chain(&message)
             .map(|line| HudBatch::text_width(atlas, line))
             .fold(0.0, f32::max)
             .ceil()
             .max(160.0)
             + 30.0;
+        let height = Self::height_of(&title, &message);
         let x = batch.width - width * self.slide.portion;
-        background(atlas, batch, x, y, width);
+        crate::ui::blit_sprite(
+            batch,
+            atlas,
+            "gui/sprites/toast/system",
+            x,
+            y,
+            width,
+            height,
+            u32::MAX,
+        );
         let yellow = self.title_color;
-        match &self.message {
-            Some(message) => {
-                batch.text(atlas, &self.title, x + 18.0, y + 7.0, yellow, false);
-                batch.text(atlas, message, x + 18.0, y + 19.0, u32::MAX, false);
+        if message.is_empty() {
+            for (i, line) in title.iter().enumerate() {
+                batch.text(
+                    atlas,
+                    line,
+                    x + 18.0,
+                    y + 12.0 + i as f32 * 12.0,
+                    yellow,
+                    false,
+                );
             }
-            None => {
-                batch.text(atlas, &self.title, x + 18.0, y + 12.0, yellow, false);
+        } else {
+            for (i, line) in title.iter().enumerate() {
+                batch.text(
+                    atlas,
+                    line,
+                    x + 18.0,
+                    y + 7.0 + i as f32 * 12.0,
+                    yellow,
+                    false,
+                );
+            }
+            let top = 7.0 + title.len() as f32 * 12.0;
+            for (i, line) in message.iter().enumerate() {
+                batch.text(
+                    atlas,
+                    line,
+                    x + 18.0,
+                    y + top + i as f32 * 12.0,
+                    u32::MAX,
+                    false,
+                );
             }
         }
+    }
+
+    /// `SystemToast.splitToLength`: 200 pixels a line.
+    fn lines(&self, atlas: &HudAtlas) -> (Vec<String>, Vec<String>) {
+        let title = crate::multiplayer::wrap(&self.title, 200.0, atlas);
+        let message = self
+            .message
+            .as_deref()
+            .map(|message| crate::multiplayer::wrap(message, 200.0, atlas))
+            .unwrap_or_default();
+        (title, message)
+    }
+
+    /// `SystemToast.height`: 20 + the title's extra lines + at least one
+    /// message line, 12 each.
+    fn height_of(title: &[String], message: &[String]) -> f32 {
+        20.0 + (title.len().max(1) - 1) as f32 * 12.0 + message.len().max(1) as f32 * 12.0
+    }
+
+    /// The toast's height at the font it draws in.
+    pub fn height(&self, atlas: &HudAtlas) -> f32 {
+        let (title, message) = self.lines(atlas);
+        Self::height_of(&title, &message)
     }
 }
 /// SystemToast's 32-pixel background keeps the notice icon and borders intact.
@@ -183,6 +243,106 @@ pub fn background(atlas: &HudAtlas, batch: &mut HudBatch, x: f32, y: f32, width:
                 h,
                 piece,
                 u32::MAX,
+            );
+        }
+    }
+}
+
+/// `FriendToast`: a 160-wide `friends/toast_background`, the friend's 20x20
+/// face at (6, 6) when one is known, and up to two lines of white text; it
+/// slides like every toast and stays five seconds (times Notification Time).
+pub struct FriendToast {
+    pub slide: Slide,
+    message: String,
+    /// The friend whose face it shows (`ResolvableProfile`), when one is known.
+    pub friend: Option<u128>,
+}
+
+impl FriendToast {
+    const WIDTH: f32 = 160.0;
+    const FACE_SIZE: f32 = 20.0;
+    const TEXT_LEFT_WITH_FACE: f32 = 30.0;
+    const TEXT_LEFT_NO_FACE: f32 = 7.0;
+    const PADDING_TOP: f32 = 7.0;
+    const PADDING_BOTTOM: f32 = 3.0;
+    const LINE_SPACING: f32 = 11.0;
+
+    pub fn new(message: String, friend: Option<u128>) -> Self {
+        Self {
+            slide: Slide::default(),
+            message,
+            friend,
+        }
+    }
+
+    /// `FriendToast.update`: five seconds (128, `Notification Time` scaled).
+    pub fn update(&mut self, multiplier: f64) -> (Option<bool>, bool) {
+        self.slide
+            .update_now(|fully| (fully as f64) < 5000.0 * multiplier)
+    }
+
+    fn lines(&self, atlas: &HudAtlas) -> Vec<String> {
+        let text_left = if self.friend.is_some() {
+            Self::TEXT_LEFT_WITH_FACE
+        } else {
+            Self::TEXT_LEFT_NO_FACE
+        };
+        crate::multiplayer::wrap(&self.message, Self::WIDTH - text_left - 4.0, atlas)
+    }
+
+    /// `FriendToast.height`: 7 + `max(lines, 2) * 11` + 3.
+    pub fn height(&self, atlas: &HudAtlas) -> f32 {
+        let lines = self.lines(atlas).len().max(2) as f32;
+        Self::PADDING_TOP + lines * Self::LINE_SPACING + Self::PADDING_BOTTOM
+    }
+
+    /// `extractRenderState`: the face when known, the lines centred in the
+    /// content's two-line height.
+    pub fn draw(&self, atlas: &HudAtlas, batch: &mut HudBatch, y: f32, face: Option<&str>) {
+        if self.slide.portion <= 0.0 {
+            return;
+        }
+        let height = self.height(atlas);
+        let x = batch.width - Self::WIDTH * self.slide.portion;
+        crate::ui::blit_sprite(
+            batch,
+            atlas,
+            "gui/sprites/friends/toast_background",
+            x,
+            y,
+            Self::WIDTH,
+            height,
+            u32::MAX,
+        );
+        let face = face.filter(|_| self.friend.is_some());
+        let text_left = if face.is_some() {
+            Self::TEXT_LEFT_WITH_FACE
+        } else {
+            Self::TEXT_LEFT_NO_FACE
+        };
+        if let Some(sprite) = face {
+            crate::ui::blit_sprite(
+                batch,
+                atlas,
+                sprite,
+                x + 6.0,
+                y + 6.0,
+                Self::FACE_SIZE,
+                Self::FACE_SIZE,
+                u32::MAX,
+            );
+        }
+        let lines = self.lines(atlas);
+        let content = (lines.len().max(2) as f32) * Self::LINE_SPACING;
+        let top = Self::PADDING_TOP + (content - lines.len() as f32 * Self::LINE_SPACING) / 2.0;
+        for (i, line) in lines.iter().enumerate() {
+            batch.text(
+                atlas,
+                line,
+                x + text_left,
+                y + top + i as f32 * Self::LINE_SPACING,
+                u32::MAX,
+                false,
             );
         }
     }

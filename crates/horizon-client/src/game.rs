@@ -974,9 +974,12 @@ enum Screen {
     Advancements,
     /// WorldOptionsScreen (game/lan_screen.rs).
     WorldOptions,
-    /// Play with Friends, from the pause menu's Friends button
+    /// Play with Friends, from the pause menu's second friends button
     /// (`friends_screen`, game/friends.rs).
     Friends,
+    /// `FriendsOverlayScreen` (`friends_overlay`): the account's friends and requests
+    /// over the paused world.
+    FriendsOverlay,
     /// `SocialInteractionsScreen` (`social_screen`, game/social.rs).
     Social,
     /// CommandBlockEditScreen (game/command_blocks.rs).
@@ -1018,6 +1021,7 @@ impl Screen {
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world_options",
             Screen::Friends => "friends",
+            Screen::FriendsOverlay => "friends_overlay",
             Screen::Social => "social",
             Screen::CommandBlock => "command_block",
             Screen::BlockEditor => "block_editor",
@@ -3212,6 +3216,8 @@ struct Game<'a> {
     /// The open world is shared behind an invite code (game/friends.rs).
     #[cfg(feature = "friends")]
     friends: Option<friends::Sharing>,
+    /// `FriendsOverlayScreen`, over the paused world (`friends_overlay`).
+    friends_overlay: Option<crate::friends_overlay::Screen>,
     /// The Social Interactions screen and the players whose chat is hidden (game/social.rs).
     social: social::Social,
     world_options: Option<lan_screen::WorldOptions>,
@@ -8451,6 +8457,7 @@ impl Game<'_> {
             Screen::Mod => {}
             Screen::WorldOptions => self.draw_world_options(&mut batch),
             Screen::Friends => self.draw_friends_screen(&mut batch),
+            Screen::FriendsOverlay => self.draw_friends_overlay(&mut batch),
             Screen::Social => self.draw_social_screen(&mut batch),
             Screen::ServerLinks => self.draw_server_links(&mut batch),
             Screen::ConfirmLink => self.draw_confirm_link(&mut batch),
@@ -8485,6 +8492,7 @@ impl Game<'_> {
         self.draw_tutorial_toasts(&mut batch, !show_hud);
         self.draw_pack_toasts(&mut batch, !show_hud);
         self.draw_music_toast(&mut batch, !show_hud);
+        self.draw_friends_toasts(&mut batch, !show_hud);
         if self.server_packs.prompt.is_none() {
             self.remote_hud(&mut batch);
             self.draw_sign_editor(&mut batch);
@@ -15779,6 +15787,11 @@ impl Game<'_> {
                         if self.screen == Screen::BlockEditor {
                             self.block_editor_drag();
                         }
+                        if self.screen == Screen::FriendsOverlay
+                            && let Some(screen) = &mut self.friends_overlay
+                        {
+                            screen.drag_scroll(self.cursor);
+                        }
                         if self.screen == Screen::Advancements {
                             self.advancements_drag();
                         }
@@ -15902,6 +15915,13 @@ impl Game<'_> {
                             title.stick_scroll(d, self.cursor, gui);
                         } else {
                             title.scroll_worlds(d, self.cursor, gui);
+                        }
+                    }
+                    // `FriendsOverlayScreen`'s lists: the wheel scrolls them.
+                    if self.screen == Screen::FriendsOverlay {
+                        let size = self.gui_size();
+                        if let Some(screen) = self.friends_overlay.as_mut() {
+                            screen.scroll(d, self.cursor, size);
                         }
                     }
                     // MouseHandler.onScroll: the hotbar (or the spectator
@@ -16309,6 +16329,14 @@ impl Game<'_> {
                         Screen::Friends if pressed && button == MouseButton::Left => {
                             self.friends_screen_click()
                         }
+                        Screen::FriendsOverlay if pressed && button == MouseButton::Left => {
+                            self.friends_overlay_click()
+                        }
+                        Screen::FriendsOverlay if button == MouseButton::Left => {
+                            if let Some(screen) = self.friends_overlay.as_mut() {
+                                screen.end_scroll_drag();
+                            }
+                        }
                         Screen::Social if pressed && button == MouseButton::Left => {
                             self.social_click()
                         }
@@ -16479,6 +16507,11 @@ impl Game<'_> {
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::Social => {
                     self.social_key(&event)
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if self.screen == Screen::FriendsOverlay =>
+                {
+                    self.friends_overlay_key(&event)
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::CommandBlock => {
                     self.command_block_key(&event)
@@ -17474,6 +17507,7 @@ impl<'a> Game<'a> {
             game_tests: game_tests::GameTests::default(),
             #[cfg(feature = "friends")]
             friends: None,
+            friends_overlay: None,
             social: Default::default(),
             debug_keys: Default::default(),
             debug_charts: Default::default(),

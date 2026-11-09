@@ -107,7 +107,7 @@ mod multiplayer_parent_navigation {
     #[test]
     fn friend_cancel_returns_to_title() {
         let mut f = Fixture::new();
-        f.click("Friends");
+        f.click("Play with Friends");
         assert!(matches!(
             f.title.mode,
             Mode::Multiplayer(Screen::Friend { .. })
@@ -119,13 +119,70 @@ mod multiplayer_parent_navigation {
     #[test]
     fn friend_escape_returns_to_title() {
         let mut f = Fixture::new();
-        f.click("Friends");
+        f.click("Play with Friends");
         assert!(matches!(
             f.title.mode,
             Mode::Multiplayer(Screen::Friend { .. })
         ));
         f.title.escape();
         assert!(matches!(f.title.mode, Mode::Main));
+    }
+
+    /// `FriendsOverlayScreen.mouseClicked`: a click outside the panel returns to the
+    /// screen behind (the title).
+    #[test]
+    fn clicking_outside_the_friends_overlay_returns_to_the_title() {
+        let mut f = Fixture::new();
+        f.title.mode = Mode::Friends(crate::friends_overlay::Screen::new());
+        assert_eq!(
+            f.title.click(1.0, 1.0, (854.0, 480.0)),
+            (Action::None, false)
+        );
+        assert!(matches!(f.title.mode, Mode::Main));
+    }
+
+    /// `PrivacyConfirmLinkScreen`: Open in Browser and Copy Link to Clipboard answer
+    /// with the URL; Cancel and Escape return to the overlay without it.
+    #[test]
+    fn the_privacy_link_asks_before_it_opens() {
+        let url = "https://aka.ms/MinecraftJavaXboxPrivacyAndSafety";
+        let overlay = || Mode::Friends(crate::friends_overlay::Screen::new());
+        let mut f = Fixture::new();
+        f.title.mode = Mode::ConfirmLink {
+            url: url.into(),
+            back: Box::new(overlay()),
+        };
+        assert_eq!(f.title.buttons(854.0, 480.0).len(), 3);
+        assert_eq!(
+            f.title.click_action(0.0, 0.0, (854.0, 480.0), Some(120)),
+            Action::OpenUri(url.into())
+        );
+        assert!(matches!(f.title.mode, Mode::Friends(_)));
+        f.title.mode = Mode::ConfirmLink {
+            url: url.into(),
+            back: Box::new(overlay()),
+        };
+        assert_eq!(
+            f.title.click_action(0.0, 0.0, (854.0, 480.0), Some(121)),
+            Action::CopyText(url.into())
+        );
+        assert!(matches!(f.title.mode, Mode::Friends(_)));
+        f.title.mode = Mode::ConfirmLink {
+            url: url.into(),
+            back: Box::new(overlay()),
+        };
+        assert_eq!(
+            f.title.click_action(0.0, 0.0, (854.0, 480.0), Some(122)),
+            Action::None
+        );
+        assert!(matches!(f.title.mode, Mode::Friends(_)));
+        // ConfirmScreen.keyPressed: Escape answers no.
+        f.title.mode = Mode::ConfirmLink {
+            url: url.into(),
+            back: Box::new(overlay()),
+        };
+        f.title.escape();
+        assert!(matches!(f.title.mode, Mode::Friends(_)));
     }
 
     #[test]
@@ -1180,9 +1237,9 @@ fn icon_buttons_show_their_tooltip_while_hovered() {
     // MenuTooltipPositioner puts the text 12 right of the pointer and at
     // 195 + 3 + round(lerp(13 / 20, 17, 5)) = 198 + 9 = 207.
     for (id, text, top_left) in [
-        (5, "Friends", (228.0, 207.0)),
-        (6, "Change Language", (252.0, 207.0)),
-        (7, "Accessibility Settings", (276.0, 207.0)),
+        (5, "Friends", (216.0, 207.0)),
+        (6, "Change Language", (240.0, 207.0)),
+        (7, "Accessibility Settings", (264.0, 207.0)),
     ] {
         let mouse = button_middle(&f.title, id);
         let (tooltip, drawn) = draw_hovered(&f.title, &atlas, mouse, &mut frame);

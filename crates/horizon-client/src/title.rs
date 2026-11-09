@@ -337,6 +337,15 @@ pub enum Mode {
     },
     Multiplayer(crate::multiplayer::Screen),
     Realms(crate::realms::Screen),
+    /// `FriendsOverlayScreen`: the account's friends and requests over the title.
+    Friends(crate::friends_overlay::Screen),
+    /// `PrivacyConfirmLinkScreen`: the friends overlay's account link asks first;
+    /// Cancel and Escape return to `back` (`ConfirmScreen.shouldCloseOnEsc` false,
+    /// its keyPressed answering no).
+    ConfirmLink {
+        url: String,
+        back: Box<Mode>,
+    },
     /// SafetyScreen: the warning before the first Multiplayer click, with its
     /// "Do not show this screen again" box.
     MultiplayerWarning {
@@ -767,6 +776,8 @@ impl Mode {
         match self {
             Self::Main => "title",
             Self::Realms(_) => "realms",
+            Self::Friends(_) => "friends",
+            Self::ConfirmLink { .. } => "confirm_link",
             Self::Select { .. } => "world_select",
             Self::Create { .. } => "world_create",
             Self::CreateFlat { .. } => "world_create_flat",
@@ -1181,6 +1192,9 @@ impl Title {
         if let Some(rules) = self.rules.get_mut() {
             return rules.drag(cursor.1, size.1.ceil());
         }
+        if let Mode::Friends(screen) = &mut self.mode {
+            return screen.drag_scroll(cursor);
+        }
         if let Mode::Realms(screen) = &mut self.mode {
             return screen.drag(cursor, size);
         }
@@ -1210,6 +1224,9 @@ impl Title {
         if let Mode::Realms(screen) = &mut self.mode {
             screen.release();
         }
+        if let Mode::Friends(screen) = &mut self.mode {
+            screen.end_scroll_drag();
+        }
         if let Mode::Multiplayer(screen) = &mut self.mode {
             screen.release(&self.saves);
         }
@@ -1233,6 +1250,10 @@ impl Title {
         }
         if let Mode::Realms(screen) = &mut self.mode {
             screen.wheel(delta, cursor, size);
+            return false;
+        }
+        if let Mode::Friends(screen) = &mut self.mode {
+            screen.scroll(delta, cursor, size);
             return false;
         }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
@@ -1302,6 +1323,12 @@ impl Title {
         self.poll_realms();
         self.poll_onboarding(std::time::Instant::now());
         self.poll_account();
+        if let Mode::Friends(screen) = &mut self.mode {
+            // The title screen has no loaded Options yet: Notification Time is 1.
+            screen.tick(1.0);
+        } else {
+            crate::social::set_foreground(false);
+        }
         self.poll_optimize();
         if !self.backup_shown.get() {
             return;
@@ -1891,83 +1918,7 @@ impl Title {
             action: None,
         };
         match &self.mode {
-            Mode::Main => {
-                let cx = (w / 2.0).floor();
-                let y = (h / 4.0).floor() + 48.0;
-                let mut buttons = vec![
-                    b(
-                        cx - 100.0,
-                        y,
-                        200.0,
-                        &lang::get_or("menu.singleplayer", "Singleplayer"),
-                        true,
-                        1,
-                    ),
-                    b(
-                        cx - 100.0,
-                        y + 24.0,
-                        200.0,
-                        &lang::get_or("menu.multiplayer", "Multiplayer"),
-                        self.allows_multiplayer,
-                        4,
-                    ),
-                    b(
-                        cx - 100.0,
-                        y + 48.0,
-                        200.0,
-                        &lang::get_or("menu.online", "Minecraft Realms"),
-                        // TitleScreen.createNormalMenuOptions: Realms is off when
-                        // multiplayer is.
-                        self.allows_multiplayer,
-                        8,
-                    ),
-                    b(
-                        cx - 100.0,
-                        y + 96.0,
-                        98.0,
-                        &lang::get_or("menu.options", "Options..."),
-                        true,
-                        3,
-                    )
-                    .does(crate::widgets::Action::Options),
-                    b(
-                        cx + 2.0,
-                        y + 96.0,
-                        98.0,
-                        &lang::get_or("menu.quit", "Quit Game"),
-                        true,
-                        2,
-                    )
-                    .does(crate::widgets::Action::Exit),
-                ];
-                // CommonButtons' icon buttons; Horizon's Join a Friend (an
-                // invite code) sits behind vanilla's Friends button.
-                for (i, (key, plain, id, icon)) in [
-                    ("gui.friends.open", "Friends", 5, "friends/friends"),
-                    ("options.language", "Language...", 6, "icon/language"),
-                    (
-                        "options.accessibility",
-                        "Accessibility Settings...",
-                        7,
-                        "icon/accessibility",
-                    ),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let mut button = b(
-                        cx - 34.0 + i as f32 * 24.0,
-                        y + 72.0,
-                        20.0,
-                        &lang::get_or(key, plain),
-                        true,
-                        id,
-                    );
-                    button.icon = Some((icon, 15.0));
-                    buttons.push(button);
-                }
-                buttons
-            }
+            Mode::Main => self.main_buttons(w, h),
             Mode::Select { worlds, selected } => {
                 let world = selected.and_then(|i| worlds.get(i));
                 // SelectWorldScreen.updateButtonStatus: primaryActionMessage, canEdit, canRecreate.
@@ -2359,6 +2310,28 @@ impl Title {
                     })
                     .collect()
             }
+            Mode::ConfirmLink { .. } => {
+                // `PrivacyConfirmLinkScreen`: Open in Browser, Copy Link to Clipboard,
+                // Cancel, 100 wide each (`ConfirmLinkScreen.addButtons`).
+                let labels = [
+                    lang::get_or("chat.link.open", "Open in Browser"),
+                    lang::get_or("gui.copy_link_to_clipboard", "Copy Link to Clipboard"),
+                    lang::get_or("gui.cancel", "Cancel"),
+                ];
+                let positions = self.ban_buttons.get();
+                (0..3)
+                    .map(|i| {
+                        b(
+                            positions[i].0,
+                            positions[i].1,
+                            100.0,
+                            &labels[i],
+                            true,
+                            120 + i as u8,
+                        )
+                    })
+                    .collect()
+            }
             Mode::Backup { .. } => Vec::new(),
             Mode::Multiplayer(screen) => screen
                 .buttons(w, h)
@@ -2378,8 +2351,201 @@ impl Title {
                     btn
                 })
                 .collect(),
+            Mode::Friends(screen) => screen
+                .buttons((w, h))
+                .into_iter()
+                .map(|(x, y, bw, label, enabled, id, icon)| {
+                    // `SpriteIconButton`'s message is its narration/tooltip; an
+                    // icon button draws no label, so this only names it.
+                    let label = if label.is_empty() {
+                        screen.button_tooltip(id).map(lang::get).unwrap_or_default()
+                    } else {
+                        label
+                    };
+                    let mut btn = b(x, y, bw, &label, enabled, id);
+                    btn.icon = icon;
+                    btn
+                })
+                .collect(),
         }
     }
+
+    /// TitleScreen's main menu, for the screen and for what the friends
+    /// overlay (`backgroundScreen`) keeps behind it.
+    fn main_buttons(&self, w: f32, h: f32) -> Vec<Button> {
+        let b = |x: f32, y: f32, w: f32, label: &str, enabled: bool, id: u8| Button {
+            x,
+            y,
+            w,
+            label: label.into(),
+            enabled,
+            id,
+            icon: None,
+            trailing: None,
+            action: None,
+        };
+        let cx = (w / 2.0).floor();
+        let y = (h / 4.0).floor() + 48.0;
+        let mut buttons = vec![
+            b(
+                cx - 100.0,
+                y,
+                200.0,
+                &lang::get_or("menu.singleplayer", "Singleplayer"),
+                true,
+                1,
+            ),
+            b(
+                cx - 100.0,
+                y + 24.0,
+                200.0,
+                &lang::get_or("menu.multiplayer", "Multiplayer"),
+                self.allows_multiplayer,
+                4,
+            ),
+            b(
+                cx - 100.0,
+                y + 48.0,
+                200.0,
+                &lang::get_or("menu.online", "Minecraft Realms"),
+                // TitleScreen.createNormalMenuOptions: Realms is off when
+                // multiplayer is.
+                self.allows_multiplayer,
+                8,
+            ),
+            b(
+                cx - 100.0,
+                y + 96.0,
+                98.0,
+                &lang::get_or("menu.options", "Options..."),
+                true,
+                3,
+            )
+            .does(crate::widgets::Action::Options),
+            b(
+                cx + 2.0,
+                y + 96.0,
+                98.0,
+                &lang::get_or("menu.quit", "Quit Game"),
+                true,
+                2,
+            )
+            .does(crate::widgets::Action::Exit),
+        ];
+        // CommonButtons' icon buttons; the last is Horizon's own Play with
+        // Friends (the invite code), beside vanilla's friends overlay.
+        for (i, (key, plain, id, icon)) in [
+            ("gui.friends.open", "Friends", 5, "friends/friends"),
+            ("options.language", "Language...", 6, "icon/language"),
+            (
+                "options.accessibility",
+                "Accessibility Settings...",
+                7,
+                "icon/accessibility",
+            ),
+            (
+                "horizon.friends.play",
+                "Play with Friends",
+                9,
+                "icon/invite",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // `CommonButtons.friends`' `friendsAvailable`: the vanilla friends
+            // list needs a signed-in account; Horizon's sharing does not.
+            let enabled = id != 5 || crate::social::available();
+            let mut button = b(
+                cx - 46.0 + i as f32 * 24.0,
+                y + 72.0,
+                20.0,
+                &lang::get_or(key, plain),
+                enabled,
+                id,
+            );
+            button.icon = Some((icon, 15.0));
+            buttons.push(button);
+        }
+        buttons
+    }
+
+    /// `TitleScreen.extractRenderState` under `FriendsOverlayScreen`: the logo,
+    /// splash, version, notice and main menu, with no hover (the background
+    /// screen is drawn with the pointer at -1, -1).
+    fn draw_title_behind_friends(
+        &self,
+        atlas: &HudAtlas,
+        batch: &mut HudBatch,
+        (w, h): (f32, f32),
+    ) {
+        draw_logo(atlas, batch, w);
+        if let Some(splash) = self.splash.as_deref() {
+            let tw = HudBatch::text_width(atlas, splash);
+            let start = batch.vertices.len();
+            batch.text(
+                atlas,
+                splash,
+                -(tw / 2.0).floor(),
+                -8.0,
+                rgba(255, 255, 0, 255),
+                true,
+            );
+            let scale = (1.8
+                - (self.started.elapsed().as_secs_f32() * std::f32::consts::TAU)
+                    .sin()
+                    .abs()
+                    * 0.1)
+                * 100.0
+                / (tw + 32.0);
+            let (sin, cos) = (-20.0f32).to_radians().sin_cos();
+            for v in &mut batch.vertices[start..] {
+                let [x, y] = v.pos;
+                v.pos = [
+                    w / 2.0 + 123.0 + scale * (x * cos - y * sin),
+                    69.0 + scale * (x * sin + y * cos),
+                ];
+            }
+        }
+        let version = format!("Horizon {} (Rust)", horizon_core::VANILLA_VERSION);
+        batch.text(atlas, &version, 2.0, h - 10.0, u32::MAX, true);
+        if let Some(nightly) = horizon_core::release::nightly_label() {
+            batch.text(atlas, &nightly, 2.0, 2.0, u32::MAX, true);
+        }
+        let notice = lang::get_or(
+            "horizon.title.not_affiliated",
+            "Not affiliated with Mojang or Microsoft",
+        );
+        let tw = HudBatch::text_width(atlas, &notice).ceil();
+        batch.text(atlas, &notice, w - tw - 2.0, h - 10.0, u32::MAX, true);
+        for b in self.main_buttons(w, h) {
+            let sprite = if b.enabled {
+                "gui/sprites/widget/button"
+            } else {
+                "gui/sprites/widget/button_disabled"
+            };
+            crate::ui::nine_slice(batch, atlas, sprite, b.x, b.y, b.w, 20.0, u32::MAX);
+            let color = if b.enabled {
+                u32::MAX
+            } else {
+                rgba(160, 160, 160, 255)
+            };
+            if let Some((icon, size)) = b.icon {
+                batch.sprite_scaled(
+                    atlas,
+                    &format!("gui/sprites/{icon}"),
+                    b.x + (b.w / 2.0).floor() - (size / 2.0).floor(),
+                    b.y + 10.0 - (size / 2.0).floor(),
+                    size,
+                    size,
+                    u32::MAX,
+                );
+            } else {
+                b.draw_label(batch, atlas, color);
+            }
+        }
+    }
+
     /// The screen this mode is, as the narrator reads it: its id and
     /// `getNarrationMessage` (the title, or `joinForNarration(title, message)`
     /// for the confirm and alert screens). `None` for the screens that
@@ -2491,6 +2657,17 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     join(&[&notice.title().plain(), &notice.message(now).plain()]),
                 )
             }
+            // PrivacyConfirmLinkScreen: its title and message, `joinForNarration`.
+            Mode::ConfirmLink { .. } => ScreenInfo::new(
+                "confirm_link",
+                join(&[
+                    &get("gui.privacy_link.title", "Privacy settings"),
+                    &get(
+                        "gui.privacy_link.message",
+                        "Open this link to manage your privacy and online safety settings.",
+                    ),
+                ]),
+            ),
             Mode::Delete { world } => ScreenInfo::new(
                 "delete_world",
                 join(&[
@@ -2576,6 +2753,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     None => info,
                 }
             }
+            Mode::Friends(_) => ScreenInfo::new("friends", lang::get("gui.friends.open")),
             Mode::Multiplayer(_) => return None,
         };
         Some(info)
@@ -2609,6 +2787,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             5 => icon("gui.friends.open.narration"),
             6 => icon("options.language.narration"),
             7 => icon("accessibility.onboarding.accessibility.button.narration"),
+            9 => icon("horizon.friends.play.narration"),
             _ => Narratable::button(b.label.clone(), rect, b.enabled),
         };
         // TitleScreen.init adds the icon row after Minecraft Realms and before
@@ -2633,6 +2812,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             (Mode::Main, 7) | (Mode::Onboarding(_), onboarding::ACCESSIBILITY) => {
                 Some("options.accessibility.tooltip")
             }
+            (Mode::Main, 9) => Some("horizon.friends.play.tooltip"),
+            // `SpriteIconButton`'s tooltips: Send/Enter a profile name/loading,
+            // Unfriend, Accept, Decline, Cancel request.
+            (Mode::Friends(screen), _) => screen.button_tooltip(id),
             _ => None,
         }
     }
@@ -3351,6 +3534,60 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 self.ban_buttons
                     .set([layout.buttons[0], layout.buttons[1], layout.buttons[2]]);
             }
+            Mode::ConfirmLink { url, .. } => {
+                // `PrivacyConfirmLinkScreen.init`: the yellow underlined title (up to
+                // 4 lines), the privacy message (up to 15), the URL in white, then
+                // the button row 16 below; the layout is centred (`ConfirmScreen`).
+                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+                let title = Text::translate("gui.privacy_link.title", &[])
+                    .with_color(0xFFFF_FF00)
+                    .underlined();
+                let message = Text::translate("gui.privacy_link.message", &[]);
+                let url_line = Text::literal(url.clone()).with_color(0xFFFF_FFFF);
+                let title_lines: Vec<Text> = atlas
+                    .font
+                    .split(&title, w - 50.0)
+                    .into_iter()
+                    .take(4)
+                    .collect();
+                let message_lines: Vec<Text> = atlas
+                    .font
+                    .split(&message, w - 50.0)
+                    .into_iter()
+                    .take(15)
+                    .collect();
+                let (title_h, message_h) = (
+                    9.0 * title_lines.len() as f32,
+                    9.0 * message_lines.len() as f32,
+                );
+                let total = title_h + 8.0 + message_h + 8.0 + 9.0 + 8.0 + 16.0 + 20.0;
+                let ly = ((h - total) / 2.0).trunc();
+                let mut y = ly;
+                let mut lines: Vec<(Text, f32, f32)> = Vec::new();
+                for (i, line) in title_lines
+                    .iter()
+                    .chain(message_lines.iter())
+                    .chain(std::iter::once(&url_line))
+                    .enumerate()
+                {
+                    let x = ((w - atlas.font.width_text(line)) / 2.0).trunc();
+                    lines.push((line.clone(), x, y));
+                    y += 9.0;
+                    if i + 1 == title_lines.len()
+                        || i + 1 == title_lines.len() + message_lines.len()
+                        || i + 1 == title_lines.len() + message_lines.len() + 1
+                    {
+                        y += 8.0;
+                    }
+                }
+                for (line, x, y) in &lines {
+                    batch.text_styled(atlas, line, *x, *y, u32::MAX, true);
+                }
+                let bx = ((w - 308.0) / 2.0).trunc();
+                let by = ly + title_h + 8.0 + message_h + 8.0 + 9.0 + 8.0 + 16.0;
+                self.ban_buttons
+                    .set([(bx, by), (bx + 104.0, by), (bx + 208.0, by)]);
+            }
             Mode::Multiplayer(screen) => screen.draw(
                 atlas,
                 batch,
@@ -3369,9 +3606,19 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 h,
                 self.focused_button.is_none(),
             ),
+            Mode::Friends(screen) => {
+                // `FriendsOverlayScreen.backgroundScreen`: the title screen stays
+                // behind the overlay.
+                self.draw_title_behind_friends(atlas, batch, (w, h));
+                // `extractBlurredBackground` over `backgroundScreen`: the title
+                // screen is blurred, the overlay panel stays sharp.
+                batch.blur_at = batch.vertices.len() as u32;
+                screen.draw_over(atlas, batch, cursor, (w, h));
+            }
         }
         // The hovered button's `Tooltip`, drawn once the widgets are.
         let mut button_tooltip = None;
+        let friends_loading = matches!(&self.mode, Mode::Friends(screen) if screen.loading());
         for b in self.buttons(w, h) {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
             // Realms' icon buttons have no label to record.
@@ -3390,43 +3637,100 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             }
             let is_focused = self.focused_button == Some(b.id);
             let hover = b.enabled && (inside || is_focused);
-            let sprite = if !b.enabled {
-                "gui/sprites/widget/button_disabled"
-            } else if hover {
-                "gui/sprites/widget/button_highlighted"
-            } else {
-                "gui/sprites/widget/button"
+            // `FriendsOverlayTabButton`: selected is the enabled sprite, an
+            // unselected tab its disabled one, and hovering any is highlighted.
+            let friends_tab = match &self.mode {
+                Mode::Friends(screen) if matches!(b.id, 1 | 2) => {
+                    Some(screen.selected_tab() == b.id)
+                }
+                _ => None,
             };
-            // Nine-slice approximation: left and right halves of the 200-wide sprite.
-            if let Some(r) = atlas.sprites.get(sprite).copied() {
-                let half = b.w / 2.0;
-                let mut left = r;
-                left.u1 = r.u0 + (r.u1 - r.u0) * (half / r.w as f32);
-                batch.rect_uv(b.x, b.y, half, 20.0, left, u32::MAX);
-                let mut right = r;
-                right.u0 = r.u1 - (r.u1 - r.u0) * (half / r.w as f32);
-                batch.rect_uv(b.x + half, b.y, half, 20.0, right, u32::MAX);
+            if let Some(selected) = friends_tab {
+                let sprite = if hover {
+                    "gui/sprites/friends/button_highlighted"
+                } else if selected {
+                    "gui/sprites/friends/button"
+                } else {
+                    "gui/sprites/friends/button_disabled"
+                };
+                crate::ui::blit_sprite(batch, atlas, sprite, b.x, b.y, b.w, 20.0, u32::MAX);
+            } else {
+                let sprite = if !b.enabled {
+                    "gui/sprites/widget/button_disabled"
+                } else if hover {
+                    "gui/sprites/widget/button_highlighted"
+                } else {
+                    "gui/sprites/widget/button"
+                };
+                // `AbstractButton.extractDefaultSprite`: the sprite's `gui.scaling`
+                // nine-slice, its centre tiles/stretches as the metadata says.
+                crate::ui::nine_slice(batch, atlas, sprite, b.x, b.y, b.w, 20.0, u32::MAX);
             }
             let color = if b.enabled {
                 u32::MAX
             } else {
                 rgba(160, 160, 160, 255)
             };
+            let friends_action =
+                matches!(&self.mode, Mode::Friends(screen) if screen.action_loading(b.id));
+            if (friends_loading && b.id == 3) || friends_action {
+                // `SpriteIconButton.extractLoadingStateIfLoading`: the disabled
+                // background (already drawn, `enabled` is false) and the animated
+                // 5x2 `friends/loading` sprite centred in the button.
+                batch.sprite_scaled(
+                    atlas,
+                    "gui/sprites/friends/loading",
+                    b.x + (b.w - 5.0) / 2.0,
+                    b.y + 9.0,
+                    5.0,
+                    2.0,
+                    u32::MAX,
+                );
+                continue;
+            }
             if let Some((icon, size)) = b.icon {
+                // `IncomingEntry`'s accept/reject have highlighted variants.
+                let icon = if hover && icon == "friends/accept" {
+                    "friends/accept_highlighted"
+                } else if hover && icon == "friends/reject" {
+                    "friends/reject_highlighted"
+                } else {
+                    icon
+                };
+                // `friends/remove` is 13x11.
+                let (iw, ih) = if icon == "friends/remove" {
+                    (13.0, 11.0)
+                } else {
+                    (size, size)
+                };
                 // CenteredIcon divides the button and sprite sizes separately:
                 // a 15px icon in a 20px button starts at 10 - 7 = 3, not 2.
                 batch.sprite_scaled(
                     atlas,
                     &format!("gui/sprites/{icon}"),
-                    b.x + (b.w / 2.0).floor() - (size / 2.0).floor(),
-                    b.y + 10.0 - (size / 2.0).floor(),
-                    size,
-                    size,
+                    b.x + (b.w / 2.0).floor() - (iw / 2.0).floor(),
+                    b.y + 10.0 - (ih / 2.0).floor(),
+                    iw,
+                    ih,
                     u32::MAX,
                 );
                 continue;
             }
-            b.draw_label(batch, atlas, color);
+            if let Some(selected) = friends_tab {
+                // `FriendsOverlayTabButton.renderLabel`: 1px margins and the
+                // unselected label one lower.
+                let width = HudBatch::text_width(atlas, &b.label).min(b.w - 2.0);
+                batch.text(
+                    atlas,
+                    &b.label,
+                    b.x + (b.w - width) / 2.0,
+                    b.y + if selected { 6.0 } else { 7.0 },
+                    color,
+                    true,
+                );
+            } else {
+                b.draw_label(batch, atlas, color);
+            }
             if let Some((icon, size)) = b.trailing {
                 // TextAndIcon: `x + width - spriteWidth - 2`, centred in the height.
                 batch.sprite_scaled(
@@ -3485,6 +3789,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             crate::toasts::background(atlas, batch, x, 0.0, width);
             batch.text(atlas, &title, x + 18.0, 7.0, rgba(255, 255, 0, 255), false);
             batch.text(atlas, &message, x + 18.0, 19.0, u32::MAX, false);
+        }
+        // `ToastManager` after the screen's widgets: the friends overlay's failure
+        // toast stays over its tabs and panel.
+        if let Mode::Friends(screen) = &self.mode {
+            // `ToastManager`: the title's own toast already holds the first
+            // 32-pixel slot, so the overlay's toasts start below it.
+            let base = if self.toast.is_some() { 32.0 } else { 0.0 };
+            screen.draw_toast_at(atlas, batch, base);
         }
     }
     /// The tooltip of a world's icon (drawn with the row, as vanilla does) or, for a
@@ -3576,6 +3888,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             || self.confirm_experiments.get_mut().is_some()
         {
             return None;
+        }
+        // The friends overlay's `TabNavigationBar` takes the same keys.
+        if let Mode::Friends(screen) = &mut self.mode {
+            return screen.tab_key(key, ctrl, shift);
         }
         // The Realms configuration screen's `TabNavigationBar` takes the same keys.
         if let Mode::Realms(screen) = &mut self.mode {
@@ -3702,6 +4018,17 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 Action::None
             }
             (Mode::Main, Some(2)) => Action::Quit,
+            (Mode::ConfirmLink { url, back }, Some(id @ 120..=122)) => {
+                // ConfirmLinkScreen.addButtons: Open in Browser (yes), Copy Link to
+                // Clipboard (no, copied), Cancel (no); each returns to `back`.
+                let url = url.clone();
+                self.mode = *back.clone();
+                match id {
+                    120 => Action::OpenUri(url),
+                    121 => Action::CopyText(url),
+                    _ => Action::None,
+                }
+            }
             (Mode::BanNotice(_), Some(id @ 120..=122)) => {
                 // BanNoticeScreens' callback: Open in Browser opens the link, Copy copies it
                 // and answers no; all of them run `next`.
@@ -3765,6 +4092,41 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     crate::realms::Outcome::None => Action::None,
                 }
             }
+            (Mode::Friends(screen), hit) => {
+                if hit.is_none() && screen.begin_scroll_drag((x, y), (w, h)) {
+                    return Action::None;
+                }
+                let question = screen.question_open();
+                screen.click(hit, (x, y), (w, h));
+                if let Some(name) = screen.take_profile_copy() {
+                    // `PlainTextButton` on the profile row copies the name.
+                    Action::CopyText(name)
+                } else if let Some(url) = screen.take_link_click() {
+                    let _ = screen.take_link_sound();
+                    // `MICROSOFT_ACCOUNT_LINK`: `PrivacyConfirmLinkScreen.confirmLinkNow`
+                    // covers the overlay and returns to it.
+                    self.mode = Mode::ConfirmLink {
+                        url: url.to_owned(),
+                        back: Box::new(Mode::Friends(screen.clone())),
+                    };
+                    Action::None
+                } else if screen.take_cancelled() {
+                    // `FriendsListConfirmScreen` answered Turn Off: `lastScreen`.
+                    self.mode = Mode::Main;
+                    Action::None
+                } else if !question
+                    && hit.is_none()
+                    && !screen.contains((x, y), (w, h))
+                    && screen.escape()
+                {
+                    // `FriendsOverlayScreen.mouseClicked`: a click outside the panel
+                    // returns to the screen behind (the title).
+                    self.mode = Mode::Main;
+                    Action::None
+                } else {
+                    Action::None
+                }
+            }
             (Mode::MultiplayerWarning { .. }, Some(71)) => {
                 self.mode = Mode::Main;
                 Action::None
@@ -3782,6 +4144,13 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 crate::multiplayer::Outcome::None => Action::None,
             },
             (Mode::Main, Some(5)) => {
+                // `CommonButtons.friends`: the vanilla friends overlay, whose list is
+                // turned on first when it is off (`OnlineOptionsScreen.confirmFriendsListEnabled`).
+                self.mode = Mode::Friends(crate::friends_overlay::Screen::new_gated());
+                Action::None
+            }
+            (Mode::Main, Some(9)) => {
+                // Horizon's own Play with Friends, behind a second icon.
                 self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend(true));
                 Action::None
             }
@@ -4125,6 +4494,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         match &mut self.mode {
             Mode::Multiplayer(screen) => screen.focused_text(),
             Mode::Realms(screen) => screen.focused_text(),
+            Mode::Friends(screen) => screen.focused_text(),
             mode => caret_field(mode, self.search_focused, &mut self.search),
         }
     }
@@ -4203,6 +4573,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 .map(|(_, rect)| rect),
             Mode::Multiplayer(screen) => screen.focused_box((w, h)),
             Mode::Realms(screen) => screen.focused_box((w, h)),
+            Mode::Friends(screen) => screen.focused_box((w, h)),
             Mode::CreateBuffet { buffet, .. } if buffet.query_focused => {
                 Some(buffet::search_box(w))
             }
@@ -4333,6 +4704,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             // A press on Create is a button click: the local world, or the upload.
             let sound = upload || matches!(action, Action::Create { .. });
             return (action, sound);
+        }
+        // `AddFriendWidget`'s EditBox: Enter sends the name in it.
+        if let Mode::Friends(screen) = &mut self.mode {
+            let sent = screen.enter();
+            return (Action::None, sent);
         }
         match &self.mode {
             Mode::Multiplayer(screen) => match screen.confirm() {
@@ -4955,6 +5331,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         {
             return;
         }
+        if let Mode::Friends(screen) = &mut self.mode
+            && !screen.escape()
+        {
+            return;
+        }
         match &self.mode {
             // OptimizeWorldScreen: `shouldCloseOnEsc` is false; the Backup wait takes no input.
             Mode::Backup { .. } | Mode::Optimize { .. } => {}
@@ -4988,6 +5369,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             }
             Mode::CreateBuffet { .. } => self.close_buffet(false),
             Mode::Create { .. } => self.cancel_create(),
+            // `FriendsOverlayScreen.onClose`: the screen behind (the title).
+            Mode::Friends(_) => self.mode = Mode::Main,
+            // `ConfirmScreen.keyPressed`: Escape answers no, the screen that asked
+            // returns (`PrivacyConfirmLinkScreen`'s parent).
+            Mode::ConfirmLink { back, .. } => {
+                let back = *back.clone();
+                self.mode = back;
+            }
             // Screen.keyPressed: Escape closes the screen, which fades out.
             Mode::Onboarding(_) => self.onboarding_close(),
             // ConfirmScreen.keyPressed: Escape answers no, which runs `next`.
@@ -5052,6 +5441,7 @@ fn caret_field<'a>(
         },
         Mode::Multiplayer(screen) => screen.focused_text(),
         Mode::Realms(screen) => screen.focused_text(),
+        Mode::Friends(screen) => screen.focused_text(),
         Mode::CreateFlat { flat, .. } if flat.page == flat::Page::Presets && flat.share_focused => {
             Some((FLAT_SHARE, &mut flat.share, 1230))
         }
@@ -5314,18 +5704,26 @@ mod classic_tests {
             let buttons = title.buttons(w, h);
             let cx = (w / 2.0).floor();
             let y = (h / 4.0).floor() + 48.0;
+            let friends_available = crate::social::available();
             for (id, x, enabled, icon) in [
-                (5, cx - 34.0, true, "friends/friends"),
-                (6, cx - 10.0, true, "icon/language"),
-                (7, cx + 14.0, true, "icon/accessibility"),
+                (5, cx - 46.0, friends_available, "friends/friends"),
+                (6, cx - 22.0, true, "icon/language"),
+                (7, cx + 2.0, true, "icon/accessibility"),
+                (9, cx + 26.0, true, "icon/invite"),
             ] {
                 let b = buttons.iter().find(|b| b.id == id).unwrap();
                 assert_eq!(
                     (b.x, b.y, b.w, b.enabled, b.icon),
                     (x, y + 72.0, 20.0, enabled, Some((icon, 15.0)))
                 );
+                let click = title.click(x + 10.0, y + 82.0, (w, h));
+                if id == 5 && !friends_available {
+                    // `friendsAvailable`: no signed-in account, no friends list.
+                    assert_eq!(click, (Action::None, false));
+                    continue;
+                }
                 assert_eq!(
-                    title.click(x + 10.0, y + 82.0, (w, h)),
+                    click,
                     match id {
                         6 => (Action::Language, true),
                         7 => (Action::Accessibility, true),
@@ -5333,6 +5731,10 @@ mod classic_tests {
                     }
                 );
                 if id == 5 {
+                    assert!(matches!(title.mode, Mode::Friends(_)));
+                    title.mode = Mode::Main;
+                }
+                if id == 9 {
                     assert!(matches!(
                         title.mode,
                         Mode::Multiplayer(crate::multiplayer::Screen::Friend { .. })
@@ -5345,7 +5747,7 @@ mod classic_tests {
             }
             // The four-pixel gaps around icons must not activate a button.
             assert_eq!(
-                title.click(cx + 12.0, y + 82.0, (w, h)),
+                title.click(cx - 24.0, y + 82.0, (w, h)),
                 (Action::None, false)
             );
             assert_eq!(
@@ -5438,7 +5840,7 @@ mod classic_tests {
                 .iter()
                 .find(|quad| quad[0].uv == [0.25 + i as f32 * 0.125, 0.0])
                 .unwrap();
-            let x = cx - 34.0 + i as f32 * 24.0 + 3.0;
+            let x = cx - 46.0 + i as f32 * 24.0 + 3.0;
             let y = (batch.height / 4.0).floor() + 48.0 + 72.0 + 3.0;
             assert_eq!(quad[0].pos, [x, y]);
             assert_eq!(quad[2].pos, [x + 15.0, y + 15.0]);

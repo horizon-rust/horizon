@@ -32,6 +32,9 @@ pub(super) struct LinksUi {
     /// `ConfirmLinkScreen.trusted`: the pause menu's buttons ask with the
     /// trusted text and no warning; a server's link is untrusted.
     pub trusted: bool,
+    /// `PrivacyConfirmLinkScreen`: the friends list's account link asks with its
+    /// privacy title and message, then opens the page.
+    pub privacy: bool,
     /// The screen the confirmation returns to (its parent); Server Links when unset.
     pub back: Option<Screen>,
 }
@@ -298,6 +301,16 @@ impl Game<'_> {
     pub(super) fn confirm_trusted_link(&mut self, url: &str, parent: Screen) {
         self.links_ui.confirm = Some(url.to_owned());
         self.links_ui.trusted = true;
+        self.links_ui.privacy = false;
+        self.links_ui.back = Some(parent);
+        self.screen = Screen::ConfirmLink;
+    }
+    /// `PrivacyConfirmLinkScreen.confirmLinkNow`: the friends list's account link
+    /// asks with its privacy title and message before opening the page.
+    pub(super) fn confirm_privacy_link(&mut self, url: &str, parent: Screen) {
+        self.links_ui.confirm = Some(url.to_owned());
+        self.links_ui.trusted = true;
+        self.links_ui.privacy = true;
         self.links_ui.back = Some(parent);
         self.screen = Screen::ConfirmLink;
     }
@@ -332,7 +345,11 @@ impl Game<'_> {
                 &url,
             )
         });
-        let layout = confirm_link_layout(atlas, (w, h), &url, trusted);
+        let layout = if self.links_ui.privacy {
+            privacy_link_layout(&atlas.font, (w, h), &url)
+        } else {
+            confirm_link_layout(atlas, (w, h), &url, trusted)
+        };
         for (line, x, y) in &layout.lines {
             batch.text_styled(atlas, line, *x, *y, u32::MAX, true);
         }
@@ -534,6 +551,62 @@ fn confirm_link_layout(
         &[100.0; 3],
     )
 }
+/// `PrivacyConfirmLinkScreen.init`: a yellow underlined title of up to 4 lines, the
+/// privacy message (15 lines), the URL in white, then Open in Browser / Copy Link to
+/// Clipboard / Cancel, all centred (`ConfirmScreen`'s vertical layout).
+fn privacy_link_layout(
+    font: &horizon_client::font::Font,
+    (w, h): (f32, f32),
+    url: &str,
+) -> ConfirmLayout {
+    let title = Text::translate("gui.privacy_link.title", &[])
+        .with_color(0xFFFF_FF00)
+        .underlined();
+    let message = Text::translate("gui.privacy_link.message", &[]);
+    let url_line = Text::literal(url.to_owned()).with_color(0xFFFF_FFFF);
+    let title_lines: Vec<Text> = font
+        .split_lines(&title, w - 50.0)
+        .into_iter()
+        .take(4)
+        .map(|(line, _)| line)
+        .collect();
+    let message_lines: Vec<Text> = font
+        .split_lines(&message, w - 50.0)
+        .into_iter()
+        .take(15)
+        .map(|(line, _)| line)
+        .collect();
+    let (title_h, message_h) = (
+        9.0 * title_lines.len() as f32,
+        9.0 * message_lines.len() as f32,
+    );
+    let total = title_h + 8.0 + message_h + 8.0 + 9.0 + 8.0 + 16.0 + 20.0;
+    let mut y = ((h - total) / 2.0).trunc();
+    let mut lines = Vec::new();
+    let mut push = |line: &Text, at: f32| {
+        let lw = font.width_text(line);
+        lines.push((line.clone(), ((w - lw) / 2.0).trunc(), at));
+    };
+    for line in &title_lines {
+        push(line, y);
+        y += 9.0;
+    }
+    y += 8.0;
+    for line in &message_lines {
+        push(line, y);
+        y += 9.0;
+    }
+    y += 8.0;
+    push(&url_line, y);
+    y += 9.0;
+    let row_w = 3.0 * 100.0 + 2.0 * 4.0;
+    let by = y + 8.0 + 16.0;
+    let bx = ((w - row_w) / 2.0).trunc();
+    ConfirmLayout {
+        lines,
+        buttons: vec![(bx, by), (bx + 104.0, by), (bx + 208.0, by)],
+    }
+}
 /// `ConfirmLinkScreen`'s yes, copy and no labels: Open in Browser and Cancel
 /// when trusted.
 fn confirm_link_labels(trusted: bool) -> [&'static str; 3] {
@@ -568,6 +641,28 @@ mod tests {
         assert_eq!(
             confirm_link_labels(false),
             ["gui.yes", "gui.copy_link_to_clipboard", "gui.no"]
+        );
+    }
+
+    /// `PrivacyConfirmLinkScreen`: its own title and message, the URL in white, and
+    /// ConfirmLinkScreen's three 100-wide buttons 4 apart.
+    #[test]
+    fn a_privacy_link_asks_with_its_own_text_and_three_buttons() {
+        let atlas = horizon_client::hud::HudAtlas::build(std::path::Path::new(
+            "/nonexistent/horizon-test-assets",
+        ))
+        .unwrap();
+        let url = "https://aka.ms/MinecraftJavaXboxPrivacyAndSafety";
+        let layout = privacy_link_layout(&atlas.font, (854.0, 480.0), url);
+        assert_eq!(layout.buttons.len(), 3);
+        assert_eq!(layout.buttons[1].0 - layout.buttons[0].0, 104.0);
+        assert_eq!(layout.buttons[2].0 - layout.buttons[1].0, 104.0);
+        assert!(
+            layout
+                .lines
+                .iter()
+                .any(|(line, _, _)| line.plain().contains(url)),
+            "the URL line is drawn"
         );
     }
 

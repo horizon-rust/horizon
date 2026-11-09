@@ -77,6 +77,28 @@ impl PresenceStatus {
             Self::Offline => "OFFLINE",
         }
     }
+    /// `gui.friends.presence.status.<name>`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Online => "gui.friends.presence.status.online",
+            Self::PlayingOffline => "gui.friends.presence.status.playing_offline",
+            Self::PlayingRealms => "gui.friends.presence.status.playing_realms",
+            Self::PlayingServer => "gui.friends.presence.status.playing_server",
+            Self::PlayingHostedServer => "gui.friends.presence.status.playing_hosted_server",
+            Self::Offline => "gui.friends.presence.status.offline",
+        }
+    }
+    /// `FriendEntry.presenceStatusSortOrder`: playing friends first, offline last.
+    pub fn sort_order(self) -> u8 {
+        match self {
+            Self::PlayingHostedServer => 0,
+            Self::PlayingServer => 1,
+            Self::PlayingRealms => 2,
+            Self::PlayingOffline => 3,
+            Self::Online => 4,
+            Self::Offline => 5,
+        }
+    }
 }
 
 /// `PresenceStatusDto`.
@@ -276,6 +298,12 @@ pub fn init(friends_enabled: bool, allow_requests: bool) {
     spawn_updater();
 }
 
+/// `Minecraft.friendsEnabled`: an account that may use the friends list. Offline play
+/// (no session) has none.
+pub fn available() -> bool {
+    auth::current().filter(|s| !s.expired()).is_some()
+}
+
 /// `PlayerSocialManager.setFriendListEnabled`: the Online options switch.
 pub fn set_friend_list_enabled(enabled: bool) {
     let mut inner = lock();
@@ -301,6 +329,11 @@ pub fn set_allow_friend_requests(allow: bool) {
     lock().manager.allow_friend_requests = allow;
 }
 
+/// `RemoteFriendListUpdateHandler.getLatestFriendData`.
+pub fn data() -> FriendData {
+    lock().handler.latest.clone()
+}
+
 /// `PlayerSocialManager.getFriends`.
 pub fn friends() -> Vec<Friend> {
     lock().handler.latest.friends.clone()
@@ -316,14 +349,29 @@ pub fn outgoing_requests() -> Vec<Friend> {
     lock().handler.latest.outgoing.clone()
 }
 
+/// `PlayerSocialManager.runAction`/`onActionFailed`: read the lists again now.
+pub fn refresh_lists() {
+    lock().handler.forced = true;
+}
+
 /// `PlayerSocialManager.getFriendListState`.
 pub fn friend_list_state() -> State {
     lock().handler.state
 }
 
 /// `PresenceHandler.getLatestPresence`.
-pub fn latest_presence() -> Vec<Presence> {
+pub fn presence() -> Vec<Presence> {
     lock().presence.latest.clone()
+}
+
+/// `PlayerSocialManager.getPresenceHandler().getLatestPresence()`, by profile.
+pub fn presence_of(id: u128) -> Option<PresenceStatus> {
+    lock()
+        .presence
+        .latest
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.status)
 }
 
 /// `RemoteFriendListUpdateHandler`'s foreground interval: the friends overlay is open.
@@ -596,7 +644,7 @@ fn post_presence(status: PresenceStatus) -> Option<Vec<Presence>> {
     // `PresenceResponse`: a missing `presence` field is an empty list, replacing the
     // cached one; malformed JSON keeps the cache, as authlib's exception path does.
     if let Ok(value) = serde_json::from_str::<Value>(&answer.body) {
-        let presence = presence_of(&value);
+        let presence = presence_list(&value);
         inner.service.presence_cache = presence.clone();
         return Some(presence);
     }
@@ -753,11 +801,11 @@ fn parse_friend_list(value: Option<&Value>) -> Vec<Friend> {
 /// authlib's `PresenceResponse`.
 pub fn parse_presence(body: &str) -> Option<Vec<Presence>> {
     let v: Value = serde_json::from_str(body).ok()?;
-    Some(presence_of(&v))
+    Some(presence_list(&v))
 }
 
 /// `PresenceResponse.presence`: a missing list reads as empty, as Gson's null does.
-fn presence_of(v: &Value) -> Vec<Presence> {
+fn presence_list(v: &Value) -> Vec<Presence> {
     v.get("presence")
         .and_then(Value::as_array)
         .into_iter()

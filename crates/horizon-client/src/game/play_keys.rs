@@ -109,6 +109,7 @@ impl Game<'_> {
                     }
                 }
                 Screen::Stats | Screen::Friends => self.screen = Screen::Paused,
+                Screen::FriendsOverlay => self.close_friends_overlay(),
                 Screen::Social => self.close_social(),
                 Screen::ServerLinks => self.screen = Screen::Paused,
                 // ConfirmScreen.keyPressed: Escape answers no; both return to
