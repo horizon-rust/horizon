@@ -187,6 +187,17 @@ fn row(
     row
 }
 
+/// A structure's quads at (`page`, `start`) go to `to` if they are the range that moved (`from`):
+/// a stale structure's (`PAGE_GONE`) or one of an older mesh, whose range is no longer its
+/// section's, stays. Whether they went.
+fn follow(page: &mut u32, start: &mut u64, from: (u32, u64), to: (u32, u64)) -> bool {
+    let moved = (*page, *start) == from;
+    if moved {
+        (*page, *start) = to;
+    }
+    moved
+}
+
 /// A moving structure (the entities, the view model, a cloud tile): the quads it was made to
 /// hold, and its device address for the raw build's instances (0 without it).
 struct Moving {
@@ -506,6 +517,18 @@ impl HwRays {
             // their texels (`PAGE_GONE`), until the new mesh's structure replaces it.
             built.page = PAGE_GONE;
             self.stale.insert(key, 0);
+            self.changed = true;
+        }
+    }
+
+    /// Section `key`'s quads moved in the arena from `from` to `to` (`(page, first vertex)`,
+    /// gfx.rs `move_off_page`): its row reads their texels there from the next table, its
+    /// structure kept (the build copied its geometry in). With the rays on, the translucent
+    /// quads move with the solid ones, after them in the same range (`row`).
+    pub fn relocate(&mut self, key: SectionKey, from: (u32, u64), to: (u32, u64)) {
+        if let Some(built) = self.built.get_mut(&key)
+            && follow(&mut built.page, &mut built.start, from, to)
+        {
             self.changed = true;
         }
     }
@@ -1106,6 +1129,22 @@ mod tests {
         let shown = waves(include_str!("../terrain.wgsl"));
         assert_eq!(shown, waves(include_str!("shadow_rays_hw.wgsl")));
         assert_eq!(shown, waves(include_str!("froxels_hw.wgsl")));
+    }
+
+    #[test]
+    fn a_structure_follows_only_the_range_it_was_built_from() {
+        let (from, to) = ((2, 4000), (0, 128));
+        let mut at = from;
+        assert!(follow(&mut at.0, &mut at.1, from, to));
+        assert_eq!(at, to);
+        // Gone (`forget`): its old range is another mesh's now.
+        let mut gone = (PAGE_GONE, 4000);
+        assert!(!follow(&mut gone.0, &mut gone.1, from, to));
+        assert_eq!(gone, (PAGE_GONE, 4000));
+        // Built from another range than the one that moved.
+        let mut other = (2, 8000);
+        assert!(!follow(&mut other.0, &mut other.1, from, to));
+        assert_eq!(other, (2, 8000));
     }
 
     /// The first arena vertex shadow_rays_hw.wgsl's `hw_quad` finds for quad `primitive / 2` of
