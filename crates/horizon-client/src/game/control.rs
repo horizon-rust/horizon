@@ -1046,10 +1046,11 @@ impl Game<'_> {
             "rt-skip" => {
                 let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
                 let skip = arg(1)?.parse::<u32>().map_err(
-                    |_| "rt-skip MASK (1 sun, 2 GI, 4 DI, 8 PSR, 16 GI every frame, 32 VR's second eye's own light, 64 the far field; 0 all)",
+                    |_| "rt-skip MASK (1 sun, 2 GI, 4 DI, 8 PSR, 16 GI every frame, 32 VR's second eye's own light, 64 the far field, 4194304 the denoiser's early-out; 0 all)",
                 )?;
-                renderer.set_rt_skip(skip & 127);
-                Ok(Some(json!({ "ok": true, "skip": skip & 127 })))
+                let skip = skip & (127 | 4_194_304);
+                renderer.set_rt_skip(skip);
+                Ok(Some(json!({ "ok": true, "skip": skip })))
             }
             "gpu-stages" => {
                 let on = match line.split_whitespace().nth(1) {
