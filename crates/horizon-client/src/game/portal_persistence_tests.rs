@@ -43,9 +43,13 @@ fn live_and_saved_portal_counters_follow_runtime_and_data_updates() {
     game.build_registries();
     game.options.dedicated = Some(Vec::new());
     game.world = horizon_client::world::World::new(game.res.facts().air, 1);
-    game.world
-        .chunks
-        .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+    for z in -2..=2 {
+        for x in -2..=2 {
+            game.world
+                .chunks
+                .insert((x, z), Arc::new(Chunk::empty(x, z)));
+        }
+    }
     let kinds = [
         "minecraft:oak_boat",
         "minecraft:minecart",
@@ -74,6 +78,7 @@ fn live_and_saved_portal_counters_follow_runtime_and_data_updates() {
         forced: vec![(0, 0)],
         ..Default::default()
     }));
+    assert!(game.entity_ticking_area()(4, 4));
     game.handle_vehicle_portals();
     game.handle_entity_portals();
     for id in &ids {
