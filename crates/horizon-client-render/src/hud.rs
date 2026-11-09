@@ -941,7 +941,6 @@ impl HudAtlas {
         for i in 0..FRIEND_ICON_SLOTS {
             images.push((format!("horizon/friend-icon{i}"), 64, 64, Vec::new()));
         }
-        let side = PACK_ICON_SIZE as usize;
         for i in 0..PACK_ICON_SLOTS {
             images.push((
                 format!("horizon/pack-icon{i}"),

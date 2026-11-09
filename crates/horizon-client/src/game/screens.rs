@@ -80,6 +80,7 @@ impl Screen {
             | Self::CommandBlock
             | Self::BlockEditor
             | Self::DebugOptions
+            | Self::FriendsOverlay
             | Self::HudEditor => true,
         }
     }

@@ -8532,6 +8532,10 @@ impl Game<'_> {
     /// (skins, maps, the themed UI's glyphs and corners) has to be drawn again.
     pub(super) fn forget_atlas_slots(&mut self) {
         self.skin_slots.forget();
+        self.friends_toast_faces.forget_atlas();
+        if let Some(screen) = &mut self.friends_overlay {
+            screen.forget_faces();
+        }
         self.maps.slots.forget();
         self.trim_slots.forget();
         self.map_patches.clear();
@@ -11288,7 +11292,6 @@ impl Game<'_> {
                     if self.screen.takes_presses() && event.state == ElementState::Pressed =>
                 {
                     self.screen_press(&event)
-                }
                 }
                 // Options consumes presses; releases still reach the bound
                 // gameplay mapping below, including sneak/sprint toggles.
