@@ -9853,22 +9853,6 @@ impl Game<'_> {
             }
             return false;
         }
-        // A spear jabs (`MultiPlayerGameMode.piercingAttack`): the server
-        // stabs, this client swings, plays the sound and starts its charge
-        // again.
-        if let Some(kinetic) = spear {
-            // ServerboundPlayerActionPacket.Action.STAB.
-            self.send(S::PlayerAction(play::PlayerAction {
-                action: 8,
-                pos: [0; 3],
-                direction: 0,
-                sequence: 0,
-            }));
-            self.hand_strength.reset_attack();
-            self.swing_hand(Hand::Main, kinetic.attack_animation());
-            self.play_at_feet(kinetic.attack_sound);
-            return true;
-        }
         let mut instant = false;
         // A ghast's fireball or a wind charge nearer than any mob: the
         // server turns it (game/deflect.rs).
@@ -9891,21 +9875,31 @@ impl Game<'_> {
             self.reset_attack_strength();
         } else if let Some((i, distance, _)) = self.mob_hit()
             && self.before_block(distance)
+            && self.held_range_allows(distance)
         {
             // Minecraft.startAttack: an item's attack_range must hold the hit.
-            if self.held_range_allows(distance) {
-                self.send(S::Attack(play::Attack {
-                    id: self.mobs[i].id as i32,
-                }));
-                self.pvp_attacked(self.mobs[i].id as i32, distance);
-                let (target, player) = (
-                    self.mobs[i].id,
-                    &*self.mobs[i].kind.id == "minecraft:player",
-                );
-                self.native_client_attack(target, player);
-                self.remote_player_attack(i);
-                self.reset_attack_strength();
-            }
+            let (id, player) = (
+                self.mobs[i].id,
+                &*self.mobs[i].kind.id == "minecraft:player",
+            );
+            self.send(S::Attack(play::Attack { id: id as i32 }));
+            self.pvp_attacked(id as i32, distance);
+            self.native_client_attack(id, player);
+            self.remote_player_attack(i);
+            self.reset_attack_strength();
+        } else if let Some(kinetic) = spear {
+            // A spear jabs (`MultiPlayerGameMode.piercingAttack`): the server
+            // stabs, this client swings, plays the sound and starts its charge again.
+            self.send(S::PlayerAction(play::PlayerAction {
+                action: 8,
+                pos: [0; 3],
+                direction: 0,
+                sequence: 0,
+            }));
+            self.hand_strength.reset_attack();
+            self.swing_hand(Hand::Main, kinetic.attack_animation());
+            self.play_at_feet(kinetic.attack_sound);
+            return true;
         } else if !self.entity_targeted()
             && let Some(hit) = self.pick()
         {
@@ -9920,7 +9914,11 @@ impl Game<'_> {
             }
             self.reset_attack_strength();
         }
-        self.swing_arm();
+        let animation = spear.map_or(SwingAnimation::DEFAULT, |k| k.attack_animation());
+        self.swing_hand(Hand::Main, animation);
+        if let Some(kinetic) = spear {
+            self.play_at_feet(kinetic.attack_sound);
+        }
         self.send(S::Punch(Empty));
         instant
     }
