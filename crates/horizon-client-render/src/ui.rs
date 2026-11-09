@@ -1818,17 +1818,14 @@ impl EditBox {
         skin: Option<&str>,
     ) {
         self.layout(atlas);
-        crate::widgets::target_as(
-            [self.x, self.y, self.width, self.height],
-            crate::widgets::Kind::Field,
-        );
+        // The focus outline and a press go round the box's frame where it has one.
+        let rect = self
+            .frame
+            .unwrap_or([self.x, self.y, self.width, self.height]);
+        crate::widgets::target_as(rect, crate::widgets::Kind::Field);
         crate::widgets::narratable(|| {
-            crate::widgets::Narratable::edit_box(
-                self.message.clone(),
-                self.value.clone(),
-                [self.x, self.y, self.width, self.height],
-            )
-            .focused(self.focused)
+            crate::widgets::Narratable::edit_box(self.message.clone(), self.value.clone(), rect)
+                .focused(self.focused)
         });
         if self.bordered {
             let sprite = skin.unwrap_or(if self.focused {

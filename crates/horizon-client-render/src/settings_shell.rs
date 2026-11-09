@@ -300,13 +300,22 @@ pub(crate) fn search_field(
     let rect = cols.search();
     style::well(batch, atlas, rect);
     search.focused = focused;
-    let [x, y, _, h] = rect;
+    let [x, y, w, h] = rect;
     let clear = cols.clear();
     (search.x, search.y) = (x + 5.0, y + ((h - 8.0) / 2.0).floor());
     search.width = clear[0] - search.x;
     search.text_color = style::WHITE;
-    // The clear button isn't the field's: a click at the field's end must not press it.
-    let frame = [x, y, clear[0] - x, h];
+    // The whole field, but for the clear button while it shows: a click there must not press it.
+    let frame = [
+        x,
+        y,
+        if search.value.is_empty() {
+            w
+        } else {
+            clear[0] - x
+        },
+        h,
+    ];
     search.frame = Some(frame);
     search.draw(batch, atlas, None);
     if search.value.is_empty() && !focused {
