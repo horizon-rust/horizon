@@ -3623,8 +3623,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             if let Some(action) = b.action.filter(|_| !self.preparing) {
                 crate::widgets::declare_action(action, [b.x, b.y, b.w, 20.0], b.enabled);
             }
-            let inside =
-                cursor.0 >= b.x && cursor.0 < b.x + b.w && cursor.1 >= b.y && cursor.1 < b.y + 20.0;
+            let inside = cursor.0 >= b.x
+                && cursor.0 < b.x + b.w
+                && cursor.1 >= b.y
+                && cursor.1 < b.y + 20.0
+                && match &self.mode {
+                    Mode::Friends(screen) => screen.entry_button_pointed(b.id, cursor, (w, h)),
+                    _ => true,
+                };
             // `FriendsOverlayTabButton`: selected is the enabled sprite, an
             // unselected tab its disabled one, and hovering any is highlighted.
             let friends_tab = match &self.mode {
@@ -3659,6 +3665,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                         Some(selected_row),
                         [b.x, b.y, b.w, 20.0],
                     )
+                    .focused(self.focused_button == Some(b.id))
                 });
             } else {
                 crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
@@ -3675,6 +3682,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 button_tooltip = Some((key, [b.x, b.y, b.w, 20.0]));
             }
             let hover = b.enabled && (inside || is_focused);
+            let first_button = batch.vertices.len();
             if let Some(selected) = friends_tab {
                 let sprite = if hover {
                     "gui/sprites/friends/button_highlighted"
@@ -3716,6 +3724,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     2.0,
                     u32::MAX,
                 );
+                if let Mode::Friends(screen) = &self.mode {
+                    screen.clip_entry_button(batch, first_button, b.id, (w, h));
+                }
                 continue;
             }
             if let Some((icon, size)) = b.icon {
@@ -3744,6 +3755,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     ih,
                     u32::MAX,
                 );
+                if let Mode::Friends(screen) = &self.mode {
+                    screen.clip_entry_button(batch, first_button, b.id, (w, h));
+                }
                 continue;
             }
             if let Some(selected) = friends_tab {
@@ -3772,6 +3786,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     size,
                     u32::MAX,
                 );
+            }
+            if let Mode::Friends(screen) = &self.mode {
+                screen.clip_entry_button(batch, first_button, b.id, (w, h));
             }
         }
         // RealmsHeader's notification badges sit on their buttons, so they draw after.
@@ -3919,7 +3936,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         // The friends overlay's `TabNavigationBar` takes the same keys.
         if let Mode::Friends(screen) = &mut self.mode {
-            return screen.tab_key(key, ctrl, shift);
+            let changed = screen.tab_key(key, ctrl, shift)?;
+            if matches!(self.focused_button, Some(1 | 2)) {
+                self.focused_button = Some(screen.selected_tab());
+            }
+            return Some(changed);
         }
         // The Realms configuration screen's `TabNavigationBar` takes the same keys.
         if let Mode::Realms(screen) = &mut self.mode {
@@ -3998,7 +4019,17 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         let hit = self
             .buttons(w, h)
             .into_iter()
-            .find(|b| b.enabled && x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + 20.0)
+            .find(|b| {
+                b.enabled
+                    && x >= b.x
+                    && x < b.x + b.w
+                    && y >= b.y
+                    && y < b.y + 20.0
+                    && match &self.mode {
+                        Mode::Friends(screen) => screen.entry_button_pointed(b.id, (x, y), (w, h)),
+                        _ => true,
+                    }
+            })
             .map(|b| b.id);
         if hit.is_some() {
             self.focused_button = hit;
@@ -4717,6 +4748,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 _ => (Action::None, false),
             };
         }
+        if let Mode::Friends(screen) = &self.mode
+            && let Some(name) = screen.activate_profile()
+        {
+            return (Action::CopyText(name), true);
+        }
         if let Some(id) = self.focused_button {
             let (w, h) = size;
             let buttons = self.buttons(w, h);
@@ -4780,6 +4816,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
     }
     /// Tab navigation through widgets and fields in either forward or reverse order.
     pub fn tab_dir(&mut self, reverse: bool, size: (f32, f32)) {
+        if let Mode::Friends(screen) = &mut self.mode {
+            // `TabNavigationBar.nextFocusPath` enters on the selected tab;
+            // the next Tab leaves the bar for this tab's content.
+            self.focused_button = screen
+                .focus_next(reverse, size)
+                .filter(|id| !matches!(id, 0 | 4));
+            return;
+        }
         if let Mode::Realms(screen) = &mut self.mode {
             // `RealmsScreen`'s buttons take the keyboard like every other screen's: Tab
             // steps through the enabled ones (`MenuTabBar`'s tabs included). A product
@@ -4967,6 +5011,12 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             return;
         }
         if self.has_caret_field() {
+            return;
+        }
+        if let Mode::Friends(screen) = &mut self.mode
+            && let Some(_changed) = screen.focus_tab_arrow(key)
+        {
+            self.focused_button = Some(screen.selected_tab());
             return;
         }
         if self.focused_button.is_none()

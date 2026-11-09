@@ -70,8 +70,13 @@ pub struct Screen {
     tab: Tab,
     add: String,
     add_focused: bool,
+    /// Keyboard focus: 0 is the edit box, 1/2 the tab bar, 3 Send,
+    /// 4 the profile name, and the remaining ids are row buttons.
+    focus_id: Option<u8>,
     caret: RefCell<crate::ui::Caret>,
     offset: Cell<f32>,
+    /// The wrapped manage-account footer's line count, measured when drawn.
+    footer_lines: Cell<usize>,
     /// A friend whose removal is asked about (`FriendEntry.confirmRemoveFriend`).
     confirm: Option<Friend>,
     /// `FriendsListConfirmScreen`, before the list is turned on from the title.
@@ -138,8 +143,10 @@ impl Clone for Screen {
             tab: self.tab,
             add: self.add.clone(),
             add_focused: self.add_focused,
+            focus_id: self.focus_id,
             caret: RefCell::new(self.caret.borrow().clone()),
             offset: Cell::new(self.offset.get()),
+            footer_lines: Cell::new(self.footer_lines.get()),
             confirm: self.confirm.clone(),
             enable_confirm: self.enable_confirm,
             sending: self.sending.clone(),
@@ -182,8 +189,10 @@ impl Screen {
             // `FriendsOverlayScreen.init` starts with no focused widget: the tab
             // bar takes the focus, so the edit box shows its hint until clicked.
             add_focused: false,
+            focus_id: None,
             caret: RefCell::new(crate::ui::Caret::default()),
             offset: Cell::new(0.0),
+            footer_lines: Cell::new(1),
             confirm: None,
             enable_confirm: false,
             sending: None,
@@ -226,8 +235,8 @@ impl Screen {
             let name = self.add.trim().to_owned();
             if result == social::ResultCode::Success {
                 self.add.clear();
-                self.add_focused = true;
-                // `FriendToast.showFriendRequestSent`: no face.
+                // `AddFriendWidget.State.SENDING` removed EditBox focus; the
+                // completion callback enables it but does not refocus it.
                 self.friend_toasts.push(crate::toasts::FriendToast::new(
                     crate::lang::tr(
                         "gui.friends.toast.request_sent.message",
@@ -236,7 +245,6 @@ impl Screen {
                     None,
                 ));
             } else {
-                self.add_focused = true;
                 self.failed(result);
             }
         }
@@ -388,13 +396,49 @@ impl Screen {
         [x + 8.0, y + 3.0, PANEL_WIDTH - 20.0 - 3.0 - 16.0, 20.0]
     }
 
+    /// `FriendsTab` reserves the add widget's 44px; `PendingTab` fills the
+    /// whole panel with its `ScrollableLayout` and has no add widget.
+    fn list_top(&self, panel_y: f32) -> f32 {
+        panel_y
+            + if self.tab == Tab::Friends {
+                ADD_HEIGHT
+            } else {
+                0.0
+            }
+    }
+
+    /// The `ScrollableLayout.Container`'s scissor. `PendingTab` uses all of
+    /// the panel; only `FriendsTab` places `AddFriendWidget` above its list.
+    pub fn list_clip(&self, size: (f32, f32)) -> [f32; 4] {
+        let (x, y, height) = Self::panel(size);
+        [x, self.list_top(y), x + PANEL_WIDTH, y + height]
+    }
+
+    /// `ScrollableLayout` clips entry controls as well as the rows behind
+    /// them; hidden portions must not remain clickable.
+    pub fn entry_button_pointed(&self, id: u8, cursor: (f32, f32), size: (f32, f32)) -> bool {
+        if id < 40 {
+            return true;
+        }
+        let [left, top, right, bottom] = self.list_clip(size);
+        cursor.0 >= left && cursor.0 < right && cursor.1 >= top && cursor.1 < bottom
+    }
+
+    pub fn clip_entry_button(&self, batch: &mut HudBatch, first: usize, id: u8, size: (f32, f32)) {
+        if id >= 40 {
+            let [left, top, right, bottom] = self.list_clip(size);
+            batch.clip_since(first, left, top, right, bottom);
+        }
+    }
+
     /// The add-friend field's box, for the caret's press (`focused_rect`).
     pub fn focused_box(&self, (w, h): (f32, f32)) -> Option<[f32; 4]> {
         self.add_focused().then(|| Self::field_rect((w, h)))
     }
 
     pub fn focused_text(&mut self) -> Option<(crate::clipboard::FieldId, &mut String, usize)> {
-        if !self.add_focused
+        if self.tab != Tab::Friends
+            || !self.add_focused
             || self.confirm.is_some()
             || self.enable_confirm
             || self.sending.is_some()
@@ -406,7 +450,8 @@ impl Screen {
 
     /// Whether the add-friend box takes text (`EditBox.isFocused`).
     pub fn add_focused(&self) -> bool {
-        self.add_focused
+        self.tab == Tab::Friends
+            && self.add_focused
             && self.confirm.is_none()
             && !self.enable_confirm
             && self.sending.is_none()
@@ -436,6 +481,102 @@ impl Screen {
                 &[&self.lists().incoming.len() as &dyn std::fmt::Display],
             )
         }
+    }
+
+    /// The focused child of the overlay: 0 is the EditBox, 1/2 the tab bar,
+    /// 3 Send, 4 the profile name; other ids name entry buttons.
+    pub fn focused_id(&self) -> Option<u8> {
+        self.focus_id
+    }
+
+    /// `TabNavigationBar.nextFocusPath` enters on the selected tab. Tab then
+    /// leaves the bar for the current tab's children rather than picking the
+    /// other tab. Inactive widgets are omitted, as `nextFocusPath` does.
+    pub fn focus_next(&mut self, reverse: bool, size: (f32, f32)) -> Option<u8> {
+        let mut stops = if self.question_open() {
+            self.buttons(size)
+                .into_iter()
+                .filter(|button| button.4)
+                .map(|button| button.5)
+                .collect::<Vec<_>>()
+        } else {
+            let mut stops = vec![self.selected_tab()];
+            if self.tab == Tab::Friends {
+                if social::friend_list_state() == State::Success && self.sending.is_none() {
+                    stops.push(0);
+                }
+                if self
+                    .buttons(size)
+                    .iter()
+                    .any(|button| button.5 == 3 && button.4)
+                {
+                    stops.push(3);
+                }
+                if horizon_client_render::auth::current().is_some() {
+                    stops.push(4);
+                }
+            }
+            stops.extend(
+                self.buttons(size)
+                    .into_iter()
+                    .filter(|button| button.4 && button.5 >= 40)
+                    .map(|button| button.5),
+            );
+            stops
+        };
+        if stops.is_empty() {
+            self.focus_id = None;
+            self.add_focused = false;
+            return None;
+        }
+        let current = if self.add_focused() {
+            Some(0)
+        } else {
+            self.focus_id
+        };
+        let index = current.and_then(|id| stops.iter().position(|stop| *stop == id));
+        let next = match (index, reverse) {
+            (Some(0), true) => stops.pop().expect("non-empty focus path"),
+            (Some(index), true) => stops[index - 1],
+            (Some(index), false) => stops[(index + 1) % stops.len()],
+            (None, true) => *stops.last().expect("non-empty focus path"),
+            (None, false) => stops[0],
+        };
+        self.focus_id = Some(next);
+        self.add_focused = next == 0;
+        Some(next)
+    }
+
+    /// Left/Right while the tab bar has focus moves its child focus and
+    /// selects that tab (`TabNavigationBar.setFocused`).
+    pub fn focus_tab_arrow(&mut self, key: winit::keyboard::KeyCode) -> Option<bool> {
+        use winit::keyboard::KeyCode;
+        if !matches!(self.focus_id, Some(1 | 2))
+            || !matches!(key, KeyCode::ArrowLeft | KeyCode::ArrowRight)
+        {
+            return None;
+        }
+        let target = if key == KeyCode::ArrowLeft {
+            Tab::Friends
+        } else {
+            Tab::Requests
+        };
+        let changed = self.tab != target;
+        if changed {
+            self.tab = target;
+            self.offset.set(0.0);
+        }
+        self.focus_id = Some(self.selected_tab());
+        Some(changed)
+    }
+
+    /// A keyboard-activated profile name copies it like `PlainTextButton`.
+    pub fn activate_profile(&self) -> Option<String> {
+        (self.focus_id == Some(4)).then(|| {
+            horizon_client_render::auth::current()
+                .map(|session| session.name.clone())
+                .unwrap_or_default()
+        })
     }
 
     /// The selected tab's button id (1 Friends, 2 Requests).
@@ -488,7 +629,11 @@ impl Screen {
         let changed = self.tab != target;
         if changed {
             self.tab = target;
+            self.add_focused = false;
             self.offset.set(0.0);
+        }
+        if matches!(self.focus_id, Some(1 | 2)) {
+            self.focus_id = Some(self.selected_tab());
         }
         Some(changed)
     }
@@ -504,7 +649,7 @@ impl Screen {
             return false;
         }
         let (x, y, height) = Self::panel(size);
-        let top = y + ADD_HEIGHT;
+        let top = self.list_top(y);
         let bottom = y + height;
         let Some((_, thumb)) =
             scroller(self.content_height(), bottom - top, self.offset.get(), top)
@@ -661,9 +806,9 @@ impl Screen {
             return;
         }
         let (x, y, height) = Self::panel(size);
-        let top = y + ADD_HEIGHT;
+        let top = self.list_top(y);
         // `AbstractScrollArea.mouseScrolled` only reaches the list under the
-        // pointer; the add-friend row and the tabs are outside it.
+        // pointer; the Friends tab's add widget and both tabs are outside it.
         if !ui::hovered(cursor, x, top, PANEL_WIDTH, y + height - top) {
             return;
         }
@@ -676,10 +821,14 @@ impl Screen {
         let data = self.lists();
         match self.tab {
             Tab::Friends if data.friends.is_empty() => 0.0,
-            // `FriendsTab.updateEntries`: the entries, then the account footer
-            // (a one-line `MultiLineTextWidget` at the list's 204-wide content).
-            Tab::Friends => data.friends.len() as f32 * ENTRY_HEIGHT + HEADER_HEIGHT,
-            // `PendingTab.updateEntries`: each group's 9-high header over its
+            // `FriendsTab.createManageAccountFooter` adds a padded
+            // `FocusableTextWidget`: 9px for each wrapped line and 8px padding.
+            Tab::Friends => {
+                data.friends.len() as f32 * ENTRY_HEIGHT
+                    + self.footer_lines.get().max(1) as f32 * 9.0
+                    + 8.0
+            }
+            // `PendingTab.updateEntries`: each group's 17-high header over its
             // 28-high entries.
             Tab::Requests => {
                 let mut height = 0.0;
@@ -696,8 +845,8 @@ impl Screen {
     }
 
     pub fn clamp_scroll(&mut self, size: (f32, f32)) {
-        let (_, _, height) = Self::panel(size);
-        let max = (self.content_height() - (height - ADD_HEIGHT)).max(0.0);
+        let (_, y, height) = Self::panel(size);
+        let max = (self.content_height() - (y + height - self.list_top(y))).max(0.0);
         self.offset.set(self.offset.get().clamp(0.0, max));
     }
 
@@ -772,7 +921,9 @@ impl Screen {
                 2,
                 None,
             ),
-            (
+        ];
+        if self.tab == Tab::Friends {
+            buttons.push((
                 x + PANEL_WIDTH - 8.0 - 20.0,
                 y + 3.0,
                 20.0,
@@ -782,10 +933,10 @@ impl Screen {
                     && self.sending.is_none(),
                 3,
                 Some(("friends/send_request", 15.0)),
-            ),
-        ];
+            ));
+        }
         let offset = self.offset.get();
-        let top = y + ADD_HEIGHT;
+        let top = self.list_top(y);
         let bottom = y + height;
         if self.tab == Tab::Friends {
             for (i, _) in self.friends().iter().enumerate() {
@@ -807,7 +958,7 @@ impl Screen {
                 ));
             }
         } else {
-            // `PendingTab.updateEntries`: 9-high group headers, 28-high entries.
+            // `PendingTab.updateEntries`: 17-high group headers, 28-high entries.
             let data = self.lists();
             let rows = pending_rows(data.incoming.len(), data.outgoing.len(), top, offset);
             let mut slot = 0usize;
@@ -860,13 +1011,20 @@ impl Screen {
 
     pub fn click(&mut self, hit: Option<u8>, cursor: (f32, f32), size: (f32, f32)) {
         if let Some(id) = hit {
+            if !self.entry_button_pointed(id, cursor, size) {
+                return;
+            }
+            self.focus_id = Some(id);
+            self.add_focused = false;
             match id {
                 1 => {
                     self.tab = Tab::Friends;
+                    self.add_focused = false;
                     self.offset.set(0.0);
                 }
                 2 => {
                     self.tab = Tab::Requests;
+                    self.add_focused = false;
                     self.offset.set(0.0);
                 }
                 3 => self.send(),
@@ -957,13 +1115,16 @@ impl Screen {
         // `PlainTextButton` on the profile row.
         let [px, py, pw, ph] = self.profile_box.get();
         if cursor.0 >= px && cursor.0 < px + pw && cursor.1 >= py && cursor.1 < py + ph {
+            self.focus_id = Some(4);
             self.profile_clicked = true;
             return;
         }
         let rect = Self::field_rect((size.0.ceil(), size.1.ceil()));
-        self.add_focused = ui::hovered(cursor, rect[0], rect[1], rect[2], rect[3])
+        self.add_focused = self.tab == Tab::Friends
+            && ui::hovered(cursor, rect[0], rect[1], rect[2], rect[3])
             && self.sending.is_none()
             && social::friend_list_state() == State::Success;
+        self.focus_id = self.add_focused.then_some(0);
     }
 
     fn send(&mut self) {
@@ -1014,6 +1175,7 @@ impl Screen {
             return;
         }
         self.add_focused = false;
+        self.focus_id = None;
         self.sending = Some(spawn(move || social::send_friend_request(&name)));
     }
 
@@ -1073,6 +1235,7 @@ impl Screen {
     ) {
         self.links.borrow_mut().clear();
         self.footer_links.borrow_mut().clear();
+        self.profile_box.set([-1000.0; 4]);
         let (x, y, height) = Self::panel((w, h));
         if dim {
             batch.fill(atlas, 0.0, 0.0, w, h, rgba(0, 0, 0, 140));
@@ -1116,73 +1279,77 @@ impl Screen {
             u32::MAX,
         );
 
-        let [fx, fy, fw, fh] = Self::field_rect((w, h));
-        self.caret.borrow_mut().draw(
-            batch,
-            atlas,
-            (ADD_FRIEND, &self.add, 32),
-            [fx, fy, fw, fh],
-            self.add_focused(),
-            self.started,
-        );
-        if !self.add_focused() && self.add.is_empty() {
+        if self.tab == Tab::Friends {
+            let [fx, fy, fw, fh] = Self::field_rect((w, h));
+            self.caret.borrow_mut().draw(
+                batch,
+                atlas,
+                (ADD_FRIEND, &self.add, 32),
+                [fx, fy, fw, fh],
+                self.add_focused(),
+                self.started,
+            );
+            if !self.add_focused() && self.add.is_empty() {
+                batch.text(
+                    atlas,
+                    &crate::lang::get("gui.friends.enter_nickname"),
+                    fx + 4.0,
+                    fy + 6.0,
+                    0xFF40_4040,
+                    false,
+                );
+            }
+            // The profile row (`AddFriendWidget.createProfileRow`).
+            let name = horizon_client_render::auth::current()
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            let label = crate::lang::get("gui.friends.my_profile_name");
+            let label_w = HudBatch::text_width(atlas, &label);
+            let name_w = HudBatch::text_width(atlas, &name);
+            batch.text(atlas, &label, x + 8.0, fy + fh + 6.0, GREY, false);
+            let profile_rect = [x + 8.0 + label_w, fy + fh + 6.0, name_w, 9.0];
+            self.profile_box.set(profile_rect);
+            let profile_hover = cursor.0 >= profile_rect[0]
+                && cursor.0 < profile_rect[0] + profile_rect[2]
+                && cursor.1 >= profile_rect[1]
+                && cursor.1 < profile_rect[1] + profile_rect[3];
+            crate::widgets::record(&name, profile_rect, true);
+            crate::widgets::narratable(|| {
+                crate::widgets::Narratable::button(
+                    crate::lang::tr(
+                        "gui.friends.my_profile_name.narration",
+                        &[&name as &dyn std::fmt::Display],
+                    ),
+                    profile_rect,
+                    true,
+                )
+                .hovered(profile_hover)
+                .focused(
+                    self.focus_id == Some(4) || crate::widgets::narration_focused(profile_rect),
+                )
+            });
+            crate::widgets::widget_cursor(profile_hover, true);
             batch.text(
                 atlas,
-                &crate::lang::get("gui.friends.enter_nickname"),
-                fx + 4.0,
-                fy + 6.0,
-                0xFF40_4040,
+                &name,
+                x + 8.0 + label_w,
+                fy + fh + 6.0,
+                u32::MAX,
                 false,
             );
+            crate::ui::tiled_sized(
+                batch,
+                atlas,
+                "gui/sprites/friends/list_separator_top",
+                x,
+                y + ADD_HEIGHT - 2.0,
+                PANEL_WIDTH,
+                2.0,
+                [32.0, 2.0],
+                u32::MAX,
+            );
         }
-        // The profile row (`AddFriendWidget.createProfileRow`).
-        let name = horizon_client_render::auth::current()
-            .map(|s| s.name.clone())
-            .unwrap_or_default();
-        let label = crate::lang::get("gui.friends.my_profile_name");
-        let label_w = HudBatch::text_width(atlas, &label);
-        let name_w = HudBatch::text_width(atlas, &name);
-        batch.text(atlas, &label, x + 8.0, fy + fh + 6.0, GREY, false);
-        let profile_rect = [x + 8.0 + label_w, fy + fh + 6.0, name_w, 9.0];
-        self.profile_box.set(profile_rect);
-        let profile_hover = cursor.0 >= profile_rect[0]
-            && cursor.0 < profile_rect[0] + profile_rect[2]
-            && cursor.1 >= profile_rect[1]
-            && cursor.1 < profile_rect[1] + profile_rect[3];
-        crate::widgets::record(&name, profile_rect, true);
-        crate::widgets::narratable(|| {
-            crate::widgets::Narratable::button(
-                crate::lang::tr(
-                    "gui.friends.my_profile_name.narration",
-                    &[&name as &dyn std::fmt::Display],
-                ),
-                profile_rect,
-                true,
-            )
-            .hovered(profile_hover)
-            .focused(crate::widgets::narration_focused(profile_rect))
-        });
-        crate::widgets::widget_cursor(profile_hover, true);
-        batch.text(
-            atlas,
-            &name,
-            x + 8.0 + label_w,
-            fy + fh + 6.0,
-            u32::MAX,
-            false,
-        );
-        crate::ui::tiled_sized(
-            batch,
-            atlas,
-            "gui/sprites/friends/list_separator_top",
-            x,
-            y + ADD_HEIGHT - 2.0,
-            PANEL_WIDTH,
-            2.0,
-            [32.0, 2.0],
-            u32::MAX,
-        );
-        let top = y + ADD_HEIGHT;
+        let top = self.list_top(y);
         let bottom = y + height;
         match self.tab {
             Tab::Friends => self.draw_friends(atlas, batch, (x, top, bottom)),
@@ -1198,7 +1365,8 @@ impl Screen {
                 && cursor.0 < px + pw
                 && cursor.1 >= py
                 && cursor.1 < py + ph;
-            let profile_focused = crate::widgets::narration_focused([px, py, pw, ph]);
+            let profile_focused =
+                self.focus_id == Some(4) || crate::widgets::narration_focused([px, py, pw, ph]);
             if profile_hover || profile_focused {
                 let lines = [crate::text::Text::translate(
                     "gui.friends.copy_to_clipboard",
@@ -1266,8 +1434,10 @@ impl Screen {
             let cx = x + PANEL_WIDTH / 2.0;
             let empty = empty_state_text();
             let link = account_link_text();
-            let lines: Vec<&str> = empty.lines().collect();
-            let block_h = 48.0 + 8.0 + lines.len() as f32 * 9.0;
+            // `AbstractFriendsTab.createCenteredText` reserves four pixels on
+            // both sides and above/below the wrapped text.
+            let lines = crate::multiplayer::wrap(&empty, PANEL_WIDTH - 24.0, atlas);
+            let block_h = 48.0 + 8.0 + lines.len() as f32 * 9.0 + 8.0;
             let block_top = top + ((bottom - top - block_h) / 2.0).floor();
             ui::blit_sprite(
                 batch,
@@ -1287,7 +1457,7 @@ impl Screen {
                     atlas,
                     line,
                     cx,
-                    block_top + 56.0 + i as f32 * 9.0,
+                    block_top + 60.0 + i as f32 * 9.0,
                     &link,
                     false,
                 );
@@ -1302,25 +1472,28 @@ impl Screen {
         }
         // `FriendsTab.updateEntries` adds `createManageAccountFooter` after the
         // entries only; the empty state (`showEmpty`) has no footer.
-        let footer = top + friends.len() as f32 * ENTRY_HEIGHT - offset;
-        if !friends.is_empty() && footer > top && footer < bottom {
-            // `MANAGE_ACCOUNT_FOOTER`: one centred paragraph, wrapped at the list's
-            // width (`MultiLineTextWidget`), with the account link composed in.
+        if !friends.is_empty() {
             let footer_text = manage_account_text();
             let link = account_link_text();
-            for (i, line) in crate::multiplayer::wrap(&footer_text, PANEL_WIDTH - 16.0, atlas)
-                .iter()
-                .enumerate()
-            {
-                self.centered_with_link(
-                    batch,
-                    atlas,
-                    line,
-                    x + PANEL_WIDTH / 2.0,
-                    footer + 4.0 + i as f32 * 9.0,
-                    &link,
-                    true,
-                );
+            let lines = crate::multiplayer::wrap(&footer_text, PANEL_WIDTH - 24.0, atlas);
+            self.footer_lines.set(lines.len());
+            let footer = top + friends.len() as f32 * ENTRY_HEIGHT - offset;
+            let footer_height = lines.len() as f32 * 9.0 + 8.0;
+            if footer < bottom && footer + footer_height > top {
+                for (i, line) in lines.iter().enumerate() {
+                    let line_y = footer + 4.0 + i as f32 * 9.0;
+                    if line_y + 9.0 > top && line_y < bottom {
+                        self.centered_with_link(
+                            batch,
+                            atlas,
+                            line,
+                            x + PANEL_WIDTH / 2.0,
+                            line_y,
+                            &link,
+                            true,
+                        );
+                    }
+                }
             }
         }
         self.draw_scrollbar(atlas, batch, (x, top, bottom));
@@ -1414,7 +1587,7 @@ impl Screen {
             && y < bottom
         {
             // `PendingTab.RECEIVED_HEADER`: `ChatFormatting.BOLD, UNDERLINE`,
-            // a 9-high line centred in the list's content width.
+            // a 17-high widget with the 9-high line inset 4px and centred.
             centered_styled(
                 batch,
                 atlas,
@@ -1714,7 +1887,7 @@ fn first_free_toast_slot(used: u32, slots: usize) -> Option<usize> {
 }
 
 /// A request row's button ids: 100 + slot * 2, accept/cancel at +0 and decline at +1.
-/// `PendingTab.updateEntries`'s rows: a 9-high header over each non-empty
+/// `PendingTab.updateEntries`'s rows: a 17-high header over each non-empty
 /// group's 28-high entries, from the list top less the scroll offset.
 struct PendingRows {
     received_header: Option<f32>,
@@ -1957,20 +2130,20 @@ mod tests {
         assert_eq!(field, [x + 8.0, y + 3.0, 181.0, 20.0]);
     }
 
-    /// `PendingTab.updateEntries`: each group's 9-high header sits above 28-high
-    /// entries, and the whole list moves up by the scroll offset.
+    /// `PendingTab.updateEntries`: each group's 17-high `FocusableTextWidget`
+    /// sits above 28-high entries; the whole list moves by the scroll offset.
     #[test]
-    fn pending_headers_are_nine_high_and_entries_twenty_eight() {
+    fn pending_headers_are_seventeen_high_and_entries_twenty_eight() {
         let rows = pending_rows(2, 1, 100.0, 0.0);
         assert_eq!(rows.received_header, Some(100.0));
-        assert_eq!(rows.incoming, vec![109.0, 137.0]);
-        assert_eq!(rows.sent_header, Some(165.0));
-        assert_eq!(rows.outgoing, vec![174.0]);
+        assert_eq!(rows.incoming, vec![117.0, 145.0]);
+        assert_eq!(rows.sent_header, Some(173.0));
+        assert_eq!(rows.outgoing, vec![190.0]);
         let scrolled = pending_rows(1, 1, 100.0, 10.0);
         assert_eq!(scrolled.received_header, Some(90.0));
-        assert_eq!(scrolled.incoming, vec![99.0]);
-        assert_eq!(scrolled.sent_header, Some(127.0));
-        assert_eq!(scrolled.outgoing, vec![136.0]);
+        assert_eq!(scrolled.incoming, vec![107.0]);
+        assert_eq!(scrolled.sent_header, Some(135.0));
+        assert_eq!(scrolled.outgoing, vec![152.0]);
     }
 
     /// `FriendsOverlayScreen.mouseClicked`: the overlay reaches from the tab

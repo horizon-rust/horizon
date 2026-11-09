@@ -302,16 +302,28 @@ impl Game<'_> {
             .unwrap_or_default();
         let mut tooltip = None;
         for (x, y, bw, label, enabled, id, icon) in buttons {
+            let first_button = batch.vertices.len();
             let rect = [x, y, bw, 20.0];
-            let hover = enabled && horizon_client::ui::hovered(cursor, x, y, bw, 20.0);
-            let focused = enabled && horizon_client::widgets::narration_focused(rect);
-            if (hover || focused)
+            let pointed = enabled
+                && self
+                    .friends_overlay
+                    .as_ref()
+                    .is_some_and(|screen| screen.entry_button_pointed(id, cursor, size))
+                && horizon_client::ui::hovered(cursor, x, y, bw, 20.0);
+            let focused = enabled
+                && (horizon_client::widgets::narration_focused(rect)
+                    || self
+                        .friends_overlay
+                        .as_ref()
+                        .is_some_and(|screen| screen.focused_id() == Some(id)));
+            let hover = pointed || focused;
+            if (pointed || focused)
                 && let Some(key) = self
                     .friends_overlay
                     .as_ref()
                     .and_then(|screen| screen.button_tooltip(id))
             {
-                tooltip = Some((key, rect, focused && !hover));
+                tooltip = Some((key, rect, focused && !pointed));
             }
             // `FriendsOverlayTabButton`: selected is the enabled sprite, an
             // unselected tab its disabled one, and hovering any is highlighted.
@@ -364,7 +376,7 @@ impl Game<'_> {
                     )
                 });
                 let hovered =
-                    hover.then(|| horizon_client::widgets::Row::new(index, narration.clone()));
+                    pointed.then(|| horizon_client::widgets::Row::new(index, narration.clone()));
                 horizon_client::widgets::record_as(
                     &narration,
                     [x, y, bw, 20.0],
@@ -379,11 +391,12 @@ impl Game<'_> {
                         selected_row,
                         [x, y, bw, 20.0],
                     )
+                    .focused(focused)
                 });
             } else {
                 horizon_client::widgets::record(&narration, [x, y, bw, 20.0], enabled);
             }
-            horizon_client::widgets::widget_cursor(hover, enabled);
+            horizon_client::widgets::widget_cursor(pointed, enabled);
             let loading = (id == 3 && self.friends_overlay.as_ref().is_some_and(|s| s.loading()))
                 || self
                     .friends_overlay
@@ -437,6 +450,9 @@ impl Game<'_> {
                     true,
                 );
             }
+            if let Some(screen) = self.friends_overlay.as_ref() {
+                screen.clip_entry_button(batch, first_button, id, size);
+            }
         }
         if let Some((key, rect, focused)) = tooltip {
             let lines = atlas.font.split(&Text::translate(key, &[]), 170.0);
@@ -478,7 +494,10 @@ impl Game<'_> {
             let hit = screen
                 .buttons(size)
                 .into_iter()
-                .find(|b| b.4 && crate::ui::hovered(cursor, b.0, b.1, b.2, 20.0))
+                .find(|b| {
+                    b.4 && screen.entry_button_pointed(b.5, cursor, size)
+                        && crate::ui::hovered(cursor, b.0, b.1, b.2, 20.0)
+                })
                 .map(|b| b.5);
             if hit.is_some() {
                 self.audio.play_button_click();
@@ -529,6 +548,7 @@ impl Game<'_> {
             self.has_shift_down(),
             self.types_text(),
         );
+        let size = self.gui_size();
         let Some(screen) = self.friends_overlay.as_mut() else {
             return;
         };
@@ -539,11 +559,43 @@ impl Game<'_> {
             }
             return;
         }
+        if key == winit::keyboard::KeyCode::Tab {
+            screen.focus_next(shift, size);
+            return;
+        }
+        if let Some(changed) = screen.focus_tab_arrow(key) {
+            if changed {
+                self.audio.play_button_click();
+            }
+            return;
+        }
         let mut close = false;
         match key {
             winit::keyboard::KeyCode::Escape => close = screen.escape(),
-            winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter => {
-                if screen.enter() {
+            winit::keyboard::KeyCode::Enter
+            | winit::keyboard::KeyCode::NumpadEnter
+            | winit::keyboard::KeyCode::Space
+                if key != winit::keyboard::KeyCode::Space
+                    || screen.focused_id().is_some_and(|id| id != 0) =>
+            {
+                if let Some(name) = screen.activate_profile() {
+                    self.clipboard.set(&name);
+                    self.audio.play_button_click();
+                } else if let Some(id) = screen.focused_id().filter(|id| *id != 0) {
+                    if let Some(button) =
+                        screen.buttons(size).into_iter().find(|b| b.5 == id && b.4)
+                    {
+                        let [_, top, _, bottom] = screen.list_clip(size);
+                        let button_y = if id >= 40 {
+                            (button.1 + 1.0).clamp(top + 1.0, bottom - 1.0)
+                        } else {
+                            button.1 + 1.0
+                        };
+                        screen.click(Some(id), (button.0 + 1.0, button_y), size);
+                        close = screen.take_cancelled();
+                        self.audio.play_button_click();
+                    }
+                } else if screen.enter() {
                     self.audio.play_button_click();
                 }
             }
