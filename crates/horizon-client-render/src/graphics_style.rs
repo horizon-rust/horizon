@@ -447,6 +447,18 @@ pub fn cycler(
     };
     scrolling_label(batch, atlas, value, [x + 9.0, ty, w - 18.0], (y, h), color);
 }
+/// A tab as vanilla's Create World screen draws it (`MenuTabBar.MenuTabButton`), in any look:
+/// the tab sprite, and on the open tab the menu background inside it and an underline under the
+/// label. `(selected, lit, live)`: open; pointed at or focused; usable.
+pub fn vanilla_tab(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    label: &Text,
+    flags: (bool, bool, bool),
+) {
+    vanilla::tab(batch, atlas, rect, label, flags);
+}
 /// A screen's title, centred at the top (split-screen profiles).
 pub fn title(batch: &mut HudBatch, atlas: &HudAtlas, text: &Text) {
     let w = batch.width;
@@ -487,7 +499,7 @@ mod tests {
         assert!(atlas.font.width_text(&long.resolved()) > rect[2]);
         let short = Text::literal("Done");
         let short_w = atlas.font.width_text(&short.resolved());
-        let draws: [(&str, fn(&mut HudBatch, &HudAtlas, [f32; 4], &Text)); 3] = [
+        let draws: [(&str, fn(&mut HudBatch, &HudAtlas, [f32; 4], &Text)); 5] = [
             ("button", |b, a, r, t| {
                 button(b, a, r, t, (false, true, false))
             }),
@@ -495,6 +507,12 @@ mod tests {
                 slider(b, a, r, t, 0.5, (false, true))
             }),
             ("cycler", |b, a, r, t| cycler(b, a, r, t, (false, true))),
+            ("open tab", |b, a, r, t| {
+                vanilla_tab(b, a, r, t, (true, false, true))
+            }),
+            ("tab", |b, a, r, t| {
+                vanilla_tab(b, a, r, t, (false, true, true))
+            }),
         ];
         for (name, draw) in draws {
             let mut plain = HudBatch::new([640, 480]);

@@ -365,6 +365,10 @@ The shell paints through `graphics_style`, which follows the menu style the laye
   A row the cursor or the focus is on gets the grey edge, and its control lights. `NEUTRAL`, the look
   with no style given, uses it, so the engine built alone looks vanilla.
 
+Two of vanilla's pieces draw in any look, for overlays that use them: `graphics_style::vanilla_tab`
+(a Create World tab, `MenuTabBar.MenuTabButton`) and `ui::tooltip_panel` (a tooltip's background and
+frame round any content).
+
 `HORIZON_MENU_STYLE=vanilla` starts the official game with no style given, so it draws in `NEUTRAL`.
 Use it to see and test the vanilla look; `pad_menu_e2e.py` passes the variable on to the game.
 

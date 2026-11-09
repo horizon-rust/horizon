@@ -21,6 +21,12 @@ const SLIDER_HIGHLIGHTED: &str = "gui/sprites/widget/slider_highlighted";
 const HANDLE: &str = "gui/sprites/widget/slider_handle";
 const HANDLE_HIGHLIGHTED: &str = "gui/sprites/widget/slider_handle_highlighted";
 const TEXT_FIELD: &str = "gui/sprites/widget/text_field";
+const TAB: &str = "gui/sprites/widget/tab";
+const TAB_HIGHLIGHTED: &str = "gui/sprites/widget/tab_highlighted";
+const TAB_SELECTED: &str = "gui/sprites/widget/tab_selected";
+const TAB_SELECTED_HIGHLIGHTED: &str = "gui/sprites/widget/tab_selected_highlighted";
+/// A tab's label sits this much lower while the tab isn't open (`MenuTabButton.SELECTED_OFFSET`).
+const TAB_DROP: f32 = 3.0;
 const SCROLLER: &str = "gui/sprites/widget/scroller";
 const SCROLLER_BACKGROUND: &str = "gui/sprites/widget/scroller_background";
 
@@ -213,6 +219,41 @@ pub(super) fn cycler(
     (hover, live): (bool, bool),
 ) {
     button(batch, atlas, rect, value, (hover, live), 0.0);
+}
+
+/// A tab (`MenuTabBar.MenuTabButton`): its sprite; open, the menu background inside it and a
+/// 1 px underline 2 px over its bottom, as wide as the label; the label centred.
+pub(super) fn tab(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    [x, y, w, h]: [f32; 4],
+    label: &Text,
+    (selected, lit, live): (bool, bool, bool),
+) {
+    let sprite = match (selected, lit) {
+        (true, true) => TAB_SELECTED_HIGHLIGHTED,
+        (true, false) => TAB_SELECTED,
+        (false, true) => TAB_HIGHLIGHTED,
+        (false, false) => TAB,
+    };
+    ui::nine_slice(batch, atlas, sprite, x, y, w, h, u32::MAX);
+    let colour = text(live);
+    if selected {
+        ui::menu_background(batch, atlas, x + 2.0, y + 2.0, w - 4.0, h - 2.0, false);
+        let lw = atlas.font.width(&label.plain()).min(w - 4.0);
+        let lx = x + ((w - lw) / 2.0).floor();
+        super::fill(batch, atlas, [lx, y + h - 2.0, lw, 1.0], colour);
+    }
+    let top = y + if selected { 0.0 } else { TAB_DROP };
+    let ty = top + ((y + h - top - 8.0) / 2.0).floor();
+    scrolling_label(
+        batch,
+        atlas,
+        label,
+        [x + 1.0, ty, w - 2.0],
+        (top, y + h - top),
+        colour,
+    );
 }
 
 /// A field: vanilla's text field, its focus ring left to the caller.
