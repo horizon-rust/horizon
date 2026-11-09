@@ -30,4 +30,8 @@ fn deferred_identity_survives_without_fabricating_nonplayer_context() {
     assert_eq!(m.last_damage.unwrap().0.attacker, Some(Who::Mob(19)));
     assert!(m.damage_with_player_uuid(2.0, Damage::of(DamageKind::Generic), b, None));
     assert_eq!(m.last_damage.unwrap().0.attacker_uuid, None);
+    let deferred = Damage::indirect_magic(Some(Who::Player), [0.0; 3]).with_attacker_uuid(Some(a));
+    assert!(m.damage_by(3.0, deferred, "minecraft:splash_potion"));
+    assert_eq!(m.last_damage.unwrap().0.attacker_uuid, Some(a));
+    assert_eq!(m.last_damage.unwrap().0.attacker, Some(Who::Player));
 }
