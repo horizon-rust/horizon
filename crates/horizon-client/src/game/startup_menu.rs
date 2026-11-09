@@ -27,6 +27,10 @@ pub(super) struct StartupMenu {
     selection: AppendSelection,
     /// The narrator's `NARRATOR_TOGGLE` toast, handed to the game with the title.
     narrator_toast: Option<horizon_client::toasts::SystemToast>,
+    /// Friends notifications keep updating after their overlay closes and are
+    /// handed to Game with the rest of the title UI.
+    friends_toasts: horizon_client::toasts::FriendsToasts,
+    friends_toast_faces: Option<horizon_client::friends_overlay::Faces>,
     /// The screens' narration, handed to the game with the title (which
     /// stays the screen already opened).
     narration: horizon_client::screen_narrator::ScreenNarrator,
@@ -129,6 +133,10 @@ impl StartupMenu {
         game.text_selection = std::mem::take(&mut self.selection);
         game.perf = std::mem::take(&mut self.perf);
         game.narrator_toast = self.narrator_toast.take();
+        game.friends_toasts = std::mem::take(&mut self.friends_toasts);
+        if let Some(faces) = self.friends_toast_faces.take() {
+            game.friends_toast_faces = faces;
+        }
         game.narration = std::mem::take(&mut self.narration);
         // Preserve an existing resource-error screen opened by start_game.
         if self.options_open {
@@ -1287,12 +1295,40 @@ impl Loading {
         let title_toast = self.menu.title.as_ref().is_some_and(|t| t.has_toast());
         super::narrator::draw_toast(
             &mut self.menu.narrator_toast,
-            u32::from(title_toast),
+            u32::from(title_toast) | self.menu.friends_toasts.occupied_slots(),
             f64::from(self.settings.notification_display_time),
             &gui.atlas,
             batch,
             false,
         );
+        if let Some(title) = self.menu.title.as_mut() {
+            horizon_client::friends_overlay::queue_notices(
+                &mut self.menu.friends_toasts,
+                title.take_friend_notices(),
+            );
+        }
+        horizon_client::friends_overlay::queue_social_events(&mut self.menu.friends_toasts, true);
+        let narrator_slot = self
+            .menu
+            .narrator_toast
+            .as_ref()
+            .and_then(|toast| toast.slot)
+            .map_or(0, |slot| 1 << slot);
+        self.menu.friends_toasts.update(
+            &gui.atlas,
+            f64::from(self.settings.notification_display_time),
+            u32::from(title_toast) | narrator_slot,
+        );
+        let faces = self
+            .menu
+            .friends_toast_faces
+            .get_or_insert_with(horizon_client::friends_overlay::Faces::new_toasts);
+        faces.begin_frame();
+        self.menu
+            .friends_toasts
+            .draw(&gui.atlas, batch, |batch, atlas, id| {
+                faces.face(batch, atlas, id)
+            });
     }
 
     pub(super) fn restart_menu_resources(&mut self) -> Result<()> {

@@ -36,13 +36,14 @@ const ADD_FRIEND: crate::clipboard::FieldId = ("friends.add", 0);
 /// What a worker hands back.
 type Job<T> = Arc<Mutex<Option<T>>>;
 
-fn spawn<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Job<T> {
+fn spawn(work: impl FnOnce() -> social::ResultCode + Send + 'static) -> Job<social::ResultCode> {
     let job = Arc::new(Mutex::new(None));
     let out = Arc::clone(&job);
     if let Err(e) = std::thread::Builder::new()
         .name("Friends".into())
         .spawn(move || {
             let result = work();
+            social::record_action_failure(result);
             if let Ok(mut slot) = out.lock() {
                 *slot = Some(result);
             }
@@ -66,6 +67,77 @@ pub enum Tab {
 /// A row's button: the title's `ButtonSpec` plus the sprite it draws.
 pub type FriendButton = (f32, f32, f32, String, bool, u8, Option<(&'static str, f32)>);
 
+/// A friend action's toast, handed to the client-owned ToastManager instead
+/// of disappearing when `FriendsOverlayScreen` closes.
+pub enum Notice {
+    System(String),
+    Friend(String, Option<u128>),
+}
+
+/// Add action notices to the client-owned manager. The overlay may be
+/// destroyed immediately after this transfer without hiding a toast.
+pub fn queue_notices(queue: &mut crate::toasts::FriendsToasts, notices: Vec<Notice>) {
+    for notice in notices {
+        match notice {
+            Notice::System(title) => queue.add_system(title),
+            Notice::Friend(message, friend) => queue.add_friend(message, friend),
+        }
+    }
+}
+
+/// `RemoteFriendListUpdateHandler` continues to poll while the overlay is
+/// closed. Its event queue belongs to the service, not an individual screen.
+pub fn queue_social_events(queue: &mut crate::toasts::FriendsToasts, enabled: bool) {
+    for event in social::drain_friend_events() {
+        if let social::FriendEvent::ActionFailed(code) = event {
+            let key = match code {
+                social::ResultCode::TooManyRequests => {
+                    Some("gui.friends.error.rateLimited.message")
+                }
+                social::ResultCode::UnknownProfile => {
+                    Some("gui.friends.error.user_may_lack_active_profile")
+                }
+                social::ResultCode::Unauthorized => Some("gui.friends.error.unauthorized"),
+                social::ResultCode::Forbidden => Some("gui.friends.error.forbidden.message"),
+                social::ResultCode::ServiceNotAvailable => {
+                    Some("gui.friends.error.unavailable.message")
+                }
+                social::ResultCode::Error => Some("gui.friends.error.failed.message"),
+                _ => None,
+            };
+            if let Some(key) = key {
+                queue.add_system(crate::lang::get(key));
+            }
+            continue;
+        }
+        if !enabled {
+            continue;
+        }
+        let (key, name, id) = match event {
+            social::FriendEvent::ActionFailed(_) => unreachable!(),
+            social::FriendEvent::RequestSent(name) => {
+                ("gui.friends.toast.request_sent.message", name, None)
+            }
+            social::FriendEvent::RequestReceived(friend) => (
+                "gui.friends.toast.request_received.message",
+                friend.name,
+                Some(friend.id),
+            ),
+            social::FriendEvent::RequestAccepted(friend) => (
+                "gui.friends.toast.request_accepted.message",
+                friend.name,
+                Some(friend.id),
+            ),
+            social::FriendEvent::FriendAdded(friend) => (
+                "gui.friends.toast.friend_added.message",
+                friend.name,
+                Some(friend.id),
+            ),
+        };
+        queue.add_friend(crate::lang::tr(key, &[&name as &dyn std::fmt::Display]), id);
+    }
+}
+
 pub struct Screen {
     tab: Tab,
     add: String,
@@ -85,20 +157,15 @@ pub struct Screen {
     action: Option<Job<social::ResultCode>>,
     /// The entry button showing loading after a press (`switchToLoadingAfterPress`).
     action_button: Option<u8>,
-    /// A failure toast (`SystemToast`, `FRIEND_SYSTEM_NOTIFICATION`).
-    toast: Option<crate::toasts::SystemToast>,
-    /// `FriendToast`s: request sent/received, accepted, a friend added.
-    friend_toasts: Vec<crate::toasts::FriendToast>,
-    /// The lists the friend toasts last compared against.
-    seen: Option<Seen>,
+    /// Notifications produced by actions; the client drains these into its
+    /// persistent toast queue even if this screen closes on the same frame.
+    notices: Vec<Notice>,
     /// The friend ids and the order the last populate gave them: presence
     /// updates change the status text but do not resort the rows.
     sort_cache: RefCell<Option<(Vec<u128>, Vec<u128>)>>,
     /// The scroller drag: the press's y, the offset then, its thumb and the
     /// list height (`AbstractScrollArea.scrolling`).
     scroll_drag: Cell<Option<(f32, f32, f32, f32)>>,
-    /// First toast visibility transition since the previous game update.
-    toast_sound: Cell<Option<bool>>,
     /// The account link's boxes as last drawn (`MICROSOFT_ACCOUNT_LINK`), in the
     /// footer and the empty state.
     links: RefCell<Vec<[f32; 4]>>,
@@ -119,14 +186,6 @@ pub struct Screen {
     enable_buttons: Cell<[[f32; 4]; 2]>,
     started: Instant,
     faces: RefCell<Faces>,
-}
-
-/// The last lists friend toasts were made from.
-#[derive(Clone)]
-struct Seen {
-    friends: Vec<u128>,
-    incoming: Vec<u128>,
-    outgoing: Vec<u128>,
 }
 
 impl Default for Screen {
@@ -152,12 +211,9 @@ impl Clone for Screen {
             sending: self.sending.clone(),
             action: self.action.clone(),
             action_button: self.action_button,
-            toast: None,
-            friend_toasts: Vec::new(),
-            seen: self.seen.clone(),
+            notices: Vec::new(),
             sort_cache: RefCell::new(self.sort_cache.borrow().clone()),
             scroll_drag: Cell::new(None),
-            toast_sound: Cell::new(None),
             links: RefCell::new(Vec::new()),
             footer_links: RefCell::new(Vec::new()),
             link_clicked: false,
@@ -168,7 +224,7 @@ impl Clone for Screen {
             confirm_buttons: Cell::new([[-1000.0; 4]; 2]),
             enable_buttons: Cell::new([[-1000.0; 4]; 2]),
             started: self.started,
-            faces: RefCell::new(Faces::new()),
+            faces: RefCell::new(Faces::new_rows()),
         }
     }
 }
@@ -182,6 +238,11 @@ impl std::fmt::Debug for Screen {
 }
 
 impl Screen {
+    /// A new resource atlas needs the visible rows' face pixels uploaded again.
+    pub fn forget_faces(&mut self) {
+        self.faces.get_mut().forget_atlas();
+    }
+
     pub fn new() -> Self {
         Self {
             tab: Tab::Friends,
@@ -198,12 +259,9 @@ impl Screen {
             sending: None,
             action: None,
             action_button: None,
-            toast: None,
-            friend_toasts: Vec::new(),
-            seen: None,
+            notices: Vec::new(),
             sort_cache: RefCell::new(None),
             scroll_drag: Cell::new(None),
-            toast_sound: Cell::new(None),
             links: RefCell::new(Vec::new()),
             footer_links: RefCell::new(Vec::new()),
             link_clicked: false,
@@ -214,7 +272,7 @@ impl Screen {
             confirm_buttons: Cell::new([[-1000.0; 4]; 2]),
             enable_buttons: Cell::new([[-1000.0; 4]; 2]),
             started: Instant::now(),
-            faces: RefCell::new(Faces::new()),
+            faces: RefCell::new(Faces::new_rows()),
         }
     }
 
@@ -227,125 +285,37 @@ impl Screen {
         screen
     }
 
-    /// `multiplier` is Notification Time (`Options.notificationDisplayTime`).
-    pub fn tick(&mut self, multiplier: f64) {
+    /// Poll asynchronous actions; the client takes any resulting notice into
+    /// its persistent `ToastManager` before discarding this screen.
+    pub fn tick(&mut self) {
         social::set_foreground(true);
         if let Some(result) = self.sending.as_ref().and_then(take) {
             self.sending = None;
-            let name = self.add.trim().to_owned();
             if result == social::ResultCode::Success {
                 self.add.clear();
-                // `AddFriendWidget.State.SENDING` removed EditBox focus; the
-                // completion callback enables it but does not refocus it.
-                self.friend_toasts.push(crate::toasts::FriendToast::new(
-                    crate::lang::tr(
-                        "gui.friends.toast.request_sent.message",
-                        &[&name as &dyn std::fmt::Display],
-                    ),
-                    None,
-                ));
-            } else {
-                self.failed(result);
+                // The service worker detects the new outgoing request on the
+                // forced list update, including after this screen closes.
             }
         }
         if let Some(result) = self.action.as_ref().and_then(take) {
             self.action = None;
             self.action_button = None;
             if result != social::ResultCode::Success {
-                self.failed(result);
-                // `onActionFailed`: refreshLists() reads the lists again.
                 social::refresh_lists();
             }
         }
-        self.poll_friend_toasts();
-        // `ToastManager.update`: play only the first visibility-change sound this tick.
-        let mut toast_sound = None;
-        if let Some(toast) = &mut self.toast {
-            let (sound, finished) = toast.update(multiplier);
-            toast_sound = sound;
-            if finished {
-                self.toast = None;
-            }
-        }
-        self.friend_toasts.retain_mut(|toast| {
-            let (sound, finished) = toast.update(multiplier);
-            if toast_sound.is_none() {
-                toast_sound = sound;
-            }
-            !finished
-        });
-        self.toast_sound.set(toast_sound);
     }
 
-    /// `ToastManager.update`: the visibility change to play after this screen
-    /// has updated; at most one sound is returned per frame.
-    pub fn take_toast_sound(&self) -> Option<bool> {
-        self.toast_sound.take()
+    /// Deliver action toasts to the client-owned manager; waiting toasts must
+    /// not start their slide or time out while all five slots are occupied.
+    pub fn take_notices(&mut self) -> Vec<Notice> {
+        std::mem::take(&mut self.notices)
     }
 
-    /// `PlayerSocialManager`'s pushes as `FriendToast`s: a new incoming request,
-    /// a friend accepted from either side. The first successful read only
-    /// records the lists.
-    fn poll_friend_toasts(&mut self) {
-        if social::friend_list_state() != State::Success {
-            return;
-        }
-        let data = self.lists();
-        let now = Seen {
-            friends: data.friends.iter().map(|friend| friend.id).collect(),
-            incoming: data.incoming.iter().map(|friend| friend.id).collect(),
-            outgoing: data.outgoing.iter().map(|friend| friend.id).collect(),
-        };
-        if let Some(previous) = &self.seen {
-            for friend in &data.incoming {
-                if !previous.incoming.contains(&friend.id) {
-                    self.friend_toasts.push(crate::toasts::FriendToast::new(
-                        crate::lang::tr(
-                            "gui.friends.toast.request_received.message",
-                            &[&friend.name as &dyn std::fmt::Display],
-                        ),
-                        Some(friend.id),
-                    ));
-                }
-            }
-            for friend in &data.friends {
-                if previous.friends.contains(&friend.id) {
-                    continue;
-                }
-                let key = if previous.outgoing.contains(&friend.id) {
-                    "gui.friends.toast.friend_added.message"
-                } else if previous.incoming.contains(&friend.id) {
-                    "gui.friends.toast.request_accepted.message"
-                } else {
-                    continue;
-                };
-                self.friend_toasts.push(crate::toasts::FriendToast::new(
-                    crate::lang::tr(key, &[&friend.name as &dyn std::fmt::Display]),
-                    Some(friend.id),
-                ));
-            }
-        }
-        self.seen = Some(now);
-    }
-
-    fn failed(&mut self, code: social::ResultCode) {
-        let key = match code {
-            social::ResultCode::TooManyRequests => "gui.friends.error.rateLimited.message",
-            social::ResultCode::UnknownProfile => "gui.friends.error.user_may_lack_active_profile",
-            social::ResultCode::Unauthorized => "gui.friends.error.unauthorized",
-            social::ResultCode::Forbidden => "gui.friends.error.forbidden.message",
-            social::ResultCode::ServiceNotAvailable | social::ResultCode::TemporaryUnavailable => {
-                "gui.friends.error.unavailable.message"
-            }
-            _ => "gui.friends.error.failed.message",
-        };
-        self.show_system_toast(crate::lang::get(key));
-    }
-
-    /// `SystemToast.addOrUpdate(..., FRIEND_SYSTEM_NOTIFICATION, title, null)`: the
-    /// yellow title on the system background, over the screen's own widgets.
+    /// `SystemToast.addOrUpdate(..., FRIEND_SYSTEM_NOTIFICATION, title, null)`;
+    /// the persistent toast queue merges this id across screens.
     fn show_system_toast(&mut self, title: String) {
-        self.toast = Some(crate::toasts::SystemToast::new(title, None));
+        self.notices.push(Notice::System(title));
     }
 
     fn lists(&self) -> social::FriendData {
@@ -1235,6 +1205,7 @@ impl Screen {
     ) {
         self.links.borrow_mut().clear();
         self.footer_links.borrow_mut().clear();
+        self.faces.borrow_mut().begin_frame();
         self.profile_box.set([-1000.0; 4]);
         let (x, y, height) = Self::panel((w, h));
         if dim {
@@ -1379,32 +1350,6 @@ impl Screen {
                 };
                 ui::tooltip_menu(batch, atlas, &lines, pointer, [px, py, pw, ph]);
             }
-        }
-    }
-
-    /// `ToastManager.extractRenderState`: each toast gets the first consecutive free
-    /// 32px slots it needs (`ceil(height/32)`) after the toasts already queued by
-    /// the game. Its own `yPos` remains `firstSlotIndex * height`.
-    pub fn draw_toast_slots(&self, atlas: &HudAtlas, batch: &mut HudBatch, mut used: u32) {
-        if let Some(toast) = &self.toast {
-            let height = toast.height(atlas);
-            let slots = (height / 32.0).ceil() as usize;
-            if let Some(slot) = first_free_toast_slot(used, slots) {
-                used |= ((1u32 << slots) - 1) << slot;
-                toast.draw(atlas, batch, slot as f32 * height);
-            }
-        }
-        for toast in &self.friend_toasts {
-            let height = toast.height(atlas);
-            let slots = (height / 32.0).ceil() as usize;
-            let Some(slot) = first_free_toast_slot(used, slots) else {
-                break;
-            };
-            used |= ((1u32 << slots) - 1) << slot;
-            let face = toast
-                .friend
-                .and_then(|id| self.faces.borrow_mut().face(batch, atlas, id));
-            toast.draw(atlas, batch, slot as f32 * height, face.as_deref());
         }
     }
 
@@ -1879,13 +1824,6 @@ impl Screen {
     }
 }
 
-/// `ToastManager.findFreeSlotsIndex`: the first consecutive free run.
-fn first_free_toast_slot(used: u32, slots: usize) -> Option<usize> {
-    (0..5).find(|start| {
-        *start + slots <= 5 && (*start..*start + slots).all(|slot| used & (1 << slot) == 0)
-    })
-}
-
 /// A request row's button ids: 100 + slot * 2, accept/cancel at +0 and decline at +1.
 /// `PendingTab.updateEntries`'s rows: a 17-high header over each non-empty
 /// group's 28-high entries, from the list top less the scroll offset.
@@ -2003,39 +1941,68 @@ fn pending_header(key: &str) -> crate::text::Text {
         .underlined()
 }
 
-/// The players' faces: `PlayerFaceWidget`'s 8x8 head in a `horizon/world-iconN` slot,
-/// as the Realms screens draw one.
-struct Faces {
+/// The players' faces: `PlayerFaceWidget`'s head in dedicated
+/// `horizon/friend-iconN` slots. Rows use the first 24, toasts the last 8;
+/// they never overwrite title/Realms `world-iconN` sprites or each other.
+pub struct Faces {
     profiles: Arc<Mutex<horizon_client_render::skins::Resolver>>,
     downloads: Arc<Mutex<horizon_client_render::skins::Downloader>>,
     images: std::collections::HashMap<String, Vec<u8>>,
     slots: std::collections::HashMap<u128, usize>,
+    first_slot: usize,
+    slot_count: usize,
 }
 
 impl Faces {
-    fn new() -> Self {
-        let root = std::env::current_dir()
-            .unwrap_or_default()
-            .join("assets/skins");
+    pub fn new_rows() -> Self {
+        Self::new(0, 24)
+    }
+
+    pub fn new_toasts() -> Self {
+        Self::new(24, 8)
+    }
+
+    /// Start a new HUD batch: at most the allotted faces can be present in
+    /// one frame. Older identities may reuse slots in later frames.
+    pub fn begin_frame(&mut self) {
+        self.slots.clear();
+    }
+
+    /// The resource pack replaced the atlas: clear cached allocations and
+    /// decoded faces. Resolver/Downloader retain their bounded shared caches,
+    /// so `face` recreates a patch when it is next requested.
+    pub fn forget_atlas(&mut self) {
+        self.slots.clear();
+        self.images.clear();
+    }
+
+    fn new(first_slot: usize, slot_count: usize) -> Self {
+        static WORKERS: std::sync::OnceLock<(
+            Arc<Mutex<horizon_client_render::skins::Resolver>>,
+            Arc<Mutex<horizon_client_render::skins::Downloader>>,
+        )> = std::sync::OnceLock::new();
+        let (profiles, downloads) = WORKERS.get_or_init(|| {
+            let root = std::env::current_dir()
+                .unwrap_or_default()
+                .join("assets/skins");
+            (
+                Arc::new(Mutex::new(horizon_client_render::skins::Resolver::new())),
+                Arc::new(Mutex::new(horizon_client_render::skins::Downloader::new(
+                    root,
+                ))),
+            )
+        });
         Self {
-            profiles: Arc::new(Mutex::new(horizon_client_render::skins::Resolver::new())),
-            downloads: Arc::new(Mutex::new(horizon_client_render::skins::Downloader::new(
-                root,
-            ))),
+            profiles: Arc::clone(profiles),
+            downloads: Arc::clone(downloads),
             images: std::collections::HashMap::new(),
             slots: std::collections::HashMap::new(),
+            first_slot,
+            slot_count,
         }
     }
 
-    fn face(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, id: u128) -> Option<String> {
-        let slot = match self.slots.get(&id) {
-            Some(slot) => *slot,
-            None => {
-                let slot = self.slots.len() % 32;
-                self.slots.insert(id, slot);
-                slot
-            }
-        };
+    pub fn face(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, id: u128) -> Option<String> {
         let (value, signature) = {
             let mut profiles = self.profiles.lock().ok()?;
             let horizon_client_render::skins::Resolve::Done(Some(profile)) =
@@ -2048,7 +2015,7 @@ impl Faces {
         let textures = horizon_client_render::skins::unpack(
             &value,
             signature,
-            &horizon_client_render::skins::TEXTURE_URIS,
+            horizon_client_render::skins::texture_uris(),
         );
         let url = textures.skin?;
         let location = horizon_client_render::skins::skin_location(
@@ -2060,18 +2027,31 @@ impl Faces {
         {
             return None;
         }
-        let _ = downloads.take_ready();
         let face = match self.images.get(&location) {
             Some(face) => face.clone(),
             None => {
                 let skin = downloads.image(&location)?;
                 let face = face_from_skin(skin)?;
+                if self.images.len() >= 32 {
+                    self.images.clear();
+                }
                 self.images.insert(location, face.clone());
                 face
             }
         };
         drop(downloads);
-        let sprite = format!("horizon/world-icon{slot}");
+        let slot = match self.slots.get(&id) {
+            Some(slot) => *slot,
+            None => {
+                if self.slots.len() >= self.slot_count {
+                    return None;
+                }
+                let slot = self.first_slot + self.slots.len();
+                self.slots.insert(id, slot);
+                slot
+            }
+        };
+        let sprite = format!("horizon/friend-icon{slot}");
         let rect = atlas.sprites.get(&sprite)?;
         batch.patches.push(crate::font::Patch {
             x: (rect.u0 * atlas.width as f32).round() as u32,

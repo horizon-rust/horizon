@@ -464,6 +464,9 @@ pub struct Title {
     connect_request: Option<String>,
     /// EditWorldScreen's and WorldOpenFlows' `SystemToast` and its slide.
     toast: Option<(crate::toasts::Slide, WorldToast)>,
+    /// Friend action errors produced immediately before switching away from
+    /// `Mode::Friends`, retained until the client toast manager drains them.
+    friend_notices: Vec<crate::friends_overlay::Notice>,
     icons: RefCell<std::collections::HashMap<PathBuf, (std::time::SystemTime, Option<Vec<u8>>)>>,
     splash: Option<String>,
     /// `SplashManager.getSplash` rolled the player's own name instead of a list entry.
@@ -853,6 +856,7 @@ impl Title {
             open_request: None,
             connect_request: None,
             toast: None,
+            friend_notices: Vec::new(),
             icons: RefCell::new(std::collections::HashMap::new()),
             splash: choose_splash(&splashes, splash_index, (today.month(), today.day())),
             splash_you,
@@ -1318,14 +1322,23 @@ impl Title {
             alert: None,
         };
     }
+    /// Action notices produced by the active Friends overlay, transferred to
+    /// the client-owned toast manager rather than owned by this screen.
+    pub fn take_friend_notices(&mut self) -> Vec<crate::friends_overlay::Notice> {
+        let mut notices = std::mem::take(&mut self.friend_notices);
+        if let Mode::Friends(screen) = &mut self.mode {
+            notices.extend(screen.take_notices());
+        }
+        notices
+    }
+
     /// Polling is done once per rendered frame so filesystem work never blocks drawing.
     pub fn poll_backup(&mut self) {
         self.poll_realms();
         self.poll_onboarding(std::time::Instant::now());
         self.poll_account();
         if let Mode::Friends(screen) = &mut self.mode {
-            // The title screen has no loaded Options yet: Notification Time is 1.
-            screen.tick(1.0);
+            screen.tick();
         } else {
             crate::social::set_foreground(false);
         }
@@ -3837,12 +3850,6 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             batch.text(atlas, &title, x + 18.0, 7.0, rgba(255, 255, 0, 255), false);
             batch.text(atlas, &message, x + 18.0, 19.0, u32::MAX, false);
         }
-        // `ToastManager` after the screen's widgets: the friends overlay's failure
-        // toast stays over its tabs and panel.
-        if let Mode::Friends(screen) = &self.mode {
-            // The title's own toast holds slot zero while it is visible.
-            screen.draw_toast_slots(atlas, batch, u32::from(self.toast.is_some()));
-        }
     }
     /// The tooltip of a world's icon (drawn with the row, as vanilla does) or, for a
     /// world that needs its files upgraded first, of the Play, Edit and Re-Create
@@ -4164,6 +4171,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     let _ = screen.take_link_sound();
                     // `MICROSOFT_ACCOUNT_LINK`: `PrivacyConfirmLinkScreen.confirmLinkNow`
                     // covers the overlay and returns to it.
+                    self.friend_notices.extend(screen.take_notices());
                     self.mode = Mode::ConfirmLink {
                         url: url.to_owned(),
                         back: Box::new(Mode::Friends(screen.clone())),
@@ -4171,6 +4179,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     Action::None
                 } else if screen.take_cancelled() {
                     // `FriendsListConfirmScreen` answered Turn Off: `lastScreen`.
+                    self.friend_notices.extend(screen.take_notices());
                     self.mode = Mode::Main;
                     Action::None
                 } else if !question
@@ -4180,6 +4189,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 {
                     // `FriendsOverlayScreen.mouseClicked`: a click outside the panel
                     // returns to the screen behind (the title).
+                    self.friend_notices.extend(screen.take_notices());
                     self.mode = Mode::Main;
                     Action::None
                 } else {
@@ -5409,10 +5419,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         {
             return;
         }
-        if let Mode::Friends(screen) = &mut self.mode
-            && !screen.escape()
-        {
-            return;
+        if let Mode::Friends(screen) = &mut self.mode {
+            if !screen.escape() {
+                return;
+            }
+            self.friend_notices.extend(screen.take_notices());
         }
         match &self.mode {
             // OptimizeWorldScreen: `shouldCloseOnEsc` is false; the Backup wait takes no input.

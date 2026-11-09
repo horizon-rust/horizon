@@ -2883,6 +2883,11 @@ struct Game<'a> {
     tutorial_toasts: Vec<tutorial::HintToast>,
     /// The `SystemToastId.NARRATOR_TOGGLE` toast, wherever the player is.
     narrator_toast: Option<horizon_client::toasts::SystemToast>,
+    /// The client's persistent friend notification queue (not owned by an
+    /// open screen, so switching screens never clears visible toasts).
+    friends_toasts: horizon_client::toasts::FriendsToasts,
+    /// Toast faces use their own atlas slots, away from world-list icons.
+    friends_toast_faces: horizon_client::friends_overlay::Faces,
     /// The open screen's narration (`Screen`'s narration state and timing).
     narration: horizon_client::screen_narrator::ScreenNarrator,
     /// Where the options screen returns: true = title, false = pause menu.
@@ -8065,6 +8070,7 @@ impl Game<'_> {
         // The ToastManager draws over every screen, the title and the
         // options included: the narrator's toast follows the player there.
         self.draw_narrator_toast(&mut batch);
+        self.draw_friends_toasts(&mut batch, self.ui.hide_gui);
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
         self.draw_debug_overlay(&mut batch, size);
@@ -8492,7 +8498,6 @@ impl Game<'_> {
         self.draw_tutorial_toasts(&mut batch, !show_hud);
         self.draw_pack_toasts(&mut batch, !show_hud);
         self.draw_music_toast(&mut batch, !show_hud);
-        self.draw_friends_toasts(&mut batch, !show_hud);
         if self.server_packs.prompt.is_none() {
             self.remote_hud(&mut batch);
             self.draw_sign_editor(&mut batch);
@@ -17304,6 +17309,8 @@ impl<'a> Game<'a> {
             tutorial,
             tutorial_toasts: Vec::new(),
             narrator_toast: None,
+            friends_toasts: Default::default(),
+            friends_toast_faces: horizon_client::friends_overlay::Faces::new_toasts(),
             narration: Default::default(),
             options_from_title: false,
             dragging: false,

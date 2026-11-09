@@ -386,6 +386,10 @@ impl Game<'_> {
         // The new atlas's skin and map slots are blank: players and maps
         // upload into it again instead of naming sprites it does not have.
         self.skin_slots.forget();
+        self.friends_toast_faces.forget_atlas();
+        if let Some(screen) = &mut self.friends_overlay {
+            screen.forget_faces();
+        }
         self.skin_downloads
             .borrow_mut()
             .set_resource_root(self.options.resources.clone());

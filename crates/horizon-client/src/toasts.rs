@@ -1,7 +1,7 @@
 //! `ToastManager`'s slide, shared by the game's toasts and the title
 //! screens' system toasts.
 use crate::hud::{HudAtlas, HudBatch};
-use std::time::Instant;
+use std::{collections::VecDeque, time::Instant};
 
 /// `ToastManager.ToastInstance`: slides a toast in and out over 600 ms,
 /// eased by the square, and counts how long it has been fully shown.
@@ -315,7 +315,9 @@ impl FriendToast {
             u32::MAX,
         );
         let face = face.filter(|_| self.friend.is_some());
-        let text_left = if face.is_some() {
+        // `FriendToast.skinProfile` decides the text inset, even before the
+        // asynchronous skin has downloaded and a face can be drawn.
+        let text_left = if self.friend.is_some() {
             Self::TEXT_LEFT_WITH_FACE
         } else {
             Self::TEXT_LEFT_NO_FACE
@@ -346,6 +348,166 @@ impl FriendToast {
             );
         }
     }
+}
+
+/// The friends overlay's `ToastManager` queues, using the vanilla five 32-pixel
+/// slots. A toast waiting for a slot is not updated, so it does not spend time.
+const MAX_WAITING: usize = 64;
+
+#[derive(Default)]
+pub struct FriendsToasts {
+    waiting: VecDeque<FriendToastEntry>,
+    displayed: Vec<DisplayedFriendToast>,
+    occupied: u32,
+}
+
+enum FriendToastEntry {
+    System(SystemToast),
+    Friend(FriendToast),
+}
+
+struct DisplayedFriendToast {
+    toast: FriendToastEntry,
+    slot: usize,
+    slots: usize,
+}
+
+impl FriendsToasts {
+    /// `FRIEND_SYSTEM_NOTIFICATION` has one token: reset displayed or pending.
+    pub fn add_system(&mut self, title: String) {
+        for entry in &mut self.displayed {
+            if let FriendToastEntry::System(toast) = &mut entry.toast {
+                toast.reset(title, None);
+                return;
+            }
+        }
+        for entry in &mut self.waiting {
+            if let FriendToastEntry::System(toast) = entry {
+                toast.reset(title, None);
+                return;
+            }
+        }
+        if self.waiting.len() >= MAX_WAITING {
+            self.trim_waiting_for_new_friend();
+        }
+        self.waiting
+            .push_back(FriendToastEntry::System(SystemToast::new(title, None)));
+    }
+
+    /// Friend notifications never merge. Keep at most 64 pending entries; if
+    /// full, discard the oldest pending friend notification (never a system token).
+    pub fn add_friend(&mut self, message: String, friend: Option<u128>) {
+        self.trim_waiting_for_new_friend();
+        self.waiting
+            .push_back(FriendToastEntry::Friend(FriendToast::new(message, friend)));
+    }
+
+    fn trim_waiting_for_new_friend(&mut self) {
+        if self.waiting.len() < MAX_WAITING {
+            return;
+        }
+        if let Some(index) = self
+            .waiting
+            .iter()
+            .position(|entry| matches!(entry, FriendToastEntry::Friend(_)))
+        {
+            self.waiting.remove(index);
+        }
+    }
+
+    /// Update displayed entries, release their slots, then assign waiting entries.
+    /// Return the first visibility transition this frame; a freshly assigned
+    /// ToastInstance becomes visible at its next update (vanilla's order).
+    pub fn update(&mut self, atlas: &HudAtlas, multiplier: f64, used: u32) -> Option<bool> {
+        let mut sound = None;
+        let mut retained = Vec::with_capacity(self.displayed.len());
+        for mut entry in self.displayed.drain(..) {
+            let (changed, finished) = match &mut entry.toast {
+                FriendToastEntry::System(toast) => toast.update(multiplier),
+                FriendToastEntry::Friend(toast) => toast.update(multiplier),
+            };
+            if sound.is_none() {
+                sound = changed;
+            }
+            if finished {
+                self.occupied &= !slot_mask(entry.slot, entry.slots);
+            } else {
+                retained.push(entry);
+            }
+        }
+        self.displayed = retained;
+        let mut available = self.occupied | used;
+        let mut scanned = 0;
+        while scanned < self.waiting.len() {
+            let entry = self.waiting.pop_front().expect("length was checked");
+            let slots = entry.slots(atlas);
+            if let Some(slot) = first_free_slots(available, slots) {
+                let mask = slot_mask(slot, slots);
+                self.occupied |= mask;
+                available |= mask;
+                self.displayed.push(DisplayedFriendToast {
+                    toast: entry,
+                    slot,
+                    slots,
+                });
+                scanned = 0;
+            } else {
+                self.waiting.push_back(entry);
+                scanned += 1;
+            }
+        }
+        sound
+    }
+
+    pub fn occupied_slots(&self) -> u32 {
+        self.occupied
+    }
+
+    /// The caller controls global hidden/F1 state, as with vanilla ToastManager.
+    pub fn draw(
+        &self,
+        atlas: &HudAtlas,
+        batch: &mut HudBatch,
+        mut face: impl FnMut(&mut HudBatch, &HudAtlas, u128) -> Option<String>,
+    ) {
+        for entry in &self.displayed {
+            match &entry.toast {
+                FriendToastEntry::System(toast) => {
+                    toast.draw(atlas, batch, entry.slot as f32 * toast.height(atlas));
+                }
+                FriendToastEntry::Friend(toast) => {
+                    let face = toast.friend.and_then(|id| face(batch, atlas, id));
+                    toast.draw(
+                        atlas,
+                        batch,
+                        entry.slot as f32 * toast.height(atlas),
+                        face.as_deref(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+impl FriendToastEntry {
+    fn slots(&self, atlas: &HudAtlas) -> usize {
+        let height = match self {
+            Self::System(toast) => toast.height(atlas),
+            Self::Friend(toast) => toast.height(atlas),
+        };
+        ((height / 32.0).ceil() as usize).max(1)
+    }
+}
+
+fn slot_mask(slot: usize, slots: usize) -> u32 {
+    ((1u32 << slots) - 1) << slot
+}
+
+fn first_free_slots(occupied: u32, slots: usize) -> Option<usize> {
+    if slots == 0 || slots > 5 {
+        return None;
+    }
+    (0..=5 - slots).find(|start| occupied & slot_mask(*start, slots) == 0)
 }
 
 /// `NowPlayingToast`'s `musicNoteColorTick`, `lastMusicNoteColorChange` and

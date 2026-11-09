@@ -2204,7 +2204,12 @@ impl Game<'_> {
             .filter_map(|t| t.slot)
             .chain(packs)
             .chain(self.narrator_toast.as_ref().and_then(|t| t.slot))
-            .fold(self.tutorial_toast_slots(), |used, slot| used | 1 << slot)
+            .fold(
+                self.tutorial_toast_slots()
+                    | self.friends_toasts.occupied_slots()
+                    | u32::from(self.title.as_ref().is_some_and(|title| title.has_toast())),
+                |used, slot| used | 1 << slot,
+            )
     }
     /// `ToastManager.addToast`'s `ToastAddEvent`: whether a new toast of
     /// `kind` (`id` within it) may be queued; false when a mod cancelled it.

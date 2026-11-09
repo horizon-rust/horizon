@@ -251,7 +251,10 @@ impl Game<'_> {
     }
 
     pub(super) fn close_friends_overlay(&mut self) {
-        self.friends_overlay = None;
+        if let Some(mut screen) = self.friends_overlay.take() {
+            screen.tick();
+            crate::friends_overlay::queue_notices(&mut self.friends_toasts, screen.take_notices());
+        }
         crate::social::set_foreground(false);
         self.screen = super::Screen::Paused;
     }
@@ -261,24 +264,8 @@ impl Game<'_> {
         // blurred with the rest of the world (`extractBlurredBackground`).
         self.draw_pause_menu(batch);
         batch.blur_at = batch.vertices.len() as u32;
-        let multiplier = f64::from(self.settings.notification_display_time);
-        let toast_sound = if let Some(screen) = self.friends_overlay.as_mut() {
-            screen.tick(multiplier);
-            screen.take_toast_sound()
-        } else {
-            None
-        };
-        if let Some(show) = toast_sound {
-            self.audio.play(
-                if show {
-                    "minecraft:ui.toast.in"
-                } else {
-                    "minecraft:ui.toast.out"
-                },
-                None,
-                1.0,
-                1.0,
-            );
+        if let Some(screen) = self.friends_overlay.as_mut() {
+            screen.tick();
         }
         horizon_client::widgets::begin_screen(|| {
             horizon_client::widgets::ScreenInfo::new(
@@ -467,16 +454,49 @@ impl Game<'_> {
         // widget (`draw_friends_toasts`), not here.
     }
 
-    /// `ToastManager.extractRenderState`: the overlay's toasts after every other
-    /// toast, in the slots they leave free, and hidden with the HUD (F1).
-    pub(super) fn draw_friends_toasts(&self, batch: &mut HudBatch, hidden: bool) {
-        if hidden {
-            return;
+    /// `ToastManager.update`/`extractRenderState` on every screen, not only
+    /// `FriendsOverlayScreen`. Waiting entries start only after a free slot is
+    /// assigned; F1 hides drawing but never pauses their lifetime.
+    pub(super) fn draw_friends_toasts(&mut self, batch: &mut HudBatch, hidden: bool) {
+        if let Some(title) = &mut self.title {
+            crate::friends_overlay::queue_notices(
+                &mut self.friends_toasts,
+                title.take_friend_notices(),
+            );
         }
-        let Some(screen) = &self.friends_overlay else {
-            return;
-        };
-        screen.draw_toast_slots(&self.gui.atlas, batch, self.toast_slots_used());
+        if let Some(screen) = &mut self.friends_overlay {
+            crate::friends_overlay::queue_notices(&mut self.friends_toasts, screen.take_notices());
+        }
+        crate::friends_overlay::queue_social_events(
+            &mut self.friends_toasts,
+            self.title.is_some() || self.settings.file.bool("inGameNotification"),
+        );
+        let used = (self.toast_slots_used() & !self.friends_toasts.occupied_slots())
+            | u32::from(self.title.as_ref().is_some_and(|title| title.has_toast()));
+        if let Some(show) = self.friends_toasts.update(
+            &self.gui.atlas,
+            f64::from(self.settings.notification_display_time),
+            used,
+        ) {
+            self.audio.play(
+                if show {
+                    "minecraft:ui.toast.in"
+                } else {
+                    "minecraft:ui.toast.out"
+                },
+                None,
+                1.0,
+                1.0,
+            );
+        }
+        if !hidden {
+            let faces = &mut self.friends_toast_faces;
+            faces.begin_frame();
+            self.friends_toasts
+                .draw(&self.gui.atlas, batch, |batch, atlas, id| {
+                    faces.face(batch, atlas, id)
+                });
+        }
     }
 
     pub(super) fn friends_overlay_click(&mut self) {
