@@ -265,7 +265,7 @@ impl horizon_polytone::expr::Host for FrameHost<'_> {
             ("config", [horizon_polytone::expr::Value::Str(id)]) => self
                 .configs
                 .get(id)
-                .map(horizon_polytone::pack::ConfigValue::to_value)
+                .map(horizon_polytone::pack::config_value)
                 .ok_or_else(|| format!("no config {id}")),
             _ => Err(format!(
                 "{name} is not available in an attribute expression"
@@ -569,6 +569,25 @@ pub(crate) fn polytone_noise() -> &'static horizon_core::noise::SimplexNoise {
 }
 
 impl horizon_polytone::expr::Host for BlockHost<'_> {
+    fn field(
+        &mut self,
+        root: horizon_polytone::expr::Root,
+        field: horizon_polytone::expr::Field,
+    ) -> Option<horizon_polytone::expr::Value> {
+        use horizon_polytone::expr::Field as F;
+        if root != horizon_polytone::expr::Root::Object {
+            return None;
+        }
+        Some(horizon_polytone::expr::Value::Num(match field {
+            F::X => f64::from(self.at[0]),
+            F::Y => f64::from(self.at[1]),
+            F::Z => f64::from(self.at[2]),
+            F::Temperature => f64::from(self.biome.temperature),
+            F::Downfall => f64::from(self.biome.downfall),
+            _ => return None,
+        }))
+    }
+
     fn root(&mut self, root: horizon_polytone::expr::Root) -> horizon_polytone::expr::Value {
         use horizon_polytone::expr::Root;
         horizon_polytone::expr::Value::Object(match root {
@@ -1084,6 +1103,7 @@ mod tests {
         for (path, text) in pack {
             write(&format!("pack/{path}"), text);
         }
+        crate::pack_formats::install();
         let modifiers = PackModifiers::read(&dir.join("pack")).with_configs(
             crate::packs::polytone_configs(&crate::packs::Source::Dir(dir.join("pack"))),
         );

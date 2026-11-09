@@ -40,8 +40,52 @@ pub trait PackFormats: Send + Sync {
         None
     }
 
+    /// The overlay's entity texture variants, blinks and emissive overlays.
+    fn entity_textures(&self, _root: &Path) -> Option<crate::entity_textures::EntityTextures> {
+        None
+    }
+
+    /// The block entity models the overlay reshapes over `vanilla`'s, with their textures;
+    /// `None` when it reshapes none.
+    fn block_entity_models(
+        &self,
+        _root: &Path,
+        _vanilla: &std::collections::HashMap<&'static str, crate::block_entity_render::ModelPart>,
+    ) -> Option<Reshaped> {
+        None
+    }
+
     /// The sky layers the overlay draws over the vanilla sky, if it has any.
     fn custom_sky(&self, _root: &Path) -> Option<Arc<dyn crate::custom_sky::SkyLayers>> {
+        None
+    }
+
+    /// The options the pack (its base, not its overlays) declares, at their defaults.
+    fn pack_options(
+        &self,
+        _source: &crate::packs::Source,
+    ) -> Option<horizon_pack_options::Configs> {
+        None
+    }
+
+    /// Whether an `overlays.entries[]` item of `pack.mcmeta` is active, given the pack's options;
+    /// `formats_apply` is vanilla's answer from its `formats`.
+    fn overlay_active(
+        &self,
+        _entry: &serde_json::Value,
+        _options: &horizon_pack_options::Configs,
+        formats_apply: bool,
+    ) -> bool {
+        formats_apply
+    }
+
+    /// A pack's `sounds.json` without the events its options turn off; `None` when it keeps
+    /// them all.
+    fn sounds_without_unmet(
+        &self,
+        _text: &[u8],
+        _options: &horizon_pack_options::Configs,
+    ) -> Option<Vec<u8>> {
         None
     }
 
@@ -50,6 +94,13 @@ pub trait PackFormats: Send + Sync {
         None
     }
 }
+
+/// Every block entity model, reshaped by a pack or vanilla's, and the atlas names of the
+/// pack's textures by model ([`PackFormats::block_entity_models`]).
+pub type Reshaped = (
+    std::collections::HashMap<&'static str, crate::block_entity_render::ModelPart>,
+    std::collections::HashMap<&'static str, String>,
+);
 
 /// No format beyond vanilla's.
 struct Vanilla;

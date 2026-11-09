@@ -288,6 +288,8 @@ fn zip_pack(id: &str, path: PathBuf) -> Pack {
 }
 
 fn main() {
+    // The pack formats the game installs at startup, so their loading is measured too.
+    horizon_client_render::pack_formats::install();
     let args: Vec<String> = std::env::args().collect();
     let scale = args
         .iter()

@@ -960,7 +960,7 @@ pub struct Scene<'a> {
     pub world: &'a World,
     pub sprites: &'a HashMap<String, Rect>,
     /// The packs' OptiFine emissive overlays of the sprites.
-    pub emissive: &'a horizon_optifine::emissive::Emissive,
+    pub emissive: &'a crate::entity_textures::Emissive,
     /// Atlas sprites that contain a texel with fractional alpha. Static
     /// geometry stays on the cutout pipeline; these models keep the blended
     /// entity path so resource packs retain their alpha behavior.
@@ -1039,7 +1039,7 @@ impl CacheOptions {
     }
 }
 /// The block-entity models and what is baked from them: vanilla's, or the packs' custom entity
-/// models over them ([`crate::block_entity_cem`]).
+/// models over them ([`crate::pack_hooks::PackFormats::block_entity_models`]).
 #[derive(Default)]
 pub struct BlockEntityShapes {
     models: HashMap<&'static str, ModelPart>,
@@ -1555,7 +1555,7 @@ impl BlockEntityRenderer {
     /// The models the packs under `root` give, their `.jem` files over vanilla's, for
     /// [`Self::set_shapes`] (a pack reload): vanilla's own, shared, without any.
     pub fn shapes_for(&self, root: &Path) -> Arc<BlockEntityShapes> {
-        match crate::block_entity_cem::reshape(root, &self.vanilla.models) {
+        match crate::pack_hooks::formats().block_entity_models(root, &self.vanilla.models) {
             Some((models, textures)) => Arc::new(BlockEntityShapes::new(models, textures)),
             None => self.vanilla.clone(),
         }
@@ -4768,7 +4768,8 @@ mod tests {
 
     #[test]
     fn a_chest_jem_reshapes_the_closed_chest_and_paints_its_texture() {
-        use crate::block_entity_cem::tests::{BOX, chest, pack};
+        use crate::pack_formats::block_entity_cem::tests::{BOX, chest, pack};
+        crate::pack_formats::install();
         let vanilla = Arc::new(BlockEntityShapes::new(
             HashMap::from([("chest", chest())]),
             HashMap::new(),
@@ -4864,8 +4865,8 @@ mod tests {
         };
         // The chest's three faces become the bottom's, the lock's and the custom lid's six, in
         // the `.jem`'s texture. Ender and copper chests have no file of their own: vanilla's
-        // three faces in their own textures. (Trapped chests: `block_entity_cem`'s tests; their
-        // texture turns festive in late December.)
+        // three faces in their own textures. (Trapped chests: `block_entity_cem`'s tests in
+        // `pack_formats`; their texture turns festive in late December.)
         for (block, texture, u0, faces) in [
             ("chest", "entity/chest/normal", 0.4, 8),
             ("ender_chest", "entity/chest/ender", 0.2, 3),

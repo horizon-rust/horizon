@@ -81,6 +81,11 @@ impl Blinks {
         self.blinks.is_empty()
     }
 
+    /// The blinks by texture, and [`Self::files`].
+    pub fn into_parts(self) -> (HashMap<String, Blink>, Vec<(String, String)>) {
+        (self.blinks, self.files)
+    }
+
     pub fn get(&self, texture: &str) -> Option<&Blink> {
         self.blinks.get(texture)
     }

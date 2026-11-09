@@ -1,5 +1,5 @@
 //! OptiFine random entity textures on mobs: which variant of each of its textures a mob wears
-//! (`horizon_optifine::random_textures` finds them in the packs).
+//! (the pack formats find them in the packs: [`crate::entity_textures`]).
 //!
 //! [`choose`] runs when the client first sees a mob, about once a second after that, and on the
 //! next tick when the mob draws a texture with rules it hasn't chosen for (a wolf just tamed;
@@ -16,8 +16,7 @@
 
 use super::render::{DYE_NAMES, PROFESSIONS};
 use super::{Mob, MobData, Species};
-use horizon_optifine::random::{self, Block, Facts, Weather};
-use horizon_optifine::random_textures::RandomTextures;
+use crate::entity_textures::{self as random, Block, Facts, RandomTextures, Weather};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Where the mob was when the client first saw it.
@@ -41,7 +40,7 @@ pub struct Choice {
     /// The [`RandomTextures::generation`] the picks are from: another (a pack reload) makes
     /// them stale.
     generation: u64,
-    /// The variant each rule file chose, by its index in [`RandomTextures::rules`].
+    /// The variant each rule file chose, by its index ([`RandomTextures::matching`]).
     picks: Vec<(usize, u32)>,
     /// The body texture's variant.
     primary: Option<u32>,
@@ -176,7 +175,7 @@ pub fn choose(
                 Some(&(_, index)) => index,
                 None => {
                     // No rule matching is the texture itself, as is ETF's 0.
-                    let index = textures.rules(id).matching(&facts, seed).unwrap_or(0);
+                    let index = textures.matching(id, &facts, seed).unwrap_or(0);
                     choice.picks.push((id, index));
                     index
                 }
@@ -301,7 +300,8 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
         }
-        let textures = RandomTextures::scan(&root);
+        crate::pack_formats::install();
+        let textures = crate::entity_textures::EntityTextures::load(&root).random;
         let _ = std::fs::remove_dir_all(&root);
         textures
     }

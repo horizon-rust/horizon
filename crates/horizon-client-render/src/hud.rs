@@ -111,11 +111,11 @@ pub struct HudAtlas {
     /// The packs' Polytone screen sprite modifiers.
     pub sprite_modifiers: std::sync::Arc<sprite_modifiers::SpriteModifiers>,
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
-    pub random_textures: horizon_optifine::random_textures::RandomTextures,
+    pub random_textures: crate::entity_textures::RandomTextures,
     /// Their emissive overlays (`_e`), packed here too.
-    pub emissive: std::sync::Arc<horizon_optifine::emissive::Emissive>,
+    pub emissive: std::sync::Arc<crate::entity_textures::Emissive>,
     /// ETF's blinking frames (`_blink`), packed here too.
-    pub blinks: horizon_optifine::blink::Blinks,
+    pub blinks: crate::entity_textures::Blinks,
     /// Of the shared atlas's textures, their LabPBR normal and specular maps as paged maps
     /// (`paged_maps.rs`), read while loading for shader packs (`sprites::labpbr_maps`).
     pub material_maps: std::sync::Arc<[Option<crate::paged_maps::PagedMap>; 2]>,
@@ -1204,25 +1204,18 @@ impl HudAtlas {
             let s = p.to_string_lossy().replace('\\', "/");
             !s.contains("title/background") && !s.contains("presets")
         });
-        // OptiFine random entity variants, under the names their scan gives them (those
-        // outside `textures/` are `<ns>:optifine/random/...`).
-        let random_textures = if folders.contains(&"entity") {
-            horizon_optifine::random_textures::RandomTextures::scan(root)
+        // Random entity variants, under the names their scan gives them (those outside
+        // `textures/` are `<ns>:optifine/random/...`), blink frames and emissive overlays.
+        let crate::entity_textures::EntityTextures {
+            random: random_textures,
+            blinks,
+            emissive,
+        } = if folders.contains(&"entity") {
+            crate::entity_textures::EntityTextures::load(root)
         } else {
             Default::default()
         };
-        let blinks = if folders.contains(&"entity") {
-            horizon_optifine::blink::Blinks::scan(root, &random_textures)
-        } else {
-            Default::default()
-        };
-        let emissive = std::sync::Arc::new(if folders.contains(&"entity") {
-            let mut e = horizon_optifine::emissive::Emissive::scan(root, &random_textures);
-            e.pair_beside(root, blinks.files());
-            e
-        } else {
-            Default::default()
-        });
+        let emissive = std::sync::Arc::new(emissive);
         let mut named: HashMap<PathBuf, String> = HashMap::new();
         let extra = random_textures
             .files()
@@ -3474,6 +3467,7 @@ mod tests {
     /// `RandomTextures` gives them; one beside its texture packs once, under its own.
     #[test]
     fn random_entity_variants_pack_under_their_scan_names() {
+        crate::pack_formats::install();
         let root =
             std::env::temp_dir().join(format!("horizon-atlas-random-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -3496,6 +3490,7 @@ mod tests {
     /// A random variant's emissive overlay packs beside the variant, under its name.
     #[test]
     fn variant_overlays_pack_under_their_names() {
+        crate::pack_formats::install();
         let root =
             std::env::temp_dir().join(format!("horizon-atlas-overlay-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);

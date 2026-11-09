@@ -95,6 +95,11 @@ impl Emissive {
         self.overlays.is_empty()
     }
 
+    /// The suffix, the overlays by texture, and [`Self::files`].
+    pub fn into_parts(self) -> (String, HashMap<String, String>, Vec<(String, String)>) {
+        (self.suffix, self.overlays, self.files)
+    }
+
     /// The atlas name of the overlay that glows over `texture`.
     pub fn overlay(&self, texture: &str) -> Option<&str> {
         self.overlays.get(texture).map(String::as_str)

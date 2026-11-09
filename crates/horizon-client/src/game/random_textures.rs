@@ -3,9 +3,9 @@
 //! checks (`horizon_client::mobs::random_textures`).
 
 use super::Game;
+use horizon_client::entity_textures::Weather;
 use horizon_client::mobs::random_textures::{Seen, choose, seed};
 use horizon_core::geometry::Vec3;
-use horizon_optifine::random::Weather;
 
 impl Game<'_> {
     pub(super) fn tick_random_textures(&mut self) {

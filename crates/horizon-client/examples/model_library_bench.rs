@@ -50,6 +50,8 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 fn main() -> horizon_client::Result<()> {
+    // The pack formats the game installs at startup, so their loading is measured too.
+    horizon_client::pack_formats::install();
     let root = std::env::args()
         .nth(1)
         .ok_or("usage: model_library_bench ROOT [--parity]")?;

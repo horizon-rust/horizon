@@ -12,7 +12,7 @@ use crate::{
     text::Text,
     ui,
 };
-use horizon_polytone::pack::{ConfigKind, ConfigValue, Configs};
+use horizon_pack_options::{ConfigKind, ConfigValue, Configs};
 
 /// What a click asks of the options screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -481,17 +481,36 @@ impl PackOptionsUi {
 mod tests {
     use super::*;
 
+    use horizon_pack_options::ConfigEntry;
+
+    fn slider(default: f64) -> ConfigEntry {
+        let kind = ConfigKind::Number {
+            min: 0.0,
+            max: 1.0,
+            step: 0.1,
+        };
+        ConfigEntry::new(kind, ConfigValue::Number(default))
+    }
+
+    fn in_section(entry: ConfigEntry, section: &str, order: i64) -> ConfigEntry {
+        ConfigEntry {
+            section: Some(section.into()),
+            section_order: Some(order),
+            ..entry
+        }
+    }
+
     fn configs() -> Configs {
         let mut c = Configs::default();
-        c.add_entry(
-            "p:fog".into(),
-            &serde_json::json!({"default_value": 0.5, "section": "sky", "section_order": 2}),
+        c.insert("p:fog".into(), in_section(slider(0.5), "sky", 2));
+        let allowed = vec!["drops".into(), "streaks".into()];
+        let rain = ConfigEntry::new(
+            ConfigKind::Text { allowed },
+            ConfigValue::Text("drops".into()),
         );
-        c.add_entry("p:rain".into(), &serde_json::json!({"default_value": "drops", "allowed_values": ["drops", "streaks"], "section": "weather", "section_order": 1}));
-        c.add_entry(
-            "p:birds".into(),
-            &serde_json::json!({"default_value": true}),
-        );
+        c.insert("p:rain".into(), in_section(rain, "weather", 1));
+        let birds = ConfigEntry::new(ConfigKind::Bool, ConfigValue::Bool(true));
+        c.insert("p:birds".into(), birds);
         c
     }
 
@@ -537,9 +556,16 @@ mod tests {
     #[test]
     fn the_presets_row_cycles_the_pack_wide_presets_and_shows_custom_otherwise() {
         let mut c = Configs::default();
-        let entry = |default: f64, fast: f64, pretty: f64| serde_json::json!({"default_value": default, "presets": {"fast": fast, "pretty": pretty}});
-        c.add_entry("p:fog".into(), &entry(0.5, 0.0, 1.0));
-        c.add_entry("p:dust".into(), &entry(0.5, 0.0, 0.8));
+        let entry = |fast: f64, pretty: f64| ConfigEntry {
+            presets: [
+                ("fast".into(), ConfigValue::Number(fast)),
+                ("pretty".into(), ConfigValue::Number(pretty)),
+            ]
+            .into(),
+            ..slider(0.5)
+        };
+        c.insert("p:fog".into(), entry(0.0, 1.0));
+        c.insert("p:dust".into(), entry(0.0, 0.8));
         let mut ui = PackOptionsUi::open(c);
         // The defaults are no preset.
         assert_eq!(ui.current_preset(), None);

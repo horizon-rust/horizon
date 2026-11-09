@@ -2351,7 +2351,7 @@ pub fn part_matrix(
         .find_map(|c| part_matrix(c, m, poses, name, x_offset))
 }
 /// The first part named `name`, depth first.
-pub(super) fn find_part<'a>(part: &'a Part, name: &str) -> Option<&'a Part> {
+pub fn find_part<'a>(part: &'a Part, name: &str) -> Option<&'a Part> {
     if part.name == name {
         return Some(part);
     }
@@ -3640,7 +3640,6 @@ mod scroll_tests {
 mod emissive_tests {
     use super::*;
     use crate::mobs::{Polygon, Species};
-    use horizon_optifine::{blink::Blinks, emissive::Emissive, random_textures::RandomTextures};
     use std::sync::{Arc, RwLock};
 
     /// A silverfish (drawn with its type's texture) whose model is one quad.
@@ -3686,10 +3685,12 @@ mod emissive_tests {
             };
             std::fs::write(path, text).unwrap();
         }
-        let random = RandomTextures::scan(&root);
-        let blinks = Blinks::scan(&root, &random);
-        let mut emissive = Emissive::scan(&root, &random);
-        emissive.pair_beside(&root, blinks.files());
+        crate::pack_formats::install();
+        let crate::entity_textures::EntityTextures {
+            random,
+            blinks,
+            emissive,
+        } = crate::entity_textures::EntityTextures::load(&root);
         let _ = std::fs::remove_dir_all(&root);
         MobData {
             states: Vec::new(),
@@ -3869,7 +3870,7 @@ mod emissive_tests {
             blocks: Vec::new(),
             moon_phase: 0,
             day_time: 0,
-            weather: horizon_optifine::random::Weather::Clear,
+            weather: crate::entity_textures::Weather::Clear,
         };
         let props = format!("{RANDOM}/silverfish.properties");
         let variant = format!("{RANDOM}/silverfish2.png");
@@ -3931,7 +3932,6 @@ mod emissive_tests {
 mod random_texture_tests {
     use super::*;
     use crate::mobs::{Polygon, Species};
-    use horizon_optifine::random_textures::RandomTextures;
     use std::sync::{Arc, RwLock};
 
     /// A silverfish (drawn with its type's texture) whose model is one quad.
@@ -3967,7 +3967,8 @@ mod random_texture_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("silverfish.properties"), "textures.1=2").unwrap();
         std::fs::write(dir.join("silverfish2.png"), "").unwrap();
-        let random = RandomTextures::scan(&root);
+        crate::pack_formats::install();
+        let random = crate::entity_textures::EntityTextures::load(&root).random;
         let _ = std::fs::remove_dir_all(&root);
         MobData {
             states: Vec::new(),
@@ -4004,7 +4005,7 @@ mod random_texture_tests {
                 blocks: Vec::new(),
                 moon_phase: 0,
                 day_time: 0,
-                weather: horizon_optifine::random::Weather::Clear,
+                weather: crate::entity_textures::Weather::Clear,
             };
             crate::mobs::random_textures::choose(&mut m, &textures, &data, Some(seen), 0);
         }

@@ -183,6 +183,11 @@ impl RandomTextures {
         &self.rules[id]
     }
 
+    /// Every texture's entry by atlas name, and the rule files they index.
+    pub fn into_parts(self) -> (HashMap<String, Entry>, Vec<Rules>) {
+        (self.entries, self.rules)
+    }
+
     /// Every variant's file (its path from the resource root) and atlas name, for the entity
     /// atlas to pack. That includes variants beside their texture under `textures/entity/`,
     /// which the atlas may already walk.
@@ -196,6 +201,11 @@ impl RandomTextures {
 }
 
 impl Entry {
+    /// Each variant's number and atlas name.
+    pub fn variant_names(&self) -> impl Iterator<Item = (u32, &str)> {
+        self.variants.iter().map(|(&n, v)| (n, v.name.as_str()))
+    }
+
     /// The atlas name of variant `index`, or `None` for the texture itself: variant 0, 1 without
     /// a `<name>1.png`, and a variant whose file is missing.
     pub fn texture(&self, index: u32) -> Option<&str> {
