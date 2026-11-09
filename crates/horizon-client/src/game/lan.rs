@@ -5017,7 +5017,7 @@ mod merchant_restock_tests {
         assert_eq!(restocked.len(), 1);
         assert_eq!(restocked[0].offers[0].uses, 0);
         assert_eq!(restocked[0].offers[0].demand, 12);
-        assert_eq!(restocked[0].offers[0].special_price_diff, -1);
+        assert_eq!(restocked[0].offers[0].special_price, -1);
         assert!(game.lan_merchant_closed(&mut host, 1, Some(opened[0].container)));
         let saved = game.mobs[0].extra.trade.as_ref().unwrap();
         assert_eq!(saved.offers[0].uses, 0);
