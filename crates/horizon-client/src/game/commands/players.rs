@@ -165,6 +165,18 @@ impl Game<'_> {
         ])
     }
 
+    /// `Entity.getDisplayName`: name as team shows it, showing entity on hover, inserting its UUID.
+    pub(in crate::game) fn mob_text(&self, m: &crate::mobs::Mob) -> Text {
+        let team = self.mob_team_of(m);
+        let uuid = self
+            .persist
+            .uuids
+            .get(&m.id)
+            .copied()
+            .unwrap_or_else(crate::save::random_uuid);
+        format_mob_text(m, team, uuid)
+    }
+
     /// Run `f` for the player `t` (None for anything else): in place, or
     /// with the guest's state swapped in, in their level, as their own turn.
     /// What `f` tells the player (`system_message`) goes to their chat; the
@@ -225,5 +237,131 @@ impl Game<'_> {
         }
         self.lan = Some(host);
         Some(out)
+    }
+}
+
+/// `Entity.getDisplayName`: name as team shows it, showing entity on hover, inserting its UUID.
+pub(in crate::game) fn format_mob_text(
+    m: &crate::mobs::Mob,
+    team: Option<&horizon_client::scoreboard::Team>,
+    uuid: [i32; 4],
+) -> Text {
+    let name = m.command_name();
+    let shown = match team {
+        Some(team) => team.formatted_name(name.clone()),
+        None => name.clone(),
+    };
+    let uuid_str = horizon_client_core::uuid::uuid_text(uuid);
+    shown.with_component_fields(vec![
+        (
+            "hover_event".into(),
+            serde_json::json!({
+                "action": "show_entity",
+                "id": &*m.kind.id,
+                "uuid": uuid_str,
+                "name": name.component(),
+            }),
+        ),
+        ("insertion".into(), uuid_str.into()),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_client::mobs::{Anim, Brain, Mob, MobType, Part, Species};
+    use horizon_client::scoreboard::Scoreboard;
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    fn test_mob(id: u32, species: Species, name: &str) -> Mob {
+        let part = Part {
+            name: "root".into(),
+            pose: [0.0; 9],
+            polygons: Vec::new(),
+            children: Vec::new(),
+        };
+        let kind = MobType {
+            id: name.into(),
+            species,
+            width: 0.6,
+            height: 1.8,
+            eye_height: 1.62,
+            category: "creature".into(),
+            max_health: 20.0,
+            speed: 0.25,
+            flying_speed: 0.02,
+            attack_damage: 2.0,
+            attack_knockback: 0.0,
+            follow_range: 16.0,
+            step_height: 0.6,
+            armor: 0.0,
+            armor_toughness: 0.0,
+            knockback_resistance: 0.0,
+            jump_strength: 0.42,
+            attributes: Default::default(),
+            item_stack_limits: Default::default(),
+            gravity: 0.08,
+            safe_fall_distance: 3.0,
+            fall_damage_multiplier: 1.0,
+            water_efficiency: 0.0,
+            water_slowdown: 0.8,
+            air_speed: 0.02,
+            baby_scale: 0.5,
+            head_rot_speed: 10.0,
+            max_head_x_rot: 40.0,
+            max_head_y_rot: 75.0,
+            ambient_interval: 80,
+            flags: Default::default(),
+            model: Arc::new(part),
+            layers: Default::default(),
+            texture: String::new(),
+            brain: Brain::Passive,
+            anim: Anim::Quadruped,
+            sounds: ["entity.wolf.ambient"; 3],
+            step_sound: None,
+            food: Default::default(),
+            tempt: Default::default(),
+        };
+        Mob::new(id, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn mob_text_includes_hover_event_and_uuid_insertion() {
+        let m = test_mob(1, Species::Wolf, "minecraft:wolf");
+        let uuid = [1, 2, 3, 4];
+        let text = format_mob_text(&m, None, uuid);
+        let comp = text.component();
+
+        let expected_uuid = horizon_client_core::uuid::uuid_text(uuid);
+        assert_eq!(comp["insertion"], expected_uuid);
+        assert_eq!(comp["hover_event"]["action"], "show_entity");
+        assert_eq!(comp["hover_event"]["id"], "minecraft:wolf");
+        assert_eq!(comp["hover_event"]["uuid"], expected_uuid);
+        assert_eq!(comp["hover_event"]["name"], m.command_name().component());
+    }
+
+    #[test]
+    fn mob_text_preserves_custom_name_and_team_formatting() {
+        let mut m = test_mob(1, Species::Wolf, "minecraft:wolf");
+        let uuid = [5, 6, 7, 8];
+        m.custom_name = Some("Ghost".into());
+
+        let mut board = Scoreboard::default();
+        let team = board.add_team("red");
+        team.prefix = horizon_client::scoreboard::literal("[RED] ");
+
+        let text = format_mob_text(&m, Some(team), uuid);
+        let comp = text.component();
+
+        let expected_uuid = horizon_client_core::uuid::uuid_text(uuid);
+        assert_eq!(comp["insertion"], expected_uuid);
+        assert_eq!(comp["hover_event"]["action"], "show_entity");
+        assert_eq!(comp["hover_event"]["id"], "minecraft:wolf");
+        assert_eq!(comp["hover_event"]["uuid"], expected_uuid);
+        assert_eq!(
+            comp["hover_event"]["name"],
+            serde_json::json!({"text": "Ghost"})
+        );
     }
 }
