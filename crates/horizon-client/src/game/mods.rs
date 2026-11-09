@@ -944,6 +944,26 @@ mod tests {
         );
     }
 
+    /// Sets a directory's own modification time. `File::open` reads a directory on
+    /// Unix; Windows needs `FILE_FLAG_BACKUP_SEMANTICS` to open one at all and
+    /// `FILE_WRITE_ATTRIBUTES` (not generic write) to set its time.
+    fn set_directory_mtime(path: &std::path::Path, time: std::time::SystemTime) {
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x0000_0100;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            std::fs::OpenOptions::new()
+                .access_mode(FILE_WRITE_ATTRIBUTES)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(path)
+                .unwrap()
+        };
+        #[cfg(not(windows))]
+        let file = std::fs::File::open(path).unwrap();
+        file.set_modified(time).unwrap();
+    }
+
     /// A mod's live-switch verdict is read once per version of the mod: a later look finds
     /// it without reading the files again, a `--dev-mod` is always read, and the mod
     /// replaced (a new modification time) is read again.
@@ -969,10 +989,7 @@ mod tests {
         assert_eq!(verdict(&ruby, &manifest, true), switches_on_restart);
         assert_eq!(verdict(&ruby, &manifest, false), Some(Ok(())));
         let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
-        std::fs::File::open(&ruby)
-            .unwrap()
-            .set_modified(later)
-            .unwrap();
+        set_directory_mtime(&ruby, later);
         assert_eq!(verdict(&ruby, &manifest, false), switches_on_restart);
         std::fs::remove_dir_all(&dir).unwrap();
     }
