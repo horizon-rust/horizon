@@ -139,6 +139,29 @@ pub(super) fn pack_infos(vanilla: &Path, server: &[Pack]) -> Vec<PackInfo> {
     infos.push(vanilla_info(vanilla));
     infos
 }
+/// The folder packs' Polytone config entries (#11486), by pack id, for those that have some:
+/// what the Pack Options page edits.
+pub(super) fn pack_configs(vanilla: &Path) -> std::collections::BTreeMap<String, packs::Configs> {
+    packs::discover(vanilla, &packs_dir())
+        .into_iter()
+        .filter(|p| !p.polytone_configs.entries().is_empty())
+        .map(|p| (p.id, p.polytone_configs))
+        .collect()
+}
+/// The player changed Pack Options: `chosen` replaces their choices for `entries`, kept in
+/// `polytone-configs.json`.
+pub(super) fn save_pack_options(
+    entries: &[String],
+    chosen: std::collections::BTreeMap<String, packs::ConfigValue>,
+) {
+    let mut all = packs::polytone_choices();
+    all.retain(|id, _| !entries.contains(id));
+    all.extend(chosen);
+    if let Err(e) = packs::save_polytone_choices(&packs::polytone_choices_file(), &all) {
+        log::warn!("could not save the pack options: {e}");
+    }
+    packs::set_polytone_choices(all);
+}
 impl Game<'_> {
     pub(super) fn vanilla_root(&self) -> PathBuf {
         if self.ui.vanilla_root.as_os_str().is_empty() {
@@ -168,10 +191,12 @@ impl Game<'_> {
     /// (`PackSelectionScreen` makes its `PackSelectionModel` from them).
     pub(super) fn refresh_pack_lists(&mut self) {
         let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
+        let configs = pack_configs(&self.vanilla_root());
         let browsing = self.settings.extras.pack_browser;
         let o = &mut self.ui.options;
         o.pack_browser = browsing;
         o.pack_infos = infos;
+        o.pack_configs = configs;
         o.pack_selection = self.settings.resource_packs.clone();
         o.pack_screen = None;
     }
@@ -215,6 +240,7 @@ impl Game<'_> {
             let selection = self.settings.resource_packs.clone();
             let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
             self.ui.options.pack_infos = infos;
+            self.ui.options.pack_configs = pack_configs(&self.vanilla_root());
             self.ui.options.pack_selection = selection;
             self.ui.options.pack_screen = None;
         }
@@ -280,10 +306,11 @@ impl Game<'_> {
         if self.ui.vanilla_root.as_os_str().is_empty() {
             self.ui.vanilla_root = vanilla.clone();
         }
-        let (selected, server, mods, dev_mods) = (
+        let (selected, server, mods, disabled, dev_mods) = (
             self.settings.resource_packs.clone(),
             self.server_packs.active.clone(),
             self.applied_mods(),
+            self.settings.mods.disabled.clone(),
             self.options.dev_mods.clone(),
         );
         let (assets, res, context) = (
@@ -294,8 +321,8 @@ impl Game<'_> {
         let (unicode, japanese) = (self.settings.force_unicode, self.settings.japanese_glyphs);
         self.pack_reload = Some(PackReload::spawn(kind, move |progress| {
             stage_pack(
-                &vanilla, &selected, &server, &mods, &dev_mods, &assets, &res, &context, unicode,
-                japanese, progress,
+                &vanilla, &selected, &server, &mods, &disabled, &dev_mods, &assets, &res, &context,
+                unicode, japanese, progress,
             )
             .map_err(|e| e.to_string())
         })?);
@@ -357,8 +384,12 @@ impl Game<'_> {
                     Some(textures),
                     self.settings.horizon.api,
                     self.settings.horizon.translucent_batching,
-                    self.settings.horizon.wide_frame(),
+                    &self.settings.horizon,
                     super::shader_packs::picked_pack_shape(&self.settings),
+                    self.renderer
+                        .as_ref()
+                        .map(|r| r.display_reading())
+                        .unwrap_or_default(),
                     (
                         self.settings.file.int("textureFiltering"),
                         self.settings.file.int("maxAnisotropyBit"),
@@ -492,6 +523,7 @@ pub(super) fn stage_pack(
     selected: &[String],
     server: &[Pack],
     mods_enabled: &BTreeSet<String>,
+    mods_disabled: &BTreeSet<String>,
     dev_mods: &[PathBuf],
     assets: &Arc<Assets>,
     res: &Resources,
@@ -500,7 +532,7 @@ pub(super) fn stage_pack(
     japanese: bool,
     progress: &super::Progress,
 ) -> horizon_client::Result<StagedPack> {
-    let base = super::mods::content_root(vanilla_root, mods_enabled, dev_mods);
+    let base = super::mods::content_root(vanilla_root, mods_enabled, mods_disabled, dev_mods);
     let root = startup_root(vanilla_root, &base, selected, server)?;
     progress.set(1);
     // The world's models and sprites and the GUI atlas read the same root and nothing of
