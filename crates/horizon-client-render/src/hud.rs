@@ -143,6 +143,8 @@ pub const MOD_IMAGE_SIZE: u32 = 1024;
 pub const SKIN_SLOTS: usize = 128;
 /// Reused by the visible rows of the classic world selector.
 pub const WORLD_ICON_SLOTS: usize = 32;
+/// Fixed atlas slots for the friends overlay's downloaded avatars.
+pub const FRIEND_ICON_SLOTS: usize = 32;
 /// Atlas slots for the pack icons on the pack screen, one per icon drawn
 /// (`PackSelectionScreen.loadPackIcon` registers a texture per pack): two lists
 /// of 36-pixel rows at GUI scale 2 on a 4K screen still fit.
@@ -939,6 +941,14 @@ impl HudAtlas {
         for i in 0..WORLD_ICON_SLOTS {
             images.push((
                 format!("horizon/world-icon{i}"),
+                64,
+                64,
+                vec![0; 64 * 64 * 4],
+            ));
+        }
+        for i in 0..FRIEND_ICON_SLOTS {
+            images.push((
+                format!("horizon/friend-icon{i}"),
                 64,
                 64,
                 vec![0; 64 * 64 * 4],
