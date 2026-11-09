@@ -8,6 +8,11 @@ impl Game<'_> {
         amount: f32,
         mut source: Damage,
     ) -> bool {
+        if source.attacker_uuid.is_none()
+            && let Some(Who::Mob(id)) = source.attacker
+        {
+            source.attacker_uuid = self.damage_attacker_uuid(Some(Who::Mob(id)), None);
+        }
         if source.attacker_species.is_none()
             && let Some(Who::Mob(id)) = source.attacker
         {

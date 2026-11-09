@@ -5435,7 +5435,7 @@ impl Game<'_> {
             attacker: p.owner,
             from: Some([p.previous.x, p.previous.y, p.previous.z]),
             attacker_species,
-            attacker_uuid: None,
+            attacker_uuid: self.damage_attacker_uuid(p.owner, p.guest),
         };
         let aim = self.attacker_aim(source.attacker);
         match (&p.kind, hit) {
