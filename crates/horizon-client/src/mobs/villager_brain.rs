@@ -9,6 +9,7 @@
 //! the mob's own random drives positions, sounds and jumps. `RunOne` and the
 //! other `GateBehavior`s shuffle with a random of their own, seeded with
 //! `Brain::shuffle_seed` when the brain is built.
+mod restock;
 use super::{
     Mob, MobEvent, MobWorld, Species, Who,
     brain::{Timed, living_near},
@@ -18,6 +19,7 @@ use horizon_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource},
 };
+use restock::restock_if_due;
 
 /// `MemorySlot.NEVER_EXPIRE`.
 pub(super) const NEVER: i64 = i64::MAX;
@@ -3506,22 +3508,6 @@ fn villager_target_valid(m: &mut Mob, w: &MobWorld, which: Mem) -> bool {
 fn play_work_sound(m: &mut Mob, cx: &mut Bx) {
     if let Some(sound) = super::villager::work_sound(m.extra.variant2) {
         m.voice(sound, cx.events);
-    }
-}
-/// `WorkAtPoi.start`'s restock.
-fn restock_if_due(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
-    let day = w.day_time.div_euclid(24000);
-    if let Some(t) = m.extra.trade.as_mut() {
-        let before = t.offers.clone();
-        let before_restock = (t.last_restock, t.restocks_today);
-        let restock = t.should_restock(w.game_time, day);
-        if restock {
-            t.restock(w.game_time);
-        }
-        // shouldRestock also catches up missed demand on a new day.
-        if restock || t.offers != before || (t.last_restock, t.restocks_today) != before_restock {
-            events.push(MobEvent::VillagerRestocked { mob: m.id });
-        }
     }
 }
 #[cfg(test)]

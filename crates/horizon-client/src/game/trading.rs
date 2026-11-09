@@ -348,6 +348,12 @@ impl Game<'_> {
         });
         Ok(true)
     }
+    /// Apply the villager AI's request to generate its offers.
+    pub(super) fn merchant_offers_generated(&mut self, mob: u32) {
+        if let Some(i) = self.mobs.iter().position(|m| m.id == mob) {
+            self.ensure_offers(i);
+        }
+    }
     /// `Villager.updateSpecialPrices` after restock: the live offers, result
     /// slot and offer packet all change before the trading player's next click.
     pub(super) fn merchant_restocked(&mut self, id: u32) {

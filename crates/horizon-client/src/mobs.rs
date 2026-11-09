@@ -37,6 +37,7 @@ pub mod drops;
 pub mod enderman;
 pub mod equine;
 pub mod equip;
+mod events;
 pub mod farm;
 pub mod finalize;
 pub mod fox;
@@ -1691,25 +1692,6 @@ impl MannequinDescription {
     }
 }
 /// Events a mob tick asks the game to act on.
-impl MobEvent {
-    pub fn entity_sound(
-        mob: &Mob,
-        name: &'static str,
-        source: usize,
-        volume: f32,
-        pitch: f32,
-    ) -> Self {
-        Self::EntitySound {
-            mob: mob.id,
-            name,
-            at: [mob.position.x, mob.position.y, mob.position.z],
-            volume,
-            pitch,
-            source,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub enum MobEvent {
     /// Squid.handleEntityEvent(19), resetting the remote tentacle cycle.
