@@ -15,6 +15,7 @@
 use crate::auth::{self, AuthSession};
 use serde_json::{Value, json};
 use std::{
+    collections::{HashSet, VecDeque},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -181,6 +182,33 @@ impl Service {
     }
 }
 
+/// A newly observed friend-list transition, matching vanilla's toast categories.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FriendEvent {
+    ActionFailed(ResultCode),
+    RequestSent(String),
+    RequestReceived(Friend),
+    RequestAccepted(Friend),
+    FriendAdded(Friend),
+}
+
+const MAX_FRIEND_EVENTS: usize = 64;
+
+/// `PlayerSocialManager.handleResult`: action failures are reported from the
+/// worker itself, whether or not the screen that started it is still open.
+pub fn record_action_failure(code: ResultCode) {
+    if code != ResultCode::Success {
+        let mut inner = lock();
+        push_friend_event(&mut inner.handler.events, FriendEvent::ActionFailed(code));
+    }
+}
+
+/// `RemoteFriendListUpdateHandler`'s bounded event handoff to the client UI.
+pub fn drain_friend_events() -> Vec<FriendEvent> {
+    let mut inner = lock();
+    inner.handler.events.drain(..).collect()
+}
+
 /// `RemoteFriendListUpdateHandler`.
 struct Handler {
     enabled: bool,
@@ -190,6 +218,8 @@ struct Handler {
     last_update: Option<Instant>,
     /// A forced read (`forceUpdate`) is due, whatever the interval.
     forced: bool,
+    /// Events produced only by successful list responses after the baseline.
+    events: VecDeque<FriendEvent>,
     /// `getUpdateIntervalNanos`'s foreground: the friends overlay is open.
     foreground: bool,
 }
@@ -202,6 +232,7 @@ impl Default for Handler {
             latest: FriendData::default(),
             last_update: None,
             forced: false,
+            events: VecDeque::new(),
             foreground: false,
         }
     }
@@ -311,6 +342,9 @@ pub fn set_friend_list_enabled(enabled: bool) {
     inner.handler.enabled = enabled;
     if enabled {
         inner.handler.last_update = None;
+    } else {
+        inner.handler.forced = false;
+        inner.handler.events.clear();
     }
 }
 
@@ -494,6 +528,54 @@ fn toggle(on: bool) -> &'static str {
     if on { "ENABLED" } else { "DISABLED" }
 }
 
+fn commit_friend_data(inner: &mut Inner, data: FriendData) {
+    let previous = inner.handler.latest.clone();
+    if inner.handler.enabled
+        && inner.manager.friend_list_enabled
+        && inner.handler.state == State::Success
+    {
+        let old_friends: HashSet<u128> = previous.friends.iter().map(|f| f.id).collect();
+        let old_incoming: HashSet<u128> = previous.incoming.iter().map(|f| f.id).collect();
+        let old_outgoing: HashSet<u128> = previous.outgoing.iter().map(|f| f.id).collect();
+        let current_friends: HashSet<u128> = data.friends.iter().map(|f| f.id).collect();
+        for friend in &data.friends {
+            if !old_friends.contains(&friend.id) {
+                let event =
+                    if old_outgoing.contains(&friend.id) || old_incoming.contains(&friend.id) {
+                        FriendEvent::RequestAccepted(friend.clone())
+                    } else {
+                        FriendEvent::FriendAdded(friend.clone())
+                    };
+                push_friend_event(&mut inner.handler.events, event);
+            }
+        }
+        for friend in &data.incoming {
+            if !old_incoming.contains(&friend.id) && !current_friends.contains(&friend.id) {
+                push_friend_event(
+                    &mut inner.handler.events,
+                    FriendEvent::RequestReceived(friend.clone()),
+                );
+            }
+        }
+        for friend in &data.outgoing {
+            if !old_outgoing.contains(&friend.id) && !current_friends.contains(&friend.id) {
+                push_friend_event(
+                    &mut inner.handler.events,
+                    FriendEvent::RequestSent(friend.name.clone()),
+                );
+            }
+        }
+    }
+    inner.handler.latest = data;
+}
+
+fn push_friend_event(events: &mut VecDeque<FriendEvent>, event: FriendEvent) {
+    if events.len() >= MAX_FRIEND_EVENTS {
+        events.pop_front();
+    }
+    events.push_back(event);
+}
+
 /// `MinecraftServicesFriendsService.putFriendAction`: the answer already is the new
 /// lists, as authlib caches it, and the handler reads again.
 fn friend_action(body: Value) -> ResultCode {
@@ -523,7 +605,10 @@ fn friend_action(body: Value) -> ResultCode {
     };
     if code == ResultCode::Success {
         // `PlayerSocialManager.runAction` forces a read after a successful action.
-        lock().handler.forced = true;
+        let mut inner = lock();
+        if inner.manager.friend_list_enabled {
+            inner.handler.forced = true;
+        }
     }
     code
 }
@@ -567,7 +652,14 @@ fn update_friend_data() {
             return;
         }
         if !inner.service.can_make_request() {
+            let forced = inner.handler.forced;
             inner.handler.forced = false;
+            if forced {
+                // A successful friend action may have already promoted the service cache;
+                // the forced worker is the single place that turns that promotion into events.
+                let data = inner.service.friends_cache.clone();
+                commit_friend_data(&mut inner, data);
+            }
             inner.handler.state = State::Success;
             inner.handler.latest = inner.service.friends_cache.clone();
             inner.handler.last_update = Some(Instant::now());
@@ -598,7 +690,11 @@ fn update_friend_data() {
             }
             if answer.status != 304 && !answer.body.is_empty() {
                 match parse_friends(&answer.body) {
-                    Some(data) => inner.service.friends_cache = data,
+                    Some(data) => {
+                        inner.service.friends_cache = data;
+                        let data = inner.service.friends_cache.clone();
+                        commit_friend_data(&mut inner, data);
+                    }
                     None => {
                         // authlib's parse failure is an ERROR result: the handler keeps
                         // the cached lists and shows the generic error.
@@ -607,8 +703,10 @@ fn update_friend_data() {
                         return;
                     }
                 }
+            } else {
+                // An unchanged ETag/empty response cannot introduce friends.
+                inner.handler.latest = inner.service.friends_cache.clone();
             }
-            inner.handler.latest = inner.service.friends_cache.clone();
             inner.handler.state = State::Success;
         }
         Err(failure) => {
