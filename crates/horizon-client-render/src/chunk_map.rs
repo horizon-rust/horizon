@@ -219,6 +219,9 @@ impl crate::light::LightWorld for ChunkMap {
     fn section(&self, cx: i32, s: usize, cz: i32) -> Option<&Arc<crate::chunk::Section>> {
         self.columns.section(cx, s, cz)
     }
+    fn chunk_sections(&self, cx: i32, cz: i32) -> Option<&[Arc<crate::chunk::Section>]> {
+        crate::light::LightWorld::chunk_sections(&self.columns, cx, cz)
+    }
     fn set_section_light(&mut self, cx: i32, s: usize, cz: i32, light: crate::chunk::Light) {
         self.columns.set_section_light(cx, s, cz, light);
     }

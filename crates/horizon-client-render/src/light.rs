@@ -22,6 +22,7 @@ use crate::{
 use horizon_core::geometry::{Direction, ShapeOp, VoxelShape};
 use horizon_world::registry::{BlockRegistry, BlockStateId};
 use std::{
+    cell::RefCell,
     collections::{HashMap, VecDeque},
     path::Path,
     sync::Arc,
@@ -362,6 +363,60 @@ fn give_scratch(scratch: LightScratch) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if pool.len() < kept_scratch() {
         pool.push(scratch);
+    }
+}
+
+thread_local! {
+    static RELIGHT_SCRATCH: RefCell<RelightScratch> = RefCell::new(RelightScratch::new());
+}
+
+struct RelightScratch {
+    decrease: VecDeque<(Pos, u8)>,
+    cleared: Vec<Pos>,
+    increase: VecDeque<Pos>,
+    sources: FxHashMap<(i32, i32), i32>,
+    columns: FxHashMap<(i32, i32), i32>,
+    sky_seeds: Vec<Pos>,
+}
+
+impl RelightScratch {
+    fn new() -> Self {
+        Self {
+            decrease: VecDeque::new(),
+            cleared: Vec::new(),
+            increase: VecDeque::new(),
+            sources: FxHashMap::default(),
+            columns: FxHashMap::default(),
+            sky_seeds: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        const MAX_CAPACITY: usize = 65_536;
+        self.decrease.clear();
+        if self.decrease.capacity() > MAX_CAPACITY {
+            self.decrease.shrink_to(MAX_CAPACITY);
+        }
+        self.cleared.clear();
+        if self.cleared.capacity() > MAX_CAPACITY {
+            self.cleared.shrink_to(MAX_CAPACITY);
+        }
+        self.increase.clear();
+        if self.increase.capacity() > MAX_CAPACITY {
+            self.increase.shrink_to(MAX_CAPACITY);
+        }
+        self.sources.clear();
+        if self.sources.capacity() > MAX_CAPACITY {
+            self.sources.shrink_to(MAX_CAPACITY);
+        }
+        self.columns.clear();
+        if self.columns.capacity() > MAX_CAPACITY {
+            self.columns.shrink_to(MAX_CAPACITY);
+        }
+        self.sky_seeds.clear();
+        if self.sky_seeds.capacity() > MAX_CAPACITY {
+            self.sky_seeds.shrink_to(MAX_CAPACITY);
+        }
     }
 }
 
@@ -839,6 +894,10 @@ pub trait LightWorld {
     fn set_section_light(&mut self, cx: i32, s: usize, cz: i32, light: Light);
     /// The column the world's chunks hold (its level's).
     fn layout(&self) -> ColumnLayout;
+    /// All sections of chunk (cx, cz), None unless the chunk is loaded and lit.
+    fn chunk_sections(&self, _cx: i32, _cz: i32) -> Option<&[Arc<Section>]> {
+        None
+    }
 }
 impl<S: std::hash::BuildHasher> LightWorld for HashMap<(i32, i32), Arc<Chunk>, S> {
     fn layout(&self) -> ColumnLayout {
@@ -850,6 +909,11 @@ impl<S: std::hash::BuildHasher> LightWorld for HashMap<(i32, i32), Arc<Chunk>, S
         self.get(&(cx, cz))
             .filter(|c| c.lit)
             .map(|c| &c.sections[s])
+    }
+    fn chunk_sections(&self, cx: i32, cz: i32) -> Option<&[Arc<Section>]> {
+        self.get(&(cx, cz))
+            .filter(|c| c.lit)
+            .map(|c| c.sections.as_slice())
     }
     fn set_section_light(&mut self, cx: i32, s: usize, cz: i32, light: Light) {
         if let Some(chunk) = self.get_mut(&(cx, cz)) {
@@ -866,6 +930,13 @@ struct Region<'w> {
     slots: Vec<Slot>,
     /// Section key (cx, s, cz) to slot, `NONE` where the chunk isn't lit.
     index: FxHashMap<Pos, u32>,
+    /// Column cache: (cx, cz) -> slot index for each section in the column.
+    column_slots: FxHashMap<(i32, i32), Vec<u32>>,
+    /// Active cached column coordinates.
+    active_col: (i32, i32),
+    /// Slots for each section index in `active_col`.
+    active_slots: Vec<u32>,
+    spare_slots: Vec<Vec<u32>>,
     last: (Pos, u32),
 }
 struct Slot {
@@ -875,13 +946,20 @@ struct Slot {
     light: Option<Box<[u8; 4096]>>,
 }
 const NONE: u32 = u32::MAX;
+const UNLOADED: u32 = u32::MAX - 1;
 impl<'w> Region<'w> {
     fn new(world: &'w mut dyn LightWorld) -> Self {
+        let layout = world.layout();
+        let sections = layout.sections();
         Self {
-            layout: world.layout(),
+            layout,
             world,
-            slots: Vec::new(),
+            slots: Vec::with_capacity(sections * 4),
             index: FxHashMap::default(),
+            column_slots: FxHashMap::default(),
+            active_col: (i32::MIN, i32::MIN),
+            active_slots: vec![UNLOADED; sections],
+            spare_slots: Vec::new(),
             last: ((i32::MIN, 0, 0), NONE),
         }
     }
@@ -889,10 +967,61 @@ impl<'w> Region<'w> {
     fn slot(&mut self, x: i32, y: i32, z: i32) -> Option<usize> {
         let s = self.layout.section_index(y)?;
         let key = (x >> 4, s as i32, z >> 4);
-        if self.last.0 != key {
-            self.last = (key, self.load(key));
+        if self.last.0 == key {
+            return (self.last.1 != NONE).then_some(self.last.1 as usize);
         }
-        (self.last.1 != NONE).then_some(self.last.1 as usize)
+        let (cx, cz) = (key.0, key.2);
+        if self.active_col != (cx, cz) {
+            self.switch_column(cx, cz);
+        }
+        let mut slot = self.active_slots[s];
+        if slot == UNLOADED {
+            slot = self.load(key);
+            self.active_slots[s] = slot;
+        }
+        self.last = (key, slot);
+        (slot != NONE).then_some(slot as usize)
+    }
+    fn switch_column(&mut self, cx: i32, cz: i32) {
+        if self.active_col == (cx, cz) {
+            return;
+        }
+        let sections = self.layout.sections();
+        if self.active_col != (i32::MIN, i32::MIN) {
+            let active = std::mem::replace(
+                &mut self.active_slots,
+                self.spare_slots
+                    .pop()
+                    .unwrap_or_else(|| vec![UNLOADED; sections]),
+            );
+            self.column_slots.insert(self.active_col, active);
+        }
+        self.active_col = (cx, cz);
+        if let Some(cached) = self.column_slots.remove(&(cx, cz)) {
+            let old = std::mem::replace(&mut self.active_slots, cached);
+            self.spare_slots.push(old);
+            return;
+        }
+        self.active_slots.fill(UNLOADED);
+        if let Some(chunk_sections) = self.world.chunk_sections(cx, cz) {
+            for (si, section) in chunk_sections.iter().enumerate().take(sections) {
+                let key = (cx, si as i32, cz);
+                let slot = self.slots.len() as u32;
+                self.slots.push(Slot {
+                    key,
+                    section: section.clone(),
+                    light: None,
+                });
+                self.index.insert(key, slot);
+                self.active_slots[si] = slot;
+            }
+        } else if self.world.section(cx, 0, cz).is_none() {
+            for si in 0..sections {
+                let key = (cx, si as i32, cz);
+                self.index.insert(key, NONE);
+                self.active_slots[si] = NONE;
+            }
+        }
     }
     fn load(&mut self, key: Pos) -> u32 {
         if let Some(&slot) = self.index.get(&key) {
@@ -1142,10 +1271,25 @@ pub fn relight(
     force: bool,
     changed: &mut LightChanges,
 ) {
-    let mut region = Region::new(world);
-    changed.keyed(region.layout);
-    relight_region(&mut region, tables, sky_light, positions, force, changed);
-    region.finish();
+    changed.keyed(world.layout());
+    if positions.is_empty() {
+        return;
+    }
+    RELIGHT_SCRATCH.with_borrow_mut(|scratch| {
+        scratch.clear();
+        let mut region = Region::new(world);
+        relight_region(
+            &mut region,
+            tables,
+            sky_light,
+            positions,
+            force,
+            scratch,
+            changed,
+        );
+        region.finish();
+        scratch.clear();
+    });
 }
 /// The columns `changed` touched that border a loaded column not lit yet
 /// (`unlit`). `relight` reads and writes only lit columns, so an edit's
@@ -1170,15 +1314,19 @@ fn relight_region(
     sky_light: bool,
     positions: &[Pos],
     force: bool,
+    scratch: &mut RelightScratch,
     changed: &mut LightChanges,
 ) {
     crate::spans::time("lt_block", || {
-        relight_layer(world, tables, false, positions.to_vec(), force, changed)
+        relight_layer(world, tables, false, positions, force, scratch, changed)
     });
     if sky_light {
         let (min_y, max_y) = (world.layout.min_y(), world.layout.max_y());
-        let mut seeds = positions.to_vec();
-        let mut columns: FxHashMap<(i32, i32), i32> = FxHashMap::default();
+        scratch.sky_seeds.clear();
+        scratch.sky_seeds.extend_from_slice(positions);
+        scratch.columns.clear();
+        let columns = &mut scratch.columns;
+        let sky_seeds = &mut scratch.sky_seeds;
         crate::spans::time("lt_columns", || {
             for &(x, _, z) in positions {
                 if columns.contains_key(&(x, z)) {
@@ -1190,33 +1338,51 @@ fn relight_region(
                 // lowest source, and old 15s (sources) below it.
                 for y in source..max_y {
                     if level(world, true, (x, y, z)).is_some_and(|l| l != 15) {
-                        seeds.push((x, y, z));
+                        sky_seeds.push((x, y, z));
                     }
                 }
                 let mut y = source - 1;
                 while y >= min_y && level(world, true, (x, y, z)) == Some(15) {
-                    seeds.push((x, y, z));
+                    sky_seeds.push((x, y, z));
                     y -= 1;
                 }
             }
         });
+        let sky_seeds_vec = std::mem::take(&mut scratch.sky_seeds);
         crate::spans::time("lt_sky", || {
-            relight_layer(world, tables, true, seeds, force, changed)
+            relight_layer(world, tables, true, &sky_seeds_vec, force, scratch, changed)
         });
+        scratch.sky_seeds = sky_seeds_vec;
     }
 }
 fn relight_layer(
     world: &mut Region,
     tables: &LightTables,
     sky: bool,
-    seeds: Vec<Pos>,
+    seeds: &[Pos],
     force: bool,
+    scratch: &mut RelightScratch,
     changed: &mut LightChanges,
 ) {
-    let mut decrease: VecDeque<(Pos, u8)> = VecDeque::new();
-    let mut cleared: Vec<Pos> = Vec::new();
-    let mut increase: VecDeque<Pos> = VecDeque::new();
-    for p in seeds {
+    scratch.decrease.clear();
+    scratch.cleared.clear();
+    scratch.increase.clear();
+    scratch.sources.clear();
+
+    if seeds.len() > scratch.decrease.capacity() {
+        scratch.decrease.reserve(seeds.len());
+    }
+    if seeds.len() > scratch.cleared.capacity() {
+        scratch.cleared.reserve(seeds.len());
+    }
+    if seeds.len() > scratch.increase.capacity() {
+        scratch.increase.reserve(seeds.len());
+    }
+
+    let decrease = &mut scratch.decrease;
+    let cleared = &mut scratch.cleared;
+    let increase = &mut scratch.increase;
+    for &p in seeds {
         let Some(old) = level(world, sky, p) else {
             continue;
         };
@@ -1267,13 +1433,22 @@ fn relight_layer(
         }
     }
     // Sources inside the cleared area light up again.
-    let mut sources: FxHashMap<(i32, i32), i32> = FxHashMap::default();
+    let sources = &mut scratch.sources;
+    let mut last_xz = (i32::MIN, i32::MIN);
+    let mut last_lowest = 0;
     crate::spans::time("lt_sources", || {
-        for p in cleared {
+        for &p in cleared.iter() {
             let seed = if sky {
-                let lowest = *sources
-                    .entry((p.0, p.2))
-                    .or_insert_with(|| lowest_sky_source(world, tables, p.0, p.2));
+                let lowest = if (p.0, p.2) == last_xz {
+                    last_lowest
+                } else {
+                    let lowest = *sources
+                        .entry((p.0, p.2))
+                        .or_insert_with(|| lowest_sky_source(world, tables, p.0, p.2));
+                    last_xz = (p.0, p.2);
+                    last_lowest = lowest;
+                    lowest
+                };
                 if p.1 >= lowest { 15 } else { 0 }
             } else {
                 world
@@ -1309,6 +1484,10 @@ fn relight_layer(
             }
         }
     }
+    decrease.clear();
+    cleared.clear();
+    increase.clear();
+    sources.clear();
 }
 
 #[cfg(test)]
