@@ -1204,7 +1204,7 @@ impl Game<'_> {
         // SulfurCube.primeWhenOnPoweredPosition runs before super.tick adopts
         // the body: the cubes whose adopted body explodes, as this tick starts.
         let primable = self.sulfur_cubes_adopted_explosive();
-        let mut mobs = std::mem::take(&mut self.mobs);
+        let (mut doses, mut mobs) = (self.take_cloud_doses(), std::mem::take(&mut self.mobs));
         // Each mob's target as the mods last heard it, by its place in `mobs`
         // (`native_living_change_target`).
         let mut targets = std::mem::take(&mut self.creatures.target_buf);
@@ -1288,6 +1288,7 @@ impl Game<'_> {
             let mut despawn_w = base.despawn_view();
             let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
             for i in 0..mobs.len() {
+                doses.run(self, i, &mut mobs, &keep, (&mut snapshot, &mut grid));
                 let m = &mut mobs[i];
                 let (bx, bz) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
                 let seen_guest = if guests.is_empty() {
@@ -1498,9 +1499,7 @@ impl Game<'_> {
                 keep.push(kept);
                 // ServerLevel ticks entities one after another: the ones
                 // after this mob see it as it is now.
-                snapshot[i] = seen(m, uuid);
-                snapshot[i].alive &= kept;
-                grid.update(i, snapshot[i].bounds);
+                super::potions::refresh_seen((&mut snapshot, &mut grid), i, m, (uuid, kept));
                 horizon_client::mobs::apply_brain_events(&mut mobs, &mut events, from);
             }
             // Targets changed after the mob's own tick (another mob's alert):
@@ -1568,6 +1567,7 @@ impl Game<'_> {
             self.mobs.append(&mut mobs);
         }
         self.died = died;
+        self.finish_cloud_doses(doses);
         snapshot.clear();
         self.creatures.seen_buf = snapshot;
         self.creatures.ticked = ticked;

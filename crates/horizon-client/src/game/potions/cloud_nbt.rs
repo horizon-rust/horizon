@@ -53,6 +53,7 @@ pub(in crate::game) fn potion_cloud_from_nbt(tag: &Tag) -> Option<(Vec3, Breath)
     Some((
         at,
         Breath {
+            join: Default::default(),
             id: 0,
             at: [at.x, at.y, at.z],
             radius: real("Radius", 3.0).clamp(0.0, 32.0),

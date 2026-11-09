@@ -2319,6 +2319,7 @@ impl Game<'_> {
                     }
                     let id = self.take_entity_id();
                     self.breath_clouds.push(Breath {
+                        join: Default::default(),
                         id,
                         at: [x, y.floor() + 1.0, z],
                         radius: 5.0,
@@ -2975,6 +2976,7 @@ impl Game<'_> {
         let feet = [next.x, next.y - 0.5, next.z];
         let at = fireball_cloud_origin(feet, &snap_targets);
         self.breath_clouds.push(Breath {
+            join: Default::default(),
             id,
             at,
             radius: 3.0,
@@ -3289,13 +3291,8 @@ pub(super) struct Breath {
     pub(super) victims: Vec<(Victim, i32)>,
     /// A lingering potion's cloud (`ThrownLingeringPotion`): what it applies.
     pub(super) potion: Option<super::potions::PotionCloud>,
-}
-impl Breath {
-    /// `AreaEffectCloud.isWaiting`: before its wait time (20 ticks, 10 for a
-    /// lingering potion's).
-    pub(super) fn waiting(&self) -> bool {
-        self.age < self.potion.as_ref().map_or(20, |p| p.settings.wait_time)
-    }
+    /// When it joined the level (`potions/cloud_tick.rs`).
+    pub(super) join: horizon_client::join_seq::JoinSeq,
 }
 impl Game<'_> {
     /// `EnderDragonRenderer` and `EnderDragonModel.setupAnim`.
