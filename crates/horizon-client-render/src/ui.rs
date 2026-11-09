@@ -1351,6 +1351,10 @@ impl Caret {
             &mut idle
         };
         [edit.x, edit.y, edit.width, edit.height] = rect;
+        // `EditBox.setFocused(true)`: gaining the focus restarts the blink.
+        if focused && !edit.focused {
+            edit.reset_blink();
+        }
         edit.focused = focused;
         edit.text_color = color;
         if edit.focused_at < focused_at {
@@ -1589,7 +1593,8 @@ impl EditBox {
             self.highlight = self.cursor;
         }
         self.scroll_to(self.cursor);
-        self.reset_blink();
+        // `EditBox.setFocused` is the only place vanilla restarts the blink
+        // (`focusedTime`); moving the cursor keeps the phase running.
     }
     pub fn move_cursor_to_end(&mut self, select: bool) {
         self.set_cursor(char_len(&self.value), select);
@@ -1712,7 +1717,6 @@ impl EditBox {
     ) -> bool {
         let before = self.value.clone();
         crate::clipboard::apply(self, shortcut, clipboard);
-        self.reset_blink();
         self.value != before
     }
     /// The first shown character after scrolling to the cursor, and the
