@@ -266,6 +266,7 @@ impl Game<'_> {
                     attacker,
                     from,
                     attacker_species,
+                    attacker_uuid: None,
                 };
                 // DamageSource.getEntity is the causing player, even when
                 // another client issued the command or supplied the direct entity.
