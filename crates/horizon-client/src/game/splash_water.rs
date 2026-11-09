@@ -152,7 +152,7 @@ impl Game<'_> {
         if hurts || extinguishes {
             let source =
                 Damage::indirect_magic(by_player.then_some(Who::Player), [at.x, at.y, at.z])
-                    .with_attacker_uuid(attacker_uuid);
+                    .with_attacker_uuid(attacker_uuid.filter(|_| by_player));
             for m in self.mobs.iter_mut().filter(|m| !m.removed) {
                 // WATER_SENSITIVE_OR_ON_FIRE.
                 let sensitive = m.kind.flags.water_sensitive;

@@ -45,3 +45,32 @@ fn damage_keeps_the_actual_owner_after_that_actor_leaves() {
     assert_eq!(captured.attacker_uuid, Some(attacker));
     assert_eq!(game.damage_attacker_uuid(None, Some(7)), None);
 }
+
+#[test]
+#[ignore = "requires explicit isolated prepared resources"]
+fn a_mob_owned_water_potion_keeps_its_damage_ownerless() {
+    let mut game = crate::game::kill_die_vibration_tests::game();
+    game.mobs.clear();
+    let kind = game.res.mob_types().get("minecraft:blaze").unwrap().clone();
+    assert!(kind.flags.water_sensitive);
+    game.mobs
+        .push(Mob::new(92, kind, Vec3::new(2.0, 100.0, 1.0), 0.0));
+    let before = game.mobs[0].health;
+    let water = horizon_client::items::ItemStack::new("minecraft:splash_potion", 1)
+        .with_potion("minecraft:water");
+    assert!(game.potion_in_tag(&water, "minecraft:hurts_water_sensitive_entities"));
+    game.affect_entities_around(
+        &water,
+        Vec3::new(2.0, 100.0, 1.0),
+        false,
+        Some([0, 0, 0, 19]),
+    );
+    let hit = game.mobs[0]
+        .last_damage
+        .expect("water damage must actually be accepted")
+        .0;
+    assert!(game.mobs[0].health < before);
+    assert_eq!(hit.kind, DamageKind::IndirectMagic);
+    assert_eq!(hit.attacker, None);
+    assert_eq!(hit.attacker_uuid, None);
+}
