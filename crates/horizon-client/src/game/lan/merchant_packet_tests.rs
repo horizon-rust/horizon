@@ -287,7 +287,10 @@ fn merchant_take_keeps_packet_snapshot_until_price_refresh() {
     let live = game.mobs[0].extra.trade.as_mut().unwrap();
     live.offers[0].uses = 0;
     live.offers[0].demand = 12;
-    game.lan_merchant_refresh(&mut host, 77, None);
+    // Exercise the real restock event bridge, not only the LAN leaf helper.
+    game.lan = Some(host);
+    game.merchant_restocked(77);
+    let mut host = game.lan.take().expect("restock retains the LAN host");
     let restocked = packets(&rx).0;
     assert_eq!(restocked.len(), 1);
     assert_eq!(restocked[0].offers[0].uses, 0);

@@ -17,3 +17,91 @@ pub(super) fn restock_if_due(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        items::ItemStack,
+        merchant::{ItemCost, MerchantOffer, Trader},
+    };
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared entity resources in HORIZON_TEST_RESOURCES"]
+    fn work_site_refreshes_real_restock_and_counter_only_catchup() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let ran = crate::mobs::world::with_resource_test_world(
+            &root,
+            &[],
+            true,
+            true,
+            |_, _| {},
+            |world, types| {
+                let mut world = world.clone();
+                world.game_time = 6000;
+                world.day_time = 2000;
+                // Used stock restocks; next-day catch-up must still refresh the
+                // trading player when only counters change; unused fresh stock does not.
+                for (uses, last, restocks, demand, expected_last, expected_restocks, refresh) in [
+                    (12, 0, 0, 12, 6000, 1, true),
+                    (0, -24000, 2, 0, 6000, 0, true),
+                    (0, 6000, 1, 0, 6000, 1, false),
+                ] {
+                    let mut mob = Mob::new(
+                        77,
+                        Arc::new(types.types["minecraft:villager"].clone()),
+                        Vec3::ZERO,
+                        0.0,
+                    );
+                    mob.extra.trade = Some(Box::new(Trader {
+                        xp: 20,
+                        offers: vec![MerchantOffer {
+                            base_cost_a: ItemCost {
+                                stack: ItemStack::new("minecraft:emerald", 4),
+                            },
+                            cost_b: None,
+                            result: ItemStack::new("minecraft:glass", 3),
+                            uses,
+                            max_uses: 12,
+                            reward_exp: false,
+                            special_price_diff: 0,
+                            demand: 0,
+                            price_multiplier: 0.05,
+                            xp: 1,
+                        }],
+                        last_restock: last,
+                        restocks_today: restocks,
+                        check_day: 0,
+                        unset: false,
+                    }));
+                    let mut events = Vec::new();
+                    restock_if_due(&mut mob, &world, &mut events);
+                    assert_eq!(events.len(), usize::from(refresh));
+                    if refresh {
+                        assert!(matches!(events[0], MobEvent::VillagerRestocked { mob: 77 }));
+                    }
+                    let trade = mob.extra.trade.as_ref().unwrap();
+                    assert_eq!(trade.offers[0].uses, 0);
+                    assert_eq!(trade.offers[0].demand, demand);
+                    assert_eq!(trade.last_restock, expected_last);
+                    assert_eq!(trade.restocks_today, expected_restocks);
+                    assert_eq!(trade.xp, 20);
+                    events.clear();
+                    restock_if_due(&mut mob, &world, &mut events);
+                    assert!(
+                        events.is_empty(),
+                        "the same work tick must not refresh twice"
+                    );
+                }
+            },
+        );
+        assert!(
+            ran,
+            "the prepared resource fixture must execute all three controls"
+        );
+    }
+}
