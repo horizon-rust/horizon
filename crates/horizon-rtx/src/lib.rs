@@ -301,6 +301,10 @@ mod vulkan {
     }
 }
 
+/// DLSS Ray Reconstruction through NVIDIA's NGX (docs/rt-dlss-rr.md): the `dlss-rr` feature,
+/// off by default, and nothing runs unless `HORIZON_RT_DLSS_RR=1`.
+#[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+pub mod dlss_rr;
 pub mod micromap;
 #[cfg(not(target_os = "macos"))]
 pub mod omm;
