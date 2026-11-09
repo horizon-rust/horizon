@@ -1882,9 +1882,9 @@ mod tests {
             ("minecraft:netherite_sword", 2)
         );
         // Anvil: a patched REPAIRABLE list repairs with an item the sword's
-        // default does not accept.
-        let mut repairable = ItemStack::new("minecraft:diamond_sword", 1);
-        repairable.damage = 100;
+        // default does not accept. The durability is the stack's own: this
+        // table holds tags only, so the prototype has no MAX_DAMAGE here.
+        let mut repairable = worn("minecraft:diamond_sword", 1561, 100);
         repairable.data_mut().set_other(
             "minecraft:repairable",
             Some(Tag::compound([(
