@@ -75,6 +75,13 @@ mod vulkan {
         instances_address: u64,
         _scratch: wgpu::Buffer,
         scratch_address: u64,
+        /// Whether the device has `VK_KHR_ray_tracing_pipeline` (wgpu then enables its
+        /// `rayTracingPipeline` feature): the barriers name the ray tracing stage only then
+        /// (VUID-vkCmdPipelineBarrier-srcStageMask-07946 and dstStageMask-07946).
+        pipelines: bool,
+        /// This structure's own number, never given to another: the sun pass's descriptor sets
+        /// tell structures apart by it, a destroyed handle's value being free for a new one.
+        id: u64,
     }
 
     // The handles are plain Vulkan handles wgpu keeps alive as long as its own objects, which
@@ -93,13 +100,15 @@ mod vulkan {
             if !super::wanted() {
                 return None;
             }
-            let (raw_device, raw_instance) = {
+            let (raw_device, raw_instance, pipelines) = {
                 // Safety: read, cloned (the handles and function tables), dropped before wgpu
                 // takes the device back.
                 let hal = unsafe { device.as_hal::<Vulkan>() }?;
                 (
                     hal.raw_device().clone(),
                     hal.shared_instance().raw_instance().clone(),
+                    hal.enabled_device_extensions()
+                        .contains(&ash::khr::ray_tracing_pipeline::NAME),
                 )
             };
             let structures =
@@ -162,7 +171,18 @@ mod vulkan {
                 instances_address,
                 _scratch: scratch,
                 scratch_address,
+                pipelines,
+                id: {
+                    static NEXT: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(1);
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                },
             })
+        }
+
+        /// This structure's number, unique in the process (`id`).
+        pub(crate) fn id(&self) -> u64 {
+            self.id
         }
 
         /// The structure's handle, for the passes that bind it raw (`sun`).
@@ -248,6 +268,23 @@ mod vulkan {
                         return;
                     };
                     let cb = hal.raw_handle();
+                    // The shaders that trace the structure: ray queries in the kernel and the
+                    // draws, and the ray tracing pipeline's passes (`sun`) where the device has
+                    // them.
+                    // (wgpu-hal's own barriers for a structure read by shaders name the same).
+                    let mut tracing = vk::PipelineStageFlags::VERTEX_SHADER
+                        | vk::PipelineStageFlags::COMPUTE_SHADER
+                        | vk::PipelineStageFlags::FRAGMENT_SHADER;
+                    if self.pipelines {
+                        tracing |= vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR;
+                    }
+                    // Before the build: the instances' copy and the bottom-level builds written
+                    // (read after write), the scratch's last build done (write after write: the
+                    // scratch is read and written at ACCELERATION_STRUCTURE_BUILD, spec 7.1.3's
+                    // table of access types), and the last frame's traces of the structure done
+                    // before it is written again (write after read: an execution dependency on
+                    // the stages that read it, which the last frame's barriers don't chain to
+                    // the build stage).
                     let before = [vk::MemoryBarrier::default()
                         .src_access_mask(
                             vk::AccessFlags::TRANSFER_WRITE
@@ -255,12 +292,14 @@ mod vulkan {
                         )
                         .dst_access_mask(
                             vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR
+                                | vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR
                                 | vk::AccessFlags::SHADER_READ,
                         )];
                     self.device.cmd_pipeline_barrier(
                         cb,
                         vk::PipelineStageFlags::TRANSFER
-                            | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                            | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR
+                            | tracing,
                         vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
                         vk::DependencyFlags::empty(),
                         &before,
@@ -273,7 +312,10 @@ mod vulkan {
                         .primitive_count(count)];
                     self.structures
                         .cmd_build_acceleration_structures(cb, &[info], &[&range]);
-                    // The shaders read it next; the next frame's transfer rewrites the instances.
+                    // The shaders read it next (the ray tracing pipeline's too: without its
+                    // stage here the sun pass's reads of the structure were not ordered after
+                    // the build, spec 7.1's synchronization scopes); the next frame's transfer
+                    // rewrites the instances.
                     let after = [vk::MemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
                         .dst_access_mask(
@@ -284,9 +326,7 @@ mod vulkan {
                     self.device.cmd_pipeline_barrier(
                         cb,
                         vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                        vk::PipelineStageFlags::COMPUTE_SHADER
-                            | vk::PipelineStageFlags::FRAGMENT_SHADER
-                            | vk::PipelineStageFlags::TRANSFER,
+                        tracing | vk::PipelineStageFlags::TRANSFER,
                         vk::DependencyFlags::empty(),
                         &after,
                         &[],
@@ -370,6 +410,7 @@ pub use sun::{KernelReads, SunInputs, SunPass};
 pub mod sun {
     pub const ARENA_PAGES: usize = 8;
     pub struct SunInputs<'a> {
+        pub view: usize,
         pub uniform: &'a wgpu::Buffer,
         pub depth: &'a wgpu::TextureView,
         pub mask_size: [u32; 2],
@@ -407,6 +448,7 @@ pub mod sun {
         pub fn kinds(&self) -> super::Kinds {
             super::Kinds::default()
         }
+        pub fn submitted(&mut self, _: &wgpu::Queue) {}
     }
 }
 #[cfg(target_os = "macos")]

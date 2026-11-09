@@ -8460,6 +8460,7 @@ impl Renderer {
                             encoder,
                             split,
                             horizon_rtx::SunInputs {
+                                view,
                                 uniform,
                                 depth,
                                 mask_size,
@@ -14901,6 +14902,11 @@ impl Renderer {
         let submission = crate::spans::time("submit", || {
             self.queue.submit(split.into_iter().chain([commands]))
         });
+        // The sun pass's runs are submitted: their descriptor sets free once the GPU is done.
+        #[cfg(feature = "rtx")]
+        if let Some(pass) = &mut self.sun_pass {
+            pass.submitted(&self.queue);
+        }
         gpu_passes::submitted();
         if let Some(read) = after.or_else(|| self.after_submit()) {
             read();

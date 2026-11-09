@@ -12,18 +12,29 @@
 //! (`CommandEncoder::transition_resources`), bound through their raw handles.
 
 use crate::{INSTANCE_SIZE, RawTlas};
-use ash::vk;
+use ash::vk::{self, Handle};
 use std::ffi::CStr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use wgpu::hal::api::Vulkan;
 
-/// Descriptor sets in flight at most: a frame's set is written while the frames before still
-/// run, so each frame takes the next of a ring.
-const FRAMES: usize = 4;
+/// Descriptor sets allocated at a time (a pool each).
+const CHUNK: u32 = 8;
+/// Sets past which the pass stops trusting `submitted` alone (see `SunPass::free_slot`).
+const MAX_SLOTS: usize = 64;
+/// Sets a view keeps written, its current one included: the view's inputs alternate between two
+/// frames' textures (`last_mask`...), so two sets serve it with no rewrite, one more for slack.
+const KEEP_PER_VIEW: usize = 3;
+/// Runs after which a view not seen (an inset turned off) lets go of its sets and outputs.
+const FORGET_RUNS: u64 = 256;
 /// The arena pages bound (sun.rahit `arena0..7`, as the kernel's `ARENA_PAGES`).
 pub const ARENA_PAGES: usize = 8;
 
 /// What the pass reads of a frame (the trace kernel's own resources, `ShadowRays::run`).
 pub struct SunInputs<'a> {
+    /// The view: 0 the window (or its VR mirror), 1 and 2 the eyes, 3 and 4 VR's insets. A frame
+    /// runs the pass once a view.
+    pub view: usize,
     /// The kernel's `Rt` uniform, written for this view already.
     pub uniform: &'a wgpu::Buffer,
     /// The rays' depth prepass of the view.
@@ -68,9 +79,18 @@ pub struct SunPass {
     pipeline: vk::Pipeline,
     layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,
-    pool: vk::DescriptorPool,
-    sets: [vk::DescriptorSet; FRAMES],
-    frame: usize,
+    /// The sets' pools, `CHUNK` sets each.
+    pools: Vec<vk::DescriptorPool>,
+    /// The descriptor sets, each with what it was last written with (`Slot`).
+    slots: Vec<Slot>,
+    /// Runs recorded (the serial of the last one).
+    serial: u64,
+    /// The last run whose command buffer was submitted (`submitted`).
+    submitted: u64,
+    /// The last run the GPU is known to have finished (set by `on_submitted_work_done`).
+    done: Arc<AtomicU64>,
+    /// Whether the `MAX_SLOTS` fallback was logged.
+    warned: bool,
     modules: [vk::ShaderModule; 4],
     sbt: Sbt,
     /// Which ray generations run.
@@ -79,8 +99,39 @@ pub struct SunPass {
     flags: u32,
     /// The outputs, a texel a ray, the mask's size: the sun's light through (`Rgba16Float`), the
     /// bounce pass's hit and what it is (`Rgba32Float`) and its face, colour and sun light
-    /// (`Rgba32Uint`). All are bound whichever generations run (the pipeline holds both).
-    output: Option<(Outputs, [u32; 2])>,
+    /// (`Rgba32Uint`). All are bound whichever generations run (the pipeline holds both). One set
+    /// a size: VR's eyes share theirs, its insets and the window mirror have their own, so no view
+    /// makes another's again (they were remade up to five times a frame).
+    outputs: Vec<([u32; 2], Outputs)>,
+    /// The views seen lately: their index (0 the window, 1 and 2 the eyes, 3 and 4 the insets),
+    /// mask size and last run; the outputs of a size no view has go.
+    views: Vec<(usize, [u32; 2], u64)>,
+}
+
+/// A descriptor set and what it was written with: the raw handles (`key`, empty when unwritten)
+/// and clones of the wgpu objects behind them (`held`). Vulkan forbids updating a set a pending
+/// command buffer uses (VUID-vkUpdateDescriptorSets-None-03047, without UPDATE_AFTER_BIND) and
+/// destroying an image view or buffer such a command buffer reads through a descriptor
+/// (VUID-vkDestroyImageView-imageView-01026, VUID-vkDestroyBuffer-buffer-00922): a set is
+/// written again only once the GPU finished the last run that bound it (`last <= done`), and
+/// until then it keeps what it points at alive (wgpu doesn't know of the raw command buffer's
+/// reads). Holding them also keeps their handles from being recycled, so equal keys mean the
+/// same objects and a set already written for them is bound again without a rewrite.
+struct Slot {
+    set: vk::DescriptorSet,
+    key: Vec<u64>,
+    held: (Vec<wgpu::Buffer>, Vec<wgpu::TextureView>),
+    /// The view and mask size it was last bound for, and that run's serial (0: never).
+    view: usize,
+    size: [u32; 2],
+    last: u64,
+}
+
+impl Slot {
+    fn clear(&mut self) {
+        self.key.clear();
+        self.held = (Vec::new(), Vec::new());
+    }
 }
 
 struct Outputs {
@@ -326,8 +377,48 @@ impl SunPass {
                 &memory_properties,
                 groups.len() as u32,
             )?;
-            // The sets: one a frame of the ring.
-            let count = FRAMES as u32;
+            let mut pass = Self {
+                device: raw_device,
+                rt,
+                pipeline,
+                layout,
+                set_layout,
+                pools: Vec::new(),
+                slots: Vec::new(),
+                serial: 0,
+                submitted: 0,
+                done: Arc::new(AtomicU64::new(0)),
+                warned: false,
+                modules,
+                sbt,
+                kinds,
+                flags: 0,
+                outputs: Vec::new(),
+                views: Vec::new(),
+            };
+            if !pass.grow() {
+                log::warn!("Horizon RTX: no sun pass, its descriptor sets failed");
+                return None;
+            }
+            // Bit 1: the wind sways the foliage (HORIZON_RT_SKIP bit 4096 clear), so sun.rahit
+            // ignores a cutout quad met right at the ray's start.
+            pass.flags = u32::from(reorder()) | if wind_skipped() { 0 } else { 2 };
+            log::info!(
+                "Horizon RTX: a ray tracing pipeline for {}{}{}, shader execution reordering {}",
+                if kinds.sun { "the sun pass" } else { "" },
+                if kinds.sun && kinds.gi { " and " } else { "" },
+                if kinds.gi { "the bounce pass" } else { "" },
+                if pass.flags & 1 != 0 { "on" } else { "off" },
+            );
+            Some(pass)
+        }
+    }
+
+    /// `CHUNK` more descriptor sets, in a pool of their own; false if Vulkan refused.
+    fn grow(&mut self) -> bool {
+        // Safety: a pool and its sets on this pass's device, destroyed in `drop`.
+        unsafe {
+            let count = CHUNK;
             let sizes = [
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::UNIFORM_BUFFER)
@@ -345,48 +436,88 @@ impl SunPass {
                     .ty(vk::DescriptorType::STORAGE_BUFFER)
                     .descriptor_count((ARENA_PAGES as u32 + 3) * count),
             ];
-            let pool = raw_device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .max_sets(count)
-                        .pool_sizes(&sizes),
-                    None,
-                )
-                .ok()?;
-            let layouts = [set_layout; FRAMES];
-            let sets = raw_device
-                .allocate_descriptor_sets(
-                    &vk::DescriptorSetAllocateInfo::default()
-                        .descriptor_pool(pool)
-                        .set_layouts(&layouts),
-                )
-                .ok()?;
-            // Bit 1: the wind sways the foliage (HORIZON_RT_SKIP bit 4096 clear), so sun.rahit
-            // ignores a cutout quad met right at the ray's start.
-            let flags = u32::from(reorder()) | if wind_skipped() { 0 } else { 2 };
-            log::info!(
-                "Horizon RTX: a ray tracing pipeline for {}{}{}, shader execution reordering {}",
-                if kinds.sun { "the sun pass" } else { "" },
-                if kinds.sun && kinds.gi { " and " } else { "" },
-                if kinds.gi { "the bounce pass" } else { "" },
-                if flags & 1 != 0 { "on" } else { "off" },
-            );
-            Some(Self {
-                device: raw_device,
-                rt,
-                pipeline,
-                layout,
-                set_layout,
-                pool,
-                sets: sets.try_into().ok()?,
-                frame: 0,
-                modules,
-                sbt,
-                kinds,
-                flags,
-                output: None,
-            })
+            let Ok(pool) = self.device.create_descriptor_pool(
+                &vk::DescriptorPoolCreateInfo::default()
+                    .max_sets(count)
+                    .pool_sizes(&sizes),
+                None,
+            ) else {
+                return false;
+            };
+            let layouts = [self.set_layout; CHUNK as usize];
+            let Ok(sets) = self.device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(pool)
+                    .set_layouts(&layouts),
+            ) else {
+                self.device.destroy_descriptor_pool(pool, None);
+                return false;
+            };
+            self.pools.push(pool);
+            self.slots.extend(sets.into_iter().map(|set| Slot {
+                set,
+                key: Vec::new(),
+                held: (Vec::new(), Vec::new()),
+                view: 0,
+                size: [0, 0],
+                last: 0,
+            }));
+            true
         }
+    }
+
+    /// Tells the pass that every run recorded so far was just submitted (call right after the
+    /// `queue.submit` that took their command buffers): their sets and what they hold are freed
+    /// for reuse once the GPU finishes that submission.
+    pub fn submitted(&mut self, queue: &wgpu::Queue) {
+        if self.serial > self.submitted {
+            self.submitted = self.serial;
+            let (done, upto) = (self.done.clone(), self.serial);
+            queue.on_submitted_work_done(move || {
+                done.fetch_max(upto, Ordering::AcqRel);
+            });
+        }
+    }
+
+    /// A set no pending command buffer uses, the one unused longest; more are made when all are
+    /// in use. Past `MAX_SLOTS` (`submitted` not called, or the GPU far behind), a set last bound
+    /// `MAX_SLOTS` runs ago counts as finished: a dozen frames or more, where wgpu's surface
+    /// keeps two in flight (`desired_maximum_frame_latency`) and OpenXR's `xrWaitFrame` paces the
+    /// headset's.
+    fn free_slot(&mut self, done: u64, now: u64) -> usize {
+        let pick = |slots: &[Slot], done: u64| {
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.last <= done)
+                .min_by_key(|(_, s)| (!s.key.is_empty(), s.last))
+                .map(|(i, _)| i)
+        };
+        if let Some(i) = pick(&self.slots, done) {
+            return i;
+        }
+        if self.slots.len() >= MAX_SLOTS {
+            if !self.warned {
+                self.warned = true;
+                log::warn!(
+                    "Horizon RTX: the sun pass's {} descriptor sets all wait on the GPU; reusing the oldest",
+                    self.slots.len()
+                );
+            }
+            if let Some(i) = pick(&self.slots, now.saturating_sub(MAX_SLOTS as u64)) {
+                return i;
+            }
+        }
+        let before = self.slots.len();
+        if self.grow() {
+            return before;
+        }
+        // Vulkan gave no more sets: the oldest, as the fallback above.
+        self.slots
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, s)| s.last)
+            .map_or(0, |(i, _)| i)
     }
 
     /// The shader binding table of `groups` groups: the handles at base-aligned offsets in a
@@ -480,9 +611,23 @@ impl SunPass {
         })
     }
 
-    /// The passes' outputs of `size` texels, made when the size changes.
-    fn outputs(&mut self, device: &wgpu::Device, size: [u32; 2]) -> &Outputs {
-        if self.output.as_ref().is_none_or(|(_, have)| *have != size) {
+    /// The passes' outputs of `size` texels for `view`, made the first time a view has that size;
+    /// those of a size no view has any more go (the sets that bound them hold them until the GPU
+    /// is done, `Slot`).
+    fn outputs(&mut self, device: &wgpu::Device, view: usize, size: [u32; 2]) -> &Outputs {
+        let now = self.serial;
+        match self.views.iter_mut().find(|v| v.0 == view) {
+            Some(v) => {
+                v.1 = size;
+                v.2 = now;
+            }
+            None => self.views.push((view, size, now)),
+        }
+        self.views.retain(|v| v.2 + FORGET_RUNS >= now);
+        let views = &self.views;
+        self.outputs
+            .retain(|(have, _)| views.iter().any(|v| v.1 == *have));
+        if !self.outputs.iter().any(|(have, _)| *have == size) {
             let make = |label, format| {
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
@@ -502,7 +647,8 @@ impl SunPass {
                 let view = texture.create_view(&Default::default());
                 (texture, view)
             };
-            self.output = Some((
+            self.outputs.push((
+                size,
                 Outputs {
                     sun: make("RT lighting's sun pass", wgpu::TextureFormat::Rgba16Float),
                     gi_a: make(
@@ -514,10 +660,14 @@ impl SunPass {
                         wgpu::TextureFormat::Rgba32Uint,
                     ),
                 },
-                size,
             ));
         }
-        &self.output.as_ref().expect("made above").0
+        &self
+            .outputs
+            .iter()
+            .find(|(have, _)| *have == size)
+            .expect("made above")
+            .1
     }
 
     /// Which ray generations run (the kernel's `rt.mode.w` bits).
@@ -539,7 +689,9 @@ impl SunPass {
         split: &mut Vec<wgpu::CommandBuffer>,
         inputs: SunInputs<'_>,
     ) -> PassViews {
-        let outputs = self.outputs(device, inputs.mask_size);
+        self.serial += 1;
+        let now = self.serial;
+        let outputs = self.outputs(device, inputs.view, inputs.mask_size);
         let (sun_texture, view) = outputs.sun.clone();
         let (gi_a_texture, gi_a) = outputs.gi_a.clone();
         let (gi_b_texture, gi_b) = outputs.gi_b.clone();
@@ -602,19 +754,93 @@ impl SunPass {
             label: Some("Horizon RTX: the sun pass"),
         });
 
-        let set = self.sets[self.frame % FRAMES];
-        self.frame = self.frame.wrapping_add(1);
-        // Safety: the resources' own handles, alive for the frame (wgpu holds them), the set of
-        // this frame of the ring, written before the commands that read it are recorded.
-        unsafe {
-            let buffer = |b: &wgpu::Buffer| -> Option<vk::Buffer> {
-                let hal = b.as_hal::<Vulkan>()?;
-                Some(hal.raw_handle())
-            };
-            let image = |v: &wgpu::TextureView| -> Option<vk::ImageView> {
-                let hal = v.as_hal::<Vulkan>()?;
-                Some(hal.raw_handle())
-            };
+        // Safety: the resources' own handles, read while they live.
+        let buffer = |b: &wgpu::Buffer| -> Option<vk::Buffer> {
+            let hal = unsafe { b.as_hal::<Vulkan>() }?;
+            Some(unsafe { hal.raw_handle() })
+        };
+        let image = |v: &wgpu::TextureView| -> Option<vk::ImageView> {
+            let hal = unsafe { v.as_hal::<Vulkan>() }?;
+            Some(unsafe { hal.raw_handle() })
+        };
+        // What the set points at, in a fixed order: its key and the objects it holds.
+        let kernel = &inputs.kernel;
+        let held_buffers: Vec<wgpu::Buffer> = [inputs.uniform]
+            .into_iter()
+            .chain(inputs.arena.iter())
+            .chain([inputs.instances, inputs.dynamics, kernel.cache])
+            .cloned()
+            .collect();
+        let held_views: Vec<wgpu::TextureView> = [
+            inputs.depth,
+            &view,
+            &gi_a,
+            &gi_b,
+            inputs.sprites,
+            inputs.atlas,
+            kernel.sky,
+            kernel.last_mask,
+            kernel.last_light,
+            kernel.last_direct,
+            kernel.last_gi[0],
+            kernel.last_gi[1],
+        ]
+        .into_iter()
+        .cloned()
+        .collect();
+        let key: Vec<u64> = [inputs.tlas.id(), inputs.tlas.raw_handle().as_raw()]
+            .into_iter()
+            .chain(
+                held_buffers
+                    .iter()
+                    .map(|b| buffer(b).unwrap_or_default().as_raw()),
+            )
+            .chain(
+                held_views
+                    .iter()
+                    .map(|v| image(v).unwrap_or_default().as_raw()),
+            )
+            .collect();
+        let done = self.done.load(Ordering::Acquire);
+        // A set already written with these: bound again as it is (a set may be bound by any
+        // number of pending command buffers, as long as none updates it).
+        let (index, write) = match self.slots.iter().position(|s| s.key == key) {
+            Some(i) => (i, false),
+            None => (self.free_slot(done, now), true),
+        };
+        {
+            let slot = &mut self.slots[index];
+            if write {
+                slot.key = key;
+                slot.held = (held_buffers, held_views);
+            }
+            slot.view = inputs.view;
+            slot.size = inputs.mask_size;
+            slot.last = now;
+        }
+        // The view's older sets, the GPU done with them, let go of what they hold: past the
+        // `KEEP_PER_VIEW` latest, or of another size (a resize), or of a view gone.
+        let mut mine: Vec<usize> = (0..self.slots.len())
+            .filter(|&i| {
+                i != index && self.slots[i].view == inputs.view && !self.slots[i].key.is_empty()
+            })
+            .collect();
+        mine.sort_by_key(|&i| std::cmp::Reverse(self.slots[i].last));
+        for (rank, &i) in mine.iter().enumerate() {
+            let slot = &mut self.slots[i];
+            if slot.last <= done && (rank + 1 >= KEEP_PER_VIEW || slot.size != inputs.mask_size) {
+                slot.clear();
+            }
+        }
+        for slot in &mut self.slots {
+            if !slot.key.is_empty() && slot.last <= done && slot.last + FORGET_RUNS < now {
+                slot.clear();
+            }
+        }
+        let set = self.slots[index].set;
+        // The set written only when no pending command buffer uses it (`free_slot`), before the
+        // commands that read it are recorded.
+        if write {
             let mut buffer_infos = Vec::new();
             let mut writes = Vec::new();
             let mut buffer_write = |binding: u32, ty: vk::DescriptorType, b: Option<vk::Buffer>| {
@@ -756,8 +982,12 @@ impl SunPass {
                     .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .image_info(info)
             }));
-            self.device.update_descriptor_sets(&descriptor_writes, &[]);
-
+            // Safety: the resources' own handles, alive while the set holds them (`Slot`).
+            unsafe { self.device.update_descriptor_sets(&descriptor_writes, &[]) };
+        }
+        // Safety: the set's resources alive while it holds them (`Slot`), the pipeline and table
+        // this pass's own, recorded on the encoder's own command buffer.
+        unsafe {
             let [width, height] = inputs.mask_size;
             let kinds = self.kinds;
             let push: [u32; 2] = [inputs.sprite_split, self.flags];
@@ -766,6 +996,32 @@ impl SunPass {
                     return;
                 };
                 let cb = hal.raw_handle();
+                // wgpu's transitions above (and its barriers after the commands that wrote
+                // these: the depth prepass, the uniform's copy, the kernel's last reads of the
+                // outputs) wait in VERTEX|FRAGMENT|COMPUTE_SHADER only (wgpu-hal conv.rs
+                // `map_texture_usage_to_barrier`), so nothing orders them, nor their layout
+                // transitions, before the ray tracing stage. This barrier's first scope takes
+                // those stages in, which chains them (spec 7.1, execution dependency chains, and
+                // 7.6.1's image layout transitions) to the rays' reads and writes: read after
+                // write for the inputs, write after read for the outputs the last view's kernel
+                // read.
+                let before = [vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
+                    .dst_access_mask(
+                        vk::AccessFlags::SHADER_READ
+                            | vk::AccessFlags::SHADER_WRITE
+                            | vk::AccessFlags::UNIFORM_READ
+                            | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                    )];
+                self.device.cmd_pipeline_barrier(
+                    cb,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                    vk::DependencyFlags::empty(),
+                    &before,
+                    &[],
+                    &[],
+                );
                 self.device.cmd_bind_pipeline(
                     cb,
                     vk::PipelineBindPoint::RAY_TRACING_KHR,
@@ -837,7 +1093,9 @@ impl Drop for SunPass {
             let _ = self.device.device_wait_idle();
             self.device.destroy_pipeline(self.pipeline, None);
             self.device.destroy_pipeline_layout(self.layout, None);
-            self.device.destroy_descriptor_pool(self.pool, None);
+            for pool in self.pools.drain(..) {
+                self.device.destroy_descriptor_pool(pool, None);
+            }
             self.device
                 .destroy_descriptor_set_layout(self.set_layout, None);
             for module in self.modules {
