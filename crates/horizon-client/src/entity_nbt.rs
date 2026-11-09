@@ -1861,8 +1861,7 @@ fn put_sulfur_attributes(map: &mut Compound, m: &Mob) {
         map.insert("attributes".into(), Tag::List(list));
     }
 }
-/// `Brain.Packed`: the memories finalizeSpawn set, over the saved ones.
-/// `CustomName`: a text component saved as a string or a `{text: ..}` compound.
+/// `Brain.Packed`: the memories finalizeSpawn set, over the saved ones. `CustomName`: a text component.
 fn custom_name(tag: &Tag) -> Option<String> {
     match tag.get("CustomName")? {
         Tag::String(s) => Some(s.to_string_lossy()),
@@ -6426,8 +6425,9 @@ pub fn apply_item_components(m: &mut Mob, stack: &crate::items::ItemStack) {
     let Some(components) = stack.data() else {
         return;
     };
-    if let Some(name) = stack.custom_name() {
-        m.custom_name = Some(name);
+    if let Some(n) = components.other("minecraft:custom_name").map(name_text) {
+        m.custom_name = Some(n.plain()); // `PostSpawnProcessor` keeps the style.
+        m.custom_name_text = Some(n);
     }
     if let Some(data) = components.other("minecraft:bucket_entity_data") {
         if let Some(v) = number(data.get("Age")) {

@@ -7597,11 +7597,11 @@ impl Game<'_> {
         }
         Ok(true)
     }
-    /// `EntityType.updateCustomEntityTag`: the egg's `minecraft:entity_data` on
-    /// the mob it spawned, once the guards let it through, as
-    /// `TypedEntityData.loadInto`: the mob's own compound, the data merged over
-    /// it, loaded back into the same mob (`/data merge entity`'s loader).
+    /// `EntityType.updateCustomEntityTag`: the egg's `minecraft:entity_data` merged
+    /// over the mob (`/data merge entity`'s loader), after `applyImplicitComponent`
+    /// stored the egg's `custom_data` as the mob's `data`.
     pub(super) fn apply_spawn_egg_entity_data(&mut self, id: u32, stack: &ItemStack) {
+        horizon_client::block_entity_item::apply_egg_custom_data(&mut self.persist.raw, id, stack);
         let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
             return;
         };

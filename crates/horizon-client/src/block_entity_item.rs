@@ -129,6 +129,23 @@ pub fn stack_configured_entity(stack: &crate::items::ItemStack, kind: &str, own:
     }
 }
 
+/// `Entity.applyImplicitComponent` for a spawn egg's spawned mob: the egg's
+/// `minecraft:custom_data` becomes the mob's `data`, kept in the raw tag the
+/// save writes back untouched (a live mob has no `data` field of its own).
+pub fn apply_egg_custom_data(
+    raw: &mut std::collections::HashMap<u32, Tag>,
+    id: u32,
+    stack: &crate::items::ItemStack,
+) {
+    if let Some(custom) = stack.custom_data()
+        && let Tag::Compound(map) = raw
+            .entry(id)
+            .or_insert_with(|| Tag::Compound(Compound::new()))
+    {
+        map.insert("data".into(), Tag::Compound(custom.clone()));
+    }
+}
+
 /// `Spawner.getSpawnEntityDisplayName` (`SpawnData.entity.id` of the item's
 /// data, which `ItemStack.addDetailsToTooltip` reads for spawners and trial
 /// spawners alike): the entity type a spawner item spawns.
