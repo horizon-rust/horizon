@@ -458,6 +458,11 @@ pub struct ShadowRays {
     no_gi_pass: [wgpu::TextureView; 2],
 }
 
+/// `HORIZON_RT_SKIP`'s bit for white noise everywhere (shadow_rays.wgsl `blue2`): the kernel's own
+/// `SKIP`, and bit 4 of `rt.mode.w` for the RTX 4090 build's passes (horizon-rtx shaders/sun.rgen,
+/// gi.rgen), whose `SKIP` this is not.
+const WHITE_NOISE: u32 = 2_097_152;
+
 /// VR's second eye takes the first eye's light (`ShadowRays::run`); off, it traces its own
 /// (`horizon-ctl rt-skip 32`, to time it).
 pub static SHARE_EYES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -546,8 +551,8 @@ impl ShadowRays {
     /// left to climb by itself, 8388608 the moving casters' own second ray toward the sun instead
     /// of the sun's ray telling them, shadow_rays_moving.wgsl; 4194304 the denoiser's early-out on
     /// converged pixels, denoise.wgsl `SKIP`, which then filters every pixel through every pass as
-    /// before), in a running game, to time each part alone (`horizon-ctl rt-skip`); 0 traces it
-    /// all again.
+    /// before; 2097152 white noise for every sample, not `blue2`'s blue noise: `WHITE_NOISE`), in
+    /// a running game, to time each part alone (`horizon-ctl rt-skip`); 0 traces it all again.
     pub fn set_skip(&mut self, device: &wgpu::Device, skip: u32) {
         SHARE_EYES.store(skip & 32 == 0, std::sync::atomic::Ordering::Relaxed);
         let skip = skip & !32;
@@ -1148,9 +1153,9 @@ impl ShadowRays {
         // lies in front, the only texels whose mirrors and refraction look for it.
         cover: Option<&wgpu::TextureView>,
         // The RTX 4090 build's ray tracing pipeline (horizon-rtx `sun`): which of its passes run
-        // (`rt.mode.w`'s bits: 1 the sun, 2 the bounce), and what records them for this view once
-        // the uniform is written, given the encoder, the uniform and the mask's size, giving the
-        // textures the kernel reads in place of its own rays.
+        // (`rt.mode.w`'s bits: 1 the sun, 2 the bounce; 4, set here, `WHITE_NOISE`), and what
+        // records them for this view once the uniform is written, given the encoder, the uniform
+        // and the mask's size, giving the textures the kernel reads in place of its own rays.
         sun_pass: Option<(u32, &mut PipelinePass<'_>)>,
     ) -> [wgpu::TextureView; 5] {
         let scale = foveation.scale;
@@ -1238,7 +1243,8 @@ impl ShadowRays {
                     (Some(_), None) => 1.0,
                     (None, _) => 0.0,
                 },
-                sun_pass.as_ref().map_or(0.0, |(bits, _)| *bits as f32),
+                (sun_pass.as_ref().map_or(0, |(bits, _)| *bits)
+                    | if self.skip & WHITE_NOISE != 0 { 4 } else { 0 }) as f32,
             ],
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
             motion: match last {
