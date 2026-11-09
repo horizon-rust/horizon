@@ -172,7 +172,7 @@ pub fn register(m: &mut Mob) {
             g.add(4, RandomLookAround::default());
             g.add(5, LookAtPlayer::new(6.0));
             g.add(5, super::dolphin::Jump::new(10));
-            g.add(6, MeleeAttack::new(1.2, true));
+            g.add(6, MeleeAttack::new(f64::from(1.2_f32), true));
             g.add(7, super::dolphin::MoveToItem::default());
             g.add(8, super::dolphin::PlayWithItems);
             g.add(8, super::dolphin::FollowPlayerRidden::new(false));
@@ -766,10 +766,18 @@ pub fn start_following<M: super::MobSlot>(mobs: &mut [M], fish: u32, leader: u32
     if current.is_some_and(|l| alive(mobs, l)) {
         return;
     }
-    if let Some(m) = mobs.iter_mut().map(super::MobSlot::mob_mut).find(|m| m.id == fish) {
+    if let Some(m) = mobs
+        .iter_mut()
+        .map(super::MobSlot::mob_mut)
+        .find(|m| m.id == fish)
+    {
         m.extra.leader = Some(leader);
     }
-    if let Some(m) = mobs.iter_mut().map(super::MobSlot::mob_mut).find(|m| m.id == leader) {
+    if let Some(m) = mobs
+        .iter_mut()
+        .map(super::MobSlot::mob_mut)
+        .find(|m| m.id == leader)
+    {
         m.extra.followers += 1;
     }
 }

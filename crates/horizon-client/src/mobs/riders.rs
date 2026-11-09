@@ -190,12 +190,19 @@ pub fn link<M: super::MobSlot>(mobs: &mut [M], rider: u32, vehicle: u32) {
     if rider == vehicle {
         return;
     }
-    if let Some(m) = mobs.iter_mut().map(super::MobSlot::mob_mut).find(|m| m.id == rider) {
+    if let Some(m) = mobs
+        .iter_mut()
+        .map(super::MobSlot::mob_mut)
+        .find(|m| m.id == rider)
+    {
         super::shulker::on_start_riding(m);
         m.extra.mount = Some(vehicle);
         m.extra.passenger = true;
     }
-    if let Some(m) = mobs.iter_mut().map(super::MobSlot::mob_mut).find(|m| m.id == vehicle)
+    if let Some(m) = mobs
+        .iter_mut()
+        .map(super::MobSlot::mob_mut)
+        .find(|m| m.id == vehicle)
         && m.extra.rider.is_none()
     {
         m.extra.rider = Some(rider);
@@ -232,7 +239,11 @@ fn top_passenger<M: super::MobSlot>(mobs: &[M], vehicle: u32, counter: i32) -> u
 pub fn start_riding<M: super::MobSlot>(mobs: &mut [M], rider: u32, vehicle: u32) -> bool {
     // `Shulker.startRiding` puts its attach face back before the ride is
     // decided, so a shulker that is refused still ends up lid up.
-    if let Some(m) = mobs.iter_mut().map(super::MobSlot::mob_mut).find(|m| m.id == rider) {
+    if let Some(m) = mobs
+        .iter_mut()
+        .map(super::MobSlot::mob_mut)
+        .find(|m| m.id == rider)
+    {
         super::shulker::on_start_riding(m);
     }
     let Some(r) = mobs.iter().map(super::MobSlot::mob).find(|m| m.id == rider) else {
@@ -254,12 +265,20 @@ pub fn start_riding<M: super::MobSlot>(mobs: &mut [M], rider: u32, vehicle: u32)
     // its vehicle.
     let mut up = Some(vehicle);
     while let Some(v) = up {
-        up = mobs.iter().map(super::MobSlot::mob).find(|m| m.id == v).and_then(|m| m.extra.mount);
+        up = mobs
+            .iter()
+            .map(super::MobSlot::mob)
+            .find(|m| m.id == v)
+            .and_then(|m| m.extra.mount);
         if up == Some(rider) {
             return false;
         }
     }
-    let Some(v) = mobs.iter().map(super::MobSlot::mob).find(|m| m.id == vehicle) else {
+    let Some(v) = mobs
+        .iter()
+        .map(super::MobSlot::mob)
+        .find(|m| m.id == vehicle)
+    else {
         return false;
     };
     let count = usize::from(v.rider.is_some())
