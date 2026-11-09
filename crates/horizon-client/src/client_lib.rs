@@ -110,6 +110,7 @@ pub mod osk;
 pub mod patrol;
 pub mod perf_overlay;
 pub mod pick_item;
+pub mod play_session;
 pub mod player_sync;
 pub mod portal_sections;
 pub mod pose;

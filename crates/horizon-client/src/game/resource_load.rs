@@ -487,7 +487,7 @@ pub(super) fn load_resources(
     };
     let resources = Arc::new(resources);
     if menu {
-        horizon_client::telemetry::mark_core_ready();
+        horizon_client::play_session::core_ready();
         log::info!(
             "Horizon: core-ready after {} ms",
             started.elapsed().as_millis()
@@ -526,7 +526,7 @@ pub(super) fn load_resources(
                     .set(rest)
                     .map_err(|_| "world resources already loaded".to_owned())?;
                 progress.set(9);
-                horizon_client::telemetry::mark_rest_ready();
+                horizon_client::play_session::rest_ready();
                 log::info!(
                     "Horizon: rest-ready after {} ms",
                     started.elapsed().as_millis()

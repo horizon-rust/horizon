@@ -3,10 +3,16 @@
 //! summary, in the outbox. It never sends those itself: the launcher does, at its next start (the
 //! game's only sending is the anonymous "I'm playing" ping, `heartbeat.rs`).
 //! Without the player's yes for that kind nothing is kept, and crash-reports/ stays local.
+//!
+//! The play session's summary is built from the game's hooks ([`HOOKS`], `horizon_hooks`), as a
+//! Horizon crate does: it leaves the engine for the Horizon layer when the official executable
+//! ships (layer plan M5, docs/layers.md).
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
+
+use horizon_hooks::{Frame, Hooks, Milestone, WorldLeft};
 
 use horizon_telemetry::payload::{Crash, Display, Perf, Settings, System, Timings};
 use horizon_telemetry::scrub::Scrubber;
@@ -19,30 +25,68 @@ const MIN_SECONDS: f32 = 60.0;
 /// world, the server or the resource packs.
 const CRASH_DETAILS: [&str; 3] = ["Horizon Version", "Graphics Adapter", "Render Settings"];
 
-static STARTED: OnceLock<Instant> = OnceLock::new();
 static CORE_READY_MS: AtomicU32 = AtomicU32::new(u32::MAX);
 static REST_READY_MS: AtomicU32 = AtomicU32::new(u32::MAX);
 /// The screen the window opened on.
 static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 
-/// When the game started, for the time to the title screen. Call first thing in `main`.
-pub fn mark_start() {
-    STARTED.get_or_init(Instant::now);
+/// The game's hooks, for `horizon_hooks::register`.
+pub static HOOKS: Telemetry = Telemetry {
+    session: LazyLock::new(|| Mutex::new(Session::default())),
+};
+
+/// The play session's performance, as the game's hooks tell it.
+pub struct Telemetry {
+    session: LazyLock<Mutex<Session>>,
 }
 
-pub fn mark_core_ready() {
-    mark_ready(&CORE_READY_MS);
-}
-
-pub fn mark_rest_ready() {
-    mark_ready(&REST_READY_MS);
-}
-
-fn mark_ready(mark: &AtomicU32) {
-    if let Some(started) = STARTED.get() {
-        let ms = started.elapsed().as_millis().min(u128::from(u32::MAX - 1)) as u32;
-        let _ = mark.compare_exchange(u32::MAX, ms, Ordering::Relaxed, Ordering::Relaxed);
+impl Telemetry {
+    fn session(&self) -> std::sync::MutexGuard<'_, Session> {
+        self.session.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+impl Hooks for Telemetry {
+    fn startup(&self, milestone: Milestone, since_start: Duration) {
+        match milestone {
+            Milestone::CoreReady => mark_ready(&CORE_READY_MS, since_start),
+            Milestone::RestReady => mark_ready(&REST_READY_MS, since_start),
+            Milestone::TitleShown => self.session().title_shown(since_start),
+        }
+    }
+
+    /// A player who allows performance statistics also says what their slow frames spent their
+    /// time in.
+    fn wants_frame_steps(&self, home: &Path) -> bool {
+        horizon_telemetry::Consent::load(home).allows(horizon_telemetry::Kind::Perf)
+    }
+
+    fn world_shown(&self, since_opening: Duration) {
+        self.session().world_shown(since_opening);
+    }
+
+    fn frame(&self, frame: &Frame<'_>) {
+        self.session().frame(frame.ms, || frame.slowest_step());
+    }
+
+    fn world_left(&self, left: &WorldLeft<'_>) {
+        let settings = Settings {
+            render_distance: left.render_distance.clamp(0, 255) as u8,
+            simulation_distance: left.simulation_distance.clamp(0, 255) as u8,
+            max_fps: left
+                .max_fps
+                .map_or(0, |f| f.min(u32::from(u16::MAX)) as u16),
+            vsync: left.vsync,
+            fullscreen: left.fullscreen,
+            graphics: left.graphics.to_owned(),
+        };
+        self.session().finish(left.home, settings);
+    }
+}
+
+fn mark_ready(mark: &AtomicU32, since_start: Duration) {
+    let ms = since_start.as_millis().min(u128::from(u32::MAX - 1)) as u32;
+    let _ = mark.compare_exchange(u32::MAX, ms, Ordering::Relaxed, Ordering::Relaxed);
 }
 
 fn readiness_ms(mark: &AtomicU32) -> Option<u32> {
@@ -176,42 +220,33 @@ pub struct Session {
     /// The start was measured: only the first session carries it.
     title_measured: bool,
     to_world_ms: Option<u32>,
-    opening: Option<Instant>,
     slow_frames: Vec<horizon_telemetry::payload::SlowFrames>,
 }
 
 impl Session {
-    /// The title screen drew a frame: the first time, how long the start took.
-    pub fn title_shown(&mut self) {
+    /// The title screen drew its first frame, `since_start` after the game started.
+    pub fn title_shown(&mut self, since_start: Duration) {
         if !self.title_measured {
             self.title_measured = true;
-            crate::spans::startup::mark("title.shown");
-            // The frame itself: the menu bundle can be ready seconds before
-            // the renderer that draws it (pipelines compiling on a slow driver).
-            self.to_title_ms = STARTED.get().map(|s| s.elapsed().as_millis() as u32);
+            self.to_title_ms = Some(since_start.as_millis().min(u128::from(u32::MAX)) as u32);
         }
     }
 
-    /// A world starts loading.
-    pub fn world_opening(&mut self) {
-        if self.opening.is_none() {
-            crate::spans::startup::arm("world.opening");
+    /// A world's first frame, `since_opening` after it started opening: the session's first
+    /// world counts.
+    pub fn world_shown(&mut self, since_opening: Duration) {
+        if self.to_world_ms.is_none() {
+            self.to_world_ms = Some(since_opening.as_millis().min(u128::from(u32::MAX)) as u32);
         }
-        self.opening.get_or_insert_with(Instant::now);
     }
 
-    /// An entry queued during startup was cancelled before opening a world.
-    pub fn cancel_world_opening(&mut self) {
-        self.opening = None;
-    }
-
-    /// A frame drawn while playing (not in menus or loading), with the spans the render thread
-    /// recorded in it ([`crate::spans::take_raw`]): a frame of `SLOW_FRAME_MS` or more counts
-    /// under the step it spent most of its time in ([`crate::spans::culprit`]).
-    pub fn frame(&mut self, ms: f32, spans: &[crate::spans::Span]) {
+    /// A frame drawn while playing (not in menus or loading): a frame of `SLOW_FRAME_MS` or
+    /// more counts under the step it spent most of its time in (`slowest_step`, the game's
+    /// `spans::culprit`).
+    pub fn frame(&mut self, ms: f32, slowest_step: impl FnOnce() -> Option<(String, f32)>) {
         use horizon_telemetry::payload::{SLOW_FRAME_MS, SlowFrames};
         if ms >= SLOW_FRAME_MS {
-            let (mut path, span_ms) = crate::spans::culprit(spans).unwrap_or_default();
+            let (mut path, span_ms) = slowest_step().unwrap_or_default();
             // A path too long for the item keeps its last steps.
             while path.len() > SlowFrames::MAX_NAME
                 && let Some((_, rest)) = path.split_once('/')
@@ -219,12 +254,6 @@ impl Session {
                 path = rest.to_owned();
             }
             SlowFrames::record(&mut self.slow_frames, ms, &path, span_ms);
-        }
-        if let Some(opening) = self.opening.take() {
-            crate::spans::startup::mark("world.first_frame");
-            if self.to_world_ms.is_none() {
-                self.to_world_ms = Some(opening.elapsed().as_millis() as u32);
-            }
         }
         self.frames.record(ms);
         self.played_ms += ms;
@@ -453,25 +482,30 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_startup_entry_does_not_time_menu_browsing() {
+    fn the_time_to_a_world_is_the_sessions_first() {
         let mut session = Session::default();
-        session.world_opening();
-        assert!(session.opening.is_some());
-        session.cancel_world_opening();
-        assert!(session.opening.is_none());
-        session.frame(16.0, &[]);
-        assert!(session.to_world_ms.is_none());
-        session.world_opening();
-        session.frame(16.0, &[]);
-        assert!(session.to_world_ms.is_some());
+        session.world_shown(Duration::from_millis(4200));
+        session.world_shown(Duration::from_millis(900));
+        assert_eq!(session.to_world_ms, Some(4200));
+    }
+
+    #[test]
+    fn the_time_to_the_title_goes_with_the_first_session_only() {
+        let home = home("title");
+        let mut session = Session::default();
+        session.title_shown(Duration::from_millis(3100));
+        assert_eq!(session.to_title_ms, Some(3100));
+        session.finish(&home, Settings::default());
+        session.title_shown(Duration::from_millis(9000));
+        assert_eq!(session.to_title_ms, None);
     }
 
     #[test]
     fn a_session_is_kept_only_with_consent_and_once_long_enough() {
         let home = home("session");
         let mut session = Session::default();
-        session.world_opening();
-        (0..2000).for_each(|_| session.frame(16.6, &[]));
+        session.world_shown(Duration::from_millis(1500));
+        (0..2000).for_each(|_| session.frame(16.6, || None));
         session.finish(&home, Settings::default());
         assert!(outbox::pending(&home).is_empty(), "33 s, and no consent");
         allow(
@@ -481,11 +515,11 @@ mod tests {
                 ..Choices::NONE
             },
         );
-        (0..2000).for_each(|_| session.frame(16.6, &[]));
+        (0..2000).for_each(|_| session.frame(16.6, || None));
         session.finish(&home, Settings::default());
         assert!(outbox::pending(&home).is_empty(), "33 s is too short");
-        session.world_opening();
-        (0..4000).for_each(|_| session.frame(16.6, &[]));
+        session.world_shown(Duration::from_millis(1500));
+        (0..4000).for_each(|_| session.frame(16.6, || None));
         (0..1200).for_each(|_| session.tick(4.0));
         session.finish(
             &home,
@@ -518,13 +552,15 @@ mod tests {
             cpu_ms: ms,
             depth,
         };
+        let culprit = |spans: &[Span]| crate::spans::culprit(spans);
         let mut session = Session::default();
-        (0..4000).for_each(|_| session.frame(16.6, &[span("tick", 10.0, 0)]));
+        let ticking = [span("tick", 10.0, 0)];
+        (0..4000).for_each(|_| session.frame(16.6, || culprit(&ticking)));
         let frozen = [span("r_uploads", 280.0, 1), span("renderer", 300.0, 0)];
-        session.frame(320.0, &frozen);
-        session.frame(900.0, &frozen);
-        session.frame(260.0, &[]);
-        session.frame(249.0, &frozen);
+        session.frame(320.0, || culprit(&frozen));
+        session.frame(900.0, || culprit(&frozen));
+        session.frame(260.0, || culprit(&[]));
+        session.frame(249.0, || culprit(&frozen));
         let perf = session.summary(Settings::default()).unwrap();
         let seen: Vec<_> = perf
             .slow_frames

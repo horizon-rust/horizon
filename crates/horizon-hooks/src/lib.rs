@@ -24,7 +24,9 @@ pub mod settings;
 pub mod tunnel;
 
 use registry::Registry;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::time::Duration;
 
 /// What a crate above the engine hears from the game. Every method has an empty default:
 /// implement only those you need. Hooks run on the game's thread (the render thread) unless a
@@ -42,12 +44,88 @@ pub trait Hooks: Sync {
     /// The game is ending normally: its window closed and the world is saved. Not after a crash.
     fn shutdown(&self) {}
 
+    /// A moment of the game's start, once each, with the time since the process started.
+    fn startup(&self, _milestone: Milestone, _since_start: Duration) {}
+
+    /// Whether this hook wants the render thread to time its steps in every frame, for
+    /// [`Frame::slowest_step`]. Asked once as the game starts (not on a dedicated server);
+    /// `home` is the game's home folder. Timing the steps costs microseconds a frame.
+    fn wants_frame_steps(&self, _home: &Path) -> bool {
+        false
+    }
+
+    /// A world's first frame was drawn: the time since it started opening (single player, a
+    /// server, LAN). Every time a world is entered.
+    fn world_shown(&self, _since_opening: Duration) {}
+
+    /// A frame drawn while playing: not in the menus or while a world loads. Every frame.
+    fn frame(&self, _frame: &Frame<'_>) {}
+
+    /// The player left a world (to the title screen, or by quitting): the end of a play
+    /// session, with the settings it was played with.
+    fn world_left(&self, _left: &WorldLeft<'_>) {}
+
     /// The resolver of `friend:` addresses this crate offers ([`tunnel`]); the first hook that
     /// offers one is used. Asked on the network thread when joining and on the game thread when
     /// an address is shown, never per frame.
     fn tunnel(&self) -> Option<&dyn tunnel::Resolver> {
         None
     }
+}
+
+/// A moment of the game's start ([`Hooks::startup`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Milestone {
+    /// The resources the menus need are loaded.
+    CoreReady,
+    /// The rest (what a world needs) too.
+    RestReady,
+    /// The title screen drew its first frame.
+    TitleShown,
+}
+
+impl Milestone {
+    fn bit(self) -> u8 {
+        match self {
+            Self::CoreReady => 1,
+            Self::RestReady => 2,
+            Self::TitleShown => 4,
+        }
+    }
+}
+
+/// What [`Hooks::frame`] gets.
+pub struct Frame<'a> {
+    /// How long the frame took.
+    pub ms: f32,
+    slowest_step: &'a dyn Fn() -> Option<(String, f32)>,
+}
+
+impl<'a> Frame<'a> {
+    /// `slowest_step` gives [`Frame::slowest_step`], only when asked.
+    pub fn new(ms: f32, slowest_step: &'a dyn Fn() -> Option<(String, f32)>) -> Self {
+        Self { ms, slowest_step }
+    }
+
+    /// The step the frame spent the most time in (`render/terrain`) and its milliseconds, when
+    /// the steps were timed ([`Hooks::wants_frame_steps`]). Worked out on each call: ask only
+    /// for a slow frame.
+    pub fn slowest_step(&self) -> Option<(String, f32)> {
+        (self.slowest_step)()
+    }
+}
+
+/// What [`Hooks::world_left`] gets: the game's home folder and the settings played with.
+pub struct WorldLeft<'a> {
+    pub home: &'a Path,
+    pub render_distance: i32,
+    pub simulation_distance: i32,
+    /// `None`: unlimited.
+    pub max_fps: Option<u32>,
+    pub vsync: bool,
+    pub fullscreen: bool,
+    /// The graphics preset's name.
+    pub graphics: &'a str,
 }
 
 /// What [`Hooks::started`] gets.
@@ -130,6 +208,44 @@ pub mod engine {
         }
     }
 
+    /// The milestones already said.
+    static MILESTONES: AtomicU8 = AtomicU8::new(0);
+
+    /// [`Hooks::startup`], the first time `milestone` is reached; later calls do nothing.
+    pub fn startup(milestone: Milestone, since_start: Duration) {
+        if MILESTONES.fetch_or(milestone.bit(), Ordering::Relaxed) & milestone.bit() == 0 {
+            for hooks in all() {
+                hooks.startup(milestone, since_start);
+            }
+        }
+    }
+
+    /// [`Hooks::wants_frame_steps`]: whether any hook wants them.
+    pub fn wants_frame_steps(home: &Path) -> bool {
+        all().iter().any(|h| h.wants_frame_steps(home))
+    }
+
+    /// [`Hooks::world_shown`].
+    pub fn world_shown(since_opening: Duration) {
+        for hooks in all() {
+            hooks.world_shown(since_opening);
+        }
+    }
+
+    /// [`Hooks::frame`].
+    pub fn frame(frame: &Frame<'_>) {
+        for hooks in all() {
+            hooks.frame(frame);
+        }
+    }
+
+    /// [`Hooks::world_left`].
+    pub fn world_left(left: &WorldLeft<'_>) {
+        for hooks in all() {
+            hooks.world_left(left);
+        }
+    }
+
     /// [`Hooks::tunnel`]: the first registered hook's resolver.
     pub fn tunnel() -> Option<&'static dyn tunnel::Resolver> {
         all().iter().find_map(|hooks| hooks.tunnel())
@@ -155,6 +271,24 @@ mod tests {
         fn published(&self, open: bool) {
             self.0.lock().unwrap().push(format!("published {open}"));
         }
+        fn startup(&self, milestone: Milestone, since_start: Duration) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{milestone:?} {}", since_start.as_millis()));
+        }
+        fn wants_frame_steps(&self, _home: &Path) -> bool {
+            true
+        }
+        fn frame(&self, frame: &Frame<'_>) {
+            let step = frame
+                .slowest_step()
+                .map(|(name, ms)| format!(" {name} {ms}"));
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("frame {}{}", frame.ms, step.unwrap_or_default()));
+        }
     }
 
     /// Implements nothing: the defaults do nothing.
@@ -172,10 +306,24 @@ mod tests {
         for open in [false, true, true, true, false, false] {
             engine::published(open);
         }
+        // Each milestone once: the first time it is reached.
+        engine::startup(Milestone::CoreReady, Duration::from_millis(900));
+        engine::startup(Milestone::TitleShown, Duration::from_millis(1500));
+        engine::startup(Milestone::CoreReady, Duration::from_millis(4000));
+        // Any hook that wants the steps timed has them.
+        assert!(engine::wants_frame_steps(Path::new("home")));
+        engine::frame(&Frame::new(70.0, &|| Some(("render/terrain".into(), 50.0))));
         engine::shutdown();
         assert_eq!(
             *RECORDER.0.lock().unwrap(),
-            ["started 0.2.31", "published true", "published false"]
+            [
+                "started 0.2.31",
+                "published true",
+                "published false",
+                "CoreReady 900",
+                "TitleShown 1500",
+                "frame 70 render/terrain 50",
+            ]
         );
         assert_eq!(register(&Silent), Err(TooLate));
     }

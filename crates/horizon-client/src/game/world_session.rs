@@ -169,33 +169,29 @@ impl Game<'_> {
     /// Leaving the game with a world open (window closed, Quit, `quit`):
     /// menu items go back (Player.closeContainer), then the world is saved,
     /// once.
-    /// Keeps this play session's performance summary for the launcher to send, if the player
-    /// allows performance statistics (`horizon_client::telemetry`), and starts the next one.
+    /// Ends this play session for the hooks (`horizon_client::play_session`): opt-in telemetry
+    /// keeps its performance summary for the launcher to send, if the player allows it.
     pub(super) fn finish_perf(&mut self) {
         // One session per computer: P1's (a splitscreen player's would count it again).
         if self.options.split_guest {
             return;
         }
-        let s = &self.settings;
-        let settings = horizon_telemetry::payload::Settings {
-            render_distance: s.render_distance.clamp(0, 255) as u8,
-            simulation_distance: s.simulation_distance.clamp(0, 255) as u8,
-            // 260 is the slider's "unlimited".
-            max_fps: if s.max_fps >= 260 {
-                0
-            } else {
-                s.max_fps.min(u32::from(u16::MAX)) as u16
-            },
-            vsync: s.vsync,
-            fullscreen: s.fullscreen,
-            graphics: s.graphics_preset.clone(),
-        };
         // Again now: on Wayland the window is on a screen only once it has been shown.
         if let Some(window) = &self.window {
             horizon_client::telemetry::note_display(window);
         }
-        self.perf
-            .finish(&horizon_client::logging::game_home(), settings);
+        let s = &self.settings;
+        let home = horizon_client::logging::game_home();
+        self.perf.finish(&horizon_hooks::WorldLeft {
+            home: &home,
+            render_distance: s.render_distance,
+            simulation_distance: s.simulation_distance,
+            // 260 is the slider's "unlimited".
+            max_fps: (s.max_fps < 260).then_some(s.max_fps),
+            vsync: s.vsync,
+            fullscreen: s.fullscreen,
+            graphics: &s.graphics_preset,
+        });
     }
 
     pub(super) fn save_for_exit(&mut self) -> Result<()> {

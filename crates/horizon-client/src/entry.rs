@@ -20,13 +20,18 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         horizon_client::options_ui::HORIZON_EXTRAS
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
-    horizon_client::telemetry::mark_start();
+    // The process's start, for the startup trace and the start's milestones.
+    horizon_client::spans::startup::init(std::time::Instant::now());
     // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
     crash::on_report(horizon_client::telemetry::keep_crash);
+    // Opt-in telemetry's play session plugs in through the hooks until it moves to a Horizon
+    // crate in horizon-official's parts (layer plan M5). horizon-extras: telemetry is Horizon's
+    // (docs/layers.md); without it no session is kept.
+    #[cfg(feature = "horizon-extras")]
+    let _ = horizon_hooks::register(&horizon_client::telemetry::HOOKS);
     // Crates above the engine registered their hooks before this (horizon-official's `main`);
     // none registers after this point.
     horizon_hooks::engine::seal();
-    horizon_client::spans::startup::init(std::time::Instant::now());
     horizon_client::spans::trace::start_from_env();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let game_args = args.iter().take_while(|a| *a != "--dedicated");
