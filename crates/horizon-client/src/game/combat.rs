@@ -932,7 +932,7 @@ mod guest_hit_tests {
             game.combat.pending.clear();
             game.guest_mob_event(5, hit);
             let noted: Vec<u32> = (game.combat.pending.iter())
-                .map(|(_, (id, _), _)| *id)
+                .map(|pending| pending.attacker.0)
                 .collect();
             assert_eq!(noted, [5]);
             assert_eq!(game.combat.melee_mob, None, "the hit used it up");

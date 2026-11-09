@@ -216,7 +216,7 @@ fn explosion_causing_entities_parity_fixture() {
                 }
                 for tick in 0..3 {
                     let mut cart = game.carts[0].clone();
-                    let alive = game.tick_cart(&mut cart, [0.0; 2]);
+                    let alive = game.tick_cart(&mut cart, [0.0; 2], 0, &mut CartIndex::default());
                     if tick < 2 {
                         assert!(alive);
                         assert!(!game.player.as_ref().unwrap().health.dead_or_dying());
