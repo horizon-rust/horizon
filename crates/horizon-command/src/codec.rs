@@ -248,7 +248,9 @@ fn check_feature(tag: &Tag, reg: &Registries) -> Result<(), String> {
             return Err(not_map(cfg_tag));
         };
         if get(cfg_map, "to_place").is_none() {
-            return Err(no_key("to_place", cfg_tag));
+            // The feature codec decodes the configuration from the feature's
+            // own map, so the error names that map, `config` wrapper included.
+            return Err(no_key("to_place", tag));
         }
     }
     Ok(())
@@ -271,7 +273,7 @@ fn dfu_feature_error(tag: &Tag, msg: &str) -> String {
         }
         let cfg_tag = tag.get("config").unwrap_or(tag);
         if matches!(cfg_tag, Tag::Compound(c) if get(c, field).is_none()) {
-            return no_key(field, cfg_tag);
+            return no_key(field, tag);
         }
     }
     msg.to_owned()
@@ -345,12 +347,14 @@ pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
             require(map, t, &keys)
         }),
         // The ConfiguredFeature codec, where the source has the live features.
+        // Without them the parse stays as it was (#12177): nothing decodes an
+        // inline feature early, so the partial check must not run either.
         "minecraft:worldgen/feature" => {
+            let Some(codec) = &reg.inline_feature else {
+                return Ok(());
+            };
             check_feature(t, reg)?;
-            if let Some(codec) = &reg.inline_feature {
-                return codec.check(t).map_err(|msg| dfu_feature_error(t, &msg));
-            }
-            Ok(())
+            codec.check(t).map_err(|msg| dfu_feature_error(t, &msg))
         }
         "minecraft:loot_table" => match t {
             Tag::Compound(_) => loot_table_references(t, reg),
@@ -511,6 +515,54 @@ mod predicate_tests {
             r#"{type:"minecraft:inverted",term:{}}"#,
         ] {
             assert_eq!(decode_text(bad), Err("No key type in MapLike[{}]".into()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod inline_feature_tests {
+    use super::*;
+
+    /// #12177: without the server's live features no codec decodes an inline
+    /// feature early, so a malformed one parses and fails when the command
+    /// runs. #12636's partial type check must not tighten that path.
+    #[test]
+    fn without_live_features_an_inline_feature_is_left_to_the_run() {
+        let reg = Registries::default();
+        assert!(reg.inline_feature.is_none());
+        for text in [
+            r#"{type:"minecraft:simple_block"}"#,
+            r#"{type:"minecraft:h171_unknown"}"#,
+        ] {
+            let (tag, _) = horizon_world::nbt::parse_snbt(text).unwrap();
+            assert_eq!(
+                decode("minecraft:worldgen/feature", &tag, &reg),
+                Ok(()),
+                "{text}"
+            );
+        }
+    }
+
+    /// The configuration codec decodes the feature's own map, so a missing
+    /// `to_place` names that whole map, `config` wrapper included, as Java does.
+    #[test]
+    fn a_missing_config_field_names_the_whole_feature_map() {
+        let reg = Registries {
+            inline_feature: Some(horizon_client_core::registries::InlineFeatureCheck::new(
+                |_| Ok(()),
+            )),
+            ..Registries::default()
+        };
+        for text in [
+            r#"{type:"minecraft:simple_block",config:{}}"#,
+            r#"{type:"minecraft:simple_block"}"#,
+        ] {
+            let (tag, _) = horizon_world::nbt::parse_snbt(text).unwrap();
+            assert_eq!(
+                decode("minecraft:worldgen/feature", &tag, &reg),
+                Err(no_key("to_place", &tag)),
+                "{text}"
+            );
         }
     }
 }
