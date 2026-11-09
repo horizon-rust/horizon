@@ -166,7 +166,7 @@ vec4 hw_texel(Hit h, uint base) {
     return texelFetch(sprites, ivec3(texel, int(layer)), 0);
 }
 
-// The kernel's `surface_at`, `surface_normal`, `random2`, `cosine_dir`, `tile_of`.
+// The kernel's `surface_at`, `surface_normal`, `random2`, `blue2`, `cosine_dir`, `tile_of`.
 vec3 surface_at(ivec2 p) {
     vec2 size = rt.size.xy;
     float d = texelFetch(depth, clamp(p, ivec2(0), ivec2(size) - 1), 0).r;
@@ -193,6 +193,19 @@ vec2 random2(ivec2 texel, uint salt) {
     u = ((u >> ((u >> 28u) + 4u)) ^ u) * 277803737u;
     u = (u >> 22u) ^ u;
     return vec2(float(w >> 8u), float(u >> 8u)) / 16777216.0;
+}
+// The kernel's `blue2` for the bounce (its stream `BLUE_GI`: the texel transposed), bit for
+// bit: blue noise over the screen, low-discrepancy over the view's frames; white (`random2`)
+// when `rt.mode.w`'s bit 4 says `HORIZON_RT_SKIP` 2097152 asked for it.
+vec2 blue2(ivec2 texel, uint salt) {
+    if ((uint(rt.mode.w) & 4u) != 0u) return random2(texel, salt);
+    uvec2 q = uvec2(texel).yx;
+    uint k = uint(rt.frame.z);
+    uint r2 = q.x * 3242174889u + q.y * 2447445413u + k * 773608062u;
+    uint inner = q.y * 288237660u + q.x * 25070368u;
+    uint ign = inner * 52u + (inner >> 16u) * 64417u + (((inner & 0xffffu) * 64417u) >> 16u)
+        + k * 3014823329u;
+    return vec2(float(r2 >> 8u), float(ign >> 8u)) / 16777216.0;
 }
 vec3 cosine_dir(vec3 n, vec2 u) {
     vec3 t = normalize(abs(n.y) > 0.9 ? cross(n, vec3(1.0, 0.0, 0.0)) : cross(n, vec3(0.0, 1.0, 0.0)));
@@ -424,7 +437,7 @@ struct GiSample {
 };
 // The kernel's `gi_sample`, or false.
 bool gi_sample(vec3 pos, vec3 n, ivec2 texel, out GiSample s) {
-    vec3 d = cosine_dir(n, random2(texel, 1u));
+    vec3 d = cosine_dir(n, blue2(texel, 1u));
     s = GiSample(pos + d * REACH, -d, vec3(0.0));
     float t;
     vec3 normal, albedo;

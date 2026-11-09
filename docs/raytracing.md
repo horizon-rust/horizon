@@ -463,7 +463,7 @@ game.log` sums the reports (`--by-look` one a head pose, `--best 0.25` the short
 shares the GPU). The medians take only frames whose head pose stayed put, and each stage only the frames it ran in,
 so their sum need not be the GPU time the VR line logs every 300 frames: beside that line, `Horizon VR: GPU means`
 gives each view's stages' means over the same frames (a stage that did not run counts 0), and the time between the
-views of a frame (other submissions' work, or the GPU idle). `HORIZON_RT_SKIP` (a mask: 1 the sun's ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 64 the far field; 2048, read at start, the mesh clouds instead of the dome's) leaves parts of the
+views of a frame (other submissions' work, or the GPU idle). `HORIZON_RT_SKIP` (a mask: 1 the sun's ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 64 the far field; 2048, read at start, the mesh clouds instead of the dome's; 2097152 white noise for every sample instead of the sun disc's, the bounce's and the light point's blue noise, `blue2`) leaves parts of the
 trace kernel out to time each alone, `HORIZON_RT_SHARP` (degrees) moves the foveation's sharp zone (0: sparse all over,
 180: sharp all over). `HORIZON_RT_FORCE_OPAQUE=1` traces every hardware ray (the trace kernel's and the froxels') with
 the force-opaque ray flag, so no candidate hit comes back to the shader for its alpha test (cutouts shadow as squares,

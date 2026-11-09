@@ -578,8 +578,9 @@ override DEBUG: u32 = 0u;
 // tint and caustics, the surface's backward face tinting a second time, the caustics' short history
 // in `accumulate`), to compare with before; 8192 the rays' hits as before the one look (lava met by
 // a mirror or seen through water or glass in its atlas sprite, a ray down into water absorbed over
-// the air before it: shadow_rays_hw.wgsl `hw_surface`). (32, VR's second eye's own
-// light, never reaches the kernel: shadow_rays.rs `set_skip`.)
+// the air before it: shadow_rays_hw.wgsl `hw_surface`); 2097152 white noise for every sample, as
+// before the blue noise (`blue2`; the pass's shaders read it from `rt.mode.w`'s bit 4). (32, VR's
+// second eye's own light, never reaches the kernel: shadow_rays.rs `set_skip`.)
 override SKIP: u32 = 0u;
 // `HORIZON_RT_SUN_CENTRE=1`: RT lighting traces the ray toward the sun's centre too, which it
 // never reads (`trace`), as before 8121f258f, to tell what leaving it out changed.
@@ -663,6 +664,47 @@ fn random2(texel: vec2<i32>, salt: u32) -> vec2<f32> {
     u = ((u >> ((u >> 28u) + 4u)) ^ u) * 277803737u;
     u = (u >> 22u) ^ u;
     return vec2(f32(w >> 8u), f32(u >> 8u)) / 16777216.0;
+}
+// The samples that are averaged over the frames and the denoiser's taps (the sun disc's point, the
+// bounce's direction, the light source's point) draw `blue2`'s numbers instead of `random2`'s:
+// blue noise over the screen (neighbouring texels' numbers spread over 0..1 rather than clump, so
+// the error is fine-grained and the denoiser's taps cancel it) and low-discrepancy over the frames
+// (a texel's numbers fill 0..1 evenly within the history rather than at random). `HORIZON_RT_SKIP`
+// 2097152 draws `random2`'s white noise everywhere again, to compare. The random decisions stay
+// `random2`'s (which candidate a reservoir keeps, which neighbours it merges, which lights a bounce
+// draws): resampling needs its choices uncorrelated with its neighbours' and its candidates'.
+// The streams, a transform each of the texel (`blue2`; a shifted texel would only add a constant
+// to the numbers): the sun's numbers at a texel are unrelated to the other two's, the bounce's and
+// the light point's less so (they are separate estimates: it costs a little variance, no bias).
+const BLUE_SUN: u32 = 0u;
+const BLUE_GI: u32 = 1u;
+const BLUE_LIGHT: u32 = 2u;
+// Set by `cs_sparse`: the ray is a 4x4 block's, its numbers the block's own (the blocks' corners
+// every fourth texel would take every fourth texel's numbers, as uneven as white noise).
+var<private> blue_block: bool = false;
+// A texel's and a frame's numbers in stream `stream` (0..1); `salt` is `random2`'s, for the
+// white noise `HORIZON_RT_SKIP` 2097152 asks for. Each dimension is a dither over the texel in
+// fixed point (exact: horizon-rtx shaders/sun.rgen and gi.rgen draw the same numbers): x Roberts'
+// R2 dither, y Jimenez's interleaved gradient noise of the transposed texel (two different
+// lattices: the pair spreads over the square, not along a line), both turned each frame by a
+// Kronecker step (Cranley-Patterson rotation) over the view's own frames, so both eyes of a frame
+// draw the same. The step (0.18012, 0.70194) keeps the points spread whether a texel draws every
+// frame or one frame in 2, 4 or 8 (the bounced light's turns, `GI_TURN_BITS`): R2's own step
+// (0.7549, 0.5698) taken every fourth frame barely moves (4 x 0.7549 = 3.02). The pass's shaders
+// draw the same numbers bit for bit: the sun pass's ray is traced again here through water
+// (`trace`), and the moving casters' shadow aims at the same point of the disc.
+fn blue2(texel: vec2<i32>, salt: u32, stream: u32) -> vec2<f32> {
+    if (SKIP & 2097152u) != 0u { return random2(texel, salt); }
+    let t = vec2<u32>(select(texel, texel >> vec2(2u), blue_block));
+    var q = t;
+    if stream == BLUE_GI { q = t.yx; }
+    if stream == BLUE_LIGHT { q = vec2(0u - t.y, t.x); }
+    let k = u32(rt.frame.z);
+    let r2 = q.x * 3242174889u + q.y * 2447445413u + k * 773608062u;
+    let inner = q.y * 288237660u + q.x * 25070368u;
+    let ign = inner * 52u + (inner >> 16u) * 64417u + (((inner & 0xffffu) * 64417u) >> 16u)
+        + k * 3014823329u;
+    return vec2(f32(r2 >> 8u), f32(ign >> 8u)) / 16777216.0;
 }
 // The light a ray from `pos` along `l` (unit) lets through before it leaves the grid, rises above
 // its highest block, spends `budget` (1 an empty brick crossed, 4 a full one) or goes `reach`. The
@@ -910,6 +952,8 @@ fn open_light(lifted: vec3<f32>, n: vec3<f32>, at: vec3<f32>) -> vec3<f32> {
 // The light reaching camera-relative `pos` (normal `n`) along one more cosine-weighted ray: the
 // sky's, or the surface it meets lit by the sun and its cache cell (or the open sky's guess).
 fn second_bounce(pos: vec3<f32>, n: vec3<f32>, salt: vec2<i32>) -> vec3<f32> {
+    // White (`random2`): `salt` is a world position, not a texel, so screen-space blue noise means
+    // nothing here.
     let d = cosine_dir(n, random2(salt, 3u));
     let h = hw_hit(pos, d, 256.0);
     if h.t < 0.0 { return sky_at(d) * h.through; }
@@ -994,7 +1038,7 @@ fn hit_normal(at: vec3<f32>, cell: vec3<i32>) -> vec3<f32> {
 }
 // This frame's sample at camera-relative `pos` (normal `n`), and whether it is the sky's (w 1).
 fn gi_sample(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> GiSample {
-    let d = cosine_dir(n, random2(texel, 1u));
+    let d = cosine_dir(n, blue2(texel, 1u, BLUE_GI));
     // The hybrid's exact triangles and their textures where the GPU traces rays, as Remix's.
     if HW {
         let h = hw_hit(pos, d, 4096.0);
@@ -1059,6 +1103,8 @@ fn restir_gi(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i32>,
     var sum = luminance(own.light) * 3.14159265;
     var seen = 1.0;
     var reused = false;
+    // White (`random2`), not `blue2`: which candidate the reservoir keeps and which neighbours it
+    // merges must not correlate with the neighbours' own choices (whose samples it takes).
     var u = random2(texel, 70u);
     if has_last {
         for (var j = 0; j < 3; j++) {
@@ -1243,6 +1289,7 @@ fn block_light(pos: vec3<f32>, n: vec3<f32>, most: i32, texel: vec2<i32>) -> vec
     }
     if all == 0 { return vec3(0.0); }
     let drawn = min(most, all);
+    // White (`random2`): the bounce rays' cheap estimate, `texel` a world position there.
     let offset = i32(random2(texel, 30u).x * f32(all));
     let share = f32(all) / f32(drawn);
     var sum = vec3(0.0);
@@ -1289,6 +1336,7 @@ fn restir_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i3
     let words = light_cell(local);
     var r = Reservoir(0u, 0.0, 0.0, 0.0);
     var chosen = 0.0;
+    // White (`random2`), as ReSTIR GI's: the reservoir's choices.
     var u = random2(texel, 40u);
     // The cell's lights, all of them (eight at most): each candidate's weight its light over the
     // chance of drawing it among them.
@@ -1333,7 +1381,9 @@ fn restir_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i3
     if r.light == 0u || chosen <= 0.0 { return vec4(0.0); }
     r.weight = r.sum / (r.seen * chosen);
     // The light chosen, toward a point of it drawn this frame, through one shadow ray.
-    let offset = vec3(random2(texel, 60u), random2(texel, 61u).x) * 2.0 - 1.0;
+    // Its x and y `blue2`'s, its z white: a third number from another stream would follow the
+    // first two (they are lattices) and sample a plane through the block, not all of it.
+    let offset = vec3(blue2(texel, 60u, BLUE_LIGHT), random2(texel, 61u).x) * 2.0 - 1.0;
     let path = light_path(r.light, local, n, offset);
     let through = light_through(pos, path);
     let light = path.light * through * r.weight;
@@ -1358,6 +1408,8 @@ fn moving_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> vec3<f32> {
     var sum = 0.0;
     var chosen = -1;
     var chosen_p = 0.0;
+    // White (`random2`) throughout: the choice among the lights, and the point of a small sphere
+    // (a few moving lights, their penumbra a fraction of a block's).
     var u = random2(texel, 70u).x;
     for (var k = 0; k < count; k++) {
         let p = moving_gain(rt.moving[k], pos, n, vec3(0.0));
@@ -1521,6 +1573,7 @@ fn aldhani_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> vec3<f32> {
     var sum = 0.0;
     var chosen = 0u;
     var chosen_facing = 0.0;
+    // White (`random2`): already stratified over the two candidates, and `y` is the choice.
     let random = random2(texel, 90u);
     var pick = random.y;
     for (var c = 0u; c < 2u; c++) {
@@ -1732,6 +1785,7 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         if rt.mode.y > 0.5 && rt.light.w > 0.0 && (SKIP & 1u) == 0u {
             var disc = vec3(1.0);
             var traced = false;
+            var merged = false;
             if pass_ran(1u) && sun_from_pass {
                 let from_pass = textureLoad(sun_pass, texel, 0);
                 disc = from_pass.rgb;
@@ -1745,16 +1799,24 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
                 traced = from_pass.a < 0.0 && !behind_psr && (SKIP & 512u) == 0u;
             }
             if traced || !(pass_ran(1u) && sun_from_pass) {
-                disc = sun_disc_ray(lifted, random2(texel, 2u));
+                disc = sun_disc_ray(lifted, blue2(texel, 2u, BLUE_SUN));
                 sun_caustic = HW && hw_caustic_on && (SKIP & 512u) == 0u;
+                merged = HW && (SKIP & 8388608u) == 0u;
             }
             sun_through = mix(vec3(far_sun), disc * beyond, edge);
             // Whether a moving caster (an entity, the player's body, the view model) stands
             // between this surface and the point of the disc this frame's ray aimed at
-            // (shadow_rays_moving.wgsl): its shadow moves, `accumulate` keeps it sharp.
+            // (shadow_rays_moving.wgsl): its shadow moves, `accumulate` keeps it sharp. The ray
+            // just traced toward that point says it (`hw_light_moving`): what stopped it. A
+            // moving caster behind the terrain that shadows first may go unseen, where its shadow
+            // changes nothing. The sun pass's texels, and `SKIP` 8388608, trace the second ray.
             if HW && edge > 0.0 && (SKIP & 1024u) == 0u {
-                moving_shade = hw_moving_shadow(lifted, sun_disc_dir(random2(texel, 2u)),
-                    MOVING_REACH);
+                if merged {
+                    moving_shade = hw_light_moving >= 0.0 && hw_light_moving < MOVING_REACH;
+                } else {
+                    moving_shade = hw_moving_shadow(lifted,
+                        sun_disc_dir(blue2(texel, 2u, BLUE_SUN)), MOVING_REACH);
+                }
             }
         }
         let v = max(sun_through.r, max(sun_through.g, sun_through.b));
@@ -2204,6 +2266,7 @@ fn blocks_across() -> i32 {
             return;
         }
     }
+    blue_block = true;
     let v = trace(pixel_of(corner + 2), corner);
     sparse[block.y * blocks_across() + block.x] = SparseRay(v.rays, v.blocks, v.direct, v.sun,
         v.reservoir, gi_out_a, gi_out_b, vec4(0u), vec4(0.0));

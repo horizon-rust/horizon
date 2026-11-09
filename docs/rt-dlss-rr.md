@@ -1,0 +1,285 @@
+# DLSS Ray Reconstruction for RT lighting (design, scaffold)
+
+Part of the RTX 4090 build ([rtx-4090.md](rtx-4090.md)): Windows, an RTX 4090, Vulkan only (no DX12), VR on
+Apple Vision Pro through an OpenXR runtime (two eyes of 4400x3520 at 90 Hz) and the desktop window. This
+branch already drops main's rule of "no NVIDIA DLL at run time" ([raytracing.md](raytracing.md)). The owner
+approved NVIDIA's proprietary binaries for this.
+
+**Why.** An eye-1 frame in VR measures 5.97 ms, of which trace 1.60, the denoiser (`denoise.wgsl`, 5 à-trous
+passes) 0.55 and TAA (`taa.wgsl`) 0.45, plus the accumulation inside the trace kernel (`accumulate`,
+MAX_HISTORY 30). DLSS Ray Reconstruction (RR, NGX's feature "DLSS-D", `NVSDK_NGX_Feature_RayReconstruction` =
+13) replaces the accumulation, the denoiser and TAA with one learned pass, and it can upscale, so the rays
+can be traced at a lower internal resolution. That is the biggest lever left for both quality and cost.
+
+**State.** The scaffold is `crates/horizon-rtx/src/dlss_rr.rs`, behind the cargo feature `dlss-rr`, which is off
+by default and not wired into the frame. Without the feature the crate builds as it did before. With it, nothing
+runs unless `HORIZON_RT_DLSS_RR=1`.
+
+## 1. Loading NGX on Vulkan from Rust
+
+There are no official Rust bindings. The SDK (github.com/NVIDIA/DLSS) ships these pieces:
+
+- **headers**: `nvsdk_ngx.h`, `nvsdk_ngx_vk.h`, `nvsdk_ngx_defs*.h`, `nvsdk_ngx_params*.h`, and
+  `nvsdk_ngx_helpers*_vk.h`. The helpers are `static inline` C functions such as `NGX_VULKAN_CREATE_DLSSD_EXT1`
+  and `NGX_VULKAN_EVALUATE_DLSSD_EXT`. They do nothing more than set named parameters and call the exported
+  functions.
+- **a static library**, `nvsdk_ngx`. It exports the C functions and loads the feature DLL at run time. The
+  files are `lib/Windows_x86_64/x64/nvsdk_ngx_d.lib` (built for the dynamic CRT, which Rust's MSVC targets use by
+  default) and `nvsdk_ngx_s.lib` (for `crt-static`). On Linux it is `lib/Linux_x86_64/libnvsdk_ngx.a`, which
+  needs `stdc++` and `dl`.
+- **the runtime**, `nvngx_dlssd.dll`, holding the RR network. The driver can update it. The static library
+  looks for it in the folders given in `NVSDK_NGX_FeatureCommonInfo::PathListInfo` and beside the executable.
+
+There are two ways to bind it:
+
+| | Hand-written `ffi` + link the static lib (chosen) | Small C shim (`cc` + the SDK's helpers) |
+|---|---|---|
+| Build needs | `DLSS_SDK_DIR` only | `DLSS_SDK_DIR`, the Vulkan SDK headers and a C compiler (MSVC/clang) |
+| Fidelity to the helpers | Re-implements about 40 `Set*` calls (names checked, see §7) | Exact, calls NVIDIA's inline code |
+| Breakage on SDK update | Parameter names are a stable string ABI; struct layouts are pinned by a test | None from the helpers |
+| bindgen | Not needed | Optional |
+
+The hand-written layer is the realistic option. The ABI is small: about 12 `NVSDK_NGX_VULKAN_*` functions,
+8 `NVSDK_NGX_Parameter_*` functions, 10 small `#[repr(C)]` structs and string keys. `NVSDK_CONV` is `__cdecl`
+on MSVC (on x86-64 that is the C convention) and empty on GCC/Clang, so `extern "C"` is correct. dlss_wgpu
+(the Bevy community crate, docs.rs/dlss_wgpu) takes the shim route, with bindgen and `wrap_static_fns`. If the
+hand-written helpers ever drift from NVIDIA's, the shim is the fallback.
+
+**Build (`crates/horizon-rtx/build.rs`).** Without `dlss-rr` the script does nothing. With `dlss-rr`:
+
+- With `DLSS_SDK_DIR` set and the library present, it links `nvsdk_ngx_{d,s}` (Windows) or `nvsdk_ngx` +
+  `stdc++` + `dl` (Linux).
+- With `DLSS_SDK_DIR` missing or wrong, the build fails and says so.
+- With `HORIZON_DLSS_RR_NO_LINK=1` and no SDK, it only prints a warning and links nothing. That is enough for
+  `cargo check` and `cargo clippy` on Linux CI or this container. A binary that calls NGX then fails to link.
+
+This is the only exception to the hard error.
+
+**Calls, in order (`dlss_rr.rs`):**
+
+1. Before the Vulkan instance exists, call `required_instance_extensions()`, which wraps
+   `NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements(&FeatureDiscoveryInfo, &count, &VkExtensionProperties*)`.
+   `FeatureDiscoveryInfo` carries the SDK version (`NVSDK_NGX_Version_API` = 0x15), the feature id 13, a
+   project id with `NVSDK_NGX_ENGINE_TYPE_CUSTOM`, a data path and `FeatureCommonInfo` (DLL paths, logging).
+2. Before the device exists, call `required_device_extensions()`. It calls
+   `NVSDK_NGX_VULKAN_GetFeatureRequirements(instance, physical, &info, &FeatureRequirement)`, then
+   `..._GetFeatureDeviceExtensionRequirements(instance, physical, &info, &count, &props)`. It returns `Err` on a GPU
+   or driver without RR: that is the fallback point. The deprecated `NVSDK_NGX_VULKAN_RequiredExtensions` is not
+   used.
+3. Call `Ngx::init()`, which runs `NVSDK_NGX_VULKAN_Init_with_ProjectID(projectId, engineType, engineVersion,
+   dataPath, VkInstance, VkPhysicalDevice, VkDevice, vkGetInstanceProcAddr, vkGetDeviceProcAddr = NULL,
+   &FeatureCommonInfo, NVSDK_NGX_Version_API)`. Then `NVSDK_NGX_VULKAN_GetCapabilityParameters`. The
+   `SuperSamplingDenoising.Available` key must be 1. If it is not, `SuperSamplingDenoising.NeedsUpdatedDriver` and
+   `.FeatureInitResult` explain why. `NVSDK_NGX_VULKAN_Init(appId: u64, ...)` is the alternative for an
+   NVIDIA-assigned application id. `HORIZON_DLSS_PROJECT_ID` overrides the built-in UUID.
+4. `DlssRr::new()` allocates a parameter block (`NVSDK_NGX_VULKAN_AllocateParameters`). It sets what
+   `NGX_VULKAN_CREATE_DLSSD_EXT1` sets: node masks 1, `Width`/`Height` (render size), `OutWidth`/`OutHeight`,
+   `PerfQualityValue`, `DLSS.Feature.Create.Flags`, `DLSS.Enable.Output.Subrects`, `DLSS.Denoise.Mode` =
+   DLUnified, `DLSS.Roughness.Mode` and `DLSS.Use.HW.Depth`. Then it calls
+   `NVSDK_NGX_VULKAN_CreateFeature1(VkDevice, VkCommandBuffer, 13, params, &handle)`, which records setup
+   commands into a command buffer.
+5. Each frame, `DlssRr::evaluate()` (or `record()`, which also does the wgpu split) sets what
+   `NGX_VULKAN_EVALUATE_DLSSD_EXT` sets (§3), then calls `NVSDK_NGX_VULKAN_EvaluateFeature_C(cmd, handle, params,
+   NULL)`.
+6. `Drop` calls `NVSDK_NGX_VULKAN_ReleaseFeature` and `DestroyParameters`. The last `Arc<Ngx>` calls
+   `NVSDK_NGX_VULKAN_Shutdown1(VkDevice)`.
+
+## 2. How it fits wgpu
+
+**Extensions at creation. This is the main integration risk.** NGX's instance and device extensions must be
+enabled when Vulkan objects are created. wgpu-hal's callbacks take `&'static CStr`, so `dlss_rr::leak()` leaks
+the few names once.
+
+- **Desktop instance**: `wgpu::Instance::new(instance_descriptor(..))` (`crates/horizon-client-render/src/gfx.rs:2940`,
+  `fn instance_descriptor` at `gfx.rs:2370`) has no hook. Two options:
+  - When RR is wanted, build it with `wgpu::hal::vulkan::Instance::init_with_callback` (`third_party/wgpu-hal/src/vulkan/instance.rs:570`,
+    `CreateInstanceCallbackArgs::extensions`) and `wgpu::Instance::from_hal`, as dlss_wgpu does.
+  - Or check at start that NGX's list is a subset of what wgpu-hal already enables
+    (`Instance::desired_extensions`, `instance.rs:227`), and turn RR off otherwise.
+
+  NGX's instance list is expected to be `VK_KHR_get_physical_device_properties2`-class extensions that wgpu
+  already has, but this is **unverified**.
+- **Desktop device**: `horizon_hdr::open_vulkan_device` (`crates/horizon-hdr/src/lib.rs:13-86`) already uses
+  `open_with_callback` and pushes extra extensions (HDR metadata, SER, opacity micromaps). RR's names go into
+  the same callback (`args.extensions.push`). **There is a trap:** that function returns `None` when the GPU
+  lacks `VK_EXT_hdr_metadata` (`lib.rs:31-33`), and `gfx.rs:3033-3042` then falls back to plain
+  `adapter.request_device`, which adds no extensions at all. The HDR check has to become optional for the RR
+  extensions, or RR has to be turned off on that path. Note also that `open_with_callback` has an
+  `enumerate_device_extension_properties` gate. Each RR name has to be checked as offered before it is pushed,
+  or device creation fails.
+- **VR**: OpenXR creates both objects (`crates/horizon-xr/src/lib.rs`, `open_vulkan`).
+  - Add NGX's instance names to `instance_extensions` before `xr.create_vulkan_instance` (`lib.rs:1062-1080`).
+  - Add NGX's device names to `device_extensions` beside `RtxExtensions` (`lib.rs:990-1040`, pushed at
+    `lib.rs:1143-1150`) before `xr.create_vulkan_device`.
+  - `required_device_extensions` needs the raw instance and physical device, which exist at that point
+    (`physical`, `ash_instance`).
+- **Raw handles**: `dlss_rr::Image::of(adapter, view)` takes `TextureView::as_hal::<Vulkan>().raw_handle()`
+  (VkImageView), `Texture::as_hal::<Vulkan>().raw_handle()` (VkImage) and
+  `Adapter::texture_format_as_raw` (VkFormat, the same mapping wgpu uses). The device handles come from
+  `Device::as_hal::<Vulkan>()`, as in `RawTlas::new` (`crates/horizon-rtx/src/lib.rs`).
+- **Recording**: wgpu records an encoder's commands only at `finish`, so raw commands cannot share an encoder
+  with wgpu's (`RawTlas::build`). Use the sun pass's split instead (`crates/horizon-rtx/src/sun.rs:593-601`):
+  1. `encoder.transition_resources(..)` puts every input into `TextureUses::RESOURCE`
+     (`SHADER_READ_ONLY_OPTIMAL`, or `DEPTH_STENCIL_READ_ONLY_OPTIMAL` for depth) and the output into
+     `STORAGE_READ_WRITE` (`GENERAL`).
+  2. The encoder is finished into `split_commands`.
+  3. A fresh encoder takes the raw `EvaluateFeature` through `as_hal_mut`.
+  4. Recording carries on in a third encoder.
+
+  `gfx.rs:14900` submits `split_commands` before the frame's last buffer, in order. NGX records its own
+  barriers inside the call and leaves each image in the layout it found. wgpu's tracker still believes those
+  layouts, so no hand-back is needed. That behaviour is the documented contract of NGX's Vulkan path and is
+  **unverified** here; check it with the validation layers. dlss_wgpu documents that DLSS triggers Vulkan
+  validation errors that are safe to ignore.
+- **Command buffer for `CreateFeature1`**: record it in its own raw encoder at the first RR frame, using the
+  same split pattern.
+
+## 3. Inputs: what RR reads and where it comes from
+
+How the renderer composes light today: the kernel writes **light masks** at the rays' resolution (sun
+visibility, block light, direct light, the sun's colour, reflection, refraction:
+`crates/horizon-client-render/src/gfx/shadow_rays.wgsl:96,345,353,362,388,391`). The **world raster pass** then
+multiplies them into the textured terrain at full resolution, using a depth-aware upsampling (`terrain.wgsl:1018`
+`rt_taps_at`; `fs_solid`/`fs_opaque` at `terrain.wgsl:3050-3054`). No "colour" image exists before the scene
+image, and no G-buffer exists either. RR's noisy colour is therefore **the world pass's output when it reads
+un-accumulated, un-denoised masks**.
+
+| RR input (NGX key) | Exists today | Missing / to do |
+|---|---|---|
+| Noisy colour (`Color`): 1 spp radiance × albedo, linear HDR | The scene (`tonemap.rs:119` `SCENE_FORMAT` Rgba16Float), composed in `terrain.wgsl`. Its masks are accumulated over up to 30 frames (`shadow_rays.wgsl:1845` MAX_HISTORY, `accumulate` at `:1915`) and denoised (`denoise.wgsl`) | A kernel mode that returns `trace`'s result unaccumulated (skip `accumulate`, `:1915`). It also has to stop the "rest in turns" scheduling (`rt.frame.z`, `trace` at `:1665`), because RR wants a fresh sample at every pixel every frame. The denoiser is skipped. The terrain reads the raw masks. ReSTIR's temporal reuse can stay (RR is meant to sit on top of ReSTIR). The kernel files are not touched by this branch |
+| Output (`Output`) | | A storage-capable Rgba16Float at output size, which replaces TAA's history as the resolved scene (`taa.rs:332` `resolve`; called at `gfx.rs:14363-14378`) |
+| Depth (`Depth`) | Depth32Float, reversed Z (`GreaterEqual`, `gfx.rs:3687,3838`). In VR the prepass is at the rays' resolution (`gfx.rs:1787` `half_prepass`, `:8409-8418`) | Hardware depth: `DLSS.Use.HW.Depth` = 1 plus `DepthInverted`. It has to be the depth of the colour's own pixel grid |
+| Motion vectors (`MotionVectors`) | **Camera only.** The kernel reprojects by `prev_view_proj` and the camera's move (`shadow_rays.wgsl:27-31`, used in `accumulate`), and TAA by depth and the camera (`taa.rs:7-8`: "what moves ghosts"). Frame generation has per-entity vectors (`gfx/frame_gen/motion.rs:1-6`, `motion.wgsl`: UV units, current → previous, unjittered, entity pixels only, Rgba16Float `motion.rs:46`). It is built only when frame generation runs (`frame_gen.rs:188`). The camera part is a matrix (`frame_gen.rs:194` `camera_motion`), not an image | A full-screen motion pass: the camera's reprojection from depth for every pixel, overlaid with `ObjectMotion` for entities. Set `MV.Scale` = render size (UV to pixels) and `MVJittered` = 0. Not covered at all: water and lava surface animation, falling blocks, pistons, block entities (chests, bells), particles. Use the `DLSS.Input.Bias.Current.Color.Mask` or transparency mask for the last ones |
+| Diffuse albedo (`DLSS.Input.DiffuseAlbedo`) | Only inside the terrain fragment shader (atlas sample) | An extra colour attachment in the world pass (Rgba8Unorm, linear) |
+| Specular albedo (`DLSS.Input.SpecularAlbedo`) | | The preintegrated environment BRDF (split-sum approximation from F0, N·V and roughness), not F0: one more attachment, or computed in the compose pass |
+| Normals (`GBuffer.Normals`) | Face index only: the kernel keeps `face_in(direct.a)`; the terrain has face normals in its vertices | An attachment of world-space normals with roughness in w (`DLSS.Roughness.Mode` = Packed). `WorldToViewMatrix` and `ViewToClipMatrix` are needed in any case (row-major) |
+| Roughness (`GBuffer.Roughness`) | Material roughness of water, glass, ice and LabPBR (`gfx/materials.rs`) is used by the kernel's reflections | Packed into the normals' w |
+| Specular hit distance (`DLSSD.SpecularHitDistance`) | Only the water hit's distance (`shadow_rays.wgsl:398-400` `water_at`) | Optional but valuable for reflections: write `hw_reflect`'s t into an R16F. Specular motion vectors (`GBuffer.SpecularMvec`) are the alternative |
+| Jitter (`Jitter.Offset.X/Y`) | Halton(2,3) over 16 phases in pixels, image moved right and down (`taa.rs:29,72`, `jittered` at `:79`, `Taa::jitter` at `:300`, applied at `gfx.rs:10466-10470`). The rays use the jittered matrices (`taa.rs:13-21`) | Pass the same pixels. **Unverified**: NGX's sign convention against "image moves right/down". Test with a still camera (the image must not swim) and the SDK's dev DLL overlay. RR prefers a longer sequence than 16 phases when upscaling (the guide's phase-count rule; **unverified**) |
+| Exposure (`ExposureTexture`, `DLSS.Pre.Exposure`) | Auto-exposure runs after the resolve (`gfx.rs:8127`, `exposure.rs`). The scene is linear, in paper whites | `IsHDR` = 1, pre-exposure 1. Either feed last frame's exposure as a 1x1 R32F texture or set `AutoExposure` |
+| Reset (`Reset`) | None. The kernel's history is dropped only when its masks are recreated (resize); `masks.last` at `shadow_rays.rs:1181`, `motion.w` at `:1211-1217` | A reset flag for the view: teleport (a camera jump of more than a few blocks), dimension change, world open, resize, RT toggled, shader pack change. Per view |
+| Render subrect (`DLSS.Render.Subrect.Dimensions.*`) | | The used size of the inputs (dynamic resolution) |
+
+## 4. VR
+
+- **One feature per view**, as the kernel and TAA keep one history per view (window = 0, eyes, quad-view
+  insets: `shadow_rays.rs:12` `KEPT`). In VR that means two `DlssRr` on one `Ngx`.
+- **Resolutions.** The eye is 4400x3520 (15.5 MP, 1.87 times 4K). In the sharp zone the rays already run at
+  2x2 pixels a ray, and the VR prepass is at 2200x1760 (`half_prepass`). DLSS's published scales give these
+  render sizes:
+
+  | Mode | Scale | Render size |
+  |---|---|---|
+  | Quality | 1/1.5 | 2934x2347 |
+  | Balanced | 0.58 | 2552x2042 |
+  | Performance | 1/2 | 2200x1760 |
+
+  `Quality::render_size` encodes these scales, and NGX's `DLSSDOptimalSettingsCallback` is the authority.
+  **Performance matches the existing ray density**, so RR at Performance would cost no extra rays and the
+  world raster pass could drop to 2200x1760.
+- **Cost (estimates, to be measured).** I found no public table of RR execution times. NVIDIA's Super
+  Resolution table puts the 4090 at roughly 0.5 to 1 ms at 4K output, and RR is several times heavier:
+  community figures put it at 1.5 to 3 ms at 4K output on a 4090. That is an **estimate**. RR scales roughly
+  with output pixels, so a full 4400x3520 eye would take about **3 to 6 ms, times two eyes**. That alone is
+  most of the 11.1 ms budget, against today's 1.0 ms of denoiser + TAA per eye. **VRAM (estimate):** inputs
+  at 2200x1760 are about 34 B/px (colour 8, albedos 4+4, normals 8, motion 4, depth 4, hit distance 2), about
+  132 MB per eye, plus the 124 MB Rgba16Float output and NGX's internal history (unknown; measure with
+  `DLSSDGetStatsCallback`). Plan on 0.3 to 0.6 GB for both eyes.
+- **Run RR only in the sharp zone.** RR's model expects a uniform 1-spp signal. Two things break that:
+  - **The periphery traces one ray a 4x4 block of texels** (`cs_sparse`, `shadow_rays.wgsl:2192`; scale in
+    `shadow_rays.rs:17-30`). That is blocky, correlated structure, not noise. RR would keep it as detail or
+    smear it.
+  - **Eye 2 takes eye 1's light** where both see a surface (`from_first`, `:2095`; `rt.mode.z` 1 = eye 1's
+    accumulated light, 2 = its denoised light, `taken_out` at `:395`). Mode 2 has no meaning under RR (nothing
+    is denoised before RR). Mode 1, with eye 1's *raw* sample reprojected, gives eye 2 a fresh but
+    eye-correlated sample every frame. RR may accept it; this has to be measured (A/B: eye 2 traces its own
+    rays).
+
+  The plan is to evaluate RR in a gaze-centred rectangle only:
+  - Its inputs are written into zone-sized textures by a compose pass, so input subrects are not needed.
+  - The output goes to a subrect (`DLSS.Enable.Output.Subrects`, `DLSS.Output.Subrect.Base.X/Y`) of the eye
+    image.
+  - The periphery keeps today's accumulation, denoiser and TAA, with a feathered seam.
+
+  The zone follows the gaze, so the zone's motion vectors must include the zone's own move since last frame
+  (`mv += offset_now - offset_last`). With the 25° sharp half-angle (`SHARP_DEGREES`) the zone is roughly
+  0.35 to 0.45 of the eye's tangent extent on each side, so 12 to 20 % of the pixels: about **0.5 to 1.2 ms
+  an eye (estimate)**.
+- The desktop window has no foveation (`Foveation::screen`), so it is the first place to try RR on the whole
+  frame.
+
+## 5. Distribution and licence
+
+- **Nothing NVIDIA's is committed.** That covers no headers, no `.lib` and no DLL. `tools/check_public_tree.py`
+  and the hook guard Mojang's files; extend them to `nvngx*.dll` and `nvsdk_ngx*` when wiring this.
+- **Dev machine**: clone the SDK (github.com/NVIDIA/DLSS, release 310.x) outside the repo, set
+  `DLSS_SDK_DIR`, and build with `--features dlss-rr` (later through the game's `rtx` build).
+- **Runtime**: `nvngx_dlssd.dll` from the SDK's `lib/Windows_x86_64/rel/` folder goes beside
+  `horizon-client.exe`, or into a folder that `HORIZON_DLSS_DIR` names. The renderer passes both to
+  `Ngx::init`'s `dll_dirs`. The SDK's `dev/` DLL draws a debug overlay (jitter and MV checks). The folder
+  names are **unverified**.
+- **Licence (brief)**: the DLSS SDK licence lets the runtime DLLs ship with the application, and requires the
+  copyright and licence text from the programming guide (section 9.5 per dlss_wgpu's README) in the product's
+  notices (THIRD_PARTY_NOTICES.md). Neither the SDK nor its headers may be redistributed in source form here.
+  It forbids reverse engineering. NVIDIA asks for a project or application id. Read the SDK's `LICENSE.txt`
+  before any release; this summary is not legal advice.
+- **Non-NVIDIA GPU, old driver, missing DLL, init failure**: each step returns `Err`. These are
+  `required_device_extensions` (`GetFeatureRequirements`), `Ngx::init` (`SuperSamplingDenoising.Available`)
+  and `DlssRr::new`. The renderer logs the reason once and keeps the current accumulation, denoiser and TAA.
+  No extension is enabled that the GPU did not offer.
+
+## 6. Staged plan and A/B
+
+The switch is `HORIZON_RT_DLSS_RR=1` (`dlss_rr::wanted()`). It is off by default, and any failure falls back
+automatically.
+
+| Stage | Change (files) | A/B measurement |
+|---|---|---|
+| 0 (this) | `horizon-rtx/src/dlss_rr.rs`, `build.rs`, the `dlss-rr` feature | Builds; nothing changes at runtime |
+| 1. Extensions + init | `horizon-hdr/src/lib.rs` (RR names in the callback; HDR check made optional), `gfx.rs:2940` (instance via `init_with_callback` when wanted), `horizon-xr/src/lib.rs` (both lists), `horizon-client-render/Cargo.toml` (`dlss-rr = ["rtx", "horizon-rtx/dlss-rr"]`). Log RR's availability and extensions | Startup time, frame time unchanged with RR wanted but unused; validation layers clean apart from NGX's known ones |
+| 2. Motion vectors | A full-screen motion pass (camera from depth + `ObjectMotion` always on when RR is wanted), new `gfx/motion_vectors.rs` | Its cost (expected below 0.1 ms); a debug view (`HORIZON_RT_DEBUG`) of the vectors on moving mobs |
+| 3. G-buffer | World pass MRTs: diffuse albedo, normals + roughness, specular albedo (`terrain.wgsl`, the pipelines in `gfx.rs`) | Raster cost of the extra attachments, per eye |
+| 4. Raw kernel mode | `shadow_rays.rs`/`.wgsl`: an `rt.mode` bit that skips `accumulate`, the rest-in-turns and the denoiser (once the parallel kernel work lands) | Trace time without accumulation; the noisy image itself (debug view) |
+| 5. RR at DLAA, desktop | Evaluate after the world and its media, in place of `taa.resolve` (`gfx.rs:14363`), through `DlssRr::record` and `split_commands`; reset flag per view | Desktop 3440x1440: RR ms against accumulate + denoise + TAA (0.55 + 0.45 + accumulation); stills and motion captures against today's |
+| 6. RR upscaling, desktop | World pass and rays at `Quality::render_size`; hand and HUD unchanged after it | ms and quality at Quality/Balanced/Performance against the current RT scale 2 path |
+| 7. VR sharp zone | Zone-sized compose, output subrect, per-eye features, zone-move motion | Eye frame ms (today 5.97), the seam; eye 2 sharing on/off |
+| 8. VR whole eye (only if 7 leaves budget) | Uniform rays in the periphery at lower density instead of 4x4 sharing | Both eyes against 11.1 ms |
+
+## 7. What was checked against NVIDIA's public headers
+
+**Checked** (the SDK's `include/` on github.com/NVIDIA/DLSS, main branch, read on 9 November 2026), as
+interface facts only, with no header text copied:
+
+- **Function names, parameter types and order**: `NVSDK_NGX_VULKAN_Init`, `_Init_with_ProjectID`, `_Shutdown1`,
+  `_GetCapabilityParameters`, `_AllocateParameters`, `_DestroyParameters`, `_GetScratchBufferSize`,
+  `_CreateFeature1`, `_ReleaseFeature`, `_EvaluateFeature_C`, `_GetFeatureRequirements`,
+  `_GetFeatureInstanceExtensionRequirements` and `_GetFeatureDeviceExtensionRequirements`.
+- **Parameter functions**: `NVSDK_NGX_Parameter_Set{I,UI,F,ULL,VoidPointer}` / `Get{I,UI,VoidPointer}`. They are
+  exported functions, not inline.
+- **Calling convention**: `NVSDK_CONV` is `__cdecl` on MSVC and empty elsewhere.
+- **Struct fields**: `NVSDK_NGX_Resource_VK` (union, `Type`, `ReadWrite`), `ImageViewInfo_VK`, `BufferInfo_VK`,
+  `FeatureCommonInfo`, `PathListInfo`, `LoggingInfo`, `FeatureDiscoveryInfo`, `Application_Identifier`,
+  `ProjectIdDescription` and `FeatureRequirement`.
+- **Enum values**: `Result_Success` 0x1, the failure mask, `Version_API` 0x15, feature 13, `PerfQuality`, the
+  DLSS feature flags, `EngineType`, the denoise, roughness and depth modes, and `Resource_VK_Type`.
+- **Parameter-key strings** for every key `dlss_rr::ffi::names` lists. The mapping of each
+  `NVSDK_NGX_VK_DLSSD_Eval_Params` field to its key and setter (normals → `GBuffer.Normals`, roughness →
+  `GBuffer.Roughness`, specular hit distance → `DLSSD.SpecularHitDistance`, specular motion vectors →
+  `GBuffer.SpecularMvec`, matrices as `float*` through `SetVoidPointer`, zero scale or exposure treated as 1),
+  and of the create helper (denoise mode set to DLUnified).
+- **Library and DLL names and folders**: from dlss_wgpu's build script and README.
+
+**Unverified:**
+
+- the `DLSSDOptimalSettingsCallback` signature and its in/out keys (declared, not used yet);
+- the exact contents of NGX's instance and device extension lists;
+- NGX's layout and barrier contract on Vulkan;
+- the jitter sign;
+- the DLL folder names in the SDK;
+- that a self-chosen UUID is accepted as a project id outside development;
+- the licence wording (read `LICENSE.txt`);
+- every performance and VRAM figure in §4.
+
+The struct layouts are pinned by a test (`dlss_rr::tests`), which runs only with the feature on. On Linux it runs
+without the SDK (`HORIZON_DLSS_RR_NO_LINK=1 cargo test -p horizon-rtx --features dlss-rr`): the linker drops the
+unused NGX symbols.

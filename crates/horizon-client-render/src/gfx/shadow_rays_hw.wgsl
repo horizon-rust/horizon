@@ -127,11 +127,13 @@ fn hw_opaque(c: RayIntersection) -> bool {
     let base = hw_quad(c, false);
     if base == 0xffffffffu { return true; }
     if (arena_at(base, 4u) & 0x8000u) != 0u { return true; }
-    // The wind (gfx/wind.rs): the leaves and plants drawn sway, their structures don't; a cutout
-    // quad this near the ray's start is taken for the swaying surface's own copy.
-    if c.t < WIND_SELF_REACH && (SKIP & 4096u) == 0u { return false; }
-    var texel = vec4(-1.0);
+    // The wind (gfx/wind.rs): the leaves and plants drawn sway, their structures don't; a swaying
+    // cutout quad (a wind kind) this near the ray's start is taken for the swaying surface's own
+    // copy. A still cutout (a ladder, a rail, a trapdoor) shadows however near: its kind is read
+    // first, the word that holds its layer is already in hand and every farther hit needs it too.
     let kind = wind_class(arena_at(base, 4u) & 0x7fffu);
+    if kind != 0u && c.t < WIND_SELF_REACH && (SKIP & 4096u) == 0u { return false; }
+    var texel = vec4(-1.0);
     if kind != 0u && (SKIP & (4096u | 131072u)) == 0u {
         texel = hw_swayed_texel(c, base, kind);
     } else {
@@ -345,6 +347,12 @@ var<private> hw_caustic: vec4<f32>;
 var<private> hw_caustic_sea: f32;
 // The length the sun's shadow ray runs inside ice (x) and packed ice (y): `hw_tint`.
 var<private> hw_ice_run: vec2<f32>;
+// The distance to the moving caster (an entity, the player's body, the view model: a row of
+// `DYN_ENTITY`) that stopped the last `hw_light` ray, -1 when none did (it reached the light, or
+// the terrain or a cloud stopped it). The sun's ray says with it whether its shadow moves
+// (shadow_rays.wgsl `trace`), with no second ray masked to the moving casters
+// (shadow_rays_moving.wgsl, kept for `SKIP` 8388608).
+var<private> hw_light_moving: f32 = -1.0;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     var q: ray_query;
     // The instances stand around their anchor (gfx/hw_rays.rs): the camera's offset from it. The
@@ -355,6 +363,7 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     hw_caustic_on = false;
     hw_water_t = -1.0;
     hw_ice_run = vec2(0.0);
+    hw_light_moving = -1.0;
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index == instances[c.instance_custom_data].at.w {
@@ -366,7 +375,11 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
         }
     }
     let hit = rayQueryGetCommittedIntersection(&q);
-    if hit.kind != RAY_QUERY_INTERSECTION_NONE { return vec3(0.0); }
+    if hit.kind != RAY_QUERY_INTERSECTION_NONE {
+        // Read once a ray ends in shadow, out of the search's loop.
+        if instances[hit.instance_custom_data].at.x == DYN_ENTITY { hw_light_moving = hit.t; }
+        return vec3(0.0);
+    }
     // Ice's body (shadow_rays_psr.wgsl `ice_body`): the light a hill of ice lets through.
     if rt.held.w > 0.5 {
         through *= exp(-ICE_EXTINCTION * max(hw_ice_run.x, 0.0)
@@ -568,6 +581,8 @@ const WATER_ABSORPTION: vec3<f32> = vec3(0.025541, 0.005268, 0.005827);
 const WATER_TINT_ABSORPTION: f32 = 0.06;
 // What real water adds to Remix's clear medium (terrain.wgsl `WATER_PURE_ABSORPTION`).
 const WATER_PURE_ABSORPTION: vec3<f32> = vec3(0.30, 0.045, 0.012);
+// The translucent candidates `hw_hit` keeps (its `seen`'s length).
+const HW_SEEN: u32 = 4u;
 // The nearest opaque triangle from camera-relative `pos` along `l` (unit) within `reach`, as
 // Remix's bounce rays meet it: its distance (-1 none), its face's normal toward the ray, its
 // texel's colour times the vertex tint in light (the grid's map colour past the first arena page
@@ -578,16 +593,77 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     var q: ray_query;
     hw_water_t = -1.0;
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
-    var through = vec3(1.0);
+    // The candidates come in the structure's order, not by distance: a translucent one may lie
+    // past the opaque hit committed after it, and must not tint (or wet) what that hit shows. They
+    // are kept (`HW_SEEN` at most, the nearest: what each lets through and its distance; which of
+    // them are water in `wet`'s bits) and applied once the hit is known. Past `HW_SEEN`, those dropped multiply
+    // into `tail`, applied whole when the nearest of them lies before the hit: the kept ones are
+    // always the nearest, so only a hit among the dropped ones gets more tint than it should.
+    var seen: array<vec4<f32>, 4>;
+    var count = 0u;
+    var wet = 0u;
+    var tail = vec4(1.0, 1.0, 1.0, 3.4e38);
+    var tail_water = 3.4e38;
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index == instances[c.instance_custom_data].at.w {
-            through *= hw_tint(c, pos, l, false);
+            // `hw_tint` says a water quad by setting `hw_water_t` to its distance (its own test
+            // against the last one is order-bound: the twin faces are told apart here instead).
+            hw_water_t = -1.0;
+            var e = vec4(hw_tint(c, pos, l, false), c.t);
+            var e_wet = hw_water_t >= 0.0;
+            // The top's backward face lies on the top (`hw_tint`): the light is dimmed once.
+            var twin = false;
+            if e_wet && (SKIP & 512u) == 0u {
+                twin = abs(tail_water - c.t) < 1e-3;
+                for (var i = 0u; i < count; i++) {
+                    twin = twin || (((wet >> i) & 1u) != 0u && abs(seen[i].w - c.t) < 1e-3);
+                }
+            }
+            if !twin {
+                if count < HW_SEEN {
+                    seen[count] = e;
+                    wet |= select(0u, 1u << count, e_wet);
+                    count += 1u;
+                } else {
+                    // Full: the farthest of the kept and this one, the farther goes to `tail`.
+                    var far = 0u;
+                    for (var i = 1u; i < HW_SEEN; i++) {
+                        if seen[i].w > seen[far].w { far = i; }
+                    }
+                    if seen[far].w > c.t {
+                        let kept = e;
+                        let kept_wet = e_wet;
+                        e = seen[far];
+                        e_wet = ((wet >> far) & 1u) != 0u;
+                        seen[far] = kept;
+                        wet = (wet & ~(1u << far)) | select(0u, 1u << far, kept_wet);
+                    }
+                    tail = vec4(tail.rgb * e.rgb, min(tail.w, e.w));
+                    if e_wet { tail_water = min(tail_water, e.w); }
+                }
+            }
         } else if hw_opaque(c) {
             rayQueryConfirmIntersection(&q);
         }
     }
     let hit = rayQueryGetCommittedIntersection(&q);
+    // What lies before the hit (on a miss, all of it) lets its light through; the nearest water
+    // there is where the ray went into it.
+    let before = select(3.4e38, hit.t, hit.kind != RAY_QUERY_INTERSECTION_NONE);
+    var through = vec3(1.0);
+    var nearest_water = 3.4e38;
+    for (var i = 0u; i < count; i++) {
+        if seen[i].w <= before {
+            through *= seen[i].rgb;
+            if ((wet >> i) & 1u) != 0u { nearest_water = min(nearest_water, seen[i].w); }
+        }
+    }
+    if tail.w <= before {
+        through *= tail.rgb;
+        if tail_water <= before { nearest_water = min(nearest_water, tail_water); }
+    }
+    hw_water_t = select(-1.0, nearest_water, nearest_water < 3.4e38);
     // Gone down into water (`hw_tint`): its medium over the length run under the surface.
     var water = -1.0;
     if hw_water_t >= 0.0 && l.y < -0.02 && (SKIP & 8192u) == 0u {

@@ -72,6 +72,11 @@ fn signal(c: vec4<f32>, q: vec2<i32>, first: bool) -> vec3<f32> {
     if first { return usable(c.rgb + max(textureLoad(direct, q, 0).rgb, vec3(0.0))); }
     return usable(c.rgb);
 }
+// The light a tap filters with its direct light already read (`signal`).
+fn signal_of(c: vec3<f32>, direct_light: vec3<f32>, first: bool) -> vec3<f32> {
+    if first { return usable(c + max(direct_light, vec3(0.0))); }
+    return usable(c);
+}
 // A value with its NaNs and infinities as 0 (by their bits, as shadow_rays.wgsl `finite`).
 fn finite(x: f32) -> f32 {
     return select(x, 0.0, (bitcast<u32>(x) & 0x7f800000u) == 0x7f800000u);
@@ -83,6 +88,23 @@ fn finite(x: f32) -> f32 {
 fn usable(c: vec3<f32>) -> vec3<f32> {
     return clamp(vec3(finite(c.r), finite(c.g), finite(c.b)), vec3(0.0), vec3(65000.0));
 }
+
+// `HORIZON_RT_SKIP` (gfx/shadow_rays.rs `set_skip`): 4194304 filters every pixel through every
+// pass as before the early-out (`filter_before`), to time and compare the two.
+override SKIP: u32 = 0u;
+const SKIP_EARLY_OUT: u32 = 4194304u;
+// A pixel's history when full (shadow_rays.wgsl `MAX_HISTORY`).
+const FULL_HISTORY: f32 = 30.0;
+// The noise a pass may find left in a pixel with a full history, as a share of its light, below
+// which the pass passes the light through unfiltered: 1%, about one step of an 8-bit display at
+// mid grey. The noise left is the passes' own estimate of it: the frame's standard deviation (from
+// the moments) over the square root of the 30 frames averaged (fewer than the exponential
+// average's ~60, as the bounced light's turns and the reprojection share samples), divided by
+// the pass's spacing in blocks as `spread` is, trusted only up to CONVERGED_SPACING: a pixel
+// converges on its first pass at a frame's deviation of 5.5% of its light (above the ~4% the half
+// floats' rounding of the moments can leave on steady light), on the passes of 4 and over at 22%.
+const CONVERGED: f32 = 0.01;
+const CONVERGED_SPACING: i32 = 4;
 
 // The filter's kernel, the linear B-spline's weights.
 const KERNEL: array<f32, 3> = array<f32, 3>(0.25, 0.5, 0.25);
@@ -134,27 +156,9 @@ fn takes(p: vec2<i32>, taken_at: u32) -> bool {
     return copied >= 0.25 * own;
 }
 
-@compute @workgroup_size(8, 8) fn cs_denoise(@builtin(global_invocation_id) id: vec3<u32>) {
-    let size = vec2<i32>(textureDimensions(input));
-    let p = vec2<i32>(id.xy);
-    if any(p >= size) { return; }
-    if rt.mode.z > 1.5 {
-        let taken_at = textureLoad(taken, p, 0).r;
-        if DEBUG == 12u && params.step.y == 1 {
-            textureStore(output, p, debug_share(p, taken_at));
-            return;
-        }
-        if takes(p, taken_at) {
-            if params.step.x == 1 {
-                let t = vec2<i32>(i32(taken_at & 0xffffu) - 1, i32(taken_at >> 16u));
-                let l = textureLoad(first_light, t, 0);
-                textureStore(output, p, vec4(usable(l.rgb), finite(l.a)));
-            } else if params.step.x == 2 {
-                textureStore(output, p, textureLoad(input, p, 0));
-            }
-            return;
-        }
-    }
+// The filter as it was before the early-out (`HORIZON_RT_SKIP` 4194304), word for word, so the two
+// can be timed and compared in one session.
+fn filter_before(p: vec2<i32>, size: vec2<i32>) -> vec4<f32> {
     let centre = textureLoad(input, p, 0);
     let first = params.step.x == 1;
     // Away from VR's sharp zone a 4x4 block of texels shares one ray (shadow_rays.wgsl
@@ -165,8 +169,7 @@ fn takes(p: vec2<i32>, taken_at: u32) -> bool {
     // `HORIZON_RT_DENOISE_FOVEA=0` filters the periphery as the sharp zone.
     let span = select(1, 4, params.step.z == 1 && !sharp_block(p));
     if params.step.x < span {
-        textureStore(output, p, vec4(signal(centre, p, first), finite(centre.a)));
-        return;
+        return vec4(signal(centre, p, first), finite(centre.a));
     }
     let d0 = textureLoad(mask, p, 0).a;
     let here = textureLoad(direct, p, 0);
@@ -221,5 +224,132 @@ fn takes(p: vec2<i32>, taken_at: u32) -> bool {
         }
         if weight > 1e-5 { light = sum / weight; }
     }
+    return vec4(usable(light), finite(centre.a));
+}
+
+@compute @workgroup_size(8, 8) fn cs_denoise(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = vec2<i32>(textureDimensions(input));
+    let p = vec2<i32>(id.xy);
+    if any(p >= size) { return; }
+    if rt.mode.z > 1.5 {
+        let taken_at = textureLoad(taken, p, 0).r;
+        if DEBUG == 12u && params.step.y == 1 {
+            textureStore(output, p, debug_share(p, taken_at));
+            return;
+        }
+        if takes(p, taken_at) {
+            if params.step.x == 1 {
+                let t = vec2<i32>(i32(taken_at & 0xffffu) - 1, i32(taken_at >> 16u));
+                let l = textureLoad(first_light, t, 0);
+                textureStore(output, p, vec4(usable(l.rgb), finite(l.a)));
+            } else if params.step.x == 2 {
+                textureStore(output, p, textureLoad(input, p, 0));
+            }
+            return;
+        }
+    }
+    if (SKIP & SKIP_EARLY_OUT) != 0u {
+        textureStore(output, p, filter_before(p, size));
+        return;
+    }
+    let centre = textureLoad(input, p, 0);
+    let first = params.step.x == 1;
+    // Away from VR's sharp zone a 4x4 block of texels shares one ray (shadow_rays.wgsl
+    // `cs_sparse`): the passes spaced within a block (1 and 2) would blur copies of it. There the
+    // filter starts at a block's spacing, its passes of 4, 8 and 16 being the sharp zone's of 1,
+    // 2 and 4 counted in blocks (the anti-firefly against the neighbouring blocks, the variance
+    // scaled as theirs); the passes before it pass the light on, the direct added on the first.
+    // `HORIZON_RT_DENOISE_FOVEA=0` filters the periphery as the sharp zone.
+    let span = select(1, 4, params.step.z == 1 && !sharp_block(p));
+    if params.step.x < span {
+        textureStore(output, p, vec4(signal(centre, p, first), finite(centre.a)));
+        return;
+    }
+    let d0 = textureLoad(mask, p, 0).a;
+    let here = textureLoad(direct, p, 0);
+    let face = face_in(here.a);
+    // The centre's light, its direct read once.
+    let own = signal_of(centre.rgb, here.rgb, first);
+    // (The test the filter runs under, negated, so a NaN distance stays unfiltered as before.)
+    if !(d0 >= 0.0 && centre.a >= 0.0) {
+        textureStore(output, p, vec4(own, finite(centre.a)));
+        return;
+    }
+    let step = params.step.x;
+    let mean = luminance(textureLoad(accumulated, p, 0).rgb + max(here.rgb, vec3(0.0)));
+    var variance = max(textureLoad(moments, p, 0).a - mean * mean, 0.0);
+    // (`n + 32` while the anti-lag's flag is set: shadow_rays.wgsl `history_in`.)
+    let packed = floor(here.a / 8.0);
+    let history = packed - 32.0 * floor(packed / 32.0);
+    if history < SHORT_HISTORY {
+        // As if each missing frame left the light's own size of noise.
+        variance = max(variance, mean * mean * (SHORT_HISTORY - history) / SHORT_HISTORY);
+    }
+    // Converged (`CONVERGED`): a full history whose light this pass would find steady passes it
+    // through before any neighbour is read, its detail kept (a contact shadow, the edge of a lit
+    // patch, which the wide passes soften). Each pass tests it again at its own spacing, so a
+    // pixel the first passes filtered may still skip the last; one just uncovered (a short
+    // history) or whose light changed (the anti-lag cut it) takes every pass. Steady light needs
+    // no anti-firefly: a lucky ray shows in the moments.
+    let left = sqrt(variance / FULL_HISTORY) / f32(min(step / span, CONVERGED_SPACING));
+    if history > FULL_HISTORY - 0.5 && left <= CONVERGED * mean {
+        textureStore(output, p, vec4(own, finite(centre.a)));
+        return;
+    }
+    // The taps, each read once (on the anti-firefly's pass it and the filter take the same eight),
+    // the distance and face first so a tap across an edge costs no light read; a tap left out has
+    // a distance below 0. The centre's are its own.
+    var taps: array<vec3<f32>, 9>;
+    var depths: array<f32, 9>;
+    for (var y = 0; y < 3; y++) {
+        for (var x = 0; x < 3; x++) {
+            let i = y * 3 + x;
+            depths[i] = -1.0;
+            if x == 1 && y == 1 {
+                taps[i] = own;
+                depths[i] = d0;
+                continue;
+            }
+            let q = clamp(p + vec2(x - 1, y - 1) * step, vec2(0), size - 1);
+            let d = textureLoad(mask, q, 0).a;
+            if d < 0.0 { continue; }
+            let there = textureLoad(direct, q, 0);
+            if abs(face_in(there.a) - face) > 0.5 { continue; }
+            let c = textureLoad(input, q, 0);
+            if c.a < 0.0 { continue; }
+            taps[i] = signal_of(c.rgb, there.rgb, first);
+            depths[i] = d;
+        }
+    }
+    var light = own;
+    if step == span {
+        var brightest = 0.0;
+        for (var i = 0; i < 9; i++) {
+            if i == 4 || depths[i] < 0.0 { continue; }
+            brightest = max(brightest, luminance(taps[i]));
+        }
+        let l = luminance(light);
+        let cap = FIREFLY * brightest + 1e-3;
+        if brightest > 0.0 && l > cap { light *= cap / l; }
+    }
+    let tolerance = 0.03 * d0 + 0.05;
+    // Coarser passes see less noise (each already averaged some), as SVGF's filtered variance.
+    let spread = LIGHT_SIGMA * sqrt(variance) / f32(step / span) + 0.02 * mean + 1e-3;
+    let l0 = luminance(light);
+    var sum = vec3(0.0);
+    var weight = 0.0;
+    for (var y = 0; y < 3; y++) {
+        for (var x = 0; x < 3; x++) {
+            let i = y * 3 + x;
+            let d = depths[i];
+            if d < 0.0 { continue; }
+            let s = taps[i];
+            let w = KERNEL[x] * KERNEL[y] * exp(-abs(d - d0) / tolerance)
+                * exp(-abs(luminance(s) - l0) / spread);
+            sum += s * w;
+            weight += w;
+        }
+    }
+    if weight > 1e-5 { light = sum / weight; }
     textureStore(output, p, vec4(usable(light), finite(centre.a)));
 }

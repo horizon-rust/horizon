@@ -245,6 +245,7 @@ const HARDWARE: &str = concat!(
 const NO_HARDWARE: &str = "
 const HW: bool = false;
 var<private> hw_caustic_on: bool = false;
+var<private> hw_light_moving: f32 = -1.0;
 const GI_HW_VISIBILITY: bool = false;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> { return vec3(-1.0); }
 fn hw_visible(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> bool { return true; }
@@ -415,6 +416,9 @@ pub struct ShadowRays {
     /// RT lighting's denoiser (denoise.wgsl): its pipeline and layout, a uniform a pass.
     denoise: wgpu::ComputePipeline,
     denoise_layout: wgpu::BindGroupLayout,
+    /// What `denoise` is made of, to make it again with another `SKIP` (`set_skip`).
+    denoise_shader: wgpu::ShaderModule,
+    denoise_pipeline_layout: wgpu::PipelineLayout,
     denoise_params: [wgpu::Buffer; 5],
     /// RT lighting's radiance cache (shadow_rays.wgsl `CacheCell`, radiance_cache.wgsl), shared by
     /// every view, and its resolve's pipeline and group.
@@ -453,6 +457,11 @@ pub struct ShadowRays {
     /// The bounce pass's stand-ins (`gi_pass_a`, `gi_pass_b`, bound at 62 and 63).
     no_gi_pass: [wgpu::TextureView; 2],
 }
+
+/// `HORIZON_RT_SKIP`'s bit for white noise everywhere (shadow_rays.wgsl `blue2`): the kernel's own
+/// `SKIP`, and bit 4 of `rt.mode.w` for the RTX 4090 build's passes (horizon-rtx shaders/sun.rgen,
+/// gi.rgen), whose `SKIP` this is not.
+const WHITE_NOISE: u32 = 2_097_152;
 
 /// VR's second eye takes the first eye's light (`ShadowRays::run`); off, it traces its own
 /// (`horizon-ctl rt-skip 32`, to time it).
@@ -493,17 +502,70 @@ fn kernel(
     })
 }
 
+/// The denoiser (denoise.wgsl `cs_denoise`) leaving out what `skip` says (denoise.wgsl `SKIP`:
+/// `DENOISE_EARLY_OUT`), with `HORIZON_RT_DEBUG=12`'s view of what VR's second eye took
+/// (`debug_share`).
+fn denoiser(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    skip: u32,
+) -> wgpu::ComputePipeline {
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("RT lighting's denoiser"),
+        layout: Some(layout),
+        module: shader,
+        entry_point: Some("cs_denoise"),
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &[
+                (
+                    "DEBUG",
+                    std::env::var("HORIZON_RT_DEBUG")
+                        .ok()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .map_or(0.0, f64::from),
+                ),
+                // `HORIZON_RT_SHARE_GUARD=1`, a trial (denoise.wgsl `takes`).
+                (
+                    "SHARE_GUARD",
+                    f64::from(u8::from(
+                        std::env::var("HORIZON_RT_SHARE_GUARD").is_ok_and(|v| v == "1"),
+                    )),
+                ),
+                ("SKIP", f64::from(skip & DENOISE_EARLY_OUT)),
+            ],
+            ..Default::default()
+        },
+        cache: None,
+    })
+}
+
+/// `HORIZON_RT_SKIP`'s bit for the denoiser's early-out (denoise.wgsl `SKIP_EARLY_OUT`): set, every
+/// pixel takes every pass as before it.
+const DENOISE_EARLY_OUT: u32 = 4_194_304;
+
 impl ShadowRays {
     /// Makes the kernel again leaving out what `skip` says (shadow_rays.wgsl `SKIP`: 1 the sun's
     /// ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 16 the bounced light's turns; 32 VR's second
     /// eye's own light, `SHARE_EYES`; 64 the far field, 128 the translucent tint, 32768 a dark history
-    /// left to climb by itself), in a running game, to time each part alone
-    /// (`horizon-ctl rt-skip`); 0 traces it all again.
+    /// left to climb by itself, 8388608 the moving casters' own second ray toward the sun instead
+    /// of the sun's ray telling them, shadow_rays_moving.wgsl; 4194304 the denoiser's early-out on
+    /// converged pixels, denoise.wgsl `SKIP`, which then filters every pixel through every pass as
+    /// before; 2097152 white noise for every sample, not `blue2`'s blue noise: `WHITE_NOISE`), in
+    /// a running game, to time each part alone (`horizon-ctl rt-skip`); 0 traces it all again.
     pub fn set_skip(&mut self, device: &wgpu::Device, skip: u32) {
         SHARE_EYES.store(skip & 32 == 0, std::sync::atomic::Ordering::Relaxed);
         let skip = skip & !32;
         if skip == self.skip {
             return;
+        }
+        if (skip ^ self.skip) & DENOISE_EARLY_OUT != 0 {
+            self.denoise = denoiser(
+                device,
+                &self.denoise_pipeline_layout,
+                &self.denoise_shader,
+                skip,
+            );
         }
         self.skip = skip;
         self.pipeline = kernel(
@@ -810,39 +872,13 @@ impl ShadowRays {
                 entry(9, read),
             ],
         });
-        let denoise = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("RT lighting's denoiser"),
-            layout: Some(
-                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("RT lighting's denoiser"),
-                    bind_group_layouts: &[Some(&denoise_layout)],
-                    ..Default::default()
-                }),
-            ),
-            module: &denoise_shader,
-            entry_point: Some("cs_denoise"),
-            // `HORIZON_RT_DEBUG=12`: what VR's second eye took (denoise.wgsl `debug_share`).
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[
-                    (
-                        "DEBUG",
-                        std::env::var("HORIZON_RT_DEBUG")
-                            .ok()
-                            .and_then(|v| v.parse::<u32>().ok())
-                            .map_or(0.0, f64::from),
-                    ),
-                    // `HORIZON_RT_SHARE_GUARD=1`, a trial (denoise.wgsl `takes`).
-                    (
-                        "SHARE_GUARD",
-                        f64::from(u8::from(
-                            std::env::var("HORIZON_RT_SHARE_GUARD").is_ok_and(|v| v == "1"),
-                        )),
-                    ),
-                ],
+        let denoise_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("RT lighting's denoiser"),
+                bind_group_layouts: &[Some(&denoise_layout)],
                 ..Default::default()
-            },
-            cache: None,
-        });
+            });
+        let denoise = denoiser(device, &denoise_pipeline_layout, &denoise_shader, skip);
         let denoise_params = std::array::from_fn(|i| {
             use wgpu::util::DeviceExt;
             let last = i32::from(i == DENOISE_STEPS.len() - 1);
@@ -901,6 +937,8 @@ impl ShadowRays {
             resolve_group,
             denoise,
             denoise_layout,
+            denoise_shader,
+            denoise_pipeline_layout,
             denoise_params,
             hardware,
             layout,
@@ -1115,9 +1153,9 @@ impl ShadowRays {
         // lies in front, the only texels whose mirrors and refraction look for it.
         cover: Option<&wgpu::TextureView>,
         // The RTX 4090 build's ray tracing pipeline (horizon-rtx `sun`): which of its passes run
-        // (`rt.mode.w`'s bits: 1 the sun, 2 the bounce), and what records them for this view once
-        // the uniform is written, given the encoder, the uniform and the mask's size, giving the
-        // textures the kernel reads in place of its own rays.
+        // (`rt.mode.w`'s bits: 1 the sun, 2 the bounce; 4, set here, `WHITE_NOISE`), and what
+        // records them for this view once the uniform is written, given the encoder, the uniform
+        // and the mask's size, giving the textures the kernel reads in place of its own rays.
         sun_pass: Option<(u32, &mut PipelinePass<'_>)>,
     ) -> [wgpu::TextureView; 5] {
         let scale = foveation.scale;
@@ -1205,7 +1243,8 @@ impl ShadowRays {
                     (Some(_), None) => 1.0,
                     (None, _) => 0.0,
                 },
-                sun_pass.as_ref().map_or(0.0, |(bits, _)| *bits as f32),
+                (sun_pass.as_ref().map_or(0, |(bits, _)| *bits)
+                    | if self.skip & WHITE_NOISE != 0 { 4 } else { 0 }) as f32,
             ],
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
             motion: match last {
@@ -1562,6 +1601,46 @@ mod tests {
         ]
         .map(|(name, offset)| (name.to_string(), offset as u32));
         assert_eq!(offsets, expected);
+    }
+
+    #[test]
+    fn the_denoiser_builds_with_and_without_its_early_out() {
+        // wgpu refuses a pipeline constant the shader lacks: `denoiser` sets these three, and the
+        // denoiser must translate with `HORIZON_RT_SKIP`'s bit (`DENOISE_EARLY_OUT`) set or not.
+        let source = include_str!("denoise.wgsl");
+        let module = naga::front::wgsl::parse_str(source).expect("the denoiser");
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("a valid denoiser");
+        for skip in [0, super::DENOISE_EARLY_OUT, u32::MAX] {
+            let mut constants = naga::back::PipelineConstants::default();
+            constants.insert("DEBUG".to_string(), 0.0);
+            constants.insert("SHARE_GUARD".to_string(), 0.0);
+            constants.insert(
+                "SKIP".to_string(),
+                f64::from(skip & super::DENOISE_EARLY_OUT),
+            );
+            let (m, i) = naga::back::pipeline_constants::process_overrides(
+                &module,
+                &info,
+                Some((naga::ShaderStage::Compute, "cs_denoise")),
+                &constants,
+            )
+            .unwrap_or_else(|e| panic!("the denoiser's constants, SKIP {skip}: {e}"));
+            naga::back::spv::write_vec(
+                &m,
+                &i,
+                &naga::back::spv::Options::default(),
+                Some(&naga::back::spv::PipelineOptions {
+                    shader_stage: naga::ShaderStage::Compute,
+                    entry_point: "cs_denoise".to_string(),
+                }),
+            )
+            .unwrap_or_else(|e| panic!("the denoiser in SPIR-V, SKIP {skip}: {e}"));
+        }
     }
 
     #[test]

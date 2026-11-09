@@ -1,6 +1,8 @@
 // RT lighting's moving casters (gfx/hw_rays.rs `MOVING_MASK`): the entities, the player's body and
 // the view model sit in the top-level structure with a mask bit the terrain's sections lack, so a
-// ray masked to it meets them alone. `trace` sends one toward the sun beside the sun's own ray:
+// ray masked to it meets them alone. `trace` sends one toward the sun beside the sun's own ray
+// where the sun pass gave the sun's light, or with `SKIP` 8388608 (otherwise the sun's own ray
+// says what stopped it, `hw_light_moving`):
 // where it meets one, the shadow there moves with its caster, and `accumulate` keeps the sun's
 // history short (a few frames) instead of the 30 a still shadow averages, so the shadow of a block
 // in the hand, of the player or of a mob follows it sharp rather than trailing behind.
