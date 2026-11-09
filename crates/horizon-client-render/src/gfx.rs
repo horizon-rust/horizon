@@ -7641,6 +7641,11 @@ impl Renderer {
         self.lod_pending = None;
         self.detail_columns.clear();
         self.detail_revision += 1;
+        // The rays' structures go with them: another level at the same coordinates would
+        // otherwise keep casting the old terrain's shadows (`HwRays::clear`).
+        if let Some(hw) = &mut self.hw_rays {
+            hw.clear();
+        }
         // A dimension change drops every page at once: freed later, off this thread.
         self.graveyard.add(self.arena.clear());
         if let Some(gpu) = &mut self.gpu_culling {

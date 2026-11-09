@@ -510,6 +510,21 @@ impl HwRays {
         }
     }
 
+    /// Every section went at once (another level, another world): their structures leave the rays
+    /// now, none standing in for a new mesh (the new level's section at the same key is other
+    /// terrain, and a key the new level leaves empty would keep the old one's shadow for good).
+    /// They wait in the graveyard `GRAVE_FRAMES` frames like any other, the frames in flight and
+    /// the raw builds not yet submitted (`raw_sections`) still reading them; the micromaps worked
+    /// out for the old meshes go too, so the new level's sections don't take them.
+    pub fn clear(&mut self) {
+        let now = self.frames;
+        self.graveyard
+            .extend(self.built.drain().map(|(_, old)| (now, old)));
+        self.stale.clear();
+        self.micromaps.retain(|_| false);
+        self.changed = true;
+    }
+
     /// Whether `key` is within `RADIUS` chunks of chunk `center`.
     pub fn near(center: (i32, i32), key: SectionKey) -> bool {
         (key.0 - center.0).abs() <= RADIUS && (key.2 - center.1).abs() <= RADIUS
