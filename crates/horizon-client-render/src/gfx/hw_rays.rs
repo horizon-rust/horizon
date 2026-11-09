@@ -201,10 +201,19 @@ struct Moving {
 /// (a world opened again, a setting changed) replaced thousands at once.
 const GRAVE_FRAMES: u64 = 8;
 
+/// A structure kept in the graveyard: a section's, or a moving one outgrown or gone (the
+/// entities', the view model's, a cloud tile's), which the raw build references the same way.
+/// Only held, never read.
+#[allow(dead_code)]
+enum Grave {
+    Section(Built),
+    Moving(Moving),
+}
+
 pub struct HwRays {
     built: HashMap<SectionKey, Built>,
-    /// Structures gone from `built`, kept `GRAVE_FRAMES` frames (by `frames`).
-    graveyard: std::collections::VecDeque<(u64, Built)>,
+    /// Structures gone from `built` or replaced, kept `GRAVE_FRAMES` frames (by `frames`).
+    graveyard: std::collections::VecDeque<(u64, Grave)>,
     frames: u64,
     /// Sections meshed again whose old structure stands in until the new one is built, and the
     /// frames it has stood in: the section never leaves the rays between its two meshes (it
@@ -257,6 +266,17 @@ pub struct HwRays {
     /// (docs/rtx-4090.md, phase 1: the measured gain was 0.3 ms of the 1.3 the any-hit floor
     /// promised).
     stat: [u64; 3],
+    /// To wait for the GPU before the structures go (`Drop`).
+    device: wgpu::Device,
+}
+
+impl Drop for HwRays {
+    /// Frames in flight may still trace the structures the raw build references by address,
+    /// which wgpu doesn't hold for them: the renderer made again (a setting, the window) would
+    /// free them all under those frames, the device lost. It is rare, so it waits.
+    fn drop(&mut self) {
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+    }
 }
 
 /// Sections between two lines of the opaque share in the log.
@@ -364,16 +384,17 @@ fn moving_entry<'a>(
 }
 
 /// Makes `slot`'s structure again for `quads` quads when it is missing or too small (a power of
-/// two, so a growing crowd does not remake it every frame).
+/// two, so a growing crowd does not remake it every frame), handing back the one it replaces for
+/// the graveyard (frames in flight may still trace it).
 fn ensure_moving(
     device: &wgpu::Device,
     raw: Option<&RawTlas>,
     slot: &mut Option<Moving>,
     quads: u32,
     label: &'static str,
-) {
+) -> Option<Moving> {
     if slot.as_ref().is_some_and(|m| m.quads >= quads) {
-        return;
+        return None;
     }
     let held = quads.next_power_of_two().max(64);
     let mut blas = device.create_blas(
@@ -391,11 +412,11 @@ fn ensure_moving(
         },
     );
     let address = raw.and_then(|r| r.blas_address(&mut blas)).unwrap_or(0);
-    *slot = Some(Moving {
+    slot.replace(Moving {
         blas,
         quads: held,
         address,
-    });
+    })
 }
 
 /// How far the camera may move from the anchor before the instances are placed again, in blocks
@@ -477,6 +498,7 @@ impl HwRays {
             moving: 0,
             hand_scratch: Vec::new(),
             stat: [0; 3],
+            device: device.clone(),
         }
     }
 
@@ -560,7 +582,7 @@ impl HwRays {
         for key in gone {
             self.stale.remove(&key);
             if let Some(old) = self.built.remove(&key) {
-                self.graveyard.push_back((now, old));
+                self.graveyard.push_back((now, Grave::Section(old)));
             }
         }
         for t in todo {
@@ -574,7 +596,7 @@ impl HwRays {
             .collect();
         for key in far {
             if let Some(old) = self.built.remove(&key) {
-                self.graveyard.push_back((now, old));
+                self.graveyard.push_back((now, Grave::Section(old)));
             }
         }
         self.micromaps.frame();
@@ -727,7 +749,7 @@ impl HwRays {
                 },
             );
             if let Some(old) = old {
-                self.graveyard.push_back((self.frames, old));
+                self.graveyard.push_back((self.frames, Grave::Section(old)));
             }
         }
         for ((((t, size), buffer), (_, parts)), raw) in todo
@@ -910,11 +932,19 @@ impl HwRays {
             );
         }
         // The cloud tiles: a structure each, made when the tile comes (a tile with another level of
-        // detail has another key) and dropped with it; the wind only moves its instance.
-        let before = self.clouds.len();
-        self.clouds
-            .retain(|key, _| dynamic.clouds.iter().any(|t| t.key == *key));
-        let mut changed = self.clouds.len() != before;
+        // detail has another key) and buried with it; the wind only moves its instance.
+        let gone: Vec<TileKey> = self
+            .clouds
+            .keys()
+            .filter(|key| !dynamic.clouds.iter().any(|t| t.key == **key))
+            .copied()
+            .collect();
+        let mut changed = !gone.is_empty();
+        for key in gone {
+            if let Some(old) = self.clouds.remove(&key) {
+                self.graveyard.push_back((self.frames, Grave::Moving(old)));
+            }
+        }
         let mut fresh = Vec::new();
         for tile in &dynamic.clouds {
             if self.clouds.contains_key(&tile.key) || fresh.len() >= CLOUDS_PER_FRAME {
@@ -966,23 +996,27 @@ impl HwRays {
             return;
         }
         // The moving structures, built again from this frame's vertices.
-        if entity_quads > 0 {
-            ensure_moving(
+        if entity_quads > 0
+            && let Some(old) = ensure_moving(
                 device,
                 self.raw.as_ref(),
                 &mut self.entities,
                 entity_quads,
                 "RT lighting's entities",
-            );
+            )
+        {
+            self.graveyard.push_back((self.frames, Grave::Moving(old)));
         }
-        if hand_quads > 0 {
-            ensure_moving(
+        if hand_quads > 0
+            && let Some(old) = ensure_moving(
                 device,
                 self.raw.as_ref(),
                 &mut self.hand,
                 hand_quads,
                 "RT lighting's view model",
-            );
+            )
+        {
+            self.graveyard.push_back((self.frames, Grave::Moving(old)));
         }
         let flags = wgpu::AccelerationStructureGeometryFlags::empty();
         let entity_size = quads_geometry(entity_quads, flags);
