@@ -112,8 +112,6 @@ pub struct Extras {
     pub minimap_zoom: f32,
     /// Turn with the player (forward up) instead of north up.
     pub minimap_rotate: bool,
-    /// Retry lost multiplayer connections (`reconnect`).
-    pub auto_reconnect: bool,
     /// Positional sounds leave a few static sound channels free for UI sounds
     /// and others played to the listener (`sound_engine::HEARD_RESERVE`).
     pub ui_sound_reserve: bool,
@@ -219,7 +217,6 @@ impl Default for Extras {
             minimap_round: false,
             minimap_zoom: 1.0,
             minimap_rotate: false,
-            auto_reconnect: false,
             ui_sound_reserve: false,
             own_name_tag: false,
             hide_block_particles: false,
@@ -324,7 +321,6 @@ impl Extras {
                     }
                 }
                 "minimapRotate" => e.minimap_rotate = flag(e.minimap_rotate),
-                "autoReconnect" => e.auto_reconnect = flag(e.auto_reconnect),
                 "uiSoundReserve" => e.ui_sound_reserve = flag(e.ui_sound_reserve),
                 "ownNameTag" => e.own_name_tag = flag(e.own_name_tag),
                 "hideBlockParticles" => e.hide_block_particles = flag(e.hide_block_particles),
@@ -376,7 +372,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\n{}cosmeticsHideFx:{}\ncosmeticsSolo:{}\n{}:{}\n{}:{}\n{}:{}\n",
+            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\n{}cosmeticsHideFx:{}\ncosmeticsSolo:{}\n{}:{}\n{}:{}\n{}:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.pregen),
             bool_text(self.fullbright),
@@ -404,7 +400,6 @@ impl Extras {
             },
             self.minimap_zoom,
             bool_text(self.minimap_rotate),
-            bool_text(self.auto_reconnect),
             bool_text(self.ui_sound_reserve),
             bool_text(self.own_name_tag),
             bool_text(self.hide_block_particles),
@@ -598,7 +593,6 @@ pub enum Item {
     DynamicLights,
     OwnNameTag,
     HideBlockParticles,
-    AutoReconnect,
     UiSoundReserve,
     /// The Music... page on Music & Sounds (`Music page`).
     MusicPage,
@@ -651,8 +645,8 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(ChatIndicator),
         Err("horizon.extras.header.world"),
         Ok(Pregen),
+        // Auto-reconnect's row (horizon-reconnect, a section: `horizon_hooks::pages`).
         Err("horizon.extras.header.multiplayer"),
-        Ok(AutoReconnect),
         Err("horizon.extras.header.sound"),
         Ok(UiSoundReserve),
         Ok(MusicPage),
@@ -681,7 +675,6 @@ impl Item {
             Item::DynamicLights => "horizon.extras.dynamic_lights",
             Item::OwnNameTag => "horizon.extras.own_name_tag",
             Item::HideBlockParticles => "horizon.extras.hide_block_particles",
-            Item::AutoReconnect => "horizon.extras.auto_reconnect",
             Item::UiSoundReserve => "horizon.extras.ui_sound_reserve",
             Item::MusicPage => "horizon.extras.music_page",
             Item::MouseTweaks => "horizon.extras.mouse_tweaks",
@@ -714,7 +707,6 @@ impl Item {
             Item::DynamicLights => "horizon.extras.dynamic_lights.tooltip",
             Item::OwnNameTag => "horizon.extras.own_name_tag.tooltip",
             Item::HideBlockParticles => "horizon.extras.hide_block_particles.tooltip",
-            Item::AutoReconnect => "horizon.extras.auto_reconnect.tooltip",
             Item::UiSoundReserve => "horizon.extras.ui_sound_reserve.tooltip",
             Item::MusicPage => "horizon.extras.music_page.tooltip",
             Item::MouseTweaks => "horizon.extras.mouse_tweaks.tooltip",
@@ -756,7 +748,6 @@ impl Item {
             Item::DynamicLights => "Dynamic lights",
             Item::OwnNameTag => "Own name tag",
             Item::HideBlockParticles => "Hide block-break particles",
-            Item::AutoReconnect => "Auto-reconnect",
             Item::UiSoundReserve => "Keep channels for UI sounds",
             Item::MusicPage => "Music page",
             Item::MouseTweaks => "Mouse Tweaks controls",
@@ -792,10 +783,9 @@ impl Item {
             ChatIndicator => ChatAnimation,
             Pvp(o) => return o.parent().map(Pvp),
             Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
-            | AutoReconnect | NoAi | AgentControl | ReproKeys | DiscordPresence | Splitscreen
-            | ChatAnimation | WheelCyclesSettings | MusicPage | PackBrowser | CosmeticsMine
-            | CosmeticsOthers | CosmeticsHideFx | CosmeticsSolo | HorizonMarks | HorizonMe
-            | Pregen => {
+            | NoAi | AgentControl | ReproKeys | DiscordPresence | Splitscreen | ChatAnimation
+            | WheelCyclesSettings | MusicPage | PackBrowser | CosmeticsMine | CosmeticsOthers
+            | CosmeticsHideFx | CosmeticsSolo | HorizonMarks | HorizonMe | Pregen => {
                 return None;
             }
         })
@@ -815,9 +805,6 @@ impl Item {
             }
             Item::HideBlockParticles => {
                 "Hides the debris particles that burst from a broken block and crumble off the one you mine. Other particles stay."
-            }
-            Item::AutoReconnect => {
-                "Rejoins a server after a lost connection or a restart, never after a kick or ban."
             }
             Item::UiSoundReserve => {
                 "Sounds in the world leave 16 of the 247 sound channels free, so a flood of them (a big explosion) can't silence menu clicks."
@@ -894,7 +881,6 @@ impl Item {
             Item::ChatAnimation => Some(Cost::None),
             Item::OwnNameTag
             | Item::HideBlockParticles
-            | Item::AutoReconnect
             | Item::MouseTweaks
             | Item::Sort
             | Item::Splitscreen
@@ -916,7 +902,6 @@ impl Item {
             Item::DynamicLights => e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag,
             Item::HideBlockParticles => e.hide_block_particles,
-            Item::AutoReconnect => e.auto_reconnect,
             Item::UiSoundReserve => e.ui_sound_reserve,
             Item::MusicPage => e.music_page,
             Item::MouseTweaks => e.mouse_tweaks,
@@ -975,7 +960,6 @@ impl Item {
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag = !e.own_name_tag,
             Item::HideBlockParticles => e.hide_block_particles = !e.hide_block_particles,
-            Item::AutoReconnect => e.auto_reconnect = !e.auto_reconnect,
             Item::UiSoundReserve => e.ui_sound_reserve = !e.ui_sound_reserve,
             Item::MusicPage => e.music_page = !e.music_page,
             Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
@@ -1100,7 +1084,7 @@ mod tests {
     fn everything_is_off_by_default_and_round_trips() {
         let d = Extras::default();
         assert!(!d.fullbright && !d.dynamic_lights);
-        assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
+        assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap);
         assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag && !d.ui_sound_reserve);
         assert!(!d.hide_block_particles && !d.pregen);
         assert!(!d.music_page && d.music_off.is_empty());
@@ -1126,7 +1110,6 @@ mod tests {
         e.minimap_zoom = 0.5;
         e.minimap_rotate = true;
         e.minimap_corner = Corner::BottomLeft;
-        e.auto_reconnect = true;
         Item::Pregen.cycle(&mut e, false);
         assert_eq!(Item::Pregen.switch(&e), Some(true));
         Item::OwnNameTag.cycle(&mut e, false);

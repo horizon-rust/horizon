@@ -56,6 +56,7 @@
     "horizon-launcher": "horizon",
     "horizon-mod-registry": "horizon",
     "horizon-official": "horizon",
+    "horizon-reconnect": "horizon",
     "horizon-relay": "horizon",
     "horizon-release-sign": "horizon",
     "horizon-server": "horizon",

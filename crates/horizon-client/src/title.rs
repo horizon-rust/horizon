@@ -4707,7 +4707,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
     }
     /// The server auto-reconnect retries now, once its countdown is over.
-    pub fn due_retry(&mut self) -> Option<crate::reconnect::Retry> {
+    pub fn due_retry(&mut self) -> Option<horizon_hooks::Reconnect> {
         match &mut self.mode {
             Mode::Multiplayer(screen) => screen.due_retry(),
             _ => None,

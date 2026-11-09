@@ -1,8 +1,24 @@
 //! Opening and closing a local world from the client: the title screen's actions, entering a
-//! world on the server thread, and saving and leaving it on exit.
+//! world on the server thread, and saving and leaving it on exit. Also connecting again to a
+//! server when an attempt a hook planned is due (`last_server.rs`).
 use super::*;
 
 impl Game<'_> {
+    /// Connects again once a planned attempt's countdown is over. An online-mode server gets the
+    /// signed-in account again: `connect_server` takes it from `auth::current()`, held in memory
+    /// for the whole run (the launcher's session file is gone after the first read).
+    pub(super) fn reconnect_when_due(&mut self) -> Result<()> {
+        if let Some(retry) = self.title.as_mut().and_then(|t| t.due_retry()) {
+            self.connect_server_with_options(
+                &retry.address,
+                &retry.name,
+                None,
+                retry.lan,
+                self.last_server.realm,
+            )?;
+        }
+        Ok(())
+    }
     /// `onAbort`: the confirm screen's Back or Escape reopens the Data
     /// Packs screen with the selection it had.
     pub(super) fn reopen_data_packs(&mut self, event_loop: &dyn EventLoopCtl) -> Result<()> {

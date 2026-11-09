@@ -261,6 +261,8 @@ impl<'a> Split<'a> {
                 .get(i.wrapping_sub(1))
                 .map(|g| g.options.clone()),
         );
+        let seat = self.guests.get(i.wrapping_sub(1)).map_or(1, |g| g.seat);
+        horizon_hooks::engine::set_seat(seat - 1);
         self.turn = i;
     }
 
@@ -513,7 +515,7 @@ impl<'a> Split<'a> {
         if self.host.integrated.is_some() || self.host.remote.is_none() {
             return None;
         }
-        self.host.server_address().map(str::to_owned)
+        self.host.last_server.address().map(str::to_owned)
     }
 
     /// The pads' players who accepted, and the testing players (`HORIZON_SPLIT`, one a frame),

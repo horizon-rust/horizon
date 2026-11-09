@@ -24,7 +24,9 @@ pub mod settings;
 pub mod tunnel;
 
 use registry::Registry;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 /// What a crate above the engine hears from the game. Every method has an empty default:
 /// implement only those you need. Hooks run on the game's thread (the render thread) unless a
@@ -41,6 +43,23 @@ pub trait Hooks: Sync {
 
     /// The game is ending normally: its window closed and the world is saved. Not after a crash.
     fn shutdown(&self) {}
+
+    /// This window starts connecting to a multiplayer server (the server list, a direct
+    /// connection, a Realm, a LAN world). Not single player's own server.
+    fn connecting(&self, _server: &Server<'_>) {}
+
+    /// The server let the player in.
+    fn joined(&self) {}
+
+    /// The player left the server on purpose: nothing to retry.
+    fn left(&self) {}
+
+    /// The connection ended without the player leaving it (lost, closed, kicked, refused). A hook
+    /// may plan another attempt: the engine shows its countdown on the Disconnected screen, with
+    /// Cancel, and connects again when it is due. Every hook hears the end; the first plan wins.
+    fn ended(&self, _end: &Ended<'_>) -> Option<Reconnect> {
+        None
+    }
 
     /// The resolver of `friend:` addresses this crate offers ([`tunnel`]); the first hook that
     /// offers one is used. Asked on the network thread when joining and on the game thread when
@@ -60,6 +79,77 @@ pub struct Started<'a> {
 impl<'a> Started<'a> {
     pub fn new(version: &'a str) -> Self {
         Self { version }
+    }
+}
+
+/// What [`Hooks::connecting`] gets.
+#[non_exhaustive]
+pub struct Server<'a> {
+    /// As the player gave it (`host[:port]`).
+    pub address: &'a str,
+    /// The player name the connection uses.
+    pub name: &'a str,
+    /// Found on the local network.
+    pub lan: bool,
+}
+
+impl<'a> Server<'a> {
+    pub fn new(address: &'a str, name: &'a str, lan: bool) -> Self {
+        Self { address, name, lan }
+    }
+}
+
+/// What [`Hooks::ended`] gets.
+#[non_exhaustive]
+pub struct Ended<'a> {
+    /// The reason shown on the Disconnected screen.
+    pub reason: &'a str,
+    /// Its translation key, when it has one (`disconnect.timeout`, `multiplayer.disconnect.kicked`).
+    pub key: Option<&'a str>,
+    /// The server sent it (a disconnect packet), rather than the connection failing.
+    pub from_server: bool,
+}
+
+impl<'a> Ended<'a> {
+    pub fn new(reason: &'a str, key: Option<&'a str>, from_server: bool) -> Self {
+        Self {
+            reason,
+            key,
+            from_server,
+        }
+    }
+}
+
+/// Another attempt at a server, planned by [`Hooks::ended`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reconnect {
+    pub address: String,
+    pub name: String,
+    pub lan: bool,
+    /// When to connect.
+    pub at: Instant,
+    /// This attempt, 1-based, of `attempts`.
+    pub attempt: usize,
+    pub attempts: usize,
+}
+
+impl Reconnect {
+    /// Whole seconds left, rounded up.
+    pub fn seconds_left(&self, now: Instant) -> u64 {
+        let left = self.at.saturating_duration_since(now);
+        left.as_secs() + u64::from(left.subsec_nanos() > 0)
+    }
+    pub fn due(&self, now: Instant) -> bool {
+        now >= self.at
+    }
+    /// The Disconnected screen's countdown line.
+    pub fn text(&self, now: Instant) -> String {
+        format!(
+            "Reconnecting in {} s (attempt {} of {})",
+            self.seconds_left(now),
+            self.attempt,
+            self.attempts
+        )
     }
 }
 
@@ -89,9 +179,26 @@ fn all() -> &'static [&'static dyn Hooks] {
     HOOKS.all()
 }
 
+thread_local! {
+    static SEAT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The splitscreen player whose turn it is: 0 for P1 (and without splitscreen), 1 for P2...
+/// Splitscreen players are one process, each `Game` in turn on the game's thread, so a crate's
+/// statics are shared by them: a crate that keeps per-player state (settings, pages, HUD) indexes
+/// it by this. A player keeps its seat while it plays. Other threads always see 0.
+pub fn seat() -> usize {
+    SEAT.get()
+}
+
 /// The engine's side: where it calls the hooks. Only the engine calls these.
 pub mod engine {
     use super::*;
+
+    /// The player whose turn starts on this thread ([`seat`]).
+    pub fn set_seat(seat: usize) {
+        SEAT.set(seat);
+    }
 
     /// Seals every list (hooks and the registries); their first use does it anyway. Call where
     /// registration ends.
@@ -130,6 +237,39 @@ pub mod engine {
         }
     }
 
+    /// [`Hooks::connecting`].
+    pub fn connecting(server: &Server<'_>) {
+        for hooks in all() {
+            hooks.connecting(server);
+        }
+    }
+
+    /// [`Hooks::joined`].
+    pub fn joined() {
+        for hooks in all() {
+            hooks.joined();
+        }
+    }
+
+    /// [`Hooks::left`].
+    pub fn left() {
+        for hooks in all() {
+            hooks.left();
+        }
+    }
+
+    /// [`Hooks::ended`]: every hook hears it, and the first plan is the one kept.
+    pub fn ended(end: &Ended<'_>) -> Option<Reconnect> {
+        let mut plan = None;
+        for hooks in all() {
+            let mine = hooks.ended(end);
+            if plan.is_none() {
+                plan = mine;
+            }
+        }
+        plan
+    }
+
     /// [`Hooks::tunnel`]: the first registered hook's resolver.
     pub fn tunnel() -> Option<&'static dyn tunnel::Resolver> {
         all().iter().find_map(|hooks| hooks.tunnel())
@@ -155,7 +295,28 @@ mod tests {
         fn published(&self, open: bool) {
             self.0.lock().unwrap().push(format!("published {open}"));
         }
+        fn ended(&self, end: &Ended<'_>) -> Option<Reconnect> {
+            self.0.lock().unwrap().push(format!("ended {}", end.reason));
+            None
+        }
     }
+
+    /// Plans an attempt numbered by its field.
+    struct Planner(usize);
+    impl Hooks for Planner {
+        fn ended(&self, end: &Ended<'_>) -> Option<Reconnect> {
+            Some(Reconnect {
+                address: end.reason.to_owned(),
+                name: String::new(),
+                lan: false,
+                at: Instant::now(),
+                attempt: self.0,
+                attempts: 5,
+            })
+        }
+    }
+    static FIRST: Planner = Planner(1);
+    static SECOND: Planner = Planner(2);
 
     /// Implements nothing: the defaults do nothing.
     struct Silent;
@@ -167,15 +328,25 @@ mod tests {
     fn registered_hooks_hear_the_game_and_late_ones_are_refused() {
         register(&RECORDER).unwrap();
         register(&Silent).unwrap();
+        register(&FIRST).unwrap();
+        register(&SECOND).unwrap();
         engine::started(&Started::new("0.2.31"));
         // Changes only: the same state every frame is said once.
         for open in [false, true, true, true, false, false] {
             engine::published(open);
         }
+        // Every hook hears the end; the first plan registered is the one kept.
+        let plan = engine::ended(&Ended::new("lost", None, false)).unwrap();
+        assert_eq!(plan.attempt, 1);
         engine::shutdown();
         assert_eq!(
             *RECORDER.0.lock().unwrap(),
-            ["started 0.2.31", "published true", "published false"]
+            [
+                "started 0.2.31",
+                "published true",
+                "published false",
+                "ended lost"
+            ]
         );
         assert_eq!(register(&Silent), Err(TooLate));
     }
