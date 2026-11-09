@@ -552,7 +552,7 @@ impl HwRays {
     pub fn clear(&mut self) {
         let now = self.frames;
         self.graveyard
-            .extend(self.built.drain().map(|(_, old)| (now, old)));
+            .extend(self.built.drain().map(|(_, old)| (now, Grave::Section(old))));
         self.stale.clear();
         self.micromaps.retain(|_| false);
         self.changed = true;
