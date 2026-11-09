@@ -386,10 +386,9 @@ impl Game<'_> {
                 let label = if i == FRIENDS_ICON {
                     crate::lang::get("gui.friends.open")
                 } else {
-                    horizon_client::friends_screen::title()
+                    super::friends::title()
                 };
                 horizon_client::widgets::record(&label, [x, y, 20.0, 20.0], active);
-            }
             }
             ui::button(
                 batch,
@@ -432,7 +431,7 @@ impl Game<'_> {
                 tooltip = Some(if i == FRIENDS_ICON {
                     Text::translate("gui.friends.open", &[])
                 } else if i == HORIZON_FRIENDS_ICON {
-                    Text::literal(horizon_client::friends_screen::title())
+                    Text::literal(super::friends::title())
                 } else {
                     Text::translate(ICON_LABELS[i], &[])
                 });

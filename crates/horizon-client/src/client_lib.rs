@@ -71,7 +71,6 @@ pub mod fire_render;
 pub mod first_person;
 pub mod flatgen;
 pub mod friends_overlay;
-pub mod friends_screen;
 pub mod furnace;
 pub mod game_mode_switcher;
 pub mod game_rules_screen;

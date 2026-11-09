@@ -8,21 +8,15 @@
 //! loopback address. The joining side is horizon-friends' (`game`), registered by
 //! horizon-official.
 use super::{Game, lan::LanSettings};
-use horizon_client::{
-    Result,
-    clipboard::Clipboard,
-    hud::HudBatch,
-    lang,
-    text::Text,
-};
+use horizon_client::{Result, clipboard::Clipboard, hud::HudBatch, lang, text::Text};
 use horizon_friends::{Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun};
 use horizon_protocol::{GAME_VERSION, PROTOCOL_VERSION};
 use std::time::{Duration, Instant};
 
 mod screen;
 
+pub use screen::title;
 use screen::{self as friends_screen, Action, FriendsView};
-pub use screen::{TITLE, title};
 
 pub(super) struct Sharing {
     host: Host,
@@ -651,11 +645,11 @@ impl Game<'_> {
         if let Some(screen) = self.friends_overlay.as_mut() {
             screen.key(winit::keyboard::KeyCode::Backspace, false, false);
         }
+    }
 
     /// Whether the pause menu offers Play with Friends (a singleplayer world).
     pub(super) fn friends_shown(&self) -> bool {
         self.friends_view().shown
-    }
     }
 
     /// What Play with Friends shows.
