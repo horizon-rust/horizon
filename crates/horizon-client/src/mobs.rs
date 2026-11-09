@@ -3537,6 +3537,10 @@ impl Mob {
         armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
         player_uuid: Option<[i32; 4]>,
     ) -> bool {
+        let mut source = source;
+        if source.attacker == Some(Who::Player) && player_uuid.is_some() {
+            source.attacker_uuid = player_uuid;
+        }
         axolotl::before_damage(self, amount, &source);
         raider::note_hurt(self);
         // SulfurCube.hurtServer: the priming and a block's immune knockback
@@ -5478,6 +5482,7 @@ mod fire_resistance_damage_tests {
             attacker: Some(Who::Player),
             from: None,
             attacker_species: None,
+            attacker_uuid: None,
         };
         assert!(mob.damage(1.0, source));
         assert_eq!(mob.health, 10.0);
@@ -5541,6 +5546,7 @@ mod magic_absorb_tests {
             attacker: Some(Who::Player),
             from: Some([4.0, 2.0, 3.0]),
             attacker_species: None,
+            attacker_uuid: None,
         };
         let sounds = |m: &Mob| -> Vec<(&'static str, [f64; 3], f32, f32)> {
             m.outbox
@@ -5608,6 +5614,7 @@ mod magic_absorb_tests {
             attacker: Some(Who::Mob(m.id)),
             from: None,
             attacker_species: Some(Species::Witch),
+            attacker_uuid: None,
         };
         m.damage(20.0, own);
         assert_eq!(m.health, 10.0);
@@ -5677,6 +5684,7 @@ mod armor_hurt_tests {
             attacker: None,
             from: None,
             attacker_species: None,
+            attacker_uuid: None,
         };
         let mut m = horse();
         m.extra.body = Some("minecraft:diamond_horse_armor".into());
@@ -6657,3 +6665,6 @@ mod hidden_speed_mob_tick_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod damage_identity_tests;

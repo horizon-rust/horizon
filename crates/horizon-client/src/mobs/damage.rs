@@ -1,3 +1,4 @@
+//! Damage ownership, origin and damage-type predicates.
 use super::{DamageKind, NamedDamage, Species, Who};
 
 /// A damage source: its type, the attacking entity and where it came from.
@@ -7,14 +8,22 @@ pub struct Damage {
     pub attacker: Option<Who>,
     pub from: Option<[f64; 3]>,
     pub attacker_species: Option<Species>,
+    /// UUID captured from the causing entity before deferred damage is applied.
+    pub attacker_uuid: Option<[i32; 4]>,
 }
 impl Damage {
+    pub fn with_attacker_uuid(mut self, uuid: Option<[i32; 4]>) -> Self {
+        self.attacker_uuid = uuid;
+        self
+    }
+
     pub fn fall() -> Self {
         Self {
             kind: DamageKind::Fall,
             attacker: None,
             from: None,
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     pub fn of(kind: DamageKind) -> Self {
@@ -23,6 +32,7 @@ impl Damage {
             attacker: None,
             from: None,
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     pub fn player(from: [f64; 3]) -> Self {
@@ -31,6 +41,7 @@ impl Damage {
             attacker: Some(Who::Player),
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     /// `DamageSources.mace`: a player's smash attack.
@@ -40,6 +51,7 @@ impl Damage {
             attacker: Some(Who::Player),
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     /// `DamageSources.spear`: a player's stab with a spear.
@@ -49,6 +61,7 @@ impl Damage {
             attacker: Some(Who::Player),
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     /// `DamageSources.indirectMagic(potion, owner)`: `attacker` is the owner
@@ -60,6 +73,7 @@ impl Damage {
             attacker,
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     /// `DamageSources.fireworks(rocket, owner)`: `attacker` is the owner
@@ -71,6 +85,7 @@ impl Damage {
             attacker,
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     pub fn mob(id: u32, from: [f64; 3]) -> Self {
@@ -79,6 +94,7 @@ impl Damage {
             attacker: Some(Who::Mob(id)),
             from: Some(from),
             attacker_species: None,
+            attacker_uuid: None,
         }
     }
     pub fn with_species(mut self, species: Species) -> Self {

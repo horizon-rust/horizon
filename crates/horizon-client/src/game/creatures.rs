@@ -2896,10 +2896,9 @@ impl Game<'_> {
                         }
                         Who::Mob(id) => {
                             let source = Damage {
-                                kind: DamageKind::SonicBoom,
                                 attacker: Some(Who::Mob(attacker)),
                                 from: Some(from),
-                                attacker_species: Some(Species::Warden),
+                                ..Damage::of(DamageKind::SonicBoom).with_species(Species::Warden)
                             };
                             let hurt = self.mob_hits_mob(id, 10.0, source);
                             let resistance = self

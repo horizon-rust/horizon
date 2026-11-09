@@ -248,6 +248,7 @@ impl Game<'_> {
                         attacker: owner.map(horizon_client::mobs::Who::Mob),
                         from: Some(f.pos),
                         attacker_species: None,
+                        attacker_uuid: None,
                     },
                 )
                 && owner.is_some()
