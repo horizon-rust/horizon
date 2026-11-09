@@ -1200,6 +1200,9 @@ pub struct EditBox {
     pub cursor: usize,
     pub highlight: usize,
     display: usize,
+    /// `EditBox.scrollTo(pos == displayPos)`: lay out after paging the display
+    /// window one visible substring to the left.
+    scroll_left_page: bool,
     pub max_length: usize,
     pub bordered: bool,
     /// `MultiLineEditBox`: a book page keeps line breaks. A single-line box strips them.
@@ -1497,6 +1500,7 @@ impl EditBox {
             cursor: 0,
             highlight: 0,
             display: 0,
+            scroll_left_page: false,
             max_length: 32,
             bordered: true,
             multiline: false,
@@ -1642,9 +1646,12 @@ impl EditBox {
         self.set_cursor(pos, true);
     }
     fn scroll_to(&mut self, pos: usize) {
-        // EditBox.scrollTo without font access is completed in `layout`.
+        // `EditBox.scrollTo`: at the left edge of the visible text, page one
+        // visible substring left before laying out the caret.
         self.display = self.display.min(char_len(&self.value));
-        if pos < self.display {
+        if pos == self.display {
+            self.scroll_left_page = true;
+        } else if pos < self.display {
             self.display = pos;
         }
     }
@@ -1652,6 +1659,11 @@ impl EditBox {
         let len = char_len(&self.value);
         self.display = self.display.min(len);
         let (value, inner) = (self.value.clone(), self.inner_width());
+        if std::mem::take(&mut self.scroll_left_page) {
+            self.display = self
+                .display
+                .saturating_sub(atlas.font.fit_reverse(&value, inner));
+        }
         let visible = |d: usize| -> usize {
             let rest: String = value.chars().skip(d).collect();
             atlas.font.fit(&rest, inner)
