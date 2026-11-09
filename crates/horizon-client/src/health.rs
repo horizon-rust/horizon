@@ -22,6 +22,10 @@ use horizon_world::{
     synced_floats::{FloatValue, Observer, SyncedFloats},
 };
 use std::{cell::Cell, fs, io, path::Path, sync::OnceLock};
+mod equipment;
+#[doc(hidden)]
+pub use equipment::EquipmentHurt;
+
 pub(crate) type Attributes = LiveAttributes<Box<dyn horizon_world::attributes::live::Identities>>;
 pub(crate) type State = HurtState<DamageTypeId>;
 
@@ -1166,6 +1170,51 @@ mod tests {
         let immune = player.hurt_blocking(health, rules, id, 3.0, None).unwrap();
         assert!(!immune.hurt && !immune.stopped_sleeping);
         assert!(player.sleeping);
+    }
+
+    /// The equipment continuation must wake before durability hooks and retain
+    /// that outcome even when the cooldown rejects the prepared hit.
+    #[test]
+    #[ignore = "requires explicit HORIZON_TEST_RESOURCES; run the focused prepared-data check"]
+    fn equipment_damage_retains_waking_across_continuations() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES")
+                .expect("set HORIZON_TEST_RESOURCES to the prepared vanilla resources"),
+        );
+        assert!(root.join("movement-properties.nbt").exists());
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let resources = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut player =
+            crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
+                .unwrap();
+        let health = &resources.health;
+        let source = health.damage.id("minecraft:mob_attack").unwrap();
+        for (amount, invulnerable, expected_hurt, expected_wake) in [
+            (2.0, false, true, true),
+            (1.0, false, false, true),
+            (3.0, true, false, false),
+        ] {
+            player.set_sleeping(true).unwrap();
+            player.invulnerable = invulnerable;
+            let mut hit = player
+                .prepare_equipment_hurt(
+                    health,
+                    super::HealthRules::default(),
+                    source,
+                    amount,
+                    None,
+                    false,
+                    -1,
+                )
+                .unwrap();
+            assert_eq!(player.sleeping, !expected_wake, "before equipment hooks");
+            let _ = player.select_equipment_hurt(health, &mut hit).unwrap();
+            assert_eq!(player.sleeping, !expected_wake, "after selecting damage");
+            let outcome = player.finish_equipment_hurt(health, hit).unwrap();
+            assert_eq!(outcome.hurt, expected_hurt);
+            assert_eq!(outcome.stopped_sleeping, expected_wake);
+            assert_eq!(player.sleeping, !expected_wake);
+        }
     }
 
     /// #2800: on Easy a mob's 4 is scaled to 3 before `applyItemBlocking`,
