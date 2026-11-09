@@ -1,6 +1,13 @@
+/// The game's `mod_api` types a hook names with a `crate::mod_api::` path.
+#[cfg(test)]
+mod mod_api {
+    #[derive(Clone, Copy)]
+    pub struct NativeInventoryKind;
+}
 #[cfg(test)]
 mod tests {
     include!("block_clone_item_tests.rs");
+    include!("state_block_entity_tests.rs");
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -10,7 +17,10 @@ mod tests {
     }
     struct BlockEntityDraw(Vec<u32>);
     struct NativeWorldDraw(Vec<u32>);
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "stubs shaped like the game's, only some of them read"
+    )]
     mod stubs {
         #[derive(Clone, Copy, Debug, PartialEq)]
         pub(super) struct BlockStateId;
@@ -35,6 +45,7 @@ mod tests {
         pub(super) struct NativeLootDrops<'a>(pub &'a ());
         pub(super) struct NativeNoteBlockChange<'a>(pub &'a ());
         pub(super) struct NativeScreenView<'a>(pub &'a ());
+        pub(super) struct NativeTextField;
         pub(super) struct ClientboundPlayPacket;
         pub(super) struct EntityDataValue;
         pub(super) struct NativeGenerate;
@@ -57,6 +68,7 @@ mod tests {
         pub(super) struct ModelPart;
         pub(super) struct NativeShake;
         pub(super) struct WorldPrimitives;
+        pub(super) struct WorldHold;
         pub(super) struct Music;
         pub(super) struct MusicLayer;
         pub(super) struct NativeBlockRim;
@@ -74,6 +86,7 @@ mod tests {
         pub(super) struct NativeFluidDrain;
         pub(super) struct NativeFluidStack;
         pub(super) struct NativeFluidTankView;
+        pub(super) struct NativeFishingMedium;
         pub(super) struct ModEnergyBuffer;
         pub(super) struct Mob;
         pub(super) struct LootStack;
@@ -113,7 +126,10 @@ mod tests {
             pub struct KeyEvent;
         }
     }
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "stubs shaped like the game's, only some of them read"
+    )]
     mod generated {
         mod horizon_mods {
             pub mod content {

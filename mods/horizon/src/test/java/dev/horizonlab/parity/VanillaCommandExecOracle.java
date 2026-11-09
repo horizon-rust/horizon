@@ -114,7 +114,8 @@ public final class VanillaCommandExecOracle {
             WorldDataConfiguration config = WorldDataConfiguration.DEFAULT;
             LevelSettings settings = new LevelSettings("Harness", GameType.SURVIVAL, LevelSettings.DifficultySettings.DEFAULT, true, config);
             WorldLoader.PackConfig packConfig = new WorldLoader.PackConfig(packs, config, false, true);
-            WorldLoader.InitConfig init = new WorldLoader.InitConfig(packConfig, Commands.CommandSelection.INTEGRATED, LevelBasedPermissionSet.OWNER);
+            WorldLoader.InitConfig init = new WorldLoader.InitConfig(packConfig, Commands.CommandSelection.INTEGRATED,
+                Boolean.getBoolean("horizon.functionAdmissionFixture") ? LevelBasedPermissionSet.GAMEMASTER : LevelBasedPermissionSet.OWNER);
             boolean flat = Boolean.getBoolean("horizon.parity.flat");
             WorldOptions options = new WorldOptions(seed, !flat, false);
             WorldStem stem = Util.<WorldStem>blockUntilDone(executor -> WorldLoader.load(init, context -> {
@@ -625,7 +626,12 @@ public final class VanillaCommandExecOracle {
                         String command = op.get("cmd").getAsString();
                         messages.clear();
                         List<JsonArray> results = new ArrayList<>();
-                        var source = player.createCommandSourceStack().withCallback((success, value) -> {
+                        // Reuse the existing feedback receiver while retaining the actual
+                        // server stack's null entity, names, position and permissions.
+                        var baseSource = op.has("source") && op.get("source").getAsString().equals("console")
+                                ? this.createCommandSourceStack().withSource(player.commandSource())
+                                : player.createCommandSourceStack();
+                        var source = baseSource.withCallback((success, value) -> {
                             JsonArray r = new JsonArray();
                             r.add(success);
                             r.add(value);
@@ -644,6 +650,21 @@ public final class VanillaCommandExecOracle {
                             if (op.has("trace") && op.get("trace").getAsBoolean()) System.err.println("command trace: " + gson.toJson(record));
                             if (!op.has("record") || op.get("record").getAsBoolean()) out.append(gson.toJson(record)).append('\n');
                         }
+                    }
+                    case "projectile_saved_type" -> {
+                        var entity=level.getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (!(entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow) || !entity.isAlive())
+                            throw new IllegalStateException("projectile type: missing actual arrow");
+                        var uuid=entity.getUUID();
+                        int[] words={(int)(uuid.getMostSignificantBits()>>32),(int)uuid.getMostSignificantBits(),
+                            (int)(uuid.getLeastSignificantBits()>>32),(int)uuid.getLeastSignificantBits()};
+                        JsonObject state=new JsonObject();state.add("uuid",gson.toJsonTree(words));
+                        state.addProperty("kind",net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
+                        state.add("pos",gson.toJsonTree(new double[]{entity.getX(),entity.getY(),entity.getZ()}));
+                        state.addProperty("no_gravity",entity.isNoGravity());
+                        JsonObject record=new JsonObject();record.addProperty("cmd","#projectile_saved_type "+op.get("label").getAsString());
+                        record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);
+                        out.append(gson.toJson(record)).append('\n');
                     }
                     case "raid_state" -> {
                         var raidLevel=player.level(); int id=op.get("id").getAsInt();
@@ -785,6 +806,9 @@ public final class VanillaCommandExecOracle {
                     }
                     case "tick" -> {
                         int n = op.has("n") ? op.get("n").getAsInt() : 1;
+                        // The ordinary harness budget defers chunk I/O. An unload
+                        // fixture can give the real unload queue time to drain.
+                        boolean allowChunkIo = op.has("allow_chunk_io") && op.get("allow_chunk_io").getAsBoolean();
                         messages.clear();
                         // Answers computed off-thread (profile lookups) reach the
                         // server's task queue before the next tick.
@@ -796,7 +820,7 @@ public final class VanillaCommandExecOracle {
                         }
                         long pacedStart = System.nanoTime();
                         for (int i = 0; i < n; i++) {
-                            tick();
+                            tick(allowChunkIo);
                             if (op.has("pace_ms")) {
                                 long left = op.get("pace_ms").getAsLong() * (i + 1) * 1_000_000L - (System.nanoTime() - pacedStart);
                                 if (left > 0) try {Thread.sleep(left / 1_000_000L, (int)(left % 1_000_000L));}
@@ -848,6 +872,15 @@ public final class VanillaCommandExecOracle {
                             throw new IllegalStateException("boat click: missing live boat");
                         player.connection.handleInteract(new net.minecraft.network.protocol.game.ServerboundInteractPacket(
                             boat.getId(), net.minecraft.world.InteractionHand.MAIN_HAND,
+                            net.minecraft.world.phys.Vec3.ZERO, false));
+                    }
+                    case "mob_interact" -> {
+                        // The player's real Interact packet on a live mob, by UUID.
+                        var mob = level.getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (!(mob instanceof net.minecraft.world.entity.Mob) || !mob.isAlive())
+                            throw new IllegalStateException("mob click: missing live mob");
+                        player.connection.handleInteract(new net.minecraft.network.protocol.game.ServerboundInteractPacket(
+                            mob.getId(), net.minecraft.world.InteractionHand.MAIN_HAND,
                             net.minecraft.world.phys.Vec3.ZERO, false));
                     }
                     case "use_item" -> {
@@ -931,6 +964,17 @@ public final class VanillaCommandExecOracle {
                             throw new IllegalStateException(e);
                         }
                     }
+                    case "map_carried" -> {
+                        // The harness has no player network listener; invoke the
+                        // real map update normally reached from its player tick.
+                        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+                            var stack = player.getInventory().getItem(i);
+                            var id = stack.get(net.minecraft.core.component.DataComponents.MAP_ID);
+                            if (id == null) continue;
+                            var map = net.minecraft.world.item.MapItem.getSavedData(id, player.level());
+                            if (map != null) map.tickCarriedBy(player, stack, null);
+                        }
+                    }
                     case "craft_menu_click" -> {
                         if (!(player.containerMenu instanceof net.minecraft.world.inventory.CraftingMenu))
                             throw new IllegalStateException("craft fixture: crafting menu not open");
@@ -983,6 +1027,12 @@ public final class VanillaCommandExecOracle {
                             new net.minecraft.world.level.saveddata.maps.MapId(id), player.level());
                         String value = map == null ? "missing" : "scale=" + map.scale + ",locked=" + map.locked
                             + ",center=" + map.centerX + "," + map.centerZ;
+                        if (map != null && op.has("red_x")) {
+                            int targets = 0;
+                            for (var decoration : map.getDecorations())
+                                if (decoration.type().is(net.minecraft.world.level.saveddata.maps.MapDecorationTypes.RED_X)) targets++;
+                            value += ",red_x=" + targets;
+                        }
                         JsonObject record = new JsonObject();
                         record.addProperty("cmd", "#map_state " + id);
                         JsonArray messages = new JsonArray();
@@ -994,6 +1044,17 @@ public final class VanillaCommandExecOracle {
                     case "light" -> {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
+                        // ThreadedLevelLightEngine runs the checkBlock tasks a /fill queues at most 1000 per update,
+                        // so after a large fill the light lags by many ticks on a loaded runner (command_reinforcements
+                        // read block light 10 in its sealed room, 2026-11-07). Read it once the tasks queued so far ran.
+                        var pending = player.level().getChunkSource().getLightEngine().waitForPendingTasks(
+                            pos.getX() >> 4, pos.getZ() >> 4);
+                        long lightDeadline = System.nanoTime() + 120_000_000_000L;
+                        while (!pending.isDone()) {
+                            if (System.nanoTime() > lightDeadline) throw new IllegalStateException("light updates did not finish");
+                            tick();
+                            try { Thread.sleep(5); } catch (InterruptedException e) { throw new RuntimeException(e); }
+                        }
                         JsonObject record = new JsonObject();
                         record.addProperty("cmd", "#light " + p);
                         record.add("messages", new JsonArray());
@@ -1008,7 +1069,8 @@ public final class VanillaCommandExecOracle {
                         record.add("results", results);
                         out.append(gson.toJson(record)).append('\n');
                     }
-                    case "close_menu" -> player.closeContainer();
+                    case "close_menu" -> player.connection.handleContainerClose(
+                        new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(player.containerMenu.containerId));
                     case "merchant_save" -> saveEverything(true, true, true);
                     case "merchant_saved_stats" -> {
                         player.getStats().save();
@@ -1098,9 +1160,22 @@ public final class VanillaCommandExecOracle {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
                         var state = player.level().getBlockState(pos);
-                        if (!state.is(net.minecraft.world.level.block.Blocks.CRAFTER))
-                            throw new IllegalStateException("crafter tick without a crafter");
+                        if (!state.is(net.minecraft.world.level.block.Blocks.CRAFTER) && !state.is(net.minecraft.world.level.block.Blocks.DISPENSER))
+                            throw new IllegalStateException("crafter tick without a crafter or dispenser");
                         state.tick(player.level(), pos, player.level().getRandom());
+                    }
+                    case "sync_randoms" -> {
+                        // docs/parity-workflow.md "Randoms that repeat": needs tools/seed_agent.py's -javaagent.
+                        try {
+                            Class.forName("dev.horizonlab.parity.SeedAgent").getMethod("setUniquifier", long.class)
+                                .invoke(null, op.get("uniquifier").getAsLong());
+                            var counter = ServerLevel.class.getDeclaredField("ENTITY_COUNTER");
+                            counter.setAccessible(true);
+                            ((java.util.concurrent.atomic.AtomicInteger) counter.get(null)).set(op.get("entity_id").getAsInt());
+                        } catch (ReflectiveOperationException e) {
+                            throw new IllegalStateException(e);
+                        }
+                        player.level().getRandom().setSeed(op.get("level_seed").getAsLong());
                     }
                     case "break" -> {
                         JsonArray pos = op.getAsJsonArray("pos");
@@ -1190,6 +1265,10 @@ public final class VanillaCommandExecOracle {
 
         /** One iteration of MinecraftServer.runServer: the delayed tick profiler start, then the tick. */
         void tick() {
+            tick(false);
+        }
+
+        void tick(boolean allowChunkIo) {
             try {
                 var delay = MinecraftServer.class.getDeclaredField("debugCommandProfilerDelayStart");
                 delay.setAccessible(true);
@@ -1206,7 +1285,7 @@ public final class VanillaCommandExecOracle {
                 throw new RuntimeException(e);
             }
             drain();
-            super.tickServer(() -> false);
+            super.tickServer(() -> allowChunkIo);
             // The player's network listener ticks it each server tick
             // (ServerGamePacketListenerImpl.tickPlayer); this one has no
             // listening connection. Its movement is the client's, so of
