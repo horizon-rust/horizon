@@ -107,4 +107,32 @@ fn anvil_wear_leaves_the_level_random_stream_untouched() {
             println!("level RNG control creative={creative}, block={name}: {actual}");
         }
     }
+    // Keep the neighbouring bottle-impact fix when composing the sound arms.
+    // These are production event calls with source-derived stream controls,
+    // not a native client rendering comparison.
+    for id in [1029, 1030, 1053, 1054, 1042, 1043, 1044] {
+        game.world.random = LegacyRandom::new(98765);
+        *game.particles.level_random() = LegacyRandom::new(54321);
+        game.player.as_mut().unwrap().random = LegacyRandom::new(12345);
+        game.level_event_at(id, [3, 64, 3], 0);
+        let mut world = LegacyRandom::new(98765);
+        let mut client = LegacyRandom::new(54321);
+        if matches!(id, 1029 | 1030 | 1053 | 1054) {
+            client.next_float();
+        } else {
+            world.next_float();
+        }
+        assert_eq!(game.world.random.next_int(), world.next_int(), "event {id}");
+        assert_eq!(
+            game.particles.level_random().next_int(),
+            client.next_int(),
+            "event {id}"
+        );
+        assert_eq!(
+            game.player.as_mut().unwrap().random.next_int(),
+            LegacyRandom::new(12345).next_int(),
+            "event {id}: sounds must not draw from the player"
+        );
+        println!("sound RNG composition control event={id}");
+    }
 }

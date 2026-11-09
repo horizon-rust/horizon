@@ -5961,9 +5961,7 @@ impl Game<'_> {
                                 // must not change the server's bottle XP stream.
                                 self.particles.level_random().next_float() * 0.1 + 0.9
                             }
-                            1042 | 1043 | 1044 => {
-                                self.world.random.next_float() * 0.1 + 0.9
-                            }
+                            1042..=1044 => self.world.random.next_float() * 0.1 + 0.9,
                             1026 | 1027 => {
                                 let r = self.particles.level_random();
                                 (r.next_float() - r.next_float()) * 0.2 + 1.0
