@@ -85,7 +85,7 @@ AttributeType.ofInterpolated	skip:data		attribute type definitions and codecs
 AttributeType.ofNotInterpolated	skip:data		attribute type definitions and codecs
 AttributeType.createModifierCodec	skip:data		attribute type definitions and codecs
 AttributeType.checkAllowedModifier	skip:data		attribute type definitions and codecs
-BedRule.Rule.test	inline	crates/horizon-client/src/game.rs::Game::try_sleep	WHEN_DARK is the hard-coded night or thunder check; ALWAYS and NEVER are in bed_sets_spawn and the dimension checks
+BedRule.Rule.test	inline	crates/horizon-client/src/game/beds.rs::Game::try_sleep	the dimension's can_sleep rule tests dark_outside
 EnvironmentAttribute.valueCodec	skip:data		codec
 EnvironmentAttribute.Builder.build	skip:data		attribute definition builder
 EnvironmentAttributeMap.applyModifier	inline	crates/horizon-client-render/src/environment.rs::Environment::value	gap: minor: only multiply and override are applied for visual tracks; and, or and maximum tracks are read by their own users
