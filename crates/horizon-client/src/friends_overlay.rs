@@ -92,6 +92,8 @@ pub struct Screen {
     /// The scroller drag: the press's y, the offset then, its thumb and the
     /// list height (`AbstractScrollArea.scrolling`).
     scroll_drag: Cell<Option<(f32, f32, f32, f32)>>,
+    /// First toast visibility transition since the previous game update.
+    toast_sound: Cell<Option<bool>>,
     /// The account link's boxes as last drawn (`MICROSOFT_ACCOUNT_LINK`), in the
     /// footer and the empty state.
     links: RefCell<Vec<[f32; 4]>>,
@@ -148,6 +150,7 @@ impl Clone for Screen {
             seen: self.seen.clone(),
             sort_cache: RefCell::new(self.sort_cache.borrow().clone()),
             scroll_drag: Cell::new(None),
+            toast_sound: Cell::new(None),
             links: RefCell::new(Vec::new()),
             footer_links: RefCell::new(Vec::new()),
             link_clicked: false,
@@ -191,6 +194,7 @@ impl Screen {
             seen: None,
             sort_cache: RefCell::new(None),
             scroll_drag: Cell::new(None),
+            toast_sound: Cell::new(None),
             links: RefCell::new(Vec::new()),
             footer_links: RefCell::new(Vec::new()),
             link_clicked: false,
@@ -246,17 +250,29 @@ impl Screen {
             }
         }
         self.poll_friend_toasts();
-        // `SystemToast.update`: the id's display time scaled by Notification Time.
+        // `ToastManager.update`: play only the first visibility-change sound this tick.
+        let mut toast_sound = None;
         if let Some(toast) = &mut self.toast {
-            let (_, finished) = toast.update(multiplier);
+            let (sound, finished) = toast.update(multiplier);
+            toast_sound = sound;
             if finished {
                 self.toast = None;
             }
         }
         self.friend_toasts.retain_mut(|toast| {
-            let (_, finished) = toast.update(multiplier);
+            let (sound, finished) = toast.update(multiplier);
+            if toast_sound.is_none() {
+                toast_sound = sound;
+            }
             !finished
         });
+        self.toast_sound.set(toast_sound);
+    }
+
+    /// `ToastManager.update`: the visibility change to play after this screen
+    /// has updated; at most one sound is returned per frame.
+    pub fn take_toast_sound(&self) -> Option<bool> {
+        self.toast_sound.take()
     }
 
     /// `PlayerSocialManager`'s pushes as `FriendToast`s: a new incoming request,
@@ -1125,11 +1141,28 @@ impl Screen {
             .unwrap_or_default();
         let label = crate::lang::get("gui.friends.my_profile_name");
         let label_w = HudBatch::text_width(atlas, &label);
-        batch.text(atlas, &label, x + 8.0, fy + fh + 6.0, GREY, false);
         let name_w = HudBatch::text_width(atlas, &name);
-        // `PlainTextButton`: the name's own width and 9 height, copying it.
-        self.profile_box
-            .set([x + 8.0 + label_w, fy + fh + 6.0, name_w, 9.0]);
+        batch.text(atlas, &label, x + 8.0, fy + fh + 6.0, GREY, false);
+        let profile_rect = [x + 8.0 + label_w, fy + fh + 6.0, name_w, 9.0];
+        self.profile_box.set(profile_rect);
+        let profile_hover = cursor.0 >= profile_rect[0]
+            && cursor.0 < profile_rect[0] + profile_rect[2]
+            && cursor.1 >= profile_rect[1]
+            && cursor.1 < profile_rect[1] + profile_rect[3];
+        crate::widgets::record(&name, profile_rect, true);
+        crate::widgets::narratable(|| {
+            crate::widgets::Narratable::button(
+                crate::lang::tr(
+                    "gui.friends.my_profile_name.narration",
+                    &[&name as &dyn std::fmt::Display],
+                ),
+                profile_rect,
+                true,
+            )
+            .hovered(profile_hover)
+            .focused(crate::widgets::narration_focused(profile_rect))
+        });
+        crate::widgets::widget_cursor(profile_hover, true);
         batch.text(
             atlas,
             &name,
@@ -1160,44 +1193,50 @@ impl Screen {
         } else {
             // `PlainTextButton.setTooltip(COPY_TO_CLIPBOARD)`.
             let [px, py, pw, ph] = self.profile_box.get();
-            if pw > 0.0
+            let profile_hover = pw > 0.0
                 && cursor.0 >= px
                 && cursor.0 < px + pw
                 && cursor.1 >= py
-                && cursor.1 < py + ph
-            {
-                ui::tooltip(
-                    batch,
-                    atlas,
-                    &[crate::text::Text::translate(
-                        "gui.friends.copy_to_clipboard",
-                        &[],
-                    )],
-                    cursor,
-                );
+                && cursor.1 < py + ph;
+            let profile_focused = crate::widgets::narration_focused([px, py, pw, ph]);
+            if profile_hover || profile_focused {
+                let lines = [crate::text::Text::translate(
+                    "gui.friends.copy_to_clipboard",
+                    &[],
+                )];
+                let pointer = if profile_focused && !profile_hover {
+                    (px + pw / 2.0, py + ph / 2.0)
+                } else {
+                    cursor
+                };
+                ui::tooltip_menu(batch, atlas, &lines, pointer, [px, py, pw, ph]);
             }
         }
     }
 
-    /// `ToastManager.extractRenderState`: the failure toast over every widget the
-    /// screen draws, so a tab button or the panel never covers it.
-    pub fn draw_toast(&self, atlas: &HudAtlas, batch: &mut HudBatch) {
-        self.draw_toast_at(atlas, batch, 0.0);
-    }
-
-    /// The toasts from `y` down: other toasts' slots come first in the game.
-    pub fn draw_toast_at(&self, atlas: &HudAtlas, batch: &mut HudBatch, y: f32) {
-        let mut y = y;
+    /// `ToastManager.extractRenderState`: each toast gets the first consecutive free
+    /// 32px slots it needs (`ceil(height/32)`) after the toasts already queued by
+    /// the game. Its own `yPos` remains `firstSlotIndex * height`.
+    pub fn draw_toast_slots(&self, atlas: &HudAtlas, batch: &mut HudBatch, mut used: u32) {
         if let Some(toast) = &self.toast {
-            toast.draw(atlas, batch, y);
-            y += toast.height(atlas);
+            let height = toast.height(atlas);
+            let slots = (height / 32.0).ceil() as usize;
+            if let Some(slot) = first_free_toast_slot(used, slots) {
+                used |= ((1u32 << slots) - 1) << slot;
+                toast.draw(atlas, batch, slot as f32 * height);
+            }
         }
         for toast in &self.friend_toasts {
+            let height = toast.height(atlas);
+            let slots = (height / 32.0).ceil() as usize;
+            let Some(slot) = first_free_toast_slot(used, slots) else {
+                break;
+            };
+            used |= ((1u32 << slots) - 1) << slot;
             let face = toast
                 .friend
                 .and_then(|id| self.faces.borrow_mut().face(batch, atlas, id));
-            toast.draw(atlas, batch, y, face.as_deref());
-            y += toast.height(atlas);
+            toast.draw(atlas, batch, slot as f32 * height, face.as_deref());
         }
     }
 
@@ -1665,6 +1704,13 @@ impl Screen {
             [bx + button_w + 6.0, y, button_w, 20.0],
         ]);
     }
+}
+
+/// `ToastManager.findFreeSlotsIndex`: the first consecutive free run.
+fn first_free_toast_slot(used: u32, slots: usize) -> Option<usize> {
+    (0..5).find(|start| {
+        *start + slots <= 5 && (*start..*start + slots).all(|slot| used & (1 << slot) == 0)
+    })
 }
 
 /// A request row's button ids: 100 + slot * 2, accept/cancel at +0 and decline at +1.

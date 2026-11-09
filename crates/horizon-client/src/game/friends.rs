@@ -262,8 +262,23 @@ impl Game<'_> {
         self.draw_pause_menu(batch);
         batch.blur_at = batch.vertices.len() as u32;
         let multiplier = f64::from(self.settings.notification_display_time);
-        if let Some(screen) = self.friends_overlay.as_mut() {
+        let toast_sound = if let Some(screen) = self.friends_overlay.as_mut() {
             screen.tick(multiplier);
+            screen.take_toast_sound()
+        } else {
+            None
+        };
+        if let Some(show) = toast_sound {
+            self.audio.play(
+                if show {
+                    "minecraft:ui.toast.in"
+                } else {
+                    "minecraft:ui.toast.out"
+                },
+                None,
+                1.0,
+                1.0,
+            );
         }
         horizon_client::widgets::begin_screen(|| {
             horizon_client::widgets::ScreenInfo::new(
@@ -287,14 +302,16 @@ impl Game<'_> {
             .unwrap_or_default();
         let mut tooltip = None;
         for (x, y, bw, label, enabled, id, icon) in buttons {
+            let rect = [x, y, bw, 20.0];
             let hover = enabled && horizon_client::ui::hovered(cursor, x, y, bw, 20.0);
-            if hover
+            let focused = enabled && horizon_client::widgets::narration_focused(rect);
+            if (hover || focused)
                 && let Some(key) = self
                     .friends_overlay
                     .as_ref()
                     .and_then(|screen| screen.button_tooltip(id))
             {
-                tooltip = Some((key, [x, y, bw, 20.0]));
+                tooltip = Some((key, rect, focused && !hover));
             }
             // `FriendsOverlayTabButton`: selected is the enabled sprite, an
             // unselected tab its disabled one, and hovering any is highlighted.
@@ -421,9 +438,14 @@ impl Game<'_> {
                 );
             }
         }
-        if let Some((key, rect)) = tooltip {
+        if let Some((key, rect, focused)) = tooltip {
             let lines = atlas.font.split(&Text::translate(key, &[]), 170.0);
-            horizon_client::ui::tooltip_menu(batch, atlas, &lines, cursor, rect);
+            let pointer = if focused {
+                (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0)
+            } else {
+                cursor
+            };
+            horizon_client::ui::tooltip_menu(batch, atlas, &lines, pointer, rect);
         }
         // The toasts are drawn with `ToastManager` after every other screen
         // widget (`draw_friends_toasts`), not here.
@@ -438,8 +460,7 @@ impl Game<'_> {
         let Some(screen) = &self.friends_overlay else {
             return;
         };
-        let slot = self.toast_slots_used().count_ones() as f32;
-        screen.draw_toast_at(&self.gui.atlas, batch, slot * 32.0);
+        screen.draw_toast_slots(&self.gui.atlas, batch, self.toast_slots_used());
     }
 
     pub(super) fn friends_overlay_click(&mut self) {

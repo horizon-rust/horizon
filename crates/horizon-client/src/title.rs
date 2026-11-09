@@ -3620,11 +3620,6 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         let mut button_tooltip = None;
         let friends_loading = matches!(&self.mode, Mode::Friends(screen) if screen.loading());
         for b in self.buttons(w, h) {
-            crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
-            // Realms' icon buttons have no label to record.
-            if b.enabled && b.label.trim().is_empty() {
-                crate::widgets::target([b.x, b.y, b.w, 20.0]);
-            }
             if let Some(action) = b.action.filter(|_| !self.preparing) {
                 crate::widgets::declare_action(action, [b.x, b.y, b.w, 20.0], b.enabled);
             }
@@ -3639,6 +3634,12 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 _ => None,
             };
             if let Some(selected) = friends_tab {
+                crate::widgets::record_as(
+                    &b.label,
+                    [b.x, b.y, b.w, 20.0],
+                    b.enabled,
+                    crate::widgets::Kind::Tab(selected),
+                );
                 // `TabNavigationBar`/`TabButton`: position, title and usage.
                 let index = if b.id == 1 { 0 } else { 1 };
                 let selected_index = if selected { index } else { 1 - index };
@@ -3660,13 +3661,19 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     )
                 });
             } else {
+                crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
+                if b.enabled && b.label.trim().is_empty() {
+                    crate::widgets::target([b.x, b.y, b.w, 20.0]);
+                }
                 crate::widgets::narratable(|| self.button_narration(&b).hovered(inside));
             }
             crate::widgets::widget_cursor(inside, b.enabled);
-            if inside && let Some(key) = self.button_tooltip(b.id) {
+            let is_focused = self.focused_button == Some(b.id);
+            if (inside || is_focused)
+                && let Some(key) = self.button_tooltip(b.id)
+            {
                 button_tooltip = Some((key, [b.x, b.y, b.w, 20.0]));
             }
-            let is_focused = self.focused_button == Some(b.id);
             let hover = b.enabled && (inside || is_focused);
             if let Some(selected) = friends_tab {
                 let sprite = if hover {
@@ -3816,10 +3823,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         // `ToastManager` after the screen's widgets: the friends overlay's failure
         // toast stays over its tabs and panel.
         if let Mode::Friends(screen) = &self.mode {
-            // `ToastManager`: the title's own toast already holds the first
-            // 32-pixel slot, so the overlay's toasts start below it.
-            let base = if self.toast.is_some() { 32.0 } else { 0.0 };
-            screen.draw_toast_at(atlas, batch, base);
+            // The title's own toast holds slot zero while it is visible.
+            screen.draw_toast_slots(atlas, batch, u32::from(self.toast.is_some()));
         }
     }
     /// The tooltip of a world's icon (drawn with the row, as vanilla does) or, for a
