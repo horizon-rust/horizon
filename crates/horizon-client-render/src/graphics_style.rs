@@ -20,7 +20,7 @@ fn b() -> &'static SettingsColours {
 /// The pages drawn on vanilla's own surfaces (`menu_style::Surfaces::Vanilla`).
 mod vanilla;
 pub fn vanilla_surfaces() -> bool {
-    menu_style::get().surfaces == menu_style::Surfaces::Vanilla
+    menu_style::surfaces() == menu_style::Surfaces::Vanilla
 }
 thread_local! {
     /// Whether a world is behind the screen, as its backdrop was last drawn ([`veil_over`]): vanilla's
@@ -459,6 +459,10 @@ pub fn vanilla_tab(
 ) {
     vanilla::tab(batch, atlas, rect, label, flags);
 }
+/// The top of a [`vanilla_tab`]'s label, for marks drawn on its line (a controller's glyphs).
+pub fn vanilla_tab_label_y(y: f32, h: f32, open: bool) -> f32 {
+    vanilla::tab_label_y(y, h, open)
+}
 /// A screen's title, centred at the top (split-screen profiles).
 pub fn title(batch: &mut HudBatch, atlas: &HudAtlas, text: &Text) {
     let w = batch.width;
@@ -514,12 +518,17 @@ mod tests {
                 vanilla_tab(b, a, r, t, (false, true, true))
             }),
         ];
-        for (name, draw) in draws {
+        let looks = [menu_style::Surfaces::Flat, menu_style::Surfaces::Vanilla];
+        for (surfaces, (name, draw)) in looks.into_iter().flat_map(|l| draws.map(|d| (l, d))) {
+            let name = format!("{name} on {surfaces:?}");
+            let draw = |batch: &mut HudBatch, text: &Text| {
+                menu_style::with_surfaces(surfaces, || draw(batch, &atlas, rect, text))
+            };
             let mut plain = HudBatch::new([640, 480]);
-            draw(&mut plain, &atlas, rect, &Text::empty());
+            draw(&mut plain, &Text::empty());
             let base = plain.vertices.len();
             let mut batch = HudBatch::new([640, 480]);
-            draw(&mut batch, &atlas, rect, &long);
+            draw(&mut batch, &long);
             assert!(batch.vertices.len() > base, "{name}: long label drawn");
             // The widget's own fill, track and handle also draw: only the label's vertices count.
             let label = batch
@@ -536,7 +545,7 @@ mod tests {
             }
             // The label's own glyphs (past the widget's fill) start centred.
             let mut batch = HudBatch::new([640, 480]);
-            draw(&mut batch, &atlas, rect, &short);
+            draw(&mut batch, &short);
             let (lo, hi) = x_span(&batch, &plain);
             let middle = (lo + hi) / 2.0;
             let want = rect[0] + rect[2] / 2.0;
@@ -545,5 +554,14 @@ mod tests {
                 "{name}: centre {middle}, want {want}"
             );
         }
+    }
+
+    /// A tab's label sits where vanilla's `MenuTabButton` puts it: for a 24 px tab, 8 px down
+    /// while open and 10 px while not (`(top + bottom - 9) / 2 + 1`, its top 3 px lower).
+    #[test]
+    fn a_tab_label_sits_on_vanillas_line() {
+        assert_eq!(vanilla_tab_label_y(0.0, 24.0, true), 8.0);
+        assert_eq!(vanilla_tab_label_y(0.0, 24.0, false), 10.0);
+        assert_eq!(vanilla_tab_label_y(40.0, 24.0, false), 50.0);
     }
 }

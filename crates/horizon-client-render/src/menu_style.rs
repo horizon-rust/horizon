@@ -153,6 +153,30 @@ pub fn install(style: MenuStyle) -> bool {
     STYLE.set(style).is_ok()
 }
 
+/// The surfaces the settings pages draw on: the style's, or in this crate's tests the ones
+/// [`with_surfaces`] pinned, so a test doesn't depend on what [`NEUTRAL`] uses.
+pub fn surfaces() -> Surfaces {
+    #[cfg(test)]
+    if let Some(pinned) = PINNED.get() {
+        return pinned;
+    }
+    get().surfaces
+}
+
+#[cfg(test)]
+thread_local! {
+    static PINNED: std::cell::Cell<Option<Surfaces>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with the settings pages on `surfaces`, on this thread (tests only).
+#[cfg(test)]
+pub fn with_surfaces<R>(surfaces: Surfaces, f: impl FnOnce() -> R) -> R {
+    let before = PINNED.replace(Some(surfaces));
+    let out = f();
+    PINNED.set(before);
+    out
+}
+
 /// The look given to [`install`], or [`NEUTRAL`].
 #[inline]
 pub fn get() -> &'static MenuStyle {

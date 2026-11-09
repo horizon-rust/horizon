@@ -25,6 +25,8 @@ const TAB: &str = "gui/sprites/widget/tab";
 const TAB_HIGHLIGHTED: &str = "gui/sprites/widget/tab_highlighted";
 const TAB_SELECTED: &str = "gui/sprites/widget/tab_selected";
 const TAB_SELECTED_HIGHLIGHTED: &str = "gui/sprites/widget/tab_selected_highlighted";
+/// The font's line height, as vanilla centres text on it (`Font.lineHeight`).
+const LINE_H: f32 = 9.0;
 /// A tab's label sits this much lower while the tab isn't open (`MenuTabButton.SELECTED_OFFSET`).
 const TAB_DROP: f32 = 3.0;
 const SCROLLER: &str = "gui/sprites/widget/scroller";
@@ -245,7 +247,7 @@ pub(super) fn tab(
         super::fill(batch, atlas, [lx, y + h - 2.0, lw, 1.0], colour);
     }
     let top = y + if selected { 0.0 } else { TAB_DROP };
-    let ty = top + ((y + h - top - 8.0) / 2.0).floor();
+    let ty = tab_label_y(y, h, selected);
     scrolling_label(
         batch,
         atlas,
@@ -254,6 +256,14 @@ pub(super) fn tab(
         (top, y + h - top),
         colour,
     );
+}
+
+/// Where vanilla centres a tab's label (`MenuTabButton.renderLabel`, through
+/// `ActiveTextCollector`): from the tab's top, or `TAB_DROP` under it while it isn't open, to its
+/// bottom, on a 9 px line, then 1 px down.
+pub(super) fn tab_label_y(y: f32, h: f32, open: bool) -> f32 {
+    let top = y + if open { 0.0 } else { TAB_DROP };
+    ((top + y + h - LINE_H) / 2.0).floor() + 1.0
 }
 
 /// A field: vanilla's text field, its focus ring left to the caller.
