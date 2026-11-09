@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--vanilla-home', type=Path, help='prepared .local directory')
     parser.add_argument('--resources', type=Path)
-    parser.add_argument('--test-binary', type=Path, help='already built horizon-client library test executable')
+    parser.add_argument('--test-binary', type=Path, help='already built horizon-client gameplay test executable')
     args = parser.parse_args()
     if args.vanilla_home:
         lab.LOCAL = args.vanilla_home.resolve()
@@ -50,7 +50,12 @@ def main():
         run(['java', '-Xmx512M', '-cp', os.pathsep.join([str(classes), cp]),
              'dev.horizonlab.parity.VanillaExplosionCausesOracle', expected], 'java', cwd=scratch, env=env)
         if args.test_binary:
-            command = [args.test_binary.resolve(), FIXTURE, '--exact', '--ignored', '--nocapture']
+            binary = args.test_binary.resolve()
+            listing = subprocess.run([str(binary), FIXTURE, '--exact', '--list'],
+                                     check=True, capture_output=True, text=True, cwd=scratch, env=env)
+            assert listing.stdout.splitlines().count(FIXTURE + ': test') == 1, (
+                'the test executable must contain exactly one explosion cause fixture')
+            command = [binary, FIXTURE, '--exact', '--ignored', '--nocapture']
             cwd = scratch
         else:
             command = ['cargo', 'test', '-p', 'horizon-client', '--lib', FIXTURE,
