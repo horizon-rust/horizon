@@ -5372,7 +5372,9 @@ impl Renderer {
                     entry_point: Some("fs_entity"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: frame_format,
+                        // The world pass's format (Linear Light's scene in RGBA16F), not the
+                        // frame's: under SDR output (VR) they differ.
+                        format: world_format,
                         // fs_entity's discard handles binary cutout alpha. Any
                         // sprite with fractional alpha stays on the blended
                         // dynamic entity path.
