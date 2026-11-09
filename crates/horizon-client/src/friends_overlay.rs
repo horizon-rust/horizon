@@ -410,6 +410,18 @@ impl Screen {
         self.sending.is_some()
     }
 
+    /// A tab's title (0 Friends, 1 Requests), for `TabNavigationBar` narration.
+    pub fn tab_title(&self, index: usize) -> String {
+        if index == 0 {
+            crate::lang::get("gui.friends.tab_friends")
+        } else {
+            crate::lang::tr(
+                "gui.friends.requests_count",
+                &[&self.lists().incoming.len() as &dyn std::fmt::Display],
+            )
+        }
+    }
+
     /// The selected tab's button id (1 Friends, 2 Requests).
     pub fn selected_tab(&self) -> u8 {
         match self.tab {

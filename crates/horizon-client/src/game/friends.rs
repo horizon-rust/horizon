@@ -335,7 +335,37 @@ impl Game<'_> {
             } else {
                 label.clone()
             };
-            horizon_client::widgets::record(&narration, [x, y, bw, 20.0], enabled);
+            if let Some(selected) = friends_tab {
+                // `TabNavigationBar`/`TabButton`: "Selected tab i out of n",
+                // the title, and the navigation usage when focused.
+                let index = if id == 1 { 0 } else { 1 };
+                let selected_index = if selected { index } else { 1 - index };
+                let selected_row = self.friends_overlay.as_ref().map(|screen| {
+                    horizon_client::widgets::Row::new(
+                        selected_index,
+                        screen.tab_title(selected_index),
+                    )
+                });
+                let hovered =
+                    hover.then(|| horizon_client::widgets::Row::new(index, narration.clone()));
+                horizon_client::widgets::record_as(
+                    &narration,
+                    [x, y, bw, 20.0],
+                    enabled,
+                    horizon_client::widgets::Kind::Tab(selected),
+                );
+                horizon_client::widgets::narratable(|| {
+                    horizon_client::widgets::Narratable::list(
+                        horizon_client::widgets::ListKind::Tabs,
+                        2,
+                        hovered,
+                        selected_row,
+                        [x, y, bw, 20.0],
+                    )
+                });
+            } else {
+                horizon_client::widgets::record(&narration, [x, y, bw, 20.0], enabled);
+            }
             horizon_client::widgets::widget_cursor(hover, enabled);
             let loading = (id == 3 && self.friends_overlay.as_ref().is_some_and(|s| s.loading()))
                 || self

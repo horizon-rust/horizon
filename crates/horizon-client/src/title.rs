@@ -3630,13 +3630,6 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             }
             let inside =
                 cursor.0 >= b.x && cursor.0 < b.x + b.w && cursor.1 >= b.y && cursor.1 < b.y + 20.0;
-            crate::widgets::narratable(|| self.button_narration(&b).hovered(inside));
-            crate::widgets::widget_cursor(inside, b.enabled);
-            if inside && let Some(key) = self.button_tooltip(b.id) {
-                button_tooltip = Some((key, [b.x, b.y, b.w, 20.0]));
-            }
-            let is_focused = self.focused_button == Some(b.id);
-            let hover = b.enabled && (inside || is_focused);
             // `FriendsOverlayTabButton`: selected is the enabled sprite, an
             // unselected tab its disabled one, and hovering any is highlighted.
             let friends_tab = match &self.mode {
@@ -3645,6 +3638,36 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 }
                 _ => None,
             };
+            if let Some(selected) = friends_tab {
+                // `TabNavigationBar`/`TabButton`: position, title and usage.
+                let index = if b.id == 1 { 0 } else { 1 };
+                let selected_index = if selected { index } else { 1 - index };
+                let selected_row = crate::widgets::Row::new(
+                    selected_index,
+                    match &self.mode {
+                        Mode::Friends(screen) => screen.tab_title(selected_index),
+                        _ => String::new(),
+                    },
+                );
+                let hovered = inside.then(|| crate::widgets::Row::new(index, b.label.clone()));
+                crate::widgets::narratable(|| {
+                    crate::widgets::Narratable::list(
+                        crate::widgets::ListKind::Tabs,
+                        2,
+                        hovered,
+                        Some(selected_row),
+                        [b.x, b.y, b.w, 20.0],
+                    )
+                });
+            } else {
+                crate::widgets::narratable(|| self.button_narration(&b).hovered(inside));
+            }
+            crate::widgets::widget_cursor(inside, b.enabled);
+            if inside && let Some(key) = self.button_tooltip(b.id) {
+                button_tooltip = Some((key, [b.x, b.y, b.w, 20.0]));
+            }
+            let is_focused = self.focused_button == Some(b.id);
+            let hover = b.enabled && (inside || is_focused);
             if let Some(selected) = friends_tab {
                 let sprite = if hover {
                     "gui/sprites/friends/button_highlighted"
