@@ -59,7 +59,7 @@ mod tests {
                         offers: crate::entity_nbt::offers_from_nbt(&horizon_world::nbt::parse_snbt(
                             &format!(concat!("{{Recipes:[{{buy:{{id:\"minecraft:emerald\",count:4}},",
                                 "sell:{{id:\"minecraft:glass\",count:3}},uses:{uses},maxUses:12,",
-                                "rewardExp:0b,xp:1,priceMultiplier:0.05f,demand:0,specialPrice:0}}]}}"))
+                                "rewardExp:0b,xp:1,priceMultiplier:0.05f,demand:0,specialPrice:0}}]}}"), uses = uses)
                         ).unwrap().0),
                         last_restock: last,
                         restocks_today: restocks,
