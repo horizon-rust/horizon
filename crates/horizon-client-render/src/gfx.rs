@@ -708,14 +708,16 @@ impl Part {
 /// until the next range would pass `budget` bytes (it keeps what is left; the
 /// first range moves whatever its size, so none keeps the page closed), the
 /// copies into `encoder`, the ranges' flat draw ids (`flat`) and, in the
-/// section arena, GPU culling's records (`records`) along. False when the other
-/// pages have no room left.
+/// section arena, GPU culling's records (`records`) and the hardware rays' rows
+/// (`rays`, by the meshes' keys: none for far tiles, which the rays don't hold)
+/// along. False when the other pages have no room left.
 fn move_off_page<'a>(
     arena: &mut arena::Arena,
     encoder: &mut wgpu::CommandEncoder,
     mut flat: Option<(&mut flat::Flat, &wgpu::Device, &mut upload::Uploads)>,
     mut records: Option<&mut gpu_culling::Records>,
-    meshes: impl Iterator<Item = &'a mut SectionGpu>,
+    mut rays: Option<&mut hw_rays::HwRays>,
+    meshes: impl Iterator<Item = (Option<SectionKey>, &'a mut SectionGpu)>,
     page: u32,
     part: Part,
     budget: &mut u64,
@@ -724,8 +726,12 @@ fn move_off_page<'a>(
         records.is_none() || matches!(part, Part::Section { .. }),
         "records follow the section arena's ranges"
     );
+    debug_assert!(
+        rays.is_none() || matches!(part, Part::Section { .. }),
+        "the rays read the section arena alone"
+    );
     let mut moved = false;
-    for s in meshes {
+    for (key, s) in meshes {
         // Nothing of a mesh here: split, one without solid quads (its (0, 0) is no
         // range of page 0); in the other arenas, one without translucent quads.
         let Some((_, start, vertices)) = part.of(s).filter(|r| r.0 == page) else {
@@ -754,10 +760,28 @@ fn move_off_page<'a>(
         {
             records.relocate(id, to.0, u64::from(s.solid_base()));
         }
+        // The rays' row reads its quads' texels where they are now (its structure keeps
+        // the geometry it was built with): left at the old range, which another mesh
+        // takes, they alpha-tested and coloured with that mesh's vertices.
+        if let (Part::Section { .. }, Some(rays), Some(key)) = (part, rays.as_deref_mut(), key) {
+            rays.relocate(key, (page, start), to);
+        }
         *budget = budget.saturating_sub(bytes);
         moved = true;
     }
     true
+}
+/// The meshes `move_off_page` moves: the sections by their keys, then the far
+/// tiles' (no key).
+fn keyed_meshes<'a>(
+    sections: &'a mut resident::Resident<SectionGpu>,
+    lods: &'a mut HashMap<crate::lod::TileKey, lod::Tile>,
+) -> impl Iterator<Item = (Option<SectionKey>, &'a mut SectionGpu)> {
+    sections.iter_mut().map(|(key, s, _)| (Some(key), s)).chain(
+        lods.values_mut()
+            .flat_map(|tile| tile.meshes_mut())
+            .map(|s| (None, s)),
+    )
 }
 /// Starts moving a page of a large arena far larger than its ranges in use
 /// (`Arena::oversized`) into a new page of the size they get (`Arena::open_page`),
@@ -7389,19 +7413,27 @@ impl Renderer {
                     label: Some("Section uploads"),
                 })
         });
-        let meshes = self
-            .sections
-            .values_mut()
-            .chain(self.lods.values_mut().flat_map(|tile| tile.meshes_mut()));
+        let meshes = keyed_meshes(&mut self.sections, &mut self.lods);
         let flat = self
             .flat
             .as_mut()
             .map(|f| (f, &self.device, &mut self.section_uploads));
-        // GPU culling's records move with the sections.
+        // GPU culling's records and the hardware rays' rows move with the sections.
         let gpu = self.gpu_culling.as_mut().map(|g| &mut g.records);
+        let rays = self.hw_rays.as_mut();
         let split = self.translucent_arena.is_some();
         let (arena, part) = (&mut self.arena, Part::Section { split });
-        if !move_off_page(arena, encoder, flat, gpu, meshes, page, part, &mut budget) {
+        if !move_off_page(
+            arena,
+            encoder,
+            flat,
+            gpu,
+            rays,
+            meshes,
+            page,
+            part,
+            &mut budget,
+        ) {
             // The other pages have no room after all.
             arena.reopen();
         }
@@ -7456,10 +7488,7 @@ impl Renderer {
                     label: Some("Section uploads"),
                 })
         });
-        let meshes = self
-            .sections
-            .values_mut()
-            .chain(self.lods.values_mut().flat_map(|tile| tile.meshes_mut()));
+        let meshes = keyed_meshes(&mut self.sections, &mut self.lods);
         // As many quads a frame either way: a quad's indices are a quarter of its bytes.
         let cap = match part {
             Part::Indices => COMPACT_BUDGET / 4,
@@ -7472,8 +7501,19 @@ impl Renderer {
             _ => None,
         }
         .map(|f| (f, &self.device, &mut self.section_uploads));
-        // GPU culling's records follow the section arena alone.
-        if !move_off_page(arena, encoder, flat, None, meshes, page, part, &mut budget) {
+        // GPU culling's records and the rays' rows follow the section arena alone (with the
+        // rays the translucent quads stay after the solid ones there: no translucent arena).
+        if !move_off_page(
+            arena,
+            encoder,
+            flat,
+            None,
+            None,
+            meshes,
+            page,
+            part,
+            &mut budget,
+        ) {
             // New ranges took the room: both pages stay, drawn, until a later try.
             arena.reopen();
             self.shrink_gate.wait(now, SHRINK_RETRY);
