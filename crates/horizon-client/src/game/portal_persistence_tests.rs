@@ -151,6 +151,9 @@ fn live_and_saved_portal_counters_follow_runtime_and_data_updates() {
     let id = game.next_entity;
     let state = game.portals.entities.entry(id).or_default();
     state.set_inside(BlockPos::new(4, 210, 4), 300);
+    game.restore_portal_cooldown(id, &Tag::compound([("PortalCooldown", Tag::Int(2))]));
+    assert!(game.portals.entities[&id].process.is_some());
+    assert_eq!(game.portals.entities[&id].cooldown, 2);
     game.restore_portal_cooldown(id, &Tag::compound([("PortalCooldown", Tag::Int(0))]));
     assert!(game.portals.entities[&id].process.is_some());
     assert_eq!(game.portals.entities[&id].cooldown, 0);
