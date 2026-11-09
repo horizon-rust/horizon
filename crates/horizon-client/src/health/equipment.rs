@@ -84,7 +84,7 @@ impl PlayerMotion {
             totem_fired: hit.totem_fired,
             canceled: hit.canceled,
             sleeping: self.sleeping,
-            stopped_sleeping: hit.stopped_sleeping,
+            stopped_sleeping: false,
         };
         let mut combat = ServerPlayerCombat::new(
             &mut self.attributes,
@@ -100,12 +100,14 @@ impl PlayerMotion {
         hit.knocked = environment.knocked;
         hit.totem_fired = environment.totem_fired;
         hit.canceled = environment.canceled;
-        hit.stopped_sleeping = environment.stopped_sleeping;
+        let stopped_sleeping = environment.stopped_sleeping;
+        hit.stopped_sleeping |= stopped_sleeping;
+        let value = result?;
         // Wake before equipment hooks continue, retaining the signal for Game.
-        if hit.stopped_sleeping && self.sleeping {
+        if stopped_sleeping && self.sleeping {
             self.set_sleeping(false)?;
         }
-        result
+        Ok(value)
     }
     #[doc(hidden)]
     pub fn prepare_equipment_hurt(

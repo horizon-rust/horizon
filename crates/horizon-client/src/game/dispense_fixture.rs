@@ -1446,3 +1446,51 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+pub(super) mod bed_sleep_tests {
+    use super::super::*;
+
+    /// Run the real bed interactions on synthetic chunks, without opening a
+    /// world, starting an integrated server or entering the game loop.
+    #[test]
+    #[ignore = "needs prepared resources and HORIZON_TEST_BED_CASES=INPUT,OUTPUT in scratch homes/cwd"]
+    fn bed_sleep_cases_without_world_startup() {
+        let spec = std::env::var("HORIZON_TEST_BED_CASES").expect("case paths required");
+        with_scratch_game(|game| game.dispense_fixture(&spec).unwrap());
+    }
+
+    pub(in crate::game) fn with_scratch_game(run: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root;
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&std::env::current_dir().unwrap()),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        run(&mut game);
+    }
+}

@@ -1215,6 +1215,33 @@ mod tests {
             assert_eq!(outcome.stopped_sleeping, expected_wake);
             assert_eq!(player.sleeping, !expected_wake);
         }
+        // A durability hook can change the live player between continuations.
+        // A retained outcome is not a new stopSleeping request from vanilla.
+        let mut player =
+            crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
+                .unwrap();
+        player.set_sleeping(true).unwrap();
+        let mut hit = player
+            .prepare_equipment_hurt(
+                health,
+                super::HealthRules::default(),
+                source,
+                2.0,
+                None,
+                false,
+                -1,
+            )
+            .unwrap();
+        assert!(!player.sleeping);
+        player.set_sleeping(true).unwrap();
+        let _ = player.select_equipment_hurt(health, &mut hit).unwrap();
+        assert!(
+            player.sleeping,
+            "a retained outcome must not wake a second time"
+        );
+        let outcome = player.finish_equipment_hurt(health, hit).unwrap();
+        assert!(outcome.hurt && outcome.stopped_sleeping);
+        assert!(player.sleeping);
     }
 
     /// #2800: on Easy a mob's 4 is scaled to 3 before `applyItemBlocking`,
