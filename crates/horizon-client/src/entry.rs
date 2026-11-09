@@ -21,6 +21,11 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     horizon_client::telemetry::mark_start();
     // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
     crash::on_report(horizon_client::telemetry::keep_crash);
+    // Auto-reconnect, a Horizon extra still in the engine crates, runs on the connection hooks as
+    // the crates above do (horizon_client::reconnect; docs/layers.md, plan M5).
+    if cfg!(feature = "horizon-extras") {
+        let _ = horizon_hooks::register(&horizon_client::reconnect::HOOKS);
+    }
     // Crates above the engine registered their hooks before this (horizon-official's `main`);
     // none registers after this point.
     horizon_hooks::engine::seal();

@@ -979,7 +979,7 @@ impl Game<'_> {
         lan: bool,
         realm: bool,
     ) -> Result<()> {
-        self.realm_session = realm;
+        self.last_server.realm = realm;
         self.reset_tutorial();
         self.perf.world_opening();
         // A server's own biomes come over the connection; the last local
@@ -1027,7 +1027,7 @@ impl Game<'_> {
                 root.clone(),
             ),
             None => {
-                self.extras_connecting(address, name, lan);
+                self.last_server.connecting(address, name, lan);
                 match cookies {
                     Some(cookies) => Session::connect_transferred(
                         address,
@@ -1522,7 +1522,7 @@ impl Game<'_> {
         self.finish_perf();
         if reason.is_none() {
             // Leaving on purpose: nothing for auto-reconnect to retry.
-            self.extras_left();
+            self.last_server.left();
         }
         self.clear_waypoints();
         self.hud_disconnected();
@@ -2288,7 +2288,7 @@ impl Game<'_> {
                     uuid,
                 } => {
                     self.set_registries(registries);
-                    self.extras_joined();
+                    self.last_server.joined();
                     // handleLogin: the level loading screen replaces any dialog.
                     self.close_dialogs();
                     if let Some(r) = self.remote.as_mut() {
@@ -2430,9 +2430,9 @@ impl Game<'_> {
                         self.connect_server_with_cookies(&address, &name, Some(cookies))?;
                         return Ok(());
                     }
-                    let retry = self.reconnect_after(&reason, key.as_deref(), from_server);
+                    let plan = self.last_server.ended(&reason, key.as_deref(), from_server);
                     self.leave_server(Some(reason))?;
-                    self.offer_reconnect(retry);
+                    horizon_client::last_server::offer(self.title.as_mut(), plan);
                     return Ok(());
                 }
                 Event::Packet(packet) => self.handle_packet(*packet)?,
@@ -3873,7 +3873,7 @@ impl Game<'_> {
             C::Explode(p) => self.remote_explode(&p),
             C::Sound(p) => {
                 if let Some(name) = self.remote_sound_name(&p.sound)
-                    && !self.settings.extras.pvp.combat.mutes_sound(&name)
+                    && !self.pvp_mutes_sound(&name)
                 {
                     let at = [
                         f64::from(p.x) / 8.0,
@@ -3895,7 +3895,7 @@ impl Game<'_> {
             }
             C::SoundEntity(p) => {
                 if let Some(name) = self.remote_sound_name(&p.sound)
-                    && !self.settings.extras.pvp.combat.mutes_sound(&name)
+                    && !self.pvp_mutes_sound(&name)
                     && let Some(state) = self.remote_sound_entity_state(p.id)
                 {
                     let source = usize::try_from(p.source)
@@ -6746,7 +6746,7 @@ impl Game<'_> {
         // (`KeyboardInput.tick`: 8 directions, full speed). The server only hears those keys
         // (`ServerboundPlayerInputPacket`), and an anticheat that predicts from them pulls back
         // a player moving at the stick's own angle and speed.
-        if self.integrated.is_none() && self.server_address().is_some() {
+        if self.integrated.is_none() && self.last_server.address().is_some() {
             keys.analog = None;
         }
         let [mut strafe, mut forward] = keys.direction();

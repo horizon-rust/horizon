@@ -299,7 +299,7 @@ impl Game<'_> {
     /// address isn't, even on this computer or the local network: an address can be a proxy, a
     /// tunnel or a friend's relay as well.
     fn direct_craft_free_server(&self) -> bool {
-        self.server_is_lan()
+        self.last_server.lan()
             || self
                 .remote
                 .as_ref()
