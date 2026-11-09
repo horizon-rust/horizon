@@ -70,7 +70,10 @@ def cases():
                 'slots': [['minecraft:emerald', pay] if pay else None, None,
                           [f'minecraft:{item}', output] if result else None],
                 'carried': carried, 'xp': 20+uses,
-                'offers': [{'uses': uses, 'special': 0, 'cost': 4}]}})
+                # With the world frozen, notifyTrade updates the offer but the
+                # deferred AI reputation event has not sent another packet.
+                'sent_offers': [{'uses': 0, 'special': 0, 'demand': 0, 'cost': 4}],
+                'offers': [{'uses': uses, 'special': 0, 'demand': 0, 'cost': 4}]}})
         state('open', 0, 0, False)
         action('select', index=0)
         state('selected', 0, payment, payment >= 4)

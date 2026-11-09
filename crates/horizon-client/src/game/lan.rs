@@ -4803,3 +4803,6 @@ mod owner_attachment_save_tests {
         assert_eq!(saved_value(&game), Some(9));
     }
 }
+
+#[cfg(test)]
+mod merchant_packet_tests;
