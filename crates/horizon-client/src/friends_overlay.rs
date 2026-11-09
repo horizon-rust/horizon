@@ -1277,8 +1277,14 @@ impl Screen {
             let label = crate::lang::get("gui.friends.my_profile_name");
             let label_w = HudBatch::text_width(atlas, &label);
             let name_w = HudBatch::text_width(atlas, &name);
-            batch.text(atlas, &label, x + 8.0, fy + fh + 6.0, GREY, false);
-            let profile_rect = [x + 8.0 + label_w, fy + fh + 6.0, name_w, 9.0];
+            let row_x = x + 8.0;
+            let (label_x, name_x) = if crate::lang::bidirectional() {
+                (row_x + name_w, row_x)
+            } else {
+                (row_x, row_x + label_w)
+            };
+            batch.text(atlas, &label, label_x, fy + fh + 6.0, GREY, false);
+            let profile_rect = [name_x, fy + fh + 6.0, name_w, 9.0];
             self.profile_box.set(profile_rect);
             let profile_hover = cursor.0 >= profile_rect[0]
                 && cursor.0 < profile_rect[0] + profile_rect[2]
@@ -1300,14 +1306,7 @@ impl Screen {
                 )
             });
             crate::widgets::widget_cursor(profile_hover, true);
-            batch.text(
-                atlas,
-                &name,
-                x + 8.0 + label_w,
-                fy + fh + 6.0,
-                u32::MAX,
-                false,
-            );
+            batch.text(atlas, &name, name_x, fy + fh + 6.0, u32::MAX, false);
             crate::ui::tiled_sized(
                 batch,
                 atlas,
