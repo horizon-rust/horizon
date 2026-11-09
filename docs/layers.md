@@ -105,6 +105,13 @@ Code that belongs higher than the crate it has to live in today (a platform sett
 say) goes in its own module, never mixed into an engine module. Horizon code in the game also goes behind
 `horizon-extras`. That keeps each later move a pure file move.
 
+## File size
+
+A Rust file over 3000 lines may not grow compared with the base of the branch. `game.rs` (~21,700 lines),
+`game/remote.rs` (~10,900) and `gfx.rs` (~10,100) are the worst; they slow incremental builds. Smaller files may
+grow to 3000 lines, and a big file may shrink or stay as it is. There is no list of files, so no check breaks on
+an unrelated edit. Generated files and `third_party/` are not checked.
+
 ## The check
 
 `python3 tools/check_layers.py` runs in CI's verify job and in `tools/pr_ready.py`. It reads the four workspaces'
