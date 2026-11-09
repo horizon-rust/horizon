@@ -612,26 +612,26 @@ fn translate(
     // its y range, then its two horizontal edges; water there, a little below and above (waves),
     // casts nothing.
     if patches {
-        let boxes: Vec<String> = (0..2 * WATER_PATCHES)
-            .map(|k| format!("horizonWaterPatch{k}"))
-            .collect();
-        writeln!(
-            fragment_main,
-            "    vec4 hz_patches[{}] = vec4[{}]({});\n    \
-             for (int hz_i = 0; hz_i < {WATER_PATCHES}; hz_i++) {{\n        \
-             if (hz_i >= horizonWaterPatchCount) {{ break; }}\n        \
-             vec4 hz_a = hz_patches[2 * hz_i];\n        vec4 hz_b = hz_patches[2 * hz_i + 1];\n        \
-             vec2 hz_d = horizonPatchPos.xz - hz_a.xy;\n        \
-             float hz_s = dot(hz_d, hz_b.xy) / max(dot(hz_b.xy, hz_b.xy), 1e-6);\n        \
-             float hz_t = dot(hz_d, hz_b.zw) / max(dot(hz_b.zw, hz_b.zw), 1e-6);\n        \
-             if (hz_s >= 0.0 && hz_s <= 1.0 && hz_t >= 0.0 && hz_t <= 1.0\n            \
-             && horizonPatchPos.y >= hz_a.z - 0.5 && horizonPatchPos.y <= hz_a.w + 0.25) {{ discard; }}\n    \
-             }}",
-            2 * WATER_PATCHES,
-            2 * WATER_PATCHES,
-            boxes.join(", ")
-        )
-        .unwrap();
+        // Each box from its own uniforms, none without boats: an array indexed in a loop sits in
+        // local memory per fragment and holds registers back from every draw, boats or not.
+        let mut test = String::from("    if (horizonWaterPatchCount > 0) {\n");
+        for k in 0..WATER_PATCHES {
+            let (a, b) = (2 * k, 2 * k + 1);
+            write!(
+                test,
+                "        if (horizonWaterPatchCount > {k}) {{\n            \
+                 vec2 hz_d = horizonPatchPos.xz - horizonWaterPatch{a}.xy;\n            \
+                 vec2 hz_e = horizonWaterPatch{b}.xy, hz_f = horizonWaterPatch{b}.zw;\n            \
+                 float hz_s = dot(hz_d, hz_e) / max(dot(hz_e, hz_e), 1e-6);\n            \
+                 float hz_t = dot(hz_d, hz_f) / max(dot(hz_f, hz_f), 1e-6);\n            \
+                 if (hz_s >= 0.0 && hz_s <= 1.0 && hz_t >= 0.0 && hz_t <= 1.0\n                \
+                 && horizonPatchPos.y >= horizonWaterPatch{a}.z - 0.5\n                \
+                 && horizonPatchPos.y <= horizonWaterPatch{a}.w + 0.25) {{ discard; }}\n        }}\n"
+            )
+            .unwrap();
+        }
+        test.push_str("    }\n");
+        fragment_main.push_str(&test);
     }
     // Behind a boat's water patch, within 3% of its distance (the water's surface lies at the
     // patch, and packs wave it): no water there. Depth 1 is no patch.
