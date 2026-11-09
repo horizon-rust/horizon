@@ -359,7 +359,7 @@ impl Game<'_> {
     pub(super) fn merchant_restocked(&mut self, id: u32) {
         self.merchant_refresh_local(id, None);
         if let Some(mut host) = self.lan.take() {
-            self.lan_merchant_refresh(&mut host, id, None);
+            self.lan_merchant_reputation(&mut host, id);
             self.lan = Some(host);
         }
     }

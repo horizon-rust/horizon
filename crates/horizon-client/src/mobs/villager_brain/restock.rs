@@ -21,10 +21,7 @@ pub(super) fn restock_if_due(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        items::ItemStack,
-        merchant::{ItemCost, MerchantOffer, Trader},
-    };
+    use crate::merchant::Trader;
     use horizon_core::geometry::Vec3;
     use std::sync::Arc;
 
@@ -59,24 +56,14 @@ mod tests {
                     );
                     mob.extra.trade = Some(Box::new(Trader {
                         xp: 20,
-                        offers: vec![MerchantOffer {
-                            base_cost_a: ItemCost {
-                                stack: ItemStack::new("minecraft:emerald", 4),
-                            },
-                            cost_b: None,
-                            result: ItemStack::new("minecraft:glass", 3),
-                            uses,
-                            max_uses: 12,
-                            reward_exp: false,
-                            special_price_diff: 0,
-                            demand: 0,
-                            price_multiplier: 0.05,
-                            xp: 1,
-                        }],
+                        offers: crate::entity_nbt::offers_from_nbt(&horizon_world::nbt::parse_snbt(
+                            &format!(concat!("{{Recipes:[{{buy:{{id:\"minecraft:emerald\",count:4}},",
+                                "sell:{{id:\"minecraft:glass\",count:3}},uses:{uses},maxUses:12,",
+                                "rewardExp:0b,xp:1,priceMultiplier:0.05f,demand:0,specialPrice:0}}]}}"))
+                        ).unwrap().0),
                         last_restock: last,
                         restocks_today: restocks,
-                        check_day: 0,
-                        unset: false,
+                        ..Default::default()
                     }));
                     let mut events = Vec::new();
                     restock_if_due(&mut mob, &world, &mut events);

@@ -1,35 +1,18 @@
 #!/usr/bin/env python3
 """Exercise real villager AI restock with an open owner merchant menu."""
 import argparse
-import gzip
 import json
-import struct
-import zlib
 from pathlib import Path
 import subprocess
 import sys
-from lra_schem import _nbt
+from anvil_dump import plain, region_chunks
 
 
 def persisted_merchant(root, number):
     matches = []
     for region in root.glob('**/entities/*.mca'):
-        raw = region.read_bytes()
-        for chunk in range(1024):
-            location = int.from_bytes(raw[chunk * 4:chunk * 4 + 4], 'big')
-            if not location:
-                continue
-            offset = (location >> 8) * 4096
-            length = struct.unpack_from('>I', raw, offset)[0]
-            kind = raw[offset + 4]
-            payload = raw[offset + 5:offset + 4 + length]
-            if kind == 1:
-                payload = gzip.decompress(payload)
-            elif kind == 2:
-                payload = zlib.decompress(payload)
-            elif kind != 3:
-                raise ValueError(f'unsupported region compression {kind}')
-            for entity in _nbt(payload).get('Entities', []):
+        for chunk in region_chunks(region).values():
+            for entity in plain(chunk, full=True).get('Entities', []):
                 if entity.get('UUID') == [113, 1, 0, number]:
                     matches.append(entity)
     if len(matches) != 1:

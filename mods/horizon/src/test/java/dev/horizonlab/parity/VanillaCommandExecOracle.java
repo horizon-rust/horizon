@@ -1140,10 +1140,12 @@ public final class VanillaCommandExecOracle {
                         uuid=new JsonArray();for(int n:net.minecraft.core.UUIDUtil.uuidToIntArray(player.getUUID()))uuid.add(n);state.add("player",uuid);
                         JsonArray slots=new JsonArray();for(int n=0;n<3;n++)slots.add(merchantStack(menu.getSlot(n).getItem()));state.add("slots",slots);
                         state.add("carried",merchantStack(menu.getCarried()));state.addProperty("xp",menu.getTraderXp());
-                        state.add("sent_offers",sentMerchantOffers.get(menu.containerId));
+                        boolean offerPackets = op.has("offer_packets") && op.get("offer_packets").getAsBoolean();
+                        if (offerPackets) state.add("sent_offers",sentMerchantOffers.get(menu.containerId));
                         JsonArray offers=new JsonArray();for(var offer:menu.getOffers()) {
                             JsonObject o=new JsonObject();o.addProperty("uses",offer.getUses());o.addProperty("special",offer.getSpecialPriceDiff());
-                            o.addProperty("demand",offer.getDemand());o.addProperty("cost",offer.getCostA().getCount());offers.add(o);
+                            if (offerPackets) o.addProperty("demand",offer.getDemand());
+                            o.addProperty("cost",offer.getCostA().getCount());offers.add(o);
                         }state.add("offers",offers);
                         JsonObject record=new JsonObject();record.addProperty("cmd","#merchant_state "+op.get("label").getAsString());
                         record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);

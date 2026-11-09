@@ -250,7 +250,6 @@ impl Game<'_> {
         host: &mut LanHost,
         conn: u32,
         window: Option<i32>,
-        refresh_offers: bool,
         op: impl FnOnce(&mut Menu, &Env),
     ) -> bool {
         let Some(mut gm) = host.play.get_mut(&conn).and_then(|p| p.merchant.take()) else {
@@ -346,11 +345,7 @@ impl Game<'_> {
             self.as_guest(host, conn, |g| g.merchant_traded(gm.merchant.mob, &traded));
         }
         self.drop_guest_items(host, gi, dropped);
-        // Vanilla sends offers on opening and updateSpecialPrices, not on
-        // a normal result take. Trade reputation refreshes on the AI phase.
-        if refresh_offers {
-            self.lan_send_offers(host, conn, &mut gm, true);
-        }
+        self.lan_send_offers(host, conn, &mut gm, false);
         self.lan_send_merchant_content(host, conn, &mut gm);
         host.play.entry(conn).or_default().merchant = Some(gm);
         true
@@ -372,7 +367,7 @@ impl Game<'_> {
             _ => Input::PickupAll,
         };
         let (slot, button) = (i32::from(p.slot), i32::from(p.button));
-        self.lan_merchant_op(host, conn, Some(p.container), false, |menu, env| {
+        self.lan_merchant_op(host, conn, Some(p.container), |menu, env| {
             let _ = menu.click(env, slot, button, input);
         })
     }
@@ -385,7 +380,7 @@ impl Game<'_> {
             return;
         };
         let (uuid, name) = (guest.uuid, guest.name.clone());
-        if self.lan_merchant_op(host, conn, None, false, |menu, env| {
+        if self.lan_merchant_op(host, conn, None, |menu, env| {
             menu.merchant_select(env, index)
         }) {
             let villager = host
@@ -404,9 +399,7 @@ impl Game<'_> {
         conn: u32,
         window: Option<i32>,
     ) -> bool {
-        if !self.lan_merchant_op(host, conn, window, false, |menu, env| {
-            menu.merchant_close(env)
-        }) {
+        if !self.lan_merchant_op(host, conn, window, |menu, env| menu.merchant_close(env)) {
             return false;
         }
         let Some(mut gm) = host.play.get_mut(&conn).and_then(|p| p.merchant.take()) else {
@@ -455,7 +448,7 @@ impl Game<'_> {
             }
         }
     }
-    /// Refresh open guest prices after the actual villager reputation event.
+    /// Refresh open guest prices after reputation changes or a restock.
     pub(super) fn lan_merchant_reputation(&mut self, host: &mut LanHost, id: u32) {
         let conns: Vec<u32> = host
             .play
@@ -468,19 +461,25 @@ impl Game<'_> {
             .map(|(c, _)| *c)
             .collect();
         for conn in conns {
-            let Some(uuid) = host
+            let Some((uuid, hero)) = host
                 .hub
                 .guests
                 .iter()
                 .find(|g| g.conn == conn && host.hub.here(g))
-                .map(|g| uuid_words(g.uuid))
+                .map(|g| {
+                    (
+                        uuid_words(g.uuid),
+                        g.effects.amplifier("hero_of_the_village"),
+                    )
+                })
             else {
                 continue;
             };
             let reputation = self.villager_reputation_of(id, uuid);
-            self.lan_merchant_op(host, conn, None, true, |menu, env| {
+            self.lan_merchant_op(host, conn, None, |menu, env| {
                 if let Some(s) = menu.merchant.as_mut() {
                     s.reputation = reputation;
+                    s.hero = hero;
                     s.update_special_prices();
                 }
                 menu.merchant_update(env);
@@ -503,46 +502,5 @@ impl Game<'_> {
             return;
         }
         self.lan_open_station(host, conn, &station);
-    }
-    /// `Villager.updateSpecialPrices` for current guest traders, optionally
-    /// restricted to the reputation event's source UUID. Guest state must be
-    /// restored before this reads their inventory and active effects.
-    pub(super) fn lan_merchant_refresh(
-        &mut self,
-        host: &mut LanHost,
-        id: u32,
-        source_uuid: Option<[i32; 4]>,
-    ) {
-        let players: Vec<_> = host
-            .play
-            .iter()
-            .filter_map(|(conn, play)| {
-                let merchant = play.merchant.as_ref()?;
-                if merchant.merchant.mob != Some(id) {
-                    return None;
-                }
-                let guest = host
-                    .hub
-                    .guests
-                    .iter()
-                    .find(|g| g.conn == *conn && host.hub.here(g))?;
-                let uuid = uuid_words(guest.uuid);
-                if source_uuid.is_some_and(|source| source != uuid) {
-                    return None;
-                }
-                Some((*conn, uuid, guest.effects.amplifier("hero_of_the_village")))
-            })
-            .collect();
-        for (conn, uuid, hero) in players {
-            let reputation = self.villager_reputation_of(id, uuid);
-            self.lan_merchant_op(host, conn, None, true, |menu, env| {
-                if let Some(session) = menu.merchant.as_mut() {
-                    session.reputation = reputation;
-                    session.hero = hero;
-                    session.update_special_prices();
-                }
-                menu.merchant_update(env);
-            });
-        }
     }
 }

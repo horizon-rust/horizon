@@ -14,7 +14,7 @@ def cases():
     def menu(label, *, merchant=1, window=1, uses=12, demand=0,
              special=0, cost=4, payment=True, result=False):
         offers = [{'uses': uses, 'special': special, 'demand': demand, 'cost': cost}]
-        ops.append({'op': 'merchant_state', 'label': label, 'expect_observation': {
+        ops.append({'op': 'merchant_state', 'label': label, 'offer_packets': True, 'expect_observation': {
             'window': window, 'merchant': [113, 1, 0, merchant],
             'player': [-1608632253, -450807400, -1786055591, -2146546415],
             'slots': [['minecraft:emerald', 20] if payment else None, None,
