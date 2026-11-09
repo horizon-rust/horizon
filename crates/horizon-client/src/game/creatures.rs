@@ -1284,7 +1284,7 @@ impl Game<'_> {
             let w = self.mob_world_base(&[]);
             let rebuild = mob_islands::hookless(&w);
             // Each mob's answer reads only the blocks: helper threads give the same.
-            mob_islands::par_map(&self.mobs, lanes, 2048, |part, out| {
+            mob_islands::par_map(&self.mobs, lanes, 256, |part, out| {
                 let w = rebuild();
                 out.extend(part.iter().map(|m| m.on_climbable(&w)));
             })
@@ -1293,14 +1293,9 @@ impl Game<'_> {
             m.on_climbable = climbing;
         }
         let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
-        snapshot.extend(mob_islands::par_map(
-            &self.mobs,
-            lanes,
-            2048,
-            |part, out| {
-                out.extend(part.iter().map(|m| seen(m, uuid)));
-            },
-        ));
+        snapshot.extend(mob_islands::par_map(&self.mobs, lanes, 256, |part, out| {
+            out.extend(part.iter().map(|m| seen(m, uuid)));
+        }));
         let mut events = std::mem::take(&mut self.creatures.event_buf);
         events.clear();
         // SulfurCube.primeWhenOnPoweredPosition runs before super.tick adopts
@@ -1371,19 +1366,21 @@ impl Game<'_> {
                     }
                 })
                 .collect();
-            let nearest_players: Vec<Option<Vec3>> = mobs
-                .iter()
-                .zip(&roles)
-                .map(|(m, role)| {
-                    (*role != Role::Unloaded)
-                        .then(|| {
-                            nearest
-                                .nearest(m.position.x, m.position.y, m.position.z)
-                                .map(|p| p.position)
-                        })
-                        .flatten()
-                })
-                .collect();
+            // Each answer reads only the players: helper threads give the same.
+            let order: Vec<usize> = (0..mobs.len()).collect();
+            let nearest_players: Vec<Option<Vec3>> =
+                mob_islands::par_map(&order, lanes, 256, |part, out| {
+                    out.extend(part.iter().map(|&k| {
+                        let m = &mobs[k];
+                        (roles[k] != Role::Unloaded)
+                            .then(|| {
+                                nearest
+                                    .nearest(m.position.x, m.position.y, m.position.z)
+                                    .map(|p| p.position)
+                            })
+                            .flatten()
+                    }))
+                });
             let shared = mob_islands::Shared {
                 uuid,
                 host_uuid: if self.player.is_some() {
@@ -1489,10 +1486,9 @@ impl Game<'_> {
                         mob_islands::merge_one(serial)
                     });
                     // The whole list's grid, as each group's must answer.
-                    let whole = horizon_client::mobs::seen_grid::SeenGrid::new(
+                    let whole = horizon_client::mobs::seen_grid::SeenGrid::bounds_of(
                         snapshot.iter().map(|s| s.bounds),
-                    )
-                    .bounds();
+                    );
                     let (draws, randoms) = mob_islands::lanes(&scratch, plan.groups.len());
                     // getCurrentDifficultyAt for each ticking mob's chunk, before the threads start.
                     let mut by_chunk = horizon_client::fast_hash::FxHashMap::default();

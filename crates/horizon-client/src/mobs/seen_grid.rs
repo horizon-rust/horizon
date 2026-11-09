@@ -46,6 +46,16 @@ impl SeenGrid {
     pub fn bounds(&self) -> (f64, usize) {
         (self.reach, self.cells.len().max(self.columns))
     }
+    /// [`Self::bounds`] of the grid of `boxes`, without building it.
+    pub fn bounds_of(boxes: impl Iterator<Item = Aabb>) -> (f64, usize) {
+        let mut reach = 0.0_f64;
+        let mut cells = crate::fast_hash::FxHashSet::default();
+        for b in boxes {
+            reach = reach.max(width(b));
+            cells.insert(corner(b));
+        }
+        (reach, cells.len())
+    }
     /// Answer queries as a grid of `bounds` would: as wide a margin, and a scan past as many
     /// columns.
     pub fn answering_as(mut self, (reach, columns): (f64, usize)) -> Self {
