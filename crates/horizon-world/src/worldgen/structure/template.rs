@@ -11,7 +11,9 @@ use std::sync::{Arc, OnceLock};
 pub struct BlockInfo {
     pub pos: [i32; 3],
     pub state: BlockStateId,
-    pub nbt: Option<Compound>,
+    /// Boxed: nearly no block has block-entity data, but every block of every
+    /// template kept in the session would otherwise pay 24 bytes for it.
+    pub nbt: Option<Box<Compound>>,
 }
 #[derive(Clone, Debug)]
 pub struct JigsawInfo {
@@ -172,7 +174,7 @@ pub fn save_nbt(
         tag.insert("pos".into(), int_list(block.pos));
         tag.insert("state".into(), Tag::Int(index as i32));
         if let Some(nbt) = &block.nbt {
-            tag.insert("nbt".into(), Tag::Compound(nbt.clone()));
+            tag.insert("nbt".into(), Tag::Compound((**nbt).clone()));
         }
         block_list.push(Tag::Compound(tag));
     }
@@ -260,7 +262,7 @@ impl StructureTemplate {
                     .copied()
                     .unwrap_or(air);
                 let nbt = match get(block, "nbt") {
-                    Some(Tag::Compound(c)) => Some(c.clone()),
+                    Some(Tag::Compound(c)) => Some(Box::new(c.clone())),
                     _ => None,
                 };
                 let class = if nbt.is_some() {
@@ -432,7 +434,7 @@ impl StructureTemplate {
                 .iter()
                 .filter_map(|info| {
                     let horizontal = jigsaw_states(info.state)?;
-                    let nbt = info.nbt.clone().unwrap_or_default();
+                    let nbt = info.nbt.as_deref().cloned().unwrap_or_default();
                     let joint = string(get(&nbt, "joint"));
                     let text = |key: &str, default: &str| {
                         string(get(&nbt, key)).unwrap_or_else(|| default.to_owned())
@@ -489,6 +491,18 @@ mod save_tests {
         BlockRegistry::from_nbt(&tag).unwrap()
     }
 
+    /// The template store keeps every loaded template's blocks for the
+    /// session. Nearly no block carries block-entity NBT, so a block pays a
+    /// pointer for it instead of embedding a `Compound`.
+    #[test]
+    fn a_block_info_pays_a_pointer_for_rare_nbt() {
+        assert!(
+            std::mem::size_of::<BlockInfo>() <= 24,
+            "BlockInfo grew to {} bytes: box the rare NBT again",
+            std::mem::size_of::<BlockInfo>()
+        );
+    }
+
     #[test]
     fn a_data_pack_template_is_found_and_others_stay_empty() {
         let registry: &'static BlockRegistry = Box::leak(Box::new(registry()));
@@ -543,7 +557,7 @@ mod save_tests {
             nbt: nbt.then(|| {
                 let mut c = Compound::new();
                 c.insert("id".into(), Tag::String("minecraft:chest".into()));
-                c
+                Box::new(c)
             }),
         };
         let blocks = vec![
