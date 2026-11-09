@@ -315,7 +315,7 @@ impl Game<'_> {
         self.remote.is_some() && self.integrated.is_none()
     }
     pub(super) fn draw_pause_menu(&mut self, batch: &mut HudBatch) {
-        let friends = self.friends_view().shown;
+        let friends = self.friends_shown();
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
@@ -389,6 +389,7 @@ impl Game<'_> {
                     horizon_client::friends_screen::title()
                 };
                 horizon_client::widgets::record(&label, [x, y, 20.0, 20.0], active);
+            }
             }
             ui::button(
                 batch,
@@ -521,7 +522,7 @@ impl Game<'_> {
             // Every active icon: the three links (12, 13, 15), vanilla's friends
             // overlay (10) and Horizon's sharing (16).
             let available = crate::social::available();
-            let horizon_friends = self.friends_view().shown;
+            let horizon_friends = self.friends_shown();
             (0..ICON_LABELS.len())
                 .find(|&i| {
                     icon_active(i, horizon_friends, available)
@@ -555,7 +556,7 @@ impl Game<'_> {
             self.options.split_guest || self.split_hud.menu,
         );
         let mut active_ids: Vec<u8> = buttons.into_iter().filter(|b| b.5).map(|b| b.4).collect();
-        let friends = self.friends_view().shown;
+        let friends = self.friends_shown();
         active_ids.extend(pause_icon_focus_ids(friends, crate::social::available()));
         if active_ids.is_empty() {
             return Ok(());
@@ -607,7 +608,7 @@ impl Game<'_> {
                     .filter(|b| b.5)
                     .map(|b| (b.4, b.0, b.1, b.2))
                     .collect();
-                let friends = self.friends_view().shown;
+                let friends = self.friends_shown();
                 for (i, (x, y, _)) in pause_icons(
                     w,
                     h,

@@ -1,16 +1,16 @@
 //! Play with friends, host side: "Start Sharing" on the Play with Friends
-//! screen (`friends_screen`, the pause menu's Friends button) opens the world to LAN if
+//! screen (`screen`, the pause menu's Friends button) opens the world to LAN if
 //! it isn't (with Open to LAN's defaults) and shares that port behind an
 //! invite code (horizon-friends). The code holds this computer's addresses
 //! and the key, so friends join with no server of ours; a relay the player
 //! configured adds a short code and a fallback. The integrated server is the
 //! LAN one, unchanged: tunnelled guests are LAN guests that connect from the
-//! loopback address.
+//! loopback address. The joining side is horizon-friends' (`game`), registered by
+//! horizon-official.
 use super::{Game, lan::LanSettings};
 use horizon_client::{
     Result,
     clipboard::Clipboard,
-    friends_screen::{self, Action, FriendsView},
     hud::HudBatch,
     lang,
     text::Text,
@@ -18,6 +18,11 @@ use horizon_client::{
 use horizon_friends::{Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun};
 use horizon_protocol::{GAME_VERSION, PROTOCOL_VERSION};
 use std::time::{Duration, Instant};
+
+mod screen;
+
+use screen::{self as friends_screen, Action, FriendsView};
+pub use screen::{TITLE, title};
 
 pub(super) struct Sharing {
     host: Host,
@@ -646,6 +651,11 @@ impl Game<'_> {
         if let Some(screen) = self.friends_overlay.as_mut() {
             screen.key(winit::keyboard::KeyCode::Backspace, false, false);
         }
+
+    /// Whether the pause menu offers Play with Friends (a singleplayer world).
+    pub(super) fn friends_shown(&self) -> bool {
+        self.friends_view().shown
+    }
     }
 
     /// What Play with Friends shows.
