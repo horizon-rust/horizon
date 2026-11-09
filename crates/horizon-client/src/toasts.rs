@@ -333,6 +333,21 @@ impl FriendToast {
                 Self::FACE_SIZE,
                 u32::MAX,
             );
+        } else if let Some(friend) = self.friend {
+            let skin = crate::tab_list::default_skin(friend);
+            for u in [8.0, 40.0] {
+                crate::ui::blit_sprite_region(
+                    batch,
+                    atlas,
+                    skin,
+                    [u, 8.0, 8.0, 8.0],
+                    x + 6.0,
+                    y + 6.0,
+                    Self::FACE_SIZE,
+                    Self::FACE_SIZE,
+                    u32::MAX,
+                );
+            }
         }
         let lines = self.lines(atlas);
         let content = (lines.len().max(2) as f32) * Self::LINE_SPACING;

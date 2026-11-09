@@ -1630,7 +1630,31 @@ impl Screen {
                 u32::MAX,
             );
         } else {
-            batch.fill(atlas, x + 8.0, y + 2.0, 24.0, 24.0, 0xFF30_3030);
+            // `PlayerFaceExtractor` renders `PlayerSkinRenderCache.getOrDefault`
+            // while the friend's profile or texture is still loading.
+            let skin = crate::tab_list::default_skin(friend.id);
+            ui::blit_sprite_region(
+                batch,
+                atlas,
+                skin,
+                [8.0, 8.0, 8.0, 8.0],
+                x + 8.0,
+                y + 2.0,
+                24.0,
+                24.0,
+                u32::MAX,
+            );
+            ui::blit_sprite_region(
+                batch,
+                atlas,
+                skin,
+                [40.0, 8.0, 8.0, 8.0],
+                x + 8.0,
+                y + 2.0,
+                24.0,
+                24.0,
+                u32::MAX,
+            );
         }
         let text_x = x + 8.0 + 24.0 + 4.0;
         // `AbstractFriendsEntryContainerWidget`: `height / 3 - nameHeight / 2`
