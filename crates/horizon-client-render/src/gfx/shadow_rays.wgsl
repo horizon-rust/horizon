@@ -1732,6 +1732,7 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         if rt.mode.y > 0.5 && rt.light.w > 0.0 && (SKIP & 1u) == 0u {
             var disc = vec3(1.0);
             var traced = false;
+            var merged = false;
             if pass_ran(1u) && sun_from_pass {
                 let from_pass = textureLoad(sun_pass, texel, 0);
                 disc = from_pass.rgb;
@@ -1747,14 +1748,22 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
             if traced || !(pass_ran(1u) && sun_from_pass) {
                 disc = sun_disc_ray(lifted, random2(texel, 2u));
                 sun_caustic = HW && hw_caustic_on && (SKIP & 512u) == 0u;
+                merged = HW && (SKIP & 8388608u) == 0u;
             }
             sun_through = mix(vec3(far_sun), disc * beyond, edge);
             // Whether a moving caster (an entity, the player's body, the view model) stands
             // between this surface and the point of the disc this frame's ray aimed at
-            // (shadow_rays_moving.wgsl): its shadow moves, `accumulate` keeps it sharp.
+            // (shadow_rays_moving.wgsl): its shadow moves, `accumulate` keeps it sharp. The ray
+            // just traced toward that point says it (`hw_light_moving`): what stopped it. A
+            // moving caster behind the terrain that shadows first may go unseen, where its shadow
+            // changes nothing. The sun pass's texels, and `SKIP` 8388608, trace the second ray.
             if HW && edge > 0.0 && (SKIP & 1024u) == 0u {
-                moving_shade = hw_moving_shadow(lifted, sun_disc_dir(random2(texel, 2u)),
-                    MOVING_REACH);
+                if merged {
+                    moving_shade = hw_light_moving >= 0.0 && hw_light_moving < MOVING_REACH;
+                } else {
+                    moving_shade = hw_moving_shadow(lifted, sun_disc_dir(random2(texel, 2u)),
+                        MOVING_REACH);
+                }
             }
         }
         let v = max(sun_through.r, max(sun_through.g, sun_through.b));

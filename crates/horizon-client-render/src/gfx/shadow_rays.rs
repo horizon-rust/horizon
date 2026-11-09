@@ -245,6 +245,7 @@ const HARDWARE: &str = concat!(
 const NO_HARDWARE: &str = "
 const HW: bool = false;
 var<private> hw_caustic_on: bool = false;
+var<private> hw_light_moving: f32 = -1.0;
 const GI_HW_VISIBILITY: bool = false;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> { return vec3(-1.0); }
 fn hw_visible(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> bool { return true; }
@@ -497,8 +498,9 @@ impl ShadowRays {
     /// Makes the kernel again leaving out what `skip` says (shadow_rays.wgsl `SKIP`: 1 the sun's
     /// ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 16 the bounced light's turns; 32 VR's second
     /// eye's own light, `SHARE_EYES`; 64 the far field, 128 the translucent tint, 32768 a dark history
-    /// left to climb by itself), in a running game, to time each part alone
-    /// (`horizon-ctl rt-skip`); 0 traces it all again.
+    /// left to climb by itself, 8388608 the moving casters' own second ray toward the sun instead
+    /// of the sun's ray telling them, shadow_rays_moving.wgsl), in a running game, to time each
+    /// part alone (`horizon-ctl rt-skip`); 0 traces it all again.
     pub fn set_skip(&mut self, device: &wgpu::Device, skip: u32) {
         SHARE_EYES.store(skip & 32 == 0, std::sync::atomic::Ordering::Relaxed);
         let skip = skip & !32;

@@ -347,6 +347,12 @@ var<private> hw_caustic: vec4<f32>;
 var<private> hw_caustic_sea: f32;
 // The length the sun's shadow ray runs inside ice (x) and packed ice (y): `hw_tint`.
 var<private> hw_ice_run: vec2<f32>;
+// The distance to the moving caster (an entity, the player's body, the view model: a row of
+// `DYN_ENTITY`) that stopped the last `hw_light` ray, -1 when none did (it reached the light, or
+// the terrain or a cloud stopped it). The sun's ray says with it whether its shadow moves
+// (shadow_rays.wgsl `trace`), with no second ray masked to the moving casters
+// (shadow_rays_moving.wgsl, kept for `SKIP` 8388608).
+var<private> hw_light_moving: f32 = -1.0;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     var q: ray_query;
     // The instances stand around their anchor (gfx/hw_rays.rs): the camera's offset from it. The
@@ -357,6 +363,7 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     hw_caustic_on = false;
     hw_water_t = -1.0;
     hw_ice_run = vec2(0.0);
+    hw_light_moving = -1.0;
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index == instances[c.instance_custom_data].at.w {
@@ -368,7 +375,11 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
         }
     }
     let hit = rayQueryGetCommittedIntersection(&q);
-    if hit.kind != RAY_QUERY_INTERSECTION_NONE { return vec3(0.0); }
+    if hit.kind != RAY_QUERY_INTERSECTION_NONE {
+        // Read once a ray ends in shadow, out of the search's loop.
+        if instances[hit.instance_custom_data].at.x == DYN_ENTITY { hw_light_moving = hit.t; }
+        return vec3(0.0);
+    }
     // Ice's body (shadow_rays_psr.wgsl `ice_body`): the light a hill of ice lets through.
     if rt.held.w > 0.5 {
         through *= exp(-ICE_EXTINCTION * max(hw_ice_run.x, 0.0)
