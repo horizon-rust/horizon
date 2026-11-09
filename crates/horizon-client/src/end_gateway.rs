@@ -27,6 +27,11 @@ impl Traveller {
         self.state.handle(allowed, 0, ENTITY_DELAY)
     }
 
+    /// `Entity.load` updates its counter without replacing the portal process.
+    pub fn set_cooldown(&mut self, cooldown: i32) {
+        self.state.cooldown = cooldown;
+    }
+
     /// Whether the entity's travel is over: it has no portal process left and
     /// its portal cooldown has run out.
     pub fn is_done(&self) -> bool {
