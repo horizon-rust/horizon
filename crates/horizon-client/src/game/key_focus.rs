@@ -442,6 +442,34 @@ mod tests {
         assert_eq!(act(Nav::Select, Some(b), &targets, CTX), Act::Press);
     }
 
+    /// The sign editor and book screens expose their text fields and controls
+    /// as screen targets, so Tab/Shift+Tab can leave a field and Select can
+    /// activate the focused control without sending text to it.
+    #[test]
+    fn editor_fields_and_controls_participate_in_keyboard_navigation() {
+        let field = Target {
+            rect: [100.0, 40.0, 120.0, 16.0],
+            kind: Kind::Field,
+        };
+        let page_back = button(100.0, 160.0);
+        let page_forward = button(130.0, 160.0);
+        let sign_done = button(100.0, 196.0);
+
+        // A sign's text and Done button; a writable book adds both page
+        // controls between its page field and Sign/Done controls.
+        let sign = [field, sign_done];
+        assert_eq!(tab_step(&sign, None, true), Some(0));
+        assert_eq!(tab_step(&sign, Some(field.rect), true), Some(1));
+        assert_eq!(act(Nav::Select, Some(sign_done), &sign, CTX), Act::Press);
+
+        let book = [field, page_back, page_forward, sign_done];
+        assert_eq!(tab_step(&book, Some(field.rect), true), Some(1));
+        assert_eq!(tab_step(&book, Some(page_back.rect), true), Some(2));
+        assert_eq!(tab_step(&book, Some(page_forward.rect), true), Some(3));
+        assert_eq!(tab_step(&book, Some(sign_done.rect), false), Some(2));
+        assert_eq!(act(Nav::Select, Some(page_forward), &book, CTX), Act::Press);
+    }
+
     /// AbstractSliderButton.keyPressed and setFocused.
     #[test]
     fn slider_arrows_change_the_value_only_once_allowed() {
