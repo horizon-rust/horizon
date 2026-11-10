@@ -4037,6 +4037,10 @@ fn rain_drop_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32) -> v
     let torch = BLOCK_LIGHT * pow(clamp(level / 15.0, 0.0, 1.0), 2.0) * 0.5;
     return sky + lit * (forward * 6.0 + rainbow) + torch;
 }
+// Where a drop stops over a column of the rain map (`rain_cell`): its top, a water's a little under.
+fn rain_ground(column: u32) -> f32 {
+    return rain_top(column) - select(0.0, 0.11, rain_surface(column) == 10u);
+}
 @vertex fn vs_rain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) id: u32)
     -> RainOut {
     var out: RainOut;
@@ -4077,19 +4081,42 @@ fn rain_drop_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32) -> v
     let y = camera.y - band * 0.5 + band * fract(rain_rand(seed + 4u) - t * speed / band);
     let start = (vec2<f32>(cell) + vec2(rain_rand(seed + 2u), rain_rand(seed + 3u))) * size;
     let xz = start - lean * (y - camera.y);
-    let column = rain_cell(vec2<i32>(floor(xz)));
+    var column = rain_cell(vec2<i32>(floor(xz)));
     if column == 0u || !rain_falls(column) { return out; }
     // It stops on the first block that stops motion (vanilla's rain heightmap), a water's top a
     // little under it, and leaves a circle there for a moment.
-    let ground = rain_top(column) - select(0.0, 0.11, rain_surface(column) == 10u);
+    var ground = rain_ground(column);
     var head = vec3(xz.x, y, xz.y);
     var splash = -1.0;
     if y < ground {
+        // Under the column it would be over now: it landed on the way. Leaning with the wind, it
+        // came down over other columns: where its path meets the ground is the column whose top
+        // the path crosses over that very column (three steps settle it on all but broken
+        // ground), and the circle is there, not where the wind would have carried it since.
+        var at = start - lean * (ground - camera.y);
+        for (var i = 0; i < 3; i++) {
+            let c = rain_cell(vec2<i32>(floor(at)));
+            if c == 0u { return out; }
+            let g = rain_ground(c);
+            column = c;
+            if g == ground { break; }
+            ground = g;
+            at = start - lean * (ground - camera.y);
+        }
+        // Still above that column's top: its path ran into a wall's side on the way. No circle.
+        if y >= ground || !rain_falls(column) { return out; }
         let since = (ground - y) / speed;
         if !near || since > RAIN_SPLASH { return out; }
         splash = since / RAIN_SPLASH;
-        let at = start - lean * (ground - camera.y);
         head = vec3(at.x, ground, at.y);
+    } else if dot(lean, lean) > 1e-4 {
+        // In the air: unless a higher column upwind stopped it on its way down here (the lee of a
+        // wall, under a roof's edge), one and three blocks of fall back up its path.
+        for (var i = 0; i < 2; i++) {
+            let up = y + select(1.0, 3.0, i == 1);
+            let c = rain_cell(vec2<i32>(floor(start - lean * (up - camera.y))));
+            if c != 0u && rain_ground(c) > up { return out; }
+        }
     }
     let rel = head - camera;
     let distance = length(rel);
