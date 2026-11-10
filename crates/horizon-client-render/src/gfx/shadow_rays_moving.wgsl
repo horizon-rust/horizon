@@ -10,6 +10,7 @@
 const MOVING_MASK: u32 = 0x08u;
 fn hw_moving_shadow(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> bool {
     var q: ray_query;
+    hw_from = pos;
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, MOVING_MASK, 0.0, reach, pos + rt.hw_offset.xyz, l));
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);

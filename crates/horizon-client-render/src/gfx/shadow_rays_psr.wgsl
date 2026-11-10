@@ -71,6 +71,7 @@ struct HwFace {
 }
 fn hw_face(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwFace {
     var q: ray_query;
+    hw_from = pos;
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
