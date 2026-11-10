@@ -63,6 +63,15 @@ pub fn tile(view: usize) -> u32 {
 /// Slices along the rays.
 pub const SLICES: u32 = 96;
 /// Where the first slice ends and the last slice ends, in blocks (`froxelMaxDistanceMeters` 256).
+/// The share of the light the open air lets through 100 m. It was 0.95 (12 % scattered over the
+/// grid's 256 m): toward the sun that adds half the light of a sunlit white wall to the sky, more
+/// than the sky's own within 30 degrees of the sun, a white veil over the view (the sky's table
+/// already holds the atmosphere's aureole). At 0.985 the grid scatters 4 %: about the sky's own
+/// light at the sun, the shafts still showing against shade; on FIXE01 it still left a white halo
+/// some 40 degrees across around the sun in VR. At 0.995 (1.3 % over 256 m) the sky stays blue a
+/// few tens of degrees off the sun and the shafts still show in shade (`HORIZON_FROXEL_AIR=0.95`
+/// for the old look).
+pub const AIR_THROUGH: f32 = 0.995;
 pub const NEAR: f32 = 0.5;
 pub const FAR: f32 = 256.0;
 /// How many frames the history holds at most (Remix's default 128), and while settling
@@ -169,11 +178,19 @@ impl Medium {
     }
 
     /// The open air by day, a thin default (Remix's is the runtime's, its own atmosphere being off):
-    /// 0.95 of the light through 100 m (about 88 % over the 256 m the grid reaches), no
-    /// absorption, scattering forward (g 0.7) so the sun's shafts show past shadows and toward it
-    /// without a haze over the rest of the view.
+    /// `AIR_THROUGH` of the light through 100 m, no absorption, scattering forward (g 0.7) so the
+    /// sun's shafts show past shadows and toward it without a haze over the rest of the view.
+    /// `HORIZON_FROXEL_AIR` sets that share (0.5 to 1) for testing.
     pub fn air() -> Self {
-        Self::measured(Vec3::splat(0.95), 100.0, Vec3::splat(1.0), 0.7)
+        static THROUGH: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        let through = *THROUGH.get_or_init(|| {
+            std::env::var("HORIZON_FROXEL_AIR")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .map_or(AIR_THROUGH, |v| v.clamp(0.5, 1.0))
+        });
+        Self::measured(Vec3::splat(through), 100.0, Vec3::splat(1.0), 0.7)
     }
 
     /// Between two media (the extinction and the albedo linearly, `t` 0: `self`).
@@ -1169,7 +1186,7 @@ mod tests {
         let rain = Medium::rain();
         assert!(((-rain.sigma_t.x * 10.0).exp() - 0.996).abs() < 1e-5);
         let air = Medium::air();
-        assert!(((-air.sigma_t.y * 100.0).exp() - 0.95).abs() < 1e-5);
+        assert!(((-air.sigma_t.y * 100.0).exp() - AIR_THROUGH).abs() < 1e-5);
     }
 
     #[test]
