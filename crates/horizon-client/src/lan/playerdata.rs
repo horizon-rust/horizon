@@ -1566,4 +1566,51 @@ mod tests {
         assert_eq!(first_item(&g), Some(("minecraft:diamond", 5)));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn snapshot_for_respawn_preserves_sprinting_and_all_modifiers() {
+        let Some((_, res)) = resources() else {
+            return;
+        };
+        let mut m = crate::motion::PlayerMotion::new(&res, horizon_core::geometry::Vec3::ZERO)
+            .expect("a body");
+        let key = m.attributes.key("minecraft:movement_speed").unwrap();
+        let handle = m
+            .attributes
+            .get_instance(Some(key.clone()))
+            .unwrap()
+            .unwrap();
+        let sprint = horizon_world::attributes::Modifier::new(
+            "minecraft:sprinting",
+            0.3,
+            horizon_world::attributes::Operation::AddMultipliedTotal,
+        )
+        .unwrap();
+        m.attributes
+            .edit(&handle, |a, o| a.add_transient(sprint, o))
+            .unwrap();
+
+        let kept = crate::lan::attributes::snapshot_for_respawn(&m.attributes, true);
+        let speed_snap = kept
+            .iter()
+            .find(|s| s.attribute == key.attribute().registry_id())
+            .expect("movement_speed snapshot");
+        assert!(
+            speed_snap
+                .modifiers
+                .iter()
+                .any(|m| m.id == "minecraft:sprinting"),
+            "sprinting modifier must be preserved when keep=true"
+        );
+
+        let dropped = crate::lan::attributes::snapshot_for_respawn(&m.attributes, false);
+        let speed_snap_dropped = dropped
+            .iter()
+            .find(|s| s.attribute == key.attribute().registry_id())
+            .expect("movement_speed snapshot");
+        assert!(
+            speed_snap_dropped.modifiers.is_empty(),
+            "modifiers must be empty when keep=false"
+        );
+    }
 }

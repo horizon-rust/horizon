@@ -592,6 +592,7 @@ pub(super) struct Remote {
     /// holds its abilities from the login on; here the player is made at
     /// the first teleport, which takes them then.
     abilities: Option<play::PlayerAbilities>,
+    pub(super) pending_attributes: Vec<play::AttributeSnapshot>,
     loaded_sent: bool,
     /// The dimension of the client level the mods heard made
     /// (`native_client_level_load`), to be told dropped once.
@@ -1188,6 +1189,7 @@ impl Game<'_> {
             was_living_flags: 0,
             last_recorded_pose: None,
             abilities: None,
+            pending_attributes: Vec::new(),
             loaded_sent: false,
             heard_level: None,
             native_epoch: None,
@@ -1418,6 +1420,7 @@ impl Game<'_> {
             last_recorded_pose: None,
             carried: std::cell::Cell::new(None),
             abilities: None,
+            pending_attributes: Vec::new(),
             loaded_sent: false,
             heard_level: None,
             native_epoch: None,
@@ -3409,17 +3412,21 @@ impl Game<'_> {
                 self.remote_chat_login();
             }
             C::Respawn(p) => {
-                if let Some(r) = self.remote.as_ref() {
+                if let Some(r) = self.remote.as_mut() {
                     self.audio.remove_sound_entity(r.entity_id as u32);
+                    if let Some(pl) = self.player.as_ref() {
+                        r.pending_attributes =
+                            horizon_client::lan::attributes::snapshot_for_respawn(
+                                &pl.attributes,
+                                p.keep & 1 != 0,
+                            );
+                    }
+                    r.attachments.retain(|h, _| matches!(h, Holder::Player(_)));
                 }
                 // A new player, without effects (the server sends them
                 // again) and with no item in use.
                 self.potions.effects.clear();
                 // The server sends the level, chunks and entities again.
-                if let Some(r) = self.remote.as_mut() {
-                    r.attachments
-                        .retain(|holder, _| matches!(holder, Holder::Player(_)));
-                }
                 self.using = None;
                 self.end_mod_use();
                 // After a death (no KEEP_ENTITY_DATA) the new LocalPlayer
@@ -4569,9 +4576,11 @@ impl Game<'_> {
             // HUD draws and the health it may hold), reach, speed and so on.
             // Then the received health again, which the old maximum clamped.
             C::UpdateAttributes(p) if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) => {
-                if let Some(pl) = self.player.as_mut() {
-                    horizon_client::lan::attributes::apply(&mut pl.attributes, &p.values);
-                }
+                horizon_client::lan::attributes::apply_to_player_or_queue(
+                    self.player.as_mut().map(|p| &mut p.attributes),
+                    self.remote.as_mut().map(|r| &mut r.pending_attributes),
+                    &p.values,
+                );
                 self.apply_remote_health();
             }
             C::UpdateAttributes(p) => self.remote_mob_attributes(p.id, &p.values),
@@ -6125,9 +6134,9 @@ impl Game<'_> {
         if self.riding.is_some()
             && let Some(player) = self.player.as_ref()
         {
-            let at = player.position;
+            let (at, id) = (player.position, p.teleport);
             self.send(S::AcceptTeleportation(play::AcceptTeleportation {
-                id: p.teleport,
+                id,
                 x: at.x,
                 y: at.y,
                 z: at.z,
@@ -6148,6 +6157,10 @@ impl Game<'_> {
                 // Player.tick derives noPhysics from the current game mode.
                 player.spectator = self.spectator();
                 player.velocity = delta;
+                if let Some(r) = self.remote.as_mut() {
+                    let p = std::mem::take(&mut r.pending_attributes);
+                    horizon_client::lan::attributes::apply(&mut player.attributes, &p);
+                }
                 self.player = Some(player);
                 self.input_player_replaced();
                 self.sway = Default::default();
@@ -9586,16 +9599,10 @@ impl Game<'_> {
         } else if let Some((i, distance, _)) = self.mob_hit()
             && self.before_block(distance)
         {
-            // Minecraft.startAttack: an item's attack_range must hold the hit.
             if self.held_range_allows(distance) {
-                self.send(S::Attack(play::Attack {
-                    id: self.mobs[i].id as i32,
-                }));
+                self.send(S::Attack(play::Attack { id: self.mobs[i].id as i32 }));
                 self.pvp_attacked(self.mobs[i].id as i32, distance);
-                let (target, player) = (
-                    self.mobs[i].id,
-                    &*self.mobs[i].kind.id == "minecraft:player",
-                );
+                let (target, player) = (self.mobs[i].id, &*self.mobs[i].kind.id == "minecraft:player");
                 self.native_client_attack(target, player);
                 self.remote_player_attack(i);
                 self.reset_attack_strength();
@@ -9635,9 +9642,7 @@ impl Game<'_> {
         // `getAttackStrengthScale(0.5)`: here the ticker is `hand_strength`'s
         // (`attack_ticks` only counts in the local world), and the attack
         // speed is the player's synced attribute, which a server may change.
-        let speed = self
-            .own_attribute("minecraft:attack_speed")
-            .unwrap_or_else(|| self.main_hand_attack_speed());
+        let speed = self.main_hand_attack_speed();
         let strength = self.hand_strength.scale(0.5, speed);
         // Player.attack's damage: a riptide spin's, or this client's own
         // ATTACK_DAMAGE, which the held item and effects don't change here.
@@ -9672,12 +9677,8 @@ impl Game<'_> {
             return;
         }
         if let Some(p) = self.player.as_mut() {
-            let slowdown = horizon_client::attack_strength::ATTACKER_SLOWDOWN;
-            p.velocity = Vec3::new(
-                p.velocity.x * slowdown,
-                p.velocity.y,
-                p.velocity.z * slowdown,
-            );
+            let s = horizon_client::attack_strength::ATTACKER_SLOWDOWN;
+            p.velocity = Vec3::new(p.velocity.x * s, p.velocity.y, p.velocity.z * s);
         }
         self.stop_sprint_after_extra_knockback();
     }
@@ -9691,13 +9692,8 @@ impl Game<'_> {
     }
 
     /// An attribute's value on this client's player, if its map has the attribute.
-    fn own_attribute(&mut self, id: &str) -> Option<f64> {
-        let p = self.player.as_mut()?;
-        let key = p.attributes.key(id)?;
-        p.attributes.lookup(Some(&key))?;
-        p.attributes
-            .value(Some(key), horizon_world::attribute_map::ValueKind::Computed)
-            .ok()
+    fn own_attribute(&self, id: &str) -> Option<f64> {
+        self.player.as_ref()?.attributes.computed_value_of(id).ok()
     }
 
     fn remote_continue_attack(&mut self, down: bool) {
