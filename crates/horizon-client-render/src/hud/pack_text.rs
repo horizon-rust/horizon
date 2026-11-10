@@ -45,6 +45,18 @@ pub(super) fn load_core(
     defines: &[&str],
     glue: &Glue,
 ) -> Option<Arc<CoreProgram>> {
+    load_core_with(root, defaults, name, defines, glue, &|_| false)
+}
+
+/// [`load_core`] for a pipeline that also gives the samplers `provided` says yes to.
+fn load_core_with(
+    root: &Path,
+    defaults: &Path,
+    name: &str,
+    defines: &[&str],
+    glue: &Glue,
+    provided: &dyn Fn(&str) -> bool,
+) -> Option<Arc<CoreProgram>> {
     if root == defaults {
         return None;
     }
@@ -64,7 +76,9 @@ pub(super) fn load_core(
         let path = format!("assets/{namespace}/{path}");
         read(root, &path).or_else(|| read(defaults, &path))
     };
-    match crate::core_shader::translate_core(&vertex, &fragment, defines, &include, glue) {
+    match crate::core_shader::translate_core_with(
+        &vertex, &fragment, defines, &include, glue, provided,
+    ) {
         Ok(program) => {
             log::info!("the resource pack's {name} shader is used");
             Some(Arc::new(program))
@@ -95,6 +109,17 @@ pub(super) fn load_shaders(atlas: &mut super::HudAtlas, root: &Path, defaults: &
         &["IS_SEE_THROUGH"],
         &crate::gfx::core_text::SEE_THROUGH_GLUE,
     );
+    let oit = |name: &str| crate::gfx::core_text::OIT_SAMPLERS.contains(&name);
+    atlas.text_shaders.oit = crate::gfx::core_text::OIT_DEFINES.map(|defines| {
+        load_core_with(
+            root,
+            defaults,
+            "text",
+            defines,
+            &crate::gfx::core_text::WORLD_GLUE,
+            &oit,
+        )
+    });
 }
 
 /// Each uniform block's offset in the one buffer (`core_shader::BLOCKS` order).

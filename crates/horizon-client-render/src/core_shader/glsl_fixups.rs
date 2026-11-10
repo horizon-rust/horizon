@@ -3,11 +3,35 @@
 //! - a function with `sampler2D` parameters is copied once per set of samplers its callers pass
 //!   (all of them a shader's global samplers), the copy reading those samplers by name;
 //! - an unsized array (`const float[] w = float[](...)`, `float w[] = ...`) takes the size its
-//!   initializer gives.
+//!   initializer gives;
+//! - an array sized by an integer constant (`const int n = OIT_COEFF_COUNT / 4; vec4 s[n];`,
+//!   vanilla's `oit_sample.glsl`) is sized by the constant's expression.
 
-/// `text` with both rewrites, where they apply; anything they can't follow is left as it was.
+/// `text` with these rewrites, where they apply; anything they can't follow is left as it was.
 pub(super) fn fixups(text: &str) -> String {
-    size_unsized_arrays(&specialize_sampler_params(text))
+    size_by_int_constants(&size_unsized_arrays(&specialize_sampler_params(text)))
+}
+
+/// Each `[name]` whose `name` is a `const int name = expression;` becomes `[(expression)]`.
+fn size_by_int_constants(text: &str) -> String {
+    let mut out = text.to_owned();
+    let mut from = 0;
+    while let Some(found) = text[from..].find("const int ") {
+        let start = from + found + "const int ".len();
+        let Some(end) = text[start..].find(';').map(|e| start + e) else {
+            break;
+        };
+        from = end;
+        let Some((name, expression)) = text[start..end].split_once('=') else {
+            continue;
+        };
+        let (name, expression) = (name.trim(), expression.trim());
+        if name.is_empty() || !name.chars().all(is_ident) || expression.is_empty() {
+            continue;
+        }
+        out = out.replace(&format!("[{name}]"), &format!("[({expression})]"));
+    }
+    out
 }
 
 fn is_ident(c: char) -> bool {
@@ -428,6 +452,13 @@ fn size_unsized_arrays(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// naga sizes an array by a constant expression, not by a local constant's name.
+    #[test]
+    fn an_array_sized_by_an_int_constant_takes_its_expression() {
+        let text = "void main() {\n    const int n = COUNT / 4;\n    vec4 s[n];\n}\n";
+        assert!(fixups(text).contains("vec4 s[(COUNT / 4)];"));
+    }
 
     #[test]
     fn a_sampler_parameter_becomes_a_copy_per_sampler_passed() {

@@ -560,8 +560,10 @@ fn compile(
     provided: &dyn Fn(&str) -> bool,
 ) -> Result<naga::Module, String> {
     let mut options = Options::from(stage);
+    // `NAME VALUE` defines a value, as `RenderPipeline.Builder.withShaderDefine(name, int)`.
     for define in defines {
-        options.defines.insert((*define).to_owned(), String::new());
+        let (name, value) = define.split_once(' ').unwrap_or((define, ""));
+        options.defines.insert(name.to_owned(), value.to_owned());
     }
     let module = Frontend::default().parse(&options, code).map_err(|e| {
         e.errors

@@ -11293,6 +11293,10 @@ impl Renderer {
                         };
                     // "Features, World Border, Weather": what follows the opaque
                     // world in the classic pass, one stage at a time.
+                    let pack_text = core_text::OitText {
+                        core: self.core_text.as_ref(),
+                        entities: &self.entity_group,
+                    };
                     let features = |pass: &mut wgpu::RenderPass<'_>, stage: oit::Stage| {
                         let f = oit.features();
                         let s = stage as usize;
@@ -11309,7 +11313,7 @@ impl Renderer {
                                 pass.draw_indexed(0..count * 6, (first * 4) as i32, 0..1);
                             }
                         };
-                        quads(pass, &f.text[s], text_quads, entity_quads);
+                        pack_text.draw(pass, stage, &f.text[s], text_quads, entity_quads);
                         if !hdr_gain {
                             quads(
                                 pass,
