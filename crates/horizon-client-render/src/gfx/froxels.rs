@@ -13,7 +13,8 @@
 //!    and water, times the Henyey-Greenstein phase), the sky (a ray toward it, times the sky's mean light) and one light source drawn by
 //!    importance (a shadow ray), through hardware ray queries against the terrain's TLAS (`hw_rays`)
 //!    where the GPU has them, else the voxel grid's DDA; then *blends* (`cs_blend`) that sample with
-//!    the last frame's froxels reprojected in world space (the history `MAX_ACCUMULATION` frames
+//!    the last frame's froxels reprojected in world space (the sky's light first averaged over the
+//!    froxel's 27 neighbours, `sky_filter`) (the history `MAX_ACCUMULATION` frames
 //!    long, `SETTLING_ACCUMULATION` for `SETTLING_FRAMES` after the medium changes or the view is
 //!    new), the history shortened where its froxel moved a lot and clamped to the neighbourhood of
 //!    the new samples;
@@ -341,6 +342,17 @@ fn jitter(n: u32) -> [f32; 4] {
     [axis(1), axis(2), axis(3), 0.0]
 }
 
+/// Whether the sky's light in the medium is filtered across neighbouring froxels and drawn by a
+/// low-discrepancy sequence (froxels.wgsl `sky_filter`): on unless `HORIZON_FROXEL_SKY_FILTER=0`,
+/// which draws it as before (white noise, each froxel's own ray), to compare. In a dark cave with
+/// one opening to the sky, one ray in fifty or so toward the sky reaches it: a froxel's single
+/// ray every other frame was all or nothing, and the history, its reprojection resampling it
+/// bilinearly and the neighbourhood's clamp, spread that into large grey blotches.
+pub fn sky_filter() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("HORIZON_FROXEL_SKY_FILTER").is_ok_and(|v| v.trim() == "0"))
+}
+
 /// A view's froxels: two grids of the source (the last frame's is the history) and the integrated
 /// one.
 struct ViewFroxels {
@@ -598,6 +610,8 @@ impl Froxels {
                 entry(12, compute, sampler),
                 entry(13, compute, output),
                 entry(21, compute, froxels(false)),
+                // The sky, for the sky's light the inject left apart (`sky_filter`).
+                entry(10, compute, sky_texture),
             ],
         });
         let integrate_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -933,6 +947,7 @@ impl Froxels {
         state.turn = state.turn.wrapping_add(1);
         // Which half of the froxels this frame injects: 1 or 2 (froxels.wgsl `injected`).
         let half = 1 + state.turn % 2;
+        let state_turn = state.turn;
         let last = state.last.replace((inputs.view_proj, inputs.camera));
         let from = state.source[1 - state.next].clone();
         let to = state.source[state.next].clone();
@@ -999,11 +1014,14 @@ impl Froxels {
                 medium.anisotropy,
             ],
             albedo: [medium.albedo.x, medium.albedo.y, medium.albedo.z, 1.0],
-            history: [cap, 1.0, half as f32, 0.0],
+            history: [cap, 1.0, half as f32, ((state_turn / 2) % 65536) as f32],
             size: [inputs.size[0] as f32, inputs.size[1] as f32, 0.0, 0.0],
             eye: [eye.x, eye.y, eye.z, 0.0],
             prev_eye: [prev_eye.x, prev_eye.y, prev_eye.z, 0.0],
-            jitter: jitter(frame),
+            jitter: {
+                let [x, y, z, _] = jitter(frame);
+                [x, y, z, f32::from(u8::from(sky_filter()))]
+            },
             map: [near[0], near[1], far[0], far[1]],
             map_scale: [
                 1.0 / natural_fog::TEXEL[0] as f32,
@@ -1096,6 +1114,7 @@ impl Froxels {
                     },
                     view(13, &to),
                     view(21, &fresh),
+                    view(10, inputs.sky),
                 ],
             });
             {
