@@ -4075,7 +4075,7 @@ fn rain_landing(start: vec2<f32>, lean: vec2<f32>, base: f32, y: f32, top: f32) 
     let fl = floor(p);
     let ahead = select(p - fl, fl + 1.0 - p, d >= vec2(0.0));
     var next = select(y + ahead * delta, vec2(1e9), still);
-    let step = select(vec2<i32>(-1), vec2<i32>(1), d >= vec2(0.0));
+    let step = vec2<i32>(select(-1, 1, d.x >= 0.0), select(-1, 1, d.y >= 0.0));
     var cell = vec2<i32>(fl);
     var low = y;
     for (var i = 0; i < RAIN_LANDING_CELLS; i++) {
