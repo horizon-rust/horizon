@@ -295,6 +295,9 @@ const STAT_EVERY: u64 = 2048;
 
 /// The moving geometry of a frame, as drawn, for `HwRays::finish`.
 pub struct Dynamic<'a> {
+    /// The entities posed on the GPU (`entity_skin`): the buffer whose first vertices they are,
+    /// and how many, in `Vertex`'s own layout. Copied on the GPU ahead of `entities`.
+    pub posed: Option<(&'a wgpu::Buffer, u32)>,
     /// The entities' quads, four vertices each, relative to the camera.
     pub entities: &'a [Vertex],
     /// The player's own body in first person, relative to the camera as the entities are: drawn
@@ -912,6 +915,7 @@ impl HwRays {
         let enabled =
             *ENABLED.get_or_init(|| std::env::var("HORIZON_HW_DYNAMIC").map_or(true, |v| v != "0"));
         let none = Dynamic {
+            posed: None,
             entities: &[],
             body: &[],
             hand: &[],
@@ -921,11 +925,14 @@ impl HwRays {
         let dynamic = if enabled { dynamic } else { &none };
         // The vertices: the entities', the player's body (one structure with the entities'), then
         // the view model's moved to where the world sees them.
-        let entities =
-            &dynamic.entities[..dynamic.entities.len().min(MAX_DYNAMIC_VERTICES) / 4 * 4];
-        let body_room = MAX_DYNAMIC_VERTICES - entities.len();
+        let posed = dynamic
+            .posed
+            .map_or(0, |(_, n)| (n as usize).min(MAX_DYNAMIC_VERTICES) / 4 * 4);
+        let entity_room = MAX_DYNAMIC_VERTICES - posed;
+        let entities = &dynamic.entities[..dynamic.entities.len().min(entity_room) / 4 * 4];
+        let body_room = entity_room - entities.len();
         let body = &dynamic.body[..dynamic.body.len().min(body_room) / 4 * 4];
-        let solid = entities.len() + body.len();
+        let solid = posed + entities.len() + body.len();
         let hand_room = MAX_DYNAMIC_VERTICES - solid;
         let hand = &dynamic.hand[..dynamic.hand.len().min(hand_room) / 4 * 4];
         self.hand_scratch.clear();
@@ -952,13 +959,23 @@ impl HwRays {
             self.capacity = total.next_power_of_two();
             self.dynamics = Self::dynamics_buffer(device, self.capacity);
         }
+        let stride = std::mem::size_of::<Vertex>() as u64;
+        // The posed ones stay on the GPU: copied from where the skinning wrote them (earlier in
+        // this encoder), before the structures are built.
+        if let (Some((from, _)), true) = (dynamic.posed, posed > 0) {
+            encoder.copy_buffer_to_buffer(from, 0, &self.dynamics, 0, posed as u64 * stride);
+        }
         if !entities.is_empty() {
-            queue.write_buffer(&self.dynamics, 0, bytemuck::cast_slice(entities));
+            queue.write_buffer(
+                &self.dynamics,
+                posed as u64 * stride,
+                bytemuck::cast_slice(entities),
+            );
         }
         if !body.is_empty() {
             queue.write_buffer(
                 &self.dynamics,
-                std::mem::size_of_val(entities) as u64,
+                (posed + entities.len()) as u64 * stride,
                 bytemuck::cast_slice(body),
             );
         }

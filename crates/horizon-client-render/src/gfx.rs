@@ -225,6 +225,11 @@ pub use froxels::CameraMedium;
 // The natural fogs in the froxels (gfx/natural_fog.rs).
 pub mod natural_fog;
 mod rt_guides;
+/// `Renderer::skins_entities`' `HORIZON_RT_GPU_MOBS=1`.
+fn rt_gpu_mobs() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_GPU_MOBS").as_deref() == Ok("1"))
+}
 // DLSS Ray Reconstruction's evaluation on the window (gfx/dlss_eval.rs, docs/rt-dlss-rr.md).
 #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
 mod dlss_eval;
@@ -8387,6 +8392,7 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         frame: &Frame,
         solid_quads: u32,
+        posed: u32,
         clouds: bool,
     ) {
         // The view model is drawn in the window's view only.
@@ -8414,6 +8420,7 @@ impl Renderer {
             &self.queue,
             encoder,
             &hw_rays::Dynamic {
+                posed: (posed > 0).then_some((&self.entity_buffer, posed)),
                 entities: &self.entity_batch.combined[..solid],
                 body: frame.rt_body,
                 hand,
@@ -9205,7 +9212,12 @@ impl Renderer {
             // RT lighting's hardware rays trace the entities' quads from the CPU stream
             // (`hw_finish`): posed on the GPU, a mob casts no traced shadow, shows in no
             // reflection and gives DLSS Ray Reconstruction no albedo.
-            && !(self.rt_lighting && self.hw_rays.is_some())
+            // `HORIZON_RT_GPU_MOBS=1` poses them on the GPU all the same (measured in VR with 30
+            // pigs: 0.6 ms of CPU a frame less) and copies the posed vertices to the rays on the
+            // GPU (`hw_finish`); not with a pack's own entity target, which that copy cannot read.
+            && !(self.rt_lighting
+                && self.hw_rays.is_some()
+                && !(rt_gpu_mobs() && self.pack_post.is_none()))
             && self.pack_post.as_ref().is_none_or(|(_, post)| {
                 post.as_ref().is_some_and(|post| post.skins_entities())
                     && !native_render::render_needs().entity_spans
@@ -12674,7 +12686,7 @@ impl Renderer {
             // The entities' vertices are known now: they join the terrain in the rays.
             let clouds = rt_clouds_on && rt_clouds::mode() == rt_clouds::Mode::Mesh;
             crate::spans::time("rt_moving", || {
-                self.hw_finish(&mut encoder, frame, entity_quads, clouds)
+                self.hw_finish(&mut encoder, frame, entity_quads - posed / 4, posed, clouds)
             });
             // The raw top-level build can't share the encoder with wgpu's commands: the encoder
             // so far goes first, the build next, the rest of the frame in a new encoder.
