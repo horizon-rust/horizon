@@ -1,9 +1,11 @@
 //! DLSS Ray Reconstruction's guide buffers (docs/rt-dlss-rr.md, "Guides"): for each depth pixel of
 //! a view, the diffuse albedo, the specular albedo, the normal with the roughness, and the motion
 //! vector, written by a compute pass (`rt_guides.wgsl`, `cs_guides`) appended to the hardware
-//! kernel's shader and run right after the kernel for the view, with the kernel's own bind group.
-//! The forward terrain is untouched: each guide comes from a short hardware ray across the surface
-//! the depth prepass shows (`hw_hit`), with the depth's normal where that ray misses.
+//! kernel's shader and run with the kernel's own bind group for the view: right after the kernel
+//! on the RT depth prepass, or, for DLSS-RR's view, later on the world pass's own jittered depth
+//! (`ShadowRays::run_guides`). The forward terrain is untouched: each guide comes from a short
+//! hardware ray across the surface the depth shows (`hw_hit`), with water and glass found by a
+//! second one, and the depth's normal where both miss.
 //!
 //! Nothing of it exists (no shader, no pipeline, no textures, no dispatch) unless
 //! [`guides_wanted`]: `HORIZON_RT_GUIDES=1`, or DLSS-RR wanted (`HORIZON_RT_DLSS_RR=1`, read here
@@ -41,8 +43,10 @@ pub enum Show {
     /// The specular albedo, gamma-encoded.
     Specular = 5,
     /// Where each pixel's guides came from: green the hardware ray's triangle, red the depth's
-    /// fallback, yellow a puddle or a wet film, black the sky.
+    /// fallback, yellow a puddle or a wet film, blue water or glass, black the sky.
     Source = 6,
+    /// The depth's distance, white near to black far: which depth the guides were made from.
+    Depth = 7,
 }
 
 impl Show {
@@ -54,12 +58,14 @@ impl Show {
             "motion" => Self::Motion,
             "specular" => Self::Specular,
             "source" => Self::Source,
+            "depth" => Self::Depth,
             _ => Self::None,
         }
     }
 }
 
-/// `HORIZON_RT_GUIDES_SHOW`: `albedo`, `normal`, `roughness`, `motion`, `specular` or `source`.
+/// `HORIZON_RT_GUIDES_SHOW`: `albedo`, `normal`, `roughness`, `motion`, `specular`, `source` or
+/// `depth`.
 pub fn show() -> Show {
     static SHOW: std::sync::OnceLock<Show> = std::sync::OnceLock::new();
     *SHOW.get_or_init(|| {
@@ -78,6 +84,13 @@ pub const NORMALS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float
 pub const MOTION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 const SHOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
+/// rt_guides.wgsl `GuideParams`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Params {
+    jitter: [f32; 4],
+}
+
 /// One view's guides, at its depth's size (the render size), for DLSS-RR's evaluation
 /// (horizon-rtx `dlss_rr::Inputs`).
 #[derive(Clone)]
@@ -90,7 +103,7 @@ pub struct Guides {
     /// World-space unit normal (xyz, toward the camera), roughness in w (`roughness_packed`).
     pub normals: wgpu::TextureView,
     /// Render pixels from this frame's position to last frame's (previous - current), x right,
-    /// y down, unjittered: `mv_scale` [1, 1], `mv_jittered` false.
+    /// y down, unjittered (the jitter is taken out): `mv_scale` [1, 1], `mv_jittered` false.
     pub motion: wgpu::TextureView,
     /// `HORIZON_RT_GUIDES_SHOW`'s picture (1x1 and unwritten without it).
     show: wgpu::Texture,
@@ -99,7 +112,8 @@ pub struct Guides {
 struct ViewGuides {
     view: usize,
     guides: Guides,
-    group: wgpu::BindGroup,
+    show: wgpu::TextureView,
+    params: wgpu::Buffer,
 }
 
 pub struct RtGuides {
@@ -108,6 +122,8 @@ pub struct RtGuides {
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
     views: Vec<ViewGuides>,
+    /// `guide_objects`' stand-in without the entities' own motion.
+    no_objects: wgpu::TextureView,
     /// The picture's blit onto the window, by the target's format.
     blitter: Option<(wgpu::TextureFormat, wgpu::util::TextureBlitter)>,
 }
@@ -156,6 +172,16 @@ impl RtGuides {
             },
             count: None,
         };
+        let texture = |binding, sample_type| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("RT guides"),
             entries: &[
@@ -164,6 +190,18 @@ impl RtGuides {
                 storage(2, NORMALS_FORMAT),
                 storage(3, MOTION_FORMAT),
                 storage(4, SHOW_FORMAT),
+                texture(5, wgpu::TextureSampleType::Depth),
+                texture(6, wgpu::TextureSampleType::Float { filterable: false }),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -178,6 +216,13 @@ impl RtGuides {
             pipeline,
             layout,
             views: Vec::new(),
+            no_objects: Self::texture(
+                device,
+                [1, 1],
+                super::frame_gen::motion::FORMAT,
+                "RT guides: no entity motion",
+            )
+            .create_view(&Default::default()),
             blitter: None,
         }
     }
@@ -234,7 +279,50 @@ impl RtGuides {
                 .create_view(&Default::default()),
             show: Self::texture(device, show_size, SHOW_FORMAT, "RT guide: picture"),
         };
-        let show_view = guides.show.create_view(&Default::default());
+        let show = guides.show.create_view(&Default::default());
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("RT guides"),
+            size: std::mem::size_of::<Params>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.views.push(ViewGuides {
+            view,
+            guides,
+            show,
+            params,
+        });
+        self.views.len() - 1
+    }
+
+    /// Writes view `view`'s guides from `depth` of `size` (the RT prepass, or the world's own
+    /// depth, whose image moved by `jitter` pixels right and down), with the kernel's bind group
+    /// `kernel` as the kernel ran it for this view (its uniform still the view's in `encoder`).
+    /// `objects`: the entities' own motion over that depth (frame_gen `ObjectMotion`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn run(
+        &mut self,
+        device: &wgpu::Device,
+        uploads: &mut super::upload::Uploads,
+        encoder: &mut wgpu::CommandEncoder,
+        view: usize,
+        kernel: &wgpu::BindGroup,
+        depth: &wgpu::TextureView,
+        size: [u32; 2],
+        jitter: [f32; 2],
+        objects: Option<&wgpu::TextureView>,
+    ) {
+        let i = self.view_guides(device, view, size);
+        let v = &self.views[i];
+        let params = Params {
+            jitter: [
+                jitter[0],
+                jitter[1],
+                f32::from(u8::from(objects.is_some())),
+                0.0,
+            ],
+        };
+        uploads.buffer(encoder, &v.params, 0, bytemuck::bytes_of(&params));
         let entry = |binding, view| wgpu::BindGroupEntry {
             binding,
             resource: wgpu::BindingResource::TextureView(view),
@@ -243,39 +331,26 @@ impl RtGuides {
             label: Some("RT guides"),
             layout: &self.layout,
             entries: &[
-                entry(0, &guides.diffuse_albedo),
-                entry(1, &guides.specular_albedo),
-                entry(2, &guides.normals),
-                entry(3, &guides.motion),
-                entry(4, &show_view),
+                entry(0, &v.guides.diffuse_albedo),
+                entry(1, &v.guides.specular_albedo),
+                entry(2, &v.guides.normals),
+                entry(3, &v.guides.motion),
+                entry(4, &v.show),
+                entry(5, depth),
+                entry(6, objects.unwrap_or(&self.no_objects)),
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: v.params.as_entire_binding(),
+                },
             ],
         });
-        self.views.push(ViewGuides {
-            view,
-            guides,
-            group,
-        });
-        self.views.len() - 1
-    }
-
-    /// Writes view `view`'s guides from its depth of `size`, with the kernel's bind group `kernel`
-    /// as the kernel ran it for this view (its uniform written for it in `encoder`).
-    pub fn run(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        view: usize,
-        size: [u32; 2],
-        kernel: &wgpu::BindGroup,
-    ) {
-        let i = self.view_guides(device, view, size);
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("RT guides"),
             timestamp_writes: None,
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, kernel, &[]);
-        pass.set_bind_group(1, &self.views[i].group, &[]);
+        pass.set_bind_group(1, &group, &[]);
         pass.dispatch_workgroups(size[0].div_ceil(8), size[1].div_ceil(8), 1);
         drop(pass);
         super::gpu_passes::stamp(encoder, "rays: DLSS-RR guides");
@@ -353,6 +428,7 @@ mod tests {
             (4, 64),
             (5, 64),
             (6, u32::MAX),
+            (7, 64),
         ] {
             let mut constants = naga::back::PipelineConstants::default();
             constants.insert("GUIDES_SHOW".to_string(), f64::from(show));
@@ -379,9 +455,10 @@ mod tests {
 
     #[test]
     fn the_guides_write_their_own_group_in_the_formats_the_textures_have() {
-        // Group 1 is the guides' alone (the kernel's layout is group 0), each binding in the
-        // format `RtGuides` makes its texture in (`DIFFUSE_FORMAT`..`SHOW_FORMAT`): wgpu refuses
-        // a mismatch only on the GPU.
+        // Group 1 is the guides' alone (the kernel's layout is group 0): each storage binding in
+        // the format `RtGuides` makes its texture in (`DIFFUSE_FORMAT`..`SHOW_FORMAT`), then the
+        // depth, the entities' motion and the uniform `RtGuides::new`'s layout declares: wgpu
+        // refuses a mismatch only on the GPU.
         let (module, _) = validated(&source(2048));
         let mut found = Vec::new();
         for (_, var) in module.global_variables.iter() {
@@ -391,14 +468,31 @@ mod tests {
             if binding.group != 1 {
                 continue;
             }
-            let naga::TypeInner::Image {
-                class: naga::ImageClass::Storage { format, .. },
-                ..
-            } = module.types[var.ty].inner
-            else {
-                panic!("group 1 holds storage images only");
-            };
-            found.push((binding.binding, format));
+            match &module.types[var.ty].inner {
+                naga::TypeInner::Image {
+                    class: naga::ImageClass::Storage { format, .. },
+                    ..
+                } => found.push((binding.binding, *format)),
+                naga::TypeInner::Image {
+                    class: naga::ImageClass::Depth { multi: false },
+                    dim: naga::ImageDimension::D2,
+                    ..
+                } => assert_eq!(binding.binding, 5, "the depth"),
+                naga::TypeInner::Image {
+                    class:
+                        naga::ImageClass::Sampled {
+                            kind: naga::ScalarKind::Float,
+                            multi: false,
+                        },
+                    dim: naga::ImageDimension::D2,
+                    ..
+                } => assert_eq!(binding.binding, 6, "the entities' motion"),
+                naga::TypeInner::Struct { span, .. } => {
+                    assert_eq!(binding.binding, 7, "the uniform");
+                    assert_eq!(*span as usize, std::mem::size_of::<Params>());
+                }
+                other => panic!("unexpected binding in group 1: {other:?}"),
+            }
         }
         found.sort_by_key(|(b, _)| *b);
         use naga::StorageFormat as F;
@@ -422,6 +516,7 @@ mod tests {
         assert_eq!(Show::parse("motion"), Show::Motion);
         assert_eq!(Show::parse("specular"), Show::Specular);
         assert_eq!(Show::parse("source"), Show::Source);
+        assert_eq!(Show::parse("depth"), Show::Depth);
         assert_eq!(Show::parse("nonsense"), Show::None);
     }
 }

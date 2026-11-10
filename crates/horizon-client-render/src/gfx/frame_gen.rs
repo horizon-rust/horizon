@@ -8,7 +8,7 @@
 //! copies each to the swapchain, which it alone acquires and presents.
 
 mod interpolation;
-mod motion;
+pub(super) mod motion;
 mod optical_flow;
 
 use glam::{DMat4, DVec3, Mat4};
