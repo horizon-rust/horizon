@@ -138,14 +138,16 @@ fn expand(
         }
         for line in text.lines() {
             let directive = line.trim_start().strip_prefix('#').map(str::trim_start);
+            // 26.3's shaderc pastes an `#include` every time (vanilla's includes carry guards);
+            // 26.2's GlslPreprocessor imported a `#moj_import` file once.
             let target = directive.and_then(|d| {
                 d.strip_prefix("include")
-                    .or_else(|| d.strip_prefix("moj_import"))
-                    .map(str::trim)
+                    .map(|t| (t.trim(), false))
+                    .or_else(|| d.strip_prefix("moj_import").map(|t| (t.trim(), true)))
             });
-            if let Some(target) = target {
+            if let Some((target, once)) = target {
                 let id = include_id(target, dir).ok_or_else(|| format!("bad include {target}"))?;
-                if seen.insert(id.clone()) {
+                if seen.insert(id.clone()) || !once {
                     let file = include(&id).ok_or_else(|| format!("{id} not found"))?;
                     let parent = &id[..id.rfind('/').map_or(id.len(), |i| i + 1)];
                     walk(&file, parent, include, seen, depth + 1, out)?;
@@ -325,11 +327,11 @@ fn block_name(line: &str) -> Option<&str> {
         .then_some(name)
 }
 
-/// What the two stages share: the vertex stage's outputs in location order, and the names of
+/// What the two stages share: the vertex stage's outputs and their locations, and the names of
 /// the blocks and samplers of other pipelines in binding order.
 #[derive(Default)]
 struct Names {
-    varyings: Vec<String>,
+    varyings: Vec<(String, u32)>,
     other: Vec<String>,
 }
 
@@ -337,8 +339,8 @@ impl Names {
     fn location(&self, varying: &str) -> Option<u32> {
         self.varyings
             .iter()
-            .position(|v| v == varying)
-            .map(|i| i as u32)
+            .find(|(v, _)| v == varying)
+            .map(|(_, location)| *location)
     }
 
     /// A block or sampler of another pipeline: its binding (two for a sampler).
@@ -371,6 +373,18 @@ fn rewrite(
         }
     }
     let mut outputs: Vec<&str> = Vec::new();
+    // A 26.3 shader's own varying locations (shaderc compiles them as written); the others take
+    // the first location none of them uses.
+    let explicit: Vec<u32> = if vertex {
+        text.lines()
+            .flat_map(declaration_lines)
+            .filter_map(declaration)
+            .filter(|d| d.storage == "out")
+            .filter_map(|d| d.location)
+            .collect()
+    } else {
+        Vec::new()
+    };
     for source_line in text.lines() {
         for line in declaration_lines(source_line) {
             if let Some(name) = block_name(line) {
@@ -451,8 +465,16 @@ fn rewrite(
                 "out" if vertex => {
                     // One location each: naga takes scalars and vectors only.
                     let location = names.location(decl.name).unwrap_or_else(|| {
-                        names.varyings.push(decl.name.to_owned());
-                        names.varyings.len() as u32 - 1
+                        let location = decl.location.unwrap_or_else(|| {
+                            (0..)
+                                .find(|l| {
+                                    !explicit.contains(l)
+                                        && names.varyings.iter().all(|(_, v)| v != l)
+                                })
+                                .unwrap_or_default()
+                        });
+                        names.varyings.push((decl.name.to_owned(), location));
+                        location
                     });
                     writeln!(
                         out,
@@ -729,6 +751,45 @@ mod tests {
         let mut read = locations(&program.fragment, true);
         read.sort_unstable();
         assert_eq!(read, [0, 2]);
+    }
+
+    /// A 26.3 shader's own locations stay (OpenGL allows 16): varyings of other pipelines
+    /// behind an `#ifdef` reuse them and don't push the others past the limit.
+    #[test]
+    fn explicit_varying_locations_are_kept() {
+        let vsh = "#version 330\nin vec3 Position;\n\
+            #ifdef IS_GUI\nlayout(location = 4) out float gui;\n#else\nlayout(location = 4) out float world;\n#endif\n\
+            layout(location = 13) out vec4 a;\nout float b;\n\
+            void main() { gl_Position = vec4(Position, 1.0); a = vec4(1.0); b = 1.0;\n\
+            #ifdef IS_GUI\ngui = 1.0;\n#else\nworld = 1.0;\n#endif\n}\n";
+        let fsh = "#version 330\n#ifdef IS_GUI\nlayout(location = 4) in float gui;\n#endif\n\
+            layout(location = 13) in vec4 a;\nin float b;\nout vec4 fragColor;\n\
+            void main() { fragColor = a * b;\n#ifdef IS_GUI\nfragColor *= gui;\n#endif\n}\n";
+        let program = translate_core(vsh, fsh, &["IS_GUI"], &include, &GLUE).unwrap();
+        let mut read = locations(&program.fragment, true);
+        read.sort_unstable();
+        assert_eq!(read, [0, 4, 13]);
+    }
+
+    /// 26.3's `#include` is pasted every time, its guard keeping one copy per branch, where
+    /// 26.2's `#moj_import` imported a file once: a second branch's include isn't left empty.
+    #[test]
+    fn an_include_is_pasted_every_time_and_a_moj_import_once() {
+        let file = |id: &str| {
+            (id == "minecraft:shaders/include/g.glsl")
+                .then(|| "#ifndef G\n#define G\nconst float g = 1.0;\n#endif\n".to_owned())
+        };
+        let twice =
+            "#ifdef A\n#include <minecraft:g.glsl>\n#else\n#include <minecraft:g.glsl>\n#endif\n";
+        let expanded = expand(twice, "minecraft:shaders/core/", &file).unwrap();
+        assert_eq!(expanded.matches("const float g").count(), 2);
+        let imported = expand(
+            &twice.replace("#include", "#moj_import"),
+            "minecraft:shaders/core/",
+            &file,
+        )
+        .unwrap();
+        assert_eq!(imported.matches("const float g").count(), 1);
     }
 
     #[test]
