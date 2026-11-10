@@ -1,4 +1,4 @@
-# DLSS Ray Reconstruction for RT lighting (design; stages 1, 4 and 5 wired on the desktop)
+# DLSS Ray Reconstruction for RT lighting (design; stages 1, 4, 5 and 6 wired on the desktop)
 
 Part of the RTX 4090 build ([rtx-4090.md](rtx-4090.md)): Windows, an RTX 4090, Vulkan only (no DX12), VR on
 Apple Vision Pro through an OpenXR runtime (two eyes of 4400x3520 at 90 Hz) and the desktop window. This
@@ -24,7 +24,10 @@ its output drawn back over the scene. Stage 5 then ran on the RTX 4090 (clean, s
 2580x1080). On RR's frames the guides are now made from the world pass's own jittered depth, with the
 entities, water and glass in it, and moving entities have motion vectors of their own (§3.1, §9). Without
 the switch (or without the feature) the kernel, the denoiser, TAA and every shader's output are as before.
-The tester's steps are in §8 (stage 1) and §9 (stages 4 and 5, and the guides).
+**Stage 6 (upscaling) is wired, not yet run on a GPU** (§10): with `HORIZON_DLSS_RR_QUALITY=quality`,
+`balanced`, `performance` or `ultra`, the world, the rays, the guides and the media are drawn at NGX's render
+size for that mode and RR's output is the window's size. Unset or `dlaa`, everything is as in stage 5.
+The tester's steps are in §8 (stage 1), §9 (stages 4 and 5, and the guides) and §10 (stage 6).
 
 ## 1. Loading NGX on Vulkan from Rust
 
@@ -357,7 +360,7 @@ automatically.
 | 3. G-buffer | **Done without MRTs**: the guides pass (§3.1) traces them, on RR's frames from the world's jittered depth (entities, water and glass included). Left: LabPBR normals, roughness and F0, refraction of what lies behind water and glass, particles | Raster cost of the extra attachments, per eye |
 | 4. Raw kernel mode (**done, desktop**, §9) | `shadow_rays.wgsl` `raw_frame` (`rt.mode.w` bit 8): no `accumulate`, no rest in turns; `denoise.wgsl` one pass-through (`params.step.w` 1); `ShadowRays::set_raw_view`; horizon-rtx `SunPass::set_never_rest` (the bounce pass agrees) | Trace time without accumulation; the noisy image itself (`HORIZON_DLSS_RR_SHOW=input`) |
 | 5. RR at DLAA, desktop (**done, unrun**, §9) | `gfx/dlss_eval.rs`; `Session::evaluate` and `DlssRr::record` (horizon-rtx); `gfx.rs` `rr_now`, in place of `taa.resolve`, through `split_commands`; reset on the first frame, a resize, a cut or a frame without RR | Desktop 3440x1440: RR ms against accumulate + denoise + TAA (0.55 + 0.45 + accumulation); stills and motion captures against today's |
-| 6. RR upscaling, desktop | World pass and rays at `Quality::render_size`; hand and HUD unchanged after it | ms and quality at Quality/Balanced/Performance against the current RT scale 2 path |
+| 6. RR upscaling, desktop (**done, unrun**, §10) | `HORIZON_DLSS_RR_QUALITY`; `Session` render size ≠ output size (`Ngx::optimal_settings`); the world post's target at the render size (`world_post::Post::set_render_size`); RR after the rain and haze, its output onto the window's scene in place of the world post's copy; bloom, tone mapping, hand and HUD unchanged after it | ms and quality at Quality/Balanced/Performance against DLAA and against the RT scale 2 path |
 | 7. VR sharp zone | Zone-sized compose, output subrect, per-eye features, zone-move motion | Eye frame ms (today 5.97), the seam; eye 2 sharing on/off |
 | 8. VR whole eye (only if 7 leaves budget) | Uniform rays in the periphery at lower density instead of 4x4 sharing | Both eyes against 11.1 ms |
 
@@ -606,3 +609,100 @@ Windows linker; only `cargo check`, the unit tests and naga's validation of the 
 - that the raw kernel mode leaves nothing temporal behind besides ReSTIR's reuse (the radiance cache
   still averages over frames, by design);
 - that dropping the session after a failed evaluation mid-frame is safe (it waits for the device first).
+
+## 10. Stage 6: RR upscaling on the desktop window
+
+**The switch.** `HORIZON_DLSS_RR_QUALITY` (`dlss_rr::quality_wanted`, read once when the session is made):
+`quality`, `balanced`, `performance` or `ultra` (Ultra Performance); unset, empty or `dlaa` is stage 5
+exactly (render size = output size = the world's size, the same code path, the same jitter); anything
+else is logged and taken as DLAA. It only matters with `HORIZON_RT_DLSS_RR=1`; VR and offscreen
+renderers never make a session, so they never take this path.
+
+**What is wired:**
+
+- **The feature.** `Session::start` takes the mode. In an upscaling mode the output size is the
+  window's (`Renderer::render` calls `Session::resize` with it before each frame) and the render size is
+  `Ngx::optimal_settings(window, mode).render` (NGX's `DLSSDOptimalSettingsCallback`, e.g. Quality
+  1720x720 for 2580x1080). `CreateFeature1` is given `Width`/`Height` = the render size, `OutWidth`/
+  `OutHeight` = the window's and `PerfQualityValue` = the mode (MaxQuality 2, Balanced 1, MaxPerf 0,
+  UltraPerformance 3). One line when it is made:
+  `DLSS-RR: feature instance created for Quality: render 1720x720 -> output 2580x1080 (upscaling,
+  PerfQualityValue 2, jitter over 32 phases)`.
+- **The world at the render size.** The renderer's existing decoupling of the world from the window is
+  the world post's target (`gfx/world_post.rs`, the resolution scale and FXAA's): every world pass already
+  takes its size from it (`world_size`, `world_post.size()`), and so do the rays' prepass and kernel,
+  the guides, the entities' motion, the clouds, the froxels, the rain and the haze. On RR's upscaled
+  frames `Post::set_render_size` makes that target the render size, in place of the resolution scale's
+  (the resolution scale does not apply while a mode is set; DLAA keeps it, as before). The jitter
+  (`taa::jittered` with `taa_size`, now the render size) is in render pixels, as NGX takes it.
+- **Jitter phases.** `dlss_rr::jitter_phases`: NVIDIA's 8 × (output / render)², at least 32: 32 at DLAA,
+  Quality (1.5x: 18) and Balanced and Performance (2x: 32); 72 at Ultra Performance (3x).
+- **Motion vectors** stay in render pixels (the guides' are UV × the render size; `MV.Scale` 1, 1;
+  `MVLowRes`).
+- **Order.** The rain, the snow and the heat haze need the world's depth, which only exists at the render
+  size, so on upscaled frames RR is evaluated after them (they are in its input) instead of before
+  them as at DLAA. TAA does not run on those frames. RR's output (Rgba16Float storage image, the
+  window's size) is drawn onto the window's scene where the world post's copy would go; the copy is
+  skipped. Exposure, bloom, the tone mapping, the hand and the HUD then run at the window's size as
+  after that copy. With `HORIZON_DLSS_RR_SHOW=input` the copy runs instead (the noisy input,
+  stretched to the window).
+- **Last frame's scene.** The screen-space reflections read RR's last output (window-sized) by screen
+  position (`rt_screen_reflection`: NDC × the texture's own size), so its size need not be the
+  world's.
+- **Texture mip bias.** NVIDIA advises a texture LOD bias of log2(render / output) (−0.58 at Quality,
+  −1 at Performance, −1.58 at Ultra Performance) for the world's textures when upscaling. The terrain
+  has no LOD bias hook: its sprites are sampled with their own gradients (`sprite_grad`,
+  `textureSampleGrad`) or an explicit level, and wgpu samplers have no `mipLodBias`. So **no bias is
+  applied**; distant terrain is a little blurrier than DLSS's own guidance would give. Adding it means
+  scaling `sprite_grad`'s gradients by 2^bias, a change to the terrain shader left for later.
+- **Fallbacks.** No render size from NGX (an old DLL), a feature that cannot be made, an evaluation that
+  fails: one `DLSS-RR: off: …` line, and the world goes back to the full size the next frame (the world
+  post's own rule). A frame whose rays did not run makes no guides: that frame shows the render-size
+  world stretched by the world post's copy, and RR's history resets. Out of video memory for the
+  render-size target: logged, the resolution scale's size instead, and RR off after its evaluation
+  finds the sizes wrong.
+
+### Tester's steps (RTX 4090, Windows, Vulkan)
+
+1. Build and start as in §9 (`HORIZON_RT_DLSS_RR=1`, RT lighting on), once per mode with
+   `set HORIZON_DLSS_RR_QUALITY=` `dlaa`, `quality`, `balanced`, `performance`, `ultra`, the same window
+   size (2580x1080 or 3440x1440) and the same place and time of day (`/time set`, a still camera).
+2. Expected lines (sizes are examples):
+
+   ```
+   DLSS-RR: NGX's render sizes for a 2580x1080 output: DLAA 2580x1080, Quality 1720x720, ...
+   DLSS-RR: feature instance created for Quality: render 1720x720 -> output 2580x1080 (upscaling, PerfQualityValue 2, jitter over 32 phases)
+   DLSS-RR: first evaluation recorded at 1720x720 -> 2580x1080 (Quality, reset on, jitter 0.000, -0.167); ...
+   ```
+
+   Resizing the window logs `feature instance for Quality: render … released`, then a new `created`
+   line for the new size.
+3. For each mode, please report with `HORIZON_GPU_PASSES=1`: the GPU frame ms, the `DLSS Ray
+   Reconstruction` pass ms and the rays' (kernel) ms, against DLAA (10.55 → 13.56 ms at 1720x720 so far)
+   and against RT lighting without RR at the same window size.
+4. Screenshots per mode (F2), same view: terrain near and far (texture sharpness: no mip bias is
+   applied), leaves against the sky, a torch-lit cave, water and glass, a walking mob, rain if possible
+   (the drops are now in RR's input) and a heat haze over lava or fire. Then a short turn of the camera
+   and a walk: does it ghost, smear or shimmer more than at DLAA?
+5. Once with `HORIZON_DLSS_RR_SHOW=input` at Performance: the screen shows the render-size input
+   stretched to the window (blocky is expected); and once with `HORIZON_RT_GUIDES_SHOW=motion` (the
+   guides stretched over the window, still grey with a still camera).
+6. Please send back the `DLSS-RR:` block, the ms of step 3, the screenshots, whether a still camera
+   swims in any mode (and whether `HORIZON_DLSS_RR_JITTER_SIGN` fixes it), and any Vulkan validation
+   message besides NGX's known ones.
+
+### Unverified (nothing of stage 6 has run: the machine that wrote it has no GPU, no SDK and no `.local/`
+data; only `cargo check`, clippy and the unit tests ran)
+
+- that NGX accepts render size ≠ output size with these inputs, and the `PerfQualityValue` values;
+- that `DLSSDOptimalSettingsCallback`'s render size is what NGX's own `CreateFeature1` expects (the sizes
+  logged at stage 1 came from it; none was used to make a feature yet);
+- the jitter phases at Ultra Performance (72) and the jitter sign at a render size ≠ output size;
+- RR's look with the rain, the snow and the heat haze in its input (no motion vectors or masks of
+  their own: they may be washed out or smear), and with no texture mip bias;
+- that every pass that sizes itself from the world post's target follows the render size (the resolution
+  scale's path is the one every one of them was written for; the hand draws after RR at the
+  window's size);
+- the frame that falls back (no guides) showing the stretched render-size world without anti-aliasing;
+- every ms figure.
+
