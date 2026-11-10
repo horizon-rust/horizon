@@ -59,6 +59,8 @@ const GUIDE_WATER_F0: f32 = 0.02;
 const GUIDE_GLASS_F0: f32 = 0.04;
 // What lies behind water or glass is looked for this far past it.
 const GUIDE_BEHIND: f32 = 64.0;
+// How far from the depth's surface, in blocks, a triangle still gives it its texel.
+const GUIDE_LOOSE: f32 = 0.35;
 // The preintegrated environment BRDF's scale and bias on F0 (Karis 2014, "Physically Based Shading
 // on Mobile", after Lazarov 2013): what a split-sum renderer multiplies its prefiltered
 // reflection by, the specular albedo DLSS-RR asks for (its guide gives an approximation of the
@@ -160,7 +162,8 @@ fn guide_picture(diffuse: vec3<f32>, specular: vec3<f32>, n: vec3<f32>, roughnes
     var motion = vec2(0.0);
     var n = vec3(0.0, 1.0, 0.0);
     var dist = 3.4e38;
-    // Black: the sky; green: the ray's triangle; red: the depth's fallback; yellow: a wet
+    // Black: the sky; green: the ray's triangle; orange: a triangle near the depth (`GUIDE_LOOSE`);
+    // red: the depth's fallback; yellow: a wet
     // override; blue: water or glass over what lies behind.
     var source = vec3(0.0);
     if d <= 0.0 {
@@ -205,10 +208,20 @@ fn guide_picture(diffuse: vec3<f32>, specular: vec3<f32>, n: vec3<f32>, roughnes
                 source = vec3(0.0, 0.4, 1.0);
             } else {
                 n = guide_normal(p, pos);
+                // A surface the world pass drew a little off the rays' own (leaves swaying in
+                // the wind, an animal's pose): the first triangle within `GUIDE_LOOSE` of the
+                // depth gives its texel, better than the block's mean colour; the normal stays
+                // the depth's.
+                let near = max(dist - GUIDE_LOOSE, 0.0);
+                let loose = hw_hit(ray * near, ray, dist + GUIDE_LOOSE - near);
                 let cell = vec3<i32>(floor(pos - n * 0.01 + rt.camera.xyz + rt.fraction.xyz));
                 let map = map_albedo(cell);
                 diffuse = select(vec3(0.214), map, map.x >= 0.0);
                 source = vec3(1.0, 0.0, 0.0);
+                if loose.t >= 0.0 {
+                    diffuse = loose.albedo;
+                    source = vec3(1.0, 0.5, 0.0);
+                }
             }
         }
         // The rain's puddles and wet films, which the kernel's reflections mirror
