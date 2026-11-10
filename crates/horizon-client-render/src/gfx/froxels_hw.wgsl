@@ -294,6 +294,7 @@ fn water_noise(p: vec2<f32>) -> f32 {
 }
 // `sea` is how open the water lies (terrain.wgsl `TerrainOut::sea`: 0 a swamp's still water, 0.6 a
 // lake's, 1 the open sea's): the swell and the wind sea grow with it, still water hardly moves.
+const WATER_CALM: f32 = 0.6;
 fn water_sea(q: vec2<f32>, t: f32, sea: f32) -> vec3<f32> {
     let still = mix(vec3(0.1, 0.25, 0.4), vec3(1.0), smoothstep(0.0, 0.6, sea));
     let open = mix(vec3(1.0), vec3(1.8, 1.3, 1.1), smoothstep(0.6, 1.0, sea));
@@ -302,7 +303,9 @@ fn water_sea(q: vec2<f32>, t: f32, sea: f32) -> vec3<f32> {
     let gusts = water_noise(q / 23.0 + vec2(-3.7, 11.9) + vec2(0.045, 0.02) * t);
     // The wind's gains contrast more than the swell's: calm slicks beside rippled patches.
     let patches = smoothstep(vec2(0.15), vec2(0.85), vec2(wind, gusts));
-    return vec3(0.4 + 1.2 * swell, 0.15 + 1.7 * patches) * still * open;
+    // All of it at six tenths (`WATER_CALM`): at full height the surface was a dense mesh of
+    // glints and its caustics a net of hard lines on the bed, a pond's as a gale's.
+    return vec3(0.4 + 1.2 * swell, 0.15 + 1.7 * patches) * still * open * WATER_CALM;
 }
 fn water_surface(q: vec2<f32>, t: f32, footprint: f32, sea: f32) -> WaterSurface {
     var s = WaterSurface(0.0, vec2(0.0), vec3(0.0));
@@ -402,8 +405,12 @@ fn water_caustics(p: vec2<f32>, depth: f32, l: vec3<f32>, t: f32, footprint: f32
         water_area(w.slope, w.curvature, depth, l, WATER_INDEX_RGB.y),
         water_area(w.slope, w.curvature, depth, l, WATER_INDEX_RGB.z));
     // Soft at the fold (the sun's disc has a size, the line a width), never infinite.
-    let eps = 0.018 + 0.005 * depth;
-    let gathered = 1.0 / sqrt(det * det + eps * eps) / water_mean(depth);
+    // (Wider than the sun's disc alone makes it, 0.06 against 0.018, and never past four times
+    // the mean: the lines were fifty times the light around them, a net of white wire under the
+    // moon. The mean is the calmer waves': theirs at the depth their height stands for.)
+    let eps = 0.06 + 0.02 * depth;
+    let gathered = min(1.0 / sqrt(det * det + eps * eps) / water_mean(depth * WATER_CALM),
+        vec3(4.0));
     let keeps = exp(-0.07 * depth) * (1.0 - smoothstep(0.06, 0.25, footprint));
     return mix(vec3(1.0), gathered, keeps);
 }
