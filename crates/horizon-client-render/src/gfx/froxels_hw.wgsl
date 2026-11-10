@@ -229,7 +229,7 @@ struct WaterSurface {
 // 0.6, a calmer sea than dispersion alone gives), the phase 2.1 a wave. Written out, no shader has to work them out: each costs a sine and a cosine.
 fn water_wave(p: vec2<f32>, t: f32, footprint: f32, d: vec4<f32>, w: vec2<f32>) -> WaterSurface {
     // A ripple finer than about a pixel only shimmers: it fades out, and costs nothing then.
-    let fade = 1.0 - smoothstep(1.5, 4.0, d.z * footprint);
+    let fade = 1.0 - smoothstep(0.75, 2.0, d.z * footprint);
     if fade <= 0.0 { return WaterSurface(0.0, vec2(0.0), vec3(0.0)); }
     let slope = d.w * fade;
     let phase = d.z * dot(d.xy, p) - w.x * t + w.y;
