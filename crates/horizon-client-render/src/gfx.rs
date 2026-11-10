@@ -2480,6 +2480,25 @@ fn backends_name(backends: wgpu::Backends) -> &'static str {
 /// The translucent terrain's cover over the rays' prepass (`Renderer::draw_cover`): 1 where water
 /// or glass lies in front of the solid terrain.
 const COVER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// The share of the sun's or the moon's direct light at elevation sine `y`: none at the horizon,
+/// all of it from `HORIZON_SUN_RISE` degrees up (3 by default; 0: all of it at once, as before).
+fn sun_rise(y: f32) -> f32 {
+    static FULL: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    let full = *FULL.get_or_init(|| {
+        std::env::var("HORIZON_SUN_RISE")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .map_or(3.0, |v| v.clamp(0.0, 20.0))
+            .to_radians()
+            .sin()
+    });
+    if full <= 0.0 {
+        return 1.0;
+    }
+    let t = (y / full).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
 /// `HORIZON_RT_SHORE=1`: RT lighting's surf on a beach's shallows and the wet sand at the water's
 /// edge (terrain.wgsl `rt_shore`, `globals.earth.w`), off by default: the surf's veil hid the bed
 /// and its caustics over a whole terrace of sand.
@@ -10874,6 +10893,11 @@ impl Renderer {
             };
             // Behind the rain's clouds: about 3 % of the direct light gets through.
             let light = light * atmosphere::PAPER_WHITE * (1.0 - 0.97 * overcast.w);
+            // Rising or setting, the light comes almost level and the rays only meet the terrain
+            // around the camera: the far hills that hide the sun cast no shadow, and a valley
+            // behind a mountain was lit orange at dawn. The direct light comes in over the first
+            // degrees above the horizon (`sun_rise`).
+            let light = light * sun_rise(rt_sun.y.abs());
             [light.x, light.y, light.z, radius]
         };
         rt.sun_light = rt_sun_light;
