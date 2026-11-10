@@ -2936,7 +2936,9 @@ fn rt_glass_weathered(in: TerrainOut) -> bool {
 // terrain's too, gfx/parallax.rs).
 fn rt_glass_weathered_at(pos: vec3<f32>, layer: u32) -> bool {
     if globals.rt_mode.x < 0.5 || !linear_on() { return false; }
-    if !rt_glass_plain(layer) || dot(pos, pos) > 2304.0 { return false; }
+    // Any glass but ice (the translucent terrain's every face but water's): a pack's own glass
+    // sprites (connected textures, RTX packs) are not the plain glass's.
+    if rt_is_water(layer) || rt_ice(layer) != 0u || dot(pos, pos) > 2304.0 { return false; }
     if globals.rain.y > 0.0 || rt_glass_forced() { return true; }
     if globals.linear.w <= 0.0 { return false; }
     let column = rain_cell(vec2<i32>(floor(rain_world(pos).xz)));
@@ -3053,7 +3055,8 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
     let distance = length(g.pos);
     let ray = g.pos / max(distance, 1e-4);
     let view = -ray;
-    let plain = rt_glass_plain(g.layer);
+    // A clear texel (kept for the weather, `rt_glass_weathered`) is clear glass whatever sprite.
+    let plain = rt_glass_plain(g.layer) || g.alpha < 0.01;
     let ice = rt_ice(g.layer);
     // Ice's optics (`rt_ice`): its index, a smooth face with a little frost on clear ice, a rough
     // one on packed ice (unless the pack's specular map says rougher).

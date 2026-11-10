@@ -347,6 +347,7 @@ mod tests {
             face: [0; 6],
             cover: [0.0; 6],
             rt_ice: 0,
+            rt_glass: false,
             light_colour: [0; 3],
             light_at: [0; 3],
             flame: 0,

@@ -754,6 +754,8 @@ struct Info {
     ice: bool,
     /// RT lighting's ice (`rt_ice_kind`): 1 ice, 2 packed ice, 0 neither.
     rt_ice: u8,
+    /// Plain glass and its pane, which RT lighting draws translucent (`rt_plain_glass`).
+    rt_glass: bool,
     sturdy: u8,
     /// Occlusion face per direction: 0 empty, 1 the full-block singleton, 2 partial.
     face: [u8; 6],
@@ -1169,6 +1171,7 @@ impl MeshTables {
                 blocks_flow: assets.blocks_fluid_flow.contains(&*s.name),
                 ice: s.has_class("IceBlock"),
                 rt_ice: rt_ice_kind(name),
+                rt_glass: rt_plain_glass(name),
                 sturdy: s.sturdy_full,
                 face,
                 cover,
@@ -2379,11 +2382,13 @@ impl Mesher<'_> {
         // Opaque leaves (forceOpaque) and leaves a leaf-culling mode proved internal draw in the
         // solid layer whatever their sprite.
         let solid_leaves = !self.cutout_leaves && state.leaves || interior_leaf;
-        // RT lighting draws ice and packed ice as translucent ice (`rt_ice_kind`), whatever
-        // alpha the pack gives their textures.
+        // RT lighting draws ice and packed ice as translucent ice (`rt_ice_kind`), and plain
+        // glass as glass (`rt_plain_glass`), whatever alpha the pack gives their textures.
+        let rt_translucent = self.rt_lighting
+            && (state.rt_ice != 0 && rt_ice_on() || state.rt_glass && rt_glass_on());
         let own = TileLayer::Layer {
             layer: face.layer as u16,
-            translucent: face.translucent || (self.rt_lighting && state.rt_ice != 0 && rt_ice_on()),
+            translucent: face.translucent || rt_translucent,
             opaque: face.opaque,
         };
         // A tile keeps the quad's forced translucency; `<skip>` and `<default>` are its own.
@@ -2394,7 +2399,9 @@ impl Mesher<'_> {
                 opaque,
             } => TileLayer::Layer {
                 layer,
-                translucent: translucent || q.render_type.is_none() && q.material.force_translucent,
+                translucent: translucent
+                    || rt_translucent
+                    || q.render_type.is_none() && q.material.force_translucent,
                 opaque,
             },
             TileLayer::Skip | TileLayer::Default => own,
@@ -2637,6 +2644,20 @@ pub fn rt_ice_kind(name: &str) -> u8 {
 pub fn rt_packed_ice_clear() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_RT_PACKED_ICE").is_ok_and(|v| v == "1"))
+}
+/// RT lighting's plain glass (terrain.wgsl `rt_glass_at`): the glass block and its pane are drawn
+/// translucent whatever alpha the pack gives their textures. A pack made for RTX (Remix's glass)
+/// ships them with a clear face and an opaque frame, no texel in between, which put them in the
+/// cutout layer: the dielectric and the weather on it (`rt_glass_weather`) never reached their
+/// faces.
+pub fn rt_plain_glass(name: &str) -> bool {
+    matches!(name, "glass" | "glass_pane")
+}
+/// Whether RT lighting draws plain glass as glass (`rt_plain_glass`): `HORIZON_RT_GLASS=0` keeps
+/// the pack's layer.
+pub fn rt_glass_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_GLASS").map_or(true, |v| v != "0"))
 }
 /// Whether RT lighting draws its own ice (`rt_ice_kind`): `HORIZON_RT_ICE=0` keeps the pack's.
 pub fn rt_ice_on() -> bool {

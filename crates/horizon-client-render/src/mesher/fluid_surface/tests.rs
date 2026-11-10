@@ -38,6 +38,7 @@ fn info() -> Vec<Info> {
         blocks_flow: false,
         ice: false,
         rt_ice: 0,
+        rt_glass: false,
         sturdy: 0,
         face: [0; 6],
         cover: [0.0; 6],
