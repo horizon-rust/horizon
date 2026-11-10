@@ -506,6 +506,7 @@ fn kernel(
                 ("SUN_CENTRE", centre),
                 ("EDGE_BAND", edge_band()),
                 ("HELD_LIGHT", held_light()),
+                ("AMBIENT", ambient()),
             ],
             ..Default::default()
         },
@@ -1659,6 +1660,16 @@ impl ShadowRays {
     }
 }
 
+/// `HORIZON_RT_AMBIENT`: RT lighting's ambient light, on every face whatever reaches it
+/// (shadow_rays.wgsl `AMBIENT`), 0 to 1; 0.003 by default (very low: a floor under the traced
+/// light), 0 none.
+fn ambient() -> f64 {
+    std::env::var("HORIZON_RT_AMBIENT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .map_or(0.003, |v| v.clamp(0.0, 1.0))
+}
 /// `HORIZON_RT_HELD_LIGHT`: how bright RT lighting's moving lights are (a torch in the hand)
 /// against a placed light of their level (shadow_rays.wgsl `HELD_LIGHT`), 0 to 16; 2.5 by default
 /// (the light is at the eye, so what it lights faces it and looks flat: it wants more to read as
