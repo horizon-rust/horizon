@@ -3,7 +3,7 @@
 //! its 40 tick cooldown), `Entity.setAsInsidePortal` and `Entity.handlePortal`
 //! (the entity goes through on the next tick), and
 //! `TheEndGatewayBlockEntity.getPortalPosition` (where it lands).
-use crate::nether_portal::{ENTITY_DELAY, PortalState};
+use crate::nether_portal::PortalState;
 use crate::projectiles::{Projectile, ProjectileKind};
 use horizon_core::{geometry::Vec3, position::BlockPos};
 
@@ -16,15 +16,16 @@ pub struct Traveller {
 
 impl Traveller {
     /// `Entity.setAsInsidePortal`: the entity is in the gateway and goes
-    /// through it on the next tick.
-    pub fn enter(&mut self, gateway: BlockPos) {
-        self.state.set_inside(gateway, ENTITY_DELAY);
+    /// through it on the next tick. `delay` is the entity's
+    /// `getDimensionChangingDelay`.
+    pub fn enter(&mut self, gateway: BlockPos, delay: i32) {
+        self.state.set_inside(gateway, delay);
     }
 
     /// `Entity.handlePortal`: the entity goes through the gateway it entered
     /// (the End gateway has no transition time), or stays where it is.
-    pub fn travel(&mut self, allowed: bool) -> Option<BlockPos> {
-        self.state.handle(allowed, 0, ENTITY_DELAY)
+    pub fn travel(&mut self, allowed: bool, delay: i32) -> Option<BlockPos> {
+        self.state.handle(allowed, 0, delay)
     }
 
     /// Whether the entity's travel is over: it has no portal process left and
@@ -108,6 +109,7 @@ pub fn bottom_center(p: [i32; 3]) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nether_portal::{ENTITY_DELAY, PROJECTILE_DELAY};
 
     /// The gateway of the issue: a block at [702, 100, 0] in the End.
     const GATEWAY: [i32; 3] = [702, 100, 0];
@@ -162,10 +164,10 @@ mod tests {
         let gateway = BlockPos::new(702, 100, 0);
         let mut traveller = Traveller::default();
         // Nothing happens while the entity is outside the gateway.
-        assert_eq!(traveller.travel(true), None);
+        assert_eq!(traveller.travel(true, ENTITY_DELAY), None);
         // It enters the gateway, and goes through on the next tick.
-        traveller.enter(gateway);
-        assert_eq!(traveller.travel(true), Some(gateway));
+        traveller.enter(gateway, ENTITY_DELAY);
+        assert_eq!(traveller.travel(true, ENTITY_DELAY), Some(gateway));
         // Its portal cooldown keeps it from going back at once.
         assert_eq!(traveller.cooldown(), ENTITY_DELAY);
         assert!(!traveller.is_done());
@@ -175,9 +177,9 @@ mod tests {
     fn an_entity_that_may_not_use_portals_stays_in_the_gateway() {
         let gateway = BlockPos::new(702, 100, 0);
         let mut traveller = Traveller::default();
-        traveller.enter(gateway);
+        traveller.enter(gateway, ENTITY_DELAY);
         // A mob that cannot use a portal does not go through.
-        assert_eq!(traveller.travel(false), None);
+        assert_eq!(traveller.travel(false, ENTITY_DELAY), None);
     }
 
     /// A world with no blocks in the way and nothing to hit: the gateway
@@ -217,8 +219,8 @@ mod tests {
         // takes it in, and it goes through on the next tick.
         assert_eq!(found, Some(gateway));
         let mut traveller = Traveller::default();
-        traveller.enter(gateway);
-        assert_eq!(traveller.travel(true), Some(gateway));
+        traveller.enter(gateway, PROJECTILE_DELAY);
+        assert_eq!(traveller.travel(true, PROJECTILE_DELAY), Some(gateway));
         // getPortalDestination: at the exit, no motion and rotation 0.
         let exit = bottom_center([8, 100, 0]);
         place_pearl(&mut pearl, exit);
@@ -232,8 +234,8 @@ mod tests {
         assert_eq!((pearl.position.x, pearl.position.z), (8.5, 0.5));
         assert!((pearl.position.y - (100.0 - 0.03 * 0.99)).abs() < 1e-9);
         // The pearl is out of the gateway: it does not go back at once.
-        assert_eq!(traveller.travel(true), None);
-        assert_eq!(traveller.cooldown(), ENTITY_DELAY - 1);
+        assert_eq!(traveller.travel(true, PROJECTILE_DELAY), None);
+        assert_eq!(traveller.cooldown(), PROJECTILE_DELAY - 1);
     }
 
     #[test]

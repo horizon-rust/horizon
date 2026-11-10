@@ -1538,7 +1538,8 @@ impl Game<'_> {
             if self.restart_portal_cooldown(id) {
                 continue;
             }
-            self.end.gateways.entry(id).or_default().enter(pos);
+            let delay = self.portal_delay_of(id);
+            self.end.gateways.entry(id).or_default().enter(pos, delay);
         }
     }
 
@@ -1609,11 +1610,12 @@ impl Game<'_> {
             if !ticking {
                 continue;
             }
+            let delay = self.portal_delay_of(id);
             let Some(state) = self.end.gateways.get_mut(&id) else {
                 continue;
             };
             // The End gateway has no transition time (Portal.getPortalTransitionTime).
-            if let Some(entry) = state.travel(allowed) {
+            if let Some(entry) = state.travel(allowed, delay) {
                 leaving.push((id, entry));
             }
             if state.is_done() {

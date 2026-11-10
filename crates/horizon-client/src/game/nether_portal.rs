@@ -653,7 +653,7 @@ impl Game<'_> {
         if vehicles {
             before.clear();
         }
-        let mut ids: Vec<(u32, bool)> = Vec::new();
+        let mut ids: Vec<(u32, bool, i32)> = Vec::new();
         // ServerLevel.tick ticks only the entities in entity-ticking chunks,
         // and handlePortal runs in their tick: past the simulation distance an
         // entity's portal time and cooldown wait, kept as they are.
@@ -677,14 +677,15 @@ impl Game<'_> {
                     before.insert(entity.id(), entity.position());
                 }
                 if has_portal_state {
-                    ids.push((entity.id(), can_sweep && entity.can_use_portal(self)));
+                    let allowed = can_sweep && entity.can_use_portal(self);
+                    ids.push((entity.id(), allowed, entity.portal_delay()));
                 }
             }
         });
         self.portals.before = before;
         let present: std::collections::HashSet<u32> = ids
             .iter()
-            .map(|(id, _)| *id)
+            .map(|(id, _, _)| *id)
             .chain(waiting.iter().copied())
             .collect();
         // Each pass keeps the other group's states.
@@ -693,11 +694,11 @@ impl Game<'_> {
             let vehicle = boats.iter().any(|b| b.id == *id) || carts.iter().any(|c| c.id == *id);
             present.contains(id) || vehicle != vehicles
         });
-        for (id, allowed) in ids {
+        for (id, allowed, delay) in ids {
             let Some(state) = self.portals.entities.get_mut(&id) else {
                 continue;
             };
-            if let Some(entry) = state.handle(allowed, 0, ENTITY_DELAY) {
+            if let Some(entry) = state.handle(allowed, 0, delay) {
                 leaving.push((id, entry));
             }
             if state.cooldown == 0 && state.process.is_none() {
@@ -760,24 +761,38 @@ impl Game<'_> {
     /// `Entity.setAsInsidePortal` on an entity that is still on its portal
     /// cooldown, whatever the portal: the cooldown restarts and it stays.
     pub(super) fn restart_portal_cooldown(&mut self, id: u32) -> bool {
+        let delay = self.portal_delay_of(id);
         match self.portals.entities.get_mut(&id) {
             Some(state) if state.cooldown > 0 => {
-                state.cooldown = ENTITY_DELAY;
+                state.cooldown = delay;
                 true
             }
             _ => false,
         }
     }
     /// `Entity.setPortalCooldown` on an entity that has just spawned in a
-    /// portal: it stands in the portal for 300 ticks without going through.
+    /// portal or come through one: it stands in the portal for its
+    /// `getDimensionChangingDelay` without going through.
     pub(super) fn set_portal_cooldown(&mut self, id: u32) {
+        let cooldown = self.portal_delay_of(id);
         self.portals.entities.insert(
             id,
             PortalState {
-                cooldown: ENTITY_DELAY,
+                cooldown,
                 process: None,
             },
         );
+    }
+    /// `getDimensionChangingDelay` of the entity with that id in the level
+    /// in place (`Entity`'s for one that is not there).
+    pub(super) fn portal_delay_of(&self, id: u32) -> i32 {
+        let mut delay = ENTITY_DELAY;
+        for_each_entity!(entity_lists_of!(self), entity => {
+            if entity.id() == id {
+                delay = entity.portal_delay();
+            }
+        });
+        delay
     }
     /// `canUsePortal(false)` of a mob: what the mob itself decides
     /// (`mobs::mob_can_use_portal`), riding nothing, not asleep, and not
@@ -878,7 +893,7 @@ impl Game<'_> {
         {
             super::lan_entities::assign_entity_id(&mut self.next_entity, &mut r.id);
         }
-        let mut inside: Vec<(u32, BlockPos)> = Vec::new();
+        let mut inside: Vec<(u32, BlockPos, i32)> = Vec::new();
         let mut portal_sections = std::mem::take(&mut self.portals.sections);
         // Only the entities that tick (in entity-ticking chunks) move, so only
         // they can have swept into a portal.
@@ -907,16 +922,16 @@ impl Game<'_> {
                 .portal_from()
                 .unwrap_or_else(|| self.portals.before.get(&id).copied().unwrap_or(to));
             if let Some(pos) = self.swept_portal(from, to, width, height, &mut portal_sections) {
-                inside.push((id, pos));
+                inside.push((id, pos, entity.portal_delay()));
             }
         });
         self.portals.sections = portal_sections;
-        for (id, pos) in inside {
+        for (id, pos, delay) in inside {
             self.portals
                 .entities
                 .entry(id)
                 .or_default()
-                .set_inside(pos, ENTITY_DELAY);
+                .set_inside(pos, delay);
         }
     }
     /// The first nether or End portal block an entity box swept through
@@ -1280,7 +1295,11 @@ impl Game<'_> {
                     Tag::List(vec![Tag::Float(yaw.to_bits()), Tag::Float(pitch.to_bits())]),
                 );
                 // setPortalCooldown before the teleport, copied by restoreFrom.
-                c.insert("PortalCooldown".into(), Tag::Int(ENTITY_DELAY));
+                let delay = horizon_client::save::text(c.get(&"id".into()))
+                    .map_or(ENTITY_DELAY, |id| {
+                        horizon_client::nether_portal::delay_of(&id)
+                    });
+                c.insert("PortalCooldown".into(), Tag::Int(delay));
             }
             // ServerLevel.addDuringTeleport: a fresh add, not loaded from disk.
             super::persist::mark_fresh(&mut tag);

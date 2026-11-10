@@ -257,6 +257,11 @@ pub(super) trait Entity: EntityRules {
     fn is_vehicle(&self) -> bool {
         false
     }
+    /// `getDimensionChangingDelay`: the portal cooldown it gets when it goes
+    /// through a portal (`Entity`'s 300; a vehicle's 10; a projectile's 2).
+    fn portal_delay(&self) -> i32 {
+        horizon_client::nether_portal::ENTITY_DELAY
+    }
     /// Where it stood at the start of its tick, for the kinds that store it
     /// (None: `portals.before` has it).
     fn portal_from(&self) -> Option<Vec3> {
@@ -1357,6 +1362,9 @@ impl Entity for Boat {
     fn is_vehicle(&self) -> bool {
         true
     }
+    fn portal_delay(&self) -> i32 {
+        horizon_client::nether_portal::VEHICLE_DELAY
+    }
     /// `Boat.getEyeY`: the top of the 0.5625 box.
     fn fluid_eye_y(&self) -> f64 {
         self.position.y + super::boats::HEIGHT
@@ -1431,6 +1439,9 @@ impl Entity for Minecart {
     stored_motion!();
     fn is_vehicle(&self) -> bool {
         true
+    }
+    fn portal_delay(&self) -> i32 {
+        horizon_client::nether_portal::VEHICLE_DELAY
     }
     fn portal_size(&self) -> Option<(f32, f32)> {
         Some((
@@ -1715,6 +1726,9 @@ impl Entity for FallingBlock {
 }
 
 impl Entity for Projectile {
+    fn portal_delay(&self) -> i32 {
+        horizon_client::nether_portal::PROJECTILE_DELAY
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1835,6 +1849,9 @@ impl Entity for Projectile {
 }
 
 impl Entity for Rocket {
+    fn portal_delay(&self) -> i32 {
+        horizon_client::nether_portal::PROJECTILE_DELAY
+    }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
@@ -1902,6 +1919,9 @@ impl Entity for Rocket {
 }
 
 impl Entity for ThrownTrident {
+    fn portal_delay(&self) -> i32 {
+        horizon_client::nether_portal::PROJECTILE_DELAY
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
