@@ -2504,9 +2504,25 @@ fn backends_name(backends: wgpu::Backends) -> &'static str {
 /// The translucent terrain's cover over the rays' prepass (`Renderer::draw_cover`): 1 where water
 /// or glass lies in front of the solid terrain.
 const COVER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
-/// Whether the rays look for water or glass in front of a texel only where the translucent
-/// terrain's cover says some lies (shadow_rays_hw.wgsl `hw_reflect`): on unless
-/// `HORIZON_RT_PSR_COVER=0`, which traces that ray from every texel as before.
+/// The share of the sun's or the moon's direct light at elevation sine `y`: none at the horizon,
+/// all of it from `HORIZON_SUN_RISE` degrees up (3 by default; 0: all of it at once, as before).
+fn sun_rise(y: f32) -> f32 {
+    static FULL: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    let full = *FULL.get_or_init(|| {
+        std::env::var("HORIZON_SUN_RISE")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .map_or(3.0, |v| v.clamp(0.0, 20.0))
+            .to_radians()
+            .sin()
+    });
+    if full <= 0.0 {
+        return 1.0;
+    }
+    let t = (y / full).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
 /// `HORIZON_RT_SHORE=1`: RT lighting's surf on a beach's shallows and the wet sand at the water's
 /// edge (terrain.wgsl `rt_shore`, `globals.earth.w`), off by default: the surf's veil hid the bed
 /// and its caustics over a whole terrace of sand.
@@ -2518,6 +2534,15 @@ fn rt_shore() -> f32 {
         std::env::var("HORIZON_RT_SHORE").is_ok_and(|v| v == "1")
     }))) + (shadow_rays::ambient() as f32).min(0.49)
 }
+/// `HORIZON_RT_HAND_SHADOW=1`: the view model stays in the hardware rays beside the player's own
+/// body (`Renderer::hw_finish`), as before.
+fn rt_hand_shadow() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_HAND_SHADOW").is_ok_and(|v| v == "1"))
+}
+/// Whether the rays look for water or glass in front of a texel only where the translucent
+/// terrain's cover says some lies (shadow_rays_hw.wgsl `hw_reflect`): on unless
+/// `HORIZON_RT_PSR_COVER=0`, which traces that ray from every texel as before.
 fn psr_cover() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_RT_PSR_COVER").map_or(true, |v| v != "0"))
@@ -8408,8 +8433,16 @@ impl Renderer {
         posed: u32,
         clouds: bool,
     ) {
-        // The view model is drawn in the window's view only.
-        let hand = if self.eye.is_some() { &[] } else { frame.hand };
+        // The view model is drawn in the window's view only. And not beside the player's own body
+        // (`Frame::rt_body`): the body has its arms and its head where they are, and the view
+        // model's arm and held block, drawn large beside the eye, threw a second shadow next to
+        // the body's, a block the size of a head by its shoulder. `HORIZON_RT_HAND_SHADOW=1`
+        // keeps the view model in the rays with the body.
+        let hand = if self.eye.is_some() || (!frame.rt_body.is_empty() && !rt_hand_shadow()) {
+            &[]
+        } else {
+            frame.hand
+        };
         let Some(hw) = self.hw_rays.as_mut() else {
             return;
         };
@@ -8509,6 +8542,12 @@ impl Renderer {
     /// 4096 packed ice.
     pub fn set_ice_layers(&mut self, ice: Option<u32>, packed: Option<u32>) {
         let on = crate::mesher::rt_ice_on();
+        // Opaque packed ice (`rt_packed_ice_clear`) has no layer of its own here: the ice's twice.
+        let packed = if crate::mesher::rt_packed_ice_clear() {
+            packed
+        } else {
+            ice
+        };
         self.ice_layers = match (ice, packed) {
             (Some(i), Some(p)) if on && i < 4096 && p < 4096 => (i + 4096 * p) as f32,
             _ => -1.0,
@@ -10664,7 +10703,7 @@ impl Renderer {
             .time(self.water_clock.elapsed().as_secs_f32())
             .filter(|_| self.rt_lighting && !frame.title)
         {
-            rt.aldhani = [t, atmosphere::MOONLIGHT * atmosphere::PAPER_WHITE];
+            rt.aldhani = [t, atmosphere::moonlight() * atmosphere::PAPER_WHITE];
         }
         // In VR the first eye alone updates the structures, as it alone submits their raw builds
         // and builds the top level (below): the second eye's sections built raw with opacity
@@ -10811,7 +10850,8 @@ impl Renderer {
             let level = if rt_sun.y > 0.0 {
                 self.atmosphere.sunlight(rt_sun) * rt_sun.y
             } else {
-                self.atmosphere.sunlight(-rt_sun) * (atmosphere::MOONLIGHT * moon_lit * (-rt_sun.y))
+                self.atmosphere.sunlight(-rt_sun)
+                    * (atmosphere::moonlight() * moon_lit * (-rt_sun.y))
             };
             let level =
                 level.dot(Vec3::new(0.2126, 0.7152, 0.0722)) * 1.2 * atmosphere::PAPER_WHITE;
@@ -10892,12 +10932,17 @@ impl Renderer {
                 (
                     self.atmosphere.sunlight(-rt_sun)
                         * Vec3::from(MOON_REFLECTANCE)
-                        * (atmosphere::MOONLIGHT * moon_lit),
+                        * (atmosphere::moonlight() * moon_lit),
                     self.rt_moon_radius,
                 )
             };
             // Behind the rain's clouds: about 3 % of the direct light gets through.
             let light = light * atmosphere::PAPER_WHITE * (1.0 - 0.97 * overcast.w);
+            // Rising or setting, the light comes almost level and the rays only meet the terrain
+            // around the camera: the far hills that hide the sun cast no shadow, and a valley
+            // behind a mountain was lit orange at dawn. The direct light comes in over the first
+            // degrees above the horizon (`sun_rise`).
+            let light = light * sun_rise(rt_sun.y.abs());
             [light.x, light.y, light.z, radius]
         };
         rt.sun_light = rt_sun_light;

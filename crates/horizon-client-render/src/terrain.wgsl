@@ -1414,7 +1414,11 @@ fn rt_glare(d: vec3<f32>) -> vec3<f32> {
     // the disc the night's exposure lifts.
     // (0.03: at a tenth its flat veil over the disc still took the maria's contrast.)
     let eye = select(1.0, 0.03, globals.rt_mode.z > 0.5);
-    return globals.rt_sun_light.rgb * (10.0 * 3.14159265 * eye / (at * at * at)) * fade
+    // By night none on the moon's own disc, rising over a radius and a half past its limb: the
+    // glare is the eye's veil around a source, and laid flat over the disc (some two paper whites
+    // against the disc's one) it was what turned the moon into a white ball without a map.
+    let off = select(1.0, smoothstep(radius, 2.5 * radius, theta), globals.rt_mode.z > 0.5);
+    return globals.rt_sun_light.rgb * (10.0 * 3.14159265 * eye / (at * at * at)) * fade * off
         * smoothstep(-0.05, 0.02, toward.y);
 }
 // RT lighting: the real moon's disc toward `d` (0.52 degrees across, times the Moon Size
@@ -1673,10 +1677,21 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
         + reflected
         + m.albedo * m.emission * MATERIAL_EMISSION + spray;
 }
+// No real surface is darker than charcoal or soot, which give back 2 to 4 % of the light, but a
+// texture's near-black texels (sculk's body, deepslate's joints) decode to a few thousandths: no
+// lamp showed them, and sculk was its specks on black. A dark albedo is raised toward
+// `ALBEDO_FLOOR`, four times at most so its colour and the texture's pattern stay.
+const ALBEDO_FLOOR: f32 = 0.02;
+fn rt_albedo_floor(albedo: vec3<f32>) -> vec3<f32> {
+    let y = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+    return max(albedo * clamp(ALBEDO_FLOOR / max(y, 1e-5), 1.0, 4.0), vec3(0.25 * ALBEDO_FLOOR));
+}
 // RT lighting: material `m`'s linear colour, lit by the model and fogged. The fog scatters the
 // light it gets: the sky's, as much as the surface sees of it (a sealed room's air carries none).
-fn rt_material_lit(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>,
+fn rt_material_lit(m_in: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>,
     light: vec2<f32>, spherical: f32, cylindrical: f32) -> vec3<f32> {
+    var m = m_in;
+    m.albedo = rt_albedo_floor(m.albedo);
     let v = rt_visibility(pos, pixel);
     rt_mirror = rt_reflection(pixel, pos);
     // A puddle: what the rays found it reflects.

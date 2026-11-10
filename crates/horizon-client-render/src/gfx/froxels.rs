@@ -359,6 +359,26 @@ pub fn sky_filter() -> bool {
 /// On unless `HORIZON_FROXEL_STEADY_AIR=0`, to compare. Off, a step out from under an arch (its
 /// shade lowering the camera's sky light enough to turn the natural fogs off) laid a veil four
 /// times thicker over the sky and the far terrain at once, and a step back took it away.
+/// The light sources' share in the air (froxels.wgsl `lights_scatter`): `HORIZON_FROXEL_LIGHTS`,
+/// 0.25 by default (1: as before). In a dark cave the eye's exposure made the air around a glow
+/// lichen or a sculk's specks a haze with shafts.
+pub fn lights_share() -> f32 {
+    static SHARE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SHARE.get_or_init(|| {
+        std::env::var("HORIZON_FROXEL_LIGHTS")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .map_or(0.25, |v| v.clamp(0.0, 4.0))
+    })
+}
+/// Whether a froxel's bright outliers are held to its neighbourhood's light (froxels.wgsl
+/// `cs_blend`). On unless `HORIZON_FROXEL_OUTLIERS=old`: the floor was 0.5 whatever the light, a
+/// thousand times a moonlit night's, whose far mist flickered.
+pub fn outliers_held() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("HORIZON_FROXEL_OUTLIERS").is_ok_and(|v| v.trim() == "old"))
+}
 pub fn steady_air() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| !std::env::var("HORIZON_FROXEL_STEADY_AIR").is_ok_and(|v| v.trim() == "0"))
@@ -1072,12 +1092,17 @@ impl Froxels {
                 medium.anisotropy,
             ],
             albedo: [medium.albedo.x, medium.albedo.y, medium.albedo.z, 1.0],
-            history: [cap, 1.0, half as f32, ((state_turn / 2) % 65536) as f32],
+            history: [
+                cap,
+                lights_share(),
+                half as f32,
+                ((state_turn / 2) % 65536) as f32,
+            ],
             size: [
                 inputs.size[0] as f32,
                 inputs.size[1] as f32,
                 f32::from(u8::from(steady_air())),
-                0.0,
+                f32::from(u8::from(outliers_held())),
             ],
             eye: [eye.x, eye.y, eye.z, 0.0],
             prev_eye: [prev_eye.x, prev_eye.y, prev_eye.z, 0.0],

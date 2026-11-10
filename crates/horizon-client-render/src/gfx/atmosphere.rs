@@ -27,7 +27,19 @@ pub const SIZE: [u32; 2] = [64, 32];
 pub const PAPER_WHITE: f32 = 1.25;
 /// The moon's light against the sun's (gameplay's, not the real 1/400000): moonlit nights stay
 /// readable.
-pub const MOONLIGHT: f32 = 0.05;
+pub const MOONLIGHT: f32 = 0.025;
+/// [`MOONLIGHT`], or `HORIZON_MOONLIGHT`'s (0 to 1; 0.05 was the value before: a full moon lit the
+/// ground as a dull day).
+pub fn moonlight() -> f32 {
+    static LIGHT: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *LIGHT.get_or_init(|| {
+        std::env::var("HORIZON_MOONLIGHT")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| (0.0..=1.0).contains(v))
+            .unwrap_or(MOONLIGHT)
+    })
+}
 /// What a new moon leaves of the night sky's light, as a fraction of a full moon's: the airglow, the
 /// starlight and the zodiacal light, enough to tell the ground from the sky and too little to hide
 /// a star.
@@ -399,7 +411,7 @@ impl Sky {
     /// The discs' angular radii are 0: the sky table is 5.6 degrees a texel, a disc of the sun's
     /// size would light a texel now and then; the sun and the moon are drawn on their own.
     fn for_sun(sun: Vec3, moon_lit: f32) -> Self {
-        let moon_light = MOONLIGHT * moon_lit.max(NIGHT_GLOW);
+        let moon_light = moonlight() * moon_lit.max(NIGHT_GLOW);
         Self {
             sun_direction_and_radius: [sun.x, sun.y, sun.z, 0.0],
             moon_direction_and_radius: [-sun.x, -sun.y, -sun.z, 0.0],
