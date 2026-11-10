@@ -42,25 +42,57 @@ struct Params {
 // The bloom's own chain keeps only the light above the threshold, measured after the exposure
 // (Remix's luminanceThreshold); the exposure's chain keeps all of it.
 override BRIGHT: bool = false;
+// The glow's first level steadied against the rays' noise (`fs_first`): on unless
+// `HORIZON_BLOOM_STABLE=0`, which keeps the hard threshold and the plain mean.
+override STABLE: bool = true;
+// The most a pixel gives the glow over the threshold, in paper whites after the exposure (0: no
+// limit, `HORIZON_BLOOM_MOST`). The sun's disc is tens of thousands of paper whites: unbounded,
+// the chain's eight levels spread it into a white veil tens of degrees wide over the sky and
+// whatever stands before it (in VR, where the sun is nearly always in view, over half the
+// picture), and the disc's light times its pixels grew with the resolution. Bounded, the disc
+// keeps a halo a few times its size; the sky's own glare (terrain.wgsl `rt_glare`) is the
+// aureole around it. Lamps, lava and fire are far below it.
+override GLOW_MOST: f32 = 64.0;
 
 // Half the scene's size: each texel is the mean of the 2x2 pixels it covers, shadows applied.
 @fragment fn fs_first(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let size = vec2<i32>(textureDimensions(scene));
     let base = vec2<i32>(p.xy) * 2;
     var sum = vec3(0.0);
+    var weights = 0.0;
     for (var k = 0; k < 4; k++) {
         let at = min(base + vec2(k & 1, k >> 1), size - 1);
         let c = textureLoad(scene, at, 0);
         var light = min(max(shadowed(c, vec2<f32>(at) + 0.5), vec3(0.0)), vec3(CEILING));
+        var weight = 1.0;
         if BRIGHT {
             // The light above the threshold, a pixel's colour scaled by the share of its
             // luminance that is over.
             let luma = max(dot(light, vec3(0.2126, 0.7152, 0.0722)) * exposure.x, 1e-4);
-            light *= max(luma - params.bloom.y, 0.0) / luma;
+            var over = max(luma - params.bloom.y, 0.0);
+            if STABLE {
+                // A soft knee half the threshold wide (a quadratic into the line): a surface
+                // whose light wavers about the threshold (the rays' noise, a wave's glint) fades
+                // into the glow, where the hard edge switched it on and off.
+                let knee = 0.5 * params.bloom.y;
+                let soft = clamp(luma - params.bloom.y + knee, 0.0, 2.0 * knee);
+                over = max(over, soft * soft / max(4.0 * knee, 1e-4));
+            }
+            if GLOW_MOST > 0.0 { over = min(over, GLOW_MOST); }
+            light *= over / luma;
+            if STABLE {
+                // Karis' average (Jimenez 2014, the first level only): a pixel counts for less
+                // the brighter it is, so one hot pixel among dark ones (a firefly, a glint a
+                // pixel wide the jitter catches one frame in a few) no longer lights a whole
+                // patch of the glow on and off. A bright area keeps its light: its pixels weigh
+                // the same.
+                weight = 1.0 / (1.0 + over);
+            }
         }
-        sum += light;
+        sum += light * weight;
+        weights += weight;
     }
-    return vec4(sum * 0.25, 1.0);
+    return vec4(sum / weights, 1.0);
 }
 
 @fragment fn fs_down(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {

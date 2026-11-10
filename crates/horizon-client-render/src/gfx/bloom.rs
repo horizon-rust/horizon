@@ -133,7 +133,24 @@ impl Bloom {
             },
             alpha: wgpu::BlendComponent::REPLACE,
         };
-        let bright = pipeline("fs_first", &first_layout, None, &[("BRIGHT", 1.0)]);
+        // bloom.wgsl `STABLE` and `GLOW_MOST`: the glow steadied and bounded, unless
+        // `HORIZON_BLOOM_STABLE=0` and `HORIZON_BLOOM_MOST=0` (or another bound).
+        let stable = std::env::var("HORIZON_BLOOM_STABLE").map_or(true, |v| v != "0");
+        let most = std::env::var("HORIZON_BLOOM_MOST")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(64.0);
+        let bright = pipeline(
+            "fs_first",
+            &first_layout,
+            None,
+            &[
+                ("BRIGHT", 1.0),
+                ("STABLE", f64::from(u8::from(stable))),
+                ("GLOW_MOST", most),
+            ],
+        );
         Self {
             first_bright: bright,
             params_layout,
