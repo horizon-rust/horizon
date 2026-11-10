@@ -77,7 +77,7 @@ impl Game<'_> {
             return Snow::default();
         }
         let (level, thunder) = self.world.weather.levels(alpha);
-        let rate = Snow::rate_for(level, thunder);
+        let rate = Snow::rate_for(level, thunder, self.rain_intensity());
         if !self.snow.started {
             self.snow.started = true;
             if rate > 0.0 {

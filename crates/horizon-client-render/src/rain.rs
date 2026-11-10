@@ -55,6 +55,68 @@ pub fn extinction(rate_mm_h: f32) -> f32 {
     std::f32::consts::PI * MARSHALL_PALMER_N0 / slope(rate_mm_h).powi(3) * 1e-6
 }
 
+/// How hard this shower (this snowfall) falls against the rate vanilla's levels stand for: each
+/// one draws its own when it starts, from a light drizzle or flurries (0.3) to a cloudburst or a
+/// heavy snowfall (2.5), about as often lighter as heavier, and within it the rate swells and
+/// eases over a minute or two (by a third either way). The draw is hashed from the game time the
+/// shower started at; `HORIZON_WEATHER_INTENSITY` forces the factor (1: vanilla's fixed rates).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Intensity {
+    /// The shower's own factor and its seed, while one falls.
+    shower: Option<(f32, u32)>,
+}
+/// The lightest shower's factor and the heaviest's.
+pub const LIGHTEST: f32 = 0.3;
+pub const HEAVIEST: f32 = 2.5;
+impl Intensity {
+    /// This frame's factor: `falling` whether vanilla's rain level is above 0, `game_time` the
+    /// world's (ticks), `seconds` the swell's clock (real seconds).
+    pub fn step(&mut self, falling: bool, game_time: i64, seconds: f32) -> f32 {
+        if let Some(forced) = std::env::var("HORIZON_WEATHER_INTENSITY")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+        {
+            return forced.max(0.0);
+        }
+        if !falling {
+            self.shower = None;
+            return 1.0;
+        }
+        let (factor, seed) = *self.shower.get_or_insert_with(|| {
+            let seed = hash(game_time as u64);
+            (
+                Self::draw(unit(seed), unit(hash(u64::from(seed) + 1))),
+                seed,
+            )
+        });
+        let phase = unit(hash(u64::from(seed) + 2)) * std::f32::consts::TAU;
+        let swell =
+            0.6 * (seconds * 0.05 + phase).sin() + 0.4 * (seconds * 0.13 + 2.0 * phase).sin();
+        factor * (1.0 + swell / 3.0)
+    }
+
+    /// The factor this shower drew, while one falls.
+    pub fn drawn(&self) -> Option<f32> {
+        self.shower.map(|(f, _)| f)
+    }
+
+    /// A shower's factor for two uniform draws: log-uniformly between [`LIGHTEST`] and
+    /// [`HEAVIEST`] around a middle of about 0.9, the extremes rarer (their mean's distribution).
+    pub fn draw(a: f32, b: f32) -> f32 {
+        let t = ((a + b) * 0.5).clamp(0.0, 1.0);
+        (LIGHTEST.ln() + t * (HEAVIEST.ln() - LIGHTEST.ln())).exp()
+    }
+}
+fn hash(x: u64) -> u32 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31)) as u32
+}
+fn unit(h: u32) -> f32 {
+    (h >> 8) as f32 / (1u32 << 24) as f32
+}
+
 /// The rain this frame, for the renderer: its rate and the wind blowing it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rain {
@@ -64,10 +126,11 @@ pub struct Rain {
     pub wind: [f32; 2],
 }
 impl Rain {
-    /// The rain for vanilla's levels at `seconds` (the wind's gusts): a breeze that turns slowly,
-    /// stronger in a storm. `HORIZON_RAIN_MM_H` forces the rate while it rains.
-    pub fn from_levels(rain: f32, thunder: f32, seconds: f32) -> Self {
-        let mut rate = rate_mm_h(rain, thunder);
+    /// The rain for vanilla's levels at `seconds` (the wind's gusts), this shower's `intensity`
+    /// ([`Intensity`]) times the rate: a breeze that turns slowly, stronger in a storm or a
+    /// cloudburst. `HORIZON_RAIN_MM_H` forces the rate while it rains.
+    pub fn from_levels(rain: f32, thunder: f32, seconds: f32, intensity: f32) -> Self {
+        let mut rate = rate_mm_h(rain, thunder) * intensity.max(0.0);
         if rate > 0.0
             && let Some(forced) = std::env::var("HORIZON_RAIN_MM_H")
                 .ok()
@@ -75,7 +138,8 @@ impl Rain {
         {
             rate = forced.max(0.0) * rain.clamp(0.0, 1.0);
         }
-        let storm = (rate / THUNDER_MM_H).clamp(0.0, 1.0);
+        // A cloudburst's gusts past a thunderstorm's: a blizzard's wind where it snows.
+        let storm = (rate / THUNDER_MM_H).clamp(0.0, 1.6);
         let speed = (1.0 + 3.0 * storm) * (1.0 + 0.4 * (seconds * 0.13).sin());
         let angle = 0.6 + 0.5 * (seconds * 0.011).sin();
         Self {
@@ -506,6 +570,37 @@ pub fn upload_ranges(upload: &[u32]) -> impl Iterator<Item = (usize, &[u32])> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn showers_differ_and_each_keeps_its_own() {
+        let draws: Vec<f32> = (0..2000)
+            .map(|start| {
+                let mut i = Intensity::default();
+                i.step(true, start * 9001, 0.0);
+                i.drawn().unwrap()
+            })
+            .collect();
+        assert!(draws.iter().all(|&f| (LIGHTEST..=HEAVIEST).contains(&f)));
+        // Drizzles and cloudbursts both happen, the middle most often.
+        assert!(draws.iter().any(|&f| f < 0.5) && draws.iter().any(|&f| f > 1.6));
+        let mut sorted = draws.clone();
+        sorted.sort_by(f32::total_cmp);
+        let median = sorted[sorted.len() / 2];
+        assert!(median > 0.7 && median < 1.2, "{median}");
+        // A shower keeps its draw, swelling and easing by a third at most; the next one draws
+        // again.
+        let mut i = Intensity::default();
+        let first = i.step(true, 1000, 0.0);
+        let drawn = i.drawn().unwrap();
+        for s in 0..600 {
+            let f = i.step(true, 1000 + s * 20, s as f32);
+            assert!(f >= drawn * 0.66 && f <= drawn * 1.34, "{f} {drawn}");
+        }
+        assert_eq!(i.step(false, 13_000, 600.0), 1.0);
+        i.step(true, 20_000, 601.0);
+        assert_ne!(i.drawn().unwrap(), drawn);
+        assert!(first > 0.0);
+    }
 
     #[test]
     fn drops_fall_from_two_to_nine_metres_a_second() {

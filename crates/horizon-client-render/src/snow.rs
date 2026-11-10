@@ -85,9 +85,11 @@ pub struct Snow {
     pub cover: f32,
 }
 impl Snow {
-    /// The snow's rate for vanilla's levels; `HORIZON_SNOW_MM_H` forces it while it snows.
-    pub fn rate_for(rain: f32, thunder: f32) -> f32 {
-        let rate = rate_mm_h(rain, thunder);
+    /// The snow's rate for vanilla's levels, this snowfall's `intensity` times
+    /// (`crate::rain::Intensity`: flurries to a heavy fall); `HORIZON_SNOW_MM_H` forces it while it
+    /// snows.
+    pub fn rate_for(rain: f32, thunder: f32, intensity: f32) -> f32 {
+        let rate = rate_mm_h(rain, thunder) * intensity.max(0.0);
         if rate > 0.0
             && let Some(forced) = std::env::var("HORIZON_SNOW_MM_H")
                 .ok()

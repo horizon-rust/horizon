@@ -14196,6 +14196,7 @@ impl Game<'_> {
         // Renderer encoding and GPU waiting belong to render, not prepare.
         drop(prepare);
         let debug_passes = self.debug_lists_gpu_passes();
+        let intensity = self.rain_intensity();
         let result = match self.renderer.as_mut() {
             Some(renderer) => {
                 renderer.set_pass_timing(debug_passes || self.gpu_passes);
@@ -14223,6 +14224,7 @@ impl Game<'_> {
                         rain: frame.pack.rain.max(rain),
                         thunder: frame.pack.thunder.max(thunder),
                         snow: self.snow.share(),
+                        intensity,
                     },
                 );
                 horizon_client::spans::time("renderer", || renderer.render(&frame))

@@ -3,7 +3,7 @@
 //! particles give way to the renderer's drops (snow stays vanilla's).
 use super::{Dim, Game};
 use horizon_client::blocks::Fluid;
-use horizon_client::rain::{Rain, RainMap, Surface, Wetness, classify};
+use horizon_client::rain::{Intensity, Rain, RainMap, Surface, Wetness, classify};
 use std::time::Instant;
 
 /// The rain's state between frames.
@@ -14,6 +14,9 @@ pub(super) struct RainState {
     last: Option<Instant>,
     /// The dimension the map was filled in.
     dim: Option<Dim>,
+    /// This shower's intensity, and its factor this frame (snow's too: game/snow.rs).
+    intensity: Intensity,
+    factor: f32,
 }
 
 /// What a frame hands the renderer: the rain, the wetness, and the map's words that changed
@@ -60,7 +63,16 @@ impl Game<'_> {
             };
         }
         let (level, thunder) = self.world.weather.levels(alpha);
-        let rain = Rain::from_levels(level, thunder, self.water_seconds());
+        let seconds = self.water_seconds();
+        let before = self.rain.intensity.drawn();
+        self.rain.factor = self
+            .rain
+            .intensity
+            .step(level > 0.0, self.world.game_time, seconds);
+        if let (None, Some(drawn)) = (before, self.rain.intensity.drawn()) {
+            log::info!("Horizon weather: a new shower, {drawn:.2} times vanilla's rate");
+        }
+        let rain = Rain::from_levels(level, thunder, seconds, self.rain.factor);
         let speed = std::env::var("HORIZON_WET_SPEED")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
@@ -115,6 +127,16 @@ impl Game<'_> {
 
     /// The seconds the renderer's water and drops animate by: the same clock is not reachable
     /// here, so the gusts run on the game's ticks.
+    /// This shower's (snowfall's) intensity against vanilla's levels this frame
+    /// (`rain::Intensity`), 1 without the physical rain. Set by `rain_frame`.
+    pub(super) fn rain_intensity(&self) -> f32 {
+        if self.physical_rain() {
+            self.rain.factor
+        } else {
+            1.0
+        }
+    }
+
     fn water_seconds(&self) -> f32 {
         (self.world.game_time.rem_euclid(72_000) as f32) / 20.0
     }

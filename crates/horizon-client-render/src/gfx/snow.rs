@@ -15,8 +15,8 @@
 /// The grids' sides in cells, and the tracks a cell (terrain.wgsl's `SNOW_*` constants).
 pub const NEAR_SIDE: u32 = 48;
 pub const FAR_SIDE: u32 = 32;
-pub const TRACKS: u32 = 48;
-pub const FAR_TRACKS: u32 = 24;
+pub const TRACKS: u32 = 64;
+pub const FAR_TRACKS: u32 = 32;
 /// Instances a frame: every track of both grids.
 pub const INSTANCES: u32 = NEAR_SIDE * NEAR_SIDE * TRACKS + FAR_SIDE * FAR_SIDE * FAR_TRACKS;
 

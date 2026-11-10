@@ -241,6 +241,8 @@ pub struct CameraMedium {
     /// How much of what falls at the camera is snow (0 to 1, eased across a biome's edge), with
     /// RT lighting's physical snow on: its medium in place of the rain's.
     pub snow: f32,
+    /// This shower's intensity against vanilla's levels (`rain::Intensity`, 1: theirs).
+    pub intensity: f32,
 }
 
 impl Default for CameraMedium {
@@ -252,6 +254,7 @@ impl Default for CameraMedium {
             rain: 0.0,
             thunder: 0.0,
             snow: 0.0,
+            intensity: 1.0,
         }
     }
 }
@@ -264,9 +267,10 @@ impl CameraMedium {
         if self.in_water {
             return Medium::water();
         }
-        let mut weather = Medium::falling(crate::rain::rate_mm_h(self.rain, self.thunder));
+        let k = self.intensity.max(0.0);
+        let mut weather = Medium::falling(crate::rain::rate_mm_h(self.rain, self.thunder) * k);
         if self.snow > 0.0 {
-            let snow = Medium::snowing(crate::snow::rate_mm_h(self.rain, self.thunder));
+            let snow = Medium::snowing(crate::snow::rate_mm_h(self.rain, self.thunder) * k);
             weather = weather.mix(snow, self.snow.clamp(0.0, 1.0));
         }
         let open = ((self.sky_light - 3.0) / 6.0).clamp(0.0, 1.0);

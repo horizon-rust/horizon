@@ -554,8 +554,11 @@ impl HwRays {
     /// out for the old meshes go too, so the new level's sections don't take them.
     pub fn clear(&mut self) {
         let now = self.frames;
-        self.graveyard
-            .extend(self.built.drain().map(|(_, old)| (now, Grave::Section(old))));
+        self.graveyard.extend(
+            self.built
+                .drain()
+                .map(|(_, old)| (now, Grave::Section(old))),
+        );
         self.stale.clear();
         self.micromaps.retain(|_| false);
         self.changed = true;
