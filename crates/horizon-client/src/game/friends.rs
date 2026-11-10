@@ -25,13 +25,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-/// The English title: the fallback of [`title`], and what the screen's widgets are named by.
-pub const TITLE: &str = "Play with Friends";
-/// The title in the current language.
-pub fn title() -> String {
-    tr("horizon.friends.title", TITLE)
-}
-
 struct Sharing {
     host: Host,
     /// Sharing opened the world to LAN, so stopping closes it again.

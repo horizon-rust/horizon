@@ -202,6 +202,15 @@ fn friends_page() -> Option<&'static dyn Page> {
         .find(|page| page.place() == Place::PauseFriends)
 }
 
+/// What the Friends icon and its screen are named, for its tooltip, the narrator, controller
+/// focus and the control socket's widget tree: the page's title, else vanilla's tooltip.
+pub(super) fn friends_name() -> String {
+    friends_page().map_or_else(
+        || horizon_client::lang::get("gui.friends.open"),
+        |page| horizon_client::lang::get(page.title()),
+    )
+}
+
 impl Game<'_> {
     /// Whether the pause menu's Friends icon is active: a page is registered for it and this
     /// window plays a singleplayer world (another server's world can't be shared).
@@ -210,7 +219,7 @@ impl Game<'_> {
     }
 
     /// The Friends icon's page. Its rows are asked each time it is drawn.
-    pub(super) fn draw_friends_screen(&mut self, batch: &mut HudBatch) {
+    pub(super) fn draw_added_page(&mut self, batch: &mut HudBatch) {
         let Some(page) = friends_page() else {
             // Only reached by naming the screen (`horizon-ctl`): back to the pause menu.
             self.screen = Screen::Paused;
@@ -219,12 +228,12 @@ impl Game<'_> {
         let mut rows = Vec::new();
         page.rows(&mut rows);
         horizon_client::widgets::begin_screen(|| {
-            horizon_client::widgets::ScreenInfo::new("friends", super::friends::TITLE)
+            horizon_client::widgets::ScreenInfo::new("friends", friends_name())
         });
         draw(batch, &self.gui.atlas, self.cursor, page.title(), &rows);
     }
 
-    pub(super) fn friends_screen_click(&mut self) {
+    pub(super) fn added_page_click(&mut self) {
         let Some(page) = friends_page() else {
             return;
         };

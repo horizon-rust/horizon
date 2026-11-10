@@ -654,9 +654,9 @@ enum Screen {
     Advancements,
     /// WorldOptionsScreen (game/lan_screen.rs).
     WorldOptions,
-    /// Play with Friends, from the pause menu's Friends button
-    /// (the page at `Place::PauseFriends`, game/page_screen.rs).
-    Friends,
+    /// The page a crate registered at `Place::PauseFriends` (Play with Friends in the official
+    /// build), from the pause menu's Friends icon, drawn as its own screen (game/page_screen.rs).
+    AddedPage,
     /// `SocialInteractionsScreen` (`social_screen`, game/social.rs).
     Social,
     /// CommandBlockEditScreen (game/command_blocks.rs).
@@ -700,7 +700,7 @@ impl Screen {
             Screen::Stats => "stats",
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world_options",
-            Screen::Friends => "friends",
+            Screen::AddedPage => "friends",
             Screen::Social => "social",
             Screen::CommandBlock => "command_block",
             Screen::BlockEditor => "block_editor",
@@ -6231,7 +6231,7 @@ impl Game<'_> {
             Screen::Advancements => self.draw_advancements(&mut batch),
             Screen::Mod => {}
             Screen::WorldOptions => self.draw_world_options(&mut batch),
-            Screen::Friends => self.draw_friends_screen(&mut batch),
+            Screen::AddedPage => self.draw_added_page(&mut batch),
             Screen::Social => self.draw_social_screen(&mut batch),
             Screen::ServerLinks => self.draw_server_links(&mut batch),
             Screen::ConfirmLink => self.draw_confirm_link(&mut batch),
@@ -10879,8 +10879,8 @@ impl Game<'_> {
                         Screen::WorldOptions if button == MouseButton::Left => {
                             self.world_options_release()
                         }
-                        Screen::Friends if pressed && button == MouseButton::Left => {
-                            self.friends_screen_click()
+                        Screen::AddedPage if pressed && button == MouseButton::Left => {
+                            self.added_page_click()
                         }
                         Screen::Social if pressed && button == MouseButton::Left => {
                             self.social_click()
