@@ -459,6 +459,10 @@ pub struct ShadowRays {
     /// DLSS-RR's guides (`rt_guides`), after the kernel with RT lighting: only with hardware rays
     /// and `rt_guides::guides_wanted()`.
     guides: Option<super::rt_guides::RtGuides>,
+    /// DLSS Ray Reconstruction's view (`set_raw_view`): its frames are traced raw and its
+    /// denoiser only adds the direct light, through `denoise_raw`'s pass (made on first use).
+    raw_view: Option<usize>,
+    denoise_raw: Option<wgpu::Buffer>,
 }
 
 /// `HORIZON_RT_SKIP`'s bit for white noise everywhere (shadow_rays.wgsl `blue2`): the kernel's own
@@ -941,6 +945,8 @@ impl ShadowRays {
             .then(|| super::rt_guides::RtGuides::new(device, &layout, split, skip));
         Self {
             guides,
+            raw_view: None,
+            denoise_raw: None,
             cache,
             resolve,
             resolve_group,
@@ -1029,8 +1035,8 @@ impl ShadowRays {
 
     /// DLSS-RR's guides of view `view` (0 the window, then the VR views), once written: none
     /// unless `rt_guides::guides_wanted()` with hardware rays and RT lighting.
-    // Read by DLSS-RR's evaluation once it is wired (docs/rt-dlss-rr.md, stage 5).
-    #[allow(dead_code)]
+    // Read by DLSS-RR's evaluation (gfx/dlss_eval.rs, docs/rt-dlss-rr.md stage 5).
+    #[cfg_attr(not(feature = "dlss-rr"), allow(dead_code))]
     pub fn guides(&self, view: usize) -> Option<&super::rt_guides::Guides> {
         self.guides.as_ref()?.guides(view)
     }
@@ -1046,6 +1052,15 @@ impl ShadowRays {
         if let Some(guides) = &mut self.guides {
             guides.draw_shown(device, encoder, view, target);
         }
+    }
+
+    /// The view DLSS Ray Reconstruction denoises this frame (none: every view as before): its
+    /// kernel writes this frame's sample alone, without the accumulation or the bounced light's
+    /// turns (shadow_rays.wgsl `raw_frame`, `rt.mode.w`'s bit 8), and its denoiser filters nothing
+    /// (denoise.wgsl, `params.step.w` 1).
+    #[cfg_attr(not(feature = "dlss-rr"), allow(dead_code))]
+    pub fn set_raw_view(&mut self, view: Option<usize>) {
+        self.raw_view = view;
     }
 
     /// The mask view `view` (0 the window, then the VR views) traced last.
@@ -1189,6 +1204,7 @@ impl ShadowRays {
         sun_pass: Option<(u32, &mut PipelinePass<'_>)>,
     ) -> [wgpu::TextureView; 5] {
         let view_index = view;
+        let raw = rays.lighting && self.raw_view == Some(view);
         let scale = foveation.scale;
         let mask_size = size.map(|v| v.div_ceil(scale));
         // VR's second eye right after the first, at its size, with the first eye's depth: the first
@@ -1275,7 +1291,8 @@ impl ShadowRays {
                     (None, _) => 0.0,
                 },
                 (sun_pass.as_ref().map_or(0, |(bits, _)| *bits)
-                    | if self.skip & WHITE_NOISE != 0 { 4 } else { 0 }) as f32,
+                    | if self.skip & WHITE_NOISE != 0 { 4 } else { 0 }
+                    | if raw { 8 } else { 0 }) as f32,
             ],
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
             motion: match last {
@@ -1521,7 +1538,22 @@ impl ShadowRays {
             (&light, &scratch),
             (&scratch, &light),
         ];
-        for ((from, to), params) in passes.into_iter().zip(&self.denoise_params) {
+        // DLSS-RR's raw frames: one pass from `blocks` to `light`, the direct light added.
+        if raw && self.denoise_raw.is_none() {
+            use wgpu::util::DeviceExt;
+            self.denoise_raw = Some(
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("RT lighting's denoiser, DLSS-RR's pass-through"),
+                    contents: bytemuck::cast_slice(&[1i32, 1, 0, 1]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                }),
+            );
+        }
+        let raw_pass = self.denoise_raw.as_ref().filter(|_| raw);
+        let params = raw_pass
+            .into_iter()
+            .chain(self.denoise_params.iter().filter(|_| raw_pass.is_none()));
+        for ((from, to), params) in passes.into_iter().zip(params) {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("RT lighting's denoiser"),
                 layout: &self.denoise_layout,

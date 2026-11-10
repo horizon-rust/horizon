@@ -1,4 +1,4 @@
-# DLSS Ray Reconstruction for RT lighting (design, stage 1: NGX starts in the game)
+# DLSS Ray Reconstruction for RT lighting (design; stages 1, 4 and 5 wired on the desktop)
 
 Part of the RTX 4090 build ([rtx-4090.md](rtx-4090.md)): Windows, an RTX 4090, Vulkan only (no DX12), VR on
 Apple Vision Pro through an OpenXR runtime (two eyes of 4400x3520 at 90 Hz) and the desktop window. This
@@ -17,8 +17,12 @@ builds as it did before. With it, nothing runs unless `HORIZON_RT_DLSS_RR=1`. **
 window only): with the switch, NGX's instance and device extensions are enabled when the window's Vulkan
 instance and device are made, NGX is initialised on the device, its render sizes are logged, and one DLSS-RR
 feature instance is made for the window's size, made again on resize and released before NGX shuts down.
-Nothing is evaluated yet: the frame, the kernel, the denoiser, TAA and every shader are unchanged. The tester's
-steps are in §8.
+Stage 1 ran on the RTX 4090 (SDK v310.9.16, 10 November 2026; §7). **Stages 4 and 5 are wired, not yet
+run on a GPU** (§9): with the switch, the window's view is traced raw (no accumulation, no rest in turns,
+no à-trous filtering), the world is drawn with RR's jitter, and RR is evaluated where the TAA resolve ran,
+its output drawn back over the scene. Without the switch (or without the feature) the kernel, the denoiser,
+TAA and every shader's output are as before. The tester's steps are in §8 (stage 1) and §9 (stages 4
+and 5).
 
 ## 1. Loading NGX on Vulkan from Rust
 
@@ -184,7 +188,7 @@ un-accumulated, un-denoised masks**.
 
 | RR input (NGX key) | Exists today | Missing / to do |
 |---|---|---|
-| Noisy colour (`Color`): 1 spp radiance × albedo, linear HDR | The scene (`tonemap.rs:119` `SCENE_FORMAT` Rgba16Float), composed in `terrain.wgsl`. Its masks are accumulated over up to 30 frames (`shadow_rays.wgsl:1845` MAX_HISTORY, `accumulate` at `:1915`) and denoised (`denoise.wgsl`) | A kernel mode that returns `trace`'s result unaccumulated (skip `accumulate`, `:1915`). It also has to stop the "rest in turns" scheduling (`rt.frame.z`, `trace` at `:1665`), because RR wants a fresh sample at every pixel every frame. The denoiser is skipped. The terrain reads the raw masks. ReSTIR's temporal reuse can stay (RR is meant to sit on top of ReSTIR). The kernel files are not touched by this branch |
+| Noisy colour (`Color`): 1 spp radiance × albedo, linear HDR | The scene (`tonemap.rs:119` `SCENE_FORMAT` Rgba16Float), composed in `terrain.wgsl`. Its masks are accumulated over up to 30 frames (`shadow_rays.wgsl:1845` MAX_HISTORY, `accumulate` at `:1915`) and denoised (`denoise.wgsl`) | A kernel mode that returns `trace`'s result unaccumulated (skip `accumulate`, `:1915`). It also has to stop the "rest in turns" scheduling (`rt.frame.z`, `trace` at `:1665`), because RR wants a fresh sample at every pixel every frame. The denoiser is skipped. The terrain reads the raw masks. ReSTIR's temporal reuse can stay (RR is meant to sit on top of ReSTIR). **Done (stage 4, §9)**: `raw_frame` |
 | Output (`Output`) | | A storage-capable Rgba16Float at output size, which replaces TAA's history as the resolved scene (`taa.rs:332` `resolve`; called at `gfx.rs:14363-14378`) |
 | Depth (`Depth`) | Depth32Float, reversed Z (`GreaterEqual`, `gfx.rs:3687,3838`). In VR the prepass is at the rays' resolution (`gfx.rs:1787` `half_prepass`, `:8409-8418`) | Hardware depth: `DLSS.Use.HW.Depth` = 1 plus `DepthInverted`. It has to be the depth of the colour's own pixel grid |
 | Motion vectors (`MotionVectors`) | **Camera, as a guide** (§3.1): `rt_guides` writes an Rg16Float at the render size, render pixels from this frame's position to last frame's (previous − current, x right, y down), unjittered (the RT prepass draws with the clean matrix), from the depth and the kernel's `prev_view_proj`/`motion`; the sky by its direction. Frame generation has per-entity vectors (`gfx/frame_gen/motion.rs`, `motion.wgsl`: UV units, current → previous, unjittered, entity pixels only, Rgba16Float), built only when frame generation runs | `MV.Scale` = 1, 1 (already pixels), `MVJittered` = 0. Entities: overlay `ObjectMotion` once the guides read the world pass's depth (the prepass has no entities). Not covered at all: water and lava surface animation, falling blocks, pistons, block entities (chests, bells), particles. Use the `DLSS.Input.Bias.Current.Color.Mask` or transparency mask for the last ones |
@@ -321,8 +325,8 @@ automatically.
 | 1. Extensions + init (**done, desktop**; VR left) | `horizon-hdr/src/lib.rs` (`open_vulkan_device_with`), `gfx.rs` (`open_backend`: instance and device; `Renderer::new` and `resize`: `dlss_rr::Session`), `dlss_rr.rs` (`create_instance`, `device_extensions`, `Paths`, `Session`, `Ngx::optimal_settings`), the `dlss-rr` feature in `horizon-client`/`horizon-client-render`. VR (`horizon-xr/src/lib.rs`, both lists) is still to do | Startup time, frame time unchanged with RR wanted but unused; validation layers clean apart from NGX's known ones |
 | 2. Motion vectors | **Camera part done** in the guides pass (§3.1, `gfx/rt_guides.rs`); left: `ObjectMotion` for entities over it, on the world pass's depth | Its cost (expected below 0.1 ms); a debug view (`HORIZON_RT_DEBUG`) of the vectors on moving mobs |
 | 3. G-buffer | **First version done without MRTs**: the guides pass (§3.1) traces them from the depth prepass. Left: entities, hand and translucent surfaces (world pass depth or MRTs in `terrain.wgsl`), LabPBR normals, roughness and F0 | Raster cost of the extra attachments, per eye |
-| 4. Raw kernel mode | `shadow_rays.rs`/`.wgsl`: an `rt.mode` bit that skips `accumulate`, the rest-in-turns and the denoiser (once the parallel kernel work lands) | Trace time without accumulation; the noisy image itself (debug view) |
-| 5. RR at DLAA, desktop | Evaluate after the world and its media, in place of `taa.resolve` (`gfx.rs:14363`), through `DlssRr::record` and `split_commands`; reset flag per view | Desktop 3440x1440: RR ms against accumulate + denoise + TAA (0.55 + 0.45 + accumulation); stills and motion captures against today's |
+| 4. Raw kernel mode (**done, desktop**, §9) | `shadow_rays.wgsl` `raw_frame` (`rt.mode.w` bit 8): no `accumulate`, no rest in turns; `denoise.wgsl` one pass-through (`params.step.w` 1); `ShadowRays::set_raw_view`; horizon-rtx `SunPass::set_never_rest` (the bounce pass agrees) | Trace time without accumulation; the noisy image itself (`HORIZON_DLSS_RR_SHOW=input`) |
+| 5. RR at DLAA, desktop (**done, unrun**, §9) | `gfx/dlss_eval.rs`; `Session::evaluate` and `DlssRr::record` (horizon-rtx); `gfx.rs` `rr_now`, in place of `taa.resolve`, through `split_commands`; reset on the first frame, a resize, a cut or a frame without RR | Desktop 3440x1440: RR ms against accumulate + denoise + TAA (0.55 + 0.45 + accumulation); stills and motion captures against today's |
 | 6. RR upscaling, desktop | World pass and rays at `Quality::render_size`; hand and HUD unchanged after it | ms and quality at Quality/Balanced/Performance against the current RT scale 2 path |
 | 7. VR sharp zone | Zone-sized compose, output subrect, per-eye features, zone-move motion | Eye frame ms (today 5.97), the seam; eye 2 sharing on/off |
 | 8. VR whole eye (only if 7 leaves budget) | Uniform rays in the periphery at lower density instead of 4x4 sharing | Both eyes against 11.1 ms |
@@ -358,17 +362,32 @@ interface facts only, with no header text copied:
   functions passed), its instance path (`init_with_callback` + `from_hal`) and its drop order (wait idle,
   `DestroyParameters`, `Shutdown1`).
 
+- **Stage 5, read on 10 November 2026** (main branch headers and dlss_wgpu's `src/context.rs`,
+  `render_parameters.rs`): every key `NGX_VULKAN_EVALUATE_DLSSD_EXT` sets that Horizon feeds, including
+  the input sub-rectangle bases (all 0), `TonemapperType` (0, the string tone mapper) and the
+  `DLSS.Indicator.Invert.*` axes, now set as the helper does; which inputs the helper's struct lists as
+  required (albedos, normals, roughness, colour, output, depth, motion, jitter, render subrect) and that
+  the two matrices are among its optional "research" fields; `DLSS.Roughness.Mode` packed = roughness in
+  `normals.w`; dlss_wgpu's evaluation: `transition_resources` to `RESOURCE` for inputs and
+  `STORAGE_READ_WRITE` for the output, the image views' whole subresource, the `texture_format_as_raw`
+  format, then the evaluation on the encoder's raw command buffer.
+
+**Verified on the RTX 4090** (stage 1, SDK v310.9.16, reported 10 November 2026): NGX asked for and got the
+device extensions `VK_NVX_binary_import`, `VK_NVX_image_view_handle`, `VK_KHR_buffer_device_address` and
+`VK_KHR_push_descriptor`; NGX initialised with the self-chosen project id; `SuperSamplingDenoising.Available`
+= 1; the feature instance was made at 2580x1080 (DLAA), made again on resize, released, and NGX shut down
+without a crash; the Windows link needed nothing beyond `nvsdk_ngx_d.lib`; the `rel` DLL folder name held.
+
 **Unverified:**
 
 - whether NGX needs Vulkan device *features* besides its extensions (the header names none; wgpu enables
-  buffer device address with ray queries);
-- that `Device::poll(wait)` is enough before `ReleaseFeature`/`Shutdown1` (dlss_wgpu calls
-  `vkDeviceWaitIdle`; nothing is evaluated yet, so only the setup submission can be in flight);
-- the exact contents of NGX's instance and device extension lists;
-- NGX's layout and barrier contract on Vulkan;
-- the jitter sign;
-- the DLL folder names in the SDK (taken from dlss_wgpu's code);
-- that a self-chosen UUID is accepted as a project id outside development;
+  buffer device address with ray queries; stage 1 ran without asking for more);
+- that `Device::poll(wait)` is enough before `ReleaseFeature`/`Shutdown1` once frames are evaluated
+  (dlss_wgpu calls `vkDeviceWaitIdle`);
+- the instance extension list (the device list is verified above);
+- NGX's layout and barrier contract on Vulkan (`DlssRr::record` adds a full memory barrier on each side);
+- the jitter sign (`HORIZON_DLSS_RR_JITTER_SIGN`, §9);
+- that a self-chosen UUID is accepted as a project id outside development (accepted in development);
 - the licence wording (read `LICENSE.txt`);
 - every performance and VRAM figure in §4.
 
@@ -428,3 +447,94 @@ requirement query fails, and RT lighting keeps its accumulation, denoiser and TA
 with the version NGX asks for), DX12 or OpenGL chosen (`needs Vulkan`), VR (`not wired for VR yet`).
 
 Please send back the whole `DLSS-RR:` block and, if anything failed, the newest file in `logs\ngx`.
+
+## 9. Stages 4 and 5: RR evaluated on the desktop window (DLAA)
+
+**What is wired** (all behind the `dlss-rr` feature and `HORIZON_RT_DLSS_RR=1`; desktop window only, render
+size = output size = the world's size, which a render scale can make differ from the window's):
+
+- **Raw kernel mode (stage 4).** `ShadowRays::set_raw_view(Some(0))` (`gfx/shadow_rays.rs`) sets bit 8 of
+  `rt.mode.w` for the window's view. The kernel (`shadow_rays.wgsl` `raw_frame`) then skips `accumulate`
+  (only the moving caster's mark is taken off the face, as `accumulate` does) and never rests the bounced
+  light in turns (`trace`'s `rest`); ReSTIR DI/GI's temporal reuse stays, as the design says. The RTX 4090
+  bounce pass is told the same through `SunPass::set_never_rest` (its flag bit 4, the kernel's `SKIP` 16),
+  so the two agree on which texels rest. The à-trous denoiser is replaced by one pass that only adds the
+  direct light (`denoise.wgsl`, `params.step.w` 1, a buffer made on first use). Every other view keeps
+  bit 8 clear and the five passes; without the switch no bit, buffer or pass changes, so every shader's
+  output is as before.
+- **Jitter.** On RR frames the world is drawn with `dlss_eval`'s own Halton(2, 3) jitter (16 phases,
+  `taa::jitter`), advanced once a frame evaluated; TAA's history is freed. The RT depth prepass and the
+  guides stay on the clean matrix (§3.1), so the guides are up to half a pixel off the colour's jittered
+  grid: the motion vectors are unjittered (`MVJittered` 0), which is what NGX asks for; the albedos and
+  normals' half-pixel offset is a known approximation. The hand is drawn after the evaluation (not in the
+  world pass), as RR has no guides for it.
+- **Evaluation (stage 5).** Where `taa.resolve` ran (`gfx.rs`, `rr_done`), `DlssEval::evaluate`
+  (`gfx/dlss_eval.rs`) makes the feature follow the world's size (`Session::resize`), then
+  `Session::evaluate` (horizon-rtx `dlss_rr.rs`) takes the raw handles of: the scene (noisy colour, linear
+  HDR, `IsHDR`), the world's depth (reversed Z, `DepthInverted`, hardware depth), and the guides' motion,
+  diffuse albedo, specular albedo and normals with roughness in w (`DLSS.Roughness.Mode` packed). Exposure:
+  NGX's `AutoExposure` (no exposure texture), pre-exposure 1. Reset: the first evaluation of a feature, a
+  resize, a camera move of more than 8 blocks in a frame, any frame without RR's evaluation before this
+  one. `DlssRr::record` transitions the inputs to `RESOURCE` and the output to `STORAGE_READ_WRITE`, ends
+  the frame's encoder into `split_commands`, records `EvaluateFeature` between two full memory barriers in
+  a command buffer of its own, and the frame carries on in a new encoder. The output (Rgba16Float storage
+  image) is drawn back over the scene (`wgpu::util::TextureBlitter`); the rain, haze, bloom, tone mapping,
+  hand and HUD follow unchanged. It also stands in for TAA's last frame for the screen-space reflections.
+- **Fallbacks.** A frame whose rays did not run, or whose guides are not the world's size, is resolved by
+  TAA instead (and RR's history resets). Any `Err` (NGX's evaluation, a missing or mis-sized image, a
+  non-Vulkan texture) logs one `DLSS-RR: off: the evaluation failed (...)` line, drops the session (feature
+  released, NGX shut down) and the rest of the run is the normal path (that frame resolves through TAA).
+
+**Debug switches:**
+
+- `HORIZON_DLSS_RR_SHOW=input`: RR still runs, but its output is not drawn back: the screen shows the raw
+  noisy input RR was given. Noise there is expected; wrong colours, black areas or smearing there mean the
+  input is at fault, not RR.
+- `HORIZON_DLSS_RR_JITTER=0`: no jitter (and RR told 0): if the image calms, the jitter is the suspect.
+- `HORIZON_DLSS_RR_JITTER_SIGN=x`, `y` or `xy`: the jitter NGX is told is negated on those axes (Horizon's
+  is how far the image moves, right and down). Try each with a still camera: the right one does not swim.
+- `HORIZON_RT_GUIDES_SHOW=motion|normal|albedo|...` (§3.1) still pictures the guides.
+- NVIDIA's `dev` DLL (`lib\Windows_x86_64\dev\nvngx_dlssd.dll` in place of the `rel` one) draws its overlay
+  with the jitter and motion vector checks.
+
+### Tester's steps (RTX 4090, Windows, Vulkan)
+
+1. Build as in §8 (steps 1 to 4): `cargo build --profile fast -p horizon-client --features rtx,dlss-rr`
+   with `DLSS_SDK_DIR` set, `nvngx_dlssd.dll` beside the executable or in `DLSS_RUNTIME_DIR`.
+2. From a scratch game folder, with RT lighting on in a world: `set HORIZON_RT_DLSS_RR=1`, then start the
+   game as in §8 step 5. Walk around, look at shadows, torch light in a cave, water and glass.
+3. Expected log lines, after §8's stage 1 lines (sizes are examples):
+
+   ```
+   DLSS-RR: feature instance created for 2580x1080 (DLAA: render size = output size)
+   DLSS-RR: first evaluation recorded at 2580x1080 (DLAA, reset on, jitter 0.000, -0.167); RT lighting's accumulation, denoiser and TAA are skipped for the window
+   ```
+
+   With a render scale, the feature is made again at the world's size first (`feature instance for WxH
+   released`, then `created for W'xH'`). On a failure: `DLSS-RR: off: the evaluation failed
+   (NVSDK_NGX_VULKAN_EvaluateFeature_C failed (NGX result 0xbad000..)); back to RT lighting's accumulation,
+   denoiser and TAA for the rest of the run`.
+4. A/B: the same place with and without `HORIZON_RT_DLSS_RR=1`; then `HORIZON_DLSS_RR_SHOW=input` to see
+   the raw input; with `HORIZON_GPU_PASSES=1` the pass timings show `DLSS Ray Reconstruction` and a single
+   `rays: denoiser` pass on RR frames.
+5. Please send back: the `DLSS-RR:` block, screenshots with and without RR (and with `SHOW=input`), whether
+   a still camera swims (and which `JITTER_SIGN` fixes it), any Vulkan validation messages besides NGX's
+   known ones, and the newest file in `logs\ngx` if anything failed.
+
+### Unverified (nothing of stages 4 and 5 has run: the machine that wrote them has no GPU, no SDK and no
+Windows linker; only `cargo check`, the unit tests and naga's validation of the shaders ran)
+
+- that NGX accepts the inputs at all (formats Rgba8Unorm albedos, Rgba16Float normals, Rg16Float motion,
+  Depth32Float depth, Rgba16Float colour and output) and the image views wgpu made;
+- the barrier and layout contract around `EvaluateFeature` (the full barriers are a guess at safety, not a
+  measured need), and that the wgpu tracker stays right after it (validation layers will tell);
+- the jitter sign, and whether 16 phases suit RR at DLAA;
+- whether the half-pixel offset of the unjittered guides against the jittered colour shows (soft edges,
+  shimmer on albedo edges); the alternative is a jittered prepass;
+- RR's look with entities, the hand-less frame, water, glass and particles (no guides of their own: they
+  get the terrain behind them, §3.1);
+- that `AutoExposure` is the right choice against feeding last frame's exposure;
+- the cost (RR ms against 0.55 + 0.45 ms + the accumulation) and the VRAM;
+- that the raw kernel mode leaves nothing temporal behind besides ReSTIR's reuse (the radiance cache
+  still averages over frames, by design);
+- that dropping the session after a failed evaluation mid-frame is safe (it waits for the device first).

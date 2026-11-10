@@ -225,6 +225,9 @@ pub use froxels::CameraMedium;
 // The natural fogs in the froxels (gfx/natural_fog.rs).
 pub mod natural_fog;
 mod rt_guides;
+// DLSS Ray Reconstruction's evaluation on the window (gfx/dlss_eval.rs, docs/rt-dlss-rr.md).
+#[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+mod dlss_eval;
 mod shadow_rays;
 mod sky_planets;
 mod sky_stars;
@@ -1664,10 +1667,14 @@ pub struct Renderer {
     #[cfg(feature = "rtx")]
     sun_pass: Option<horizon_rtx::SunPass>,
     /// DLSS Ray Reconstruction on the window (`dlss-rr` feature, `HORIZON_RT_DLSS_RR=1`,
-    /// docs/rt-dlss-rr.md): NGX on this device and a feature instance at the window's size, made
-    /// again on resize. Stage 1: nothing is evaluated yet.
+    /// docs/rt-dlss-rr.md): NGX on this device and a feature instance at the world's size, made
+    /// again when it changes, evaluated in place of the TAA resolve (`dlss_eval`). Dropped, and RR
+    /// off for the run, at the first NGX failure.
     #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
     dlss_rr: Option<horizon_rtx::dlss_rr::Session>,
+    /// RR's frame state: its output, jitter and history (`dlss_eval::DlssEval`).
+    #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+    dlss_eval: dlss_eval::DlssEval,
     /// The world's colour format (the scene's with Linear Light, else the screen's).
     world_format: wgpu::TextureFormat,
     /// Frame generation (Horizon setting).
@@ -6344,6 +6351,8 @@ impl Renderer {
             sun_pass,
             #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
             dlss_rr,
+            #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+            dlss_eval: Default::default(),
             materials: None,
             parallax: None,
             parallax_on: false,
@@ -6788,10 +6797,7 @@ impl Renderer {
             self.offscreen = Some(Self::offscreen_target(&self.device, &self.config));
         }
         self.depth = Self::depth(&self.device, &self.config);
-        #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
-        if let Some(rr) = &mut self.dlss_rr {
-            rr.resize([width, height]);
-        }
+        // DLSS-RR's feature follows the world's size from the frame (`dlss_eval`), not the window.
     }
     /// Whether sections are drawn as one index list per frame (`flat`).
     pub fn flat_draws(&self) -> bool {
@@ -10573,7 +10579,6 @@ impl Renderer {
         // sub-pixel jitter in `view_proj`, which the rays' pass takes as it is (it rebuilds
         // positions from that depth and reprojects with the last jittered matrix: both consistent),
         // and the resolve after the world takes the clean one.
-        let taa_now = taa::enabled() && rt.lighting && world_linear;
         let clean_view_proj = view_proj;
         let taa_size = {
             let target = [target_texture.width(), target_texture.height()];
@@ -10583,8 +10588,46 @@ impl Renderer {
                 None => self.world_post.scaled_size(window, false).unwrap_or(target),
             }
         };
+        // DLSS Ray Reconstruction (dlss_eval.rs, docs/rt-dlss-rr.md stages 4 and 5): the window's
+        // view, with RT lighting and hardware rays (the guides need them), traced raw, drawn with
+        // RR's jitter and evaluated where the TAA resolve runs. Every other view, and every frame
+        // without the switch, is as before.
+        #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+        let rr_now = self.eye.is_none()
+            && rt.lighting
+            && world_linear
+            && self.world_format == tonemap::SCENE_FORMAT
+            && self.hw_rays.is_some()
+            && self.dlss_rr.as_ref().is_some_and(|s| s.active());
+        #[cfg(not(all(feature = "dlss-rr", not(target_os = "macos"))))]
+        let rr_now = false;
+        #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+        {
+            self.shadow_rays.set_raw_view(rr_now.then_some(0));
+            if let Some(pass) = &mut self.sun_pass
+                && self.dlss_eval.never_rest != rr_now
+            {
+                pass.set_never_rest(rr_now);
+                self.dlss_eval.never_rest = rr_now;
+            }
+            if !rr_now {
+                self.dlss_eval.skipped();
+            }
+        }
+        // The jittered frame, and the depth kept for the resolve: TAA's, or RR's in its place.
+        let taa_now = (taa::enabled() || rr_now) && rt.lighting && world_linear;
         let view_proj = if taa_now {
-            taa::jittered(view_proj, self.taa.jitter(rt_view), taa_size)
+            #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+            let jitter = if rr_now {
+                // RR keeps its own history: TAA's is freed while it runs.
+                self.taa.release();
+                self.dlss_eval.jitter()
+            } else {
+                self.taa.jitter(rt_view)
+            };
+            #[cfg(not(all(feature = "dlss-rr", not(target_os = "macos"))))]
+            let jitter = self.taa.jitter(rt_view);
+            taa::jittered(view_proj, jitter, taa_size)
         } else {
             self.taa.release();
             view_proj
@@ -10646,7 +10689,7 @@ impl Renderer {
             } else {
                 0.0
             };
-            t.set_params(if thunder_level > 0.5 {
+            let params = if thunder_level > 0.5 {
                 tonemap::PostParams {
                     ev_max: tonemap::PostParams::THUNDER.ev_max + clouds,
                     ..tonemap::PostParams::THUNDER
@@ -10662,6 +10705,11 @@ impl Renderer {
                 tonemap::PostParams::DUSK
             } else {
                 tonemap::PostParams::REMIX
+            };
+            t.set_params(if self.eye.is_some() {
+                params.for_eye()
+            } else {
+                params
             });
         }
         // RT lighting's volumetric clouds (`rt_clouds`) replace vanilla's.
@@ -12667,6 +12715,9 @@ impl Renderer {
             }
             prepass_depth = Some(depth.clone());
             let scene = self.taa.last_color(rt_view);
+            // With RR, its last output is the last resolved frame.
+            #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+            let scene = scene.or_else(|| rr_now.then(|| self.dlss_eval.last_output()).flatten());
             self.terrain_groups_with(
                 Some(&mask),
                 Some(&blocks),
@@ -12696,6 +12747,8 @@ impl Renderer {
             && self.hdr.is_none()
             // Frame generation draws the hand over the real and the made frame after the world.
             && fg_frames.is_none()
+            // RR has no guides for the hand: it draws after the evaluation, as after TAA's resolve.
+            && !rr_now
             && !native_render::world_drawn_hooked();
         if oit_on {
             let size = self
@@ -14479,9 +14532,51 @@ impl Renderer {
             gpu_passes::stamp(&mut encoder, "froxels: apply");
         }
         laps.lap("rp_froxels");
+        // DLSS Ray Reconstruction (dlss_eval.rs) in the resolve's place: the world and its media,
+        // traced raw, denoised and anti-aliased into the scene. A frame whose rays did not run
+        // (no guides of this frame's size) falls back to TAA; an NGX failure turns RR off.
+        #[allow(unused_mut)]
+        let mut rr_done = false;
+        #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+        if rr_now && rt_now {
+            let guides = self
+                .shadow_rays
+                .guides(0)
+                .filter(|g| g.size == world_size)
+                .cloned();
+            if let (Some(guides), Some(session)) = (guides, self.dlss_rr.as_mut()) {
+                match self.dlss_eval.evaluate(
+                    session,
+                    &self.device,
+                    &self.adapter,
+                    &mut encoder,
+                    &mut self.split_commands,
+                    &guides,
+                    world_view,
+                    world_depth,
+                    frame.camera,
+                ) {
+                    Ok(()) => {
+                        rr_done = true;
+                        gpu_passes::stamp(&mut encoder, "DLSS Ray Reconstruction");
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "DLSS-RR: off: the evaluation failed ({e}); back to RT lighting's \
+                             accumulation, denoiser and TAA for the rest of the run"
+                        );
+                        self.dlss_rr = None;
+                    }
+                }
+            }
+            if !rr_done {
+                // A frame without RR's evaluation: its history resets on the next one.
+                self.dlss_eval.skipped();
+            }
+        }
         // Temporal anti-aliasing (taa.rs): the world and its media resolved against the history,
         // before the tone mapping's exposure and bloom read them (the hand and the HUD come after).
-        if taa_now {
+        if taa_now && !rr_done && taa::enabled() {
             self.taa.resolve(
                 &self.device,
                 &mut self.uploads,
