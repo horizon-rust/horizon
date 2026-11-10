@@ -509,6 +509,7 @@ fn kernel(
                 ("SUN_CENTRE", centre),
                 ("EDGE_BAND", edge_band()),
                 ("HELD_LIGHT", held_light()),
+                ("HELD_REACH", held_reach()),
                 ("AMBIENT", ambient()),
             ],
             ..Default::default()
@@ -1719,6 +1720,15 @@ fn held_light() -> f64 {
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| v.is_finite())
         .map_or(2.5, |v| v.clamp(0.0, 16.0))
+}
+/// `HORIZON_RT_HELD_REACH`: how far a moving light of level 15 reaches, in blocks
+/// (shadow_rays.wgsl `HELD_REACH`): a placed light's 24 by default, 15 as before.
+fn held_reach() -> f64 {
+    std::env::var("HORIZON_RT_HELD_REACH")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .map_or(24.0, |v| v.clamp(1.0, 64.0))
 }
 /// `HORIZON_RT_EDGE_BAND`: the share of the voxel grid's reach (toward its edge) over which the
 /// traced rays fade into the far field and vanilla's light (shadow_rays.wgsl `EDGE_BAND`), 0.05

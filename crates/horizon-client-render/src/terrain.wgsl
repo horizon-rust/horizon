@@ -3472,6 +3472,19 @@ fn outline_clip(vertex: u32, start: vec3<f32>, end: vec3<f32>, width: f32) -> ve
     if vertex % 2u != 0u { offset = -offset; }
     return vec4((ndc1 + vec3(offset, 0.0)) * line_start.w, line_start.w);
 }
+// How far the wind moves the hit outline's point at camera-relative `pos`: what `wind_offset`
+// gives its block's vertices there (gfx/wind.rs `Frame::outline`: the block's class, its sky light
+// and its foot's height in the header's last words). A plant bends by its height above its foot,
+// as its sprite's v does; a leaf corner moves as the leaves' corner there (unpinned).
+fn outline_wind(pos: vec3<f32>) -> vec3<f32> {
+    let kind = wind_buf[29];
+    if kind == 0u { return vec3(0.0); }
+    let open = wind_open(wind_f(30u), length(pos));
+    if open <= 0.0 { return vec3(0.0); }
+    let world = wind_world(pos);
+    let v = 1.0 - clamp(pos.y - wind_f(31u), 0.0, 1.0);
+    return wind_shape(kind, world, wind_at(pos, world), vec2(0.0, v), false, open);
+}
 struct LineOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) spherical: f32,
@@ -3481,9 +3494,12 @@ struct LineOut {
 @vertex fn vs_line(@builtin(vertex_index) vertex: u32,
     @location(0) start: vec3<f32>, @location(1) end: vec3<f32>,
     @location(2) argb: vec4<f32>, @location(3) width: f32) -> LineOut {
-    let position = select(start, end, vertex >= 2u);
+    // The hit block's outline sways as its leaves or its plant do (`outline_wind`).
+    let swayed_start = start + outline_wind(start);
+    let swayed_end = end + outline_wind(end);
+    let position = select(swayed_start, swayed_end, vertex >= 2u);
     var out: LineOut;
-    out.clip = outline_clip(vertex, start, end, width);
+    out.clip = outline_clip(vertex, swayed_start, swayed_end, width);
     out.spherical = length(position);
     out.cylindrical = max(length(position.xz), abs(position.y));
     // ARGB in a little-endian u32 reads as B, G, R, A.

@@ -620,6 +620,7 @@ override EDGE_BAND: f32 = 0.25;
 // How bright the moving lights are (a torch in the hand) against a placed light of their level
 // (shadow_rays.rs `held_light`, HORIZON_RT_HELD_LIGHT; 1: as bright).
 override HELD_LIGHT: f32 = 2.5;
+override HELD_REACH: f32 = 24.0;
 // An ambient light on every face, whatever reaches it (shadow_rays.rs `ambient`,
 // HORIZON_RT_AMBIENT): very low, a floor under the traced light so that a place no light reaches
 // is not pitch black; a torch's light on a wall beside it is about 1.
@@ -1515,12 +1516,17 @@ fn moving_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> vec3<f32> {
 fn moving_gain(light: vec4<f32>, pos: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> f32 {
     let to = light.xyz + offset - pos;
     let d = length(to);
-    let reach = light.w;
-    if d >= reach || reach <= 0.0 { return 0.0; }
+    // Its level (w) reaches as far as a placed light's (gfx/voxels.rs `LIGHT_REACH`, 24 blocks at
+    // level 15) and is as strong: its own reach was its level in blocks, so a torch in the hand
+    // gave out at 14 blocks where the one on the wall lights 22 (`HELD_REACH` 15: as before).
+    let level = light.w;
+    if level <= 0.0 { return 0.0; }
+    let reach = HELD_REACH * (level + 1.0) / 16.0;
+    if d >= reach { return 0.0; }
     let facing = dot(n, to / max(d, 1e-4));
     if facing <= 0.0 { return 0.0; }
     let window = 1.0 - (d / reach) * (d / reach);
-    return (reach / 15.0) * window * window * facing / ((1.0 + d) * (1.0 + d));
+    return (level / 15.0) * (level / 15.0) * window * window * facing / ((1.0 + d) * (1.0 + d));
 }
 // ALDHANI-BEGIN: the Eye of Aldhani's field, the same text in gfx/aldhani.wgsl (which makes it),
 // terrain.wgsl (the sky draws it) and gfx/shadow_rays.wgsl (the terrain is lit by it); a test keeps

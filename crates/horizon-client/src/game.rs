@@ -13725,6 +13725,8 @@ impl Game<'_> {
         let debug_crosshair = horizon_client::gizmos::camera_relative(&crosshair.on_top, at, view);
         // LevelExtractor.extractBlockOutline: model translucency controls draw order.
         let mut outline_after_terrain = false;
+        // RT lighting's wind on the hit block, for its outline to sway with it.
+        let mut outline_wind = None;
         // GameRenderer.shouldRenderBlockOutline: not with the HUD hidden (F1), and only for a
         // player who may build. Adventure players only get one with a CAN_BREAK or
         // CAN_PLACE_ON item matching the block, and spectators with a menu block; Horizon
@@ -13747,6 +13749,17 @@ impl Game<'_> {
                 .map(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
                     let f = self.res.facts().get(state);
+                    let below = self.world.block(h.pos[0], h.pos[1] - 1, h.pos[2]);
+                    let upper = self.res.facts().get(below).name == f.name;
+                    let kind = horizon_client::gfx::wind::outline_class(
+                        &f.name,
+                        |c| f.has_class(c),
+                        upper,
+                    );
+                    if kind != 0 {
+                        let sky = self.world.light(h.pos[0], h.pos[1], h.pos[2]) >> 4;
+                        outline_wind = Some((kind, f32::from(sky) / 15.0, f64::from(h.pos[1])));
+                    }
                     outline_after_terrain = self
                         .pack
                         .render
@@ -14073,6 +14086,7 @@ impl Game<'_> {
             fog: Some(self.frame_fog(camera, &sky, biome, water_fog)),
             dark_disc: self.dark_disc(camera),
             outline,
+            outline_wind,
             outline_after_terrain,
             outline_high_contrast: self.settings.file.bool("highContrastBlockOutline"),
             pvp: self.settings.extras.pvp.frame(),

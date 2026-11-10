@@ -120,6 +120,16 @@ fn block_class(name: &str, has_class: impl Fn(&str) -> bool) -> u8 {
     class::NONE
 }
 
+/// The class the hit outline of block state `name` sways by (`Frame::outline`): its faces' own,
+/// a tall plant's half given by `upper`.
+pub fn outline_class(name: &str, has_class: impl Fn(&str) -> bool, upper: bool) -> u8 {
+    let name = name.strip_prefix("minecraft:").unwrap_or(name);
+    match block_class(name, has_class) {
+        class::TALL_LOWER if upper => class::TALL_UPPER,
+        c => c,
+    }
+}
+
 /// A tall plant's face's class by its sprite (`minecraft:block/tall_grass_top`): the upper
 /// half's sprites end in `_top` (and the sunflower's head), the rest are the lower half's.
 fn tall_half(sprite: &str) -> u8 {
@@ -306,6 +316,9 @@ pub struct Frame {
     pub wind: [f32; 2],
     /// Whether the foliage sways (RT lighting in a level with weather, the bit clear).
     pub on: bool,
+    /// The hit block's outline, to sway as the block does (terrain.wgsl `vs_line`): its class
+    /// (`outline_class`), its sky light (0 to 1) and its foot's height from the camera.
+    pub outline: Option<(u8, f32, f32)>,
 }
 
 /// The wind's buffer (terrain.wgsl group 0, binding 25; the rays' binding 65): the header, two
@@ -425,6 +438,11 @@ impl Wind {
         h[9] = f(frame.wind[1]);
         h[10] = f(if frame.on && !self.skipped { 1.0 } else { 0.0 });
         h[28] = f(self.fade(Instant::now()));
+        if let Some((kind, sky, foot)) = frame.outline {
+            h[29] = u32::from(kind);
+            h[30] = f(sky);
+            h[31] = f(foot);
+        }
         h
     }
 }
