@@ -581,6 +581,15 @@ content mods ("content mods not loaded: ..." in the log). Feature tags are vanil
 doesn't read a mod's `placed_feature` tags yet); a world's data pack that replaces a biome replaces the mods' changes to
 it too.
 
+A mod may add villager professions, each with one job-site block, in `data/<ns>/villager_profession/<name>.json`.
+`poi` is the job-site block; `work_sound` is a sound event without `minecraft:`; `look` is the vanilla profession whose
+texture and hat it wears; `gift` defaults to `<ns>:gameplay/hero_of_the_village/<name>_gift`. Vanilla's fifteen
+professions keep their indices; entries are ordered by id and start at 15, so both sides of a connection agree.
+
+```json
+{ "poi": "mymod:bench", "work_sound": "entity.villager.work_toolsmith", "look": "toolsmith" }
+```
+
 A pool element may be one of Lithostitched's: `lithostitched:limited` (`delegate`, `limit`, `min_depth`) places its
 `delegate` at most `limit` times in one structure start, and `lithostitched:guaranteed` (`delegate`, `count`,
 `min_depth`) is tried before its pool's other elements at each jigsaw that reaches that pool (as target or fallback)

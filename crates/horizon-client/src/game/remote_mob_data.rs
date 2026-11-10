@@ -480,7 +480,10 @@ fn villager_data(m: &mut Mob, data: &[i32], builtin: &Builtin) {
     if let Some(t) = index("minecraft:villager_type", kind, &VILLAGER_TYPES) {
         m.extra.variant = t;
     }
-    if let Some(p) = index("minecraft:villager_profession", profession, &PROFESSIONS) {
+    // A data pack's profession is sent above the built-in ids.
+    if let Some(p) = horizon_client::mobs::villager_professions::from_network_id(profession)
+        .or_else(|| index("minecraft:villager_profession", profession, &PROFESSIONS))
+    {
         m.extra.variant2 = p;
     }
     m.extra.variant3 = level.clamp(0, i32::from(u8::MAX)) as u8;
