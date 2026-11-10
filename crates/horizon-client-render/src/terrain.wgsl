@@ -1410,9 +1410,10 @@ fn rt_glare(d: vec3<f32>) -> vec3<f32> {
     let radius = degrees(globals.rt_sun_light.w);
     let at = max(theta, radius);
     let fade = 1.0 - smoothstep(3.0, 15.0, theta);
-    // The moon's a tenth as much: under the night sky the eye sees it sharp, its glare would hide
+    // The moon's a thirtieth as much: under the night sky the eye sees it sharp, its glare would hide
     // the disc the night's exposure lifts.
-    let eye = select(1.0, 0.1, globals.rt_mode.z > 0.5);
+    // (0.03: at a tenth its flat veil over the disc still took the maria's contrast.)
+    let eye = select(1.0, 0.03, globals.rt_mode.z > 0.5);
     return globals.rt_sun_light.rgb * (10.0 * 3.14159265 * eye / (at * at * at)) * fade
         * smoothstep(-0.05, 0.02, toward.y);
 }
@@ -1466,8 +1467,13 @@ fn rt_moon_disc(d: vec3<f32>) -> vec3<f32> {
     // lit side's at its brightest (the Big Bear Earthshine Project, about 12 against 3.5 mag per
     // square arcsecond).
     let earth_lit = 0.5 - 0.5 * cos(phase);
-    let earthshine = 3.0 * 4e-4 * earth_lit;
-    return tint * (albedo / 0.12) * (3.0 * lit + earthshine) * air;
+    // By night 1 paper white, not the day's 3: at 3 its highlands stood at 4.5 and its maria at
+    // 1.5, both past the tone curve's knee (0.9) under the night's exposure (0.7), and the disc
+    // came out one white, its map gone. At 1 the maria sit near a third and the highlands at
+    // white. Through the dusk, with the sun's height, as the exposure's top comes down.
+    let full = mix(1.0, 3.0, smoothstep(-0.1, 0.1, globals.rt_sun.y));
+    let earthshine = full * 4e-4 * earth_lit;
+    return tint * (albedo / 0.12) * (full * lit + earthshine) * air;
 }
 // RT lighting: the light sources' traced light at this pixel (`rt_blocks`), this frame's rays only.
 // RT lighting: the sun's colour through stained glass at this pixel (`rt_sun_tint`), divided by the
