@@ -1056,6 +1056,9 @@ impl Game<'_> {
         streaming.radius = self.settings.render_distance;
         self.streaming = streaming;
         self.world = World::new(self.res.facts().air, 0);
+        // The last world's rain stays in it: its wet ground and puddles showed in the next.
+        self.rain = Default::default();
+        self.fog_wetness = 0.0;
         self.save = Arc::new(SaveDir::new(
             std::env::temp_dir().join("horizon-remote-unused"),
             horizon_client::save::LevelShape::OVERWORLD,
@@ -1303,6 +1306,9 @@ impl Game<'_> {
         streaming.radius = self.settings.render_distance;
         self.streaming = streaming;
         self.world = World::new(self.res.facts().air, 0);
+        // The last world's rain stays in it: its wet ground and puddles showed in the next.
+        self.rain = Default::default();
+        self.fog_wetness = 0.0;
         self.save = Arc::new(SaveDir::new(
             std::env::temp_dir().join("horizon-replay-unused"),
             horizon_client::save::LevelShape::OVERWORLD,
@@ -1560,6 +1566,9 @@ impl Game<'_> {
         self.streaming = Streaming::new(Arc::new(NoTerrain), self.worker_context(), 1);
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
+        // The last world's rain stays in it: its wet ground and puddles showed in the next.
+        self.rain = Default::default();
+        self.fog_wetness = 0.0;
         self.player = None;
         // The vehicle went with the level: an id kept here would seat the
         // next login on an entity that is not there.
