@@ -53,7 +53,7 @@ pub(super) fn build_renderer(
     // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
     let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
     let atlas_pixels = atlas.pixels();
-    let mut renderer = pollster::block_on(Renderer::new(
+    let mut renderer = horizon_threads::block_on(Renderer::new(
         window,
         offscreen,
         &assets.pixels.get(),
@@ -135,7 +135,7 @@ pub(super) fn loading_renderer(
     if let Some(atlas) = atlas {
         atlas.font.reset_cache();
     }
-    let mut renderer = pollster::block_on(Renderer::new(
+    let mut renderer = horizon_threads::block_on(Renderer::new(
         window,
         offscreen,
         &[255, 255, 255, 255],

@@ -705,8 +705,113 @@ pub fn keep_stdio_from_children() {
     }
 }
 
+/// Runs `future` to completion on the calling thread. On Windows, pumps window
+/// messages while waiting so the window thread does not deadlock with display
+/// drivers or DWM and does not enter a "Not Responding" state during device
+/// initialization.
+pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    let thread = std::thread::current();
+    struct ThreadWaker(std::thread::Thread);
+    impl std::task::Wake for ThreadWaker {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+        fn wake_by_ref(self: &std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(std::sync::Arc::new(ThreadWaker(thread)));
+    let mut cx = std::task::Context::from_waker(&waker);
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, MSG, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
+            QS_ALLINPUT, TranslateMessage, WM_PAINT,
+        };
+
+        loop {
+            unsafe {
+                let mut msg: MSG = std::mem::zeroed();
+                let mut pumped = 0;
+                let mut saw_paint = false;
+                // Bound message dispatch per poll, and defer repeated WM_PAINT to avoid
+                // unbounded loops during winit callbacks where internal paint requests
+                // can reschedule indefinitely.
+                while pumped < 16
+                    && PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0
+                {
+                    pumped += 1;
+                    let is_paint = msg.message == WM_PAINT;
+                    if is_paint && saw_paint {
+                        break;
+                    }
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                    if is_paint {
+                        saw_paint = true;
+                    }
+                }
+            }
+
+            if let std::task::Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+                return output;
+            }
+
+            unsafe {
+                MsgWaitForMultipleObjectsEx(0, std::ptr::null(), 50, QS_ALLINPUT, 0);
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    loop {
+        if let std::task::Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            return output;
+        }
+        std::thread::park();
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn block_on_runs_future_to_completion() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let _ = tx.send(42);
+        });
+        let result = super::block_on(async {
+            let res = loop {
+                if let Ok(val) = rx.try_recv() {
+                    break val;
+                }
+                // Yield to allow thread to progress
+                struct Yield(bool);
+                impl std::future::Future for Yield {
+                    type Output = ();
+                    fn poll(
+                        mut self: std::pin::Pin<&mut Self>,
+                        cx: &mut std::task::Context<'_>,
+                    ) -> std::task::Poll<()> {
+                        if self.0 {
+                            std::task::Poll::Ready(())
+                        } else {
+                            self.0 = true;
+                            cx.waker().wake_by_ref();
+                            std::task::Poll::Pending
+                        }
+                    }
+                }
+                Yield(false).await;
+            };
+            res * 2
+        });
+        assert_eq!(result, 84);
+    }
+
     /// Without `HORIZON_WORKER_THREADS`, the count is the machine's.
     #[test]
     fn worker_count_defaults_to_the_machine() {

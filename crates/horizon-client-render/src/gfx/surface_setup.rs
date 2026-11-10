@@ -115,13 +115,13 @@ pub(super) async fn open_adapter(
     adapter: &wgpu::Adapter,
     layers: u32,
 ) -> std::result::Result<Adapted, AdapterFailure> {
+    describe_adapter(adapter);
     let caps = surface.map(|surface| surface.get_capabilities(adapter));
     if caps.as_ref().is_some_and(|caps| caps.formats.is_empty()) {
         return Err(AdapterFailure::CannotPresent(
             "the window surface offers it no format".into(),
         ));
     }
-    describe_adapter(adapter);
     let info = adapter.get_info();
     let limits = adapter.limits();
     if let Err(e) = check_layers(adapter, layers) {
