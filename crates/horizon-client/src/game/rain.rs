@@ -68,7 +68,7 @@ impl Game<'_> {
         self.rain.factor = self
             .rain
             .intensity
-            .step(level > 0.0, self.world.game_time, seconds);
+            .step(level, self.world.game_time, seconds);
         if let (None, Some(drawn)) = (before, self.rain.intensity.drawn()) {
             log::info!("Horizon weather: a new shower, {drawn:.2} times vanilla's rate");
         }

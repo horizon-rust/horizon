@@ -15,7 +15,7 @@ struct DualOut {
     // As `fs_translucent`: drawn whole as it fades in, toward the fog colour as a section fades in.
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
     var out: DualOut;
-    if color.a < 0.01 { discard; }
+    if color.a < 0.01 && !rt_glass_weathered(in) { discard; }
     if globals.rt_mode.x > 0.5 && linear_on() && in.emission == 0u && rt_is_water(in.layer) {
         let w = rt_water(in, n);
         out.added = vec4(w.added, w.alpha);

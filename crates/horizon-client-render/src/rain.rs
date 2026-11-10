@@ -58,28 +58,41 @@ pub fn extinction(rate_mm_h: f32) -> f32 {
 /// How hard this shower (this snowfall) falls against the rate vanilla's levels stand for: each
 /// one draws its own when it starts, from a light drizzle or flurries (0.3) to a cloudburst or a
 /// heavy snowfall (2.5), about as often lighter as heavier, and within it the rate swells and
-/// eases over a minute or two (by a third either way). The draw is hashed from the game time the
-/// shower started at; `HORIZON_WEATHER_INTENSITY` forces the factor (1: vanilla's fixed rates).
+/// eases over a minute or two (by a third either way). A shower ends once vanilla's level falls
+/// (the rain stopping), and the next starts as it rises again, even before it reached 0 (a
+/// `/weather clear` then `/weather rain`). The draw is hashed from the game time the shower started
+/// at; `HORIZON_WEATHER_INTENSITY` forces the factor (1: vanilla's fixed rates).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Intensity {
     /// The shower's own factor and its seed, while one falls.
     shower: Option<(f32, u32)>,
+    /// Vanilla's level at the last step, and whether it has fallen since the shower started.
+    last: f32,
+    ending: bool,
 }
 /// The lightest shower's factor and the heaviest's.
 pub const LIGHTEST: f32 = 0.3;
 pub const HEAVIEST: f32 = 2.5;
 impl Intensity {
-    /// This frame's factor: `falling` whether vanilla's rain level is above 0, `game_time` the
-    /// world's (ticks), `seconds` the swell's clock (real seconds).
-    pub fn step(&mut self, falling: bool, game_time: i64, seconds: f32) -> f32 {
+    /// This frame's factor: `level` vanilla's rain level, `game_time` the world's (ticks),
+    /// `seconds` the swell's clock (real seconds).
+    pub fn step(&mut self, level: f32, game_time: i64, seconds: f32) -> f32 {
+        let last = std::mem::replace(&mut self.last, level);
+        if level < last - 1e-5 {
+            self.ending = true;
+        } else if level > last + 1e-5 && self.ending {
+            self.shower = None;
+            self.ending = false;
+        }
         if let Some(forced) = std::env::var("HORIZON_WEATHER_INTENSITY")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
         {
             return forced.max(0.0);
         }
-        if !falling {
+        if level <= 0.0 {
             self.shower = None;
+            self.ending = false;
             return 1.0;
         }
         let (factor, seed) = *self.shower.get_or_insert_with(|| {
@@ -576,7 +589,7 @@ mod tests {
         let draws: Vec<f32> = (0..2000)
             .map(|start| {
                 let mut i = Intensity::default();
-                i.step(true, start * 9001, 0.0);
+                i.step(1.0, start * 9001, 0.0);
                 i.drawn().unwrap()
             })
             .collect();
@@ -590,15 +603,23 @@ mod tests {
         // A shower keeps its draw, swelling and easing by a third at most; the next one draws
         // again.
         let mut i = Intensity::default();
-        let first = i.step(true, 1000, 0.0);
+        let first = i.step(1.0, 1000, 0.0);
         let drawn = i.drawn().unwrap();
         for s in 0..600 {
-            let f = i.step(true, 1000 + s * 20, s as f32);
+            let f = i.step(1.0, 1000 + s * 20, s as f32);
             assert!(f >= drawn * 0.66 && f <= drawn * 1.34, "{f} {drawn}");
         }
-        assert_eq!(i.step(false, 13_000, 600.0), 1.0);
-        i.step(true, 20_000, 601.0);
-        assert_ne!(i.drawn().unwrap(), drawn);
+        assert_eq!(i.step(0.0, 13_000, 600.0), 1.0);
+        i.step(0.5, 20_000, 601.0);
+        let second = i.drawn().unwrap();
+        assert_ne!(second, drawn);
+        // `/weather clear` then `/weather rain` before the level reached 0: the fall ends this
+        // shower (it fades on with its own draw), the rise starts the next.
+        i.step(1.0, 20_100, 602.0);
+        i.step(0.6, 20_200, 603.0);
+        assert_eq!(i.drawn().unwrap(), second);
+        i.step(0.7, 20_300, 604.0);
+        assert_ne!(i.drawn().unwrap(), second);
         assert!(first > 0.0);
     }
 

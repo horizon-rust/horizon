@@ -2925,6 +2925,18 @@ fn rt_refracted(pixel: vec2<f32>) -> vec4<f32> {
 // `t1`, `t2`, its tangents: `t2` up on a wall), x and y, and the frost's cover in z. Nothing past
 // 48 blocks, nor where the drops would be under a pixel.
 const GLASS_DROP_CELL: f32 = 0.05;
+// Whether a clear texel of plain glass (its block's or its pane's: alpha 0 in most of it, which
+// the translucent terrain drops) is kept to show the weather on it (`rt_glass_weather`): with RT
+// lighting, within 48 blocks, while anything is wet or where the snow's cover lies in a column it
+// snows in. The pane is glass all over: kept, it is shaded as the rest of it, its reflection too.
+fn rt_glass_weathered(in: TerrainOut) -> bool {
+    if globals.rt_mode.x < 0.5 || !linear_on() || in.emission != 0u { return false; }
+    if !rt_glass_plain(in.layer) || dot(in.pos, in.pos) > 2304.0 { return false; }
+    if globals.rain.y > 0.0 { return true; }
+    if globals.linear.w <= 0.0 { return false; }
+    let column = rain_cell(vec2<i32>(floor(rain_world(in.pos).xz)));
+    return column != 0u && snow_falls(column);
+}
 const GLASS_STREAK_CELL: f32 = 0.0833;
 fn rt_glass_weather(pos: vec3<f32>, face: vec3<f32>, t1: vec3<f32>, t2: vec3<f32>, sky: f32)
     -> vec3<f32> {
@@ -3168,7 +3180,9 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
     // Ice's frost, under the face's reflection: a pale blue-white layer, its texel's colour half
     // way to the white of snow, lit as the terrain is, the sun scattering through it from behind.
     if frost > 0.0 {
-        let white = mix(clamp(g.albedo, vec3(0.0), vec3(1.0)), vec3(0.86, 0.93, 1.0), 0.5);
+        // The weather's frost on glass is its own white, whatever the glass's texel.
+        var white = mix(clamp(g.albedo, vec3(0.0), vec3(1.0)), vec3(0.86, 0.93, 1.0), 0.5);
+        if ice == 0u { white = vec3(0.86, 0.9, 0.95); }
         let layer = rt_material_lit(RtMaterial(white, n, 1.0, 1.0, vec3(0.02), 0.0, 1.0, 0.0),
             g.face, g.pos, g.clip, g.light, g.spherical, g.cylindrical);
         added += (1.0 - fresnel) * frost * layer;
@@ -3328,7 +3342,7 @@ fn scene_finish(in: TerrainOut, color: vec4<f32>) -> vec4<f32> {
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     var color = texel * in.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
-    if color.a < 0.01 { discard; }
+    if color.a < 0.01 && !rt_glass_weathered(in) { discard; }
     // RT lighting: water its own way (`rt_water`), glass its own (`rt_glass`).
     if globals.rt_mode.x > 0.5 && linear_on() && in.emission == 0u {
         let n = face_normal(in.pos);
