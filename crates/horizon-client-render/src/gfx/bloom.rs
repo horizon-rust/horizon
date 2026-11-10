@@ -330,3 +330,41 @@ impl Chain {
         &self.levels[i.min(self.levels.len() - 1)]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_glow_builds_bounded_steadied_and_as_before() {
+        // wgpu refuses a pipeline constant the shader lacks: `Bloom::new` sets these three.
+        let module = naga::front::wgsl::parse_str(include_str!("bloom.wgsl")).expect("the bloom");
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("a valid bloom");
+        for (stable, most) in [(1.0, 64.0), (0.0, 0.0)] {
+            let mut constants = naga::back::PipelineConstants::default();
+            constants.insert("BRIGHT".to_string(), 1.0);
+            constants.insert("STABLE".to_string(), stable);
+            constants.insert("GLOW_MOST".to_string(), most);
+            let (m, i) = naga::back::pipeline_constants::process_overrides(
+                &module,
+                &info,
+                Some((naga::ShaderStage::Fragment, "fs_first")),
+                &constants,
+            )
+            .unwrap_or_else(|e| panic!("the bloom's constants: {e}"));
+            naga::back::spv::write_vec(
+                &m,
+                &i,
+                &naga::back::spv::Options::default(),
+                Some(&naga::back::spv::PipelineOptions {
+                    shader_stage: naga::ShaderStage::Fragment,
+                    entry_point: "fs_first".to_string(),
+                }),
+            )
+            .unwrap_or_else(|e| panic!("the bloom in SPIR-V: {e}"));
+        }
+    }
+}
