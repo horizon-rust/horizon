@@ -51,7 +51,7 @@ fn the_layout_takes_vanilla_s_sizes() {
 }
 
 #[test]
-fn a_picked_toggle_shows_its_state_on_one_line() {
+fn a_picked_toggle_shows_its_name_never_a_bare_state() {
     vanilla(|| {
         let mut pages = Pages::default();
         pages.set_slot(0, 0, Slot::Action(RadialAction::TogglePerspective));
@@ -71,8 +71,9 @@ fn a_picked_toggle_shows_its_state_on_one_line() {
             });
             lines.into_iter().map(|l| l.0).collect::<Vec<_>>()
         };
-        assert_eq!(lines(0, View::ThirdPersonBack), ["Third Person"]);
-        assert_eq!(lines(0, View::FirstPerson), ["First Person"]);
+        // What it is, whatever its state: never a bare "Third Person" or "Off".
+        assert_eq!(lines(0, View::ThirdPersonBack), ["Perspective"]);
+        assert_eq!(lines(0, View::FirstPerson), ["Perspective"]);
         // Not a toggle: its name alone.
         assert_eq!(lines(2, View::FirstPerson), ["Advancements"]);
     });
@@ -256,10 +257,7 @@ fn long_names_are_cut_as_vanilla_cuts_them() {
                     };
                     let d = dial(&pages, &room, seen, ALL);
                     let lines = look::tooltip_lines(&atlas, &lay, &d, pages.page(0));
-                    let name = match toggle_state(action, d.toggles) {
-                        Some((now, _)) => lang::get(now),
-                        None => action_label(action),
-                    };
+                    let name = action_label(action);
                     assert!(
                         atlas.font.width(&lines[0].0) <= width,
                         "{w}x{h}: {name} too wide"
@@ -366,6 +364,40 @@ fn the_tabs_are_equal_and_the_open_one_sits_on_the_dial_s_centre() {
                     // The row is symmetric about the dial.
                     let (l, r) = (tabs[0].1[0], tabs[2].1[0] + tw);
                     assert_eq!(l + r, 2.0 * lay.cx, "{w}x{h}: the row");
+                }
+            }
+        });
+    });
+}
+
+#[test]
+fn every_default_item_shows_its_name_in_the_hub_whatever_the_toggles() {
+    vanilla(|| {
+        let atlas = atlas();
+        let pages = Pages::default();
+        let room = Room::new(427.0, 240.0);
+        let lay = Layout::new(427.0, 240.0, &room);
+        let ((), _) = lang::scoped(english(), || {
+            for page in 0..pages.len() {
+                for slot in 0..SLOTS {
+                    let Slot::Action(action) = pages.page(page).slot(slot) else {
+                        continue;
+                    };
+                    let seen = Seen {
+                        page,
+                        selected: Some(slot),
+                        waiting: false,
+                    };
+                    let mut d = dial(&pages, &room, seen, ALL);
+                    // Whatever the toggles are, the hub names the item.
+                    d.toggles.cinematic = true;
+                    d.toggles.hud_hidden = true;
+                    d.toggles.view = View::ThirdPersonFront;
+                    let lines = look::tooltip_lines(&atlas, &lay, &d, pages.page(page));
+                    let name = action_label(*action);
+                    let room = look::tooltip_room(&lay);
+                    let cut = fit::clip_text(&atlas, &name, room).into_owned();
+                    assert_eq!(lines, [(cut, look::WHITE)], "{action:?}");
                 }
             }
         });

@@ -9,8 +9,7 @@
 //!   and icon (vanilla has no slash); an empty one is a faded frame. A view too tight for a
 //!   frame takes vanilla's 18 px inventory slot instead, before the HUD's rows are covered.
 //! - The hub is vanilla's tooltip (`ui::tooltip_panel`) with one short line: the picked item's
-//!   name, or a toggle's state ("Third Person"). A toggle's state shows nowhere else; no
-//!   reasons, hints or second lines.
+//!   name. No state (a toggle's included), reasons, hints or second lines.
 //! - The pages are Create World's tabs (`graphics_style::vanilla_tab`), the bumpers beside them.
 //! - The Cancel hint sits on the text background, as chat and subtitles do (the player's Text
 //!   Background Opacity).
@@ -197,11 +196,10 @@ fn draw_cells(
     }
 }
 
-/// The hub tooltip's one line: the picked item's name, or a live toggle's state ("Third
-/// Person", "Hidden", "Off": its gold, lit slot says which toggle), cut as vanilla cuts a line
-/// too wide for its room. Name and state together ("Perspective: Third Person", ~125 px) don't
-/// fit the hub at 427x240 (~92 px clear of the side slots). Nothing for an empty slot or while the stick must be let go: the hub
-/// says no more (less is more).
+/// The hub tooltip's one line: what the picked item is, its name, cut as vanilla cuts a line too
+/// wide for its room. Never a state, even a toggle's: players know what is on, and a bare "Off"
+/// says nothing of what it belongs to. Nothing for an empty slot or while the stick must be let
+/// go: the hub says no more (less is more).
 pub(super) fn tooltip_lines(
     atlas: &HudAtlas,
     lay: &Layout,
@@ -214,10 +212,7 @@ pub(super) fn tooltip_lines(
     let text = match page.slot(slot) {
         Slot::Empty => return Vec::new(),
         Slot::Missing(_) => lang::get(MISSING),
-        Slot::Action(action) => match toggle_state(*action, dial.toggles) {
-            Some((now, _)) if dial.available[slot] => lang::get(now),
-            _ => action_label(*action),
-        },
+        Slot::Action(action) => action_label(*action),
     };
     let text = fit::clip_text(atlas, &text, tooltip_room(lay)).into_owned();
     vec![(text, WHITE)]
