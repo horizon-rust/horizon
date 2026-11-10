@@ -1719,6 +1719,21 @@ pub struct Frame<'a> {
     /// The history is wrong (a camera cut, frames without RR before this one).
     pub reset: bool,
     pub frame_time_ms: f32,
+    /// The game's own exposure, a 1x1 texture holding the multiplier the grading applies (a
+    /// frame old); `None` leaves it to NGX's `AutoExposure` (`game_exposure`).
+    pub exposure: Option<&'a wgpu::TextureView>,
+}
+
+/// Whether RR is given the game's exposure (`Frame::exposure`) rather than NGX's auto-exposure:
+/// `HORIZON_DLSS_RR_EXPOSURE=auto` keeps NGX's. NGX's own guess sits far off in a dark room (a
+/// room lit by one glowstone came out in marbled blotches and trails): the game's meter already
+/// knows what the scene is exposed to.
+pub fn game_exposure() -> bool {
+    static GAME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *GAME.get_or_init(|| {
+        !std::env::var("HORIZON_DLSS_RR_EXPOSURE")
+            .is_ok_and(|v| v.trim().eq_ignore_ascii_case("auto"))
+    })
 }
 
 impl Session {
@@ -1881,6 +1896,15 @@ impl Session {
             })?;
             images.push(image);
         }
+        // The game's exposure, where the feature was made to read one.
+        let exposure = match frame.exposure.filter(|_| game_exposure()) {
+            // Safety: as the views above.
+            Some(view) => Some(unsafe { Image::of(frame.adapter, view) }.ok_or(Error {
+                call: "a Vulkan texture",
+                result: ffi::RESULT_FAIL,
+            })?),
+            None => None,
+        };
         let reset = frame.reset || self.fresh;
         let inputs = Inputs {
             color: images[0],
@@ -1893,7 +1917,7 @@ impl Session {
             roughness: None,
             specular_hit_distance: None,
             specular_motion_vectors: None,
-            exposure: None,
+            exposure,
             bias_current_color_mask: None,
             transparency_mask: None,
             jitter: frame.jitter,
@@ -1907,7 +1931,16 @@ impl Session {
             world_to_view: None,
             view_to_clip: None,
         };
-        let read: Vec<&wgpu::Texture> = views[..6].iter().map(|v| v.texture()).collect();
+        let read: Vec<&wgpu::Texture> = views[..6]
+            .iter()
+            .map(|v| v.texture())
+            .chain(
+                frame
+                    .exposure
+                    .filter(|_| exposure.is_some())
+                    .map(|v| v.texture()),
+            )
+            .collect();
         let written = [frame.output.texture()];
         // Safety: `inputs` holds the handles of these very textures, alive for the frame.
         unsafe {
@@ -1982,7 +2015,7 @@ impl Session {
             hdr: true,
             mv_low_res: true,
             mv_jittered: false,
-            auto_exposure: true,
+            auto_exposure: !game_exposure(),
             roughness_packed: true,
             hardware_depth: true,
             output_subrects: false,

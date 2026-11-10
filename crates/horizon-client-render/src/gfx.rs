@@ -8531,6 +8531,7 @@ impl Renderer {
                 target,
                 camera,
                 clean_view_proj,
+                self.tonemap.as_ref().and_then(|t| t.exposure_state()),
             ) {
                 Ok(()) => {
                     done = true;
