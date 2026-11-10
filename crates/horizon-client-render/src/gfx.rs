@@ -8576,6 +8576,7 @@ impl Renderer {
                 target,
                 camera,
                 clean_view_proj,
+                self.tonemap.as_ref().and_then(|t| t.exposure_state()),
             ) {
                 Ok(()) => {
                     done = true;
@@ -10834,7 +10835,7 @@ impl Renderer {
                     ..tonemap::PostParams::RAIN
                 }
             } else if rt_sun.y < -0.05 {
-                tonemap::PostParams::NIGHT
+                tonemap::PostParams::night()
             } else if rt_sun.y < 0.2 {
                 tonemap::PostParams::DUSK
             } else {
@@ -10842,8 +10843,17 @@ impl Renderer {
             };
             // Shut in from the sky (the camera's sky light level), the room's own top
             // (`PostParams::indoors`); `HORIZON_RT_SKIP` 134217728 keeps the open air's.
+            // By day (Remix's own situation: the sun up, no rain) the room's top whatever the
+            // level: the open air's cap keeps the dusk and the night dark, and by day a scene
+            // darker than the key is so because it is shut in. The level missed rooms open to the
+            // sky: under a skylight it is 15 down to the floor and a level less a block away, so
+            // a hall lit through its roof kept the open air's +1.5 stops and showed grey.
+            // `HORIZON_RT_SKIP` 1073741824 keeps the level alone (shadow_rays.rs `SKIP_GI`).
+            let by_day = params == tonemap::PostParams::REMIX && !self.shadow_rays.gi_skipped();
             let params = if frame.title || self.shadow_rays.interior_skipped() {
                 params
+            } else if by_day {
+                params.indoors(0)
             } else {
                 params.indoors(frame.pack.eye_light[1])
             };

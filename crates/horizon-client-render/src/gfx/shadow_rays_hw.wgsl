@@ -127,12 +127,19 @@ fn hw_opaque(c: RayIntersection) -> bool {
     let base = hw_quad(c, false);
     if base == 0xffffffffu { return true; }
     if (arena_at(base, 4u) & 0x8000u) != 0u { return true; }
-    // The wind (gfx/wind.rs): the leaves and plants drawn sway, their structures don't; a swaying
-    // cutout quad (a wind kind) this near the ray's start is taken for the swaying surface's own
-    // copy. A still cutout (a ladder, a rail, a trapdoor) shadows however near: its kind is read
-    // first, the word that holds its layer is already in hand and every farther hit needs it too.
+    // The wind (gfx/wind.rs): the leaves and plants drawn sway, their structures don't, so a ray
+    // leaving a swaying surface may meet that surface's own unmoved copy. `hw_swayed_texel` tells
+    // it by where the ray starts (`hw_own_copy`): on the drawn quad itself. A ray from the ground
+    // or a wall meets the plant however near, and the grass's shadow starts at its foot (it used
+    // to skip every swaying cutout within `WIND_SELF_REACH` of any ray's start, which left a lit
+    // gap a tenth of a block wide around every stem, and missed the plant's own copy wherever a
+    // storm bent it farther than that: the grass shadowed itself black). The still shadows
+    // (`SKIP` 131072) and `SKIP` 268435456 keep that reach. A still cutout (a ladder, a rail, a
+    // trapdoor) shadows however near: its kind is read first, the word that holds its layer is
+    // already in hand and every farther hit needs it too.
     let kind = wind_class(arena_at(base, 4u) & 0x7fffu);
-    if kind != 0u && c.t < WIND_SELF_REACH && (SKIP & 4096u) == 0u { return false; }
+    let reach_skip = (SKIP & (268435456u | 131072u)) != 0u;
+    if kind != 0u && reach_skip && c.t < WIND_SELF_REACH && (SKIP & 4096u) == 0u { return false; }
     var texel = vec4(-1.0);
     if kind != 0u && (SKIP & (4096u | 131072u)) == 0u {
         texel = hw_swayed_texel(c, base, kind);
@@ -156,14 +163,21 @@ fn hw_swayed_texel(c: RayIntersection, base: u32, kind: u32) -> vec4<f32> {
     if layer >= SPRITE_SPLIT { return vec4(-1.0); }
     let second = (c.primitive_index & 1u) == 1u;
     let b = c.barycentrics;
-    let v1 = base + select(1u, 2u, second);
-    let v2 = base + select(2u, 3u, second);
-    let p0 = hw_position(base);
-    let p1 = hw_position(v1);
-    let p2 = hw_position(v2);
-    let uv0 = hw_uv(base);
-    let uv1 = hw_uv(v1);
-    let uv2 = hw_uv(v2);
+    // The quad's four corners (its triangles 0, 1, 2 and 0, 2, 3), the hit's triangle among them.
+    let q0 = hw_position(base);
+    let q1 = hw_position(base + 1u);
+    let q2 = hw_position(base + 2u);
+    let q3 = hw_position(base + 3u);
+    let t0 = hw_uv(base);
+    let t1 = hw_uv(base + 1u);
+    let t2 = hw_uv(base + 2u);
+    let t3 = hw_uv(base + 3u);
+    let p0 = q0;
+    let p1 = select(q1, q2, second);
+    let p2 = select(q2, q3, second);
+    let uv0 = t0;
+    let uv1 = select(t1, t2, second);
+    let uv2 = select(t2, t3, second);
     let w0 = 1.0 - b.x - b.y;
     let local = p0 * w0 + p1 * b.x + p2 * b.y;
     var uv = uv0 * w0 + uv1 * b.x + uv2 * b.y;
@@ -173,9 +187,22 @@ fn hw_swayed_texel(c: RayIntersection, base: u32, kind: u32) -> vec4<f32> {
     if open > 0.0 {
         let world = wind_world(pos);
         let w = wind_at(pos, world);
-        let d = wind_shape(kind, world + p0 - local, w, uv0, wind_pinned(p0.y), open) * w0
-            + wind_shape(kind, world + p1 - local, w, uv1, wind_pinned(p1.y), open) * b.x
-            + wind_shape(kind, world + p2 - local, w, uv2, wind_pinned(p2.y), open) * b.y;
+        // Each corner's offset as the terrain's vertex shader moves it (`wind_offset`).
+        let d0 = wind_shape(kind, world + q0 - local, w, t0, wind_pinned(q0.y), open);
+        let d1 = wind_shape(kind, world + q1 - local, w, t1, wind_pinned(q1.y), open);
+        let d2 = wind_shape(kind, world + q2 - local, w, t2, wind_pinned(q2.y), open);
+        let d3 = wind_shape(kind, world + q3 - local, w, t3, wind_pinned(q3.y), open);
+        // The ray leaves this very quad as drawn: what it meets here is the quad's own unmoved
+        // copy, never a shadow on itself.
+        if (SKIP & 268435456u) == 0u {
+            let start = c.world_to_object * vec4(hw_from + rt.hw_offset.xyz, 1.0);
+            let gap = WIND_OWN_PLANE + 0.003 * length(hw_from);
+            if hw_own_copy(start, q0 + d0, q1 + d1, q2 + d2, t0, t1, t2, layer, gap)
+                || hw_own_copy(start, q0 + d0, q2 + d2, q3 + d3, t0, t2, t3, layer, gap) {
+                return vec4(0.0);
+            }
+        }
+        let d = d0 * w0 + select(d1, d2, second) * b.x + select(d2, d3, second) * b.y;
         // The step across the triangle (in its barycentrics) that comes nearest -d.
         let e1 = p1 - p0;
         let e2 = p2 - p0;
@@ -202,6 +229,47 @@ fn hw_swayed_texel(c: RayIntersection, base: u32, kind: u32) -> vec4<f32> {
 }
 // gfx/wind.rs `SELF_REACH`.
 const WIND_SELF_REACH: f32 = 0.1;
+// Where the ray being traced starts (camera-relative): every ray query whose candidates go
+// through `hw_opaque` sets it, for `hw_own_copy`.
+var<private> hw_from: vec3<f32>;
+// How far off a swaying quad as drawn a ray's start may lie and still be on it (blocks), plus
+// 0.003 a block from the camera: the primary surface is lifted 0.02 off itself, 0.002 more a block
+// (shadow_rays.wgsl `trace`), the bounces 0.02, and the drawn corners each take the wind at their
+// own place where this takes it at the hit. Under a sixteenth: a ray from the ground beside a
+// stem meets the stem.
+const WIND_OWN_PLANE: f32 = 0.04;
+// Whether `start` (in the instance's space) lies on the drawn triangle `a`, `b`, `c` (texture
+// coordinates `ta`, `tb`, `tc`, sprite `layer`): within `gap` of its plane, over it, on an opaque
+// texel. Then the ray leaves that very surface, and what it meets of the quad's unmoved copy is
+// itself. Seen through the quad's holes (the ground under the grass, a wall behind a vine) the
+// start is on a clear texel, and the quad shadows it.
+fn hw_own_copy(start: vec3<f32>, a: vec3<f32>, b: vec3<f32>, c: vec3<f32>, ta: vec2<f32>,
+    tb: vec2<f32>, tc: vec2<f32>, layer: u32, gap: f32) -> bool {
+    let e1 = b - a;
+    let e2 = c - a;
+    let f = cross(e1, e2);
+    let area = length(f);
+    if area < 1e-8 { return false; }
+    let r = start - a;
+    if abs(dot(r, f)) > gap * area { return false; }
+    // The start's foot on the plane, in the triangle's barycentrics (a little past its edges, so
+    // the seam between the quad's two triangles is covered).
+    let a11 = dot(e1, e1);
+    let a12 = dot(e1, e2);
+    let a22 = dot(e2, e2);
+    let det = a11 * a22 - a12 * a12;
+    if abs(det) < 1e-12 { return false; }
+    let r1 = dot(e1, r);
+    let r2 = dot(e2, r);
+    let s1 = (r1 * a22 - r2 * a12) / det;
+    let s2 = (a11 * r2 - a12 * r1) / det;
+    let edge = 0.01;
+    if s1 < -edge || s2 < -edge || s1 + s2 > 1.0 + edge { return false; }
+    let uv = ta + s1 * (tb - ta) + s2 * (tc - ta);
+    let size = vec2<i32>(textureDimensions(sprites).xy);
+    let texel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2(0), size - 1);
+    return textureLoad(sprites, texel, i32(layer), 0).a >= 0.5;
+}
 // What candidate hit `c` (a translucent quad: stained glass, water, ice) lets through: the light
 // filtered by its colour (its texel times its tint, in light), as much as it is opaque. Through
 // water the sun's shadow ray (`focus`) takes the waves' caustics too; the other rays (the bounces,
@@ -303,14 +371,14 @@ fn glass_fresnel(cosine: f32) -> f32 {
 }
 // Ice's body, its extinction a block (shadow_rays_psr.wgsl `ice_body`): clear ice absorbs red
 // most, packed ice scatters most of the light within a block or two.
-// Ice is cloudy (air bubbles, cracks, frost): two or three blocks of it hide what lies behind,
-// packed ice within a block. `HORIZON_RT_SKIP` 33554432 keeps the clearer ice of before (glacier
+// Ice is cloudy (air bubbles, cracks, frost): one block of it leaves a tenth of what lies behind
+// (a frozen sea's sheet hides the sea bed under it), two hide it, packed ice within a block. `HORIZON_RT_SKIP` 33554432 keeps the clearer ice of before (glacier
 // ice: `ice_cloudy`), its even faces and its thin walls' tint along the other rays.
 fn ice_cloudy() -> bool {
     return (SKIP & 33554432u) == 0u;
 }
 fn ice_extinction(packed: bool) -> vec3<f32> {
-    if ice_cloudy() { return select(vec3(1.1, 0.85, 0.75), vec3(2.3, 2.1, 2.0), packed); }
+    if ice_cloudy() { return select(vec3(2.2, 1.9, 1.7), vec3(4.5, 4.2, 4.0), packed); }
     return select(vec3(0.14, 0.08, 0.06), vec3(0.75, 0.66, 0.6), packed);
 }
 // What ice's body scatters back of the light on it, in light: clear ice's glacier blue, packed
@@ -400,6 +468,7 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     rayQueryInitialize(&q, terrain,
         RayDesc(0x0u | FIRST_HIT, 0xffu, 0.0, reach, pos + rt.hw_offset.xyz, l));
     var through = vec3(1.0);
+    hw_from = pos;
     hw_caustic_on = false;
     hw_water_t = -1.0;
     hw_ice_run = vec2(0.0);
@@ -439,6 +508,7 @@ fn hw_visible(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> bool {
     var q: ray_query;
     rayQueryInitialize(&q, terrain,
         RayDesc(0x0u | FIRST_HIT, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
+    hw_from = pos;
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index != instances[c.instance_custom_data].at.w && hw_opaque(c) {
@@ -631,6 +701,7 @@ const HW_SEEN: u32 = 4u;
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     hw_level = vec3(0.0);
     hw_sky = -1.0;
+    hw_from = pos;
     var q: ray_query;
     hw_water_t = -1.0;
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));

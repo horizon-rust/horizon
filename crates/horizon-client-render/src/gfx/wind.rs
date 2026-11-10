@@ -27,9 +27,14 @@
 //! alpha test on a swaying quad (shadow_rays_hw.wgsl `hw_swayed_texel`) evaluates the same wind
 //! at the hit (the shared text between `WIND-BEGIN` and `WIND-END` in terrain.wgsl) and reads the
 //! texel the moved quad holds there, so the leaves' holes and the blades of grass move in their
-//! shadows. A ray leaving a swaying surface could meet its own unmoved copy a few centimetres
-//! away: a cutout quad met within `SELF_REACH` of the ray's start is ignored (also horizon-rtx
-//! `sun.rahit`, whose pass keeps still shadows). `HORIZON_RT_SKIP` bit 4096 turns all of it off
+//! shadows. A ray leaving a swaying surface could meet its own unmoved copy, as far off as the
+//! wind bent it (a storm bends grass tips by up to 0.4 block): what the ray meets of a swaying quad
+//! whose drawn copy it starts on (within a few centimetres of its plane, over an opaque texel:
+//! shadow_rays_hw.wgsl `hw_own_copy`) is ignored, and a ray from anything else (the ground at a
+//! stem's foot, a wall behind a vine) meets the quad however near. The still shadows (bit 131072)
+//! and `HORIZON_RT_SKIP` bit 268435456 ignore instead every swaying quad met within `SELF_REACH`
+//! of any ray's start, as before (also horizon-rtx `sun.rahit`, whose pass keeps still shadows),
+//! which left a lit gap around every stem's foot. Bit 4096 turns all of it off
 //! (`horizon-ctl rt-skip` too), bit 131072 only the shadows' swaying (`SHADOW_SKIP_BIT`).
 
 use crate::assets::RenderAssets;

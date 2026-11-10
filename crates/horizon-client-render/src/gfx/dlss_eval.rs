@@ -82,6 +82,9 @@ pub struct DlssEval {
     last_time: Option<std::time::Instant>,
     /// Whether the sun pass's bounce pass was told never to rest (`SunPass::set_never_rest`).
     pub never_rest: bool,
+    /// The game's exposure for NGX (`horizon_rtx::dlss_rr::game_exposure`): a 1x1 texture the
+    /// meter's multiplier is copied into before each evaluation.
+    exposure: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
 impl DlssEval {
@@ -204,7 +207,49 @@ impl DlssEval {
         target: &wgpu::TextureView,
         camera: DVec3,
         view_proj: Mat4,
+        exposure: Option<&wgpu::Buffer>,
     ) -> Result<(), horizon_rtx::dlss_rr::Error> {
+        // The exposure the grading applies (the meter's state, its first float; last frame's:
+        // this frame's is measured after RR), as NGX reads it.
+        let exposure = exposure
+            .filter(|_| horizon_rtx::dlss_rr::game_exposure())
+            .map(|state| {
+                let (texture, view) = self.exposure.get_or_insert_with(|| {
+                    let texture = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("DLSS Ray Reconstruction's exposure"),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::R32Float,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    (texture, view)
+                });
+                encoder.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: state,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: None,
+                            rows_per_image: None,
+                        },
+                    },
+                    texture.as_image_copy(),
+                    wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                view.clone()
+            });
         if !session.upscales() {
             session.resize([color.texture().width(), color.texture().height()]);
         }
@@ -233,6 +278,7 @@ impl DlssEval {
                 jitter: [jitter[0] * sign[0], jitter[1] * sign[1]],
                 reset,
                 frame_time_ms,
+                exposure: exposure.as_ref(),
             },
         )?;
         if !show_input() {

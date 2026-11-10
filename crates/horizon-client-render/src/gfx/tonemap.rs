@@ -83,13 +83,32 @@ impl PostParams {
         ev_max: -0.5,
         ..Self::REMIX
     };
-    /// Remix's night: the top at -0.5, a bloom that burns at 1.5 over anything above 1.
+    /// The night: the top at -0.5, the bloom a little more than the day's (0.2 over the day's
+    /// threshold, above white). Remix's own night (`NIGHT_REMIX`) burns at 1.5 over anything above
+    /// 1 of its units, a two-hundredth of white: every lit thing glowed, a lamp's room was a veil
+    /// and the moon a white ball in a halo, its maria gone.
     pub const NIGHT: Self = Self {
+        ev_max: -0.5,
+        bloom_burn: 0.2,
+        ..Self::REMIX
+    };
+    /// Remix's night: the top at -0.5, a bloom that burns at 1.5 over anything above 1
+    /// (`HORIZON_NIGHT_BLOOM=remix`).
+    pub const NIGHT_REMIX: Self = Self {
         ev_max: -0.5,
         bloom_burn: 1.5,
         bloom_threshold: 1.0,
         ..Self::REMIX
     };
+    /// The night's values: `NIGHT`, or Remix's own with `HORIZON_NIGHT_BLOOM=remix`.
+    pub fn night() -> Self {
+        static REMIX: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *REMIX.get_or_init(|| std::env::var("HORIZON_NIGHT_BLOOM").is_ok_and(|v| v == "remix")) {
+            Self::NIGHT_REMIX
+        } else {
+            Self::NIGHT
+        }
+    }
     /// Remix's rain: the top at -1, shadows at 1.75.
     pub const RAIN: Self = Self {
         ev_max: -1.0,
@@ -113,11 +132,12 @@ impl PostParams {
     pub const INDOOR_EV_MAX: f32 = 3.0;
 
     /// These with the exposure's top raised toward `INDOOR_EV_MAX` as the camera is shut in from
-    /// the sky: by its vanilla sky light level `sky` (0..15), from 13 (a block from the open sky:
-    /// the open air's top) down to 6 (well inside: the room's). It only lifts the top, and only
+    /// the sky: by its vanilla sky light level `sky` (0..15), from 9 (under a tree, a porch, a cave's
+    /// mouth: still the open air's top, or the night's exposure rose under every tree and the moon
+    /// burnt to a white disc) down to 2 (well inside: the room's). It only lifts the top, and only
     /// matters where the scene is darker than the key.
     pub fn indoors(self, sky: i32) -> Self {
-        let t = ((13.0 - sky as f32) / 7.0).clamp(0.0, 1.0);
+        let t = ((9.0 - sky as f32) / 7.0).clamp(0.0, 1.0);
         let inside = t * t * (3.0 - 2.0 * t);
         Self {
             ev_max: self.ev_max + (indoor_ev_max() - self.ev_max).max(0.0) * inside,
@@ -610,6 +630,12 @@ fn vignette_group(
 }
 
 impl Tonemap {
+    /// The exposure meter's state (x: the multiplier the grading applies), once RT lighting has
+    /// drawn: what DLSS Ray Reconstruction is told the scene is exposed to (dlss_eval.rs).
+    #[cfg_attr(not(feature = "dlss-rr"), allow(dead_code))]
+    pub fn exposure_state(&self) -> Option<&wgpu::Buffer> {
+        self.grading.as_ref().map(|g| g.meter.state())
+    }
     /// Tone mapping onto targets of `screen`'s format.
     pub fn new(device: &wgpu::Device, screen: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -697,7 +723,7 @@ impl Tonemap {
             night_vision: true,
             params: match std::env::var("HORIZON_POST_SITUATION").as_deref() {
                 Ok("dusk") => PostParams::DUSK,
-                Ok("night") => PostParams::NIGHT,
+                Ok("night") => PostParams::night(),
                 Ok("rain") => PostParams::RAIN,
                 Ok("thunder") => PostParams::THUNDER,
                 _ => PostParams::REMIX,
@@ -1087,11 +1113,12 @@ mod tests {
             // The open air (and a block under a tree's edge) keeps Remix's caps.
             assert_eq!(situation.indoors(15), situation);
             assert_eq!(situation.indoors(13), situation);
+            assert_eq!(situation.indoors(9), situation);
             // Well inside, the room's top, at any hour.
             assert_eq!(situation.indoors(0).ev_max, 3.0);
-            assert_eq!(situation.indoors(6).ev_max, 3.0);
+            assert_eq!(situation.indoors(2).ev_max, 3.0);
             // Between, between; never lower than the open air's, and nothing else changes.
-            let half = situation.indoors(10);
+            let half = situation.indoors(6);
             assert!(half.ev_max > situation.ev_max && half.ev_max < 3.0);
             assert_eq!(half.ev_min, situation.ev_min);
             assert_eq!(half.exposure, situation.exposure);
