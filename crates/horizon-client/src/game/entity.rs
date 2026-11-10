@@ -20,7 +20,7 @@ use horizon_client::entity_rules::EntityRules;
 use horizon_client::join_seq::JoinSeq;
 use horizon_client::join_seq::Joined as _;
 use horizon_client::mobs::{Mob, Species};
-use horizon_client::projectiles::Projectile;
+use horizon_client::projectiles::{Projectile, ProjectileKind};
 use horizon_core::geometry::{Aabb, Direction, Vec3};
 use horizon_core::position::BlockPos;
 use horizon_world::nbt::Tag;
@@ -246,6 +246,11 @@ pub(super) trait Entity: EntityRules {
     /// `FishingHook.canUsePortal` is false in vanilla).
     fn portal_size(&self) -> Option<(f32, f32)> {
         None
+    }
+    /// The box an End gateway sweeps for this kind. A gateway is a same-level
+    /// teleport, so it also takes the projectiles a chunk does not save.
+    fn gateway_size(&self) -> Option<(f32, f32)> {
+        self.portal_size()
     }
     /// `Entity.canUsePortal(false)` for a kind in `portal_size`. A kind that
     /// cannot stays tracked, so its cooldown and process run out.
@@ -1706,6 +1711,14 @@ impl Entity for FallingBlock {
         Ok(())
     }
     stored_motion!();
+    /// `FallingBlockEntity` sweeps an End gateway too; its own `portal`
+    /// state only handles the nether and End portals.
+    fn gateway_size(&self) -> Option<(f32, f32)> {
+        Some((0.98, 0.98))
+    }
+    fn portal_from(&self) -> Option<Vec3> {
+        Some(self.previous)
+    }
     fn selector_target(&self) -> Option<Target> {
         Some(Target::Falling(self.id))
     }
@@ -1778,6 +1791,12 @@ impl Entity for Projectile {
     /// Arrows and the thrown items and fireballs a chunk saves.
     fn portal_size(&self) -> Option<(f32, f32)> {
         (super::nether_portal::is_arrow(self) || super::nether_portal::is_portal_projectile(self))
+            .then(|| super::nether_portal::projectile_box(self))
+    }
+    /// An End gateway also takes the projectiles a chunk does not save; a
+    /// pearl has its own transition.
+    fn gateway_size(&self) -> Option<(f32, f32)> {
+        (!matches!(self.kind, ProjectileKind::EnderPearl))
             .then(|| super::nether_portal::projectile_box(self))
     }
     fn portal_from(&self) -> Option<Vec3> {
