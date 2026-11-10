@@ -62,6 +62,9 @@ pub mod ffi {
     pub type Result = u32;
     pub const RESULT_SUCCESS: Result = 0x1;
     pub const RESULT_FAIL: Result = 0xBAD0_0000;
+    /// `NVSDK_NGX_Result_FAIL_OutOfDate`: what the optimal-settings helper answers when the
+    /// capability parameters hold no callback (an old DLL or driver).
+    pub const RESULT_FAIL_OUT_OF_DATE: Result = 0xBAD0_000C;
     /// `NVSDK_NGX_FAILED`.
     pub const fn failed(r: Result) -> bool {
         r & 0xFFF0_0000 == 0xBAD0_0000
@@ -212,8 +215,10 @@ pub mod ffi {
         pub MinOSVersion: [c_char; 255],
     }
 
-    /// The `DLSSDOptimalSettingsCallback` parameter's type (unverified: the helper that calls it,
-    /// `NGX_DLSSD_GET_OPTIMAL_SETTINGS`, is inline in the SDK and not reproduced here).
+    /// `PFN_NVSDK_NGX_DLSS_GetOptimalSettingsCallback`, the `DLSSDOptimalSettingsCallback`
+    /// capability parameter: the SDK's inline `NGX_DLSSD_GET_OPTIMAL_SETTINGS` calls it on the
+    /// capability parameters after setting `Width`, `Height`, `PerfQualityValue` and `RTXValue`
+    /// (`Ngx::optimal_settings` does the same).
     pub type OptimalSettingsCallback = unsafe extern "C" fn(*mut Parameter) -> Result;
 
     // NVSDK_CONV is __cdecl on MSVC (the only convention on x86-64) and nothing elsewhere.
@@ -367,6 +372,11 @@ pub mod ffi {
         pub const RR_MIN_DRIVER_MINOR: &CStr = c"SuperSamplingDenoising.MinDriverVersionMinor";
         pub const RR_FEATURE_INIT_RESULT: &CStr = c"SuperSamplingDenoising.FeatureInitResult";
         pub const RR_OPTIMAL_SETTINGS: &CStr = c"DLSSDOptimalSettingsCallback";
+        pub const RTX_VALUE: &CStr = c"RTXValue";
+        pub const DYNAMIC_MAX_WIDTH: &CStr = c"DLSS.Get.Dynamic.Max.Render.Width";
+        pub const DYNAMIC_MAX_HEIGHT: &CStr = c"DLSS.Get.Dynamic.Max.Render.Height";
+        pub const DYNAMIC_MIN_WIDTH: &CStr = c"DLSS.Get.Dynamic.Min.Render.Width";
+        pub const DYNAMIC_MIN_HEIGHT: &CStr = c"DLSS.Get.Dynamic.Min.Render.Height";
     }
 }
 
@@ -427,19 +437,36 @@ impl Discovery {
             InternalData: std::ptr::null_mut(),
             LoggingInfo: ffi::LoggingInfo {
                 LoggingCallback: Some(log_callback),
-                MinimumLoggingLevel: 1,
+                MinimumLoggingLevel: ngx_log_level(),
                 DisableOtherLoggingSinks: false,
             },
         }
     }
 }
 
-/// NGX's log, into Horizon's.
+/// NGX's own logging level (`NVSDK_NGX_Logging_Level`): `HORIZON_DLSS_RR_LOG=2` verbose, `=0` off,
+/// else on.
+fn ngx_log_level() -> i32 {
+    match std::env::var("HORIZON_DLSS_RR_LOG").as_deref() {
+        Ok("0") => 0,
+        Ok("2") => 2,
+        _ => 1,
+    }
+}
+
+/// NGX's log, into Horizon's: at debug level, or info with `HORIZON_DLSS_RR_LOG` set to 1 or 2.
 unsafe extern "C" fn log_callback(message: *const c_char, _level: i32, _source: i32) {
     if !message.is_null() {
         // Safety: NGX hands a NUL-terminated string valid for the call.
         let text = unsafe { CStr::from_ptr(message) }.to_string_lossy();
-        log::debug!("NGX: {}", text.trim_end());
+        if matches!(
+            std::env::var("HORIZON_DLSS_RR_LOG").as_deref(),
+            Ok("1" | "2")
+        ) {
+            log::info!("NGX: {}", text.trim_end());
+        } else {
+            log::debug!("NGX: {}", text.trim_end());
+        }
     }
 }
 
@@ -542,8 +569,13 @@ pub fn leak(names: Vec<CString>) -> Vec<&'static CStr> {
         .collect()
 }
 
+/// The devices NGX is initialised on.
+static INITIALISED: std::sync::Mutex<Vec<vk::Device>> = std::sync::Mutex::new(Vec::new());
+
 /// NGX on one Vulkan device: initialised once, shut down when the last feature using it goes.
 pub struct Ngx {
+    /// Keeps the Vulkan device alive until NGX is shut down on it (`Drop`).
+    wgpu_device: wgpu::Device,
     device: vk::Device,
     caps: *mut ffi::Parameter,
 }
@@ -551,6 +583,15 @@ pub struct Ngx {
 // The handles are used from the render thread only; NGX allows calls from any one thread at a time.
 unsafe impl Send for Ngx {}
 unsafe impl Sync for Ngx {}
+
+/// NGX's render sizes for one output size and quality mode (`NGX_DLSSD_GET_OPTIMAL_SETTINGS`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OptimalSettings {
+    pub render: [u32; 2],
+    /// The range dynamic resolution may use (both `render` when NGX gives none).
+    pub min: [u32; 2],
+    pub max: [u32; 2],
+}
 
 impl Ngx {
     /// NGX on `device`'s Vulkan device, with Ray Reconstruction available on it; `Err` when the
@@ -565,21 +606,32 @@ impl Ngx {
             call: "a Vulkan device",
             result: ffi::RESULT_FAIL,
         };
-        let (raw_device, instance, physical, entry) = {
-            // Safety: read and cloned, dropped before wgpu takes the device back.
+        let (raw_device, instance, physical, gipa, gdpa) = {
+            // Safety: read and copied, dropped before wgpu takes the device back.
             let hal = unsafe { device.as_hal::<Vulkan>() }.ok_or(not_vulkan)?;
             let shared = hal.shared_instance();
             (
                 hal.raw_device().handle(),
                 shared.raw_instance().handle(),
                 hal.raw_physical_device(),
-                shared.entry().clone(),
+                shared.entry().static_fn().get_instance_proc_addr,
+                // What dlss_wgpu passes too: the instance's own vkGetDeviceProcAddr.
+                shared.raw_instance().fp_v1_0().get_device_proc_addr,
             )
         };
+        // One NGX a device: `Shutdown1` on one would end the other's.
+        let mut initialised = INITIALISED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if initialised.contains(&raw_device) {
+            return Err(Error {
+                call: "NGX is already initialised on this device",
+                result: ffi::RESULT_FAIL,
+            });
+        }
         let discovery = Discovery::new(dll_dirs, data_path);
         let paths: Vec<*const ffi::WChar> = discovery.paths.iter().map(|p| p.as_ptr()).collect();
         let common = discovery.common(&paths);
-        let gipa = entry.static_fn().get_instance_proc_addr;
         // Safety: the device's own handles and loader; the strings live for the call.
         check("NVSDK_NGX_VULKAN_Init_with_ProjectID", unsafe {
             ffi::NVSDK_NGX_VULKAN_Init_with_ProjectID(
@@ -591,7 +643,7 @@ impl Ngx {
                 physical,
                 raw_device,
                 Some(gipa),
-                None,
+                Some(gdpa),
                 &common,
                 ffi::VERSION_API,
             )
@@ -599,7 +651,11 @@ impl Ngx {
         let mut caps = std::ptr::null_mut();
         // Safety: NGX initialised above.
         let got = unsafe { ffi::NVSDK_NGX_VULKAN_GetCapabilityParameters(&mut caps) };
+        // From here on, dropping `ngx` shuts NGX down again.
+        initialised.push(raw_device);
+        drop(initialised);
         let ngx = Arc::new(Self {
+            wgpu_device: device.clone(),
             device: raw_device,
             caps,
         });
@@ -607,6 +663,13 @@ impl Ngx {
         let available = ngx.get_i(ffi::names::RR_AVAILABLE).unwrap_or(0);
         if available == 0 {
             let driver = ngx.get_i(ffi::names::RR_NEEDS_UPDATED_DRIVER).unwrap_or(0);
+            if driver != 0 {
+                log::warn!(
+                    "DLSS-RR: the driver is too old for Ray Reconstruction (NGX asks for {}.{} or newer)",
+                    ngx.get_ui(ffi::names::RR_MIN_DRIVER_MAJOR).unwrap_or(0),
+                    ngx.get_ui(ffi::names::RR_MIN_DRIVER_MINOR).unwrap_or(0),
+                );
+            }
             let result = ngx
                 .get_i(ffi::names::RR_FEATURE_INIT_RESULT)
                 .map_or(ffi::RESULT_FAIL, |r| r as u32);
@@ -614,7 +677,8 @@ impl Ngx {
                 call: if driver != 0 {
                     "Ray Reconstruction needs a newer driver"
                 } else {
-                    "Ray Reconstruction is not available"
+                    "Ray Reconstruction is not available (SuperSamplingDenoising.Available = 0; \
+                     is nvngx_dlssd.dll in one of the folders above?)"
                 },
                 result,
             });
@@ -628,17 +692,85 @@ impl Ngx {
         let r = unsafe { ffi::NVSDK_NGX_Parameter_GetI(self.caps, name.as_ptr(), &mut v) };
         (!ffi::failed(r)).then_some(v)
     }
+
+    fn get_ui(&self, name: &CStr) -> Option<u32> {
+        let mut v = 0;
+        // Safety: as `get_i`.
+        let r = unsafe { ffi::NVSDK_NGX_Parameter_GetUI(self.caps, name.as_ptr(), &mut v) };
+        (!ffi::failed(r)).then_some(v)
+    }
+
+    /// The render size NGX advises for `output` at `quality`: what the SDK's inline
+    /// `NGX_DLSSD_GET_OPTIMAL_SETTINGS` does, on the capability parameters.
+    pub fn optimal_settings(
+        &self,
+        output: [u32; 2],
+        quality: Quality,
+    ) -> Result<OptimalSettings, Error> {
+        use ffi::names as n;
+        let mut callback = std::ptr::null_mut();
+        // Safety: the capability parameters, alive until `Drop`.
+        let r = unsafe {
+            ffi::NVSDK_NGX_Parameter_GetVoidPointer(
+                self.caps,
+                n::RR_OPTIMAL_SETTINGS.as_ptr(),
+                &mut callback,
+            )
+        };
+        if ffi::failed(r) || callback.is_null() {
+            return Err(Error {
+                call: "DLSSDOptimalSettingsCallback (none: an old DLL or driver)",
+                result: ffi::RESULT_FAIL_OUT_OF_DATE,
+            });
+        }
+        // Safety: NGX's function pointer under that key has this type (the SDK's helper casts it
+        // the same way).
+        let callback =
+            unsafe { std::mem::transmute::<*mut c_void, ffi::OptimalSettingsCallback>(callback) };
+        // Safety: the capability parameters; the callback reads and writes them.
+        unsafe {
+            let p = self.caps;
+            ffi::NVSDK_NGX_Parameter_SetUI(p, n::WIDTH.as_ptr(), output[0]);
+            ffi::NVSDK_NGX_Parameter_SetUI(p, n::HEIGHT.as_ptr(), output[1]);
+            ffi::NVSDK_NGX_Parameter_SetI(p, n::PERF_QUALITY_VALUE.as_ptr(), quality.value());
+            // The helper sets it too: "some older DLSS dlls still expect this value to be set".
+            ffi::NVSDK_NGX_Parameter_SetI(p, n::RTX_VALUE.as_ptr(), 0);
+            check("DLSSDOptimalSettingsCallback", callback(p))?;
+        }
+        let pair = |w: &CStr, h: &CStr| Some([self.get_ui(w)?, self.get_ui(h)?]);
+        let render = pair(n::OUT_WIDTH, n::OUT_HEIGHT).ok_or(Error {
+            call: "DLSSDOptimalSettingsCallback (no OutWidth/OutHeight)",
+            result: ffi::RESULT_FAIL,
+        })?;
+        Ok(OptimalSettings {
+            render,
+            min: pair(n::DYNAMIC_MIN_WIDTH, n::DYNAMIC_MIN_HEIGHT).unwrap_or(render),
+            max: pair(n::DYNAMIC_MAX_WIDTH, n::DYNAMIC_MAX_HEIGHT).unwrap_or(render),
+        })
+    }
 }
 
 impl Drop for Ngx {
     fn drop(&mut self) {
+        // NGX's work on the GPU (feature setup) ends before it shuts down.
+        let _ = self.wgpu_device.poll(wgpu::PollType::wait_indefinitely());
         // Safety: the parameters and the device NGX was initialised on; every feature is
-        // released first (each holds an `Arc` of this).
+        // released first (each holds an `Arc` of this), and `wgpu_device` keeps the VkDevice
+        // alive until after `Shutdown1`.
         unsafe {
             if !self.caps.is_null() {
                 ffi::NVSDK_NGX_VULKAN_DestroyParameters(self.caps);
             }
-            ffi::NVSDK_NGX_VULKAN_Shutdown1(self.device);
+            let r = ffi::NVSDK_NGX_VULKAN_Shutdown1(self.device);
+            INITIALISED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|d| *d != self.device);
+            if ffi::failed(r) {
+                log::warn!("DLSS-RR: NVSDK_NGX_VULKAN_Shutdown1 failed (NGX result {r:#010x})");
+            } else {
+                log::info!("DLSS-RR: NGX shut down");
+            }
         }
     }
 }
@@ -655,6 +787,24 @@ pub enum Quality {
 }
 
 impl Quality {
+    pub const ALL: [Self; 5] = [
+        Self::Dlaa,
+        Self::Quality,
+        Self::Balanced,
+        Self::Performance,
+        Self::UltraPerformance,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Dlaa => "DLAA",
+            Self::Quality => "Quality",
+            Self::Balanced => "Balanced",
+            Self::Performance => "Performance",
+            Self::UltraPerformance => "Ultra Performance",
+        }
+    }
+
     fn value(self) -> i32 {
         match self {
             Self::Dlaa => ffi::PERF_DLAA,
@@ -1092,6 +1242,496 @@ impl Drop for DlssRr {
             }
         }
     }
+}
+
+// Stage 1 (docs/rt-dlss-rr.md §6): NGX's extensions enabled when the window's instance and device
+// are made, NGX initialised on that device, and one feature instance at the window's size, made
+// again on resize and released before NGX shuts down. Nothing is evaluated yet. Every step logs
+// one line starting "DLSS-RR:", and every failure leaves the renderer as it is without RR.
+
+/// Where NGX looks for its runtime DLL, and where it writes its own logs.
+#[derive(Clone, Debug)]
+pub struct Paths {
+    pub dll_dirs: Vec<std::path::PathBuf>,
+    pub data_path: std::path::PathBuf,
+}
+
+/// The start of the feature DLL's file name: `nvngx_dlssd.dll` on Windows,
+/// `libnvidia-ngx-dlssd.so.<version>` on Linux.
+#[cfg(windows)]
+const RUNTIME_DLL: &str = "nvngx_dlssd";
+#[cfg(not(windows))]
+const RUNTIME_DLL: &str = "libnvidia-ngx-dlssd";
+
+impl Paths {
+    /// The executable's folder, then `DLSS_RUNTIME_DIR` when set; NGX's logs go to `data_path`
+    /// (made if missing).
+    pub fn new(data_path: std::path::PathBuf) -> Self {
+        let mut dll_dirs = Vec::new();
+        if let Some(dir) = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+        {
+            dll_dirs.push(dir);
+        }
+        if let Some(dir) = std::env::var_os("DLSS_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+            dll_dirs.push(dir.into());
+        }
+        let _ = std::fs::create_dir_all(&data_path);
+        Self {
+            dll_dirs,
+            data_path,
+        }
+    }
+
+    /// Logs the folders NGX is told to search (`FeatureCommonInfo::PathListInfo`) and whether
+    /// the runtime DLL is in each.
+    pub fn log(&self) {
+        for dir in &self.dll_dirs {
+            match runtime_dll_in(dir) {
+                Some(file) => log::info!(
+                    "DLSS-RR: NGX searches {} for the runtime: {} found",
+                    dir.display(),
+                    file.to_string_lossy()
+                ),
+                None => log::info!(
+                    "DLSS-RR: NGX searches {} for the runtime: no {RUNTIME_DLL}* there",
+                    dir.display()
+                ),
+            }
+        }
+        if std::env::var_os("DLSS_RUNTIME_DIR").is_none_or(|d| d.is_empty()) {
+            log::info!(
+                "DLSS-RR: DLSS_RUNTIME_DIR is not set: only the executable's folder is searched"
+            );
+        }
+        log::info!(
+            "DLSS-RR: NGX's data path (its own logs): {}",
+            self.data_path.display()
+        );
+    }
+}
+
+/// The feature DLL's name in `dir`, if it is there.
+fn runtime_dll_in(dir: &std::path::Path) -> Option<std::ffi::OsString> {
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+        let name = entry.file_name();
+        name.to_string_lossy()
+            .to_ascii_lowercase()
+            .starts_with(RUNTIME_DLL)
+            .then_some(name)
+    })
+}
+
+/// Names for the log: `a, b, c`, or `none`.
+fn list<S: AsRef<CStr>>(names: &[S]) -> String {
+    if names.is_empty() {
+        return "none".to_owned();
+    }
+    names
+        .iter()
+        .map(|n| n.as_ref().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The window's instance, made as `wgpu::Instance::new(make())` makes it, with NGX's instance
+/// extensions enabled too. When wgpu already enables every one (expected:
+/// `VK_KHR_get_physical_device_properties2`-class names; unverified), that is the instance
+/// returned, unchanged. Otherwise it is made again through wgpu-hal's `init_with_callback` with
+/// the missing names added, as dlss_wgpu does; then wgpu-core's flags are the environment's
+/// (`Instance::from_hal`), so release builds validate indirect draws unless
+/// `WGPU_VALIDATION_INDIRECT_CALL=0`. Any failure keeps wgpu's own instance, and RR stays off.
+pub fn create_instance(
+    make: impl Fn() -> wgpu::InstanceDescriptor,
+    paths: &Paths,
+) -> wgpu::Instance {
+    paths.log();
+    let instance = wgpu::Instance::new(make());
+    let wanted = match required_instance_extensions(&paths.dll_dirs, &paths.data_path) {
+        Ok(wanted) => wanted,
+        Err(e) => {
+            log::warn!(
+                "DLSS-RR: off: NGX's instance extensions are unknown ({e}); the renderer stays as it is"
+            );
+            return instance;
+        }
+    };
+    log::info!(
+        "DLSS-RR: NGX asks for {} instance extension(s): {}",
+        wanted.len(),
+        list(&wanted)
+    );
+    let (missing, offered) = {
+        // Safety: read only, dropped before the instance is used or dropped.
+        let Some(hal) = (unsafe { instance.as_hal::<Vulkan>() }) else {
+            log::warn!("DLSS-RR: off: the instance has no Vulkan backend");
+            return instance;
+        };
+        let shared = hal.shared_instance();
+        let missing: Vec<CString> = wanted
+            .iter()
+            .filter(|w| !shared.extensions().contains(&w.as_c_str()))
+            .cloned()
+            .collect();
+        // Safety: the instance's own loader.
+        let available = unsafe { shared.entry().enumerate_instance_extension_properties(None) }
+            .unwrap_or_default();
+        let offered = missing.iter().all(|m| {
+            available
+                .iter()
+                .any(|a| a.extension_name_as_c_str() == Ok(m.as_c_str()))
+        });
+        (missing, offered)
+    };
+    if missing.is_empty() {
+        log::info!("DLSS-RR: wgpu's Vulkan instance already enables all of them");
+        return instance;
+    }
+    if !offered {
+        log::warn!(
+            "DLSS-RR: off: the Vulkan loader does not offer every instance extension NGX needs \
+             (missing from wgpu's instance: {})",
+            list(&missing)
+        );
+        return instance;
+    }
+    drop(instance);
+    let desc = make();
+    let hal_desc = wgpu::hal::InstanceDescriptor {
+        name: "wgpu",
+        flags: desc.flags,
+        memory_budget_thresholds: desc.memory_budget_thresholds,
+        backend_options: desc.backend_options.clone(),
+        telemetry: None,
+        // Only OpenGL reads the display; the surface takes the window's own handles.
+        display: None,
+    };
+    let extra = leak(missing.clone());
+    // Safety: what `Instance::new` does for Vulkan, with the extra names, each offered by the
+    // loader (checked above).
+    let made = unsafe {
+        wgpu::hal::vulkan::Instance::init_with_callback(
+            &hal_desc,
+            Some(Box::new(
+                move |args: wgpu::hal::vulkan::CreateInstanceCallbackArgs| {
+                    for name in extra {
+                        if !args.extensions.contains(&name) {
+                            args.extensions.push(name);
+                        }
+                    }
+                },
+            )),
+        )
+    };
+    match made {
+        Ok(hal) => {
+            log::info!(
+                "DLSS-RR: the Vulkan instance is made with {} added (wgpu's own path cannot add \
+                 instance extensions; indirect draws are now validated unless \
+                 WGPU_VALIDATION_INDIRECT_CALL=0)",
+                list(&missing)
+            );
+            // Safety: a Vulkan instance wgpu-hal made itself.
+            unsafe { wgpu::Instance::from_hal::<Vulkan>(hal) }
+        }
+        Err(e) => {
+            log::warn!(
+                "DLSS-RR: off: making the Vulkan instance with {} failed ({e}); the renderer \
+                 stays as it is",
+                list(&missing)
+            );
+            wgpu::Instance::new(make())
+        }
+    }
+}
+
+/// NGX's device extensions for `adapter`'s GPU, to enable when the device is made
+/// (horizon-hdr's `open_vulkan_device_with`). Empty, so that the device is made exactly as
+/// without RR, when the GPU or driver lacks Ray Reconstruction, the query fails, or the driver
+/// does not offer one of the names.
+pub fn device_extensions(adapter: &wgpu::Adapter, paths: &Paths) -> Vec<&'static CStr> {
+    let (instance, physical, available) = {
+        // Safety: read only, dropped at once; the handles stay valid while `adapter` lives.
+        let Some(hal) = (unsafe { adapter.as_hal::<Vulkan>() }) else {
+            log::warn!("DLSS-RR: off: the adapter is not Vulkan");
+            return Vec::new();
+        };
+        let raw = hal.shared_instance().raw_instance();
+        // Safety: the adapter's own physical device on its own instance.
+        let available =
+            unsafe { raw.enumerate_device_extension_properties(hal.raw_physical_device()) }
+                .unwrap_or_default();
+        (raw.handle(), hal.raw_physical_device(), available)
+    };
+    // Safety: the adapter's physical device on its live instance.
+    let wanted = match unsafe {
+        required_device_extensions(instance, physical, &paths.dll_dirs, &paths.data_path)
+    } {
+        Ok(wanted) => wanted,
+        Err(e) => {
+            log::warn!("DLSS-RR: off on this GPU: {e}; the renderer stays as it is");
+            return Vec::new();
+        }
+    };
+    log::info!(
+        "DLSS-RR: Ray Reconstruction is supported on this GPU and driver \
+         (NVSDK_NGX_VULKAN_GetFeatureRequirements); NGX asks for {} device extension(s): {}",
+        wanted.len(),
+        list(&wanted)
+    );
+    let absent: Vec<&CString> = wanted
+        .iter()
+        .filter(|w| {
+            !available
+                .iter()
+                .any(|a| a.extension_name_as_c_str() == Ok(w.as_c_str()))
+        })
+        .collect();
+    if !absent.is_empty() {
+        log::warn!(
+            "DLSS-RR: off: the driver does not offer {}; the device is made without NGX's extensions",
+            list(&absent)
+        );
+        return Vec::new();
+    }
+    leak(wanted)
+}
+
+/// Whether the device was made with every extension NGX asks for (logged, enabled or not).
+fn extensions_enabled(device: &wgpu::Device, paths: &Paths) -> bool {
+    // Safety: read only, dropped before the device is used again.
+    let Some(hal) = (unsafe { device.as_hal::<Vulkan>() }) else {
+        log::warn!("DLSS-RR: off: the device is not Vulkan");
+        return false;
+    };
+    let shared = hal.shared_instance();
+    let report = |kind: &str, wanted: Result<Vec<CString>, Error>, enabled: &[&CStr]| {
+        let wanted = match wanted {
+            Ok(wanted) => wanted,
+            Err(e) => {
+                log::warn!("DLSS-RR: off: NGX's {kind} extensions are unknown ({e})");
+                return false;
+            }
+        };
+        let (on, off): (Vec<&CString>, Vec<&CString>) =
+            wanted.iter().partition(|w| enabled.contains(&w.as_c_str()));
+        log::info!(
+            "DLSS-RR: {kind} extensions NGX needs: enabled [{}], not enabled [{}]",
+            list(&on),
+            list(&off)
+        );
+        if !off.is_empty() {
+            log::warn!(
+                "DLSS-RR: off: the {kind} was made without {}; the renderer stays as it is",
+                list(&off)
+            );
+        }
+        off.is_empty()
+    };
+    let instance_ok = report(
+        "instance",
+        required_instance_extensions(&paths.dll_dirs, &paths.data_path),
+        shared.extensions(),
+    );
+    // Safety: the device's own physical device on its live instance.
+    let device_ok = instance_ok
+        && report(
+            "device",
+            unsafe {
+                required_device_extensions(
+                    shared.raw_instance().handle(),
+                    hal.raw_physical_device(),
+                    &paths.dll_dirs,
+                    &paths.data_path,
+                )
+            },
+            hal.enabled_device_extensions(),
+        );
+    instance_ok && device_ok
+}
+
+/// Ray Reconstruction on the desktop window: NGX on the window's device and one feature instance
+/// at the window's size, in DLAA (render size = output size: the renderer has no upscaling path
+/// for RR yet). Nothing is evaluated yet. Dropping it releases the feature and, with the last
+/// `Arc<Ngx>`, shuts NGX down, before the device can go (both hold it).
+pub struct Session {
+    feature: Option<DlssRr>,
+    ngx: Arc<Ngx>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    size: [u32; 2],
+}
+
+impl Session {
+    /// NGX on `device` (or `previous`'s, when the renderer is rebuilt on the same device) and a
+    /// feature for a `size` window; `None`, logged, when anything fails.
+    pub fn start(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        size: [u32; 2],
+        paths: &Paths,
+        previous: Option<&Session>,
+    ) -> Option<Self> {
+        let ngx = match previous.filter(|p| p.device == *device) {
+            Some(previous) => previous.ngx.clone(),
+            None => {
+                if !extensions_enabled(device, paths) {
+                    return None;
+                }
+                match Ngx::init(device, &paths.dll_dirs, &paths.data_path) {
+                    Ok(ngx) => {
+                        log::info!(
+                            "DLSS-RR: NGX initialised (project id, custom engine); Ray \
+                             Reconstruction is available (SuperSamplingDenoising.Available = 1)"
+                        );
+                        ngx
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "DLSS-RR: off: {e}; RT lighting keeps its accumulation, denoiser and TAA"
+                        );
+                        return None;
+                    }
+                }
+            }
+        };
+        log_optimal(&ngx, size, true);
+        let mut session = Self {
+            feature: None,
+            ngx,
+            device: device.clone(),
+            queue: queue.clone(),
+            size,
+        };
+        session.create();
+        session.feature.is_some().then_some(session)
+    }
+
+    /// Whether a feature instance exists for the window's current size.
+    pub fn active(&self) -> bool {
+        self.feature.is_some()
+    }
+
+    /// Follows the window to `size`: the feature is released and made again at the new size.
+    pub fn resize(&mut self, size: [u32; 2]) {
+        if size == self.size || size.contains(&0) {
+            return;
+        }
+        self.release();
+        self.size = size;
+        log_optimal(&self.ngx, size, false);
+        self.create();
+    }
+
+    fn create(&mut self) {
+        let [w, h] = self.size;
+        // What the later stages feed (docs/rt-dlss-rr.md §3); the evaluation stage may change
+        // these, which only means making the feature again.
+        let settings = Settings {
+            render: self.size,
+            output: self.size,
+            quality: Quality::Dlaa,
+            depth_inverted: true,
+            hdr: true,
+            mv_low_res: true,
+            mv_jittered: false,
+            auto_exposure: true,
+            roughness_packed: true,
+            hardware_depth: true,
+            output_subrects: false,
+        };
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Horizon RTX: DLSS Ray Reconstruction setup"),
+            });
+        let mut made = Err(Error {
+            call: "a Vulkan command encoder",
+            result: ffi::RESULT_FAIL,
+        });
+        // Safety: the encoder's own command buffer, open and recording (wgpu-core begins it
+        // for `as_hal_mut`) on the device NGX was initialised on, holding nothing else; it is
+        // submitted at once, before any evaluation.
+        unsafe {
+            encoder.as_hal_mut::<Vulkan, _, _>(|hal| {
+                if let Some(hal) = hal {
+                    made = DlssRr::new(&self.ngx, hal.raw_handle(), settings);
+                }
+            });
+        }
+        self.queue.submit([encoder.finish()]);
+        match made {
+            Ok(feature) => {
+                log::info!(
+                    "DLSS-RR: feature instance created for {w}x{h} (DLAA: render size = output \
+                     size; nothing is evaluated yet)"
+                );
+                self.feature = Some(feature);
+            }
+            Err(e) => log::warn!(
+                "DLSS-RR: off: creating the feature instance for {w}x{h} failed: {e}; the \
+                 renderer stays as it is"
+            ),
+        }
+    }
+
+    fn release(&mut self) {
+        if let Some(feature) = self.feature.take() {
+            // Its setup commands have run before it is released.
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+            drop(feature);
+            log::info!(
+                "DLSS-RR: feature instance for {}x{} released",
+                self.size[0],
+                self.size[1]
+            );
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // The feature first, then (fields) the `Arc<Ngx>`, whose last drop shuts NGX down, then
+        // the device.
+        self.release();
+    }
+}
+
+/// Logs NGX's render size for a `size` output at each quality mode (info at start, debug on
+/// resize).
+fn log_optimal(ngx: &Ngx, size: [u32; 2], info: bool) {
+    let sizes: Vec<String> = Quality::ALL
+        .iter()
+        .map(|&q| match ngx.optimal_settings(size, q) {
+            Ok(o) if o.min == o.max => {
+                format!("{} {}x{}", q.name(), o.render[0], o.render[1])
+            }
+            Ok(o) => format!(
+                "{} {}x{} (dynamic {}x{} to {}x{})",
+                q.name(),
+                o.render[0],
+                o.render[1],
+                o.min[0],
+                o.min[1],
+                o.max[0],
+                o.max[1]
+            ),
+            Err(e) => format!("{} unknown ({e})", q.name()),
+        })
+        .collect();
+    let level = if info {
+        log::Level::Info
+    } else {
+        log::Level::Debug
+    };
+    log::log!(
+        level,
+        "DLSS-RR: NGX's render sizes for a {}x{} output: {}",
+        size[0],
+        size[1],
+        sizes.join(", ")
+    );
 }
 
 #[cfg(test)]

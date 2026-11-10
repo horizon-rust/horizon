@@ -456,6 +456,9 @@ pub struct ShadowRays {
     no_sun_pass: wgpu::TextureView,
     /// The bounce pass's stand-ins (`gi_pass_a`, `gi_pass_b`, bound at 62 and 63).
     no_gi_pass: [wgpu::TextureView; 2],
+    /// DLSS-RR's guides (`rt_guides`), after the kernel with RT lighting: only with hardware rays
+    /// and `rt_guides::guides_wanted()`.
+    guides: Option<super::rt_guides::RtGuides>,
 }
 
 /// `HORIZON_RT_SKIP`'s bit for white noise everywhere (shadow_rays.wgsl `blue2`): the kernel's own
@@ -568,6 +571,9 @@ impl ShadowRays {
             );
         }
         self.skip = skip;
+        if let Some(guides) = &mut self.guides {
+            guides.set_skip(device, skip);
+        }
         self.pipeline = kernel(
             device,
             &self.pipeline_layout,
@@ -931,7 +937,10 @@ impl ShadowRays {
                 resource: cache.as_entire_binding(),
             }],
         });
+        let guides = (hardware && super::rt_guides::guides_wanted())
+            .then(|| super::rt_guides::RtGuides::new(device, &layout, split, skip));
         Self {
+            guides,
             cache,
             resolve,
             resolve_group,
@@ -1015,6 +1024,27 @@ impl ShadowRays {
                     view_formats: &[],
                 })
                 .create_view(&Default::default()),
+        }
+    }
+
+    /// DLSS-RR's guides of view `view` (0 the window, then the VR views), once written: none
+    /// unless `rt_guides::guides_wanted()` with hardware rays and RT lighting.
+    // Read by DLSS-RR's evaluation once it is wired (docs/rt-dlss-rr.md, stage 5).
+    #[allow(dead_code)]
+    pub fn guides(&self, view: usize) -> Option<&super::rt_guides::Guides> {
+        self.guides.as_ref()?.guides(view)
+    }
+
+    /// Draws `HORIZON_RT_GUIDES_SHOW`'s picture of view `view`'s guides over `target`.
+    pub fn draw_guides_shown(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        view: usize,
+        target: &wgpu::Texture,
+    ) {
+        if let Some(guides) = &mut self.guides {
+            guides.draw_shown(device, encoder, view, target);
         }
     }
 
@@ -1158,6 +1188,7 @@ impl ShadowRays {
         // and the mask's size, giving the textures the kernel reads in place of its own rays.
         sun_pass: Option<(u32, &mut PipelinePass<'_>)>,
     ) -> [wgpu::TextureView; 5] {
+        let view_index = view;
         let scale = foveation.scale;
         let mask_size = size.map(|v| v.div_ceil(scale));
         // VR's second eye right after the first, at its size, with the first eye's depth: the first
@@ -1460,6 +1491,13 @@ impl ShadowRays {
         drop(pass);
         // One kernel traces the sun, the direct lights, the bounces and the mirrors at once.
         super::gpu_passes::stamp(encoder, "rays: trace (sun, DI, GI, PSR)");
+        // DLSS-RR's guides at the depth's size, with the kernel's group as it was bound for this
+        // view (`rt_guides`).
+        if rays.lighting
+            && let Some(guides) = &mut self.guides
+        {
+            guides.run(device, encoder, view_index, size, &group);
+        }
         if !rays.lighting {
             return [mask, blocks, sun, reflection, refraction];
         }

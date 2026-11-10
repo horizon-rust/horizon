@@ -224,6 +224,7 @@ pub mod gpu_passes;
 pub use froxels::CameraMedium;
 // The natural fogs in the froxels (gfx/natural_fog.rs).
 pub mod natural_fog;
+mod rt_guides;
 mod shadow_rays;
 mod sky_planets;
 mod sky_stars;
@@ -1662,6 +1663,11 @@ pub struct Renderer {
     /// RT lighting's sun pass as a ray tracing pipeline (horizon-rtx `sun`), when wanted.
     #[cfg(feature = "rtx")]
     sun_pass: Option<horizon_rtx::SunPass>,
+    /// DLSS Ray Reconstruction on the window (`dlss-rr` feature, `HORIZON_RT_DLSS_RR=1`,
+    /// docs/rt-dlss-rr.md): NGX on this device and a feature instance at the window's size, made
+    /// again on resize. Stage 1: nothing is evaluated yet.
+    #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+    dlss_rr: Option<horizon_rtx::dlss_rr::Session>,
     /// The world's colour format (the scene's with Linear Light, else the screen's).
     world_format: wgpu::TextureFormat,
     /// Frame generation (Horizon setting).
@@ -2961,6 +2967,21 @@ async fn open_backend(
     allow_cpu: bool,
 ) -> std::result::Result<Opened, NoDevice> {
     let name = backends_name(backends);
+    // DLSS Ray Reconstruction (docs/rt-dlss-rr.md): NGX's instance extensions too, when wanted.
+    #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+    let instance = if backends.contains(wgpu::Backends::VULKAN) && horizon_rtx::dlss_rr::wanted() {
+        horizon_rtx::dlss_rr::create_instance(
+            || instance_descriptor(backends, Some(window), allow_nonconformant),
+            &dlss_rr_paths(),
+        )
+    } else {
+        wgpu::Instance::new(instance_descriptor(
+            backends,
+            Some(window),
+            allow_nonconformant,
+        ))
+    };
+    #[cfg(not(all(feature = "dlss-rr", not(target_os = "macos"))))]
     let instance = wgpu::Instance::new(instance_descriptor(
         backends,
         Some(window),
@@ -3053,7 +3074,21 @@ async fn open_backend(
         memory_hints: wgpu::MemoryHints::MemoryUsage,
         ..Default::default()
     };
-    #[cfg(not(target_os = "macos"))]
+    // DLSS Ray Reconstruction (docs/rt-dlss-rr.md): NGX's device extensions too, when wanted and
+    // the GPU has the feature; none otherwise, which opens the device as without the feature.
+    #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+    let opened = match info.backend {
+        wgpu::Backend::Vulkan => {
+            let extra = if horizon_rtx::dlss_rr::wanted() {
+                horizon_rtx::dlss_rr::device_extensions(&adapter, &dlss_rr_paths())
+            } else {
+                Vec::new()
+            };
+            horizon_hdr::open_vulkan_device_with(&adapter, &desc, &extra)
+        }
+        _ => None,
+    };
+    #[cfg(all(not(target_os = "macos"), not(feature = "dlss-rr")))]
     let opened = match info.backend {
         wgpu::Backend::Vulkan => horizon_hdr::open_vulkan_device(&adapter, &desc),
         _ => None,
@@ -3090,6 +3125,12 @@ async fn open_backend(
         }
         Err(e) => Err(NoDevice::Failed(format!("{name} device: {e}"))),
     }
+}
+/// Where NGX looks for `nvngx_dlssd.dll` (the executable's folder, `DLSS_RUNTIME_DIR`) and writes
+/// its logs (the game home's `logs/ngx`).
+#[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+fn dlss_rr_paths() -> horizon_rtx::dlss_rr::Paths {
+    horizon_rtx::dlss_rr::Paths::new(crate::logging::game_home().join("logs").join("ngx"))
 }
 /// What to tell a player whose system offers no usable graphics adapter.
 /// Vulkan is loaded at run time (the game links no graphics library), so a
@@ -6102,6 +6143,31 @@ impl Renderer {
         // The sun pass as a ray tracing pipeline (horizon-rtx `sun`, `HORIZON_RT_PIPELINE=1`).
         #[cfg(feature = "rtx")]
         let sun_pass = hw.then(|| horizon_rtx::SunPass::new(&device)).flatten();
+        // DLSS Ray Reconstruction, stage 1 (docs/rt-dlss-rr.md): the desktop window only.
+        #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+        let dlss_rr = if !horizon_rtx::dlss_rr::wanted() {
+            None
+        } else if info.backend != wgpu::Backend::Vulkan {
+            log::warn!(
+                "DLSS-RR: off: Ray Reconstruction needs Vulkan, and the renderer is on {:?}",
+                info.backend
+            );
+            None
+        } else if xr.is_some() {
+            log::warn!("DLSS-RR: off: not wired for VR yet (docs/rt-dlss-rr.md, section 4)");
+            None
+        } else if surface.is_none() {
+            log::info!("DLSS-RR: off for an offscreen renderer (the desktop window only)");
+            None
+        } else {
+            horizon_rtx::dlss_rr::Session::start(
+                &device,
+                &queue,
+                [config.width, config.height],
+                &dlss_rr_paths(),
+                previous.and_then(|p| p.dlss_rr.as_ref()),
+            )
+        };
         drop(pipelines_step);
         reuse.finish(generation);
         if previous.is_some() {
@@ -6276,6 +6342,8 @@ impl Renderer {
             split_commands: Vec::new(),
             #[cfg(feature = "rtx")]
             sun_pass,
+            #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+            dlss_rr,
             materials: None,
             parallax: None,
             parallax_on: false,
@@ -6720,6 +6788,10 @@ impl Renderer {
             self.offscreen = Some(Self::offscreen_target(&self.device, &self.config));
         }
         self.depth = Self::depth(&self.device, &self.config);
+        #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+        if let Some(rr) = &mut self.dlss_rr {
+            rr.resize([width, height]);
+        }
     }
     /// Whether sections are drawn as one index list per frame (`flat`).
     pub fn flat_draws(&self) -> bool {
@@ -14755,6 +14827,12 @@ impl Renderer {
             &overlay,
             scene_overlay,
         );
+        // `HORIZON_RT_GUIDES_SHOW`: one of DLSS-RR's guides over the window's frame, HUD and all
+        // (rt_guides.rs), before a screenshot reads it back.
+        if self.eye.is_none() {
+            self.shadow_rays
+                .draw_guides_shown(&self.device, &mut encoder, 0, &target_texture);
+        }
         if culling && let Some(cull) = &mut self.cull {
             cull.end(&self.device, &mut encoder);
         }
@@ -14865,6 +14943,11 @@ impl Renderer {
                 }
             }
             (None, _) => {}
+        }
+        // HDR output presents from the scene, not the frame: the guide's picture goes on again.
+        if let (Some(_), Some(output), None) = (&self.hdr, &output, &self.eye) {
+            self.shadow_rays
+                .draw_guides_shown(&self.device, &mut encoder, 0, output);
         }
         // With HDR on, a full-frame screenshot gets an HDR10 copy beside it.
         let hdr_readback = readback
@@ -17025,6 +17108,8 @@ mod tests {
         assert!(files.len() >= 10, "{files:?}");
         // The rays' pass is made of four files, with or without hardware rays (shadow_rays.rs).
         let named = |p: &std::path::Path, name: &str| p.file_name().is_some_and(|f| f == name);
+        // DLSS-RR's guides come after the hardware variant (rt_guides.rs, its own test).
+        files.retain(|p| !named(p, "rt_guides.wgsl"));
         files.retain(|p| {
             !named(p, "shadow_rays_hw.wgsl")
                 && !named(p, "shadow_rays_psr.wgsl")

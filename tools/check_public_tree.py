@@ -11,6 +11,9 @@ PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java"}
 ORIGINAL_JDK_TOOLS = {"tools/JfrSummary.java", "tests/java/JfrFixture.java"}
 # The prepared folder's files in one file (crates/horizon-core/src/prepared_files.rs): Mojang's data.
 PRIVATE_NAMES = {"horizon-data.bin"}
+# NVIDIA's DLSS SDK (docs/rt-dlss-rr.md): its headers and static libraries (nvsdk_ngx*) and its
+# runtime DLLs and shared objects (nvngx_*.dll, libnvidia-ngx-*.so*) stay on the developer's machine.
+PRIVATE_PREFIXES = ("nvsdk_ngx", "nvngx", "libnvidia-ngx")
 
 
 def prohibited(path):
@@ -25,6 +28,7 @@ def prohibited(path):
         bool(parsed.parts and parsed.parts[0] in PRIVATE_ROOTS)
         or parsed.suffix.lower() in PRIVATE_EXTENSIONS
         or parsed.name in PRIVATE_NAMES
+        or parsed.name.lower().startswith(PRIVATE_PREFIXES)
     )
 
 
