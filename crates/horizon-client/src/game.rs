@@ -372,8 +372,8 @@ mod place_feature_tests;
 mod play_input;
 mod play_keys;
 mod player_equip;
-mod player_hurt;
 pub(crate) mod player_hooks;
+mod player_hurt;
 mod player_spawn;
 mod pointer_capture;
 #[cfg(test)]
