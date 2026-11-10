@@ -22,7 +22,7 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
-    sync::{OnceLock, RwLock},
+    sync::{Mutex, OnceLock, RwLock},
 };
 
 /// Vanilla's profession table has this many entries; custom ones start here.
@@ -49,12 +49,42 @@ pub struct Profession {
 
 #[derive(Default)]
 struct Registry {
-    /// In id order; index = `FIRST + position`.
-    professions: Vec<Profession>,
+    /// By index minus `FIRST`. A slot for a profession a later reload removes
+    /// stays so live villagers keep their index and look; only the lookup maps
+    /// are rebuilt.
+    professions: Vec<Option<Profession>>,
     by_poi: HashMap<&'static str, u8>,
     by_id: HashMap<&'static str, u8>,
     by_name: HashMap<&'static str, u8>,
 }
+
+/// Indexes handed out across reloads, so adding a profession cannot renumber
+/// the ones live villagers already carry.
+struct Assignments {
+    by_id: HashMap<String, u8>,
+    next: u16,
+}
+impl Default for Assignments {
+    fn default() -> Self {
+        Self {
+            by_id: HashMap::new(),
+            next: u16::from(FIRST),
+        }
+    }
+}
+impl Assignments {
+    fn assign(&mut self, id: &str) -> Option<u8> {
+        if let Some(index) = self.by_id.get(id) {
+            return Some(*index);
+        }
+        let index = u8::try_from(self.next).ok()?;
+        self.next = self.next.checked_add(1)?;
+        self.by_id.insert(id.to_owned(), index);
+        Some(index)
+    }
+}
+
+static ASSIGNMENTS: OnceLock<Mutex<Assignments>> = OnceLock::new();
 
 /// The current table. A reload leaks the old one (a few short strings) so
 /// callers can hold `&'static` names while rendering.
@@ -95,12 +125,27 @@ pub fn load(root: &Path, overlay: &PackOverlay) {
             files.insert(id.to_owned(), value);
         }
     }
-    install(build(files));
+    let previous = read();
+    let mut assignments = ASSIGNMENTS
+        .get_or_init(|| Mutex::new(Assignments::default()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let registry = build(files, Some(previous), &mut assignments);
+    drop(assignments);
+    install(registry);
 }
 
-/// The table from its JSON files, without installing it.
-fn build(files: BTreeMap<String, Value>) -> Registry {
+/// The table from its JSON files, without installing it. `previous` keeps
+/// retired slots; `assignments` keeps every id on the index it first had.
+fn build(
+    files: BTreeMap<String, Value>,
+    previous: Option<&Registry>,
+    assignments: &mut Assignments,
+) -> Registry {
     let mut registry = Registry::default();
+    if let Some(previous) = previous {
+        registry.professions = previous.professions.clone();
+    }
     for (id, value) in files {
         let Some((namespace, name)) = id.split_once(':') else {
             continue;
@@ -108,6 +153,10 @@ fn build(files: BTreeMap<String, Value>) -> Registry {
         let (namespace, name) = (namespace.to_owned(), name.to_owned());
         let Some(poi) = value["poi"].as_str() else {
             log::warn!("Horizon: villager profession {id} has no poi");
+            continue;
+        };
+        let Some(index) = assignments.assign(&id) else {
+            log::warn!("Horizon: villager profession {id} has no index left");
             continue;
         };
         let id: &'static str = Box::leak(id.into_boxed_str());
@@ -127,15 +176,14 @@ fn build(files: BTreeMap<String, Value>) -> Registry {
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{namespace}:gameplay/hero_of_the_village/{name}_gift"));
         let gift: &'static str = Box::leak(gift.into_boxed_str());
-        if registry.professions.len() + usize::from(FIRST) > usize::from(u8::MAX) {
-            log::warn!("Horizon: villager profession {id} has no index left");
-            break;
+        let slot = usize::from(index - FIRST);
+        if registry.professions.len() <= slot {
+            registry.professions.resize_with(slot + 1, || None);
         }
-        let index = FIRST + registry.professions.len() as u8;
         registry.by_poi.insert(poi, index);
         registry.by_id.insert(id, index);
         registry.by_name.insert(name, index);
-        registry.professions.push(Profession {
+        registry.professions[slot] = Some(Profession {
             id,
             name,
             poi,
@@ -149,7 +197,10 @@ fn build(files: BTreeMap<String, Value>) -> Registry {
 
 /// The custom profession at an index, if any.
 fn custom(index: u8) -> Option<&'static Profession> {
-    read().professions.get(index.checked_sub(FIRST)? as usize)
+    read()
+        .professions
+        .get(index.checked_sub(FIRST)? as usize)?
+        .as_ref()
 }
 /// The path name at any profession index (`oceanographer`, `farmer`, ...).
 pub fn name(index: u8) -> &'static str {
@@ -205,7 +256,7 @@ pub fn job_site(block: &str) -> Option<u8> {
 
 /// `PoiTypes.register`: the POI type of a block state and its max tickets.
 pub fn poi_type(state: &horizon_world::chunk::BlockState) -> Option<(&'static str, i32)> {
-    if let Some(poi) = custom(job_site(&state.name)?) {
+    if let Some(poi) = job_site(&state.name).and_then(custom) {
         return Some((poi.id, 1));
     }
     let name = state.name.strip_prefix("minecraft:")?;
@@ -292,8 +343,8 @@ mod tests {
             serde_json::json!({"poi": "example:bench", "look": "farmer",
                 "work_sound": "entity.villager.work_farmer"}),
         )]);
-        let registry = build(files);
-        let p = &registry.professions[0];
+        let registry = build(files, None, &mut Assignments::default());
+        let p = registry.professions[0].as_ref().unwrap();
         assert_eq!(p.id, "example:test");
         assert_eq!(p.name, "test");
         assert_eq!(p.look, "farmer");
@@ -302,6 +353,61 @@ mod tests {
         assert_eq!(registry.by_poi.get("example:bench"), Some(&FIRST));
         assert_eq!(registry.by_id.get("example:test"), Some(&FIRST));
         assert_eq!(registry.by_name.get("test"), Some(&FIRST));
+    }
+
+    #[test]
+    fn vanilla_pois_still_classify_without_a_custom_match() {
+        let state = |name: &str| horizon_world::chunk::BlockState {
+            name: name.into(),
+            properties: Default::default(),
+        };
+        assert_eq!(
+            poi_type(&state("minecraft:bell")),
+            Some(("minecraft:meeting", 32))
+        );
+        assert_eq!(
+            poi_type(&state("minecraft:blast_furnace")),
+            Some(("minecraft:armorer", 1))
+        );
+        assert_eq!(poi_type(&state("minecraft:stone")), None);
+    }
+
+    #[test]
+    fn reloads_keep_an_id_on_its_index() {
+        let profession = |poi: &str| serde_json::json!({"poi": poi, "look": "farmer"});
+        let mut assignments = Assignments::default();
+        let first = build(
+            BTreeMap::from([("example:zookeeper".to_owned(), profession("example:a"))]),
+            None,
+            &mut assignments,
+        );
+        // A new id sorts before zookeeper, but must not take its index.
+        let second = build(
+            BTreeMap::from([
+                ("example:beekeeper".to_owned(), profession("example:b")),
+                ("example:zookeeper".to_owned(), profession("example:a")),
+            ]),
+            Some(&first),
+            &mut assignments,
+        );
+        assert_eq!(second.by_id.get("example:zookeeper"), Some(&FIRST));
+        assert_eq!(second.by_id.get("example:beekeeper"), Some(&(FIRST + 1)));
+        assert_eq!(
+            second.professions[0].as_ref().map(|p| p.name),
+            Some("zookeeper")
+        );
+        // Removing a profession keeps its slot for live villagers, but no
+        // longer offers it as a new job.
+        let third = build(
+            BTreeMap::from([("example:beekeeper".to_owned(), profession("example:b"))]),
+            Some(&second),
+            &mut assignments,
+        );
+        assert_eq!(
+            third.professions[0].as_ref().map(|p| p.id),
+            Some("example:zookeeper")
+        );
+        assert!(!third.by_id.contains_key("example:zookeeper"));
     }
 
     #[test]
