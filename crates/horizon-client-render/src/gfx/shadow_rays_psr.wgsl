@@ -53,9 +53,9 @@ var<private> glass_frost: vec3<f32>;
 // two. What is lost is made up by the light its bubbles scatter toward the eye: its frost's colour,
 // a deeper blue, lit as the face it entered by. A pillar shows what lies behind it, deep blue; a
 // hill of ice or packed ice is opaque.
-// Their extinction a block: shadow_rays_hw.wgsl `ICE_EXTINCTION`.
+// Their extinction a block: shadow_rays_hw.wgsl `ice_extinction`.
 fn ice_body(entry: vec3<f32>, n: vec3<f32>, through: vec3<f32>, inside: f32) -> vec3<f32> {
-    let sigma = select(ICE_EXTINCTION, PACKED_ICE_EXTINCTION, glass_ice > 1.5);
+    let sigma = ice_extinction(glass_ice > 1.5);
     let t = exp(-sigma * inside);
     let lit = sun_on(entry + n * 0.02, n) + hw_seen_light(entry, n);
     let scattered = glass_frost * vec3(0.75, 0.9, 1.0) * lit;
@@ -107,7 +107,15 @@ fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
     let g = vec4(glass_sigma, 0.0);
     let entry = ray * glass_at.w;
     var pos = entry - n * 0.002;
+    // Ice's faces are uneven (shadow_rays_hw.wgsl `ice_uneven`): the ray bends by the face as it
+    // stands there, packed ice's rougher.
+    let uneven = select(0.0, select(0.45, 0.8, glass_ice > 1.5), glass_ice > 0.0 && ice_cloudy());
+    let origin = rt.camera.xyz + rt.fraction.xyz;
     var dir = refract(ray, n, 1.0 / GLASS_INDEX);
+    if uneven > 0.0 {
+        let leaned = refract(ray, ice_uneven(entry + origin, n, uneven), 1.0 / GLASS_INDEX);
+        if dot(leaned, leaned) > 1e-6 && dot(leaned, n) < 0.0 { dir = leaned; }
+    }
     // The near wall (its Fresnel is the shader's): its colour over its thickness along the bent ray.
     var absorbed = exp(-g.rgb * GLASS_WALL / max(-dot(dir, n), 0.05));
     var out = false;
@@ -129,7 +137,11 @@ fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
         pos += dir * f.t;
         // The face's normal against the ray (the far side's points along it).
         let m = select(f.normal, -f.normal, dot(f.normal, dir) > 0.0);
-        let bent = refract(dir, m, GLASS_INDEX);
+        var bent = refract(dir, m, GLASS_INDEX);
+        if uneven > 0.0 && dot(bent, bent) >= 1e-6 {
+            let leaned = refract(dir, ice_uneven(pos + origin, m, uneven), GLASS_INDEX);
+            if dot(leaned, leaned) > 1e-6 && dot(leaned, m) < 0.0 { bent = leaned; }
+        }
         if dot(bent, bent) < 1e-6 {
             // Reflected back in off the wall, through its colour there and back.
             let w = exp(-g.rgb * GLASS_WALL / max(-dot(dir, m), 0.05));
@@ -156,7 +168,7 @@ fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
         beam = luminance(hw_light(pos, l, 4096.0));
     }
     if glass_ice > 0.0 {
-        let sigma = select(ICE_EXTINCTION, PACKED_ICE_EXTINCTION, glass_ice > 1.5);
+        let sigma = ice_extinction(glass_ice > 1.5);
         beam *= luminance(exp(-sigma * inside));
     }
     let h = hw_hit(pos, dir, 256.0);

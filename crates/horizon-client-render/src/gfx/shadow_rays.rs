@@ -1591,6 +1591,11 @@ impl ShadowRays {
             (&scratch, &light),
         ];
         // DLSS-RR's raw frames: one pass from `blocks` to `light`, the direct light added.
+        // Only the raw frames (`rr_raw`), unless `HORIZON_DLSS_RR_DENOISE=0`: the accumulated
+        // frames RR takes by default are denoised first, as every other view's. RR left their
+        // half-averaged light as grain and marbling in low light (a room lit by one torch) and
+        // dragged it into trails.
+        let raw = raw && (rr_raw() || !rr_denoise());
         if raw && self.denoise_raw.is_none() {
             use wgpu::util::DeviceExt;
             self.denoise_raw = Some(
@@ -1654,6 +1659,12 @@ fn edge_band() -> f64 {
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| (0.05..=0.9).contains(v))
         .unwrap_or(0.25)
+}
+/// Whether the view DLSS Ray Reconstruction takes keeps RT lighting's denoiser before it
+/// (`HORIZON_DLSS_RR_DENOISE=0`: RR alone, the pass-through).
+fn rr_denoise() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("HORIZON_DLSS_RR_DENOISE").is_ok_and(|v| v == "0"))
 }
 /// `ShadowRays::rr_raw`.
 fn rr_raw() -> bool {
