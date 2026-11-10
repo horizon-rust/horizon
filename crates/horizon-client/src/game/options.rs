@@ -707,7 +707,11 @@ impl Game<'_> {
     /// throttled when minimised, idle, or in a menu without a world.
     pub(super) fn framerate_limit(&self) -> i32 {
         let context = FrameContext {
-            inactivity: if self.settings.inactivity_fps_limit == "minimized" {
+            // In VR the head and the hands move without a key or the mouse: the AFK throttle
+            // (30 fps after a minute, 10 after ten) would drop a headset's frames.
+            inactivity: if self.settings.inactivity_fps_limit == "minimized"
+                || std::env::var_os("HORIZON_XR").is_some_and(|v| v == "1")
+            {
                 InactivityFpsLimit::Minimized
             } else {
                 InactivityFpsLimit::Afk

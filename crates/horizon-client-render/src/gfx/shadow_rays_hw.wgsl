@@ -898,7 +898,9 @@ fn hw_mirror(start: vec3<f32>, r: vec3<f32>) -> vec4<f32> {
     if h.t < 0.0 { return vec4(0.0); }
     let seen = start + r * h.t;
     let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
-    return vec4(h.through * hw_surface(h, seen, light) + hw_water_glint(h, r), 1.0);
+    // a: 1 plus the hit's distance (terrain.wgsl `rt_water_at` dims a reflection seen from under
+    // the water over it); every reader takes a > 0.5 as a hit.
+    return vec4(h.through * hw_surface(h, seen, light) + hw_water_glint(h, r), 1.0 + max(h.t, 0.0));
 }
 // The rain's ripples (slopes) on the water's top at world `world`, `t` blocks from the camera,
 // where the rain falls on it (terrain.wgsl `rt_rain_ripples`).

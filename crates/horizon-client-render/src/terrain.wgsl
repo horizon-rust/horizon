@@ -2074,11 +2074,16 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
         let body_lit = rt_sky(vec3(0.0, 1.0, 0.0)) * max(sky_seen, 0.3) + sun * max(globals.rt_light.y, 0.0);
         let body = body_lit * colour * vec3(0.206, 0.999, 0.903) * WATER_GLOW
             / (1.0 + 0.8 / max(globals.rt_light.y, 0.25));
-        var traced_below = false;
-        if globals.rt_motion.w > 1.5 {
-            traced_below = rt_reflection(in.clip, in.pos).a > 0.5;
+        // A traced hit (its distance in a, past 1) shows through the water it crossed back down,
+        // the body's light in its place: one teal mirror, darker only over a bed a few blocks off.
+        var below = vec4(0.0);
+        if globals.rt_motion.w > 1.5 { below = rt_reflection(in.clip, in.pos); }
+        if below.a > 0.5 {
+            let back = exp(-absorption * max(below.a - 1.0, 0.0));
+            reflected = below.rgb * back + body * (1.0 - back);
+        } else {
+            reflected = body;
         }
-        if !traced_below { reflected = body; }
         if sin_t >= 1.0 {
             under_fresnel = 1.0;
         } else {
