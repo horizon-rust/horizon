@@ -357,13 +357,17 @@ impl Keyboard {
             .into_iter()
             .map(|(job, what)| HintRow::new([Glyph::menu(job, glyphs)], what).text())
             .collect();
+        // Smaller when it would run past the panel (a font with wider letters, the pack's).
+        let line = line.join("   ");
+        let wide = ui.measure(Face::Regular, ui_theme::small(), &line);
+        let size = ui_theme::small() * (width / wide).min(1.0);
         ui.text_centered(
             Face::Regular,
-            ui_theme::small(),
+            size,
             x0 + width / 2.0,
             y0 + 5.0 * (KEY_H + GAP) + 2.0,
             color::muted(),
-            &line.join("   "),
+            &line,
         );
     }
 }

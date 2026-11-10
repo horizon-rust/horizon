@@ -188,7 +188,7 @@ struct Cached {
 }
 /// Glyphs and corner masks rasterized into the atlas region `horizon/ui-text`.
 struct Cache {
-    /// None: no fonts were given, and text draws nothing.
+    /// None: no fonts were given, and text comes from the pack's font (`pack_layout`).
     fonts: Option<Fonts>,
     entries: HashMap<Key, Cached>,
     shelf: (u32, u32, u32),
@@ -372,6 +372,49 @@ pub struct Ui<'a> {
     pub density: f32,
     scale: f32,
 }
+/// Vanilla's line: the baseline sits this many font pixels below its top, and the line is
+/// [`PACK_LINE`] tall.
+const PACK_ASCENT: f32 = 7.0;
+const PACK_LINE: f32 = 9.0;
+/// A design-system size `px` sets a line about this much taller than itself.
+const PACK_LINE_PER_PX: f32 = 1.2;
+/// The whole-pixel scale the pack's font is drawn at for text of `px` physical pixels: the
+/// nearest to the line it would have in the design system's fonts.
+fn pack_scale(px: f32) -> f32 {
+    (px * PACK_LINE_PER_PX / PACK_LINE).round().max(1.0)
+}
+/// `text` laid out in the resource pack's own font, `px` physical pixels in size: what the
+/// overlays draw when `menu_style` gives them no fonts (vanilla's look), so the on-screen
+/// keyboard's keys keep their labels. Returns the width, ascent, descent and glyph quads, as
+/// `Ui::layout`.
+fn pack_layout(
+    atlas: &HudAtlas,
+    px: f32,
+    text: &str,
+    draw: bool,
+) -> (f32, f32, f32, Vec<(f32, f32, f32, f32, Rect)>) {
+    let gui = pack_scale(px);
+    let (mut pen, mut quads) = (0.0, Vec::new());
+    for ch in unformatted(text) {
+        let g = atlas.font.glyph(ch);
+        if let (true, Some(rect)) = (draw, g.rect) {
+            let (x, y) = (
+                (pen + g.left * gui).round(),
+                ((g.top - PACK_ASCENT) * gui).round(),
+            );
+            quads.push((
+                x,
+                y,
+                (g.right - g.left) * gui,
+                (g.bottom - g.top) * gui,
+                rect,
+            ));
+        }
+        pen += g.advance * gui;
+    }
+    let ascent = PACK_ASCENT * gui;
+    (pen, ascent, ascent - PACK_LINE * gui, quads)
+}
 impl<'a> Ui<'a> {
     /// `cursor` is in GUI pixels, like every screen's input.
     pub fn new(atlas: &'a HudAtlas, batch: &'a mut HudBatch, cursor: (f32, f32)) -> Self {
@@ -514,7 +557,7 @@ impl<'a> Ui<'a> {
         let gui = self.scale;
         with_cache(atlas, |c| {
             let Some(fonts) = &c.fonts else {
-                return (0.0, 0.0, 0.0, Vec::new());
+                return pack_layout(atlas, px, text, draw);
             };
             let scale = fonts.scale(face, px);
             let (ascent, descent) = {
@@ -894,6 +937,53 @@ mod tests {
         // A pack's lang gives `menu.options` as "§6Options..." (vanilla draws it gold).
         assert_eq!(drawn(&atlas, "§6Options..."), drawn(&atlas, "Options..."));
         assert_eq!(drawn(&atlas, "§lA§r§"), drawn(&atlas, "A"));
+        reset_atlas();
+    }
+
+    #[test]
+    fn with_no_fonts_given_text_is_the_packs_font_at_the_asked_size() {
+        let root = std::env::temp_dir().join(format!("hz-ui-nofonts-{}", std::process::id()));
+        let font = root.join("assets/minecraft/font");
+        let tex = root.join("assets/minecraft/textures/font");
+        std::fs::create_dir_all(&font).unwrap();
+        std::fs::create_dir_all(&tex).unwrap();
+        std::fs::write(
+            font.join("default.json"),
+            r#"{"providers":[{"type":"bitmap","file":"minecraft:font/a.png","ascent":7,"chars":["a"]}]}"#,
+        )
+        .unwrap();
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, 8, 8);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&[255; 256])
+            .unwrap();
+        std::fs::write(tex.join("a.png"), png).unwrap();
+        reset_atlas();
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        let a = atlas.font.glyph('a');
+        let uv = a.rect.map(|r| [r.u0, r.v0]).expect("the pack draws a");
+        // A key's label: every letter is drawn, the pack's bitmap, as wide as the pack says, at
+        // the whole-pixel scale nearest the asked size (23 px: a 27.6 px line, 3 font pixels).
+        assert_eq!(pack_scale(23.0), 3.0);
+        assert_eq!(
+            pack_scale(19.0),
+            3.0,
+            "a 22.8 px line is nearer three than two"
+        );
+        assert_eq!(pack_scale(2.0), 1.0, "never below the font's own pixels");
+        let (w, ascent, descent, quads) = pack_layout(&atlas, 23.0, "aa", true);
+        assert_eq!(quads.len(), 2);
+        assert!(quads.iter().all(|q| [q.4.u0, q.4.v0] == uv));
+        assert!((w - 2.0 * a.advance * 3.0).abs() < 0.01, "{w}");
+        // Vanilla's 9-pixel line, its baseline 7 down.
+        assert_eq!((ascent, descent), (21.0, -6.0));
+        // Measuring draws nothing but keeps the width.
+        let (mw, _, _, none) = pack_layout(&atlas, 23.0, "aa", false);
+        assert!(none.is_empty() && mw == w);
         reset_atlas();
     }
 
