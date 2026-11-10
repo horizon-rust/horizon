@@ -30,7 +30,7 @@ pub(super) const SHADE: [u8; 2] = [110, 70];
 /// highlight a container draws round a slot under the cursor (behind and over the item, 4 px
 /// round it).
 pub const SMALL_CELL: f32 = 18.0;
-const SLOT: &str = "gui/sprites/container/slot";
+pub(super) const SLOT: &str = "gui/sprites/container/slot";
 const HIGHLIGHT_BACK: &str = "gui/sprites/container/slot_highlight_back";
 const HIGHLIGHT_FRONT: &str = "gui/sprites/container/slot_highlight_front";
 const HIGHLIGHT: f32 = 24.0;
@@ -53,12 +53,12 @@ const PLATE_PAD: f32 = 2.0;
 /// An advancement task frame, square, 26 px; its item 5 px in.
 pub const FRAME: f32 = 26.0;
 const FRAME_INSET: f32 = 5.0;
-const TASK_FRAME: [&str; 2] = [
+pub(super) const TASK_FRAME: [&str; 2] = [
     "gui/sprites/advancements/task_frame_unobtained",
     "gui/sprites/advancements/task_frame_obtained",
 ];
-/// A slot that can't run, or an empty one: its frame at half alpha.
-const FADED_FRAME: u32 = colour(0xFFFFFF, 128);
+/// A slot that can't run, or an empty one: its frame or inventory slot at half alpha.
+pub(super) const FADED_FRAME: u32 = colour(0xFFFFFF, 128);
 
 /// The smallest tile the ring takes on vanilla's surfaces: a whole frame.
 pub fn least_tile() -> f32 {
@@ -140,14 +140,15 @@ fn draw_cells(
         let live = dial.available[slot];
         let (ix, iy) = (x + inset, y + inset);
         let around = [ix - HIGHLIGHT_OUT, iy - HIGHLIGHT_OUT];
-        if small {
-            ui::blit_sprite(batch, atlas, SLOT, x, y, size, size, u32::MAX);
+        // An empty slot, or one that can't run, is faded: a frame or an inventory slot alike.
+        let faded = item.is_empty() || !live;
+        let tint = if faded { FADED_FRAME } else { u32::MAX };
+        let sprite = if small {
+            SLOT
         } else {
-            let faded = item.is_empty() || !live;
-            let tint = if faded { FADED_FRAME } else { u32::MAX };
-            let frame = TASK_FRAME[chosen as usize];
-            ui::blit_sprite(batch, atlas, frame, x, y, size, size, tint);
-        }
+            TASK_FRAME[chosen as usize]
+        };
+        ui::blit_sprite(batch, atlas, sprite, x, y, size, size, tint);
         if chosen {
             let [hx, hy] = around;
             ui::blit_sprite(

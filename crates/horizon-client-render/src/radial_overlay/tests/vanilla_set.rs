@@ -4,7 +4,7 @@
 use super::super::vanilla::{self as look, GREY, SHADE};
 use super::super::*;
 use super::{ALL, VIEWS, atlas, colours_in, dial, draw, inside, rooms, shown};
-use crate::hud_kit::room::Keep;
+use crate::hud_kit::{icon::NoItems, room::Keep};
 use crate::lang;
 use crate::menu_style::{self, Surfaces};
 
@@ -401,5 +401,72 @@ fn every_default_item_shows_its_name_in_the_hub_whatever_the_toggles() {
                 }
             }
         });
+    });
+}
+
+/// The test atlas with stand-ins for the slots' sprites, so their quads (and tints) are drawn.
+fn atlas_with_slots() -> HudAtlas {
+    let mut atlas = atlas();
+    let rect = crate::hud::Rect {
+        u0: 0.0,
+        u1: 1.0,
+        v0: 0.0,
+        v1: 1.0,
+        w: 18,
+        h: 18,
+    };
+    for sprite in [look::SLOT, look::TASK_FRAME[0], look::TASK_FRAME[1]] {
+        atlas.sprites.insert(sprite.to_owned(), rect);
+    }
+    atlas
+}
+
+#[test]
+fn an_empty_or_unavailable_slot_is_faded_in_frames_and_inventory_slots_alike() {
+    vanilla(|| {
+        let atlas = atlas_with_slots();
+        let pages = Pages::default();
+        let page = pages.page(0);
+        let live = (0..SLOTS).find(|s| !page.slot(*s).is_empty()).unwrap();
+        let empty = (0..SLOTS).find(|s| page.slot(*s).is_empty()).unwrap();
+        let blocked = (live + 1..SLOTS)
+            .find(|s| !page.slot(*s).is_empty())
+            .unwrap();
+        // Roomy: frames. 320x180 under a boss bar with both HUD rows: inventory slots.
+        let (_, _, tight) = with_rows(320.0, 180.0)
+            .into_iter()
+            .find(|(top, bars, _)| *bars == 1 && *top == 180.0 - 59.0)
+            .unwrap();
+        for (size, room, small) in [
+            ([427, 240], Room::new(427.0, 240.0), false),
+            ([320, 180], tight, true),
+        ] {
+            let lay = Layout::new(size[0] as f32, size[1] as f32, &room);
+            assert_eq!(lay.tile < look::least_tile(), small, "{size:?}");
+            let seen = Seen {
+                page: 0,
+                selected: None,
+                waiting: false,
+            };
+            let mut available = ALL;
+            available[blocked] = false;
+            let d = dial(&pages, &room, seen, available);
+            let mut batch = HudBatch::new(size);
+            let clock = Clock::new(Instant::now(), true);
+            draw_overlay(&mut batch, &atlas, &NoItems, &d, &shown(seen), clock);
+            let tints = |slot| colours_in(&batch, look::cell_rect(&lay, slot));
+            assert!(
+                !tints(live).contains(&look::FADED_FRAME),
+                "{size:?}: a live slot faded"
+            );
+            assert!(
+                tints(blocked).contains(&look::FADED_FRAME),
+                "{size:?}: an unavailable slot not faded"
+            );
+            assert!(
+                tints(empty).contains(&look::FADED_FRAME),
+                "{size:?}: an empty slot not faded"
+            );
+        }
     });
 }
