@@ -6,8 +6,8 @@
 //! The layer above gives it once at startup ([`install`]), before the first frame; the
 //! official game gives Horizon's design system (`docs/design-system.md`). With none given, the
 //! screens draw in [`NEUTRAL`]: vanilla's own surfaces (its widget sprites and list backgrounds),
-//! its greys and chat colours, and no text where they would use their own fonts. A read is one
-//! atomic load, and only those screens make it.
+//! its greys and chat colours, and the resource pack's font where they would use their own. A
+//! read is one atomic load, and only those screens make it.
 use std::sync::OnceLock;
 
 /// Colours as `0xRRGGBB`, sizes in dp (the launcher's logical pixels).
@@ -16,7 +16,7 @@ pub struct MenuStyle {
     pub settings: SettingsColours,
     pub overlay: OverlayColours,
     pub sizes: Sizes,
-    /// The overlays' TrueType faces; none: they draw no text.
+    /// The overlays' TrueType faces; none: they draw their text in the resource pack's font.
     pub fonts: Option<Fonts>,
     /// What the settings pages are drawn with: their panels, lists and controls.
     pub surfaces: Surfaces,
