@@ -54,6 +54,17 @@ const REMIX_UNITS: f32 = 200.0;
 /// The local tone mapping exposure at which Remix's own scale is the scene's, 1.
 const REMIX_EXPOSURE: f32 = 0.214_057_28;
 
+/// `PostParams::INDOOR_EV_MAX`, or `HORIZON_INDOOR_EV_MAX`'s stops (-2 to 6).
+fn indoor_ev_max() -> f32 {
+    static TOP: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *TOP.get_or_init(|| {
+        std::env::var("HORIZON_INDOOR_EV_MAX")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| (-2.0..=6.0).contains(v))
+            .unwrap_or(PostParams::INDOOR_EV_MAX)
+    })
+}
 impl PostParams {
     /// Remix's rtx.conf values.
     pub const REMIX: Self = Self {
@@ -97,7 +108,9 @@ impl PostParams {
     /// indoors the eye adapts to the room's own light whatever the hour. A room lit by lamps
     /// averages about 2^-5 paper white, which the key (exposure.wgsl, 2^-2.6) wants 2.4 stops up:
     /// under the dusk cap it showed three stops too dark, its bounced light crushed to black.
-    pub const INDOOR_EV_MAX: f32 = 4.0;
+    /// Not higher: an unlit cave would be lifted into its own noise.
+    /// `HORIZON_INDOOR_EV_MAX` sets another (`indoor_ev_max`).
+    pub const INDOOR_EV_MAX: f32 = 3.0;
 
     /// These with the exposure's top raised toward `INDOOR_EV_MAX` as the camera is shut in from
     /// the sky: by its vanilla sky light level `sky` (0..15), from 13 (a block from the open sky:
@@ -107,7 +120,7 @@ impl PostParams {
         let t = ((13.0 - sky as f32) / 7.0).clamp(0.0, 1.0);
         let inside = t * t * (3.0 - 2.0 * t);
         Self {
-            ev_max: self.ev_max + (Self::INDOOR_EV_MAX - self.ev_max).max(0.0) * inside,
+            ev_max: self.ev_max + (indoor_ev_max() - self.ev_max).max(0.0) * inside,
             ..self
         }
     }
@@ -1075,11 +1088,11 @@ mod tests {
             assert_eq!(situation.indoors(15), situation);
             assert_eq!(situation.indoors(13), situation);
             // Well inside, the room's top, at any hour.
-            assert_eq!(situation.indoors(0).ev_max, 4.0);
-            assert_eq!(situation.indoors(6).ev_max, 4.0);
+            assert_eq!(situation.indoors(0).ev_max, 3.0);
+            assert_eq!(situation.indoors(6).ev_max, 3.0);
             // Between, between; never lower than the open air's, and nothing else changes.
             let half = situation.indoors(10);
-            assert!(half.ev_max > situation.ev_max && half.ev_max < 4.0);
+            assert!(half.ev_max > situation.ev_max && half.ev_max < 3.0);
             assert_eq!(half.ev_min, situation.ev_min);
             assert_eq!(half.exposure, situation.exposure);
         }
