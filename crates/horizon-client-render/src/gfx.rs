@@ -9197,11 +9197,15 @@ impl Renderer {
     }
 
     /// Whether the game may pose ordinary entity models on the GPU (`Frame::skin`).
-    /// Standard packs need every bridge stage; native packs, frame generation and
-    /// native observers of the CPU entity stream retain their existing fallback.
+    /// Standard packs need every bridge stage; native packs, frame generation, RT lighting's
+    /// hardware rays and native observers of the CPU entity stream retain their existing fallback.
     pub fn skins_entities(&self) -> bool {
         self.entity_skin.is_some()
             && !self.frame_gen.on
+            // RT lighting's hardware rays trace the entities' quads from the CPU stream
+            // (`hw_finish`): posed on the GPU, a mob casts no traced shadow, shows in no
+            // reflection and gives DLSS Ray Reconstruction no albedo.
+            && !(self.rt_lighting && self.hw_rays.is_some())
             && self.pack_post.as_ref().is_none_or(|(_, post)| {
                 post.as_ref().is_some_and(|post| post.skins_entities())
                     && !native_render::render_needs().entity_spans
@@ -10605,10 +10609,11 @@ impl Renderer {
         {
             self.shadow_rays.set_raw_view(rr_now.then_some(0));
             if let Some(pass) = &mut self.sun_pass
-                && self.dlss_eval.never_rest != rr_now
+                && self.dlss_eval.never_rest != (rr_now && shadow_rays::ShadowRays::rr_raw())
             {
-                pass.set_never_rest(rr_now);
-                self.dlss_eval.never_rest = rr_now;
+                let never = rr_now && shadow_rays::ShadowRays::rr_raw();
+                pass.set_never_rest(never);
+                self.dlss_eval.never_rest = never;
             }
             if !rr_now {
                 self.dlss_eval.skipped();

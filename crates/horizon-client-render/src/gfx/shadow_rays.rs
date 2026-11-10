@@ -1058,6 +1058,16 @@ impl ShadowRays {
         }
     }
 
+    /// Whether DLSS Ray Reconstruction's view is traced raw (`HORIZON_DLSS_RR_RAW=1`): every texel's
+    /// bounce traced every frame and nothing accumulated, as NVIDIA's guide asks. Measured on an
+    /// RTX 4090 at 1720x720: 28.6 ms a frame against 10.4 without RR, the bounce no longer resting in
+    /// turns being most of the kernel's cost. Without it (the default) the kernel accumulates and
+    /// rests as for every other view, and RR takes the à-trous denoiser's and the TAA's place only.
+    #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+    pub fn rr_raw() -> bool {
+        rr_raw()
+    }
+
     /// The view DLSS Ray Reconstruction denoises this frame (none: every view as before): its
     /// kernel writes this frame's sample alone, without the accumulation or the bounced light's
     /// turns (shadow_rays.wgsl `raw_frame`, `rt.mode.w`'s bit 8), and its denoiser filters nothing
@@ -1328,7 +1338,7 @@ impl ShadowRays {
                 },
                 (sun_pass.as_ref().map_or(0, |(bits, _)| *bits)
                     | if self.skip & WHITE_NOISE != 0 { 4 } else { 0 }
-                    | if raw { 8 } else { 0 }) as f32,
+                    | if raw && rr_raw() { 8 } else { 0 }) as f32,
             ],
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
             motion: match last {
@@ -1645,6 +1655,12 @@ fn edge_band() -> f64 {
         .filter(|v| (0.05..=0.9).contains(v))
         .unwrap_or(0.25)
 }
+/// `ShadowRays::rr_raw`.
+fn rr_raw() -> bool {
+    static RAW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *RAW.get_or_init(|| std::env::var("HORIZON_DLSS_RR_RAW").as_deref() == Ok("1"))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
