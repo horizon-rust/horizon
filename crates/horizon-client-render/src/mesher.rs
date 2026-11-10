@@ -2588,9 +2588,16 @@ fn bilinear(c: &[(TerrainVertex, [f32; 2]); 4], s: f32, t: f32) -> (TerrainVerte
 pub fn rt_ice_kind(name: &str) -> u8 {
     match name {
         "ice" => 1,
-        "packed_ice" => 2,
+        "packed_ice" if rt_packed_ice_clear() => 2,
         _ => 0,
     }
+}
+/// Whether RT lighting draws packed ice as milky translucent ice (`HORIZON_RT_PACKED_ICE=1`).
+/// Off by default: it is the opaque block vanilla draws, since whole walls of it showed the
+/// terrain behind them.
+pub fn rt_packed_ice_clear() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_PACKED_ICE").is_ok_and(|v| v == "1"))
 }
 /// Whether RT lighting draws its own ice (`rt_ice_kind`): `HORIZON_RT_ICE=0` keeps the pack's.
 pub fn rt_ice_on() -> bool {

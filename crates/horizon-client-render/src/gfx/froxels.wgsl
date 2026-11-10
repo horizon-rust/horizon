@@ -56,7 +56,7 @@ struct Fx {
     // (mod 65536: the index of its own sample in `sky_sample`'s sequence).
     history: vec4<f32>,
     // The depth's size in pixels, z: 1 when the air ends at the froxels' reach whatever the fogs
-    // (`steady_air`).
+    // (`steady_air`), w: 1 when bright outliers are held to the neighbourhood (`outliers_held`).
     size: vec4<f32>,
     // xyz: where the view's rays start (camera-relative; the view bobbing moves it off the camera),
     // this frame's and the last frame's.
@@ -749,7 +749,9 @@ fn cs_blend(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     // Bright outliers (a ray through a gap) are held to what the history shows, beyond a few
     // times its light, so one lucky ray doesn't flash.
-    let limit = max(luminance(old.rgb) * 6.0, 0.5);
+    // The floor follows the neighbourhood's light (`size.w`; 0.5 before, far above a night's).
+    let floor_at = select(0.5, luminance(mean) * 6.0 + 1e-5, fx.size.w > 0.5);
+    let limit = max(luminance(old.rgb) * 6.0, floor_at);
     let lum = luminance(fresh);
     if count > 0.0 && lum > limit { fresh *= limit / lum; }
     let out = mix(old.rgb, fresh, 1.0 / n);
