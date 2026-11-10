@@ -495,7 +495,7 @@ struct Globals {
     rt_moon: [f32; 4],
     /// The Earth's curvature (`Renderer::earth_curvature`): x the square of the radius it starts
     /// at (`lod::earth_drop`; -1 off), y how far the sea's horizon dips (`lod::horizon_dip`); z
-    /// RT lighting's ice layers (`Renderer::set_ice_layers`); w unused.
+    /// RT lighting's ice layers (`Renderer::set_ice_layers`); w its surf and wet shore on (`rt_shore`).
     earth: [f32; 4],
     /// The shooting stars' shower (terrain.wgsl `meteor_make`, `sky_stars::Meteors`): its radiant
     /// and zenithal hourly rate; its meteors' speed and population index, and the sporadic rate.
@@ -2483,6 +2483,15 @@ const COVER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 /// Whether the rays look for water or glass in front of a texel only where the translucent
 /// terrain's cover says some lies (shadow_rays_hw.wgsl `hw_reflect`): on unless
 /// `HORIZON_RT_PSR_COVER=0`, which traces that ray from every texel as before.
+/// `HORIZON_RT_SHORE=1`: RT lighting's surf on a beach's shallows and the wet sand at the water's
+/// edge (terrain.wgsl `rt_shore`, `globals.earth.w`), off by default: the surf's veil hid the bed
+/// and its caustics over a whole terrace of sand.
+fn rt_shore() -> f32 {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    f32::from(u8::from(*ON.get_or_init(|| {
+        std::env::var("HORIZON_RT_SHORE").is_ok_and(|v| v == "1")
+    })))
+}
 fn psr_cover() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_RT_PSR_COVER").map_or(true, |v| v != "0"))
@@ -11018,9 +11027,9 @@ impl Renderer {
                     (r * r) as f32,
                     lod::horizon_dip(frame.camera.y) as f32,
                     self.ice_layers,
-                    0.0,
+                    rt_shore(),
                 ],
-                None => [-1.0, 0.0, self.ice_layers, 0.0],
+                None => [-1.0, 0.0, self.ice_layers, rt_shore()],
             },
             rt_shower: meteors.radiant,
             rt_stream: meteors.stream,

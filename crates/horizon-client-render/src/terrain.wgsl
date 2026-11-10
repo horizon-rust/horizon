@@ -73,8 +73,8 @@ struct Globals {
     rt_moon: vec4<f32>,
     // The Earth's curvature (`earth_drop`): x the square of the radius it starts at (below 0 off),
     // y how far the sea's horizon dips under the horizontal, in radians; z RT lighting's ice and
-    // packed ice sprite layers (`rt_ice`, ice + 4096 packed ice, -1 none); w the block textures'
-    // anisotropic taps (Texture Filtering Anisotropic: 2 to 8; 0 off).
+    // packed ice sprite layers (`rt_ice`, ice + 4096 packed ice, -1 none); w whether the surf
+    // and the wet shore are on (1; gfx.rs `rt_shore`).
     earth: vec4<f32>,
     // The shooting stars' shower (`meteor_make`): its radiant (equatorial, xyz) and zenithal hourly
     // rate (w); its meteors' speed (km/s, x) and population index (y), the sporadic rate (z).
@@ -2142,7 +2142,8 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     // metres, white water breaks in bands rolling in to the shore (a crest every nine seconds,
     // reaching the shallows later), a line of it at the very edge, torn into lace by the wind: a
     // white diffuse layer on the water, lit by the sky and the sun, hiding what lies under it.
-    if sea > 0.75 && bottom > 0.0 && face.y > 0.5 {
+    // (Off unless `HORIZON_RT_SHORE=1`, `globals.earth.w`: its veil hid the bed and its caustics.)
+    if globals.earth.w > 0.5 && sea > 0.75 && bottom > 0.0 && face.y > 0.5 {
         let floor_depth = max(bottom - distance, 0.0) * abs(ray.y);
         let band = (1.0 - smoothstep(0.1, 2.0, floor_depth)) * smoothstep(0.75, 0.95, sea);
         if band > 0.0 {
@@ -2529,7 +2530,8 @@ fn rt_wet_rain(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2
 // seconds. 0 dry to 1 soaked; none past 64 blocks or out of the map. Eight look-ups of the map at
 // most, on those tops alone.
 fn rt_shore(world: vec3<f32>, geo: vec3<f32>, pos: vec3<f32>) -> f32 {
-    if geo.y < 0.5 || dot(pos, pos) > 4096.0 { return 0.0; }
+    // Off unless `HORIZON_RT_SHORE=1` (`globals.earth.w`).
+    if globals.earth.w < 0.5 || geo.y < 0.5 || dot(pos, pos) > 4096.0 { return 0.0; }
     let c = vec2<i32>(floor(world.xz));
     let own = rain_cell(c);
     let s = rain_surface(own);
