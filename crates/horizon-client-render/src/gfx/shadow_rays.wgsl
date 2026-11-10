@@ -77,6 +77,11 @@ struct Rt {
 fn pass_ran(bit: u32) -> bool {
     return (u32(rt.mode.w) & bit) != 0u;
 }
+// DLSS Ray Reconstruction's raw frames (`rt.mode.w`'s bit 8, shadow_rays.rs `raw_view`): this
+// frame's sample alone at every texel, neither accumulated nor resting in turns, for RR to denoise.
+fn raw_frame() -> bool {
+    return (u32(rt.mode.w) & 8u) != 0u;
+}
 // Whether this thread's `trace` is for the sun pass's own texel (the sharp zone: `cs_shadow`),
 // not a sparse block's corner traced for its neighbours (`cs_sparse`).
 var<private> sun_from_pass: bool = false;
@@ -1859,7 +1864,7 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         // seen, or past the grid's band, rests in turns as before (each frame's GI is most of
         // the kernel's cost).
         let cut = antilag_in(textureLoad(last_direct, back.xy, 0).a);
-        rest = rest && back.z == 1 && !cut && (SKIP & 16u) == 0u;
+        rest = rest && back.z == 1 && !cut && (SKIP & 16u) == 0u && !raw_frame();
         sky_rested = rest;
         if rest {
             sky = vec4(textureLoad(last_blocks, back.xy, 0).rgb, textureLoad(last_mask, back.xy, 0).b);
@@ -2362,7 +2367,9 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
             gi_out_b = s.gi_b;
         }
     }
-    if rt.mode.x > 0.5 && !taken { v = accumulate(texel, v); }
+    if rt.mode.x > 0.5 && !taken && !raw_frame() { v = accumulate(texel, v); }
+    // A raw frame (`raw_frame`): the moving caster's mark off the face, as `accumulate` takes it.
+    if rt.mode.x > 0.5 && !taken && raw_frame() { v.direct.a = floor(v.direct.a); }
     if DEBUG == 3u { v.rays = vec4(textureLoad(depth, pixel_of(texel), 0) * 20.0 + 0.25); }
     if all(vec2<u32>(texel) < textureDimensions(mask)) {
         v.rays = finite4(v.rays);

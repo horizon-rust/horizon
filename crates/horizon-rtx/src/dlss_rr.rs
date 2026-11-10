@@ -365,6 +365,49 @@ pub mod ffi {
         pub const SPECULAR_MOTION_VECTORS: &CStr = c"GBuffer.SpecularMvec";
         pub const WORLD_TO_VIEW: &CStr = c"WorldToViewMatrix";
         pub const VIEW_TO_CLIP: &CStr = c"ViewToClipMatrix";
+        pub const TONEMAPPER_TYPE: &CStr = c"TonemapperType";
+        pub const INDICATOR_INVERT_X: &CStr = c"DLSS.Indicator.Invert.X.Axis";
+        pub const INDICATOR_INVERT_Y: &CStr = c"DLSS.Indicator.Invert.Y.Axis";
+        /// The inputs' sub-rectangle origins, which `NGX_VULKAN_EVALUATE_DLSSD_EXT` always sets
+        /// (0, 0 for whole images), in the SDK's own spellings.
+        pub const SUBRECT_BASES: [(&CStr, &CStr); 9] = [
+            (
+                c"DLSS.Input.Color.Subrect.Base.X",
+                c"DLSS.Input.Color.Subrect.Base.Y",
+            ),
+            (
+                c"DLSS.Input.Depth.Subrect.Base.X",
+                c"DLSS.Input.Depth.Subrect.Base.Y",
+            ),
+            (
+                c"DLSS.Input.MV.Subrect.Base.X",
+                c"DLSS.Input.MV.Subrect.Base.Y",
+            ),
+            (
+                c"DLSS.Input.Translucency.Subrect.Base.X",
+                c"DLSS.Input.Translucency.Subrect.Base.Y",
+            ),
+            (
+                c"DLSS.Input.Bias.Current.Color.Subrect.Base.X",
+                c"DLSS.Input.Bias.Current.Color.Subrect.Base.Y",
+            ),
+            (
+                c"DLSS.Input.DiffuseAlbedo.Subrect.Base.X",
+                c"DLSS.Input.DiffuseAlbedo.Subrect.Base.Y",
+            ),
+            (
+                c"DLSS.Input.SpecularAlbedo.Subrect.Base.X",
+                c"DLSS.Input.SpecularAlbedo.Subrect.Base.Y",
+            ),
+            (
+                c"DLSS.Input.Normals.Subrect.Base.X",
+                c"DLSS.Input.Normals.Subrect.Base.Y",
+            ),
+            (
+                c"DLSS.Input.Roughness.Subrect.Base.X",
+                c"DLSS.Input.Roughness.Subrect.Base.Y",
+            ),
+        ];
 
         pub const RR_AVAILABLE: &CStr = c"SuperSamplingDenoising.Available";
         pub const RR_NEEDS_UPDATED_DRIVER: &CStr = c"SuperSamplingDenoising.NeedsUpdatedDriver";
@@ -1162,6 +1205,15 @@ impl DlssRr {
                 or_one(inputs.exposure_scale),
             );
             ffi::NVSDK_NGX_Parameter_SetF(p, n::FRAME_TIME_DELTA_MS.as_ptr(), inputs.frame_time_ms);
+            // The rest the helper sets: whole images (no input sub-rectangles), the string tone
+            // mapper (0, the helper's default), the dev DLL's overlay axes as they are.
+            for (x, y) in n::SUBRECT_BASES {
+                ffi::NVSDK_NGX_Parameter_SetUI(p, x.as_ptr(), 0);
+                ffi::NVSDK_NGX_Parameter_SetUI(p, y.as_ptr(), 0);
+            }
+            ffi::NVSDK_NGX_Parameter_SetUI(p, n::TONEMAPPER_TYPE.as_ptr(), 0);
+            ffi::NVSDK_NGX_Parameter_SetI(p, n::INDICATOR_INVERT_X.as_ptr(), 0);
+            ffi::NVSDK_NGX_Parameter_SetI(p, n::INDICATOR_INVERT_Y.as_ptr(), 0);
             check("NVSDK_NGX_VULKAN_EvaluateFeature_C", {
                 ffi::NVSDK_NGX_VULKAN_EvaluateFeature_C(cmd, self.handle, p, None)
             })
@@ -1171,21 +1223,33 @@ impl DlssRr {
     /// Records the evaluation into a command buffer of its own, after `encoder`'s commands: the
     /// pattern `RawTlas::build` and `sun` use (wgpu records an encoder's commands at `finish`, so
     /// raw commands can't share one). Transitions `images` to what NGX reads (`RESOURCE`) and
-    /// `outputs` to storage in `encoder`, ends it into `split`, and returns a fresh encoder for
-    /// what follows; submit `split` in order before it.
+    /// `outputs` to storage in `encoder`, ends it into `split`, records the evaluation between two
+    /// full memory barriers, and leaves a fresh encoder in `encoder` for what follows; submit
+    /// `split` in order before it. dlss_wgpu records the same transitions, then the evaluation in
+    /// the same encoder (its wgpu records eagerly); NGX leaves each image in the layout it found,
+    /// which wgpu's tracker still believes.
     ///
     /// # Safety
     /// `inputs` holds the handles of `images` and `outputs` (`Image::of`), alive for the frame.
     pub unsafe fn record(
         &self,
         device: &wgpu::Device,
-        encoder: wgpu::CommandEncoder,
+        encoder: &mut wgpu::CommandEncoder,
         split: &mut Vec<wgpu::CommandBuffer>,
         images: &[&wgpu::Texture],
         outputs: &[&wgpu::Texture],
         inputs: &Inputs,
-    ) -> (wgpu::CommandEncoder, Result<(), Error>) {
-        let mut encoder = encoder;
+    ) -> Result<(), Error> {
+        // The device's functions, for the barriers (copied out: no wgpu lock is held while the
+        // encoder below is recorded).
+        // Safety: read only, dropped at once.
+        let raw_device = unsafe { device.as_hal::<Vulkan>() }.map(|d| d.raw_device().clone());
+        let Some(raw_device) = raw_device else {
+            return Err(Error {
+                call: "a Vulkan device",
+                result: ffi::RESULT_FAIL,
+            });
+        };
         let transitions = images
             .iter()
             .map(|t| wgpu::TextureTransition {
@@ -1202,17 +1266,47 @@ impl DlssRr {
             std::iter::empty::<wgpu::BufferTransition<&wgpu::Buffer>>(),
             transitions,
         );
-        split.push(encoder.finish());
+        let before = std::mem::replace(
+            encoder,
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Horizon frame, after DLSS Ray Reconstruction"),
+            }),
+        );
+        split.push(before.finish());
         let mut raw = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Horizon RTX: DLSS Ray Reconstruction"),
         });
         let mut result = Ok(());
+        // NGX records its own barriers, but which stages wgpu's transitions above wait for
+        // (shader stages) and which stages wgpu's next barriers start from are not NGX's: a full
+        // memory barrier on each side covers whatever NGX runs (compute, copies), at the cost of
+        // two barriers a frame.
+        let full = [vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)];
         // Safety: raw commands on the encoder's own command buffer, which holds nothing else;
         // the transitions above put every image where NGX expects it.
         unsafe {
             raw.as_hal_mut::<Vulkan, _, _>(|hal| {
                 result = match hal {
-                    Some(hal) => self.evaluate(hal.raw_handle(), inputs),
+                    Some(hal) => {
+                        let cb = hal.raw_handle();
+                        let barrier = || {
+                            raw_device.cmd_pipeline_barrier(
+                                cb,
+                                vk::PipelineStageFlags::ALL_COMMANDS,
+                                vk::PipelineStageFlags::ALL_COMMANDS,
+                                vk::DependencyFlags::empty(),
+                                &full,
+                                &[],
+                                &[],
+                            )
+                        };
+                        barrier();
+                        let evaluated = self.evaluate(cb, inputs);
+                        barrier();
+                        evaluated
+                    }
                     None => Err(Error {
                         call: "a Vulkan command encoder",
                         result: ffi::RESULT_FAIL,
@@ -1221,10 +1315,7 @@ impl DlssRr {
             });
         }
         split.push(raw.finish());
-        let next = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Horizon frame, after DLSS Ray Reconstruction"),
-        });
-        (next, result)
+        result
     }
 }
 
@@ -1244,10 +1335,11 @@ impl Drop for DlssRr {
     }
 }
 
-// Stage 1 (docs/rt-dlss-rr.md §6): NGX's extensions enabled when the window's instance and device
-// are made, NGX initialised on that device, and one feature instance at the window's size, made
-// again on resize and released before NGX shuts down. Nothing is evaluated yet. Every step logs
-// one line starting "DLSS-RR:", and every failure leaves the renderer as it is without RR.
+// Stages 1 and 5 (docs/rt-dlss-rr.md §6): NGX's extensions enabled when the window's instance and
+// device are made, NGX initialised on that device, one feature instance at the world's render size
+// (DLAA), made again when that size changes and released before NGX shuts down, and evaluated each
+// frame in place of the TAA resolve (`Session::evaluate`). Every step logs one line starting
+// "DLSS-RR:", and every failure leaves the renderer as it is without RR.
 
 /// Where NGX looks for its runtime DLL, and where it writes its own logs.
 #[derive(Clone, Debug)]
@@ -1552,15 +1644,43 @@ fn extensions_enabled(device: &wgpu::Device, paths: &Paths) -> bool {
 }
 
 /// Ray Reconstruction on the desktop window: NGX on the window's device and one feature instance
-/// at the window's size, in DLAA (render size = output size: the renderer has no upscaling path
-/// for RR yet). Nothing is evaluated yet. Dropping it releases the feature and, with the last
-/// `Arc<Ngx>`, shuts NGX down, before the device can go (both hold it).
+/// at the world's size, in DLAA (render size = output size: the renderer has no upscaling path
+/// for RR yet), evaluated once a frame (`evaluate`). Dropping it releases the feature and, with the
+/// last `Arc<Ngx>`, shuts NGX down, before the device can go (both hold it).
 pub struct Session {
     feature: Option<DlssRr>,
     ngx: Arc<Ngx>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     size: [u32; 2],
+    /// The feature was just made: its first evaluation resets (it has no history yet).
+    fresh: bool,
+    /// Evaluations so far, for the first one's log line.
+    evaluated: u64,
+}
+
+/// One frame's images for `Session::evaluate`, all at the session's size: wgpu views whose raw
+/// Vulkan handles NGX is given (`Image::of`).
+pub struct Frame<'a> {
+    /// What the raw handles' formats are looked up with.
+    pub adapter: &'a wgpu::Adapter,
+    /// The noisy scene, linear HDR (`IsHDR`), before the exposure (NGX's `AutoExposure`).
+    pub color: &'a wgpu::TextureView,
+    /// The hardware depth, reversed Z (`DepthInverted`).
+    pub depth: &'a wgpu::TextureView,
+    /// Render pixels toward last frame's position, unjittered (`MVJittered` 0, scale 1, 1).
+    pub motion: &'a wgpu::TextureView,
+    pub diffuse_albedo: &'a wgpu::TextureView,
+    pub specular_albedo: &'a wgpu::TextureView,
+    /// World-space normals, roughness in w (`DLSS.Roughness.Mode` packed).
+    pub normals: &'a wgpu::TextureView,
+    /// The denoised scene, a storage image (Rgba16Float).
+    pub output: &'a wgpu::TextureView,
+    /// The projection's jitter this frame in render pixels, as NGX takes it.
+    pub jitter: [f32; 2],
+    /// The history is wrong (a camera cut, frames without RR before this one).
+    pub reset: bool,
+    pub frame_time_ms: f32,
 }
 
 impl Session {
@@ -1603,6 +1723,8 @@ impl Session {
             device: device.clone(),
             queue: queue.clone(),
             size,
+            fresh: true,
+            evaluated: 0,
         };
         session.create();
         session.feature.is_some().then_some(session)
@@ -1613,7 +1735,102 @@ impl Session {
         self.feature.is_some()
     }
 
-    /// Follows the window to `size`: the feature is released and made again at the new size.
+    /// The size the feature is made for (render = output).
+    pub fn size(&self) -> [u32; 2] {
+        self.size
+    }
+
+    /// Records this frame's evaluation (docs/rt-dlss-rr.md §3) after `encoder`'s commands, in
+    /// command buffers of its own pushed to `split` (`DlssRr::record`), and leaves a new encoder
+    /// in `encoder`. `Err` when the feature is missing, an image is not this size or not Vulkan,
+    /// or NGX refuses the evaluation: the caller turns RR off then.
+    pub fn evaluate(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        split: &mut Vec<wgpu::CommandBuffer>,
+        frame: &Frame<'_>,
+    ) -> Result<(), Error> {
+        let Some(feature) = &self.feature else {
+            return Err(Error {
+                call: "a feature instance (none was made)",
+                result: ffi::RESULT_FAIL,
+            });
+        };
+        let views = [
+            frame.color,
+            frame.depth,
+            frame.motion,
+            frame.diffuse_albedo,
+            frame.specular_albedo,
+            frame.normals,
+            frame.output,
+        ];
+        let mut images = Vec::with_capacity(views.len());
+        for view in views {
+            let texture = view.texture();
+            if [texture.width(), texture.height()] != self.size {
+                return Err(Error {
+                    call: "an input or output of the feature's size",
+                    result: ffi::RESULT_FAIL,
+                });
+            }
+            // Safety: the views live for the frame the evaluation is recorded and submitted in;
+            // `record` transitions them to the layouts NGX reads.
+            let image = unsafe { Image::of(frame.adapter, view) }.ok_or(Error {
+                call: "a Vulkan texture",
+                result: ffi::RESULT_FAIL,
+            })?;
+            images.push(image);
+        }
+        let reset = frame.reset || self.fresh;
+        let inputs = Inputs {
+            color: images[0],
+            depth: images[1],
+            motion_vectors: images[2],
+            diffuse_albedo: images[3],
+            specular_albedo: images[4],
+            normals: images[5],
+            output: images[6],
+            roughness: None,
+            specular_hit_distance: None,
+            specular_motion_vectors: None,
+            exposure: None,
+            bias_current_color_mask: None,
+            transparency_mask: None,
+            jitter: frame.jitter,
+            mv_scale: [1.0, 1.0],
+            render_size: self.size,
+            output_offset: [0, 0],
+            reset,
+            pre_exposure: 1.0,
+            exposure_scale: 1.0,
+            frame_time_ms: frame.frame_time_ms,
+            world_to_view: None,
+            view_to_clip: None,
+        };
+        let read: Vec<&wgpu::Texture> = views[..6].iter().map(|v| v.texture()).collect();
+        let written = [frame.output.texture()];
+        // Safety: `inputs` holds the handles of these very textures, alive for the frame.
+        unsafe {
+            feature.record(&self.device, encoder, split, &read, &written, &inputs)?;
+        }
+        self.fresh = false;
+        if self.evaluated == 0 {
+            log::info!(
+                "DLSS-RR: first evaluation recorded at {}x{} (DLAA, reset {}, jitter {:.3}, {:.3}); \
+                 RT lighting's accumulation, denoiser and TAA are skipped for the window",
+                self.size[0],
+                self.size[1],
+                if reset { "on" } else { "off" },
+                frame.jitter[0],
+                frame.jitter[1],
+            );
+        }
+        self.evaluated += 1;
+        Ok(())
+    }
+
+    /// Follows the world's render size: the feature is released and made again at `size`.
     pub fn resize(&mut self, size: [u32; 2]) {
         if size == self.size || size.contains(&0) {
             return;
@@ -1622,6 +1839,7 @@ impl Session {
         self.size = size;
         log_optimal(&self.ngx, size, false);
         self.create();
+        self.fresh = true;
     }
 
     fn create(&mut self) {
@@ -1665,7 +1883,7 @@ impl Session {
             Ok(feature) => {
                 log::info!(
                     "DLSS-RR: feature instance created for {w}x{h} (DLAA: render size = output \
-                     size; nothing is evaluated yet)"
+                     size)"
                 );
                 self.feature = Some(feature);
             }

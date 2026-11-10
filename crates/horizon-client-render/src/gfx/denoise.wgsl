@@ -14,7 +14,7 @@
 // anti-firefly): one lucky ray toward a bright light would otherwise bloom into a blob.
 struct Params {
     // x: the taps' spacing in pixels, y: 1 on the last pass, z: 1 to filter VR's periphery by its
-    // blocks (`span`).
+    // blocks (`span`), w: 1 for DLSS-RR's pass-through (`cs_denoise`).
     step: vec4<i32>,
 }
 @group(0) @binding(0) var<uniform> params: Params;
@@ -231,6 +231,13 @@ fn filter_before(p: vec2<i32>, size: vec2<i32>) -> vec4<f32> {
     let size = vec2<i32>(textureDimensions(input));
     let p = vec2<i32>(id.xy);
     if any(p >= size) { return; }
+    // DLSS Ray Reconstruction's raw frames (`params.step.w` 1, gfx/shadow_rays.rs `raw_view`): one
+    // pass that adds the direct light and filters nothing, RR denoising what the terrain composes.
+    if params.step.w == 1 {
+        let c = textureLoad(input, p, 0);
+        textureStore(output, p, vec4(signal(c, p, true), finite(c.a)));
+        return;
+    }
     if rt.mode.z > 1.5 {
         let taken_at = textureLoad(taken, p, 0).r;
         if DEBUG == 12u && params.step.y == 1 {
