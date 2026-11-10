@@ -415,6 +415,7 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         fog: None,
         dark_disc: false,
         outline: Vec::new(),
+        outline_wind: None,
         outline_after_terrain: false,
         outline_high_contrast: false,
         pvp: Default::default(),

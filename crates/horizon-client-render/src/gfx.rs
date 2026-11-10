@@ -983,6 +983,9 @@ pub struct Frame<'a> {
     pub dark_disc: bool,
     /// The hit block outline as line segments (from, to) in world space.
     pub outline: Vec<[f64; 6]>,
+    /// RT lighting's wind on the hit block (`wind::outline_class`, not 0; its sky light 0 to 1;
+    /// its foot's height in the world): the outline sways with its leaves or its plant.
+    pub outline_wind: Option<(u8, f32, f64)>,
     /// `BlockOutlineRenderState.isTranslucent`: draw after translucent terrain.
     pub outline_after_terrain: bool,
     /// `BlockOutlineRenderState.highContrast`: a thick black outline under a bright one.
@@ -2480,6 +2483,12 @@ fn backends_name(backends: wgpu::Backends) -> &'static str {
 /// The translucent terrain's cover over the rays' prepass (`Renderer::draw_cover`): 1 where water
 /// or glass lies in front of the solid terrain.
 const COVER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// Whether the hit block's outline sways with its block (`Frame::outline_wind`):
+/// `HORIZON_OUTLINE_WIND=0` keeps it still, as before.
+fn outline_sways() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_OUTLINE_WIND").map_or(true, |v| v.trim() != "0"))
+}
 /// The share of the sun's or the moon's direct light at elevation sine `y`: none at the horizon,
 /// all of it from `HORIZON_SUN_RISE` degrees up (3 by default; 0: all of it at once, as before).
 fn sun_rise(y: f32) -> f32 {
@@ -11113,6 +11122,10 @@ impl Renderer {
             seconds: self.water_clock.elapsed().as_secs_f32() % 3600.0,
             wind: frame.rain.wind,
             on: self.rt_lighting && !(frame.title || frame.end_sky || frame.nether_lighting),
+            outline: frame
+                .outline_wind
+                .filter(|_| outline_sways())
+                .map(|(kind, sky, foot)| (kind, sky, (foot - frame.camera.y) as f32)),
         });
         self.uploads.buffer(
             &mut encoder,
