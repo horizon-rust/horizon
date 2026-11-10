@@ -739,22 +739,29 @@ impl Game<'_> {
             );
         }
     }
-    /// `Entity.saveWithoutId`: the modeled non-arrow projectile codecs
-    /// share the live cooldown between command reads and chunk writes.
+    /// `Entity.saveWithoutId`: every save writes the entity's live
+    /// `portalCooldown`, the one `PortalState::handle` counts down. The tag it
+    /// goes over starts from the compound the entity was loaded with, whose
+    /// value never changes by itself.
+    pub(super) fn save_portal_cooldown(&self, id: u32, tag: &mut Tag) {
+        if let Tag::Compound(fields) = tag {
+            let cooldown = self
+                .portals
+                .entities
+                .get(&id)
+                .map_or(0, |portal| portal.cooldown);
+            fields.insert("PortalCooldown".into(), Tag::Int(cooldown));
+        }
+    }
+    /// `Entity.saveWithoutId` for the modeled non-arrow projectile codecs,
+    /// which share the live cooldown between command reads and chunk writes.
     pub(super) fn save_projectile_portal_cooldown(
         &self,
         projectile: &horizon_client::projectiles::Projectile,
         tag: &mut Tag,
     ) {
-        if projectile.arrow.is_none()
-            && let Tag::Compound(fields) = tag
-        {
-            let cooldown = self
-                .portals
-                .entities
-                .get(&projectile.id)
-                .map_or(0, |portal| portal.cooldown);
-            fields.insert("PortalCooldown".into(), Tag::Int(cooldown));
+        if projectile.arrow.is_none() {
+            self.save_portal_cooldown(projectile.id, tag);
         }
     }
     /// `Entity.setAsInsidePortal` on an entity that is still on its portal

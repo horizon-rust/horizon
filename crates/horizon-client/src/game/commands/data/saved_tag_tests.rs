@@ -111,6 +111,41 @@ fn tag_commands_and_explicit_empty(game: &mut Game<'_>) {
     assert_eq!(game.world.game_time, start);
 }
 
+/// `Entity.saveWithoutId` writes the live `portalCooldown`, the one the portal
+/// tracker counts down, not the value the entity was loaded with: a pig
+/// summoned with `PortalCooldown:17` saves 17 through `Entity.load`'s restore,
+/// then whatever the tracker holds (#14539).
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn portal_cooldown_saves_the_live_value() {
+    with_command_game("portal-cooldown", |game| {
+        assert!(game.run_command(
+            "summon pig 4.5 200 4.5 {UUID:[I;328,0,0,6],NoAI:1b,NoGravity:1b,PortalCooldown:17}"
+        ));
+        assert!(game.run_command(
+            "summon minecraft:item 6.5 200 4.5 {UUID:[I;328,0,0,7],NoGravity:1b,Item:{id:\"minecraft:stone\",count:1},PortalCooldown:17}"
+        ));
+        let saved = |game: &mut Game<'_>, uuid: [i32; 4]| {
+            let target = game.target_with_uuid(uuid).unwrap();
+            game.data_of(&DataRef::Entity(target))
+                .unwrap()
+                .get("PortalCooldown")
+                .cloned()
+        };
+        // Entity.load: both keep the saved cooldown in the tracker.
+        assert_eq!(saved(game, [328, 0, 0, 6]), Some(Tag::Int(17)));
+        assert_eq!(saved(game, [328, 0, 0, 7]), Some(Tag::Int(17)));
+        // Entity.setPortalCooldown: an entity that just came through stands in
+        // the portal for 300 ticks, and that is what a save must hold.
+        let pig = game.target_with_uuid([328, 0, 0, 6]).unwrap();
+        let Target::Mob(id) = pig else {
+            panic!("a pig is a mob")
+        };
+        game.set_portal_cooldown(id);
+        assert_eq!(saved(game, [328, 0, 0, 6]), Some(Tag::Int(300)));
+    });
+}
+
 /// `/data get` on a cloud that was never saved shows `Entity.saveWithoutId`'s
 /// common fields, as 26.3 prints them (#13057).
 #[test]
