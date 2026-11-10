@@ -76,6 +76,13 @@ override PARALLAX_DISTANCE: f32 = 24.0;
 // march costs up to 48. [`SHADOW_DISTANCE`] by default, `HORIZON_POM_SHADOW_DISTANCE` (or the
 // march's 24 with `HORIZON_RT_SKIP` bit 65536) to compare.
 override PARALLAX_SHADOW_DISTANCE: f32 = 36.0;
+// The map's texels per pixel (log2) from which the relief fades out, flat a level and a half
+// further (`HORIZON_POM_FINE`). It was -0.5 (flat once a texel covers a pixel): a pack whose height
+// maps are 128 or 256 texels a block (a 16-texel design drawn large, as most are) lost its relief
+// two or three blocks from the eye on a wide screen, sooner at a slant: a patch of relief at the
+// feet, its edge following the camera, the same sand flat beyond. A texel's relief still shows
+// when it is a third of a pixel: its neighbours' is the same block of the design.
+override PARALLAX_FINE: f32 = 1.5;
 // How much darker the bottom of the relief is (0 leaves occlusion to the map and the light).
 override PARALLAX_CAVITY: f32 = 0.25;
 // At most this many texels crossed per fragment.
@@ -334,7 +341,7 @@ fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
     let lod = log2(max(max(length(dx), length(dy)) * slot.size, 1e-6));
     let distance = length(in.position);
     let near = 1.0 - smoothstep(PARALLAX_DISTANCE * 0.75, PARALLAX_DISTANCE, distance);
-    let fine = 1.0 - smoothstep(-0.5, 0.5, lod);
+    let fine = 1.0 - smoothstep(PARALLAX_FINE, PARALLAX_FINE + 1.5, lod);
     let strength = select(0.0, near * fine, march);
     // The shadow reaches further than the march, never less far.
     let shadow_distance = max(PARALLAX_SHADOW_DISTANCE, PARALLAX_DISTANCE);
@@ -738,13 +745,24 @@ impl Parallax {
             shape,
             "Parallax terrain",
             module,
-            vec![(
-                "PARALLAX_SHADOW_DISTANCE",
-                shadow_distance(
-                    std::env::var("HORIZON_POM_SHADOW_DISTANCE").ok().as_deref(),
-                    std::env::var("HORIZON_RT_SKIP").ok().as_deref(),
+            vec![
+                (
+                    "PARALLAX_SHADOW_DISTANCE",
+                    shadow_distance(
+                        std::env::var("HORIZON_POM_SHADOW_DISTANCE").ok().as_deref(),
+                        std::env::var("HORIZON_RT_SKIP").ok().as_deref(),
+                    ),
                 ),
-            )],
+                // `HORIZON_POM_FINE`: -0.5 the fade of before, where a texel covers a pixel.
+                (
+                    "PARALLAX_FINE",
+                    std::env::var("HORIZON_POM_FINE")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<f64>().ok())
+                        .filter(|v| (-2.0..=6.0).contains(v))
+                        .unwrap_or(1.5),
+                ),
+            ],
             (GROUP, &layout),
             ["parallax_vs", "parallax_vs_flat"],
             ["parallax_fs_solid", "parallax_fs_translucent"],

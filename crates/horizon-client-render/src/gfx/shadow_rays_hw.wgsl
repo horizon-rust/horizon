@@ -883,6 +883,13 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
         let block = f32((arena_at(base, 4u) >> 24u) & 255u) / 16.0;
         let steps = max(15.0 - block, 0.0);
         hw_level = select(vec3(0.0), HW_BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), block > 0.0);
+        // Not from a face met at once (within a tenth of a block, fading in to six tenths): a
+        // rail lying a sixteenth over a block, a carpet's or a plant's underside. The level is
+        // the light the lamps around give a face in the open; the side turned to the block it lies
+        // on gets none of it, and the block under it took that light for its own: a rail over a
+        // dark bridge near lava showed the bridge through its holes as bright squares
+        // (`HORIZON_RT_SKIP` 2147483648: as before).
+        if (SKIP & 2147483648u) == 0u { hw_level *= smoothstep(0.1, 0.6, hit.t); }
         // Its sky light level's share of full daylight (the light's next byte, 16 a level), for
         // `open_light`.
         hw_sky = clamp(f32((arena_at(base, 4u) >> 16u) & 255u) / 240.0, 0.0, 1.0);
