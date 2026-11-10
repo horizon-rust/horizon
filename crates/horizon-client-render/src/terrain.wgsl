@@ -2981,25 +2981,24 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
     // Ice's frost (`rt_ice`): its face's diffuse layer's opacity, more on the texture's light
     // streaks (bubbles, cracks). Traced, the ice's body is the rays' (shadow_rays_psr.wgsl
     // `ice_body`: Beer-Lambert over the whole length the ray runs inside the ice, so a hill of it
-    // is opaque). Untraced, it is guessed from what lies behind (at most 6 blocks of clear ice,
-    // 2.5 of packed ice): what its bubbles scatter adds to the frost, what it absorbs (red most,
+    // is opaque). Untraced, it is guessed from how far behind the next solid thing is drawn (at
+    // most 6 blocks): what its bubbles scatter adds to the frost, what it absorbs (red most,
     // glacier blue) dims what shows through.
     var frost = 0.0;
     var body = vec3(1.0);
     if ice > 0u {
         let streak = smoothstep(0.3, 0.85, dot(g.albedo, vec3(0.2126, 0.7152, 0.0722)));
         if refracted.a > 0.0 {
-            frost = select(0.3, 0.1, ice == 1u) + 0.25 * streak;
-        } else if ice == 1u {
-            let through = min(behind, 6.0);
-            frost = 0.15 + 0.3 * streak;
-            body = exp(-vec3(0.06, 0.022, 0.01) * through);
-            frost = 1.0 - (1.0 - frost) * exp(-0.05 * through);
+            frost = select(0.3, 0.2, ice == 1u) + 0.25 * streak;
         } else {
-            let through = min(behind, 2.5);
-            frost = 0.35 + 0.3 * streak;
-            body = exp(-vec3(0.1, 0.04, 0.02) * through);
-            frost = 1.0 - (1.0 - frost) * exp(-0.35 * through);
+            // The rays' extinction a block (shadow_rays_hw.wgsl `ice_extinction`, cloudy ice):
+            // what is lost its bubbles scatter, the frost's layer.
+            let sigma = select(vec3(4.5, 4.2, 4.0), vec3(2.2, 1.9, 1.7), ice == 1u);
+            let kept = exp(-sigma * behind);
+            let share = max(dot(kept, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+            frost = select(0.35, 0.15, ice == 1u) + 0.3 * streak;
+            body = kept / share;
+            frost = 1.0 - (1.0 - frost) * share;
         }
     }
     if refracted.a <= 0.0 {

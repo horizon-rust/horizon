@@ -505,6 +505,7 @@ fn kernel(
                 ("SKIP", f64::from(skip)),
                 ("SUN_CENTRE", centre),
                 ("EDGE_BAND", edge_band()),
+                ("HELD_LIGHT", held_light()),
             ],
             ..Default::default()
         },
@@ -1658,6 +1659,17 @@ impl ShadowRays {
     }
 }
 
+/// `HORIZON_RT_HELD_LIGHT`: how bright RT lighting's moving lights are (a torch in the hand)
+/// against a placed light of their level (shadow_rays.wgsl `HELD_LIGHT`), 0 to 16; 2.5 by default
+/// (the light is at the eye, so what it lights faces it and looks flat: it wants more to read as
+/// a torch's), 1 as bright as a placed one.
+fn held_light() -> f64 {
+    std::env::var("HORIZON_RT_HELD_LIGHT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .map_or(2.5, |v| v.clamp(0.0, 16.0))
+}
 /// `HORIZON_RT_EDGE_BAND`: the share of the voxel grid's reach (toward its edge) over which the
 /// traced rays fade into the far field and vanilla's light (shadow_rays.wgsl `EDGE_BAND`), 0.05
 /// to 0.9; 0.25 without it. A wider band softens where the near terrain's traced shadows and

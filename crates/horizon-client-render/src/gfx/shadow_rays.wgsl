@@ -604,6 +604,9 @@ override SUN_CENTRE: u32 = 0u;
 // The share of the grid's reach, toward its edge, over which the rays fade into the far field
 // (shadow_rays.rs `edge_band`, HORIZON_RT_EDGE_BAND).
 override EDGE_BAND: f32 = 0.25;
+// How bright the moving lights are (a torch in the hand) against a placed light of their level
+// (shadow_rays.rs `held_light`, HORIZON_RT_HELD_LIGHT; 1: as bright).
+override HELD_LIGHT: f32 = 2.5;
 
 // Ray-traced shadows (gfx/voxels.rs, docs/raytracing.md): whether world block `v` is in the grid.
 fn in_grid(v: vec3<i32>) -> bool {
@@ -1283,7 +1286,13 @@ fn light_path(index: u32, local: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> 
     let d = select(max(max(max(near.x, near.y), near.z), 0.0), max(length_to - 0.1, 0.0), own);
     let reach = light.at.w;
     if d >= reach { return none; }
-    var facing = select(dot(n, l), 1.0, d < 0.05);
+    // In the light's own block the light is all around (a lamp's face, lichen on the wall beside):
+    // no cosine there. That eases into the cosine over the first blocks' three quarters outside it
+    // (a flame's 0.15), so the block's outline is not drawn on the walls and the floor around it
+    // as a step in the light (`HORIZON_RT_SKIP` 536870912: the step of before).
+    let around = select(0.75, 0.15, own);
+    var facing = mix(1.0, max(dot(n, l), 0.0), smoothstep(0.0, around, d));
+    if (SKIP & 536870912u) != 0u { facing = select(dot(n, l), 1.0, d < 0.05); }
     // Near its own flame (a torch's stick): the fire is a volume wrapping the stick's top, not a
     // point above it, so the stick's sides get some of it.
     if own && length_to < 0.8 { facing = max(facing, 0.35); }
@@ -1475,7 +1484,8 @@ fn moving_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> vec3<f32> {
     }
     let gain = moving_gain(light, pos, n, offset);
     // The chosen light's own light times the sum over the chance of drawing it (p / sum).
-    return pow(MOVING_COLOUR, vec3(2.2)) * BLOCK_LIGHT * through * (gain * sum / chosen_p);
+    return pow(MOVING_COLOUR, vec3(2.2)) * (BLOCK_LIGHT * HELD_LIGHT) * through
+        * (gain * sum / chosen_p);
 }
 // A moving light's unshadowed light at `pos` (normal `n`), as the block lights' fall off.
 fn moving_gain(light: vec4<f32>, pos: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> f32 {

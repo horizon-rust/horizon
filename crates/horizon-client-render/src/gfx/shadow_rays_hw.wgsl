@@ -303,14 +303,14 @@ fn glass_fresnel(cosine: f32) -> f32 {
 }
 // Ice's body, its extinction a block (shadow_rays_psr.wgsl `ice_body`): clear ice absorbs red
 // most, packed ice scatters most of the light within a block or two.
-// Ice is cloudy (air bubbles, cracks, frost): two or three blocks of it hide what lies behind,
-// packed ice within a block. `HORIZON_RT_SKIP` 33554432 keeps the clearer ice of before (glacier
+// Ice is cloudy (air bubbles, cracks, frost): one block of it leaves a tenth of what lies behind
+// (a frozen sea's sheet hides the sea bed under it), two hide it, packed ice within a block. `HORIZON_RT_SKIP` 33554432 keeps the clearer ice of before (glacier
 // ice: `ice_cloudy`), its even faces and its thin walls' tint along the other rays.
 fn ice_cloudy() -> bool {
     return (SKIP & 33554432u) == 0u;
 }
 fn ice_extinction(packed: bool) -> vec3<f32> {
-    if ice_cloudy() { return select(vec3(1.1, 0.85, 0.75), vec3(2.3, 2.1, 2.0), packed); }
+    if ice_cloudy() { return select(vec3(2.2, 1.9, 1.7), vec3(4.5, 4.2, 4.0), packed); }
     return select(vec3(0.14, 0.08, 0.06), vec3(0.75, 0.66, 0.6), packed);
 }
 // What ice's body scatters back of the light on it, in light: clear ice's glacier blue, packed
