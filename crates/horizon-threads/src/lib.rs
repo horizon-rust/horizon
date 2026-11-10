@@ -4,6 +4,7 @@
 /// The game window's boot screen, before wgpu's first frame paints over it.
 #[cfg(target_os = "windows")]
 pub mod boot_paint;
+pub mod env_file;
 pub mod heap_census;
 pub mod jobs;
 pub mod process_memory;

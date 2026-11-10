@@ -15,7 +15,7 @@
 //! (no HDR output, screenshot or video), the grading pass applies the curve itself, onto the
 //! screen's target. Env switches, for A/B: `HORIZON_POST=0` (no grading), `HORIZON_EXPOSURE=0`
 //! (the exposure stays 1; a number is a fixed value in stops), `HORIZON_BLOOM=0` (a number is the
-//! bloom's burn intensity), `HORIZON_TONEMAP=shoulder` (today's curve in place of ACES) and
+//! bloom's burn intensity), `HORIZON_TONE_SHADOWS` and `_HIGHLIGHTS` (the local tone mapping's), `HORIZON_TONEMAP=shoulder` (today's curve in place of ACES) and
 //! `HORIZON_GRADE_FUSED=0` (the graded light's target and the curve's own pass every frame).
 //!
 //! The grading follows RTX Remix's post-processing and its rtx.conf values (`PostParams`): the
@@ -104,15 +104,33 @@ impl PostParams {
             0.0,
             0.0,
             self.exposure / REMIX_EXPOSURE,
-            self.shadows,
-            self.highlights,
-            self.sigma,
-            self.offset,
+            tone("SHADOWS").unwrap_or(self.shadows),
+            tone("HIGHLIGHTS").unwrap_or(self.highlights),
+            tone("SIGMA").unwrap_or(self.sigma),
+            tone("OFFSET").unwrap_or(self.offset),
             0.0,
             0.0,
             0.0,
         ]
     }
+}
+
+/// The local tone mapping's values when `HORIZON_TONE_SHADOWS`, `_HIGHLIGHTS`, `_SIGMA` or
+/// `_OFFSET` set them (how far the dark is lifted and the bright lowered, as factors; the
+/// exposure preference's width and offset in stops), for tuning in a headset whose 8-bit eyes
+/// crush what the monitor's HDR shows.
+fn tone(name: &str) -> Option<f32> {
+    static VALUES: std::sync::OnceLock<[Option<f32>; 4]> = std::sync::OnceLock::new();
+    const NAMES: [&str; 4] = ["SHADOWS", "HIGHLIGHTS", "SIGMA", "OFFSET"];
+    let values = VALUES.get_or_init(|| {
+        NAMES.map(|n| {
+            std::env::var(format!("HORIZON_TONE_{n}"))
+                .ok()
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+        })
+    });
+    values[NAMES.iter().position(|n| *n == name)?]
 }
 
 /// The scene target's format.

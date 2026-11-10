@@ -18,21 +18,25 @@ fn hw_refract(p: vec2<i32>) -> vec4<f32> {
     // From above (the normal up), into the water; from below, out of it.
     let eta = select(WATER_INDEX, 1.0 / WATER_INDEX, n.y > 0.0);
     var bent = refract(ray, n, eta);
-    let inside = n.y > 0.0;
+    // Whether the bent ray runs in the water: from above, into it; from below, past the critical
+    // angle (total internal reflection), back down into it.
+    var inside = n.y > 0.0;
+    var start = at - n * 0.02;
     if dot(bent, bent) < 1e-6 {
-        // Total internal reflection: back down into the water.
         bent = reflect(ray, n);
+        inside = true;
+        // The reflected ray starts on the camera's side of the surface, in the water.
+        start = at + n * 0.02;
     }
-    let start = at - n * 0.02;
     let h = hw_hit(start, bent, 256.0);
     if h.t < 0.0 {
-        // Through the surface to the sky (from below), or into deep water.
+        // Into deep water, or through the surface to the sky (from below).
         if inside { return vec4(0.0, 0.0, 0.0, 64.0); }
         return vec4(sky_at(bent) * h.through, 0.01);
     }
     let seen = start + bent * h.t;
     let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
-    // From above, the distance in the water; from below, the ray is already out of it.
+    // In the water, the distance it runs there (the water's shader absorbs over it); out of it, none.
     return vec4(h.through * hw_surface(h, seen, light), select(0.01, max(h.t, 0.01), inside));
 }
 // The same through glass (shadow_rays_hw.wgsl `hw_glass`): where `hw_reflect` met it, its face
