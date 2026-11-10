@@ -2092,12 +2092,18 @@ struct FromFirst {
 // the same point, and its light is the first eye's mask texel there (in the first eye's periphery
 // its 4x4 block's ray, as the first eye shows it), when that texel holds the same face. Also sets
 // `fast_out` and the GI reservoir (`gi_out_a`, `gi_out_b`), for this eye's next frame.
+// Blocks from the eye within which the second eye never takes the first eye's light (`from_first`).
+const NEAR_OWN: f32 = 2.0;
 fn from_first(p: vec2<i32>) -> FromFirst {
     var out: FromFirst;
     out.found = false;
     if f32(p.x) >= rt.size.x || f32(p.y) >= rt.size.y { return out; }
     if textureLoad(depth, p, 0) <= 0.0 { return out; }
     let pos = surface_at(p);
+    // Within NEAR_OWN of the eye (the arm and the held item, drawn for each eye with its own
+    // view model) this eye traces its own light: the first eye's at the same point is another
+    // face of it, or none (the arm's side the right eye alone sees came out black).
+    if length(pos) < NEAR_OWN { return out; }
     let c = rt.first_view_proj * vec4(pos, 1.0);
     if c.w <= 0.0 { return out; }
     let ndc = c.xy / c.w;
@@ -2137,6 +2143,7 @@ fn first_texel_of(texel: vec2<i32>) -> u32 {
     if f32(p.x) >= rt.size.x || f32(p.y) >= rt.size.y { return 0u; }
     if textureLoad(depth, p, 0) <= 0.0 { return 0u; }
     let pos = surface_at(p);
+    if length(pos) < NEAR_OWN { return 0u; }
     let c = rt.first_view_proj * vec4(pos, 1.0);
     if c.w <= 0.0 { return 0u; }
     let ndc = c.xy / c.w;
