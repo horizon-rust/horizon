@@ -113,11 +113,12 @@ impl PostParams {
     pub const INDOOR_EV_MAX: f32 = 3.0;
 
     /// These with the exposure's top raised toward `INDOOR_EV_MAX` as the camera is shut in from
-    /// the sky: by its vanilla sky light level `sky` (0..15), from 13 (a block from the open sky:
-    /// the open air's top) down to 6 (well inside: the room's). It only lifts the top, and only
+    /// the sky: by its vanilla sky light level `sky` (0..15), from 9 (under a tree, a porch, a cave's
+    /// mouth: still the open air's top, or the night's exposure rose under every tree and the moon
+    /// burnt to a white disc) down to 2 (well inside: the room's). It only lifts the top, and only
     /// matters where the scene is darker than the key.
     pub fn indoors(self, sky: i32) -> Self {
-        let t = ((13.0 - sky as f32) / 7.0).clamp(0.0, 1.0);
+        let t = ((9.0 - sky as f32) / 7.0).clamp(0.0, 1.0);
         let inside = t * t * (3.0 - 2.0 * t);
         Self {
             ev_max: self.ev_max + (indoor_ev_max() - self.ev_max).max(0.0) * inside,
@@ -1093,11 +1094,12 @@ mod tests {
             // The open air (and a block under a tree's edge) keeps Remix's caps.
             assert_eq!(situation.indoors(15), situation);
             assert_eq!(situation.indoors(13), situation);
+            assert_eq!(situation.indoors(9), situation);
             // Well inside, the room's top, at any hour.
             assert_eq!(situation.indoors(0).ev_max, 3.0);
-            assert_eq!(situation.indoors(6).ev_max, 3.0);
+            assert_eq!(situation.indoors(2).ev_max, 3.0);
             // Between, between; never lower than the open air's, and nothing else changes.
-            let half = situation.indoors(10);
+            let half = situation.indoors(6);
             assert!(half.ev_max > situation.ev_max && half.ev_max < 3.0);
             assert_eq!(half.ev_min, situation.ev_min);
             assert_eq!(half.exposure, situation.exposure);
