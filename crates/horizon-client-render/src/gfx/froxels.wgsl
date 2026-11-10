@@ -55,7 +55,8 @@ struct Fx {
     // froxels this frame injects (`injected`), w: how many times each froxel has been injected
     // (mod 65536: the index of its own sample in `sky_sample`'s sequence).
     history: vec4<f32>,
-    // The depth's size in pixels.
+    // The depth's size in pixels, z: 1 when the air ends at the froxels' reach whatever the fogs
+    // (`steady_air`).
     size: vec4<f32>,
     // xyz: where the view's rays start (camera-relative; the view bobbing moves it off the camera),
     // this frame's and the last frame's.
@@ -994,8 +995,7 @@ const MARCH_STEPS: i32 = 32;
 fn fog_march(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
     let dir = ray_dir(uv);
     let c = dot(dir, fx.light.xyz);
-    let st = max(fx.sigma_t.rgb, vec3(1e-6));
-    let ss = st * fx.albedo.rgb;
+    let st_air = max(fx.sigma_t.rgb, vec3(1e-6));
     var scattered = vec3(0.0);
     var through = vec3(1.0);
     var fog_through = 1.0;
@@ -1009,6 +1009,10 @@ fn fog_march(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
         let pos = fx.eye.xyz + dir * d;
         let f = fog_at(pos, dz);
         let fog = f.valley + f.steam;
+        // The air within the froxels' reach only (`steady_air`).
+        let air_here = !steady_air() || d <= fx.depth.y;
+        let st = select(vec3(1e-6), st_air, air_here);
+        let ss = select(vec3(0.0), st_air * fx.albedo.rgb, air_here);
         if light {
             let j = view_source_at(uv, d);
             // The fog's shade on itself here (as the far slices light it: the fog up to its top
@@ -1032,6 +1036,17 @@ fn fog_march(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
     }
     return vec4(scattered, fog_through);
 }
+// Whether the air (the homogeneous medium) ends at the froxels' reach (`depth.y`) on every path
+// (froxels.rs `steady_air`, `HORIZON_FROXEL_STEADY_AIR=0` off). The fogs on (`fog_on`: the
+// natural fogs can be, which goes by the camera's sky light), the sky's pixels lie at `far.x` and
+// the march and `clear_view` added the air out to `MARCH_RANGE`, four times the grid's 256
+// blocks; off (the camera a few blocks under an arch, in its shade), they ended at the grid. So
+// the camera's step out from under an arch laid a veil four times thicker over the sky and the
+// far terrain at once. Ending there too, the air is the same whether the fogs are on or not: the
+// grid's, as `AIR_THROUGH` was measured for.
+fn steady_air() -> bool {
+    return fx.size.z > 0.5;
+}
 // What the fogs let through, as the grid's columns around the pixel see them, for the ray to `r`
 // to be marched as clear air: their transmittance out to the end of the slice holding it.
 const CLEAR_THROUGH: f32 = 0.9999;
@@ -1051,7 +1066,7 @@ fn clear_view(uv: vec2<f32>, r: f32, light: bool) -> vec4<f32> {
     if slice.x > 0.5 { a = integrated_cubic(v.xy, (slice.x - 0.5) / total); }
     var air = mix(a.rgb, b.rgb, clamp((v.z - slice.y) / max(slice.z - slice.y, 1e-4), 0.0, 1.0));
     let past = min(r, MARCH_RANGE) - fx.depth.y;
-    if past > 0.0 {
+    if past > 0.0 && !steady_air() {
         let st = max(fx.sigma_t.rgb, vec3(1e-6));
         let j = view_source_at(uv, MARCH_RANGE);
         air += exp(-st * fx.depth.y) * j * fx.albedo.rgb * (1.0 - exp(-st * past));
