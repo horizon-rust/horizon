@@ -532,6 +532,7 @@ size = output size = the world's size, which a render scale can make differ from
 
 **Debug switches:**
 
+- `HORIZON_DLSS_RR_RAW=1`: the kernel traces the window raw (no accumulation, the bounce never resting), as NVIDIA's guide asks. Measured on the RTX 4090 at 1720x720, still camera: 28.6 ms of GPU a frame against 10.4 without RR, for about 3 ms of stamped RR passes: the bounce traced at every texel every frame is the rest. So by default the kernel accumulates and rests in turns as for every other view, and RR only takes the à-trous denoiser's and the TAA's place; whether its image holds up on that accumulated input is to be judged on the GPU.
 - `HORIZON_DLSS_RR_SHOW=input`: RR still runs, but its output is not drawn back: the screen shows the raw
   noisy input RR was given. Noise there is expected; wrong colours, black areas or smearing there mean the
   input is at fault, not RR.

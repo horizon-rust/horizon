@@ -10560,10 +10560,11 @@ impl Renderer {
         {
             self.shadow_rays.set_raw_view(rr_now.then_some(0));
             if let Some(pass) = &mut self.sun_pass
-                && self.dlss_eval.never_rest != rr_now
+                && self.dlss_eval.never_rest != (rr_now && shadow_rays::ShadowRays::rr_raw())
             {
-                pass.set_never_rest(rr_now);
-                self.dlss_eval.never_rest = rr_now;
+                let never = rr_now && shadow_rays::ShadowRays::rr_raw();
+                pass.set_never_rest(never);
+                self.dlss_eval.never_rest = never;
             }
             if !rr_now {
                 self.dlss_eval.skipped();
