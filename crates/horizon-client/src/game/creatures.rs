@@ -3574,9 +3574,7 @@ impl Game<'_> {
                 MobEvent::VillagerMeet { mob, other } => self.villager_meet(mob, other),
                 MobEvent::VillagerTrade { mob, player } => self.villager_traded_by(mob, player),
                 MobEvent::VillagerOffers { mob } => {
-                    if let Some(i) = self.mobs.iter().position(|m| m.id == mob) {
-                        self.ensure_offers(i);
-                    }
+                    self.ensure_offers_and_refresh(mob);
                 }
                 MobEvent::VillagerBirth {
                     parent,

@@ -1739,7 +1739,7 @@ impl B {
                         pos: site,
                     });
                 }
-                restock_if_due(m, cx.w);
+                restock_if_due(m, cx.w, cx.events);
                 true
             }
             B::HarvestFarmland {
@@ -3509,18 +3509,18 @@ fn play_work_sound(m: &mut Mob, cx: &mut Bx) {
     }
 }
 /// `WorkAtPoi.start`'s restock.
-fn restock_if_due(m: &mut Mob, w: &MobWorld) {
+fn restock_if_due(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     let day = w.day_time.div_euclid(24000);
     if let Some(t) = m.extra.trade.as_mut()
         && t.should_restock(w.game_time, day)
     {
         t.restock(w.game_time);
+        events.push(MobEvent::VillagerOffers { mob: m.id });
     }
 }
 #[cfg(test)]
 #[path = "villager_farming_tests.rs"]
 mod farming_tests;
-
 /// `HarvestFarmland.validFarmlandAroundVillager`: ripe crops and bare
 /// farmland around the villager.
 fn farmland_around(m: &Mob, w: &MobWorld) -> Vec<[i32; 3]> {

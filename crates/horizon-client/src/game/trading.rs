@@ -395,6 +395,54 @@ impl Game<'_> {
             session.origin = [m.position.x, m.position.y, m.position.z];
         }
     }
+    /// `ServerPlayer.sendMerchantOffers` after a villager restocks while its
+    /// trading screen is open: keep the menu's offers in step with the mob.
+    pub(super) fn refresh_merchant_offers(&mut self, mob: u32) {
+        let Some(offers) = self
+            .mobs
+            .iter()
+            .find(|m| m.id == mob)
+            .and_then(|m| m.extra.trade.as_ref())
+            .map(|t| t.offers.clone())
+        else {
+            return;
+        };
+        let local_changed = self
+            .station
+            .as_ref()
+            .and_then(|s| s.merchant.as_ref())
+            .is_some_and(|m| m.mob == Some(mob) && m.session.offers != offers);
+        let lan_changed = self.lan.as_ref().is_some_and(|host| {
+            host.play.values().any(|p| {
+                p.merchant
+                    .as_ref()
+                    .is_some_and(|m| m.merchant.mob == Some(mob) && m.merchant.session.villager)
+            })
+        });
+        if !local_changed && !lan_changed {
+            return;
+        }
+        let lan_offers = offers.clone();
+        if local_changed {
+            if let Some(m) = self.station.as_mut().and_then(|s| s.merchant.as_mut()) {
+                m.session.offers = offers;
+            }
+            self.menu_session(|menu, env, _| {
+                menu.merchant_update(env);
+                Some(true)
+            });
+        }
+        if lan_changed && let Some(mut host) = self.lan.take() {
+            self.lan_merchant_restock(&mut host, mob, &lan_offers);
+            self.lan = Some(host);
+        }
+    }
+    pub(super) fn ensure_offers_and_refresh(&mut self, mob: u32) {
+        if let Some(i) = self.mobs.iter().position(|m| m.id == mob) {
+            self.ensure_offers(i);
+        }
+        self.refresh_merchant_offers(mob);
+    }
     /// After a menu click: the session back to the station, its random to
     /// the mob, and what it did (orbs, level-ups, the yes/no voice).
     pub(super) fn merchant_sync_out(&mut self, session: Box<merchant::Session>) {

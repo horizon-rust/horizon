@@ -472,6 +472,34 @@ impl Game<'_> {
             });
         }
     }
+    /// Refresh open guest screens after their villager restocks.
+    pub(super) fn lan_merchant_restock(
+        &mut self,
+        host: &mut LanHost,
+        id: u32,
+        offers: &[merchant::MerchantOffer],
+    ) {
+        let conns: Vec<u32> = host
+            .play
+            .iter()
+            .filter(|(_, p)| {
+                p.merchant
+                    .as_ref()
+                    .is_some_and(|m| m.merchant.mob == Some(id) && m.merchant.session.villager)
+            })
+            .map(|(c, _)| *c)
+            .collect();
+        for conn in conns {
+            let offers = offers.to_vec();
+            self.lan_merchant_op(host, conn, None, move |menu, env| {
+                if let Some(session) = menu.merchant.as_mut() {
+                    session.offers = offers;
+                    session.update_special_prices();
+                }
+                menu.merchant_update(env);
+            });
+        }
+    }
     /// Takes a station a guest's action opened: a trading screen or a
     /// workstation menu goes to the guest (game/lan_stations.rs).
     pub(super) fn lan_station_opened(

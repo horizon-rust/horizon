@@ -2395,8 +2395,7 @@ pub enum MobEvent {
         player: [i32; 4],
     },
     /// `AbstractVillager.getOffers` for a villager whose offers are not made
-    /// yet: the level rolls them (the brain has no trade data), so the
-    /// behaviour that asked reads them from the next tick on.
+    /// yet, or `Villager.restock`: the host refreshes the open trade menu.
     VillagerOffers {
         mob: u32,
     },
