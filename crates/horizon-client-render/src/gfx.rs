@@ -2480,9 +2480,6 @@ fn backends_name(backends: wgpu::Backends) -> &'static str {
 /// The translucent terrain's cover over the rays' prepass (`Renderer::draw_cover`): 1 where water
 /// or glass lies in front of the solid terrain.
 const COVER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
-/// Whether the rays look for water or glass in front of a texel only where the translucent
-/// terrain's cover says some lies (shadow_rays_hw.wgsl `hw_reflect`): on unless
-/// `HORIZON_RT_PSR_COVER=0`, which traces that ray from every texel as before.
 /// `HORIZON_RT_SHORE=1`: RT lighting's surf on a beach's shallows and the wet sand at the water's
 /// edge (terrain.wgsl `rt_shore`, `globals.earth.w`), off by default: the surf's veil hid the bed
 /// and its caustics over a whole terrace of sand.
@@ -2494,6 +2491,15 @@ fn rt_shore() -> f32 {
         std::env::var("HORIZON_RT_SHORE").is_ok_and(|v| v == "1")
     }))) + (shadow_rays::ambient() as f32).min(0.49)
 }
+/// `HORIZON_RT_HAND_SHADOW=1`: the view model stays in the hardware rays beside the player's own
+/// body (`Renderer::hw_finish`), as before.
+fn rt_hand_shadow() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_HAND_SHADOW").is_ok_and(|v| v == "1"))
+}
+/// Whether the rays look for water or glass in front of a texel only where the translucent
+/// terrain's cover says some lies (shadow_rays_hw.wgsl `hw_reflect`): on unless
+/// `HORIZON_RT_PSR_COVER=0`, which traces that ray from every texel as before.
 fn psr_cover() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_RT_PSR_COVER").map_or(true, |v| v != "0"))
@@ -8363,8 +8369,16 @@ impl Renderer {
         posed: u32,
         clouds: bool,
     ) {
-        // The view model is drawn in the window's view only.
-        let hand = if self.eye.is_some() { &[] } else { frame.hand };
+        // The view model is drawn in the window's view only. And not beside the player's own body
+        // (`Frame::rt_body`): the body has its arms and its head where they are, and the view
+        // model's arm and held block, drawn large beside the eye, threw a second shadow next to
+        // the body's, a block the size of a head by its shoulder. `HORIZON_RT_HAND_SHADOW=1`
+        // keeps the view model in the rays with the body.
+        let hand = if self.eye.is_some() || (!frame.rt_body.is_empty() && !rt_hand_shadow()) {
+            &[]
+        } else {
+            frame.hand
+        };
         let Some(hw) = self.hw_rays.as_mut() else {
             return;
         };
