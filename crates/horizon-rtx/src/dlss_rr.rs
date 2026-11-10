@@ -23,6 +23,22 @@ pub fn wanted() -> bool {
     std::env::var("HORIZON_RT_DLSS_RR").is_ok_and(|v| v == "1")
 }
 
+/// The quality mode the window's feature is made in: `HORIZON_DLSS_RR_QUALITY`
+/// (`quality`, `balanced`, `performance`, `ultra`; unset or `dlaa` is DLAA, render size = output
+/// size). An unknown value is logged and taken as DLAA.
+pub fn quality_wanted() -> Quality {
+    let Ok(v) = std::env::var("HORIZON_DLSS_RR_QUALITY") else {
+        return Quality::Dlaa;
+    };
+    Quality::parse(&v).unwrap_or_else(|| {
+        log::warn!(
+            "DLSS-RR: HORIZON_DLSS_RR_QUALITY={v:?} is not dlaa, quality, balanced, performance \
+             or ultra: DLAA"
+        );
+        Quality::Dlaa
+    })
+}
+
 /// Why NGX or the feature could not be used: the call and its `NVSDK_NGX_Result`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
@@ -848,6 +864,23 @@ impl Quality {
         }
     }
 
+    /// `HORIZON_DLSS_RR_QUALITY`'s spelling of a mode, case and blanks ignored ("" is DLAA).
+    pub fn parse(v: &str) -> Option<Self> {
+        match v
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', '_', ' '], "")
+            .as_str()
+        {
+            "" | "dlaa" => Some(Self::Dlaa),
+            "quality" => Some(Self::Quality),
+            "balanced" => Some(Self::Balanced),
+            "performance" => Some(Self::Performance),
+            "ultra" | "ultraperformance" => Some(Self::UltraPerformance),
+            _ => None,
+        }
+    }
+
     fn value(self) -> i32 {
         match self {
             Self::Dlaa => ffi::PERF_DLAA,
@@ -1643,24 +1676,29 @@ fn extensions_enabled(device: &wgpu::Device, paths: &Paths) -> bool {
     instance_ok && device_ok
 }
 
-/// Ray Reconstruction on the desktop window: NGX on the window's device and one feature instance
-/// at the world's size, in DLAA (render size = output size: the renderer has no upscaling path
-/// for RR yet), evaluated once a frame (`evaluate`). Dropping it releases the feature and, with the
-/// last `Arc<Ngx>`, shuts NGX down, before the device can go (both hold it).
+/// Ray Reconstruction on the desktop window: NGX on the window's device and one feature instance,
+/// evaluated once a frame (`evaluate`). In DLAA (render size = output size) it follows the world's
+/// size; in an upscaling mode (`quality_wanted`) its output is the window's size and its render
+/// size NGX's optimal one for it (`render_size`), which the renderer draws the world at. Dropping
+/// it releases the feature and, with the last `Arc<Ngx>`, shuts NGX down, before the device can go
+/// (both hold it).
 pub struct Session {
     feature: Option<DlssRr>,
     ngx: Arc<Ngx>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    size: [u32; 2],
+    quality: Quality,
+    /// The inputs' size and the output's (equal in DLAA).
+    render: [u32; 2],
+    output: [u32; 2],
     /// The feature was just made: its first evaluation resets (it has no history yet).
     fresh: bool,
     /// Evaluations so far, for the first one's log line.
     evaluated: u64,
 }
 
-/// One frame's images for `Session::evaluate`, all at the session's size: wgpu views whose raw
-/// Vulkan handles NGX is given (`Image::of`).
+/// One frame's images for `Session::evaluate`, at the session's render size but for `output`
+/// (its output size): wgpu views whose raw Vulkan handles NGX is given (`Image::of`).
 pub struct Frame<'a> {
     /// What the raw handles' formats are looked up with.
     pub adapter: &'a wgpu::Adapter,
@@ -1685,11 +1723,12 @@ pub struct Frame<'a> {
 
 impl Session {
     /// NGX on `device` (or `previous`'s, when the renderer is rebuilt on the same device) and a
-    /// feature for a `size` window; `None`, logged, when anything fails.
+    /// feature in `quality` for a `size` window; `None`, logged, when anything fails.
     pub fn start(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         size: [u32; 2],
+        quality: Quality,
         paths: &Paths,
         previous: Option<&Session>,
     ) -> Option<Self> {
@@ -1722,28 +1761,83 @@ impl Session {
             ngx,
             device: device.clone(),
             queue: queue.clone(),
-            size,
+            quality,
+            render: size,
+            output: size,
             fresh: true,
             evaluated: 0,
         };
+        session.render = session.render_for(size)?;
         session.create();
         session.feature.is_some().then_some(session)
     }
 
-    /// Whether a feature instance exists for the window's current size.
+    /// The render size for a `size` output: itself in DLAA, NGX's optimal one otherwise; `None`,
+    /// logged, when NGX gives none (an old DLL or driver).
+    fn render_for(&self, size: [u32; 2]) -> Option<[u32; 2]> {
+        if self.quality == Quality::Dlaa {
+            return Some(size);
+        }
+        match self.ngx.optimal_settings(size, self.quality) {
+            Ok(o) if !o.render.contains(&0) && o.render[0] <= size[0] && o.render[1] <= size[1] => {
+                Some(o.render)
+            }
+            Ok(o) => {
+                log::warn!(
+                    "DLSS-RR: off: NGX's render size for {} at {}x{} is {}x{}; back to RT \
+                     lighting's accumulation, denoiser and TAA at full resolution",
+                    self.quality.name(),
+                    size[0],
+                    size[1],
+                    o.render[0],
+                    o.render[1]
+                );
+                None
+            }
+            Err(e) => {
+                log::warn!(
+                    "DLSS-RR: off: no render size for {} at {}x{} ({e}); back to RT lighting's \
+                     accumulation, denoiser and TAA at full resolution",
+                    self.quality.name(),
+                    size[0],
+                    size[1]
+                );
+                None
+            }
+        }
+    }
+
+    /// Whether a feature instance exists for the current size.
     pub fn active(&self) -> bool {
         self.feature.is_some()
     }
 
-    /// The size the feature is made for (render = output).
-    pub fn size(&self) -> [u32; 2] {
-        self.size
+    /// The quality mode the feature is made in.
+    pub fn quality(&self) -> Quality {
+        self.quality
+    }
+
+    /// Whether the feature upscales (any mode but DLAA): the world is drawn at `render_size` and
+    /// the output is the window's size (`resize` with the window's).
+    pub fn upscales(&self) -> bool {
+        self.quality != Quality::Dlaa
+    }
+
+    /// The size of the inputs (the world's, the rays', the guides').
+    pub fn render_size(&self) -> [u32; 2] {
+        self.render
+    }
+
+    /// The size of the output (the render size in DLAA).
+    pub fn output_size(&self) -> [u32; 2] {
+        self.output
     }
 
     /// Records this frame's evaluation (docs/rt-dlss-rr.md §3) after `encoder`'s commands, in
     /// command buffers of its own pushed to `split` (`DlssRr::record`), and leaves a new encoder
-    /// in `encoder`. `Err` when the feature is missing, an image is not this size or not Vulkan,
-    /// or NGX refuses the evaluation: the caller turns RR off then.
+    /// in `encoder`. `Err` when the feature is missing, an input is not the render size or the
+    /// output not the output size, an image is not Vulkan, or NGX refuses the evaluation: the
+    /// caller turns RR off then.
     pub fn evaluate(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1766,11 +1860,16 @@ impl Session {
             frame.output,
         ];
         let mut images = Vec::with_capacity(views.len());
-        for view in views {
+        for (i, view) in views.into_iter().enumerate() {
             let texture = view.texture();
-            if [texture.width(), texture.height()] != self.size {
+            let (size, call) = if i == 6 {
+                (self.output, "an output of the feature's output size")
+            } else {
+                (self.render, "an input of the feature's render size")
+            };
+            if [texture.width(), texture.height()] != size {
                 return Err(Error {
-                    call: "an input or output of the feature's size",
+                    call,
                     result: ffi::RESULT_FAIL,
                 });
             }
@@ -1799,7 +1898,7 @@ impl Session {
             transparency_mask: None,
             jitter: frame.jitter,
             mv_scale: [1.0, 1.0],
-            render_size: self.size,
+            render_size: self.render,
             output_offset: [0, 0],
             reset,
             pre_exposure: 1.0,
@@ -1816,11 +1915,21 @@ impl Session {
         }
         self.fresh = false;
         if self.evaluated == 0 {
+            let sizes = if self.upscales() {
+                format!(
+                    "{}x{} -> {}x{} ({}",
+                    self.render[0],
+                    self.render[1],
+                    self.output[0],
+                    self.output[1],
+                    self.quality.name()
+                )
+            } else {
+                format!("{}x{} (DLAA", self.render[0], self.render[1])
+            };
             log::info!(
-                "DLSS-RR: first evaluation recorded at {}x{} (DLAA, reset {}, jitter {:.3}, {:.3}); \
+                "DLSS-RR: first evaluation recorded at {sizes}, reset {}, jitter {:.3}, {:.3}); \
                  RT lighting's accumulation, denoiser and TAA are skipped for the window",
-                self.size[0],
-                self.size[1],
                 if reset { "on" } else { "off" },
                 frame.jitter[0],
                 frame.jitter[1],
@@ -1830,26 +1939,45 @@ impl Session {
         Ok(())
     }
 
-    /// Follows the world's render size: the feature is released and made again at `size`.
+    /// Follows the output's size (the world's in DLAA, the window's when upscaling): the feature
+    /// is released and made again for `size`. A render size NGX does not give leaves the session
+    /// without a feature (`active` false), logged.
     pub fn resize(&mut self, size: [u32; 2]) {
-        if size == self.size || size.contains(&0) {
+        if size == self.output || size.contains(&0) {
             return;
         }
         self.release();
-        self.size = size;
+        self.output = size;
         log_optimal(&self.ngx, size, false);
+        let Some(render) = self.render_for(size) else {
+            return;
+        };
+        self.render = render;
         self.create();
         self.fresh = true;
     }
 
+    fn describe(&self) -> String {
+        let [w, h] = self.render;
+        if self.upscales() {
+            format!(
+                "{}: render {w}x{h} -> output {}x{}",
+                self.quality.name(),
+                self.output[0],
+                self.output[1]
+            )
+        } else {
+            format!("{w}x{h}")
+        }
+    }
+
     fn create(&mut self) {
-        let [w, h] = self.size;
         // What the later stages feed (docs/rt-dlss-rr.md §3); the evaluation stage may change
         // these, which only means making the feature again.
         let settings = Settings {
-            render: self.size,
-            output: self.size,
-            quality: Quality::Dlaa,
+            render: self.render,
+            output: self.output,
+            quality: self.quality,
             depth_inverted: true,
             hdr: true,
             mv_low_res: true,
@@ -1879,16 +2007,26 @@ impl Session {
             });
         }
         self.queue.submit([encoder.finish()]);
+        let what = self.describe();
         match made {
             Ok(feature) => {
-                log::info!(
-                    "DLSS-RR: feature instance created for {w}x{h} (DLAA: render size = output \
-                     size)"
-                );
+                if self.upscales() {
+                    log::info!(
+                        "DLSS-RR: feature instance created for {what} (upscaling, \
+                         PerfQualityValue {}, jitter over {} phases)",
+                        self.quality.value(),
+                        jitter_phases(self.render, self.output)
+                    );
+                } else {
+                    log::info!(
+                        "DLSS-RR: feature instance created for {what} (DLAA: render size = \
+                         output size)"
+                    );
+                }
                 self.feature = Some(feature);
             }
             Err(e) => log::warn!(
-                "DLSS-RR: off: creating the feature instance for {w}x{h} failed: {e}; the \
+                "DLSS-RR: off: creating the feature instance for {what} failed: {e}; the \
                  renderer stays as it is"
             ),
         }
@@ -1899,13 +2037,16 @@ impl Session {
             // Its setup commands have run before it is released.
             let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
             drop(feature);
-            log::info!(
-                "DLSS-RR: feature instance for {}x{} released",
-                self.size[0],
-                self.size[1]
-            );
+            log::info!("DLSS-RR: feature instance for {} released", self.describe());
         }
     }
+}
+
+/// The jitter's phases before it repeats for a `render` input and an `output`: NVIDIA's guide's
+/// 8 × (output / render)² (the scale on each axis), at least 32 as its RR guide asks.
+pub fn jitter_phases(render: [u32; 2], output: [u32; 2]) -> u32 {
+    let ratio = |i: usize| output[i] as f64 / render[i].max(1) as f64;
+    ((8.0 * ratio(0) * ratio(1)).ceil() as u32).max(32)
 }
 
 impl Drop for Session {
@@ -1982,6 +2123,31 @@ mod tests {
         assert_eq!(Quality::Performance.render_size(eye), [2200, 1760]);
         assert_eq!(Quality::Quality.render_size(eye), [2934, 2347]);
         assert_eq!(Quality::UltraPerformance.render_size(eye), [1467, 1174]);
+    }
+
+    #[test]
+    fn the_quality_switch_names_each_mode() {
+        assert_eq!(Quality::parse(""), Some(Quality::Dlaa));
+        assert_eq!(Quality::parse(" DLAA "), Some(Quality::Dlaa));
+        assert_eq!(Quality::parse("Quality"), Some(Quality::Quality));
+        assert_eq!(Quality::parse("balanced"), Some(Quality::Balanced));
+        assert_eq!(Quality::parse("performance"), Some(Quality::Performance));
+        assert_eq!(Quality::parse("ultra"), Some(Quality::UltraPerformance));
+        assert_eq!(
+            Quality::parse("ultra_performance"),
+            Some(Quality::UltraPerformance)
+        );
+        assert_eq!(Quality::parse("fast"), None);
+    }
+
+    #[test]
+    fn the_jitter_has_more_phases_the_more_it_upscales() {
+        // NVIDIA's 8 × scale², never under RR's 32.
+        assert_eq!(jitter_phases([2580, 1080], [2580, 1080]), 32);
+        assert_eq!(jitter_phases([1720, 720], [2580, 1080]), 32);
+        assert_eq!(jitter_phases([1290, 540], [2580, 1080]), 32);
+        assert_eq!(jitter_phases([860, 360], [2580, 1080]), 72);
+        assert_eq!(jitter_phases([640, 360], [2560, 1440]), 128);
     }
 
     #[test]

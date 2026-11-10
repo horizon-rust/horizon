@@ -553,6 +553,8 @@ fn denoiser(
 /// `HORIZON_RT_SKIP`'s bit for the denoiser's early-out (denoise.wgsl `SKIP_EARLY_OUT`): set, every
 /// pixel takes every pass as before it.
 const DENOISE_EARLY_OUT: u32 = 4_194_304;
+/// `HORIZON_RT_SKIP`'s bit for closed rooms as before (shadow_rays.wgsl `SKIP_INTERIOR`).
+const SKIP_INTERIOR: u32 = 134_217_728;
 
 impl ShadowRays {
     /// Makes the kernel again leaving out what `skip` says (shadow_rays.wgsl `SKIP`: 1 the sun's
@@ -561,7 +563,8 @@ impl ShadowRays {
     /// left to climb by itself, 8388608 the moving casters' own second ray toward the sun instead
     /// of the sun's ray telling them, shadow_rays_moving.wgsl; 4194304 the denoiser's early-out on
     /// converged pixels, denoise.wgsl `SKIP`, which then filters every pixel through every pass as
-    /// before; 2097152 white noise for every sample, not `blue2`'s blue noise: `WHITE_NOISE`), in
+    /// before; 2097152 white noise for every sample, not `blue2`'s blue noise: `WHITE_NOISE`;
+    /// 134217728 closed rooms as before, `SKIP_INTERIOR`), in
     /// a running game, to time each part alone (`horizon-ctl rt-skip`); 0 traces it all again.
     pub fn set_skip(&mut self, device: &wgpu::Device, skip: u32) {
         SHARE_EYES.store(skip & 32 == 0, std::sync::atomic::Ordering::Relaxed);
@@ -1072,6 +1075,12 @@ impl ShadowRays {
     /// kernel writes this frame's sample alone, without the accumulation or the bounced light's
     /// turns (shadow_rays.wgsl `raw_frame`, `rt.mode.w`'s bit 8), and its denoiser filters nothing
     /// (denoise.wgsl, `params.step.w` 1).
+    /// Whether `HORIZON_RT_SKIP` (as `set_skip` last made the kernel) keeps closed rooms as before
+    /// (shadow_rays.wgsl `SKIP_INTERIOR`), for the exposure's top indoors too (gfx.rs).
+    pub fn interior_skipped(&self) -> bool {
+        self.skip & SKIP_INTERIOR != 0
+    }
+
     #[cfg_attr(not(feature = "dlss-rr"), allow(dead_code))]
     pub fn set_raw_view(&mut self, view: Option<usize>) {
         self.raw_view = view;
@@ -1591,6 +1600,11 @@ impl ShadowRays {
             (&scratch, &light),
         ];
         // DLSS-RR's raw frames: one pass from `blocks` to `light`, the direct light added.
+        // Only the raw frames (`rr_raw`), unless `HORIZON_DLSS_RR_DENOISE=0`: the accumulated
+        // frames RR takes by default are denoised first, as every other view's. RR left their
+        // half-averaged light as grain and marbling in low light (a room lit by one torch) and
+        // dragged it into trails.
+        let raw = raw && (rr_raw() || !rr_denoise());
         if raw && self.denoise_raw.is_none() {
             use wgpu::util::DeviceExt;
             self.denoise_raw = Some(
@@ -1654,6 +1668,12 @@ fn edge_band() -> f64 {
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| (0.05..=0.9).contains(v))
         .unwrap_or(0.25)
+}
+/// Whether the view DLSS Ray Reconstruction takes keeps RT lighting's denoiser before it
+/// (`HORIZON_DLSS_RR_DENOISE=0`: RR alone, the pass-through).
+fn rr_denoise() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("HORIZON_DLSS_RR_DENOISE").is_ok_and(|v| v == "0"))
 }
 /// `ShadowRays::rr_raw`.
 fn rr_raw() -> bool {

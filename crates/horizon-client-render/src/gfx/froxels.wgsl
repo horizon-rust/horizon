@@ -4,10 +4,13 @@
 //   cs_inject    per froxel, the light scattered toward the camera at a point of the froxel drawn
 //                this frame (a low-discrepancy sequence, so the history supersamples the froxel): the
 //                sun (a shadow ray, tinted by stained glass and water), the sky's ambient (a ray toward
-//                the sky), and one light source drawn by importance, each through a shadow ray.
+//                the sky, drawn by a low-discrepancy sequence per froxel and kept apart for the
+//                blend to filter: `sky_filter`), and one light source drawn by importance, each
+//                through a shadow ray.
 //   cs_blend     per froxel, that sample blended with the last frame's froxels reprojected (a long
 //                history, 8 frames while settling), the history shortened where the froxel's content
-//                moved a lot and held within the range the new samples' neighbourhood shows.
+//                moved a lot and held within the range the new samples' neighbourhood shows; the
+//                sky's light averaged over that neighbourhood first.
 //   cs_integrate per screen column, front to back: the in-scatter and (in alpha) the transmittance
 //                up to each slice.
 //   fs_scatter / fs_transmit  the composite, `scene * T + in-scatter` at each pixel's depth, the
@@ -48,15 +51,19 @@ struct Fx {
     sigma_t: vec4<f32>,
     // rgb: the medium's single scattering albedo, w: the sky's ambient light in the medium.
     albedo: vec4<f32>,
-    // x: the history's longest length in frames, y: the light sources' scale.
+    // x: the history's longest length in frames, y: the light sources' scale, z: which half of the
+    // froxels this frame injects (`injected`), w: how many times each froxel has been injected
+    // (mod 65536: the index of its own sample in `sky_sample`'s sequence).
     history: vec4<f32>,
-    // The depth's size in pixels.
+    // The depth's size in pixels, z: 1 when the air ends at the froxels' reach whatever the fogs
+    // (`steady_air`).
     size: vec4<f32>,
     // xyz: where the view's rays start (camera-relative; the view bobbing moves it off the camera),
     // this frame's and the last frame's.
     eye: vec4<f32>,
     prev_eye: vec4<f32>,
-    // xyz: this frame's offset within a froxel before the froxel's own shift (a 3D R-sequence).
+    // xyz: this frame's offset within a froxel before the froxel's own shift (a 3D R-sequence), w: 1
+    // when the sky's light is filtered (`sky_filter`).
     jitter: vec4<f32>,
     // The natural fogs (gfx/natural_fog.rs). The relief map's layers: xy the camera's block less
     // the near layer's origin (x, z), zw the far layer's; and x, y their texels' sizes' inverse,
@@ -525,13 +532,36 @@ fn sun_scatter(pos: vec3<f32>, rnd: vec3<f32>) -> vec3<f32> {
     let seen = visibility(pos, d, 4096.0);
     return PI * fx.sun_light.rgb * seen;
 }
-// The sky's light in the medium, reached from above: a cosine-weighted ray toward the sky.
-fn ambient_scatter(pos: vec3<f32>, rnd: vec2<f32>) -> vec3<f32> {
+// The sky's light in the medium (`sky_mean() * fx.albedo.w` times this), reached from above: what
+// a cosine-weighted ray toward the sky lets through.
+fn ambient_seen(pos: vec3<f32>, rnd: vec2<f32>) -> vec3<f32> {
     let r = sqrt(rnd.x);
     let a = 2.0 * PI * rnd.y;
     let d = normalize(vec3(r * cos(a), sqrt(max(1.0 - rnd.x, 1e-3)), r * sin(a)));
-    let seen = visibility(pos, d, 4096.0);
-    return sky_mean() * fx.albedo.w * seen;
+    return visibility(pos, d, 4096.0);
+}
+// Whether the sky's light is filtered (froxels.rs `sky_filter`, `HORIZON_FROXEL_SKY_FILTER=0` off).
+// In a cave lit through one opening, few of the rays toward the sky reach it: each froxel's one
+// ray every other frame is all or nothing, white noise from froxel to froxel and frame to frame,
+// and the history (its reprojection resampling it, the neighbourhood's clamp following that
+// noise's local mean) smeared it into large grey blotches over the dark. Filtered, the inject
+// stores the sky's share apart (the sample's alpha) and the blend averages it over the froxel's
+// 27 neighbours before it meets the history; and each froxel draws its rays toward the sky by a
+// low-discrepancy sequence over its own samples (`sky_sample`), so its history covers the sky
+// evenly rather than by chance. The sun's beam is not filtered: its edges stay as sharp as its
+// shadow rays draw them, and it does not bleed past the walls that cut it.
+fn sky_filter() -> bool {
+    return fx.jitter.w > 0.5;
+}
+// The froxel `id`'s point of the sky's hemisphere (0..1, 0..1) for its sample this frame: the
+// R2 sequence (Roberts' plastic number in two dimensions, in 32-bit fixed point so it stays exact
+// however long it runs) at the froxel's own injection count, shifted by the froxel's own random
+// number (a Cranley-Patterson rotation, independent of the shift of its point).
+fn sky_sample(id: vec3<u32>) -> vec2<f32> {
+    let n = u32(fx.history.w);
+    let r2 = vec2(n * 0xc13fa9a9u, n * 0x91e10da6u);
+    let shift = random3(id * 1597334677u + vec3(29u, 211u, 3u)).xy;
+    return fract(vec2<f32>(r2 >> vec2(8u)) / 16777216.0 + shift);
 }
 // One light source of the froxel's cell, drawn by its light there (resampled importance
 // sampling with one sample: the sum of the weights over the chosen one's), through a shadow ray.
@@ -585,9 +615,18 @@ fn cs_inject(@builtin(global_invocation_id) id_in: vec3<u32>) {
     let pos = fx.eye.xyz + dir * slice_r(at.z);
     let c = dot(dir, fx.light.xyz);
     let sun = sun_scatter(pos, rnd2);
-    let ambient = ambient_scatter(pos, rnd.zx);
+    let sky = sky_mean() * fx.albedo.w;
+    let filtered = sky_filter();
+    // The sky's ray: drawn by the froxel's own sequence when filtered, else white noise.
+    let sky_rnd = select(rnd.zx, sky_sample(id), filtered);
+    let ambient_seen_here = ambient_seen(pos, sky_rnd);
+    let ambient = sky * ambient_seen_here;
     let lamps = lights_scatter(pos, dir, rnd2.zxy);
     var fresh = sun * hg(c, fx.sigma_t.w) + ambient + lamps;
+    // The sky's light's share, per unit of `sky`: what the fogs below let through of it.
+    var sky_share = 1.0;
+    // The light without the sky's.
+    var rest = sun * hg(c, fx.sigma_t.w) + lamps;
     if fog_on() {
         // In the fogs: the sun's light dimmed by the fog toward it (their top lit, their depths in
         // their own shade), with a share of multiple scattering (dimmed less, scattered evenly);
@@ -616,8 +655,21 @@ fn cs_inject(@builtin(global_invocation_id) id_in: vec3<u32>) {
         let sa = luminance(fx.sigma_t.rgb * fx.albedo.rgb);
         let sf = mean * FOG_ALBEDO;
         fresh = (air * sa + fog * sf) / max(sa + sf, 1e-8);
+        // The same without the sky's light, and that light's own share (its terms in `air` and
+        // `fog` above, mixed alike).
+        let air_rest = sun * hg(c, fx.sigma_t.w) * sun_t + lamps;
+        let fog_rest = sun * fog_sun(c, 1.0) + lamps;
+        rest = (air_rest * sa + fog_rest * sf) / max(sa + sf, 1e-8);
+        sky_share = (sqrt(up_t) * sa + sf) / max(sa + sf, 1e-8);
     }
-    textureStore(fresh_out, vec3<i32>(id), vec4(fresh, 1.0));
+    if filtered {
+        // The sky's light apart, as a grey share of `sky` (the tint of stained glass on the sky's
+        // ray is let go: its mean over the channels), for the blend to filter (`cs_blend`).
+        let seen = dot(ambient_seen_here, vec3(1.0 / 3.0)) * sky_share;
+        textureStore(fresh_out, vec3<i32>(id), vec4(rest, seen));
+        return;
+    }
+    textureStore(fresh_out, vec3<i32>(id), vec4(fresh, 0.0));
 }
 
 // The most the history keeps of its length where its froxel moved far, and the froxels' move (the
@@ -633,20 +685,30 @@ fn cs_blend(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = fx.dims.xyz;
     let top = vec3<i32>(dims) - 1;
     let here_id = vec3<i32>(id);
-    var fresh = textureLoad(fresh_in, here_id, 0).rgb;
+    // The sky's light the inject left apart in the samples' alpha (`sky_filter`; 0 otherwise).
+    var sky = vec3(0.0);
+    if sky_filter() { sky = sky_mean() * fx.albedo.w; }
+    let own = textureLoad(fresh_in, here_id, 0);
     // This frame's samples around the froxel: their mean and spread say what the light there is now.
     var sum = vec3(0.0);
     var sum_squares = vec3(0.0);
+    var sky_sum = 0.0;
     for (var dz = -1; dz <= 1; dz++) {
         for (var dy = -1; dy <= 1; dy++) {
             for (var dx = -1; dx <= 1; dx++) {
-                let c = textureLoad(fresh_in, clamp(here_id + vec3(dx, dy, dz), vec3(0), top), 0).rgb;
+                let s = textureLoad(fresh_in, clamp(here_id + vec3(dx, dy, dz), vec3(0), top), 0);
+                let c = s.rgb + sky * s.a;
                 sum += c;
                 sum_squares += c * c;
+                sky_sum += s.a;
             }
         }
     }
     let mean = sum / 27.0;
+    // The froxel's own light, with the sky's share its neighbourhood's mean: 27 rays toward the sky
+    // (half of them the last frame's) in place of one, the noise's spread five times smaller. The
+    // sky seen through an opening changes over metres, the froxels' 3x3x3 a few blocks at most.
+    var fresh = own.rgb + sky * (sky_sum / 27.0);
     let spread = sqrt(max(sum_squares / 27.0 - mean * mean, vec3(0.0)));
     // Frame to frame: where this froxel's centre stood in the last frame's grid, in world space from
     // the eye each frame's rays start at.
@@ -933,8 +995,7 @@ const MARCH_STEPS: i32 = 32;
 fn fog_march(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
     let dir = ray_dir(uv);
     let c = dot(dir, fx.light.xyz);
-    let st = max(fx.sigma_t.rgb, vec3(1e-6));
-    let ss = st * fx.albedo.rgb;
+    let st_air = max(fx.sigma_t.rgb, vec3(1e-6));
     var scattered = vec3(0.0);
     var through = vec3(1.0);
     var fog_through = 1.0;
@@ -948,6 +1009,10 @@ fn fog_march(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
         let pos = fx.eye.xyz + dir * d;
         let f = fog_at(pos, dz);
         let fog = f.valley + f.steam;
+        // The air within the froxels' reach only (`steady_air`).
+        let air_here = !steady_air() || d <= fx.depth.y;
+        let st = select(vec3(1e-6), st_air, air_here);
+        let ss = select(vec3(0.0), st_air * fx.albedo.rgb, air_here);
         if light {
             let j = view_source_at(uv, d);
             // The fog's shade on itself here (as the far slices light it: the fog up to its top
@@ -971,6 +1036,17 @@ fn fog_march(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
     }
     return vec4(scattered, fog_through);
 }
+// Whether the air (the homogeneous medium) ends at the froxels' reach (`depth.y`) on every path
+// (froxels.rs `steady_air`, `HORIZON_FROXEL_STEADY_AIR=0` off). The fogs on (`fog_on`: the
+// natural fogs can be, which goes by the camera's sky light), the sky's pixels lie at `far.x` and
+// the march and `clear_view` added the air out to `MARCH_RANGE`, four times the grid's 256
+// blocks; off (the camera a few blocks under an arch, in its shade), they ended at the grid. So
+// the camera's step out from under an arch laid a veil four times thicker over the sky and the
+// far terrain at once. Ending there too, the air is the same whether the fogs are on or not: the
+// grid's, as `AIR_THROUGH` was measured for.
+fn steady_air() -> bool {
+    return fx.size.z > 0.5;
+}
 // What the fogs let through, as the grid's columns around the pixel see them, for the ray to `r`
 // to be marched as clear air: their transmittance out to the end of the slice holding it.
 const CLEAR_THROUGH: f32 = 0.9999;
@@ -990,7 +1066,7 @@ fn clear_view(uv: vec2<f32>, r: f32, light: bool) -> vec4<f32> {
     if slice.x > 0.5 { a = integrated_cubic(v.xy, (slice.x - 0.5) / total); }
     var air = mix(a.rgb, b.rgb, clamp((v.z - slice.y) / max(slice.z - slice.y, 1e-4), 0.0, 1.0));
     let past = min(r, MARCH_RANGE) - fx.depth.y;
-    if past > 0.0 {
+    if past > 0.0 && !steady_air() {
         let st = max(fx.sigma_t.rgb, vec3(1e-6));
         let j = view_source_at(uv, MARCH_RANGE);
         air += exp(-st * fx.depth.y) * j * fx.albedo.rgb * (1.0 - exp(-st * past));

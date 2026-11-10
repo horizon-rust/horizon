@@ -13,7 +13,8 @@
 //!    and water, times the Henyey-Greenstein phase), the sky (a ray toward it, times the sky's mean light) and one light source drawn by
 //!    importance (a shadow ray), through hardware ray queries against the terrain's TLAS (`hw_rays`)
 //!    where the GPU has them, else the voxel grid's DDA; then *blends* (`cs_blend`) that sample with
-//!    the last frame's froxels reprojected in world space (the history `MAX_ACCUMULATION` frames
+//!    the last frame's froxels reprojected in world space (the sky's light first averaged over the
+//!    froxel's 27 neighbours, `sky_filter`) (the history `MAX_ACCUMULATION` frames
 //!    long, `SETTLING_ACCUMULATION` for `SETTLING_FRAMES` after the medium changes or the view is
 //!    new), the history shortened where its froxel moved a lot and clamped to the neighbourhood of
 //!    the new samples;
@@ -341,6 +342,58 @@ fn jitter(n: u32) -> [f32; 4] {
     [axis(1), axis(2), axis(3), 0.0]
 }
 
+/// Whether the sky's light in the medium is filtered across neighbouring froxels and drawn by a
+/// low-discrepancy sequence (froxels.wgsl `sky_filter`): on unless `HORIZON_FROXEL_SKY_FILTER=0`,
+/// which draws it as before (white noise, each froxel's own ray), to compare. In a dark cave with
+/// one opening to the sky, one ray in fifty or so toward the sky reaches it: a froxel's single
+/// ray every other frame was all or nothing, and the history, its reprojection resampling it
+/// bilinearly and the neighbourhood's clamp, spread that into large grey blotches.
+pub fn sky_filter() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("HORIZON_FROXEL_SKY_FILTER").is_ok_and(|v| v.trim() == "0"))
+}
+
+/// Whether the air steadies (froxels.wgsl `steady_air`): it ends at the froxels' reach whether the
+/// natural fogs are on or not, and what the camera's place picks (the cave's share of the medium,
+/// the natural fogs' `open`) eases over `EASE_SECONDS` instead of following the camera's block.
+/// On unless `HORIZON_FROXEL_STEADY_AIR=0`, to compare. Off, a step out from under an arch (its
+/// shade lowering the camera's sky light enough to turn the natural fogs off) laid a veil four
+/// times thicker over the sky and the far terrain at once, and a step back took it away.
+pub fn steady_air() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("HORIZON_FROXEL_STEADY_AIR").is_ok_and(|v| v.trim() == "0"))
+}
+
+/// The time constant (seconds) of the ease of what the camera's place picks (`steady_air`): a
+/// step under an arch or into a cave's mouth fades the medium and the fogs over a couple of
+/// seconds, as eyes adapt, rather than in a frame.
+pub const EASE_SECONDS: f32 = 1.5;
+
+/// `from` eased toward `to` over `dt` seconds (`EASE_SECONDS`' exponential), reaching it within a
+/// hundredth.
+fn ease(from: f32, to: f32, dt: f32) -> f32 {
+    let eased = from + (to - from) * (1.0 - (-dt / EASE_SECONDS).exp());
+    if (eased - to).abs() < 0.01 { to } else { eased }
+}
+
+/// A value eased over time (`ease`), from the first one it is given.
+#[derive(Clone, Copy, Debug, Default)]
+struct Eased {
+    value: Option<(f32, std::time::Instant)>,
+}
+
+impl Eased {
+    fn toward(&mut self, to: f32) -> f32 {
+        let now = std::time::Instant::now();
+        let value = match self.value {
+            Some((v, at)) => ease(v, to, now.duration_since(at).as_secs_f32().min(0.5)),
+            None => to,
+        };
+        self.value = Some((value, now));
+        value
+    }
+}
+
 /// A view's froxels: two grids of the source (the last frame's is the history) and the integrated
 /// one.
 struct ViewFroxels {
@@ -453,6 +506,9 @@ pub struct Froxels {
     map: wgpu::Buffer,
     map_origins: [Option<[i32; 2]>; 2],
     map_pending: Vec<FogLayer>,
+    /// The camera's sky light and the natural fogs' `open`, eased (`steady_air`).
+    eased_sky: Eased,
+    eased_open: Eased,
 }
 
 /// What `Froxels::run` draws from, for one view.
@@ -598,6 +654,8 @@ impl Froxels {
                 entry(12, compute, sampler),
                 entry(13, compute, output),
                 entry(21, compute, froxels(false)),
+                // The sky, for the sky's light the inject left apart (`sky_filter`).
+                entry(10, compute, sky_texture),
             ],
         });
         let integrate_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -703,6 +761,8 @@ impl Froxels {
             }),
             map_origins: [None; 2],
             map_pending: Vec::new(),
+            eased_sky: Eased::default(),
+            eased_open: Eased::default(),
         }
     }
 
@@ -721,6 +781,9 @@ impl Froxels {
         self.drift[1] -= (wind + DVec3::new(0.0, 0.45, 0.0)) * dt;
         self.drifts = self.drift.map(split);
         self.fog = fog;
+        if steady_air() {
+            self.fog.open = self.eased_open.toward(fog.open);
+        }
     }
 
     /// A layer of the relief map, to upload with the next view.
@@ -899,7 +962,16 @@ impl Froxels {
         if self.hardware && inputs.hardware.is_none() {
             return;
         }
-        let medium = self.medium();
+        let medium = if steady_air() && self.forced.is_none() {
+            let sky_light = self.eased_sky.toward(self.camera.sky_light);
+            CameraMedium {
+                sky_light,
+                ..self.camera
+            }
+            .medium()
+        } else {
+            self.medium()
+        };
         self.frame = self.frame.wrapping_add(1);
         let frame = self.frame;
         let index = self.view_froxels(device, inputs.view, inputs.size);
@@ -933,6 +1005,7 @@ impl Froxels {
         state.turn = state.turn.wrapping_add(1);
         // Which half of the froxels this frame injects: 1 or 2 (froxels.wgsl `injected`).
         let half = 1 + state.turn % 2;
+        let state_turn = state.turn;
         let last = state.last.replace((inputs.view_proj, inputs.camera));
         let from = state.source[1 - state.next].clone();
         let to = state.source[state.next].clone();
@@ -999,11 +1072,19 @@ impl Froxels {
                 medium.anisotropy,
             ],
             albedo: [medium.albedo.x, medium.albedo.y, medium.albedo.z, 1.0],
-            history: [cap, 1.0, half as f32, 0.0],
-            size: [inputs.size[0] as f32, inputs.size[1] as f32, 0.0, 0.0],
+            history: [cap, 1.0, half as f32, ((state_turn / 2) % 65536) as f32],
+            size: [
+                inputs.size[0] as f32,
+                inputs.size[1] as f32,
+                f32::from(u8::from(steady_air())),
+                0.0,
+            ],
             eye: [eye.x, eye.y, eye.z, 0.0],
             prev_eye: [prev_eye.x, prev_eye.y, prev_eye.z, 0.0],
-            jitter: jitter(frame),
+            jitter: {
+                let [x, y, z, _] = jitter(frame);
+                [x, y, z, f32::from(u8::from(sky_filter()))]
+            },
             map: [near[0], near[1], far[0], far[1]],
             map_scale: [
                 1.0 / natural_fog::TEXEL[0] as f32,
@@ -1096,6 +1177,7 @@ impl Froxels {
                     },
                     view(13, &to),
                     view(21, &fresh),
+                    view(10, inputs.sky),
                 ],
             });
             {
@@ -1225,6 +1307,20 @@ mod tests {
         // Snow hides more than the rain of the same levels.
         let snow = CameraMedium { snow: 1.0, ..rain };
         assert!(snow.medium().sigma_t.x > rain.medium().sigma_t.x);
+    }
+
+    #[test]
+    fn the_cameras_place_eases_in() {
+        // A step from the open (15) into a cave's shade (0): a frame later the medium has barely
+        // moved, after a few time constants it is the cave's, never past it.
+        let one_frame = ease(15.0, 0.0, 1.0 / 60.0);
+        assert!(one_frame > 14.5 && one_frame < 15.0);
+        let mut v = 15.0;
+        for _ in 0..(60.0 * EASE_SECONDS * 8.0) as usize {
+            v = ease(v, 0.0, 1.0 / 60.0);
+            assert!(v >= 0.0);
+        }
+        assert_eq!(v, 0.0);
     }
 
     #[test]

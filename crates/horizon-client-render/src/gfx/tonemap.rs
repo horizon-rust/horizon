@@ -54,6 +54,17 @@ const REMIX_UNITS: f32 = 200.0;
 /// The local tone mapping exposure at which Remix's own scale is the scene's, 1.
 const REMIX_EXPOSURE: f32 = 0.214_057_28;
 
+/// `PostParams::INDOOR_EV_MAX`, or `HORIZON_INDOOR_EV_MAX`'s stops (-2 to 6).
+fn indoor_ev_max() -> f32 {
+    static TOP: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *TOP.get_or_init(|| {
+        std::env::var("HORIZON_INDOOR_EV_MAX")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| (-2.0..=6.0).contains(v))
+            .unwrap_or(PostParams::INDOOR_EV_MAX)
+    })
+}
 impl PostParams {
     /// Remix's rtx.conf values.
     pub const REMIX: Self = Self {
@@ -91,6 +102,28 @@ impl PostParams {
         shadows: 2.0,
         ..Self::REMIX
     };
+
+    /// The exposure's top in stops for a closed room: Remix's situations cap it for the open air
+    /// (+1.5 by day, -0.5 at dusk and by night, -1 in the rain), so that the night stays dark;
+    /// indoors the eye adapts to the room's own light whatever the hour. A room lit by lamps
+    /// averages about 2^-5 paper white, which the key (exposure.wgsl, 2^-2.6) wants 2.4 stops up:
+    /// under the dusk cap it showed three stops too dark, its bounced light crushed to black.
+    /// Not higher: an unlit cave would be lifted into its own noise.
+    /// `HORIZON_INDOOR_EV_MAX` sets another (`indoor_ev_max`).
+    pub const INDOOR_EV_MAX: f32 = 3.0;
+
+    /// These with the exposure's top raised toward `INDOOR_EV_MAX` as the camera is shut in from
+    /// the sky: by its vanilla sky light level `sky` (0..15), from 13 (a block from the open sky:
+    /// the open air's top) down to 6 (well inside: the room's). It only lifts the top, and only
+    /// matters where the scene is darker than the key.
+    pub fn indoors(self, sky: i32) -> Self {
+        let t = ((13.0 - sky as f32) / 7.0).clamp(0.0, 1.0);
+        let inside = t * t * (3.0 - 2.0 * t);
+        Self {
+            ev_max: self.ev_max + (indoor_ev_max() - self.ev_max).max(0.0) * inside,
+            ..self
+        }
+    }
 
     /// These for a headset's eye: 0.4 stops brighter (`HORIZON_VR_EXPOSURE_STOPS` sets another, 0
     /// the screen's). An eye is 8-bit SDR and fills the view: measured in the headset, the
@@ -1035,6 +1068,33 @@ impl Tonemap {
                 &[&t.group],
                 scene,
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PostParams;
+
+    #[test]
+    fn a_closed_room_may_expose_up_to_its_own_light_whatever_the_hour() {
+        for situation in [
+            PostParams::REMIX,
+            PostParams::DUSK,
+            PostParams::NIGHT,
+            PostParams::RAIN,
+        ] {
+            // The open air (and a block under a tree's edge) keeps Remix's caps.
+            assert_eq!(situation.indoors(15), situation);
+            assert_eq!(situation.indoors(13), situation);
+            // Well inside, the room's top, at any hour.
+            assert_eq!(situation.indoors(0).ev_max, 3.0);
+            assert_eq!(situation.indoors(6).ev_max, 3.0);
+            // Between, between; never lower than the open air's, and nothing else changes.
+            let half = situation.indoors(10);
+            assert!(half.ev_max > situation.ev_max && half.ev_max < 3.0);
+            assert_eq!(half.ev_min, situation.ev_min);
+            assert_eq!(half.exposure, situation.exposure);
         }
     }
 }

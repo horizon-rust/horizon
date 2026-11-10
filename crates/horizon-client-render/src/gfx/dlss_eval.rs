@@ -1,4 +1,4 @@
-//! DLSS Ray Reconstruction's evaluation on the desktop window (docs/rt-dlss-rr.md, stages 4 and 5),
+//! DLSS Ray Reconstruction's evaluation on the desktop window (docs/rt-dlss-rr.md, stages 4 to 6),
 //! behind the `dlss-rr` feature and `HORIZON_RT_DLSS_RR=1`: the frame state around horizon-rtx's
 //! `dlss_rr::Session`.
 //!
@@ -8,6 +8,10 @@
 //! world's depth and the RT guides (`rt_guides`), writing `output`, which is then drawn back over
 //! the scene: bloom, the tone mapping, the hand and the HUD follow as after the resolve. Any NGX
 //! failure turns RR off for the rest of the run (the caller drops the session).
+//!
+//! In an upscaling mode (`HORIZON_DLSS_RR_QUALITY`, stage 6) the world is drawn at the session's
+//! render size (the world post's target, `world_post::Post::set_render_size`), and `output`, at
+//! the window's size, is drawn onto the window's scene in place of the world post's copy.
 //!
 //! The guides are made just before the evaluation from the world's own depth and this module's
 //! jitter (`ShadowRays::run_guides`), with the entities' own motion drawn over that depth by
@@ -47,8 +51,9 @@ fn jitter_sign() -> [f32; 2] {
     })
 }
 
-/// The jitter's positions before it repeats: NVIDIA's RR guide asks for at least 32 (its
-/// Programming Guide's minimum is 8 at DLAA), Halton(2, 3) as DLSS was trained on.
+/// The jitter's positions before it repeats at DLAA: NVIDIA's RR guide asks for at least 32 (its
+/// Programming Guide's minimum is 8 at DLAA), Halton(2, 3) as DLSS was trained on. Upscaling takes
+/// more (`horizon_rtx::dlss_rr::jitter_phases`).
 const PHASES: u32 = 32;
 
 /// The camera moving farther than this in a frame is a cut (a teleport, a dimension change): RR's
@@ -58,13 +63,16 @@ const CUT_DISTANCE: f64 = 8.0;
 /// The window's RR state between frames.
 #[derive(Default)]
 pub struct DlssEval {
-    /// RR's output (a storage image at the world's size) and its view, which also stands for the
-    /// last resolved frame (the screen-space reflections' `scene`, TAA's `last_color`).
+    /// RR's output (a storage image at the session's output size) and its view, which also stands
+    /// for the last resolved frame (the screen-space reflections' `scene`, TAA's `last_color`; they
+    /// read it by screen position, whatever its size).
     output: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// The output drawn back over the scene.
     blitter: Option<wgpu::util::TextureBlitter>,
     /// Frames evaluated: where the jitter is in its sequence.
     frame: u32,
+    /// The jitter's phases (`set_sizes`; 0 before: `PHASES`).
+    phases: u32,
     /// The camera of the last frame evaluated and its unjittered view projection; none after a
     /// frame without RR (a reset next).
     last_camera: Option<DVec3>,
@@ -81,10 +89,16 @@ impl DlssEval {
     /// `taa::jitter`, Halton(2, 3), over `PHASES`).
     pub fn jitter(&self) -> [f32; 2] {
         if jitter_on() {
-            super::taa::jitter_of(self.frame, PHASES)
+            super::taa::jitter_of(self.frame, self.phases.max(PHASES))
         } else {
             [0.0; 2]
         }
+    }
+
+    /// The session's render and output sizes this frame, before `jitter`: the jitter's phases
+    /// grow with the upscaling (32 at DLAA, as before).
+    pub fn set_sizes(&mut self, render: [u32; 2], output: [u32; 2]) {
+        self.phases = horizon_rtx::dlss_rr::jitter_phases(render, output);
     }
 
     /// RR's last output, while frames are evaluated.
@@ -172,8 +186,10 @@ impl DlssEval {
         self.output.as_ref().expect("made above").1.clone()
     }
 
-    /// Evaluates RR for this frame over `color` (the scene, `size`), which then holds RR's output
-    /// unless `show_input`. `Err` is NGX's (or a missing or mis-sized input): turn RR off.
+    /// Evaluates RR for this frame over `color` (the world's scene) and draws its output onto
+    /// `target` unless `show_input`: `color` itself at DLAA, whose session follows `color`'s size;
+    /// the window's scene when the session upscales (its sizes set by the caller, `resize` with
+    /// the window's). `Err` is NGX's (or a missing or mis-sized input): turn RR off.
     #[allow(clippy::too_many_arguments)]
     pub fn evaluate(
         &mut self,
@@ -185,12 +201,14 @@ impl DlssEval {
         guides: &super::rt_guides::Guides,
         color: &wgpu::TextureView,
         depth: &wgpu::TextureView,
+        target: &wgpu::TextureView,
         camera: DVec3,
         view_proj: Mat4,
     ) -> Result<(), horizon_rtx::dlss_rr::Error> {
-        let size = [color.texture().width(), color.texture().height()];
-        session.resize(size);
-        let output = self.output(device, size);
+        if !session.upscales() {
+            session.resize([color.texture().width(), color.texture().height()]);
+        }
+        let output = self.output(device, session.output_size());
         let reset = self
             .last_camera
             .is_none_or(|last| (camera - last).length() > CUT_DISTANCE);
@@ -221,7 +239,7 @@ impl DlssEval {
             let blitter = self.blitter.get_or_insert_with(|| {
                 wgpu::util::TextureBlitter::new(device, super::tonemap::SCENE_FORMAT)
             });
-            blitter.copy(device, encoder, &output, color);
+            blitter.copy(device, encoder, &output, target);
         }
         self.frame = self.frame.wrapping_add(1);
         self.last_camera = Some(camera);

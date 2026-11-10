@@ -470,10 +470,19 @@ fn finite3(v: vec3<f32>) -> vec3<f32> {
 fn finite4(v: vec4<f32>) -> vec4<f32> {
     return vec4(finite(v.x), finite(v.y), finite(v.z), finite(v.w));
 }
-fn cache_add(pos: vec3<f32>, n: vec3<f32>, light: vec3<f32>) {
+// The fixed point is rounded at random (by `texel`'s numbers), up as often as the fraction says:
+// cut down, every light under a 1024th of a paper white (a closed room's second bounce, a cave's
+// light off the lit walls) was stored as none and every dim cell held a step under its light.
+// `HORIZON_RT_SKIP` 134217728 cuts it down as before.
+fn cache_add(pos: vec3<f32>, n: vec3<f32>, light: vec3<f32>, texel: vec2<i32>) {
     let slot = cache_slot(cache_key(pos, n), true);
     if slot == 0xffffffffu { return; }
-    let fixed = vec3<u32>(clamp(finite3(light), vec3(0.0), vec3(64.0)) * CACHE_SCALE);
+    var round = vec3(0.0);
+    if (SKIP & SKIP_INTERIOR) == 0u {
+        let u = random2(texel, 95u);
+        round = vec3(u.x, u.y, fract(u.x + u.y * 0.618034));
+    }
+    let fixed = vec3<u32>(clamp(finite3(light), vec3(0.0), vec3(64.0)) * CACHE_SCALE + round);
     atomicAdd(&cache[slot].r, fixed.r);
     atomicAdd(&cache[slot].g, fixed.g);
     atomicAdd(&cache[slot].b, fixed.b);
@@ -584,7 +593,9 @@ override DEBUG: u32 = 0u;
 // in `accumulate`), to compare with before; 8192 the rays' hits as before the one look (lava met by
 // a mirror or seen through water or glass in its atlas sprite, a ray down into water absorbed over
 // the air before it: shadow_rays_hw.wgsl `hw_surface`); 2097152 white noise for every sample, as
-// before the blue noise (`blue2`; the pass's shaders read it from `rt.mode.w`'s bit 4). (32, VR's
+// before the blue noise (`blue2`; the pass's shaders read it from `rt.mode.w`'s bit 4); 134217728
+// closed rooms as before (`SKIP_INTERIOR`: `open_light`'s sky unseen, the radiance cache's fixed
+// point cut down, and gfx.rs's exposure top the open air's indoors too). (32, VR's
 // second eye's own light, never reaches the kernel: shadow_rays.rs `set_skip`.)
 override SKIP: u32 = 0u;
 // `HORIZON_RT_SUN_CENTRE=1`: RT lighting traces the ray toward the sun's centre too, which it
@@ -949,10 +960,24 @@ fn bounce_rest(at: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     return open_light(lifted, n, at);
 }
 // Without a cache cell or a further ray: the sky over the face's open half and the brightest
-// light source.
+// light source. The sky only as much as the surface sees of it: no ray says how much here, so its
+// vanilla sky light level does (`hw_sky`, the quad the last hardware ray met: its share of full
+// daylight squared, terrain.wgsl `rt_sky_level`'s law), as the terrain past the grid lights itself.
+// Without it every surface a bounce ray met off the screen and out of the cache (behind the camera
+// in a closed room, a cave) was lit by a quarter to a half of the open sky, through the walls;
+// open air (level 15) is lit as before. Unknown (the voxel grid's rays, an entity): as before.
+// `HORIZON_RT_SKIP` 134217728 keeps the guess unseen. (A face turned down has no open half: no sky,
+// and no `normalize` of nothing, which is not a number.)
+const SKIP_INTERIOR: u32 = 134217728u;
+var<private> hw_sky: f32 = -1.0;
 fn open_light(lifted: vec3<f32>, n: vec3<f32>, at: vec3<f32>) -> vec3<f32> {
-    return sky_at(normalize(n + vec3(0.0, 1.0, 0.0))) * (0.25 + 0.25 * n.y)
-        + block_light(lifted, n, 1, vec2<i32>(floor(at.xz * 16.0)));
+    let share = 0.25 + 0.25 * n.y;
+    var sky = vec3(0.0);
+    if share > 1e-3 {
+        sky = sky_at(normalize(n + vec3(0.0, 1.0, 0.0))) * share;
+        if hw_sky >= 0.0 && (SKIP & SKIP_INTERIOR) == 0u { sky *= hw_sky * hw_sky; }
+    }
+    return sky + block_light(lifted, n, 1, vec2<i32>(floor(at.xz * 16.0)));
 }
 // The light reaching camera-relative `pos` (normal `n`) along one more cosine-weighted ray: the
 // sky's, or the surface it meets lit by the sun and its cache cell (or the open sky's guess).
@@ -1881,7 +1906,7 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         }
         // What this pixel found, into the radiance cache for the bounce rays of the frames after
         // (a resting one what it kept, so that the cache the refraction reads stays as full).
-        cache_add(pos, n, sky.rgb + direct.rgb);
+        cache_add(pos, n, sky.rgb + direct.rgb, texel);
         // The sun mask's alpha: the indirect and direct light's luminance squared, its second
         // moment once accumulated, for the denoiser's variance (denoise.wgsl).
         let moment = luminance(sky.rgb + direct.rgb) * luminance(sky.rgb + direct.rgb);

@@ -672,7 +672,8 @@ fn albedo(pad: &Padded, info: &[Info]) -> crate::occupancy::Albedo {
     })
 }
 /// The section's light sources for RT lighting (`SectionMesh::lights`): the blocks that emit light,
-/// leaving out those no neighbour lets the light out of (buried lava, a lamp inside a wall).
+/// leaving out those no neighbour lets the light out of (buried lava, a lamp inside a wall);
+/// water lets it out.
 fn lights(pad: &Padded, info: &[Info]) -> Vec<[u8; 10]> {
     let mut out = Vec::new();
     for y in 0..16 {
@@ -682,12 +683,13 @@ fn lights(pad: &Padded, info: &[Info]) -> Vec<[u8; 10]> {
                 if s.emission == 0 {
                     continue;
                 }
-                // Touching air (or a plant, glass): a light inside a lava lake, under the
-                // surface, lights nothing the rays could see.
+                // Touching air (or a plant, glass) or water: a light inside a lava lake, under
+                // the surface, lights nothing the rays could see, but water lets the light out
+                // (glow lichen, a sea lantern, sea pickles, magma on the sea bed).
                 let open = Direction::ALL.iter().any(|d| {
                     let [dx, dy, dz] = d.normal();
                     let n = &info[pad.blocks[pi(x + dx, y + dy, z + dz)] as usize];
-                    !n.solid && n.fluid.kind() == FluidKind::Empty
+                    !n.solid && !matches!(n.fluid.kind(), FluidKind::Lava | FluidKind::FlowingLava)
                 });
                 if open {
                     let [r, g, b] = s.light_colour;
@@ -1633,6 +1635,18 @@ pub const SHADE_BITS: u32 = 0xF000_0000;
 pub fn with_sea(color: u32, sea: u32) -> u32 {
     color & !SHADE_BITS | (sea & 15) << 28
 }
+/// The exposure (`BiomeInfo::sea`, 0 to 15) of water under sky light level `sky` (0 to 15): the
+/// biome's in the open, falling to 0 (still water) where no sky light reaches it. The wind that
+/// raises the waves does not blow in a cave, whatever biome lies over it: a pool there is a calm
+/// mirror, and what it reflects (a lava fall, the cave's opening) stays one image instead of
+/// breaking into a glitter over every ripple.
+pub fn sheltered_sea(sea: u32, sky: u8) -> u32 {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var("HORIZON_RT_CAVE_WATER").is_ok_and(|v| v == "0")) {
+        return sea;
+    }
+    sea * u32::from(sky.min(12)) / 12
+}
 const UNSET: u32 = u32::MAX;
 const NO_BIOME: u16 = u16::MAX;
 /// The `ColorResolver`s `ClientLevel` caches block tints for.
@@ -1977,7 +1991,12 @@ impl Mesher<'_> {
                         // The biome's water colour, and in the top byte how open it lies
                         // (`with_sea`).
                         let sea = tints.get(Resolver::Sea, x, y, z) & 255;
-                        let water = tints.get(Resolver::Water, x, y, z) | sea.min(15) << 24;
+                        // No wind reaches water the sky does not: a cave's pool lies still
+                        // (`sheltered_sea`), by the sky's light on it or just over it.
+                        let above = (cell as isize + step_index([0, 1, 0])) as usize;
+                        let sky = (pad.light[cell] >> 4).max(pad.light[above] >> 4);
+                        let sea = sheltered_sea(sea.min(15), sky);
+                        let water = tints.get(Resolver::Water, x, y, z) | sea << 24;
                         if self.smooth_fluids {
                             let lattice = lattice.get_or_insert_with(fluid_surface::Lattice::new);
                             let cell = [x, y, z];

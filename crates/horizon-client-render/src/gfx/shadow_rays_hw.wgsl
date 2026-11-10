@@ -303,8 +303,48 @@ fn glass_fresnel(cosine: f32) -> f32 {
 }
 // Ice's body, its extinction a block (shadow_rays_psr.wgsl `ice_body`): clear ice absorbs red
 // most, packed ice scatters most of the light within a block or two.
-const ICE_EXTINCTION: vec3<f32> = vec3(0.14, 0.08, 0.06);
-const PACKED_ICE_EXTINCTION: vec3<f32> = vec3(0.75, 0.66, 0.6);
+// Ice is cloudy (air bubbles, cracks, frost): two or three blocks of it hide what lies behind,
+// packed ice within a block. `HORIZON_RT_SKIP` 33554432 keeps the clearer ice of before (glacier
+// ice: `ice_cloudy`), its even faces and its thin walls' tint along the other rays.
+fn ice_cloudy() -> bool {
+    return (SKIP & 33554432u) == 0u;
+}
+fn ice_extinction(packed: bool) -> vec3<f32> {
+    if ice_cloudy() { return select(vec3(1.1, 0.85, 0.75), vec3(2.3, 2.1, 2.0), packed); }
+    return select(vec3(0.14, 0.08, 0.06), vec3(0.75, 0.66, 0.6), packed);
+}
+// What ice's body scatters back of the light on it, in light: clear ice's glacier blue, packed
+// ice's white.
+const ICE_SCATTER: vec3<f32> = vec3(0.5, 0.72, 0.95);
+const PACKED_ICE_SCATTER: vec3<f32> = vec3(0.72, 0.82, 0.95);
+// The ice faces `hw_hit` keeps along its ray (the nearest).
+const HW_ICE_FACES: u32 = 8u;
+// A number in 0..1 for the ray from `pos` along `l`, new each frame: where in ice's body a ray is
+// scattered (`hw_hit`). White: the rays are the mirrors', the refraction's and the bounces'.
+fn hw_ice_draw(pos: vec3<f32>, l: vec3<f32>) -> f32 {
+    let q = floor((pos + l * 61.0) * 1024.0);
+    return random2(vec2<i32>(q.xz) + vec2<i32>(i32(q.y) * 7, i32(q.y) * 13), 11u).x;
+}
+// Ice is not optical glass: its faces are uneven and its body cracked, so what shows through it
+// is broken up and bent every way. The face's normal `n` at world `world`, leaned by a noise of
+// the place over three scales (a third of a block down to a few pixels), `amount` its slope.
+fn ice_uneven(world: vec3<f32>, n: vec3<f32>, amount: f32) -> vec3<f32> {
+    var q = world.xy;
+    var t1 = vec3(1.0, 0.0, 0.0);
+    var t2 = vec3(0.0, 1.0, 0.0);
+    if abs(n.y) > 0.5 {
+        q = world.xz;
+        t2 = vec3(0.0, 0.0, 1.0);
+    } else if abs(n.x) > 0.5 {
+        q = world.zy;
+        t1 = vec3(0.0, 0.0, 1.0);
+    }
+    let g = vec2(water_noise(q * 2.9) + 0.6 * water_noise(q * 8.3 + vec2(3.1, 7.7))
+            + 0.4 * water_noise(q * 23.0 + vec2(11.3, 1.9)),
+        water_noise(q * 2.9 + vec2(41.0, 13.0)) + 0.6 * water_noise(q * 8.3 + vec2(-5.7, 29.1))
+            + 0.4 * water_noise(q * 23.0 + vec2(17.9, -8.3))) - 1.0;
+    return normalize(n + (t1 * g.x + t2 * g.y) * amount);
+}
 // RT lighting's ice (terrain.wgsl `rt_ice`): 1 where sprite `layer` is the ice's, 2 the packed
 // ice's, 0 neither (`rt.held.w`, packed plus one).
 fn hw_ice(layer: f32) -> f32 {
@@ -382,8 +422,8 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     }
     // Ice's body (shadow_rays_psr.wgsl `ice_body`): the light a hill of ice lets through.
     if rt.held.w > 0.5 {
-        through *= exp(-ICE_EXTINCTION * max(hw_ice_run.x, 0.0)
-            - PACKED_ICE_EXTINCTION * max(hw_ice_run.y, 0.0));
+        through *= exp(-ice_extinction(false) * max(hw_ice_run.x, 0.0)
+            - ice_extinction(true) * max(hw_ice_run.y, 0.0));
     }
     if hw_caustic_on {
         through *= water_caustics(hw_caustic.xy, hw_caustic.z, l, rt.water.z, hw_caustic.w,
@@ -590,6 +630,7 @@ const HW_SEEN: u32 = 4u;
 // sources' light by its block light level in `hw_level`.
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     hw_level = vec3(0.0);
+    hw_sky = -1.0;
     var q: ray_query;
     hw_water_t = -1.0;
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
@@ -604,9 +645,41 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     var wet = 0u;
     var tail = vec4(1.0, 1.0, 1.0, 3.4e38);
     var tail_water = 3.4e38;
+    var ice_faces: array<vec2<f32>, 8>;
+    var ice_count = 0u;
+    // The nearest face the ray enters ice by: its normal (outward) and distance.
+    var ice_in = vec4(0.0, 0.0, 0.0, 3.4e38);
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index == instances[c.instance_custom_data].at.w {
+            // Ice's faces: its body acts over the length run between them (below), not a thin
+            // wall's tint at each. The nearest `HW_ICE_FACES` are kept, each with its distance and
+            // its kind (`hw_ice`), negative where the ray enters by it.
+            if rt.held.w > 0.5 && ice_cloudy() {
+                let base = hw_quad(c, true);
+                var kind = 0.0;
+                if base != NO_QUAD { kind = hw_ice(f32(arena_at(base, 4u) & 0x7fffu)); }
+                if kind > 0.0 {
+                    let p0 = hw_position(base);
+                    let f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
+                    let leaves = dot(f, l) > 0.0;
+                    var e = vec2(c.t, select(-kind, kind, leaves));
+                    if !leaves && c.t < ice_in.w && dot(f, f) > 1e-12 {
+                        ice_in = vec4(normalize(f), c.t);
+                    }
+                    if ice_count < HW_ICE_FACES {
+                        ice_faces[ice_count] = e;
+                        ice_count += 1u;
+                    } else {
+                        var far = 0u;
+                        for (var i = 1u; i < HW_ICE_FACES; i++) {
+                            if ice_faces[i].x > ice_faces[far].x { far = i; }
+                        }
+                        if ice_faces[far].x > c.t { ice_faces[far] = e; }
+                    }
+                    continue;
+                }
+            }
             // `hw_tint` says a water quad by setting `hw_water_t` to its distance (its own test
             // against the last one is order-bound: the twin faces are told apart here instead).
             hw_water_t = -1.0;
@@ -663,6 +736,48 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
         through *= tail.rgb;
         if tail_water <= before { nearest_water = min(nearest_water, tail_water); }
     }
+    // Ice's body before the hit: the length run in each kind is what the ray runs to the faces it
+    // leaves by less what it runs to those it enters by (the faces between two blocks of ice are
+    // culled, the hits come in any order), to the hit where it ends inside (ice against a solid
+    // block). Beer-Lambert over it, as a draw: the ray is scattered in the body with the chance
+    // the body's opacity gives, and then meets the ice itself, a diffuse surface of its scattered
+    // colour at the face it entered by (lit there by the caller, as any surface); otherwise it
+    // goes on, tinted. Over the frames a thin sheet shows what is behind it through a blue veil,
+    // and two or three blocks of ice are a wall.
+    if ice_count > 0u {
+        var run = vec2(0.0);
+        var open = vec2(0.0);
+        var first = 3.4e38;
+        for (var i = 0u; i < ice_count; i++) {
+            let e = ice_faces[i];
+            if e.x > before { continue; }
+            first = min(first, e.x);
+            let packed = abs(e.y) > 1.5;
+            let signed = vec2(select(sign(e.y), 0.0, packed), select(0.0, sign(e.y), packed));
+            run += signed * e.x;
+            open -= signed;
+        }
+        let end = select(reach, hit.t, hit.kind != RAY_QUERY_INTERSECTION_NONE);
+        run = max(run + max(open, vec2(0.0)) * end, vec2(0.0));
+        if run.x + run.y > 0.0 {
+            let kept = exp(-ice_extinction(false) * run.x - ice_extinction(true) * run.y);
+            let chance = dot(kept, vec3(0.2126, 0.7152, 0.0722));
+            if hw_ice_draw(pos, l) >= chance {
+                // From inside the ice (the first face met is one it leaves by): scattered at once.
+                let inside = ice_in.w > first;
+                let at_t = select(ice_in.w, 0.0, inside);
+                var before_ice = vec3(1.0);
+                for (var i = 0u; i < count; i++) {
+                    if seen[i].w <= at_t { before_ice *= seen[i].rgb; }
+                }
+                if tail.w <= at_t { before_ice *= tail.rgb; }
+                hw_water_t = -1.0;
+                return HwHit(at_t, select(ice_in.xyz, -l, inside),
+                    select(ICE_SCATTER, PACKED_ICE_SCATTER, run.y > run.x), before_ice, false, -1.0);
+            }
+            through *= kept / max(chance, 1e-4);
+        }
+    }
     hw_water_t = select(-1.0, nearest_water, nearest_water < 3.4e38);
     // Gone down into water (`hw_tint`): its medium over the length run under the surface.
     var water = -1.0;
@@ -697,6 +812,9 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
         let block = f32((arena_at(base, 4u) >> 24u) & 255u) / 16.0;
         let steps = max(15.0 - block, 0.0);
         hw_level = select(vec3(0.0), HW_BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), block > 0.0);
+        // Its sky light level's share of full daylight (the light's next byte, 16 a level), for
+        // `open_light`.
+        hw_sky = clamp(f32((arena_at(base, 4u) >> 16u) & 255u) / 240.0, 0.0, 1.0);
         lava = hw_is_lava(arena_at(base, 4u) & 0x7fffu);
         if texel.a >= 0.0 {
             let w = arena_at(base, 5u);
