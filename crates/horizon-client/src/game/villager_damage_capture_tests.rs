@@ -43,6 +43,10 @@ fn damage_keeps_the_actual_owner_after_that_actor_leaves() {
     game.forget_entity(19);
     assert_eq!(game.damage_attacker_uuid(Some(Who::Mob(19)), None), None);
     assert_eq!(captured.attacker_uuid, Some(attacker));
+    println!(
+        "identity game_npc {}",
+        serde_json::to_string(&captured.attacker_uuid).unwrap()
+    );
     assert_eq!(game.damage_attacker_uuid(None, Some(7)), None);
 }
 
