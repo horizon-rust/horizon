@@ -224,6 +224,7 @@ pub mod gpu_passes;
 pub use froxels::CameraMedium;
 // The natural fogs in the froxels (gfx/natural_fog.rs).
 pub mod natural_fog;
+mod rt_guides;
 mod shadow_rays;
 mod sky_planets;
 mod sky_stars;
@@ -14710,6 +14711,12 @@ impl Renderer {
             &overlay,
             scene_overlay,
         );
+        // `HORIZON_RT_GUIDES_SHOW`: one of DLSS-RR's guides over the window's frame, HUD and all
+        // (rt_guides.rs), before a screenshot reads it back.
+        if self.eye.is_none() {
+            self.shadow_rays
+                .draw_guides_shown(&self.device, &mut encoder, 0, &target_texture);
+        }
         if culling && let Some(cull) = &mut self.cull {
             cull.end(&self.device, &mut encoder);
         }
@@ -14820,6 +14827,11 @@ impl Renderer {
                 }
             }
             (None, _) => {}
+        }
+        // HDR output presents from the scene, not the frame: the guide's picture goes on again.
+        if let (Some(_), Some(output), None) = (&self.hdr, &output, &self.eye) {
+            self.shadow_rays
+                .draw_guides_shown(&self.device, &mut encoder, 0, output);
         }
         // With HDR on, a full-frame screenshot gets an HDR10 copy beside it.
         let hdr_readback = readback
@@ -16980,6 +16992,8 @@ mod tests {
         assert!(files.len() >= 10, "{files:?}");
         // The rays' pass is made of four files, with or without hardware rays (shadow_rays.rs).
         let named = |p: &std::path::Path, name: &str| p.file_name().is_some_and(|f| f == name);
+        // DLSS-RR's guides come after the hardware variant (rt_guides.rs, its own test).
+        files.retain(|p| !named(p, "rt_guides.wgsl"));
         files.retain(|p| {
             !named(p, "shadow_rays_hw.wgsl")
                 && !named(p, "shadow_rays_psr.wgsl")
