@@ -225,10 +225,10 @@ pub use froxels::CameraMedium;
 // The natural fogs in the froxels (gfx/natural_fog.rs).
 pub mod natural_fog;
 mod rt_guides;
-/// `Renderer::skins_entities`' `HORIZON_RT_GPU_MOBS=1`.
+/// `Renderer::skins_entities`' `HORIZON_RT_GPU_MOBS` (0: off).
 fn rt_gpu_mobs() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("HORIZON_RT_GPU_MOBS").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_GPU_MOBS").as_deref() != Ok("0"))
 }
 // DLSS Ray Reconstruction's evaluation on the window (gfx/dlss_eval.rs, docs/rt-dlss-rr.md).
 #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
@@ -9203,21 +9203,33 @@ impl Renderer {
             .map(entity_skin::EntitySkin::stored)
     }
 
+    /// Whether DLSS Ray Reconstruction runs on this renderer (`dlss_eval`).
+    fn rr_active(&self) -> bool {
+        #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+        {
+            self.dlss_rr.as_ref().is_some_and(|s| s.active())
+        }
+        #[cfg(not(all(feature = "dlss-rr", not(target_os = "macos"))))]
+        {
+            false
+        }
+    }
+
     /// Whether the game may pose ordinary entity models on the GPU (`Frame::skin`).
     /// Standard packs need every bridge stage; native packs, frame generation, RT lighting's
     /// hardware rays and native observers of the CPU entity stream retain their existing fallback.
     pub fn skins_entities(&self) -> bool {
         self.entity_skin.is_some()
             && !self.frame_gen.on
-            // RT lighting's hardware rays trace the entities' quads from the CPU stream
-            // (`hw_finish`): posed on the GPU, a mob casts no traced shadow, shows in no
-            // reflection and gives DLSS Ray Reconstruction no albedo.
-            // `HORIZON_RT_GPU_MOBS=1` poses them on the GPU all the same (measured in VR with 30
-            // pigs: 0.6 ms of CPU a frame less) and copies the posed vertices to the rays on the
-            // GPU (`hw_finish`); not with a pack's own entity target, which that copy cannot read.
+            // RT lighting's hardware rays trace the entities' quads: the posed vertices are
+            // copied to them on the GPU (`hw_finish`; seen on an RTX 4090, shadows attached, 0.3
+            // to 0.7 ms of CPU a frame less in VR with 30 pigs than posing on the CPU). A pack's
+            // own entity target is out of that copy's reach, and DLSS Ray Reconstruction takes
+            // the entities' motion from the CPU stream: both keep the CPU path, as does
+            // `HORIZON_RT_GPU_MOBS=0`.
             && !(self.rt_lighting
                 && self.hw_rays.is_some()
-                && !(rt_gpu_mobs() && self.pack_post.is_none()))
+                && (!rt_gpu_mobs() || self.pack_post.is_some() || self.rr_active()))
             && self.pack_post.as_ref().is_none_or(|(_, post)| {
                 post.as_ref().is_some_and(|post| post.skins_entities())
                     && !native_render::render_needs().entity_spans
