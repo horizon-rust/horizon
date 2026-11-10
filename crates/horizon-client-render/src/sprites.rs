@@ -223,7 +223,10 @@ fn material_pixels(
             class.pixels.extend(resample(&pixels, from, size));
             class.mips.push(crate::mipmap::Settings {
                 native_size: from,
-                strategy: crate::mipmap::Strategy::Data,
+                strategy: match map {
+                    Map::Specular => crate::mipmap::Strategy::Specular,
+                    _ => crate::mipmap::Strategy::Data,
+                },
                 ..Default::default()
             });
         }

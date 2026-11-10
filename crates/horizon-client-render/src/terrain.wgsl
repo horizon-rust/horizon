@@ -1410,9 +1410,10 @@ fn rt_glare(d: vec3<f32>) -> vec3<f32> {
     let radius = degrees(globals.rt_sun_light.w);
     let at = max(theta, radius);
     let fade = 1.0 - smoothstep(3.0, 15.0, theta);
-    // The moon's a tenth as much: under the night sky the eye sees it sharp, its glare would hide
+    // The moon's a thirtieth as much: under the night sky the eye sees it sharp, its glare would hide
     // the disc the night's exposure lifts.
-    let eye = select(1.0, 0.1, globals.rt_mode.z > 0.5);
+    // (0.03: at a tenth its flat veil over the disc still took the maria's contrast.)
+    let eye = select(1.0, 0.03, globals.rt_mode.z > 0.5);
     return globals.rt_sun_light.rgb * (10.0 * 3.14159265 * eye / (at * at * at)) * fade
         * smoothstep(-0.05, 0.02, toward.y);
 }
@@ -1466,8 +1467,13 @@ fn rt_moon_disc(d: vec3<f32>) -> vec3<f32> {
     // lit side's at its brightest (the Big Bear Earthshine Project, about 12 against 3.5 mag per
     // square arcsecond).
     let earth_lit = 0.5 - 0.5 * cos(phase);
-    let earthshine = 3.0 * 4e-4 * earth_lit;
-    return tint * (albedo / 0.12) * (3.0 * lit + earthshine) * air;
+    // By night 1 paper white, not the day's 3: at 3 its highlands stood at 4.5 and its maria at
+    // 1.5, both past the tone curve's knee (0.9) under the night's exposure (0.7), and the disc
+    // came out one white, its map gone. At 1 the maria sit near a third and the highlands at
+    // white. Through the dusk, with the sun's height, as the exposure's top comes down.
+    let full = mix(1.0, 3.0, smoothstep(-0.1, 0.1, globals.rt_sun.y));
+    let earthshine = full * 4e-4 * earth_lit;
+    return tint * (albedo / 0.12) * (full * lit + earthshine) * air;
 }
 // RT lighting: the light sources' traced light at this pixel (`rt_blocks`), this frame's rays only.
 // RT lighting: the sun's colour through stained glass at this pixel (`rt_sun_tint`), divided by the
@@ -1752,6 +1758,7 @@ fn water_noise(p: vec2<f32>) -> f32 {
 }
 // `sea` is how open the water lies (terrain.wgsl `TerrainOut::sea`: 0 a swamp's still water, 0.6 a
 // lake's, 1 the open sea's): the swell and the wind sea grow with it, still water hardly moves.
+const WATER_CALM: f32 = 0.6;
 fn water_sea(q: vec2<f32>, t: f32, sea: f32) -> vec3<f32> {
     let still = mix(vec3(0.1, 0.25, 0.4), vec3(1.0), smoothstep(0.0, 0.6, sea));
     let open = mix(vec3(1.0), vec3(1.8, 1.3, 1.1), smoothstep(0.6, 1.0, sea));
@@ -1760,7 +1767,9 @@ fn water_sea(q: vec2<f32>, t: f32, sea: f32) -> vec3<f32> {
     let gusts = water_noise(q / 23.0 + vec2(-3.7, 11.9) + vec2(0.045, 0.02) * t);
     // The wind's gains contrast more than the swell's: calm slicks beside rippled patches.
     let patches = smoothstep(vec2(0.15), vec2(0.85), vec2(wind, gusts));
-    return vec3(0.4 + 1.2 * swell, 0.15 + 1.7 * patches) * still * open;
+    // All of it at six tenths (`WATER_CALM`): at full height the surface was a dense mesh of
+    // glints and its caustics a net of hard lines on the bed, a pond's as a gale's.
+    return vec3(0.4 + 1.2 * swell, 0.15 + 1.7 * patches) * still * open * WATER_CALM;
 }
 fn water_surface(q: vec2<f32>, t: f32, footprint: f32, sea: f32) -> WaterSurface {
     var s = WaterSurface(0.0, vec2(0.0), vec3(0.0));
