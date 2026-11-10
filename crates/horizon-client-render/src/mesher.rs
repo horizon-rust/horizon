@@ -672,7 +672,8 @@ fn albedo(pad: &Padded, info: &[Info]) -> crate::occupancy::Albedo {
     })
 }
 /// The section's light sources for RT lighting (`SectionMesh::lights`): the blocks that emit light,
-/// leaving out those no neighbour lets the light out of (buried lava, a lamp inside a wall).
+/// leaving out those no neighbour lets the light out of (buried lava, a lamp inside a wall);
+/// water lets it out.
 fn lights(pad: &Padded, info: &[Info]) -> Vec<[u8; 10]> {
     let mut out = Vec::new();
     for y in 0..16 {
@@ -682,12 +683,13 @@ fn lights(pad: &Padded, info: &[Info]) -> Vec<[u8; 10]> {
                 if s.emission == 0 {
                     continue;
                 }
-                // Touching air (or a plant, glass): a light inside a lava lake, under the
-                // surface, lights nothing the rays could see.
+                // Touching air (or a plant, glass) or water: a light inside a lava lake, under
+                // the surface, lights nothing the rays could see, but water lets the light out
+                // (glow lichen, a sea lantern, sea pickles, magma on the sea bed).
                 let open = Direction::ALL.iter().any(|d| {
                     let [dx, dy, dz] = d.normal();
                     let n = &info[pad.blocks[pi(x + dx, y + dy, z + dz)] as usize];
-                    !n.solid && n.fluid.kind() == FluidKind::Empty
+                    !n.solid && !matches!(n.fluid.kind(), FluidKind::Lava | FluidKind::FlowingLava)
                 });
                 if open {
                     let [r, g, b] = s.light_colour;
