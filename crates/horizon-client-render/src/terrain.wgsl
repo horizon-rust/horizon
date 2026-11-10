@@ -1414,7 +1414,11 @@ fn rt_glare(d: vec3<f32>) -> vec3<f32> {
     // the disc the night's exposure lifts.
     // (0.03: at a tenth its flat veil over the disc still took the maria's contrast.)
     let eye = select(1.0, 0.03, globals.rt_mode.z > 0.5);
-    return globals.rt_sun_light.rgb * (10.0 * 3.14159265 * eye / (at * at * at)) * fade
+    // By night none on the moon's own disc, rising over a radius and a half past its limb: the
+    // glare is the eye's veil around a source, and laid flat over the disc (some two paper whites
+    // against the disc's one) it was what turned the moon into a white ball without a map.
+    let off = select(1.0, smoothstep(radius, 2.5 * radius, theta), globals.rt_mode.z > 0.5);
+    return globals.rt_sun_light.rgb * (10.0 * 3.14159265 * eye / (at * at * at)) * fade * off
         * smoothstep(-0.05, 0.02, toward.y);
 }
 // RT lighting: the real moon's disc toward `d` (0.52 degrees across, times the Moon Size

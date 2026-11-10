@@ -10633,7 +10633,7 @@ impl Renderer {
             .time(self.water_clock.elapsed().as_secs_f32())
             .filter(|_| self.rt_lighting && !frame.title)
         {
-            rt.aldhani = [t, atmosphere::MOONLIGHT * atmosphere::PAPER_WHITE];
+            rt.aldhani = [t, atmosphere::moonlight() * atmosphere::PAPER_WHITE];
         }
         // In VR the first eye alone updates the structures, as it alone submits their raw builds
         // and builds the top level (below): the second eye's sections built raw with opacity
@@ -10780,7 +10780,8 @@ impl Renderer {
             let level = if rt_sun.y > 0.0 {
                 self.atmosphere.sunlight(rt_sun) * rt_sun.y
             } else {
-                self.atmosphere.sunlight(-rt_sun) * (atmosphere::MOONLIGHT * moon_lit * (-rt_sun.y))
+                self.atmosphere.sunlight(-rt_sun)
+                    * (atmosphere::moonlight() * moon_lit * (-rt_sun.y))
             };
             let level =
                 level.dot(Vec3::new(0.2126, 0.7152, 0.0722)) * 1.2 * atmosphere::PAPER_WHITE;
@@ -10861,7 +10862,7 @@ impl Renderer {
                 (
                     self.atmosphere.sunlight(-rt_sun)
                         * Vec3::from(MOON_REFLECTANCE)
-                        * (atmosphere::MOONLIGHT * moon_lit),
+                        * (atmosphere::moonlight() * moon_lit),
                     self.rt_moon_radius,
                 )
             };
