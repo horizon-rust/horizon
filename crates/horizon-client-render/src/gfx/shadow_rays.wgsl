@@ -104,6 +104,17 @@ var<private> moving_shade: bool = false;
 struct Light {
     at: vec4<f32>,
     colour: vec4<f32>,
+    // A spotlight's way and the cosine of its cone's half angle (gfx/voxels.rs `Spot`); the way
+    // (0, 0, 0) for a light that shines all around.
+    aim: vec4<f32>,
+}
+// How much of a light leaves toward `out` (unit, from the light): all of it all around, a
+// spotlight's within its cone, fading over the cone's outer third to nothing at its edge.
+fn spot_cone(aim: vec4<f32>, out: vec3<f32>) -> f32 {
+    if dot(aim.xyz, aim.xyz) < 0.5 { return 1.0; }
+    let inner = cos(acos(aim.w) * 0.67);
+    let t = smoothstep(aim.w, inner, dot(out, aim.xyz));
+    return t * t;
 }
 @group(0) @binding(7) var<storage, read> lights: array<Light>;
 // For each 8-block cell of the grid (x, then z, then y), the eight lights lighting it most
@@ -1281,7 +1292,11 @@ fn light_path(index: u32, local: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> 
     let own = any(abs(within - vec3(0.5)) > vec3(0.01));
     let size = select(select(0.1, 0.5, cube), 0.06, own);
     let middle = select(block + vec3(0.5, select(0.6, 0.5, cube), 0.5), light.at.xyz, own);
-    let to = middle + offset * size - local;
+    // A spotlight's lens: a disc a quarter of a block across its way, so its shadows soften
+    // with the distance as a real lamp's do.
+    let spot = dot(light.aim.xyz, light.aim.xyz) > 0.5;
+    let lens = (offset - light.aim.xyz * dot(offset, light.aim.xyz)) * 0.25;
+    let to = middle + select(offset * size, lens, spot) - local;
     let length_to = length(to);
     let l = to / max(length_to, 1e-4);
     // Where the ray enters the light's block (0 inside it).
@@ -1303,10 +1318,13 @@ fn light_path(index: u32, local: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> 
     // point above it, so the stick's sides get some of it.
     if own && length_to < 0.8 { facing = max(facing, 0.35); }
     if facing <= 0.0 { return none; }
+    let cone = spot_cone(light.aim, -l);
+    if cone <= 0.0 { return none; }
     let window = 1.0 - (d / reach) * (d / reach);
     // The distance to the point of the light drawn (a torch's flame stands above its block's
     // floor, so the block it stands on isn't lit as if touching it).
-    let gain = light.colour.w * window * window * facing / ((1.0 + length_to) * (1.0 + length_to));
+    let gain = light.colour.w * window * window * facing * cone
+        / ((1.0 + length_to) * (1.0 + length_to));
     // The colour tints the light, the level sets how bright it is (as vanilla's light levels do):
     // a 1900 K flame's deep orange as bright as a white lamp of its level.
     let tint = pow(light.colour.rgb, vec3(2.2));

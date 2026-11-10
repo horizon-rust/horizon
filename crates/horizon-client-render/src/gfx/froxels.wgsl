@@ -103,6 +103,17 @@ struct Fx {
 struct Light {
     at: vec4<f32>,
     colour: vec4<f32>,
+    // A spotlight's way and the cosine of its cone's half angle (gfx/voxels.rs `Spot`); the way
+    // (0, 0, 0) for a light that shines all around.
+    aim: vec4<f32>,
+}
+// How much of a light leaves toward `out` (unit, from the light): all of it all around, a
+// spotlight's within its cone, fading over the cone's outer third to nothing at its edge.
+fn spot_cone(aim: vec4<f32>, out: vec3<f32>) -> f32 {
+    if dot(aim.xyz, aim.xyz) < 0.5 { return 1.0; }
+    let inner = cos(acos(aim.w) * 0.67);
+    let t = smoothstep(aim.w, inner, dot(out, aim.xyz));
+    return t * t;
 }
 @group(0) @binding(7) var<storage, read> lights: array<Light>;
 // For each 8-block cell of the grid (x, then z, then y), the eight lights lighting it most
@@ -319,13 +330,16 @@ struct LightTo {
 }
 fn light_to(index: u32, local: vec3<f32>) -> LightTo {
     let light = lights[index - 1u];
-    let middle = floor(light.at.xyz) + vec3(0.5, 0.55, 0.5);
+    // A spotlight from its lens (its beam through the medium), any other light its block's middle.
+    let spot = dot(light.aim.xyz, light.aim.xyz) > 0.5;
+    let middle = select(floor(light.at.xyz) + vec3(0.5, 0.55, 0.5), light.at.xyz, spot);
     let to = middle - local;
     let d = length(to);
     let reach = light.at.w;
-    if d >= reach { return LightTo(vec3(0.0), vec4(0.0, 1.0, 0.0, 0.0)); }
+    let cone = spot_cone(light.aim, -to / max(d, 1e-4));
+    if d >= reach || cone <= 0.0 { return LightTo(vec3(0.0), vec4(0.0, 1.0, 0.0, 0.0)); }
     let window = 1.0 - (d / reach) * (d / reach);
-    let gain = light.colour.w * window * window / ((1.0 + d) * (1.0 + d));
+    let gain = light.colour.w * window * window * cone / ((1.0 + d) * (1.0 + d));
     return LightTo(pow(light.colour.rgb, vec3(2.2)) * (BLOCK_LIGHT * gain),
         vec4(to / max(d, 1e-4), d));
 }

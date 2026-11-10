@@ -69,7 +69,7 @@ impl Flame {
 /// The flames among a section's light sources (`mesher.rs` `lights`), `sections` as `Voxels`
 /// keeps them, within `range` of `camera`: nearest first, at most `MAX_FLAMES`.
 pub fn nearby<'a>(
-    sections: impl Iterator<Item = (&'a (i32, i32, i32), &'a Vec<[u8; 10]>)>,
+    sections: impl Iterator<Item = (&'a (i32, i32, i32), &'a Vec<crate::mesher::RtLight>)>,
     camera: DVec3,
     range: f64,
 ) -> Vec<Flame> {
@@ -84,7 +84,7 @@ pub fn nearby<'a>(
         if (centre - camera).length() > range + 14.0 {
             continue;
         }
-        for &[lx, ly, lz, level, _, _, _, ax, ay, az] in lights {
+        for &[lx, ly, lz, level, _, _, _, ax, ay, az, _] in lights {
             let kind = level >> 4;
             if kind == 0 {
                 continue;
@@ -429,8 +429,8 @@ mod tests {
     use super::*;
 
     fn sections(
-        lights: Vec<[u8; 10]>,
-    ) -> std::collections::HashMap<(i32, i32, i32), Vec<[u8; 10]>> {
+        lights: Vec<crate::mesher::RtLight>,
+    ) -> std::collections::HashMap<(i32, i32, i32), Vec<crate::mesher::RtLight>> {
         std::collections::HashMap::from([((0, 20, 0), lights)])
     }
 
@@ -439,8 +439,8 @@ mod tests {
         let y = (20 * 16 + crate::chunk::MIN_Y) as f64;
         // A torch (kind 1, level 14) at its stick's top, a lamp (no kind) and a far campfire.
         let map = sections(vec![
-            [3, 0, 4, 14 | Flame::TORCH << 4, 255, 135, 0, 16, 22, 16],
-            [5, 0, 5, 15, 255, 205, 130, 255, 255, 255],
+            [3, 0, 4, 14 | Flame::TORCH << 4, 255, 135, 0, 16, 22, 16, 0],
+            [5, 0, 5, 15, 255, 205, 130, 255, 255, 255, 0],
             [
                 15,
                 15,
@@ -452,6 +452,7 @@ mod tests {
                 255,
                 255,
                 255,
+                0,
             ],
         ]);
         let near = nearby(map.iter(), DVec3::new(2.0, y, 2.0), 10.0);
