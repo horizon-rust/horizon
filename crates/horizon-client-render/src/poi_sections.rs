@@ -19,6 +19,8 @@ pub type SectionPois<T> = Arc<[(u16, T)]>;
 
 struct Cached<T> {
     section: Weak<Section>,
+    /// The kind classifier's generation; a reload that changes POIs bumps it.
+    version: u32,
     pois: SectionPois<T>,
 }
 /// Cached POI lists by chunk column `(chunk x, chunk z)`, each by section
@@ -87,11 +89,12 @@ fn list<'a, T: Copy>(
     slot: &'a mut Option<Cached<T>>,
     len: &mut usize,
     section: &Arc<Section>,
+    version: u32,
     kind: &mut impl FnMut(u32) -> Option<T>,
 ) -> &'a SectionPois<T> {
     let fresh = slot
         .as_ref()
-        .is_some_and(|c| c.section.as_ptr() == Arc::as_ptr(section));
+        .is_some_and(|c| c.section.as_ptr() == Arc::as_ptr(section) && c.version == version);
     if !fresh {
         let pois: SectionPois<T> = if section.blocks.maybe_has(|v| kind(v).is_some()) {
             let mut states = [0u32; 4096];
@@ -107,6 +110,7 @@ fn list<'a, T: Copy>(
         *len += usize::from(slot.is_none());
         *slot = Some(Cached {
             section: Arc::downgrade(section),
+            version,
             pois,
         });
     }
@@ -121,12 +125,13 @@ impl<T: Copy> PoiSections<T> {
         &self,
         key: (i32, i32, i32),
         section: &Arc<Section>,
+        version: u32,
         mut kind: impl FnMut(u32) -> Option<T>,
     ) -> SectionPois<T> {
         let mut lists = self.sections.lock().unwrap_or_else(|e| e.into_inner());
         let s = usize::try_from(key.1).expect("a section index");
         let (column, len) = lists.column((key.0, key.2), s);
-        list(&mut column[s], len, section, &mut kind).clone()
+        list(&mut column[s], len, section, version, &mut kind).clone()
     }
 
     /// The POIs of `chunk` from block Y `y0` to `y1`, its first section at
@@ -138,6 +143,7 @@ impl<T: Copy> PoiSections<T> {
         chunk: &Chunk,
         min_y: i32,
         (y0, y1): (i32, i32),
+        version: u32,
         mut kind: impl FnMut(u32) -> Option<T>,
         out: &mut Vec<(i32, SectionPois<T>)>,
     ) {
@@ -149,7 +155,7 @@ impl<T: Copy> PoiSections<T> {
         let mut lists = self.sections.lock().unwrap_or_else(|e| e.into_inner());
         let (slots, len) = lists.column((chunk.x, chunk.z), last as usize);
         for s in first as usize..=last as usize {
-            let pois = list(&mut slots[s], len, &chunk.sections[s], &mut kind);
+            let pois = list(&mut slots[s], len, &chunk.sections[s], version, &mut kind);
             if !pois.is_empty() {
                 out.push((min_y + s as i32 * 16, pois.clone()));
             }
@@ -192,33 +198,33 @@ mod tests {
         let index = PoiSections::<u8>::default();
         let kind = |v: u32| (v == 5 || v == 6).then_some(v as u8);
         let mut chunk = Arc::new(Chunk::empty(0, 0));
-        assert!(index.get((0, 0, 0), &chunk.sections[0], kind).is_empty());
+        assert!(index.get((0, 0, 0), &chunk.sections[0], 0, kind).is_empty());
         Arc::make_mut(&mut chunk).set(3, MIN_Y + 2, 1, 6);
         Arc::make_mut(&mut chunk).set(0, MIN_Y, 0, 5);
-        let found = index.get((0, 0, 0), &chunk.sections[0], kind);
+        let found = index.get((0, 0, 0), &chunk.sections[0], 0, kind);
         assert_eq!(&*found, &[(0, 5), (2 << 8 | 1 << 4 | 3, 6)]);
         // Unchanged: the cached list, not a rescan.
-        let again = index.get((0, 0, 0), &chunk.sections[0], |_| panic!("rescanned"));
+        let again = index.get((0, 0, 0), &chunk.sections[0], 0, |_| panic!("rescanned"));
         assert!(Arc::ptr_eq(&found, &again));
         // An edit in place (no other owner) still invalidates the list.
         Arc::make_mut(&mut chunk).set(0, MIN_Y, 0, 1);
         assert_eq!(
-            &*index.get((0, 0, 0), &chunk.sections[0], kind),
+            &*index.get((0, 0, 0), &chunk.sections[0], 0, kind),
             &[(2 << 8 | 1 << 4 | 3, 6)]
         );
         // So does replacing the section, or the chunk.
         Arc::make_mut(&mut chunk).sections[0] = Arc::new(Section::default());
-        assert!(index.get((0, 0, 0), &chunk.sections[0], kind).is_empty());
+        assert!(index.get((0, 0, 0), &chunk.sections[0], 0, kind).is_empty());
         let mut other = Chunk::empty(0, 0);
         other.set(1, MIN_Y, 1, 5);
         chunk = Arc::new(other);
         assert_eq!(
-            &*index.get((0, 0, 0), &chunk.sections[0], kind),
+            &*index.get((0, 0, 0), &chunk.sections[0], 0, kind),
             &[(1 << 4 | 1, 5)]
         );
         // An unused palette entry alone yields no POI.
         Arc::make_mut(&mut chunk).set(1, MIN_Y, 1, 2);
-        assert!(index.get((0, 0, 0), &chunk.sections[0], kind).is_empty());
+        assert!(index.get((0, 0, 0), &chunk.sections[0], 0, kind).is_empty());
     }
 
     /// A column gives each section's list as `get` does, the sections
@@ -232,12 +238,12 @@ mod tests {
             Arc::make_mut(&mut chunk).set(x, y, z, 5);
         }
         let mut out = Vec::new();
-        index.column(&chunk, MIN_Y, (MIN_Y, MIN_Y + 63), kind, &mut out);
+        index.column(&chunk, MIN_Y, (MIN_Y, MIN_Y + 63), 0, kind, &mut out);
         let bases: Vec<i32> = out.iter().map(|(base, _)| *base).collect();
         assert_eq!(bases, [MIN_Y, MIN_Y + 32]);
         for (base, pois) in &out {
             let s = (base - MIN_Y) / 16;
-            let one = index.get((2, s, -3), &chunk.sections[s as usize], kind);
+            let one = index.get((2, s, -3), &chunk.sections[s as usize], 0, kind);
             assert!(Arc::ptr_eq(pois, &one));
         }
         // Kept: no rescan.
@@ -245,6 +251,7 @@ mod tests {
             &chunk,
             MIN_Y,
             (MIN_Y, MIN_Y + 63),
+            0,
             |_| panic!("rescanned"),
             &mut out,
         );
@@ -256,7 +263,14 @@ mod tests {
             rescans += 1;
             kind(v)
         };
-        index.column(&chunk, MIN_Y, (MIN_Y + 20, MIN_Y + 63), counted, &mut out);
+        index.column(
+            &chunk,
+            MIN_Y,
+            (MIN_Y + 20, MIN_Y + 63),
+            0,
+            counted,
+            &mut out,
+        );
         assert!(rescans > 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, MIN_Y + 32);
@@ -264,13 +278,25 @@ mod tests {
     }
 
     #[test]
+    fn a_new_classifier_generation_lists_the_section_again() {
+        let index = PoiSections::<u8>::default();
+        let chunk = Arc::new(Chunk::empty(0, 0));
+        let first = index.get((0, 0, 0), &chunk.sections[0], 0, |_| Some(1));
+        let again = index.get((0, 0, 0), &chunk.sections[0], 0, |_| panic!("rescanned"));
+        assert!(Arc::ptr_eq(&first, &again));
+        let changed = index.get((0, 0, 0), &chunk.sections[0], 1, |_| None);
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert_eq!(&*changed, &[]);
+    }
+
+    #[test]
     fn unloaded_sections_are_dropped() {
         let index = PoiSections::<u8>::default();
         let kind = |v: u32| (v == 5).then_some(5);
         let kept = Arc::new(Section::default());
-        index.get((0, 0, 0), &kept, kind);
+        index.get((0, 0, 0), &kept, 0, kind);
         for i in 0..MIN_PRUNE as i32 {
-            index.get((1, i, 0), &Arc::new(Section::default()), kind);
+            index.get((1, i, 0), &Arc::new(Section::default()), 0, kind);
         }
         let lists = index.sections.lock().unwrap();
         assert!(lists.len <= 2);

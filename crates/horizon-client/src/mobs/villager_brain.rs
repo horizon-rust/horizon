@@ -923,7 +923,10 @@ fn chunk_pois(
     };
     let kind = |state: u32| poi_of_state(w, horizon_world::registry::BlockStateId(state));
     let (min, mut lists) = (w.world.bottom_y(), Vec::new());
-    w.world.pois.column(chunk, min, (y0, y1), kind, &mut lists);
+    let version = super::villager_professions::version();
+    w.world
+        .pois
+        .column(chunk, min, (y0, y1), version, kind, &mut lists);
     for (base, pois) in &lists {
         for &(i, poi) in pois.iter() {
             let i = i32::from(i);

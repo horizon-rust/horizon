@@ -16,7 +16,13 @@ use horizon_world::registry::BlockStateId;
 /// The values `apply` takes from one SetEntityData packet, by vanilla's entry
 /// indices (Entity 0..=7, LivingEntity 8..=14, Mob 15, then the subclasses).
 /// `builtin` names the ids of built-in registries.
-fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_entity: i32) {
+fn apply(
+    m: &mut Mob,
+    values: &[(u8, i32, Value)],
+    builtin: &Builtin,
+    dynamic: &Dynamic,
+    local_entity: i32,
+) {
     let species = m.species();
     let baby = super::lan::baby_index(species);
     if &*m.kind.id == "minecraft:player" {
@@ -347,7 +353,9 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // Villager.DATA_VILLAGER_DATA and ZombieVillager's (after
             // Zombie's three): what VillagerProfessionLayer draws.
             (Species::Villager, 19, Value::Ids(data))
-            | (Species::ZombieVillager, 20, Value::Ids(data)) => villager_data(m, data, builtin),
+            | (Species::ZombieVillager, 20, Value::Ids(data)) => {
+                villager_data(m, data, builtin, dynamic)
+            }
             // Mannequin.DATA_PROFILE (after Avatar's two): whose skin it
             // wears; update_remote_skins resolves it like a tab player's.
             (Species::Mannequin, 17, Value::Profile(profile)) => {
@@ -466,7 +474,7 @@ fn swirls(list: &[Particle], builtin: &Builtin) -> Vec<ParticleOptions> {
 
 /// VillagerData as the network sends it: the type and the profession by
 /// their built-in registry ids, then the level.
-fn villager_data(m: &mut Mob, data: &[i32], builtin: &Builtin) {
+fn villager_data(m: &mut Mob, data: &[i32], builtin: &Builtin, dynamic: &Dynamic) {
     let &[kind, profession, level] = data else {
         return;
     };
@@ -480,9 +488,15 @@ fn villager_data(m: &mut Mob, data: &[i32], builtin: &Builtin) {
     if let Some(t) = index("minecraft:villager_type", kind, &VILLAGER_TYPES) {
         m.extra.variant = t;
     }
-    // A data pack's profession is sent above the built-in ids.
-    if let Some(p) = horizon_client::mobs::villager_professions::from_network_id(profession)
-        .or_else(|| index("minecraft:villager_profession", profession, &PROFESSIONS))
+    // The server's profession registry carries vanilla and content ids; fall
+    // back to the built-in table for a connection that did not send one.
+    let custom = dynamic
+        .registries
+        .get(horizon_client::mobs::villager_professions::SYNC_REGISTRY)
+        .and_then(|entries| entries.get(profession as usize))
+        .and_then(|(name, _)| horizon_client::mobs::villager_professions::resolve(name));
+    if let Some(p) =
+        custom.or_else(|| index("minecraft:villager_profession", profession, &PROFESSIONS))
     {
         m.extra.variant2 = p;
     }
@@ -502,7 +516,7 @@ impl Game<'_> {
             _ => None,
         });
         if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32) {
-            apply(m, values, &r.builtin, r.entity_id);
+            apply(m, values, &r.builtin, &r.registries, r.entity_id);
             apply_registry_data(m, values, &r.registries, self.world.game_time);
             if let Some(code) = bed
                 && m.species() == Species::Villager
@@ -624,6 +638,7 @@ mod tests {
                         (7, s::INT, Value::Int(frozen)),
                     ],
                     &Builtin::default(),
+                    &Dynamic::default(),
                     99,
                 );
                 assert_eq!((mob.air, mob.ticks_frozen), (air, frozen), "{kind}");
@@ -688,7 +703,13 @@ mod tests {
                             sent.push((*index, *value));
                         }
                     }
-                    super::apply(&mut client, &data.values, &Builtin::default(), 99);
+                    super::apply(
+                        &mut client,
+                        &data.values,
+                        &Builtin::default(),
+                        &Dynamic::default(),
+                        99,
+                    );
                 }
             }
             sent.sort_unstable_by_key(|v| v.0);
@@ -771,6 +792,7 @@ mod tests {
                     &mut m,
                     &[(16, s::BOOLEAN, Value::Bool(on))],
                     &Builtin::default(),
+                    &Dynamic::default(),
                     99,
                 );
                 assert_eq!(
@@ -786,6 +808,7 @@ mod tests {
                 &mut m,
                 &[(16, s::BOOLEAN, Value::Bool(true))],
                 &Builtin::default(),
+                &Dynamic::default(),
                 99,
             );
             assert!(raider::state(&m).is_none(), "{kind} is not a raider");
@@ -850,7 +873,13 @@ mod tests {
                             sent.push(*on);
                         }
                     }
-                    super::apply(&mut client, &data.values, &Builtin::default(), 99);
+                    super::apply(
+                        &mut client,
+                        &data.values,
+                        &Builtin::default(),
+                        &Dynamic::default(),
+                        99,
+                    );
                 }
             }
             trace.push((
@@ -939,7 +968,7 @@ mod tests {
     }
 
     fn apply(m: &mut Mob, values: &[(u8, i32, Value)]) {
-        super::apply(m, values, &builtin(), 99);
+        super::apply(m, values, &builtin(), &Dynamic::default(), 99);
     }
 
     fn mob(kind: &str) -> Option<Mob> {

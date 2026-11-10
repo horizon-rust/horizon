@@ -798,7 +798,8 @@ pub(super) fn mob_meta(
             let villager_type = VILLAGER_TYPES[e.variant as usize % VILLAGER_TYPES.len()];
             if let (Some(t), Some(p)) = (
                 id("minecraft:villager_type", villager_type),
-                vp::network_id_or(e.variant2, |n| id("minecraft:villager_profession", n)),
+                hub.registry_id(vp::SYNC_REGISTRY, &vp::id(e.variant2))
+                    .or_else(|| id("minecraft:villager_profession", vp::name(e.variant2))),
             ) {
                 let index = if kind == "minecraft:villager" { 19 } else { 20 };
                 let level = i32::from(e.variant3.max(1));

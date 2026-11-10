@@ -581,11 +581,13 @@ content mods ("content mods not loaded: ..." in the log). Feature tags are vanil
 doesn't read a mod's `placed_feature` tags yet); a world's data pack that replaces a biome replaces the mods' changes to
 it too.
 
-A mod may add villager professions, each with one job-site block, in `data/<ns>/villager_profession/<name>.json`.
+A content mod may add villager professions, each with one job-site block, in `data/<ns>/villager_profession/<name>.json`.
+These are content rather than world data: the client needs the same names, textures and trades, so they load from the
+content root at world open and a world data pack does not add them.
 `poi` is the job-site block; `work_sound` is a sound event without `minecraft:`; `look` is the vanilla profession whose
 texture and hat it wears; `gift` defaults to `<ns>:gameplay/hero_of_the_village/<name>_gift`. Vanilla's fifteen
 professions keep their indices. Custom entries start at 15; a local index stays with its id across reloads, and the
-network id follows the current id-sorted definitions so a host and guest with the same files agree. Their trades are
+server sends every id in `horizon:villager_profession` so a client uses the server's mapping. Their trades are
 ordinary `data/<ns>/villager_trade/` and `data/<ns>/trade_set/` files, using the profession's namespaced id
 (`<ns>:<name>/level_<n>`), not `minecraft:`.
 

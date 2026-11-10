@@ -673,7 +673,7 @@ pub struct DataStore {
 }
 /// `<kind-dir>/<ns>:<path>` for a pack file the content tables read:
 /// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `trade_set/`,
-/// `villager_trade/`, `villager_profession/`, `dialog/`, `damage_type/`, `data_maps/`, `enchantment/` or `tags/<sub>/`, where the id keeps the sub
+/// `villager_trade/`, `dialog/`, `damage_type/`, `data_maps/`, `enchantment/` or `tags/<sub>/`, where the id keeps the sub
 /// path so a nested tag kind stays addressable.
 fn content_id(file: &str) -> Option<String> {
     let rest = file.strip_prefix("data/")?;
@@ -1126,14 +1126,6 @@ mod tests {
         );
         assert_eq!(DataPack::builtin(&resources).id, "vanilla");
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn villager_profession_files_are_content_files() {
-        assert_eq!(
-            content_id("data/mymod/villager_profession/oceanographer.json").as_deref(),
-            Some("villager_profession/mymod:oceanographer")
-        );
     }
 
     #[test]

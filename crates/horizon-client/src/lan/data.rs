@@ -48,6 +48,8 @@ pub const SYNCHRONIZED: &[&str] = &[
     "minecraft:decorated_pot_pattern",
     "minecraft:block_transformer",
     "minecraft:worldgen/block_state_provider",
+    // Horizon's own: every villager profession id, vanilla and content.
+    "horizon:villager_profession",
 ];
 pub const BIOME_REGISTRY: &str = "minecraft:worldgen/biome";
 /// The table a client plays a server with: `known` and the biomes of the
@@ -328,6 +330,26 @@ impl SyncData {
             ..Default::default()
         };
         for key in SYNCHRONIZED {
+            if *key == crate::mobs::villager_professions::SYNC_REGISTRY {
+                let mut names: Vec<String> = crate::mobs::render::PROFESSIONS
+                    .iter()
+                    .map(|name| format!("minecraft:{name}"))
+                    .collect();
+                names.extend(crate::mobs::villager_professions::entries());
+                dynamic.registries.insert(
+                    (*key).into(),
+                    names.iter().map(|name| (name.clone(), None)).collect(),
+                );
+                registries.push((
+                    (*key).into(),
+                    Entries {
+                        data: vec![Tag::compound(Vec::<(&str, Tag)>::new()); names.len()],
+                        from_pack: vec![true; names.len()],
+                        names,
+                    },
+                ));
+                continue;
+            }
             if let Some(kept) = kept.filter(|_| *key != BIOME_REGISTRY || biomes.is_none()) {
                 if let Some((_, entries)) = kept.registries.iter().find(|(name, _)| name == key) {
                     dynamic
@@ -507,7 +529,21 @@ impl SyncData {
     }
 
     /// The id of a name in a built-in or synchronized registry.
+    /// The id a name has in a synchronized registry only (not the built-in
+    /// table), for a registry Horizon adds itself.
+    pub fn dynamic_id(&self, registry: &str, name: &str) -> Option<i32> {
+        self.dynamic
+            .registries
+            .get(registry)?
+            .iter()
+            .position(|(n, _)| n == name)
+            .map(|i| i as i32)
+    }
+
     pub fn id(&self, registry: &str, name: &str) -> Option<i32> {
+        if registry == crate::mobs::villager_professions::SYNC_REGISTRY {
+            return self.dynamic_id(registry, name);
+        }
         if registry == "minecraft:data_component_type"
             && self.dynamic.custom_components
             && let Some(id) = horizon_protocol::item::custom::id(name)

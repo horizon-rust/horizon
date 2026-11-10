@@ -365,10 +365,13 @@ pub(super) fn startup_resource_root(
         &settings.mods.disabled,
         dev_mods,
     );
-    match packs::startup_root(vanilla_root, &base, &settings.resource_packs, &[]) {
-        Ok(root) => (root, None),
-        Err(error) => (base, Some(error.to_string())),
-    }
+    let (root, error) =
+        match packs::startup_root(vanilla_root, &base, &settings.resource_packs, &[]) {
+            Ok(root) => (root, None),
+            Err(error) => (base, Some(error.to_string())),
+        };
+    crate::mobs::villager_professions::load(&root);
+    (root, error)
 }
 
 /// Each generation has its own channel and progress. Pack changes wait for the
