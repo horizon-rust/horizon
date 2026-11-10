@@ -595,7 +595,9 @@ override DEBUG: u32 = 0u;
 // the air before it: shadow_rays_hw.wgsl `hw_surface`); 2097152 white noise for every sample, as
 // before the blue noise (`blue2`; the pass's shaders read it from `rt.mode.w`'s bit 4); 134217728
 // closed rooms as before (`SKIP_INTERIOR`: `open_light`'s sky unseen, the radiance cache's fixed
-// point cut down, and gfx.rs's exposure top the open air's indoors too). (32, VR's
+// point cut down, and gfx.rs's exposure top the open air's indoors too); 1073741824 the bounced
+// light as before (`SKIP_GI`: the history's darkening on any darker frame, radiance_cache.wgsl's
+// cells averaging up to 1000 frames, gfx.rs's exposure top by day the open air's). (32, VR's
 // second eye's own light, never reaches the kernel: shadow_rays.rs `set_skip`.)
 override SKIP: u32 = 0u;
 // `HORIZON_RT_SUN_CENTRE=1`: RT lighting traces the ray toward the sun's centre too, which it
@@ -1979,6 +1981,26 @@ const ANTILAG_VISIBILITY: f32 = 0.15;
 // mean must be (with this frame under twice that) for the light to count as gone (`accumulate`).
 const DARKEN_HISTORY: f32 = 3.0;
 const DARKEN_RATIO: f32 = 0.35;
+// A light gone out, told from the noise of a light that only a few rays find (a closed room's sky
+// through a skylight, the patch of sun a room's bounces see: most frames find none of it, one now
+// and then many times its mean). The fast history follows a frame darker than it at once only
+// when that frame is under its mean by more than its noise (`darkens`), and the slow history
+// drops to the fast mean only where its frames were steady, their deviation under their mean
+// (`steady`, from the second moment it keeps in the sun mask's alpha). Without them, in such
+// light, every run of dark frames pulled the fast mean down three times as fast as a bright frame
+// lifted it and dropped the slow history to it as a light gone: the room held a fraction of its
+// light, in blotches where the runs fell. A lamp switched off (steady light, then none) goes as
+// fast as before. `HORIZON_RT_SKIP` 1073741824 darkens on any darker frame as before.
+const SKIP_GI: u32 = 1073741824u;
+fn darkens(lum_now: f32, quick: vec4<f32>) -> bool {
+    if (SKIP & SKIP_GI) != 0u { return true; }
+    let sigma = sqrt(max(quick.y - quick.x * quick.x, 0.0));
+    return lum_now < quick.x - CLAMP_SIGMA * sigma;
+}
+fn steady(held: f32, moment: f32) -> bool {
+    if (SKIP & SKIP_GI) != 0u { return true; }
+    return moment - held * held < held * held;
+}
 // The frames the sun's light keeps where its ray crossed water (`sun_caustic`): the caustics move
 // with the waves, and over 30 frames (and the bilinear reprojection each frame) they smeared into
 // trails that spread over the face until it was even.
@@ -2101,7 +2123,7 @@ fn accumulate(texel: vec2<i32>, traced: Traced) -> Traced {
     // A light going out shows faster than one coming on (a lamp switched off, a torch put away):
     // when this frame is darker than the fast history, its light's mean and moment follow it over
     // DARKEN_HISTORY frames instead.
-    if lum_now < quick_mean.x {
+    if lum_now < quick_mean.x && darkens(lum_now, quick_mean) {
         let quick_dark = mix(quick_mean.xy, vec2(lum_now, lum_now * lum_now),
             max(1.0 / (n + 1.0), 1.0 / DARKEN_HISTORY));
         fast_out = vec4(quick_dark, fast_out.zw);
@@ -2124,7 +2146,8 @@ fn accumulate(texel: vec2<i32>, traced: Traced) -> Traced {
     // (its moment still holds the light's square), so mean + 2 sigma stays above the old light
     // for a dozen frames. A fast mean and a frame both far under the slow history are a light
     // gone: the slow history drops to the fast mean at once.
-    if held > 1e-4 && mean < DARKEN_RATIO * held && lum_now < 2.0 * DARKEN_RATIO * held {
+    if held > 1e-4 && mean < DARKEN_RATIO * held && lum_now < 2.0 * DARKEN_RATIO * held
+        && steady(held, slow_sun.a) {
         bound = mean;
     }
     if bound > held && (SKIP & 32768u) == 0u {

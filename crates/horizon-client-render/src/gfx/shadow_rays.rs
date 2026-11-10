@@ -425,6 +425,9 @@ pub struct ShadowRays {
     cache: wgpu::Buffer,
     resolve: wgpu::ComputePipeline,
     resolve_group: wgpu::BindGroup,
+    /// What `resolve` is made of, to make it again with another `SKIP` (`set_skip`).
+    resolve_shader: wgpu::ShaderModule,
+    resolve_pipeline_layout: wgpu::PipelineLayout,
     /// Whether the pipeline traces hardware rays (`Hardware` is then bound).
     hardware: bool,
     layout: wgpu::BindGroupLayout,
@@ -557,6 +560,31 @@ fn denoiser(
 const DENOISE_EARLY_OUT: u32 = 4_194_304;
 /// `HORIZON_RT_SKIP`'s bit for closed rooms as before (shadow_rays.wgsl `SKIP_INTERIOR`).
 const SKIP_INTERIOR: u32 = 134_217_728;
+/// `HORIZON_RT_SKIP`'s bit for the bounced light as before (radiance_cache.wgsl and
+/// shadow_rays.wgsl `SKIP_GI`: the cache's cells averaging up to 1000 frames, the history's
+/// darkening on noise; gfx.rs: the exposure's top by day the open air's in a room).
+const SKIP_GI: u32 = 1_073_741_824;
+
+/// The radiance cache's resolve (radiance_cache.wgsl `cs_resolve`) as `skip` says (its `SKIP`:
+/// `SKIP_GI`).
+fn resolver(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    skip: u32,
+) -> wgpu::ComputePipeline {
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("RT lighting's radiance cache"),
+        layout: Some(layout),
+        module: shader,
+        entry_point: Some("cs_resolve"),
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &[("SKIP", f64::from(skip & SKIP_GI))],
+            ..Default::default()
+        },
+        cache: None,
+    })
+}
 
 impl ShadowRays {
     /// Makes the kernel again leaving out what `skip` says (shadow_rays.wgsl `SKIP`: 1 the sun's
@@ -566,7 +594,8 @@ impl ShadowRays {
     /// of the sun's ray telling them, shadow_rays_moving.wgsl; 4194304 the denoiser's early-out on
     /// converged pixels, denoise.wgsl `SKIP`, which then filters every pixel through every pass as
     /// before; 2097152 white noise for every sample, not `blue2`'s blue noise: `WHITE_NOISE`;
-    /// 134217728 closed rooms as before, `SKIP_INTERIOR`), in
+    /// 134217728 closed rooms as before, `SKIP_INTERIOR`; 1073741824 the bounced light as before,
+    /// `SKIP_GI`), in
     /// a running game, to time each part alone (`horizon-ctl rt-skip`); 0 traces it all again.
     pub fn set_skip(&mut self, device: &wgpu::Device, skip: u32) {
         SHARE_EYES.store(skip & 32 == 0, std::sync::atomic::Ordering::Relaxed);
@@ -579,6 +608,14 @@ impl ShadowRays {
                 device,
                 &self.denoise_pipeline_layout,
                 &self.denoise_shader,
+                skip,
+            );
+        }
+        if (skip ^ self.skip) & SKIP_GI != 0 {
+            self.resolve = resolver(
+                device,
+                &self.resolve_pipeline_layout,
+                &self.resolve_shader,
                 skip,
             );
         }
@@ -924,23 +961,17 @@ impl ShadowRays {
             label: Some("RT lighting's radiance cache"),
             entries: &[entry(0, cache_binding)],
         });
-        let resolve = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("RT lighting's radiance cache"),
-            layout: Some(
-                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("RT lighting's radiance cache"),
-                    bind_group_layouts: &[Some(&resolve_layout)],
-                    ..Default::default()
-                }),
-            ),
-            module: &device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let resolve_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("RT lighting's radiance cache"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("radiance_cache.wgsl").into()),
-            }),
-            entry_point: Some("cs_resolve"),
-            compilation_options: Default::default(),
-            cache: None,
+                bind_group_layouts: &[Some(&resolve_layout)],
+                ..Default::default()
+            });
+        let resolve_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("RT lighting's radiance cache"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("radiance_cache.wgsl").into()),
         });
+        let resolve = resolver(device, &resolve_pipeline_layout, &resolve_shader, skip);
         let resolve_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("RT lighting's radiance cache"),
             layout: &resolve_layout,
@@ -959,6 +990,8 @@ impl ShadowRays {
             cache,
             resolve,
             resolve_group,
+            resolve_shader,
+            resolve_pipeline_layout,
             denoise,
             denoise_layout,
             denoise_shader,
@@ -1081,6 +1114,12 @@ impl ShadowRays {
     /// (shadow_rays.wgsl `SKIP_INTERIOR`), for the exposure's top indoors too (gfx.rs).
     pub fn interior_skipped(&self) -> bool {
         self.skip & SKIP_INTERIOR != 0
+    }
+
+    /// Whether `HORIZON_RT_SKIP` keeps the bounced light as before (`SKIP_GI`), for the exposure's
+    /// top by day too (gfx.rs).
+    pub fn gi_skipped(&self) -> bool {
+        self.skip & SKIP_GI != 0
     }
 
     #[cfg_attr(not(feature = "dlss-rr"), allow(dead_code))]

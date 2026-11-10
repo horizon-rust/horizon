@@ -16,6 +16,22 @@ struct CacheCell {
 const CACHE_SCALE: f32 = 1024.0;
 const CACHE_STALE: u32 = 1024u;
 const CACHE_FRAMES: u32 = 1000u;
+// The frames a cell averages at most: 64, an exponential average past them. Remix's 1000 suit
+// SHaRC, whose update rays trace their paths four bounces deep, so a cell holds its multiple
+// bounces from its first frame. Here a pixel adds the light its one bounce found, lit at the hit
+// by the cache itself: each bounce more takes the cell's frames to come in, and over an average
+// of all its frames (up to 1000) the light from before they did never leaves. With an albedo of
+// a room's walls feeding back `r` of the light, the cell reaches 1 - frames^-(1 - r) of its light:
+// a white room (r about 0.7) 75 % after 100 frames, 87 % after 1000, and once past them a lamp
+// switched on settles over 1000 / (1 - r) frames, most of a minute. Over 64 frames it settles in 64 / (1 - r) frames (a few seconds) to all of it,
+// each frame still averaging every pixel the cell covers. `HORIZON_RT_SKIP` 1073741824 averages
+// 1000 as before (shadow_rays.rs `SKIP_GI`).
+const CACHE_FRAMES_FED: u32 = 64u;
+const SKIP_GI: u32 = 1073741824u;
+override SKIP: u32 = 0u;
+fn frames_most() -> u32 {
+    return select(CACHE_FRAMES_FED, CACHE_FRAMES, (SKIP & SKIP_GI) != 0u);
+}
 @compute @workgroup_size(64) fn cs_resolve(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if i >= arrayLength(&cache) { return; }
@@ -38,7 +54,7 @@ const CACHE_FRAMES: u32 = 1000u;
     var frames = 1u;
     if held[0] != 0xffffffffu {
         let last = vec3(bitcast<f32>(held[0]), bitcast<f32>(held[1]), bitcast<f32>(held[2]));
-        frames = min((cache[i].age >> 16u) + 1u, CACHE_FRAMES);
+        frames = min((cache[i].age >> 16u) + 1u, frames_most());
         light = mix(last, now, 1.0 / f32(frames));
     }
     cache[i].light = array<u32, 3>(bitcast<u32>(light.r), bitcast<u32>(light.g), bitcast<u32>(light.b));
