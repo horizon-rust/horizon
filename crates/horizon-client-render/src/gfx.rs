@@ -60,6 +60,7 @@ mod entity_outline;
 mod fluid;
 #[cfg(test)]
 mod inter_stage_tests;
+mod particle_batch;
 mod terrain_model;
 #[cfg(test)]
 pub(crate) mod test_gpu;
@@ -1239,6 +1240,8 @@ pub struct Renderer {
     mirror_group: wgpu::BindGroup,
     mirror: Option<MirrorTarget>,
     entity_pipeline: wgpu::RenderPipeline,
+    particle_pipeline: wgpu::RenderPipeline,
+    hdr_particle_mark_pipeline: wgpu::RenderPipeline,
     static_entity_pipeline: wgpu::RenderPipeline,
     static_entity_group: wgpu::BindGroup,
     static_entity_transform: wgpu::Buffer,
@@ -1304,6 +1307,9 @@ pub struct Renderer {
     hand_globals: wgpu::Buffer,
     entity_buffer: wgpu::Buffer,
     entity_capacity: u64,
+    particle_buffer: wgpu::Buffer,
+    particle_capacity: u64,
+    particle_vertices: Vec<particle_batch::ParticleVertex>,
     static_entity_sections: HashMap<[i32; 3], GpuStaticEntitySection>,
     static_entity_indices: wgpu::Buffer,
     static_entity_index_quads: u32,
@@ -4093,6 +4099,11 @@ impl Renderer {
                 attributes: &static_entity_origin_attributes,
             }),
         ];
+        let particle_vertex = [Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<particle_batch::ParticleVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &particle_batch::ATTRIBUTES,
+        })];
         #[allow(clippy::too_many_arguments)]
         let entity_pipeline_in = |format,
                                   label,
@@ -4103,7 +4114,8 @@ impl Renderer {
                                   blend,
                                   clouds,
                                   fragment: &str,
-                                  write_mask| {
+                                  write_mask,
+                                  compact| {
             kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(if clouds {
@@ -4113,9 +4125,19 @@ impl Renderer {
                 }),
                 vertex: wgpu::VertexState {
                     module: &entity_shader,
-                    entry_point: Some(if clouds { "vs_cloud" } else { "vs_entity" }),
+                    entry_point: Some(if clouds {
+                        "vs_cloud"
+                    } else if compact {
+                        "vs_particle"
+                    } else {
+                        "vs_entity"
+                    }),
                     compilation_options: Default::default(),
-                    buffers: &entity_vertex,
+                    buffers: if compact {
+                        &particle_vertex
+                    } else {
+                        &entity_vertex
+                    },
                 },
                 primitive: wgpu::PrimitiveState {
                     cull_mode,
@@ -4163,6 +4185,7 @@ impl Renderer {
                     clouds,
                     fragment,
                     write_mask,
+                    false,
                 )
             };
         let entity_pipeline = |label, cull_mode, depth_write, compare, bias, blend, clouds| {
@@ -4317,6 +4340,21 @@ impl Renderer {
             alpha_blend,
             false,
         );
+        // Unwarped translucent particles can omit the always-zero normal and
+        // glint attributes, retaining the ordinary entity fragment shader.
+        let particle_pipeline = entity_pipeline_in(
+            frame_format,
+            "Compact translucent particles",
+            None,
+            true,
+            wgpu::CompareFunction::GreaterEqual,
+            entity_bias,
+            alpha_blend,
+            false,
+            "fs_entity",
+            wgpu::ColorWrites::ALL,
+            true,
+        );
         // The hand as `entity_pipeline` draws it, in the overlays' format.
         let overlay_hand = (overlay_format != frame_format).then(|| {
             entity_pipeline_in(
@@ -4330,6 +4368,7 @@ impl Renderer {
                 false,
                 "fs_entity",
                 wgpu::ColorWrites::ALL,
+                false,
             )
         });
         let static_entity_pipeline =
@@ -4413,6 +4452,19 @@ impl Renderer {
             false,
             "fs_hdr_mark",
             wgpu::ColorWrites::ALPHA,
+        );
+        let hdr_particle_mark_pipeline = entity_pipeline_in(
+            frame_format,
+            "Compact HDR particle mark",
+            None,
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            entity_bias,
+            wgpu::BlendState::REPLACE,
+            false,
+            "fs_hdr_mark",
+            wgpu::ColorWrites::ALPHA,
+            true,
         );
         let hdr_hand_unmark_pipeline = entity_pipeline_with(
             "HDR hand unmark",
@@ -4863,6 +4915,13 @@ impl Renderer {
             usage: entity_skin::EntitySkin::usage(entity_skin.is_some()),
             mapped_at_creation: false,
         });
+        let particle_capacity = 4;
+        let particle_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Compact translucent particles"),
+            size: particle_capacity * std::mem::size_of::<particle_batch::ParticleVertex>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let static_entity_index_quads = 1 << 14;
         let static_entity_indices = Self::quad_indices(&device, static_entity_index_quads);
         let indirect_execution = adapter
@@ -5157,6 +5216,8 @@ impl Renderer {
             mirror_group,
             mirror: None,
             entity_pipeline,
+            particle_pipeline,
+            hdr_particle_mark_pipeline,
             static_entity_pipeline,
             hdr_mark_pipeline,
             hdr_entity_mark_pipeline,
@@ -5211,6 +5272,9 @@ impl Renderer {
             hand_globals,
             entity_buffer,
             entity_capacity,
+            particle_buffer,
+            particle_capacity,
+            particle_vertices: Vec::new(),
             static_entity_sections: HashMap::default(),
             static_entity_indices,
             static_entity_index_quads,
@@ -9685,13 +9749,74 @@ impl Renderer {
                 mapped_at_creation: false,
             });
         }
-        if !all_entities.is_empty() {
-            self.uploads.buffer(
-                &mut encoder,
-                &self.entity_buffer,
-                u64::from(posed) * std::mem::size_of::<Vertex>() as u64,
-                bytemuck::cast_slice(all_entities),
+        // This material is one contiguous run in EntityBatch. When no other
+        // pipeline needs its full vertices, upload it separately in 32-byte
+        // form instead of sending the redundant normal/glint attributes.
+        // Small batches stay on the old path to avoid extra upload/draw work.
+        let particle_start = ((base_quads - translucent_item_quads - translucent_particle_quads)
+            * 4
+            - posed) as usize;
+        let particle_end = particle_start + translucent_particle_quads as usize * 4;
+        let compact_particles = translucent_particle_quads >= 256
+            && !oit_on
+            && !warp_on
+            && !fg
+            && !frame.title
+            && self.native.is_none()
+            && self.pack_post.is_none()
+            && particle_batch::prepare(
+                &all_entities[particle_start..particle_end],
+                &mut self.particle_vertices,
             );
+        if !compact_particles {
+            self.particle_vertices.clear();
+        }
+        if !all_entities.is_empty() {
+            let stride = std::mem::size_of::<Vertex>() as u64;
+            if compact_particles {
+                // The original offsets of the following materials remain
+                // unchanged; only the particle gap is omitted from this upload.
+                if particle_start > 0 {
+                    self.uploads.buffer(
+                        &mut encoder,
+                        &self.entity_buffer,
+                        u64::from(posed) * stride,
+                        bytemuck::cast_slice(&all_entities[..particle_start]),
+                    );
+                }
+                if particle_end < all_entities.len() {
+                    self.uploads.buffer(
+                        &mut encoder,
+                        &self.entity_buffer,
+                        (u64::from(posed) + particle_end as u64) * stride,
+                        bytemuck::cast_slice(&all_entities[particle_end..]),
+                    );
+                }
+                let vertices = self.particle_vertices.len() as u64;
+                if vertices > self.particle_capacity {
+                    self.particle_capacity = vertices.next_power_of_two();
+                    self.particle_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Compact translucent particles"),
+                        size: self.particle_capacity
+                            * std::mem::size_of::<particle_batch::ParticleVertex>() as u64,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                }
+                self.uploads.buffer(
+                    &mut encoder,
+                    &self.particle_buffer,
+                    0,
+                    bytemuck::cast_slice(&self.particle_vertices),
+                );
+            } else {
+                self.uploads.buffer(
+                    &mut encoder,
+                    &self.entity_buffer,
+                    u64::from(posed) * stride,
+                    bytemuck::cast_slice(all_entities),
+                );
+            }
         }
         if let (Some(skinner), Some(skin)) = (&mut self.entity_skin, skin) {
             if pack_skin {
@@ -11512,27 +11637,38 @@ impl Renderer {
             // the quads write depth, so before it they would hide the glass
             // or water behind them.
             if translucent_particle_quads > 0 && !oit_on {
-                pass.set_pipeline(warped.map_or(&self.entity_pipeline, |w| &w.entities));
+                pass.set_pipeline(if compact_particles {
+                    &self.particle_pipeline
+                } else {
+                    warped.map_or(&self.entity_pipeline, |w| &w.entities)
+                });
                 if let Some(group) = warp_group {
                     pass.set_bind_group(2, group, &[]);
                 }
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
-                    0..translucent_particle_quads * 6,
-                    ((base_quads - translucent_item_quads - translucent_particle_quads) * 4) as i32,
-                    0..1,
+                pass.set_vertex_buffer(
+                    0,
+                    if compact_particles {
+                        self.particle_buffer.slice(..)
+                    } else {
+                        self.entity_buffer.slice(..)
+                    },
                 );
+                let base_vertex = if compact_particles {
+                    0
+                } else {
+                    ((base_quads - translucent_item_quads - translucent_particle_quads) * 4) as i32
+                };
+                pass.draw_indexed(0..translucent_particle_quads * 6, base_vertex, 0..1);
                 if light_marks(self.output.frame.format, self.hdr.is_some()) {
                     // Fireworks: their sparks are translucent-layer particles.
-                    pass.set_pipeline(hdr_entity_mark);
-                    pass.draw_indexed(
-                        0..translucent_particle_quads * 6,
-                        ((base_quads - translucent_item_quads - translucent_particle_quads) * 4)
-                            as i32,
-                        0..1,
-                    );
+                    pass.set_pipeline(if compact_particles {
+                        &self.hdr_particle_mark_pipeline
+                    } else {
+                        hdr_entity_mark
+                    });
+                    pass.draw_indexed(0..translucent_particle_quads * 6, base_vertex, 0..1);
                 }
                 pass.set_bind_group(0, &self.group, &[]);
             }
