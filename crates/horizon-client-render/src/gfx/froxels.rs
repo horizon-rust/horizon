@@ -551,6 +551,17 @@ impl Froxels {
                         multisampled: false,
                     },
                 ),
+                // The moving geometry and its atlas, for the entities' alpha test.
+                entry(36, compute, storage),
+                entry(
+                    37,
+                    compute,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
             ]);
             inject_entries.extend(
                 super::hw_rays::ARENA_BINDINGS
@@ -1027,6 +1038,8 @@ impl Froxels {
                     buffer(16, &hw.arena[0]),
                     view(17, hw.sprites),
                     buffer(23, hw.instances),
+                    buffer(36, hw.dynamics),
+                    view(37, hw.atlas),
                 ]);
                 entries.extend(
                     super::hw_rays::ARENA_BINDINGS

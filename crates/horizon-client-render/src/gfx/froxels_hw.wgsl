@@ -48,6 +48,34 @@ struct HwInstance {
     geometries: array<vec4<u32>, 2>,
 }
 @group(0) @binding(23) var<storage, read> instances: array<HwInstance>;
+// The moving geometry's vertices and their atlas (shadow_rays_hw.wgsl's, the same bindings), for the
+// entities' alpha test: an instance whose row starts with `DYN_ENTITY` holds quads from the vertex
+// in its second word.
+@group(0) @binding(36) var<storage, read> dynamics: array<u32>;
+@group(0) @binding(37) var entity_atlas: texture_2d<f32>;
+// A moving vertex's stride in `dynamics` (gfx/hw_rays.rs `DYN_WORDS`).
+const DYN_WORDS: u32 = 11u;
+const DYN_ENTITY: u32 = 0xfffffff0u;
+// The texel candidate hit `c` meets on an entity or view model quad, times the vertex colour (as
+// entity.wgsl draws it, its alpha too): shadow_rays_hw.wgsl `hw_entity_texel`; none (alpha -1) on
+// any other moving geometry.
+fn hw_entity_texel(c: RayIntersection) -> vec4<f32> {
+    let at = instances[c.instance_custom_data].at;
+    if at.x != DYN_ENTITY { return vec4(-1.0); }
+    let base = at.y + (c.primitive_index / 2u) * 4u;
+    // The quad's triangles: corners 0, 1, 2 and 0, 2, 3 (gfx.rs `quad_indices`).
+    let second = (c.primitive_index & 1u) == 1u;
+    let b = c.barycentrics;
+    let v1 = base + select(1u, 2u, second);
+    let v2 = base + select(2u, 3u, second);
+    let uv = bitcast<vec2<f32>>(vec2(dynamics[base * DYN_WORDS + 3u], dynamics[base * DYN_WORDS + 4u])) * (1.0 - b.x - b.y)
+        + bitcast<vec2<f32>>(vec2(dynamics[v1 * DYN_WORDS + 3u], dynamics[v1 * DYN_WORDS + 4u])) * b.x
+        + bitcast<vec2<f32>>(vec2(dynamics[v2 * DYN_WORDS + 3u], dynamics[v2 * DYN_WORDS + 4u])) * b.y;
+    let size = vec2<i32>(textureDimensions(entity_atlas));
+    let texel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2(0), size - 1);
+    let color = unpack4x8unorm(dynamics[base * DYN_WORDS + 6u]);
+    return textureLoad(entity_atlas, texel, 0) * color;
+}
 // The quad candidate hit `c` is on: its first arena vertex (`arena_at`), or none (`u32` max) on a
 // page past those bound or on none (moving geometry, a structure whose vertices went).
 fn hw_quad(c: RayIntersection, translucent: bool) -> u32 {
@@ -78,11 +106,15 @@ fn hw_texel(c: RayIntersection, base: u32) -> vec4<f32> {
     return textureLoad(sprites, texel, i32(layer), 0);
 }
 // Whether candidate hit `c` (a solid quad) meets an opaque texel. Opaque leaves, quads on arena
-// pages past those bound and sprites past the first array are taken as opaque. Only the cutouts
-// come here: the opaque geometry's hits the hardware confirms itself (gfx/hw_rays.rs).
+// pages past those bound, the clouds and sprites past the first array are taken as opaque; an
+// entity's texel as entity.wgsl keeps it (it discards what is under a tenth opaque). Only the
+// cutouts come here: the opaque geometry's hits the hardware confirms itself (gfx/hw_rays.rs).
 fn hw_opaque(c: RayIntersection) -> bool {
     let base = hw_quad(c, false);
-    if base == 0xffffffffu { return true; }
+    if base == 0xffffffffu {
+        let entity = hw_entity_texel(c);
+        return entity.a < -0.5 || entity.a >= 0.1;
+    }
     if (arena_at(base, 4u) & 0x8000u) != 0u { return true; }
     let texel = hw_texel(c, base);
     return texel.a < 0.0 || texel.a >= 0.5;
