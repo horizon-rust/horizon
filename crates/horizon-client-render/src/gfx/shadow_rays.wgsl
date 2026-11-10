@@ -1365,6 +1365,17 @@ fn restir_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i3
             let off = select(vec2<i32>((jitter * 2.0 - 1.0) * 6.0), vec2(0), j == 0);
             let last = last_reservoir(last_at + off);
             if last.x == 0u || light_key(last.x) != last.y { continue; }
+            // The same surface, as ReSTIR GI's neighbours (`restir_gi`): the face it showed and
+            // its distance (a floor's pixel doesn't take the wall's light across the corner).
+            if j > 0 {
+                let size = vec2<i32>(textureDimensions(last_mask));
+                let c = clamp(last_at + off, vec2(0), size - 1);
+                let depth = length(pos);
+                if abs(face_in(textureLoad(last_direct, c, 0).a) - face_of(n)) > 0.5
+                    || abs(textureLoad(last_mask, c, 0).a - depth) > 0.05 * depth + 0.1 {
+                    continue;
+                }
+            }
             let p = luminance(light_path(last.x, local, n, vec3(0.0)).light)
                 * learnt(cell, slot_of(words, last.x));
             let seen = min(bitcast<f32>(last.z), RESERVOIR_HISTORY / 3.0);
