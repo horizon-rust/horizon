@@ -95,7 +95,8 @@ pub struct SunPass {
     sbt: Sbt,
     /// Which ray generations run.
     kinds: Kinds,
-    /// The push constants' flags (bit 0: reorder, bit 1: the wind).
+    /// The push constants' flags (bit 0: reorder, bit 1: the wind, bits 2 and 3: the bounced
+    /// light's turns as the kernel's `GI_TURN_BITS`, bit 4: the kernel's `SKIP` 16, no resting).
     flags: u32,
     /// The outputs, a texel a ray, the mask's size: the sun's light through (`Rgba16Float`), the
     /// bounce pass's hit and what it is (`Rgba32Float`) and its face, colour and sun light
@@ -403,6 +404,8 @@ impl SunPass {
             // Bit 1: the wind sways the foliage (HORIZON_RT_SKIP bit 4096 clear), so sun.rahit
             // ignores a cutout quad met right at the ray's start.
             pass.flags = u32::from(reorder()) | if wind_skipped() { 0 } else { 2 };
+            // Bits 2 and 3, bit 4: gi.rgen rests its tiles on the kernel's own turns.
+            pass.flags |= gi_turn_bits() << 2 | if skipped(16) { 16 } else { 0 };
             log::info!(
                 "Horizon RTX: a ray tracing pipeline for {}{}{}, shader execution reordering {}",
                 if kinds.sun { "the sun pass" } else { "" },
@@ -1112,8 +1115,23 @@ pub const ROW: u64 = INSTANCE_SIZE;
 
 /// Whether `HORIZON_RT_SKIP` has the wind's bit (4096, horizon-client gfx/wind.rs).
 fn wind_skipped() -> bool {
+    skipped(4096)
+}
+
+/// Whether `HORIZON_RT_SKIP` has `bit` (the kernel's `SKIP`, as the game starts with it).
+fn skipped(bit: u32) -> bool {
     std::env::var("HORIZON_RT_SKIP")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
-        .is_some_and(|s| s & 4096 != 0)
+        .is_some_and(|s| s & bit != 0)
+}
+
+/// The bounced light's turns as the trace kernel takes them (horizon-client-render
+/// gfx/shadow_rays.rs `gi_turn_bits`, the same rule): `HORIZON_RT_GI_TURNS=4` one frame in four
+/// (2 bits), otherwise one in eight (3).
+fn gi_turn_bits() -> u32 {
+    match std::env::var("HORIZON_RT_GI_TURNS").as_deref() {
+        Ok("4") => 2,
+        _ => 3,
+    }
 }
