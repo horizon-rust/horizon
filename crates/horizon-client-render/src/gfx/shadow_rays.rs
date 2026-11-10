@@ -463,6 +463,9 @@ pub struct ShadowRays {
     /// denoiser only adds the direct light, through `denoise_raw`'s pass (made on first use).
     raw_view: Option<usize>,
     denoise_raw: Option<wgpu::Buffer>,
+    /// The raw view's kernel bind group of this frame, kept for its guides, which wait for the
+    /// world pass's depth (`run_guides`).
+    raw_guides: Option<(usize, wgpu::BindGroup)>,
 }
 
 /// `HORIZON_RT_SKIP`'s bit for white noise everywhere (shadow_rays.wgsl `blue2`): the kernel's own
@@ -946,6 +949,7 @@ impl ShadowRays {
         Self {
             guides,
             raw_view: None,
+            raw_guides: None,
             denoise_raw: None,
             cache,
             resolve,
@@ -1061,6 +1065,35 @@ impl ShadowRays {
     #[cfg_attr(not(feature = "dlss-rr"), allow(dead_code))]
     pub fn set_raw_view(&mut self, view: Option<usize>) {
         self.raw_view = view;
+    }
+
+    /// Writes the raw view's guides (`set_raw_view`) from the world pass's own `depth`, whose image
+    /// moved by `jitter` pixels (right and down) as the colour's did, with `objects` the entities'
+    /// own motion over it, and the kernel's bind group of this frame. False when the kernel did
+    /// not run for that view this frame (nothing written).
+    #[cfg_attr(not(feature = "dlss-rr"), allow(dead_code))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_guides(
+        &mut self,
+        device: &wgpu::Device,
+        uploads: &mut Uploads,
+        encoder: &mut wgpu::CommandEncoder,
+        view: usize,
+        depth: &wgpu::TextureView,
+        jitter: [f32; 2],
+        objects: Option<&wgpu::TextureView>,
+    ) -> bool {
+        let (Some((kept, group)), Some(guides)) = (self.raw_guides.take(), &mut self.guides) else {
+            return false;
+        };
+        if kept != view {
+            return false;
+        }
+        let size = [depth.texture().width(), depth.texture().height()];
+        guides.run(
+            device, uploads, encoder, view, &group, depth, size, jitter, objects,
+        );
+        true
     }
 
     /// The mask view `view` (0 the window, then the VR views) traced last.
@@ -1205,6 +1238,9 @@ impl ShadowRays {
     ) -> [wgpu::TextureView; 5] {
         let view_index = view;
         let raw = rays.lighting && self.raw_view == Some(view);
+        if self.raw_guides.as_ref().is_some_and(|(v, _)| *v == view) {
+            self.raw_guides = None;
+        }
         let scale = foveation.scale;
         let mask_size = size.map(|v| v.div_ceil(scale));
         // VR's second eye right after the first, at its size, with the first eye's depth: the first
@@ -1509,11 +1545,17 @@ impl ShadowRays {
         // One kernel traces the sun, the direct lights, the bounces and the mirrors at once.
         super::gpu_passes::stamp(encoder, "rays: trace (sun, DI, GI, PSR)");
         // DLSS-RR's guides at the depth's size, with the kernel's group as it was bound for this
-        // view (`rt_guides`).
+        // view (`rt_guides`); RR's own view keeps the group for its guides on the world's depth.
         if rays.lighting
             && let Some(guides) = &mut self.guides
         {
-            guides.run(device, encoder, view_index, size, &group);
+            if raw {
+                self.raw_guides = Some((view_index, group.clone()));
+            } else {
+                guides.run(
+                    device, uploads, encoder, view_index, &group, depth, size, [0.0; 2], None,
+                );
+            }
         }
         if !rays.lighting {
             return [mask, blocks, sun, reflection, refraction];

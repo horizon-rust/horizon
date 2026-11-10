@@ -20,9 +20,11 @@ feature instance is made for the window's size, made again on resize and release
 Stage 1 ran on the RTX 4090 (SDK v310.9.16, 10 November 2026; §7). **Stages 4 and 5 are wired, not yet
 run on a GPU** (§9): with the switch, the window's view is traced raw (no accumulation, no rest in turns,
 no à-trous filtering), the world is drawn with RR's jitter, and RR is evaluated where the TAA resolve ran,
-its output drawn back over the scene. Without the switch (or without the feature) the kernel, the denoiser,
-TAA and every shader's output are as before. The tester's steps are in §8 (stage 1) and §9 (stages 4
-and 5).
+its output drawn back over the scene. Stage 5 then ran on the RTX 4090 (clean, sharp, 2.6 ms at
+2580x1080). On RR's frames the guides are now made from the world pass's own jittered depth, with the
+entities, water and glass in it, and moving entities have motion vectors of their own (§3.1, §9). Without
+the switch (or without the feature) the kernel, the denoiser, TAA and every shader's output are as before.
+The tester's steps are in §8 (stage 1) and §9 (stages 4 and 5, and the guides).
 
 ## 1. Loading NGX on Vulkan from Rust
 
@@ -191,13 +193,13 @@ un-accumulated, un-denoised masks**.
 | Noisy colour (`Color`): 1 spp radiance × albedo, linear HDR | The scene (`tonemap.rs:119` `SCENE_FORMAT` Rgba16Float), composed in `terrain.wgsl`. Its masks are accumulated over up to 30 frames (`shadow_rays.wgsl:1845` MAX_HISTORY, `accumulate` at `:1915`) and denoised (`denoise.wgsl`) | A kernel mode that returns `trace`'s result unaccumulated (skip `accumulate`, `:1915`). It also has to stop the "rest in turns" scheduling (`rt.frame.z`, `trace` at `:1665`), because RR wants a fresh sample at every pixel every frame. The denoiser is skipped. The terrain reads the raw masks. ReSTIR's temporal reuse can stay (RR is meant to sit on top of ReSTIR). **Done (stage 4, §9)**: `raw_frame` |
 | Output (`Output`) | | A storage-capable Rgba16Float at output size, which replaces TAA's history as the resolved scene (`taa.rs:332` `resolve`; called at `gfx.rs:14363-14378`) |
 | Depth (`Depth`) | Depth32Float, reversed Z (`GreaterEqual`, `gfx.rs:3687,3838`). In VR the prepass is at the rays' resolution (`gfx.rs:1787` `half_prepass`, `:8409-8418`) | Hardware depth: `DLSS.Use.HW.Depth` = 1 plus `DepthInverted`. It has to be the depth of the colour's own pixel grid |
-| Motion vectors (`MotionVectors`) | **Camera, as a guide** (§3.1): `rt_guides` writes an Rg16Float at the render size, render pixels from this frame's position to last frame's (previous − current, x right, y down), unjittered (the RT prepass draws with the clean matrix), from the depth and the kernel's `prev_view_proj`/`motion`; the sky by its direction. Frame generation has per-entity vectors (`gfx/frame_gen/motion.rs`, `motion.wgsl`: UV units, current → previous, unjittered, entity pixels only, Rgba16Float), built only when frame generation runs | `MV.Scale` = 1, 1 (already pixels), `MVJittered` = 0. Entities: overlay `ObjectMotion` once the guides read the world pass's depth (the prepass has no entities). Not covered at all: water and lava surface animation, falling blocks, pistons, block entities (chests, bells), particles. Use the `DLSS.Input.Bias.Current.Color.Mask` or transparency mask for the last ones |
-| Diffuse albedo (`DLSS.Input.DiffuseAlbedo`) | **Guide** (§3.1): Rgba8Unorm, linear, the texel × vertex tint of the triangle a short hardware ray finds at the depth's surface (`hw_hit`); fallback the voxel grid's map colour, else mid grey | Entities, the hand and translucent surfaces show the terrain behind them |
+| Motion vectors (`MotionVectors`) | **Guide** (§3.1): `rt_guides` writes an Rg16Float at the render size, render pixels from this frame's position to last frame's (previous − current, x right, y down), with the jitter taken out, from the depth and the kernel's `prev_view_proj`/`motion`; the sky by its direction. On RR's frames, entities with their own motion from frame generation's `ObjectMotion` (`gfx/frame_gen/motion.rs`), drawn over the world's depth and fed by `dlss_eval` | `MV.Scale` = 1, 1 (already pixels), `MVJittered` = 0. Not covered: entities posed on the GPU (`skin`, not in `Frame::entities`), entities whose vertex layout changed since last frame, water and lava surface animation, falling blocks, pistons, block entities (chests, bells), particles. Use the `DLSS.Input.Bias.Current.Color.Mask` or the transparency layer for the last ones |
+| Diffuse albedo (`DLSS.Input.DiffuseAlbedo`) | **Guide** (§3.1): Rgba8Unorm, linear, the texel × vertex tint of the triangle a short hardware ray finds at the depth's surface (`hw_hit`, entities included); under water or glass what lies behind × (1 − F); fallback the voxel grid's map colour, else mid grey; the sky 0.5 (NVIDIA's default) | Particles and the rain have none of their own; refraction is not applied to what lies behind water or glass |
 | Specular albedo (`DLSS.Input.SpecularAlbedo`) | **Guide** (§3.1): Rgba8Unorm, the preintegrated environment BRDF of F0, roughness and N·V (Karis 2014's `EnvBRDFApprox`), not F0 | F0 0.04 everywhere (0.02 on puddles and wet films): no LabPBR F0/metals yet. Whether NVIDIA's guide wants exactly this approximation is **unverified** (its sample code could not be fetched) |
-| Normals (`GBuffer.Normals`) | **Guide** (§3.1): Rgba16Float, world-space unit normal toward the camera (camera-relative world axes: the instances are only translated), roughness in w | Geometric face normals only (no LabPBR normal maps); the depth's own normal where the ray misses. `DLSS.Roughness.Mode` = Packed. `WorldToViewMatrix` and `ViewToClipMatrix` are needed in any case (row-major) |
-| Roughness (`GBuffer.Roughness`) | **Guide**, in the normals' w (§3.1): 1, 0.05 on the rain's puddles and 0.2 on wet films (where the kernel mirrors them, `hw_puddle`) | The kernel reads no LabPBR smoothness (its reflections are mirrors on water, glass and puddles only), so neither do the guides; translucent surfaces are not in the prepass |
+| Normals (`GBuffer.Normals`) | **Guide** (§3.1): Rgba16Float, world-space unit normal toward the camera (camera-relative world axes: the instances are only translated), roughness in w; water and glass their flat face normal; the sky 0 | Geometric face normals only (no LabPBR normal maps, no water waves); the depth's own normal where the ray misses. `DLSS.Roughness.Mode` = Packed. `WorldToViewMatrix` and `ViewToClipMatrix` are needed in any case (row-major) |
+| Roughness (`GBuffer.Roughness`) | **Guide**, in the normals' w (§3.1): 1, 0.05 on the rain's puddles and 0.2 on wet films (where the kernel mirrors them, `hw_puddle`), blended toward 0 by F on water and glass; the sky 0 | The kernel reads no LabPBR smoothness (its reflections are mirrors on water, glass and puddles only), so neither do the guides |
 | Specular hit distance (`DLSSD.SpecularHitDistance`) | Only the water hit's distance (`shadow_rays.wgsl` `water_at`); `hw_mirror`'s hit is not kept | Not made by the guides: `hw_reflect` would have to return its `hw_hit` t (an R16F written by the kernel). Specular motion vectors (`GBuffer.SpecularMvec`) are the alternative |
-| Jitter (`Jitter.Offset.X/Y`) | Halton(2,3) over 16 phases in pixels, image moved right and down (`taa.rs:29,72`, `jittered` at `:79`, `Taa::jitter` at `:300`, applied at `gfx.rs:10466-10470`). The rays use the jittered matrices (`taa.rs:13-21`) | Pass the same pixels. **Unverified**: NGX's sign convention against "image moves right/down". Test with a still camera (the image must not swim) and the SDK's dev DLL overlay. RR prefers a longer sequence than 16 phases when upscaling (the guide's phase-count rule; **unverified**) |
+| Jitter (`Jitter.Offset.X/Y`) | TAA: Halton(2,3) over 16 phases in pixels, image moved right and down (`taa::jitter`, `jittered`). RR: the same sequence over 32 phases (`dlss_eval::PHASES`, `taa::jitter_of`), as NVIDIA's RR guide asks (at least 32) | Pass the same pixels. **Unverified**: NGX's sign convention against "image moves right/down" (`HORIZON_DLSS_RR_JITTER_SIGN`). Test with a still camera (the image must not swim) and the SDK's dev DLL overlay |
 | Exposure (`ExposureTexture`, `DLSS.Pre.Exposure`) | Auto-exposure runs after the resolve (`gfx.rs:8127`, `exposure.rs`). The scene is linear, in paper whites | `IsHDR` = 1, pre-exposure 1. Either feed last frame's exposure as a 1x1 R32F texture or set `AutoExposure` |
 | Reset (`Reset`) | None. The kernel's history is dropped only when its masks are recreated (resize); `masks.last` at `shadow_rays.rs:1181`, `motion.w` at `:1211-1217` | A reset flag for the view: teleport (a camera jump of more than a few blocks), dimension change, world open, resize, RT toggled, shader pack change. Per view |
 | Render subrect (`DLSS.Render.Subrect.Dimensions.*`) | | The used size of the inputs (dynamic resolution) |
@@ -211,35 +213,63 @@ no guides) and runs only with RT lighting.
 
 - **Where.** `rt_guides.wgsl` is appended to the hardware kernel (`shadow_rays::source(true, ..)`) into a
   second shader module, entry `cs_guides`. Its pipeline layout is the kernel's group 0 plus its own group
-  1 (five storage textures), so `ShadowRays::run` dispatches it right after the kernel with the kernel's
-  own bind group for the view: the uniform, depth prepass, structures, arena and sprites as the kernel saw
-  them. One texel per depth pixel: the window's render size, VR's prepass at the rays' size
-  (`half_prepass`). Per-view textures, kept for the five views as the kernel keeps its masks.
-  `ShadowRays::guides(view)` returns the `Guides` views for the evaluate stage.
+  1 (five storage textures, the depth it reads, the entities' motion, a uniform with the jitter), and it
+  runs with the kernel's own bind group for the view: the uniform, structures, arena and sprites as the
+  kernel saw them. One texel per depth pixel. Per-view textures, kept for the five views as the kernel
+  keeps its masks. `ShadowRays::guides(view)` returns the `Guides` views for the evaluate stage.
+- **Which depth.** Every view but RR's: right after the kernel, on the RT depth prepass (solid terrain,
+  the clean matrix), jitter 0: the window's render size, VR's prepass at the rays' size (`half_prepass`).
+  RR's view (`set_raw_view`): the kernel keeps its bind group (`raw_guides`) and `ShadowRays::run_guides`
+  dispatches the pass just before the evaluation, on the **world pass's own depth**, the one RR is given:
+  jittered as the colour is, with the entities, water, glass and everything else that writes depth (the
+  hand is drawn after the evaluation, so it is not in it). The pass reads each pixel where its sample lies
+  on the unjittered grid (`guide_centre`: the pixel's centre less the jitter, since `taa::jittered`
+  moves a point `jitter` pixels right and down), so positions, normals, albedos and motion all belong to
+  the colour's own sample.
 - **How a pixel is found.** The depth gives the camera-relative position. One hardware ray (`hw_hit`) runs
   across the surface only, from `margin` before it to `margin` past it (`margin` = 0.05 + 0.006 × distance),
   so the player's own body and the view model near the camera are never met. If its hit lies within
-  0.03 + 0.004 × distance of the depth, the triangle's texel colour and face normal are taken; otherwise
-  (a miss: geometry outside the structures, the far field) the depth's normal (`surface_normal`) and the
-  voxel grid's map colour.
-- **What gets what.** Solid terrain: its triangle. Sky: zero albedo, normal toward the camera, rotation-only
-  motion. Entities, the hand, water, glass, ice: not in the prepass depth, so they get the terrain (or sky)
-  behind them; this is the main gap, closed by reading the world pass's depth and drawing entity IDs, or
-  by the G-buffer of stage 3. Lava: its atlas texel as albedo (its emission belongs in the colour).
+  0.03 + 0.004 × distance of the depth, the triangle's texel colour and face normal are taken (terrain, and
+  the entities' quads, which `hw_hit` textures from the dynamic BLAS). Otherwise a second short ray
+  (`guide_cover`, `hw_reflect`'s test) looks for water or glass at the depth. If neither (geometry outside
+  the structures, the far field): the depth's normal (`guide_normal`) and the voxel grid's map colour.
+- **Water and glass** (world depth only: they write depth, so the depth, and RR's depth input, is the
+  transparent surface's). NVIDIA's RR guide (§3.4.1) says that without specular motion vectors the depth,
+  normal and hit distance must agree on one surface, the opaque background or the transparent one, while
+  the albedos and roughness may be blended toward the transparent surface where it dominates. So: the
+  normal is the surface's flat face normal (no waves: the guide warns against noisy guides); with F the
+  Schlick Fresnel of F0 0.02 (water) or 0.04 (glass) at N·V, the diffuse albedo is what lies behind (a
+  `hw_hit` 64 blocks on along the unrefracted ray, times what else tints it) × (1 − F), the specular albedo
+  the background's × (1 − F) plus the surface's mirror (`env_brdf_approx` of its F0 at roughness 0), and the
+  roughness `mix(1, 0, F)`. The motion is the surface's (the camera's). Left: what lies behind is not
+  refracted (the guide's advice is to refract the guides as the colour is, or default to the background as
+  here); water's absorption is not in the diffuse albedo; ice and stained glass are glass.
+- **What gets what.** Solid terrain: its triangle. Entities (world depth): their quad's texel and face.
+  Sky: NVIDIA's defaults (diffuse 0.5, specular 0, normal 0, roughness 0), rotation-only motion. Lava: its
+  atlas texel as albedo (its emission belongs in the colour). On the prepass (no RR), entities, water and
+  glass are not in the depth and get the terrain behind them. Particles, the rain and anything that does
+  not write depth get what lies behind them in every case.
+- **Entity motion** (RR only). `dlss_eval` feeds frame generation's `ObjectMotion` every RR frame
+  (`track_entities`: `Frame::entities` and `entity_motion`, matched by entity id and vertex layout) and
+  draws it over the world's depth before the guides (`object_motion`: the jittered matrix to place the
+  vertices, this frame's and last frame's clean matrices for the vector). The guides take that vector
+  (UV × render size) wherever it is set, the camera's elsewhere. Entities posed on the GPU (`skin`) are
+  not in `Frame::entities` and keep the camera's motion, as in frame generation.
 - **Conventions.** Diffuse albedo Rgba8Unorm linear; specular albedo Rgba8Unorm (env BRDF); normals
   Rgba16Float world space, roughness in w; motion Rg16Float, render pixels, previous − current, x right,
-  y down, unjittered (`MV.Scale` 1, `MVJittered` 0). The RT prepass draws with the clean matrix (gfx.rs
-  "The rays work on the still frame"), so the guides are on the unjittered grid while the world pass is
-  jittered: when RR is wired, either the prepass takes the jitter or RR is fed an unjittered colour.
+  y down, without the jitter (`MV.Scale` 1, `MVJittered` 0: the Programming Guide §3.6.2 says NGX then uses
+  them as they are, and §3.7.3 that the jitter offsets are given apart in any case).
 - **Cost.** One short ray a render pixel (a window of a few centimetres to a block, on its own triangle):
   far cheaper than the kernel's primary-surface rays, about one extra "first hit" ray a pixel, plus four
   texture writes (13 B/px). At 3440x1440 that is 5 M short rays; to be measured on the 4090.
-- **Looking at them.** `HORIZON_RT_GUIDES_SHOW=albedo|normal|roughness|motion|specular|source` draws the
+- **Looking at them.** `HORIZON_RT_GUIDES_SHOW=albedo|normal|roughness|motion|specular|source|depth` draws the
   window's guide over the whole frame (HUD included, so screenshots take it), stretched to the window:
   albedo and specular gamma-encoded, normals as `n × 0.5 + 0.5` (up is green, +x red, +z blue), roughness
   in grey, motion as red (right) and green (down) around grey 0.5 with 16 px a frame at full scale, and
   `source` green where the ray found the triangle, red where the depth's fallback was used, yellow on
-  puddles and wet films, black for the sky. With HDR output the picture is drawn on the HDR swapchain too
+  puddles and wet films, blue on water and glass, black for the sky, and `depth` the distance, white near
+  to black far (grey at about 32 blocks, black sky). With RR on they show the guides RR was given (the
+  world's depth); without, the prepass's. With HDR output the picture is drawn on the HDR swapchain too
   (at paper-white level or below, so it looks dim).
 
 ## 4. VR
@@ -323,8 +353,8 @@ automatically.
 |---|---|---|
 | 0 (this) | `horizon-rtx/src/dlss_rr.rs`, `build.rs`, the `dlss-rr` feature | Builds; nothing changes at runtime |
 | 1. Extensions + init (**done, desktop**; VR left) | `horizon-hdr/src/lib.rs` (`open_vulkan_device_with`), `gfx.rs` (`open_backend`: instance and device; `Renderer::new` and `resize`: `dlss_rr::Session`), `dlss_rr.rs` (`create_instance`, `device_extensions`, `Paths`, `Session`, `Ngx::optimal_settings`), the `dlss-rr` feature in `horizon-client`/`horizon-client-render`. VR (`horizon-xr/src/lib.rs`, both lists) is still to do | Startup time, frame time unchanged with RR wanted but unused; validation layers clean apart from NGX's known ones |
-| 2. Motion vectors | **Camera part done** in the guides pass (§3.1, `gfx/rt_guides.rs`); left: `ObjectMotion` for entities over it, on the world pass's depth | Its cost (expected below 0.1 ms); a debug view (`HORIZON_RT_DEBUG`) of the vectors on moving mobs |
-| 3. G-buffer | **First version done without MRTs**: the guides pass (§3.1) traces them from the depth prepass. Left: entities, hand and translucent surfaces (world pass depth or MRTs in `terrain.wgsl`), LabPBR normals, roughness and F0 | Raster cost of the extra attachments, per eye |
+| 2. Motion vectors | **Done** in the guides pass (§3.1): the camera's, and on RR's frames the entities' own (`ObjectMotion` on the world's depth); left: GPU-posed entities, block animation, particles | Its cost (expected below 0.1 ms); a debug view (`HORIZON_RT_DEBUG`) of the vectors on moving mobs |
+| 3. G-buffer | **Done without MRTs**: the guides pass (§3.1) traces them, on RR's frames from the world's jittered depth (entities, water and glass included). Left: LabPBR normals, roughness and F0, refraction of what lies behind water and glass, particles | Raster cost of the extra attachments, per eye |
 | 4. Raw kernel mode (**done, desktop**, §9) | `shadow_rays.wgsl` `raw_frame` (`rt.mode.w` bit 8): no `accumulate`, no rest in turns; `denoise.wgsl` one pass-through (`params.step.w` 1); `ShadowRays::set_raw_view`; horizon-rtx `SunPass::set_never_rest` (the bounce pass agrees) | Trace time without accumulation; the noisy image itself (`HORIZON_DLSS_RR_SHOW=input`) |
 | 5. RR at DLAA, desktop (**done, unrun**, §9) | `gfx/dlss_eval.rs`; `Session::evaluate` and `DlssRr::record` (horizon-rtx); `gfx.rs` `rr_now`, in place of `taa.resolve`, through `split_commands`; reset on the first frame, a resize, a cut or a frame without RR | Desktop 3440x1440: RR ms against accumulate + denoise + TAA (0.55 + 0.45 + accumulation); stills and motion captures against today's |
 | 6. RR upscaling, desktop | World pass and rays at `Quality::render_size`; hand and HUD unchanged after it | ms and quality at Quality/Balanced/Performance against the current RT scale 2 path |
@@ -371,6 +401,18 @@ interface facts only, with no header text copied:
   `normals.w`; dlss_wgpu's evaluation: `transition_resources` to `RESOURCE` for inputs and
   `STORAGE_READ_WRITE` for the output, the image views' whole subresource, the `texture_format_as_raw`
   format, then the evaluation on the encoder's raw command buffer.
+
+- **The guides, read on 10 November 2026** (main branch: `include/nvsdk_ngx_helpers_dlssd_vk.h`,
+  `doc/DLSS-RR Integration Guide.pdf`, `doc/DLSS_Programming_Guide_Release.pdf`): motion vectors in render
+  pixels toward last frame's position, and with `MVJittered` 0 NGX uses them without taking any jitter out
+  (Programming Guide §3.6.1, §3.6.2); the jitter offsets are in render pixels, within ±0.5, given apart
+  whether or not the vectors hold them (§3.7.3; the helper's comment: "render pixel space"); Halton is what
+  DLSS was trained on and RR wants at least 32 phases (RR guide §3.6; Programming Guide §3.7.1); the sky's
+  defaults (diffuse albedo 0.5, specular albedo, normals and roughness 0; RR guide §3.4.1 to §3.4.4); the
+  blending of albedos and roughness toward a dominating transparent surface with depth, normal and hit
+  distance kept on one surface (§3.4.1); defaulting refracted motion to the background's as "sensible, but
+  imperfect", and constant guides rather than noisy ones on refracting surfaces (§3.5); the transparency
+  layer and colour-before-transparency inputs as NGX's route for particles (§3.4.10, §3.4.11; not used).
 
 **Verified on the RTX 4090** (stage 1, SDK v310.9.16, reported 10 November 2026): NGX asked for and got the
 device extensions `VK_NVX_binary_import`, `VK_NVX_image_view_handle`, `VK_KHR_buffer_device_address` and
@@ -462,12 +504,15 @@ size = output size = the world's size, which a render scale can make differ from
   direct light (`denoise.wgsl`, `params.step.w` 1, a buffer made on first use). Every other view keeps
   bit 8 clear and the five passes; without the switch no bit, buffer or pass changes, so every shader's
   output is as before.
-- **Jitter.** On RR frames the world is drawn with `dlss_eval`'s own Halton(2, 3) jitter (16 phases,
-  `taa::jitter`), advanced once a frame evaluated; TAA's history is freed. The RT depth prepass and the
-  guides stay on the clean matrix (§3.1), so the guides are up to half a pixel off the colour's jittered
-  grid: the motion vectors are unjittered (`MVJittered` 0), which is what NGX asks for; the albedos and
-  normals' half-pixel offset is a known approximation. The hand is drawn after the evaluation (not in the
-  world pass), as RR has no guides for it.
+- **Jitter.** On RR frames the world is drawn with `dlss_eval`'s own Halton(2, 3) jitter (32 phases,
+  `taa::jitter_of`), advanced once a frame evaluated; TAA's history is freed. The RT depth prepass stays
+  on the clean matrix, but RR's guides are made from the world's own jittered depth with the same jitter
+  (§3.1), so every guide is on the colour's grid; the motion vectors have the jitter taken out
+  (`MVJittered` 0). The hand is drawn after the evaluation (not in the world pass), as before.
+- **Guides.** Just before the evaluation: frame generation's `ObjectMotion` draws the entities' own
+  motion over the world's depth (`DlssEval::object_motion`), then `ShadowRays::run_guides` runs the guides
+  pass on that depth with the kernel's bind group of this frame. A frame where the kernel did not run
+  for the window makes no guides and falls back to TAA.
 - **Evaluation (stage 5).** Where `taa.resolve` ran (`gfx.rs`, `rr_done`), `DlssEval::evaluate`
   (`gfx/dlss_eval.rs`) makes the feature follow the world's size (`Session::resize`), then
   `Session::evaluate` (horizon-rtx `dlss_rr.rs`) takes the raw handles of: the scene (noisy colour, linear
@@ -493,7 +538,8 @@ size = output size = the world's size, which a render scale can make differ from
 - `HORIZON_DLSS_RR_JITTER=0`: no jitter (and RR told 0): if the image calms, the jitter is the suspect.
 - `HORIZON_DLSS_RR_JITTER_SIGN=x`, `y` or `xy`: the jitter NGX is told is negated on those axes (Horizon's
   is how far the image moves, right and down). Try each with a still camera: the right one does not swim.
-- `HORIZON_RT_GUIDES_SHOW=motion|normal|albedo|...` (§3.1) still pictures the guides.
+- `HORIZON_RT_GUIDES_SHOW=motion|normal|albedo|roughness|specular|source|depth` (§3.1) pictures the
+  guides RR was given.
 - NVIDIA's `dev` DLL (`lib\Windows_x86_64\dev\nvngx_dlssd.dll` in place of the `rel` one) draws its overlay
   with the jitter and motion vector checks.
 
@@ -517,9 +563,26 @@ size = output size = the world's size, which a render scale can make differ from
 4. A/B: the same place with and without `HORIZON_RT_DLSS_RR=1`; then `HORIZON_DLSS_RR_SHOW=input` to see
    the raw input; with `HORIZON_GPU_PASSES=1` the pass timings show `DLSS Ray Reconstruction` and a single
    `rays: denoiser` pass on RR frames.
-5. Please send back: the `DLSS-RR:` block, screenshots with and without RR (and with `SHOW=input`), whether
-   a still camera swims (and which `JITTER_SIGN` fixes it), any Vulkan validation messages besides NGX's
-   known ones, and the newest file in `logs\ngx` if anything failed.
+5. The guides, with RR on (`HORIZON_RT_DLSS_RR=1` plus `HORIZON_RT_GUIDES_SHOW=<view>`), one screenshot
+   each in a scene with a mob walking, a pond or the sea, a glass window and terrain in the distance:
+   - `depth`: the mob, the water's surface and the glass appear in it (they did not before); no hand.
+   - `source`: terrain and the mob green, water and glass blue, red only far away or at odd geometry,
+     black sky. A mob in red means its quads are not in the hardware structure.
+   - `albedo`: the mob in its own colours (not the ground behind it); under water and glass the bottom
+     or the room behind, a little darker at grazing angles; the sky mid grey.
+   - `normal`: sharp per-face colours on the mob; water flat (green, no waves); the sky mid grey (0).
+   - `roughness`: white terrain and mobs, darker on water and glass toward grazing angles, black sky.
+   - `motion`: grey everywhere with a still camera, and the walking mob alone tinted (it was grey
+     before). The vector points back to where the pixel was: a mob walking left on screen is redder
+     than grey, one walking right less red (bluish green); walking toward the bottom of the screen less
+     green, toward the top more. Turning the camera tints the whole frame smoothly.
+   - `specular`: dark grey on terrain, brighter on water and glass toward grazing angles.
+   With a still camera none of them should shimmer at edges more than the scene does (they follow the
+   jitter now); compare one with `HORIZON_DLSS_RR_JITTER=0`, which should look the same but steady.
+6. Please send back: the `DLSS-RR:` block, screenshots with and without RR (and with `SHOW=input`), the
+   guide screenshots of step 5, whether a still camera swims (and which `JITTER_SIGN` fixes it), whether a
+   walking mob ghosts or smears with RR (and whether water and glass smear), any Vulkan validation messages
+   besides NGX's known ones, and the newest file in `logs\ngx` if anything failed.
 
 ### Unverified (nothing of stages 4 and 5 has run: the machine that wrote them has no GPU, no SDK and no
 Windows linker; only `cargo check`, the unit tests and naga's validation of the shaders ran)
@@ -529,10 +592,14 @@ Windows linker; only `cargo check`, the unit tests and naga's validation of the 
 - the barrier and layout contract around `EvaluateFeature` (the full barriers are a guess at safety, not a
   measured need), and that the wgpu tracker stays right after it (validation layers will tell);
 - the jitter sign, and whether 16 phases suit RR at DLAA;
-- whether the half-pixel offset of the unjittered guides against the jittered colour shows (soft edges,
-  shimmer on albedo edges); the alternative is a jittered prepass;
-- RR's look with entities, the hand-less frame, water, glass and particles (no guides of their own: they
-  get the terrain behind them, §3.1);
+- that the guides now sit on the colour's jittered grid (`guide_centre`'s sign: a wrong sign would make
+  the `SHOW` views shimmer at edges with a still camera, steady with `HORIZON_DLSS_RR_JITTER=0`);
+- RR's look with entities, water and glass on their new guides, and with particles (no guides of their
+  own); that the entities' quads in the hardware structure match the drawn ones closely enough for the
+  short ray (else `source` shows them red);
+- that `ObjectMotion`'s vectors (made for frame generation) are right for RR: sign, the jitter, and the
+  previous matrix `dlss_eval` builds from last frame's clean one;
+- the cost of the second ray on water and glass pixels and of the entity motion pass;
 - that `AutoExposure` is the right choice against feeding last frame's exposure;
 - the cost (RR ms against 0.55 + 0.45 ms + the accumulation) and the VRAM;
 - that the raw kernel mode leaves nothing temporal behind besides ReSTIR's reuse (the radiance cache

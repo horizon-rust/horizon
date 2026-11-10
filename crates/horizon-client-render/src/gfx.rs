@@ -12131,6 +12131,17 @@ impl Renderer {
                 frame.camera,
             );
         }
+        // DLSS-RR's guides take the entities' own motion as frame generation does (dlss_eval.rs).
+        #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
+        if rr_now {
+            self.dlss_eval.track_entities(
+                &self.device,
+                &self.entity_atlas,
+                frame.entities,
+                frame.entity_motion,
+                frame.camera,
+            );
+        }
         let all_entities = &self.entity_batch.combined;
         let hand_quads = (frame.hand.len() / 4) as u32;
         let additive_quads = (frame.additive.len() / 4) as u32 - self.entity_batch.moved_additive;
@@ -14533,15 +14544,35 @@ impl Renderer {
         }
         laps.lap("rp_froxels");
         // DLSS Ray Reconstruction (dlss_eval.rs) in the resolve's place: the world and its media,
-        // traced raw, denoised and anti-aliased into the scene. A frame whose rays did not run
-        // (no guides of this frame's size) falls back to TAA; an NGX failure turns RR off.
+        // traced raw, denoised and anti-aliased into the scene. Its guides are made here, from
+        // the world's own depth with RR's jitter (the entities, water and glass in it), and the
+        // entities' own motion. A frame whose rays did not run (no guides of this frame's size)
+        // falls back to TAA; an NGX failure turns RR off.
         #[allow(unused_mut)]
         let mut rr_done = false;
         #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
         if rr_now && rt_now {
-            let guides = self
-                .shadow_rays
-                .guides(0)
+            let objects = self.dlss_eval.object_motion(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                world_depth,
+                view_proj,
+                clean_view_proj,
+                frame.camera,
+            );
+            let made = self.shadow_rays.run_guides(
+                &self.device,
+                &mut self.uploads,
+                &mut encoder,
+                0,
+                world_depth,
+                self.dlss_eval.jitter(),
+                objects.as_ref(),
+            );
+            let guides = made
+                .then(|| self.shadow_rays.guides(0))
+                .flatten()
                 .filter(|g| g.size == world_size)
                 .cloned();
             if let (Some(guides), Some(session)) = (guides, self.dlss_rr.as_mut()) {
@@ -14555,6 +14586,7 @@ impl Renderer {
                     world_view,
                     world_depth,
                     frame.camera,
+                    clean_view_proj,
                 ) {
                     Ok(()) => {
                         rr_done = true;
