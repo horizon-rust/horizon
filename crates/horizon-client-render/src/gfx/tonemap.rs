@@ -92,6 +92,25 @@ impl PostParams {
         ..Self::REMIX
     };
 
+    /// These for a headset's eye: 0.4 stops brighter (`HORIZON_VR_EXPOSURE_STOPS` sets another, 0
+    /// the screen's). An eye is 8-bit SDR and fills the view: measured in the headset, the
+    /// foreground under a noon sun stayed near black at the screen's exposure, where the screen's
+    /// own image was right, and lifting the local tone mapping's shadows changed little.
+    pub fn for_eye(self) -> Self {
+        static STOPS: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        let stops = *STOPS.get_or_init(|| {
+            std::env::var("HORIZON_VR_EXPOSURE_STOPS")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .map_or(0.4, |v| v.clamp(-2.0, 2.0))
+        });
+        Self {
+            exposure: self.exposure * stops.exp2(),
+            ..self
+        }
+    }
+
     /// The uniform the grading shaders read (tonemap.wgsl `Params`), with the time step.
     fn words(&self, dt: f32, burn: Option<f32>) -> [f32; 16] {
         [

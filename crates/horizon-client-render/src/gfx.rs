@@ -10601,7 +10601,7 @@ impl Renderer {
             } else {
                 0.0
             };
-            t.set_params(if thunder_level > 0.5 {
+            let params = if thunder_level > 0.5 {
                 tonemap::PostParams {
                     ev_max: tonemap::PostParams::THUNDER.ev_max + clouds,
                     ..tonemap::PostParams::THUNDER
@@ -10617,6 +10617,11 @@ impl Renderer {
                 tonemap::PostParams::DUSK
             } else {
                 tonemap::PostParams::REMIX
+            };
+            t.set_params(if self.eye.is_some() {
+                params.for_eye()
+            } else {
+                params
             });
         }
         // RT lighting's volumetric clouds (`rt_clouds`) replace vanilla's.
