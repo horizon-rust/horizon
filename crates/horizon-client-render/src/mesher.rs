@@ -387,8 +387,9 @@ pub struct SectionMesh {
     /// RT lighting's light sources (gfx/voxels.rs): the section's blocks that emit light and can
     /// be seen (a neighbour isn't solid), as section-relative x, y, z, the level, the colour, and
     /// where in the block the light is (`Info::light_at`). The level's high nibble is the kind of
-    /// flame the block burns (`Info::flame`), for the heat haze above it.
-    pub rt_lights: Vec<[u8; 10]>,
+    /// flame the block burns (`Info::flame`), for the heat haze above it. The last byte is the
+    /// way a spotlight shines (`Info::spot`).
+    pub rt_lights: Vec<RtLight>,
     /// RT lighting's bounced light (gfx/voxels.rs): the solid blocks' map colours (`albedo`).
     pub albedo: crate::occupancy::Albedo,
     /// RT lighting's opacity micromaps of its cutout quads, worked out by the meshing worker
@@ -674,7 +675,7 @@ fn albedo(pad: &Padded, info: &[Info]) -> crate::occupancy::Albedo {
 /// The section's light sources for RT lighting (`SectionMesh::lights`): the blocks that emit light,
 /// leaving out those no neighbour lets the light out of (buried lava, a lamp inside a wall);
 /// water lets it out.
-fn lights(pad: &Padded, info: &[Info]) -> Vec<[u8; 10]> {
+fn lights(pad: &Padded, info: &[Info]) -> Vec<RtLight> {
     let mut out = Vec::new();
     for y in 0..16 {
         for z in 0..16 {
@@ -705,6 +706,7 @@ fn lights(pad: &Padded, info: &[Info]) -> Vec<[u8; 10]> {
                         ax,
                         ay,
                         az,
+                        s.spot,
                     ]);
                 }
             }
@@ -766,6 +768,9 @@ struct Info {
     /// Which kind of flame the block burns, for the heat haze above it (`transmission::flame_kind`; 0
     /// none): `lights` keeps it in the level's high nibble.
     flame: u8,
+    /// A spotlight's way (`spot`): 1 + its index in `SPOT_WAYS`, 0 a light that shines all
+    /// around.
+    spot: u8,
     /// `getMapColor(..).id`: the block's colour to RT lighting's bounced light (`albedo`).
     map_color: u8,
     /// What the block is to the rays (`crate::occupancy` EMPTY, SOLID or CUTOUT) and its shape's
@@ -875,7 +880,10 @@ fn voxelize(models: &[&crate::models::catalog::BakedModel], pixels: &[u8], size:
 /// warm orange by default, soul fire blue, redstone red, sea lanterns and end rods cold white.
 fn light_colour(name: &str) -> [u8; 3] {
     let has = |part: &str| name.contains(part);
-    if has("soul") {
+    if has("copper_projector") {
+        // A spotlight's lamp, a cooler white than a flame: about 4000 K.
+        [255, 228, 196]
+    } else if has("soul") {
         [110, 200, 255]
     } else if has("redstone") && !has("lamp") {
         [255, 50, 25]
@@ -920,7 +928,37 @@ fn light_at(name: &str, facing: Option<&str>) -> [u8; 3] {
     if name.ends_with("torch") {
         return at(0.5, 0.7, 0.5);
     }
+    if let Some(way) = SPOT_WAYS.get(usize::from(spot(name, facing)).wrapping_sub(1)) {
+        // A spotlight's lens, just inside the face it shines from.
+        let [x, y, z] = way.map(|v| 0.5 + 0.46 * f32::from(v));
+        return at(x, y, z);
+    }
     [255; 3]
+}
+/// One RT light source of a section (`SectionMesh::rt_lights`): section-relative x, y, z, the
+/// level (the flame's kind in its high nibble), the colour, where in the block it is, and the way
+/// a spotlight shines (`Info::spot`).
+pub type RtLight = [u8; 11];
+/// The ways a spotlight shines, as `Info::spot` counts them (from 1): vanilla's `Direction` order.
+pub const SPOT_WAYS: [[i8; 3]; 6] = [
+    [0, -1, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+    [0, 0, 1],
+    [-1, 0, 0],
+    [1, 0, 0],
+];
+/// The way a block named `name` shines when it is a spotlight (Horizon's copper projector, a
+/// content mod's lamp with a `facing`: docs/raytracing.md "Spotlights"): 1 + the index of its
+/// facing in `SPOT_WAYS`, 0 for every other light.
+fn spot(name: &str, facing: Option<&str>) -> u8 {
+    if !name.ends_with("copper_projector") {
+        return 0;
+    }
+    let ways = ["down", "up", "north", "south", "west", "east"];
+    facing
+        .and_then(|f| ways.iter().position(|w| *w == f))
+        .map_or(0, |i| i as u8 + 1)
 }
 /// Derived per-state facts, exposed for the section-mesh parity gate.
 #[derive(Clone, Copy, Debug)]
@@ -1136,6 +1174,7 @@ impl MeshTables {
                 cover,
                 light_colour: light_colour(name),
                 light_at: light_at(name, props.get("facing").map(String::as_str)),
+                spot: spot(name, props.get("facing").map(String::as_str)),
                 flame: crate::gfx::transmission::flame_kind(name),
                 map_color: s.map_color,
                 ray,

@@ -350,6 +350,7 @@ mod tests {
             light_colour: [0; 3],
             light_at: [0; 3],
             flame: 0,
+            spot: 0,
             map_color: 0,
             ray: 0,
             ray_shape: 0,

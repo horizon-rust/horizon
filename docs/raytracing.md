@@ -450,6 +450,31 @@ Remix itself could not be measured on the same scene here: it runs inside Minecr
 own runtime, which cannot be driven offscreen by `horizon-ctl`; its numbers on the same copy are
 to be taken by hand (its in-game profiler) for the comparison.
 
+## Spotlights: the copper projector
+
+Remix's Java mod adds a directional lamp, its Copper Beacon: mounted on the face it is placed on, redstone-controlled,
+its beam a real light that shows in mist and rain. Horizon's own equivalent, built without its assets or code:
+
+- **The block** is a content mod in this repository, [`mods/copper_projector`](../mods/copper_projector): block
+  `copper_projector:copper_projector` from template `minecraft:redstone_lamp` (lit by a redstone signal, as a lamp,
+  light 15) with a `facing` of its own. Placed, it faces away from the face clicked, as an end rod does: on a
+  ceiling it shines down, on a floor up, on a wall straight out (`level/place.rs`, the lamp's placement; vanilla's
+  lamp has no `facing` and keeps its state). Its model is vanilla's copper textures (chiseled copper, the copper
+  bulb as the lens), read from the player's own install. Recipe: copper ingots around a copper bulb, glass above,
+  redstone below. It loads as any content mod: in `horizon-mods/`, or `--dev-mod mods/copper_projector`.
+- **The light** (`mesher.rs` `spot`, `gfx/voxels.rs` `Spot`): the lit block's RT light sits on its lens and carries
+  its way and its cone, `aim` in the GPU light. ReSTIR DI weighs it through the cone (`spot_cone` in
+  shadow_rays.wgsl: full inside two thirds of the half angle, gone at its edge), its shadow rays aim at a lens a
+  quarter of a block across, so its shadows soften with distance. Its light gathered into a cone, it is 12 times a
+  lamp's strength and reaches 48 blocks; the light cells only list it where its cone can reach, so it takes no
+  slot behind it.
+- **The beam** is the froxels' own light sources pass (`light_to` in froxels.wgsl, with the cone): no new pass. It
+  shows where the medium is thick enough to scatter it (fog, rain, water, a cave's air), as a real beam does.
+
+Switches: `HORIZON_RT_SPOT_REACH` (blocks, default 48), `HORIZON_RT_SPOT_GAIN` (default 12, 0 puts the spotlights
+out) and `HORIZON_RT_SPOT_ANGLE` (half angle in degrees, default 24). Cost: one light more where it is placed, as a
+lamp; nothing where there is none.
+
 ## GPU budget for Vision Pro (90 Hz, two eyes)
 
 The target: 11.1 ms of GPU a frame for both eyes, with RT lighting on. Measured on 30 October 2026 on the

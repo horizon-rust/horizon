@@ -227,12 +227,52 @@ const CELLS: [u32; 3] = [WIDTH / 8, WIDTH / 8, HEIGHT / 8];
 const LIGHT_REACH: f32 = 24.0;
 
 /// One light source for the GPU: its centre relative to the grid's first block (y from the
-/// world's bottom) and its reach; its colour (gamma-space, 0..1) and strength.
+/// world's bottom) and its reach; its colour (gamma-space, 0..1) and strength; a spotlight's way
+/// and the cosine of its cone's half angle (0, 0, 0 a light that shines all around).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuLight {
     at: [f32; 4],
     colour: [f32; 4],
+    aim: [f32; 4],
+}
+
+/// A spotlight (`mesher::spot`, the copper projector): how far it reaches, in blocks, how much
+/// brighter it is than a lamp of its level (its light gathered into its cone instead of every
+/// way), and its cone's half angle, in degrees. `HORIZON_RT_SPOT_REACH`, `HORIZON_RT_SPOT_GAIN`
+/// and `HORIZON_RT_SPOT_ANGLE` set others.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Spot {
+    reach: f32,
+    gain: f32,
+    angle: f32,
+}
+
+impl Spot {
+    const DEFAULT: Spot = Spot {
+        reach: 48.0,
+        gain: 12.0,
+        angle: 24.0,
+    };
+
+    fn get() -> Spot {
+        static SPOT: std::sync::OnceLock<Spot> = std::sync::OnceLock::new();
+        *SPOT.get_or_init(|| {
+            let env = |key: &str, default: f32, low: f32, high: f32| {
+                std::env::var(key)
+                    .ok()
+                    .and_then(|v| v.trim().parse::<f32>().ok())
+                    .filter(|v| v.is_finite())
+                    .map_or(default, |v| v.clamp(low, high))
+            };
+            let d = Spot::DEFAULT;
+            Spot {
+                reach: env("HORIZON_RT_SPOT_REACH", d.reach, 4.0, 96.0),
+                gain: env("HORIZON_RT_SPOT_GAIN", d.gain, 0.0, 100.0),
+                angle: env("HORIZON_RT_SPOT_ANGLE", d.angle, 2.0, 80.0),
+            }
+        })
+    }
 }
 
 #[derive(Default)]
@@ -241,7 +281,7 @@ pub struct Voxels {
     /// Every resident section's blocks' colours (`SectionMesh::albedo`), for RT lighting.
     albedo: HashMap<SectionKey, Albedo>,
     /// Every resident section's light sources (`SectionMesh::lights`), for RT lighting.
-    lights: HashMap<SectionKey, Vec<[u8; 10]>>,
+    lights: HashMap<SectionKey, Vec<crate::mesher::RtLight>>,
     grid: Option<Grid>,
 }
 
@@ -257,7 +297,7 @@ impl Voxels {
     }
 
     /// The section `key` now has these light sources (as meshed).
-    pub fn set_lights(&mut self, key: SectionKey, lights: &[[u8; 10]]) {
+    pub fn set_lights(&mut self, key: SectionKey, lights: &[crate::mesher::RtLight]) {
         let changed = if lights.is_empty() {
             self.lights.remove(&key).is_some()
         } else {
@@ -644,7 +684,7 @@ impl Voxels {
             grid.lights_dirty = false;
             grid.lights_age = 0;
             // The lights in range only: what `light_cells` reads of them.
-            let snapshot: HashMap<SectionKey, Vec<[u8; 10]>> = self
+            let snapshot: HashMap<SectionKey, Vec<crate::mesher::RtLight>> = self
                 .lights
                 .iter()
                 .filter(|(key, _)| in_range(center, key.0, key.2))
@@ -676,17 +716,27 @@ impl Voxels {
 /// each cell of the grid the eight (indices + 1, two to a word) whose light reaching its centre is
 /// the strongest.
 fn light_cells(
-    sections: &HashMap<SectionKey, Vec<[u8; 10]>>,
+    sections: &HashMap<SectionKey, Vec<crate::mesher::RtLight>>,
     center: (i32, i32),
     origin: [i32; 2],
     camera: DVec3,
 ) -> (Vec<GpuLight>, Vec<[u32; 4]>) {
+    light_cells_with(sections, center, origin, camera, Spot::get())
+}
+fn light_cells_with(
+    sections: &HashMap<SectionKey, Vec<crate::mesher::RtLight>>,
+    center: (i32, i32),
+    origin: [i32; 2],
+    camera: DVec3,
+    spot: Spot,
+) -> (Vec<GpuLight>, Vec<[u32; 4]>) {
+    let spot_cos = spot.angle.to_radians().cos();
     let mut found: Vec<(f64, GpuLight)> = Vec::new();
     for (&(x, sy, z), lights) in sections {
         if !in_range(center, x, z) {
             continue;
         }
-        for &[lx, ly, lz, level, r, g, b, ax, ay, az] in lights {
+        for &[lx, ly, lz, level, r, g, b, ax, ay, az, way] in lights {
             // The high nibble is the flame's kind (`haze::nearby`).
             let level = level & 15;
             // Where in the block it burns (the mesher's `light_at`), or its middle.
@@ -701,7 +751,14 @@ fn light_cells(
                 z * 16 + i32::from(lz),
             ];
             let d = DVec3::new(world[0] as f64, world[1] as f64, world[2] as f64) - camera;
-            let strength = (f32::from(level) / 15.0).powi(2);
+            let mut strength = (f32::from(level) / 15.0).powi(2);
+            let mut reach = LIGHT_REACH * (f32::from(level) + 1.0) / 16.0;
+            let mut aim = [0.0; 4];
+            if let Some(w) = crate::mesher::SPOT_WAYS.get(usize::from(way).wrapping_sub(1)) {
+                strength *= spot.gain;
+                reach = spot.reach * (f32::from(level) + 1.0) / 16.0;
+                aim = [f32::from(w[0]), f32::from(w[1]), f32::from(w[2]), spot_cos];
+            }
             found.push((
                 d.length_squared(),
                 GpuLight {
@@ -709,7 +766,7 @@ fn light_cells(
                         (world[0] - origin[0]) as f32 + within[0],
                         (world[1] - crate::chunk::MIN_Y) as f32 + within[1],
                         (world[2] - origin[1]) as f32 + within[2],
-                        LIGHT_REACH * (f32::from(level) + 1.0) / 16.0,
+                        reach,
                     ],
                     colour: [
                         f32::from(r) / 255.0,
@@ -717,6 +774,7 @@ fn light_cells(
                         f32::from(b) / 255.0,
                         strength,
                     ],
+                    aim,
                 },
             ));
         }
@@ -737,9 +795,10 @@ fn light_cells(
                         y as f32 * 8.0 + 4.0,
                         z as f32 * 8.0 + 4.0,
                     ];
-                    let d2 = (c[0] - px).powi(2) + (c[1] - py).powi(2) + (c[2] - pz).powi(2);
+                    let v = [c[0] - px, c[1] - py, c[2] - pz];
+                    let d2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
                     // The cell's nearest corner is up to 7 blocks nearer than its centre.
-                    if d2.sqrt() > reach + 7.0 {
+                    if d2.sqrt() > reach + 7.0 || !in_cone(light.aim, v, d2.sqrt()) {
                         continue;
                     }
                     let score = light.colour[3] / d2.max(1.0);
@@ -759,6 +818,19 @@ fn light_cells(
         .map(|s| std::array::from_fn(|w| s[w * 2].1 | (s[w * 2 + 1].1 << 16)))
         .collect();
     (lights, cells)
+}
+
+/// Whether a cell whose centre is `v` from a light (`d` away) may be in the light's cone: a light
+/// that shines every way lights them all, a spotlight those within its cone widened by the
+/// angle the cell's half diagonal (7 blocks) takes there.
+fn in_cone(aim: [f32; 4], v: [f32; 3], d: f32) -> bool {
+    let [x, y, z, cos] = aim;
+    if (x, y, z) == (0.0, 0.0, 0.0) || d <= 7.0 {
+        return true;
+    }
+    let along = (x * v[0] + y * v[1] + z * v[2]) / d;
+    let margin = (7.0 / d).asin();
+    along >= (cos.acos() + margin).min(std::f32::consts::PI).cos()
 }
 
 #[cfg(test)]
@@ -863,7 +935,7 @@ mod tests {
         let mut sections = HashMap::new();
         sections.insert(
             (2, 16, 1),
-            vec![[1, 9, 10, 14, 255, 170, 90, 255, 255, 255]],
+            vec![[1, 9, 10, 14, 255, 170, 90, 255, 255, 255, 0]],
         );
         let origin = [-RADIUS * 16, -RADIUS * 16];
         let (lights, cells) = light_cells(&sections, (0, 0), origin, DVec3::ZERO);
@@ -884,5 +956,32 @@ mod tests {
             1
         );
         assert_eq!(cell(at[0] + 40.0, at[1], at[2]), [0; 4]);
+    }
+
+    #[test]
+    fn a_spotlight_reaches_far_along_its_cone_and_not_behind_it() {
+        // A projector (level 15) shining down from world (33, 201, 26).
+        let mut sections = HashMap::new();
+        sections.insert(
+            (2, 16, 1),
+            vec![[1, 9, 10, 15, 255, 205, 130, 16, 1, 16, 1]],
+        );
+        let origin = [-RADIUS * 16, -RADIUS * 16];
+        let (lights, cells) =
+            light_cells_with(&sections, (0, 0), origin, DVec3::ZERO, Spot::DEFAULT);
+        let at = lights[0].at;
+        assert_eq!(lights[0].aim[..3], [0.0, -1.0, 0.0]);
+        assert_eq!(at[3], Spot::DEFAULT.reach);
+        let [cx, cz, _] = CELLS.map(|c| c as usize);
+        let lit = |x: f32, y: f32, z: f32| {
+            let [x, y, z] = [x, y, z].map(|v| (v / 8.0) as usize);
+            cells[(y * cz + z) * cx + x]
+                .iter()
+                .any(|&w| w & 0xffff == 1 || w >> 16 == 1)
+        };
+        // 40 blocks below it, past a torch's reach; not 30 blocks above, nor 30 to the side.
+        assert!(lit(at[0], at[1] - 40.0, at[2]));
+        assert!(!lit(at[0], at[1] + 30.0, at[2]));
+        assert!(!lit(at[0] + 30.0, at[1], at[2]));
     }
 }
