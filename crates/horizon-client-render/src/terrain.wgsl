@@ -3987,6 +3987,10 @@ struct RainOut {
     @location(2) alpha: f32,
     // 0 a streak; the circle an impact leaves, 1 + its age (0 to 1).
     @location(3) splash: f32,
+    // An impact's circle: the world point under the fragment (x, z, `rain_world`'s) and the
+    // ground it lies on (y), so that it shows on that column's top alone, not hanging past its
+    // edge over lower ground or into a neighbour's leaves.
+    @location(4) world: vec3<f32>,
 }
 // The sky table toward `d` (`rt_sky` without the Eye of Aldhani's glow, which the vertex stage
 // does not see).
@@ -4040,6 +4044,63 @@ fn rain_drop_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32) -> v
 fn rain_ground(column: u32) -> f32 {
     return rain_top(column) - select(0.0, 0.11, rain_surface(column) == 10u);
 }
+// Where a drop's leaning path first met what stops it (`rain_landing`): `kind` 0 nowhere (in the
+// air down to its height), 1 on the top of `column` at `ground`, over `at` (x, z), 2 on a column's
+// side or above the band's top (born under cover): no circle.
+struct RainLanding {
+    kind: u32,
+    column: u32,
+    ground: f32,
+    at: vec2<f32>,
+}
+// The drop whose path is `start - lean * (h - base)` (x, z at height h), now at height `y`, born at
+// `top`: the columns its path crossed, walked back up from `y` cell by cell. In each column the
+// path spends heights `low` to `high`; it struck the column whose ground stands at `low` or above,
+// on its top when the ground is under `high`, else on its side (it came in below the top). The
+// highest such column is the first it met coming down. RAIN_LANDING_CELLS columns at most, an
+// unknown one ends the walk.
+const RAIN_LANDING_CELLS: i32 = 40;
+fn rain_landing(start: vec2<f32>, lean: vec2<f32>, base: f32, y: f32, top: f32) -> RainLanding {
+    var r: RainLanding;
+    r.kind = 0u;
+    r.column = 0u;
+    r.ground = 0.0;
+    r.at = vec2(0.0);
+    let p = start - lean * (y - base);
+    // Climbing a block moves the path by `-lean`: the heights at which it next crosses a cell's
+    // edge in x and in z, and the climb between two edges.
+    let d = -lean;
+    let still = abs(d) < vec2(1e-5);
+    let delta = 1.0 / max(abs(d), vec2(1e-5));
+    let fl = floor(p);
+    let ahead = select(p - fl, fl + 1.0 - p, d >= vec2(0.0));
+    var next = select(y + ahead * delta, vec2(1e9), still);
+    let step = select(vec2<i32>(-1), vec2<i32>(1), d >= vec2(0.0));
+    var cell = vec2<i32>(fl);
+    var low = y;
+    for (var i = 0; i < RAIN_LANDING_CELLS; i++) {
+        let c = rain_cell(cell);
+        if c == 0u { break; }
+        let high = min(min(next.x, next.y), top);
+        let g = rain_ground(c);
+        if g >= low {
+            r.column = c;
+            r.ground = g;
+            r.kind = select(2u, 1u, g < high);
+            r.at = start - lean * (g - base);
+        }
+        if high >= top { break; }
+        low = high;
+        if next.x < next.y {
+            cell.x += step.x;
+            next.x += delta.x;
+        } else {
+            cell.y += step.y;
+            next.y += delta.y;
+        }
+    }
+    return r;
+}
 @vertex fn vs_rain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) id: u32)
     -> RainOut {
     var out: RainOut;
@@ -4048,6 +4109,7 @@ fn rain_ground(column: u32) -> f32 {
     out.colour = vec3(0.0);
     out.alpha = 0.0;
     out.splash = 0.0;
+    out.world = vec3(0.0);
     let rate = globals.rain.x;
     if rate <= 0.0 { return out; }
     let near_count = RAIN_NEAR * RAIN_NEAR * RAIN_TRACKS;
@@ -4081,41 +4143,27 @@ fn rain_ground(column: u32) -> f32 {
     let start = (vec2<f32>(cell) + vec2(rain_rand(seed + 2u), rain_rand(seed + 3u))) * size;
     let xz = start - lean * (y - camera.y);
     var column = rain_cell(vec2<i32>(floor(xz)));
-    if column == 0u || !rain_falls(column) { return out; }
-    // It stops on the first block that stops motion (vanilla's rain heightmap), a water's top a
-    // little under it, and leaves a circle there for a moment.
+    if column == 0u { return out; }
+    // It stops on the first block that stops motion (vanilla's rain heightmap: leaves stop it,
+    // grass and flowers let it through to the ground), a water's top a little under it, and leaves
+    // a circle there for a moment, on that column's top alone.
     var ground = rain_ground(column);
     var head = vec3(xz.x, y, xz.y);
     var splash = -1.0;
-    if y < ground {
-        // Under the column it would be over now: it landed on the way. Leaning with the wind, it
-        // came down over other columns: where its path meets the ground is the column whose top
-        // the path crosses over that very column (three steps settle it on all but broken
-        // ground), and the circle is there, not where the wind would have carried it since.
-        var at = start - lean * (ground - camera.y);
-        for (var i = 0; i < 3; i++) {
-            let c = rain_cell(vec2<i32>(floor(at)));
-            if c == 0u { return out; }
-            let g = rain_ground(c);
-            column = c;
-            if g == ground { break; }
-            ground = g;
-            at = start - lean * (ground - camera.y);
-        }
-        // Still above that column's top: its path ran into a wall's side on the way. No circle.
-        if y >= ground || !rain_falls(column) { return out; }
+    let land = rain_landing(start, lean, camera.y, y, camera.y + band * 0.5);
+    if land.kind == 0u {
+        // In the air all the way from the band's top: it falls on, if it rains here.
+        if !rain_falls(column) { return out; }
+    } else {
+        // Stopped on the way: on a column's side (a wall, a trunk, a canopy's edge) or born under
+        // cover it leaves no circle; on a top, a circle where its path met it, not under it now.
+        if land.kind != 1u || !rain_falls(land.column) { return out; }
+        column = land.column;
+        ground = land.ground;
         let since = (ground - y) / speed;
         if !near || since > RAIN_SPLASH { return out; }
         splash = since / RAIN_SPLASH;
-        head = vec3(at.x, ground, at.y);
-    } else if dot(lean, lean) > 1e-4 {
-        // In the air: unless a higher column upwind stopped it on its way down here (the lee of a
-        // wall, under a roof's edge), one and three blocks of fall back up its path.
-        for (var i = 0; i < 2; i++) {
-            let up = y + select(1.0, 3.0, i == 1);
-            let c = rain_cell(vec2<i32>(floor(start - lean * (up - camera.y))));
-            if c != 0u && rain_ground(c) > up { return out; }
-        }
+        head = vec3(land.at.x, ground, land.at.y);
     }
     let rel = head - camera;
     let distance = length(rel);
@@ -4151,6 +4199,8 @@ fn rain_ground(column: u32) -> f32 {
         out.clip = globals.view_proj * vec4(at, 1.0);
         out.uv = vec2(corner.x, corner.y * 2.0 - 1.0);
         out.splash = 1.0 + splash;
+        out.world = vec3(head.x + corner.x * extent, ground,
+            head.z + (corner.y * 2.0 - 1.0) * extent);
         // The same water over a growing ring is a thinner film: as opaque as the drop at first,
         // then fainter as the ring's area grows (its radius and width, as fs_rain draws them,
         // against theirs at the first frames; a thin film shows less than in proportion to its
@@ -4174,6 +4224,10 @@ fn rain_ground(column: u32) -> f32 {
 @fragment fn fs_rain(in: RainOut) -> @location(0) vec4<f32> {
     var a = in.alpha;
     if in.splash > 0.5 {
+        // Only on the top it landed on: the part of the circle past its column's edge is over
+        // another column (lower ground, a wall's side, a neighbour's leaves) and not there.
+        let column = rain_cell(vec2<i32>(floor(in.world.xz)));
+        if column == 0u || abs(rain_ground(column) - in.world.y) > 0.01 { discard; }
         // A thin circle spreading from the impact (fast at first, as a capillary ring slows),
         // widening and fading as it goes.
         let age = in.splash - 1.0;
