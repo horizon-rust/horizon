@@ -1702,7 +1702,7 @@ impl ShadowRays {
 /// `HORIZON_RT_AMBIENT`: RT lighting's ambient light, on every face whatever reaches it
 /// (shadow_rays.wgsl `AMBIENT`), 0 to 1; 0.003 by default (very low: a floor under the traced
 /// light), 0 none.
-fn ambient() -> f64 {
+pub(super) fn ambient() -> f64 {
     std::env::var("HORIZON_RT_AMBIENT")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())

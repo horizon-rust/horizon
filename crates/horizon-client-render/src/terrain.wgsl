@@ -74,7 +74,7 @@ struct Globals {
     // The Earth's curvature (`earth_drop`): x the square of the radius it starts at (below 0 off),
     // y how far the sea's horizon dips under the horizontal, in radians; z RT lighting's ice and
     // packed ice sprite layers (`rt_ice`, ice + 4096 packed ice, -1 none); w whether the surf
-    // and the wet shore are on (1; gfx.rs `rt_shore`).
+    // and the wet shore are on (1 and more; gfx.rs `rt_shore`), its fraction the ambient light.
     earth: vec4<f32>,
     // The shooting stars' shower (`meteor_make`): its radiant (equatorial, xyz) and zenithal hourly
     // rate (w); its meteors' speed (km/s, x) and population index (y), the sporadic rate (z).

@@ -2488,9 +2488,11 @@ const COVER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 /// and its caustics over a whole terrace of sand.
 fn rt_shore() -> f32 {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // And RT lighting's ambient light as its fraction (entity.wgsl `rt_entity_light`: an entity
+    // is not traced, the ambient is added there), under a half.
     f32::from(u8::from(*ON.get_or_init(|| {
         std::env::var("HORIZON_RT_SHORE").is_ok_and(|v| v == "1")
-    })))
+    }))) + (shadow_rays::ambient() as f32).min(0.49)
 }
 fn psr_cover() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
