@@ -1719,7 +1719,7 @@ struct WaterSurface {
 // 0.6, a calmer sea than dispersion alone gives), the phase 2.1 a wave. Written out, no shader has to work them out: each costs a sine and a cosine.
 fn water_wave(p: vec2<f32>, t: f32, footprint: f32, d: vec4<f32>, w: vec2<f32>) -> WaterSurface {
     // A ripple finer than about a pixel only shimmers: it fades out, and costs nothing then.
-    let fade = 1.0 - smoothstep(1.5, 4.0, d.z * footprint);
+    let fade = 1.0 - smoothstep(0.75, 2.0, d.z * footprint);
     if fade <= 0.0 { return WaterSurface(0.0, vec2(0.0), vec3(0.0)); }
     let slope = d.w * fade;
     let phase = d.z * dot(d.xy, p) - w.x * t + w.y;
@@ -1817,7 +1817,7 @@ fn water_lost_slope(footprint: f32, sea: vec3<f32>) -> f32 {
     for (var i = 0; i < 16; i++) {
         let a = min(1.0 / k, 0.06 * min(1.0, k / 2.4))
             * select(select(sea.z, sea.y, i < 11), sea.x, i < 5);
-        let fade = 1.0 - smoothstep(1.5, 4.0, k * footprint);
+        let fade = 1.0 - smoothstep(0.75, 2.0, k * footprint);
         lost += 0.5 * a * a * (1.0 - fade * fade);
         k *= 1.25;
     }
@@ -1829,6 +1829,9 @@ fn water_lost_slope(footprint: f32, sea: vec3<f32>) -> f32 {
 // what that colour lacks (a swamp's murk), and colours the light the water scatters.
 const WATER_ABSORPTION: vec3<f32> = vec3(0.025541, 0.005268, 0.005827);
 const WATER_TINT_ABSORPTION: f32 = 0.06;
+// The share of the light the water body scatters back toward the eye (its glow), with Remix's
+// single-scattering albedo: 0.15 left open water ink navy save for the glints.
+const WATER_GLOW: f32 = 0.3;
 // What real water adds to Remix's clear medium: pure water's absorption a metre (Smith and Baker)
 // at red, green and blue, which turns a shallow bed turquoise and deep water night blue.
 const WATER_PURE_ABSORPTION: vec3<f32> = vec3(0.30, 0.045, 0.012);
@@ -2061,6 +2064,30 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
                 1.0);
         }
     }
+    // Seen from under the water (the surface's underside): past Snell's window (48.6 degrees off
+    // the normal) the surface mirrors the water below whole, inside it a share of it; what it
+    // mirrors is the water's own body, lit as the open water's glow is, not the sky below the
+    // horizon (black), unless a traced ray met something there.
+    var under_fresnel = -1.0;
+    if face.y < -0.5 {
+        let sin_t = 1.33 * sqrt(max(1.0 - nv * nv, 0.0));
+        let body_lit = rt_sky(vec3(0.0, 1.0, 0.0)) * max(sky_seen, 0.3) + sun * max(globals.rt_light.y, 0.0);
+        let body = body_lit * colour * vec3(0.206, 0.999, 0.903) * WATER_GLOW
+            / (1.0 + 0.8 / max(globals.rt_light.y, 0.25));
+        var traced_below = false;
+        if globals.rt_motion.w > 1.5 {
+            traced_below = rt_reflection(in.clip, in.pos).a > 0.5;
+        }
+        if !traced_below { reflected = body; }
+        if sin_t >= 1.0 {
+            under_fresnel = 1.0;
+        } else {
+            let cos_t = sqrt(1.0 - sin_t * sin_t);
+            let rs = (1.33 * nv - cos_t) / (1.33 * nv + cos_t);
+            let rp = (nv - 1.33 * cos_t) / (nv + 1.33 * cos_t);
+            under_fresnel = 0.5 * (rs * rs + rp * rp);
+        }
+    }
     let l = globals.rt_light.xyz;
     let h = normalize(l + view);
     let nl = max(dot(n, l), 0.0);
@@ -2090,10 +2117,11 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     // along the ray of both dimmings, so the glow saturates to the deep water's colour
     // (blue-green, red absorbed first) and a shallow bed shows through it.
     let both = 1.0 + 0.8 / max(l.y, 0.25);
-    let glow = lit * colour * vec3(0.206, 0.999, 0.903) * 0.15 * (1.0 - exp(-absorption * thickness * both)) / both;
-    var added = fresnel * reflected + (1.0 - fresnel) * glow
+    let glow = lit * colour * vec3(0.206, 0.999, 0.903) * WATER_GLOW * (1.0 - exp(-absorption * thickness * both)) / both;
+    let fresnel_used = select(fresnel, under_fresnel, under_fresnel >= 0.0);
+    var added = fresnel_used * reflected + (1.0 - fresnel_used) * glow
         + rt_sky(vec3(0.0, 1.0, 0.0)) * sky_seen * (RAIN_SPRAY * spray);
-    var shows = (1.0 - fresnel) * through;
+    var shows = (1.0 - fresnel_used) * through;
     // Past the rays' reach (no refraction traced: `refracted.a` 0) the floor drawn behind was lit as
     // if no water stood over it, the rays meeting none on the way to the sun: its light dims here
     // as the rays dim it near by (shadow_rays_hw.wgsl `hw_tint`), along the sun's path bent down into
