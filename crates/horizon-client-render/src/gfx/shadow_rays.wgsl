@@ -2123,6 +2123,7 @@ fn accumulate(texel: vec2<i32>, traced: Traced) -> Traced {
         if lit > 1e-6 {
             slow_blocks += lit_blocks * (lacking / lit);
             slow_direct += lit_direct * (lacking / lit);
+            lag = lacking > ANTILAG_LIGHT * max(mean, 1e-3);
         }
     } else if held > 1e-5 && bound != held {
         slow_blocks *= bound / held;
