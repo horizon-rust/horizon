@@ -10795,6 +10795,13 @@ impl Renderer {
             } else {
                 tonemap::PostParams::REMIX
             };
+            // Shut in from the sky (the camera's sky light level), the room's own top
+            // (`PostParams::indoors`); `HORIZON_RT_SKIP` 134217728 keeps the open air's.
+            let params = if frame.title || self.shadow_rays.interior_skipped() {
+                params
+            } else {
+                params.indoors(frame.pack.eye_light[1])
+            };
             t.set_params(if self.eye.is_some() {
                 params.for_eye()
             } else {

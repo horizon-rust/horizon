@@ -630,6 +630,7 @@ const HW_SEEN: u32 = 4u;
 // sources' light by its block light level in `hw_level`.
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     hw_level = vec3(0.0);
+    hw_sky = -1.0;
     var q: ray_query;
     hw_water_t = -1.0;
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
@@ -811,6 +812,9 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
         let block = f32((arena_at(base, 4u) >> 24u) & 255u) / 16.0;
         let steps = max(15.0 - block, 0.0);
         hw_level = select(vec3(0.0), HW_BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), block > 0.0);
+        // Its sky light level's share of full daylight (the light's next byte, 16 a level), for
+        // `open_light`.
+        hw_sky = clamp(f32((arena_at(base, 4u) >> 16u) & 255u) / 240.0, 0.0, 1.0);
         lava = hw_is_lava(arena_at(base, 4u) & 0x7fffu);
         if texel.a >= 0.0 {
             let w = arena_at(base, 5u);

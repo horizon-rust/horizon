@@ -92,6 +92,26 @@ impl PostParams {
         ..Self::REMIX
     };
 
+    /// The exposure's top in stops for a closed room: Remix's situations cap it for the open air
+    /// (+1.5 by day, -0.5 at dusk and by night, -1 in the rain), so that the night stays dark;
+    /// indoors the eye adapts to the room's own light whatever the hour. A room lit by lamps
+    /// averages about 2^-5 paper white, which the key (exposure.wgsl, 2^-2.6) wants 2.4 stops up:
+    /// under the dusk cap it showed three stops too dark, its bounced light crushed to black.
+    pub const INDOOR_EV_MAX: f32 = 4.0;
+
+    /// These with the exposure's top raised toward `INDOOR_EV_MAX` as the camera is shut in from
+    /// the sky: by its vanilla sky light level `sky` (0..15), from 13 (a block from the open sky:
+    /// the open air's top) down to 6 (well inside: the room's). It only lifts the top, and only
+    /// matters where the scene is darker than the key.
+    pub fn indoors(self, sky: i32) -> Self {
+        let t = ((13.0 - sky as f32) / 7.0).clamp(0.0, 1.0);
+        let inside = t * t * (3.0 - 2.0 * t);
+        Self {
+            ev_max: self.ev_max + (Self::INDOOR_EV_MAX - self.ev_max).max(0.0) * inside,
+            ..self
+        }
+    }
+
     /// These for a headset's eye: 0.4 stops brighter (`HORIZON_VR_EXPOSURE_STOPS` sets another, 0
     /// the screen's). An eye is 8-bit SDR and fills the view: measured in the headset, the
     /// foreground under a noon sun stayed near black at the screen's exposure, where the screen's
@@ -1035,6 +1055,33 @@ impl Tonemap {
                 &[&t.group],
                 scene,
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PostParams;
+
+    #[test]
+    fn a_closed_room_may_expose_up_to_its_own_light_whatever_the_hour() {
+        for situation in [
+            PostParams::REMIX,
+            PostParams::DUSK,
+            PostParams::NIGHT,
+            PostParams::RAIN,
+        ] {
+            // The open air (and a block under a tree's edge) keeps Remix's caps.
+            assert_eq!(situation.indoors(15), situation);
+            assert_eq!(situation.indoors(13), situation);
+            // Well inside, the room's top, at any hour.
+            assert_eq!(situation.indoors(0).ev_max, 4.0);
+            assert_eq!(situation.indoors(6).ev_max, 4.0);
+            // Between, between; never lower than the open air's, and nothing else changes.
+            let half = situation.indoors(10);
+            assert!(half.ev_max > situation.ev_max && half.ev_max < 4.0);
+            assert_eq!(half.ev_min, situation.ev_min);
+            assert_eq!(half.exposure, situation.exposure);
         }
     }
 }
