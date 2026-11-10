@@ -61,6 +61,22 @@ impl crate::item::Names for SyncedNames<'_> {
             .map(str::to_owned)
     }
 }
+impl SyncedNames<'_> {
+    /// The network id of `name` in `registry`, the reverse of `name`: the
+    /// same registries in the same order, so an id this gives names back to
+    /// `name`.
+    pub fn id(&self, registry: &str, name: &str) -> Option<i32> {
+        self.builtin
+            .get(registry)
+            .and_then(|ids| ids.id(name))
+            .or_else(|| self.dynamic.id(registry, name))
+            .or_else(|| {
+                (self.dynamic.custom_components && registry == "minecraft:data_component_type")
+                    .then(|| crate::item::custom::id(name))
+                    .flatten()
+            })
+    }
+}
 
 impl Builtin {
     pub fn load(path: &Path) -> Result<Self> {
@@ -314,6 +330,45 @@ mod tests {
         assert_eq!(names.name("minecraft:item", 2), None);
         assert_eq!(names.name("minecraft:item", -1), None);
         assert_eq!(names.name("minecraft:unknown", 0), None);
+    }
+
+    #[test]
+    fn synced_ids_reverse_builtin_and_synced_names() {
+        use crate::item::Names;
+        let report = r#"{"minecraft:item":{"entries":{"minecraft:stone":{"protocol_id":1},"minecraft:air":{"protocol_id":0}}}}"#;
+        let builtin = Builtin::parse(report).unwrap();
+        let mut dynamic = Dynamic::default();
+        dynamic.add(RegistryData {
+            registry: "minecraft:enchantment".into(),
+            entries: ["minecraft:sharpness", "minecraft:mending"]
+                .into_iter()
+                .map(|id| RegistryEntry {
+                    id: id.into(),
+                    data: None,
+                })
+                .collect(),
+        });
+        let names = SyncedNames {
+            builtin: &builtin,
+            dynamic: &dynamic,
+        };
+        assert_eq!(names.id("minecraft:item", "minecraft:stone"), Some(1));
+        // A synced registry numbers its entries in the order they arrived.
+        assert_eq!(
+            names.id("minecraft:enchantment", "minecraft:mending"),
+            Some(1)
+        );
+        for (registry, name) in [
+            ("minecraft:item", "minecraft:air"),
+            ("minecraft:item", "minecraft:stone"),
+            ("minecraft:enchantment", "minecraft:sharpness"),
+            ("minecraft:enchantment", "minecraft:mending"),
+        ] {
+            let id = names.id(registry, name).unwrap();
+            assert_eq!(names.name(registry, id).as_deref(), Some(name));
+        }
+        assert_eq!(names.id("minecraft:item", "minecraft:dirt"), None);
+        assert_eq!(names.id("minecraft:unknown", "minecraft:stone"), None);
     }
 
     #[test]

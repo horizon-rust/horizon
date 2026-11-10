@@ -25,4 +25,19 @@ impl Game<'_> {
         }
         self.lan.as_ref()?.hub.synced_name(registry, id)
     }
+
+    /// The network id of `name` in `registry`, the reverse of
+    /// `native_registry_name` over the same registries: the id it gives
+    /// names back to `name`. None for an unknown registry or name, and while
+    /// no server is connected. API @API:registry_id@.
+    pub(super) fn native_registry_id(&self, registry: &str, name: &str) -> Option<i32> {
+        if let Some(r) = self.remote.as_ref() {
+            return SyncedNames {
+                builtin: &r.builtin,
+                dynamic: &r.registries,
+            }
+            .id(registry, name);
+        }
+        self.lan.as_ref()?.hub.synced_id(registry, name)
+    }
 }

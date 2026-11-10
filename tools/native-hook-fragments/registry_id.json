@@ -1,0 +1,14 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "registry_id",
+      "target": "horizon_client::game::native_registry_name::Game<'_>::native_registry_id"
+    }
+  ],
+  "rust_summary": "the numeric id of a registry name (`native_registry_id`), the reverse of `native_registry_name`, so a mod can put a particle, sound, item or entity type into a packet by id.",
+  "doc_summary": "`native_registry_id(registry, name)` (`host.registry_id`) gives the protocol id of a name in a registry, the reverse of `native_registry_name`. Bundles need \"hooks\": @API:registry_id@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_registry_name.rs"
+  ]
+}
