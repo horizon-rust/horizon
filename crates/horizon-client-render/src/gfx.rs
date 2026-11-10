@@ -12890,18 +12890,6 @@ impl Renderer {
         if culling && let Some(cull) = &mut self.cull {
             cull.bind_depth(&self.device, world_depth);
         }
-        // The hand draws at the end of the world pass, after a depth reset, when nothing runs
-        // between them (a scaled world's post pass, HDR's world copy, a native mod's
-        // `native_world_drawn`): one render pass fewer, ~10 µs of wgpu's encoding a frame.
-        let hand_in_world = (frame.hand.len() / 4) > 0
-            && !pack_draws_hand
-            && scaled.is_none()
-            && self.hdr.is_none()
-            // Frame generation draws the hand over the real and the made frame after the world.
-            && fg_frames.is_none()
-            // RR has no guides for the hand: it draws after the evaluation, as after TAA's resolve.
-            && !rr_now
-            && !native_render::world_drawn_hooked();
         if oit_on {
             let size = self
                 .world_post
@@ -13304,6 +13292,28 @@ impl Renderer {
         // occlusion test and the native copy kept it only for `keep_depth`, so with GPU culling
         // (VR) the fog drew over the near trees.
         let keep_depth = keep_depth || material.is_some() || shadows || froxels_now || taa_now;
+        // The hand draws at the end of the world pass, after a depth reset, when nothing runs
+        // between them (a scaled world's post pass, HDR's world copy, a native mod's
+        // `native_world_drawn`): one render pass fewer, ~10 µs of wgpu's encoding a frame.
+        // Nor when anything after the pass reads the world's depth (`keep_depth`: the ray-traced
+        // shadows, the froxels, the TAA, the clouds; and RT lighting's rain, snow and heat
+        // haze): the reset leaves it the far plane wherever the hand isn't, so the froxels took
+        // every pixel for the sky and laid their whole 256 blocks of medium over a closed room
+        // (a thick grey fog, the same by day and night, gone with RR, whose frames drew the hand
+        // after the evaluation and kept the depth).
+        let hand_in_world = (frame.hand.len() / 4) > 0
+            && !pack_draws_hand
+            && scaled.is_none()
+            && self.hdr.is_none()
+            // Frame generation draws the hand over the real and the made frame after the world.
+            && fg_frames.is_none()
+            // RR has no guides for the hand: it draws after the evaluation, as after TAA's resolve.
+            && !rr_now
+            && !keep_depth
+            && !(rt.lighting && world_linear)
+            && !rain_drops
+            && !snow_flakes
+            && !native_render::world_drawn_hooked();
         // GPU culling's occlusion test splits the world pass as cull.rs's does.
         let gpu_occluding = gpu_frame && self.gpu_culling.as_ref().is_some_and(|g| g.occluding());
         let pack_frame = |pass: &mut wgpu::RenderPass<'_>| {
