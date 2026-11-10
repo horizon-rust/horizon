@@ -69,7 +69,11 @@ impl Game<'_> {
             .rain
             .intensity
             .step(level, self.world.game_time, seconds);
-        if let (None, Some(drawn)) = (before, self.rain.intensity.drawn()) {
+        // A new shower: none fell, or the one that fell ended (the level fell, then rose).
+        let after = self.rain.intensity.drawn();
+        if after != before
+            && let Some(drawn) = after
+        {
             log::info!("Horizon weather: a new shower, {drawn:.2} times vanilla's rate");
         }
         let rain = Rain::from_levels(level, thunder, seconds, self.rain.factor);

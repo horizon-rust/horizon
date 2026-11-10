@@ -2930,13 +2930,25 @@ const GLASS_DROP_CELL: f32 = 0.05;
 // lighting, within 48 blocks, while anything is wet or where the snow's cover lies in a column it
 // snows in. The pane is glass all over: kept, it is shaded as the rest of it, its reflection too.
 fn rt_glass_weathered(in: TerrainOut) -> bool {
-    if globals.rt_mode.x < 0.5 || !linear_on() || in.emission != 0u { return false; }
-    if !rt_glass_plain(in.layer) || dot(in.pos, in.pos) > 2304.0 { return false; }
-    if globals.rain.y > 0.0 { return true; }
+    return in.emission == 0u && rt_glass_weathered_at(in.pos, in.layer);
+}
+// `rt_glass_weathered` for a fragment at camera-relative `pos` of sprite `layer` (the parallax
+// terrain's too, gfx/parallax.rs).
+fn rt_glass_weathered_at(pos: vec3<f32>, layer: u32) -> bool {
+    if globals.rt_mode.x < 0.5 || !linear_on() { return false; }
+    if !rt_glass_plain(layer) || dot(pos, pos) > 2304.0 { return false; }
+    if globals.rain.y > 0.0 || rt_glass_forced() { return true; }
     if globals.linear.w <= 0.0 { return false; }
-    let column = rain_cell(vec2<i32>(floor(rain_world(in.pos).xz)));
+    let column = rain_cell(vec2<i32>(floor(rain_world(pos).xz)));
     return column != 0u && snow_falls(column);
 }
+// HORIZON_RT_DEBUG=15: what the weather does to glass (red its frost, green its drops' slopes,
+// blue a quarter each for: reached, wet, a column where it snows, the rain reaching it); 16: the
+// weather forced on every plain glass within 48 blocks (soaked, a downpour, full frost), to look
+// at it whatever the sky does.
+fn rt_glass_debug() -> bool { return globals.rt_mode.y > 7.5 && globals.rt_mode.y < 8.5; }
+fn rt_glass_forced() -> bool { return globals.rt_mode.y > 8.5 && globals.rt_mode.y < 9.5; }
+var<private> rt_glass_seen: vec4<f32> = vec4(0.0);
 const GLASS_STREAK_CELL: f32 = 0.0833;
 fn rt_glass_weather(pos: vec3<f32>, face: vec3<f32>, t1: vec3<f32>, t2: vec3<f32>, sky: f32)
     -> vec3<f32> {
@@ -2946,24 +2958,31 @@ fn rt_glass_weather(pos: vec3<f32>, face: vec3<f32>, t1: vec3<f32>, t2: vec3<f32
     var out = vec3(0.0);
     // Frost, in a column where it snows, both sides of the pane (the warm room's damp freezes on
     // the inside too).
-    let cover = globals.linear.w;
-    if column != 0u && snow_falls(column) && cover > 0.0 {
-        let grow = smoothstep(0.0, 4.0, cover);
+    let forced = rt_glass_forced();
+    let cover = select(globals.linear.w, 6.0, forced);
+    let snowy = column != 0u && snow_falls(column);
+    rt_glass_seen = vec4(0.0, 0.0, 0.25 + select(0.0, 0.25, snowy), 0.0);
+    if (snowy || forced) && cover > 0.0 {
+        let grow = smoothstep(0.0, 1.5, cover);
         let local = fract(vec2(dot(world, t1), dot(world, t2)));
         let edge = min(min(local.x, 1.0 - local.x), min(local.y, 1.0 - local.y));
         let fern = 0.55 * lava_noise(world * 9.0) + 0.3 * lava_noise(world * 23.0)
             + 0.15 * lava_noise(world * 61.0);
         // The bottom edge gathers most (the cold air sinks along the pane).
-        let reach = grow * (0.12 + 0.3 * smoothstep(0.6, 0.0, local.y) * step(0.5, abs(t2.y)));
+        let reach = grow * (0.18 + 0.32 * smoothstep(0.6, 0.0, local.y) * step(0.5, abs(t2.y)));
         out.z = grow * (1.0 - smoothstep(reach * 0.6, reach + 0.04, edge + (fern - 0.5) * 0.22))
             * (0.65 + 0.35 * fern);
     }
-    let shade = globals.rain;
+    var shade = globals.rain;
+    if forced { shade = vec4(12.0, 1.0, shade.z, shade.w); }
     let wet = shade.y;
     if wet <= 0.0 { return out; }
+    rt_glass_seen.z += 0.25;
     var exposure = rain_exposure(world, face);
     if exposure < 0.0 { exposure = smoothstep(0.875, 0.9375, sky) * select(0.0, 1.0, face.y > -0.5); }
+    if forced { exposure = 1.0; }
     if exposure <= 0.0 { return out; }
+    rt_glass_seen.z += 0.25;
     let footprint = rain_footprint(pos);
     let fade = 1.0 - smoothstep(0.15 * GLASS_DROP_CELL, 0.45 * GLASS_DROP_CELL, footprint);
     if fade <= 0.0 { return out; }
@@ -3055,6 +3074,10 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
         n = normalize(n - (t1 * w.x + t2 * w.y) * 0.35);
         weather_frost = w.z;
         roughness = mix(roughness, max(roughness, 0.55), weather_frost);
+        if rt_glass_debug() {
+            let c = vec3(w.z, min(length(w.xy), 1.0), rt_glass_seen.z);
+            return WaterLight(c, vec3(0.0), 1.0);
+        }
     }
     // A map's facet turned from the eye is seen edge on: kept just inside the side it can see.
     let facing = dot(n, view);

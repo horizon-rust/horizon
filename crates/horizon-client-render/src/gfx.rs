@@ -11090,6 +11090,10 @@ impl Renderer {
                     13 => 6.0,
                     // 14: the parts of the RT lit colour (terrain.wgsl `rt_terms_view`).
                     14 => 7.0,
+                    // 15: the weather on glass, 16: forced on it (terrain.wgsl
+                    // `rt_glass_weather`).
+                    15 => 8.0,
+                    16 => 9.0,
                     _ => 0.0,
                 },
                 // The light the rays trace toward is the moon's.

@@ -524,7 +524,9 @@ fn parallax_translucent(in: ParallaxOut) -> vec4<f32> {
         // Glass: the pack's normal map and roughness drive its bending, its reflections and its
         // blur (terrain.wgsl `rt_glass_at`); without a map, drawn glass's waviness.
         let s = parallax_surface(in, false);
-        if s.texel.a < 0.01 { discard; }
+        if s.texel.a < 0.01 && !horizon_terrain_rt_glass_weathered_at(in.position, in.layer) {
+            discard;
+        }
         let layer = in.layer & 0x7fffu;
         let specular = specular_at(layer, s.uv, s.footprint);
         let normal = select(horizon_terrain_rt_glass_wave(in.position, s.geo), s.normal, s.mapped);
