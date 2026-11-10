@@ -584,8 +584,9 @@ it too.
 A mod may add villager professions, each with one job-site block, in `data/<ns>/villager_profession/<name>.json`.
 `poi` is the job-site block; `work_sound` is a sound event without `minecraft:`; `look` is the vanilla profession whose
 texture and hat it wears; `gift` defaults to `<ns>:gameplay/hero_of_the_village/<name>_gift`. Vanilla's fifteen
-professions keep their indices; entries are ordered by id and start at 15, so both sides of a connection agree. Their
-trades are ordinary `data/<ns>/villager_trade/` and `data/<ns>/trade_set/` files, using the profession's namespaced id
+professions keep their indices. Custom entries start at 15; a local index stays with its id across reloads, and the
+network id follows the current id-sorted definitions so a host and guest with the same files agree. Their trades are
+ordinary `data/<ns>/villager_trade/` and `data/<ns>/trade_set/` files, using the profession's namespaced id
 (`<ns>:<name>/level_<n>`), not `minecraft:`.
 
 ```json

@@ -13,8 +13,10 @@
 //! `poi` is the job-site block (required); `work_sound` is the sound event
 //! without `minecraft:`; `look` is the vanilla profession whose texture and
 //! hat the villager wears; `gift` defaults to
-//! `<namespace>:gameplay/hero_of_the_village/<name>_gift`. Entries are sorted
-//! by id, so both sides of a connection assign the same index.
+//! `<namespace>:gameplay/hero_of_the_village/<name>_gift`. Local indices stay
+//! with an id across reloads; the network id is the id's position in the
+//! current id-sorted definitions, so a host and guest with the same files
+//! agree even when they loaded them in different orders.
 
 use crate::mobs::render;
 use horizon_world::loot::PackOverlay;
@@ -22,7 +24,10 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
-    sync::{Mutex, OnceLock, RwLock},
+    sync::{
+        Mutex, OnceLock, RwLock,
+        atomic::{AtomicU32, Ordering},
+    },
 };
 
 /// Vanilla's profession table has this many entries; custom ones start here.
@@ -56,7 +61,16 @@ struct Registry {
     by_poi: HashMap<&'static str, u8>,
     by_id: HashMap<&'static str, u8>,
     by_name: HashMap<&'static str, u8>,
+    /// The current definition order's wire index, by id. It is rebuilt from
+    /// the current files on every load, so a host and guest with the same
+    /// definitions agree even when their local index histories differ.
+    wire: HashMap<&'static str, u16>,
+    wire_by_position: Vec<&'static str>,
 }
+
+/// Bumped whenever the table is installed, so caches that derive from it
+/// (the villager POI table) rebuild on `/reload`.
+static VERSION: AtomicU32 = AtomicU32::new(0);
 
 /// Indexes handed out across reloads, so adding a profession cannot renumber
 /// the ones live villagers already carry.
@@ -99,6 +113,13 @@ fn install(registry: Registry) {
     let registry: &'static Registry = Box::leak(Box::new(registry));
     let slot = REGISTRY.get_or_init(|| RwLock::new(Box::leak(Box::new(Registry::default()))));
     *slot.write().unwrap_or_else(|e| e.into_inner()) = registry;
+    VERSION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The current table's generation. A consumer caching something derived from
+/// it compares this and rebuilds when it changes.
+pub fn version() -> u32 {
+    VERSION.load(Ordering::Relaxed)
 }
 
 /// Load the resource root's professions and the world's data packs over them.
@@ -180,6 +201,9 @@ fn build(
         if registry.professions.len() <= slot {
             registry.professions.resize_with(slot + 1, || None);
         }
+        let wire = registry.wire_by_position.len() as u16;
+        registry.wire.insert(id, wire);
+        registry.wire_by_position.push(id);
         registry.by_poi.insert(poi, index);
         registry.by_id.insert(id, index);
         registry.by_name.insert(name, index);
@@ -226,10 +250,13 @@ pub fn id(index: u8) -> String {
 
 /// The translation key a villager's command reply uses.
 pub fn translation_key(index: u8) -> String {
-    let id = id(index);
+    translation_key_of(&id(index))
+}
+
+fn translation_key_of(id: &str) -> String {
     match id.split_once(':') {
-        Some(("minecraft", path)) => format!("entity.minecraft.villager.{path}"),
-        Some((namespace, path)) => format!("entity.minecraft.villager.{namespace}.{path}"),
+        // VillagerProfession builds `entity.<namespace>.villager.<path>`.
+        Some((namespace, path)) => format!("entity.{namespace}.villager.{path}"),
         None => format!("entity.minecraft.villager.{id}"),
     }
 }
@@ -304,26 +331,29 @@ pub fn gift_table(index: u8) -> Option<&'static str> {
     custom(index).map(|p| p.gift)
 }
 
-fn network_id_of(index: u8, count: usize) -> Option<i32> {
-    let offset = index.checked_sub(FIRST)?;
-    (usize::from(offset) < count).then(|| NETWORK_BASE + i32::from(offset))
+fn network_id_of(registry: &Registry, index: u8) -> Option<i32> {
+    let profession = registry
+        .professions
+        .get(index.checked_sub(FIRST)? as usize)?
+        .as_ref()?;
+    let wire = *registry.wire.get(profession.id)?;
+    Some(NETWORK_BASE + i32::from(wire))
 }
 
-fn from_network_id_of(id: i32, count: usize) -> Option<u8> {
-    let offset = usize::try_from(id.checked_sub(NETWORK_BASE)?).ok()?;
-    (offset < count)
-        .then(|| FIRST.checked_add(u8::try_from(offset).ok()?))
-        .flatten()
+fn from_network_id_of(registry: &Registry, id: i32) -> Option<u8> {
+    let wire = usize::try_from(id.checked_sub(NETWORK_BASE)?).ok()?;
+    let profession = *registry.wire_by_position.get(wire)?;
+    registry.by_id.get(profession).copied()
 }
 
 /// The id a client is sent for a custom profession (`None` for vanilla).
 pub fn network_id(index: u8) -> Option<i32> {
-    network_id_of(index, read().professions.len())
+    network_id_of(read(), index)
 }
 
 /// The custom profession index for a network id from `network_id`.
 pub fn from_network_id(id: i32) -> Option<u8> {
-    from_network_id_of(id, read().professions.len())
+    from_network_id_of(read(), id)
 }
 
 /// A custom profession's network id, or the built-in `fallback` for a
@@ -412,12 +442,67 @@ mod tests {
 
     #[test]
     fn custom_network_ids_round_trip() {
+        let files = (0..10)
+            .map(|i| {
+                (
+                    format!("example:p{i}"),
+                    serde_json::json!({"poi": format!("example:b{i}"), "look": "farmer"}),
+                )
+            })
+            .collect();
+        let registry = build(files, None, &mut Assignments::default());
         for i in 0..10 {
             let index = FIRST + i;
-            let id = network_id_of(index, 10).unwrap();
-            assert_eq!(from_network_id_of(id, 10), Some(index));
+            let id = network_id_of(&registry, index).unwrap();
+            assert_eq!(from_network_id_of(&registry, id), Some(index));
         }
-        assert_eq!(network_id_of(14, 10), None);
-        assert_eq!(from_network_id_of(NETWORK_BASE + 10, 10), None);
+        assert_eq!(network_id_of(&registry, 14), None);
+        assert_eq!(from_network_id_of(&registry, NETWORK_BASE + 10), None);
+    }
+
+    #[test]
+    fn wire_ids_do_not_depend_on_local_index_history() {
+        let profession = |poi: &str| serde_json::json!({"poi": poi, "look": "farmer"});
+        let mut host = Assignments::default();
+        let host_first = build(
+            BTreeMap::from([("example:zookeeper".to_owned(), profession("example:a"))]),
+            None,
+            &mut host,
+        );
+        let host = build(
+            BTreeMap::from([
+                ("example:beekeeper".to_owned(), profession("example:b")),
+                ("example:zookeeper".to_owned(), profession("example:a")),
+            ]),
+            Some(&host_first),
+            &mut host,
+        );
+        // A fresh guest sorts beekeeper first, so zookeeper is local 16 here
+        // and 15 on the host; the wire id must still be the same.
+        let mut guest = Assignments::default();
+        let guest = build(
+            BTreeMap::from([
+                ("example:beekeeper".to_owned(), profession("example:b")),
+                ("example:zookeeper".to_owned(), profession("example:a")),
+            ]),
+            None,
+            &mut guest,
+        );
+        let host_zookeeper = network_id_of(&host, FIRST).unwrap();
+        let guest_zookeeper = network_id_of(&guest, FIRST + 1).unwrap();
+        assert_eq!(host_zookeeper, guest_zookeeper);
+        assert_eq!(from_network_id_of(&guest, host_zookeeper), Some(FIRST + 1));
+    }
+
+    #[test]
+    fn translation_keys_use_the_profession_namespace() {
+        assert_eq!(
+            translation_key_of("mymod:beekeeper"),
+            "entity.mymod.villager.beekeeper"
+        );
+        assert_eq!(
+            translation_key_of("minecraft:farmer"),
+            "entity.minecraft.villager.farmer"
+        );
     }
 }

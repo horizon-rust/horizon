@@ -828,15 +828,9 @@ pub fn poi_at(w: &MobWorld, x: i32, y: i32, z: i32) -> Option<Poi> {
 /// The POI a block state is, if any (`PoiTypes.forState`), from the table
 /// of every state built on first use.
 fn poi_of_state(w: &MobWorld, state: horizon_world::registry::BlockStateId) -> Option<Poi> {
-    let table = w.data.pois.get_or_init(|| {
-        (0..w.registry.len())
-            .map(|i| state_poi(w, horizon_world::registry::BlockStateId(i as u32)))
-            .collect()
-    });
-    match table.get(state.0 as usize) {
-        Some(poi) => *poi,
-        None => state_poi(w, state),
-    }
+    w.data.poi_of_state(w.registry.len(), state.0, |i| {
+        state_poi(w, horizon_world::registry::BlockStateId(i))
+    })
 }
 fn state_poi(w: &MobWorld, state: horizon_world::registry::BlockStateId) -> Option<Poi> {
     let name = &*w.facts.get(state).name;
