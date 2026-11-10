@@ -10790,7 +10790,7 @@ impl Renderer {
                     ..tonemap::PostParams::RAIN
                 }
             } else if rt_sun.y < -0.05 {
-                tonemap::PostParams::NIGHT
+                tonemap::PostParams::night()
             } else if rt_sun.y < 0.2 {
                 tonemap::PostParams::DUSK
             } else {

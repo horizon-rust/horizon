@@ -83,13 +83,32 @@ impl PostParams {
         ev_max: -0.5,
         ..Self::REMIX
     };
-    /// Remix's night: the top at -0.5, a bloom that burns at 1.5 over anything above 1.
+    /// The night: the top at -0.5, the bloom a little more than the day's (0.2 over the day's
+    /// threshold, above white). Remix's own night (`NIGHT_REMIX`) burns at 1.5 over anything above
+    /// 1 of its units, a two-hundredth of white: every lit thing glowed, a lamp's room was a veil
+    /// and the moon a white ball in a halo, its maria gone.
     pub const NIGHT: Self = Self {
+        ev_max: -0.5,
+        bloom_burn: 0.2,
+        ..Self::REMIX
+    };
+    /// Remix's night: the top at -0.5, a bloom that burns at 1.5 over anything above 1
+    /// (`HORIZON_NIGHT_BLOOM=remix`).
+    pub const NIGHT_REMIX: Self = Self {
         ev_max: -0.5,
         bloom_burn: 1.5,
         bloom_threshold: 1.0,
         ..Self::REMIX
     };
+    /// The night's values: `NIGHT`, or Remix's own with `HORIZON_NIGHT_BLOOM=remix`.
+    pub fn night() -> Self {
+        static REMIX: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *REMIX.get_or_init(|| std::env::var("HORIZON_NIGHT_BLOOM").is_ok_and(|v| v == "remix")) {
+            Self::NIGHT_REMIX
+        } else {
+            Self::NIGHT
+        }
+    }
     /// Remix's rain: the top at -1, shadows at 1.75.
     pub const RAIN: Self = Self {
         ev_max: -1.0,
@@ -704,7 +723,7 @@ impl Tonemap {
             night_vision: true,
             params: match std::env::var("HORIZON_POST_SITUATION").as_deref() {
                 Ok("dusk") => PostParams::DUSK,
-                Ok("night") => PostParams::NIGHT,
+                Ok("night") => PostParams::night(),
                 Ok("rain") => PostParams::RAIN,
                 Ok("thunder") => PostParams::THUNDER,
                 _ => PostParams::REMIX,
