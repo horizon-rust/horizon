@@ -6,8 +6,8 @@
 //! chestplate, boots) and `entity/equipment/humanoid_leggings/diamond` (layer 2), so the layers
 //! are mapped back to the old names here. An elytra rule's `texture` replaces the wings'.
 
+use crate::cit::{Kind, Rule};
 use crate::cit_assets::{rule_sprites, sprite_id};
-use horizon_optifine::cit::{Kind, Rule};
 use std::collections::BTreeSet;
 
 /// The pre-1.21.2 armour texture name of an equipment asset's layer: `asset` (`minecraft:gold`
@@ -114,10 +114,9 @@ pub fn armor_sprites(rules: &[Rule]) -> BTreeSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_optifine::Properties;
 
     fn rule(path: &str, text: &str) -> Rule {
-        Rule::parse(path, &Properties::parse_equals_first(text), |_| true).unwrap()
+        crate::pack_formats::cit::parse_rule(path, text).unwrap()
     }
 
     #[test]

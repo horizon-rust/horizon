@@ -94,7 +94,7 @@ pub struct BakedFace {
     pub opaque: bool,
     /// Fractional alpha: drawn in the sorted translucent pass.
     pub translucent: bool,
-    /// The Fusion connecting texture rule its sprite joins by ([`crate::fusion`]), plus one:
+    /// The connecting texture rule a pack format assigned to its sprite, plus one:
     /// two bytes, within the padding every face already has.
     pub fusion: Option<std::num::NonZeroU16>,
     /// `prepareQuadShape` of the quad, indexed by the block's `full` flag: the

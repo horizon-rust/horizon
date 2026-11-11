@@ -338,7 +338,7 @@ fn coverage_preserves_each_cit_blend_and_its_destination_alpha() {
     let Some(mut gpu) = Gpu::new() else {
         return;
     };
-    use horizon_optifine::cit::parse_blend;
+    use crate::pack_formats::cit::parse_blend;
     for (name, expected) in [
         ("alpha", 128),
         ("add", 0),
