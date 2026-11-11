@@ -110,10 +110,25 @@ impl UserCache {
     fn safe_add(&mut self, mut info: Info) -> usize {
         self.operations += 1;
         info.last_access = self.operations;
-        let index = self.infos.len();
-        self.by_name.insert(info.user.name.to_lowercase(), index);
-        self.by_uuid.insert(info.user.id, index);
-        self.infos.push(info);
+        // The id's slot is reused, as vanilla's maps drop the old object: a join is not a new
+        // entry for good.
+        let index = match self.by_uuid.get(&info.user.id) {
+            Some(&i) => {
+                let old = self.infos[i].user.name.to_lowercase();
+                if self.by_name.get(&old) == Some(&i) {
+                    self.by_name.remove(&old);
+                }
+                self.infos[i] = info;
+                i
+            }
+            None => {
+                self.infos.push(info);
+                self.infos.len() - 1
+            }
+        };
+        self.by_name
+            .insert(self.infos[index].user.name.to_lowercase(), index);
+        self.by_uuid.insert(self.infos[index].user.id, index);
         index
     }
 
@@ -245,6 +260,24 @@ mod tests {
         let file = dir.join("usercache.json");
         std::fs::write(&file, text).unwrap();
         UserCache::load(file)
+    }
+
+    #[test]
+    fn the_same_player_joining_again_takes_no_new_entry() {
+        let (mut c, _) = cache("[]");
+        let kim = |name: &str| NameAndId {
+            id: 7,
+            name: name.into(),
+        };
+        for _ in 0..100 {
+            c.add_internal(kim("Kim"), 0);
+        }
+        assert_eq!(c.infos.len(), 1);
+        // A renamed player: the old name no longer finds them, the new one does.
+        c.add_internal(kim("Kimberly"), 0);
+        assert_eq!(c.infos.len(), 1);
+        assert!(!c.by_name.contains_key("kim"));
+        assert_eq!(c.by_name.get("kimberly"), Some(&0));
     }
 
     #[test]
