@@ -182,6 +182,17 @@ const KNOBS: &[Knob] = &[
         }),
     },
     Knob {
+        id: "night_vision",
+        group: "horizon.live.group.light",
+        label: "horizon.live.night_vision",
+        kind: Kind::Toggle,
+        get: |g| json!(g.settings.horizon.night_vision),
+        set: Some(|g, v| {
+            g.settings.horizon.night_vision = flag(v)?;
+            Ok(Change::Saved)
+        }),
+    },
+    Knob {
         id: "natural_fog",
         group: "horizon.live.group.fog",
         label: "horizon.live.natural_fog",
@@ -587,6 +598,7 @@ impl Game<'_> {
                 r.rt_ambient_light = self.settings.horizon.rt_ambient();
                 r.set_god_rays(self.settings.horizon.god_rays);
                 r.set_god_rays_quality(self.settings.horizon.god_rays_quality);
+                r.set_night_vision(self.settings.horizon.night_vision);
             }
             r.set_fog_density(density);
         }

@@ -475,7 +475,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::NightVision,
                             None,
-                            "RT Lighting: dim scenes fade to grey as the eye sees at night.",
+                            "RT Lighting: dim scenes fade to grey, as eyes do at night. Off: colours stay.",
                         ),
                         h(
                             H::ShootingStars,
@@ -1040,7 +1040,7 @@ impl H {
                 1 => labelled("Sun Size", "1x (Real)"),
                 n => labelled("Sun Size", format!("{n}x")),
             },
-            H::NightVision => labelled("Night Vision", on_off(g.night_vision)),
+            H::NightVision => labelled("Night Grey", on_off(g.night_vision)),
             H::ShootingStars => labelled(
                 "Shooting Stars",
                 match g.shooting_stars {
