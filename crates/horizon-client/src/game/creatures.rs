@@ -3612,19 +3612,18 @@ impl Game<'_> {
                 } => self.fall_to_passengers(mob, distance, modifier),
                 MobEvent::ShedScute { mob, at, pitch } => {
                     // The mob already checked `shouldDropLoot` (a baby, `mob_drops`).
-                    let table = "minecraft:gameplay/armadillo_shed";
-                    let drops = self.sequence_loot(table, table, None);
-                    for d in drops {
-                        self.spawn_at_location(Vec3::new(at[0], at[1], at[2]), 0.0, d);
+                    // Armadillo.customServerAiStep: like an egg, the sound and
+                    // the game event only when the shed table gave something.
+                    if self.drop_gift_loot(mob, "minecraft:gameplay/armadillo_shed", at) {
+                        self.audio.play(
+                            "minecraft:entity.armadillo.scute_drop",
+                            Some(at),
+                            1.0,
+                            pitch,
+                        );
+                        let ctx = self.who_context(Some(Who::Mob(mob)), None);
+                        self.post_game_event("minecraft:entity_place", at, ctx);
                     }
-                    self.audio.play(
-                        "minecraft:entity.armadillo.scute_drop",
-                        Some(at),
-                        1.0,
-                        pitch,
-                    );
-                    let ctx = self.who_context(Some(Who::Mob(mob)), None);
-                    self.post_game_event("minecraft:entity_place", at, ctx);
                 }
                 MobEvent::LayEgg { mob, at, pitch } => {
                     // Chicken.aiStep: `dropFromGiftLootTable` says whether
