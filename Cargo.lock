@@ -1907,6 +1907,7 @@ dependencies = [
  "horizon-client-lib",
  "horizon-core",
  "horizon-world",
+ "log",
  "serde_json",
 ]
 
