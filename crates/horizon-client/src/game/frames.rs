@@ -483,17 +483,21 @@ impl Game<'_> {
                     .sqrt()
                     / diameter;
             let (kind, pos) = (self.item_frames[i].kind(), self.item_frames[i].pos);
-            let (lo, hi) = self.item_frames[i].bounds();
+            let b = self.item_frames[i].bounds();
             if dist > 1.0
                 || self.item_frames[i].fixed
-                || (pushed && !self.blast_pushes_box(blast, diameter, lo, hi))
+                || (pushed && !self.blast_pushes(blast, diameter, c, b))
                 || self.hanging_break_cancelled(kind, pos, false)
             {
                 i += 1;
                 continue;
             }
             let mut f = self.item_frames.remove(i);
-            let credit = if pushed { None } else { self.explosion_kill_credit() };
+            let credit = if pushed {
+                None
+            } else {
+                self.explosion_kill_credit()
+            };
             self.entity_killed_event_by(center(&f), credit);
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);

@@ -146,6 +146,9 @@ pub(super) fn blast_spares_decorations(
     source_in_water || (!mob_griefing && (interaction == BlockInteraction::Keep || by_mob))
 }
 
+/// An entity box, low and high corners.
+pub(super) type Bounds = ([f64; 3], [f64; 3]);
+
 /// How far the blast's `center` is from `p`.
 fn blast_distance(center: [f64; 3], p: [f64; 3]) -> f64 {
     ((p[0] - center[0]).powi(2) + (p[1] - center[1]).powi(2) + (p[2] - center[2]).powi(2)).sqrt()
@@ -860,11 +863,17 @@ impl Game<'_> {
         self.blast_spares_decorations(interaction)
             && !blast_spares_decorations(griefing, interaction, false, in_water)
     }
-    /// `ServerExplosion.hurtEntities`'s knockback on a hanging box: within the
-    /// blast (`dist` below 1) and seen (`getSeenPercent` above 0).
-    pub(super) fn blast_pushes_box(&self, center: [f64; 3], diameter: f64, lo: [f64; 3], hi: [f64; 3]) -> bool {
-        let at = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
-        blast_distance(center, at) / diameter < 1.0 && self.seen_percent(center, lo, hi) > 0.0
+    /// `ServerExplosion.hurtEntities`'s knockback on an entity at `at` with box
+    /// `lo..hi`: within the blast (`dist` below 1) and seen (`getSeenPercent`
+    /// above 0).
+    pub(super) fn blast_pushes(
+        &self,
+        center: [f64; 3],
+        diameter: f64,
+        at: [f64; 3],
+        b: Bounds,
+    ) -> bool {
+        blast_distance(center, at) / diameter < 1.0 && self.seen_percent(center, b.0, b.1) > 0.0
     }
     /// `Entity.isInWater` for an entity box: `updateFluidInteraction` over the box.
     pub(super) fn bounds_in_water(&self, bounds: horizon_core::geometry::Aabb) -> bool {
@@ -893,7 +902,9 @@ impl Game<'_> {
             by_mob,
             false,
         );
-        if !self.blast_spares_decorations(interaction) || self.blast_only_pushes_hanging(interaction) {
+        if !self.blast_spares_decorations(interaction)
+            || self.blast_only_pushes_hanging(interaction)
+        {
             self.explosion_breaks_hanging(center, diameter, interaction);
         }
         if spares_stands {
@@ -914,9 +925,18 @@ impl Game<'_> {
     }
     /// Paintings and cushions in reach (`BlockAttachedEntity.hurtServer`), or
     /// pushed off (`blast_only_pushes_hanging`).
-    fn explosion_breaks_hanging(&mut self, center: [f64; 3], diameter: f64, interaction: BlockInteraction) {
+    fn explosion_breaks_hanging(
+        &mut self,
+        center: [f64; 3],
+        diameter: f64,
+        interaction: BlockInteraction,
+    ) {
         let pushed = self.blast_only_pushes_hanging(interaction);
-        let credit = if pushed { None } else { self.explosion_kill_credit() };
+        let credit = if pushed {
+            None
+        } else {
+            self.explosion_kill_credit()
+        };
         let mut i = 0;
         while i < self.paintings.len() {
             // HangingEntity.recalculateBoundingBox: a painting stands at the
@@ -924,7 +944,7 @@ impl Game<'_> {
             let (lo, hi) = self.paintings[i].bounds();
             let at = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
             let hit = if pushed {
-                self.blast_pushes_box(center, diameter, lo, hi)
+                self.blast_pushes(center, diameter, at, (lo, hi))
             } else {
                 blast_reaches(center, diameter, at)
             };
@@ -935,10 +955,10 @@ impl Game<'_> {
         }
         let mut i = 0;
         while i < self.cushions.len() {
+            // A cushion stands at the bottom of its box (`Cushion.recalculateBoundingBox`).
             let p = self.cushions[i].position;
-            let (lo, hi) = self.cushions[i].bounds();
             let hit = if pushed {
-                self.blast_pushes_box(center, diameter, lo, hi)
+                self.blast_pushes(center, diameter, [p.x, p.y, p.z], self.cushions[i].bounds())
             } else {
                 blast_reaches(center, diameter, [p.x, p.y, p.z])
             };
