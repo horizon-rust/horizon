@@ -115,6 +115,8 @@ struct Uniform {
     rain_sun: [f32; 4],
     first_view_proj: [[f32; 4]; 4],
     first_inverse_view_proj: [[f32; 4]; 4],
+    /// x: the ambient light (`Rays::ambient_light`).
+    ambient_light: [f32; 4],
 }
 
 /// The moving lights the rays light the terrain with at most (`Rays::moving`).
@@ -160,6 +162,9 @@ pub struct Rays {
     /// reflections turn off.
     pub rain: [f32; 4],
     pub rain_sun: [f32; 4],
+    /// RT lighting's ambient light on every face (shadow_rays.wgsl `rt.ambient_light`): the
+    /// RT Ambient Light option (`Renderer::rt_ambient`).
+    pub ambient_light: f32,
     /// The far field (`far_heights::FarHeights::update`): the window's first texel, 1 once built,
     /// the highest top.
     pub far: [f32; 4],
@@ -510,7 +515,6 @@ fn kernel(
                 ("EDGE_BAND", edge_band()),
                 ("HELD_LIGHT", held_light()),
                 ("HELD_REACH", held_reach()),
-                ("AMBIENT", ambient()),
             ],
             ..Default::default()
         },
@@ -1425,6 +1429,7 @@ impl ShadowRays {
             first_inverse_view_proj: first
                 .as_ref()
                 .map_or([[0.0; 4]; 4], |(m, _, _)| m.inverse().to_cols_array_2d()),
+            ambient_light: [rays.ambient_light, 0.0, 0.0, 0.0],
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
         // The sun pass, after the uniform it reads is written and before the kernel reads it.
@@ -1701,9 +1706,10 @@ impl ShadowRays {
 }
 
 /// `HORIZON_RT_AMBIENT`: RT lighting's ambient light, on every face whatever reaches it
-/// (shadow_rays.wgsl `AMBIENT`), 0 to 1; 0.003 by default (very low: a floor under the traced
-/// light), 0 none.
-pub(super) fn ambient() -> f64 {
+/// (shadow_rays.wgsl `rt.ambient_light`), 0 to 1; 0.003 by default (very low: a floor under the
+/// traced light), 0 none. The RT Ambient Light option's default (`Graphics::rt_ambient`), which
+/// sets it in game.
+pub fn ambient() -> f64 {
     std::env::var("HORIZON_RT_AMBIENT")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())

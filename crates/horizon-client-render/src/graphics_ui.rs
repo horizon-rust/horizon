@@ -106,6 +106,8 @@ pub enum H {
     RtRays,
     SunSize,
     MoonSize,
+    RtAmbientLight,
+    GodRays,
     NightVision,
     ShootingStars,
     AerialPerspective,
@@ -453,6 +455,16 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::MoonSize,
                             None,
                             "RT Lighting's moon, times its real size: its disc and night shadows.",
+                        ),
+                        h(
+                            H::RtAmbientLight,
+                            None,
+                            "RT Lighting: a light on every face, so caves are not pitch black.",
+                        ),
+                        h(
+                            H::GodRays,
+                            None,
+                            "RT Lighting's sunbeams in the air and their haze. The water keeps its own.",
                         ),
                         h(
                             H::NightVision,
@@ -859,6 +871,11 @@ fn on_off(on: bool) -> String {
 /// A control's caption and its value, both through the language table: Horizon's captions are
 /// English sentences, and some of the values ("Off", "12 chunks") are words too.
 /// "Caption: value" (`options.generic_value`), both looked up in the language table.
+/// RT Ambient Light's slider stops, in ten thousandths (`Graphics::rt_ambient_light`): finer
+/// near the dark end, where the eye tells them apart (0.0005, 0.003 the default).
+const RT_AMBIENT_STEPS: [u32; 24] = [
+    0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 80, 100, 150, 200, 300, 400, 500,
+];
 fn labelled(caption: &str, value: impl std::fmt::Display) -> Text {
     let value = value.to_string();
     Text::option_name_value(
@@ -905,6 +922,14 @@ impl H {
             H::SunPathTilt => Some((g.sun_path_tilt as f32 + 60.0) / 120.0),
             H::SunSize => Some((g.sun_size as f32 - 1.0) / 19.0),
             H::MoonSize => Some((g.moon_size as f32 - 1.0) / 19.0),
+            H::RtAmbientLight => {
+                let i = RT_AMBIENT_STEPS
+                    .iter()
+                    .position(|&a| a >= g.rt_ambient_light)
+                    .unwrap_or(RT_AMBIENT_STEPS.len() - 1);
+                Some(i as f32 / (RT_AMBIENT_STEPS.len() - 1) as f32)
+            }
+            H::GodRays => Some(g.god_rays as f32 / crate::graphics::MAX_GOD_RAYS as f32),
             H::AerialPerspective => Some(match g.aerial_perspective {
                 0 => 0.0,
                 n => (1.0 + (n as f32).log2()) / 7.0,
@@ -926,6 +951,8 @@ impl H {
             H::SunPathTilt => Some(24),
             H::SunSize => Some(19),
             H::MoonSize => Some(19),
+            H::RtAmbientLight => Some((RT_AMBIENT_STEPS.len() - 1) as u32),
+            H::GodRays => Some(crate::graphics::MAX_GOD_RAYS / 10),
             H::AerialPerspective => Some(7),
             H::ChunkUpdates => Some(64),
             H::EntityCullingPrecheck => Some(32),
@@ -1025,6 +1052,14 @@ impl H {
             H::MoonSize => match g.moon_size {
                 1 => labelled("Moon Size", "1x (Real)"),
                 n => labelled("Moon Size", format!("{n}x")),
+            },
+            H::RtAmbientLight => match g.rt_ambient_light {
+                0 => labelled("RT Ambient Light", "Off"),
+                n => labelled("RT Ambient Light", format!("{:.4}", n as f32 / 10_000.0)),
+            },
+            H::GodRays => match g.god_rays {
+                0 => labelled("God Rays", "Off"),
+                n => labelled_percent("God Rays", n),
             },
             H::AerialPerspective => match g.aerial_perspective {
                 0 => labelled("Aerial Perspective", "Off"),
@@ -1151,6 +1186,13 @@ impl H {
             H::SunPathTilt => g.sun_path_tilt = -60 + (v * 24.0).round() as i32 * 5,
             H::SunSize => g.sun_size = 1 + (v * 19.0).round() as u32,
             H::MoonSize => g.moon_size = 1 + (v * 19.0).round() as u32,
+            H::RtAmbientLight => {
+                g.rt_ambient_light =
+                    RT_AMBIENT_STEPS[(v * (RT_AMBIENT_STEPS.len() - 1) as f32).round() as usize]
+            }
+            H::GodRays => {
+                g.god_rays = (v * (crate::graphics::MAX_GOD_RAYS / 10) as f32).round() as u32 * 10
+            }
             H::AerialPerspective => {
                 g.aerial_perspective = match (v * 7.0).round() as u32 {
                     0 => 0,

@@ -60,6 +60,11 @@ struct Rt {
     // VR's second eye: the first eye's view projection this frame and its inverse (`from_first`).
     first_view_proj: mat4x4<f32>,
     first_inverse_view_proj: mat4x4<f32>,
+    // x: the ambient light on every face, whatever reaches it (shadow_rays.rs `Rays::ambient_light`:
+    // the RT Ambient Light option, HORIZON_RT_AMBIENT its default): very low, a floor under the
+    // traced light so that a place no light reaches is not pitch black; a torch's light on a wall
+    // beside it is about 1.
+    ambient_light: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> rt: Rt;
 // The RTX 4090 build's sun pass (horizon-rtx `sun`, docs/rtx-4090.md): the sun's light through, a
@@ -621,10 +626,6 @@ override EDGE_BAND: f32 = 0.25;
 // (shadow_rays.rs `held_light`, HORIZON_RT_HELD_LIGHT; 1: as bright).
 override HELD_LIGHT: f32 = 2.5;
 override HELD_REACH: f32 = 24.0;
-// An ambient light on every face, whatever reaches it (shadow_rays.rs `ambient`,
-// HORIZON_RT_AMBIENT): very low, a floor under the traced light so that a place no light reaches
-// is not pitch black; a torch's light on a wall beside it is about 1.
-override AMBIENT: f32 = 0.003;
 
 // Ray-traced shadows (gfx/voxels.rs, docs/raytracing.md): whether world block `v` is in the grid.
 fn in_grid(v: vec3<i32>) -> bool {
@@ -1938,7 +1939,7 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         } else if (SKIP & 2u) == 0u {
             sky = restir_gi(lifted, n, texel, back.xy, back.z == 1);
             // The ambient light: the same on every face, so nothing is pitch black.
-            sky = vec4(sky.rgb + vec3(AMBIENT), sky.a);
+            sky = vec4(sky.rgb + vec3(rt.ambient_light.x), sky.a);
         }
         let blocks = vec4(sky.rgb, select(edge, -1.0, edge < 0.5));
         var direct = vec4(0.0, 0.0, 0.0, face_of(n));

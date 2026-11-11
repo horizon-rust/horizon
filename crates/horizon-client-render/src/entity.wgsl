@@ -325,7 +325,7 @@ fn rt_entity_light(n: vec3<f32>, levels: vec2<f32>) -> vec3<f32> {
     let sky = rt_entity_sky(toward) * sky_level * dome;
     let steps = max(15.0 - levels.y, 0.0);
     let block = select(vec3(0.0), RT_BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), levels.y > 0.0);
-    // RT lighting's ambient light (shadow_rays.wgsl `AMBIENT`), as on the terrain: beside the
+    // RT lighting's ambient light (shadow_rays.wgsl `rt.ambient_light`), as on the terrain: beside the
     // surf's switch in `globals.earth.w`, its fraction.
     return sun + sky + block + vec3(fract(globals.earth.w));
 }
