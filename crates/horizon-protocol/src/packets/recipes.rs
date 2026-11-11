@@ -681,51 +681,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn displays_written_for_a_1_21_11_client_read_back_as_that_version() {
-        use crate::adapter::{ServerVersion, ids};
-        let old = ServerVersion::V1_21_11.ids().unwrap();
-        let (stick, apple) = (ids::item(880), ids::item(900));
-        let display = SlotDisplay::Composite(vec![
-            SlotDisplay::Item(stick),
-            SlotDisplay::WithAnyPotion(Box::new(SlotDisplay::Item(apple))),
-            SlotDisplay::Dyed {
-                dye: Box::new(SlotDisplay::Item(apple)),
-                target: Box::new(SlotDisplay::Item(stick)),
-            },
-            SlotDisplay::WithRemainder {
-                input: Box::new(SlotDisplay::Item(stick)),
-                remainder: Box::new(SlotDisplay::Empty),
-            },
-        ]);
-        let mut w = Writer::new();
-        {
-            let _down = ids::renumbering(old, ids::Way::Down);
-            display.write(&mut w);
-            HolderSet::Items(vec![stick, apple]).write(&mut w);
-        }
-        // Read as a 1.21.11 server's packet is: the kinds 1.21.11 lacks show what they wrap.
-        let _up = ids::renumbering(old, ids::Way::Up);
-        let mut r = Reader::new(&w.data);
-        assert_eq!(
-            SlotDisplay::read(&mut r).unwrap(),
-            SlotDisplay::Composite(vec![
-                SlotDisplay::Item(stick),
-                SlotDisplay::Item(apple),
-                SlotDisplay::Item(stick),
-                SlotDisplay::WithRemainder {
-                    input: Box::new(SlotDisplay::Item(stick)),
-                    remainder: Box::new(SlotDisplay::Empty),
-                },
-            ])
-        );
-        assert_eq!(
-            HolderSet::read(&mut r).unwrap(),
-            HolderSet::Items(vec![stick, apple])
-        );
-        assert_eq!(r.remaining(), 0);
-    }
-
-    #[test]
     fn book_entries_round_trip() {
         let add = RecipeBookAdd {
             entries: vec![
@@ -780,6 +735,51 @@ mod tests {
         RecipeBookAdd::write(&add, &mut w);
         let mut r = Reader::new(&w.data);
         assert_eq!(RecipeBookAdd::read(&mut r).unwrap(), add);
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn displays_written_for_a_1_21_11_client_read_back_as_that_version() {
+        use crate::adapter::{ServerVersion, ids};
+        let old = ServerVersion::V1_21_11.ids().unwrap();
+        let (stick, apple) = (ids::item(880), ids::item(900));
+        let display = SlotDisplay::Composite(vec![
+            SlotDisplay::Item(stick),
+            SlotDisplay::WithAnyPotion(Box::new(SlotDisplay::Item(apple))),
+            SlotDisplay::Dyed {
+                dye: Box::new(SlotDisplay::Item(apple)),
+                target: Box::new(SlotDisplay::Item(stick)),
+            },
+            SlotDisplay::WithRemainder {
+                input: Box::new(SlotDisplay::Item(stick)),
+                remainder: Box::new(SlotDisplay::Empty),
+            },
+        ]);
+        let mut w = Writer::new();
+        {
+            let _down = ids::renumbering(old, ids::Way::Down);
+            display.write(&mut w);
+            HolderSet::Items(vec![stick, apple]).write(&mut w);
+        }
+        // Read as a 1.21.11 server's packet is: the kinds 1.21.11 lacks show what they wrap.
+        let _up = ids::renumbering(old, ids::Way::Up);
+        let mut r = Reader::new(&w.data);
+        assert_eq!(
+            SlotDisplay::read(&mut r).unwrap(),
+            SlotDisplay::Composite(vec![
+                SlotDisplay::Item(stick),
+                SlotDisplay::Item(apple),
+                SlotDisplay::Item(stick),
+                SlotDisplay::WithRemainder {
+                    input: Box::new(SlotDisplay::Item(stick)),
+                    remainder: Box::new(SlotDisplay::Empty),
+                },
+            ])
+        );
+        assert_eq!(
+            HolderSet::read(&mut r).unwrap(),
+            HolderSet::Items(vec![stick, apple])
+        );
         assert_eq!(r.remaining(), 0);
     }
 }
