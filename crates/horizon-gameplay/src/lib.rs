@@ -11,3 +11,4 @@ pub mod mob_index;
 
 
 pub mod dedicated;
+pub mod cat_spawner;
