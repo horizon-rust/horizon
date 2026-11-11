@@ -60,7 +60,6 @@ mod entity_outline;
 mod fluid;
 #[cfg(test)]
 mod inter_stage_tests;
-mod particle_batch;
 mod terrain_model;
 #[cfg(test)]
 pub(crate) mod test_gpu;
@@ -76,6 +75,8 @@ pub use entity_batch::{
     mark_oit,
 };
 pub use view::{View, ViewSet};
+
+mod particle_batch;
 
 /// Window.getAppropriateLineWidth, in framebuffer pixels.
 pub fn outline_width(width: u32) -> f32 {
