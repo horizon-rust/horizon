@@ -30,6 +30,7 @@
     "horizon-client-render": "engine",
     "horizon-command": "engine",
     "horizon-core": "engine",
+    "horizon-gameplay": "engine",
     "horizon-items": "engine",
     "horizon-narrator": "engine",
     "horizon-perf-format": "engine",
