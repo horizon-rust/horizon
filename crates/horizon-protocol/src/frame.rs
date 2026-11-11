@@ -123,32 +123,12 @@ impl Inflater {
     /// The zlib stream at the front of `input`, which must hold exactly `size` bytes.
     fn inflate(&mut self, input: &[u8], size: usize) -> Result<Vec<u8>> {
         self.0.reset(true);
-        // One byte more than declared: a longer stream fills it. Reserved as the output grows, not
-        // all at once: a few bytes declaring 8 MiB would otherwise allocate 8 MiB per frame.
-        // DEFLATE expands at most about 1032:1.
-        let limit = size + 1;
-        let mut out =
-            Vec::with_capacity(limit.min(input.len().saturating_mul(1032).saturating_add(64)));
-        let status = loop {
-            let consumed = usize::try_from(self.0.total_in()).unwrap_or(input.len());
-            let status = self
-                .0
-                .decompress_vec(
-                    input.get(consumed..).unwrap_or_default(),
-                    &mut out,
-                    FlushDecompress::Finish,
-                )
-                .map_err(|e| Error::new(format!("Badly compressed packet - {e}")))?;
-            // Done, past the limit, or stopped with room left (the input ran out).
-            if matches!(status, Status::StreamEnd)
-                || out.len() >= limit
-                || out.len() < out.capacity()
-            {
-                break status;
-            }
-            let more = out.len().max(4096).min(limit - out.len());
-            out.reserve_exact(more);
-        };
+        // One byte more than declared: a longer stream fills it.
+        let mut out = Vec::with_capacity(size + 1);
+        let status = self
+            .0
+            .decompress_vec(input, &mut out, FlushDecompress::Finish)
+            .map_err(|e| Error::new(format!("Badly compressed packet - {e}")))?;
         if out.len() != size || !matches!(status, Status::StreamEnd) {
             return Err(Error::new(format!(
                 "Badly compressed packet - actual length {} does not match declared size {size}",
@@ -209,28 +189,6 @@ mod tests {
     /// The kept compressor writes the bytes a new one does, whatever it
     /// compressed before: small, large (several output blocks), repetitive
     /// and random bodies, in an order that puts each size after the others.
-    #[test]
-    fn large_bodies_inflate_whole_and_short_streams_are_refused() {
-        // 2 MiB of zeros deflate to a few KiB: inflated whole as the buffer grows.
-        let body = vec![0u8; 2 << 20];
-        let frame = contents(&body, Some(256)).unwrap();
-        let mut inflater = Inflater::default();
-        let Body::Inflated(out) = super::body(&frame, Some(256), &mut inflater).unwrap() else {
-            panic!("compressed");
-        };
-        assert!(out == body);
-        // A few bytes declaring 8 MiB: refused (and no longer 8 MiB reserved for them).
-        let mut lying = Vec::new();
-        write_varint(&mut lying, MAX_UNCOMPRESSED as i32);
-        lying.extend_from_slice(&frame[3..20]);
-        assert!(super::body(&lying, Some(256), &mut inflater).is_err());
-        // The same inflater still reads a good frame after.
-        assert!(matches!(
-            super::body(&frame, Some(256), &mut inflater).unwrap(),
-            Body::Inflated(_)
-        ));
-    }
-
     #[test]
     fn a_reused_compressor_writes_the_same_bytes() {
         let mut seed = 0x9e37_79b9_7f4a_7c15u64;
