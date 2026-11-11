@@ -65,10 +65,7 @@ impl Game<'_> {
         let (level, thunder) = self.world.weather.levels(alpha);
         let seconds = self.water_seconds();
         let before = self.rain.intensity.drawn();
-        self.rain.factor = self
-            .rain
-            .intensity
-            .step(level, self.world.game_time, seconds);
+        self.rain.factor = self.rain.intensity.step(level, self.world.game_time);
         // A new shower: none fell, or the one that fell ended (the level fell, then rose).
         let after = self.rain.intensity.drawn();
         if after != before

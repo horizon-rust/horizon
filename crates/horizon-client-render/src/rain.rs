@@ -57,15 +57,17 @@ pub fn extinction(rate_mm_h: f32) -> f32 {
 
 /// How hard this shower (this snowfall) falls against the rate vanilla's levels stand for: each
 /// one draws its own when it starts, from a light drizzle or flurries (0.3) to a cloudburst or a
-/// heavy snowfall (2.5), about as often lighter as heavier, and within it the rate swells and
-/// eases over a minute or two (by a third either way). A shower ends once vanilla's level falls
+/// heavy snowfall (2.5), about as often lighter as heavier, and keeps it: the drops' and the
+/// flakes' sizes, so their speeds, follow the rate, and a fall's phase is the time times its speed,
+/// so a rate that kept changing (a swell within the shower) shifted every drop by the hour's
+/// seconds times its change, the rain hanging still or rising. A shower ends once vanilla's level falls
 /// (the rain stopping), and the next starts as it rises again, even before it reached 0 (a
 /// `/weather clear` then `/weather rain`). The draw is hashed from the game time the shower started
 /// at; `HORIZON_WEATHER_INTENSITY` forces the factor (1: vanilla's fixed rates).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Intensity {
-    /// The shower's own factor and its seed, while one falls.
-    shower: Option<(f32, u32)>,
+    /// The shower's own factor, while one falls.
+    shower: Option<f32>,
     /// Vanilla's level at the last step, and whether it has fallen since the shower started.
     last: f32,
     ending: bool,
@@ -74,9 +76,8 @@ pub struct Intensity {
 pub const LIGHTEST: f32 = 0.3;
 pub const HEAVIEST: f32 = 2.5;
 impl Intensity {
-    /// This frame's factor: `level` vanilla's rain level, `game_time` the world's (ticks),
-    /// `seconds` the swell's clock (real seconds).
-    pub fn step(&mut self, level: f32, game_time: i64, seconds: f32) -> f32 {
+    /// This frame's factor: `level` vanilla's rain level, `game_time` the world's (ticks).
+    pub fn step(&mut self, level: f32, game_time: i64) -> f32 {
         let last = std::mem::replace(&mut self.last, level);
         if level < last - 1e-5 {
             self.ending = true;
@@ -95,22 +96,15 @@ impl Intensity {
             self.ending = false;
             return 1.0;
         }
-        let (factor, seed) = *self.shower.get_or_insert_with(|| {
+        *self.shower.get_or_insert_with(|| {
             let seed = hash(game_time as u64);
-            (
-                Self::draw(unit(seed), unit(hash(u64::from(seed) + 1))),
-                seed,
-            )
-        });
-        let phase = unit(hash(u64::from(seed) + 2)) * std::f32::consts::TAU;
-        let swell =
-            0.6 * (seconds * 0.05 + phase).sin() + 0.4 * (seconds * 0.13 + 2.0 * phase).sin();
-        factor * (1.0 + swell / 3.0)
+            Self::draw(unit(seed), unit(hash(u64::from(seed) + 1)))
+        })
     }
 
     /// The factor this shower drew, while one falls.
     pub fn drawn(&self) -> Option<f32> {
-        self.shower.map(|(f, _)| f)
+        self.shower
     }
 
     /// A shower's factor for two uniform draws: log-uniformly between [`LIGHTEST`] and
@@ -589,7 +583,7 @@ mod tests {
         let draws: Vec<f32> = (0..2000)
             .map(|start| {
                 let mut i = Intensity::default();
-                i.step(1.0, start * 9001, 0.0);
+                i.step(1.0, start * 9001);
                 i.drawn().unwrap()
             })
             .collect();
@@ -600,25 +594,25 @@ mod tests {
         sorted.sort_by(f32::total_cmp);
         let median = sorted[sorted.len() / 2];
         assert!(median > 0.7 && median < 1.2, "{median}");
-        // A shower keeps its draw, swelling and easing by a third at most; the next one draws
-        // again.
+        // A shower keeps its draw, steady (a drifting rate moves every falling drop); the next
+        // one draws again.
         let mut i = Intensity::default();
-        let first = i.step(1.0, 1000, 0.0);
+        let first = i.step(1.0, 1000);
         let drawn = i.drawn().unwrap();
         for s in 0..600 {
-            let f = i.step(1.0, 1000 + s * 20, s as f32);
-            assert!(f >= drawn * 0.66 && f <= drawn * 1.34, "{f} {drawn}");
+            let f = i.step(1.0, 1000 + s * 20);
+            assert_eq!(f, drawn);
         }
-        assert_eq!(i.step(0.0, 13_000, 600.0), 1.0);
-        i.step(0.5, 20_000, 601.0);
+        assert_eq!(i.step(0.0, 13_000), 1.0);
+        i.step(0.5, 20_000);
         let second = i.drawn().unwrap();
         assert_ne!(second, drawn);
         // `/weather clear` then `/weather rain` before the level reached 0: the fall ends this
         // shower (it fades on with its own draw), the rise starts the next.
-        i.step(1.0, 20_100, 602.0);
-        i.step(0.6, 20_200, 603.0);
+        i.step(1.0, 20_100);
+        i.step(0.6, 20_200);
         assert_eq!(i.drawn().unwrap(), second);
-        i.step(0.7, 20_300, 604.0);
+        i.step(0.7, 20_300);
         assert_ne!(i.drawn().unwrap(), second);
         assert!(first > 0.0);
     }

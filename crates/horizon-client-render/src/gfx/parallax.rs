@@ -533,6 +533,7 @@ fn parallax_translucent(in: ParallaxOut) -> vec4<f32> {
         let normal = select(horizon_terrain_rt_glass_wave(in.position, s.geo), s.normal, s.mapped);
         let roughness = select(0.0, (1.0 - specular.r) * (1.0 - specular.r),
             specular_slot(layer).array != 0xffffu);
+        horizon_terrain_rt_glass_neighbours = horizon_terrain_rt_glass_edges(in.tint);
         let g = horizon_terrain_rt_glass_at(horizon_terrain_GlassIn(in.position, in.clip.xy,
             in.light, in.spherical, in.cylindrical, s.geo, normal,
             horizon_terrain_decode_gamma(s.texel.rgb * in.tint), s.texel.a, roughness, in.layer));

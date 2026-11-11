@@ -143,6 +143,23 @@ impl TerrainVertex {
     }
 }
 #[cfg(test)]
+mod glass_edge_tests {
+    use super::{ModelDirection, glass_edges};
+
+    /// A window three blocks wide and two tall, seen through its middle bottom block's face
+    /// toward north: glass east and west of it and above it, none below.
+    #[test]
+    fn a_window_s_inner_edges_are_not_edges() {
+        let window = |n: [i32; 3]| n[2] == 0 && (-1..=1).contains(&n[0]) && (0..=1).contains(&n[1]);
+        assert_eq!(glass_edges(ModelDirection::North, window), 0b0111);
+        // A face toward east: its plane's first axis is z, along which no glass lies.
+        assert_eq!(glass_edges(ModelDirection::East, window), 0b0100);
+        // Alone: every edge is the window's.
+        assert_eq!(glass_edges(ModelDirection::Up, |_| false), 0);
+    }
+}
+
+#[cfg(test)]
 mod vertex_tests {
     use super::TerrainVertex;
 
@@ -2233,6 +2250,16 @@ impl Mesher<'_> {
         interior_leaf: bool,
     ) {
         let q = &face.quad;
+        // RT lighting's glass: which of its face's in-plane neighbours are glass too
+        // (`glass_edges`), in its colour's low bits, for the frost to follow the whole window.
+        let glass = if self.rt_lighting && state.rt_glass && rt_glass_on() {
+            glass_edges(q.facing, |n| {
+                self.tables.info[pad.blocks[(cell as isize + step_index(n)) as usize] as usize]
+                    .rt_glass
+            })
+        } else {
+            0
+        };
         // A quad's own light (a model's glowing part) may raise the tier; whether it
         // shines all over stays the block's.
         let tier = (state.tier & !WHOLE).max(hdr_tier("", q.light[0])) | state.tier & WHOLE;
@@ -2339,7 +2366,11 @@ impl Mesher<'_> {
                 (Some(t), false) => [16, 8, 0].map(|shift| g * (t >> shift & 255) / 255),
                 (None, false) => [g; 3],
                 (Some(t), true) => [16, 8, 0].map(|shift| t >> shift & 255),
-                (None, true) => [255; 3],
+                (None, true) => [
+                    255 - (glass & 1),
+                    255 - (glass >> 1 & 1),
+                    255 - (glass >> 2 & 3),
+                ],
             };
             let shade = if self.rt_lighting {
                 (g.min(255) >> 4) << 28 | !SHADE_BITS
@@ -2652,6 +2683,24 @@ pub fn rt_packed_ice_clear() -> bool {
 /// faces.
 pub fn rt_plain_glass(name: &str) -> bool {
     matches!(name, "glass" | "glass_pane")
+}
+/// Which of a glass face's four in-plane neighbours are glass too (`is_glass` of an offset), for
+/// RT lighting's frost to run along the window's outline, not each block's (terrain.wgsl
+/// `rt_glass_weather`). The face's plane has two axes, in world order: z then y for a face toward
+/// x, x then z toward y, x then y toward z. Bit 0: the next block along the first axis is glass,
+/// 1 the one before it, 2 and 3 the same along the second. Carried by an untinted face's colour,
+/// 255 less bit 0 in red, bit 1 in green, bits 2 and 3 in blue (a 1 % change at most).
+pub fn glass_edges(facing: ModelDirection, mut is_glass: impl FnMut([i32; 3]) -> bool) -> u32 {
+    let (first, second) = match facing {
+        ModelDirection::West | ModelDirection::East => ([0, 0, 1], [0, 1, 0]),
+        ModelDirection::Down | ModelDirection::Up => ([1, 0, 0], [0, 0, 1]),
+        ModelDirection::North | ModelDirection::South => ([1, 0, 0], [0, 1, 0]),
+    };
+    let neg = |a: [i32; 3]| a.map(|v| -v);
+    u32::from(is_glass(first))
+        | u32::from(is_glass(neg(first))) << 1
+        | u32::from(is_glass(second)) << 2
+        | u32::from(is_glass(neg(second))) << 3
 }
 /// Whether RT lighting draws plain glass as glass (`rt_plain_glass`): `HORIZON_RT_GLASS=0` keeps
 /// the pack's layer.

@@ -2935,7 +2935,8 @@ fn rt_refracted(pixel: vec2<f32>) -> vec4<f32> {
 // drops bead on it, each a little lens, renewed as the rain strikes, and now and then one grows
 // heavy enough to run down a vertical face, wiping a wet trail behind it that wavers and dries
 // from its top; once the rain stops the drops dry off with the wetness. Where it snows, frost
-// creeps in from the edges of each block's face as the cover builds (`globals.linear.w`), in
+// creeps in from the edges of the window (a block's face, its glass neighbours' joined) on a
+// window to the outside as the cover builds (`globals.linear.w`), in
 // feathery fronts, and recedes as it melts. Returns the slopes the water gives the face (along
 // `t1`, `t2`, its tangents: `t2` up on a wall), x and y, and the frost's cover in z. Nothing past
 // 48 blocks, nor where the drops would be under a pixel.
@@ -2966,6 +2967,32 @@ fn rt_glass_weathered_at(pos: vec3<f32>, layer: u32) -> bool {
 fn rt_glass_debug() -> bool { return globals.rt_mode.y > 7.5 && globals.rt_mode.y < 8.5; }
 fn rt_glass_forced() -> bool { return globals.rt_mode.y > 8.5 && globals.rt_mode.y < 9.5; }
 var<private> rt_glass_seen: vec4<f32> = vec4(0.0);
+// Which of the glass face's in-plane neighbours are glass too (mesher.rs `glass_edges`, in its
+// untinted colour's low bits), set from its tint before `rt_glass_at`.
+var<private> rt_glass_neighbours: u32 = 0u;
+fn rt_glass_edges(tint: vec3<f32>) -> u32 {
+    if min(tint.r, min(tint.g, tint.b)) < 251.5 / 255.0 { return 0u; }
+    let c = vec3<u32>(round((vec3(1.0) - tint) * 255.0));
+    return (c.x & 1u) | (c.y & 1u) << 1u | (c.z & 3u) << 2u;
+}
+// How open to the sky the side of a glass face at world `p` facing `face` lies, or the other side
+// (0 to 1): the frost forms on a window's outside, not on glass within a house. A wall's two sides
+// are the columns a little off it either way, open where their tops lie below it; a roof's, its own
+// column's top block. Unknown columns count as open.
+fn rt_glass_outside(p: vec3<f32>, face: vec3<f32>) -> f32 {
+    if abs(face.y) > 0.5 {
+        let w = rain_cell(vec2<i32>(floor(p.xz)));
+        if w == 0u { return 1.0; }
+        return smoothstep(rain_top(w) - 1.15, rain_top(w) - 0.95, p.y);
+    }
+    var open = 0.0;
+    for (var s = -1.0; s < 2.0; s += 2.0) {
+        let w = rain_cell(vec2<i32>(floor(p.xz + face.xz * (0.6 * s))));
+        if w == 0u { return 1.0; }
+        open = max(open, smoothstep(rain_top(w) - 0.6, rain_top(w) - 0.05, p.y));
+    }
+    return open;
+}
 const GLASS_STREAK_CELL: f32 = 0.0833;
 fn rt_glass_weather(pos: vec3<f32>, face: vec3<f32>, t1: vec3<f32>, t2: vec3<f32>, sky: f32)
     -> vec3<f32> {
@@ -2973,20 +3000,28 @@ fn rt_glass_weather(pos: vec3<f32>, face: vec3<f32>, t1: vec3<f32>, t2: vec3<f32
     let world = rain_world(pos);
     let column = rain_cell(vec2<i32>(floor(world.xz)));
     var out = vec3(0.0);
-    // Frost, in a column where it snows, both sides of the pane (the warm room's damp freezes on
-    // the inside too).
+    // Frost, in a column where it snows, on a window to the outside (`rt_glass_outside`), along
+    // the outline of the whole window: an edge with glass beyond it is no edge
+    // (`rt_glass_neighbours`).
     let forced = rt_glass_forced();
     let cover = select(globals.linear.w, 6.0, forced);
     let snowy = column != 0u && snow_falls(column);
     rt_glass_seen = vec4(0.0, 0.0, 0.25 + select(0.0, 0.25, snowy), 0.0);
     if (snowy || forced) && cover > 0.0 {
-        let grow = smoothstep(0.0, 1.5, cover);
-        let local = fract(vec2(dot(world, t1), dot(world, t2)));
-        let edge = min(min(local.x, 1.0 - local.x), min(local.y, 1.0 - local.y));
+        let grow = smoothstep(0.0, 1.5, cover) * select(rt_glass_outside(world, face), 1.0, forced);
+        let a = abs(face);
+        let plane = select(select(world.xy, world.xz, a.y > 0.5), world.zy, a.x > 0.5);
+        let local = fract(plane);
+        let e = rt_glass_neighbours;
+        let far = 3.0;
+        let edge = min(min(select(1.0 - local.x, far, (e & 1u) != 0u), select(local.x, far, (e & 2u) != 0u)),
+            min(select(1.0 - local.y, far, (e & 4u) != 0u), select(local.y, far, (e & 8u) != 0u)));
+        // The window's foot: this block's, or the one below's when glass goes on down.
+        let foot = select(local.y, local.y + 1.0, (e & 8u) != 0u);
         let fern = 0.55 * lava_noise(world * 9.0) + 0.3 * lava_noise(world * 23.0)
             + 0.15 * lava_noise(world * 61.0);
         // The bottom edge gathers most (the cold air sinks along the pane).
-        let reach = grow * (0.18 + 0.32 * smoothstep(0.6, 0.0, local.y) * step(0.5, abs(t2.y)));
+        let reach = grow * (0.18 + 0.32 * smoothstep(0.6, 0.0, foot) * step(a.y, 0.5));
         out.z = grow * (1.0 - smoothstep(reach * 0.6, reach + 0.04, edge + (fern - 0.5) * 0.22))
             * (0.65 + 0.35 * fern);
     }
@@ -3257,6 +3292,7 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
 }
 // The plain terrain's glass: its texel, the face's tint, and the waviness for a normal.
 fn rt_glass(in: TerrainOut, face: vec3<f32>, texel: vec4<f32>) -> WaterLight {
+    rt_glass_neighbours = rt_glass_edges(in.tint.rgb);
     return rt_glass_at(GlassIn(in.pos, in.clip.xy, in.light, in.spherical, in.cylindrical, face,
         rt_glass_wave(in.pos, face), decode_gamma(texel.rgb * in.tint.rgb), texel.a, 0.0, in.layer));
 }
