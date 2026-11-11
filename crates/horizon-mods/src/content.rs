@@ -856,7 +856,8 @@ impl Content {
                 parts.next().unwrap_or(""),
                 parts.next().unwrap_or(""),
             );
-            let own = namespace == id;
+            // Never a reserved namespace, however the manifest got here.
+            let own = namespace == id && !matches!(id, "minecraft" | "c" | "horizon");
             let owned = own || manifest.namespaces.iter().any(|n| n == namespace);
             // Vanilla's own files stay vanilla's; a mod may only add to its
             // tags and atlases, and to the convention tags mods share.

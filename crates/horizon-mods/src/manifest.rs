@@ -231,6 +231,14 @@ impl Manifest {
                 m.id
             ));
         }
+        // A mod's id is its own namespace: `minecraft`, `c` or `horizon` would make vanilla's (or
+        // the shared or Horizon's) files the mod's own, past the content fence.
+        if RESERVED_NAMESPACES.contains(&m.id.as_str()) {
+            return Err(format!(
+                "{MANIFEST}: id {} is a reserved namespace; pick another id",
+                m.id
+            ));
+        }
         if !APIS.contains(&m.api.as_str()) {
             return Err(format!(
                 "built for API {}; this Horizon runs {}",
@@ -467,6 +475,14 @@ capabilities = ["game-read", "hud"]
     fn refuses_bad_ids_and_apis() {
         let bad_id = EXAMPLE.replace("coords_hud", "Coords HUD");
         assert!(Manifest::parse(&bad_id).unwrap_err().contains("is not"));
+        for reserved in ["minecraft", "c", "horizon"] {
+            let m = EXAMPLE.replace("coords_hud", reserved);
+            assert!(
+                Manifest::parse(&m)
+                    .unwrap_err()
+                    .contains("reserved namespace")
+            );
+        }
         let bad_api = EXAMPLE.replace("api = \"0.1\"", "api = \"0.4\"");
         assert!(Manifest::parse(&bad_api).unwrap_err().contains("API 0.4"));
         let unknown = format!("{EXAMPLE}network = true\n");
