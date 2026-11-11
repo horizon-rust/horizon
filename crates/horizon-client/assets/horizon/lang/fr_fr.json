@@ -564,6 +564,7 @@
   "horizon.live.god_rays_quality.medium": "Moyenne",
   "horizon.live.god_rays_quality.high": "Haute",
   "horizon.live.god_rays_quality.ultra": "Ultra",
+  "horizon.live.night_vision": "Gris de nuit (l'œil la nuit)",
   "horizon.live.cloud_cover": "Couverture nuageuse (0 dégagé, 0,5 jour moyen, 1 couvert)",
   "horizon.live.cloud_cover.auto": "Dérive au fil des jours"
 }

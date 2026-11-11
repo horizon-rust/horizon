@@ -1037,8 +1037,8 @@
   "High": "High",
   "The god rays' grid and steps: finer shafts and fog edges, more GPU time.": "The god rays' grid and steps: finer shafts and fog edges, more GPU time.",
   "RT Lighting's sunbeams in the air and their haze. The water keeps its own.": "RT Lighting's sunbeams in the air and their haze. The water keeps its own.",
-  "Night Vision": "Night Vision",
-  "RT Lighting: dim scenes fade to grey as the eye sees at night.": "RT Lighting: dim scenes fade to grey as the eye sees at night.",
+  "Night Grey": "Night Grey",
+  "RT Lighting: dim scenes fade to grey, as eyes do at night. Off: colours stay.": "RT Lighting: dim scenes fade to grey, as eyes do at night. Off: colours stay.",
   "Shooting Stars": "Shooting Stars",
   "Rare": "Rare",
   "RT Lighting's shooting stars: none, the real sky's showers, or frequent.": "RT Lighting's shooting stars: none, the real sky's showers, or frequent.",
@@ -1090,6 +1090,7 @@
   "horizon.live.god_rays_quality.medium": "Medium",
   "horizon.live.god_rays_quality.high": "High",
   "horizon.live.god_rays_quality.ultra": "Ultra",
+  "horizon.live.night_vision": "Night grey (the eye at night)",
   "horizon.live.cloud_cover": "Cloud cover (0 clear, 0.5 average day, 1 overcast)",
   "horizon.live.cloud_cover.auto": "Drifts with the days"
 }
