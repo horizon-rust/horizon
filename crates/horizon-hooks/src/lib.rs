@@ -17,11 +17,14 @@
 //! pages, [`hud`] for what it draws on the HUD.
 #![forbid(unsafe_code)]
 
+pub mod containers;
 pub mod hud;
+pub mod look;
 pub mod pages;
 mod registry;
 pub mod settings;
 
+use containers::{Container, SlotId};
 use registry::Registry;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,6 +62,32 @@ pub trait Hooks: Sync {
     fn ended(&self, _end: &Ended<'_>) -> Option<Reconnect> {
         None
     }
+
+    // An open container screen (`containers`): each input hook returns whether it took the
+    // input, and then vanilla's handling of it doesn't run. The first hook that takes it wins.
+
+    /// A mouse button went down over the panel, on `slot` or none.
+    fn container_press(&self, _c: &mut dyn Container, _slot: Option<SlotId>, _right: bool) -> bool {
+        false
+    }
+    /// The cursor moved with a button held, now over `slot` or none.
+    fn container_drag(&self, _c: &mut dyn Container, _slot: Option<SlotId>) -> bool {
+        false
+    }
+    /// The button went up. Every hook hears it.
+    fn container_release(&self, _c: &mut dyn Container) {}
+    /// The wheel turned `steps` notches over `slot` or none (up is positive; a trackpad turns it
+    /// in fractions).
+    fn container_wheel(&self, _c: &mut dyn Container, _slot: Option<SlotId>, _steps: f32) -> bool {
+        false
+    }
+    /// A key or a mouse button the screen got, by its name (`key.keyboard.r`, `key.mouse.middle`),
+    /// with the cursor over `slot` or none.
+    fn container_key(&self, _c: &mut dyn Container, _slot: Option<SlotId>, _key: &str) -> bool {
+        false
+    }
+    /// Draws over the panel, from its top left corner, after the slots and before the tooltip.
+    fn container_draw(&self, _c: &dyn Container, _canvas: &mut dyn hud::Canvas) {}
 }
 
 /// What [`Hooks::started`] gets.
@@ -250,6 +279,46 @@ pub mod engine {
         }
     }
 
+    /// Whether a container screen's input reaches a hook: false while none is registered, and
+    /// the engine builds no `Container` then.
+    pub fn containers() -> bool {
+        !all().is_empty()
+    }
+
+    /// [`Hooks::container_press`]: true when a hook took it.
+    pub fn container_press(c: &mut dyn Container, slot: Option<SlotId>, right: bool) -> bool {
+        all().iter().any(|h| h.container_press(c, slot, right))
+    }
+
+    /// [`Hooks::container_drag`].
+    pub fn container_drag(c: &mut dyn Container, slot: Option<SlotId>) -> bool {
+        all().iter().any(|h| h.container_drag(c, slot))
+    }
+
+    /// [`Hooks::container_release`], to every hook.
+    pub fn container_release(c: &mut dyn Container) {
+        for hooks in all() {
+            hooks.container_release(c);
+        }
+    }
+
+    /// [`Hooks::container_wheel`].
+    pub fn container_wheel(c: &mut dyn Container, slot: Option<SlotId>, steps: f32) -> bool {
+        all().iter().any(|h| h.container_wheel(c, slot, steps))
+    }
+
+    /// [`Hooks::container_key`].
+    pub fn container_key(c: &mut dyn Container, slot: Option<SlotId>, key: &str) -> bool {
+        all().iter().any(|h| h.container_key(c, slot, key))
+    }
+
+    /// [`Hooks::container_draw`].
+    pub fn container_draw(c: &dyn Container, canvas: &mut dyn crate::hud::Canvas) {
+        for hooks in all() {
+            hooks.container_draw(c, canvas);
+        }
+    }
+
     /// [`Hooks::ended`]: every hook hears it, and the first plan is the one kept.
     pub fn ended(end: &Ended<'_>) -> Option<Reconnect> {
         let mut plan = None;
@@ -311,12 +380,66 @@ mod tests {
 
     static RECORDER: Recorder = Recorder(StdMutex::new(Vec::new()));
 
+    /// Takes its key on a container screen; notes what reached it.
+    struct Keys(&'static str, StdMutex<Vec<String>>);
+    impl Hooks for Keys {
+        fn container_key(&self, _: &mut dyn Container, _: Option<SlotId>, key: &str) -> bool {
+            self.1.lock().unwrap().push(format!("key {key}"));
+            key == self.0
+        }
+        fn container_release(&self, _: &mut dyn Container) {
+            self.1.lock().unwrap().push("release".into());
+        }
+    }
+    static SORT: Keys = Keys("key.keyboard.r", StdMutex::new(Vec::new()));
+    static ALSO_R: Keys = Keys("key.keyboard.r", StdMutex::new(Vec::new()));
+
+    /// A screen with nothing in it.
+    struct Empty;
+    impl Container for Empty {
+        fn menu(&self) -> &str {
+            "inventory"
+        }
+        fn slots(&self) -> Vec<containers::Slot> {
+            Vec::new()
+        }
+        fn stack(&mut self, _: SlotId) -> Option<containers::Stack> {
+            None
+        }
+        fn carried(&self) -> Option<containers::Stack> {
+            None
+        }
+        fn takes_one(&mut self, _: SlotId, _: &containers::Stack) -> bool {
+            false
+        }
+        fn landing(&mut self, _: SlotId) -> Vec<SlotId> {
+            Vec::new()
+        }
+        fn click(&mut self, _: SlotId, _: containers::Click) -> bool {
+            false
+        }
+        fn spread(&self) -> usize {
+            0
+        }
+        fn cursor(&self) -> (f32, f32) {
+            (0.0, 0.0)
+        }
+        fn shift(&self) -> bool {
+            false
+        }
+        fn order(&mut self, _: SlotId) -> (u32, String) {
+            (u32::MAX, String::new())
+        }
+    }
+
     #[test]
     fn registered_hooks_hear_the_game_and_late_ones_are_refused() {
         register(&RECORDER).unwrap();
         register(&Silent).unwrap();
         register(&FIRST).unwrap();
         register(&SECOND).unwrap();
+        register(&SORT).unwrap();
+        register(&ALSO_R).unwrap();
         engine::started(&Started::new("0.2.31"));
         // Changes only: the same state every frame is said once.
         for open in [false, true, true, true, false, false] {
@@ -325,6 +448,20 @@ mod tests {
         // Every hook hears the end; the first plan registered is the one kept.
         let plan = engine::ended(&Ended::new("lost", None, false)).unwrap();
         assert_eq!(plan.attempt, 1);
+        // A container screen's key goes to the first hook that takes it, its release to all.
+        assert!(engine::containers());
+        assert!(!engine::container_key(&mut Empty, None, "key.keyboard.e"));
+        assert!(engine::container_key(&mut Empty, None, "key.keyboard.r"));
+        engine::container_release(&mut Empty);
+        assert_eq!(
+            *SORT.1.lock().unwrap(),
+            ["key key.keyboard.e", "key key.keyboard.r", "release"]
+        );
+        assert_eq!(
+            *ALSO_R.1.lock().unwrap(),
+            ["key key.keyboard.e", "release"],
+            "taken before it"
+        );
         engine::shutdown();
         assert_eq!(
             *RECORDER.0.lock().unwrap(),
