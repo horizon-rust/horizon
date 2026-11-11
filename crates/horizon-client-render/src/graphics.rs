@@ -1898,9 +1898,10 @@ mod tests {
         assert_eq!(g.workers, 0);
         let cores = horizon_threads::worker_count();
         assert!((1..=cores.saturating_sub(1).max(1)).contains(&g.worker_threads()));
-        if !cfg!(target_vendor = "apple") {
-            assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
-        }
+        // Every core but one, counting only the performance cores where the machine has two kinds
+        // (Apple silicon, and on Linux Intel's hybrid parts and big.LITTLE ARM): a 22-thread
+        // runner with 16 performance threads gets 15, not 21.
+        assert_eq!(g.worker_threads(), horizon_threads::default_workers());
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
         assert_eq!(manual.worker_threads(), 3);
