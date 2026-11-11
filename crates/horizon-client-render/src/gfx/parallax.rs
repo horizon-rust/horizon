@@ -66,6 +66,22 @@ fn shadow_distance(distance: Option<&str>, skip: Option<&str>) -> f64 {
     }
 }
 
+/// The taps along a material map's longer axis (`HORIZON_RT_MAP_TAPS`, 1 to 16), 4 by default.
+fn map_taps(value: Option<&str>) -> f64 {
+    value
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| (1.0..=16.0).contains(v))
+        .map_or(4.0, f64::floor)
+}
+/// 1 when `HORIZON_RT_MAP_FILTER=old`: the maps read at one rounded level, as before.
+fn map_old(value: Option<&str>) -> f64 {
+    if value.is_some_and(|v| v.trim().eq_ignore_ascii_case("old")) {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 /// The entries, after the prefixed terrain and the normal map declarations.
 const ENTRIES: &str = r"
 // How deep the relief goes (1: LabPBR's quarter block) and where it fades out, in blocks.
@@ -85,6 +101,10 @@ override PARALLAX_SHADOW_DISTANCE: f32 = 36.0;
 override PARALLAX_FINE: f32 = 1.5;
 // How much darker the bottom of the relief is (0 leaves occlusion to the map and the light).
 override PARALLAX_CAVITY: f32 = 0.25;
+// At most this many taps along a material map's longer axis at a grazing angle (`map_filtered`;
+// `HORIZON_RT_MAP_TAPS`), and 1 to read the maps as before (`HORIZON_RT_MAP_FILTER=old`).
+override PARALLAX_MAP_TAPS: f32 = 4.0;
+override PARALLAX_MAP_OLD: f32 = 0.0;
 // At most this many texels crossed per fragment.
 const PARALLAX_STEPS: u32 = 48u;
 const PARALLAX_NEUTRAL: vec4<f32> = vec4(0.5, 0.5, 1.0, 1.0);
@@ -179,26 +199,69 @@ fn subsurface_slot(layer: u32) -> ParallaxSlot {
 }
 // The backlight tint at `uv` (the texel's colour, alpha 1; alpha 0 where the sprite has no map),
 // read as `specular_at` reads.
-fn subsurface_at(layer: u32, uv: vec2<f32>, footprint: f32) -> vec4<f32> {
+fn subsurface_at(layer: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
     let slot = subsurface_slot(layer);
     if slot.array == 0xffffu { return SUBSURFACE_NEUTRAL; }
-    let lod = log2(max(footprint * slot.size, 1e-6));
-    let level = clamp(i32(round(lod)), 0, i32(log2(slot.size)));
-    let size = max(slot.size / exp2(f32(level)), 1.0);
-    let cell = floor(uv * size);
-    let texel = subsurface_load(slot, vec2<i32>(cell - floor(cell / size) * size), level);
-    return vec4(texel.rgb, 1.0);
+    return vec4(map_filtered(1u, slot, uv, dx, dy).rgb, 1.0);
 }
-// The specular texel at `uv` for a footprint of `footprint` (the texture coordinate's change a
-// pixel), read at the map's mip level for that size.
-fn specular_at(layer: u32, uv: vec2<f32>, footprint: f32) -> vec4<f32> {
+// The specular texel at `uv` for the texture coordinate's change a pixel `dx`, `dy`, filtered as
+// the sprite's colour is (`map_filtered`). Its alpha, the emission, says none as 0 (LabPBR's 255
+// is read as 0 before the blend, as the map's levels store it: mipmap.rs `Strategy::Specular`).
+fn specular_at(layer: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
     let slot = specular_slot(layer);
     if slot.array == 0xffffu { return SPECULAR_NEUTRAL; }
-    let lod = log2(max(footprint * slot.size, 1e-6));
-    let level = clamp(i32(round(lod)), 0, i32(log2(slot.size)));
-    let size = max(slot.size / exp2(f32(level)), 1.0);
+    return map_filtered(0u, slot, uv, dx, dy);
+}
+// Texel `uv` of a specular (`kind` 0) or subsurface (1) map's mip `level`, wrapped into the map;
+// a specular texel's no emission (255) as 0.
+fn map_texel(kind: u32, slot: ParallaxSlot, uv: vec2<f32>, level: f32) -> vec4<f32> {
+    let size = max(slot.size / exp2(level), 1.0);
     let cell = floor(uv * size);
-    return specular_load(slot, vec2<i32>(cell - floor(cell / size) * size), level);
+    let texel = vec2<i32>(cell - floor(cell / size) * size);
+    if kind == 0u {
+        var s = specular_load(slot, texel, i32(level));
+        if s.a > 254.5 / 255.0 { s.a = 0.0; }
+        return s;
+    }
+    return subsurface_load(slot, texel, i32(level));
+}
+// A material map at `uv`, read as the block sampler reads the sprite's colour: between the two mip
+// levels around a texel's size (its linear mip filter), and at a grazing angle, where the texture
+// shrinks much more along one screen axis than the other, at the level of the smaller shrink with
+// up to PARALLAX_MAP_TAPS taps along the longer one (its anisotropy). It was one level, rounded,
+// for the longer axis: seen along a track, a powered rail's colour kept its dots while its
+// emission was already its whole face's average, and at each half level the look jumped (all a
+// pack's maps: smoothness, metals, porosity, emission). `HORIZON_RT_MAP_FILTER=old`
+// (PARALLAX_MAP_OLD) reads as before.
+fn map_filtered(kind: u32, slot: ParallaxSlot, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>)
+    -> vec4<f32> {
+    let top = log2(slot.size);
+    let lx = length(dx);
+    let ly = length(dy);
+    let major = max(lx, ly);
+    if PARALLAX_MAP_OLD > 0.5 {
+        let lod = log2(max(major * slot.size, 1e-6));
+        let level = clamp(round(lod), 0.0, top);
+        return map_texel(kind, slot, uv, level);
+    }
+    let minor = max(min(lx, ly), 1e-9);
+    let axis = select(dy, dx, lx >= ly);
+    let taps = clamp(ceil(major / minor - 0.01), 1.0, max(PARALLAX_MAP_TAPS, 1.0));
+    let at = clamp(log2(max(major / taps * slot.size, 1e-6)), 0.0, top);
+    let low = floor(at);
+    let high = min(low + 1.0, top);
+    let t = at - low;
+    var sum = vec4(0.0);
+    for (var i = 0; i < i32(taps); i++) {
+        let p = uv + axis * ((f32(i) + 0.5) / taps - 0.5);
+        let near = map_texel(kind, slot, p, low);
+        if t > 0.001 {
+            sum += mix(near, map_texel(kind, slot, p, high), t);
+        } else {
+            sum += near;
+        }
+    }
+    return sum / taps;
 }
 // Texel `cell` (wrapped into the map) of mip `level` (0 the map's own size).
 fn parallax_texel(slot: ParallaxSlot, cell: vec2<f32>, level: i32) -> vec4<f32> {
@@ -308,6 +371,9 @@ struct ParallaxSurface {
     ao: f32,
     uv: vec2<f32>,
     footprint: f32,
+    // The texture coordinate's change a pixel, along the screen's x and y.
+    du: vec2<f32>,
+    dv: vec2<f32>,
     mapped: bool,
     // How deep the relief is where the view landed (0 its top, 1 its deepest; 0.5 without a
     // map), where the rain's puddles gather first (terrain.wgsl `rain_puddle`).
@@ -335,7 +401,7 @@ fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
     let texel = parallax_sprite(in.uv, layer, dx, dy);
     let footprint = max(length(dx), length(dy));
     if slot.array == 0xffffu {
-        return ParallaxSurface(texel, n, n, 1.0, in.uv, footprint, false, 0.5);
+        return ParallaxSurface(texel, n, n, 1.0, in.uv, footprint, dx, dy, false, 0.5);
     }
     // log2 of the map's texels per pixel: 0 where a texel covers one pixel.
     let lod = log2(max(max(length(dx), length(dy)) * slot.size, 1e-6));
@@ -388,7 +454,7 @@ fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
     if strength > 0.001 {
         landed = parallax_sprite(hit.uv, layer, dx, dy);
     }
-    return ParallaxSurface(landed, n, world, ao, hit.uv, footprint, true, relief);
+    return ParallaxSurface(landed, n, world, ao, hit.uv, footprint, dx, dy, true, relief);
 }
 // Vanilla's light: the surface's texel shaded for the map's normal, times its occlusion.
 fn parallax_color(in: ParallaxOut, march: bool) -> vec4<f32> {
@@ -428,7 +494,7 @@ fn parallax_transmission(in: ParallaxOut, geo: vec3<f32>, tint: vec3<f32>, inten
 fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
     let layer = in.layer & 0x7fffu;
     let albedo = horizon_terrain_decode_gamma(s.texel.rgb * in.tint);
-    let specular = specular_at(layer, s.uv, s.footprint);
+    let specular = specular_at(layer, s.uv, s.du, s.dv);
     var m = horizon_terrain_rt_packed_ice(horizon_terrain_rt_labpbr(albedo, s.normal, s.ao, specular),
         in.layer);
     // Wet from the rain (terrain.wgsl `rt_wet`), as porous as LabPBR's blue says (up to 64) where
@@ -442,7 +508,7 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
     let intensity = select(select(0.0, SSS_THIN, thin), m.subsurface, m.subsurface > 0.0);
     // The pack's tint, with the face's biome colour as a hue only (the map is as bright as the
     // light through the leaf), or the albedo's twice.
-    let sss = subsurface_at(layer, s.uv, s.footprint);
+    let sss = subsurface_at(layer, s.uv, s.du, s.dv);
     let hue = in.tint / max(max(in.tint.r, in.tint.g), max(in.tint.b, 1e-3));
     let tint = select(albedo * albedo, horizon_terrain_decode_gamma(sss.rgb * hue), sss.a > 0.5);
     m.subsurface = 0.0;
@@ -532,7 +598,7 @@ fn parallax_translucent(in: ParallaxOut) -> vec4<f32> {
             discard;
         }
         let layer = in.layer & 0x7fffu;
-        let specular = specular_at(layer, s.uv, s.footprint);
+        let specular = specular_at(layer, s.uv, s.du, s.dv);
         // A clear texel kept for the weather on it is plain clear glass under the water or the
         // frost: the pack's map and roughness for its clear face (an RTX pack's broad streaks)
         // would bend and blur the whole view through the window wherever a drop sits.
@@ -773,6 +839,14 @@ impl Parallax {
                         .filter(|v| (-2.0..=6.0).contains(v))
                         .unwrap_or(1.5),
                 ),
+                (
+                    "PARALLAX_MAP_TAPS",
+                    map_taps(std::env::var("HORIZON_RT_MAP_TAPS").ok().as_deref()),
+                ),
+                (
+                    "PARALLAX_MAP_OLD",
+                    map_old(std::env::var("HORIZON_RT_MAP_FILTER").ok().as_deref()),
+                ),
             ],
             (GROUP, &layout),
             ["parallax_vs", "parallax_vs_flat"],
@@ -787,6 +861,16 @@ impl Parallax {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_map_filter_switches_read_their_variables() {
+        assert_eq!(map_taps(None), 4.0);
+        assert_eq!(map_taps(Some(" 8 ")), 8.0);
+        assert_eq!(map_taps(Some("0")), 4.0);
+        assert_eq!(map_taps(Some("40")), 4.0);
+        assert_eq!(map_old(Some("OLD")), 1.0);
+        assert_eq!(map_old(Some("1")), 0.0);
+        assert_eq!(map_old(None), 0.0);
+    }
     #[test]
     fn the_shader_validates_for_no_one_and_several_arrays() {
         for (arrays, dual) in [
