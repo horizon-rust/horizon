@@ -27,6 +27,7 @@
     "horizon-client-core": "engine",
     "horizon-client-input": "engine",
     "horizon-client-lib": "engine",
+    "horizon-client-gameplay": "engine",
     "horizon-client-render": "engine",
     "horizon-command": "engine",
     "horizon-core": "engine",
