@@ -1091,5 +1091,17 @@
   "horizon.live.god_rays_quality.high": "High",
   "horizon.live.god_rays_quality.ultra": "Ultra",
   "horizon.live.cloud_cover": "Cloud cover (0 clear, 0.5 average day, 1 overcast)",
-  "horizon.live.cloud_cover.auto": "Drifts with the days"
+  "horizon.live.cloud_cover.auto": "Drifts with the days",
+  "horizon.live.group.perf": "Performance",
+  "horizon.live.perf": "Show what the CPU and the GPU spend each frame on",
+  "horizon.live.perf.fps": "Frames a second",
+  "horizon.live.perf.frame": "Frame time (mean / worst)",
+  "horizon.live.perf.wait": "CPU waiting for the GPU",
+  "horizon.live.perf.cpu": "CPU, render thread (ms a frame)",
+  "horizon.live.perf.cpu_inner": "CPU, inside those steps",
+  "horizon.live.perf.gpu": "GPU (ms a frame)",
+  "horizon.live.perf.between": "GPU between views (other work, or idle)",
+  "horizon.live.perf.cost": "Cost of this view",
+  "horizon.live.perf.no_gpu": "This GPU cannot time its stages",
+  "horizon.live.perf.starting": "Measuring…"
 }
