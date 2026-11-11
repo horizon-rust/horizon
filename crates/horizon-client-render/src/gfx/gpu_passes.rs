@@ -93,6 +93,11 @@ struct Profiler {
     /// between two views read back of one frame (the next one's start less this one's end).
     tallies: Vec<(String, Tally)>,
     between: f64,
+    /// The same for the live settings panel (`take_panel_means`), which reads them at its own
+    /// pace without taking the log's.
+    panel: Vec<(String, Tally)>,
+    panel_between: f64,
+    panel_taken_at: u64,
     /// The views read back last: frame, place in it, first and last stamp (ticks).
     recent: VecDeque<(u64, u8, u64, u64)>,
     /// The frame being begun, and the place its next view takes; the frame at the last
@@ -158,6 +163,9 @@ pub fn init(device: &wgpu::Device, queue: &wgpu::Queue) {
             dropped: 0,
             tallies: Vec::new(),
             between: 0.0,
+            panel: Vec::new(),
+            panel_between: 0.0,
+            panel_taken_at: FRAME.load(Ordering::Relaxed),
             recent: VecDeque::new(),
             frame: (0, 0),
             taken_at: FRAME.load(Ordering::Relaxed),
@@ -183,6 +191,9 @@ pub fn set_enabled(on: bool) -> bool {
         p.current = None;
         p.tallies.clear();
         p.between = 0.0;
+        p.panel.clear();
+        p.panel_between = 0.0;
+        p.panel_taken_at = FRAME.load(Ordering::Relaxed);
         p.recent.clear();
         p.taken_at = FRAME.load(Ordering::Relaxed);
     }
@@ -301,6 +312,44 @@ pub fn take_means() -> Vec<String> {
     lines
 }
 
+/// `take_means` for the live settings panel, as data: each view's mean GPU time a frame and its
+/// stages', in milliseconds, over the frames begun since its last call (its own tallies, so the
+/// VR log keeps its own), and the GPU's time between the views. None while not timing.
+pub fn take_panel_means() -> Option<serde_json::Value> {
+    if !enabled() {
+        return None;
+    }
+    let mut state = STATE.lock().ok()?;
+    let p = state.as_mut()?;
+    p.collect();
+    let now = FRAME.load(Ordering::Relaxed);
+    let frames = now.saturating_sub(p.panel_taken_at).max(1) as f64;
+    p.panel_taken_at = now;
+    let views: Vec<serde_json::Value> = p
+        .panel
+        .drain(..)
+        .filter(|(_, t)| t.timed > 0)
+        .map(|(view, t)| {
+            let per = f64::from(t.begun.max(t.timed)) / f64::from(t.timed) / frames;
+            let stages: Vec<serde_json::Value> = t
+                .stages
+                .iter()
+                .map(|(name, ms)| serde_json::json!({ "stage": name, "ms": ms * per }))
+                .collect();
+            serde_json::json!({
+                "view": view,
+                "timed": t.timed,
+                "begun": t.begun,
+                "ms": t.total * per,
+                "stages": stages,
+            })
+        })
+        .collect();
+    let between = p.panel_between / frames;
+    p.panel_between = 0.0;
+    Some(serde_json::json!({ "views": views, "between_ms": between }))
+}
+
 /// Starts timing the frame `encoder` records, for the view `label`, when a slot is free.
 pub fn begin(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, label: &str) {
     if !enabled() {
@@ -327,6 +376,7 @@ pub fn begin(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, label: &
     let order = p.frame.1;
     p.frame.1 = p.frame.1.saturating_add(1);
     p.tally(label).begun += 1;
+    tally(&mut p.panel, label).begun += 1;
     let slot = p.next;
     p.current = (p.slots[slot].state.load(Ordering::Acquire) == FREE).then_some(slot);
     let Some(slot) = p.current else { return };
@@ -450,24 +500,30 @@ impl Profiler {
                 }
             }
             let (first, last) = (stamps[0], stamps[stamps.len() - 1]);
-            let t = tally(&mut self.tallies, &s.label);
-            t.timed += 1;
-            t.total += f64::from(ms(last - first));
-            for &(name, ms) in &frame {
-                match t.stages.iter_mut().find(|f| f.0 == name) {
-                    Some(f) => f.1 += f64::from(ms),
-                    None => t.stages.push((name, f64::from(ms))),
+            for tallies in [&mut self.tallies, &mut self.panel] {
+                let t = tally(tallies, &s.label);
+                t.timed += 1;
+                t.total += f64::from(ms(last - first));
+                for &(name, ms) in &frame {
+                    match t.stages.iter_mut().find(|f| f.0 == name) {
+                        Some(f) => f.1 += f64::from(ms),
+                        None => t.stages.push((name, f64::from(ms))),
+                    }
                 }
             }
             // The gap to the view before it in its frame, and from the one after, when read back.
             let at = (s.frame, u16::from(s.order));
             for &(f, order, start, end) in &self.recent {
                 let order = u16::from(order);
-                if f == at.0 && order + 1 == at.1 && first >= end {
-                    self.between += f64::from(ms(first - end));
+                let gap = if f == at.0 && order + 1 == at.1 && first >= end {
+                    f64::from(ms(first - end))
                 } else if f == at.0 && at.1 + 1 == order && start >= last {
-                    self.between += f64::from(ms(start - last));
-                }
+                    f64::from(ms(start - last))
+                } else {
+                    continue;
+                };
+                self.between += gap;
+                self.panel_between += gap;
             }
             if self.recent.len() == 32 {
                 self.recent.pop_front();

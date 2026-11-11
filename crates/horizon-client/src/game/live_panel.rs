@@ -87,6 +87,25 @@ fn word(v: &Value) -> Result<&str, String> {
 /// The panel's controls, in the page's order (a group's heading over its first knob).
 const KNOBS: &[Knob] = &[
     Knob {
+        id: "perf",
+        group: "horizon.live.group.perf",
+        label: "horizon.live.perf",
+        kind: Kind::Toggle,
+        get: |g| json!(g.live_panel.as_ref().is_some_and(|p| p.perf.is_some())),
+        set: Some(|g, v| {
+            let on = flag(v)?;
+            if let Some(p) = g.live_panel.as_mut() {
+                match (on, p.perf.take()) {
+                    (true, None) => p.perf = Some(super::live_perf::Perf::start()),
+                    (true, Some(perf)) => p.perf = Some(perf),
+                    (false, Some(perf)) => perf.stop(),
+                    (false, None) => {}
+                }
+            }
+            Ok(Change::Live)
+        }),
+    },
+    Knob {
         id: "rt_ambient",
         group: "horizon.live.group.light",
         label: "horizon.live.rt_ambient",
@@ -296,6 +315,20 @@ const KNOBS: &[Knob] = &[
     },
 ];
 
+/// The performance view's labels (`horizon.live.perf.<name>`), sent with the state.
+const PERF_LABELS: &[&str] = &[
+    "fps",
+    "frame",
+    "wait",
+    "cpu",
+    "cpu_inner",
+    "gpu",
+    "between",
+    "cost",
+    "no_gpu",
+    "starting",
+];
+
 /// A request from the page, answered with the panel's state.
 enum Request {
     State,
@@ -313,6 +346,8 @@ pub(super) struct LivePanel {
     fog_density: f32,
     /// When a saved setting last moved, until it is written.
     save_at: Option<Instant>,
+    /// The performance view, while it is on (game/live_perf.rs).
+    perf: Option<super::live_perf::Perf>,
 }
 
 impl LivePanel {
@@ -370,6 +405,7 @@ impl LivePanel {
             god_rays_before: 100,
             fog_density: 1.0,
             save_at: None,
+            perf: None,
         })
     }
 }
@@ -556,6 +592,18 @@ impl Game<'_> {
         }
     }
 
+    /// A frame drawn, for the performance view while it is on: its spans and the CPU's wait on
+    /// the GPU.
+    pub(super) fn live_panel_frame(&mut self, spans: &[horizon_client::spans::Span]) {
+        let wait = self
+            .renderer
+            .as_ref()
+            .map_or(Duration::ZERO, |r| r.last_wait);
+        if let Some(perf) = self.live_panel.as_mut().and_then(|p| p.perf.as_mut()) {
+            perf.frame(spans, wait);
+        }
+    }
+
     /// The page's view: every knob with its label in the game's language and its value.
     fn live_panel_state(&self) -> Value {
         let knobs: Vec<Value> = KNOBS
@@ -601,8 +649,23 @@ impl Game<'_> {
                 knob
             })
             .collect();
+        let perf_labels: serde_json::Map<String, Value> = PERF_LABELS
+            .iter()
+            .map(|k| {
+                (
+                    k.to_string(),
+                    json!(lang::get(&format!("horizon.live.perf.{k}"))),
+                )
+            })
+            .collect();
         json!({
             "title": lang::get("horizon.live.title"),
+            "perf": self
+                .live_panel
+                .as_ref()
+                .and_then(|p| p.perf.as_ref())
+                .map(|p| p.shown().clone()),
+            "perf_labels": perf_labels,
             "url": self.live_panel.as_ref().map(|p| p.url.clone()),
             "knobs": knobs,
         })
@@ -632,6 +695,13 @@ mod tests {
             serde_json::from_str(include_str!("../../assets/horizon/lang/en_us.json")).unwrap();
         let fr: serde_json::Map<String, Value> =
             serde_json::from_str(include_str!("../../assets/horizon/lang/fr_fr.json")).unwrap();
+        for k in PERF_LABELS {
+            let key = format!("horizon.live.perf.{k}");
+            assert!(
+                en.contains_key(&key) && fr.contains_key(&key),
+                "{key} missing"
+            );
+        }
         let mut ids = std::collections::HashSet::new();
         for k in KNOBS {
             assert!(ids.insert(k.id), "{} twice", k.id);

@@ -217,6 +217,7 @@ mod level_particles;
 mod levels;
 mod lightning;
 mod live_panel;
+mod live_perf;
 mod llamas;
 mod loading_screen;
 mod loading_window;
@@ -16002,6 +16003,7 @@ impl Game<'_> {
                     } else {
                         Vec::new()
                     };
+                    self.live_panel_frame(&frame_spans);
                     if horizon_client::spans::trace::due() {
                         horizon_client::spans::trace::stop();
                     }

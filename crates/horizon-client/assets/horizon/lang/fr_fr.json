@@ -565,5 +565,17 @@
   "horizon.live.god_rays_quality.high": "Haute",
   "horizon.live.god_rays_quality.ultra": "Ultra",
   "horizon.live.cloud_cover": "Couverture nuageuse (0 dégagé, 0,5 jour moyen, 1 couvert)",
-  "horizon.live.cloud_cover.auto": "Dérive au fil des jours"
+  "horizon.live.cloud_cover.auto": "Dérive au fil des jours",
+  "horizon.live.group.perf": "Performances",
+  "horizon.live.perf": "Afficher ce que coûtent le CPU et le GPU à chaque image",
+  "horizon.live.perf.fps": "Images par seconde",
+  "horizon.live.perf.frame": "Temps d'image (moyen / pire)",
+  "horizon.live.perf.wait": "CPU en attente du GPU",
+  "horizon.live.perf.cpu": "CPU, thread de rendu (ms par image)",
+  "horizon.live.perf.cpu_inner": "CPU, à l'intérieur de ces étapes",
+  "horizon.live.perf.gpu": "GPU (ms par image)",
+  "horizon.live.perf.between": "GPU entre les vues (autre travail, ou inactif)",
+  "horizon.live.perf.cost": "Coût de cette mesure",
+  "horizon.live.perf.no_gpu": "Ce GPU ne peut pas chronométrer ses étapes",
+  "horizon.live.perf.starting": "Mesure en cours…"
 }

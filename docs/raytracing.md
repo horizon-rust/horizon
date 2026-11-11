@@ -490,6 +490,16 @@ where it is cold) and the shower's or blizzard's intensity (held at x0 to x3, or
 each shower, with what this one drew). Every control is one entry of
 `game/live_panel.rs` `KNOBS`; the page draws whatever that table holds.
 
+Its **Performance** switch (off by default) shows, refreshed three times a second, the means a
+frame over the last second: frames a second, frame time (mean and worst), the render thread's
+wait on the GPU, its steps (`spans`, wall time, the outermost and the ones inside them) and the
+GPU's stages per view (`gfx::gpu_passes`: `desktop`, `eye1`, `eye2`; timestamps read back a few
+frames late, never waited for; `take_panel_means` keeps tallies of its own, so the VR log's every
+300 frames still has its own). On, spans are recorded on the render thread and the GPU stamps
+its stages; off, what it turned on goes off again (`game/live_perf.rs`). The page shows the CPU
+time the view itself costs the render thread (ms a second); the GPU stamps' cost is measured by
+comparing the frame time with the switch on and off.
+
 ## GPU budget for Vision Pro (90 Hz, two eyes)
 
 The target: 11.1 ms of GPU a frame for both eyes, with RT lighting on. Measured on 30 October 2026 on the
