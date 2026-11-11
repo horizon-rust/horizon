@@ -168,7 +168,9 @@ pub struct Params {
 
 /// The day's weather at `time` (seconds): the cumulus' coverage bias (-1 fewer and flatter, 1 more
 /// and taller), the cirrus' amount and the altocumulus' (0..1), drifting from one day's to the
-/// next over the day.
+/// next over the day. The bias drifts at random over the ticks ([`cover_bias`]) unless
+/// `HORIZON_CLOUD_WEATHER=daily` keeps the old day by day one, and the cover a live setting or
+/// `HORIZON_CLOUD_COVER` holds ([`set_cover`]) replaces it.
 pub fn weather(time: f64) -> (f32, f32, f32) {
     let day = (time / DAY).floor();
     let into = ((time / DAY) - day) as f32;
@@ -182,11 +184,71 @@ pub fn weather(time: f64) -> (f32, f32, f32) {
     };
     let (a, b) = (of(day), of(day + 1.0));
     let t = into * into * (3.0 - 2.0 * into);
-    (
-        a.0 + (b.0 - a.0) * t,
-        a.1 + (b.1 - a.1) * t,
-        a.2 + (b.2 - a.2) * t,
-    )
+    let daily = a.0 + (b.0 - a.0) * t;
+    let bias = match cover() {
+        Some(cover) => cover * 2.0 - 1.0,
+        None if daily_weather() => daily,
+        None => cover_bias(time),
+    };
+    (bias, a.1 + (b.1 - a.1) * t, a.2 + (b.2 - a.2) * t)
+}
+
+/// The cumulus' coverage bias at `time` (seconds), -1..1: three octaves of value noise, two
+/// days, half a day and an eighth of one (2.5 minutes) between their random knots, so the
+/// sky's cover wanders over the ticks with no day boundary. Under 0.006 a second, a full swing
+/// over twenty minutes at the fastest: the clouds grow and thin slower than the wind moves them,
+/// seen only after a while.
+pub fn cover_bias(time: f64) -> f32 {
+    let octave = |period: f64, seed: u32| {
+        let at = time / period;
+        let knot = at.floor();
+        let f = (at - knot) as f32;
+        let t = f * f * (3.0 - 2.0 * f);
+        let v = |k: f64| unit(hash(k as i32, 11, 5, seed)) * 2.0 - 1.0;
+        v(knot) + (v(knot + 1.0) - v(knot)) * t
+    };
+    let n = 0.65 * octave(DAY * 2.0, 211)
+        + 0.25 * octave(DAY * 0.5, 223)
+        + 0.1 * octave(DAY / 8.0, 227);
+    // The sum's spread is narrower than one octave's: widened back to the whole range.
+    (n * 1.4).clamp(-1.0, 1.0)
+}
+
+/// The cumulus' cover a live setting holds (0 clear .. 1 full; bit pattern of an f32, NaN for
+/// none), first `HORIZON_CLOUD_COVER`'s.
+static COVER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+static COVER_ENV: std::sync::Once = std::sync::Once::new();
+
+/// Holds the cumulus' cover at `cover` (0 clear .. 1 full, 0.5 an average day), or lets it drift
+/// again with `None`: for a live settings window.
+#[allow(dead_code)] // until that window calls it
+pub fn set_cover(cover: Option<f32>) {
+    COVER_ENV.call_once(|| {});
+    let bits = cover.map_or(u32::MAX, |c| c.clamp(0.0, 1.0).to_bits());
+    COVER.store(bits, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The cover held by [`set_cover`] or `HORIZON_CLOUD_COVER`, if any.
+pub fn cover() -> Option<f32> {
+    COVER_ENV.call_once(|| {
+        if let Some(c) = std::env::var("HORIZON_CLOUD_COVER")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+        {
+            COVER.store(
+                c.clamp(0.0, 1.0).to_bits(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+    });
+    let c = f32::from_bits(COVER.load(std::sync::atomic::Ordering::Relaxed));
+    (!c.is_nan()).then_some(c)
+}
+
+/// `HORIZON_CLOUD_WEATHER=daily`: the cumulus' bias as before, one random value a day.
+fn daily_weather() -> bool {
+    static DAILY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DAILY.get_or_init(|| std::env::var("HORIZON_CLOUD_WEATHER").as_deref() == Ok("daily"))
 }
 
 /// How fast the altocumulus and the cirrus drift against the cumulus (winds aloft are stronger).
@@ -1395,6 +1457,22 @@ mod tests {
         let (a, _, _) = weather(DAY * 5.0 - 0.01);
         let (b, _, _) = weather(DAY * 5.0 + 0.01);
         assert!((a - b).abs() < 1e-3, "{a} {b}");
+    }
+
+    #[test]
+    fn the_cover_wanders_slowly_over_the_whole_range() {
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        let mut prev = cover_bias(0.0);
+        // A tick at a time over twenty days.
+        for tick in 1..(20 * 24_000) {
+            let b = cover_bias(tick as f64 / 20.0);
+            assert!(
+                (b - prev).abs() < 0.006 / 20.0 + 1e-6,
+                "{tick}: {prev} -> {b}"
+            );
+            (lo, hi, prev) = (lo.min(b), hi.max(b), b);
+        }
+        assert!(lo < -0.6 && hi > 0.6, "{lo}..{hi}");
     }
 
     /// Renders the dome on whatever adapter there is (lavapipe will do) for a few skies and writes
