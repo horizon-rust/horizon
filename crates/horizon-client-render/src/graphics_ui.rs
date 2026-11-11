@@ -108,6 +108,7 @@ pub enum H {
     MoonSize,
     RtAmbientLight,
     GodRays,
+    GodRaysQuality,
     NightVision,
     ShootingStars,
     AerialPerspective,
@@ -465,6 +466,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::GodRays,
                             None,
                             "RT Lighting's sunbeams in the air and their haze. The water keeps its own.",
+                        ),
+                        h(
+                            H::GodRaysQuality,
+                            Medium,
+                            "The god rays' grid and steps: finer shafts and fog edges, more GPU time.",
                         ),
                         h(
                             H::NightVision,
@@ -930,6 +936,7 @@ impl H {
                 Some(i as f32 / (RT_AMBIENT_STEPS.len() - 1) as f32)
             }
             H::GodRays => Some(g.god_rays as f32 / crate::graphics::MAX_GOD_RAYS as f32),
+            H::GodRaysQuality => Some(g.god_rays_quality.min(3) as f32 / 3.0),
             H::AerialPerspective => Some(match g.aerial_perspective {
                 0 => 0.0,
                 n => (1.0 + (n as f32).log2()) / 7.0,
@@ -953,6 +960,7 @@ impl H {
             H::MoonSize => Some(19),
             H::RtAmbientLight => Some((RT_AMBIENT_STEPS.len() - 1) as u32),
             H::GodRays => Some(crate::graphics::MAX_GOD_RAYS / 10),
+            H::GodRaysQuality => Some(3),
             H::AerialPerspective => Some(7),
             H::ChunkUpdates => Some(64),
             H::EntityCullingPrecheck => Some(32),
@@ -1061,6 +1069,15 @@ impl H {
                 0 => labelled("God Rays", "Off"),
                 n => labelled_percent("God Rays", n),
             },
+            H::GodRaysQuality => labelled(
+                "God Rays Quality",
+                match g.god_rays_quality {
+                    0 => "Low",
+                    1 => "Medium",
+                    2 => "High",
+                    _ => "Ultra",
+                },
+            ),
             H::AerialPerspective => match g.aerial_perspective {
                 0 => labelled("Aerial Perspective", "Off"),
                 1 => labelled("Aerial Perspective", "1x (Real)"),
@@ -1190,6 +1207,7 @@ impl H {
                 g.rt_ambient_light =
                     RT_AMBIENT_STEPS[(v * (RT_AMBIENT_STEPS.len() - 1) as f32).round() as usize]
             }
+            H::GodRaysQuality => g.god_rays_quality = (v * 3.0).round() as u32,
             H::GodRays => {
                 g.god_rays = (v * (crate::graphics::MAX_GOD_RAYS / 10) as f32).round() as u32 * 10
             }

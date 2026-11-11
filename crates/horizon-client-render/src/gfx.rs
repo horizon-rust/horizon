@@ -8337,6 +8337,11 @@ impl Renderer {
     pub fn set_god_rays(&mut self, percent: u32) {
         self.froxels.strength = percent as f32 / 100.0;
     }
+    /// The God Rays Quality option (`Graphics::god_rays_quality`): the froxels' grid and their
+    /// per-pixel march, 0 Low to `froxels::QUALITIES - 1` Ultra (froxels.rs `quality_grid`).
+    pub fn set_god_rays_quality(&mut self, quality: u32) {
+        self.froxels.quality = quality.min(froxels::QUALITIES - 1);
+    }
     /// The natural fogs in the froxels (natural_fog.rs): the setting, the time, the air (a real
     /// weather can set its own humidity and temperatures). Call each frame.
     pub fn set_natural_fog(&mut self, fog: natural_fog::NaturalFog) {

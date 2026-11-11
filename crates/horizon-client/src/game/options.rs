@@ -560,6 +560,7 @@ impl Game<'_> {
             r.cloud_distance = s.horizon.cloud_distance_blocks(&r.info);
             r.rt_ambient_light = s.horizon.rt_ambient();
             r.set_god_rays(s.horizon.god_rays);
+            r.set_god_rays_quality(s.horizon.god_rays_quality);
             r.screenshot_quality = s.horizon.screenshot_quality;
             r.set_mipmap_levels(s.mipmap_levels.max(0) as u32);
             r.set_texture_filtering(

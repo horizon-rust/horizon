@@ -835,6 +835,9 @@ pub struct Graphics {
     /// God Rays: RT lighting's volumetric air (the froxels: the sun's shafts and the haze they
     /// leave), in percent of its density; 0 none, 100 by default. The water keeps its own.
     pub god_rays: u32,
+    /// God Rays Quality: the froxels' grid and their per-pixel march (gfx/froxels.rs
+    /// `quality_grid`), 0 Low, 1 Medium, 2 High (the grid as it was, the default), 3 Ultra.
+    pub god_rays_quality: u32,
     /// RT lighting's night vision: a dim scene fades to the eye's rods' cool grey (the Purkinje
     /// shift, gfx/tonemap.wgsl `night_vision`). On by default.
     pub night_vision: bool,
@@ -967,6 +970,7 @@ impl Default for Graphics {
             moon_size: 2,
             rt_ambient_light: default_rt_ambient_light(),
             god_rays: 100,
+            god_rays_quality: 2,
             night_vision: true,
             shooting_stars: 1,
             aerial_perspective: DEFAULT_AERIAL_PERSPECTIVE,
@@ -1113,6 +1117,7 @@ impl Graphics {
                     g.rt_ambient_light = number(g.rt_ambient_light).min(MAX_RT_AMBIENT_LIGHT)
                 }
                 "godRays" => g.god_rays = number(g.god_rays).min(MAX_GOD_RAYS),
+                "godRaysQuality" => g.god_rays_quality = number(g.god_rays_quality).min(3),
                 "moonSize" => g.moon_size = number(g.moon_size).clamp(1, 20),
                 "nightVision" => g.night_vision = flag(g.night_vision),
                 "shootingStars" => g.shooting_stars = number(g.shooting_stars).min(2),
@@ -1168,7 +1173,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\ncloudDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nrtRays:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nhorizonCulling:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nrtAmbientLight:{}\ngodRays:{}\n",
+            "preset:{}\nlodDistance:{}\ncloudDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nrtRays:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nhorizonCulling:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nrtAmbientLight:{}\ngodRays:{}\ngodRaysQuality:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.cloud_distance,
@@ -1242,6 +1247,7 @@ impl Graphics {
             bool_text(self.gpu_culling),
             self.rt_ambient_light,
             self.god_rays,
+            self.god_rays_quality,
         );
         text += &self.blue_map.serialize();
         text
@@ -1436,6 +1442,7 @@ mod tests {
             moon_size: 3,
             rt_ambient_light: 5,
             god_rays: 40,
+            god_rays_quality: 1,
             night_vision: false,
             shooting_stars: 1,
             aerial_perspective: 32,

@@ -62,6 +62,7 @@ struct Fx {
     // this frame's and the last frame's; w: 1 when the pixels' dither turns with the frame
     // (`dither_turns`).
     eye: vec4<f32>,
+    // w: the per-pixel fog march's steps (froxels.rs `quality_grid`: God Rays Quality).
     prev_eye: vec4<f32>,
     // xyz: this frame's offset within a froxel before the froxel's own shift (a 3D R-sequence), w: 1
     // when the sky's light is filtered (`sky_filter`).
@@ -1006,7 +1007,6 @@ fn view_source_at(uv: vec2<f32>, r: f32) -> vec3<f32> {
 // How far each pixel marches the fogs itself, and in how many steps (closer together near the
 // eye, as the square of their number).
 const MARCH_RANGE: f32 = 1024.0;
-const MARCH_STEPS: i32 = 32;
 // The fogs and the air along the pixel's own ray from the eye to `r` (at most `MARCH_RANGE`), the
 // steps offset by the pixel's `dither`: the in-scatter (with `light`: each step lit by the
 // froxels' light there, smooth enough to share, the density the pixel's own) and the fogs'
@@ -1019,8 +1019,10 @@ fn fog_march(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
     var scattered = vec3(0.0);
     var through = vec3(1.0);
     var fog_through = 1.0;
-    let n = f32(MARCH_STEPS);
-    for (var i = 0; i < MARCH_STEPS; i++) {
+    // The God Rays Quality's steps (froxels.rs `quality_grid`, `fx.prev_eye.w`): 32 at High.
+    let steps = clamp(i32(fx.prev_eye.w), 4, 64);
+    let n = f32(steps);
+    for (var i = 0; i < steps; i++) {
         let a = f32(i) / n;
         let b = (f32(i) + 1.0) / n;
         let dz = r * (b * b - a * a);

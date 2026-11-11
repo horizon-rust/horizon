@@ -63,6 +63,22 @@ pub fn tile(view: usize) -> u32 {
 }
 /// Slices along the rays.
 pub const SLICES: u32 = 96;
+
+/// The God Rays Quality option's steps (`Graphics::god_rays_quality`, `Froxels::quality`): Low,
+/// Medium, High (the grid as it was: `TILE`/`EYE_TILE` pixels, `SLICES`, 32 march steps) and Ultra.
+pub const QUALITIES: u32 = 4;
+/// God Rays Quality's default: High, the grid as it was.
+pub const DEFAULT_QUALITY: u32 = 2;
+/// At quality `q`: a froxel's side against `tile`'s, in quarters (8: twice as wide), the slices
+/// and the per-pixel fog march's steps (froxels.wgsl `fog_march`, `fx.prev_eye.w`).
+fn quality_grid(q: u32) -> (u32, u32, u32) {
+    match q {
+        0 => (8, 48, 12),
+        1 => (6, 64, 20),
+        2 => (4, SLICES, 32),
+        _ => (3, 128, 48),
+    }
+}
 /// Where the first slice ends and the last slice ends, in blocks (`froxelMaxDistanceMeters` 256).
 /// The share of the light the open air lets through 100 m. It was 0.95 (12 % scattered over the
 /// grid's 256 m): toward the sun that adds half the light of a sunlit white wall to the sky, more
@@ -508,6 +524,9 @@ pub struct Froxels {
     /// The God Rays option (`Renderer::set_god_rays`): the share of the medium's density out of
     /// the water (the sun's shafts and their haze), 1 as measured, 0 none.
     pub strength: f32,
+    /// The God Rays Quality option (`Renderer::set_god_rays_quality`, `quality_grid`): 0 Low to
+    /// `QUALITIES - 1` Ultra.
+    pub quality: u32,
     /// A medium forced for testing (`HORIZON_FROXEL_MEDIUM`).
     forced: Option<Medium>,
     hardware: bool,
@@ -751,6 +770,7 @@ impl Froxels {
             enabled: std::env::var("HORIZON_FROXELS").is_ok_and(|v| v != "0"),
             camera: CameraMedium::default(),
             strength: 1.0,
+            quality: DEFAULT_QUALITY,
             forced,
             hardware,
             inject,
@@ -927,12 +947,21 @@ impl Froxels {
         &self.apply.as_ref().expect("just made").1
     }
 
+    /// The pixels a froxel spans on each side in view `view` at the God Rays Quality: `tile`'s at
+    /// High, `HORIZON_FROXEL_TILE` (when set) at every quality.
+    fn tile(&self, view: usize) -> u32 {
+        if std::env::var_os("HORIZON_FROXEL_TILE").is_some() {
+            return tile(view);
+        }
+        (tile(view) * quality_grid(self.quality).0).div_ceil(4)
+    }
+
     /// The view's froxels, made (and its history dropped) when its size changed.
     fn view_froxels(&mut self, device: &wgpu::Device, view: usize, size: [u32; 2]) -> usize {
         let dims = [
-            size[0].div_ceil(tile(view)).max(1),
-            size[1].div_ceil(tile(view)).max(1),
-            SLICES,
+            size[0].div_ceil(self.tile(view)).max(1),
+            size[1].div_ceil(self.tile(view)).max(1),
+            quality_grid(self.quality).1,
         ];
         if let Some(i) = self.views.iter().position(|v| v.view == view) {
             if self.views[i].dims == dims {
@@ -1125,7 +1154,12 @@ impl Froxels {
                 f32::from(u8::from(outliers_held())),
             ],
             eye: [eye.x, eye.y, eye.z, f32::from(u8::from(dither_turns()))],
-            prev_eye: [prev_eye.x, prev_eye.y, prev_eye.z, 0.0],
+            prev_eye: [
+                prev_eye.x,
+                prev_eye.y,
+                prev_eye.z,
+                quality_grid(self.quality).2 as f32,
+            ],
             jitter: {
                 let [x, y, z, _] = jitter(frame);
                 [x, y, z, f32::from(u8::from(sky_filter()))]
