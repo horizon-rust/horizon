@@ -3,11 +3,14 @@
 //! crate until the platform's executable installs it: it uses only the crate's public API, so it
 //! moves to a platform crate unchanged, and nothing else in the crate names it.
 
+#[cfg(test)]
+mod atlas_tests;
 pub(crate) mod block_entity_cem;
 pub mod cit;
 mod cit_glint;
 mod colors;
 mod connected;
+mod creative_tabs;
 mod ctm;
 mod custom_sky;
 mod entity_textures;
@@ -15,6 +18,10 @@ pub mod environment;
 mod fusion;
 mod item_bars;
 mod pack_options;
+mod particles;
+mod particles_gpu;
+mod post;
+mod sprite_modifiers;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -82,6 +89,49 @@ impl PackFormats for Formats {
         id: &str,
     ) -> Option<Arc<dyn crate::environment::BlockColormap>> {
         Some(Arc::new(environment::Colormap::load(root, id)?))
+    }
+
+    fn post_chains(
+        &self,
+        root: &Path,
+        options: horizon_pack_options::Configs,
+    ) -> Option<Box<dyn crate::polytone_post::PostChains>> {
+        Some(Box::new(post::Post::read(root, options)?))
+    }
+
+    fn frame_expression(
+        &self,
+        source: &str,
+    ) -> Option<Box<dyn crate::environment::FrameExpression>> {
+        match horizon_polytone::expr::Program::compile(source) {
+            Ok(program) => Some(Box::new(environment::FrameProgram(program))),
+            Err(e) => {
+                log::warn!("expression {source:?}: {e}");
+                None
+            }
+        }
+    }
+
+    fn sprite_modifiers(
+        &self,
+        root: &Path,
+        keys: &mut dyn Iterator<Item = &String>,
+    ) -> Option<crate::hud::sprite_modifiers::SpriteModifiers> {
+        Some(sprite_modifiers::read(root, keys))
+    }
+
+    fn creative_tab_modifiers(&self, root: &Path) -> Vec<Box<dyn crate::pack_hooks::TabModifier>> {
+        creative_tabs::read(root)
+    }
+
+    fn custom_particles(
+        &self,
+        root: &Path,
+        blocks: &'static horizon_world::registry::BlockRegistry,
+    ) -> Option<Arc<dyn crate::particles::custom::CustomParticles>> {
+        let configs = crate::packs::polytone_configs(&crate::packs::Source::Dir(root.into()));
+        let registry = particles::Registry::read(root, configs, blocks);
+        (!registry.is_empty()).then(|| Arc::new(particles::Particles(Arc::new(registry))) as _)
     }
 
     fn biome_colormaps(

@@ -770,7 +770,7 @@ impl Game<'_> {
             .pack
             .polytone_particles
             .as_ref()
-            .and_then(|p| p.frame.read().ok().map(|f| f.clone()))
+            .and_then(|p| p.frame())
             .unwrap_or_else(|| horizon_client::environment::Frame {
                 rain,
                 thunder,

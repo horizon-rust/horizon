@@ -2025,7 +2025,7 @@ pub struct PackResources {
     /// dimension modifiers (#11486), when a pack has some: what the frame draws.
     environments: Option<Arc<[Environment; 3]>>,
     /// The packs' Polytone custom particles and block emitters (#11486), when a pack has some.
-    polytone_particles: Option<Arc<horizon_client::particles::polytone::Registry>>,
+    polytone_particles: Option<Arc<dyn horizon_client::particles::custom::CustomParticles>>,
     /// The packs' Polytone post chains (#11486), when a pack has some.
     polytone_post: Option<Arc<horizon_client::polytone_post::PolytonePost>>,
     /// The packs' Polytone custom colours (`polytone/colors.json`).
@@ -9352,10 +9352,8 @@ impl Game<'_> {
                 temperature: biomes.get(biome).temperature,
                 downfall: biomes.get(biome).downfall,
             };
-            if let Some(particles) = &self.pack.polytone_particles
-                && let Ok(mut f) = particles.frame.write()
-            {
-                f.clone_from(&frame);
+            if let Some(particles) = &self.pack.polytone_particles {
+                particles.set_frame(&frame);
             }
             polytone_frame = Some(frame.clone());
             environment.set_frame(frame);

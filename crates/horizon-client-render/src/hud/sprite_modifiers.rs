@@ -7,12 +7,23 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use horizon_polytone::sprites::{SpriteChange, SpriteModifier, sprite_id};
-
 use super::{HudAtlas, Rect as SpriteRect};
 
+/// What a modifier does to one sprite: the base's, or one of its overlays'.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SpriteChange {
+    /// Moves and grows the sprite (x, y, width, height), in GUI pixels.
+    pub offset: [i32; 4],
+    /// The atlas UVs (`u0`, `v0`, `u1`, `v1`) that replace the sprite's.
+    pub uv: [Option<f32>; 4],
+    /// The vertex colour, ARGB.
+    pub color: Option<u32>,
+    /// The sprite drawn instead (its id, relative to `textures/gui/sprites/`).
+    pub texture: Option<String>,
+}
+
 /// The packs' modifiers, by the atlas key of the sprite each one changes.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct SpriteModifiers {
     by_sprite: HashMap<String, (SpriteChange, Vec<SpriteChange>)>,
 }
@@ -35,77 +46,18 @@ fn atlas_key(id: &str) -> String {
     }
 }
 
-/// The sprite id of an atlas key, when it is a GUI sprite.
-fn sprite_of(key: &str) -> Option<String> {
-    if let Some(path) = key.strip_prefix("gui/sprites/") {
-        return Some(sprite_id(path));
-    }
-    let (namespace, rest) = key.split_once(':')?;
-    Some(format!(
-        "{namespace}:{}",
-        rest.strip_prefix("gui/sprites/")?
-    ))
-}
-
 impl SpriteModifiers {
-    /// The modifiers of the packs merged at `root` for the GUI sprites among `keys` (the atlas's):
-    /// for each sprite, the last file that targets it.
-    pub fn read<'a>(root: &Path, keys: impl Iterator<Item = &'a String>) -> Self {
-        let mut modifiers = Vec::new();
-        let namespaces = std::fs::read_dir(root.join("assets"))
-            .into_iter()
-            .flatten()
-            .flatten();
-        for namespace in namespaces {
-            let mut stack = vec![namespace.path().join("polytone/overlay_modifiers")];
-            while let Some(dir) = stack.pop() {
-                let mut entries: Vec<_> = std::fs::read_dir(&dir)
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .collect();
-                entries.sort_by_key(|e| e.path());
-                for entry in entries {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        stack.push(path);
-                        continue;
-                    }
-                    let parsed = horizon_world::json_file::read::<serde_json::Value>(&path)
-                        .map_err(|e| e.to_string())
-                        .and_then(|json| SpriteModifier::parse(&json));
-                    match parsed {
-                        Ok(m) => modifiers.push(m),
-                        Err(e) => log::warn!("{}: {e}", path.display()),
-                    }
-                }
-            }
-        }
-        Self::from_modifiers(modifiers, keys)
+    /// Each sprite's change and overlays, by atlas key.
+    pub fn new(by_sprite: HashMap<String, (SpriteChange, Vec<SpriteChange>)>) -> Self {
+        Self { by_sprite }
     }
 
-    /// `modifiers` (in load order) for the GUI sprites among `keys`: for each sprite, the last that
-    /// targets it.
-    fn from_modifiers<'a>(
-        modifiers: Vec<SpriteModifier>,
-        keys: impl Iterator<Item = &'a String>,
-    ) -> Self {
-        let mut by_sprite = HashMap::new();
-        if !modifiers.is_empty() {
-            for key in keys {
-                let Some(id) = sprite_of(key) else {
-                    continue;
-                };
-                if let Some(m) = modifiers
-                    .iter()
-                    .rev()
-                    .find(|m| m.targets.matches(&id, |_| false))
-                {
-                    by_sprite.insert(key.clone(), (m.change.clone(), m.overlays.clone()));
-                }
-            }
-        }
-        Self { by_sprite }
+    /// The modifiers of the packs merged at `root` for the GUI sprites among `keys` (the
+    /// atlas's); none without installed pack formats.
+    pub fn read<'a>(root: &Path, mut keys: impl Iterator<Item = &'a String>) -> Self {
+        crate::pack_hooks::formats()
+            .sprite_modifiers(root, &mut keys)
+            .unwrap_or_default()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -240,16 +192,52 @@ mod tests {
         .map(|(k, r)| (k.to_owned(), r))
         .into();
 
-        let modifiers: Vec<SpriteModifier> = [
-            serde_json::json!({"texture": "minecraft:hud/hotbar", "x_inc": -20, "width_inc": 40}),
-            serde_json::json!({"texture": "minecraft:hud/heart/full", "u0": 0, "u1": 0.5}),
-            serde_json::json!({"texture": "minecraft:hud/food_full", "new_texture": "minecraft:hud/heart/full", "color": -65536}),
-            serde_json::json!({"texture": "minecraft:hud/hotbar_selection", "overlays": [{"texture": "minecraft:hud/heart/full", "y_inc": -30}]}),
-        ]
-        .iter()
-        .map(|j| SpriteModifier::parse(j).unwrap())
-        .collect();
-        let mods = SpriteModifiers::from_modifiers(modifiers, sprites.keys());
+        let change =
+            |offset: [i32; 4], uv: [Option<f32>; 4], color, texture: Option<&str>| SpriteChange {
+                offset,
+                uv,
+                color,
+                texture: texture.map(str::to_owned),
+            };
+        let none = [None; 4];
+        let by_sprite = [
+            (
+                "gui/sprites/hud/hotbar",
+                change([-20, 0, 40, 0], none, None, None),
+                vec![],
+            ),
+            (
+                "gui/sprites/hud/heart/full",
+                change([0; 4], [Some(0.0), None, Some(0.5), None], None, None),
+                vec![],
+            ),
+            (
+                "gui/sprites/hud/food_full",
+                change(
+                    [0; 4],
+                    none,
+                    Some(0xFFFF_0000),
+                    Some("minecraft:hud/heart/full"),
+                ),
+                vec![],
+            ),
+            (
+                "gui/sprites/hud/hotbar_selection",
+                change([0; 4], none, None, None),
+                vec![change(
+                    [0, -30, 0, 0],
+                    none,
+                    None,
+                    Some("minecraft:hud/heart/full"),
+                )],
+            ),
+        ];
+        let mods = SpriteModifiers::new(
+            by_sprite
+                .into_iter()
+                .map(|(key, base, overlays)| (key.to_owned(), (base, overlays)))
+                .collect(),
+        );
         let white = 0xFFFF_FFFF;
         // Moved left 20 and 40 wider, the rest as it was.
         let hotbar = &mods
@@ -320,18 +308,9 @@ mod tests {
     }
 
     #[test]
-    fn sprite_ids_and_atlas_keys_turn_into_each_other() {
+    fn sprite_ids_turn_into_atlas_keys() {
         assert_eq!(atlas_key("minecraft:hud/hotbar"), "gui/sprites/hud/hotbar");
         assert_eq!(atlas_key("hud/hotbar"), "gui/sprites/hud/hotbar");
         assert_eq!(atlas_key("mypack:hud/bar"), "mypack:gui/sprites/hud/bar");
-        assert_eq!(
-            sprite_of("gui/sprites/hud/hotbar").as_deref(),
-            Some("minecraft:hud/hotbar")
-        );
-        assert_eq!(
-            sprite_of("mypack:gui/sprites/hud/bar").as_deref(),
-            Some("mypack:hud/bar")
-        );
-        assert_eq!(sprite_of("block/stone"), None);
     }
 }

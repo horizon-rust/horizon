@@ -27,10 +27,9 @@ use std::{
 
 pub use horizon_client_core::particle_type::ParticleType;
 pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape};
+pub mod custom;
 mod native;
-pub mod polytone;
-mod polytone_gpu;
-mod polytone_model;
+pub mod polytone_model;
 mod spawn;
 pub use native::{ParticleController, ParticleUpdate};
 
@@ -71,8 +70,8 @@ pub struct ParticleOptions {
     /// The block or item a `BlockParticleOption` or `ItemParticleOption` carries
     /// (`minecraft:stone`), for resource packs' particle modifier filters.
     pub source: Option<std::sync::Arc<str>>,
-    /// What the Polytone emitter that spawned this custom particle sets on it.
-    pub polytone_seed: Option<std::sync::Arc<polytone::Seed>>,
+    /// What the pack emitter that spawned this custom particle sets on it.
+    pub custom_seed: Option<std::sync::Arc<custom::Seed>>,
 }
 impl ParticleOptions {
     pub fn simple(ty: ParticleType) -> Self {
@@ -89,7 +88,7 @@ impl ParticleOptions {
             mod_particle: None,
             legacy_entity_effect: None,
             legacy_trail_lifetime: false,
-            polytone_seed: None,
+            custom_seed: None,
             source: None,
         }
     }
@@ -192,7 +191,7 @@ impl ParticleOptions {
 }
 
 #[derive(Clone, Debug)]
-enum Sprite {
+pub(crate) enum Sprite {
     /// Index into the engine's sprite table.
     Index(u32),
     /// An atlas sprite by name (block textures for terrain particles).
@@ -391,7 +390,7 @@ enum ModAnimation {
 }
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct ModBehaviour {
+pub(crate) struct ModBehaviour {
     velocity: Option<[f64; 3]>,
     /// Random extra velocity, each axis uniform in `-jitter..=jitter`.
     velocity_jitter: Option<[f64; 3]>,
@@ -492,28 +491,28 @@ pub struct Particle {
     pub position: [f64; 3],
     pub previous: [f64; 3],
     pub velocity: [f64; 3],
-    bb: Aabb,
-    bb_width: f32,
-    bb_height: f32,
+    pub bb: Aabb,
+    pub bb_width: f32,
+    pub bb_height: f32,
     pub on_ground: bool,
-    has_physics: bool,
+    pub has_physics: bool,
     /// Particles that move without collision (`move` overridden).
     free_move: bool,
-    stopped_by_collision: bool,
-    removed: bool,
+    pub stopped_by_collision: bool,
+    pub(crate) removed: bool,
     pub age: i32,
     pub lifetime: i32,
     pub gravity: f32,
-    friction: f32,
+    pub friction: f32,
     speed_up_when_y_blocked: bool,
     /// `quadSize`.
     pub size: f32,
     pub rgba: [f32; 4],
-    roll: f32,
-    o_roll: f32,
-    sprite: Sprite,
+    pub roll: f32,
+    pub o_roll: f32,
+    pub(crate) sprite: Sprite,
     /// Age-driven sprite set (`setSpriteFromAge`).
-    set: Option<u32>,
+    pub set: Option<u32>,
     /// A mod particle's `loop` animation: ticks per sprite, 0 for none.
     frame_ticks: u16,
     /// Sub-rectangle of the sprite (u0, v0, u1, v1) in 0..1.
@@ -521,22 +520,22 @@ pub struct Particle {
     size_curve: Size,
     light: Light,
     behaviour: Behaviour,
-    no_render: bool,
+    pub no_render: bool,
     /// Ticked once when created (`CritParticle` constructor).
     pre_tick: bool,
     /// `Particle.random`: the particle's own generator (`RandomSource.create()`).
-    random: LegacyRandom,
-    controller: Option<Box<dyn native::Controller>>,
+    pub random: LegacyRandom,
+    pub(crate) controller: Option<Box<dyn native::Controller>>,
     /// A resource pack's Polytone custom particle type, for its `limit` and `exclusion_radius`.
-    polytone_type: Option<std::sync::Arc<str>>,
+    pub polytone_type: Option<std::sync::Arc<str>>,
     /// A Polytone model particle's faces, drawn instead of its sprite quad.
-    model: Option<std::sync::Arc<polytone_model::ParticleModel>>,
+    pub model: Option<std::sync::Arc<polytone_model::ParticleModel>>,
     /// How a Polytone custom particle's quad turns (`rotation_mode`).
-    orientation: polytone_gpu::Orientation,
+    pub orientation: custom::Orientation,
     /// Blended additively (a Polytone `additive_translucent` particle).
-    additive: bool,
+    pub additive: bool,
 }
-fn aabb_at(p: [f64; 3], w: f32, h: f32) -> Aabb {
+pub fn aabb_at(p: [f64; 3], w: f32, h: f32) -> Aabb {
     let w = f64::from(w) / 2.0;
     Aabb::new(
         Vec3::new(p[0] - w, p[1], p[2] - w),
@@ -851,7 +850,7 @@ pub fn along_axis(
 
 impl Particle {
     /// `Particle(level, x, y, z)` + `SingleQuadParticle` (no initial velocity).
-    fn at(random: &mut LegacyRandom, ty: ParticleType, p: [f64; 3]) -> Self {
+    pub fn at(random: &mut LegacyRandom, ty: ParticleType, p: [f64; 3]) -> Self {
         let mut particle = Self::base_at(random, ty, p);
         particle.size = 0.1 * (random.next_float() * 0.5 + 0.5) * 2.0;
         particle
@@ -862,7 +861,7 @@ impl Particle {
         particle.lifetime = (4.0 / (random.next_float() * 0.9 + 0.1)) as i32;
         particle
     }
-    fn blank(ty: ParticleType, p: [f64; 3]) -> Self {
+    pub(crate) fn blank(ty: ParticleType, p: [f64; 3]) -> Self {
         Self {
             ty,
             position: p,
@@ -898,7 +897,7 @@ impl Particle {
             controller: None,
             polytone_type: None,
             model: None,
-            orientation: polytone_gpu::Orientation::Camera,
+            orientation: custom::Orientation::Camera,
             additive: false,
         }
     }
@@ -1034,7 +1033,7 @@ impl Particle {
         !self.removed
     }
     /// `Particle.move` with `Entity.collideBoundingBox` against block collision shapes.
-    fn move_by(&mut self, level: &ParticleLevel, d: [f64; 3]) {
+    pub fn move_by(&mut self, level: &ParticleLevel, d: [f64; 3]) {
         if self.free_move {
             self.bb = self.bb.move_by(Vec3::new(d[0], d[1], d[2]));
             self.set_location_from_bb();
@@ -1089,7 +1088,7 @@ impl Particle {
         }
     }
     /// `getLightCoords(a)` from the world's smooth sky and block light (0..=240).
-    fn light_coords(&self, partial: f32, sky: u32, block: u32) -> (u32, u32) {
+    pub(crate) fn light_coords(&self, partial: f32, sky: u32, block: u32) -> (u32, u32) {
         let t = ((self.age as f32 + partial) / self.lifetime as f32).clamp(0.0, 1.0);
         match self.light {
             Light::World => (sky, block),
@@ -1294,8 +1293,8 @@ impl<'a> ParticleLevel<'a> {
 
 /// `ParticleEngine` plus the sprite sets of `ParticleResources`.
 pub struct ParticleEngine {
-    particles: Vec<Particle>,
-    pending: Vec<Particle>,
+    pub(crate) particles: Vec<Particle>,
+    pub(crate) pending: Vec<Particle>,
     /// While the live particles tick (out of `particles`), what their emitters spawn waits
     /// here, so a spawn's `limit` and `exclusion_radius` see every live particle.
     spawned_in_tick: Option<Vec<(ParticleOptions, [f64; 3], [f64; 3])>>,
@@ -1317,21 +1316,21 @@ pub struct ParticleEngine {
     /// parity probe compares exactly what a block, fluid or entity asked for.
     pub created_requests: Option<Vec<(ParticleOptions, [f64; 3], [f64; 3])>>,
     names: Vec<String>,
-    rects: Vec<Option<Rect>>,
+    pub(crate) rects: Vec<Option<Rect>>,
     /// Each named sprite, and whether `SingleQuadParticle.Layer.bySprite` puts
     /// it on the translucent layer (a texel with 0 < alpha < 255).
-    atlas: HashMap<String, (Rect, bool)>,
-    sets: HashMap<ParticleType, u32>,
+    pub(crate) atlas: HashMap<String, (Rect, bool)>,
+    pub(crate) sets: HashMap<ParticleType, u32>,
     /// A native mod's sprite sets, by namespaced particle name.
-    mod_sets: HashMap<String, (u32, Option<ModBehaviour>)>,
-    set_sprites: Vec<Vec<u32>>,
+    pub(crate) mod_sets: HashMap<String, (u32, Option<ModBehaviour>)>,
+    pub(crate) set_sprites: Vec<Vec<u32>>,
     /// Resource packs' Polytone custom particle types (#11486).
-    polytone: Option<std::sync::Arc<polytone::Registry>>,
+    pub(crate) polytone: Option<std::sync::Arc<dyn custom::CustomParticles>>,
     /// Vanilla particle types a pack replaces with a custom one of the same id
     /// (`assets/minecraft/polytone/custom_particles/rain.json` is `minecraft:rain`).
     polytone_overrides: HashMap<ParticleType, String>,
     /// The packs' GPU particles' records, one store per type, and the ticks they count in.
-    polytone_gpu: Vec<polytone_gpu::Store>,
+    polytone_gpu: Vec<Box<dyn custom::GpuParticles>>,
     polytone_ticks: u64,
     /// The last frame's additively blended quads (`take_additive`).
     additive: std::sync::Mutex<Vec<Vertex>>,
@@ -1365,7 +1364,7 @@ struct CachedParticleLight {
     packed: u8,
 }
 
-struct ParticleLightCache {
+pub struct ParticleLightCache {
     entries: [Option<CachedParticleLight>; PARTICLE_LIGHT_CACHE_SIZE],
 }
 
@@ -1378,7 +1377,7 @@ impl Default for ParticleLightCache {
 }
 
 impl ParticleLightCache {
-    fn get(&mut self, block: [i32; 3], light_at: &dyn Fn([i32; 3]) -> u8) -> u8 {
+    pub fn get(&mut self, block: [i32; 3], light_at: &dyn Fn([i32; 3]) -> u8) -> u8 {
         let hash = (block[0] as u32).wrapping_mul(73_856_093)
             ^ (block[1] as u32).wrapping_mul(19_349_663)
             ^ (block[2] as u32).wrapping_mul(83_492_791);
@@ -1753,7 +1752,7 @@ impl ParticleEngine {
         Some(particle)
     }
     /// Sets (or clears) the resource packs' Polytone custom particle types.
-    pub fn set_polytone(&mut self, registry: Option<std::sync::Arc<polytone::Registry>>) {
+    pub fn set_polytone(&mut self, registry: Option<std::sync::Arc<dyn custom::CustomParticles>>) {
         let registry = registry.filter(|r| !r.is_empty());
         let same = match (&self.polytone, &registry) {
             (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
@@ -1767,7 +1766,7 @@ impl ParticleEngine {
                 .flat_map(|r| {
                     ParticleType::ALL.iter().filter_map(|&ty| {
                         let id = format!("minecraft:{}", ty.name());
-                        r.get(&id).is_some().then_some((ty, id))
+                        r.has_type(&id).then_some((ty, id))
                     })
                 })
                 .collect();
@@ -1781,7 +1780,7 @@ impl ParticleEngine {
     }
     /// Live GPU particle records (spawns, before `area` spreads them), for tests and status.
     pub fn polytone_gpu_records(&self) -> usize {
-        self.polytone_gpu.iter().map(polytone_gpu::Store::len).sum()
+        self.polytone_gpu.iter().map(|s| s.records()).sum()
     }
     /// Choose a frame from this particle's declared sprite set.
     pub fn set_sprite_frame(&self, particle: &mut Particle, frame: usize) {
@@ -2160,24 +2159,25 @@ impl ParticleEngine {
         };
         if let Some(name) = custom
             && let Some(registry) = &self.polytone
-            && let Some(def) = registry.get(name)
+            && registry.has_type(name)
         {
-            let (registry, def, name) = (registry.clone(), def.clone(), name.to_owned());
-            let particle = polytone::make(self, &registry, &name, &def, o, p, v, seed)?;
-            if def.gpu.is_some() {
-                // A GPU particle is only a record: it never becomes an engine particle.
-                let now = self.polytone_ticks;
-                let store = match self.polytone_gpu.iter().position(|s| s.is(&def)) {
-                    Some(i) => &mut self.polytone_gpu[i],
-                    None => {
-                        self.polytone_gpu.push(polytone_gpu::Store::new(&def)?);
-                        self.polytone_gpu.last_mut()?
-                    }
-                };
-                store.spawn(&particle, now, seed as u64);
-                return None;
+            let (registry, name) = (registry.clone(), name.to_owned());
+            match registry.make(self, &name, o, p, v, seed)? {
+                custom::Made::Particle(particle) => return Some(particle),
+                custom::Made::Gpu(particle) => {
+                    // A GPU particle is only a record: it never becomes an engine particle.
+                    let now = self.polytone_ticks;
+                    let store = match self.polytone_gpu.iter().position(|s| s.is(&name)) {
+                        Some(i) => &mut self.polytone_gpu[i],
+                        None => {
+                            self.polytone_gpu.push(registry.gpu_store(&name)?);
+                            self.polytone_gpu.last_mut()?
+                        }
+                    };
+                    store.spawn(&particle, now, seed as u64);
+                    return None;
+                }
             }
-            return Some(particle);
         }
         if let Some(name) = &o.mod_particle {
             let (set, behaviour) = *self.mod_sets.get(name)?;
@@ -3952,7 +3952,7 @@ impl ParticleEngine {
         }
     }
     #[allow(clippy::too_many_lines)]
-    fn tick_particle(&mut self, p: &mut Particle, level: &ParticleLevel) {
+    pub(crate) fn tick_particle(&mut self, p: &mut Particle, level: &ParticleLevel) {
         match p.behaviour {
             Behaviour::Base => p.base_tick(level),
             Behaviour::Controlled { .. } => {
@@ -4901,7 +4901,7 @@ impl ParticleEngine {
                 ) - camera;
                 (pos.as_vec3(), p.quad_size(partial))
             });
-            let rotation = if p.orientation != polytone_gpu::Orientation::Camera {
+            let rotation = if p.orientation != custom::Orientation::Camera {
                 // A custom particle's `movement_aligned` quad has its texture's top against
                 // its motion (measured in Java: a light ray rising toward the noon sun hangs
                 // below the leaves it starts at); a GPU particle's has it along its motion.
@@ -4911,7 +4911,7 @@ impl ParticleEngine {
                     p.velocity[2] as f32,
                 );
                 let roll = p.o_roll + (p.roll - p.o_roll) * partial;
-                polytone_gpu::orient(p.orientation, center, velocity, roll, base)
+                custom::orient(p.orientation, center, velocity, roll, base)
             } else if p.roll != 0.0 {
                 base * Quat::from_rotation_z(p.o_roll + (p.roll - p.o_roll) * partial)
             } else {

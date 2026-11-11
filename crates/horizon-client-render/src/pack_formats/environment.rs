@@ -4,6 +4,7 @@
 //! [`crate::environment::BlockColormap`]).
 use crate::environment::{
     BiomeFunction, BlockColormap, ColormapTarget, DimensionMaps, EnvironmentModifiers, Frame,
+    FrameExpression,
 };
 use horizon_pack_options::Configs;
 use horizon_world::environment_attributes::{
@@ -156,6 +157,15 @@ pub fn eval_frame(
         seed: frame.game_time as u64,
     };
     program.eval(&mut host).ok()
+}
+
+/// An expression over the frame alone (an animation `mode`): no option values, `v` is 0.
+pub struct FrameProgram(pub horizon_polytone::expr::Program);
+
+impl FrameExpression for FrameProgram {
+    fn eval(&self, frame: &Frame) -> Option<f64> {
+        eval_frame(&self.0, frame, &Configs::default()).map(|v| v.num())
+    }
 }
 
 impl horizon_polytone::expr::Host for FrameHost<'_> {
@@ -807,5 +817,375 @@ impl Resolver {
                 None => {}
             }
         }
+    }
+}
+
+/// The packs' modifiers on a world's environment, end to end (moved from the engine's
+/// `environment` tests, which no longer reach the formats).
+#[cfg(test)]
+mod pack_tests {
+    use crate::environment::{Environment, Frame, PackModifiers, Sample, Sky};
+
+    /// A world with one sky-lit dimension and two biomes, one of them in a tag, and a pack with
+    /// Polytone modifiers.
+    fn with_packs(pack: &[(&str, &str)]) -> Environment {
+        let files: Vec<(&str, &[u8])> = pack.iter().map(|(p, t)| (*p, t.as_bytes())).collect();
+        with_pack_files(&files)
+    }
+
+    fn with_pack_files(pack: &[(&str, &[u8])]) -> Environment {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-env-packs-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let write = |path: &str, text: &[u8]| {
+            let path = dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "world/data/minecraft/dimension_type/overworld.json",
+            r##"{"has_skylight": true, "has_ceiling": false,
+                "attributes": {"minecraft:visual/sky_color": "#808080", "minecraft:visual/fog_color": "#000000"}}"##.as_bytes(),
+        );
+        write(
+            "world/data/minecraft/worldgen/biome/plains.json",
+            r##"{"attributes": {"minecraft:visual/sky_color": "#404040"}}"##.as_bytes(),
+        );
+        write(
+            "world/data/minecraft/worldgen/biome/desert.json",
+            r#"{"attributes": {}}"#.as_bytes(),
+        );
+        write(
+            "world/data/minecraft/tags/worldgen/biome/dry.json",
+            r#"{"values": ["minecraft:desert"]}"#.as_bytes(),
+        );
+        for (path, text) in pack {
+            write(&format!("pack/{path}"), text);
+        }
+        crate::pack_formats::install();
+        let modifiers = PackModifiers::read(&dir.join("pack")).with_configs(
+            crate::packs::polytone_configs(&crate::packs::Source::Dir(dir.join("pack"))),
+        );
+        let env =
+            Environment::load_dimension_with(&dir.join("world"), "overworld", &modifiers).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        env
+    }
+
+    fn sky_at(env: &Environment, biome: &str, rain: f32) -> Sky {
+        let map = env.biome(biome).unwrap();
+        env.sample(&Sample {
+            rain,
+            biome: Some(map),
+            post_biome: env.biome_post(biome),
+            ..Sample::default()
+        })
+    }
+
+    const GRAY_40: f32 = 64.0 / 255.0;
+
+    #[test]
+    fn pack_biome_modifiers_change_their_targets_only() {
+        let env = with_packs(&[(
+            "assets/mypack/polytone/biome_modifiers/dry_fog.json",
+            r##"{"targets": "#minecraft:dry", "attributes_modifiers": {"visual/fog_color": "ff0000"}}"##,
+        )]);
+        assert_eq!(
+            sky_at(&env, "minecraft:desert", 0.0).fog_color,
+            [1.0, 0.0, 0.0]
+        );
+        assert_eq!(sky_at(&env, "minecraft:plains", 0.0).fog_color, [0.0; 3]);
+        // Without packs the stack is vanilla's: the biome's own sky.
+        let plain = with_packs(&[]);
+        assert_eq!(
+            sky_at(&plain, "minecraft:plains", 0.0).sky_color,
+            [GRAY_40; 3]
+        );
+    }
+
+    #[test]
+    fn dimension_modifiers_remove_weather_layers_and_post_process_last() {
+        let raining = |env: &Environment| sky_at(env, "minecraft:plains", 1.0).sky_color;
+        // Vanilla's rain grays the sky toward a darker gray.
+        assert_ne!(raining(&with_packs(&[])), [GRAY_40; 3]);
+        let no_rain = with_packs(&[(
+            "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+            r#"{"attributes_modifiers": {"rain": {"visual/sky_color": "REMOVE"}}}"#,
+        )]);
+        assert_eq!(raining(&no_rain), [GRAY_40; 3]);
+        let post = with_packs(&[(
+            "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+            r##"{"attributes_modifiers": {"post_process": {"visual/sky_color": "#0000ff"}}}"##,
+        )]);
+        assert_eq!(raining(&post), [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn biome_post_process_and_priority() {
+        let env = with_packs(&[
+            (
+                "assets/a/polytone/biome_modifiers/wins.json",
+                r##"{"targets": "minecraft:plains", "priority": 5,
+                    "attributes_modifiers": {"base": {"visual/fog_color": "#00ff00"},
+                                             "post_process": {"visual/sky_color": "#ffffff"}}}"##,
+            ),
+            (
+                "assets/b/polytone/biome_modifiers/loses.json",
+                r##"{"targets": "minecraft:plains", "priority": -1,
+                    "attributes_modifiers": {"visual/fog_color": "#0000ff"}}"##,
+            ),
+        ]);
+        // The higher priority's fog wins.
+        assert_eq!(
+            sky_at(&env, "minecraft:plains", 0.0).fog_color,
+            [0.0, 1.0, 0.0]
+        );
+        // The post-process sky comes after the weather, so the rain doesn't gray it.
+        assert_eq!(
+            sky_at(&env, "minecraft:plains", 1.0).sky_color,
+            [1.0, 1.0, 1.0]
+        );
+        assert!(env.biome_post("minecraft:desert").is_none());
+    }
+
+    /// A number an expression gives outside the attribute's range is clamped into it, as vanilla
+    /// clamps a sampled value: a fog end that a pack takes below zero deep underground is fog
+    /// at once, not the default end.
+    #[test]
+    fn an_expression_value_out_of_range_is_clamped() {
+        let env = with_packs(&[(
+            "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+            r#"{"attributes_modifiers": {"visual/fog_end_distance": "64 - (p.y < 0) * 80"}}"#,
+        )]);
+        let end_at = |y: f64| {
+            env.set_frame(Frame {
+                player: [0.5, y, 0.5],
+                ..Frame::default()
+            });
+            sky_at(&env, "minecraft:plains", 0.0).fog_end
+        };
+        assert_eq!(end_at(70.0), 64.0);
+        assert_eq!(end_at(-2.0), 0.0);
+    }
+
+    #[test]
+    fn expression_values_read_the_frame_and_the_value_so_far() {
+        let env = with_packs(&[
+            (
+                "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+                r#"{"attributes_modifiers": {
+                    "visual/fog_end_distance": "14 * (c.viewDistance / 16) + min(g.rain * 2, 1) * 100",
+                    "visual/fog_start_distance": {"argument": "v + config('mypack:shift')", "modifier": "override"},
+                    "visual/cloud_height": "v * 0.5"}}"#,
+            ),
+            (
+                "assets/mypack/polytone/config_entries/shift.json",
+                r#"{"default_value": 7}"#,
+            ),
+        ]);
+        let at = |rain: f32, thunder: f32, chunks: i32| {
+            env.set_frame(Frame {
+                rain,
+                thunder,
+                render_distance: chunks,
+                ..Frame::default()
+            });
+            sky_at(&env, "minecraft:plains", 0.0)
+        };
+        // `c.viewDistance` is in blocks: 16 chunks are 256.
+        assert_eq!(at(0.0, 0.0, 16).fog_end, 224.0);
+        // `g.rain` is the mean of rain and thunder: half rain is 0.25 (448 + 50), plain rain
+        // 0.5 and a thunderstorm 1, both past the `min` (224 + 100).
+        assert_eq!(at(0.5, 0.0, 32).fog_end, 498.0);
+        assert_eq!(at(1.0, 0.0, 16).fog_end, 324.0);
+        assert_eq!(at(1.0, 1.0, 16).fog_end, 324.0);
+        // `v` is the value the layers before gave: the default start 0, and 192.33 for clouds.
+        assert_eq!(at(0.0, 0.0, 16).fog_start, 7.0);
+        assert_eq!(at(0.0, 0.0, 16).cloud_height, 192.33 * 0.5);
+    }
+
+    /// A PNG of RGBA pixels in one row.
+    fn png_row(pixels: &[[u8; 4]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, pixels.len() as u32, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&pixels.concat()).unwrap();
+        writer.finish().unwrap();
+        out
+    }
+
+    #[test]
+    fn colormap_values_read_the_pixel_their_axes_pick() {
+        // Left to right: red, green, transparent, blue; x 1 is the left edge.
+        let png = png_row(&[
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [9, 9, 9, 0],
+            [0, 0, 255, 255],
+        ]);
+        let env = with_pack_files(&[
+            (
+                "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+                br#"{"attributes_modifiers": {"visual/sky_color": "mypack:sky"}}"#,
+            ),
+            (
+                "assets/mypack/polytone/colormaps/sky.json",
+                br#"{"x_axis": "1 - g.rain", "y_axis": 0}"#,
+            ),
+            ("assets/mypack/polytone/colormaps/sky.png", &png),
+        ]);
+        let sky = |rain: f32, thunder: f32| {
+            env.set_frame(Frame {
+                rain,
+                thunder,
+                ..Frame::default()
+            });
+            env.sample(&Sample::default()).sky_color
+        };
+        // `g.rain` 0, 0.3 (rain 0.6), 1 (a thunderstorm).
+        assert_eq!(sky(0.0, 0.0), [1.0, 0.0, 0.0]);
+        assert_eq!(sky(0.6, 0.0), [0.0, 1.0, 0.0]);
+        assert_eq!(sky(1.0, 1.0), [0.0, 0.0, 1.0]);
+        // A transparent pixel keeps the colour the layers before gave (the dimension's #808080):
+        // `g.rain` 0.7.
+        assert_eq!(sky(1.0, 0.4), [128.0 / 255.0; 3]);
+    }
+
+    #[test]
+    fn biome_id_colormaps_read_the_column_their_mapper_gives_the_biome() {
+        // Left to right: red, green, transparent, blue.
+        let png = png_row(&[
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [9, 9, 9, 0],
+            [0, 0, 255, 255],
+        ]);
+        let env = with_pack_files(&[
+            (
+                "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+                br#"{"attributes_modifiers": {"visual/sky_color": "mypack:sky"}}"#,
+            ),
+            (
+                "assets/mypack/polytone/colormaps/sky.json",
+                br#"{"x_axis": "biome_id", "y_axis": 0, "biome_id_mapper": "mypack:biomes"}"#,
+            ),
+            ("assets/mypack/polytone/colormaps/sky.png", &png),
+            (
+                // Pixel columns from the left, over a texture_size of the image's width.
+                "assets/mypack/polytone/biome_id_mappers/biomes.json",
+                br#"{"minecraft:desert": 3, "swamp": 1, "minecraft:plains": 2, "texture_size": 4}"#,
+            ),
+        ]);
+        let sky = |biome: &str| {
+            env.set_frame(Frame {
+                biome: biome.to_owned(),
+                ..Frame::default()
+            });
+            env.sample(&Sample::default()).sky_color
+        };
+        assert_eq!(sky("minecraft:desert"), [0.0, 0.0, 1.0]);
+        assert_eq!(sky("minecraft:swamp"), [0.0, 1.0, 0.0]);
+        // A biome the mapper doesn't name is 0: the first column.
+        assert_eq!(sky("minecraft:forest"), [1.0, 0.0, 0.0]);
+        // Plains land on the transparent pixel: the colour before stays.
+        assert_eq!(sky("minecraft:plains"), [128.0 / 255.0; 3]);
+    }
+}
+
+/// The colormaps a pack's files give: their axes and the biome functions they replace.
+#[cfg(test)]
+mod colormap_tests {
+    use super::*;
+    use crate::biome::Biomes;
+
+    fn pack(files: &[(&str, Vec<u8>)]) -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("horizon-pack-colormap-{}-{n}", std::process::id()));
+        for (path, bytes) in files {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        root
+    }
+
+    fn png_row(pixels: &[[u8; 4]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, pixels.len() as u32, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&pixels.concat()).unwrap();
+        writer.finish().unwrap();
+        out
+    }
+
+    #[test]
+    fn biome_colors_and_a_grass_block_colormap_replace_their_whole_biome_function() {
+        let biomes = Biomes::from_jsons(&[(
+            "minecraft:plains",
+            serde_json::json!({"effects": {"water_color": 0x3F76E4}}),
+        )]);
+        // biome_colors gives water a flat green; a block modifier colours oak leaves with a map,
+        // which Polytone spreads to the whole foliage function.
+        let root = pack(&[
+            (
+                "assets/mypack/polytone/colors.json",
+                br#"{"biome_colors": {"water": "0x00ff00"}}"#.to_vec(),
+            ),
+            (
+                "assets/mypack/polytone/colormaps/leaves.png",
+                png_row(&[[0, 0, 255, 255]]),
+            ),
+            (
+                "assets/mypack/polytone/block_modifiers/oak.json",
+                br#"{"targets": ["minecraft:oak_leaves"], "colormap": "mypack:leaves"}"#.to_vec(),
+            ),
+        ]);
+        let functions = biome_colormaps(&root, &colormap_targets(&root));
+        let names: Vec<_> = functions.iter().map(|(f, _)| *f).collect();
+        assert_eq!(names, [BiomeFunction::Foliage, BiomeFunction::Water]);
+        let rgb = |i: usize| {
+            functions[i]
+                .1
+                .sample([3, 68, 5], biomes.get(0))
+                .map(|c| c & 0xFF_FFFF)
+        };
+        assert_eq!((rgb(0), rgb(1)), (Some(0x00_00FF), Some(0x00_FF00)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_a_colormap_that_ignores_the_height_is_shared_up_a_column() {
+        let root = pack(&[
+            (
+                "assets/mypack/polytone/colormaps/flat.png",
+                png_row(&[[1, 2, 3, 255]]),
+            ),
+            (
+                "assets/mypack/polytone/colormaps/flat.json",
+                br#"{"x_axis": "biome_id", "y_axis": "r.noise(o.x/60, o.z/60)"}"#.to_vec(),
+            ),
+            (
+                "assets/mypack/polytone/colormaps/tall.png",
+                png_row(&[[1, 2, 3, 255]]),
+            ),
+            (
+                "assets/mypack/polytone/colormaps/tall.json",
+                br#"{"y_axis": "y_level"}"#.to_vec(),
+            ),
+        ]);
+        let load = |id| Colormap::load(&root, id).unwrap();
+        assert!(load("mypack:flat").column());
+        assert!(!load("mypack:tall").column());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

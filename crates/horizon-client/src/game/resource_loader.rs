@@ -119,7 +119,7 @@ impl GameCpuResources {
             let creative_screen = named_scope(scope, "game_cpu.creative", move || {
                 let mut creative = Creative::load(root).map_err(|error| error.to_string())?;
                 let tab_modifiers =
-                    horizon_client::polytone_creative_tabs::TabModifier::read_all(root);
+                    horizon_client::pack_hooks::formats().creative_tab_modifiers(root);
                 creative.set_pack_modifiers(tab_modifiers);
                 Ok::<_, String>(creative)
             });

@@ -338,21 +338,29 @@ fn coverage_preserves_each_cit_blend_and_its_destination_alpha() {
     let Some(mut gpu) = Gpu::new() else {
         return;
     };
-    use crate::pack_formats::cit::parse_blend;
-    for (name, expected) in [
-        ("alpha", 128),
-        ("add", 0),
-        ("dodge", 0),
-        ("glint", 0),
-        ("burn", 102),
-        ("multiply", 26),
-        ("overlay", 51),
-        ("screen", 255),
-        ("subtract", 255),
-        ("replace", 255),
-        ("0 768", 153),
-        ("774 0", 153),
-        ("770 771 772 773", 128),
+    use crate::cit::Factor::*;
+    use crate::cit::testing::pair;
+    // OptiFine's named blends and GL factor lists, as the engine draws them.
+    let four = crate::cit::Blend {
+        src: SrcAlpha,
+        dst: OneMinusSrcAlpha,
+        src_alpha: DstAlpha,
+        dst_alpha: OneMinusDstAlpha,
+    };
+    for (_name, blend, expected) in [
+        ("alpha", pair(SrcAlpha, OneMinusSrcAlpha), 128),
+        ("add", pair(SrcAlpha, One), 0),
+        ("dodge", pair(One, One), 0),
+        ("glint", pair(SrcColor, One), 0),
+        ("burn", pair(Zero, OneMinusSrcColor), 102),
+        ("multiply", pair(DstColor, OneMinusSrcAlpha), 26),
+        ("overlay", pair(DstColor, SrcColor), 51),
+        ("screen", pair(One, OneMinusSrcColor), 255),
+        ("subtract", pair(OneMinusDstColor, Zero), 255),
+        ("replace", None, 255),
+        ("0 768", pair(Zero, SrcColor), 153),
+        ("774 0", pair(DstColor, Zero), 153),
+        ("770 771 772 773", Some(four), 128),
     ] {
         let textures = cit_glint::GlintTextures {
             width: 1,
@@ -363,7 +371,7 @@ fn coverage_preserves_each_cit_blend_and_its_destination_alpha() {
                 blur: false,
                 blend: 0,
             }],
-            blends: vec![parse_blend(name).unwrap()],
+            blends: vec![blend],
             ..Default::default()
         };
         gpu.hud

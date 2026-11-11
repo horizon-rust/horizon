@@ -4767,11 +4767,26 @@ mod tests {
     }
 
     #[test]
-    fn a_chest_jem_reshapes_the_closed_chest_and_paints_its_texture() {
-        use crate::pack_formats::block_entity_cem::tests::{BOX, chest, pack};
-        crate::pack_formats::install();
+    fn a_reshaped_chest_draws_its_new_lid_in_the_packs_texture() {
+        // A part with `faces` faces, and the closed chest's model: one face per part.
+        let plane = |faces: usize, children: Vec<(&str, ModelPart)>| ModelPart {
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: vec![[[0.0; 5]; 4]; faces],
+            children: children
+                .into_iter()
+                .map(|(n, c)| (n.to_owned(), c))
+                .collect(),
+        };
+        let chest = |lid: usize| {
+            let parts = vec![
+                ("bottom", plane(1, vec![])),
+                ("lid", plane(lid, vec![])),
+                ("lock", plane(1, vec![])),
+            ];
+            plane(0, parts)
+        };
         let vanilla = Arc::new(BlockEntityShapes::new(
-            HashMap::from([("chest", chest())]),
+            HashMap::from([("chest", chest(1))]),
             HashMap::new(),
         ));
         let renderer = BlockEntityRenderer {
@@ -4784,22 +4799,17 @@ mod tests {
             static_geometry: Mutex::default(),
             sign_cache_enabled: AtomicBool::new(false),
         };
-        // No block entity's `.jem` (a mob's only): vanilla's shapes, not a copy.
-        let empty = pack("render-none", &[("optifine/cem/zombie.jem", "{}".into())]);
-        assert!(Arc::ptr_eq(&renderer.shapes_for(&empty), &renderer.vanilla));
-        let root = pack(
-            "render-chest",
-            &[(
-                "optifine/cem/chest.jem",
-                format!(
-                    r#"{{"texture": "textures/entity/chest/fancy.png",
-                        "models": [{{"part": "lid", {BOX}}}]}}"#
-                ),
-            )],
-        );
-        renderer.set_shapes(renderer.shapes_for(&root));
-        let _ = std::fs::remove_dir_all(&root);
-        let _ = std::fs::remove_dir_all(&empty);
+        // What a pack's `chest.jem` gives (`pack_formats::block_entity_cem`): the lid a box of
+        // six faces, in the `.jem`'s texture; the chests copying it with no file of their own
+        // stay vanilla.
+        renderer.set_shapes(Arc::new(BlockEntityShapes::new(
+            HashMap::from([
+                ("chest", chest(6)),
+                ("trapped_chest", chest(1)),
+                ("ender_chest", chest(1)),
+            ]),
+            HashMap::from([("chest", "entity/chest/fancy".to_owned())]),
+        )));
         let rect = |u0: f32| Rect {
             u0,
             v0: 0.0,

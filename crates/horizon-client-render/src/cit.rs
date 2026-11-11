@@ -196,3 +196,57 @@ impl CitRules {
         self.matcher.as_ref()?.glint(stack, hand, max_damage, foil)
     }
 }
+
+/// Rules and blends as a pack format gives them, for the engine's tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+
+    /// `src dst`, the alpha factors GL_ZERO and GL_ONE (the target's alpha stays).
+    pub(crate) fn pair(src: Factor, dst: Factor) -> Option<Blend> {
+        Some(Blend {
+            src,
+            dst,
+            src_alpha: Factor::Zero,
+            dst_alpha: Factor::One,
+        })
+    }
+
+    /// The glint layer a rule draws when it sets nothing: added, still, drawn blurred.
+    pub(crate) fn glint() -> Glint {
+        Glint {
+            layer: 0,
+            blend: pair(Factor::SrcAlpha, Factor::One),
+            speed: 0.0,
+            rotation: 0.0,
+            duration: 1.0,
+            rgba: [1.0; 4],
+            use_glint: false,
+            blur: true,
+        }
+    }
+
+    /// A rule of `kind` in `dir` (`assets/minecraft/optifine/cit`) named `name`, drawing
+    /// `texture` and the named `textures` (names of `.png`s beside it).
+    pub(crate) fn rule(
+        kind: Kind,
+        dir: &str,
+        name: &str,
+        texture: Option<&str>,
+        textures: &[(&str, &str)],
+    ) -> Rule {
+        let png = |t: &str| format!("{dir}/{t}.png");
+        Rule {
+            path: format!("{dir}/{name}.properties"),
+            kind,
+            texture: texture.map(png),
+            textures: textures
+                .iter()
+                .map(|(n, t)| ((*n).to_owned(), png(t)))
+                .collect(),
+            model: None,
+            models: Vec::new(),
+            glint: glint(),
+        }
+    }
+}

@@ -50,7 +50,7 @@ impl ParticleEngine {
                     Some(name) => name.clone(),
                     None => format!("minecraft:{}", options.ty.name()),
                 };
-                polytone::modify(registry, &id, options.source.as_deref(), &mut particle);
+                registry.modify(&id, options.source.as_deref(), &mut particle);
             }
             // The provider has drawn, so rejecting here keeps vanilla's RNG order.
             // shortcut: counts live plus queued particles by scanning instead of

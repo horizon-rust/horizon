@@ -60,13 +60,14 @@ pub mod hud;
 pub mod hud_kit;
 pub mod hud_layout;
 pub mod hud_overlays;
+#[cfg(any(test, feature = "test-support"))]
+pub mod hud_test_support;
 pub mod inventory_effects;
 pub mod java_text;
 mod jei_sprites;
 pub mod jigsaw_block;
 pub mod keypad;
 pub mod terrain_model;
-pub use horizon_polytone::creative_tabs as polytone_creative_tabs;
 pub use horizon_world::json_folder;
 pub mod level_loading;
 pub mod light;

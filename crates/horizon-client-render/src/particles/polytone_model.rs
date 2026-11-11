@@ -15,17 +15,17 @@ use std::path::Path;
 /// One face of a model particle: corners in blocks around the model's centre, in drawing order,
 /// with their texture coordinates inside the sprite (0 to 1).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ModelQuad {
-    pub(crate) corners: [Vec3; 4],
-    pub(crate) uv: [[f32; 2]; 4],
+pub struct ModelQuad {
+    pub corners: [Vec3; 4],
+    pub uv: [[f32; 2]; 4],
     /// The sprite's atlas name (`davidparticles:block/glow_test_1`, `block/stone`).
-    pub(crate) sprite: String,
+    pub sprite: String,
 }
 
 /// A model particle's faces.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct ParticleModel {
-    pub(crate) quads: Vec<ModelQuad>,
+pub struct ParticleModel {
+    pub quads: Vec<ModelQuad>,
 }
 
 /// `ns:path` with `minecraft` when the namespace is left out.
@@ -163,7 +163,7 @@ fn element_rotation(element: &Json) -> Option<(Quat, Vec3)> {
 impl ParticleModel {
     /// The model `id` (`davidparticles:block/fullblock_glow`) under a pack overlay root; `None`
     /// when it's missing or has no face to draw.
-    pub(crate) fn read(pack_root: &Path, id: &str) -> Option<Self> {
+    pub fn read(pack_root: &Path, id: &str) -> Option<Self> {
         let (textures, elements) = read_model(pack_root, id, 0)?;
         let mut quads = Vec::new();
         for element in &elements {
@@ -226,7 +226,7 @@ impl ParticleModel {
 }
 
 /// The packs' model particles: each custom particle type with a `model`, its faces.
-pub(crate) fn read_models<'a>(
+pub fn read_models<'a>(
     pack_root: &Path,
     types: impl Iterator<Item = (&'a String, &'a Json)>,
 ) -> HashMap<String, std::sync::Arc<ParticleModel>> {

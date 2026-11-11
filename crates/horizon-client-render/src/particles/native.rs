@@ -19,7 +19,7 @@ pub trait ParticleController: Clone + Debug + Send + Sync + 'static {
     fn tick(&mut self, particle: &mut Particle, level: &ParticleLevel<'_>) -> ParticleUpdate;
 }
 
-pub(super) trait Controller: Debug + Send + Sync {
+pub(crate) trait Controller: Debug + Send + Sync {
     fn tick(&mut self, particle: &mut Particle, level: &ParticleLevel<'_>) -> ParticleUpdate;
     fn clone_box(&self) -> Box<dyn Controller>;
 }

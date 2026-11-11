@@ -114,10 +114,9 @@ pub fn armor_sprites(rules: &[Rule]) -> BTreeSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cit::testing::rule;
 
-    fn rule(path: &str, text: &str) -> Rule {
-        crate::pack_formats::cit::parse_rule(path, text).unwrap()
-    }
+    const CIT: &str = "assets/minecraft/optifine/cit";
 
     #[test]
     fn layers_take_their_old_texture_names() {
@@ -154,12 +153,9 @@ mod tests {
 
     #[test]
     fn a_named_layer_wins_over_the_generic_texture() {
-        let r = rule(
-            "assets/minecraft/optifine/cit/armor/blue.properties",
-            "type=armor\nitems=diamond_chestplate diamond_leggings\ntexture=generic\n\
-             texture.diamond_layer_2=blue_legs\n",
-        );
         let dir = "assets/minecraft/optifine/cit/armor";
+        let textures = [("diamond_layer_2", "blue_legs")];
+        let r = rule(Kind::Armor, dir, "blue", Some("generic"), &textures);
         assert_eq!(
             armor_texture(&r, "diamond_layer_2"),
             Some(format!("{dir}/blue_legs.png").as_str())
@@ -180,10 +176,7 @@ mod tests {
 
     #[test]
     fn without_a_generic_texture_other_layers_stay_vanilla() {
-        let r = rule(
-            "assets/minecraft/optifine/cit/a.properties",
-            "type=armor\nitems=leather_helmet\ntexture.leather_layer_1=dyed\n",
-        );
+        let r = rule(Kind::Armor, CIT, "a", None, &[("leather_layer_1", "dyed")]);
         assert_eq!(
             layer_sprite(&r, "minecraft:leather", false, false).as_deref(),
             Some("horizon_cit:minecraft/optifine/cit/dyed")
@@ -194,21 +187,19 @@ mod tests {
 
     #[test]
     fn a_vanilla_texture_path_keeps_its_atlas_name() {
-        let r = rule(
-            "assets/minecraft/optifine/cit/wings.properties",
-            "type=elytra\ntexture=minecraft:textures/entity/wings/dragon.png\n",
-        );
+        let mut r = rule(Kind::Elytra, CIT, "wings", None, &[]);
+        r.texture = Some("assets/minecraft/textures/entity/wings/dragon.png".into());
         assert_eq!(elytra_sprite(&r).as_deref(), Some("entity/wings/dragon"));
     }
 
     #[test]
     fn worn_layers_pick_the_rules_texture_for_their_layer() {
-        let r = rule(
-            "assets/minecraft/optifine/cit/dye.properties",
-            "type=armor\nitems=leather_chestplate leather_leggings\n\
-             texture.leather_layer_1=body\ntexture.leather_layer_1_overlay=body_dye\n\
-             texture.leather_layer_2=legs\n",
-        );
+        let textures = [
+            ("leather_layer_1", "body"),
+            ("leather_layer_1_overlay", "body_dye"),
+            ("leather_layer_2", "legs"),
+        ];
+        let r = rule(Kind::Armor, CIT, "dye", None, &textures);
         let cit = |p: &str| Some(format!("horizon_cit:minecraft/optifine/cit/{p}"));
         let pick = |kind: &str, vanilla: &str| {
             worn_layer_sprite(Some(&r), "minecraft:leather", kind, vanilla)
@@ -238,10 +229,7 @@ mod tests {
 
     #[test]
     fn wings_take_the_rules_texture() {
-        let r = rule(
-            "assets/minecraft/optifine/cit/wings.properties",
-            "type=elytra\ntexture=wings\n",
-        );
+        let r = rule(Kind::Elytra, CIT, "wings", Some("wings"), &[]);
         assert_eq!(
             wings_sprite(Some(&r)).as_deref(),
             Some("horizon_cit:minecraft/optifine/cit/wings")
@@ -252,23 +240,16 @@ mod tests {
     #[test]
     fn only_armor_and_elytra_rules_reach_the_atlas() {
         let rules = [
+            rule(Kind::Item, CIT, "sword", Some("sword"), &[]),
             rule(
-                "assets/minecraft/optifine/cit/sword.properties",
-                "items=diamond_sword\ntexture=sword\n",
+                Kind::Armor,
+                CIT,
+                "plate",
+                Some("plate"),
+                &[("iron_layer_2", "legs")],
             ),
-            rule(
-                "assets/minecraft/optifine/cit/plate.properties",
-                "type=armor\nitems=iron_chestplate iron_leggings\ntexture=plate\n\
-                 texture.iron_layer_2=legs\n",
-            ),
-            rule(
-                "assets/minecraft/optifine/cit/wings.properties",
-                "type=elytra\ntexture=wings\n",
-            ),
-            rule(
-                "assets/minecraft/optifine/cit/glint.properties",
-                "type=enchantment\nenchantments=sharpness\ntexture=glint\n",
-            ),
+            rule(Kind::Elytra, CIT, "wings", Some("wings"), &[]),
+            rule(Kind::Enchantment, CIT, "glint", Some("glint"), &[]),
         ];
         let got: Vec<String> = armor_sprites(&rules).into_iter().collect();
         assert_eq!(
@@ -289,10 +270,7 @@ mod tests {
 
     #[test]
     fn the_atlas_lookup_falls_back_to_vanilla_and_the_cape() {
-        let iron = rule(
-            "assets/minecraft/optifine/cit/iron.properties",
-            "type=armor\nitems=iron_chestplate\ntexture.iron_layer_1=plate",
-        );
+        let iron = rule(Kind::Armor, CIT, "iron", None, &[("iron_layer_1", "plate")]);
         let plate = "horizon_cit:minecraft/optifine/cit/plate";
         let vanilla = "entity/equipment/humanoid/iron";
         let layer = |rule: Option<&Rule>, names: &[&str]| {
@@ -305,10 +283,7 @@ mod tests {
         // The rule's texture didn't reach the atlas, or there's no rule: vanilla's layer.
         assert_eq!(layer(Some(&iron), &[vanilla]).as_deref(), Some(vanilla));
         assert_eq!(layer(None, &[plate, vanilla]).as_deref(), Some(vanilla));
-        let elytra = rule(
-            "assets/minecraft/optifine/cit/w.properties",
-            "type=elytra\ntexture=wings",
-        );
+        let elytra = rule(Kind::Elytra, CIT, "w", Some("wings"), &[]);
         let w = "horizon_cit:minecraft/optifine/cit/wings";
         let wing = |rule: Option<&Rule>, names: &[&str]| wings(rule, Some("cape/x"), atlas(names));
         assert_eq!(wing(Some(&elytra), &[w, "cape/x"]).as_deref(), Some(w));

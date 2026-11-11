@@ -301,12 +301,10 @@ mod tests {
             "base.json",
             r#"{"parent":"item/handheld","textures":{"layer2":"./glow.png"}}"#,
         );
-        let rule = crate::pack_formats::cit::parse_rule_in(
-            &root,
-            "assets/minecraft/optifine/cit/a.properties",
-            "items=stick\nmodel=./swords/flame",
-        )
-        .unwrap();
+        // `model=./swords/flame` in `a.properties`.
+        let dir = "assets/minecraft/optifine/cit";
+        let mut rule = crate::cit::testing::rule(crate::cit::Kind::Item, dir, "a", None, &[]);
+        rule.model = Some(format!("{dir}/swords/flame.json"));
         let models = load_models(&root, &[rule]);
         let _ = fs::remove_dir_all(&root);
         let cit = |p: &str| format!("horizon_cit:minecraft/optifine/cit/{p}");

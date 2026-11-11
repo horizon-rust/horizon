@@ -82,7 +82,7 @@ pub(crate) struct SpriteAnimator {
 /// frame (the time of day, the weather, each expression's value).
 #[derive(Default)]
 struct AnimationModes {
-    programs: Vec<(String, horizon_polytone::expr::Program)>,
+    programs: Vec<(String, Box<dyn crate::environment::FrameExpression>)>,
     day_time: i64,
     weather: f32,
     values: std::collections::HashMap<String, f64>,
@@ -93,15 +93,14 @@ struct AnimationModes {
 
 impl AnimationModes {
     fn new(animations: &[SpriteAnimation]) -> Self {
-        let mut programs: Vec<(String, horizon_polytone::expr::Program)> = Vec::new();
+        let formats = crate::pack_hooks::formats();
+        let mut programs: Vec<(String, Box<dyn crate::environment::FrameExpression>)> = Vec::new();
         for animation in animations {
             if let Some(horizon_assets::animation::ClipMode::Expression(source)) = animation.mode()
                 && !programs.iter().any(|(s, _)| s == source)
+                && let Some(program) = formats.frame_expression(source)
             {
-                match horizon_polytone::expr::Program::compile(source) {
-                    Ok(program) => programs.push((source.clone(), program)),
-                    Err(e) => log::warn!("animation mode {source:?}: {e}"),
-                }
+                programs.push((source.clone(), program));
             }
         }
         Self {
@@ -133,11 +132,8 @@ impl super::Renderer {
         modes.values.clear();
         if let Some(frame) = frame {
             for (source, program) in &modes.programs {
-                let configs = Default::default();
-                if let Some(value) =
-                    crate::pack_formats::environment::eval_frame(program, frame, &configs)
-                {
-                    modes.values.insert(source.clone(), value.num());
+                if let Some(value) = program.eval(frame) {
+                    modes.values.insert(source.clone(), value);
                 }
             }
         }

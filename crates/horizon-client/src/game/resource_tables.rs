@@ -283,12 +283,8 @@ fn pack_environments(root: &std::path::Path) -> Option<Arc<[Environment; 3]>> {
 fn pack_particles(
     root: &std::path::Path,
     blocks: &'static horizon_world::registry::BlockRegistry,
-) -> Option<Arc<horizon_client::particles::polytone::Registry>> {
-    let configs = horizon_client::packs::polytone_configs(&horizon_client::packs::Source::Dir(
-        root.to_path_buf(),
-    ));
-    let registry = horizon_client::particles::polytone::Registry::read(root, configs, blocks);
-    (!registry.is_empty()).then(|| Arc::new(registry))
+) -> Option<Arc<dyn horizon_client::particles::custom::CustomParticles>> {
+    horizon_client::pack_hooks::formats().custom_particles(root, blocks)
 }
 
 /// The packs' custom colours; their dye and sheep colours go to the draw paths' table.

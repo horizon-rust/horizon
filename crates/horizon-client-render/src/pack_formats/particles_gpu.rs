@@ -3,65 +3,24 @@
 //! record (position, velocity, spawn time, lifetime, seed, colour, size, roll), and where it is,
 //! how big, what colour and which frame are a function of that record and the time. Here the
 //! function runs when the frame's particle quads are built, beside the engine's own particles.
-use super::{ParticleLevel, ParticleLightCache};
 use crate::hud::Rect;
 use crate::mesher::Vertex;
-use glam::{DVec3, Mat3, Quat, Vec3 as FVec3};
+use crate::particles::custom::{GpuParticles, Orientation, orient};
+use crate::particles::{ParticleLevel, ParticleLightCache};
+use glam::{DVec3, Quat, Vec3 as FVec3};
 use horizon_polytone::particles::{CustomParticle, Gpu, RenderType};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// How a particle quad turns (`rotation_mode`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum Orientation {
-    /// `look_at_xyz`: faces the camera (what every other mode falls back to).
-    #[default]
-    Camera,
-    /// `look_at_y`: turns around Y only.
-    AroundY,
-    /// `look_up`: lies flat, facing up.
-    Flat,
-    /// `movement_aligned`: stands along its velocity, facing the camera around it.
-    Movement,
-    /// `none`: fixed in the world's axes (its +Z facing south).
-    Fixed,
-}
-
-impl Orientation {
-    pub(super) fn parse(mode: &str) -> Self {
-        match mode {
-            "look_at_y" => Self::AroundY,
-            "look_up" => Self::Flat,
-            "movement_aligned" => Self::Movement,
-            "none" => Self::Fixed,
-            _ => Self::Camera,
-        }
-    }
-}
-
-/// The rotation of a quad (corners in its XY plane, facing +Z) at `center` (relative to the
-/// camera) moving along `velocity`, rolled by `roll`; `camera` is the camera-facing rotation.
-pub(super) fn orient(
-    mode: Orientation,
-    center: FVec3,
-    velocity: FVec3,
-    roll: f32,
-    camera: Quat,
-) -> Quat {
-    let rolled = |q: Quat| q * Quat::from_rotation_z(roll);
+/// How a particle quad turns (`rotation_mode`): `look_at_xyz` (what every other mode falls back
+/// to), `look_at_y`, `look_up`, `movement_aligned` or `none`.
+pub fn orientation(mode: &str) -> Orientation {
     match mode {
-        Orientation::Camera => rolled(camera),
-        Orientation::AroundY => rolled(Quat::from_rotation_y((-center.x).atan2(-center.z))),
-        Orientation::Flat => rolled(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
-        Orientation::Fixed => rolled(Quat::IDENTITY),
-        Orientation::Movement => {
-            let up = velocity.normalize_or_zero();
-            let right = up.cross((-center).normalize_or_zero()).normalize_or_zero();
-            if right == FVec3::ZERO {
-                return rolled(camera);
-            }
-            Quat::from_mat3(&Mat3::from_cols(right, up, right.cross(up)))
-        }
+        "look_at_y" => Orientation::AroundY,
+        "look_up" => Orientation::Flat,
+        "movement_aligned" => Orientation::Movement,
+        "none" => Orientation::Fixed,
+        _ => Orientation::Camera,
     }
 }
 
@@ -98,7 +57,9 @@ struct Record {
 }
 
 /// A GPU particle type's records: a ring of `limit` slots, the oldest overwritten.
-pub(super) struct Store {
+pub struct Store {
+    /// Its custom type's id.
+    name: String,
     def: Arc<CustomParticle>,
     gpu: Gpu,
     orientation: Orientation,
@@ -162,11 +123,12 @@ fn motion(gpu: &Gpu, position: [f64; 3], velocity: [f64; 3], t: f64) -> ([f64; 3
 }
 
 impl Store {
-    pub(super) fn new(def: &Arc<CustomParticle>) -> Option<Self> {
+    pub fn new(name: &str, def: &Arc<CustomParticle>) -> Option<Self> {
         let gpu = def.gpu.clone()?;
         Some(Self {
+            name: name.to_owned(),
             def: def.clone(),
-            orientation: Orientation::parse(&def.rotation_mode),
+            orientation: orientation(&def.rotation_mode),
             sprite: sprite_name(&gpu.texture),
             gpu,
             records: Vec::new(),
@@ -175,13 +137,15 @@ impl Store {
             limit: def.limit.map_or(16_384, |l| l.max(1) as usize),
         })
     }
+}
 
-    pub(super) fn is(&self, def: &Arc<CustomParticle>) -> bool {
-        Arc::ptr_eq(&self.def, def)
+impl GpuParticles for Store {
+    fn is(&self, name: &str) -> bool {
+        self.name == name
     }
 
     /// Records a spawn from a particle its initializer set up (position, motion, life, look).
-    pub(super) fn spawn(&mut self, p: &super::Particle, now: u64, seed: u64) {
+    fn spawn(&mut self, p: &crate::particles::Particle, now: u64, seed: u64) {
         if p.lifetime <= 0 {
             return;
         }
@@ -204,7 +168,7 @@ impl Store {
     }
 
     /// Forgets the records whose life is over.
-    pub(super) fn expire(&mut self, now: u64) {
+    fn expire(&mut self, now: u64) {
         let before = self.records.len();
         self.records
             .retain(|r| (now.saturating_sub(r.spawn) as f32) < r.lifetime);
@@ -213,13 +177,12 @@ impl Store {
         }
     }
 
-    pub(super) fn len(&self) -> usize {
+    fn records(&self) -> usize {
         self.records.len()
     }
 
     /// The quads of every live record at `now + partial` ticks.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn render(
+    fn render(
         &self,
         atlas: &HashMap<String, (Rect, bool)>,
         camera: DVec3,
@@ -397,43 +360,5 @@ mod tests {
         assert!(close(fade(0.9, 0.4, 0.2), 0.5));
         assert!(close(fade(1.0, 0.4, 0.2), 0.0));
         assert!(close(fade(0.3, 0.0, 0.0), 1.0));
-    }
-
-    #[test]
-    fn orientations_turn_the_quad_normal() {
-        let normal = |q: Quat| q * FVec3::Z;
-        let close = |a: FVec3, b: FVec3| (a - b).length() < 1e-5;
-        // Lying flat: facing up.
-        assert!(close(
-            normal(orient(
-                Orientation::Flat,
-                FVec3::ONE,
-                FVec3::ZERO,
-                0.0,
-                Quat::IDENTITY
-            )),
-            FVec3::Y
-        ));
-        // Around Y: facing the camera horizontally (the camera at the origin, the quad east).
-        assert!(close(
-            normal(orient(
-                Orientation::AroundY,
-                FVec3::new(5.0, 3.0, 0.0),
-                FVec3::ZERO,
-                0.0,
-                Quat::IDENTITY
-            )),
-            -FVec3::X
-        ));
-        // Along its motion: its up is the velocity, its face toward the camera.
-        let q = orient(
-            Orientation::Movement,
-            FVec3::new(0.0, 0.0, -4.0),
-            FVec3::new(0.0, -2.0, 0.0),
-            0.0,
-            Quat::IDENTITY,
-        );
-        assert!(close(q * FVec3::Y, -FVec3::Y));
-        assert!(close(normal(q), FVec3::Z));
     }
 }

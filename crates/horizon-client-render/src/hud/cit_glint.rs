@@ -438,20 +438,29 @@ impl CitGlintPass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pack_formats::cit::{parse_blend, parse_rule};
+    use crate::cit::testing::pair;
 
-    fn rule(name: &str, text: &str) -> Rule {
-        let path = format!("assets/minecraft/optifine/cit/{name}.properties");
-        parse_rule(&path, &format!("texture=glint\n{text}")).unwrap()
+    /// A rule `name` of `kind` drawing `glint.png`, its glint changed by `glint`.
+    fn rule(name: &str, kind: Kind, glint: impl FnOnce(&mut crate::cit::Glint)) -> Rule {
+        let dir = "assets/minecraft/optifine/cit";
+        let mut rule = crate::cit::testing::rule(kind, dir, name, Some("glint"), &[]);
+        glint(&mut rule.glint);
+        rule
+    }
+
+    fn multiply() -> Option<Blend> {
+        pair(Factor::DstColor, Factor::OneMinusSrcAlpha)
     }
 
     #[test]
     fn slots_share_one_size_and_their_blends() {
         let rules = [
-            rule("a", "type=enchantment\nr=0.5"),
-            rule("item", "items=stick"),
-            rule("b", "type=enchantment\nblend=multiply\nblur=false"),
-            rule("c", "type=enchantment"),
+            rule("a", Kind::Enchantment, |g| g.rgba[0] = 0.5),
+            rule("item", Kind::Item, |_| {}),
+            rule("b", Kind::Enchantment, |g| {
+                (g.blend, g.blur) = (multiply(), false)
+            }),
+            rule("c", Kind::Enchantment, |_| {}),
         ];
         // A 1x1 red glint and a 2x2 one: the red texel fills 2x2.
         let red = vec![255, 0, 0, 255];
@@ -469,13 +478,7 @@ mod tests {
         assert_eq!(t.slot_of, [Some(0), None, Some(1), Some(2)]);
         assert_eq!(&t.pixels[..16], [255, 0, 0, 255].repeat(4));
         assert_eq!(&t.pixels[16..32], &quad[..]);
-        assert_eq!(
-            t.blends,
-            [
-                parse_blend("add").unwrap(),
-                parse_blend("multiply").unwrap()
-            ]
-        );
+        assert_eq!(t.blends, [pair(Factor::SrcAlpha, Factor::One), multiply()]);
         let blends: Vec<_> = t.slots.iter().map(|s| s.blend).collect();
         assert_eq!(blends, [0, 1, 0]);
         assert_eq!(t.slots[0].rgba, [0.5, 1.0, 1.0, 1.0]);
@@ -485,7 +488,7 @@ mod tests {
 
     #[test]
     fn big_glints_are_scaled_down_to_the_largest_side() {
-        let rules = [rule("wide", "type=enchantment\nblur=false")];
+        let rules = [rule("wide", Kind::Enchantment, |g| g.blur = false)];
         // 2048 x 1, texel x holding x in red and green: every other texel is kept.
         let wide: Vec<u8> = (0..2048u32)
             .flat_map(|x| [(x % 256) as u8, (x / 256) as u8, 0, 255])
@@ -549,7 +552,7 @@ mod tests {
 
     #[test]
     fn named_blends_take_their_gl_factors() {
-        let multiply = blend_state(parse_blend("multiply").unwrap());
+        let multiply = blend_state(multiply());
         assert_eq!(multiply.color.src_factor, wgpu::BlendFactor::Dst);
         assert_eq!(
             multiply.color.dst_factor,
@@ -558,9 +561,6 @@ mod tests {
         // The alpha factors default to GL_ZERO, GL_ONE: the target's alpha stays.
         assert_eq!(multiply.alpha.src_factor, wgpu::BlendFactor::Zero);
         assert_eq!(multiply.alpha.dst_factor, wgpu::BlendFactor::One);
-        assert_eq!(
-            blend_state(parse_blend("replace").unwrap()),
-            wgpu::BlendState::REPLACE
-        );
+        assert_eq!(blend_state(None), wgpu::BlendState::REPLACE);
     }
 }

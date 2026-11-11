@@ -2,12 +2,14 @@
 //! Particle Types" and "Block Properties Modifiers"): a particle whose start, motion, look and
 //! death are expressions, and emitters that spawn particles from blocks and from particles. Each
 //! custom particle is an ordinary engine particle (sprite set, interpolation, rendering, the
-//! total limit) with a controller that runs the type's ticker.
-use super::{
-    Behaviour, Fluid, Particle, ParticleEngine, ParticleLevel, ParticleOptions, ParticleType,
-    ParticleUpdate, Sprite,
-};
+//! total limit) with a controller that runs the type's ticker. [`Particles`] implements the
+//! engine's [`crate::particles::custom::CustomParticles`].
+use crate::blocks::Fluid;
 use crate::environment::Frame;
+use crate::particles::custom::{CustomParticles, GpuParticles, Made, Seed, Sound, Spawn};
+use crate::particles::{
+    Particle, ParticleEngine, ParticleLevel, ParticleOptions, ParticleType, ParticleUpdate,
+};
 use horizon_core::random::{LegacyRandom, RandomSource};
 use horizon_polytone::expr::{Host, Program, Root, Value as V};
 use horizon_polytone::particles::{
@@ -40,7 +42,7 @@ pub struct Registry {
     /// The tags modifiers' `targets` and emitters' `biomes` name.
     tags: crate::pack_tags::Tags,
     /// Each model particle type's faces (`model`), by type id.
-    models: HashMap<String, Arc<super::polytone_model::ParticleModel>>,
+    models: HashMap<String, Arc<crate::particles::polytone_model::ParticleModel>>,
     /// Sound ids as the engine's sound queue holds them, interned once.
     sound_names: Mutex<HashMap<String, &'static str>>,
     /// Sounds the custom particles played this tick (`ParticleEngine::tick` plays them).
@@ -49,9 +51,6 @@ pub struct Registry {
     particle_modifiers: Vec<(ParticleModifier, Option<Tint>, Option<Filter>)>,
     modifiers_by_type: Mutex<HashMap<String, Arc<[usize]>>>,
 }
-
-/// A sound for the engine's queue: id, position, volume, pitch, delayed by the distance.
-type Sound = (&'static str, [f64; 3], f32, f32, bool);
 
 /// Where a particle's colormap colour comes from.
 enum TintSource {
@@ -147,15 +146,6 @@ fn json_files(root: &Path, dir: &Path) -> Vec<(String, Json)> {
         }
     }
     out
-}
-
-impl super::ParticleOptions {
-    /// These options with the block or item they carry (`source`), for particle modifier
-    /// filters.
-    pub fn with_source(mut self, id: &str) -> Self {
-        self.source = Some(Arc::from(id));
-        self
-    }
 }
 
 impl Registry {
@@ -262,7 +252,7 @@ impl Registry {
                     .clone()
             })
             .collect();
-        let models = super::polytone_model::read_models(
+        let models = crate::particles::polytone_model::read_models(
             pack_root,
             types
                 .iter()
@@ -308,7 +298,7 @@ impl Registry {
     }
 
     /// Whether any pack modifies vanilla or mod particles (`particle_modifiers`).
-    pub(super) fn modifies_particles(&self) -> bool {
+    fn modifies_particles(&self) -> bool {
         !self.particle_modifiers.is_empty()
     }
 
@@ -346,12 +336,8 @@ impl Registry {
     }
 
     /// The sounds custom particles played since the last call.
-    pub(super) fn take_sounds(&self) -> Vec<Sound> {
+    fn take_sounds(&self) -> Vec<Sound> {
         std::mem::take(&mut *self.sounds.lock().unwrap_or_else(|e| e.into_inner()))
-    }
-
-    pub fn get(&self, id: &str) -> Option<&Arc<CustomParticle>> {
-        self.types.get(id)
     }
 
     /// Sets the world's biome table (the world's own, or the default one).
@@ -397,13 +383,6 @@ impl std::fmt::Debug for Registry {
             self.block_emitters.iter().filter(|e| e.is_some()).count()
         )
     }
-}
-
-/// What an emitter seeds on the custom particle it spawns: its own `red`... `custom` and customs.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Seed {
-    pub fields: BTreeMap<String, f64>,
-    pub customs: BTreeMap<String, f64>,
 }
 
 /// A custom particle's state beyond the engine particle's.
@@ -912,7 +891,7 @@ fn options_for(id: &str, registry: &Registry) -> ParticleOptions {
 
 /// Runs `emitters` from the subject: each fires `count` times when its `chance` beats a random
 /// draw, its position relative to `base` (the particle, or the block's spawn location).
-fn emit(emitters: &[Emitter], ctx: &mut Ctx, out: &mut Vec<(ParticleOptions, [f64; 3], [f64; 3])>) {
+fn emit(emitters: &[Emitter], ctx: &mut Ctx, out: &mut Vec<Spawn>) {
     for emitter in emitters {
         if emitter
             .tick_source
@@ -988,7 +967,7 @@ fn emit(emitters: &[Emitter], ctx: &mut Ctx, out: &mut Vec<(ParticleOptions, [f6
                         seed.customs.insert(name.to_lowercase(), v);
                     }
                 }
-                options.polytone_seed = (seed != Seed::default()).then(|| Arc::new(seed));
+                options.custom_seed = (seed != Seed::default()).then(|| Arc::new(seed));
             }
             out.push((options, at, velocity));
         }
@@ -1094,7 +1073,7 @@ const INITIALIZED: [&str; 13] = [
     "dz",
 ];
 
-impl super::ParticleController for Controller {
+impl crate::particles::ParticleController for Controller {
     fn tick(&mut self, p: &mut Particle, level: &ParticleLevel<'_>) -> ParticleUpdate {
         let mut update = ParticleUpdate::default();
         if !p.advance_age() {
@@ -1174,7 +1153,7 @@ impl super::ParticleController for Controller {
             for i in 0..3 {
                 p.position[i] += p.velocity[i];
             }
-            p.bb = super::aabb_at(p.position, p.bb_width, p.bb_height);
+            p.bb = crate::particles::aabb_at(p.position, p.bb_width, p.bb_height);
         }
         let f = f64::from(p.friction);
         for c in &mut p.velocity {
@@ -1198,7 +1177,7 @@ impl super::ParticleController for Controller {
 /// A custom particle at `position` moving at `velocity`, its initializer run (seeded by the
 /// emitter that spawned it); `None` without a sprite set for a visible type.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn make(
+fn make(
     engine: &ParticleEngine,
     registry: &Arc<Registry>,
     name: &str,
@@ -1214,10 +1193,8 @@ pub(super) fn make(
         && def.gpu.is_none()
     {
         let alive = engine
-            .particles
-            .iter()
-            .chain(&engine.pending)
-            .filter(|p| !p.removed && p.polytone_type.as_deref() == Some(name))
+            .live()
+            .filter(|p| p.polytone_type.as_deref() == Some(name))
             .count();
         if alive >= limit as usize {
             return None;
@@ -1227,9 +1204,8 @@ pub(super) fn make(
     // splashes, one per patch of ground).
     if def.exclusion_radius > 0.0 && def.gpu.is_none() {
         let r2 = def.exclusion_radius * def.exclusion_radius;
-        let crowded = engine.particles.iter().chain(&engine.pending).any(|p| {
-            !p.removed
-                && p.polytone_type.as_deref() == Some(name)
+        let crowded = engine.live().any(|p| {
+            p.polytone_type.as_deref() == Some(name)
                 && (0..3)
                     .map(|i| (p.position[i] - position[i]).powi(2))
                     .sum::<f64>()
@@ -1246,19 +1222,14 @@ pub(super) fn make(
     particle.has_physics = def.has_physics;
     let mut frames = 0;
     // A model particle draws its model's faces; one whose model is missing still ticks and
-    // emits. A GPU particle is drawn from its record instead (`polytone_gpu`).
+    // emits. A GPU particle is drawn from its record instead (`particles_gpu`).
     let model = registry.models.get(name).cloned();
     let hidden = def.render_type == RenderType::Invisible
         || (def.render.contains_key("model") && model.is_none())
         || def.gpu.is_some();
     // A mod's sprite set, or for a type replacing a vanilla one, that type's.
-    let set = engine.mod_sets.get(name).map(|&(set, _)| set).or_else(|| {
-        let vanilla = name.strip_prefix("minecraft:")?;
-        engine.sets.get(&ParticleType::from_name(vanilla)?).copied()
-    });
-    match set {
-        Some(set) => {
-            let sprites = engine.set_sprites.get(set as usize)?;
+    match engine.sprite_set(name) {
+        Some((set, sprites)) => {
             frames = sprites.len();
             particle.set = Some(set);
             let pick = if def.random_sprite {
@@ -1266,7 +1237,7 @@ pub(super) fn make(
             } else {
                 0
             };
-            particle.sprite = Sprite::Index(*sprites.get(pick).or(sprites.first())?);
+            particle.set_sprite_index(*sprites.get(pick).or(sprites.first())?);
         }
         None if hidden => {}
         None if model.is_some() => {}
@@ -1275,19 +1246,17 @@ pub(super) fn make(
     particle.no_render = hidden;
     if let Some(model) = model {
         // The sprite lookup that admits a particle to drawing: its first face's.
-        particle.sprite = Sprite::Named(model.quads[0].sprite.clone());
+        particle.set_sprite_named(model.quads[0].sprite.clone());
         particle.model = Some(model);
     }
-    particle.orientation = super::polytone_gpu::Orientation::parse(&def.rotation_mode);
+    particle.orientation = super::particles_gpu::orientation(&def.rotation_mode);
     particle.additive = def.render_type == RenderType::AdditiveTranslucent;
     // `light_level`: the block light the particle gives itself (wiki "Custom Particle Types"),
     // a floor under the light where it is, as GPU particles have.
     if def.light_level > 0 {
-        particle.light = super::Light::MinBlock(def.light_level);
+        particle.set_min_block_light(def.light_level);
     }
-    particle.behaviour = Behaviour::Controlled {
-        translucent: def.render_type != RenderType::Opaque,
-    };
+    particle.set_controlled(def.render_type != RenderType::Opaque);
     let (mut custom, mut customs) = (0.0, BTreeMap::new());
     if let Ok(frame) = registry.frame.read() {
         let mut ctx = Ctx {
@@ -1314,7 +1283,7 @@ pub(super) fn make(
     }
     particle.o_roll = particle.roll;
     // The emitter's own values win over the initializer's.
-    if let Some(seed) = &options.polytone_seed {
+    if let Some(seed) = &options.custom_seed {
         for (key, v) in &seed.fields {
             set_field(&mut particle, &mut custom, key, *v);
         }
@@ -1323,8 +1292,8 @@ pub(super) fn make(
     particle.random = random;
     particle.polytone_type =
         (def.limit.is_some() || def.exclusion_radius > 0.0).then(|| Arc::from(name));
-    particle.bb = super::aabb_at(position, particle.bb_width, particle.bb_height);
-    particle.controller = Some(Box::new(Controller {
+    particle.bb = crate::particles::aabb_at(position, particle.bb_width, particle.bb_height);
+    particle.set_controller(Controller {
         def: def.clone(),
         registry: registry.clone(),
         custom,
@@ -1333,7 +1302,7 @@ pub(super) fn make(
         frames,
         tint: registry.tints.get(name).cloned(),
         tinting: Tinting::default(),
-    }));
+    });
     Some(particle)
 }
 
@@ -1375,7 +1344,7 @@ impl Filter {
 /// Runs the packs' particle modifiers aimed at `id` on a particle that was just made: each
 /// expression once, against the particle as its constructor left it (`size` scales it, `speed`
 /// sets its power, as vanilla's `Particle.scale` and `setPower`).
-pub(super) fn modify(registry: &Registry, id: &str, source: Option<&str>, p: &mut Particle) {
+fn modify(registry: &Registry, id: &str, source: Option<&str>, p: &mut Particle) {
     let modifiers = registry.modifiers_for(id);
     if modifiers.is_empty() {
         return;
@@ -1439,13 +1408,73 @@ const MODIFIED: [&str; 8] = [
     "color", "red", "green", "blue", "alpha", "life", "size", "speed",
 ];
 
-impl ParticleEngine {
-    /// The emitters of the packs' entity modifiers aimed at `entity` (its type, as
-    /// `minecraft:player`) standing at `position`, run once a client tick.
-    pub fn polytone_entity(&mut self, level: &ParticleLevel<'_>, entity: &str, position: [f64; 3]) {
-        let Some(registry) = self.polytone.clone() else {
-            return;
-        };
+/// The registry on the engine's extension point.
+pub struct Particles(pub Arc<Registry>);
+
+impl CustomParticles for Particles {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn has_type(&self, id: &str) -> bool {
+        self.0.types.contains_key(id)
+    }
+
+    fn modifies_particles(&self) -> bool {
+        self.0.modifies_particles()
+    }
+
+    fn modify(&self, id: &str, source: Option<&str>, particle: &mut Particle) {
+        modify(&self.0, id, source, particle);
+    }
+
+    fn make(
+        &self,
+        engine: &ParticleEngine,
+        name: &str,
+        options: &ParticleOptions,
+        position: [f64; 3],
+        velocity: [f64; 3],
+        seed: i64,
+    ) -> Option<Made> {
+        let def = self.0.types.get(name)?;
+        let particle = make(
+            engine, &self.0, name, def, options, position, velocity, seed,
+        )?;
+        Some(if def.gpu.is_some() {
+            Made::Gpu(particle)
+        } else {
+            Made::Particle(particle)
+        })
+    }
+
+    fn gpu_store(&self, name: &str) -> Option<Box<dyn GpuParticles>> {
+        let store = super::particles_gpu::Store::new(name, self.0.types.get(name)?)?;
+        Some(Box::new(store))
+    }
+
+    fn take_sounds(&self) -> Vec<Sound> {
+        self.0.take_sounds()
+    }
+
+    fn disables_particles(&self, state: horizon_world::registry::BlockStateId) -> bool {
+        self.0
+            .block_emitters
+            .get(state.0 as usize)
+            .and_then(Option::as_ref)
+            .is_some_and(|modifiers| modifiers.iter().any(|m| m.disable_particles))
+    }
+
+    fn entity(
+        &self,
+        level: &ParticleLevel<'_>,
+        entity: &str,
+        position: [f64; 3],
+        camera: [f64; 3],
+        random: &mut LegacyRandom,
+        out: &mut Vec<Spawn>,
+    ) {
+        let registry = &self.0;
         let modifiers = registry.entity_emitters(entity);
         if modifiers.is_empty() {
             return;
@@ -1453,17 +1482,15 @@ impl ParticleEngine {
         let Ok(frame) = registry.frame.read() else {
             return;
         };
-        let camera = self.camera;
         let distance_sq: f64 = (0..3).map(|i| (position[i] - camera[i]).powi(2)).sum();
-        let mut out = Vec::new();
         let (mut custom, mut customs) = (0.0, BTreeMap::new());
         let mut ctx = Ctx {
             subject: Subject::Entity(position),
-            random: &mut self.random,
+            random,
             custom: &mut custom,
             customs: &mut customs,
             frame: &frame,
-            registry: &registry,
+            registry,
             level: Some(level),
             blocks: Vec::new(),
         };
@@ -1471,67 +1498,57 @@ impl ParticleEngine {
             for emitter in &modifier.emitters {
                 // `max_distance`: 32 blocks from the camera unless the emitter says otherwise.
                 if distance_sq <= emitter.max_distance.unwrap_or(32.0).powi(2) {
-                    emit(std::slice::from_ref(emitter), &mut ctx, &mut out);
+                    emit(std::slice::from_ref(emitter), &mut ctx, out);
                 }
             }
         }
-        drop(ctx);
-        drop(frame);
-        for (options, position, velocity) in out {
-            self.add(&options, position, velocity);
-        }
     }
 
-    /// Whether the packs' block modifiers stop `state`'s own particles (`disable_particles`): its
-    /// `Block.animateTick` doesn't run.
-    pub fn polytone_disables_particles(
+    fn animate(
         &self,
-        state: horizon_world::registry::BlockStateId,
-    ) -> bool {
-        self.polytone
-            .as_ref()
-            .and_then(|r| r.block_emitters.get(state.0 as usize))
-            .and_then(Option::as_ref)
-            .is_some_and(|modifiers| modifiers.iter().any(|m| m.disable_particles))
-    }
-
-    /// The block emitters of the packs' block modifiers aimed at the block at `at`, run from a
-    /// block animate tick (`Block.animateTick`, as torches spawn their flames).
-    pub fn polytone_animate(&mut self, level: &ParticleLevel<'_>, at: [i32; 3]) {
-        let Some(registry) = self.polytone.clone() else {
-            return;
-        };
+        level: &ParticleLevel<'_>,
+        at: [i32; 3],
+        random: &mut LegacyRandom,
+        out: &mut Vec<Spawn>,
+        sounds: &mut Vec<Sound>,
+    ) {
+        let registry = &self.0;
         let state = level.world.block(at[0], at[1], at[2]);
         let Some(Some(modifiers)) = registry.block_emitters.get(state.0 as usize) else {
             return;
         };
-        let modifiers = modifiers.clone();
         let Ok(frame) = registry.frame.read() else {
             return;
         };
-        let mut out = Vec::new();
         let (mut custom, mut customs) = (0.0, BTreeMap::new());
         let mut ctx = Ctx {
             subject: Subject::Block(at),
-            random: &mut self.random,
+            random,
             custom: &mut custom,
             customs: &mut customs,
             frame: &frame,
-            registry: &registry,
+            registry,
             level: Some(level),
             blocks: Vec::new(),
         };
-        let mut sounds = Vec::new();
         for modifier in modifiers.iter() {
-            emit(&modifier.particle_emitters, &mut ctx, &mut out);
-            emit_sounds(&modifier.sound_emitters, &mut ctx, &mut sounds);
+            emit(&modifier.particle_emitters, &mut ctx, out);
+            emit_sounds(&modifier.sound_emitters, &mut ctx, sounds);
         }
-        drop(ctx);
-        drop(frame);
-        for (options, position, velocity) in out {
-            self.add(&options, position, velocity);
+    }
+
+    fn set_biomes(&self, biomes: &Arc<crate::biome::Biomes>) {
+        self.0.set_biomes(biomes);
+    }
+
+    fn set_frame(&self, frame: &Frame) {
+        if let Ok(mut f) = self.0.frame.write() {
+            f.clone_from(frame);
         }
-        self.sounds.extend(sounds);
+    }
+
+    fn frame(&self) -> Option<Frame> {
+        self.0.frame.read().ok().map(|f| f.clone())
     }
 }
 
@@ -1539,6 +1556,7 @@ impl ParticleEngine {
 mod tests {
     use super::*;
     use crate::chunk::Chunk;
+    use crate::particles::Sprite;
     use crate::world::World;
     use glam::DVec3;
     use horizon_world::DATA_VERSION;
@@ -1621,7 +1639,7 @@ mod tests {
         engine.mod_sets.insert("test:spark".into(), (0, None));
         engine.set_sprites.push(vec![10, 11, 12]);
         engine.camera = [1.0, 65.0, 1.0];
-        engine.set_polytone(Some(Arc::new(registry)));
+        engine.set_polytone(Some(Arc::new(Particles(Arc::new(registry)))));
         engine
     }
 
@@ -2125,7 +2143,7 @@ mod tests {
         engine.mod_sets.insert("test:leaf".into(), (0, None));
         engine.set_sprites.push(vec![10]);
         engine.camera = [1.0, 65.0, 1.0];
-        engine.set_polytone(Some(registry.clone()));
+        engine.set_polytone(Some(Arc::new(Particles(registry.clone()))));
         engine.polytone_entity(&level, "minecraft:player", [1.0, 64.0, 1.0]);
         let mut p = engine.pending.pop().unwrap();
         let tinted = [

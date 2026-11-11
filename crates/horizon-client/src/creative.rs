@@ -100,8 +100,8 @@ pub struct Creative {
     /// of every search item, built on the first search and kept until the
     /// translations, item list or enchantment registry change.
     lines_cache: Mutex<Option<(u64, Arc<[Vec<String>]>)>>,
-    /// The packs' Polytone creative tab modifiers, applied by `rebuild`.
-    pack: Vec<crate::polytone_creative_tabs::TabModifier>,
+    /// The packs' creative tab modifiers (Polytone's), applied by `rebuild`.
+    pack: Vec<Box<dyn crate::pack_hooks::TabModifier>>,
 }
 /// A text component's plain text and its colour (a name, or `#rrggbb`).
 fn component_text(json: &Value) -> (String, Option<u32>) {
@@ -447,17 +447,14 @@ impl Creative {
     }
     /// The packs' Polytone creative tab modifiers (wiki "Creative Tab Modifiers"): the tabs are
     /// built again with them.
-    pub fn set_pack_modifiers(&mut self, pack: Vec<crate::polytone_creative_tabs::TabModifier>) {
+    pub fn set_pack_modifiers(&mut self, pack: Vec<Box<dyn crate::pack_hooks::TabModifier>>) {
         self.pack = pack;
         self.rebuild();
         self.selected = self.selected.min(self.tabs.len().saturating_sub(1));
     }
     /// A tab after the modifiers aimed at it: its items, icon and name.
     fn apply_pack(&self, tab: &mut Tab) {
-        let aimed = self
-            .pack
-            .iter()
-            .filter(|m| m.targets.matches(&tab.id, |_| false));
+        let aimed = self.pack.iter().filter(|m| m.aims_at(&tab.id));
         for m in aimed {
             let in_tag = |item: &str, tag: &str| {
                 let (namespace, path) = split_id(tag);
@@ -475,10 +472,10 @@ impl Creative {
                     None => ItemStack::new(&id, 1),
                 })
                 .collect();
-            if let Some(icon) = &m.icon {
-                tab.icon = icon.clone();
+            if let Some(icon) = m.icon() {
+                tab.icon = icon.to_owned();
             }
-            if let Some(name) = &m.name {
+            if let Some(name) = m.name() {
                 tab.name = Some(component_text(name));
             }
         }
