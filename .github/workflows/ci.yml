@@ -106,6 +106,7 @@ jobs:
           HOSTED: ${{ runner.environment == 'github-hosted' }}
         run: |
           if [ "$HOSTED" = true ]; then
+            sudo python3 tools/ci/ubuntu_mirror.py
             sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
           fi
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
@@ -162,6 +163,7 @@ jobs:
           HOSTED: ${{ runner.environment == 'github-hosted' }}
         run: |
           if [ "$HOSTED" = true ]; then
+            sudo python3 tools/ci/ubuntu_mirror.py
             sudo apt-get update && sudo apt-get install -y --no-install-recommends libxkbcommon-x11-dev libwayland-dev \
               libx11-xcb-dev libfontconfig-dev libvulkan-dev libasound2-dev libudev-dev
           fi
