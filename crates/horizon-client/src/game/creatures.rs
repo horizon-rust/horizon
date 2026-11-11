@@ -1193,6 +1193,8 @@ impl Game<'_> {
         // yet (the first tick after a load, a fresh spawn) or has moved since
         // would be pushed out of a ladder or scaffolding. Refreshed here, from
         // where each mob stands now, before the snapshot others push it by.
+        // The cloud doses in the loop need the mobs in join order (`CloudDoses::run`).
+        self.order_mobs_for_cloud_doses();
         let climbing: Vec<bool> = {
             let w = self.mob_world_base(&[]);
             self.mobs.iter().map(|m| m.on_climbable(&w)).collect()
@@ -1561,14 +1563,12 @@ impl Game<'_> {
             bindings.retain(|id, _| live.contains(id));
             host.mob_players = bindings;
         }
-        // The mobs added during the tick (into the emptied `self.mobs`) come
-        // first, as `append` put them; with none, the ticked list goes back
-        // as it is instead of being copied into a new one, every mob a tick.
-        if self.mobs.is_empty() {
-            self.mobs = mobs;
-        } else {
-            self.mobs.append(&mut mobs);
-        }
+        // The mobs added during the tick (into the emptied `self.mobs`) go
+        // after the ticked ones: they joined later, and `EntityTickList.add`
+        // puts a new entity at the end of its linked map, so they tick after
+        // them next tick too. Only the new ones are copied.
+        mobs.append(&mut self.mobs);
+        self.mobs = mobs;
         self.died = died;
         self.finish_cloud_doses(doses);
         snapshot.clear();

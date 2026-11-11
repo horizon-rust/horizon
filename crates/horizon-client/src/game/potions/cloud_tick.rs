@@ -403,6 +403,16 @@ impl Game<'_> {
         }
     }
 
+    /// Before the mob loop, when it doses a cloud's mobs: the mobs in join
+    /// order, as `ServerLevel.tick` walks them (`entityTickList`), since a
+    /// cloud's doses go just before the first mob that joined after it. The
+    /// list is in that order unless something put a mob back out of place.
+    pub(in crate::game) fn order_mobs_for_cloud_doses(&mut self) {
+        if !self.potions.cloud_doses.due.is_empty() && !self.mobs.is_sorted_by_key(|m| m.join) {
+            self.mobs.sort_by_key(|m| m.join);
+        }
+    }
+
     /// Before the mob loop: the doses due in it, with the clouds out of the
     /// level for the loop (nothing reaches them while the mobs tick).
     pub(in crate::game) fn take_cloud_doses(&mut self) -> CloudDoses {

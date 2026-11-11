@@ -84,37 +84,51 @@ fn pig(game: &Game<'_>, n: i32) -> Option<(i32, i32, f32)> {
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
 fn a_cloud_doses_each_mob_in_the_order_they_joined() {
     with_game(|game| {
-        let summon_pig = |game: &mut Game<'_>, n: i32, x: f64| {
+        let summon_pig = |game: &mut Game<'_>, n: i32, (x, z): (f64, f64)| {
             let command = format!(
-                "summon minecraft:pig {x} 100 8.5 {{UUID:[I;0,12183,0,{n}],NoAI:1b,Silent:1b}}"
+                "summon minecraft:pig {x} 100 {z} {{UUID:[I;0,12183,0,{n}],NoAI:1b,Silent:1b}}"
             );
             assert!(game.run_command(&command), "{command}");
         };
-        let summon_cloud = |game: &mut Game<'_>, x: f64| {
-            let command = format!("summon minecraft:area_effect_cloud {x} 100 8.5 {CLOUD}");
+        let summon_cloud = |game: &mut Game<'_>, (x, z): (f64, f64)| {
+            let command = format!("summon minecraft:area_effect_cloud {x} 100 {z} {CLOUD}");
             assert!(game.run_command(&command), "{command}");
         };
         // Pig 1, then its cloud.
-        summon_pig(game, 1, 2.5);
-        summon_cloud(game, 2.5);
+        summon_pig(game, 1, (2.5, 8.5));
+        summon_cloud(game, (2.5, 8.5));
         // A cloud, then pig 2.
-        summon_cloud(game, 7.5);
-        summon_pig(game, 2, 7.5);
+        summon_cloud(game, (7.5, 8.5));
+        summon_pig(game, 2, (7.5, 8.5));
         // Pig 3, a cloud, then pig 4: each pig on its own side of it.
-        summon_pig(game, 3, 12.5);
-        summon_cloud(game, 12.5);
-        summon_pig(game, 4, 12.5);
+        summon_pig(game, 3, (12.5, 8.5));
+        summon_cloud(game, (12.5, 8.5));
+        summon_pig(game, 4, (12.5, 8.5));
+        // Pig 5, a cloud, then pig 6, with pig 6 first in the mob list, as a
+        // mob put back out of join order would be: the walk is still by join.
+        summon_pig(game, 5, (7.5, 3.5));
+        summon_cloud(game, (7.5, 3.5));
+        summon_pig(game, 6, (7.5, 3.5));
+        let six = game
+            .mobs
+            .iter()
+            .position(|m| game.persist.uuid_of(m.id) == Some([0, 12183, 0, 6]))
+            .unwrap();
+        let six = game.mobs.remove(six);
+        game.mobs.insert(0, six);
         for _ in 0..5 {
             game.tick_world(true).unwrap();
         }
-        let got: Vec<_> = (1..=4).map(|n| pig(game, n)).collect();
+        let got: Vec<_> = (1..=6).map(|n| pig(game, n)).collect();
         // Before the cloud: Speed 100 and hurt timer 10; after it: 99 and 9.
         let want = [
             Some((100, 10, 7.0)),
             Some((99, 9, 7.0)),
             Some((100, 10, 7.0)),
             Some((99, 9, 7.0)),
+            Some((100, 10, 7.0)),
+            Some((99, 9, 7.0)),
         ];
-        assert_eq!(got, want, "pigs 1-4 after the dose tick (the fifth)");
+        assert_eq!(got, want, "pigs 1-6 after the dose tick (the fifth)");
     });
 }
