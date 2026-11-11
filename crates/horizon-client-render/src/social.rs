@@ -545,12 +545,12 @@ fn update_friend_data() {
             if let Some(retry) = answer.retry_after {
                 inner.service.friends_poll = Some(retry);
             }
-            if let Some(etag) = answer.etag {
-                inner.service.friends_etag = Some(etag);
-            }
             if answer.status != 304 && !answer.body.is_empty() {
                 match parse_friends(&answer.body) {
-                    Some(data) => inner.service.friends_cache = data,
+                    Some(data) => {
+                        inner.service.friends_cache = data;
+                        inner.service.friends_etag = answer.etag;
+                    }
                     None => {
                         // authlib's parse failure is an ERROR result: the handler keeps
                         // the cached lists and shows the generic error.
