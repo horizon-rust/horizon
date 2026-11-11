@@ -208,14 +208,16 @@ pub(super) fn serverbound_input(payload: &[u8]) -> Result<Vec<u8>> {
     Ok(w.data)
 }
 
+/// Blocks of an old server's explosion applied at once: each becomes a packet of its own, and a
+/// vanilla blast names a few thousand at most.
+const MAX_EXPLOSION_BLOCKS: usize = 65_536;
+
 /// Preserve the older explosion's real radius/count before the later steps that lack those fields.
 pub(super) fn explosion(session: &Session, payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let center = crate::buf::Vec3d::read(&mut r)?;
     let radius = r.f32()?;
-    // A radius-limited explosion touches a few thousand blocks; a frame-sized list would only be
-    // a peer amplifying itself through the per-block packets made from it.
-    let count = r.count(MAX_EXPLOSION_BLOCKS)?;
+    let count = r.count(1_048_576)?;
     let offsets = r.bytes(count * 3)?.to_vec();
     let knockback = [r.f32()?, r.f32()?, r.f32()?].map(f64::from);
     let interaction = r.varint()?;
@@ -254,7 +256,11 @@ pub(super) fn explosion(session: &Session, payload: &[u8]) -> Result<Vec<u8>> {
         // explosions have different block-specific behavior and must not erase their blocks.
         let origin = center.map(|value| value.floor() as i32);
         let mut queued = session.incoming.lock().unwrap();
-        for offset in offsets.as_chunks::<3>().0 {
+        // Each listed block becomes a packet of its own, so only the first MAX_EXPLOSION_BLOCKS
+        // are applied at once (a vanilla blast names a few thousand at most). The server's own
+        // block updates for the rest still arrive, as they do for every block it changes.
+        let listed = offsets.as_chunks::<3>().0;
+        for offset in &listed[..listed.len().min(MAX_EXPLOSION_BLOCKS)] {
             let pos = std::array::from_fn(|axis| {
                 origin[axis].wrapping_add(i32::from(offset[axis] as i8))
             });
@@ -518,6 +524,26 @@ mod tests {
             }
             assert!(session.next_incoming().is_none());
         }
+    }
+
+    #[test]
+    fn a_huge_explosion_list_is_cut_to_the_cap_not_refused() {
+        // The first vanilla explosion above, its two offsets replaced by 70,000 (count 70,000 is
+        // the VarInt f0 a2 04).
+        let old = "3ff40000000000004050000000000000c00600000000000040800000020100ffff01013e8000003f000000bf400000011615c104";
+        let mut payload = bytes(&old[..56]);
+        payload.extend_from_slice(&[0xf0, 0xa2, 0x04]);
+        payload.extend(std::iter::repeat_n([1u8, 0, 0xff], 70_000).flatten());
+        payload.extend(bytes(&old[70..]));
+        let session = Session::new(ServerVersion::V1_21_1);
+        let body = explosion(&session, &payload).unwrap();
+        let p = play::Explode::read(&mut Reader::new(&body)).unwrap();
+        assert_eq!(p.block_count, 70_000);
+        let mut updates = 0;
+        while session.next_incoming().is_some() {
+            updates += 1;
+        }
+        assert_eq!(updates, 65_536);
     }
 
     #[test]

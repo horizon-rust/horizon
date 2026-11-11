@@ -22,10 +22,6 @@ pub(super) mod v1_20_2;
 pub(super) mod v1_20_3;
 mod v1_20_5;
 pub(super) mod v1_21_1;
-
-/// Blocks an old server's explosion may name: each becomes a packet of its own, and a vanilla blast
-/// touches a few thousand at most.
-pub(crate) const MAX_EXPLOSION_BLOCKS: usize = 65_536;
 mod v1_21_3;
 mod v1_21_4;
 mod v1_21_5;
