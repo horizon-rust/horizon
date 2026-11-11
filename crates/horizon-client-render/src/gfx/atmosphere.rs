@@ -3,9 +3,13 @@
 //! RTX Remix for Minecraft's, ported (`sky_atmosphere.wgsl` from its `sky_atmosphere.comp`,
 //! Apache-2.0): Rayleigh 8 km and Mie 1.2 km scattering on an Earth of 6371 km under 100 km of
 //! air, a 1024x256 transmittance table, a 64x32 single-scattering view of 16 view and 16 light
-//! steps, the multiple scattering added analytically and the ground below the horizon faked. The
-//! sunlight reaching the ground is its transmittance along the sun's elevation, white overhead
-//! and red at sunset.
+//! steps, and the ground below the horizon faked. The sunlight reaching the ground is its
+//! transmittance along the sun's elevation, white overhead and red at sunset.
+//!
+//! Three things are not Remix's any more, each checked against a spectral reference (the sun's
+//! spectrum through Rayleigh's lambda^-4 and the ozone's measured cross-sections, 36 wavelengths,
+//! seen through the CIE observer in sRGB) and each with its switch back ([`Air`]): the air's
+//! coefficients, the view march, and the multiple scattering (Hillaire's 2020 table).
 //!
 //! The compute passes run on the GPU when the sun has moved (a few times a minute), the
 //! transmittance table once. Remix's sky is world-fixed (azimuth around the sphere, the zenith
@@ -50,10 +54,76 @@ const EARTH_RADIUS: f32 = 6_371_000.0;
 const ATMOSPHERE_RADIUS: f32 = 6_471_000.0;
 const RAYLEIGH_HEIGHT: f32 = 8000.0;
 const MIE_HEIGHT: f32 = 1200.0;
-const BETA_R: Vec3 = Vec3::new(5.5e-6, 13.0e-6, 22.4e-6);
-// A clear day's aerosols, and the ozone's absorption (sky_atmosphere.wgsl `BETA_M`, `BETA_O`).
-const BETA_M: f32 = 6.0e-6;
-const BETA_O: Vec3 = Vec3::new(0.650e-6, 1.881e-6, 0.085e-6);
+/// The air's coefficients and how the sky's passes add its light up, with the switches back to
+/// what they were (read once).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Air {
+    /// Rayleigh's scattering a metre at sea level, red, green and blue.
+    pub rayleigh: Vec3,
+    /// The ozone's absorption a metre where it is densest.
+    pub ozone: Vec3,
+    /// The aerosols' scattering a metre at sea level: a clear day's (Hillaire's 4e-6, where
+    /// Remix's 21e-6 is a hazy one).
+    pub mie: f32,
+    /// What the sun's Mie halo is multiplied by.
+    pub halo: f32,
+    /// Remix's view march.
+    pub old_march: bool,
+    /// Remix's multiple scattering's scale, 0 for the table's.
+    pub old_multiple: f32,
+}
+
+/// The ground's albedo for the multiple scattering's table (Hillaire's 0.3).
+const GROUND_ALBEDO: f32 = 0.3;
+
+impl Air {
+    /// The air's coefficients as the sRGB primaries see the spectrum: the thin-layer limit of
+    /// sunlight (a 5778 K black body, white-balanced) scattered by Rayleigh's 1.24062e-6 /
+    /// lambda^4 (micrometres) and absorbed by the ozone's Chappuis band (300 Dobson units over
+    /// 15 km). Against the spectral sky these keep its colour within 2 % from noon to the end of
+    /// the civil twilight. The usual three-wavelength values (680, 550 and 440 nm: 5.8, 13.5 and
+    /// 33.1e-6, ozone 0.65, 1.88 and 0.085e-6) miss what the red primary sees of the orange
+    /// (where the ozone absorbs most): the low sun came out 40 % too bright in red and the
+    /// twilight's zenith purple instead of blue.
+    const SPECTRAL: (Vec3, Vec3) = (
+        Vec3::new(6.621e-6, 13.721e-6, 32.321e-6),
+        Vec3::new(2.517e-6, 1.794e-6, 0.0),
+    );
+    /// What they were (`HORIZON_SKY_AIR=old`): a blue a third under Rayleigh's (22.4 against
+    /// 32.3: a paler sky, a sunset less red), the ozone at three wavelengths.
+    const OLD: (Vec3, Vec3) = (
+        Vec3::new(5.5e-6, 13.0e-6, 22.4e-6),
+        Vec3::new(0.650e-6, 1.881e-6, 0.085e-6),
+    );
+
+    /// The air: `HORIZON_SKY_AIR=old` for the coefficients before, `HORIZON_SKY_MARCH=old` for
+    /// Remix's view march (steps of one length and the sun's halo doubled to make up for the
+    /// aerosols it missed) and `HORIZON_SKY_MULTIPLE=old` for Remix's multiple scattering (the
+    /// upper sky's mean by 0.65: about 40 % less light from the sky by day, half the blue).
+    pub fn get() -> Self {
+        static AIR: std::sync::OnceLock<Air> = std::sync::OnceLock::new();
+        *AIR.get_or_init(|| {
+            let old = |name: &str| std::env::var(name).is_ok_and(|v| v.trim() == "old");
+            Self::with(
+                old("HORIZON_SKY_AIR"),
+                old("HORIZON_SKY_MARCH"),
+                old("HORIZON_SKY_MULTIPLE"),
+            )
+        })
+    }
+
+    fn with(old_air: bool, old_march: bool, old_multiple: bool) -> Self {
+        let (rayleigh, ozone) = if old_air { Self::OLD } else { Self::SPECTRAL };
+        Self {
+            rayleigh,
+            ozone,
+            mie: 6.0e-6,
+            halo: if old_march { 2.0 } else { 1.0 },
+            old_march,
+            old_multiple: if old_multiple { 0.65 } else { 0.0 },
+        }
+    }
+}
 const LIGHT_STEPS: usize = 16;
 /// The Mie scattering's anisotropy (`AtmosphereParameters.x`, which Remix's mod sets; not in the
 /// shader): the usual 0.8.
@@ -61,6 +131,7 @@ const MIE_ANISOTROPY: f32 = 0.8;
 
 /// Remix's tables: the transmittance table, and the sky's (one more row holds its average).
 const LUT_SIZE: [u32; 2] = [1024, 256];
+const MULTIPLE_SIZE: [u32; 2] = [32, 32];
 const UPPER_SIZE: [u32; 2] = [64, 16];
 const FINAL_SIZE: [u32; 2] = [64, 33];
 
@@ -74,7 +145,7 @@ fn atmosphere_distance(r: f32, mu: f32) -> f32 {
 
 /// The sky shader's transmittance table, one texel, on the CPU: from outside to radius `r` along
 /// the zenith cosine `mu`, 16 steps (`build_transmittance_lut`).
-fn transmittance_lut(r: f32, mu: f32) -> Vec3 {
+fn transmittance_lut(air: &Air, r: f32, mu: f32) -> Vec3 {
     let sin = (1.0 - mu * mu).max(0.0).sqrt();
     let length = atmosphere_distance(r, mu);
     let step = length / LIGHT_STEPS as f32;
@@ -85,8 +156,9 @@ fn transmittance_lut(r: f32, mu: f32) -> Vec3 {
         let point = Vec3::new(sin * along, r + mu * along, 0.0);
         let height = (point.length() - EARTH_RADIUS).max(0.0);
         let ozone = (1.0 - (height - 25_000.0).abs() / 15_000.0).max(0.0);
-        optical_r += BETA_R * ((-height / RAYLEIGH_HEIGHT).exp() * step) + BETA_O * (ozone * step);
-        optical_m += BETA_M * (-height / MIE_HEIGHT).exp() * step;
+        optical_r +=
+            air.rayleigh * ((-height / RAYLEIGH_HEIGHT).exp() * step) + air.ozone * (ozone * step);
+        optical_m += air.mie * (-height / MIE_HEIGHT).exp() * step;
     }
     (-(optical_r + Vec3::splat(optical_m))).exp()
 }
@@ -100,6 +172,9 @@ struct Sky {
     sun_radiance_and_atmosphere_scale: [f32; 4],
     moon_radiance_value: [f32; 4],
     atmosphere_parameters: [f32; 4],
+    rayleigh: [f32; 4],
+    ozone: [f32; 4],
+    mie: [f32; 4],
 }
 
 /// RT lighting's atmosphere: Remix's sky tables and the passes that make them.
@@ -110,6 +185,7 @@ pub struct Atmosphere {
     pub view: wgpu::TextureView,
     uniform: wgpu::Buffer,
     lut: Pass,
+    multiple: Pass,
     single: Pass,
     reduce: Pass,
     convert: Pass,
@@ -154,6 +230,12 @@ impl Atmosphere {
             Rgba32Float,
             wgpu::TextureUsages::empty(),
         );
+        let multiple = table(
+            "Sky multiple scattering",
+            MULTIPLE_SIZE,
+            Rgba32Float,
+            wgpu::TextureUsages::empty(),
+        );
         let upper_single = table(
             "Sky single scattering",
             UPPER_SIZE,
@@ -179,6 +261,7 @@ impl Atmosphere {
             wgpu::TextureUsages::COPY_SRC,
         );
         let view_of = |t: &wgpu::Texture| t.create_view(&Default::default());
+        let multiple_v = view_of(&multiple);
         let (lut_v, single_v, view_v, final_v, view) = (
             view_of(&lut),
             view_of(&upper_single),
@@ -273,8 +356,18 @@ impl Atmosphere {
         let lut_pass = pass(
             "Sky transmittance table",
             "build_lut",
-            &[(1, Bind::Store(&lut_v, Rgba32Float))],
+            &[(0, Bind::Uniform), (1, Bind::Store(&lut_v, Rgba32Float))],
             [LUT_SIZE[0] / 8, LUT_SIZE[1] / 8],
+        );
+        let multiple_pass = pass(
+            "Sky multiple scattering table",
+            "build_multiple",
+            &[
+                (0, Bind::Uniform),
+                (2, Bind::Texture(&lut_v)),
+                (10, Bind::Store(&multiple_v, Rgba32Float)),
+            ],
+            [MULTIPLE_SIZE[0] / 8, MULTIPLE_SIZE[1] / 8],
         );
         let single = pass(
             "Sky single scattering",
@@ -284,6 +377,7 @@ impl Atmosphere {
                 (2, Bind::Texture(&lut_v)),
                 (3, Bind::Store(&single_v, Rgba32Float)),
                 (4, Bind::Store(&view_v, Rgba32Float)),
+                (11, Bind::Texture(&multiple_v)),
             ],
             [UPPER_SIZE[0] / 8, UPPER_SIZE[1] / 8],
         );
@@ -291,6 +385,7 @@ impl Atmosphere {
             "Sky reduce and compose",
             "reduce_and_compose",
             &[
+                (0, Bind::Uniform),
                 (5, Bind::Texture(&single_v)),
                 (6, Bind::Texture(&view_v)),
                 (7, Bind::Store(&final_v, Rgba16Float)),
@@ -314,6 +409,7 @@ impl Atmosphere {
             view,
             uniform,
             lut: lut_pass,
+            multiple: multiple_pass,
             single,
             reduce,
             convert,
@@ -328,7 +424,7 @@ impl Atmosphere {
         if sun.y <= 0.0 {
             return Vec3::ZERO;
         }
-        transmittance_lut(EARTH_RADIUS, sun.y)
+        transmittance_lut(&Air::get(), EARTH_RADIUS, sun.y)
     }
 
     /// Makes the sky-view table again when the sun (toward `sun`, unit, y up) has moved since by
@@ -361,6 +457,7 @@ impl Atmosphere {
         let lut = std::mem::replace(&mut self.lut_made, true);
         let passes = [
             (!lut).then_some(&self.lut),
+            (!lut).then_some(&self.multiple),
             (!same_sun).then_some(&self.single),
             (!same_sun).then_some(&self.reduce),
             Some(&self.convert),
@@ -412,12 +509,19 @@ impl Sky {
     /// size would light a texel now and then; the sun and the moon are drawn on their own.
     fn for_sun(sun: Vec3, moon_lit: f32) -> Self {
         let moon_light = moonlight() * moon_lit.max(NIGHT_GLOW);
+        let air = Air::get();
         Self {
             sun_direction_and_radius: [sun.x, sun.y, sun.z, 0.0],
             moon_direction_and_radius: [-sun.x, -sun.y, -sun.z, 0.0],
             sun_radiance_and_atmosphere_scale: [1.0, 1.0, 1.0, PAPER_WHITE * std::f32::consts::PI],
             moon_radiance_value: [moon_light, moon_light, moon_light, 0.0],
             atmosphere_parameters: [MIE_ANISOTROPY, 0.0, 0.0, 0.0],
+            rayleigh: air.rayleigh.extend(air.halo).to_array(),
+            ozone: air
+                .ozone
+                .extend(f32::from(u8::from(air.old_march)))
+                .to_array(),
+            mie: [air.mie, air.old_multiple, GROUND_ALBEDO, 0.0],
         }
     }
 }
@@ -428,9 +532,10 @@ mod tests {
 
     #[test]
     fn the_sun_is_white_overhead_and_red_at_sunset() {
-        let noon = transmittance_lut(EARTH_RADIUS, 1.0);
+        let air = Air::get();
+        let noon = transmittance_lut(&air, EARTH_RADIUS, 1.0);
         assert!(noon.min_element() > 0.6 && noon.x > noon.z, "{noon}");
-        let low = transmittance_lut(EARTH_RADIUS, 0.03);
+        let low = transmittance_lut(&air, EARTH_RADIUS, 0.03);
         assert!(low.x > 3.0 * low.z, "{low}");
     }
 
@@ -490,6 +595,68 @@ mod tests {
             .chunks(4)
             .map(|t| [half(t[0]), half(t[1]), half(t[2]), half(t[3])])
             .collect()
+    }
+
+    /// The reference: the sun's spectrum (a 5778 K black body) through Rayleigh's lambda^-4, the
+    /// ozone's measured cross-sections and the aerosols, 36 wavelengths, seen by the CIE observer
+    /// in sRGB balanced on the sun; worked out apart from this code.
+    #[test]
+    fn the_sun_s_colour_is_the_spectrum_s() {
+        let air = Air::with(false, false, false);
+        for (elevation, spectral) in [
+            (90.0f32, [0.907, 0.866, 0.767]),
+            (30.0, [0.824, 0.749, 0.589]),
+            (10.0, [0.592, 0.447, 0.228]),
+            (5.0, [0.398, 0.233, 0.064]),
+        ] {
+            let light = transmittance_lut(&air, EARTH_RADIUS, elevation.to_radians().sin());
+            let off = (light - Vec3::from(spectral)).abs().max_element();
+            assert!(off < 0.02, "{elevation}: {light} against {spectral:?}");
+        }
+    }
+
+    /// The sky's light against the same spectral reference's single scattering plus Hillaire's
+    /// multiple scattering worked out apart (Python, finer steps), at texels (row, column) of the
+    /// table: near the zenith toward and away from the sun, mid-sky and near the horizon.
+    #[test]
+    fn the_sky_s_colour_is_the_spectrum_s() {
+        let Some((device, queue)) = test_device() else {
+            eprintln!("no GPU adapter: the sky's passes are not run");
+            return;
+        };
+        let texel = |sky: &[[f32; 4]], row: usize, column: usize| {
+            Vec3::from_slice(&sky[row * SIZE[0] as usize + column][..3])
+        };
+        for (elevation, expected) in [
+            (
+                60.0f32,
+                vec![
+                    ((31, 0), [0.0400, 0.0710, 0.1465]),
+                    ((31, 63), [0.0321, 0.0615, 0.1338]),
+                    ((26, 63), [0.0338, 0.0678, 0.1502]),
+                    ((19, 32), [0.1839, 0.2883, 0.4058]),
+                ],
+            ),
+            (
+                5.0,
+                vec![
+                    ((31, 63), [0.0082, 0.0154, 0.0285]),
+                    ((26, 63), [0.0181, 0.0326, 0.0540]),
+                    ((19, 32), [0.0688, 0.0864, 0.0750]),
+                ],
+            ),
+        ] {
+            let (sin, cos) = elevation.to_radians().sin_cos();
+            let sky = gpu_sky(&device, &queue, Vec3::new(cos, sin, 0.0));
+            for ((row, column), reference) in expected {
+                let (got, reference) = (texel(&sky, row, column), Vec3::from(reference));
+                let off = ((got - reference) / reference).abs().max_element();
+                assert!(
+                    off < 0.1,
+                    "sun {elevation}, texel {row} {column}: {got} against {reference}"
+                );
+            }
+        }
     }
 
     /// The table's texel high in the sky, away from the sun: the last azimuth, the sixth row from
