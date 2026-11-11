@@ -11,11 +11,20 @@ use std::path::Path;
 const SITE: &str = "https://horizon-rust.github.io/horizon-mods/";
 
 const USAGE: &str = "usage: cargo horizon-mod registry build <checkout> --files <dir> --out <index.json> [--release <url>] [--site <url>] [--generated <time>]
-       cargo horizon-mod registry review <base checkout> <head checkout> --author <login> [--json]
+       cargo horizon-mod registry review <base checkout> <head checkout> --author <login> [--author-id <id>] [--json]
        cargo horizon-mod registry check <base checkout> <head checkout> --files <dir>
        cargo horizon-mod registry list <checkout>
        cargo horizon-mod registry release <checkout> <id> <file> --tag <tag> --published <YYYY-MM-DD> [--notes <file>] [--signature <file>] [--game <version>]
        cargo horizon-mod registry page <checkout> <id> <horizon-registry.toml>";
+
+/// A version's sha256 is 64 lowercase hex digits, and its file name one line without a path.
+fn well_formed(sha256: &str, file: &str) -> bool {
+    sha256.len() == 64
+        && sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && !file.contains(['\n', '\r', '/', '\\'])
+}
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     super::flag(args, name)
@@ -81,7 +90,11 @@ pub fn main(args: &[String]) -> Result<(), String> {
             let author = flag(rest, "--author").ok_or(USAGE)?;
             let (base, _) = registry::load(Path::new(base)).map_err(lines)?;
             let (head, revoked) = registry::load(Path::new(head)).map_err(lines)?;
-            let review = registry::review_with_revoked(&base, &head, &revoked, author);
+            let author_id = match flag(rest, "--author-id") {
+                Some(id) => Some(id.parse::<u64>().map_err(|_| USAGE.to_owned())?),
+                None => None,
+            };
+            let review = registry::review_with_revoked(&base, &head, &revoked, author, author_id);
             if rest.iter().any(|a| a == "--json") {
                 let json = serde_json::json!({"errors": review.errors, "notes": review.notes});
                 println!("{json}");
@@ -121,13 +134,26 @@ pub fn main(args: &[String]) -> Result<(), String> {
             let mut failed = 0;
             for e in &entries {
                 for v in e.versions.iter().filter(|v| !old.contains(&v.sha256)) {
+                    // The pull request's text: only a hash names a file, never a path.
+                    if !well_formed(&v.sha256, &v.file) {
+                        failed += 1;
+                        println!("{}: a version's sha256 or file name is malformed", e.id);
+                        continue;
+                    }
                     println!("{} {} ({}):", e.id, v.version, v.file);
                     let report = crate::check::check(
                         &files.join(&v.sha256),
                         e.kind.clone(),
                         e.key.as_deref(),
                         v.signature.as_deref(),
-                    );
+                    )
+                    .and_then(|r| {
+                        if r.sha256 == v.sha256 {
+                            Ok(r)
+                        } else {
+                            Err("the file isn't the one its sha256 names".to_owned())
+                        }
+                    });
                     match report {
                         Ok(r) => print!("{}", r.text()),
                         Err(err) => {
@@ -151,6 +177,12 @@ pub fn main(args: &[String]) -> Result<(), String> {
             let (entries, _) = registry::load(Path::new(checkout)).map_err(lines)?;
             for e in &entries {
                 for v in &e.versions {
+                    if !well_formed(&v.sha256, &v.file) || v.version.contains(['\n', '\r']) {
+                        return Err(format!(
+                            "{}: a version's sha256 or file name is malformed",
+                            e.id
+                        ));
+                    }
                     println!("{} {} {} {}", v.sha256, e.id, v.version, v.file);
                 }
             }
@@ -226,4 +258,25 @@ fn entry_of(checkout: &str, id: &str) -> Result<registry::Entry, String> {
         .into_iter()
         .find(|e| e.id == id && e.repo.is_some())
         .ok_or_else(|| format!("{id}: no entry with a repo"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_hash_names_a_file() {
+        let hash = "a".repeat(64);
+        assert!(well_formed(&hash, "orbital-1.0.hmod"));
+        for bad in [
+            "/proc/self/environ",
+            "../../.git/config",
+            &"A".repeat(64),
+            &"a".repeat(63),
+        ] {
+            assert!(!well_formed(bad, "x.hmod"), "{bad}");
+        }
+        assert!(!well_formed(&hash, "x\nfake line"));
+        assert!(!well_formed(&hash, "../x.hmod"));
+    }
 }

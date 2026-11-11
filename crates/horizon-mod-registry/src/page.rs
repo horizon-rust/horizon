@@ -161,6 +161,14 @@ pub fn edit(
     form: &Form,
     images: &Uploads,
 ) -> Result<String, Refusal> {
+    // The id goes into the GitHub contents URL, the branch and the pull request: checked as a
+    // new submission's is.
+    if !horizon_mods::index::valid_id(&form.id) {
+        return Err(Refusal::new(
+            StatusCode::BAD_REQUEST,
+            "an id is 1 to 64 of a-z, 0-9 and _".to_owned(),
+        ));
+    }
     let gh = &config.github;
     let Some((before, blob)) = gh.entry(&form.id).map_err(github_down)? else {
         return Err(Refusal::new(

@@ -341,7 +341,13 @@ fn a_version_taken_down_by_hash_may_leave_its_entry() {
     let one = std::slice::from_ref(&base);
     let next = std::slice::from_ref(&rotated);
 
-    let r = review_with_revoked(one, next, &[down("coords_hud", &old.sha256)], "ludovic111");
+    let r = review_with_revoked(
+        one,
+        next,
+        &[down("coords_hud", &old.sha256)],
+        "ludovic111",
+        None,
+    );
     assert!(r.errors.is_empty(), "{r:?}");
     assert!(
         r.notes
@@ -359,7 +365,7 @@ fn a_version_taken_down_by_hash_may_leave_its_entry() {
             ..down("coords_hud", "")
         }],
     ] {
-        let r = review_with_revoked(one, next, &revoked, "ludovic111");
+        let r = review_with_revoked(one, next, &revoked, "ludovic111", None);
         assert!(
             r.errors
                 .iter()
@@ -628,4 +634,23 @@ fn a_project_listed_by_its_repository_takes_its_versions_from_releases() {
             .iter()
             .any(|e| e.contains("owner/name"))
     );
+}
+
+#[test]
+fn an_owners_login_taken_by_another_account_is_noted() {
+    let mut base: Entry = toml::from_str(&hud_entry()).unwrap();
+    base.owners = vec!["ludovic111".into()];
+    base.owner_ids = vec![136255825];
+    let mut next = base.clone();
+    next.versions[0].version = "0.2.0".into();
+    let (one, two) = (std::slice::from_ref(&base), std::slice::from_ref(&next));
+    let noted = |id| {
+        review_with_revoked(one, two, &[], "ludovic111", id)
+            .notes
+            .iter()
+            .any(|n| n.contains("isn't one of its owners"))
+    };
+    assert!(!noted(Some(136255825)), "the owner's own account");
+    assert!(noted(Some(999)), "the login, now someone else's");
+    assert!(!noted(None), "no ID given: the login decides, as before");
 }
