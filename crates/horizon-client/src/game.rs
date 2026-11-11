@@ -216,6 +216,7 @@ mod legacy_rules;
 mod level_particles;
 mod levels;
 mod lightning;
+mod live_panel;
 mod llamas;
 mod loading_screen;
 mod loading_window;
@@ -2346,6 +2347,10 @@ struct Game<'a> {
     /// `LocalPlayer.itemActivation`: the totem flying up to the screen.
     item_activation: horizon_client::item_activation::ItemActivation,
     weather_parameters: horizon_client::weather::ParameterCache,
+    /// The live settings panel (`game/live_panel.rs`, `HORIZON_LIVE_PANEL`), and whether it was
+    /// started yet.
+    live_panel: Option<live_panel::LivePanel>,
+    live_panel_tried: bool,
     /// Physical rain with RT lighting (`game/rain.rs`).
     rain: rain::RainState,
     /// Physical snow with RT lighting (`game/snow.rs`).
@@ -16265,6 +16270,8 @@ impl<'a> Game<'a> {
             screen_fx: Default::default(),
             item_activation: Default::default(),
             weather_parameters: Default::default(),
+            live_panel: None,
+            live_panel_tried: false,
             rain: Default::default(),
             snow: Default::default(),
             panorama_rotation: Default::default(),

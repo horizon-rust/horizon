@@ -17,6 +17,15 @@ pub(super) struct RainState {
     /// This shower's intensity, and its factor this frame (snow's too: game/snow.rs).
     intensity: Intensity,
     factor: f32,
+    /// A factor the live settings panel holds every shower to (none: each draws its own).
+    pub(super) forced: Option<f32>,
+}
+
+impl RainState {
+    /// The factor this shower drew (none while none falls), and this frame's.
+    pub(super) fn shower(&self) -> (Option<f32>, f32) {
+        (self.intensity.drawn(), self.factor)
+    }
 }
 
 /// What a frame hands the renderer: the rain, the wetness, and the map's words that changed
@@ -66,6 +75,9 @@ impl Game<'_> {
         let seconds = self.water_seconds();
         let before = self.rain.intensity.drawn();
         self.rain.factor = self.rain.intensity.step(level, self.world.game_time);
+        if let Some(forced) = self.rain.forced {
+            self.rain.factor = forced.max(0.0);
+        }
         // A new shower: none fell, or the one that fell ended (the level fell, then rose).
         let after = self.rain.intensity.drawn();
         if after != before

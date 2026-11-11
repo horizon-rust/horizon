@@ -527,6 +527,9 @@ pub struct Froxels {
     /// The God Rays Quality option (`Renderer::set_god_rays_quality`, `quality_grid`): 0 Low to
     /// `QUALITIES - 1` Ultra.
     pub quality: u32,
+    /// The natural fogs' density against their own (`Renderer::set_fog_density`, the live settings
+    /// panel): 1 by default, 0 none.
+    pub fog_density: f32,
     /// A medium forced for testing (`HORIZON_FROXEL_MEDIUM`).
     forced: Option<Medium>,
     hardware: bool,
@@ -771,6 +774,7 @@ impl Froxels {
             camera: CameraMedium::default(),
             strength: 1.0,
             quality: DEFAULT_QUALITY,
+            fog_density: 1.0,
             forced,
             hardware,
             inject,
@@ -1107,8 +1111,13 @@ impl Froxels {
         };
         let (near, far) = (offset(0), offset(1));
         let made = self.map_origins.map(|o| f32::from(u8::from(o.is_some())));
-        let fog_on = self.fog.active() && self.map_origins.iter().any(Option::is_some);
-        let fog = self.fog.uniform();
+        let density = self.fog_density.max(0.0);
+        let fog_on =
+            self.fog.active() && density > 0.0 && self.map_origins.iter().any(Option::is_some);
+        let mut fog = self.fog.uniform();
+        // The valley fog's and the steam fog's density scales.
+        fog.fog[0] *= density;
+        fog.fog[1] *= density;
         let uniform = Uniform {
             inverse_view_proj: inputs.view_proj.inverse().to_cols_array_2d(),
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),

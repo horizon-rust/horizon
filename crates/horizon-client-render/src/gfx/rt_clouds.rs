@@ -221,7 +221,6 @@ static COVER_ENV: std::sync::Once = std::sync::Once::new();
 
 /// Holds the cumulus' cover at `cover` (0 clear .. 1 full, 0.5 an average day), or lets it drift
 /// again with `None`: for a live settings window.
-#[allow(dead_code)] // until that window calls it
 pub fn set_cover(cover: Option<f32>) {
     COVER_ENV.call_once(|| {});
     let bits = cover.map_or(u32::MAX, |c| c.clamp(0.0, 1.0).to_bits());

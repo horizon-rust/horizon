@@ -475,6 +475,21 @@ Switches: `HORIZON_RT_SPOT_REACH` (blocks, default 48), `HORIZON_RT_SPOT_GAIN` (
 out) and `HORIZON_RT_SPOT_ANGLE` (half angle in degrees, default 24). Cost: one light more where it is placed, as a
 lamp; nothing where there is none.
 
+## Live settings panel
+
+`HORIZON_LIVE_PANEL=1` (environment or `horizon-env.txt`) has the game serve a page on this computer
+and open it in the browser: a window beside the game (or on another screen, or a phone with
+`HORIZON_LIVE_PANEL=lan`) to move effects while playing, VR included, without a restart. Its
+address, with a random token, is in the log (`Horizon live panel: http://127.0.0.1:25590/…/`;
+`HORIZON_LIVE_PANEL_PORT` picks the port, `HORIZON_LIVE_PANEL_OPEN=0` only logs it). It holds the
+RT Ambient Light, God Rays and God Rays Quality options (the same settings as the graphics screen,
+saved two seconds after the last move), the Natural Fog option and the fogs' density (x0 to x5,
+this session only, `Renderer::set_fog_density`), the cumulus' cover (`rt_clouds::set_cover`, or
+drifting), the weather (`/weather clear|rain|thunder` as the world's owner: rain falls as snow
+where it is cold) and the shower's or blizzard's intensity (held at x0 to x3, or drawn at random
+each shower, with what this one drew). Every control is one entry of
+`game/live_panel.rs` `KNOBS`; the page draws whatever that table holds.
+
 ## GPU budget for Vision Pro (90 Hz, two eyes)
 
 The target: 11.1 ms of GPU a frame for both eyes, with RT lighting on. Measured on 30 October 2026 on the

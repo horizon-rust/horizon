@@ -1,0 +1,159 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Horizon</title>
+<style>
+  :root { --bg: #15171c; --card: #1f232b; --line: #2e3440; --text: #e8eaef; --dim: #9aa3b2; --accent: #6fb4ff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, sans-serif; }
+  main { max-width: 520px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 18px; margin: 4px 0 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 22px 0 8px; }
+  .knob { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .value { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 4.5em; text-align: right; }
+  input[type=range] { width: 100%; margin-top: 10px; accent-color: var(--accent); }
+  input[type=range]:disabled { opacity: .35; }
+  .choices { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .choices button { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; cursor: pointer; }
+  .choices button.on { background: var(--accent); color: #0b1220; border-color: var(--accent); }
+  .switch { width: 44px; height: 26px; accent-color: var(--accent); }
+  .reading { color: var(--dim); }
+  label.auto { color: var(--dim); font-size: 13px; display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+  #status { color: #ff8f8f; min-height: 1.4em; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Horizon</h1>
+  <div id="status"></div>
+  <div id="knobs"></div>
+</main>
+<script>
+// The game describes every control (game/live_panel.rs `KNOBS`); this page only draws them.
+const root = document.getElementById("knobs");
+const status = document.getElementById("status");
+const rows = new Map();
+let dragging = null;
+
+// The slider's travel t (0..1) and the value, bent by the knob's curve.
+const toValue = (k, t) => k.min + (k.max - k.min) * Math.pow(t, k.curve);
+const toTravel = (k, v) => Math.pow(Math.max(0, (v - k.min) / (k.max - k.min)), 1 / k.curve);
+const show = (k, v) => v === null ? "" : Number(v).toFixed(k.digits);
+
+async function send(id, value) {
+  try {
+    const r = await fetch("set", { method: "POST", body: JSON.stringify({ id, value }) });
+    if (!r.ok) throw new Error(r.status);
+    draw(await r.json());
+  } catch (e) { status.textContent = "⚠ " + e.message; }
+}
+
+function build(k) {
+  const el = document.createElement("div");
+  el.className = "knob";
+  const head = document.createElement("div");
+  head.className = "row";
+  const name = document.createElement("span");
+  name.textContent = k.label;
+  head.append(name);
+  el.append(head);
+  const row = { el, k };
+  if (k.kind === "toggle") {
+    const box = document.createElement("input");
+    box.type = "checkbox"; box.className = "switch";
+    box.onchange = () => send(k.id, box.checked);
+    head.append(box); row.box = box;
+  } else if (k.kind === "slider") {
+    const value = document.createElement("span");
+    value.className = "value"; head.append(value); row.value = value;
+    const range = document.createElement("input");
+    range.type = "range"; range.min = 0; range.max = 1000; range.step = 1;
+    const pick = () => {
+      let v = toValue(k, range.value / 1000);
+      v = Math.round(v / k.step) * k.step;
+      value.textContent = show(k, v);
+      return v;
+    };
+    let timer = null;
+    range.oninput = () => {
+      dragging = k.id;
+      const v = pick();
+      clearTimeout(timer);
+      timer = setTimeout(() => send(k.id, v), 60);
+    };
+    range.onchange = () => { dragging = null; send(k.id, pick()); };
+    el.append(range); row.range = range;
+    if (k.auto) {
+      const label = document.createElement("label");
+      label.className = "auto";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.onchange = () => send(k.id, box.checked ? null : k.start);
+      label.append(box, document.createTextNode(k.auto));
+      el.append(label); row.auto = box;
+    }
+  } else if (k.kind === "choice") {
+    const line = document.createElement("div");
+    line.className = "choices";
+    row.buttons = k.choices.map(c => {
+      const b = document.createElement("button");
+      b.textContent = c.label;
+      b.onclick = () => send(k.id, c.value);
+      line.append(b);
+      return [c.value, b];
+    });
+    el.append(line);
+  } else {
+    const text = document.createElement("div");
+    text.className = "reading"; el.append(text); row.text = text;
+  }
+  return row;
+}
+
+function draw(state) {
+  document.title = state.title;
+  document.getElementById("title").textContent = state.title;
+  status.textContent = state.error ? "⚠ " + state.error : "";
+  let group = null;
+  for (const k of state.knobs) {
+    let row = rows.get(k.id);
+    if (!row) {
+      if (k.group !== group) {
+        const h = document.createElement("h2");
+        h.textContent = k.group;
+        root.append(h);
+      }
+      row = build(k);
+      rows.set(k.id, row);
+      root.append(row.el);
+    }
+    group = k.group;
+    const v = k.value;
+    if (row.box) row.box.checked = !!v;
+    if (row.range && dragging !== k.id) {
+      const auto = v === null;
+      if (!auto) row.range.value = Math.round(toTravel(k, v) * 1000);
+      row.range.disabled = auto;
+      row.value.textContent = auto ? k.auto : show(k, v);
+      if (row.auto) row.auto.checked = auto;
+    }
+    if (row.buttons) for (const [value, b] of row.buttons) b.classList.toggle("on", value === v);
+    if (row.text) row.text.textContent = v;
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch("state");
+    if (!r.ok) throw new Error(r.status);
+    draw(await r.json());
+  } catch (e) { status.textContent = "⚠ " + e.message; }
+  setTimeout(poll, 1000);
+}
+poll();
+</script>
+</body>
+</html>

@@ -218,6 +218,7 @@ mod parallax;
 mod resident;
 mod rt_cloud_mesh;
 mod rt_clouds;
+pub use rt_clouds::{cover as cloud_cover, set_cover as set_cloud_cover};
 // Froxel volumetrics (gfx/froxels.rs).
 mod froxels;
 pub mod gpu_passes;
@@ -8341,6 +8342,10 @@ impl Renderer {
     /// per-pixel march, 0 Low to `froxels::QUALITIES - 1` Ultra (froxels.rs `quality_grid`).
     pub fn set_god_rays_quality(&mut self, quality: u32) {
         self.froxels.quality = quality.min(froxels::QUALITIES - 1);
+    }
+    /// The natural fogs' density, times their own (1 by default, 0 none; the live settings panel).
+    pub fn set_fog_density(&mut self, density: f32) {
+        self.froxels.fog_density = density;
     }
     /// The natural fogs in the froxels (natural_fog.rs): the setting, the time, the air (a real
     /// weather can set its own humidity and temperatures). Call each frame.
