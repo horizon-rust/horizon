@@ -1055,12 +1055,22 @@ pub fn game_mod_api_level() -> Option<u32> {
 /// contract of Horizon 0.2.67 and 0.2.68.
 pub fn mod_api_level(tag: &str) -> u32 {
     static LEVELS: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
-    let mut levels = LEVELS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(&(_, level)) = levels.iter().find(|(t, _)| t == tag) {
+    let known = LEVELS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(t, _)| t == tag)
+        .map(|&(_, level)| level);
+    if let Some(level) = known {
         return level;
     }
+    // Read without the lock: the whole program is read, and the window must not wait on another
+    // thread's read of another version. Two first lookups at once only read twice.
     let level = program_mod_api_level(&version_dir(tag).join(CLIENT));
-    levels.push((tag.to_owned(), level));
+    let mut levels = LEVELS.lock().unwrap_or_else(|e| e.into_inner());
+    if !levels.iter().any(|(t, _)| t == tag) {
+        levels.push((tag.to_owned(), level));
+    }
     level
 }
 
@@ -1893,7 +1903,11 @@ fn complete_reports(versions: &Path, tag: &str) -> bool {
             continue;
         };
         // Copied beside it and renamed: an interrupted copy never looks complete.
-        let partial = to.join(format!(".{name}.partial-{}", std::process::id()));
+        // Its own name per copy: the start-up thread and Play can complete the same reports at
+        // once, and one must not write into the file the other just renamed into place.
+        static COPIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COPIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let partial = to.join(format!(".{name}.partial-{}-{n}", std::process::id()));
         let copied = fs::copy(&from, &partial).and_then(|_| fs::rename(&partial, to.join(name)));
         if copied.is_err() {
             let _ = fs::remove_file(&partial);
@@ -2534,24 +2548,40 @@ pub fn preparer(
     let jar = data_dir()
         .join("server-jars")
         .join(format!("{version}.jar"));
-    if !reused && !jar.exists() {
+    if !reused {
         let json: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&manifest).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
-        let url = json["downloads"]["server"]["url"]
+        let expected = json["downloads"]["server"]["sha1"]
             .as_str()
-            .ok_or_else(|| format!("{} has no server download", manifest.display()))?;
-        log(format!("Downloading the {version} server jar from Mojang"));
-        fs::create_dir_all(jar.parent().unwrap()).map_err(|e| e.to_string())?;
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        let partial = jar.with_extension("partial");
-        fs::write(&partial, body)
-            .and_then(|_| fs::rename(&partial, &jar))
-            .map_err(|e| e.to_string())?;
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        // A cached jar that isn't the one the version names (a captive portal's page, a cut-off
+        // download) is fetched again, not kept failing every Prepare.
+        let cached = jar.exists()
+            && (expected.is_empty()
+                || fs::read(&jar).is_ok_and(|bytes| sources::sha1_hex(&bytes) == expected));
+        if !cached {
+            let url = json["downloads"]["server"]["url"]
+                .as_str()
+                .ok_or_else(|| format!("{} has no server download", manifest.display()))?;
+            log(format!("Downloading the {version} server jar from Mojang"));
+            fs::create_dir_all(jar.parent().unwrap()).map_err(|e| e.to_string())?;
+            let mut body = Vec::new();
+            get(url)?
+                .into_reader()
+                .read_to_end(&mut body)
+                .map_err(|e| e.to_string())?;
+            if !expected.is_empty() && sources::sha1_hex(&body) != expected {
+                return Err(format!(
+                    "The {version} server jar from {url} doesn't match its SHA-1. Try again."
+                ));
+            }
+            let partial = jar.with_extension("partial");
+            fs::write(&partial, body)
+                .and_then(|_| fs::rename(&partial, &jar))
+                .map_err(|e| e.to_string())?;
+        }
     }
     if let Some(binary) = binary {
         if prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
@@ -4612,8 +4642,17 @@ impl Settings {
         let tmp = dir.join(format!("settings.{}.tmp", std::process::id()));
         let json =
             serde_json::to_vec_pretty(self).map_err(|e| format!("{}: {e}", path.display()))?;
+        // Owner only: it can hold a proxy's user name and password.
+        let write_tmp = |json: &[u8]| -> std::io::Result<()> {
+            let _ = fs::remove_file(&tmp);
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            std::io::Write::write_all(&mut options.open(&tmp)?, json)
+        };
         let written = fs::create_dir_all(&dir)
-            .and_then(|()| fs::write(&tmp, json))
+            .and_then(|()| write_tmp(&json))
             .and_then(|()| fs::rename(&tmp, &path));
         if let Err(e) = written {
             let _ = fs::remove_file(&tmp);

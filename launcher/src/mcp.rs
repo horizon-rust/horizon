@@ -156,6 +156,10 @@ impl Session {
                 let server = self.running_server()?;
                 let before = server.log.lock().unwrap().len();
                 let command = arg_str(args, "command").ok_or("command is required")?;
+                // One console line: a line break would run more commands than the call shows.
+                if command.contains(['\n', '\r']) {
+                    return Err("command must be a single line".into());
+                }
                 server.running.send(command.trim_start_matches('/'));
                 std::thread::sleep(Duration::from_millis(700));
                 let log = server.log.lock().unwrap();
