@@ -525,15 +525,22 @@ fn parallax_translucent(in: ParallaxOut) -> vec4<f32> {
         // Glass: the pack's normal map and roughness drive its bending, its reflections and its
         // blur (terrain.wgsl `rt_glass_at`); without a map, drawn glass's waviness.
         let s = parallax_surface(in, false);
-        if s.texel.a < 0.01 && !horizon_terrain_rt_glass_weathered_at(in.position, in.layer) {
+        horizon_terrain_rt_glass_neighbours = horizon_terrain_rt_glass_edges(in.tint);
+        if s.texel.a < 0.01
+            && !horizon_terrain_rt_glass_weathered_at(in.position, in.layer, s.geo, in.light.x)
+        {
             discard;
         }
         let layer = in.layer & 0x7fffu;
         let specular = specular_at(layer, s.uv, s.footprint);
-        let normal = select(horizon_terrain_rt_glass_wave(in.position, s.geo), s.normal, s.mapped);
+        // A clear texel kept for the weather on it is plain clear glass under the water or the
+        // frost: the pack's map and roughness for its clear face (an RTX pack's broad streaks)
+        // would bend and blur the whole view through the window wherever a drop sits.
+        let clear = s.texel.a < 0.01;
+        let normal = select(horizon_terrain_rt_glass_wave(in.position, s.geo), s.normal,
+            s.mapped && !clear);
         let roughness = select(0.0, (1.0 - specular.r) * (1.0 - specular.r),
-            specular_slot(layer).array != 0xffffu);
-        horizon_terrain_rt_glass_neighbours = horizon_terrain_rt_glass_edges(in.tint);
+            specular_slot(layer).array != 0xffffu && !clear);
         let g = horizon_terrain_rt_glass_at(horizon_terrain_GlassIn(in.position, in.clip.xy,
             in.light, in.spherical, in.cylindrical, s.geo, normal,
             horizon_terrain_decode_gamma(s.texel.rgb * in.tint), s.texel.a, roughness, in.layer));

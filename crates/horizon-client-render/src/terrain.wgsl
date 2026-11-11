@@ -2950,11 +2950,29 @@ const GLASS_DROP_CELL: f32 = 0.05;
 // lighting, within 48 blocks, while anything is wet or where the snow's cover lies in a column it
 // snows in. The pane is glass all over: kept, it is shaded as the rest of it, its reflection too.
 fn rt_glass_weathered(in: TerrainOut) -> bool {
-    return in.emission == 0u && rt_glass_weathered_at(in.pos, in.layer);
+    rt_glass_neighbours = rt_glass_edges(in.tint.rgb);
+    return in.emission == 0u
+        && rt_glass_weathered_at(in.pos, in.layer, face_normal(in.pos), in.light.x);
 }
-// `rt_glass_weathered` for a fragment at camera-relative `pos` of sprite `layer` (the parallax
-// terrain's too, gfx/parallax.rs).
-fn rt_glass_weathered_at(pos: vec3<f32>, layer: u32) -> bool {
+// A glass face's first tangent (`rt_glass_weather`'s `t1`), the second its cross with the face.
+fn rt_glass_t1(face: vec3<f32>) -> vec3<f32> {
+    return normalize(cross(select(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), abs(face.y) > 0.9),
+        face));
+}
+// The weather worked out for this fragment by `rt_glass_weathered_at` (w: 1 when it was), for
+// `rt_glass_at` not to work it out again.
+var<private> rt_glass_cache: vec4<f32> = vec4(0.0);
+// `rt_glass_weathered` for a fragment at camera-relative `pos` of sprite `layer` on a face of
+// normal `face` (toward the eye), its sky light `sky` (the parallax terrain's too,
+// gfx/parallax.rs): kept only where a drop, a run or the frost lies on it, so the rest of the clear
+// pane stays as it was (a wet pane's whole face reflecting changed the look through every window).
+fn rt_glass_weathered_at(pos: vec3<f32>, layer: u32, face: vec3<f32>, sky: f32) -> bool {
+    if !rt_glass_may_weather(pos, layer) { return false; }
+    let t1 = rt_glass_t1(face);
+    rt_glass_cache = vec4(rt_glass_weather(pos, face, t1, cross(face, t1), sky), 1.0);
+    return length(rt_glass_cache.xy) > 0.02 || rt_glass_cache.z > 0.02;
+}
+fn rt_glass_may_weather(pos: vec3<f32>, layer: u32) -> bool {
     if globals.rt_mode.x < 0.5 || !linear_on() { return false; }
     // Any glass but ice (the translucent terrain's every face but water's): a pack's own glass
     // sprites (connected textures, RTX packs) are not the plain glass's.
@@ -3034,8 +3052,10 @@ fn rt_glass_weather(pos: vec3<f32>, face: vec3<f32>, t1: vec3<f32>, t2: vec3<f32
     let wet = shade.y;
     if wet <= 0.0 { return out; }
     rt_glass_seen.z += 0.25;
-    var exposure = rain_exposure(world, face);
-    if exposure < 0.0 { exposure = smoothstep(0.875, 0.9375, sky) * select(0.0, 1.0, face.y > -0.5); }
+    // The rain reaching either side: the drops on a window's outside show through it from the
+    // room (its outer face is not drawn from there).
+    var exposure = max(rain_exposure(world, face), rain_exposure(world, -face));
+    if exposure < 0.0 { exposure = smoothstep(0.875, 0.9375, sky) * select(0.0, 1.0, abs(face.y) < 0.5); }
     if forced { exposure = 1.0; }
     if exposure <= 0.0 { return out; }
     rt_glass_seen.z += 0.25;
@@ -3124,10 +3144,10 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
     var n = g.normal;
     var weather_frost = 0.0;
     if ice == 0u {
-        let t1 = normalize(cross(select(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0),
-            abs(g.face.y) > 0.9), g.face));
+        let t1 = rt_glass_t1(g.face);
         let t2 = cross(g.face, t1);
-        let w = rt_glass_weather(g.pos, g.face, t1, t2, g.light.x);
+        var w = rt_glass_cache.xyz;
+        if rt_glass_cache.w < 0.5 { w = rt_glass_weather(g.pos, g.face, t1, t2, g.light.x); }
         n = normalize(n - (t1 * w.x + t2 * w.y) * 0.35);
         weather_frost = w.z;
         roughness = mix(roughness, max(roughness, 0.55), weather_frost);
