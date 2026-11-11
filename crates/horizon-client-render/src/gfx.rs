@@ -9827,7 +9827,7 @@ impl Renderer {
             self.stars.prepare(
                 &mut self.uploads,
                 &mut encoder,
-                jittered * rotation,
+                jittered * native_pack::sky_turn(self.native.as_ref(), frame.end_sky) * rotation,
                 brightness,
                 &globals,
             );
@@ -9848,7 +9848,7 @@ impl Renderer {
                 &mut encoder,
                 &self.celestial_buffer,
                 0,
-                bytemuck::cast_slice(&frame.celestial[..celestial_vertices]),
+                &native_pack::celestial_bytes(self.native.as_ref(), frame, celestial_vertices),
             );
         }
         let max_quads =
