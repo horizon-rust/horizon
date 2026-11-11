@@ -2347,10 +2347,9 @@ struct Game<'a> {
     /// `LocalPlayer.itemActivation`: the totem flying up to the screen.
     item_activation: horizon_client::item_activation::ItemActivation,
     weather_parameters: horizon_client::weather::ParameterCache,
-    /// The live settings panel (`game/live_panel.rs`, `HORIZON_LIVE_PANEL`), and whether it was
-    /// started yet.
+    /// The live settings panel (`game/live_panel.rs`, `HORIZON_LIVE_PANEL`), once taken from
+    /// where the process start left it.
     live_panel: Option<live_panel::LivePanel>,
-    live_panel_tried: bool,
     /// Physical rain with RT lighting (`game/rain.rs`).
     rain: rain::RainState,
     /// Physical snow with RT lighting (`game/snow.rs`).
@@ -16271,7 +16270,6 @@ impl<'a> Game<'a> {
             item_activation: Default::default(),
             weather_parameters: Default::default(),
             live_panel: None,
-            live_panel_tried: false,
             rain: Default::default(),
             snow: Default::default(),
             panorama_rotation: Default::default(),
@@ -17245,6 +17243,11 @@ fn run_loading(
 }
 
 pub use launch_api::{UsageError, exit_code};
+
+/// The live settings panel's server, started with the process (`HORIZON_LIVE_PANEL`).
+pub(crate) fn start_live_panel() {
+    live_panel::start_at_launch();
+}
 
 pub fn run_with() -> Result<()> {
     let Some(mut options) = Options::read()? else {

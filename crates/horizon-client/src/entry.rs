@@ -66,6 +66,10 @@ pub fn main_with(mods: crate::mod_api::Mods) {
             log::info!("Switches from horizon-env.txt: {}", from_file.join(" "));
         }
         crash::install(home.clone(), side);
+        // The live settings panel listens from the start, the game's side only.
+        if side == "client" {
+            crate::game::start_live_panel();
+        }
     }
     let renderers = crate::mod_api::mods()
         .iter()

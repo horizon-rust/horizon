@@ -319,8 +319,15 @@ impl LivePanel {
     /// The panel's server, when `HORIZON_LIVE_PANEL` asks for it: on this computer only (`1`),
     /// or on the network too (`lan`).
     fn start() -> Option<Self> {
-        let lan = match std::env::var("HORIZON_LIVE_PANEL").ok()?.trim() {
-            "" | "0" => return None,
+        let Ok(asked) = std::env::var("HORIZON_LIVE_PANEL") else {
+            log::info!("Horizon live panel: off (HORIZON_LIVE_PANEL is not set)");
+            return None;
+        };
+        let lan = match asked.trim() {
+            "" | "0" => {
+                log::info!("Horizon live panel: off (HORIZON_LIVE_PANEL={asked})");
+                return None;
+            }
             "lan" => true,
             _ => false,
         };
@@ -367,6 +374,18 @@ impl LivePanel {
     }
 }
 
+/// The panel started with the process (`start_at_launch`), until the window's game takes it.
+static AT_LAUNCH: std::sync::Mutex<Option<LivePanel>> = std::sync::Mutex::new(None);
+
+/// Starts the panel's server as the process starts (`entry`, the game's side only): it listens
+/// from then on whatever the game's loop does, and the log says at once whether it runs.
+pub(super) fn start_at_launch() {
+    let panel = LivePanel::start();
+    if let Ok(mut slot) = AT_LAUNCH.lock() {
+        *slot = panel;
+    }
+}
+
 /// A token no other page can guess: the standard library's random hash keys, twice.
 fn token() -> String {
     use std::hash::{BuildHasher, Hasher};
@@ -385,10 +404,21 @@ fn token() -> String {
 /// The server's thread: one connection at a time (one page, a request a second).
 fn serve(listener: TcpListener, prefix: &str, game: &mpsc::Sender<(Request, mpsc::Sender<Value>)>) {
     for stream in listener.incoming() {
-        let Ok(stream) = stream else { continue };
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(e) => {
+                log::debug!("Horizon live panel: a connection failed: {e}");
+                continue;
+            }
+        };
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-        if handle(stream, prefix, game).is_err() && game_gone(game) {
+        // A request that panics costs its own connection, never the server.
+        let handled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle(stream, prefix, game)
+        }));
+        if matches!(handled, Ok(Err(()))) && game_gone(game) {
+            log::info!("Horizon live panel: the game let go of it, the server stops");
             return;
         }
     }
@@ -468,15 +498,16 @@ fn busy() -> (&'static str, &'static str, String) {
 }
 
 impl Game<'_> {
-    /// Each frame: start the panel the first time (the window's game only), answer the page, and
+    /// Each frame: take the panel started at launch (the window's game only), answer the page, and
     /// hand the renderer what the panel holds.
     pub(super) fn poll_live_panel(&mut self) {
         if self.serving() || self.options.dedicated.is_some() {
             return;
         }
-        if !self.live_panel_tried {
-            self.live_panel_tried = true;
-            self.live_panel = LivePanel::start();
+        if self.live_panel.is_none()
+            && let Ok(mut slot) = AT_LAUNCH.try_lock()
+        {
+            self.live_panel = slot.take();
         }
         let Some(panel) = &self.live_panel else {
             return;
