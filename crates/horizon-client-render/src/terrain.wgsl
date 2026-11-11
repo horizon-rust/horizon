@@ -2682,10 +2682,25 @@ fn rt_snow(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>) -> RtMaterial {
     }
     return m;
 }
+// RT lighting's opaque packed ice (mesher.rs `rt_packed_ice_clear` off): compacted ice, not a
+// matte block. Its face is polished and wet-looking (GGX roughness 0.2, ice's F0 0.018, whatever
+// the pack's specular map says), so it carries the sky's and the lights' sheen, and its body lets
+// the light through from behind it (subsurface 0.6), a little bluer than its texture.
+fn rt_packed_ice(m_in: RtMaterial, layer: u32) -> RtMaterial {
+    if rt_ice(layer) != 2u { return m_in; }
+    var m = m_in;
+    m.roughness = min(m.roughness, 0.2);
+    m.f0 = vec3(0.018);
+    m.metal = 0.0;
+    m.subsurface = max(m.subsurface, 0.6);
+    m.albedo = clamp(m.albedo * vec3(0.92, 0.98, 1.06), vec3(0.0), vec3(1.0));
+    return m;
+}
 // RT lighting: a fragment without maps, its albedo (`albedo`, gamma) lit and fogged, wet as the
 // rain left it.
 fn rt_lit(albedo: vec3<f32>, in: TerrainOut, n: vec3<f32>) -> vec3<f32> {
-    let m = rt_wet(rt_plain(albedo, n), n, in.pos, in.clip.xy, in.light.x, -1.0, 0.5);
+    let m = rt_wet(rt_packed_ice(rt_plain(albedo, n), in.layer), n, in.pos, in.clip.xy,
+        in.light.x, -1.0, 0.5);
     return rt_material_lit(m, n, in.pos, in.clip.xy, in.light, in.spherical, in.cylindrical);
 }
 // Whether every component is a finite number (by the bits: fast maths may drop `x != x`).

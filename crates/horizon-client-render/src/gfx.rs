@@ -8551,12 +8551,9 @@ impl Renderer {
     /// 4096 packed ice.
     pub fn set_ice_layers(&mut self, ice: Option<u32>, packed: Option<u32>) {
         let on = crate::mesher::rt_ice_on();
-        // Opaque packed ice (`rt_packed_ice_clear`) has no layer of its own here: the ice's twice.
-        let packed = if crate::mesher::rt_packed_ice_clear() {
-            packed
-        } else {
-            ice
-        };
+        // Opaque packed ice (`rt_packed_ice_clear` off) keeps its layer here: it is never meshed
+        // translucent then, so only the opaque terrain's shaders meet it, as compacted ice
+        // (terrain.wgsl `rt_packed_ice`).
         self.ice_layers = match (ice, packed) {
             (Some(i), Some(p)) if on && i < 4096 && p < 4096 => (i + 4096 * p) as f32,
             _ => -1.0,

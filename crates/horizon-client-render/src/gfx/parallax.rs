@@ -429,7 +429,8 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
     let layer = in.layer & 0x7fffu;
     let albedo = horizon_terrain_decode_gamma(s.texel.rgb * in.tint);
     let specular = specular_at(layer, s.uv, s.footprint);
-    var m = horizon_terrain_rt_labpbr(albedo, s.normal, s.ao, specular);
+    var m = horizon_terrain_rt_packed_ice(horizon_terrain_rt_labpbr(albedo, s.normal, s.ao, specular),
+        in.layer);
     // Wet from the rain (terrain.wgsl `rt_wet`), as porous as LabPBR's blue says (up to 64) where
     // the pack says it.
     let porous = round(specular.b * 255.0);

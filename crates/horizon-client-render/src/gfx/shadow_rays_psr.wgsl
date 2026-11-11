@@ -110,7 +110,10 @@ fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
     var pos = entry - n * 0.002;
     // Ice's faces are uneven (shadow_rays_hw.wgsl `ice_uneven`): the ray bends by the face as it
     // stands there, packed ice's rougher.
-    let uneven = select(0.0, select(0.45, 0.8, glass_ice > 1.5), glass_ice > 0.0 && ice_cloudy());
+    // A slope of a few hundredths: at 0.45 the ray inside turned toward a side face over much of
+    // the block, so the face showed bands of whatever lay to its sides (FIXE01, tout23: black and
+    // torch-orange stripes over ice). `HORIZON_RT_SKIP` 33554432 keeps the clear ice of before.
+    let uneven = select(0.0, select(0.05, 0.1, glass_ice > 1.5), glass_ice > 0.0 && ice_cloudy());
     let origin = rt.camera.xyz + rt.fraction.xyz;
     var dir = refract(ray, n, 1.0 / GLASS_INDEX);
     if uneven > 0.0 {
