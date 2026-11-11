@@ -17,10 +17,14 @@ async fn main() {
         .unwrap_or_else(|e| panic!("port {port}: {e}"));
     eprintln!("horizon-mod-registry: listening on {port}, submitting to {repo}");
     let app = App::new(config).unwrap_or_else(|e| panic!("horizon-mod-registry: {e}"));
-    axum::serve(listener, router(app))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
-        .unwrap_or_else(|e| panic!("{e}"));
+    // The peer's address is what the rate limits count unless `REGISTRY_CLIENT_IP_HEADER` names one.
+    axum::serve(
+        listener,
+        router(app).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+    .unwrap_or_else(|e| panic!("{e}"));
 }

@@ -77,6 +77,7 @@ REGISTRY_PUBLIC_URL=http://localhost:4173 REGISTRY_SESSION_KEY=... GITHUB_CLIENT
 | `REGISTRY_UPDATE_KEY` | Optional, random, 32 characters or more: signs owner updates' trailers (below). Unset: every update waits for a reviewer. The same value is the secret `REGISTRY_UPDATE_KEY` of horizon-mods |
 | `REGISTRY_REPO` | Default `horizon-rust/horizon-mods` |
 | `REGISTRY_DB` | The ratings' SQLite file: default `/data/registry.sqlite3`, the volume |
+| `REGISTRY_CLIENT_IP_HEADER` | The one header the proxy in front overwrites with the client's address (the Dockerfile sets `x-real-ip`, which Railway overwrites; its last comma-separated entry is used). Read only for the native-build rate limits; no other header is. Unset: the TCP peer's address |
 | `PORT` | Default 8080 |
 
 On Railway it is the service `horizon-mod-registry` of the project `horizon-site`, next to the website: built from

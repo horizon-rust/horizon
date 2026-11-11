@@ -391,6 +391,7 @@ async fn setup_keyed(
         update_key: update_key.map(<[u8]>::to_vec),
         scratch,
         database: ":memory:".into(),
+        client_ip_header: None,
     };
     let client = Client {
         app: router(App::new(config).unwrap()),
@@ -758,6 +759,7 @@ async fn a_submission_comes_from_the_sites_own_pages() {
                 update_key: None,
                 scratch: std::env::temp_dir().join("horizon-mod-registry-test"),
                 database: ":memory:".into(),
+                client_ip_header: None,
             })
             .unwrap(),
         )
