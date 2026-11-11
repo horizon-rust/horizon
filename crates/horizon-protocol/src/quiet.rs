@@ -104,15 +104,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lines_are_cut_in_utf16_units_so_decode_takes_them() {
-        let emoji = "😀".repeat(200);
-        let payloads = encode(&"🦀".repeat(40), &[emoji]);
-        let batch = decode(&payloads[0]).unwrap();
-        assert_eq!(batch.lines[0].chars().count(), MAX_LINE / 2);
-        assert_eq!(batch.mod_id.chars().count(), MAX_MOD_ID / 2);
-    }
-
-    #[test]
     fn a_batch_round_trips() {
         let lines = vec!["fill 0 0 0 1 1 1 stone".to_string(), "say hi".to_string()];
         let payloads = encode("orbital", &lines);
@@ -181,5 +172,14 @@ mod tests {
         w.varint(0);
         w.u8(1);
         assert!(decode(&w.data).is_err());
+    }
+
+    #[test]
+    fn lines_are_cut_in_utf16_units_so_decode_takes_them() {
+        let emoji = "😀".repeat(200);
+        let payloads = encode(&"🦀".repeat(40), &[emoji]);
+        let batch = decode(&payloads[0]).unwrap();
+        assert_eq!(batch.lines[0].chars().count(), MAX_LINE / 2);
+        assert_eq!(batch.mod_id.chars().count(), MAX_MOD_ID / 2);
     }
 }
