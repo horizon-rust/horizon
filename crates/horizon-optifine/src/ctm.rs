@@ -249,7 +249,7 @@ impl Rule {
                 None => match_tiles.extend(sprite_path(stem)),
             },
             (tiles, blocks) => {
-                match_tiles = tiles.map_or_else(Vec::new, sprite_list);
+                match_tiles = tiles.map_or_else(Vec::new, |v| sprite_list(path, v));
                 match_blocks = blocks.map_or_else(Vec::new, BlockMatch::parse_list);
             }
         }
@@ -351,7 +351,7 @@ impl Rule {
                 None => None,
             },
             connect,
-            connect_tiles: get("connectTiles").map_or_else(Vec::new, sprite_list),
+            connect_tiles: get("connectTiles").map_or_else(Vec::new, |v| sprite_list(path, v)),
             connect_blocks: get("connectBlocks").map_or_else(Vec::new, BlockMatch::parse_list),
             inner_seams: flag("innerSeams") == Some(true),
             weights,
@@ -400,12 +400,34 @@ impl Rule {
 }
 
 /// `matchTiles`/`connectTiles` entries as texture resource paths.
-fn sprite_list(value: &str) -> Vec<String> {
+///
+/// `./x` is beside the properties file and `~/x` in `optifine/`, as in `tiles`: a pack chains
+/// its rules by naming the tile another rule picks (Patrix: `matchTiles=./1.png`).
+/// `HORIZON_CTM_RELATIVE_MATCH=0` refuses them again (the old reading: such a rule matched nothing).
+fn sprite_list(props: &str, value: &str) -> Vec<String> {
     value
         .split_whitespace()
         .take(MAX_TILES)
-        .filter_map(sprite_path)
+        .filter_map(|name| match name {
+            n if (n.starts_with("./") || n.starts_with("~/")) && relative_match() => {
+                let png = if n.ends_with(".png") {
+                    n.to_owned()
+                } else {
+                    format!("{n}.png")
+                };
+                crate::resolve(props, &png)
+            }
+            n => sprite_path(n),
+        })
         .collect()
+}
+
+/// `HORIZON_CTM_RELATIVE_MATCH` is not `0`.
+fn relative_match() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("HORIZON_CTM_RELATIVE_MATCH").map_or(true, |v| v.trim() != "0")
+    })
 }
 
 /// A tile name as the texture's resource path: `dirt` is `textures/block/dirt.png`, and a path
@@ -618,6 +640,41 @@ mod tests {
                 tex("assets/mymod/optifine/ctm/q.png"),
                 tex(&format!("{DIR}/0-x.png")),
             ]
+        );
+    }
+
+    #[test]
+    fn relative_match_tiles_name_the_tiles_beside_the_file() {
+        // Patrix chains a random pick onto the tile its `horizontal` rule chose.
+        let r = rule(
+            "1.properties",
+            "matchTiles=./1.png ./sub/2 ~/shared/x\nmethod=random\ntiles=1 3",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            r.match_tiles,
+            [
+                format!("{DIR}/1.png"),
+                format!("{DIR}/sub/2.png"),
+                "assets/minecraft/optifine/shared/x.png".to_owned(),
+            ]
+        );
+        // The same names as the tiles the other rule loads.
+        let first = rule(
+            "bookshelf.properties",
+            "matchTiles=bookshelf\nmethod=fixed\ntiles=1",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(first.tiles, [tex(&r.match_tiles[0])]);
+        // `./..` still can't climb out of the root.
+        assert!(
+            rule(
+                "2.properties",
+                "matchTiles=./../../x.png\nmethod=random\ntiles=1"
+            )
+            .is_err()
         );
     }
 
