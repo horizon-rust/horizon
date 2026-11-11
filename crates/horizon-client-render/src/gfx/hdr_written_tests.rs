@@ -656,6 +656,7 @@ impl<'a> Draw<'a> {
 }
 
 #[test]
+#[ignore = "requires a Vulkan/Metal/DX12 adapter"]
 fn compact_particle_gpu_pixels_match_full_vertices() {
     use super::super::{Vertex, particle_batch};
     let (device, queue) = gpu().expect("GPU required for compact particle proof");
