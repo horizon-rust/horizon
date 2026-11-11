@@ -505,6 +505,9 @@ pub struct Froxels {
     pub enabled: bool,
     /// Where the camera is (`Renderer::set_volumetrics`).
     pub camera: CameraMedium,
+    /// The God Rays option (`Renderer::set_god_rays`): the share of the medium's density out of
+    /// the water (the sun's shafts and their haze), 1 as measured, 0 none.
+    pub strength: f32,
     /// A medium forced for testing (`HORIZON_FROXEL_MEDIUM`).
     forced: Option<Medium>,
     hardware: bool,
@@ -747,6 +750,7 @@ impl Froxels {
         Self {
             enabled: std::env::var("HORIZON_FROXELS").is_ok_and(|v| v != "0"),
             camera: CameraMedium::default(),
+            strength: 1.0,
             forced,
             hardware,
             inject,
@@ -993,7 +997,7 @@ impl Froxels {
         if self.hardware && inputs.hardware.is_none() {
             return;
         }
-        let medium = if steady_air() && self.forced.is_none() {
+        let mut medium = if steady_air() && self.forced.is_none() {
             let sky_light = self.eased_sky.toward(self.camera.sky_light);
             CameraMedium {
                 sky_light,
@@ -1003,6 +1007,11 @@ impl Froxels {
         } else {
             self.medium()
         };
+        // The God Rays option thins the air, the weather's and a cave's (their shafts and haze,
+        // and the light they dim with them); the water stays the fog it is.
+        if !self.camera.in_water {
+            medium.sigma_t *= self.strength.max(0.0);
+        }
         self.frame = self.frame.wrapping_add(1);
         let frame = self.frame;
         let index = self.view_froxels(device, inputs.view, inputs.size);

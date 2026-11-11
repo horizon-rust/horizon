@@ -1800,6 +1800,9 @@ pub struct Renderer {
     pub earth_curvature: bool,
     /// How far RT lighting's volumetric clouds reach, in blocks (`Graphics::cloud_distance_blocks`).
     pub cloud_distance: f32,
+    /// RT lighting's ambient light on every face (the RT Ambient Light option,
+    /// `Graphics::rt_ambient_light`; shadow_rays.wgsl `rt.ambient_light`, entity.wgsl).
+    pub rt_ambient_light: f32,
     present_modes: Vec<wgpu::PresentMode>,
     /// CPU copies of the section and far tile meshes uploaded while `render-capture` is on
     /// (`keep_capture_copies`, or `HORIZON_RENDER_CAPTURE` at creation); `None` otherwise.
@@ -2532,16 +2535,21 @@ fn sun_rise(y: f32) -> f32 {
     let t = (y / full).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
+/// RT lighting's ambient light by default (`HORIZON_RT_AMBIENT`, else 0.003): the RT Ambient
+/// Light option's default (`Graphics::rt_ambient_light`).
+pub fn rt_ambient_default() -> f64 {
+    shadow_rays::ambient()
+}
 /// `HORIZON_RT_SHORE=1`: RT lighting's surf on a beach's shallows and the wet sand at the water's
 /// edge (terrain.wgsl `rt_shore`, `globals.earth.w`), off by default: the surf's veil hid the bed
 /// and its caustics over a whole terrace of sand.
-fn rt_shore() -> f32 {
+fn rt_shore(ambient: f32) -> f32 {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     // And RT lighting's ambient light as its fraction (entity.wgsl `rt_entity_light`: an entity
     // is not traced, the ambient is added there), under a half.
     f32::from(u8::from(*ON.get_or_init(|| {
         std::env::var("HORIZON_RT_SHORE").is_ok_and(|v| v == "1")
-    }))) + (shadow_rays::ambient() as f32).min(0.49)
+    }))) + ambient.clamp(0.0, 0.49)
 }
 /// `HORIZON_RT_HAND_SHADOW=1`: the view model stays in the hardware rays beside the player's own
 /// body (`Renderer::hw_finish`), as before.
@@ -6582,6 +6590,7 @@ impl Renderer {
             animated_textures: true,
             earth_curvature: true,
             cloud_distance: crate::graphics::AUTO_CLOUD_DISTANCE,
+            rt_ambient_light: shadow_rays::ambient() as f32,
             present_modes,
             capture_copies: std::env::var_os("HORIZON_RENDER_CAPTURE")
                 .is_some()
@@ -8323,6 +8332,11 @@ impl Renderer {
         };
         self.froxels.camera = camera;
     }
+    /// The God Rays option (`Graphics::god_rays`): the froxels' air at `percent` of its density
+    /// (0 none, 100 as measured); the water keeps its own.
+    pub fn set_god_rays(&mut self, percent: u32) {
+        self.froxels.strength = percent as f32 / 100.0;
+    }
     /// The natural fogs in the froxels (natural_fog.rs): the setting, the time, the air (a real
     /// weather can set its own humidity and temperatures). Call each frame.
     pub fn set_natural_fog(&mut self, fog: natural_fog::NaturalFog) {
@@ -9274,6 +9288,7 @@ impl Renderer {
             // Set with the globals (`draw_frame`).
             rain: [0.0; 4],
             rain_sun: [0.0; 4],
+            ambient_light: self.rt_ambient_light,
         }
     }
     /// Runs the Eye of Aldhani from `seconds` into it, or stops it (`None`); refused unless
@@ -11129,9 +11144,9 @@ impl Renderer {
                     (r * r) as f32,
                     lod::horizon_dip(frame.camera.y) as f32,
                     self.ice_layers,
-                    rt_shore(),
+                    rt_shore(self.rt_ambient_light),
                 ],
-                None => [-1.0, 0.0, self.ice_layers, rt_shore()],
+                None => [-1.0, 0.0, self.ice_layers, rt_shore(self.rt_ambient_light)],
             },
             rt_shower: meteors.radiant,
             rt_stream: meteors.stream,
