@@ -534,6 +534,17 @@ impl Oit {
         &self.features
     }
 
+    /// What a resource pack's shader reads in the transmittance and accumulation stages, as
+    /// vanilla binds it: the culled depth bounds (`DepthBoundsSampler`) and the coefficients
+    /// (`Coeff0`, `Coeff1`), with the size they were made for.
+    pub(super) fn pack_inputs(
+        &self,
+    ) -> Option<([u32; 2], &wgpu::TextureView, [&wgpu::TextureView; 2])> {
+        let t = self.targets.as_ref()?;
+        let [c0, c1] = &t.views.coefficients;
+        Some((t.size, &t.views.culled, [c0, c1]))
+    }
+
     /// Sizes the targets to the world's and writes this frame's projection.
     pub fn prepare(
         &mut self,
