@@ -667,9 +667,7 @@ impl Game<'_> {
         // (as `retain` does), and a destroyed boat or cart shifts its list, so
         // `gone` counts how far.
         let blast = Blast {
-            vehicles_ignore: self.combat.blast_owner.is_none()
-                && self.blast_attacker().is_some()
-                && !self.ui.rules.bool("mob_griefing"),
+            vehicles_ignore: self.blast_by_mob() && !self.ui.rules.bool("mob_griefing"),
             items_ignore: items_ignore_explosion(self.ui.rules.bool("mob_griefing"), interaction),
             spared: exploding.filter(|_| self.combat.explosion_source_named),
         };
@@ -1193,7 +1191,7 @@ impl Game<'_> {
             let rot = r.next_double() * f64::from(std::f32::consts::TAU);
             let fuse = r.next_int_bound(20).unwrap_or(0) + 10;
             // TntBlock.wasExploded hands the new TNT the blast's indirect
-            // source, so a chain reaction keeps the player or mob who started it.
+            // source, so a chain reaction keeps a primed TNT's owner, player or mob.
             let (owner, guest) = match &self.combat.blast_owner {
                 Some(_) if self.combat.blast_owner_player => {
                     (Some(Who::Player), self.combat.blast_guest)
