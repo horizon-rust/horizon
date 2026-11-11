@@ -7587,8 +7587,8 @@ def explosion_player_decorations():
     """#11330: with `mob_griefing` off, `BlockAttachedEntity.hurtServer` and `ArmorStand.hurtServer` refuse a
     blast whose causing entity is a mob, but a player's primed TNT (its `owner`) is no mob: it still breaks an
     item frame and an armor stand, as an ownerless TNT does. A TNT whose `owner` is a zombie's UUID is a mob's
-    blast (`getIndirectSourceEntity` is that zombie): both are spared, and so is a minecart
-    (`VehicleEntity.ignoreExplosion`)."""
+    blast (`getIndirectSourceEntity` is that zombie): `hurtServer` refuses it, so the armor stand and a minecart
+    (`VehicleEntity.ignoreExplosion`) stay, but its push (`BlockAttachedEntity.push`) still kills the frame."""
     # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
     x0, y0, z0 = 4096 - 448, 260, 3584
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
