@@ -1642,7 +1642,11 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     let open = v.y * m.ao;
     let steps = max(15.0 - light.y, 0.0);
     let level = select(vec3(0.0), BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), light.y > 0.0);
-    let by_level = (rt_sky(normalize(n + vec3(0.0, 1.0, 0.0))) * seen + level) * open;
+    // And the ambient light (the RT Ambient Light option, `globals.earth.w`'s fraction), which the
+    // traced light holds already (shadow_rays.wgsl `rt.ambient_light`): past the grid, in its edge
+    // band and on a frame without rays the terrain had none, as the entities have it everywhere.
+    let by_level = (rt_sky(normalize(n + vec3(0.0, 1.0, 0.0))) * seen + level) * open
+        + vec3(fract(globals.earth.w)) * m.ao;
     let around = mix(by_level, traced.rgb * m.ao, clamp(traced.a, 0.0, 1.0));
     // Reflected: the sky the way the view bounces off the surface, as much as Fresnel says (the
     // rougher, the less of it).
