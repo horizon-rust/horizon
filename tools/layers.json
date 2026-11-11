@@ -126,6 +126,10 @@
       "horizon-guest-stack",
       "horizon-java-properties"
     ],
+    "pending": {
+      "_doc": "Engine crates that still take a non-portable crate, until the types they need move down. Entries only go away.",
+      "horizon-gameplay": ["horizon-client-lib"]
+    },
     "forbidden": [
       "arboard",
       "cpal",
