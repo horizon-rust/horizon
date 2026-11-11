@@ -7586,14 +7586,15 @@ def dispensed_item_escape():
 def explosion_player_decorations():
     """#11330: with `mob_griefing` off, `BlockAttachedEntity.hurtServer` and `ArmorStand.hurtServer` refuse a
     blast whose causing entity is a mob, but a player's primed TNT (its `owner`) is no mob: it still breaks an
-    item frame and an armor stand, as an ownerless TNT does."""
+    item frame and an armor stand, as an ownerless TNT does. A TNT whose `owner` is a zombie's UUID is a mob's
+    blast (`getIndirectSourceEntity` is that zombie): both are spared."""
     # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
     x0, y0, z0 = 4096 - 448, 260, 3584
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
             'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
            cmd('/gamerule mob_griefing false', False), cmd('/tick freeze', False)]
     near = f'x={x0},y={y0 - 4},z={z0},dx=16,dy=16,dz=16'
-    for owned in (False, True):
+    for owner in (None, '@p', 'zombie'):
         ops += [cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', False),
                 cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} bedrock', False),
                 cmd(f'/fill {x0 + 6} {y0} {z0 + 7} {x0 + 10} {y0 + 2} {z0 + 7} bedrock', False),
@@ -7602,8 +7603,12 @@ def explosion_player_decorations():
                 cmd(f'/summon armor_stand {x0 + 9}.5 {y0} {z0 + 9}.5 {{NoGravity:1b,Tags:["blast_deco"]}}',
                     expect_result=1),
                 cmd(f'/summon tnt {x0 + 8}.5 {y0} {z0 + 10}.5 {{fuse:1,Tags:["deco_tnt"]}}', expect_result=1)]
-        if owned:
-            ops.append(cmd('/data modify entity @e[type=tnt,tag=deco_tnt,limit=1] owner set from entity @p UUID'))
+        if owner == 'zombie':
+            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 {{NoAI:1b,Silent:1b,Tags:["deco_owner"]}}',
+                           expect_result=1))
+            owner = f'@e[type=zombie,tag=deco_owner,{near},limit=1]'
+        if owner:
+            ops.append(cmd(f'/data modify entity @e[type=tnt,tag=deco_tnt,limit=1] owner set from entity {owner} UUID'))
         ops += [cmd(f'/execute if entity @e[tag=blast_deco,{near}]'),
                 cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}, cmd('/tick freeze', False),
                 cmd(f'/execute if entity @e[type=item_frame,tag=blast_deco,{near}]'),
