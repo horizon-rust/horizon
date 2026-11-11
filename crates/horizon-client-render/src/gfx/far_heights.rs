@@ -731,6 +731,9 @@ fn chunk_texels(
 fn tile_texels(level0: &mut [i16], tile: &FarTile, chunk: (i32, i32)) {
     let n = SIZE as i32;
     let s = tile.stride;
+    if s >= 4 && sloped() {
+        return tile_slopes(level0, tile, chunk);
+    }
     let [x0, z0] = tile.origin;
     let (bx0, bz0) = (chunk.0 * 16, chunk.1 * 16);
     let cells = |b0: i32, o: i32| {
@@ -758,6 +761,63 @@ fn tile_texels(level0: &mut [i16], tile: &FarTile, chunk: (i32, i32)) {
                     level0[i] = level0[i].max(h);
                 }
             }
+        }
+    }
+}
+
+/// Whether a coarse tile's cells are written as slopes between their middles (`tile_slopes`):
+/// `HORIZON_RT_FAR_SLOPES=0` keeps each cell a flat square, as before.
+fn sloped() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_FAR_SLOPES").map_or(true, |v| v.trim() != "0"))
+}
+
+/// A coarse tile (cells 4 blocks wide and more) over chunk column `chunk`'s texels: each texel
+/// the height between the four cells' middles around it, not its own cell's. A cell 16 blocks
+/// wide written flat made the far hills terraces of squares, and their shadows fell in
+/// 16-block squares. A cell without a height leaves the texels nearest to it.
+fn tile_slopes(level0: &mut [i16], tile: &FarTile, chunk: (i32, i32)) {
+    let n = SIZE as i32;
+    let s = tile.stride;
+    let [x0, z0] = tile.origin;
+    let size = s * tile.cells as i32;
+    let last = tile.cells as i32 - 1;
+    let range = |b0: i32, o: i32| (b0.max(o) >> SHIFT)..((b0 + 16).min(o + size) >> SHIFT);
+    let at = |cx: i32, cz: i32| tile.heights[cz as usize * tile.cells + cx as usize];
+    // The cell coordinate of a texel's middle, from the first cell's middle, and its two cells.
+    let cell = |t: i32, o: i32| {
+        let c =
+            (((t << SHIFT) + (1 << SHIFT) / 2 - o) as f32 / s as f32 - 0.5).clamp(0.0, last as f32);
+        let low = (c.floor() as i32).min(last);
+        (low, (low + 1).min(last), c - low as f32)
+    };
+    for tz in range(chunk.1 * 16, z0) {
+        let (z_low, z_high, fz) = cell(tz, z0);
+        for tx in range(chunk.0 * 16, x0) {
+            let (x_low, x_high, fx) = cell(tx, x0);
+            let nearest = at(
+                if fx < 0.5 { x_low } else { x_high },
+                if fz < 0.5 { z_low } else { z_high },
+            );
+            if nearest == i16::MIN {
+                continue;
+            }
+            let corners = [
+                at(x_low, z_low),
+                at(x_high, z_low),
+                at(x_low, z_high),
+                at(x_high, z_high),
+            ];
+            let h = if corners.contains(&i16::MIN) {
+                nearest
+            } else {
+                let [a, b, c, d] = corners.map(f32::from);
+                let top = a + (b - a) * fx;
+                let bottom = c + (d - c) * fx;
+                (top + (bottom - top) * fz).round() as i16
+            };
+            let i = ((tz & (n - 1)) * n + (tx & (n - 1))) as usize;
+            level0[i] = level0[i].max(h);
         }
     }
 }
@@ -896,6 +956,47 @@ mod tests {
         [e.cos() * a.cos(), e.sin(), e.cos() * a.sin()]
     }
 
+    /// A coarse tile's cells are a slope between their middles, not squares: across a tile whose
+    /// cells rise 16 blocks each along x, the texels between two middles rise evenly.
+    #[test]
+    fn a_coarse_tiles_cells_are_written_as_a_slope() {
+        let cells = 16;
+        let heights: Vec<i16> = (0..cells * cells)
+            .map(|i| 64 + 16 * (i % cells) as i16)
+            .collect();
+        let tile = FarTile {
+            origin: [0, 0],
+            stride: 16,
+            cells,
+            heights,
+            source: Arc::new(Vec::new()),
+        };
+        let mut level0 = vec![MIN_Y as i16; SIZE * SIZE];
+        for cx in 0..4 {
+            tile_slopes(&mut level0, &tile, (cx, 1));
+        }
+        // Blocks 8 and 24 are the first two cells' middles: texel 4 starts at block 8.
+        let row = 12 * SIZE;
+        assert_eq!(
+            level0[row], 64,
+            "before the first middle: the first cell's height"
+        );
+        assert_eq!(
+            level0[row + 8],
+            73,
+            "block 17, a block past halfway to the next middle"
+        );
+        assert_eq!(
+            level0[row + 12],
+            81,
+            "block 25, a block past the second middle"
+        );
+        let steps: Vec<i16> = (4..28)
+            .map(|t| level0[row + t + 1] - level0[row + t])
+            .collect();
+        assert!(steps.iter().all(|&d| (1..=3).contains(&d)), "{steps:?}");
+    }
+
     /// The far field waits for the light to move a shadow: a frame's turn of the sun (2π over
     /// 24000 ticks, at 90 frames a second) runs it near the horizon, not overhead, where a
     /// second and a half's does; below the horizon it never runs again.
@@ -945,6 +1046,42 @@ mod tests {
                 || x0 >> SHIFT >= window[2]
                 || z0 >> SHIFT >= window[3]
             {
+                continue;
+            }
+            if tile.stride >= 4 {
+                // A coarse tile, whole: every texel of it in the window, between its cells'
+                // middles (`tile_slopes` writes it a chunk column at a time).
+                let cells = tile.cells as i32;
+                let h = |cx: i32, cz: i32| tile.heights[(cz * cells + cx) as usize];
+                let along = |t: i32, o: i32| {
+                    let middle = (t * 2 + 1 - o) as f32 / tile.stride as f32 - 0.5;
+                    let c = middle.clamp(0.0, (cells - 1) as f32);
+                    let low = (c.floor() as i32).min(cells - 1);
+                    (low, (low + 1).min(cells - 1), c - low as f32)
+                };
+                for tz in (z0 >> SHIFT).max(window[1])..((z0 + size) >> SHIFT).min(window[3]) {
+                    for tx in (x0 >> SHIFT).max(window[0])..((x0 + size) >> SHIFT).min(window[2]) {
+                        let (xl, xh, fx) = along(tx, x0);
+                        let (zl, zh, fz) = along(tz, z0);
+                        let near = h(
+                            if fx < 0.5 { xl } else { xh },
+                            if fz < 0.5 { zl } else { zh },
+                        );
+                        if near == i16::MIN {
+                            continue;
+                        }
+                        let four = [h(xl, zl), h(xh, zl), h(xl, zh), h(xh, zh)];
+                        let value = if four.contains(&i16::MIN) {
+                            near
+                        } else {
+                            let [a, b, c, d] = four.map(f32::from);
+                            let (top, bottom) = (a + (b - a) * fx, c + (d - c) * fx);
+                            (top + (bottom - top) * fz).round() as i16
+                        };
+                        let s = slot(tx, tz);
+                        level0[s] = level0[s].max(value);
+                    }
+                }
                 continue;
             }
             for cz in 0..tile.cells {
