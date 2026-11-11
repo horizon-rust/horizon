@@ -1252,7 +1252,8 @@ impl Graphics {
         // and render threads are raised above four cores, where vanilla
         // raises its server thread). Leaving two idled a core of a 4-thread
         // laptop while a world loaded: a teleport there took ~15% longer. On Apple
-        // silicon only the performance cores count (horizon_threads::default_workers).
+        // silicon and Linux hybrid CPUs only the performance cores count
+        // (horizon_threads::default_workers).
         let auto = horizon_threads::jobs::default_threads();
         if self.battery { auto.div_ceil(2) } else { auto }
     }
@@ -1898,9 +1899,15 @@ mod tests {
         assert_eq!(g.workers, 0);
         let cores = horizon_threads::worker_count();
         assert!((1..=cores.saturating_sub(1).max(1)).contains(&g.worker_threads()));
-        if !cfg!(target_vendor = "apple") {
-            assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
-        }
+        // Not `cores - 1` on every machine: where it tells its performance cores apart
+        // (Apple silicon; Linux CPUs whose cores' top frequencies differ by more than 5%)
+        // only those count, as horizon_threads' `default_workers_count_performance_cores` pins.
+        // On battery, Auto takes half of it, rounded up, whatever this machine is.
+        let battery = Graphics {
+            battery: true,
+            ..g.clone()
+        };
+        assert_eq!(battery.worker_threads(), g.worker_threads().div_ceil(2));
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
         assert_eq!(manual.worker_threads(), 3);

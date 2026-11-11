@@ -727,6 +727,9 @@ mod tests {
         assert_eq!(workers_for(14, || Some(10)), 9);
         // HORIZON_WORKER_THREADS below the performance cores still caps the pool.
         assert_eq!(workers_for(4, || Some(10)), 3);
+        // A process allowed more threads than the machine has performance cores (a
+        // 22-thread affinity on a CPU with 16 performance threads) keeps to the latter.
+        assert_eq!(workers_for(22, || Some(16)), 15);
         // Everywhere else (and a sysctl that answers nothing): every core but one, as before.
         assert_eq!(workers_for(12, || None), 11);
         assert_eq!(workers_for(14, || Some(0)), 13);
