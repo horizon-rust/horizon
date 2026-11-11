@@ -8,6 +8,7 @@ description = "Vanilla's logical side: the gameplay the server jar holds, common
 
 [dependencies]
 horizon-client-lib = { path = "../horizon-client-lib", default-features = false }
+horizon-core = { path = "../horizon-core" }
 
 [lints]
 workspace = true
