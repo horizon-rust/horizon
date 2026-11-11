@@ -202,7 +202,9 @@ pub(super) fn explosion(session: &Session, payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     crate::buf::Vec3d::read(&mut r)?;
     r.f32()?;
-    let count = r.count(1_048_576)?;
+    // A radius-limited explosion touches a few thousand blocks; a frame-sized list would only be
+    // a peer amplifying itself through the per-block packets made from it.
+    let count = r.count(MAX_EXPLOSION_BLOCKS)?;
     r.bytes(count * 3)?;
     for _ in 0..3 {
         r.f32()?;

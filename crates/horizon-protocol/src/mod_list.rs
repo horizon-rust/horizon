@@ -129,6 +129,10 @@ pub fn decode(data: &[u8]) -> Result<Vec<Entry>> {
         .map(|_| {
             let id = r.string(MAX_TEXT)?;
             let version = r.string(MAX_TEXT)?;
+            // These end up in the server's log: a line break would make lines of its own.
+            if id.chars().chain(version.chars()).any(char::is_control) {
+                return Err(Error::new("mod list: control character"));
+            }
             let side = Side::from_code(r.u8()?)?;
             let sha256 = match r.bool()? {
                 true => Some(r.bytes(32)?.try_into().expect("32 bytes")),
@@ -228,6 +232,19 @@ mod tests {
             sha256: Some([hash; 32]),
             side,
         }
+    }
+
+    #[test]
+    fn a_line_break_in_a_mod_list_is_refused() {
+        let forged = "x\n[12:00:00] [Server thread/INFO]: Stopping server";
+        for (id, version) in [
+            (forged, "1.0"),
+            ("ruby", "1.0\r\nop Kim"),
+            ("ruby", "1\u{7}"),
+        ] {
+            assert!(decode(&encode(&[entry(id, version, 1, Side::Both)])).is_err());
+        }
+        assert!(decode(&encode(&[entry("ruby", "1.0-β", 1, Side::Both)])).is_ok());
     }
 
     #[test]

@@ -103,7 +103,15 @@ fn set_time(payload: &[u8]) -> Result<Vec<u8>> {
     let time = day_time.saturating_abs();
     let mut w = Writer::new();
     w.i64(game_time);
-    w.i64(if ticking { time } else { -time });
+    // ClientboundSetTimePacket of 1.21.1: a stopped clock at 0 is sent as -1, since -0 would
+    // read as running.
+    w.i64(if ticking {
+        time
+    } else if time == 0 {
+        -1
+    } else {
+        -time
+    });
     Ok(w.data)
 }
 
@@ -401,6 +409,24 @@ mod tests {
     //! Each change written here is read back with `translate`'s 1.21.1 reader: 1.21.1's layout, 1.21.2's and back.
     use super::*;
     use crate::adapter::{ServerVersion, session::Session, translate};
+
+    #[test]
+    fn a_clock_stopped_at_zero_is_sent_as_minus_one() {
+        let time = |day: i64, ticking: bool| {
+            let mut w = Writer::new();
+            w.i64(5);
+            w.i64(day);
+            w.bool(ticking);
+            let out = set_time(&w.data).unwrap();
+            let mut r = Reader::new(&out);
+            r.i64().unwrap();
+            r.i64().unwrap()
+        };
+        assert_eq!(time(0, false), -1);
+        assert_eq!(time(0, true), 0);
+        assert_eq!(time(6000, false), -6000);
+        assert_eq!(time(6000, true), 6000);
+    }
 
     /// A 1.21.1 client's information (no particle status) reads as 1.21.2's with all particles.
     #[test]

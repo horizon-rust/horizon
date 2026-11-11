@@ -213,7 +213,9 @@ pub(super) fn explosion(session: &Session, payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let center = crate::buf::Vec3d::read(&mut r)?;
     let radius = r.f32()?;
-    let count = r.count(1_048_576)?;
+    // A radius-limited explosion touches a few thousand blocks; a frame-sized list would only be
+    // a peer amplifying itself through the per-block packets made from it.
+    let count = r.count(MAX_EXPLOSION_BLOCKS)?;
     let offsets = r.bytes(count * 3)?.to_vec();
     let knockback = [r.f32()?, r.f32()?, r.f32()?].map(f64::from);
     let interaction = r.varint()?;
@@ -269,6 +271,21 @@ pub(super) fn explosion(session: &Session, payload: &[u8]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_slot_in_an_unknown_negative_window_is_dropped_not_fatal() {
+        let session = Session::new(ServerVersion::V1_21_1);
+        let mut w = Writer::new();
+        w.i8(-5); // neither the cursor (-1) nor the inventory (-2)
+        w.varint(0);
+        w.i16(3);
+        w.varint(0); // empty slot
+        let id = packet_ids::play::clientbound::CONTAINER_SET_SLOT;
+        assert_eq!(
+            super::super::clientbound(&session, State::Play, id, &w.data).unwrap(),
+            None
+        );
+    }
 
     fn bytes(hex: &str) -> Vec<u8> {
         (0..hex.len())

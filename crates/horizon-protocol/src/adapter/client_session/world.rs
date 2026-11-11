@@ -164,7 +164,14 @@ fn particles(ids: &'static Ids, payload: &[u8]) -> Result<Sent> {
 /// 26.2 has nothing for is left out.
 fn explode(ids: &'static Ids, payload: &[u8]) -> Result<Sent> {
     let mut e = play::Explode::read(&mut Reader::new(payload))?;
-    let Some(particle) = particle_down(ids, &e.particle) else {
+    // A blast whose own particle 26.2 lacks (a native mod's) still pushes the player and plays its
+    // sound: shown with vanilla's explosion particle rather than dropped whole.
+    let explosion = Particle {
+        id: crate::adapter::pinned_ids::particle_type::EXPLOSION,
+        data: None,
+    };
+    let Some(particle) = particle_down(ids, &e.particle).or_else(|| particle_down(ids, &explosion))
+    else {
         return Ok(Sent::Dropped);
     };
     e.particle = particle;
