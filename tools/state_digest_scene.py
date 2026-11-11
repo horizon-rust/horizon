@@ -9,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 
+import lab
+
 GATE = os.environ.get('HORIZON_SCENE_GATE')  # optional script that exits 0 when the machine is free to run
 PROPERTIES = {
     'online-mode': 'false', 'level-seed': '12345', 'level-type': 'minecraft\\:flat', 'generate-structures': 'false',
@@ -107,12 +109,12 @@ def hold_gate():
 
 
 def scratch_env(home, digest, detail):
-    env = dict(os.environ)
+    folders = {}
     for key in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
         path = home / key.lower()
         path.mkdir(parents=True, exist_ok=True)
-        env[key] = str(path)
-    env.update(HORIZON_LAUNCHER_NO_SELF_UPDATE='1', HORIZON_NO_AUDIO='1', HORIZON_TEST_SEEDS='1', DISPLAY=':99')
+        folders[key] = path
+    env = lab.game_env(**folders, HORIZON_TEST_SEEDS='1', DISPLAY=':99')
     if digest:
         env['HORIZON_STATE_DIGEST'] = str(digest)
     if detail:
