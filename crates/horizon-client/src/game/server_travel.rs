@@ -837,7 +837,13 @@ impl Game<'_> {
                 }
             } else if let Some(job) = trip.gateway {
                 match self.resolve_gateway(job, trip.target) {
-                    Ok(at) => (at, yaw),
+                    Ok(Some(at)) => (at, yaw),
+                    // The exit search waits for a candidate chunk to load.
+                    Ok(None) => {
+                        self.server_trips.insert(k, trip);
+                        k += 1;
+                        continue;
+                    }
                     Err(e) => {
                         log::error!("End gateway exit: {e}");
                         (trip.target, yaw)
