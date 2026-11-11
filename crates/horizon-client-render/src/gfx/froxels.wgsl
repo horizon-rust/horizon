@@ -59,7 +59,8 @@ struct Fx {
     // (`steady_air`), w: 1 when bright outliers are held to the neighbourhood (`outliers_held`).
     size: vec4<f32>,
     // xyz: where the view's rays start (camera-relative; the view bobbing moves it off the camera),
-    // this frame's and the last frame's.
+    // this frame's and the last frame's; w: 1 when the pixels' dither turns with the frame
+    // (`dither_turns`).
     eye: vec4<f32>,
     prev_eye: vec4<f32>,
     // xyz: this frame's offset within a froxel before the froxel's own shift (a 3D R-sequence), w: 1
@@ -909,7 +910,10 @@ fn integrated_cubic(uv: vec2<f32>, w: f32) -> vec4<f32> {
 }
 // A noise by pixel and frame (interleaved gradient noise), -0.5..0.5.
 fn pixel_dither(pixel: vec2<f32>) -> f32 {
-    let q = pixel + 5.588238 * (fx.dims.w % 64.0);
+    // The same every frame (`eye.w` 1: turning with the frame, as before): the fogs' march puts
+    // a few steps through a far layer, and a noise new each frame made the far mist flicker under
+    // a still camera, more than the resolve after it could settle by night.
+    let q = pixel + 5.588238 * (fx.dims.w % 64.0) * fx.eye.w;
     return fract(52.9829189 * fract(dot(q, vec2(0.06711056, 0.00583715)))) - 0.5;
 }
 // The integrated grid's slice holding distance `r`: its index (the froxels' slices, then the far
@@ -1024,7 +1028,14 @@ fn fog_march(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
         let d = r * at * at;
         let pos = fx.eye.xyz + dir * d;
         let f = fog_at(pos, dz);
-        let fog = f.valley + f.steam;
+        var fog = f.valley + f.steam;
+        // A long step (far away) reads the fogs at a second point, half a step from the first:
+        // one point for tens of blocks of a patchy layer is in it or out of it by chance.
+        if dz > 12.0 && fx.eye.w < 0.5 {
+            let at2 = (f32(i) + 0.5 + dither + select(0.5, -0.5, dither > 0.0)) / n;
+            let f2 = fog_at(fx.eye.xyz + dir * (r * at2 * at2), dz);
+            fog = 0.5 * (fog + f2.valley + f2.steam);
+        }
         // The air within the froxels' reach only (`steady_air`).
         let air_here = !steady_air() || d <= fx.depth.y;
         let st = select(vec3(1e-6), st_air, air_here);

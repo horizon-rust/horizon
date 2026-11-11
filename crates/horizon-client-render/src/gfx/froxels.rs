@@ -376,6 +376,13 @@ pub fn lights_share() -> f32 {
             .map_or(0.25, |v| v.clamp(0.0, 4.0))
     })
 }
+/// Whether the pixels' dither along their ray turns with the frame (froxels.wgsl `pixel_dither`):
+/// only with `HORIZON_FROXEL_DITHER=frame`, as before. Still, the far mist no longer flickers
+/// under a still camera, and a long step of the fogs' march reads them at two points.
+pub fn dither_turns() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_FROXEL_DITHER").is_ok_and(|v| v.trim() == "frame"))
+}
 /// Whether a froxel's bright outliers are held to its neighbourhood's light (froxels.wgsl
 /// `cs_blend`). On unless `HORIZON_FROXEL_OUTLIERS=old`: the floor was 0.5 whatever the light, a
 /// thousand times a moonlit night's, whose far mist flickered.
@@ -1108,7 +1115,7 @@ impl Froxels {
                 f32::from(u8::from(steady_air())),
                 f32::from(u8::from(outliers_held())),
             ],
-            eye: [eye.x, eye.y, eye.z, 0.0],
+            eye: [eye.x, eye.y, eye.z, f32::from(u8::from(dither_turns()))],
             prev_eye: [prev_eye.x, prev_eye.y, prev_eye.z, 0.0],
             jitter: {
                 let [x, y, z, _] = jitter(frame);
