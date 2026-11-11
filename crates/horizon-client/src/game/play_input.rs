@@ -1,6 +1,7 @@
 //! Key and mouse mappings in play: toggled sneak and sprint, keys after rebinding, keys held
 //! across screens, the hotbar's wheel and bumper steps, and mouse buttons while playing.
 use super::*;
+use horizon_client::input_source::{InputHost, InputSource};
 
 fn studio_replay_shortcut(key: KeyCode) -> bool {
     matches!(
@@ -474,54 +475,99 @@ impl Game<'_> {
 
 /// The input source (docs/layers.md, "Controllers, splitscreen, replays and UI pages"): what
 /// gameplay asks of a device beyond the keyboard and mouse, and tells it. Gameplay calls these,
-/// never the controller modules; today `pad` answers.
+/// never the controller modules. A registered source answers (`input_source`); with none, the
+/// internal adapter, the `pad` modules, does until they leave the engine (spec #14205).
 impl Game<'_> {
+    /// Takes the source out for a call that needs it mutable beside the host (`self`).
+    fn with_input_source<T>(
+        &mut self,
+        call: impl FnOnce(&mut dyn InputSource, &Self) -> T,
+    ) -> Option<T> {
+        let mut source = self.input_source.take()?;
+        let answer = call(source.as_mut(), self);
+        self.input_source = Some(source);
+        Some(answer)
+    }
+
+    /// Once per frame, before the frame's input is read: the source's turn.
+    pub(super) fn input_frame(&mut self) {
+        self.with_input_source(|source, host| source.frame(host));
+    }
+
     /// The analog move vector (`[left, forward]`, -1..1) while a device moves the player.
     pub(super) fn input_move(&self) -> Option<[f32; 2]> {
-        self.pad_move()
+        match &self.input_source {
+            Some(source) => source.move_vector(self),
+            None => self.pad_move(),
+        }
     }
 
     /// Whether a device holds the key mapping named `mapping` (`key.use`).
     pub(super) fn input_holds(&self, mapping: &str) -> bool {
-        self.pad.holds_action(mapping)
+        match &self.input_source {
+            Some(source) => source.holds(mapping),
+            None => self.pad.holds_action(mapping),
+        }
     }
 
     /// Turns the view by what the devices give this frame (`Entity.turn`).
     pub(super) fn input_look(&mut self, seconds: f32) {
-        self.pad_look(seconds);
+        match self.with_input_source(|source, host| source.look(host, seconds)) {
+            Some(Some([yaw, pitch])) => self.look_turn(yaw, pitch),
+            Some(None) => {}
+            None => self.pad_look(seconds),
+        }
     }
 
     /// The keyboard or mouse acted in play (a key or button pressed): it has control again, though
     /// only moving the mouse takes a pad out of use.
     pub(super) fn input_keyboard_used(&mut self) {
-        self.pad.keyboard_took_over = true;
+        match &mut self.input_source {
+            Some(source) => source.keyboard_used(),
+            None => self.pad.keyboard_took_over = true,
+        }
     }
 
     /// Whether the pointer event being handled is one a device made (a pad's menu cursor
     /// clicking), not the mouse's.
     pub(super) fn input_made_pointer_event(&self) -> bool {
-        self.pad.menu.synthetic
+        match &self.input_source {
+            Some(source) => source.made_pointer_event(),
+            None => self.pad.menu.synthetic,
+        }
     }
 
     /// A new player entity took over (spawn, respawn, a server joined, a dimension change).
     pub(super) fn input_player_replaced(&mut self) {
-        self.pad_player_replaced();
+        match &mut self.input_source {
+            Some(source) => source.player_replaced(),
+            None => self.pad_player_replaced(),
+        }
     }
 
     /// Whether the drop about to happen is a device's whole-stack drop (it has no Control key to
     /// hold). Asking answers once.
     pub(super) fn input_takes_stack_drop(&mut self) -> bool {
-        std::mem::take(&mut self.pad.drop_stack)
+        match &mut self.input_source {
+            Some(source) => source.takes_stack_drop(),
+            None => std::mem::take(&mut self.pad.drop_stack),
+        }
     }
 
     /// The HUD starts a frame: what a device drew on the last one is gone.
     pub(super) fn input_hud_begin(&mut self) {
-        self.pad.guide_shown.clear();
+        match &mut self.input_source {
+            Some(source) => source.hud_begin(),
+            None => self.pad.guide_shown.clear(),
+        }
     }
 
     /// Something happened to the player that a device may let them feel.
     pub(super) fn input_feedback(&mut self, event: horizon_client::input_source::Feedback) {
-        self.pad_rumble(event.into());
+        match &mut self.input_source {
+            Some(source) => source.feedback(event),
+            None => self.pad_rumble(event.into()),
+        }
     }
 
     /// Whether `key` is held, a movement key by the analog move vector too: as the keys it holds
@@ -542,6 +588,22 @@ impl Game<'_> {
             KeyCode::KeyD => right,
             _ => false,
         }
+    }
+}
+
+/// What the engine offers an input source: the game it drives, read-only.
+impl InputHost for Game<'_> {
+    fn menu_open(&self) -> bool {
+        self.pad_in_menu()
+    }
+    fn focused(&self) -> bool {
+        self.focused
+    }
+    fn has_player(&self) -> bool {
+        self.player.is_some()
+    }
+    fn scoping(&self) -> bool {
+        Game::scoping(self)
     }
 }
 
