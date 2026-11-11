@@ -16,7 +16,9 @@
 //! screen's target. Env switches, for A/B: `HORIZON_POST=0` (no grading), `HORIZON_EXPOSURE=0`
 //! (the exposure stays 1; a number is a fixed value in stops), `HORIZON_BLOOM=0` (a number is the
 //! bloom's burn intensity), `HORIZON_TONE_SHADOWS` and `_HIGHLIGHTS` (the local tone mapping's), `HORIZON_TONEMAP=shoulder` (today's curve in place of ACES) and
-//! `HORIZON_GRADE_FUSED=0` (the graded light's target and the curve's own pass every frame).
+//! `HORIZON_GRADE_FUSED=0` (the graded light's target and the curve's own pass every frame),
+//! `HORIZON_NIGHT_VISION=pixel` (the night's greying by each pixel's light, not the eye's
+//! adaptation; `0` none) and `HORIZON_NIGHT_VISION_EV` (the eye's greying moved, in stops).
 //!
 //! The grading follows RTX Remix's post-processing and its rtx.conf values (`PostParams`): the
 //! auto-exposure of `exposure`, a threshold bloom that is added to the scene (burn intensity),
@@ -185,6 +187,37 @@ impl PostParams {
             0.0,
         ]
     }
+}
+
+/// The eye's night vision mode for tonemap.wgsl `night_vision`: 0 off, 1 by the eye's adaptation
+/// (the auto-exposure's adapted mean), 2 by each pixel's own light. The setting turns it off;
+/// `HORIZON_NIGHT_VISION=pixel` brings back the per-pixel greying, `=0` turns it off.
+fn night_vision_mode(on: bool) -> f32 {
+    static MODE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    let mode = *MODE.get_or_init(|| {
+        match std::env::var("HORIZON_NIGHT_VISION")
+            .as_deref()
+            .map(str::trim)
+        {
+            Ok("pixel") | Ok("2") => 2.0,
+            Ok("0") | Ok("off") => 0.0,
+            _ => 1.0,
+        }
+    });
+    if on { mode } else { 0.0 }
+}
+
+/// `HORIZON_NIGHT_VISION_EV`: the eye's night vision range moved up (the view greys sooner as the
+/// light falls) or down, in stops (-4 to 4); 0 by default.
+fn night_vision_shift() -> f32 {
+    static SHIFT: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SHIFT.get_or_init(|| {
+        std::env::var("HORIZON_NIGHT_VISION_EV")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .map_or(0.0, |v| v.clamp(-4.0, 4.0))
+    })
 }
 
 /// The local tone mapping's values when `HORIZON_TONE_SHADOWS`, `_HIGHLIGHTS`, `_SIGMA` or
@@ -984,7 +1017,8 @@ impl Tonemap {
             // The parameters are copied in with the commands, not written ahead of them: in VR
             // an eye's frame can still be queued when the other's is encoded.
             let mut words = self.params.words(grading.meter.step(), bloom_burn());
-            words[3] = f32::from(u8::from(self.night_vision));
+            words[3] = night_vision_mode(self.night_vision);
+            words[13] = night_vision_shift();
             let staging = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Horizon post-processing parameters"),
                 size: 64,

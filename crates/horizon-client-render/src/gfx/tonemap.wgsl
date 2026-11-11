@@ -84,17 +84,19 @@ fn aces(light: vec3<f32>) -> vec3<f32> {
 // no mask left to apply (alpha 1), and HDR output reads in place of the scene (hdr.rs).
 @group(1) @binding(0) var glow: texture_2d<f32>;
 @group(1) @binding(1) var glow_sampler: sampler;
-// x: the exposure's multiplier.
+// exposure.wgsl's state: x the multiplier, y the adapted mean log2 luminance, z 1 once it is
+// measured (0 with a fixed exposure).
 @group(1) @binding(2) var<uniform> exposure: vec4<f32>;
 // gfx/tonemap.rs `Grading::params`.
 struct Params {
-    // dt, the exposure's top and bottom in stops (exposure.wgsl); w 1 for the eye's night vision.
+    // dt, the exposure's top and bottom in stops (exposure.wgsl); w the eye's night vision: 0 off,
+    // 1 by the eye's adaptation, 2 by each pixel's light (`night_vision`).
     exposure: vec4<f32>,
     // The bloom's burn intensity and luminance threshold (bloom.wgsl).
     bloom: vec4<f32>,
     // Local tone mapping: exposure (relative to Remix's 0.21405728), shadows, highlights, sigma.
     local: vec4<f32>,
-    // Its exposure preference offset.
+    // Its exposure preference offset; y the night vision's shift in stops.
     local_offset: vec4<f32>,
 };
 @group(1) @binding(3) var<uniform> params: Params;
@@ -118,18 +120,47 @@ fn local_tone(light: vec3<f32>, average: f32) -> vec3<f32> {
 // they see no colour and see blue-green best (their sensitivity peaks at 507 nm), so a dim scene
 // fades to a cool grey, before the exposure lifts it. The scene's light in paper whites, a sunlit
 // white face 1: colour down to a moonlit field's (0.03), grey under a starlit one's (0.002), the
-// mesopic range between them on a log scale. A torch's or a lamp's light stays in colour.
-fn night_vision(c: vec3<f32>) -> vec3<f32> {
-    if params.exposure.w < 0.5 { return c; }
-    let y = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    let cones = smoothstep(log(0.002), log(0.03), log(max(y, 1e-7)));
-    if cones >= 1.0 { return c; }
+// mesopic range between them on a log scale.
+// Which light decides it (`params.exposure.w`): 1, the eye's adaptation, the auto-exposure's
+// adapted mean (exposure.wgsl `state.y`), so the whole view greys together as the eye adapts to
+// the dark, and the same in both eyes of a headset (they share one meter); 2, each pixel's own
+// light (`HORIZON_NIGHT_VISION=pixel`, the old way: a dark corner greyed under a noon sun).
+// With the eye's, a pixel bright enough for the cones on its own (a torch, a lamp, a lit window
+// seen from the night) keeps its colour, as a red light stays red in the dark.
+const MOON_FIELD: f32 = 0.03;
+const STAR_FIELD: f32 = 0.002;
+// What a scene's mean is of its lit white face: the exposure's key (exposure.wgsl `KEY`, 2^-2.6).
+const MEAN_OF_WHITE: f32 = 0.165;
+// A pixel's own cones: from twice a moonlit white face to half a sunlit one.
+const CONES_FROM: f32 = 0.06;
+const CONES_FULL: f32 = 0.5;
+fn rods_grey(c: vec3<f32>) -> vec3<f32> {
     // The rods' response in linear sRGB (the CIE scotopic curve folded onto the primaries), as a
     // grey with the slight blue it is seen with.
     let rods = dot(c, vec3(0.05, 0.55, 0.40));
     let tint = vec3(0.80, 0.90, 1.08);
-    let grey = tint * (rods / dot(tint, vec3(0.2126, 0.7152, 0.0722)));
-    return mix(grey, c, cones);
+    return tint * (rods / dot(tint, vec3(0.2126, 0.7152, 0.0722)));
+}
+fn night_vision(c: vec3<f32>) -> vec3<f32> {
+    let mode = params.exposure.w;
+    if mode < 0.5 { return c; }
+    let y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    var cones: f32;
+    // A fixed exposure (or its first frame) has no adapted mean: the pixel's light.
+    if mode > 1.5 || exposure.z < 0.5 {
+        cones = smoothstep(log(STAR_FIELD), log(MOON_FIELD), log(max(y, 1e-7)));
+    } else {
+        // `HORIZON_NIGHT_VISION_EV` moves the eye's range up (greys sooner) or down, in stops.
+        let shift = params.local_offset.y;
+        let eye = exposure.y - shift;
+        let lo = log2(STAR_FIELD * MEAN_OF_WHITE);
+        let hi = log2(MOON_FIELD * MEAN_OF_WHITE);
+        let adapted = smoothstep(lo, hi, eye);
+        let own = smoothstep(log(CONES_FROM), log(CONES_FULL), log(max(y, 1e-7)));
+        cones = max(adapted, own);
+    }
+    if cones >= 1.0 { return c; }
+    return mix(rods_grey(c), c, cones);
 }
 fn grade(p: vec2<f32>) -> vec3<f32> {
     let c = textureLoad(source, vec2<i32>(p), 0);

@@ -810,8 +810,8 @@ pub struct Graphics {
     /// RT lighting's moon, as many times its real size across (1..=20; 1 the real 0.52 degrees,
     /// 2 by default: as it looks to the eye near the horizon): its disc, and its shadows' penumbra.
     pub moon_size: u32,
-    /// RT lighting's night vision: a dim scene fades to the eye's rods' cool grey (the Purkinje
-    /// shift, gfx/tonemap.wgsl `night_vision`). On by default.
+    /// RT lighting's night vision: as the eye adapts to the dark its rods take over and the view
+    /// fades to a cool grey (the Purkinje shift, gfx/tonemap.wgsl `night_vision`). On by default.
     pub night_vision: bool,
     /// RT lighting's shooting stars (gfx/sky_stars.rs `meteors`): 0 none, 1 a few a night (the
     /// default), 2 one every couple of seconds.
