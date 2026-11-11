@@ -329,11 +329,36 @@ impl Game<'_> {
     /// `Villager.updateSpecialPrices` after restock: the live offers, result
     /// slot and offer packet all change before the trading player's next click.
     pub(super) fn merchant_restocked(&mut self, id: u32) {
-        self.merchant_refresh_local(id, None);
+        self.merchant_refresh_local(id);
         if let Some(mut host) = self.lan.take() {
             self.lan_merchant_reputation(&mut host, id);
             self.lan = Some(host);
         }
+    }
+    /// `Villager.updateSpecialPrices` for the current local trading player.
+    fn merchant_refresh_local(&mut self, id: u32) {
+        if !self
+            .station
+            .as_ref()
+            .and_then(|s| s.merchant.as_ref())
+            .is_some_and(|m| m.mob == Some(id))
+        {
+            return;
+        }
+        let Some(uuid) = self.player_uuid_of(self.lan_acting) else {
+            return;
+        };
+        let reputation = self.villager_reputation_of(id, uuid);
+        let hero = self.hero_amplifier();
+        self.menu_session(|menu, env, _| {
+            if let Some(session) = menu.merchant.as_mut() {
+                session.reputation = reputation;
+                session.hero = hero;
+                session.update_special_prices();
+            }
+            menu.merchant_update(env);
+            Some(true)
+        });
     }
     /// `Villager.setTradingPlayer(null)`: retain the current special prices;
     /// the next opening recalculates them. Return borrowed sequences to the world.
