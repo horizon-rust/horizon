@@ -9695,9 +9695,6 @@ impl Renderer {
                 mapped_at_creation: false,
             });
         }
-        let eligible = !(oit_on || warp_on || fg || frame.title)
-            && self.native.is_none()
-            && self.pack_post.is_none();
         let compact_particles = self.particles.upload(
             (&self.device, &mut self.uploads, &mut encoder),
             (&self.entity_buffer, all_entities),
@@ -9706,7 +9703,9 @@ impl Renderer {
                 base_quads - translucent_item_quads - translucent_particle_quads,
                 translucent_particle_quads,
             ),
-            eligible,
+            !(oit_on || warp_on || fg || frame.title)
+                && self.native.is_none()
+                && self.pack_post.is_none(),
         );
         if let (Some(skinner), Some(skin)) = (&mut self.entity_skin, skin) {
             if pack_skin {
