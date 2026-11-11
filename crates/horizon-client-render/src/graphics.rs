@@ -1902,14 +1902,18 @@ mod tests {
         // Not `cores - 1` on every machine: where it tells its performance cores apart
         // (Apple silicon; Linux CPUs whose cores' top frequencies differ by more than 5%)
         // only those count, as horizon_threads' `default_workers_count_performance_cores` pins.
+        let auto = horizon_threads::jobs::default_threads();
+        assert_eq!(g.worker_threads(), auto);
         // On battery, Auto takes half of it, rounded up, whatever this machine is.
         let battery = Graphics {
             battery: true,
             ..g.clone()
         };
-        assert_eq!(battery.worker_threads(), g.worker_threads().div_ceil(2));
+        assert_eq!(battery.worker_threads(), auto.div_ceil(2));
         // A manual count is the player's own choice, kept as asked.
-        let manual = Graphics { workers: 3, ..g };
+        let mut manual = Graphics { workers: 3, ..g };
+        assert_eq!(manual.worker_threads(), 3);
+        manual.battery = true;
         assert_eq!(manual.worker_threads(), 3);
     }
 
