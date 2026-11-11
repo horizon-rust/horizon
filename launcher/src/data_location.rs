@@ -454,8 +454,7 @@ fn checked_path(path: &Path) -> Result<PathBuf> {
         ));
     }
     let mut current = PathBuf::new();
-    let last = path.components().count().saturating_sub(1);
-    for (i, part) in path.components().enumerate() {
+    for part in path.components() {
         current.push(part);
         // A Windows drive/UNC prefix alone is not a filesystem root. Inspect it
         // only after RootDir completes it, including canonical verbatim paths.
@@ -464,11 +463,7 @@ fn checked_path(path: &Path) -> Result<PathBuf> {
         }
         match fs::symlink_metadata(&current) {
             Ok(meta) => {
-                // Only the root itself may not be a link: the folders above it are never copied
-                // (a ~/.local/share linked to another disk, Fedora Atomic's /home).
-                if i == last {
-                    reject_link(&current, &meta)?;
-                }
+                reject_link(&current, &meta)?;
                 current = fs::canonicalize(&current).map_err(|e| problem(&current, e))?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

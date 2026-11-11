@@ -184,14 +184,8 @@ pub fn device_code(ep: &Endpoints, client_id: &str) -> Result<DeviceCode, String
                 .get("interval")
                 .and_then(Value::as_u64)
                 .unwrap_or(5)
-                .clamp(1, 60),
-            // The service's numbers, bounded: Instant + a huge interval panics the sign-in thread.
-            expires_at: now().saturating_add(
-                v.get("expires_in")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(900)
-                    .min(3600),
-            ),
+                .max(1),
+            expires_at: now() + v.get("expires_in").and_then(Value::as_u64).unwrap_or(900),
             device_code,
         }),
         _ => Err(oauth_error(&v)),
@@ -265,7 +259,7 @@ pub fn wait_for_sign_in(
         }
         match poll(ep, client_id, code)? {
             Poll::Pending => {}
-            Poll::SlowDown => interval = (interval + 5).min(60),
+            Poll::SlowDown => interval += 5,
             Poll::Done(tokens) => return Ok(tokens),
         }
     }
@@ -351,7 +345,7 @@ fn minecraft_login(
     let (token, expires_in) = minecraft_token(ep, &format!("XBL3.0 x={uhs};{xsts_token}"))?;
     Ok(Minecraft {
         token,
-        expires_at: now().saturating_add(expires_in.min(7 * 86_400)),
+        expires_at: now() + expires_in,
         xuid,
     })
 }
