@@ -89,6 +89,24 @@ impl MapSet {
     pub fn bytes(&self) -> usize {
         self.classes.iter().map(|c| c.pixels.len()).sum()
     }
+    /// The sprite layers whose map says, somewhere, how much it emits: a specular map with a
+    /// texel's alpha between 1 and 254 (LabPBR's emission; 0 none, 255 none either). Such a
+    /// pack draws its light sources' burning parts itself (a torch's flame, not its stick).
+    pub fn emitting_layers(&self) -> Vec<u32> {
+        let mut out = Vec::new();
+        for class in &self.classes {
+            let bytes = (class.size * class.size * 4) as usize;
+            for (i, &layer) in class.layers.iter().enumerate() {
+                let Some(pixels) = class.pixels.get(i * bytes..(i + 1) * bytes) else {
+                    continue;
+                };
+                if pixels.chunks_exact(4).any(|t| (1..=254).contains(&t[3])) {
+                    out.push(layer);
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Every sprite layer's maps, made by `Sprites::finish` when a resource pack has at least one.
@@ -232,6 +250,35 @@ pub fn decode(normal: [u8; 4], specular: [u8; 4]) -> Material {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_map_emits_where_a_texel_alpha_says_so() {
+        // Two 2x2 maps: one all 255 (no emission) save a 0, one with a single texel at 200.
+        let none = [
+            [9u8, 9, 9, 255],
+            [9, 9, 9, 0],
+            [9, 9, 9, 255],
+            [9, 9, 9, 255],
+        ]
+        .concat();
+        let some = [
+            [9u8, 9, 9, 255],
+            [9, 9, 9, 200],
+            [9, 9, 9, 255],
+            [9, 9, 9, 255],
+        ]
+        .concat();
+        let set = MapSet {
+            index: vec![0, 1, NO_MAP, 2],
+            classes: vec![MapClass {
+                size: 2,
+                layers: vec![4, 7, 9],
+                pixels: [none.clone(), some, none].concat(),
+                mips: Vec::new(),
+            }],
+        };
+        assert_eq!(set.emitting_layers(), [7]);
+    }
+
     use super::*;
 
     #[test]

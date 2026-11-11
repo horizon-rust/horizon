@@ -15,6 +15,9 @@ use crate::labpbr::{Map, MaterialPixels, NO_MAP};
 use crate::sprites::SpriteAnimation;
 use wgpu::util::DeviceExt;
 
+/// `MaterialArrays::thin`'s bit for a sprite whose specular map holds LabPBR emission.
+pub const EMITTING: u32 = 8;
+
 /// One kind of map on the GPU.
 pub struct MapArrays {
     /// The arrays, smallest maps first.
@@ -158,10 +161,18 @@ impl MaterialArrays {
                 animators,
             }
         });
+        // Bit 8: the sprite's specular map says where it emits (`MapSet::emitting_layers`), so
+        // a light source's glow follows the map, not its texels' brightness (gfx/parallax.rs).
+        let mut flags = thin.to_vec();
+        for layer in materials.maps[Map::Specular as usize].emitting_layers() {
+            if let Some(f) = flags.get_mut(layer as usize) {
+                *f |= EMITTING;
+            }
+        }
         let thin = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Thin sprite layers"),
             // A storage buffer may not be empty.
-            contents: bytemuck::cast_slice(if thin.is_empty() { &[0] } else { thin }),
+            contents: bytemuck::cast_slice(if flags.is_empty() { &[0] } else { &flags }),
             usage: wgpu::BufferUsages::STORAGE,
         });
         Self { maps, thin, bytes }

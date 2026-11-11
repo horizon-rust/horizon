@@ -82,6 +82,15 @@ fn map_old(value: Option<&str>) -> f64 {
     }
 }
 
+/// 0 when `HORIZON_RT_EMISSION_MAP=0`: light sources burn by their texels' brightness alone.
+fn emission_map(value: Option<&str>) -> f64 {
+    if value.is_some_and(|v| v.trim() == "0") {
+        0.0
+    } else {
+        1.0
+    }
+}
+
 /// The entries, after the prefixed terrain and the normal map declarations.
 const ENTRIES: &str = r"
 // How deep the relief goes (1: LabPBR's quarter block) and where it fades out, in blocks.
@@ -105,6 +114,9 @@ override PARALLAX_CAVITY: f32 = 0.25;
 // `HORIZON_RT_MAP_TAPS`), and 1 to read the maps as before (`HORIZON_RT_MAP_FILTER=old`).
 override PARALLAX_MAP_TAPS: f32 = 4.0;
 override PARALLAX_MAP_OLD: f32 = 0.0;
+// 1: a light source's burning texels are those its specular map says emit, where it says so
+// (`HORIZON_RT_EMISSION_MAP=0`: by their brightness alone, as before: a stick's light texels lit).
+override PARALLAX_EMISSION_MAP: f32 = 1.0;
 // At most this many texels crossed per fragment.
 const PARALLAX_STEPS: u32 = 48u;
 const PARALLAX_NEUTRAL: vec4<f32> = vec4(0.5, 0.5, 1.0, 1.0);
@@ -549,9 +561,14 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
         var glow = horizon_terrain_scene_color(vec4(color.rgb, 0.0),
             horizon_terrain_emission_gain(in.emission), in.spherical, in.cylindrical).rgb;
         var burning = 1.0;
+        // A pack whose specular map says where the sprite emits (LabPBR's alpha, `thin_layers`
+        // bit 8): its burning parts are those, so a light texel of a torch's stick stays wood.
+        let mapped = PARALLAX_EMISSION_MAP > 0.5 && (thin_layers[layer] & 8u) != 0u;
+        let emits = clamp(specular_at(layer, s.uv, s.du, s.dv).a * (255.0 / 254.0), 0.0, 1.0);
+        if mapped { burning = emits; }
         if (thin_layers[layer] & 2u) != 0u {
             glow = horizon_terrain_rt_flame(color.rgb) * (1.0 - f);
-            burning = horizon_terrain_rt_burning(s.texel.rgb);
+            burning = select(horizon_terrain_rt_burning(s.texel.rgb), emits, mapped);
             // A fire's flame is the shader's own (terrain.wgsl `rt_fire`), cut where it is torn
             // away by the noise.
             if (thin_layers[layer] & 4u) != 0u {
@@ -846,6 +863,10 @@ impl Parallax {
                 (
                     "PARALLAX_MAP_OLD",
                     map_old(std::env::var("HORIZON_RT_MAP_FILTER").ok().as_deref()),
+                ),
+                (
+                    "PARALLAX_EMISSION_MAP",
+                    emission_map(std::env::var("HORIZON_RT_EMISSION_MAP").ok().as_deref()),
                 ),
             ],
             (GROUP, &layout),
