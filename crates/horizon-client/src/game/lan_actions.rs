@@ -48,8 +48,6 @@ mod crack_feedback_tests;
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
 pub(super) struct GuestPlay {
-    /// The sign this guest may write on (`SignBlockEntity.playerWhoMayEdit`).
-    pub(super) sign_editing: Option<[i32; 3]>,
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
@@ -2314,7 +2312,7 @@ impl Game<'_> {
                 }
                 4 | 5 => {
                     if !spectator {
-                        self.as_guest(host, conn, |g| g.drop_held(a.action == 4));
+                        self.guest_drop_held(host, gi, conn, a.action == 4);
                     }
                 }
                 // RELEASE_USE_ITEM: ServerPlayer.releaseUsingItem, with the
@@ -3522,13 +3520,9 @@ impl Game<'_> {
                 && self.pvp_land(host, victim, &strike)
             {
                 let on_ground = Self::pvp_victim_on_ground(host, victim);
-                self.as_guest(host, conn, |g| {
-                    g.weapon_hit_player(on_ground);
-                    g.pvp_exhaustion();
-                    if strike.stops_sprint() {
-                        g.stop_sprint_after_extra_knockback();
-                    }
-                });
+                let stops_sprint = strike.stops_sprint();
+                let sent = self.as_guest(host, conn, |g| g.pvp_hit_after(on_ground, stops_sprint));
+                self.send_guest_motion(host, conn, sent.flatten());
             }
             return;
         }
@@ -4156,8 +4150,8 @@ impl Game<'_> {
                 .map_or([0.5, 80.0, 0.5], |[x, y, z]| {
                     [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
                 });
-            let at = found.map_or(world, |(at, yaw)| {
-                host.hub.guests[i].yaw = yaw;
+            let at = found.map_or(world, |(at, yaw, pitch)| {
+                (host.hub.guests[i].yaw, host.hub.guests[i].pitch) = (yaw, pitch);
                 [at.x, at.y, at.z]
             });
             if found.is_none() {
@@ -4343,16 +4337,11 @@ impl Game<'_> {
             // Player.tick: a different main-hand item resets the attack
             // strength, and detectEquipmentUpdates gives the guest its modifiers.
             let g = &host.hub.guests[gi];
-            let held = g
-                .inventory
-                .get(g.selected)
-                .cloned()
-                .flatten()
-                .map(|s| s.item);
+            let held = super::held_items::held_attack_item(&g.inventory, g.selected);
             let play = host.play.entry(conn).or_default();
-            if play.attack_item != held {
+            if play.attack_item.as_ref() != held {
                 play.attack_ticks = 0;
-                play.attack_item = held;
+                play.attack_item = held.cloned();
             }
             self.guest_delayed_destroy(host, conn);
             self.guest_server_tick(host, conn);
@@ -4513,7 +4502,7 @@ impl Game<'_> {
             let me = self.player_text(&name, uuid);
             let text = match cause {
                 Some(key) => horizon_client::text::Text::translate(&key, &[me]),
-                None if at[1] < f64::from(self.world.bottom_y() - 64) => {
+                None if at[1] < self.world.below_world_y() => {
                     horizon_client::text::Text::translate("death.attack.outOfWorld", &[me])
                 }
                 None => self.guest_death_message(conn, me),
@@ -5224,14 +5213,8 @@ impl Game<'_> {
                 w.server_player_pose_tick()
             };
             let mut events = std::mem::take(&mut w.player.events);
-            // LayeredCauldronBlock.handleEntityOnFireInside along those moves.
-            for event in &events {
-                match event {
-                    MotionEvent::CauldronExtinguish { pos } => game.cauldron_extinguish(*pos),
-                    MotionEvent::PowderSnowMelt { pos } => game.powder_snow_melt(*pos),
-                    _ => {}
-                }
-            }
+            // Powder snow and cauldrons put the fire out along those moves.
+            game.block_extinguish_player(&events);
             // Entity.baseTick: rain puts out a burning player.
             game.rain_extinguish_player();
             // WitherRoseBlock.entityInside along those moves.
@@ -5444,35 +5427,6 @@ impl Game<'_> {
                 velocity: [v.x, v.y, v.z],
             }));
         }
-    }
-
-    /// ServerGamePacketListenerImpl.handlePlayerCommand START_RIDING_JUMP: the
-    /// vehicle the guest rides takes its own `handleStartJump` — a horse rears
-    /// and slides on the rider's keys, a camel dashes — and the sound vanilla's
-    /// server plays is broadcast to the players near the mount, the rider
-    /// included (their own client plays none).
-    fn lan_start_riding_jump(&mut self, host: &mut LanHost, conn: u32, data: i32) {
-        let Some(Some(index)) = self.as_guest(host, conn, |g| g.mount_index()) else {
-            return;
-        };
-        let m = &mut self.mobs[index];
-        let Some((sound, volume)) = crate::game::mounts::start_riding_jump(m, data) else {
-            return;
-        };
-        let at = m.center();
-        // LivingEntity.getSoundSource: a mob's sounds are in the neutral source.
-        let neutral = horizon_client::settings::SOUND_SOURCES
-            .iter()
-            .position(|s| *s == "neutral")
-            .unwrap_or(0) as i32;
-        host.hub.sound(
-            &format!("minecraft:{sound}"),
-            at,
-            volume,
-            1.0,
-            neutral,
-            None,
-        );
     }
 
     /// ServerGamePacketListenerImpl.handlePlayerCommand START_FALL_FLYING:

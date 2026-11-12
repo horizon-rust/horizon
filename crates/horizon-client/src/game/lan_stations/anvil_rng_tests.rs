@@ -5,7 +5,10 @@ use horizon_client::{
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
     motion::PlayerMotion,
 };
-use horizon_core::{geometry::Vec3, random::LegacyRandom};
+use horizon_core::{
+    geometry::Vec3,
+    random::{EntityRandom, LegacyRandom, LevelRandom},
+};
 use horizon_protocol::packets::configuration::ClientInformation;
 use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
@@ -125,10 +128,11 @@ fn anvil_wear_draws_only_from_the_acting_player() {
                         game.pack.assets.registry.default_state(name).unwrap().0,
                     );
                     game.world.chunks.insert((0, 0), Arc::new(chunk));
-                    game.world.random = LegacyRandom::new(98765);
-                    game.player.as_mut().unwrap().random = LegacyRandom::new(seed);
+                    game.world.random = LevelRandom::for_level(LegacyRandom::new(98765));
+                    game.player.as_mut().unwrap().random =
+                        EntityRandom::own(LegacyRandom::new(seed));
                     host.hub.guests[0].motion.as_mut().unwrap().random =
-                        LegacyRandom::new(seed + 7);
+                        EntityRandom::own(LegacyRandom::new(seed + 7));
                     if guest_turn {
                         let mut menu = Box::new(Menu::new(Kind::Anvil));
                         menu.combined = true;

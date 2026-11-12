@@ -2,7 +2,7 @@ use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
 use horizon_client::{chunk::Chunk, motion::PlayerMotion};
 use horizon_core::{
     geometry::Vec3,
-    random::{LegacyRandom, RandomSource},
+    random::{EntityRandom, LegacyRandom, LevelRandom, RandomSource},
 };
 use std::sync::Arc;
 
@@ -52,7 +52,7 @@ fn anvil_wear_leaves_the_level_random_stream_untouched() {
         .unwrap()
         .parse()
         .unwrap();
-    game.world.random = LegacyRandom::new(98765);
+    game.world.random = LevelRandom::for_level(LegacyRandom::new(98765));
     assert_eq!(
         game.world.random.next_int(),
         native_level_next,
@@ -77,7 +77,7 @@ fn anvil_wear_leaves_the_level_random_stream_untouched() {
                 game.pack.assets.registry.default_state(name).unwrap().0,
             );
             game.world.chunks.insert((0, 0), Arc::new(chunk));
-            game.world.random = LegacyRandom::new(98765);
+            game.world.random = LevelRandom::for_level(LegacyRandom::new(98765));
             *game.particles.level_random() = LegacyRandom::new(54321);
             game.anvil_used(pos, creative);
             let prefix = format!("0 {} {name} 0 ", u8::from(creative));
@@ -111,9 +111,9 @@ fn anvil_wear_leaves_the_level_random_stream_untouched() {
     // These are production event calls with source-derived stream controls,
     // not a native client rendering comparison.
     for id in [1029, 1030, 1053, 1054, 1042, 1043, 1044] {
-        game.world.random = LegacyRandom::new(98765);
+        game.world.random = LevelRandom::for_level(LegacyRandom::new(98765));
         *game.particles.level_random() = LegacyRandom::new(54321);
-        game.player.as_mut().unwrap().random = LegacyRandom::new(12345);
+        game.player.as_mut().unwrap().random = EntityRandom::own(LegacyRandom::new(12345));
         game.level_event_at(id, [3, 64, 3], 0);
         let mut world = LegacyRandom::new(98765);
         let mut client = LegacyRandom::new(54321);

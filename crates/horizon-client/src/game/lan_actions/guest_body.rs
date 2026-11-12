@@ -42,3 +42,6 @@ pub(super) fn initialize(resources: &MotionResources, guest: &mut Guest) {
         m.attack_log = attacks;
     }
 }
+
+#[cfg(test)]
+mod tests;
