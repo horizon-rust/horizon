@@ -294,7 +294,6 @@ public final class VanillaFinalizeSpawnOracle {
             v.add(a.getVariant().getSerializedName());
         } else if (e instanceof net.minecraft.world.entity.animal.fish.TropicalFish f) {
             v.add(String.valueOf(call(f, net.minecraft.world.entity.animal.fish.TropicalFish.class, "getPackedVariant")));
-            v.add("school=" + !f.isMaxGroupSizeReached(1));
         } else if (e instanceof net.minecraft.world.entity.animal.fish.Salmon s) {
             v.add(s.getVariant().getSerializedName());
         } else if (e instanceof net.minecraft.world.entity.animal.panda.Panda p) {

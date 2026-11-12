@@ -1083,8 +1083,8 @@ pub struct Spawned {
     pub school: bool,
 }
 
+/// `NaturalSpawner.spawnForChunk` for callbacks that do not consume the level RNG.
 #[allow(clippy::too_many_arguments)]
-/// Spawns filtered categories with a callback that does not consume the level RNG.
 pub fn spawn_for_chunk<L: NaturalLevel, R: RandomSource>(
     l: &L,
     random: &mut R,
@@ -1105,8 +1105,8 @@ pub fn spawn_for_chunk<L: NaturalLevel, R: RandomSource>(
     );
 }
 
+/// `NaturalSpawner.spawnCategoryForChunk` for callbacks that do not consume the level RNG.
 #[allow(clippy::too_many_arguments)]
-/// Spawns one category with a callback that does not consume the level RNG.
 pub fn spawn_category_for_chunk<L: NaturalLevel, R: RandomSource>(
     l: &L,
     random: &mut R,
@@ -1127,8 +1127,8 @@ pub fn spawn_category_for_chunk<L: NaturalLevel, R: RandomSource>(
     );
 }
 
+/// `NaturalSpawner.spawnCategoryForPosition` for callbacks that do not consume the level RNG.
 #[allow(clippy::too_many_arguments)]
-/// Spawns at a position with a callback that does not consume the level RNG.
 pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource>(
     l: &L,
     random: &mut R,
