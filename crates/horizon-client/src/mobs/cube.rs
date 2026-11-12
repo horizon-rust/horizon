@@ -607,7 +607,6 @@ mod golem_touch_tests {
 mod keep_jumping_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
-    use horizon_core::random::LegacyRandom;
     use std::sync::Arc;
 
     /// `CubeMobKeepOnJumpingGoal.canUse` is `!isPassenger()`: a cube riding
@@ -616,7 +615,7 @@ mod keep_jumping_tests {
     fn a_cube_that_rides_something_does_not_keep_jumping() {
         let mut starts = None;
         let ran = with_test_world(&[], |w, types| {
-            let mut lr = LegacyRandom::new(0);
+            let mut lr = crate::mobs::world::level_random(0);
             let mut events = Vec::new();
             let mut cx = Cx {
                 w,
@@ -665,7 +664,7 @@ mod keep_jumping_tests {
                 m.no_ai = true;
                 m.on_ground = true;
                 m.extra.flag2 = false;
-                let mut lr = LegacyRandom::new(0);
+                let mut lr = crate::mobs::world::level_random(0);
                 let mut events = Vec::new();
                 super::super::ai::tick(&mut m, w, &mut lr, &mut events);
                 result = Some(m.extra.flag2);

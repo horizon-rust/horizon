@@ -24,7 +24,7 @@ use horizon_client::{
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape, trig},
     position::BlockPos,
-    random::{LegacyRandom, RandomSource},
+    random::{EntityRandom, RandomSource},
 };
 use horizon_world::collision_context::CollisionContext;
 use horizon_world::nbt::Tag;
@@ -119,7 +119,7 @@ pub(super) struct Boat {
     pub leash_spin: f64,
     /// `Entity.tickCount`, for the 100 ticks a saved holder is waited for.
     pub age: i32,
-    pub random: LegacyRandom,
+    pub random: EntityRandom,
 }
 /// `ChestBoat.CONTAINER_SIZE`.
 pub(super) const CHEST_SLOTS: usize = 27;
@@ -261,7 +261,7 @@ impl Boat {
             leash_pending: None,
             leash_spin: 0.0,
             age: 0,
-            random: horizon_client::random_source::entity(),
+            random: EntityRandom::own(horizon_client::random_source::entity()),
         }
     }
     /// A chest boat or chest raft.

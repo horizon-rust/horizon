@@ -14,7 +14,7 @@ use horizon_core::{
 /// `AbstractArrow.startFalling`'s per-axis random velocity damping.
 pub fn start_falling_velocity(
     velocity: Vec3,
-    random: &mut horizon_core::random::LegacyRandom,
+    random: &mut horizon_core::random::EntityRandom,
 ) -> Vec3 {
     let x = f64::from(random.next_float() * 0.2);
     let y = f64::from(random.next_float() * 0.2);
@@ -286,8 +286,8 @@ pub struct Projectile {
 }
 /// A new projectile's own random (`Entity.random`) and the UUID its first two
 /// draws make (`Mth.createInsecureUUID`).
-pub fn new_own_random() -> (horizon_core::random::LegacyRandom, [i32; 4]) {
-    let mut random = crate::random_source::entity();
+pub fn new_own_random() -> (horizon_core::random::EntityRandom, [i32; 4]) {
+    let mut random = horizon_core::random::EntityRandom::own(crate::random_source::entity());
     let uuid = crate::save::insecure_uuid(&mut random);
     (random, uuid)
 }
@@ -558,7 +558,7 @@ impl Projectile {
         self.bounds()
     }
     /// The arrow's own random from now on (`Entity.random`).
-    pub fn with_arrow_random(mut self, random: horizon_core::random::LegacyRandom) -> Self {
+    pub fn with_arrow_random(mut self, random: horizon_core::random::EntityRandom) -> Self {
         if let Some(a) = self.arrow.as_mut() {
             a.random = random;
         }
@@ -828,7 +828,7 @@ impl Projectile {
     /// Projectile.shoot: normalized direction plus triangular noise, times speed.
     pub fn shoot(
         &mut self,
-        random: &mut impl RandomSource,
+        random: &mut horizon_core::random::EntityRandom,
         dir: [f64; 3],
         speed: f32,
         uncertainty: f32,
