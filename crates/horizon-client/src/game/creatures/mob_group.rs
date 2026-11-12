@@ -64,6 +64,9 @@ pub(super) struct Group<M: MobSlot> {
     pub corpses: Vec<Mob>,
     pub gone: Vec<Gone>,
     pub guest_events: Vec<(u32, u32, MobEvent)>,
+    /// The mod hooks its turns kept for the join, with each turn's place in the whole list (a
+    /// group of the parallel tick with mods loaded: `native_client_hooks::Deferred`).
+    pub deferred: Vec<(usize, horizon_client::native_client_hooks::Deferred)>,
 }
 
 /// What decides each turn besides the group, read at the turn as the serial loop reads it.
@@ -77,7 +80,7 @@ pub(super) struct Turns<'t, 'w> {
     /// The one player's position, when the level has one: every mob's nearest.
     pub single_player: Option<Option<Vec3>>,
     /// Whether a mod canceled a mob's tick.
-    pub canceled: &'t dyn Fn(u32) -> bool,
+    pub canceled: &'t (dyn Fn(u32) -> bool + Sync),
     /// `getCurrentDifficultyAt` a position.
     pub difficulty: &'t (dyn Fn([f64; 3]) -> LocalDifficulty + Sync),
     /// The last chunk's difficulty: mobs come in runs of one chunk.
@@ -137,6 +140,7 @@ impl<M: MobSlot> Group<M> {
             corpses: Vec::new(),
             gone: Vec::new(),
             guest_events: Vec::new(),
+            deferred: Vec::new(),
         }
     }
 
@@ -173,7 +177,17 @@ impl<M: MobSlot> Group<M> {
                 foreign.reader.set(at);
             }
             if let Some(foreign) = foreign {
-                foreign.in_seed_order(at, || self.turn(i, turns, shared));
+                foreign.in_seed_order(at, || {
+                    if foreign.defers {
+                        let ((), kept) =
+                            horizon_client::native_client_hooks::deferring_turn(|| {
+                                self.turn(i, turns, shared);
+                            });
+                        self.deferred.extend(kept.into_iter().map(|d| (at, d)));
+                    } else {
+                        self.turn(i, turns, shared);
+                    }
+                });
             } else {
                 self.turn(i, turns, shared);
             }
@@ -333,9 +347,7 @@ impl<M: MobSlot> Group<M> {
         };
         w.controlling_player_movement = controlling_player_movement;
         self.ticked.insert(self.mobs[i].mob().id);
-        // `horizon-report`'s cost by mob type (tick_profile.rs).
-        let sampled =
-            super::super::tick_profile::start().map(|t| (t, self.mobs[i].mob().kind.clone()));
+        let sampled = super::super::tick_profile::start_mob(&self.mobs[i].mob().kind);
         let kept = horizon_client::mobs::riders::tick(
             &mut self.mobs,
             i,
@@ -343,9 +355,7 @@ impl<M: MobSlot> Group<M> {
             &mut self.random,
             &mut self.events,
         );
-        if let Some((started, kind)) = sampled {
-            super::super::tick_profile::add(shared.level_id, &kind, started);
-        }
+        super::super::tick_profile::end_mob(shared.level_id, sampled);
         let m = self.mobs[i].mob_mut();
         if seen_guest.is_none() {
             self.player = w.player;
@@ -367,7 +377,10 @@ impl<M: MobSlot> Group<M> {
                 shared.guest_ids,
                 self.player.as_ref(),
             );
-            if let Some((player, mob)) = named {
+            // A grouped turn runs while no mod hooks the change (`horizon_mod_api_gen::mob_turn`).
+            if let Some((player, mob)) = named
+                && !horizon_client::native_client_hooks::deferring()
+            {
                 let kind = super::super::native_hooks::mob_kind(m);
                 let mut cancel = false;
                 Game::native_living_change_target(
