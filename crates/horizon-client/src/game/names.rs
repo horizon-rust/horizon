@@ -247,6 +247,9 @@ impl Game<'_> {
         let players = self.other_players();
         let player_ids = named_by_player_list(&players);
         let named = self.mobs.iter().filter_map(|m| {
+            if m.removed {
+                return None;
+            }
             // Already named by the player list: a second tag would sit on the
             // first (`named_by_player_list`).
             if player_ids.contains(&m.id) {
@@ -282,7 +285,7 @@ impl Game<'_> {
             local_entity_id,
         );
         for (m, name, player) in named.chain(players) {
-            if !m.alive() {
+            if !m.alive() || m.removed {
                 continue;
             }
             // EntityAttachment.NAME_TAG: 0.5 above the box of the current pose.
@@ -870,8 +873,13 @@ fn collect_vehicle_ids(
 ) -> std::collections::HashSet<u32> {
     let mut ridden: std::collections::HashSet<u32> = mobs
         .iter()
+        .filter(|m| !m.removed)
         .filter_map(|o| o.extra.mount)
-        .chain(mobs.iter().filter_map(|m| m.extra.rider.map(|_| m.id)))
+        .chain(
+            mobs.iter()
+                .filter(|m| !m.removed)
+                .filter_map(|m| m.extra.rider.map(|_| m.id)),
+        )
         .chain(passenger_vehicles)
         .collect();
     if let Some(riding) = local_riding {
@@ -1356,6 +1364,19 @@ mod tests {
         assert!(
             !sb::name_shown(None, None, view_vehicle),
             "vanilla shouldShowName hides tag for vehicles with no team"
+        );
+
+        // 4. Removed mob riding a vehicle is ignored
+        let mut mount = player_mob();
+        mount.id = 50;
+        let mut rider = player_mob();
+        rider.id = 51;
+        rider.extra.mount = Some(50);
+        rider.removed = true;
+        let ridden_removed = collect_vehicle_ids(&[mount, rider], vec![], None, None);
+        assert!(
+            !ridden_removed.contains(&50),
+            "removed rider does not mark vehicle as ridden"
         );
     }
 }
