@@ -250,6 +250,7 @@ impl Game<'_> {
         host: &mut LanHost,
         conn: u32,
         window: Option<i32>,
+        refresh_offers: bool,
         op: impl FnOnce(&mut Menu, &Env),
     ) -> bool {
         let Some(mut gm) = host.play.get_mut(&conn).and_then(|p| p.merchant.take()) else {
@@ -332,6 +333,10 @@ impl Game<'_> {
                 }
             });
         }
+        let offers_refreshed = session
+            .events
+            .iter()
+            .any(|event| matches!(event, merchant::Event::OffersRefreshed));
         let (session, traded) = self.merchant_apply(session, gm.merchant.mob);
         gm.merchant.session = session;
         if !traded.is_empty() {
@@ -345,7 +350,11 @@ impl Game<'_> {
             self.as_guest(host, conn, |g| g.merchant_traded(gm.merchant.mob, &traded));
         }
         self.drop_guest_items(host, gi, dropped);
-        self.lan_send_offers(host, conn, &mut gm, false);
+        // Vanilla sends offers on opening and updateSpecialPrices, not on
+        // a normal result take. Trade reputation refreshes on the AI phase.
+        if refresh_offers || offers_refreshed {
+            self.lan_send_offers(host, conn, &mut gm, true);
+        }
         self.lan_send_merchant_content(host, conn, &mut gm);
         host.play.entry(conn).or_default().merchant = Some(gm);
         true
@@ -367,7 +376,7 @@ impl Game<'_> {
             _ => Input::PickupAll,
         };
         let (slot, button) = (i32::from(p.slot), i32::from(p.button));
-        self.lan_merchant_op(host, conn, Some(p.container), |menu, env| {
+        self.lan_merchant_op(host, conn, Some(p.container), false, |menu, env| {
             let _ = menu.click(env, slot, button, input);
         })
     }
@@ -380,7 +389,7 @@ impl Game<'_> {
             return;
         };
         let (uuid, name) = (guest.uuid, guest.name.clone());
-        if self.lan_merchant_op(host, conn, None, |menu, env| {
+        if self.lan_merchant_op(host, conn, None, false, |menu, env| {
             menu.merchant_select(env, index)
         }) {
             let villager = host
@@ -399,7 +408,9 @@ impl Game<'_> {
         conn: u32,
         window: Option<i32>,
     ) -> bool {
-        if !self.lan_merchant_op(host, conn, window, |menu, env| menu.merchant_close(env)) {
+        if !self.lan_merchant_op(host, conn, window, false, |menu, env| {
+            menu.merchant_close(env)
+        }) {
             return false;
         }
         let Some(mut gm) = host.play.get_mut(&conn).and_then(|p| p.merchant.take()) else {
@@ -476,7 +487,7 @@ impl Game<'_> {
                 continue;
             };
             let reputation = self.villager_reputation_of(id, uuid);
-            self.lan_merchant_op(host, conn, None, |menu, env| {
+            self.lan_merchant_op(host, conn, None, true, |menu, env| {
                 if let Some(s) = menu.merchant.as_mut() {
                     s.reputation = reputation;
                     s.hero = hero;
