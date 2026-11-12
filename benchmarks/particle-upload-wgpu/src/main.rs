@@ -4,7 +4,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     pos: [f32; 3],
     uv: [f32; 2],
@@ -16,7 +16,7 @@ struct Vertex {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ParticleVertex {
     pos: [f32; 3],
     uv: [f32; 2],
@@ -49,9 +49,8 @@ fn prepare(vertices: &[Vertex], output: &mut Vec<ParticleVertex>) -> bool {
     true
 }
 
-fn as_bytes<T>(slice: &[T]) -> &[u8] {
-    // Vertex and ParticleVertex have no padding and every field is initialized.
-    unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
+fn as_bytes<T: bytemuck::Pod>(slice: &[T]) -> &[u8] {
+    bytemuck::cast_slice(slice)
 }
 
 fn median_latency(mut f: impl FnMut(), n: usize) -> f64 {
