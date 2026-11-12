@@ -2042,13 +2042,9 @@ impl Game<'_> {
                     ..EntityLootParams::default()
                 };
                 let seed = self.level.seed;
-                // LootContext.Builder.create: the table's random sequence, or
-                // the level's random when it names none.
+                // LootContext.Builder.create: the level's random with no sequence.
                 let rolled = match loot.random_sequence(table) {
-                    Some(id) => {
-                        let random = self.rand_sequences.get(id, seed);
-                        loot.roll_entity(table, random, &params)
-                    }
+                    Some(id) => loot.roll_entity(table, self.rand_sequences.get(id, seed), &params),
                     None => loot.roll_entity(table, &mut self.world.random, &params),
                 };
                 rolled

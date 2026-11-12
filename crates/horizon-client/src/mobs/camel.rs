@@ -885,7 +885,10 @@ mod tests {
         if !ran {
             return;
         }
-        let first = seen.iter().find(|(_, w)| *w != start).expect("a first look");
+        let first = seen
+            .iter()
+            .find(|(_, w)| *w != start)
+            .expect("a first look");
         assert!(first.0 < 20, "the first look comes at once: {first:?}");
         for (tick, wanted) in &seen[21..299] {
             assert_eq!(*wanted, PLAYER, "tick {tick}: the head stays on the player");
