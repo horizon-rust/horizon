@@ -103,62 +103,6 @@ pub fn apply<G: FnMut() -> i32>(map: &mut LiveAttributes<G>, values: &[Attribute
     }
 }
 
-/// `ClientPacketListener.handleRespawn`: copies the old player's attributes to
-/// the new one (`assignAllValues` with `KEEP_ATTRIBUTE_MODIFIERS`, else
-/// `assignBaseValues`).
-pub fn snapshot_for_respawn<G: FnMut() -> i32>(
-    map: &LiveAttributes<G>,
-    keep_modifiers: bool,
-) -> Vec<AttributeSnapshot> {
-    let mut out = Vec::new();
-    for (_, key, instance) in map.instances() {
-        let modifiers = if keep_modifiers {
-            instance
-                .modifiers()
-                .iter()
-                .map(|m| AttributeModifier {
-                    id: m.id().to_owned(),
-                    amount: m.amount(),
-                    operation: operation_id(m.operation()),
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        out.push(AttributeSnapshot {
-            attribute: key.attribute().registry_id(),
-            base: instance.base_value(),
-            modifiers,
-        });
-    }
-    out
-}
-
-/// Queues or updates incoming server attribute snapshots while the player is not yet created.
-pub fn queue_incoming(pending: &mut Vec<AttributeSnapshot>, incoming: &[AttributeSnapshot]) {
-    for s in incoming {
-        if let Some(existing) = pending.iter_mut().find(|e| e.attribute == s.attribute) {
-            *existing = s.clone();
-        } else {
-            pending.push(s.clone());
-        }
-    }
-}
-
-/// Applies incoming server attribute snapshots to the player's attribute map if available,
-/// or queues them in `pending` until player motion is instantiated.
-pub fn apply_to_player_or_queue<G: FnMut() -> i32>(
-    map: Option<&mut LiveAttributes<G>>,
-    pending: Option<&mut Vec<AttributeSnapshot>>,
-    values: &[AttributeSnapshot],
-) {
-    if let Some(map) = map {
-        apply(map, values);
-    } else if let Some(pending) = pending {
-        queue_incoming(pending, values);
-    }
-}
-
 /// `AttributeModifier.Operation.BY_ID`.
 fn operation(id: i32) -> Operation {
     match id {
@@ -237,39 +181,5 @@ mod tests {
         );
         instance(&mut out, 26, 0.7);
         assert_eq!(out.len(), 2);
-    }
-
-    #[test]
-    fn queue_incoming_updates_existing_and_appends_new() {
-        let mut pending = Vec::new();
-        let m = |id: &str, amount| AttributeModifier {
-            id: id.into(),
-            amount,
-            operation: 0,
-        };
-        let snap1 = AttributeSnapshot {
-            attribute: 1,
-            base: 4.0,
-            modifiers: vec![m("mod1", 1.0)],
-        };
-        queue_incoming(&mut pending, &[snap1]);
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].base, 4.0);
-
-        let snap1_updated = AttributeSnapshot {
-            attribute: 1,
-            base: 20.0,
-            modifiers: vec![m("mod1", 2.0)],
-        };
-        let snap2 = AttributeSnapshot {
-            attribute: 2,
-            base: 0.1,
-            modifiers: vec![],
-        };
-        queue_incoming(&mut pending, &[snap1_updated, snap2]);
-        assert_eq!(pending.len(), 2);
-        assert_eq!(pending[0].base, 20.0);
-        assert_eq!(pending[0].modifiers[0].amount, 2.0);
-        assert_eq!(pending[1].base, 0.1);
     }
 }

@@ -284,7 +284,8 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     // Entity.load: a component of Motion over 10 blocks a tick reads as 0.
     let motion = level.motion.map(|v| if v.abs() > 10.0 { 0.0 } else { v });
     guest.loaded_body = Some(SavedBody {
-        fire_ticks: short("Fire", -20),
+        // Entity.load: `getShortOr("Fire", 0)` narrows; Air and TicksFrozen are ints.
+        fire_ticks: i32::from(short("Fire", -20) as i16),
         air: short("Air", 300),
         fall_distance: level.fall_distance,
         velocity: motion,
@@ -1210,6 +1211,21 @@ mod tests {
         );
     }
 
+    /// `Entity.load` reads a player's `Fire` with `getShortOr` too: an int
+    /// 40000 in the player file is -25536, not half an hour of burning.
+    #[test]
+    fn a_players_saved_fire_is_narrowed_to_a_short() {
+        for (saved, expected) in [(Tag::Int(40000), -25536), (Tag::Short(60), 60)] {
+            let level = Level {
+                player_extra: Some(Tag::compound([("Fire", saved)])),
+                ..Level::default()
+            };
+            let mut g = guest();
+            apply(&mut g, &level);
+            assert_eq!(g.loaded_body.expect("a body").fire_ticks, expected);
+        }
+    }
+
     #[test]
     fn a_saved_exhaustion_and_food_timer_come_back() {
         // FoodData.addAdditionalSaveData writes foodExhaustionLevel (a float)
@@ -1565,52 +1581,5 @@ mod tests {
         assert!(load_owner(&mut g, &dir, Some(&read)));
         assert_eq!(first_item(&g), Some(("minecraft:diamond", 5)));
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn snapshot_for_respawn_preserves_sprinting_and_all_modifiers() {
-        let Some((_, res)) = resources() else {
-            return;
-        };
-        let mut m = crate::motion::PlayerMotion::new(&res, horizon_core::geometry::Vec3::ZERO)
-            .expect("a body");
-        let key = m.attributes.key("minecraft:movement_speed").unwrap();
-        let handle = m
-            .attributes
-            .get_instance(Some(key.clone()))
-            .unwrap()
-            .unwrap();
-        let sprint = horizon_world::attributes::Modifier::new(
-            "minecraft:sprinting",
-            0.3,
-            horizon_world::attributes::Operation::AddMultipliedTotal,
-        )
-        .unwrap();
-        m.attributes
-            .edit(&handle, |a, o| a.add_transient(sprint, o))
-            .unwrap();
-
-        let kept = crate::lan::attributes::snapshot_for_respawn(&m.attributes, true);
-        let speed_snap = kept
-            .iter()
-            .find(|s| s.attribute == key.attribute().registry_id())
-            .expect("movement_speed snapshot");
-        assert!(
-            speed_snap
-                .modifiers
-                .iter()
-                .any(|m| m.id == "minecraft:sprinting"),
-            "sprinting modifier must be preserved when keep=true"
-        );
-
-        let dropped = crate::lan::attributes::snapshot_for_respawn(&m.attributes, false);
-        let speed_snap_dropped = dropped
-            .iter()
-            .find(|s| s.attribute == key.attribute().registry_id())
-            .expect("movement_speed snapshot");
-        assert!(
-            speed_snap_dropped.modifiers.is_empty(),
-            "modifiers must be empty when keep=false"
-        );
     }
 }
