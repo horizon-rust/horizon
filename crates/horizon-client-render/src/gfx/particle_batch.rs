@@ -55,7 +55,7 @@ impl CompactParticles {
         kept: &super::reuse::On<'_>,
         device: &wgpu::Device,
         (shader, layout): (&wgpu::ShaderModule, &wgpu::PipelineLayout),
-        (format, bias): (wgpu::TextureFormat, wgpu::DepthBiasState),
+        (format, linear_light, bias): (wgpu::TextureFormat, bool, wgpu::DepthBiasState),
     ) -> Self {
         let vertex = [Some(wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<ParticleVertex>() as u64,
@@ -88,10 +88,7 @@ impl CompactParticles {
                     module: shader,
                     entry_point: Some(fragment),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[(
-                            "HDR_WRITE_LIGHT",
-                            f64::from(u8::from(format == super::LINEAR_FRAME)),
-                        )],
+                        constants: &super::linear_blend::frame_constants(format, linear_light),
                         ..Default::default()
                     },
                     targets: &[Some(wgpu::ColorTargetState {
