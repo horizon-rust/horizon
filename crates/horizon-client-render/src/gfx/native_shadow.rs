@@ -551,177 +551,187 @@ impl NativeShadow {
                 ("horizon_displace_steps", f64::from(u8::from(g.steps))),
             ]);
         }
-        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Native shader pack shadow"),
-            source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
-        });
-        // The frame alone, and under `[displacement]` the height maps its grid moves by.
-        let frame_entry = wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: wgpu::BufferSize::new(size_of::<FrameInputs>() as u64),
-            },
-            count: None,
-        };
-        let normals_entry = wgpu::BindGroupLayoutEntry {
-            binding: 12,
-            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2Array,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let layout_entries: Vec<_> = std::iter::once(frame_entry)
-            .chain(grid.is_some().then_some(normals_entry))
-            .collect();
-        let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Native shader pack shadow frame"),
-            entries: &layout_entries,
-        });
-        let group_entries: Vec<_> = std::iter::once(wgpu::BindGroupEntry {
-            binding: 0,
-            resource: frame.buffer.as_entire_binding(),
-        })
-        .chain(grid.as_ref().map(|g| wgpu::BindGroupEntry {
-            binding: 12,
-            resource: wgpu::BindingResource::TextureView(g.normals),
-        }))
-        .collect();
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Native shader pack shadow frame"),
-            layout: &frame_layout,
-            entries: &group_entries,
-        });
-        let layout = |flat: Option<&wgpu::BindGroupLayout>| {
-            let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] =
-                Default::default();
-            groups[0] = Some(shape.globals);
-            groups[1] = flat;
-            groups[GROUP as usize] = Some(&frame_layout);
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Native shader pack shadow"),
-                bind_group_layouts: &groups,
-                ..Default::default()
-            })
-        };
-        let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
-        let vertices = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<super::TerrainVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &super::TERRAIN_ATTRIBUTES,
-        };
-        let instances = wgpu::VertexBufferLayout {
-            array_stride: 16,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &instance_attributes,
-        };
-        let color_target = [Some(wgpu::ColorTargetState {
-            format: shadow_color(frame.api),
-            blend: None,
-            write_mask: wgpu::ColorWrites::ALL,
-        })];
-        let pipeline_with = |layout: &wgpu::PipelineLayout,
-                             vertex: &str,
-                             buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
-                             fragment: &str| {
-            let translucent = fragment == "horizon_shadow_fs_translucent";
-            let options = wgpu::PipelineCompilationOptions {
-                constants: &constants,
-                ..Default::default()
-            };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Native shader pack shadow"),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some(vertex),
-                    compilation_options: options.clone(),
-                    buffers,
-                },
-                // Both sides: the quads that face the light are drawn (`facing_runs`), and
-                // plants' crossed quads cast from either side.
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: Default::default(),
-                    bias: wgpu::DepthBiasState {
-                        constant: 0,
-                        slope_scale: 1.5,
-                        clamp: 0.0,
+        let (solid, flat, translucent, flat_translucent, entity, displaced, group) =
+            super::native_pack::checked(device, || {
+                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("Native shader pack shadow"),
+                    source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+                });
+                // The frame alone, and under `[displacement]` the height maps its grid moves by.
+                let frame_entry = wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(size_of::<FrameInputs>() as u64),
                     },
-                }),
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some(fragment),
-                    compilation_options: options,
-                    targets: if translucent { &color_target } else { &[] },
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let pipeline = |layout: &wgpu::PipelineLayout,
-                        vertex: &str,
-                        buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
-                        translucent: bool| {
-            let fragment = if translucent {
-                "horizon_shadow_fs_translucent"
-            } else {
-                "horizon_shadow_fs"
-            };
-            pipeline_with(layout, vertex, buffers, fragment)
-        };
-        let instanced = layout(None);
-        let solid = pipeline(
-            &instanced,
-            "horizon_shadow_vs",
-            &[Some(vertices.clone()), Some(instances.clone())],
-            false,
-        );
-        let translucent = pipeline(
-            &instanced,
-            "horizon_shadow_vs",
-            &[Some(vertices.clone()), Some(instances)],
-            true,
-        );
-        let flat_layout = shape.flat.map(|group| layout(Some(group)));
-        let flat_pipeline = |translucent| {
-            flat_layout.as_ref().map(|layout| {
-                pipeline(
-                    layout,
-                    "horizon_shadow_vs_flat",
-                    &[Some(vertices.clone())],
+                    count: None,
+                };
+                let normals_entry = wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                };
+                let layout_entries: Vec<_> = std::iter::once(frame_entry)
+                    .chain(grid.is_some().then_some(normals_entry))
+                    .collect();
+                let frame_layout =
+                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("Native shader pack shadow frame"),
+                        entries: &layout_entries,
+                    });
+                let group_entries: Vec<_> = std::iter::once(wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: frame.buffer.as_entire_binding(),
+                })
+                .chain(grid.as_ref().map(|g| wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: wgpu::BindingResource::TextureView(g.normals),
+                }))
+                .collect();
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Native shader pack shadow frame"),
+                    layout: &frame_layout,
+                    entries: &group_entries,
+                });
+                let layout = |flat: Option<&wgpu::BindGroupLayout>| {
+                    let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] =
+                        Default::default();
+                    groups[0] = Some(shape.globals);
+                    groups[1] = flat;
+                    groups[GROUP as usize] = Some(&frame_layout);
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("Native shader pack shadow"),
+                        bind_group_layouts: &groups,
+                        ..Default::default()
+                    })
+                };
+                let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
+                let vertices = wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<super::TerrainVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &super::TERRAIN_ATTRIBUTES,
+                };
+                let instances = wgpu::VertexBufferLayout {
+                    array_stride: 16,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &instance_attributes,
+                };
+                let color_target = [Some(wgpu::ColorTargetState {
+                    format: shadow_color(frame.api),
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })];
+                let pipeline_with = |layout: &wgpu::PipelineLayout,
+                                     vertex: &str,
+                                     buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                                     fragment: &str| {
+                    let translucent = fragment == "horizon_shadow_fs_translucent";
+                    let options = wgpu::PipelineCompilationOptions {
+                        constants: &constants,
+                        ..Default::default()
+                    };
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some("Native shader pack shadow"),
+                        layout: Some(layout),
+                        vertex: wgpu::VertexState {
+                            module: &module,
+                            entry_point: Some(vertex),
+                            compilation_options: options.clone(),
+                            buffers,
+                        },
+                        // Both sides: the quads that face the light are drawn (`facing_runs`), and
+                        // plants' crossed quads cast from either side.
+                        primitive: wgpu::PrimitiveState {
+                            cull_mode: None,
+                            ..Default::default()
+                        },
+                        depth_stencil: Some(wgpu::DepthStencilState {
+                            format: wgpu::TextureFormat::Depth32Float,
+                            depth_write_enabled: Some(true),
+                            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                            stencil: Default::default(),
+                            bias: wgpu::DepthBiasState {
+                                constant: 0,
+                                slope_scale: 1.5,
+                                clamp: 0.0,
+                            },
+                        }),
+                        multisample: Default::default(),
+                        fragment: Some(wgpu::FragmentState {
+                            module: &module,
+                            entry_point: Some(fragment),
+                            compilation_options: options,
+                            targets: if translucent { &color_target } else { &[] },
+                        }),
+                        multiview_mask: None,
+                        cache: None,
+                    })
+                };
+                let pipeline = |layout: &wgpu::PipelineLayout,
+                                vertex: &str,
+                                buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                                translucent: bool| {
+                    let fragment = if translucent {
+                        "horizon_shadow_fs_translucent"
+                    } else {
+                        "horizon_shadow_fs"
+                    };
+                    pipeline_with(layout, vertex, buffers, fragment)
+                };
+                let instanced = layout(None);
+                let solid = pipeline(
+                    &instanced,
+                    "horizon_shadow_vs",
+                    &[Some(vertices.clone()), Some(instances.clone())],
+                    false,
+                );
+                let translucent = pipeline(
+                    &instanced,
+                    "horizon_shadow_vs",
+                    &[Some(vertices.clone()), Some(instances)],
+                    true,
+                );
+                let flat_layout = shape.flat.map(|group| layout(Some(group)));
+                let flat_pipeline = |translucent| {
+                    flat_layout.as_ref().map(|layout| {
+                        pipeline(
+                            layout,
+                            "horizon_shadow_vs_flat",
+                            &[Some(vertices.clone())],
+                            translucent,
+                        )
+                    })
+                };
+                let flat = flat_pipeline(false);
+                let flat_translucent = flat_pipeline(true);
+                let entity = entity_pipeline(device, shape.entities, &frame_layout);
+                // The grid's corners come from its group 1, not from vertex buffers.
+                let displaced = grid.as_ref().map(|g| {
+                    pipeline_with(
+                        &layout(Some(g.layout)),
+                        "horizon_shadow_vs_displaced",
+                        &[],
+                        "horizon_shadow_fs_displaced",
+                    )
+                });
+                (
+                    solid,
+                    flat,
                     translucent,
+                    flat_translucent,
+                    entity,
+                    displaced,
+                    group,
                 )
             })
-        };
-        let flat = flat_pipeline(false);
-        let flat_translucent = flat_pipeline(true);
-        let entity = entity_pipeline(device, shape.entities, &frame_layout);
-        // The grid's corners come from its group 1, not from vertex buffers.
-        let displaced = grid.as_ref().map(|g| {
-            pipeline_with(
-                &layout(Some(g.layout)),
-                "horizon_shadow_vs_displaced",
-                &[],
-                "horizon_shadow_fs_displaced",
-            )
-        });
-        if let Some(e) = pollster::block_on(scope.pop()) {
-            return Err(format!("shadow pass: {e}"));
-        }
+            .map_err(|e| format!("shadow pass: {e}"))?;
         Ok(Self {
             solid,
             flat,

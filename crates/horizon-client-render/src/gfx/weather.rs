@@ -258,65 +258,66 @@ pub(super) fn native_pipeline(
     groups[0] = Some(entities);
     groups[1] = Some(time_layout);
     groups[GROUP as usize] = Some(&frame.layout);
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Native shader pack weather"),
-        bind_group_layouts: &groups,
-        ..Default::default()
-    });
-    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(&stage.label),
-        source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
-    });
-    let options = wgpu::PipelineCompilationOptions {
-        constants: &present,
-        ..Default::default()
-    };
-    let attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Float32x4,
-        3=>Float32x4,4=>Uint32x4,5=>Unorm8x4,6=>Uint8x4,7=>Uint32];
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Native shader pack weather"),
-        layout: Some(&layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("horizon_weather_vs"),
-            compilation_options: options.clone(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Vertex>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &attributes,
-            })],
-        },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
+    let layout = super::native_pack::checked(device, || {
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Native shader pack weather"),
+            bind_group_layouts: &groups,
             ..Default::default()
-        },
-        depth_stencil: Some(depth_stencil()),
-        multisample: Default::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("horizon_weather_fs"),
-            compilation_options: options,
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendState::ALPHA_BLENDING.color,
-                    // The frame's alpha stays as the surfaces left it (entities mark it 0).
-                    alpha: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::Zero,
-                        dst_factor: wgpu::BlendFactor::One,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
-    if let Some(e) = pollster::block_on(scope.pop()) {
-        return Err(format!("{}: {e}", stage.file));
-    }
+        })
+    })?;
+    let pipeline = super::native_pack::checked(device, || {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(&stage.label),
+            source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+        });
+        let options = wgpu::PipelineCompilationOptions {
+            constants: &present,
+            ..Default::default()
+        };
+        let attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Float32x4,
+            3=>Float32x4,4=>Uint32x4,5=>Unorm8x4,6=>Uint8x4,7=>Uint32];
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Native shader pack weather"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("horizon_weather_vs"),
+                compilation_options: options.clone(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &attributes,
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(depth_stencil()),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("horizon_weather_fs"),
+                compilation_options: options,
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendState::ALPHA_BLENDING.color,
+                        // The frame's alpha stays as the surfaces left it (entities mark it 0).
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    })
+    .map_err(|e| format!("{}: {e}", stage.file))?;
     Ok(pipeline)
 }
 
