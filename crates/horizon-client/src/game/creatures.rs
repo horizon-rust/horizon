@@ -1927,19 +1927,6 @@ impl Game<'_> {
             }
         }
     }
-    /// `Mob.doHurtTarget` and the other melee callers of post-attack effects.
-    fn mob_attacks_mob(&mut self, target: u32, amount: f32, source: Damage) -> bool {
-        let hurt = self.mob_hits_mob(target, amount, source);
-        if hurt {
-            self.mob_post_attack(
-                target,
-                source.attacker,
-                None,
-                Some(damage_type(source.kind, false)),
-            );
-        }
-        hurt
-    }
     /// `LivingEntity.resolvePlayerResponsibleForDamage` after `source` hurt a
     /// mob: a tame wolf's hit is its owner's (`setLastHurtByPlayer(uuid, 100)`),
     /// so the kill drops experience and player-only loot and the owner, when
