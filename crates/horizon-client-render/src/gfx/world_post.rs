@@ -3,8 +3,7 @@
 //! anti-aliases it onto the screen, under the hand and HUD. With none on,
 //! the world renders straight to the screen. With Linear Light the world's
 //! target and "the screen" are the float scene (`tonemap`); the VR mirror
-//! still copies an eye onto the window (`finish_with`). DLSS-RR's upscaling modes give the world's
-//! size themselves (`set_render_size`) and draw their own output onto the screen.
+//! still copies an eye onto the window (`finish_with`).
 //!
 //! TAA jitters the world's projection by a sub-pixel offset each frame and blends
 //! the frame into a history reprojected through the depth buffer: its motion
@@ -173,9 +172,6 @@ pub struct Post {
     pub upscale: f32,
     /// TAA runs this frame (`jitter`): not on the title screen or under a shader pack.
     taa_on: bool,
-    /// The world's size set by an upscaler of its own (DLSS-RR's render size,
-    /// `set_render_size`): in place of the resolution scale's, shown at the window's size.
-    render_size: Option<[u32; 2]>,
     target: Option<WorldTarget>,
     taa_resources: Option<TaaResources>,
     /// Frames jittered so far (the Halton index), and which history the next resolve writes.
@@ -370,7 +366,6 @@ impl Post {
             taa: false,
             upscale: 1.0,
             taa_on: false,
-            render_size: None,
             target: None,
             taa_resources,
             taa_frame: 0,
@@ -406,20 +401,9 @@ impl Post {
         self.taa_resources.is_some()
     }
 
-    /// The world's size for this frame when an upscaler of its own takes it from here to the
-    /// window's (DLSS-RR's render size), `None` for the resolution scale's rule. Set every frame
-    /// before `scaled_size` and `prepare`; the world then always has its own target.
-    pub fn set_render_size(&mut self, size: Option<[u32; 2]>) {
-        self.render_size = size.map(|s| s.map(|v| v.clamp(1, 8192)));
-    }
-
     /// Whether the world draws straight to the screen (`prepare`'s and `scaled_size`'s rule).
     fn unscaled(&self, always: bool) -> bool {
-        self.scale == 1.0
-            && !self.antialias
-            && !self.taa_on
-            && !always
-            && self.render_size.is_none()
+        self.scale == 1.0 && !self.antialias && !self.taa_on && !always
     }
 
     /// The size of the world's own target for a `window`, or `None` when the world draws straight
@@ -438,9 +422,6 @@ impl Post {
     }
 
     fn sizes_with_upscale(&self, window: [u32; 2], upscale: f32) -> ([u32; 2], [u32; 2]) {
-        if let Some(size) = self.render_size {
-            return (size, window);
-        }
         let output = window.map(|v| ((v as f32 * self.scale).round() as u32).clamp(1, 8192));
         (
             output.map(|v| ((v as f32 / upscale).round() as u32).max(1)),
@@ -535,18 +516,6 @@ impl Post {
                 break;
             }
             drop(target);
-            if self.render_size.take().is_some() {
-                // The upscaler's caller sees the world at another size and falls back.
-                log::warn!(
-                    "Horizon renderer: no video memory for the world at {size:?} ({}); the \
-                     resolution scale's size instead",
-                    error.map_or_else(String::new, |e| e.to_string())
-                );
-                if self.unscaled(always) {
-                    return None;
-                }
-                continue;
-            }
             if self.scale <= MIN_SCALE {
                 log::warn!(
                     "Horizon renderer: no video memory for the scaled world at {size:?} ({}); drawing at the window's size",
@@ -923,32 +892,6 @@ mod tests {
             post.taa_on = true;
             assert_eq!(post.sizes(window).0, expected);
         }
-    }
-
-    #[test]
-    fn an_upscalers_render_size_replaces_the_resolution_scale() {
-        let Some((device, _)) = test_device() else {
-            return;
-        };
-        let mut post = Post::new(
-            &device,
-            wgpu::TextureFormat::Rgba16Float,
-            wgpu::TextureFormat::Rgba8Unorm,
-        );
-        let window = [2580, 1080];
-        assert_eq!(post.scaled_size(window, false), None);
-        post.set_render_size(Some([1720, 720]));
-        post.scale = 0.5;
-        assert_eq!(post.scaled_size(window, false), Some([1720, 720]));
-        assert_eq!(post.taa_render_size(window), [1720, 720]);
-        assert!(post.prepare(&device, window, false).is_some());
-        assert_eq!(post.size(), Some([1720, 720]));
-        // A frame without it: the resolution scale's rule again.
-        post.set_render_size(None);
-        post.scale = 1.0;
-        assert_eq!(post.scaled_size(window, false), None);
-        assert!(post.prepare(&device, window, false).is_none());
-        assert_eq!(post.size(), None);
     }
 
     #[test]

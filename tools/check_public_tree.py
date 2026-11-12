@@ -12,7 +12,7 @@ PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java"}
 ORIGINAL_JDK_TOOLS = {"tools/JfrSummary.java", "tests/java/JfrFixture.java"}
 # The prepared folder's files in one file (crates/horizon-core/src/prepared_files.rs): Mojang's data.
 PRIVATE_NAMES = {"horizon-data.bin"}
-# NVIDIA's DLSS SDK (docs/rt-dlss-rr.md): its headers and static libraries (nvsdk_ngx*) and its
+# NVIDIA's DLSS SDK (never in the repository; a native mod downloads it): its headers and static libraries (nvsdk_ngx*) and its
 # runtime DLLs and shared objects (nvngx_*.dll, libnvidia-ngx-*.so*) stay on the developer's machine.
 PRIVATE_PREFIXES = ("nvsdk_ngx", "nvngx", "libnvidia-ngx")
 # Vanilla's 1.13 data fixer tables, copied from its code until 2026-11; horizon-prepare now exports them from the

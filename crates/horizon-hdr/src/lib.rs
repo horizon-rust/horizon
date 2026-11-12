@@ -14,69 +14,23 @@ pub fn open_vulkan_device(
     adapter: &wgpu::Adapter,
     desc: &wgpu::DeviceDescriptor<'_>,
 ) -> Option<Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError>> {
-    open(adapter, desc, &[]).ok().flatten()
-}
-
-/// [`open_vulkan_device`] with `extra` device extensions too (DLSS Ray
-/// Reconstruction's NGX list, docs/rt-dlss-rr.md), each enabled only where the
-/// GPU offers it. With any, the device is opened here even on a GPU without
-/// `VK_EXT_hdr_metadata`; when that fails, it is opened as without them. With
-/// none, this is [`open_vulkan_device`].
-#[cfg(not(target_os = "macos"))]
-pub fn open_vulkan_device_with(
-    adapter: &wgpu::Adapter,
-    desc: &wgpu::DeviceDescriptor<'_>,
-    extra: &[&'static std::ffi::CStr],
-) -> Option<Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError>> {
-    if extra.is_empty() {
-        return open_vulkan_device(adapter, desc);
-    }
-    let failure = match open(adapter, desc, extra) {
-        Ok(Some(Ok(opened))) => return Some(Ok(opened)),
-        Ok(Some(Err(e))) => e.to_string(),
-        Ok(None) => return open_vulkan_device(adapter, desc),
-        Err(e) => e,
-    };
-    log::warn!(
-        "Horizon renderer: the Vulkan device with {} extra extension(s) failed ({failure}); \
-         opening it without them",
-        extra.len()
-    );
-    open_vulkan_device(adapter, desc)
-}
-
-/// `open_vulkan_device`'s body, with `extra` extensions; `Err` when wgpu-hal's
-/// open fails (which `open_vulkan_device` answers with `None`).
-#[cfg(not(target_os = "macos"))]
-fn open(
-    adapter: &wgpu::Adapter,
-    desc: &wgpu::DeviceDescriptor<'_>,
-    extra: &[&'static std::ffi::CStr],
-) -> Result<Option<Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError>>, String> {
     use wgpu::hal::api::Vulkan;
     let open = {
         // Safety: only read and opened from here; dropped before wgpu takes it back.
-        let Some(hal) = (unsafe { adapter.as_hal::<Vulkan>() }) else {
-            return Ok(None);
-        };
+        let hal = unsafe { adapter.as_hal::<Vulkan>() }?;
         let instance = hal.shared_instance().raw_instance();
         // Safety: the adapter's own physical device on its own instance.
-        let Ok(extensions) =
-            (unsafe { instance.enumerate_device_extension_properties(hal.raw_physical_device()) })
-        else {
-            return Ok(None);
-        };
+        let extensions =
+            unsafe { instance.enumerate_device_extension_properties(hal.raw_physical_device()) }
+                .ok()?;
         let offers = |name: &std::ffi::CStr| {
             extensions
                 .iter()
                 .any(|e| e.extension_name_as_c_str() == Ok(name))
         };
-        let hdr = offers(ash::ext::hdr_metadata::NAME);
-        if !hdr && extra.is_empty() {
-            return Ok(None);
+        if !offers(ash::ext::hdr_metadata::NAME) {
+            return None;
         }
-        let extra: Vec<&'static std::ffi::CStr> =
-            extra.iter().copied().filter(|&e| offers(e)).collect();
         // The RTX 4090 build's shader execution reordering (horizon-rtx `sun`,
         // docs/rtx-4090.md): the extension and its feature where the driver offers them and the
         // device gets ray tracing pipelines (wgpu's EXPERIMENTAL_RAY_TRACING_PIPELINES).
@@ -106,9 +60,7 @@ fn open(
                 &desc.memory_hints,
                 Some(Box::new(
                     |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs| {
-                        if hdr {
-                            args.extensions.push(ash::ext::hdr_metadata::NAME);
-                        }
+                        args.extensions.push(ash::ext::hdr_metadata::NAME);
                         if reorder {
                             args.extensions
                                 .push(ash::nv::ray_tracing_invocation_reorder::NAME);
@@ -123,19 +75,14 @@ fn open(
                             }
                             *args.create_info = args.create_info.push_next(&mut micromap_features);
                         }
-                        for name in extra {
-                            if !args.extensions.contains(&name) {
-                                args.extensions.push(name);
-                            }
-                        }
                     },
                 )),
             )
         }
-        .map_err(|e| e.to_string())?
+        .ok()?
     };
     // Safety: opened from this adapter with exactly `desc`'s features.
-    Ok(Some(unsafe { adapter.create_device_from_hal(open, desc) }))
+    Some(unsafe { adapter.create_device_from_hal(open, desc) })
 }
 
 /// wgpu's opt-in to its `EXPERIMENTAL_*` features, which the crates that forbid unsafe code

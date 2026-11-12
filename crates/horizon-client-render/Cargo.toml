@@ -81,9 +81,6 @@ audio = ["dep:cpal"]
 test-support = []
 # The RTX 4090 build (docs/rtx-4090.md): RT lighting's raw Vulkan pieces (horizon-rtx).
 rtx = ["dep:horizon-rtx"]
-# DLSS Ray Reconstruction on the RTX build (docs/rt-dlss-rr.md): NGX's extensions at device creation
-# and NGX's lifetime on the window's device, with HORIZON_RT_DLSS_RR=1. Needs DLSS_SDK_DIR to link.
-dlss-rr = ["rtx", "horizon-rtx/dlss-rr"]
 # The `scene_replay` example's allocator counts allocations (horizon-threads' `alloc-count`).
 alloc-count = ["horizon-threads/alloc-count"]
 

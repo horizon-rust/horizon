@@ -1,5 +1,5 @@
 // RT lighting's denoiser (gfx/shadow_rays.rs, docs/raytracing.md), after NRD's ReLAX (the
-// denoiser Remix runs without DLSS Ray Reconstruction): the light the rays found, the sky's, the
+// denoiser Remix runs): the light the rays found, the sky's, the
 // bounced and the light sources' direct (a few rays a pixel accumulated over up to 30 frames, still
 // grainy) smoothed over the surface a pixel shows, an edge-stopping a-trous wavelet filter
 // (Dammertz et al.): 3x3 taps spread `step` pixels apart, a pass each for steps 1, 2, 4, 8 and 16
@@ -14,7 +14,7 @@
 // anti-firefly): one lucky ray toward a bright light would otherwise bloom into a blob.
 struct Params {
     // x: the taps' spacing in pixels, y: 1 on the last pass, z: 1 to filter VR's periphery by its
-    // blocks (`span`), w: 1 for DLSS-RR's pass-through (`cs_denoise`).
+    // blocks (`span`), w: unused.
     step: vec4<i32>,
 }
 @group(0) @binding(0) var<uniform> params: Params;
@@ -231,13 +231,6 @@ fn filter_before(p: vec2<i32>, size: vec2<i32>) -> vec4<f32> {
     let size = vec2<i32>(textureDimensions(input));
     let p = vec2<i32>(id.xy);
     if any(p >= size) { return; }
-    // DLSS Ray Reconstruction's raw frames (`params.step.w` 1, gfx/shadow_rays.rs `raw_view`): one
-    // pass that adds the direct light and filters nothing, RR denoising what the terrain composes.
-    if params.step.w == 1 {
-        let c = textureLoad(input, p, 0);
-        textureStore(output, p, vec4(signal(c, p, true), finite(c.a)));
-        return;
-    }
     if rt.mode.z > 1.5 {
         let taken_at = textureLoad(taken, p, 0).r;
         if DEBUG == 12u && params.step.y == 1 {

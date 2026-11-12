@@ -674,14 +674,6 @@ impl SunPass {
     }
 
     /// Which ray generations run (the kernel's `rt.mode.w` bits).
-    /// Whether the bounce pass traces every tile every frame (flag bit 4, as the kernel's `SKIP`
-    /// 16), as the kernel does on DLSS Ray Reconstruction's raw frames (gfx/shadow_rays.wgsl
-    /// `raw_frame`): the two must agree on which texels rest. Off again, `HORIZON_RT_SKIP` 16 at
-    /// start decides as before.
-    pub fn set_never_rest(&mut self, on: bool) {
-        self.flags = (self.flags & !16) | if on || skipped(16) { 16 } else { 0 };
-    }
-
     pub fn kinds(&self) -> Kinds {
         self.kinds
     }

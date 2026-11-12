@@ -464,16 +464,6 @@ pub struct ShadowRays {
     no_sun_pass: wgpu::TextureView,
     /// The bounce pass's stand-ins (`gi_pass_a`, `gi_pass_b`, bound at 62 and 63).
     no_gi_pass: [wgpu::TextureView; 2],
-    /// DLSS-RR's guides (`rt_guides`), after the kernel with RT lighting: only with hardware rays
-    /// and `rt_guides::guides_wanted()`.
-    guides: Option<super::rt_guides::RtGuides>,
-    /// DLSS Ray Reconstruction's view (`set_raw_view`): its frames are traced raw and its
-    /// denoiser only adds the direct light, through `denoise_raw`'s pass (made on first use).
-    raw_view: Option<usize>,
-    denoise_raw: Option<wgpu::Buffer>,
-    /// The raw view's kernel bind group of this frame, kept for its guides, which wait for the
-    /// world pass's depth (`run_guides`).
-    raw_guides: Option<(usize, wgpu::BindGroup)>,
 }
 
 /// `HORIZON_RT_SKIP`'s bit for white noise everywhere (shadow_rays.wgsl `blue2`): the kernel's own
@@ -625,9 +615,6 @@ impl ShadowRays {
             );
         }
         self.skip = skip;
-        if let Some(guides) = &mut self.guides {
-            guides.set_skip(device, skip);
-        }
         self.pipeline = kernel(
             device,
             &self.pipeline_layout,
@@ -985,13 +972,7 @@ impl ShadowRays {
                 resource: cache.as_entire_binding(),
             }],
         });
-        let guides = (hardware && super::rt_guides::guides_wanted())
-            .then(|| super::rt_guides::RtGuides::new(device, &layout, split, skip));
         Self {
-            guides,
-            raw_view: None,
-            raw_guides: None,
-            denoise_raw: None,
             cache,
             resolve,
             resolve_group,
@@ -1080,41 +1061,6 @@ impl ShadowRays {
         }
     }
 
-    /// DLSS-RR's guides of view `view` (0 the window, then the VR views), once written: none
-    /// unless `rt_guides::guides_wanted()` with hardware rays and RT lighting.
-    // Read by DLSS-RR's evaluation (gfx/dlss_eval.rs, docs/rt-dlss-rr.md stage 5).
-    #[cfg_attr(not(feature = "dlss-rr"), allow(dead_code))]
-    pub fn guides(&self, view: usize) -> Option<&super::rt_guides::Guides> {
-        self.guides.as_ref()?.guides(view)
-    }
-
-    /// Draws `HORIZON_RT_GUIDES_SHOW`'s picture of view `view`'s guides over `target`.
-    pub fn draw_guides_shown(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        view: usize,
-        target: &wgpu::Texture,
-    ) {
-        if let Some(guides) = &mut self.guides {
-            guides.draw_shown(device, encoder, view, target);
-        }
-    }
-
-    /// Whether DLSS Ray Reconstruction's view is traced raw (`HORIZON_DLSS_RR_RAW=1`): every texel's
-    /// bounce traced every frame and nothing accumulated, as NVIDIA's guide asks. Measured on an
-    /// RTX 4090 at 1720x720: 28.6 ms a frame against 10.4 without RR, the bounce no longer resting in
-    /// turns being most of the kernel's cost. Without it (the default) the kernel accumulates and
-    /// rests as for every other view, and RR takes the à-trous denoiser's and the TAA's place only.
-    #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
-    pub fn rr_raw() -> bool {
-        rr_raw()
-    }
-
-    /// The view DLSS Ray Reconstruction denoises this frame (none: every view as before): its
-    /// kernel writes this frame's sample alone, without the accumulation or the bounced light's
-    /// turns (shadow_rays.wgsl `raw_frame`, `rt.mode.w`'s bit 8), and its denoiser filters nothing
-    /// (denoise.wgsl, `params.step.w` 1).
     /// Whether `HORIZON_RT_SKIP` (as `set_skip` last made the kernel) keeps closed rooms as before
     /// (shadow_rays.wgsl `SKIP_INTERIOR`), for the exposure's top indoors too (gfx.rs).
     pub fn interior_skipped(&self) -> bool {
@@ -1125,40 +1071,6 @@ impl ShadowRays {
     /// top by day too (gfx.rs).
     pub fn gi_skipped(&self) -> bool {
         self.skip & SKIP_GI != 0
-    }
-
-    #[cfg_attr(not(feature = "dlss-rr"), allow(dead_code))]
-    pub fn set_raw_view(&mut self, view: Option<usize>) {
-        self.raw_view = view;
-    }
-
-    /// Writes the raw view's guides (`set_raw_view`) from the world pass's own `depth`, whose image
-    /// moved by `jitter` pixels (right and down) as the colour's did, with `objects` the entities'
-    /// own motion over it, and the kernel's bind group of this frame. False when the kernel did
-    /// not run for that view this frame (nothing written).
-    #[cfg_attr(not(feature = "dlss-rr"), allow(dead_code))]
-    #[allow(clippy::too_many_arguments)]
-    pub fn run_guides(
-        &mut self,
-        device: &wgpu::Device,
-        uploads: &mut Uploads,
-        encoder: &mut wgpu::CommandEncoder,
-        view: usize,
-        depth: &wgpu::TextureView,
-        jitter: [f32; 2],
-        objects: Option<&wgpu::TextureView>,
-    ) -> bool {
-        let (Some((kept, group)), Some(guides)) = (self.raw_guides.take(), &mut self.guides) else {
-            return false;
-        };
-        if kept != view {
-            return false;
-        }
-        let size = [depth.texture().width(), depth.texture().height()];
-        guides.run(
-            device, uploads, encoder, view, &group, depth, size, jitter, objects,
-        );
-        true
     }
 
     /// The mask view `view` (0 the window, then the VR views) traced last.
@@ -1301,11 +1213,6 @@ impl ShadowRays {
         // and the mask's size, giving the textures the kernel reads in place of its own rays.
         sun_pass: Option<(u32, &mut PipelinePass<'_>)>,
     ) -> [wgpu::TextureView; 5] {
-        let view_index = view;
-        let raw = rays.lighting && self.raw_view == Some(view);
-        if self.raw_guides.as_ref().is_some_and(|(v, _)| *v == view) {
-            self.raw_guides = None;
-        }
         let scale = foveation.scale;
         let mask_size = size.map(|v| v.div_ceil(scale));
         // VR's second eye right after the first, at its size, with the first eye's depth: the first
@@ -1392,8 +1299,7 @@ impl ShadowRays {
                     (None, _) => 0.0,
                 },
                 (sun_pass.as_ref().map_or(0, |(bits, _)| *bits)
-                    | if self.skip & WHITE_NOISE != 0 { 4 } else { 0 }
-                    | if raw && rr_raw() { 8 } else { 0 }) as f32,
+                    | if self.skip & WHITE_NOISE != 0 { 4 } else { 0 }) as f32,
             ],
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
             motion: match last {
@@ -1610,19 +1516,6 @@ impl ShadowRays {
         drop(pass);
         // One kernel traces the sun, the direct lights, the bounces and the mirrors at once.
         super::gpu_passes::stamp(encoder, "rays: trace (sun, DI, GI, PSR)");
-        // DLSS-RR's guides at the depth's size, with the kernel's group as it was bound for this
-        // view (`rt_guides`); RR's own view keeps the group for its guides on the world's depth.
-        if rays.lighting
-            && let Some(guides) = &mut self.guides
-        {
-            if raw {
-                self.raw_guides = Some((view_index, group.clone()));
-            } else {
-                guides.run(
-                    device, uploads, encoder, view_index, &group, depth, size, [0.0; 2], None,
-                );
-            }
-        }
         if !rays.lighting {
             return [mask, blocks, sun, reflection, refraction];
         }
@@ -1646,27 +1539,7 @@ impl ShadowRays {
             (&light, &scratch),
             (&scratch, &light),
         ];
-        // DLSS-RR's raw frames: one pass from `blocks` to `light`, the direct light added.
-        // Only the raw frames (`rr_raw`), unless `HORIZON_DLSS_RR_DENOISE=0`: the accumulated
-        // frames RR takes by default are denoised first, as every other view's. RR left their
-        // half-averaged light as grain and marbling in low light (a room lit by one torch) and
-        // dragged it into trails.
-        let raw = raw && (rr_raw() || !rr_denoise());
-        if raw && self.denoise_raw.is_none() {
-            use wgpu::util::DeviceExt;
-            self.denoise_raw = Some(
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("RT lighting's denoiser, DLSS-RR's pass-through"),
-                    contents: bytemuck::cast_slice(&[1i32, 1, 0, 1]),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                }),
-            );
-        }
-        let raw_pass = self.denoise_raw.as_ref().filter(|_| raw);
-        let params = raw_pass
-            .into_iter()
-            .chain(self.denoise_params.iter().filter(|_| raw_pass.is_none()));
-        for ((from, to), params) in passes.into_iter().zip(params) {
+        for ((from, to), params) in passes.into_iter().zip(&self.denoise_params) {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("RT lighting's denoiser"),
                 layout: &self.denoise_layout,
@@ -1746,17 +1619,6 @@ fn edge_band() -> f64 {
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| (0.05..=0.9).contains(v))
         .unwrap_or(0.25)
-}
-/// Whether the view DLSS Ray Reconstruction takes keeps RT lighting's denoiser before it
-/// (`HORIZON_DLSS_RR_DENOISE=0`: RR alone, the pass-through).
-fn rr_denoise() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| !std::env::var("HORIZON_DLSS_RR_DENOISE").is_ok_and(|v| v == "0"))
-}
-/// `ShadowRays::rr_raw`.
-fn rr_raw() -> bool {
-    static RAW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *RAW.get_or_init(|| std::env::var("HORIZON_DLSS_RR_RAW").as_deref() == Ok("1"))
 }
 
 #[cfg(test)]

@@ -203,17 +203,6 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
             super::shadow_rays::source(true, 1),
         ),
         (
-            "DLSS-RR guides after the hardware rays",
-            vec![
-                "shadow_rays.wgsl",
-                "shadow_rays_hw.wgsl",
-                "shadow_rays_psr.wgsl",
-                "shadow_rays_moving.wgsl",
-                "rt_guides.wgsl",
-            ],
-            super::rt_guides::source(1),
-        ),
-        (
             "translucent terrain one-pass blend",
             vec!["terrain.wgsl", "terrain_dual.wgsl"],
             super::dual_source_terrain(),

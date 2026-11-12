@@ -70,12 +70,7 @@ fn halton(mut index: u32, base: u32) -> f32 {
 /// The jitter of frame `frame`, in pixels within [-0.5, 0.5): how far the image moves right and
 /// down. Halton's index starts at 1 (its first number, 0, is no jitter at all).
 pub fn jitter(frame: u32) -> [f32; 2] {
-    jitter_of(frame, PHASES)
-}
-
-/// `jitter` over `phases` positions before the sequence repeats.
-pub fn jitter_of(frame: u32, phases: u32) -> [f32; 2] {
-    let index = frame % phases.max(1) + 1;
+    let index = frame % PHASES + 1;
     [halton(index, 2) - 0.5, halton(index, 3) - 0.5]
 }
 

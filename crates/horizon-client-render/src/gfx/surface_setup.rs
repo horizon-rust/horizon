@@ -1,8 +1,6 @@
 //! Setting the window surface up on an adapter during the device search (`open_backend`):
 //! an adapter that can't present to the window gives way to another of its backend
 //! (#13493).
-#[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
-use super::dlss_rr_paths;
 use super::{
     Renderer, check_layers, describe_adapter, device_features, hw_rt_features, is_software,
     startup_step, surface_format,
@@ -182,21 +180,7 @@ pub(super) async fn open_adapter(
         },
         ..Default::default()
     };
-    // DLSS Ray Reconstruction (docs/rt-dlss-rr.md): NGX's device extensions too, when wanted and
-    // the GPU has the feature; none otherwise, which opens the device as without the feature.
-    #[cfg(all(feature = "dlss-rr", not(target_os = "macos")))]
-    let opened = match info.backend {
-        wgpu::Backend::Vulkan => {
-            let extra = if horizon_rtx::dlss_rr::wanted() {
-                horizon_rtx::dlss_rr::device_extensions(adapter, &dlss_rr_paths())
-            } else {
-                Vec::new()
-            };
-            horizon_hdr::open_vulkan_device_with(adapter, &desc, &extra)
-        }
-        _ => None,
-    };
-    #[cfg(all(not(target_os = "macos"), not(feature = "dlss-rr")))]
+    #[cfg(not(target_os = "macos"))]
     let opened = match info.backend {
         wgpu::Backend::Vulkan => horizon_hdr::open_vulkan_device(adapter, &desc),
         _ => None,

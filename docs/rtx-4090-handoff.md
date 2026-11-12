@@ -211,8 +211,7 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
    the raw TLAS already allows (any device address works as an instance). Worth up to the forest's 1 to 2 ms.
 4. **CPU**: after the light cells, what the next flight shows (`rt_moving` goes with the raw TLAS; `update_world`'s
    remainder; `far heights` 0.4 ms needs a list of changed tiles from the LOD, see `gfx/far_heights.rs` `set_far`).
-5. **NGX (DLSS Ray Reconstruction)**: the user's decision on NVIDIA's binaries and licence; then rays at about 60 %
-   of the eye's size and the denoiser replaced. The largest remaining GPU lever.
+5. **NGX (DLSS Ray Reconstruction)**: left for an optional native mod; NVIDIA's SDK may not be in the repository.
 6. Later: a neural radiance cache on `VK_NV_cooperative_vector`; CLAS/PTLAS only if a measurement ever shows the
    builds mattering (they do not today).
 

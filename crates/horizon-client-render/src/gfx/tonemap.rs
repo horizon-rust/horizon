@@ -663,12 +663,6 @@ fn vignette_group(
 }
 
 impl Tonemap {
-    /// The exposure meter's state (x: the multiplier the grading applies), once RT lighting has
-    /// drawn: what DLSS Ray Reconstruction is told the scene is exposed to (dlss_eval.rs).
-    #[cfg_attr(not(feature = "dlss-rr"), allow(dead_code))]
-    pub fn exposure_state(&self) -> Option<&wgpu::Buffer> {
-        self.grading.as_ref().map(|g| g.meter.state())
-    }
     /// Tone mapping onto targets of `screen`'s format.
     pub fn new(device: &wgpu::Device, screen: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

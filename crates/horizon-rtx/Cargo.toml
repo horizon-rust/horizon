@@ -15,10 +15,5 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulka
 # The version wgpu-hal already uses.
 ash = { version = "0.38", default-features = false }
 
-[features]
-# DLSS Ray Reconstruction through NVIDIA's NGX (docs/rt-dlss-rr.md): links the DLSS SDK's static
-# library from DLSS_SDK_DIR (build.rs). Off by default; nothing changes without it.
-dlss-rr = []
-
 [lints]
 workspace = true
