@@ -1,4 +1,3 @@
-use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
 use horizon_client::{chunk::Chunk, motion::PlayerMotion};
 use horizon_core::{
     geometry::Vec3,
@@ -11,35 +10,10 @@ use std::sync::Arc;
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn anvil_wear_leaves_the_level_random_stream_untouched() {
-    let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
-    let settings = Settings::default();
-    let loaded = load_resources(
-        root.clone(),
-        None,
-        &root,
-        &settings,
-        std::time::Instant::now(),
-        false,
-        true,
-        &Progress::new(),
-        &mut |_, _| unreachable!(),
-    )
-    .unwrap();
-    let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-    options.resources = root.clone();
-    options.headless = true;
-    options.game_dir = Some(std::env::current_dir().unwrap());
-    options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-    let mut game = Game::new(
-        &loaded.resources,
-        loaded.pack,
-        loaded.gui.unwrap(),
-        options,
-        settings,
-        Audio::silent(&root),
-        None,
-    )
-    .unwrap();
+    let mut game = crate::game::native_machines::tests::server_game();
+    game.options.dedicated = None;
+    game.options.headless = true;
+    game.options.game_dir = Some(std::env::current_dir().unwrap());
     game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
     let oracle =
         std::fs::read_to_string(std::env::var_os("HORIZON_ANVIL_RNG_ORACLE").unwrap()).unwrap();

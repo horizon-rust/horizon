@@ -1,5 +1,4 @@
 use super::*;
-use crate::game::{Audio, Options, Progress, Settings, load_resources};
 use horizon_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
@@ -15,35 +14,10 @@ use std::sync::{Arc, atomic::AtomicI32, mpsc};
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn anvil_wear_draws_only_from_the_acting_player() {
-    let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
-    let settings = Settings::default();
-    let loaded = load_resources(
-        root.clone(),
-        None,
-        &root,
-        &settings,
-        std::time::Instant::now(),
-        false,
-        true,
-        &Progress::new(),
-        &mut |_, _| unreachable!(),
-    )
-    .unwrap();
-    let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-    options.resources = root.clone();
-    options.headless = true;
-    options.game_dir = Some(std::env::current_dir().unwrap());
-    options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-    let mut game = Game::new(
-        &loaded.resources,
-        loaded.pack,
-        loaded.gui.unwrap(),
-        options,
-        settings,
-        Audio::silent(&root),
-        None,
-    )
-    .unwrap();
+    let mut game = crate::game::native_machines::tests::server_game();
+    game.options.dedicated = None;
+    game.options.headless = true;
+    game.options.game_dir = Some(std::env::current_dir().unwrap());
     game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
     // No listener, announcements, sockets, or server loop: only the guest swap.
     game.lan_host(
