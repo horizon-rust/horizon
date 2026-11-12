@@ -30,6 +30,8 @@ use super::pack_uniforms::{self, FrameUniforms, PackInputs};
 
 mod packed;
 
+mod flip_carry;
+
 #[cfg(test)]
 mod history_reset_tests;
 
@@ -2896,12 +2898,7 @@ impl PackPost {
         let lines = post.lines.and_then(|p| build(p, Some(&line_geometry)));
         // Developers' aid: `HORIZON_SHADER_PACK_SKIP=composite,final` leaves programs out.
         let skip = std::env::var("HORIZON_SHADER_PACK_SKIP").unwrap_or_default();
-        let passes: Vec<Pass> = post
-            .programs
-            .into_iter()
-            .filter(|p| !skip.split(',').any(|s| s == p.name))
-            .filter_map(|p| build(p, None))
-            .collect();
+        let passes = flip_carry::build_passes(post.programs, &skip, |p| build(p, None));
         // The screen gets colortex0 through `final`, or else through Horizon's copy, which reads
         // floats: an integer colortex0 (`RGBA32UI`...) with no `final` left to draw can't reach
         // it (#9165).

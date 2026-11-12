@@ -780,6 +780,11 @@ pub fn load_post(
         notes: Vec::new(),
     };
     let options = crate::with_options(pack, macros);
+    // `image.<name>` values may be written with the macros `shaders.properties` defines above
+    // them (a pack writes `SKYBOX_RESOLUTION_X` and defines it inside an `#if` block). The file's
+    // final macros win over the pack's options, as a `#define` after them would; the options are
+    // still there for callers that read the file without them (1.5).
+    let image_macros = options.overlay(&properties.macros);
     for e in &properties.entries {
         if let Some(n) = e.key.strip_prefix("bufferObject.") {
             match (n.parse(), BufferObject::parse(&e.value)) {
@@ -792,7 +797,7 @@ pub fn load_post(
             continue;
         }
         if let Some(name) = e.key.strip_prefix("image.") {
-            match CustomImage::parse(name, &options.expand(&e.value)) {
+            match CustomImage::parse(name, &image_macros.expand(&e.value)) {
                 Some(i) => post.images.push(i),
                 None => post.notes.push(format!("`{}`: not an image", e.key)),
             }
@@ -2039,6 +2044,39 @@ mod tests {
             assert_eq!(post.images.len(), 1);
             assert_eq!(post.images[0].size, ImageSize::Absolute(expected));
         }
+    }
+
+    #[test]
+    fn image_dimensions_expand_macros_the_properties_file_defines() {
+        let pack = Pack::from_zip_bytes(
+            "image.zip",
+            crate::pack::tests::zip(&[
+                (
+                    "shaders/options.glsl",
+                    "#define SKYBOX_RESOLUTION 128 // [128 256]\n",
+                ),
+                (
+                    "shaders/shaders.properties",
+                    "#if SKYBOX_RESOLUTION == 128\n\
+                     #define SKYBOX_RESOLUTION_X 384\n\
+                     #define SKYBOX_RESOLUTION_Y 256\n\
+                     #endif\n\
+                     image.skyBox2D = none RGBA RGBA8 BYTE false false \
+                     SKYBOX_RESOLUTION_X SKYBOX_RESOLUTION_Y",
+                ),
+                ("shaders/placeholder.glsl", ""),
+            ]),
+        )
+        .unwrap();
+        let mut macros = Macros::standard();
+        // The pack reads its properties with its options, and writes the size as macros it
+        // defines further up in the same file, inside an `#if` (IterationRP's
+        // `SKYBOX_RESOLUTION_X/Y`).
+        let (properties, _) = crate::read_properties(&pack, &mut macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.notes.is_empty(), "{:?}", post.notes);
+        assert_eq!(post.images.len(), 1);
+        assert_eq!(post.images[0].size, ImageSize::Absolute([384, 256]));
     }
 
     #[test]

@@ -30,6 +30,11 @@ pub struct Properties {
     /// In file order; a key appears once (a later duplicate replaces the earlier one).
     pub entries: Vec<Entry>,
     pub notes: Vec<Note>,
+    /// The macros at the end of the file: the set it was read with, changed by every
+    /// `#define`/`#undef` on a line that was reached. A pack writes sizes as macros here
+    /// (`image.<name>` uses `SKYBOX_RESOLUTION_X`), so readers that expand those values need
+    /// this set, not the one the file was read with (1.5).
+    pub macros: Macros,
 }
 
 impl Properties {
@@ -93,6 +98,7 @@ impl Properties {
         if conditionals.open() {
             out.note(text.lines().count() as u32, "`#if` without `#endif`");
         }
+        out.macros = macros;
         out
     }
 
