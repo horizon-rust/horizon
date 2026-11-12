@@ -21,12 +21,19 @@ impl Game<'_> {
         let mut killed = false;
         let mut hurt = false;
         let mut infested = Vec::new();
+        let catch_up = self.catch_up_countdowns(source.attacker, target);
         let aim = self.attacker_aim(source.attacker);
         // So `living_knockback_v2` sees who hit and what they hold.
         let _attacker = self.knockback_scope_for(source.attacker);
         if let Some(t) = self.mobs.iter_mut().find(|m| m.id == target) {
+            let previous_invulnerable = t.invulnerable;
             let hit = t.damage_aimed(amount, source, aim);
             hurt = hit;
+            if hit && catch_up && t.invulnerable > previous_invulnerable {
+                // `LivingEntity.baseTick`'s countdowns, run after the hit in vanilla.
+                t.hurt_time = (t.hurt_time - 1).max(0);
+                t.invulnerable = (t.invulnerable - 1).max(0);
+            }
             if hit {
                 killed = !t.alive();
                 // The hurt or death sound the mob raised.
