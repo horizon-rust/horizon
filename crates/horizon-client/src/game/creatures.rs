@@ -2042,17 +2042,20 @@ impl Game<'_> {
                     ..EntityLootParams::default()
                 };
                 let seed = self.level.seed;
-                match loot.random_sequence(table) {
+                // LootContext.Builder.create: the table's random sequence, or
+                // the level's random when it names none.
+                let rolled = match loot.random_sequence(table) {
                     Some(id) => {
                         let random = self.rand_sequences.get(id, seed);
                         loot.roll_entity(table, random, &params)
-                            .iter()
-                            .filter(|s| !s.is_empty())
-                            .map(from_loot)
-                            .collect()
                     }
-                    None => Vec::new(),
-                }
+                    None => loot.roll_entity(table, &mut self.world.random, &params),
+                };
+                rolled
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .map(from_loot)
+                    .collect()
             }
             _ => self
                 .res

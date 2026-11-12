@@ -826,6 +826,81 @@ mod tests {
         }
     }
 
+    /// `RandomLookAround` starts only while `LOOK_TARGET` is absent: a
+    /// tempting player (`Tempt`, `LookAtPlayer`: a higher `LOOK` goal) keeps
+    /// the head on them, held look or not, while `GAZE_COOLDOWN_TICKS` still
+    /// runs out, so the next look comes as soon as they are gone.
+    #[test]
+    fn the_look_around_gives_way_to_a_higher_look() {
+        use crate::mobs::goals::{BrainLookAround, GoalSelector, LOOK};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const PLAYER: [f64; 3] = [9.0, 66.0, 9.0];
+        /// A tempting player: `LOOK` at priority 3, while `on`.
+        #[derive(Clone, Debug)]
+        struct Tempting(Arc<AtomicBool>);
+        impl Goal for Tempting {
+            goal_clone!();
+            fn flags(&self) -> u8 {
+                LOOK
+            }
+            fn can_use(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
+                self.0.load(Ordering::Relaxed)
+            }
+            fn every_tick(&self) -> bool {
+                true
+            }
+            fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
+                m.look_at(PLAYER);
+            }
+        }
+        let on = Arc::new(AtomicBool::new(false));
+        let mut goals = GoalSelector::default();
+        goals.add(3, Tempting(on.clone()));
+        goals.add(7, BrainLookAround::new((150, 250), 30.0, 0.0, 0.0));
+        let mut m = camel();
+        let start = m.ai.look.wanted;
+        // (tick, wanted) after each tick.
+        let mut seen: Vec<(u32, [f64; 3])> = Vec::new();
+        let ran = with_test_world(&[], |w, _| {
+            let mut lr = horizon_core::random::LegacyRandom::new(7);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            for tick in 1..=400u32 {
+                // The player turns up after the first look, and leaves once
+                // its cooldown (at most 251 ticks) is long over.
+                on.store((20..300).contains(&tick), Ordering::Relaxed);
+                m.age = tick;
+                if (i64::from(m.age) + i64::from(m.id)) % 2 != 0 && m.age > 1 {
+                    goals.tick_running(&mut m, &mut cx, false);
+                } else {
+                    goals.tick(&mut m, &mut cx);
+                }
+                seen.push((tick, m.ai.look.wanted));
+            }
+        });
+        if !ran {
+            return;
+        }
+        let first = seen.iter().find(|(_, w)| *w != start).expect("a first look");
+        assert!(first.0 < 20, "the first look comes at once: {first:?}");
+        for (tick, wanted) in &seen[21..299] {
+            assert_eq!(*wanted, PLAYER, "tick {tick}: the head stays on the player");
+        }
+        let next = seen[299..]
+            .iter()
+            .find(|(_, w)| *w != PLAYER)
+            .expect("a look after the player leaves");
+        assert!(
+            next.0 <= 301,
+            "the cooldown ran out meanwhile: the next look at once, not at {}",
+            next.0
+        );
+    }
+
     #[test]
     fn last_pose_tick_is_a_time_not_a_sign() {
         let mut m = camel();

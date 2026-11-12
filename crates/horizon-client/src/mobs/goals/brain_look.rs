@@ -4,8 +4,14 @@ use super::*;
 /// `RandomLookAround`, the brain behaviour `CamelAi` and `ArmadilloAi` use,
 /// which is not the goal of that name: every `interval` ticks it looks at
 /// most `max_yaw` degrees off the body's yaw, at a pitch in the range, and
-/// `LookAtTargetSink` keeps the head turning there for 45 to 90 ticks. It
-/// runs all the time, holding both clocks itself.
+/// `LookAtTargetSink` keeps the head turning there for 45 to 90 ticks.
+///
+/// It holds `LOOK`: vanilla's behaviour starts only while `LOOK_TARGET` is
+/// absent, and a temptation or a player to look at sets that memory, so a
+/// higher `LOOK` goal (`Tempt`, `LookAtPlayer`) keeps it from starting and
+/// stops the held look. `CountDownCooldownTicks` runs in the core activity
+/// whatever looks, so the cooldown is the mob age it ends at and keeps
+/// running while the goal is stopped.
 #[derive(Clone, Debug)]
 pub struct BrainLookAround {
     /// `UniformInt`'s bounds, in ticks.
@@ -13,8 +19,9 @@ pub struct BrainLookAround {
     max_yaw: f32,
     min_pitch: f32,
     pitch_range: f32,
-    /// `GAZE_COOLDOWN_TICKS` left; the next look waits for it to run out.
-    cooldown: i32,
+    /// The mob age from which `GAZE_COOLDOWN_TICKS` is gone and the next
+    /// look can start.
+    ready_at: u32,
     /// `LookAtTargetSink`'s remaining duration.
     hold: i32,
     /// `LOOK_TARGET`: the point the head turns to.
@@ -28,7 +35,7 @@ impl BrainLookAround {
             max_yaw,
             min_pitch,
             pitch_range: max_pitch - min_pitch,
-            cooldown: 0,
+            ready_at: 0,
             hold: 0,
             target: [0.0; 3],
         }
@@ -37,13 +44,18 @@ impl BrainLookAround {
 impl Goal for BrainLookAround {
     goal_clone!();
     fn flags(&self) -> u8 {
-        0
+        LOOK
     }
     fn can_use(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         true
     }
     fn can_continue(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         true
+    }
+    fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
+        // The tempting player or the looked-at player took `LOOK_TARGET`'s
+        // place: the random point is no longer looked at.
+        self.hold = 0;
     }
     fn every_tick(&self) -> bool {
         true
@@ -58,9 +70,8 @@ impl Goal for BrainLookAround {
             }
         }
         // CountDownCooldownTicks: the memory is erased at 0, and the look can
-        // start again the same tick.
-        if self.cooldown > 0 {
-            self.cooldown -= 1;
+        // start the tick after.
+        if m.age < self.ready_at {
             return;
         }
         // Behavior.tryStart draws the behaviour's duration (60, 60) from the
@@ -77,10 +88,11 @@ impl Goal for BrainLookAround {
             m.position.z + dir.z,
         ];
         m.look_at(self.target);
-        self.cooldown = self.interval.0
+        let cooldown = self.interval.0
             + m.random
                 .next_int_bound(self.interval.1 - self.interval.0 + 1)
                 .unwrap_or(0);
+        self.ready_at = m.age.saturating_add(cooldown as u32 + 1);
         // LookAtTargetSink(45, 90)'s own duration, drawn when it starts.
         self.hold = 45 + cx.lr.next_int_bound(46).unwrap_or(0);
     }
