@@ -40,10 +40,13 @@ def gateway_entity_motion(cmd, setup):
     x = 2
     for kind, data in GATEWAY_KINDS:
         for motion in ('[0.125d,0.25d,-0.125d]', '[0.0d,0.0d,0.0d]'):
+            # The gateway goes up round an entity that has had its first tick, as one
+            # that flies or falls into it has (a summoned one's first tick comes late).
             ops += setup('/kill @e[type=!player]',
-                f'setblock {x} 200 2 end_gateway{{Age:200L,exit_portal:[I;8,210,8],ExactTeleport:1b}}',
                 f'summon {kind} {x + 0.5} 200.2 2.5 '
                 f'{{NoGravity:1b,Tags:["gateway_entity"],{data},Motion:{motion}}}')
+            ops.append({'op': 'tick', 'n': 1})
+            ops += setup(f'setblock {x} 200 2 end_gateway{{Age:200L,exit_portal:[I;8,210,8],ExactTeleport:1b}}')
             # An arrow, a snowball or a falling block goes through in the tick it enters
             # (block effects before handlePortal); TNT and an orb on the next.
             ops.append({'op': 'tick', 'n': 1})
