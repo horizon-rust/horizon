@@ -990,7 +990,11 @@
 //! Bodies have no `cfg` and no macros: horizon-mixins refuses a target with
 //! either (`tests::hook_points_stay_hookable`).
 use super::native_data_maps::NativeDataMapType;
+use super::native_guards::{box_meets, finite, finite_params, mod_image_fits};
 use super::native_item_energy::ItemEnergyBuffer;
+use super::native_level_effects::{mod_particles_ok, mod_sound_ok, sound_id};
+use super::native_menus::viewer_changes;
+use super::native_world_edit::{property_change, with_property};
 use super::{
     Game, GameLevel, LevelDimension, Screen,
     execution_role::ExecutionRole,
@@ -1005,14 +1009,14 @@ use super::{
 use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
-use horizon_client::mod_api::WorldHold;
+pub(crate) use horizon_client::mod_api::NativeLootOdds;
 use horizon_client::mod_api::{
-    self, BlockProperties, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed,
-    NativeFishingMedium, NativeFluidAction, NativeFluidDrain, NativeFluidStack,
-    NativeFluidTankView, NativeLifecycleContext, NativeNoteBlockChange, NativeServerPlayer,
-    RecipeBookCategory, ServerTickPhase, TickSpan, WorldPhase,
+    self, AttachmentResult, Attachments, BlockProperties, Holder, HudMode, LayerDefinition,
+    NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeFishingMedium,
+    NativeFluidAction, NativeFluidDrain, NativeFluidStack, NativeFluidTankView,
+    NativeLifecycleContext, NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory,
+    ServerTickPhase, Suggestion, TickSpan, WorldHold, WorldPhase,
 };
-use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
     ClientboundPlayPacket, NativeBlockRim, NativeColoredLight, NativeLootDrops, NativeMinimap,
     NativeMod, NativePanelEvent, NativeScreen, NativeScreenView, NativeStack, NativeZoom,
@@ -1057,7 +1061,7 @@ use horizon_world::{
     fluid::{FluidKind, FluidState},
     level::{BlockId, LevelAccess, PlacementContext, Ticks},
     nbt::Compound,
-    registry::{BlockRegistry, BlockStateId},
+    registry::BlockStateId,
 };
 use std::{
     collections::HashMap,
@@ -1068,105 +1072,9 @@ use std::{
 };
 use winit::{event::MouseButton, keyboard::KeyCode};
 
-pub(super) struct ObservedScreen {
-    id: &'static str,
-    menu: Option<String>,
-    title: Option<Text>,
-    rect: [f32; 4],
-    slots: usize,
-    mouse: [f32; 2],
-    partial_tick: f32,
-}
-
-impl ObservedScreen {
-    fn view(&self) -> NativeScreenView<'_> {
-        NativeScreenView {
-            id: self.id,
-            menu: self.menu.as_deref(),
-            title: self.title.as_ref(),
-            rect: self.rect,
-            slots: self.slots,
-            mouse: self.mouse,
-            partial_tick: self.partial_tick,
-        }
-    }
-}
-
-fn observed_overlay_id(overlays: &[(bool, &'static str)]) -> Option<&'static str> {
-    overlays.iter().find_map(|(open, id)| open.then_some(*id))
-}
-
-impl Game<'_> {
-    fn observed_screen_view(&self) -> Option<NativeScreenView<'_>> {
-        let book = match &self.book {
-            Some(super::books::BookScreen::Edit { signing: true, .. }) => Some("book_sign"),
-            Some(super::books::BookScreen::Edit { .. }) => Some("book_edit"),
-            Some(super::books::BookScreen::View {
-                lectern: Some(_), ..
-            }) => Some("lectern"),
-            Some(super::books::BookScreen::View { .. }) => Some("book_view"),
-            None => None,
-        };
-        let overlay = observed_overlay_id(&[
-            (self.command_prompt.is_some(), "command_prompt"),
-            (self.link_prompt.is_some(), "link_prompt"),
-            (self.code_of_conduct.is_some(), "code_of_conduct"),
-            (self.server_packs.prompt.is_some(), "server_pack_prompt"),
-            (self.dialog_open(), "dialog"),
-            (book.is_some(), book.unwrap_or("book_view")),
-            (self.sign_edit.is_some(), "sign_editor"),
-        ]);
-        let Some(id) = overlay else {
-            return self.screen_view_now();
-        };
-        let renderer = self.renderer.as_ref()?;
-        let batch = HudBatch::new([renderer.config.width, renderer.config.height]);
-        Some(NativeScreenView {
-            id,
-            menu: None,
-            title: None,
-            rect: [0.0, 0.0, batch.width, batch.height],
-            slots: 0,
-            mouse: self.native_cursor(),
-            partial_tick: self.clock.fraction() as f32,
-        })
-    }
-
-    pub(super) fn observe_screen(&mut self) {
-        // Free with no native mod: the snapshot clones the title and menu.
-        if mod_api::mods().is_empty() {
-            return;
-        }
-        let current = self.observed_screen_view().map(|view| ObservedScreen {
-            id: view.id,
-            menu: view.menu.map(str::to_owned),
-            title: view.title.cloned(),
-            rect: view.rect,
-            slots: view.slots,
-            mouse: view.mouse,
-            partial_tick: view.partial_tick,
-        });
-        let changed = match (&self.observed_screen, &current) {
-            (Some(old), Some(new)) => old.id != new.id || old.menu != new.menu,
-            (None, None) => false,
-            _ => true,
-        };
-        if changed {
-            if let Some(old) = &self.observed_screen {
-                self.native_screen_closing(&old.view());
-            }
-            if let Some(new) = &current {
-                self.native_screen_opening(&new.view());
-                self.native_screen_init_post(&new.view());
-            }
-        } else if let (Some(old), Some(new)) = (&self.observed_screen, &current)
-            && old.rect != new.rect
-        {
-            self.native_screen_init_post(&new.view());
-        }
-        self.observed_screen = current;
-    }
-}
+#[path = "native_screen_observer.rs"]
+mod screen_observer;
+pub(super) use screen_observer::ObservedScreen;
 
 /// `Level.setBlock`'s flags, for the `native_set_block_property` helpers:
 /// `flags::UPDATE_CLIENTS` as a vanilla crop grows, `flags::UPDATE_ALL` as a
@@ -1504,6 +1412,34 @@ impl GameLevel<'_> {
         cancel: &mut bool,
     ) {
         mod_api::dispatch_bell_ring(self, mod_api::mods(), dimension, player, pos, cancel);
+    }
+
+    /// On an authoritative server, `player` stands in a pressure plate or tripwire
+    /// `block` (`minecraft:stone_pressure_plate`...) at `pos` and would set it off
+    /// (Bukkit's `PlayerInteractEvent` with `Action.PHYSICAL`). Asked each time
+    /// the block counts what is inside it, before the effect, for every player in
+    /// it, so a plate a player keeps standing on asks each check. Set `cancel` and
+    /// that player does not count: a plate stays unpowered and a wire untripped for
+    /// them, while others still set it off. Farmland and turtle eggs landed on are
+    /// `native_trample` and `native_entity_change_block_v2`. @API:player_physical_trigger@.
+    #[inline(always)]
+    pub(super) fn native_player_physical_trigger(
+        &self,
+        dimension: LevelDimension,
+        player: u128,
+        pos: BlockPos,
+        block: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_player_physical_trigger(
+            self,
+            mod_api::mods(),
+            dimension,
+            player,
+            pos,
+            block,
+            cancel,
+        );
     }
 
     /// On an authoritative server, a cauldron at `pos` is about to change
@@ -1928,102 +1864,11 @@ impl GameLevel<'_> {
     }
 }
 
-/// The camera shake native mods ask for (`native_camera_shake`): turns in
-/// degrees, and an offset in blocks along the camera's right, up and back.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct NativeShake {
-    pub pitch: f32,
-    pub yaw: f32,
-    pub roll: f32,
-    pub offset: [f32; 3],
-}
-
-/// A mod's camera (`native_camera_pose`): each value that isn't finite keeps vanilla's from `view`.
-fn posed_camera(
-    view: (glam::DVec3, f32, f32),
-    position: [f64; 3],
-    yaw: f32,
-    pitch: f32,
-) -> (glam::DVec3, f32, f32) {
-    let position = std::array::from_fn(|i| {
-        if position[i].is_finite() {
-            position[i]
-        } else {
-            view.0[i]
-        }
-    });
-    (
-        glam::DVec3::from_array(position),
-        if yaw.is_finite() { yaw } else { view.1 },
-        if pitch.is_finite() { pitch } else { view.2 },
-    )
-}
-
-/// The largest turn a shake gives, in degrees, on each axis.
-const SHAKE_MAX_DEGREES: f32 = 10.0;
-/// The largest offset a shake gives, in blocks, along each axis.
-const SHAKE_MAX_OFFSET: f32 = 0.5;
-
-/// The pose a native mod asks for the first-person hand, each out-of-range
-/// or non-finite component replaced by its identity.
-pub(super) fn hand_pose_matrix(values: [f32; 7]) -> glam::Mat4 {
-    let valid = |value: f32, min: f32, max: f32, default: f32| {
-        if value.is_finite() && (min..=max).contains(&value) {
-            value
-        } else {
-            default
-        }
-    };
-    let [x, y, z, pitch, yaw, roll, scale] = values;
-    glam::Mat4::from_translation(glam::Vec3::new(
-        valid(x, -16.0, 16.0, 0.0),
-        valid(y, -16.0, 16.0, 0.0),
-        valid(z, -16.0, 16.0, 0.0),
-    )) * glam::Mat4::from_rotation_x(valid(pitch, -3600.0, 3600.0, 0.0).to_radians())
-        * glam::Mat4::from_rotation_y(valid(yaw, -3600.0, 3600.0, 0.0).to_radians())
-        * glam::Mat4::from_rotation_z(valid(roll, -3600.0, 3600.0, 0.0).to_radians())
-        * glam::Mat4::from_scale(glam::Vec3::splat(valid(scale, 0.01, 100.0, 1.0)))
-}
-
-/// `shake` scaled by `scale` (Distortion Effects) and bounded on each axis;
-/// a value that isn't finite counts as none.
-fn bounded_shake(shake: NativeShake, scale: f32) -> NativeShake {
-    let scale = if scale.is_finite() {
-        scale.clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
-    let turn = |v: f32| {
-        if v.is_finite() {
-            (v * scale).clamp(-SHAKE_MAX_DEGREES, SHAKE_MAX_DEGREES)
-        } else {
-            0.0
-        }
-    };
-    let shift = |v: f32| {
-        if v.is_finite() {
-            (v * scale).clamp(-SHAKE_MAX_OFFSET, SHAKE_MAX_OFFSET)
-        } else {
-            0.0
-        }
-    };
-    NativeShake {
-        pitch: turn(shake.pitch),
-        yaw: turn(shake.yaw),
-        roll: turn(shake.roll),
-        offset: shake.offset.map(shift),
-    }
-}
-
-/// The pose a bounded shake multiplies into the projection, after the view
-/// bobbing: the offset, then roll, pitch and yaw.
-fn shake_pose(shake: NativeShake) -> glam::Mat4 {
-    let [x, y, z] = shake.offset;
-    glam::Mat4::from_translation(glam::Vec3::new(-x, -y, -z))
-        * glam::Mat4::from_rotation_z(shake.roll.to_radians())
-        * glam::Mat4::from_rotation_x(shake.pitch.to_radians())
-        * glam::Mat4::from_rotation_y(shake.yaw.to_radians())
-}
+#[path = "native_camera_pose.rs"]
+mod camera_pose;
+pub use camera_pose::NativeShake;
+pub(super) use camera_pose::hand_pose_matrix;
+use camera_pose::{bounded_shake, posed_camera, shake_pose};
 
 /// The mod screen open on this client: the block it is for, the key its
 /// slots are under, the window id of its menu, the menu's data slots as
@@ -2399,6 +2244,7 @@ impl Game<'_> {
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
     pub(super) fn native_tick(&mut self) {
+        self.native_process_tasks();
         mod_api::dispatch_tick(self, mod_api::mods());
     }
     /// Before an eligible targeted block's selection outline is built.
@@ -2691,10 +2537,10 @@ impl Game<'_> {
     /// draw here to put something below the layer, or set `canceled` to hide
     /// it. `layer` is the layer's id, in the order Horizon draws them:
     /// `minecraft:crosshair`, `hotbar`, `effects`, `boss_overlay`,
-    /// `vehicle_health` (only riding a mount), `contextual_info_bar` (the
+    /// `vehicle_health` (only riding a mount), `player_health` (the health,
+    /// armor, food and air rows, drawn in one pass), `contextual_info_bar` (the
     /// mount's jump bar, the locator bar or the experience bar, with the level
-    /// number), `player_health` (the health, armor, food and air rows, drawn in
-    /// one pass), `selected_item_name`, `sleep_overlay`, `overlay_message`
+    /// number), `selected_item_name`, `sleep_overlay`, `overlay_message`
     /// (the action bar), `title`, `scoreboard_sidebar`, `subtitle_overlay`,
     /// `chat` and `tab_list`. A layer F1 hides fires nothing, and the chat
     /// screen draws the focused chat itself, so `chat` is only the unfocused
@@ -3659,6 +3505,34 @@ impl Game<'_> {
             slot,
             stack,
             face,
+            cancel,
+        );
+    }
+    /// May player `player` (`name`) `action` (`place` or `break`) a block at
+    /// `pos` in `dimension` (`minecraft:overworld`)? The question a
+    /// region-protection mod answers for edits that do not go through a
+    /// player's own block placing and breaking (`native_destroy_block`), such
+    /// as a mod's bulk editor. Asked on the server by `native_may_build`
+    /// only; the game never asks it itself. Set `cancel` to deny the edit; any
+    /// mod doing so denies it, and without a mod that does it is allowed. The
+    /// level is read only. Bundles need "hooks": @API:can_build@.
+    pub(super) fn native_can_build(
+        &self,
+        player: u128,
+        name: &str,
+        dimension: &str,
+        pos: [i32; 3],
+        action: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_can_build(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            dimension,
+            pos,
+            action,
             cancel,
         );
     }
@@ -8154,7 +8028,7 @@ impl Game<'_> {
         mod_api::dispatch_server_packets(self, mod_api::mods(), player, packets, outbound);
     }
     /// After each pass of the server tick (paused ones too) while its spans
-    /// are recorded: always on a dedicated server, whose slow-tick log keeps
+    /// are recorded: always on a dedicated server, whose slow ring keeps
     /// them on, elsewhere while `native_spans(true)`, `HORIZON_SPIKES` or a
     /// performance report asks for them. `wall_ms` is the pass's wall time,
     /// `cpu_ms` the server thread's CPU time in it (None where the system
@@ -8631,6 +8505,18 @@ impl Game<'_> {
             source,
             blocks,
         );
+    }
+    /// An explosion at `center` in `dimension` is about to hurt and push `entities`, the ids of
+    /// the entities in its reach (players aside: `native_living_incoming_damage` hears them),
+    /// after `native_explosion_detonate`: `ServerExplosion.hurtEntities`. Take out the ids to
+    /// spare: they are neither hurt nor pushed. Server-side. API @API:explosion_entities@.
+    pub(super) fn native_explosion_entities(
+        &mut self,
+        dimension: &str,
+        center: [f64; 3],
+        entities: &mut Vec<u32>,
+    ) {
+        mod_api::dispatch_explosion_entities(self, mod_api::mods(), dimension, center, entities);
     }
     /// An explosion at `center` in `dimension`, about to break `blocks`, pushes
     /// `entity` (None for a player, whom `native_acting_player` names):
@@ -10119,113 +10005,6 @@ fn mob_source(damage: &Damage) -> HurtSource<'static> {
     }
 }
 
-/// Whether `id` is a sound event's id, `namespace:path` as `Identifier`
-/// allows: the namespace of `[a-z0-9_.-]`, the path also with `/`.
-/// Whether a native mod's sound can be sent: a namespaced event, a sound
-/// source, a position inside the world's range and a finite, non-negative
-/// volume and pitch.
-pub(super) fn mod_sound_ok(
-    sound: &str,
-    at: [f64; 3],
-    source: usize,
-    volume: f32,
-    pitch: f32,
-) -> bool {
-    let position_ok = at
-        .into_iter()
-        .all(|v| v.is_finite() && v.abs() <= f64::from(i32::MAX) / 8.0);
-    let gain_ok = volume.is_finite() && volume >= 0.0 && pitch.is_finite() && pitch >= 0.0;
-    sound_id(sound)
-        && source < horizon_client::settings::SOUND_SOURCES.len()
-        && position_ok
-        && gain_ok
-}
-
-/// Whether a native mod's particles can be sent. Block particle types need
-/// a known state (`state_ok`); item, trail and vibration particles aren't
-/// supported by the network dispatch; a mod's own type must be namespaced.
-pub(super) fn mod_particles_ok(
-    options: &ParticleOptions,
-    state: Option<BlockStateId>,
-    state_ok: impl Fn(BlockStateId) -> bool,
-    at: [f64; 3],
-    spread: [f64; 3],
-    speed: f64,
-) -> bool {
-    use ParticleType as T;
-    // A native mod's own type: the name has to be namespaced, and a client
-    // draws it only when its pack has the sprite set.
-    if let Some(name) = &options.mod_particle {
-        let namespaced = name
-            .split_once(':')
-            .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty());
-        if !namespaced {
-            return false;
-        }
-    }
-    let supported = match options.ty {
-        T::Block | T::BlockMarker | T::FallingDust | T::DustPillar | T::BlockCrumble => {
-            state.is_some_and(state_ok)
-        }
-        T::Item | T::Trail | T::Vibration => false,
-        T::Geyser | T::GeyserPlume | T::GeyserBase | T::GeyserPoof => options
-            .geyser
-            .is_some_and(|(_, impulse)| impulse.is_finite()),
-        _ => true,
-    };
-    supported
-        && at.into_iter().all(f64::is_finite)
-        && spread
-            .into_iter()
-            .all(|v| v.is_finite() && v.abs() <= f32::MAX as f64)
-        && speed.is_finite()
-        && speed.abs() <= f32::MAX as f64
-        && options.color.into_iter().all(f32::is_finite)
-        && options.to_color.into_iter().all(f32::is_finite)
-        && options.scale.is_finite()
-}
-
-fn sound_id(id: &str) -> bool {
-    let Some((namespace, path)) = id.split_once(':') else {
-        return false;
-    };
-    let allowed = |c: char, slash: bool| {
-        c.is_ascii_lowercase() || c.is_ascii_digit() || "_.-".contains(c) || (slash && c == '/')
-    };
-    !namespace.is_empty()
-        && !path.is_empty()
-        && namespace.chars().all(|c| allowed(c, false))
-        && path.chars().all(|c| allowed(c, true))
-}
-
-/// Sets the viewer counts `known` holds for `dim` to `now` and returns the
-/// changes as `(pos, previous, viewers)`, in position order. A container that
-/// is no longer counted goes to 0 and leaves `known`.
-pub(super) fn viewer_changes(
-    known: &mut HashMap<(&'static str, (i32, i32, i32)), u32>,
-    dim: &'static str,
-    mut now: HashMap<(i32, i32, i32), u32>,
-) -> Vec<((i32, i32, i32), u32, u32)> {
-    let mut changes = Vec::new();
-    known.retain(|&(d, pos), previous| {
-        if d != dim {
-            return true;
-        }
-        let viewers = now.remove(&pos).unwrap_or(0);
-        if viewers != *previous {
-            changes.push((pos, *previous, viewers));
-            *previous = viewers;
-        }
-        viewers > 0
-    });
-    for (pos, viewers) in now {
-        known.insert((dim, pos), viewers);
-        changes.push((pos, 0, viewers));
-    }
-    changes.sort_unstable();
-    changes
-}
-
 pub(super) fn dimension_id(dimension: LevelDimension) -> &'static str {
     match dimension {
         LevelDimension::Overworld => "minecraft:overworld",
@@ -10899,11 +10678,11 @@ impl Game<'_> {
             _ => return None,
         };
         if dim == self.dim {
-            Some(&mut self.world.random)
+            Some(&mut *self.world.random)
         } else {
             self.levels
                 .parked_world_mut(dim)
-                .map(|world| &mut world.random)
+                .map(|world| &mut *world.random)
         }
     }
     /// The item entities of the server level `dimension` whose box meets
@@ -11845,6 +11624,24 @@ impl Game<'_> {
     /// hotbar, then the inventory. The count is cut to one stack.
     pub(super) fn native_give(&mut self, item: &str, count: u32) -> Result<(), String> {
         self.recipe_give(item, count)
+    }
+    /// The items loot table `table` (`minecraft:blocks/gravel`) can drop and
+    /// their odds from one roll, from the world's tables (its data packs
+    /// merged): each item's chance to come at least once, how many come, and
+    /// the conditions on its way this could not judge, taken as met. Weights,
+    /// rolls, nested entries and tables, random chances and set counts count;
+    /// luck and enchantments are none. With `tool` (`minecraft:brush`),
+    /// `match_tool` conditions are judged with that tool in hand; without, they
+    /// are taken as met and named in `conditions`. None for a table that isn't
+    /// there. For a recipe viewer that lists a mod's chance outputs:
+    /// a server works them out and sends them to its players. Server-side
+    /// (any side with the world's data). API @API:loot_odds@.
+    pub(super) fn native_loot_odds(
+        &mut self,
+        table: &str,
+        tool: Option<&str>,
+    ) -> Option<Vec<NativeLootOdds>> {
+        self.loot_odds(table, tool)
     }
     /// Asks the recipe viewer to show `stack`: its recipes (`Recipes`), its
     /// uses (`Uses`), or to act on a key that went down over it in a screen
@@ -12812,16 +12609,6 @@ impl Game<'_> {
     }
 }
 
-/// Whether `rgba` is a whole `width` x `height` image that fits a
-/// `slot_width` x `slot_height` atlas slot (a native mod's `mod_image`).
-fn mod_image_fits(width: u32, height: u32, rgba: usize, slot_width: u32, slot_height: u32) -> bool {
-    width > 0
-        && height > 0
-        && width <= slot_width
-        && height <= slot_height
-        && rgba == width as usize * height as usize * 4
-}
-
 /// Whether F3's debug screen, open when `debug`, covers `corner`
 /// (`DebugScreenOverlay.extractRenderState`): its left and right columns
 /// the top corners, and its charts the bottom corners `charts` (bottom left,
@@ -12843,48 +12630,12 @@ fn mod_menu(name: &str) -> Option<(&'static str, usize)> {
         .or_else(|| horizon_client::containers::mod_menu_type(name).map(|m| (m.id, m.slots)))
 }
 
-/// `state` with its property `key` set to `value`; none when the block has
-/// no such property or value.
-fn with_property(
-    registry: &BlockRegistry,
-    state: BlockStateId,
-    key: &str,
-    value: &str,
-) -> Option<BlockStateId> {
-    let mut s = registry.state(state)?.clone();
-    match s.properties.get(key) {
-        Some(v) if v == value => return Some(state),
-        Some(_) => {}
-        None => return None,
-    }
-    s.properties.insert(key.into(), value.into());
-    registry.resolve(&s).ok()
-}
-
-/// The state a mod's property write changes `state` to; none when the block
-/// has no such property or value, or already has it: `LevelChunk.setBlockState`
-/// returns null for the same state, so `Level.setBlock` returns false.
-fn property_change(
-    registry: &BlockRegistry,
-    state: BlockStateId,
-    key: &str,
-    value: &str,
-) -> Option<BlockStateId> {
-    with_property(registry, state, key, value).filter(|&id| id != state)
-}
-
 /// `config/` beside `options`, made when missing.
 /// `config/` in the game folder, shared by its players.
 fn config_dir(game_dir: &Path) -> Result<PathBuf, String> {
     let dir = game_dir.join("config");
     fs::create_dir_all(&dir).map_err(|e| dir.display().to_string() + ": " + &e.to_string())?;
     Ok(dir)
-}
-
-/// `params` with each value that isn't finite as 0, so a mod's mistake can't
-/// put a NaN in every pixel of a pack's picture.
-fn finite_params(params: [[f32; 4]; 8]) -> [[f32; 4]; 8] {
-    params.map(|v| v.map(|x| if x.is_finite() { x } else { 0.0 }))
 }
 
 /// Whether `native_play_local_sound` takes these values: a sound event's id
@@ -12900,11 +12651,6 @@ fn local_sound_ok(sound: &str, at: [f64; 3], volume: f32, pitch: f32, delay: i32
         && (0..=1200).contains(&delay)
 }
 
-/// `v` within `lo..=hi`; `lo` when it is not a number.
-fn finite(v: f32, lo: f32, hi: f32) -> f32 {
-    if v.is_finite() { v.clamp(lo, hi) } else { lo }
-}
-
 /// An item entity as `native_item_entities` lists it. API 42.
 /// Read by mods only.
 #[derive(Clone, Debug)]
@@ -12916,17 +12662,6 @@ pub struct NativeItemEntity {
     /// Ticks before a player may pick it up (`ItemEntity.pickupDelay`);
     /// hoppers take it whatever this is.
     pub pickup_delay: u32,
-}
-
-/// `AABB.intersects`: the boxes overlap, touching faces excluded.
-fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> bool {
-    let (lo, hi) = (b.min_position(), b.max_position());
-    lo.x < max[0]
-        && hi.x > min[0]
-        && lo.y < max[1]
-        && hi.y > min[1]
-        && lo.z < max[2]
-        && hi.z > min[2]
 }
 
 /// What `native_mod_screen_open(mod_id)` does over `screen` (`blocked`: an

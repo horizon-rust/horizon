@@ -824,6 +824,13 @@ pub struct Tracker {
 }
 
 impl Tracker {
+    /// The bytes of its tables, from their capacities.
+    pub fn heap_bytes(&self) -> usize {
+        use std::mem::size_of;
+        self.seen.capacity() * (size_of::<(i32, Arc<Tracked>)>() + 1)
+            + self.events.capacity() * size_of::<TrackEvent>()
+            + self.hidden.capacity() * (size_of::<i32>() + 1)
+    }
     pub fn is_tracking(&self, id: i32) -> bool {
         self.seen.contains_key(&id)
     }
@@ -952,7 +959,7 @@ pub struct Entities {
     /// moves. One the entities' own ticks added waits for the next pass, as
     /// vanilla's waits for the next tick.
     pub synced: Vec<(i32, i32)>,
-    states: crate::fast_hash::FxHashMap<i32, ServerEntity>,
+    states: slab::ServerEntities,
     /// The level tick, stamped on every entity still in the level.
     tick: u32,
     /// This tick's entities as the range checks read them, the chunks they
@@ -1072,7 +1079,7 @@ impl Entities {
         self.states.len()
     }
     pub fn is_empty(&self) -> bool {
-        self.states.is_empty()
+        self.states.len() == 0
     }
 
     /// How many passes the level's tracking has run.
@@ -1160,12 +1167,29 @@ impl Entities {
         self.quiet.resize(entities.len(), false);
         // The states stamped this tick: when that is all of them, none left.
         let mut stamped = 0;
+        self.states.begin();
         for (index, e) in entities.iter().enumerate() {
             let mut added = false;
-            let s = self.states.entry(e.id).or_insert_with(|| {
-                added = true;
-                ServerEntity::new(e, kind(&e.kind), riding)
-            });
+            let s = match self.states.meet(e.id) {
+                Some((slot, by_id)) => {
+                    let s = self.states.at(slot);
+                    // Found out of order: the next one is looked for after
+                    // where this one was in the last tick's order.
+                    if by_id && s.seen == now.wrapping_sub(1) {
+                        let last = s.index;
+                        self.states.resume_after(last);
+                    }
+                    self.states.at_mut(slot)
+                }
+                None => {
+                    added = true;
+                    let slot = self
+                        .states
+                        .insert(e.id, ServerEntity::new(e, kind(&e.kind), riding));
+                    self.states.met_new(e.id, slot);
+                    self.states.at_mut(slot)
+                }
+            };
             if s.seen != now {
                 stamped += 1;
             }
@@ -1217,6 +1241,7 @@ impl Entities {
                 hidden: e.hidden,
             });
         }
+        self.states.end();
         // TrackedEntity.getEffectiveRange: a vehicle is tracked as far as its
         // widest indirect passenger, so a rider never leaves before its mount.
         for (&vehicle, passengers) in &riding.passengers {
@@ -1390,9 +1415,7 @@ impl Entities {
             if self.quiet[index] && !self.pairs[index] {
                 continue;
             }
-            let Some(s) = self.states.get_mut(&e.id) else {
-                continue;
-            };
+            let s = self.states.at_mut(self.states.slot_of_index(index));
             self.packets.clear();
             // Paired as it joined, then its first changes go to everyone
             // tracking it, those just paired with it included. Arrows wait for the
@@ -1466,13 +1489,14 @@ impl Entities {
         }
         // ChunkMap.removeEntity for the ones no longer in the level.
         if self.states.len() > stamped {
-            self.states.retain(|_, s| s.seen == now);
+            self.states.retain(|s| s.seen == now);
         }
     }
 }
 
 #[cfg(test)]
 mod late_pair_tests;
+mod slab;
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check vanilla's portal calculator and Horizon's headless TNT/cube blast regressions.
+"""Check vanilla's portal calculator and Horizon's isolated TNT blast regressions.
 
 The Java side calls the actual pinned calculator without creating a server. Rust
 runs the production teleport, persistence, mob-event and explosion paths. This is
@@ -17,11 +17,7 @@ except ImportError:
     import lab
     import test_rust_parity as base
 
-RUST_SOURCES = ["crates/horizon-client/src/game.rs", "crates/horizon-client/src/game/tnt.rs", "crates/horizon-client/src/game/explosion.rs",
-                     "crates/horizon-client/src/game/nether_portal.rs", "crates/horizon-client/src/game/persist.rs",
-                     "crates/horizon-client/src/game/creatures.rs", "crates/horizon-client/src/game/commands.rs",
-                     "crates/horizon-client/src/mobs/sulfur_cube.rs",
-                     "crates/horizon-client/src/game/remote_projectiles.rs", "crates/horizon-client/src/game/wind.rs"]
+RUST_SOURCES = sorted((lab.ROOT / "crates/horizon-client/src").rglob("*.rs"))
 
 
 def child_env(scratch, resources=None):
@@ -62,7 +58,7 @@ def compile_tests(build, scratch):
         result.check_returncode()
 
 
-def main():
+def main(rust_filter="portal_blast_", rust_tests=2):
     lock, jars, libraries = base.verify_artifacts()
     resources = Path(os.environ.get("HORIZON_TEST_RESOURCES", lab.RESOURCES)).resolve()
     if not (resources / "movement-properties.nbt").exists():
@@ -112,12 +108,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="horizon-portal-game-dir-") as directory:
         scratch = Path(directory)
         with (build / "rust.log").open("w", encoding="utf-8") as log:
-            subprocess.run([str(binary), "portal_blast_", "--include-ignored", "--color", "never"],
+            subprocess.run([str(binary), rust_filter, "--include-ignored", "--color", "never"],
                            cwd=scratch, env=child_env(scratch, resources),
                            check=True, stdout=log, stderr=subprocess.STDOUT)
     result = (build / "rust.log").read_text(encoding="utf-8")
-    if "running 4 tests" not in result or "4 passed; 0 failed" not in result:
-        raise AssertionError("Expected all four portal-blast regressions to execute")
+    if f"running {rust_tests} tests" not in result or f"{rust_tests} passed; 0 failed" not in result:
+        raise AssertionError(f"Expected all {rust_tests} portal-blast regressions to execute")
     if binary_hash != lab.digest(binary, "sha256"):
         raise RuntimeError("Test executable changed during validation")
     base.ensure_sources_unchanged(sources, hashes)
@@ -127,9 +123,9 @@ def main():
                            "rust_binary_sha256": binary_hash,
                            "vanilla_log_sha256": lab.digest(build / "vanilla.log", "sha256"),
                            "rust_log_sha256": lab.digest(build / "rust.log", "sha256"),
-                           "vanilla_calculator_calls": 6, "rust_tests": 4,
+                           "vanilla_calculator_calls": 6, "rust_tests": rust_tests,
                            "scope": __doc__})
-    print("Portal blast: 6 vanilla calculator queries and 4 production regressions passed")
+    print(f"Portal blast: 6 vanilla calculator queries and {rust_tests} production regressions passed")
 
 
 if __name__ == "__main__":
