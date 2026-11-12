@@ -22,6 +22,7 @@ pub mod hud;
 pub mod input;
 pub mod lang;
 pub mod pages;
+pub mod perf;
 pub mod players;
 mod registry;
 pub mod settings;
@@ -88,6 +89,11 @@ pub trait Hooks: Sync {
     /// offers one is used. Asked on the network thread when joining and on the game thread when
     /// an address is shown, never per frame.
     fn tunnel(&self) -> Option<&dyn tunnel::Resolver> {
+        None
+    }
+
+    /// Opens and shares saved performance captures ([`perf`]); the first hook that offers one is used.
+    fn captures(&self) -> Option<&dyn perf::Captures> {
         None
     }
 
@@ -352,6 +358,11 @@ pub mod engine {
         for hooks in all() {
             hooks.tick(models);
         }
+    }
+
+    /// [`Hooks::captures`]: the first registered hook's.
+    pub fn captures() -> Option<&'static dyn perf::Captures> {
+        all().iter().find_map(|hooks| hooks.captures())
     }
 
     /// [`Hooks::tunnel`]: the first registered hook's resolver.
