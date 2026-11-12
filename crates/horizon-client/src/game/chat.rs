@@ -9,7 +9,7 @@ use horizon_client::{
         Chat, ChatAbilities, ChatAction, ChatScreen, ChatSource, ChatVisibility, Commands,
         SYSTEM_INDICATOR, normalize_chat_message,
     },
-    command::Registries,
+    command::{ArgType, Dispatcher, MOD_COMMAND, Registries},
     gamerules::GameRules,
     hud::HudBatch,
     screen_draw::Measure,
@@ -33,6 +33,18 @@ pub(super) fn chat_tree(
         None => horizon_client::command::vanilla::game_dispatcher(),
     }
 }
+/// The arguments of a typed `/profiler` the client answers itself: only when the chat tree's `profiler` is Horizon's, else the server or mod that owns the name runs it.
+fn horizon_profiler_args<'a>(
+    message: &'a str,
+    server_tree: Option<&horizon_client::command::Dispatcher>,
+) -> Option<&'a str> {
+    let args = message
+        .strip_prefix('/')
+        .and_then(super::profile_capture::profiler_args)?;
+    server_tree
+        .is_none_or(|tree| tree.has_horizon_profiler())
+        .then_some(args)
+}
 use winit::{
     event::KeyEvent,
     keyboard::{KeyCode, PhysicalKey},
@@ -55,6 +67,91 @@ pub(super) fn with_native_commands(
     )
 }
 
+/// Add Studio's local command grammar to the suggestion tree. Commands are
+/// still dispatched by `studio_command`; this tree supplies coloring,
+/// completion, and Tab acceptance in chat.
+fn with_studio_commands(base: &Dispatcher) -> Dispatcher {
+    fn literal(d: &mut Dispatcher, parent: usize, name: &str) -> usize {
+        let node = d.literal(parent, name);
+        d.executes(node, MOD_COMMAND);
+        node
+    }
+    fn argument(d: &mut Dispatcher, parent: usize, name: &str, ty: ArgType) -> usize {
+        let node = d.argument(parent, name, ty);
+        d.executes(node, MOD_COMMAND);
+        node
+    }
+
+    let mut d = base.clone();
+    let root = d.find("studio").unwrap_or_else(|| d.literal(0, "studio"));
+    d.executes(root, MOD_COMMAND);
+
+    let record = literal(&mut d, root, "record");
+    let start = literal(&mut d, record, "start");
+    argument(&mut d, start, "name", ArgType::Word);
+    literal(&mut d, record, "stop");
+    literal(&mut d, record, "status");
+
+    let replay = literal(&mut d, root, "replay");
+    let open = literal(&mut d, replay, "open");
+    argument(&mut d, open, "path", ArgType::Greedy);
+    literal(&mut d, replay, "pause");
+    literal(&mut d, replay, "resume");
+    let speed = literal(&mut d, replay, "speed");
+    argument(
+        &mut d,
+        speed,
+        "multiplier",
+        ArgType::Double {
+            min: 0.01,
+            max: 20.0,
+        },
+    );
+    let seek = literal(&mut d, replay, "seek");
+    argument(
+        &mut d,
+        seek,
+        "milliseconds",
+        ArgType::Integer {
+            min: 0,
+            max: i32::MAX,
+        },
+    );
+    literal(&mut d, replay, "status");
+    literal(&mut d, replay, "close");
+
+    let freecam = literal(&mut d, root, "freecam");
+    argument(
+        &mut d,
+        freecam,
+        "state",
+        ArgType::StrEnum(&["on", "off"], "argument.enum.invalid"),
+    );
+
+    let keyframe = literal(&mut d, root, "keyframe");
+    literal(&mut d, keyframe, "add");
+    let remove = literal(&mut d, keyframe, "remove");
+    argument(
+        &mut d,
+        remove,
+        "index",
+        ArgType::Integer {
+            min: 0,
+            max: i32::MAX,
+        },
+    );
+    literal(&mut d, keyframe, "clear");
+
+    let path = literal(&mut d, root, "path");
+    argument(
+        &mut d,
+        path,
+        "state",
+        ArgType::StrEnum(&["lock", "unlock"], "argument.enum.invalid"),
+    );
+    d
+}
+
 impl Game<'_> {
     /// The tree the chat box colours, completes and parses with for the
     /// world's connection: `base`, the tree the server sent, or the game's own
@@ -66,12 +163,11 @@ impl Game<'_> {
     ) -> horizon_client::command::Dispatcher {
         let mut names = Vec::new();
         self.native_commands(&mut names);
-        names.push("studio");
         let base = match base {
             Some(tree) => tree,
             None => horizon_client::command::vanilla::game_dispatcher(),
         };
-        with_native_commands(base, &names)
+        with_studio_commands(&with_native_commands(base, &names)).with_profiler()
     }
 }
 
@@ -168,8 +264,11 @@ pub struct UiState {
     pub show_hand_when_hidden: bool,
     /// Death message key set by the cause of death (e.g. /kill).
     pub death_cause: Option<String>,
-    /// Path of an F2 screenshot waiting for its frame.
-    pub screenshot_message: Option<std::path::PathBuf>,
+    /// What this frame's HUD shows that Horizon's overlays keep clear of (`Game::hud_room`),
+    /// set by `hud_layers` before anything draws.
+    pub room: horizon_client::hud_kit::room::Room,
+    /// F2 screenshots not written yet: each reports in chat once its PNG is.
+    pub screenshot_messages: Vec<std::path::PathBuf>,
     /// The options screens.
     pub options: horizon_client::options_ui::OptionsUi,
     /// The prepared resources before resource packs are layered on.
@@ -373,7 +472,6 @@ mod hud_mode_tests {
 /// instead of at every world opening (thousands of files).
 struct ResourceIds {
     recipes: Vec<String>,
-    loot_tables: Vec<String>,
     templates: Vec<String>,
     /// `entity-types.json`'s keys, sorted (empty when the file is missing).
     entity_types: Vec<String>,
@@ -465,8 +563,6 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
     let ids = Arc::new(ResourceIds {
         // `/recipe <id>` must suggest a content mod's recipes too.
         recipes: json_ids_of_every_namespace(root, "recipe"),
-        // `/loot ... loot <id>` must find a content mod's tables too.
-        loot_tables: json_ids_of_every_namespace(root, "loot_table"),
         templates: templates_under(&root.join("worldgen/structure")),
         entity_types,
         enchantments: json_ids_in(&data.join("enchantment")),
@@ -733,6 +829,13 @@ impl Game<'_> {
             .or_default()
             .ids = ids;
     }
+    /// `ResourceOrIdArgument`'s loot tables are the server's: every table the
+    /// world plays with, the game's, the content mods' and its packs'.
+    pub(super) fn sync_loot_table_ids(&mut self) {
+        let mut ids: Vec<String> = self.items().loot_table_ids().map(str::to_owned).collect();
+        ids.sort();
+        self.ui.registries.loot_tables = ids;
+    }
     /// Registry contents for argument parsing (built when a world opens).
     pub(super) fn build_registries(&mut self) {
         let permission = owner_permission(self.allow_commands());
@@ -746,7 +849,24 @@ impl Game<'_> {
             .entries()
             .map(|(_, d)| d.name.clone())
             .collect();
-        self.ui.registries.loot_tables = ids.loot_tables.clone();
+        self.sync_loot_table_ids();
+        // ResourceOrIdArgument decodes an inline feature while the command is
+        // parsed, with the codec and blocks placement uses (the live features
+        // never change once installed).
+        self.ui.registries.inline_feature =
+            self.res
+                .behaviours()
+                .live_features()
+                .cloned()
+                .map(|features| {
+                    horizon_client_core::registries::InlineFeatureCheck::new(move |tag| {
+                        let json = horizon_client::scoreboard::tag_to_json(tag).to_string();
+                        features
+                            .decode_inline(&json)
+                            .map(drop)
+                            .map_err(|e| e.to_string())
+                    })
+                });
         self.ui.registries.templates = ids.templates.clone();
         self.ui.registries.sounds = self.audio.event_names();
         self.ui.registries.attributes = [
@@ -1170,7 +1290,7 @@ impl Game<'_> {
         let ctrl = self.has_control_down_with_quirk();
         let shift = self.has_shift_down();
         // PvP & HUD's chat search: Ctrl+F starts and stops it, Enter stops it (sends nothing).
-        if self.settings.extras.pvp.chat.search
+        if self.pvp_chat().search
             && match key {
                 KeyCode::KeyF => ctrl,
                 KeyCode::Enter | KeyCode::NumpadEnter => self.pvp.chat_search,
@@ -1295,6 +1415,12 @@ impl Game<'_> {
             return;
         }
         self.ui.chat.add_recent(&message);
+        if let Some(args) =
+            horizon_profiler_args(&message, self.remote.as_ref().map(|r| &r.chat_tree))
+        {
+            self.profiler_chat(args);
+            return;
+        }
         // On a server (single player's own included) the server runs it,
         // unless a client mod owns the command.
         if self.remote.is_some() {
@@ -1379,7 +1505,7 @@ impl Game<'_> {
             cursor.1 as f64,
         );
         // PvP & HUD's copy on click: a message where the click has nothing else to do.
-        if self.settings.extras.pvp.chat.copy
+        if self.pvp_chat().copy
             && !self.has_shift_down()
             && style.as_ref().is_none_or(|s| s.click.is_none())
             && let Some(message) =
@@ -1422,6 +1548,14 @@ impl Game<'_> {
                 }
             }
             Some(ClickEvent::RunCommand(command)) => self.click_command(&command),
+            Some(ClickEvent::Profiler(command)) => {
+                if let Some(args) = command
+                    .strip_prefix('/')
+                    .and_then(super::profile_capture::profiler_args)
+                {
+                    self.profiler_chat(args);
+                }
+            }
             // Screen.defaultHandleGameClickEvent: the dialog opens over the
             // screen, and closes back to it.
             Some(ClickEvent::ShowDialog(dialog)) => self.show_dialog_ref(&dialog),
@@ -1557,7 +1691,7 @@ impl Game<'_> {
     /// Chat lines over the HUD (focused while the chat screen is open).
     pub(super) fn draw_chat(&mut self, batch: &mut HudBatch) {
         let focused = self.screen == Screen::Chat;
-        let options = self.settings.extras.pvp.chat;
+        let options = self.pvp_chat();
         self.ui.chat.set_qol(&self.gui.atlas, options.qol());
         // A search ends with its option; a chat closed some other way ends it in keep_chat_draft.
         if self.pvp.chat_search && self.ui.chat_screen.is_none() {
@@ -1715,7 +1849,12 @@ impl Game<'_> {
     /// Advance the overworld clock (ServerClockManager.tick) when
     /// `advance_time` allows it.
     pub(super) fn advance_clock(&mut self) {
-        if !self.ui.rules.bool("advance_time") || self.ui.clock.paused {
+        if !self.ui.rules.bool("advance_time") {
+            return;
+        }
+        // The End's clock: one tick a tick, not paused or sped up by `/time` on the overworld's.
+        self.world.end_clock += 1;
+        if self.ui.clock.paused {
             return;
         }
         let c = &mut self.ui.clock;
@@ -1799,6 +1938,8 @@ impl Game<'_> {
         }
         self.ui.chat.clear();
         self.build_registries();
+        // The world opens with its test instances (`Registries.TEST_INSTANCE`).
+        self.snapshot_test_defs();
         self.sync_rules();
     }
     /// Save the clock beside level.dat (Level.write saves the game rules: a
@@ -1867,15 +2008,17 @@ impl Game<'_> {
         if std::fs::create_dir_all(&dir).is_err() {
             return None;
         }
-        let name = screenshot_name(&dir);
+        // A screenshot still being written has no file yet: its name is taken all the same.
+        let name = screenshot_name(&dir, &self.ui.screenshot_messages);
         let renderer = self.renderer.as_mut()?;
         let path = dir.join(name);
         renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
             path: path.clone(),
             size: None,
             scaled: true,
+            background: true,
         });
-        self.ui.screenshot_message = Some(path.clone());
+        self.ui.screenshot_messages.push(path.clone());
         self.write_screenshot_notes(&path);
         Some(path)
     }
@@ -1923,7 +2066,7 @@ impl Game<'_> {
         let dir = std::env::current_dir()
             .unwrap_or_default()
             .join("screenshots");
-        let name = screenshot_name(&dir);
+        let name = screenshot_name(&dir, &[]);
         let folder = dir.join(name.trim_end_matches(".png"));
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -1968,12 +2111,23 @@ impl Game<'_> {
         }
         true
     }
-    /// After a frame: report a finished F2 screenshot in chat.
-    pub(super) fn finish_screenshot(&mut self, result: &std::result::Result<[u32; 2], String>) {
-        let Some(path) = self.ui.screenshot_message.take() else {
+    /// A screenshot written on its thread: F2's reports in chat. Any other was the world
+    /// icon's (`tick_world_icon`): a failure tries again a second later, as
+    /// `tryTakeScreenshotIfNeeded` does.
+    pub(super) fn finish_screenshot(&mut self, saved: horizon_client::gfx::SavedScreenshot) {
+        let Some(at) = self
+            .ui
+            .screenshot_messages
+            .iter()
+            .position(|p| *p == saved.path)
+        else {
+            if let Err(error) = saved.result {
+                log::warn!("Horizon: couldn't save the world icon: {error}");
+            }
             return;
         };
-        let message = match result {
+        let path = self.ui.screenshot_messages.remove(at);
+        let message = match &saved.result {
             Ok(_) => {
                 log::info!("Saved screenshot to {}", path.display());
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -2009,7 +2163,7 @@ fn chat_box_text(text: &str) -> String {
         .filter(|&ch| ch >= ' ' && ch != '\u{7f}' && ch != '§')
         .collect()
 }
-pub fn screenshot_name(dir: &std::path::Path) -> String {
+pub fn screenshot_name(dir: &std::path::Path, pending: &[std::path::PathBuf]) -> String {
     // Util.getFilenameFormattedDateTime: the local date and time.
     let base = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
     let mut n = 1;
@@ -2019,7 +2173,8 @@ pub fn screenshot_name(dir: &std::path::Path) -> String {
         } else {
             format!("{base}_{n}.png")
         };
-        if !dir.join(&name).exists() {
+        let path = dir.join(&name);
+        if !path.exists() && !pending.contains(&path) {
             return name;
         }
         n += 1;
@@ -2039,6 +2194,29 @@ const LINK_COPY: usize = 1;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typed_profiler_is_the_clients_unless_the_server_owns_the_name() {
+        let vanilla = horizon_client::command::vanilla::game_dispatcher();
+        let ours = vanilla.with_profiler();
+        assert_eq!(
+            super::horizon_profiler_args("/profiler share", Some(&ours)),
+            Some(" share")
+        );
+        assert_eq!(super::horizon_profiler_args("/profiler", None), Some(""));
+        assert_eq!(
+            super::horizon_profiler_args("/profilers", Some(&ours)),
+            None
+        );
+        let mut server = vanilla.clone();
+        let node = server.literal(0, "profiler");
+        server.executes(node, "server:profiler");
+        let theirs = server.with_profiler();
+        assert_eq!(
+            super::horizon_profiler_args("/profiler share", Some(&theirs)),
+            None
+        );
+    }
 
     /// A mod's text reaches the chat box as typing would leave it: emoji and
     /// accents stay, control characters, DEL and the section sign go.
@@ -2061,6 +2239,25 @@ mod tests {
         assert!(should_discard_draft(ChatExit::Done, true));
     }
 
+    /// `Screenshot.getFile` picks the first free name of the second; an F2
+    /// screenshot still being written on its thread has no file yet, so a
+    /// second press in the same second takes the next name, not the same one.
+    #[test]
+    fn a_screenshot_being_written_keeps_its_name() {
+        let dir = std::env::temp_dir().join(format!("horizon-shots-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = screenshot_name(&dir, &[]);
+        let second = screenshot_name(&dir, &[dir.join(&first)]);
+        assert_ne!(first, second);
+        // Unless the clock turned to the next second in between.
+        let same_second = second.starts_with(first.trim_end_matches(".png"));
+        assert!(
+            !same_second || second == first.replace(".png", "_2.png"),
+            "{second}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn resource_ids_are_listed_once_per_root() {
         let root = std::env::temp_dir().join(format!("horizon-ids-{}", std::process::id()));
@@ -2071,30 +2268,8 @@ mod tests {
         std::fs::write(recipe.join("notes.txt"), "").unwrap();
         let first = resource_ids(&root);
         assert_eq!(first.recipes, ["minecraft:b", "minecraft:sub/a"]);
-        assert!(first.loot_tables.is_empty());
         std::fs::write(recipe.join("c.json"), "{}").unwrap();
         assert!(Arc::ptr_eq(&first, &resource_ids(&root)));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A content mod's loot tables are listed with vanilla's, so `/loot`
-    /// finds them.
-    #[test]
-    fn loot_tables_of_every_namespace_are_listed() {
-        let root = std::env::temp_dir().join(format!("horizon-loot-ids-{}", std::process::id()));
-        for dir in [
-            "data/minecraft/loot_table/chests",
-            "data/mymod/loot_table/rooms",
-        ] {
-            std::fs::create_dir_all(root.join(dir)).unwrap();
-        }
-        std::fs::write(root.join("data/minecraft/loot_table/chests/a.json"), "{}").unwrap();
-        std::fs::write(root.join("data/mymod/loot_table/rooms/b.json"), "{}").unwrap();
-        std::fs::write(root.join("data/mymod/loot_table/notes.txt"), "").unwrap();
-        assert_eq!(
-            resource_ids(&root).loot_tables,
-            ["minecraft:chests/a", "mymod:rooms/b"]
-        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2211,6 +2386,43 @@ mod tests {
             vanilla.parse("help", &reg).executable().map(|e| e.1)
         );
         assert_eq!(shared.nodes.len(), vanilla.nodes.len());
+    }
+
+    #[test]
+    fn studio_command_tree_suggests_subcommands_and_arguments() {
+        let reg = Registries::default();
+        let base = horizon_client::command::vanilla::game_dispatcher();
+        let tree = with_studio_commands(base);
+        let suggestions = |input: &str| {
+            let parse = tree.parse(input, &reg);
+            tree.client_suggestions(&parse, input.len(), &reg)
+                .1
+                .into_iter()
+                .map(|suggestion| suggestion.text)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            suggestions("studio "),
+            ["freecam", "keyframe", "path", "record", "replay"]
+        );
+        assert_eq!(suggestions("studio record "), ["start", "status", "stop"]);
+        assert_eq!(
+            suggestions("studio replay "),
+            [
+                "close", "open", "pause", "resume", "seek", "speed", "status"
+            ]
+        );
+        assert_eq!(suggestions("studio freecam "), ["off", "on"]);
+        assert_eq!(suggestions("studio keyframe "), ["add", "clear", "remove"]);
+        assert_eq!(suggestions("studio path "), ["lock", "unlock"]);
+        assert_eq!(
+            tree.parse("studio replay open some-recording.mcpr", &reg)
+                .executable()
+                .unwrap()
+                .1,
+            MOD_COMMAND
+        );
     }
 
     /// When `entity_types` is empty (no `entity-types.json`), fallback includes
@@ -2468,7 +2680,11 @@ mod enchantment_snapshot_tests {
         let pack = dir.join("datapacks/model");
         let tags = pack.join("data/h024/tags/enchantment");
         std::fs::create_dir_all(&tags).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
         std::fs::write(tags.join("empty.json"), r#"{"values":[]}"#).unwrap();
         std::fs::write(
             dir.join("datapacks.json"),
@@ -2596,7 +2812,7 @@ mod damage_type_registry_tests {
         let pack = dir.join("datapacks/model");
         let types = pack.join("data/example/damage_type");
         std::fs::create_dir_all(&types).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":""}}"#).unwrap();
         std::fs::write(
             types.join("test.json"),
             r#"{"message_id":"example.test","scaling":"never","exhaustion":0.0}"#,

@@ -8,7 +8,8 @@ struct DualOut {
     @location(0) @blend_src(0) added: vec4<f32>,
     @location(0) @blend_src(1) through: vec4<f32>,
 }
-@fragment fn fs_translucent_dual(in: TerrainOut) -> DualOut {
+@fragment fn fs_translucent_dual(wire: TerrainWire) -> DualOut {
+    let in = from_wire(wire);
     let n = face_normal(in.pos);
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     var color = texel * in.color;

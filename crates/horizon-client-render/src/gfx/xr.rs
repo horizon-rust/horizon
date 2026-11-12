@@ -181,7 +181,9 @@ pub(super) fn open(
 ) -> Option<horizon_xr::Xr> {
     // The same instance options as the usual Vulkan device: without wgpu's indirect draw
     // validation in release builds.
-    let flags = super::instance_descriptor(wgpu::Backends::VULKAN, None, false).flags;
+    let flags =
+        super::instance_descriptor(wgpu::Backends::VULKAN, None, false, wgpu::Dx12Compiler::Fxc)
+            .flags;
     // Foveated rendering (the quad views) only when asked: not yet tried in a headset.
     let foveated = std::env::var_os("HORIZON_XR_FOVEATED").is_some_and(|v| v == "1");
     let mut attempt = 1;
@@ -532,6 +534,7 @@ impl Renderer {
         self.hud.draw_range(
             &mut encoder,
             &view,
+            None,
             &self.depth,
             frame.hud,
             size,
@@ -886,6 +889,7 @@ impl Renderer {
         self.hud.draw_range(
             &mut encoder,
             &screen,
+            None,
             &self.depth,
             frame.hud,
             window,
@@ -947,6 +951,7 @@ impl Renderer {
                     &self.queue,
                     self.config.format.remove_srgb_suffix(),
                     super::hdr::Output::ScRgb,
+                    false,
                 )
             });
             let (paper_white, peak) = self.hdr_levels;
@@ -960,7 +965,7 @@ impl Renderer {
         let depth = std::mem::replace(&mut self.depth, depth);
         [self.config.width, self.config.height] = size;
         self.eye = Some(eye);
-        let drawn = crate::spans::time("vr_eye_draw", || self.draw_frame(frame, None));
+        let drawn = crate::spans::time("vr_eye_draw", || self.draw_frame(frame, None, self.output));
         self.xr_state.waited += self.last_wait;
         self.eye = None;
         [self.config.width, self.config.height] = window;

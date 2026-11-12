@@ -176,7 +176,7 @@ impl MaterialArrays {
         tick: u64,
     ) {
         for animator in self.maps.iter_mut().flat_map(|m| &mut m.animators) {
-            animator.animate(encoder, uploads, tick, None, None);
+            animator.animate_with(encoder, uploads, tick, None, None, None);
         }
     }
 }

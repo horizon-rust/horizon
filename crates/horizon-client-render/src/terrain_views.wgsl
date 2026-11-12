@@ -5,9 +5,9 @@
     @builtin(view_index) view: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
-    @location(5) origin: vec4<f32>) -> TerrainOut {
+    @location(5) origin: vec4<f32>) -> TerrainWire {
     var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
         origin.w);
     out.clip = fade_depth(eye_view_projs[view] * vec4(out.pos, 1.0), origin.w);
-    return out;
+    return to_wire(out);
 }

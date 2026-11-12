@@ -142,6 +142,7 @@ fn scene(
         cutout_leaves,
         rt_lighting: false,
         smooth_fluids: row["smooth_fluids"].as_bool().unwrap_or(false),
+        opaque_ice: false,
         translucent_layers: &[],
         leaf_culling: LeafCullingMode::Off,
     };

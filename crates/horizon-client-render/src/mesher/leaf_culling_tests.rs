@@ -85,6 +85,7 @@ fn mesh(
         blend_radius: 0,
         smooth_lighting: false,
         cutout_leaves: true,
+        opaque_ice: false,
         translucent_layers: &[],
         leaf_culling: mode,
     };
