@@ -15,7 +15,15 @@ impl Game<'_> {
             .random_textures
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if textures.is_empty() {
+        // Random custom model variants are chosen with the textures.
+        if textures.is_empty()
+            && !res
+                .mob_data()
+                .cem
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .has_variants()
+        {
             return;
         }
         for i in 0..self.mobs.len() {

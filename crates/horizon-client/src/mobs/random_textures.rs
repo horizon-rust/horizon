@@ -13,6 +13,10 @@
 //! pick. A texture without rules follows the body's variant, so a sheep wearing `sheep3` has
 //! `sheep_wool3` (ETF), or an even choice when the body has no variants; villagers' layers each
 //! choose their own, as ETF does.
+//!
+//! The same choice picks each custom model layer's random model variant (`models.<n>`,
+//! [`super::cem::CemModels::layer_of`]), before the textures, so a variant's own texture gets
+//! its pick at once.
 
 use super::render::{DYE_NAMES, PROFESSIONS};
 use super::{Mob, MobData, Species};
@@ -45,6 +49,8 @@ pub struct Choice {
     picks: Vec<(usize, u32)>,
     /// The body texture's variant.
     primary: Option<u32>,
+    /// The random model variant each custom model layer picked, by layer key (`creeper#main`).
+    models: Vec<(String, u32)>,
     /// Ticks until the next check of the facts that change.
     countdown: u8,
     /// Drawing found a texture with rules and no pick: choose on the next tick, unless a miss
@@ -64,11 +70,17 @@ impl Clone for Choice {
             generation: self.generation,
             picks: self.picks.clone(),
             primary: self.primary,
+            models: self.models.clone(),
             countdown: self.countdown,
             missed: AtomicBool::new(self.missed.load(Ordering::Relaxed)),
             answered: self.answered,
         }
     }
+}
+
+/// The model variant `models` holds for the layer `key`; 1 when it has none.
+fn picked(models: &[(String, u32)], key: &str) -> u32 {
+    models.iter().find(|(k, _)| k == key).map_or(1, |&(_, n)| n)
 }
 
 /// Ticks between checks of the facts that change.
@@ -78,6 +90,11 @@ impl Choice {
     /// Whether the mob's first sighting is recorded.
     pub fn has_seen(&self) -> bool {
         self.seen.is_some()
+    }
+
+    /// The random model variant the layer `key` draws: 1, the `.jem` itself, until one is picked.
+    pub fn model(&self, key: &str) -> u32 {
+        picked(&self.models, key)
     }
 
     /// Called once a tick: whether [`choose`] should run now. It does on first sight, after the
@@ -124,7 +141,6 @@ pub fn choose(
     seen: Option<Seen>,
     seed: i32,
 ) {
-    let names = super::render::drawn_textures(m, data);
     let mut choice = std::mem::take(&mut m.random_textures);
     if choice.seen.is_none() {
         choice.seen = seen;
@@ -167,6 +183,22 @@ pub fn choose(
         weather: Some(seen.weather),
         size: size(m),
     };
+    // The model variants first: the textures drawn depend on them.
+    choice.models.clear();
+    {
+        let cem = data
+            .cem
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for key in m.kind.layers.keys() {
+            if let Some(rules) = cem.model_rules(key) {
+                choice
+                    .models
+                    .push((key.clone(), rules.select(&facts, seed)));
+            }
+        }
+    }
+    let names = super::render::drawn_textures_picking(m, data, &|key| picked(&choice.models, key));
     for (i, name) in names.iter().enumerate() {
         let Some(entry) = textures.get(name) else {
             continue;

@@ -12,8 +12,13 @@
 //! block, moon, time, weather) are the caller's to fix when the entity is first seen; the others
 //! can change, and [`Rules::updates`] says whether a rule file reads any of them.
 //!
+//! The same rules pick custom entity model variants (`optifine/cem/<name>.properties`), where
+//! `models.<n>` lists the variant files instead ([`Rules::parse_models`]): 1 is `<name>.jem`,
+//! 2 `<name>2.jem`.
+//!
 //! Written from OptiFine's `random_entities.properties` and ETF's `RANDOM_GUIDE.md` and
-//! `random_entities.properties` docs; no mod's source was read.
+//! `random_entities.properties` docs; no mod's source was read. The `models.<n>` form follows
+//! the packs' own files (Fresh Animations' `optifine/cem/*.properties`).
 
 use crate::matchers::{BlockMatch, Name, RangeList, namespaced};
 use crate::properties::Properties;
@@ -95,11 +100,14 @@ struct Rule {
     blocks: Vec<(BlockMatch, bool)>,
 }
 
-/// The conditions a rule may hold, as `<key>.<n>`. A rule with any other (`nbt.<n>.*`, ETF's
-/// `teams`, `items`...) is skipped rather than applied to every entity.
+/// The keys that list a texture rule's variants, and a model rule's.
+const TEXTURE_LISTS: &[&str] = &["textures", "skins"];
+const MODEL_LISTS: &[&str] = &["models"];
+
+/// The conditions a rule may hold, as `<key>.<n>`, besides the key listing its variants. A rule
+/// with any other (`nbt.<n>.*`, ETF's `teams`, `items`...) is skipped rather than applied to
+/// every entity.
 const KEYS: &[&str] = &[
-    "textures",
-    "skins",
     "weights",
     "seedOffset",
     "seedSource",
@@ -122,11 +130,21 @@ const KEYS: &[&str] = &[
 ];
 
 impl Rules {
+    /// A random texture's rules: `textures.<n>` (or `skins.<n>`) list each rule's variants.
     pub fn parse(props: &Properties) -> Self {
-        let mut numbers: Vec<u32> = ["textures.", "skins."]
+        Self::parse_lists(props, TEXTURE_LISTS)
+    }
+
+    /// A custom entity model's rules: `models.<n>` list each rule's model variants.
+    pub fn parse_models(props: &Properties) -> Self {
+        Self::parse_lists(props, MODEL_LISTS)
+    }
+
+    fn parse_lists(props: &Properties, lists: &[&str]) -> Self {
+        let mut numbers: Vec<u32> = lists
             .iter()
-            .flat_map(|p| props.with_prefix(p))
-            .filter_map(|(n, _)| n.parse().ok())
+            .flat_map(|list| props.with_prefix(list))
+            .filter_map(|(n, _)| n.strip_prefix('.')?.parse().ok())
             .collect();
         numbers.sort_unstable();
         numbers.dedup();
@@ -134,7 +152,7 @@ impl Rules {
         numbers.truncate(MAX_RULES);
         let rules = numbers
             .into_iter()
-            .filter_map(|n| Rule::parse(props, n))
+            .filter_map(|n| Rule::parse(props, n, lists))
             .collect();
         Self { rules }
     }
@@ -166,6 +184,18 @@ impl Rules {
         })
     }
 
+    /// Every variant index some rule lists, lowest first, once each.
+    pub fn indices(&self) -> Vec<u32> {
+        let mut all: Vec<u32> = self
+            .rules
+            .iter()
+            .flat_map(|r| r.textures.iter().copied())
+            .collect();
+        all.sort_unstable();
+        all.dedup();
+        all
+    }
+
     /// The highest variant index any rule lists (at most [`MAX_INDEX`]).
     pub fn max_texture(&self) -> u32 {
         self.rules
@@ -179,7 +209,7 @@ impl Rules {
 impl Rule {
     /// `None` when the rule lists no textures, or holds a condition that doesn't parse or isn't
     /// supported: such a rule never matches, instead of matching every entity.
-    fn parse(props: &Properties, n: u32) -> Option<Self> {
+    fn parse(props: &Properties, n: u32, lists: &[&str]) -> Option<Self> {
         // This rule's keys, `<key>.<n>` or `nbt.<n>.<path>` (a path may end in a list index:
         // `nbt.2.Tags.1`): one unknown, or an empty condition (`biomes.1=`), skips the rule. An
         // empty `weights` is only no weights.
@@ -188,9 +218,10 @@ impl Rule {
             let (Some(head), Some(index)) = (parts.next(), parts.next()) else {
                 return false;
             };
+            let listed = lists.contains(&head);
             index.parse::<u32>() == Ok(n)
-                && (!KEYS.contains(&head)
-                    || (value.is_empty() && !matches!(head, "textures" | "skins" | "weights")))
+                && (!(listed || KEYS.contains(&head))
+                    || (value.is_empty() && !(listed || head == "weights")))
         });
         let get = |key: &str| props.get(&format!("{key}.{n}"));
         // ETF's `seedSource`: only the entity's own seed is read.
@@ -207,7 +238,7 @@ impl Rule {
                 Some(v) => parse(v).map(Some),
             }
         }
-        let textures = expand(&RangeList::parse(get("textures").or(get("skins"))?)?);
+        let textures = expand(&RangeList::parse(lists.iter().find_map(|list| get(list))?)?);
         if textures.is_empty() {
             return None;
         }
@@ -489,6 +520,41 @@ mod tests {
         assert_eq!(r.select(&plains, -6), 15, "|-6| % 12 = 6");
         // No facts at all: height-bound rules fail, the fallback still applies.
         assert_eq!(r.select(&Facts::default(), 1), 2);
+    }
+
+    #[test]
+    fn model_rules_list_models_and_skip_texture_lists() {
+        // A creeper's `optifine/cem/creeper.properties`, as Fresh Animations' creeper add-on
+        // writes it.
+        let text = "models.1=1 4\nbiomes.1=river swamp\n\
+                    models.2=1 2 3\nweights.2=8 1 4\nheights.2=0-50\n\
+                    models.3=1 2 3\nweights.3=30 1 2\n";
+        let r = Rules::parse_models(&Properties::parse(text));
+        assert_eq!(r.rules.len(), 3);
+        assert_eq!(r.max_texture(), 4);
+        let swamp = Facts {
+            biome: Some("minecraft:swamp"),
+            y: Some(64),
+            ..Default::default()
+        };
+        assert_eq!(r.select(&swamp, 1), 4, "1 % 2 = 1: the second of 1 4");
+        let cave = Facts {
+            biome: Some("minecraft:plains"),
+            y: Some(20),
+            ..Default::default()
+        };
+        // Weights 8 1 4 out of 13: 8 is the second model.
+        assert_eq!(r.select(&cave, 8), 2);
+        assert_eq!(r.select(&cave, 9), 3);
+        // A model file's rules aren't a texture's, nor the other way round.
+        assert!(rules(text).rules.is_empty());
+        let textures = Rules::parse_models(&Properties::parse("textures.1=2\n"));
+        assert!(textures.rules.is_empty());
+        // `nbt` rules aren't supported here yet: skipped, so the next rule decides.
+        let r = Rules::parse_models(&Properties::parse(
+            "models.2=2\nnbt.2.HasNectar=0\nmodels.3=3\n",
+        ));
+        assert_eq!(r.select(&Facts::default(), 0), 3);
     }
 
     #[test]
