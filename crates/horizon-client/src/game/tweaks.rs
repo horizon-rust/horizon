@@ -201,13 +201,16 @@ impl Game<'_> {
                     }
                     if shift {
                         self.tweak_click(slot, 0, Input::QuickMove);
-                    } else if held.count + s.count <= self.max_stack(&s)
+                    } else if held.count.saturating_add(s.count) <= self.max_stack(&s)
                         && self.tweak_click(slot, 0, Input::Pickup)
                         && self.tweak_click(slot, 0, Input::Pickup)
                     {
                         // Put the hand's stack in the slot, then take it all.
+                        // saturating_add guards against u32 overflow when both
+                        // counts are large (e.g. from an inflated NBT count).
+                        let total = held.count.saturating_add(s.count);
                         drag.held = Some(ItemStack {
-                            count: held.count + s.count,
+                            count: total,
                             ..held
                         });
                     }
