@@ -416,8 +416,10 @@ impl Game<'_> {
 impl Game<'_> {
     /// Hurt a guest: `f` runs as them, and the knockback it gave reaches
     /// their client. A hurt marks the velocity (Entity.markHurt), which goes
-    /// out once the guest's server copy has travelled (`guest_server_tick`);
-    /// a push with no hurt goes out at once.
+    /// out once the guest's server copy has travelled (`guest_server_tick`),
+    /// or, for a hurt while the packets are handled, as the push left it at
+    /// their end (`send_packet_marked_motion`); a push with no hurt goes out
+    /// at once.
     pub(super) fn guest_hit_by<R>(
         &mut self,
         host: &mut LanHost,

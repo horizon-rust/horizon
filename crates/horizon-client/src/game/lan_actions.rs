@@ -5188,8 +5188,10 @@ impl Game<'_> {
             };
             // Landing damage from this travel reaches the tracker too.
             events.append(&mut player.events);
-            // A hurt since the last tick marked the velocity (Entity.markHurt):
-            // ServerEntity.sendChanges sends it as it is after this travel.
+            // A hurt in the entity pass marked the velocity (Entity.markHurt):
+            // ServerEntity.sendChanges sends it as it is after this travel. One
+            // from the packets went out as the push left it
+            // (`send_packet_marked_motion`, #15792).
             let marked = std::mem::take(&mut player.health.sync_velocity);
             let velocity = marked.then_some(player.velocity);
             // Player.causeFallDamage: a fall of 2 blocks or more counts.
