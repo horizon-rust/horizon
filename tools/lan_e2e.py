@@ -1115,6 +1115,12 @@ def level_guest_end(host, guest, out):
     level_floor(guest, 700, 80, 0)
     guest('command', command='tp @s 700.5 80 0.5')
     guest.wait(20)
+    # #11319: other kinds take a gateway too (EndGatewayBlock.entityInside, canUsePortal): a hovering
+    # arrow and sand block go through one beside the guest's and wait at its exit, 3 blocks south.
+    guest('command', command='setblock 702 80 4 minecraft:end_gateway{exit_portal:[I;100,50,3],ExactTeleport:1b}')
+    for kind, data in (('arrow', 'pickup:0b'), ('falling_block', 'BlockState:{Name:"minecraft:sand"}')):
+        guest('command', command=f'summon minecraft:{kind} 702.5 80.2 4.5 {{NoGravity:1b,Tags:["e2e_gw"],{data}}}')
+    guest.wait(10)
     guest('command', command='setblock 702 80 0 minecraft:end_gateway{exit_portal:[I;100,50,0],ExactTeleport:1b}')
     guest('command', command='tp @s 702.5 80 0.5')
     gateway = None
@@ -1127,6 +1133,12 @@ def level_guest_end(host, guest, out):
     assert abs(gateway[0] - 100.5) < 1 and abs(gateway[2] - 0.5) < 1 and 49 <= gateway[1] <= 50, \
         f'the gateway left the guest at {gateway}'
     guest.wait(40)
+    reply = server_reply(guest, 'execute if entity @e[tag=e2e_gw,x=99,y=49,z=2,dx=3,dy=3,dz=3]', 'Test')
+    guest('command', command='tp @s ~ ~ ~ 0 10')
+    guest.wait(10)
+    guest.shot(out, 'gateway-entities')
+    guest('command', command='kill @e[tag=e2e_gw]')
+    assert 'count: 2' in reply, f'the arrow and sand at the gateway exit: {reply}'
     ex, ey, ez = (int(v // 1) for v in pos_of(guest))
     guest('command', command=f'setblock {ex + 2} {ey} {ez} minecraft:end_portal')
     guest('command', command=f'tp @s {ex + 2.5} {ey} {ez + 0.5}')
@@ -1143,7 +1155,7 @@ def level_guest_end(host, guest, out):
     home = wait_dimension(guest, OVERWORLD, 600)
     guest.wait(20)
     assert dims(host, guest) == (OVERWORLD, OVERWORLD), f'host, guest in {dims(host, guest)}'
-    return {'landed': landed, 'gateway': gateway, 'home': home['player']['position']}
+    return {'landed': landed, 'gateway': gateway, 'gateway_entities': reply, 'home': home['player']['position']}
 
 
 def level_reload(host, guest, out):
