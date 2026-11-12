@@ -3,14 +3,18 @@
 mod admin;
 pub(super) mod compute;
 mod data;
+mod display_names;
+mod target_position;
 pub(super) use data::place_summoned;
 mod effects;
 pub(super) mod execute;
 pub(super) mod extra;
+mod item_count;
 pub(in crate::game) mod items;
 mod misc;
 mod place;
 mod players;
+mod position_args;
 pub(super) mod pregen;
 mod profiles;
 mod raid;
@@ -80,6 +84,10 @@ pub(super) enum Target {
     Spawner(u32),
     /// A simulated lingering, creeper or dragon area-effect cloud.
     Cloud(u32),
+    /// The fence knot a lead tie made (`minecraft:leash_knot`), by its
+    /// entity id in the level's `knot_ids` (game/leads.rs). Explicitly
+    /// summoned knots are `Other`s.
+    Knot(u32),
 }
 /// `Entity.setXRot`: reduce the angle before clamping the pitch.
 /// Runs `$body` on the moving entity `$t` names (one of `entity_lists!`'s
@@ -134,6 +142,23 @@ pub(in crate::game) struct OtherEntity {
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
+}
+/// A natural fence knot is only read by commands here: one that would move
+/// or remove it fails as a whole instead of skipping it, so it never
+/// reports a change it did not make (#13036).
+/// The targets a command that moves or kills entities acts on: a natural leash knot is
+/// listed for selectors and `/data` but not changed yet, so it is left out, as before it was
+/// listed. A selector that found only knots finds no entity.
+pub(in crate::game) fn without_knots(targets: Vec<Target>) -> R<Vec<Target>> {
+    let found = !targets.is_empty();
+    let kept: Vec<Target> = targets
+        .into_iter()
+        .filter(|t| !matches!(t, Target::Knot(_)))
+        .collect();
+    if found && kept.is_empty() {
+        return Err(err("argument.entity.notfound.entity", &[]));
+    }
+    Ok(kept)
 }
 /// `EntityType.getDescriptionId`: `entity.<namespace>.<path>`.
 fn entity_name_key(id: &str) -> String {
@@ -206,7 +231,8 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Rocket(id)
     | Target::Trident(id)
     | Target::Spawner(id)
-    | Target::Cloud(id)) = t
+    | Target::Cloud(id)
+    | Target::Knot(id)) = t
     else {
         return None;
     };
@@ -285,7 +311,7 @@ impl Game<'_> {
         self.command_source = outer;
         ok
     }
-    fn syntax_failure(&mut self, e: &CommandError, command: &str) {
+    pub(in crate::game) fn syntax_failure(&mut self, e: &CommandError, command: &str) {
         self.command_failure(e.message.clone());
         let Some(input) = &e.input else { return };
         let cursor = e.cursor.min(input.len());
@@ -426,9 +452,7 @@ impl Game<'_> {
         // the server's own source, "Server".
         let who = match self.command_source.and_then(|s| s.entity) {
             Some(entity) => self.target_name(entity),
-            None if self.console_broadcast.is_some() => {
-                Text::literal(if self.rcon_source { "Rcon" } else { "Server" }.to_owned())
-            }
+            None if self.console_broadcast.is_some() => self.server_name(),
             None => self.player_display_name(),
         };
         let line = Text::translate("chat.type.admin", &[who, message])
@@ -493,22 +517,6 @@ impl Game<'_> {
     pub(super) fn position_arg(&self, ctx: &Context, name: &str) -> Option<[f64; 3]> {
         self.coords(ctx, name).map(|c| self.resolve_coords(&c))
     }
-    /// BlockPosArgument.getLoadedBlockPos.
-    pub(super) fn block_pos_arg(&self, ctx: &Context, name: &str) -> R<[i32; 3]> {
-        let c = self
-            .coords(ctx, name)
-            .ok_or_else(|| err("argument.pos.missing.int", &[]))?;
-        // BlockPos.containing(getPosition)
-        let p = self.resolve_coords(&c).map(|v| v.floor() as i32);
-        let dimension = self.command_source.map_or(self.dim, |s| s.dimension);
-        if dimension != self.dim || !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
-            return Err(err("argument.pos.unloaded", &[]));
-        }
-        if p[1] < self.world.bottom_y() || p[1] >= self.world.top_y() {
-            return Err(err("argument.pos.outofworld", &[]));
-        }
-        Ok(p)
-    }
     fn int(ctx: &Context, name: &str) -> Option<i32> {
         match ctx.get(name) {
             Some(Arg::Int(v)) => Some(*v),
@@ -528,114 +536,6 @@ impl Game<'_> {
         };
         conn.and_then(|c| self.command_guest(c))
             .map_or(self.dim, |g| Dim::from_id(&g.dimension))
-    }
-    pub(super) fn target_position(&self, t: Target) -> Option<[f64; 3]> {
-        match t {
-            Target::Player => self
-                .player
-                .as_ref()
-                .map(|p| [p.position.x, p.position.y, p.position.z]),
-            Target::Guest(conn) => self.command_guest(conn).map(|g| g.position),
-            Target::Mob(id) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id)
-                .map(|m| [m.position.x, m.position.y, m.position.z]),
-            Target::Item(id) => self
-                .dropped
-                .iter()
-                .find(|i| i.id == id)
-                .map(|i| [i.position.x, i.position.y, i.position.z]),
-            Target::Orb(id) => self
-                .orbs
-                .iter()
-                .find(|o| o.id == id)
-                .map(|o| [o.position.x, o.position.y, o.position.z]),
-            Target::Projectile(id) => self
-                .creatures
-                .projectiles
-                .iter()
-                .find(|a| a.id == id)
-                .map(|a| [a.position.x, a.position.y, a.position.z]),
-            Target::Stand(id) => self
-                .armor_stands
-                .iter()
-                .find(|a| a.id == id)
-                .map(|a| [a.position.x, a.position.y, a.position.z]),
-            Target::Frame(id) => self.item_frames.iter().find(|f| f.id == id).map(|f| {
-                let (lo, hi) = f.bounds();
-                [
-                    (lo[0] + hi[0]) / 2.0,
-                    (lo[1] + hi[1]) / 2.0,
-                    (lo[2] + hi[2]) / 2.0,
-                ]
-            }),
-            Target::Painting(id) => self.paintings.iter().find(|p| p.id == id).map(|p| {
-                let (lo, hi) = p.bounds();
-                [
-                    (lo[0] + hi[0]) / 2.0,
-                    (lo[1] + hi[1]) / 2.0,
-                    (lo[2] + hi[2]) / 2.0,
-                ]
-            }),
-            Target::Boat(id) => self
-                .boats
-                .iter()
-                .find(|b| b.id == id)
-                .map(|b| [b.position.x, b.position.y, b.position.z]),
-            Target::Cart(id) => self
-                .carts
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| [c.position.x, c.position.y, c.position.z]),
-            Target::Other(id) => self
-                .others
-                .iter()
-                .find(|o| o.id == id)
-                .map(|o| [o.position.x, o.position.y, o.position.z]),
-            Target::Crystal(id) => self
-                .crystals
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| [c.position.x, c.position.y, c.position.z]),
-            Target::Dragon(id) => self
-                .dragon
-                .as_ref()
-                .filter(|d| d.id == id)
-                .map(|d| [d.position.x, d.position.y, d.position.z]),
-            Target::Cushion(id) => self
-                .cushions
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| [c.position.x, c.position.y, c.position.z]),
-            Target::Tnt(id) => self
-                .tnts
-                .iter()
-                .find(|t| t.id == id)
-                .map(|t| [t.position.x, t.position.y, t.position.z]),
-            Target::Falling(id) => self
-                .falling
-                .iter()
-                .find(|f| f.id == id)
-                .map(|f| [f.position.x, f.position.y, f.position.z]),
-            Target::Rocket(id) => self
-                .rockets
-                .iter()
-                .find(|r| r.id == id)
-                .map(|r| [r.position.x, r.position.y, r.position.z]),
-            Target::Cloud(id) => self.breath_clouds.iter().find(|c| c.id == id).map(|c| c.at),
-            Target::Trident(id) => self
-                .tridents
-                .iter()
-                .find(|t| t.id == id)
-                .map(|t| [t.position.x, t.position.y, t.position.z]),
-            Target::Fangs(id) => self.fangs.list.iter().find(|f| f.id == id).map(|f| f.pos),
-            Target::Spawner(id) => self
-                .ominous_spawners
-                .iter()
-                .find(|s| s.id == id)
-                .map(|s| s.position),
-        }
     }
     pub(super) fn target_type(&self, t: Target) -> String {
         match t {
@@ -689,6 +589,7 @@ impl Game<'_> {
             Target::Fangs(_) => "minecraft:evoker_fangs".into(),
             Target::Spawner(_) => "minecraft:ominous_item_spawner".into(),
             Target::Cloud(_) => "minecraft:area_effect_cloud".into(),
+            Target::Knot(_) => "minecraft:leash_knot".into(),
         }
     }
     /// The name of the player the game acts for: a guest's own while their
@@ -755,13 +656,7 @@ impl Game<'_> {
                 let block = Text::translate(&format!("block.{block}"), &[]);
                 Text::translate("entity.minecraft.falling_block_type", &[block])
             }
-            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).map_or_else(
-                || Text::translate("entity.", &[]),
-                |m| match self.mob_team_of(m) {
-                    Some(team) => team.formatted_name(m.command_name()),
-                    None => m.command_name(),
-                },
-            ),
+            Target::Mob(id) => self.mob_command_name(id),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
                 let custom = super::native_entities::target_id(other)
@@ -1035,6 +930,9 @@ impl Game<'_> {
                 .filter(|c| c.id != 0)
                 .map(|c| Target::Cloud(c.id)),
         );
+        // The knots lead ties made (LeashFenceKnotEntity), each the one
+        // entity its id names.
+        candidates.extend(self.natural_knot_ids().into_iter().map(Target::Knot));
         candidates
     }
     /// The loaded levels, in the order the server holds them: the
@@ -1074,6 +972,7 @@ impl Game<'_> {
             Target::Trident(id),
             Target::Spawner(id),
             Target::Cloud(id),
+            Target::Knot(id),
         ]
         .into_iter()
         .find(|t| self.level_holds(*t))
@@ -1104,6 +1003,7 @@ impl Game<'_> {
             Target::Trident(id) => self.tridents.iter().any(|t| t.id == id),
             Target::Spawner(id) => self.ominous_spawners.iter().any(|s| s.id == id),
             Target::Cloud(id) => self.breath_clouds.iter().any(|c| c.id == id),
+            Target::Knot(id) => self.natural_knot(id).is_some(),
         }
     }
     /// Run `f` with the level that holds the entity a target names in place
@@ -1357,9 +1257,6 @@ impl Game<'_> {
             }
         }
         self.set_mode(mode);
-        if self.screen == Screen::Inventory && (self.creative || self.spectator()) {
-            self.screen = Screen::Playing;
-        }
         true
     }
     fn cmd_gamemode(&mut self, ctx: &Context) -> R<i32> {
@@ -1841,7 +1738,7 @@ impl Game<'_> {
             }
             Target::Crystal(id) => {
                 if let Some(c) = self.crystals.iter_mut().find(|c| c.id == id) {
-                    c.position = v;
+                    (c.position, c.fall.0) = (v, true); // performTeleport: setOnGround(true)
                 }
             }
             Target::Dragon(id) => {
@@ -1852,6 +1749,8 @@ impl Game<'_> {
             }
             Target::Tnt(id) => {
                 if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
+                    // `PrimedTnt.teleport` includes same-level command teleports.
+                    t.used_portal = true;
                     t.position = v;
                     t.previous = v;
                     if let Some(r) = rotation {
@@ -1908,6 +1807,8 @@ impl Game<'_> {
             }
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
+            // The commands leave a natural knot out (`without_knots`).
+            Target::Knot(_) => {}
         }
         // Entity.teleportSameDimension: the riders go with their vehicle at
         // once, by the offset it took and the turn it was given.
@@ -2014,7 +1915,7 @@ impl Game<'_> {
     }
     fn cmd_teleport(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let targets = if id.starts_with("teleport.targets") {
-            self.entities(ctx, "targets", false)?
+            without_knots(self.entities(ctx, "targets", false)?)?
         } else {
             vec![
                 self.source_entity()
@@ -2167,14 +2068,14 @@ impl Game<'_> {
     }
     /// `ServerClockManager.getInstance`: commands address clock-keyed state.
     /// Keep the existing Overworld clock tied to the world's canonical day time.
-    fn command_clock_time(&self, clock: &str) -> i64 {
+    pub(super) fn command_clock_time(&self, clock: &str) -> i64 {
         if clock == "minecraft:overworld" {
             self.world.day_time
         } else {
             self.ui.command_clocks.get(clock).map_or(0, |c| c.0)
         }
     }
-    fn set_command_clock_time(&mut self, clock: &str, total: i64) {
+    pub(super) fn set_command_clock_time(&mut self, clock: &str, total: i64) {
         if clock == "minecraft:overworld" {
             self.world.day_time = total;
         } else {
@@ -2185,7 +2086,7 @@ impl Game<'_> {
                 .0 = total;
         }
     }
-    fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
+    pub(super) fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
         if clock == "minecraft:overworld" {
             &mut self.ui.clock
         } else {
@@ -2220,12 +2121,7 @@ impl Game<'_> {
                 if total == t {
                     return Err(err("commands.time.set.already_at_time", &[&clock, &t]));
                 }
-                let mut cancel = false;
-                self.native_time_skip(self.dim.id(), total, t, "command", &mut cancel);
-                if !cancel {
-                    self.set_command_clock_time(&clock, t);
-                    self.command_clock_state(&clock).partial = 0.0;
-                }
+                self.jump_clock(&clock, total, t, "command");
                 self.feedback(Text::tr("commands.time.set.absolute", &[&clock, &t]));
                 Ok(t as i32)
             }
@@ -2383,41 +2279,7 @@ impl Game<'_> {
                 true,
             )
         };
-        let previous = (
-            self.world.weather.clear_time,
-            self.world.weather.rain_time,
-            self.world.weather.thunder_time,
-            self.world.weather.raining,
-            self.world.weather.thundering,
-        );
-        let mut cancel = false;
-        self.native_weather_change(self.dim.id(), raining, thundering, &mut cancel);
-        let old_thundering = self.world.weather.thundering;
-        let old_thunder_time = self.world.weather.thunder_time;
-        let mut cancel_thunder = false;
-        self.native_thunder_change(self.dim.id(), thundering, &mut cancel_thunder);
-        if cancel {
-            let w = &mut self.world.weather;
-            (
-                w.clear_time,
-                w.rain_time,
-                w.thunder_time,
-                w.raining,
-                w.thundering,
-            ) = previous;
-        } else {
-            // ServerLevel.setWeatherParameters.
-            let w = &mut self.world.weather;
-            w.clear_time = clear;
-            w.rain_time = time;
-            w.thunder_time = time;
-            w.raining = raining;
-            w.thundering = thundering;
-            if cancel_thunder {
-                w.thunder_time = old_thunder_time;
-                w.thundering = old_thundering;
-            }
-        }
+        self.apply_weather(clear, time, raining, thundering);
         self.feedback(Text::translate(key, &[]));
         Ok(duration.unwrap_or(-1))
     }
@@ -2514,17 +2376,7 @@ impl Game<'_> {
                 self.item_frames.retain(|f| f.id != id);
             }
             Target::Painting(id) => self.paintings.retain(|p| p.id != id),
-            Target::Boat(id) => {
-                // AbstractBoat.remove: a killed boat drops its lead.
-                if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-                    self.release_vehicle_container(id);
-                    let b = self.boats.remove(i);
-                    // AbstractChestBoat.remove, after the live menu writes
-                    // back its slots.
-                    self.drop_vehicle_contents(b.position.components(), &b.items);
-                    self.boat_removed(&b);
-                }
-            }
+            Target::Boat(id) => self.kill_boat(id),
             Target::Cart(id) => {
                 self.release_vehicle_container(id);
                 if let Some(i) = self.carts.iter().position(|c| c.id == id) {
@@ -2544,6 +2396,8 @@ impl Game<'_> {
             Target::Trident(id) => self.tridents.retain(|t| t.id != id),
             Target::Spawner(id) => self.ominous_spawners.retain(|s| s.id != id),
             Target::Cloud(id) => self.breath_clouds.retain(|c| c.id != id),
+            // The commands leave a natural knot out (`without_knots`).
+            Target::Knot(_) => {}
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
         self.orbs.retain(|o| o.age < u32::MAX / 2);
@@ -2554,7 +2408,7 @@ impl Game<'_> {
     }
     fn cmd_kill(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {
-            self.entities(ctx, "targets", false)?
+            without_knots(self.entities(ctx, "targets", false)?)?
         } else {
             vec![self.implied_player()]
         };
@@ -2624,9 +2478,10 @@ impl Game<'_> {
         if self.res.mob_types().contains_key(&kind) {
             // SummonCommand.createEntity loads the mob from `{id:..}`: its yaw
             // is the compound's (none, so 0), with no level-random draw.
-            self.spawn_mob_spawned(&short, pos, super::creatures::SpawnYaw::Fixed(0.0))
+            let id = self
+                .spawn_mob_spawned(&short, pos, super::creatures::SpawnYaw::Fixed(0.0))
                 .ok_or_else(|| err("commands.summon.failed.uuid", &[]))?;
-            name = Text::translate(&entity_name_key(&kind), &[]);
+            name = self.target_name(Target::Mob(id));
         } else {
             match short.as_str() {
                 "item" => {
@@ -2634,26 +2489,17 @@ impl Game<'_> {
                     return Err(err("commands.summon.failed", &[]));
                 }
                 "experience_orb" => {
-                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck
-                    // like any other orb spawn.
+                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck like any orb spawn.
                     let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
-                    self.orbs.push(horizon_client::entities::ExperienceOrb {
-                        rotation: [0.0, 0.0],
-                        join: Default::default(),
-                        no_gravity: false,
-                        id: self.next_entity,
-                        position: Vec3::new(at[0], at[1], at[2]),
-                        previous: Vec3::new(at[0], at[1], at[2]),
-                        velocity: Vec3::new(0.0, 0.0, 0.0),
-                        value: 0,
-                        age: 0,
-                        on_ground: false,
-                        count: 1,
-                        ticks: 0,
-                        health: 5,
-                        following: None,
-                    });
+                    let at = Vec3::new(at[0], at[1], at[2]);
+                    let orb = horizon_client::entities::ExperienceOrb::new(
+                        self.next_entity,
+                        at,
+                        Vec3::ZERO,
+                        0,
+                    );
+                    self.orbs.push(orb);
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
                     if !self.native_joins_flush(false, self.next_entity) {
                         return Err(err("commands.summon.failed.uuid", &[]));
@@ -2678,14 +2524,9 @@ impl Game<'_> {
                     self.next_entity += 1;
                     let at = Vec3::new(pos[0], pos[1], pos[2]);
                     let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
-                    self.crystals.push(super::dragon::Crystal {
-                        id: self.next_entity,
-                        position: at,
-                        show_bottom: true,
-                        time: super::dragon::Crystal::start_time(at, drawn, self.clock.still()),
-                        beam: None,
-                        invulnerable: false,
-                    });
+                    let time = super::dragon::Crystal::start_time(at, drawn, self.clock.still());
+                    let crystal = super::dragon::Crystal::new(self.next_entity, at, true, time);
+                    self.crystals.push(crystal);
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
                     if !self.native_joins_flush(false, self.next_entity) {
                         return Err(err("commands.summon.failed.uuid", &[]));
@@ -2976,59 +2817,6 @@ impl Game<'_> {
         });
         self.process_level_events()
             .map_err(|e| CommandError::new(Text::literal(e.to_string())))
-    }
-    /// The block entity part of `BlockInput.place`: load the block entity
-    /// from the argument's tag; true when its saved data changed.
-    pub(super) fn load_block_entity_nbt(&mut self, pos: [i32; 3], nbt: &str) -> bool {
-        use horizon_world::nbt::Tag;
-        if self.pot_data(pos).is_some() {
-            let Ok((tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
-                return false;
-            };
-            return self.set_pot_data(pos, &tag).unwrap_or(false);
-        }
-        let key = (pos[0], pos[1], pos[2]);
-        let Some(e) = self.world.block_entities.get(&key) else {
-            return false;
-        };
-        let name = self.data_block_name(pos);
-        let before = horizon_client::save::encode_block_entity(key, e, &name);
-        let Ok((mut tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
-            return false;
-        };
-        if let Tag::Compound(c) = &mut tag {
-            for k in ["id", "x", "y", "z"] {
-                if let Some(v) = before.get(k) {
-                    c.insert(k.into(), v.clone());
-                }
-            }
-        }
-        let Some((_, mut new)) = horizon_client::save::decode_block_entity(&tag) else {
-            return false;
-        };
-        let rolled = self.take_loot_table(key, &tag, &mut new);
-        let after = horizon_client::save::encode_block_entity(key, &new, &name);
-        // The lock is outside the model: a tag that only changes it still
-        // changes the block entity.
-        let lock_changed = self.world.block_lock(key) != tag.get("lock");
-        // So is the custom name.
-        let name_changed = self.load_block_name(key, &new, &tag);
-        let cooldown_changed = if name == "minecraft:hopper" {
-            let state = super::machines::HopperState::load(&tag);
-            let changed = self.hoppers.get(&key).map_or(-1, |s| s.cooldown) != state.cooldown;
-            self.hoppers.insert(key, state);
-            changed
-        } else {
-            false
-        };
-        if after == before && !rolled && !lock_changed && !name_changed && !cooldown_changed {
-            return false;
-        }
-        self.world.block_entities.insert(key, new);
-        self.world.set_block_lock(key, &tag);
-        self.update_spawner_display(key);
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
-        true
     }
     /// `RandomizableContainer.unpackLootTable` for a player who opens a
     /// container: a roll the container still holds fires
@@ -3856,7 +3644,7 @@ impl Game<'_> {
             vec![Target::Player]
         };
         let pos = if ctx.get("pos").is_some() {
-            self.block_pos_arg(ctx, "pos")?
+            self.spawnable_pos_arg(ctx, "pos")?
         } else {
             let p = self.source_position();
             [
@@ -3890,12 +3678,9 @@ impl Game<'_> {
                     return;
                 }
                 g.spawn = None;
-                g.respawn_config = Some(super::respawn_anchor::RespawnConfig {
-                    dim: level,
-                    pos,
-                    yaw,
-                    forced: true,
-                });
+                g.respawn_config = Some(super::respawn_anchor::RespawnConfig::forced(
+                    level, pos, yaw, pitch,
+                ));
             });
         }
         let dim = Text::literal(self.dim.id());
@@ -3920,7 +3705,7 @@ impl Game<'_> {
     }
     fn cmd_setworldspawn(&mut self, ctx: &Context) -> R<i32> {
         let pos = if ctx.get("pos").is_some() {
-            self.block_pos_arg(ctx, "pos")?
+            self.spawnable_pos_arg(ctx, "pos")?
         } else {
             let p = self.source_position();
             [
@@ -4017,6 +3802,12 @@ impl Game<'_> {
             };
             let present = components.get(&id.as_str().into());
             let result = match term[split..].chars().next() {
+                // Both count wrappers in `ItemPredicateArgument` use the live
+                // stack count and the same integer bounds matcher.
+                Some('=' | '~') if id == "minecraft:count" => {
+                    let value = horizon_world::nbt::parse_snbt(term[split + 1..].trim());
+                    value.is_ok_and(|(v, _)| item_count::matches(stack.count, &v))
+                }
                 Some('=') => {
                     let value = horizon_world::nbt::parse_snbt(term[split + 1..].trim())
                         .ok()
@@ -4030,28 +3821,11 @@ impl Game<'_> {
                     }
                 }
                 Some('~') => {
-                    // Sub-predicates: `count` and component predicates.
+                    // Component sub-predicates.
                     let value = horizon_world::nbt::parse_snbt(term[split + 1..].trim())
                         .ok()
                         .map(|(t, _)| t);
                     match (id.as_str(), value) {
-                        ("minecraft:count", Some(v)) => {
-                            let n = i64::from(stack.count);
-                            match &v {
-                                horizon_world::nbt::Tag::Compound(_) => {
-                                    let get = |k: &str| match v.get(k) {
-                                        Some(horizon_world::nbt::Tag::Int(i)) => {
-                                            Some(i64::from(*i))
-                                        }
-                                        _ => None,
-                                    };
-                                    get("min").is_none_or(|m| n >= m)
-                                        && get("max").is_none_or(|m| n <= m)
-                                }
-                                horizon_world::nbt::Tag::Int(i) => n == i64::from(*i),
-                                _ => false,
-                            }
-                        }
                         // `MinMaxBounds.Ints.matches`: DamagePredicate's damage-only
                         // Int bounds shape; effective DAMAGE presence is required.
                         // Other fields keep the entire existing predicate path.
@@ -4522,7 +4296,7 @@ impl Game<'_> {
                                 .map(|cart| cart.command.name())
                         })
                     })
-                    .unwrap_or_else(|| Text::literal("Server")),
+                    .unwrap_or_else(|| self.server_name()),
             },
             None => self.player_display_name(),
         };
@@ -5421,88 +5195,8 @@ mod query_feedback_tests {
 }
 
 #[cfg(test)]
-mod forced_respawn_tests {
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn overworld_spawnpoint_is_validated_at_both_player_blocks() {
-        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
-        use horizon_client::chunk::Chunk;
-        use horizon_core::geometry::Vec3;
-        use std::sync::Arc;
-        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            root.clone(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            true,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&root),
-            None,
-        )
-        .unwrap();
-        game.player = Some(
-            horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(5.5, 64.0, 5.5))
-                .unwrap(),
-        );
-        game.build_registries();
-        game.set_allow_commands(true);
-        game.world
-            .chunks
-            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-        game.level.world_spawn = Some([0, 80, 0]);
-        let registry = game.pack.assets.registry;
-        let air = registry.default_state("minecraft:air").unwrap();
-        // Liquid is a block property: aquatic plants such as kelp still permit
-        // a forced point, while a bubble column does not, at feet or head.
-        for (block, allowed) in [
-            ("air", true),
-            ("water", false),
-            ("lava", false),
-            ("bubble_column", false),
-            ("kelp", true),
-            ("stone", false),
-        ] {
-            let state = registry
-                .default_state(&format!("minecraft:{block}"))
-                .unwrap();
-            for height in [0, 1] {
-                game.world.set(5, 64, 5, air).unwrap();
-                game.world.set(5, 65, 5, air).unwrap();
-                game.world.set(5, 64 + height, 5, state).unwrap();
-                assert!(game.run_command("spawnpoint @s 5 64 5"));
-                let config = game
-                    .respawn_config
-                    .expect("Overworld commands must retain a forced configuration");
-                assert!(config.forced);
-                assert_eq!(config.pos, [5, 64, 5]);
-                let actual = game.resolve_server_respawn(config);
-                assert_eq!(actual.is_some(), allowed, "{block} at height {height}");
-                assert_eq!(game.respawn_config.is_some(), allowed);
-                assert_eq!(game.level.world_spawn, Some([0, 80, 0]));
-                if let Some((at, yaw)) = actual {
-                    assert_eq!(at, Vec3::new(5.5, 64.1, 5.5));
-                    assert_eq!(yaw, 0.0);
-                }
-            }
-        }
-    }
-}
+#[path = "forced_respawn_tests.rs"]
+mod forced_respawn_tests;
 
 #[cfg(test)]
 mod effective_presence_tests {
@@ -6190,3 +5884,7 @@ mod global_selector_order_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "item_count_predicate_tests.rs"]
+mod item_count_predicate_tests;

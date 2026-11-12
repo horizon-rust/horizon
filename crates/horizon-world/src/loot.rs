@@ -608,6 +608,9 @@ fn overlay_map(overlay: &PackOverlay, kind: &str, out: &mut HashMap<String, Valu
     }
 }
 
+mod odds;
+pub use odds::LootOdds;
+
 /// Loot tables by id. Each is kept as its JSON text and read into a [`Value`]
 /// the first time it is rolled: of vanilla's ~1,450 tables a game rolls a
 /// few, and as `Value`s they took ~7 MB for 0.6 MB of JSON. Every table was
@@ -1595,13 +1598,7 @@ impl<R: RandomSource> Context<'_, R> {
             }
             "minecraft:set_enchantments" => {
                 if let Some(map) = f["enchantments"].as_object() {
-                    if stack.item == "minecraft:book" {
-                        stack.item = "minecraft:enchanted_book".into();
-                    }
-                    for (name, level) in map {
-                        let level = self.int(level);
-                        enchant(&mut stack, name, level);
-                    }
+                    set_enchantments(&mut stack, map, |value| self.int(value));
                 }
             }
             "minecraft:set_potion" => stack.potion = f["id"].as_str().map(str::to_owned),
@@ -2153,6 +2150,21 @@ struct Choice<'v> {
     entry: &'v Value,
     item: Option<String>,
 }
+/// `SetEnchantmentsFunction.run`: set each enchantment in `map` to its level
+/// and keep the others (a book transmutes to an enchanted book first).
+fn set_enchantments(
+    stack: &mut LootStack,
+    map: &serde_json::Map<String, serde_json::Value>,
+    mut level: impl FnMut(&serde_json::Value) -> i32,
+) {
+    if stack.item == "minecraft:book" {
+        stack.item = "minecraft:enchanted_book".into();
+    }
+    for (name, value) in map {
+        enchant(stack, name, level(value).max(0));
+    }
+}
+
 fn enchant(stack: &mut LootStack, name: &str, level: i32) {
     match stack.enchantments.iter_mut().find(|(n, _)| n == name) {
         Some(slot) => slot.1 = level,
@@ -2163,6 +2175,26 @@ fn enchant(stack: &mut LootStack, name: &str, level: i32) {
 #[cfg(test)]
 mod namespace_tests {
     use super::*;
+
+    #[test]
+    fn set_enchantments_replaces_the_levels() {
+        let mut stack = LootStack::new("minecraft:book");
+        stack.enchantments.push(("minecraft:sharpness".into(), 1));
+        stack.enchantments.push(("minecraft:mending".into(), 1));
+        let map = serde_json::json!({"minecraft:sharpness": 2, "minecraft:unbreaking": 3});
+        set_enchantments(&mut stack, map.as_object().unwrap(), |value| {
+            value.as_i64().unwrap_or(0) as i32
+        });
+        assert_eq!(&*stack.item, "minecraft:enchanted_book");
+        assert_eq!(
+            stack.enchantments,
+            [
+                ("minecraft:sharpness".to_owned(), 2),
+                ("minecraft:mending".to_owned(), 1),
+                ("minecraft:unbreaking".to_owned(), 3),
+            ]
+        );
+    }
 
     /// The same root and packs share one map while it is held; other packs
     /// get their own.
@@ -2916,30 +2948,8 @@ mod native_kinds_tests {
 }
 
 #[cfg(test)]
-mod recipe_result_tests {
-    use super::*;
-
-    /// `ItemStackTemplate.CODEC` reads a stack's fields or a bare item id.
-    #[test]
-    fn a_result_is_an_object_with_an_id_or_a_bare_item_id() {
-        let id = |json: &str| {
-            let v: Value = serde_json::from_str(json).unwrap();
-            recipe_result_id(&v).map(str::to_owned)
-        };
-        assert_eq!(
-            id(r#"{"id": "ruby:ruby", "count": 3}"#).as_deref(),
-            Some("ruby:ruby")
-        );
-        assert_eq!(id(r#""ruby:ruby""#).as_deref(), Some("ruby:ruby"));
-        // No `id` (a transmuting recipe keeps its input's item), the `item` key of older
-        // versions and anything that is neither an object nor a string name no item.
-        assert_eq!(id(r#"{"count": 2}"#), None);
-        assert_eq!(id(r#"{"item": "minecraft:stick"}"#), None);
-        assert_eq!(id(r#"{"id": 7}"#), None);
-        assert_eq!(id("null"), None);
-        assert_eq!(id("[]"), None);
-    }
-}
+#[path = "recipe_result_tests.rs"]
+mod recipe_result_tests;
 
 #[cfg(test)]
 mod location_check_biome_tests {

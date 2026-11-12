@@ -702,7 +702,7 @@ impl Game<'_> {
             host.hub
                 .chat_filter
                 .as_ref()
-                .is_none_or(|g| !g.filter.matches(text)),
+                .is_none_or(|g| !g.matches(text)),
         )
     }
     /// A system line in every player's chat and the server's log.
@@ -735,6 +735,24 @@ impl Game<'_> {
             host.hub.send_to(g.conn, &packet);
         }
     }
+    /// The open world's folder name, which is the level name the server
+    /// opened (`level-name` in server.properties on a dedicated server).
+    /// None when no world is open. API @API:level_name@.
+    pub(super) fn native_level_name(&self) -> Option<String> {
+        self.world_root.file_name()?.to_str().map(str::to_owned)
+    }
+    /// The dimension a world folder holds: `world` is `minecraft:overworld`,
+    /// `world_nether` `minecraft:the_nether`, `world_the_end` `minecraft:the_end`
+    /// (the folder names Bukkit's default worlds use). None for any other
+    /// name. API @API:level_name@.
+    pub(super) fn native_dimension_of_world(&self, world: &str) -> Option<String> {
+        dimension_of_world(world).map(str::to_owned)
+    }
+    /// The world folder name that holds `dimension` (the reverse of
+    /// `native_dimension_of_world`); None for any other dimension id. API @API:level_name@.
+    pub(super) fn native_world_of_dimension(&self, dimension: &str) -> Option<String> {
+        world_of_dimension(dimension).map(str::to_owned)
+    }
     /// The server's motd from server.properties, as the list ping shows it;
     /// empty when no server runs. API @API:join_leave_helpers@.
     pub(super) fn native_motd(&self) -> String {
@@ -742,6 +760,30 @@ impl Game<'_> {
             .as_ref()
             .map(|lan| lan.hub.lan.shared.motd())
             .unwrap_or_default()
+    }
+    /// Whether the dedicated server runs in online mode (`online-mode` of server.properties):
+    /// its players sign in with their accounts. None off a dedicated server and before it listens.
+    /// API @API:server_settings@.
+    pub(super) fn native_online_mode(&self) -> Option<bool> {
+        Some(online_mode_of(&self.dedicated_lan()?.shared.config))
+    }
+    /// The port the dedicated server listens on: `server-port` of server.properties, or the
+    /// `--port` it was started with. None off a dedicated server and before it listens.
+    /// API @API:server_settings@.
+    pub(super) fn native_server_port(&self) -> Option<u16> {
+        Some(self.dedicated_lan()?.port)
+    }
+    /// How the dedicated server takes its players from a proxy: `"velocity"` when it signs the
+    /// forwarded player information with `forwarding.secret` (offline mode behind Velocity),
+    /// `"none"` when it doesn't; None off a dedicated server and before it listens. The secret
+    /// itself is never returned. API @API:server_settings@.
+    pub(super) fn native_proxy_forwarding(&self) -> Option<&'static str> {
+        Some(proxy_forwarding_of(&self.dedicated_lan()?.shared.config))
+    }
+    /// The listening socket of a dedicated server; None on any other side and before it listens.
+    fn dedicated_lan(&self) -> Option<&horizon_client::lan::Lan> {
+        self.options.dedicated.as_ref()?;
+        Some(&self.lan.as_ref()?.hub.lan)
     }
     /// Whether a player has played on the open world before: their player
     /// data file is there (`players/data/<uuid>.dat`). False when no world
@@ -1486,6 +1528,43 @@ impl Game<'_> {
     }
 }
 
+/// The default worlds' folder names and the dimension each holds.
+const DEFAULT_WORLDS: [(&str, &str); 3] = [
+    ("world", "minecraft:overworld"),
+    ("world_nether", "minecraft:the_nether"),
+    ("world_the_end", "minecraft:the_end"),
+];
+
+/// The online mode a dedicated server's network config carries: it has an
+/// `OnlineMode` key (and so signs its logins) only in online mode.
+fn online_mode_of(config: &horizon_client::lan::NetConfig) -> bool {
+    config.online.is_some()
+}
+
+/// The proxy forwarding a dedicated server's network config carries: the secret
+/// is set only offline behind a proxy (game/dedicated.rs `forwarding_secret`).
+fn proxy_forwarding_of(config: &horizon_client::lan::NetConfig) -> &'static str {
+    if config.forwarding_secret.is_some() {
+        "velocity"
+    } else {
+        "none"
+    }
+}
+
+fn dimension_of_world(world: &str) -> Option<&'static str> {
+    DEFAULT_WORLDS
+        .iter()
+        .find(|(name, _)| *name == world)
+        .map(|(_, dimension)| *dimension)
+}
+
+fn world_of_dimension(dimension: &str) -> Option<&'static str> {
+    DEFAULT_WORLDS
+        .iter()
+        .find(|(_, id)| *id == dimension)
+        .map(|(name, _)| *name)
+}
+
 fn system_chat(line: &Text) -> C {
     C::SystemChat(play::SystemChat {
         content: component_nbt(&line.component()),
@@ -2081,5 +2160,38 @@ mod tests {
         let (ran, lines) = run("time query time", true);
         assert!(ran && lines.is_empty(), "{lines:?}");
         assert!(game.console_broadcast.is_none());
+    }
+
+    #[test]
+    fn default_worlds_map_both_ways() {
+        assert_eq!(
+            dimension_of_world("world_nether"),
+            Some("minecraft:the_nether")
+        );
+        assert_eq!(
+            world_of_dimension("minecraft:the_end"),
+            Some("world_the_end")
+        );
+        assert_eq!(dimension_of_world("frontier"), None);
+        assert_eq!(world_of_dimension("minecraft:overworld"), Some("world"));
+        assert_eq!(world_of_dimension("world"), None);
+    }
+
+    #[test]
+    fn server_settings_follow_the_network_config() {
+        use horizon_client::lan::{NetConfig, OnlineMode};
+        let mut config = NetConfig::loopback(25565, String::new(), 20);
+        // online-mode=false, no proxy: no key, no forwarding secret.
+        assert!(!online_mode_of(&config));
+        assert_eq!(proxy_forwarding_of(&config), "none");
+        // online-mode=false behind Velocity: the secret is set.
+        config.forwarding_secret = Some(b"secret".to_vec());
+        assert!(!online_mode_of(&config));
+        assert_eq!(proxy_forwarding_of(&config), "velocity");
+        // online-mode=true: the server's key, and forwarding stays off.
+        config.forwarding_secret = None;
+        config.online = Some(std::sync::Arc::new(OnlineMode::generate(false).unwrap()));
+        assert!(online_mode_of(&config));
+        assert_eq!(proxy_forwarding_of(&config), "none");
     }
 }

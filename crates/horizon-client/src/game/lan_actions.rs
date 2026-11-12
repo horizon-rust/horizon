@@ -7,7 +7,7 @@
 //! block log, the level events and the entity tracker.
 use super::{
     Dim, Game, GuestUse, Hit, InteractTarget, Mining, Screen,
-    building_players::{BuildingPlayer, BuildingPlayers},
+    building_players::{BuildingPlayer, BuildingPlayers, HubBodies, shared},
     lan::LanHost,
     lan_crafting::MenuRemoval,
     respawn_anchor::RespawnConfig,
@@ -38,14 +38,15 @@ use horizon_protocol::{
 use horizon_world::entity_move::EntityMoveWorld;
 use winit::keyboard::KeyCode;
 
+mod guest_body;
+mod horizon_channels;
+
 #[cfg(test)]
 mod crack_feedback_tests;
 
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
 pub(super) struct GuestPlay {
-    /// The sign this guest may write on (`SignBlockEntity.playerWhoMayEdit`).
-    pub(super) sign_editing: Option<[i32; 3]>,
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
@@ -341,19 +342,66 @@ fn guest_open_windows(host: &LanHost, conn: u32) -> Vec<i32> {
     windows
 }
 
+fn building_player(g: &horizon_client::lan::guest::Guest) -> BuildingPlayer {
+    BuildingPlayer {
+        conn: Some(g.conn),
+        dimension: Dim::from_id(&g.dimension),
+        bounds: (g.placed && g.loaded && !g.dead && !g.spectator()).then(|| g.bounds()),
+        borrowed: false,
+    }
+}
+
+thread_local! {
+    /// The hub's bodies for the turns of one `tick_guests`, built once instead
+    /// of for every turn (players x turns a tick). A guest's entry is refreshed
+    /// when its turn ends ([`refresh_building_player`]), so the turns after it
+    /// see it where it went (a pearl, a death, spectator mode).
+    static BUILDING_CACHE: std::cell::RefCell<Option<HubBodies>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// The hub's current bodies, across dimensions. A borrowed ancestor's
 /// live body takes precedence over this saved state until its turn returns.
-fn building_players(host: &LanHost) -> Vec<BuildingPlayer> {
-    host.hub
-        .guests
-        .iter()
-        .map(|g| BuildingPlayer {
-            conn: Some(g.conn),
-            dimension: Dim::from_id(&g.dimension),
-            bounds: (g.placed && g.loaded && !g.dead && !g.spectator()).then(|| g.bounds()),
-            borrowed: false,
-        })
-        .collect()
+fn building_players(host: &LanHost) -> HubBodies {
+    let guests = &host.hub.guests;
+    let kept = BUILDING_CACHE.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|list| {
+                list.len() == guests.len()
+                    && list
+                        .iter()
+                        .zip(guests)
+                        .all(|(p, g)| p.get().conn == Some(g.conn))
+            })
+            .cloned()
+    });
+    kept.unwrap_or_else(|| shared(guests.iter().map(building_player)))
+}
+
+/// Builds the hub's bodies once for the turns to come (`Some`), or drops them.
+pub(super) fn building_cache(host: Option<&LanHost>) {
+    let bodies = host.map(|host| shared(host.hub.guests.iter().map(building_player)));
+    BUILDING_CACHE.with(|c| *c.borrow_mut() = bodies);
+}
+
+/// The cached bodies as they are now in the hub, after `conn`'s turn (or its
+/// death step). Every entry, not only the actor's: a turn can move, kill or
+/// change another guest too (`/tp`, an attack, an explosion), and the turns
+/// after it must see that guest where it is now, as a list built afresh would.
+/// Copies into the shared cells, no allocation.
+fn refresh_building_player(host: &LanHost, _conn: u32) {
+    BUILDING_CACHE.with(|c| {
+        if let Some(list) = c.borrow().as_ref()
+            && list.len() == host.hub.guests.len()
+        {
+            for (p, g) in list.iter().zip(&host.hub.guests) {
+                if p.get().conn == Some(g.conn) {
+                    p.set(building_player(g));
+                }
+            }
+        }
+    });
 }
 
 impl Game<'_> {
@@ -456,42 +504,7 @@ impl Game<'_> {
         );
         let fresh = host.hub.guests[i].motion.is_none();
         if fresh {
-            let p = Vec3::new(
-                host.hub.guests[i].position[0],
-                host.hub.guests[i].position[1],
-                host.hub.guests[i].position[2],
-            );
-            host.hub.guests[i].motion = PlayerMotion::new(self.motion, p).ok().map(Box::new);
-            // The first body after joining burns, breathes and falls on as saved.
-            let g = &mut host.hub.guests[i];
-            if let Some(saved) = g.loaded_body.take()
-                && let Some(m) = g.motion.as_mut()
-            {
-                saved.apply(m);
-                // LivingEntity.readAdditionalSaveData: the saved attributes.
-                let _ =
-                    m.apply_saved_attributes(g.saved.as_ref().and_then(|t| t.get("attributes")));
-            }
-            // ServerPlayer.restoreFrom: a body that follows another takes its
-            // attributes (a scale of 0.1 stays 0.1 after a respawn or a trip
-            // to another level).
-            let g = &mut host.hub.guests[i];
-            if let Some(carried) = g.carried_attributes.take()
-                && let Some(m) = g.motion.as_mut()
-            {
-                let _ = m.apply_saved_attributes(Some(&carried));
-            }
-            // The saved golden hearts go on the first body of a player who
-            // has been here before.
-            let saved = host.hub.guests[i].saved_absorption.take();
-            if let (Some(m), Some(amount)) = (host.hub.guests[i].motion.as_mut(), saved) {
-                let _ = m.internal_set_absorption(amount);
-            }
-            let kept = host.hub.guests[i].logs_kept.take();
-            if let (Some(m), Some((hurts, attacks))) = (host.hub.guests[i].motion.as_mut(), kept) {
-                m.hurt_log = hurts;
-                m.attack_log = attacks;
-            }
+            guest_body::initialize(self.motion, &mut host.hub.guests[i]);
         }
         let mut play = host.play.remove(&conn).unwrap_or_default();
         if fresh {
@@ -1231,6 +1244,7 @@ impl Game<'_> {
         }
         // The turn's teleports are in the hub now: the mods hear them.
         self.flush_teleport_notes(host);
+        refresh_building_player(host, conn);
         // An inner turn may move, kill or change a player's mode. Once its
         // body is back in the hub, refresh the restored outer snapshot while
         // keeping ancestor bodies that are still held by their GuestSwaps.
@@ -1591,7 +1605,7 @@ impl Game<'_> {
                 );
                 return false;
             }
-            self.unpack_boat_loot(i);
+            self.unpack_boat_loot(i, true);
         }
         // `createMenu` (ChestMenu.threeRows or a HopperMenu), and
         // `MenuProvider.getDisplayName`, the vehicle's name key.
@@ -1619,64 +1633,6 @@ impl Game<'_> {
         host.hub
             .open_container(conn, menu, title, pos, slots, items, None);
         true
-    }
-
-    /// `ContainerEntity.unpackChestVehicleLootTable` for a chest boat: the table
-    /// its raw NBT still holds rolls into the slots on the first open (an empty
-    /// boat, as a command leaves one), and `player_generates_container_loot`
-    /// fires for the player who opened it.
-    fn boat_loot_pending(&self, id: u32) -> bool {
-        matches!(
-            self.persist.raw.get(&id),
-            Some(horizon_world::nbt::Tag::Compound(map)) if map.contains_key(&"LootTable".into())
-        )
-    }
-
-    fn unpack_boat_loot(&mut self, i: usize) {
-        use horizon_world::nbt::Tag;
-        let id = self.boats[i].id;
-        let (table, seed) = {
-            let Some(Tag::Compound(map)) = self.persist.raw.get_mut(&id) else {
-                return;
-            };
-            let Some(table) = crate::save::text(map.get(&"LootTable".into()))
-                .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
-            else {
-                return;
-            };
-            let seed = match map.get(&"LootTableSeed".into()) {
-                Some(Tag::Long(seed)) => Some(*seed),
-                _ => None,
-            };
-            // The table is spent even when nothing can be rolled into it (the
-            // loot data is not loaded): vanilla clears it before filling.
-            map.remove(&"LootTable".into());
-            map.remove(&"LootTableSeed".into());
-            (table, seed)
-        };
-        // `LootTable.fill` sets the slots it rolls and leaves the rest; a boat
-        // that already holds something keeps it, so no table is applied over it.
-        if self.boats[i].items.iter().any(Option::is_some) {
-            return;
-        }
-        let loot = crate::structure_blocks::loot_data(&self.options.resources, &self.pack_files());
-        let b = &self.boats[i];
-        let at = Vec3::new(b.position.x, b.position.y, b.position.z);
-        let biome = self.biome_name_at(at).unwrap_or_default();
-        let pos = (
-            b.position.x.floor() as i32,
-            b.position.y.floor() as i32,
-            b.position.z.floor() as i32,
-        );
-        crate::structure_blocks::roll_container(
-            &mut self.boats[i].items,
-            loot.as_deref(),
-            table.clone(),
-            seed,
-            pos,
-            &biome,
-        );
-        self.trigger_loot_table(&table);
     }
 
     /// The guest's open container is closing (`AbstractContainerMenu.removed`):
@@ -2119,26 +2075,8 @@ impl Game<'_> {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
-        // Plugin channels a client registers in play (minecraft:register), from a dead player
-        // too; the packet goes on as before.
-        if let S::CustomPayload(p) = &packet
-            && let Some(register) = horizon_client::lan::channel_registration(&p.channel)
-        {
-            self.guest_channels(host, gi, &p.data, register);
-        }
-        // A plugin channel's message on a channel that isn't one of Horizon's own (the match below
-        // takes those) is for the mods, from a dead player too: vanilla's handleCustomPayload doesn't
-        // look at health.
-        let packet = match packet {
-            S::CustomPayload(p)
-                if p.channel != horizon_protocol::quiet::CHANNEL
-                    && p.channel != horizon_protocol::mod_net::CHANNEL
-                    && p.channel != horizon_client::lod_net::CHANNEL =>
-            {
-                self.guest_custom_payload(host, conn, p.channel, p.data);
-                return;
-            }
-            packet => packet,
+        let Some(packet) = self.guest_plugin_channels(host, conn, gi, packet) else {
+            return;
         };
         // A dead player acts no more, but the death screen still respawns and chats: its
         // commands run as anyone's (ServerGamePacketListenerImpl.handleChatCommand doesn't
@@ -2301,7 +2239,7 @@ impl Game<'_> {
                 }
                 4 | 5 => {
                     if !spectator {
-                        self.as_guest(host, conn, |g| g.drop_held(a.action == 4));
+                        self.guest_drop_held(host, gi, conn, a.action == 4);
                     }
                 }
                 // RELEASE_USE_ITEM: ServerPlayer.releaseUsingItem, with the
@@ -2872,6 +2810,9 @@ impl Game<'_> {
             }
             S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
                 self.guest_far_terrain(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::perf_net::CHANNEL => {
+                self.guest_perf(host, conn, &p.data)
             }
             S::CustomPayload(p) if p.channel == horizon_client::lan::recipes::TRANSFER_CHANNEL => {
                 self.guest_recipe_transfer(host, conn, &p.data);
@@ -3466,13 +3407,7 @@ impl Game<'_> {
         if host.hub.guests[gi].spectator() {
             return;
         }
-        // handleAttack: a target inside the world border, then
-        // `isWithinAttackRange(mainHandItem, box, 3.0)` before anything else, players,
-        // mobs, objects and fireballs alike.
-        if let Some(target) = self.guest_target_box(host, gi, id)
-            && (!self.inside_border(&target)
-                || self.as_guest(host, conn, |g| g.within_attack_range(&target)) != Some(true))
-        {
+        if self.guest_attack_stops(host, gi, id) {
             return;
         }
         // Native mods, where Player.attack starts: a canceled blow does
@@ -3485,12 +3420,15 @@ impl Game<'_> {
         {
             Some(("minecraft:player".to_owned(), g.position))
         } else {
-            self.level_entity(id).map(|t| {
-                (
-                    self.target_type(t),
-                    self.target_position(t).unwrap_or_default(),
-                )
-            })
+            // The mod hooks hear no natural fence knot (#13036).
+            self.level_entity(id)
+                .filter(|t| !matches!(t, super::commands::Target::Knot(_)))
+                .map(|t| {
+                    (
+                        self.target_type(t),
+                        self.target_position(t).unwrap_or_default(),
+                    )
+                })
         };
         if let Some((kind, at)) = aimed
             && self.as_guest(host, conn, |g| {
@@ -3506,13 +3444,9 @@ impl Game<'_> {
                 && self.pvp_land(host, victim, &strike)
             {
                 let on_ground = Self::pvp_victim_on_ground(host, victim);
-                self.as_guest(host, conn, |g| {
-                    g.weapon_hit_player(on_ground);
-                    g.pvp_exhaustion();
-                    if strike.stops_sprint() {
-                        g.stop_sprint_after_extra_knockback();
-                    }
-                });
+                let stops_sprint = strike.stops_sprint();
+                let sent = self.as_guest(host, conn, |g| g.pvp_hit_after(on_ground, stops_sprint));
+                self.send_guest_motion(host, conn, sent.flatten());
             }
             return;
         }
@@ -4085,6 +4019,7 @@ impl Game<'_> {
         self.native_player_clone(cloned, &name, true);
         let clock_rate = self.network_clock_rate();
         let ctx = TickCtx {
+            sea_level: self.end.locator().map_or(63, |terrain| terrain.sea_level()),
             world: &mut self.world,
             entities: &[],
             next_entity: &mut self.next_entity,
@@ -4139,8 +4074,8 @@ impl Game<'_> {
                 .map_or([0.5, 80.0, 0.5], |[x, y, z]| {
                     [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
                 });
-            let at = found.map_or(world, |(at, yaw)| {
-                host.hub.guests[i].yaw = yaw;
+            let at = found.map_or(world, |(at, yaw, pitch)| {
+                (host.hub.guests[i].yaw, host.hub.guests[i].pitch) = (yaw, pitch);
                 [at.x, at.y, at.z]
             });
             if found.is_none() {
@@ -4173,6 +4108,12 @@ impl Game<'_> {
 
     /// Per tick, for every guest: dig, use items, pick up drops, die.
     pub(super) fn tick_guests(&mut self, host: &mut LanHost) {
+        building_cache(Some(host));
+        self.tick_guests_inner(host);
+        building_cache(None);
+    }
+
+    pub(super) fn tick_guests_inner(&mut self, host: &mut LanHost) {
         self.tick_guest_cameras(host);
         self.lan_merchant_tick(host);
         self.lan_stations_tick(host);
@@ -4199,6 +4140,9 @@ impl Game<'_> {
             .filter(|g| host.hub.here(g) && g.loaded)
             .map(|g| g.conn)
             .collect();
+        // The players' pickups ask which columns items reach before
+        // scanning every item: most players stand on none.
+        self.pickup_columns = Some(Default::default());
         // The players the guests' hooks can catch.
         if host.play.values().any(|p| p.hook.is_some()) {
             self.refresh_hook_targets(host);
@@ -4218,6 +4162,7 @@ impl Game<'_> {
             self.guest_sleep_tick(host, gi);
             if host.hub.guests[gi].dead {
                 self.guest_tick_death(host, gi);
+                refresh_building_player(host, conn);
                 continue;
             }
             if self.on_server_trip(conn) {
@@ -4225,6 +4170,7 @@ impl Game<'_> {
                 // has loaded around the player or not: its respawn request
                 // is taken as soon as it comes.
                 self.guest_die(host, gi, conn);
+                refresh_building_player(host, conn);
                 continue;
             }
             // Native mods, at the start of ServerPlayer.tick: before the
@@ -4315,16 +4261,11 @@ impl Game<'_> {
             // Player.tick: a different main-hand item resets the attack
             // strength, and detectEquipmentUpdates gives the guest its modifiers.
             let g = &host.hub.guests[gi];
-            let held = g
-                .inventory
-                .get(g.selected)
-                .cloned()
-                .flatten()
-                .map(|s| s.item);
+            let held = super::held_items::held_attack_item(&g.inventory, g.selected);
             let play = host.play.entry(conn).or_default();
-            if play.attack_item != held {
+            if play.attack_item.as_ref() != held {
                 play.attack_ticks = 0;
-                play.attack_item = held;
+                play.attack_item = held.cloned();
             }
             self.guest_delayed_destroy(host, conn);
             self.guest_server_tick(host, conn);
@@ -4374,7 +4315,10 @@ impl Game<'_> {
                 self.guest_orbs(host, gi);
             }
             self.guest_die(host, gi, conn);
+            // The turns after this one see the guest where its turn left it.
+            refresh_building_player(host, conn);
         }
+        self.pickup_columns = None;
     }
 
     /// `native_player_logging_out` for guest `conn`, who has left but is still in the hub
@@ -4482,7 +4426,7 @@ impl Game<'_> {
             let me = self.player_text(&name, uuid);
             let text = match cause {
                 Some(key) => horizon_client::text::Text::translate(&key, &[me]),
-                None if at[1] < f64::from(self.world.bottom_y() - 64) => {
+                None if at[1] < self.world.below_world_y() => {
                     horizon_client::text::Text::translate("death.attack.outOfWorld", &[me])
                 }
                 None => self.guest_death_message(conn, me),
@@ -5193,14 +5137,8 @@ impl Game<'_> {
                 w.server_player_pose_tick()
             };
             let mut events = std::mem::take(&mut w.player.events);
-            // LayeredCauldronBlock.handleEntityOnFireInside along those moves.
-            for event in &events {
-                match event {
-                    MotionEvent::CauldronExtinguish { pos } => game.cauldron_extinguish(*pos),
-                    MotionEvent::PowderSnowMelt { pos } => game.powder_snow_melt(*pos),
-                    _ => {}
-                }
-            }
+            // Powder snow and cauldrons put the fire out along those moves.
+            game.block_extinguish_player(&events);
             // Entity.baseTick: rain puts out a burning player.
             game.rain_extinguish_player();
             // WitherRoseBlock.entityInside along those moves.
@@ -5413,35 +5351,6 @@ impl Game<'_> {
                 velocity: [v.x, v.y, v.z],
             }));
         }
-    }
-
-    /// ServerGamePacketListenerImpl.handlePlayerCommand START_RIDING_JUMP: the
-    /// vehicle the guest rides takes its own `handleStartJump` — a horse rears
-    /// and slides on the rider's keys, a camel dashes — and the sound vanilla's
-    /// server plays is broadcast to the players near the mount, the rider
-    /// included (their own client plays none).
-    fn lan_start_riding_jump(&mut self, host: &mut LanHost, conn: u32, data: i32) {
-        let Some(Some(index)) = self.as_guest(host, conn, |g| g.mount_index()) else {
-            return;
-        };
-        let m = &mut self.mobs[index];
-        let Some((sound, volume)) = crate::game::mounts::start_riding_jump(m, data) else {
-            return;
-        };
-        let at = m.center();
-        // LivingEntity.getSoundSource: a mob's sounds are in the neutral source.
-        let neutral = horizon_client::settings::SOUND_SOURCES
-            .iter()
-            .position(|s| *s == "neutral")
-            .unwrap_or(0) as i32;
-        host.hub.sound(
-            &format!("minecraft:{sound}"),
-            at,
-            volume,
-            1.0,
-            neutral,
-            None,
-        );
     }
 
     /// ServerGamePacketListenerImpl.handlePlayerCommand START_FALL_FLYING:
@@ -5721,6 +5630,23 @@ impl Game<'_> {
             )
         };
         if mode == SPECTATOR || self.dropped.is_empty() {
+            return;
+        }
+        // The test below takes items whose position is less than 1.5 from
+        // the player's on x and z: their boxes reach these columns.
+        if let Some(columns) = self.pickup_columns.as_mut()
+            && !columns.may_reach_area(
+                &self.dropped,
+                (
+                    (position[0] - 1.5).floor() as i32,
+                    (position[0] + 1.5).floor() as i32,
+                ),
+                (
+                    (position[2] - 1.5).floor() as i32,
+                    (position[2] + 1.5).floor() as i32,
+                ),
+            )
+        {
             return;
         }
         let near: Vec<_> = self
@@ -6218,31 +6144,9 @@ fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>
     [range(at[0]), range(at[2])]
 }
 
-/// What `ServerPlayerGameMode.handleBlockBreakAction`'s STOP_DESTROY_BLOCK branch does with a
-/// guest's STOP.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum StopDig {
-    /// A block the last START did not name: the STOP is not this dig's.
-    Other,
-    /// Already broken, by the guest's own tick: only the crack goes.
-    Gone,
-    /// The dig the START counts is at least 70 % done: the block breaks outright.
-    Break,
-    /// Less than that: the server finishes it alone from that same START.
-    Delay(u64),
-}
-
-/// The STOP branch's decision: a STOP is measured from the START that named its block
-/// (`destroyPos`, which an abort or a STOP from out of reach leaves alone), whose ticks times
-/// `getDestroyProgress` decide between the break and the delayed dig (#4124).
-fn stop_dig(play: &GuestPlay, pos: [i32; 3], air: bool, ticks: u64, per_tick: f32) -> StopDig {
-    match play.dig_start_for(pos) {
-        None => StopDig::Other,
-        Some(_) if air => StopDig::Gone,
-        Some(start) if per_tick * (ticks - start + 1) as f32 >= 0.7 => StopDig::Break,
-        Some(start) => StopDig::Delay(start),
-    }
-}
+mod attack_checks;
+mod dig_stop;
+use dig_stop::{StopDig, stop_dig};
 
 /// ServerPlayer.swingAndResetAttackStrength resets only when a use starts a swing.
 fn reset_use_attack_strength(ticker: &mut u32, before: u32, after: u32) {
@@ -6363,21 +6267,8 @@ fn bundle_inventory_slot(slot: usize, own: Option<usize>) -> Option<usize> {
 }
 
 #[cfg(test)]
-mod bundle_slot_tests {
-    use super::bundle_inventory_slot;
-
-    /// A crafting table (10 slots of its own) and an enchanting table (2): the first
-    /// inventory slot and the last hotbar slot map to 9 and 44; their own slots to none.
-    #[test]
-    fn station_menus_map_to_the_inventory_menu() {
-        assert_eq!(bundle_inventory_slot(10, Some(10)), Some(9));
-        assert_eq!(bundle_inventory_slot(45, Some(10)), Some(44));
-        assert_eq!(bundle_inventory_slot(2, Some(2)), Some(9));
-        assert_eq!(bundle_inventory_slot(5, Some(10)), None);
-        assert_eq!(bundle_inventory_slot(46, Some(10)), None);
-        assert_eq!(bundle_inventory_slot(45, None), Some(45));
-    }
-}
+#[path = "bundle_slot_tests.rs"]
+mod bundle_slot_tests;
 
 /// Where the server aims a guest's attack or interact on a mob. The packet names only the
 /// entity, so the server picked the mob's centre; a slab, trapdoor, stair or fence between the
@@ -6429,92 +6320,8 @@ fn visible_aim_point(
 }
 
 #[cfg(test)]
-mod aim_point_tests {
-    use super::visible_aim_point;
-
-    const EYE: [f64; 3] = [-760.7, 70.27, -450.4];
-    // A zombie one block behind a top slab: its centre is above the 0.5 gap under the slab.
-    const LO: [f64; 3] = [-763.0, 70.0, -450.9];
-    const HI: [f64; 3] = [-762.4, 71.95, -450.3];
-
-    /// A top slab filling x in [-762, -761] with its underside at y 70.5: a point is hidden when
-    /// the line from the eyes is above 70.5 anywhere inside that column.
-    fn behind_top_slab(p: [f64; 3]) -> bool {
-        let y_at = |x: f64| EYE[1] + (p[1] - EYE[1]) * (x - EYE[0]) / (p[0] - EYE[0]);
-        p[0] < -762.0 && (y_at(-761.0) > 70.5 || y_at(-762.0) > 70.5)
-    }
-
-    #[test]
-    fn a_visible_centre_is_kept() {
-        let centre = [
-            (LO[0] + HI[0]) / 2.0,
-            (LO[1] + HI[1]) / 2.0,
-            (LO[2] + HI[2]) / 2.0,
-        ];
-        assert_eq!(visible_aim_point(EYE, LO, HI, |_| false), centre);
-    }
-
-    /// A bottom slab hides everything under y 70.9: the aim goes above it, through the gap over the slab.
-    #[test]
-    fn a_mob_behind_a_bottom_slab_is_aimed_at_above_the_slab() {
-        let centre = [
-            (LO[0] + HI[0]) / 2.0,
-            (LO[1] + HI[1]) / 2.0,
-            (LO[2] + HI[2]) / 2.0,
-        ];
-        let p = visible_aim_point(EYE, LO, HI, |pt| pt[1] < 70.9);
-        assert!(p[1] >= 70.9, "{p:?} is still under the slab");
-        assert!(p[1] > centre[1] - 0.5, "{p:?} is far from the centre");
-    }
-
-    /// With only the centre hidden, two equally near candidates go to the one nearer the eyes.
-    #[test]
-    fn an_equally_near_point_on_the_side_of_the_eyes_wins() {
-        let eye = [5.0, 70.5, 0.0];
-        let (lo, hi) = ([-0.3, 70.0, -0.3], [0.3, 71.9, 0.3]);
-        let centre = [
-            (lo[0] + hi[0]) / 2.0,
-            (lo[1] + hi[1]) / 2.0,
-            (lo[2] + hi[2]) / 2.0,
-        ];
-        let p = visible_aim_point(eye, lo, hi, |pt| pt == centre);
-        assert!(p[0] > centre[0], "{p:?} is on the far side from the eyes");
-    }
-
-    #[test]
-    fn a_mob_seen_only_through_a_gap_is_aimed_at_through_the_gap() {
-        let centre = [
-            (LO[0] + HI[0]) / 2.0,
-            (LO[1] + HI[1]) / 2.0,
-            (LO[2] + HI[2]) / 2.0,
-        ];
-        assert!(behind_top_slab(centre), "the slab hides the centre");
-        let p = visible_aim_point(EYE, LO, HI, behind_top_slab);
-        assert!(!behind_top_slab(p), "{p:?} is still hidden");
-        for k in 0..3 {
-            assert!(LO[k] <= p[k] && p[k] <= HI[k], "{p:?} is outside the mob");
-        }
-        assert!(p[1] < centre[1], "{p:?} is not lower than the centre");
-    }
-
-    #[test]
-    fn a_fully_hidden_mob_keeps_the_centre() {
-        let centre = [
-            (LO[0] + HI[0]) / 2.0,
-            (LO[1] + HI[1]) / 2.0,
-            (LO[2] + HI[2]) / 2.0,
-        ];
-        assert_eq!(visible_aim_point(EYE, LO, HI, |_| true), centre);
-    }
-
-    #[test]
-    fn the_choice_is_deterministic() {
-        assert_eq!(
-            visible_aim_point(EYE, LO, HI, behind_top_slab),
-            visible_aim_point(EYE, LO, HI, behind_top_slab)
-        );
-    }
-}
+#[path = "aim_point_tests.rs"]
+mod aim_point_tests;
 
 /// The first target `(id, removed, bounds)` whose box meets the swept box,
 /// skipping removed ones and the vehicle the player rides.
@@ -6527,293 +6334,12 @@ fn first_spin_target(
 }
 
 #[cfg(test)]
-mod spin_target_tests {
-    use super::first_spin_target;
-    use horizon_core::geometry::{Aabb, Vec3};
-
-    fn cube(x: f64) -> Aabb {
-        Aabb::new(Vec3::new(x, 0.0, 0.0), Vec3::new(x + 1.0, 1.0, 1.0))
-    }
-
-    /// The spin hits the first mob in the swept box, not a removed one, the
-    /// vehicle, or one out of reach.
-    #[test]
-    fn the_spin_picks_the_first_live_mob_in_the_sweep() {
-        let swept = Aabb::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(3.0, 1.0, 1.0));
-        let targets = [
-            (1, false, cube(10.0)),
-            (2, true, cube(1.0)),
-            (3, false, cube(1.5)),
-            (4, false, cube(2.0)),
-        ];
-        assert_eq!(
-            first_spin_target(swept, None, targets.iter().copied()),
-            Some(2)
-        );
-        assert_eq!(
-            first_spin_target(swept, Some(3), targets.iter().copied()),
-            Some(3)
-        );
-        assert_eq!(
-            first_spin_target(swept, None, targets[..2].iter().copied()),
-            None
-        );
-    }
-}
+#[path = "spin_target_tests.rs"]
+mod spin_target_tests;
 
 #[cfg(test)]
-mod respawn_world_point_tests {
-    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
-    use horizon_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
-    use horizon_core::geometry::Vec3;
-    use horizon_protocol::packets::{configuration::ClientInformation, play::Clientbound};
-    use std::sync::{Arc, atomic::AtomicI32, mpsc};
-
-    /// PlayerList.respawn sends world respawn data, independently of the personal landing.
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn guest_respawn_keeps_world_information_distinct_from_personal_landing() {
-        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            root.clone(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            true,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&root),
-            None,
-        )
-        .unwrap();
-        let scratch = std::env::temp_dir().join(format!(
-            "horizon-respawn-point-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&scratch).unwrap();
-        game.world_root = scratch.clone();
-        let world = [0, 100, 0];
-        let personal = [5.5, 101.0, 5.5];
-        game.level.world_spawn = Some(world);
-        game.spawn = Some(Vec3::new(0.5, 100.0, 0.5));
-        game.lan_host(
-            super::super::lan::LanSettings {
-                port: 0,
-                guest_commands: true,
-                force_game_mode: false,
-            },
-            NetConfig {
-                announce: false,
-                ..NetConfig::loopback(0, "respawn-test".into(), 2)
-            },
-            HubConfig {
-                default_game_mode: 0,
-                guest_commands: true,
-                force_game_mode: false,
-                hardcore: false,
-                view_distance: 2,
-                simulation_distance: 2,
-                dimension: "minecraft:overworld".into(),
-                allow_flight: false,
-                seed: 0,
-                max_players: 2,
-                integrated: false,
-                levels: Default::default(),
-            },
-        )
-        .unwrap();
-        let (tx, rx) = mpsc::channel();
-        let mut guest = Guest::new(
-            Joined {
-                conn: 2,
-                uuid: 330,
-                name: "RespawnGuest".into(),
-                properties: Vec::new(),
-                info: ClientInformation::new(2),
-                brand: "test".into(),
-                sender: PlayerSender::new(tx, Arc::default()),
-                latency: Arc::new(AtomicI32::new(0)),
-                address: "127.0.0.1:25565".parse().unwrap(),
-                expected: false,
-                configured: Default::default(),
-            },
-            2,
-            [0.5, 100.0, 0.5],
-            2,
-        );
-        guest.dimension = "minecraft:overworld".into();
-        guest.placed = true;
-        guest.loaded = true;
-        guest.spawn = Some(personal);
-        guest.health = 0.0;
-        guest.dead = true;
-        let mut host = game.lan.take().unwrap();
-        host.hub.guests.push(guest);
-        game.guest_respawn(&mut host, 2);
-        let guest = &host.hub.guests[0];
-        assert_eq!(guest.uuid, 330);
-        assert_eq!(guest.position, personal);
-        assert_eq!(guest.health, 20.0);
-        assert!(!guest.dead);
-        let mut packets = Vec::new();
-        for out in rx.try_iter() {
-            match out {
-                Out::Packet(body) => packets.push(body),
-                Out::Packets(bodies) => packets.extend(bodies),
-                Out::Disconnect(_) => panic!("unexpected disconnect"),
-            }
-        }
-        let mut sequence = Vec::new();
-        let mut points = Vec::new();
-        for body in packets {
-            let mut r = horizon_protocol::buf::Reader::new(&body);
-            let id = r.varint().unwrap();
-            match Clientbound::decode(id, r.rest()).unwrap() {
-                Clientbound::Respawn(_) => sequence.push(84),
-                Clientbound::SetDefaultSpawnPosition(p) => {
-                    sequence.push(99);
-                    points.push((
-                        p.pos.dimension,
-                        p.pos.pos,
-                        p.yaw.to_bits(),
-                        p.pitch.to_bits(),
-                    ));
-                }
-                _ => {}
-            }
-        }
-        assert_eq!(sequence, [84, 99, 99]);
-        assert_eq!(points, vec![("minecraft:overworld".into(), world, 0, 0); 2]);
-        drop(host);
-        drop(game);
-        std::fs::remove_dir_all(scratch).unwrap();
-    }
-
-    /// A mod's health 0 for a guest dies as `/kill` does: the death message
-    /// and the death screen, not only a zero in the record.
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn a_mods_zero_health_kills_a_guest_as_kill_does() {
-        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            root.clone(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            true,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&root),
-            None,
-        )
-        .unwrap();
-        let scratch = std::env::temp_dir().join(format!(
-            "horizon-status-death-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&scratch).unwrap();
-        game.world_root = scratch.clone();
-        game.level.world_spawn = Some([0, 100, 0]);
-        game.spawn = Some(Vec3::new(0.5, 100.0, 0.5));
-        game.lan_host(
-            super::super::lan::LanSettings {
-                port: 0,
-                guest_commands: true,
-                force_game_mode: false,
-            },
-            NetConfig {
-                announce: false,
-                ..NetConfig::loopback(0, "status-death-test".into(), 2)
-            },
-            HubConfig {
-                default_game_mode: 0,
-                guest_commands: true,
-                force_game_mode: false,
-                hardcore: false,
-                view_distance: 2,
-                simulation_distance: 2,
-                dimension: "minecraft:overworld".into(),
-                allow_flight: false,
-                seed: 0,
-                max_players: 2,
-                integrated: false,
-                levels: Default::default(),
-            },
-        )
-        .unwrap();
-        let (tx, _rx) = mpsc::channel();
-        let mut guest = Guest::new(
-            Joined {
-                conn: 2,
-                uuid: 331,
-                name: "StatusGuest".into(),
-                properties: Vec::new(),
-                info: ClientInformation::new(2),
-                brand: "test".into(),
-                sender: PlayerSender::new(tx, Arc::default()),
-                latency: Arc::new(AtomicI32::new(0)),
-                address: "127.0.0.1:25565".parse().unwrap(),
-                expected: false,
-                configured: Default::default(),
-            },
-            2,
-            [0.5, 100.0, 0.5],
-            2,
-        );
-        guest.dimension = "minecraft:overworld".into();
-        guest.placed = true;
-        guest.loaded = true;
-        let mut host = game.lan.take().unwrap();
-        host.hub.guests.push(guest);
-        // Inside the player's own turn, as a tick hook sets it.
-        let set = game.as_guest(&mut host, 2, |g| {
-            g.native_set_player_status(331, Some(0.0), None, None)
-        });
-        assert_eq!(set, Some(true));
-        assert_eq!(host.hub.guests[0].health, 0.0);
-        game.guest_die(&mut host, 0, 2);
-        assert!(host.hub.guests[0].dead, "health 0 must kill");
-        drop(host);
-        drop(game);
-        std::fs::remove_dir_all(scratch).unwrap();
-    }
-}
+#[path = "respawn_world_point_tests.rs"]
+mod respawn_world_point_tests;
 
 #[cfg(test)]
 mod swing_echo_tests {
@@ -6988,52 +6514,8 @@ mod swing_echo_tests {
 }
 
 #[cfg(test)]
-mod unloaded_chunk_tests {
-    use super::touching_unloaded_chunk;
-    use horizon_client::pose::Dimensions;
-
-    /// `Entity.touchingUnloadedChunk` (#11312): the box inflated by one block
-    /// is checked chunk by chunk; a player in the middle of a loaded chunk
-    /// touches none, one within a block of its edge touches the neighbour.
-    #[test]
-    fn a_box_within_a_block_of_a_chunk_edge_touches_the_next_chunk() {
-        let body = Dimensions {
-            width: 0.6,
-            height: 1.8,
-            eye_height: 1.62,
-        };
-        let only_origin = |x: i32, z: i32| (x, z) == (0, 0);
-        assert!(!touching_unloaded_chunk(
-            [8.0, 64.0, 8.0],
-            body,
-            only_origin
-        ));
-        // 15.5 + 0.3 + 1 reaches 16.8, in chunk 1.
-        assert!(touching_unloaded_chunk(
-            [15.5, 64.0, 8.0],
-            body,
-            only_origin
-        ));
-        // 14.0 + 1.3 = 15.3: Mth.ceil gives 16, the first block of chunk 1.
-        assert!(touching_unloaded_chunk(
-            [14.0, 64.0, 8.0],
-            body,
-            only_origin
-        ));
-        // 13.5 + 1.3 = 14.8: ceil 15, still chunk 0.
-        assert!(!touching_unloaded_chunk(
-            [13.5, 64.0, 8.0],
-            body,
-            only_origin
-        ));
-        // Everything loaded: nothing is touched anywhere.
-        assert!(!touching_unloaded_chunk(
-            [15.9, 64.0, -0.5],
-            body,
-            |_, _| true
-        ));
-    }
-}
+#[path = "unloaded_chunk_tests.rs"]
+mod unloaded_chunk_tests;
 
 #[cfg(test)]
 mod guest_close_listener_tests {
@@ -7296,6 +6778,276 @@ mod guest_close_listener_tests {
             "actual ordinary guest final close must be heard: {missing:?}"
         );
         drop(receivers);
+    }
+}
+
+#[cfg(test)]
+mod horizon_channel_tests {
+    use super::horizon_channels::horizon_channel;
+
+    #[test]
+    fn horizon_channels_reach_their_handlers_and_others_go_to_the_mods() {
+        // The recipe viewer's transfer (`native_transfer_recipe`) was handed to the mods
+        // before its own arm could run, so a viewer's "+" never reached the server.
+        assert!(horizon_channel(
+            horizon_client::lan::recipes::TRANSFER_CHANNEL
+        ));
+        assert!(horizon_channel(horizon_protocol::quiet::CHANNEL));
+        assert!(horizon_channel(horizon_protocol::mod_net::CHANNEL));
+        assert!(horizon_channel(horizon_client::lod_net::CHANNEL));
+        assert!(horizon_channel(horizon_client::perf_net::CHANNEL));
+        assert!(!horizon_channel("mymod:hello"));
+        assert!(!horizon_channel("minecraft:brand"));
+    }
+}
+
+#[cfg(test)]
+#[path = "boat_holder_movement_tests.rs"]
+mod boat_holder_movement_tests;
+
+#[cfg(test)]
+mod connected_self_pose_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::{
+        chunk::Chunk,
+        lan::{
+            Joined, NetConfig, Out, PlayerSender,
+            guest::Guest,
+            hub::{Hub, HubConfig, TickCtx},
+        },
+        motion::PlayerMotion,
+        pose::Pose,
+    };
+    use horizon_core::{geometry::Vec3, position::ChunkPos};
+    use horizon_protocol::{
+        buf::Reader,
+        entity_data::{Value, serializer},
+        packets::{
+            configuration::ClientInformation,
+            play::{self, Clientbound as C, Serverbound as S},
+        },
+    };
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    fn hub_pass(game: &mut Game<'_>, hub: &mut Hub, drain: bool) {
+        let mut ctx = TickCtx {
+            sea_level: game.end.locator().map_or(63, |terrain| terrain.sea_level()),
+            world: &mut game.world,
+            entities: &[],
+            next_entity: &mut game.next_entity,
+            spawn: [0.5, 200.0, 0.5],
+            spawn_angle: [0.0; 2],
+            difficulty: 2,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: true,
+            tick_steps: Default::default(),
+            collision: Some(game.collision),
+            border: &game.border,
+            streaming: None,
+        };
+        if drain {
+            let _ = hub.drain_packets(&mut ctx);
+        } else {
+            let _ = hub.tick_level(&mut ctx);
+        }
+    }
+
+    fn metadata(rx: &mpsc::Receiver<Out>, own: i32) -> (Vec<i32>, Vec<i8>) {
+        let (mut poses, mut flags) = (Vec::new(), Vec::new());
+        while let Ok(out) = rx.try_recv() {
+            let Out::Packet(bytes) = out else {
+                continue;
+            };
+            let mut reader = Reader::new(&bytes);
+            let id = reader.varint().unwrap();
+            let packet = C::decode(id, reader.rest()).unwrap();
+            if let C::SetEntityData(data) = packet {
+                assert_eq!(data.id, own, "self receiver must get its own entity id");
+                println!(
+                    "actual self metadata bytes={bytes:02x?} values={:?}",
+                    data.values
+                );
+                for (index, kind, value) in data.values {
+                    match (index, kind, value) {
+                        (6, serializer::POSE, Value::Id(pose)) => poses.push(pose),
+                        (0, serializer::BYTE, Value::Byte(flag)) => flags.push(flag),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        (poses, flags)
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn actual_guest_input_model_pose_reaches_self_metadata() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join("self-pose-unit"),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::DedicatedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let mut chunk = Chunk::empty(0, 0);
+        chunk.lit = true;
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        game.lan_host(
+            crate::game::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "self-pose-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let position = Vec3::new(6.5, 200.0, 4.5);
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 13002,
+                name: "SelfPoseGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            102,
+            [position.x, position.y, position.z],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.loading = false;
+        guest.load_timeout = 0;
+        guest.on_ground = true;
+        guest.game_mode = 0;
+        guest.motion = Some(Box::new(PlayerMotion::new(game.motion, position).unwrap()));
+        assert_eq!(guest.health, 20.0);
+        assert!(guest.client_loaded());
+        let own = guest.entity_id;
+        game.player = None;
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        let start = game.world.game_time;
+        let mut actual = Vec::new();
+        for (stage, key, expected) in [
+            ("initial", None, Pose::Standing),
+            ("crouch", Some(32), Pose::Crouching),
+            ("crouch-repeat", Some(32), Pose::Crouching),
+            ("stand", Some(0), Pose::Standing),
+            ("stand-repeat", Some(0), Pose::Standing),
+        ] {
+            if let Some(flags) = key {
+                host.hub.guests[0]
+                    .inbox
+                    .push_back((S::PlayerInput(play::PlayerInput { flags }), 0));
+                game.world.game_time += 1;
+            }
+            hub_pass(&mut game, &mut host.hub, true);
+            game.tick_guests(&mut host);
+            let guest = &host.hub.guests[0];
+            assert_eq!(guest.uuid, 13002);
+            assert_eq!(guest.entity_id, own);
+            assert!(guest.loaded && !guest.dead && guest.client_loaded());
+            assert_eq!(guest.health, 20.0);
+            assert_eq!(guest.position, [position.x, position.y, position.z]);
+            assert_eq!(
+                guest.pose(),
+                expected,
+                "actual model must change before checking packets: {stage}"
+            );
+            assert_eq!(guest.motion.as_ref().unwrap().pose, expected);
+            assert_eq!(guest.motion.as_ref().unwrap().scale, 1.0);
+            hub_pass(&mut game, &mut host.hub, false);
+            let data = metadata(&rx, own);
+            println!(
+                "stage={stage} actual_model={expected:?} packet_poses={:?} packet_flags={:?}",
+                data.0, data.1
+            );
+            if stage == "crouch" {
+                assert_eq!(data.1, [2]);
+            }
+            if stage == "stand" {
+                assert_eq!(data.1, [0]);
+            }
+            actual.push(data.0);
+            assert!(game.player.is_none(), "guest context must restore");
+        }
+        assert_eq!(game.world.game_time - start, 4);
+        // Initial delivery remains observational, not proof from an absent field.
+        let failures: Vec<_> = [
+            (1, vec![Pose::Crouching.id()]),
+            (2, vec![]),
+            (3, vec![Pose::Standing.id()]),
+            (4, vec![]),
+        ]
+        .into_iter()
+        .filter_map(|(index, expected)| {
+            (actual[index] != expected).then_some((index, actual[index].clone(), expected))
+        })
+        .collect();
+        assert!(
+            failures.is_empty(),
+            "actual model reached the pose but self packets differ: {failures:?}"
+        );
     }
 }
 
