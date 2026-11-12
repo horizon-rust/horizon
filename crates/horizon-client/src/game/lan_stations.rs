@@ -382,7 +382,7 @@ impl Game<'_> {
             self.level_event_at(1044, gs.pos, 0);
         } else {
             let creative = gs.menu.creative;
-            // A broken anvil closes the menu on the next stillValid check.
+            // A departed guest skips wear/sound; a broken anvil closes on the next stillValid check.
             self.as_guest(host, conn, |g| g.anvil_used(gs.pos, creative));
             if let Some(craft) = craft
                 && let Some(guest) = host.hub.guests.iter().find(|g| g.conn == conn)
