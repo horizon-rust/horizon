@@ -44,8 +44,8 @@ def gateway_entity_motion(cmd, setup):
                 f'setblock {x} 200 2 end_gateway{{Age:200L,exit_portal:[I;8,210,8],ExactTeleport:1b}}',
                 f'summon {kind} {x + 0.5} 200.2 2.5 '
                 f'{{NoGravity:1b,Tags:["gateway_entity"],{data},Motion:{motion}}}')
-            # An arrow or a snowball goes through in the tick it enters (block effects
-            # before Entity.tick); TNT, an orb and a falling block on the next.
+            # An arrow, a snowball or a falling block goes through in the tick it enters
+            # (block effects before handlePortal); TNT and an orb on the next.
             ops.append({'op': 'tick', 'n': 1})
             for axis in range(3):
                 ops.append(cmd(f'/data get entity @e[tag=gateway_entity,limit=1] Pos[{axis}] 1000'))

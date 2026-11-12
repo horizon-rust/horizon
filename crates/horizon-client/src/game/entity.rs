@@ -1716,6 +1716,11 @@ impl Entity for FallingBlock {
     fn gateway_size(&self) -> Option<(f32, f32)> {
         Some((0.98, 0.98))
     }
+    /// `FallingBlockEntity.tick` moves, applies block effects, then handles
+    /// its portal: a gateway sends it on in the tick it enters.
+    fn portal_after_move(&self) -> bool {
+        true
+    }
     fn portal_from(&self) -> Option<Vec3> {
         Some(self.previous)
     }

@@ -1520,8 +1520,8 @@ impl Game<'_> {
                 .or_default()
                 .enter_with_delay(pos, delay);
         }
-        // AbstractArrow, ThrowableProjectile and AbstractHurtingProjectile
-        // apply the gateway's block effect before Entity.tick.
+        // The kinds that apply the gateway's block effect before handlePortal
+        // (projectiles, falling blocks) go through in this same tick.
         self.handle_end_gateway_portals_phase(true);
     }
 
@@ -1586,9 +1586,9 @@ impl Game<'_> {
         self.end.gateways.retain(|id, _| present.contains(id));
         let mut leaving: Vec<(u32, BlockPos)> = Vec::new();
         for (id, allowed, ticking, moved_first) in ids {
-            // AbstractArrow, ThrowableProjectile and AbstractHurtingProjectile
-            // apply block effects before Entity.tick: they go through in the
-            // tick they enter, the other kinds on their next tick.
+            // AbstractArrow, ThrowableProjectile, AbstractHurtingProjectile and
+            // FallingBlockEntity apply block effects before handlePortal: they
+            // go through in the tick they enter, the other kinds on their next.
             if !ticking || moved_first != after_move {
                 continue;
             }
