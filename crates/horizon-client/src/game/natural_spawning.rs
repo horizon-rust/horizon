@@ -31,7 +31,7 @@ use horizon_world::{
 use std::collections::{HashMap, HashSet};
 
 /// Natural spawning's candidate chunks (`ChunkMap.collectSpawningChunks`):
-/// the union of every player's 17Ã—17 chunk square, in player then dx/dz
+/// the union of every player's 17×17 chunk square, in player then dx/dz
 /// order, each chunk once. `candidates` is one pass's working list (spawning
 /// shuffles and drains it); the rest is the union for the players' last chunk
 /// positions, kept between ticks. A chunk crossing rebuilds only the squares
@@ -1072,6 +1072,7 @@ impl<'a> Game<'a> {
                     let mut spawn = |l: &GameLevel, r: &SpawnRequest, random: &mut LevelRandom| {
                         finalizer.spawn(l, r, random)
                     };
+                    horizon_threads::work::set_chunk(chunk.0, chunk.1);
                     spawn_selection::spawn_for_chunk_with_random(
                         &level,
                         &mut random,
@@ -1085,6 +1086,7 @@ impl<'a> Game<'a> {
             }
             scratch.spawn_players = state.into_players();
         }
+        horizon_threads::work::clear_work();
         spawn_selection::attempt_counters(true);
         laps.lap("sn_attempts");
         self.world.random = random;
