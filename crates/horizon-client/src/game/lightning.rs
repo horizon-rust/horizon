@@ -17,7 +17,7 @@ use horizon_client::random_source;
 use horizon_core::{
     geometry::{Aabb, Vec3},
     position::BlockPos,
-    random::{LegacyRandom, RandomSource},
+    random::{EntityRandom, RandomSource},
 };
 use horizon_world::level::Ticks;
 
@@ -30,7 +30,7 @@ pub(super) struct Bolt {
     seed: i64,
     /// The bolt's own random (`Entity.random`): its seed, flashes, flash
     /// timing, fire spots and thunder pitch draw from it, never the level's.
-    random: LegacyRandom,
+    random: EntityRandom,
     visual_only: bool,
     /// Mooshrooms and copper golems change once per bolt.
     converted: Vec<u32>,
@@ -259,7 +259,7 @@ impl Game<'_> {
             self.post_game_event("minecraft:lightning_strike", at, ctx);
         }
         // The LightningBolt constructor: `seed`, then `flashes`.
-        let mut random = random_source::entity();
+        let mut random = EntityRandom::own(random_source::entity());
         let seed = random.next_long();
         let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
@@ -295,7 +295,7 @@ impl Game<'_> {
     pub(super) fn spawn_remote_bolt(&mut self, id: u32, at: [f64; 3]) {
         self.bolts.retain(|b| b.id != id);
         // The client's own copy, constructed as on the server.
-        let mut random = random_source::entity();
+        let mut random = EntityRandom::own(random_source::entity());
         let seed = random.next_long();
         let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
@@ -319,7 +319,7 @@ impl Game<'_> {
     /// (from the bolt's own `random`), wherever `BaseFireBlock.getState` fire
     /// can survive, when a player is within the fire-spread radius. Returns how
     /// many blocks it set on fire.
-    fn bolt_fire(&mut self, at: [f64; 3], extra: i32, random: &mut LegacyRandom) -> i32 {
+    fn bolt_fire(&mut self, at: [f64; 3], extra: i32, random: &mut EntityRandom) -> i32 {
         let mut set = 0;
         let base = [
             at[0].floor() as i32,
@@ -787,6 +787,7 @@ mod tests {
     use super::*;
     use horizon_client::mobs::{Anim, Brain, Mob, MobType, Part, Species};
     use horizon_core::geometry::Vec3;
+    use horizon_core::random::LegacyRandom;
     use std::sync::Arc;
 
     /// `LightningBolt.spawnFire` places nothing, and draws no extra sources,
@@ -824,7 +825,7 @@ mod tests {
                 .unwrap(),
             );
             let random = game.world.random.clone();
-            let mut bolt_random = LegacyRandom::new(0);
+            let mut bolt_random = EntityRandom::own(LegacyRandom::new(0));
             let set = game.bolt_fire(bolt, 4, &mut bolt_random);
             let burning = game.world.block(8, 65, 8) != air;
             assert_eq!((set > 0, burning), (fires, fires), "radius {radius}");
