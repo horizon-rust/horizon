@@ -1576,8 +1576,7 @@ impl Game<'_> {
                 .filter(|p| matches!(p.kind, ProjectileKind::EnderPearl))
                 .map(|p| (p.id, true, ticks(p.position), true)),
         );
-        let mut present: std::collections::HashSet<u32> =
-            ids.iter().map(|(id, ..)| *id).collect();
+        let mut present: std::collections::HashSet<u32> = ids.iter().map(|(id, ..)| *id).collect();
         // A pearl waiting for its exit keeps its portal cooldown.
         present.extend(self.end.arrivals.iter().map(|a| match &a.traveller {
             Arriving::Pearl(p) => p.id,
