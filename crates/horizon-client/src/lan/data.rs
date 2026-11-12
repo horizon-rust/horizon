@@ -559,6 +559,12 @@ impl SyncData {
         meta
     }
 
+    /// The name of an entry of a synchronized registry, the reverse of `id`.
+    pub fn name(&self, registry: &str, id: i32) -> Option<String> {
+        let (n, _) = self.dynamic.registries.get(registry)?.get(id as usize)?;
+        Some(n.to_string())
+    }
+
     /// The id of a name in a built-in or synchronized registry.
     pub fn id(&self, registry: &str, name: &str) -> Option<i32> {
         if registry == "minecraft:data_component_type"

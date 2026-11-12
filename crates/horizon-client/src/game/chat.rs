@@ -191,6 +191,119 @@ impl Default for WorldClock {
         }
     }
 }
+const OVERWORLD_CLOCK: &str = "minecraft:overworld";
+const END_CLOCK: &str = "minecraft:the_end";
+
+impl WorldClock {
+    /// `ServerClockInstance.tick`: one tick of `total` unless paused.
+    fn tick(&mut self, total: &mut i64) {
+        if self.paused {
+            return;
+        }
+        self.partial += self.rate;
+        let whole = self.partial.floor();
+        self.partial -= whole;
+        *total += whole as i64;
+    }
+    /// The rate clients advance the clock at: 0 while paused or `advance_time` is off.
+    fn net_rate(&self, advance_time: bool) -> f32 {
+        if advance_time && !self.paused {
+            self.rate
+        } else {
+            0.0
+        }
+    }
+    /// The state a clock's `world_clocks.dat` entry holds.
+    fn from_nbt(clock: &horizon_world::nbt::Tag) -> Self {
+        use horizon_world::nbt::Tag;
+        let mut state = Self::default();
+        if let Some(Tag::Float(r)) = clock.get("rate") {
+            state.rate = f32::from_bits(*r);
+        }
+        if let Some(Tag::Float(p)) = clock.get("partial_tick") {
+            state.partial = f32::from_bits(*p);
+        }
+        if let Some(Tag::Byte(p)) = clock.get("paused") {
+            state.paused = *p != 0;
+        }
+        state
+    }
+}
+
+/// Tick the Overworld clock (`day`, state `overworld`), the End's (`end`, state in
+/// `others`) and every other clock in `others`, each at its own rate, when
+/// `advance_time` allows it.
+fn tick_clocks(
+    advance_time: bool,
+    day: &mut i64,
+    overworld: &mut WorldClock,
+    end: &mut i64,
+    others: &mut BTreeMap<String, (i64, WorldClock)>,
+) {
+    if !advance_time {
+        return;
+    }
+    overworld.tick(day);
+    others.entry(END_CLOCK.into()).or_default().1.tick(end);
+    for (name, (total, state)) in others.iter_mut() {
+        if name != END_CLOCK && name != OVERWORLD_CLOCK {
+            state.tick(total);
+        }
+    }
+}
+
+/// Write `clocks` (name, total ticks, state) into the `data` compound of
+/// `world_clocks.dat`, keeping the fields Horizon does not model and, like
+/// vanilla's codec, omitting rate, partial tick and pause at their defaults.
+fn put_clocks(data: &mut horizon_world::nbt::Tag, clocks: &[(String, i64, WorldClock)]) {
+    use horizon_world::nbt::Tag;
+    for (name, total, c) in clocks {
+        let mut clock = match data.get(name) {
+            Some(c @ Tag::Compound(_)) => c.clone(),
+            _ => Tag::Compound(Default::default()),
+        };
+        if let Tag::Compound(map) = &mut clock {
+            map.insert("total_ticks".into(), Tag::Long(*total));
+            for (key, value, default) in [
+                (
+                    "partial_tick",
+                    Tag::Float(c.partial.to_bits()),
+                    c.partial == 0.0,
+                ),
+                ("rate", Tag::Float(c.rate.to_bits()), c.rate == 1.0),
+                ("paused", Tag::Byte(i8::from(c.paused)), !c.paused),
+            ] {
+                if default {
+                    map.remove(&key.into());
+                } else {
+                    map.insert(key.into(), value);
+                }
+            }
+        }
+        if let Tag::Compound(map) = data {
+            map.insert(name.as_str().into(), clock);
+        }
+    }
+}
+
+/// Every clock of the `data` compound of `world_clocks.dat`: name, total ticks, state.
+fn read_clocks(data: &horizon_world::nbt::Tag) -> Vec<(String, i64, WorldClock)> {
+    use horizon_world::nbt::Tag;
+    let Tag::Compound(map) = data else {
+        return Vec::new();
+    };
+    map.iter()
+        .filter(|(_, c)| matches!(c, Tag::Compound(_)))
+        .map(|(name, c)| {
+            let total = match c.get("total_ticks") {
+                Some(Tag::Long(t)) => *t,
+                _ => 0,
+            };
+            (name.to_string_lossy(), total, WorldClock::from_nbt(c))
+        })
+        .collect()
+}
+
 /// A clock time marker from the timelines (ClockTimeMarker).
 #[derive(Clone, Copy, Debug)]
 pub struct TimeMarker {
@@ -1846,32 +1959,32 @@ impl Game<'_> {
             .split(&text.resolve_legacy(), width as f32);
         split.into_iter().map(|row| (row, u32::MAX)).collect()
     }
-    /// Advance the overworld clock (ServerClockManager.tick) when
-    /// `advance_time` allows it.
+    /// Tick every clock (ServerClockManager.tick) when `advance_time` allows it.
     pub(super) fn advance_clock(&mut self) {
-        if !self.ui.rules.bool("advance_time") {
-            return;
-        }
-        // The End's clock: one tick a tick, not paused or sped up by `/time` on the overworld's.
-        self.world.end_clock += 1;
-        if self.ui.clock.paused {
-            return;
-        }
-        let c = &mut self.ui.clock;
-        c.partial += c.rate;
-        let whole = c.partial.floor();
-        c.partial -= whole;
-        self.world.day_time += whole as i64;
+        let advance = self.ui.rules.bool("advance_time");
+        tick_clocks(
+            advance,
+            &mut self.world.day_time,
+            &mut self.ui.clock,
+            &mut self.world.end_clock,
+            &mut self.ui.command_clocks,
+        );
+        let end = self.world.end_clock;
+        self.world.clock_net = self
+            .ui
+            .command_clocks
+            .iter()
+            .map(|(name, (total, state))| {
+                let total = if name == END_CLOCK { end } else { *total };
+                (name.clone(), total, state.partial, state.net_rate(advance))
+            })
+            .collect();
     }
     /// `ServerClockInstance.packNetworkState`: the rate players' clients
     /// advance the overworld clock at, 0 while it is paused (`/time pause`)
     /// or `advance_time` is off.
     pub(super) fn network_clock_rate(&self) -> f32 {
-        if self.ui.rules.bool("advance_time") && !self.ui.clock.paused {
-            self.ui.clock.rate
-        } else {
-            0.0
-        }
+        self.ui.clock.net_rate(self.ui.rules.bool("advance_time"))
     }
     /// The engine-side rule values (block behaviour and health).
     pub(super) fn level_rules(&self) -> horizon_world::level::GameRules {
@@ -1920,24 +2033,25 @@ impl Game<'_> {
             && let Ok(raw) = horizon_world::compression::Compression::Gzip.decode(&bytes, 1 << 20)
             && let Ok((root, _)) =
                 horizon_world::nbt::read_named(&raw, horizon_world::nbt::Limits::default())
-            && let Some(c) = root
-                .tag
-                .get("data")
-                .and_then(|d| d.get("minecraft:overworld"))
+            && let Some(data) = root.tag.get("data")
         {
-            use horizon_world::nbt::Tag;
-            if let Some(Tag::Float(r)) = c.get("rate") {
-                self.ui.clock.rate = f32::from_bits(*r);
-            }
-            if let Some(Tag::Float(p)) = c.get("partial_tick") {
-                self.ui.clock.partial = f32::from_bits(*p);
-            }
-            if let Some(Tag::Byte(p)) = c.get("paused") {
-                self.ui.clock.paused = *p != 0;
+            for (name, total, state) in read_clocks(data) {
+                if name == OVERWORLD_CLOCK {
+                    self.ui.clock = state;
+                } else {
+                    self.ui.command_clocks.insert(name, (total, state));
+                }
             }
         }
         self.ui.chat.clear();
         self.build_registries();
+        // Every registered clock ticks, saved or not (the End's always).
+        for name in self.ui.registries.clocks.clone() {
+            if name != OVERWORLD_CLOCK {
+                self.ui.command_clocks.entry(name).or_default();
+            }
+        }
+        self.ui.command_clocks.entry(END_CLOCK.into()).or_default();
         // The world opens with its test instances (`Registries.TEST_INSTANCE`).
         self.snapshot_test_defs();
         self.sync_rules();
@@ -1950,41 +2064,27 @@ impl Game<'_> {
             return;
         }
         use horizon_world::nbt::Tag;
-        let c = self.ui.clock;
-        // The other clocks stay as saved; the overworld one keeps the fields Horizon
-        // does not model, and (like vanilla's codec) omits rate, partial tick and
-        // pause while they have their defaults.
+        // Clocks Horizon does not model stay as saved, as do unknown fields of those it does.
         let path = self.world_root.join("data/minecraft/world_clocks.dat");
         let existing = horizon_client::save::read_dat(&path);
         let mut data = match existing.as_ref().and_then(|r| r.get("data")) {
             Some(d @ Tag::Compound(_)) => d.clone(),
             _ => Tag::Compound(Default::default()),
         };
-        let mut clock = match data.get("minecraft:overworld") {
-            Some(c @ Tag::Compound(_)) => c.clone(),
-            _ => Tag::Compound(Default::default()),
-        };
-        if let Tag::Compound(map) = &mut clock {
-            map.insert("total_ticks".into(), Tag::Long(self.world.day_time));
-            for (key, value, default) in [
-                (
-                    "partial_tick",
-                    Tag::Float(c.partial.to_bits()),
-                    c.partial == 0.0,
-                ),
-                ("rate", Tag::Float(c.rate.to_bits()), c.rate == 1.0),
-                ("paused", Tag::Byte(i8::from(c.paused)), !c.paused),
-            ] {
-                if default {
-                    map.remove(&key.into());
-                } else {
-                    map.insert(key.into(), value);
-                }
-            }
+        let mut clocks = vec![(
+            OVERWORLD_CLOCK.to_owned(),
+            self.world.day_time,
+            self.ui.clock,
+        )];
+        for (name, (total, state)) in &self.ui.command_clocks {
+            let total = if name == END_CLOCK {
+                self.world.end_clock
+            } else {
+                *total
+            };
+            clocks.push((name.clone(), total, *state));
         }
-        if let Tag::Compound(map) = &mut data {
-            map.insert("minecraft:overworld".into(), clock);
-        }
+        put_clocks(&mut data, &clocks);
         let root = Tag::compound([
             ("data", data),
             ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
@@ -2125,6 +2225,80 @@ const LINK_COPY: usize = 1;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn clock(rate: f32, paused: bool) -> WorldClock {
+        WorldClock {
+            partial: 0.0,
+            rate,
+            paused,
+        }
+    }
+
+    /// Every clock ticks at its own rate; a paused one stays; the End's total is `end`.
+    #[test]
+    fn clocks_tick_at_their_own_rate_and_pause() {
+        let (mut day, mut end) = (100, 50);
+        let mut ow = clock(1.0, false);
+        let mut others = BTreeMap::from([
+            (END_CLOCK.to_owned(), (0, clock(2.0, false))),
+            ("pack:a".to_owned(), (7, clock(0.5, false))),
+            ("pack:b".to_owned(), (9, clock(3.0, true))),
+        ]);
+        for _ in 0..4 {
+            tick_clocks(true, &mut day, &mut ow, &mut end, &mut others);
+        }
+        assert_eq!((day, end), (104, 58));
+        assert_eq!(others["pack:a"].0, 9);
+        assert_eq!(others["pack:b"].0, 9);
+        assert_eq!(others[END_CLOCK].0, 0);
+    }
+
+    /// The End ticks even with no saved state for it; `advance_time` off stops every clock.
+    #[test]
+    fn advance_time_off_stops_all_clocks() {
+        let (mut day, mut end) = (0, 0);
+        let mut ow = WorldClock::default();
+        let mut others = BTreeMap::from([("pack:a".to_owned(), (0, WorldClock::default()))]);
+        tick_clocks(true, &mut day, &mut ow, &mut end, &mut others);
+        assert_eq!((day, end, others["pack:a"].0), (1, 1, 1));
+        tick_clocks(false, &mut day, &mut ow, &mut end, &mut others);
+        assert_eq!((day, end, others["pack:a"].0), (1, 1, 1));
+        assert_eq!(WorldClock::default().net_rate(false), 0.0);
+        assert_eq!(clock(2.0, true).net_rate(true), 0.0);
+        assert_eq!(clock(2.0, false).net_rate(true), 2.0);
+    }
+
+    /// Saving then loading gives back totals and states, and keeps unknown fields.
+    #[test]
+    fn clocks_round_trip_through_nbt() {
+        use horizon_world::nbt::Tag;
+        let mut data = Tag::compound([(
+            "pack:a",
+            Tag::compound([("total_ticks", Tag::Long(1)), ("extra", Tag::Int(5))]),
+        )]);
+        let clocks = vec![
+            (
+                "minecraft:overworld".to_owned(),
+                24000,
+                WorldClock::default(),
+            ),
+            ("pack:a".to_owned(), 77, clock(0.25, true)),
+        ];
+        put_clocks(&mut data, &clocks);
+        assert!(data.get("pack:a").unwrap().get("extra").is_some());
+        // Defaults are left out, as vanilla's codec does.
+        assert!(
+            data.get("minecraft:overworld")
+                .unwrap()
+                .get("rate")
+                .is_none()
+        );
+        let back = read_clocks(&data);
+        let a = back.iter().find(|c| c.0 == "pack:a").unwrap();
+        assert_eq!((a.1, a.2.rate, a.2.paused), (77, 0.25, true));
+        let o = back.iter().find(|c| c.0 == "minecraft:overworld").unwrap();
+        assert_eq!((o.1, o.2.rate, o.2.paused), (24000, 1.0, false));
+    }
 
     #[test]
     fn a_typed_profiler_is_the_clients_unless_the_server_owns_the_name() {

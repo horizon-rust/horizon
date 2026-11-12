@@ -2258,9 +2258,9 @@ impl Hub {
         }));
     }
 
-    /// ServerClockManager.createFullSyncPacket: every clock. Horizon keeps the
-    /// overworld clock (the day time) and the End's (`end_clock`). Clocks do not
-    /// advance without the advance_time rule.
+    /// ServerClockManager.createFullSyncPacket: every clock: the
+    /// overworld's (the day time) and the others' (`clock_net`, the End's among them). Clocks
+    /// do not advance while paused or without the advance_time rule.
     fn time_packet(&self, world: &World, rate: f32) -> C {
         let overworld = self
             .sync
@@ -2271,22 +2271,21 @@ impl Hub {
             clocks: self
                 .clock_ids
                 .iter()
-                .map(|&id| {
-                    if id == overworld {
-                        play::ClockState {
-                            clock: id,
-                            total_ticks: world.day_time,
-                            partial_tick: 0.0,
-                            rate,
-                        }
+                .filter_map(|&id| {
+                    let (total_ticks, partial_tick, rate) = if id == overworld {
+                        (world.day_time, 0.0, rate)
                     } else {
-                        play::ClockState {
-                            clock: id,
-                            total_ticks: world.end_clock,
-                            partial_tick: 0.0,
-                            rate: if rate > 0.0 { 1.0 } else { 0.0 },
-                        }
-                    }
+                        // The host lists the others with their pause and `advance_time` applied.
+                        let name = self.sync.name("minecraft:world_clock", id)?;
+                        let (_, t, p, r) = world.clock_net.iter().find(|c| c.0 == name)?;
+                        (*t, *p, *r)
+                    };
+                    Some(play::ClockState {
+                        clock: id,
+                        total_ticks,
+                        partial_tick,
+                        rate,
+                    })
                 })
                 .collect(),
         })
