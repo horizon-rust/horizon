@@ -1445,7 +1445,6 @@ mod tests {
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn portal_blast_rays_pass_through_without_resistance() {
         use super::super::explosion::{BlockInteraction, ExplosionSource};
-        use horizon_core::random::LegacyRandom;
         let mut game = server_game().expect("set HORIZON_TEST_RESOURCES");
         let registry = game.pack.assets.registry;
         let portal = registry.default_state("minecraft:nether_portal").unwrap();
@@ -1469,7 +1468,7 @@ mod tests {
                         }
                     }
                 }
-                game.world.random = LegacyRandom::new(seed);
+                game.world.random.set_seed(seed);
                 game.server_explode_from(
                     [8.5, 64.5, 8.5],
                     2.0,
