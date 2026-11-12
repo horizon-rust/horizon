@@ -3,8 +3,8 @@
 //! sky. The dragon fight itself lives in game/dragon.rs: the podium is
 //! inactive until the dragon dies.
 use super::entity::{Entity as _, entity_lists_of, for_each_entity};
-use horizon_client::join_seq::{JoinSeq, Joined as _};
 use super::{Dim, Game};
+use horizon_client::join_seq::{JoinSeq, Joined as _};
 use horizon_client::{
     Result,
     containers::BlockEntity,
