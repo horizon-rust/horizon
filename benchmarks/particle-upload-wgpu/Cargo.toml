@@ -1,0 +1,17 @@
+[package]
+name = "horizon-particle-upload-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+resolver = "2"
+
+[dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "dx12"] }
+pollster = "0.4"
+
+[patch.crates-io]
+# Same local wgpu/naga patches as the parent Horizon workspace.
+wgpu-hal = { path = "../../third_party/wgpu-hal" }
+naga = { path = "../../third_party/naga" }
