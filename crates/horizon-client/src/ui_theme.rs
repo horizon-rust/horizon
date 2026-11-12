@@ -378,6 +378,9 @@ const PACK_ASCENT: f32 = 7.0;
 const PACK_LINE: f32 = 9.0;
 /// A design-system size `px` sets a line about this much taller than itself.
 const PACK_LINE_PER_PX: f32 = 1.2;
+/// How many quarter pixels [`Ui::fit`] steps a proportional shrink down at most, for a size
+/// that rounded up.
+const FIT_STEPS: usize = 8;
 /// The whole-pixel scale the pack's font is drawn at for text of `px` physical pixels: the
 /// nearest to the line it would have in the design system's fonts.
 fn pack_scale(px: f32) -> f32 {
@@ -617,6 +620,33 @@ impl<'a> Ui<'a> {
             }
             (pen, ascent, descent, quads)
         })
+    }
+    /// The largest size, up to `size`, at which `text` fits `room` dp: what a label wider than
+    /// its box is drawn at. The design system's fonts shrink in proportion, measured again
+    /// since a size is drawn at quarter pixels. The pack's font (no fonts given) draws at whole
+    /// scales only, so a proportional shrink can round back to the same width: it takes the
+    /// largest whole scale that fits, and never goes below the font's own pixels (text wider
+    /// than `room` even then keeps that size).
+    pub(crate) fn fit(&self, face: Face, size: f32, text: &str, room: f32) -> f32 {
+        let wide = self.measure(face, size, text);
+        if wide <= room || wide <= 0.0 {
+            return size;
+        }
+        if with_cache(self.atlas, |c| c.fonts.is_none()) {
+            let px = (size * self.density * 4.0).round() / 4.0;
+            let scale = pack_scale(px);
+            let fits = (room / (wide / scale)).floor().clamp(1.0, scale);
+            return fits * PACK_LINE / PACK_LINE_PER_PX / self.density;
+        }
+        let quarter = 0.25 / self.density;
+        let mut fit = size * room / wide;
+        for _ in 0..FIT_STEPS {
+            if self.measure(face, fit, text) <= room || fit <= quarter {
+                break;
+            }
+            fit -= quarter;
+        }
+        fit
     }
     /// The advance of `text` in dp.
     pub(crate) fn measure(&self, face: Face, size: f32, text: &str) -> f32 {
@@ -984,6 +1014,97 @@ mod tests {
         // Measuring draws nothing but keeps the width.
         let (mw, _, _, none) = pack_layout(&atlas, 23.0, "aa", false);
         assert!(none.is_empty() && mw == w);
+        reset_atlas();
+    }
+
+    /// A pack font of one 8x8 glyph, `a`, in a scratch folder named after `tag`.
+    fn one_glyph_pack(tag: &str) -> HudAtlas {
+        let root = std::env::temp_dir().join(format!("hz-ui-{tag}-{}", std::process::id()));
+        let font = root.join("assets/minecraft/font");
+        let tex = root.join("assets/minecraft/textures/font");
+        std::fs::create_dir_all(&font).unwrap();
+        std::fs::create_dir_all(&tex).unwrap();
+        std::fs::write(
+            font.join("default.json"),
+            r#"{"providers":[{"type":"bitmap","file":"minecraft:font/a.png","ascent":7,"chars":["a"]}]}"#,
+        )
+        .unwrap();
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, 8, 8);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&[255; 256])
+            .unwrap();
+        std::fs::write(tex.join("a.png"), png).unwrap();
+        reset_atlas();
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        atlas
+    }
+
+    /// Start this thread's text cache for `atlas` with no fonts given, as vanilla's look runs
+    /// (unit tests otherwise take the design system's).
+    fn without_fonts(atlas: &HudAtlas) {
+        CACHE.with(|c| {
+            *c.borrow_mut() = Some(Cache {
+                fonts: None,
+                entries: HashMap::new(),
+                shelf: (0, 0, 0),
+                pending: Vec::new(),
+                atlas: atlas as *const HudAtlas as usize,
+            })
+        });
+    }
+
+    /// With the pack's font, a label wider than its key is drawn at the largest whole scale that
+    /// fits, and its glyphs stay inside the room: a proportional shrink alone rounds back to the
+    /// same scale (13 dp at scale 2, asked 70/80 of it: 11.375 dp, still scale 2).
+    #[test]
+    fn text_fitted_in_the_packs_font_stays_inside_its_room() {
+        let atlas = one_glyph_pack("fit");
+        without_fonts(&atlas);
+        let mut batch = HudBatch::new([1040, 700]);
+        let ui = Ui::new(&atlas, &mut batch, (0.0, 0.0));
+        assert_eq!(ui.density, 1.0);
+        let (face, size, label) = (Face::Medium, 13.0, "aaaa");
+        let wide = ui.measure(face, size, label);
+        let room = wide * 70.0 / 80.0;
+        let once = size * room / wide;
+        assert_eq!(
+            ui.measure(face, once, label),
+            wide,
+            "one proportional shrink keeps scale 2"
+        );
+        let fit = ui.fit(face, size, label, room);
+        assert!(ui.measure(face, fit, label) <= room);
+        assert_eq!(
+            ui.measure(face, fit, label),
+            wide / 2.0,
+            "the next whole scale down: 1"
+        );
+        // Drawn there, every glyph lies between the room's edges.
+        let mut batch = HudBatch::new([1040, 700]);
+        let mut ui = Ui::new(&atlas, &mut batch, (0.0, 0.0));
+        let (x, density) = (10.0, ui.density);
+        ui.text_line(face, fit, 20.0, x, 10.0, u32::MAX, label);
+        assert!(!batch.vertices.is_empty());
+        // The batch is in GUI pixels: physical pixels over its scale.
+        for v in &batch.vertices {
+            let dp = v.pos[0] * batch.scale / density;
+            assert!(
+                (x..=x + room).contains(&dp),
+                "{dp} dp outside {x}..{}",
+                x + room
+            );
+        }
+        // Text that fits keeps its size; a word too wide even at the font's own pixels (a hint
+        // wider than its panel) stays at scale 1 rather than vanishing.
+        let ui = Ui::new(&atlas, &mut batch, (0.0, 0.0));
+        assert_eq!(ui.fit(face, size, label, wide), size);
+        let one = ui.measure(face, ui.fit(face, size, label, 1.0), label);
+        assert_eq!(one, wide / 2.0);
         reset_atlas();
     }
 
