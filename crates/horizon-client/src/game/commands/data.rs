@@ -69,6 +69,7 @@ impl Game<'_> {
             let mut tag = g.entity_nbt_in_level(t)?;
             if let Target::Mob(id)
             | Target::Item(id)
+            | Target::Stand(id)
             | Target::Orb(id)
             | Target::Boat(id)
             | Target::Cart(id)
