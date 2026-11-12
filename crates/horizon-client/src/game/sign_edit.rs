@@ -644,13 +644,7 @@ impl Game<'_> {
             return;
         }
         if let Some(shortcut) = self.edit_shortcut(event) {
-            if self
-                .sign_edit
-                .as_ref()
-                .is_some_and(|edit| edit.edit.focused)
-            {
-                self.sign_shortcut(shortcut);
-            }
+            self.sign_shortcut(shortcut);
             return;
         }
         let key = match event.physical_key {
@@ -662,18 +656,11 @@ impl Game<'_> {
     /// A key and the text it typed on the sign being edited (the keyboard,
     /// or a controller's on-screen keyboard).
     pub(super) fn sign_input(&mut self, key: Option<KeyCode>, typed: Option<&str>) {
-        if key == Some(KeyCode::Escape) {
-            self.close_sign_editor();
-            return;
-        }
-        if !self
-            .sign_edit
-            .as_ref()
-            .is_some_and(|edit| edit.edit.focused)
-        {
+        if self.sign_edit.is_none() {
             return;
         }
         match key {
+            Some(KeyCode::Escape) => self.close_sign_editor(),
             Some(KeyCode::ArrowUp) => self.sign_move_line(3),
             Some(KeyCode::ArrowDown | KeyCode::Enter | KeyCode::NumpadEnter) => {
                 self.sign_move_line(1)

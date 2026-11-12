@@ -80,12 +80,30 @@ impl BookScreen {
             signing,
             title,
             title_edit,
+            page_edit,
             ..
         } = self
         {
             *signing = true;
             title_edit.set_value(title.as_str());
             title_edit.reset_blink();
+            // `BookSignScreen.setInitialFocus`: the title box takes the focus.
+            title_edit.focused = true;
+            page_edit.focused = false;
+        }
+    }
+    /// Back from the sign screen to the page: the page field takes the focus again.
+    fn end_signing(&mut self) {
+        if let Self::Edit {
+            signing,
+            title_edit,
+            page_edit,
+            ..
+        } = self
+        {
+            *signing = false;
+            title_edit.focused = false;
+            page_edit.focused = true;
         }
     }
 }
@@ -502,8 +520,8 @@ impl Game<'_> {
             },
             Some(BookScreen::Edit { signing: true, .. }) => match key {
                 Some(KeyCode::Escape) => {
-                    if let Some(BookScreen::Edit { signing, .. }) = self.book.as_mut() {
-                        *signing = false;
+                    if let Some(book) = self.book.as_mut() {
+                        book.end_signing();
                     }
                 }
                 Some(KeyCode::Enter | KeyCode::NumpadEnter) if focused => {
@@ -1117,8 +1135,8 @@ impl Game<'_> {
             },
             Some("done") => match self.book.as_mut() {
                 Some(BookScreen::Edit { signing: true, .. }) => {
-                    if let Some(BookScreen::Edit { signing, .. }) = self.book.as_mut() {
-                        *signing = false;
+                    if let Some(book) = self.book.as_mut() {
+                        book.end_signing();
                     }
                 }
                 Some(BookScreen::Edit { .. }) => self.save_book(false),
@@ -1310,8 +1328,8 @@ impl Game<'_> {
                     self.save_book(true);
                 } else if inside(w / 2.0 + 2.0, 196.0, 98.0, 20.0) {
                     click(self);
-                    if let Some(BookScreen::Edit { signing, .. }) = self.book.as_mut() {
-                        *signing = false;
+                    if let Some(book) = self.book.as_mut() {
+                        book.end_signing();
                     }
                 } else if inside(left + 36.0, 50.0, 114.0, 9.0) {
                     self.book_title_click(left + 36.0, mx);
