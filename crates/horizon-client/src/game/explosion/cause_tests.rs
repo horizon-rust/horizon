@@ -91,47 +91,7 @@ fn run(modes: &[&str], expected: usize) {
                 _ => None,
             };
             let guest = (owner == "guest").then_some(11);
-            game.crystals.push(Crystal {
-                id: 7,
-                position: Vec3::new(8.5, 64.0, 8.5),
-                show_bottom: true,
-                time: 0,
-                beam: None,
-                invulnerable: false,
-                fall: (false, 0.0),
-            });
-            if mode == "crystal" || mode == "crystal_named" {
-                assert!(game.command_damage_crystal(
-                    7,
-                    "minecraft:generic",
-                    horizon_client::mobs::DamageKind::Generic,
-                    cause
-                ));
-            } else {
-                let kind = if mode == "crystal_snowball" {
-                    ProjectileKind::Snowball
-                } else {
-                    ProjectileKind::Arrow {
-                        base_damage: 2.0,
-                        critical: false,
-                        effect: None,
-                    }
-                };
-                let mut projectile = Projectile::new(kind, Vec3::new(8.5, 64.0, 8.5), shooter);
-                projectile.id = 71;
-                projectile.guest = guest;
-                projectile.velocity.x = 3.0;
-                name(&mut game, 71, "Projectile");
-                game.projectile_hit(
-                    &projectile,
-                    ProjectileHit::Entity {
-                        who: Who::Mob(crate::game::dragon::CRYSTAL_IDS),
-                        at: projectile.position,
-                    },
-                )
-                .unwrap();
-            }
-            assert!(game.crystals.is_empty());
+            crystal_hit(&mut game, mode, cause, shooter, guest);
             assert!(game.player.as_ref().unwrap().health.dead_or_dying());
             assert!(
                 game.boats.is_empty(),
@@ -181,8 +141,58 @@ fn run(modes: &[&str], expected: usize) {
     }
     assert_eq!(output.len(), expected);
     std::fs::write(
-        std::env::var_os("HORIZON_CRYSTAL_CAUSES_OUTPUT").expect("fixture output"),
+        std::env::var_os("HORIZON_EXPLOSION_CAUSES_OUTPUT").expect("fixture output"),
         output.join("\n") + "\n",
     )
     .unwrap();
+}
+
+fn crystal_hit(
+    game: &mut Game<'_>,
+    mode: &str,
+    cause: Option<Target>,
+    shooter: Option<Who>,
+    guest: Option<u32>,
+) {
+    game.crystals.push(Crystal {
+        id: 7,
+        position: Vec3::new(8.5, 64.0, 8.5),
+        show_bottom: true,
+        time: 0,
+        beam: None,
+        invulnerable: false,
+        fall: (false, 0.0),
+    });
+    if mode == "crystal" || mode == "crystal_named" {
+        assert!(game.command_damage_crystal(
+            7,
+            "minecraft:generic",
+            horizon_client::mobs::DamageKind::Generic,
+            cause
+        ));
+    } else {
+        let kind = if mode == "crystal_snowball" {
+            ProjectileKind::Snowball
+        } else {
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            }
+        };
+        let mut projectile = Projectile::new(kind, Vec3::new(8.5, 64.0, 8.5), shooter);
+        projectile.id = 71;
+        projectile.guest = guest;
+        projectile.velocity.x = 3.0;
+        name(game, 71, "Projectile");
+        game.projectile_hit(
+            &projectile,
+            ProjectileHit::Entity {
+                who: Who::Mob(crate::game::dragon::CRYSTAL_IDS),
+                at: projectile.position,
+            },
+        )
+        .unwrap();
+    }
+    assert!(game.crystals.is_empty());
 }

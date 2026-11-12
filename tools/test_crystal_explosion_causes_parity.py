@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare real crystal explosion causes, death messages and server kill credit."""
+"""Compare real explosion causes, death messages and server kill credit."""
 import argparse
 import difflib
 import json
@@ -17,7 +17,8 @@ except ImportError:
 FIXTURE = 'game::explosion::cause_tests::crystal_explosion_causes_parity_fixture'
 
 
-def main():
+def main(oracle='VanillaCrystalExplosionCauseOracle.java', fixture=FIXTURE,
+         cases=16, variant='crystal'):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--vanilla-home', type=Path, help='prepared .local directory')
     parser.add_argument('--resources', type=Path)
@@ -25,12 +26,12 @@ def main():
     args = parser.parse_args()
     if args.vanilla_home:
         lab.LOCAL = args.vanilla_home.resolve()
-    build = lab.ROOT / '.local' / 'rust-crystal-explosion-causes-parity'
+    build = lab.ROOT / '.local' / f'rust-{variant}-explosion-causes-parity'
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
     lock, jars, libraries = base.verify_artifacts()
-    source = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCrystalExplosionCauseOracle.java'
+    source = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity' / oracle
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
@@ -41,33 +42,33 @@ def main():
             subprocess.run(list(map(str, command)), check=True, stdout=log, stderr=subprocess.STDOUT, **kwargs)
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath',
          lab.ROOT / 'mods/horizon/src/test/java', '-cp', cp, '-d', classes, source], 'compile-java')
-    with tempfile.TemporaryDirectory(prefix='horizon-crystal-causes-') as scratch:
+    with tempfile.TemporaryDirectory(prefix=f'horizon-{variant}-causes-') as scratch:
         homes = {key: Path(scratch) / key.lower() for key in
                  ['HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME']}
         env = lab.game_env(os.environ, **homes,
                            HORIZON_TEST_RESOURCES=(args.resources or lab.LOCAL / 'horizon-client' / lab.VERSION).resolve(),
-                           HORIZON_CRYSTAL_CAUSES_OUTPUT=actual)
+                           HORIZON_EXPLOSION_CAUSES_OUTPUT=actual)
         run(['java', '-Xmx512M', '-cp', os.pathsep.join([str(classes), cp]),
-             'dev.horizonlab.parity.VanillaCrystalExplosionCauseOracle', expected], 'java', cwd=scratch, env=env)
+             'dev.horizonlab.parity.' + Path(oracle).stem, expected], 'java', cwd=scratch, env=env)
         if args.test_binary:
             binary = args.test_binary.resolve()
-            listing = subprocess.run([str(binary), FIXTURE, '--exact', '--list'],
+            listing = subprocess.run([str(binary), fixture, '--exact', '--list'],
                                      check=True, capture_output=True, text=True, cwd=scratch, env=env)
-            assert listing.stdout.splitlines().count(FIXTURE + ': test') == 1, (
+            assert listing.stdout.splitlines().count(fixture + ': test') == 1, (
                 'the test executable must contain exactly one explosion cause fixture')
-            command = [binary, FIXTURE, '--exact', '--ignored', '--nocapture']
+            command = [binary, fixture, '--exact', '--ignored', '--nocapture']
             cwd = scratch
         else:
-            command = ['cargo', 'test', '-p', 'horizon-client', '--lib', FIXTURE,
+            command = ['cargo', 'test', '-p', 'horizon-client', '--lib', fixture,
                        '--', '--exact', '--ignored', '--nocapture']
             cwd = lab.ROOT
         run(command, 'rust', cwd=cwd, env=env)
     want, got = expected.read_text(encoding="utf-8").splitlines(), actual.read_text(encoding="utf-8").splitlines()
     if want != got:
         raise AssertionError('\n'.join(difflib.unified_diff(want, got, fromfile='vanilla', tofile='horizon')))
-    assert len(got) == 16, 'all player/mob/ownerless and persistence cases must run'
+    assert len(got) == cases, f'all {cases} {variant} source/owner cases must run'
     report.write_text(json.dumps({'passed': True, 'cases': len(got)}, indent=2) + '\n', encoding='utf-8')
-    print('explosion causes: 16 actual crystal cases match vanilla; server kill credit checked')
+    print(f'explosion causes: {cases} actual {variant} cases match vanilla; server kill credit checked')
 
 
 if __name__ == '__main__':
