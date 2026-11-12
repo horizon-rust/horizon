@@ -384,6 +384,8 @@
   "Reuses poles; flags and pattern layers still update.": "Używa ponownie drzewców; flagi i warstwy wzoru nadal się aktualizują.",
   "Copper Golem Statues": "Posągi miedzianego golema",
   "Reuses statue geometry until its block state changes.": "Używa ponownie geometrii posągu, dopóki jego stan bloku się nie zmieni.",
+  "Visibility Buffer": "Bufor widoczności",
+  "Shades each terrain pixel once, however many faces overlap it.": "Cieniuje każdy piksel terenu raz, niezależnie od tego, ile ścian się na nim nakłada.",
   "Opaque Ice": "Nieprzezroczysty lód",
   "Draws ice in the solid pass, without its see-through texture.": "Rysuje lód w przebiegu pełnym, bez jego przezroczystej tekstury.",
   "Shaders": "Shadery",

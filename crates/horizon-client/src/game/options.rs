@@ -606,6 +606,7 @@ impl Game<'_> {
                 self.gpu_culling_auto.reset();
             }
             let _ = r.set_gpu_culling(gpu_culling);
+            r.set_visibility_buffer(s.horizon.visibility_buffer);
             r.update_output(
                 &s.horizon,
                 &Self::options_path().with_file_name(horizon_client::graphics::HDR_MARKER),

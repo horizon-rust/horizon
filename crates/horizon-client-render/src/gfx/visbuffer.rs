@@ -1,5 +1,6 @@
-//! A visibility buffer for solid terrain, opt-in with `HORIZON_VISBUFFER=1` (read once, at
-//! startup): pass 1 rasterises the solid flat draws (near sections and far tiles, phase 1 and,
+//! A visibility buffer for solid terrain, opt-in with the Visibility Buffer setting
+//! (`Graphics::visibility_buffer`; `HORIZON_VISBUFFER=1` turns it on whatever the setting
+//! says): pass 1 rasterises the solid flat draws (near sections and far tiles, phase 1 and,
 //! with occlusion culling, phase 2) writing only depth and the ID of the quad each pixel shows
 //! (`visbuffer.wgsl`'s `vis_id`: arena page and quad); cutout and fading
 //! quads keep their alpha test and dither there, the rest never discard. Pass 2 is one
@@ -27,10 +28,53 @@ pub const MAX_PAGES: u32 = 32;
 const STORAGE_BUFFERS: u32 = PAGE_SLOTS + 2;
 const IDS: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
-/// Whether the visibility buffer is asked for, and the device binds storage buffers enough.
-pub fn wanted(device: &wgpu::Device) -> bool {
+/// `HORIZON_VISBUFFER=1`: on whatever the setting says, and offered wherever it can run.
+fn forced() -> bool {
     std::env::var("HORIZON_VISBUFFER").as_deref() == Ok("1")
-        && device.limits().max_storage_buffers_per_shader_stage >= STORAGE_BUFFERS
+}
+
+/// Whether this device takes the visibility buffer, told to the settings' switch too
+/// (`graphics::offer_visibility_buffer`): one that draws vanilla frames flat and binds storage
+/// buffers enough, behind Metal, the one backend it was tried on. `HORIZON_VISBUFFER=1` offers
+/// it behind the others too.
+pub fn offer(device: &wgpu::Device, info: &wgpu::AdapterInfo, flat: Option<&Flat>) -> bool {
+    let offered = device.limits().max_storage_buffers_per_shader_stage >= STORAGE_BUFFERS
+        && match flat {
+            Some(flat) => {
+                forced() || (info.backend == wgpu::Backend::Metal && flat.min_sections == 0)
+            }
+            None => false,
+        };
+    crate::graphics::offer_visibility_buffer(offered);
+    offered
+}
+
+impl super::Renderer {
+    /// Switches the visibility buffer: the Visibility Buffer setting sets it
+    /// (`apply_ui_settings`, after every settings change and every new renderer). It turns on
+    /// only where it is offered (`offer`); unchanged, it does nothing. Its pipelines are made
+    /// when it is switched on and dropped when it is switched off: the frames after that draw
+    /// their solid terrain with the normal passes again.
+    pub fn set_visibility_buffer(&mut self, on: bool) {
+        let on = (on || forced()) && self.visbuf_offered;
+        if on == self.visbuf.is_some() {
+            return;
+        }
+        self.visbuf = self.flat.as_ref().filter(|_| on).map(|flat| {
+            log::info!("Horizon: solid terrain through a visibility buffer");
+            let kit = self.world_warps.kit();
+            Visbuffer::new(
+                &self.device,
+                &kit.terrain,
+                flat,
+                (kit.format, kit.linear),
+                &kit.sprite_constants,
+            )
+        });
+        if !on {
+            log::info!("Horizon: solid terrain through the normal passes");
+        }
+    }
 }
 
 pub struct Visbuffer {
