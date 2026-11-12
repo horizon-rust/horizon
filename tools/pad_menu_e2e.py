@@ -66,13 +66,13 @@ Cases:
   it, and Undo shows once the pack is picked.
 - extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
   a row the right stick leaves mostly hidden scrolls back into view when A presses it, and A changes it.
-- osk_labels: the on-screen keyboard over chat draws its keys' labels, in Horizon's look and with no menu style given
-  (`HORIZON_MENU_STYLE=vanilla`, where the overlays have no fonts of their own and use the pack's).
 - osk_book_done: on a book and quill's page the keyboard's New Line key makes a line and keeps typing; Done (Menu)
   is the book's Done: it saves what was typed and closes the book, never a new line.
 - osk_sign_done: on a sign Done (Menu) closes the sign with what was typed, as its Done button.
 - osk_chat_suggestions: over chat with the keyboard open, RT fills in the selected command suggestion (Tab) and the
   right stick picks another first (Up and Down), without closing the keyboard.
+- osk_labels: the on-screen keyboard over chat draws its keys' labels, in Horizon's look and with no menu style given
+  (`HORIZON_MENU_STYLE=vanilla`, where the overlays have no fonts of their own and use the pack's).
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
 - radial_commit: holding the opener shows the overlay and pauses nothing; the stick selects; releasing runs the action once.
