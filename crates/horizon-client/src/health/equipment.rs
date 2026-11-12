@@ -17,6 +17,7 @@ pub struct EquipmentHurt {
     pending: Option<PendingHurt<()>>,
     inner: Option<bool>,
     blocked: f32,
+    blocking_item_used: bool,
     fully_blocked: bool,
     block_sound: bool,
     knocked: bool,
@@ -77,6 +78,7 @@ impl PlayerMotion {
             status: self.status.clone(),
             blocking: hit.blocking.clone(),
             blocked: hit.blocked,
+            blocking_item_used: hit.blocking_item_used,
             fully_blocked: hit.fully_blocked,
             block_sound: hit.block_sound,
             knocked: hit.knocked,
@@ -95,6 +97,7 @@ impl PlayerMotion {
         )?;
         let result = step(&mut h.hurt, &mut combat);
         hit.blocked = environment.blocked;
+        hit.blocking_item_used = environment.blocking_item_used;
         hit.fully_blocked = environment.fully_blocked;
         hit.block_sound = environment.block_sound;
         hit.knocked = environment.knocked;
@@ -133,6 +136,7 @@ impl PlayerMotion {
             pending: None,
             inner: None,
             blocked: 0.0,
+            blocking_item_used: false,
             fully_blocked: false,
             block_sound: false,
             knocked: false,
@@ -230,6 +234,7 @@ impl PlayerMotion {
         Ok(BlockOutcome {
             hurt,
             blocked: hit.blocked,
+            blocking_item_used: hit.blocking_item_used,
             fully_blocked: hit.fully_blocked,
             sound: hit.block_sound,
             knockback: hit.knocked,
