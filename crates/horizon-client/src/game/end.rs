@@ -1520,7 +1520,8 @@ impl Game<'_> {
                 .or_default()
                 .enter_with_delay(pos, delay);
         }
-        // ThrowableProjectile applies the gateway's block effect before Entity.tick.
+        // AbstractArrow, ThrowableProjectile and AbstractHurtingProjectile
+        // apply the gateway's block effect before Entity.tick.
         self.handle_end_gateway_portals_phase(true);
     }
 
@@ -1555,10 +1556,16 @@ impl Game<'_> {
         // distance waits in its gateway, its state kept as it is.
         let ticking = self.entity_ticking_area();
         let ticks = |at: Vec3| ticking(at.x.floor() as i32, at.z.floor() as i32);
-        let mut ids: Vec<(u32, bool, bool)> = Vec::new();
+        // (id, canUsePortal, ticking, handled after its move this tick)
+        let mut ids: Vec<(u32, bool, bool, bool)> = Vec::new();
         for_each_entity!(entity_lists_of!(self), entity => {
             if entity.gateway_size().is_some() {
-                ids.push((entity.id(), entity.can_use_portal(self), ticks(entity.position())));
+                ids.push((
+                    entity.id(),
+                    entity.can_use_portal(self),
+                    ticks(entity.position()),
+                    entity.portal_after_move(),
+                ));
             }
         });
         // A pearl is not in the walk (its gateway pass is its own).
@@ -1567,10 +1574,10 @@ impl Game<'_> {
                 .projectiles
                 .iter()
                 .filter(|p| matches!(p.kind, ProjectileKind::EnderPearl))
-                .map(|p| (p.id, true, ticks(p.position))),
+                .map(|p| (p.id, true, ticks(p.position), true)),
         );
         let mut present: std::collections::HashSet<u32> =
-            ids.iter().map(|(id, _, _)| *id).collect();
+            ids.iter().map(|(id, ..)| *id).collect();
         // A pearl waiting for its exit keeps its portal cooldown.
         present.extend(self.end.arrivals.iter().map(|a| match &a.traveller {
             Arriving::Pearl(p) => p.id,
@@ -1578,21 +1585,16 @@ impl Game<'_> {
         }));
         self.end.gateways.retain(|id, _| present.contains(id));
         let mut leaving: Vec<(u32, BlockPos)> = Vec::new();
-        for (id, allowed, ticking) in ids {
-            if !ticking {
+        for (id, allowed, ticking, moved_first) in ids {
+            // AbstractArrow, ThrowableProjectile and AbstractHurtingProjectile
+            // apply block effects before Entity.tick: they go through in the
+            // tick they enter, the other kinds on their next tick.
+            if !ticking || moved_first != after_move {
                 continue;
             }
             // Only an entity in a gateway has a state: skip the others before
-            // the per-id lookups below, which walk the entity lists.
+            // the per-id lookup below, which walks the entity lists.
             if !self.end.gateways.contains_key(&id) {
-                continue;
-            }
-            let is_pearl = self
-                .creatures
-                .projectiles
-                .iter()
-                .any(|p| p.id == id && matches!(p.kind, ProjectileKind::EnderPearl));
-            if is_pearl != after_move {
                 continue;
             }
             let delay = self.entity_portal_delay(id);

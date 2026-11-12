@@ -49,7 +49,8 @@ fn world() -> Game<'static> {
     game
 }
 
-/// Gateway discovery, next-tick handling and arrival, without ticking entity motion.
+/// Gateway discovery (an arrow goes through in that pass), next-tick handling
+/// and arrival, without ticking entity motion.
 fn through(game: &mut Game<'_>) {
     game.find_end_gateway_portals();
     game.handle_end_gateway_portals();
