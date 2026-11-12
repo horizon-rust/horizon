@@ -98,6 +98,7 @@ fn run(modes: &[&str], expected: usize) {
                 time: 0,
                 beam: None,
                 invulnerable: false,
+                fall: (false, 0.0),
             });
             if mode == "crystal" || mode == "crystal_named" {
                 assert!(game.command_damage_crystal(

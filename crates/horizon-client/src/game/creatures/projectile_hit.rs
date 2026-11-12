@@ -1,4 +1,5 @@
 use super::*;
+use crate::game::{commands, dragon, explosion};
 
 impl Game<'_> {
     pub(super) fn projectile_hit_inner(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
@@ -24,7 +25,7 @@ impl Game<'_> {
         self.combat.projectile_direct = match hit {
             Hit::Entity {
                 who: Who::Player, ..
-            } => Some(self.target_name(super::commands::Target::Projectile(p.id))),
+            } => Some(self.target_name(commands::Target::Projectile(p.id))),
             _ => None,
         };
         let at = match hit {
@@ -57,7 +58,7 @@ impl Game<'_> {
         if let Hit::Entity {
             who: Who::Mob(id), ..
         } = hit
-            && id >= super::dragon::SPECIAL
+            && id >= dragon::SPECIAL
             && !matches!(
                 p.kind,
                 ProjectileKind::WitherSkull { .. } | ProjectileKind::DragonFireball
@@ -77,9 +78,9 @@ impl Game<'_> {
                     Some(&p.kind),
                     self.projectile_explosion_cause(p),
                 ) {
-                    super::dragon::Hurt::Landed { .. } => EntityHit::Hurt,
-                    super::dragon::Hurt::Refused => EntityHit::Refused,
-                    super::dragon::Hurt::Shrugged => {
+                    dragon::Hurt::Landed { .. } => EntityHit::Hurt,
+                    dragon::Hurt::Refused => EntityHit::Refused,
+                    dragon::Hurt::Shrugged => {
                         if let Some(a) = arrow.arrow.as_mut() {
                             a.ignite_for_seconds(1.0);
                         }
@@ -732,7 +733,7 @@ impl Game<'_> {
                     atp,
                     *power as f32,
                     fire,
-                    super::explosion::ExplosionSource::default()
+                    explosion::ExplosionSource::default()
                         .with_silence(self.entity_silent(p.id))
                         .with_entity(p.id, "minecraft:fireball"),
                 );
