@@ -31,7 +31,7 @@ def identities(rows):
 
 GROUPS = (
     ("horizon-client-lib", "client_lib.rs", "mobs::damage_identity_tests", 2),
-    ("horizon-client", "lib.rs", "game::villagers::damage_capture_tests", 2),
+    ("horizon-client", "lib.rs", "game::villagers::damage_capture_tests", 4),
 )
 
 
@@ -52,7 +52,7 @@ def main(argv=None, *, oracle_name="VanillaDamageIdentityOracle", groups=GROUPS,
     sources = [Path(__file__), oracle, *[lab.ROOT / "crates/horizon-client/src" / path for path in (
         "mobs.rs", "mobs/damage.rs", "mobs/damage_identity_tests.rs", "game/villagers.rs",
         "game/creatures/damage_context.rs", "game/villager_damage_capture_tests.rs", "game/splash_water.rs",
-        "game/kill_die_vibration_tests.rs")]]
+        "game/kill_die_vibration_tests.rs", "game/mace.rs", "game/wind.rs", "game/wither.rs")]]
     sources.extend(lab.ROOT / path for path in extra_sources)
     hashes = base.source_hashes(sources)
     scratch = Path(lab._scratch_dir("damage-identity-cwd-")).resolve()
