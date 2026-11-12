@@ -1,7 +1,7 @@
 //! Key and mouse mappings in play: toggled sneak and sprint, keys after rebinding, keys held
 //! across screens, the hotbar's wheel and bumper steps, and mouse buttons while playing.
 use super::*;
-use horizon_client::input_source::{InputHost, InputSource};
+use horizon_client::input_source::{Factory, InputHost, InputSource};
 
 fn studio_replay_shortcut(key: KeyCode) -> bool {
     matches!(
@@ -591,6 +591,17 @@ impl Game<'_> {
     }
 }
 
+/// A new game's input source: its own, from the registered `factory`, for a player's game; none
+/// for a server's (the integrated server's thread, a dedicated server), which has no device.
+pub(super) fn input_source_for(
+    role: super::execution_role::ExecutionRole,
+    factory: Option<&dyn Factory>,
+) -> Option<Box<dyn InputSource>> {
+    factory
+        .filter(|_| role.is_client())
+        .map(|factory| factory.build())
+}
+
 /// What the engine offers an input source: the game it drives, read-only.
 impl InputHost for Game<'_> {
     fn menu_open(&self) -> bool {
@@ -606,6 +617,9 @@ impl InputHost for Game<'_> {
         Game::scoping(self)
     }
 }
+
+#[cfg(test)]
+mod input_source_tests;
 
 #[cfg(test)]
 mod tests {

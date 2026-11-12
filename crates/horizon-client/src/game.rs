@@ -11428,7 +11428,7 @@ impl<'a> Game<'a> {
         let creative = options.creative;
         let inventory = vec![None; 36];
         let now = Instant::now();
-        let look = options.look;
+        let (look, role) = (options.look, options.execution_role);
         let particles = horizon_client::particles::ParticleEngine::new(
             &root,
             &gui.atlas.sprites,
@@ -11570,7 +11570,10 @@ impl<'a> Game<'a> {
             frame_end: now,
             last_input: now,
             pad: Default::default(),
-            input_source: horizon_client::input_source::build(),
+            input_source: play_input::input_source_for(
+                role,
+                horizon_client::input_source::factory(),
+            ),
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),

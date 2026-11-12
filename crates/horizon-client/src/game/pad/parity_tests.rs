@@ -12,7 +12,7 @@ use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 /// A game at play with no world: input reaches the mappings, as in `Screen::Playing`.
-fn playing(test: impl FnOnce(&mut Game)) {
+pub(super) fn playing(test: impl FnOnce(&mut Game)) {
     let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(
@@ -47,7 +47,7 @@ fn playing(test: impl FnOnce(&mut Game)) {
 
 /// Hold `button` on the pad, as a poll that saw it go down would: the press
 /// is recorded as `pad_button` records it, which is what `holds_action` reads.
-fn pad_press(game: &mut Game, button: Button, action: &'static str) {
+pub(super) fn pad_press(game: &mut Game, button: Button, action: &'static str) {
     let mut state = PadState::default();
     // A trigger is held by how far it's pulled, not by a button bit.
     match button {

@@ -65,7 +65,8 @@ pub trait InputSource {
     fn feedback(&mut self, _event: Feedback) {}
 }
 
-/// Builds a game's [`InputSource`]: once per `Game`, so once per splitscreen player.
+/// Builds a game's [`InputSource`]: once per player's `Game`, so once per splitscreen player, and
+/// never for the integrated server's thread or a dedicated server, which have no device.
 pub trait Factory: Sync {
     fn build(&self) -> Box<dyn InputSource>;
 }
@@ -78,7 +79,8 @@ pub fn register(factory: &'static dyn Factory) -> Result<(), horizon_hooks::TooL
     FACTORY.register(factory)
 }
 
-/// A new game's input source, from the registered factory; `None` with none registered.
-pub fn build() -> Option<Box<dyn InputSource>> {
-    FACTORY.get().map(|factory| factory.build())
+/// The registered factory, `None` with none. The engine builds a source with it for each game a
+/// player plays in a window, never for a server's.
+pub fn factory() -> Option<&'static dyn Factory> {
+    FACTORY.get()
 }
