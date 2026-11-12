@@ -83,6 +83,13 @@ pub(super) fn has_official(stage: &Path) -> bool {
     stage.join("crates/horizon-official/Cargo.toml").is_file()
 }
 
+/// Whether the revision's platform game starts native mods (`horizon_game::main_with`): the
+/// generated executable then runs through it, with the platform's parts (pack formats...).
+fn has_game_main_with(stage: &Path) -> bool {
+    fs::read_to_string(stage.join("crates/horizon-game/src/lib.rs"))
+        .is_ok_and(|lib| lib.contains("pub fn main_with("))
+}
+
 /// The package the game build compiles: the generated executable when trait mods need one, else
 /// the game the release ships for `target` (the server build is horizon-client's, without
 /// Horizon's parts, as `game-build.yml`'s).
@@ -137,7 +144,7 @@ fn names_mods(stage: &Path) -> bool {
 /// The generated executable's `main`: the trait mods of bundles `ids`, in that order, named by
 /// those ids when `named`; with Horizon's own parts registered when `official` (the revision has
 /// `horizon-official`, and the build is the game's, not the server's: its `official` feature).
-fn main_rs(ids: &[&str], named: bool, official: bool) -> String {
+fn main_rs(ids: &[&str], named: bool, official: bool, platform: bool) -> String {
     let entries = (0..ids.len())
         .map(|i| format!("        mod_{i}::hooks(),\n"))
         .collect::<String>();
@@ -150,6 +157,11 @@ fn main_rs(ids: &[&str], named: bool, official: bool) -> String {
         "    #[cfg(feature = \"official\")]\n    horizon_official::register();\n"
     } else {
         ""
+    };
+    let run = if platform {
+        "horizon_game::main_with"
+    } else {
+        "horizon_client::entry::main_with"
     };
     // Mirrors crates/horizon-official/src/main.rs, with trait mods passed to main_with.
     format!(
@@ -165,7 +177,7 @@ fn main() {{
     std::hint::black_box(&MOD_API_LEVEL);
     let mods: horizon_client::mod_api::Mods = vec![
 {entries}    ].into();
-{naming}{official}    horizon_client::entry::main_with(mods);
+{naming}{official}    {run}(mods);
 }}
 "#
     )
@@ -301,6 +313,15 @@ pub(super) fn stage(
     {
         client.insert("default-features".into(), false.into());
     }
+    // The platform's game, which starts the mods with the platform's parts; its features are
+    // horizon-client's, chosen through horizon-client above.
+    let platform = has_game_main_with(stage);
+    if platform {
+        let mut dep = toml::Table::new();
+        dep.insert("path".into(), "../horizon-game".into());
+        dep.insert("default-features".into(), false.into());
+        deps.insert("horizon-game".into(), toml::Value::Table(dep));
+    }
     // The official game's parts, for the game build only (the `official` feature, a default one).
     let official = has_official(stage);
     if official {
@@ -431,7 +452,7 @@ pub(super) fn stage(
     let ids: Vec<_> = mods.iter().map(|(_, bundle)| bundle.id.as_str()).collect();
     fs::write(
         game.join("src/main.rs"),
-        main_rs(&ids, names_mods(stage), official),
+        main_rs(&ids, names_mods(stage), official, platform),
     )
     .map_err(|e| e.to_string())?;
     let root = stage.join("Cargo.toml");
@@ -505,12 +526,12 @@ mod tests {
 
     #[test]
     fn generated_main_uses_the_games_allocator() {
-        let game = include_str!("../../../crates/horizon-client/src/main.rs");
+        let game = include_str!("../../../crates/horizon-game/src/main.rs");
         let allocator = game
             .lines()
             .find(|line| line.starts_with("static ALLOCATOR:"))
             .unwrap();
-        let generated = main_rs(&[], false, false);
+        let generated = main_rs(&[], false, false, false);
         assert!(generated.lines().any(|line| line == allocator));
     }
 
@@ -518,7 +539,7 @@ mod tests {
     fn generated_main_keeps_mod_order() {
         let ids = ["base", "extra"];
         for count in 0..=2 {
-            let text = main_rs(&ids[..count], false, false);
+            let text = main_rs(&ids[..count], false, false, false);
             assert!(text.contains("entry::main_with(mods)"));
             assert_eq!(text.matches("::hooks()").count(), count);
             assert!(!text.contains("name_mods"));
@@ -529,7 +550,7 @@ mod tests {
             }
         }
         // A revision that names its mods gets the ids in the same order, before main_with.
-        let named = main_rs(&ids, true, false);
+        let named = main_rs(&ids, true, false, false);
         let naming = named
             .find(r#"mod_api::name_mods(&["base", "extra"]);"#)
             .unwrap();
@@ -666,6 +687,36 @@ mod tests {
     }
 
     /// A staged workspace with horizon-client, as `stage` expects it.
+    #[test]
+    fn a_revision_with_the_platforms_main_with_starts_the_mods_through_it() {
+        let dir = fixture("[mod]\nid = 'example'\nversion = '1'\n[api]\npath = 'engine'\n");
+        let stage_dir = workspace(&dir);
+        let resolution = super::super::dependencies::Resolution { order: vec![0] };
+        let main = || fs::read_to_string(stage_dir.join(GAME).join("src/main.rs")).unwrap();
+        let game = || read(&stage_dir.join(GAME).join("Cargo.toml")).unwrap();
+        // Before horizon-game had it: the engine's entry, as that revision's release ran.
+        let bundle = super::super::bundle(&dir, None).unwrap();
+        stage(&stage_dir, &[bundle], &[vec![]], &resolution).unwrap();
+        assert!(main().contains("    horizon_client::entry::main_with(mods);"));
+        assert!(game()["dependencies"].get("horizon-game").is_none());
+        fs::create_dir_all(stage_dir.join("crates/horizon-game/src")).unwrap();
+        fs::write(
+            stage_dir.join("crates/horizon-game/src/lib.rs"),
+            "pub fn main_with(mods: horizon_client::mod_api::Mods) {}\n",
+        )
+        .unwrap();
+        let bundle = super::super::bundle(&dir, None).unwrap();
+        stage(&stage_dir, &[bundle], &[vec![]], &resolution).unwrap();
+        assert!(main().contains("    horizon_game::main_with(mods);"));
+        assert!(!main().contains("entry::main_with"));
+        let game = game();
+        let platform = &game["dependencies"]["horizon-game"];
+        assert_eq!(platform["path"].as_str(), Some("../horizon-game"));
+        // A server build's `--no-default-features` still reaches the game through horizon-client.
+        assert_eq!(platform["default-features"].as_bool(), Some(false));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     fn workspace(dir: &Path) -> std::path::PathBuf {
         let stage_dir = dir.join("workspace");
         fs::create_dir_all(stage_dir.join("crates/horizon-client")).unwrap();

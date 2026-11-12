@@ -33,3 +33,9 @@ pub const MOD_API_LEVEL: [u8; horizon_mods::api_level::MARK.len()] = horizon_mod
 pub fn main() {
     horizon_client::entry::main();
 }
+
+/// [`main`] with native mods' hooks: the launcher's generated executable for a build with native
+/// mods calls it, so that build runs with the platform's parts too.
+pub fn main_with(mods: horizon_client::mod_api::Mods) {
+    horizon_client::entry::main_with(mods);
+}

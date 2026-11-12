@@ -1769,8 +1769,11 @@ name = "horizon-game"
 version = "0.1.0"
 dependencies = [
  "horizon-client",
+ "horizon-core",
  "horizon-mods",
  "horizon-threads",
+ "serde_json",
+ "winresource",
 ]
 
 [[package]]

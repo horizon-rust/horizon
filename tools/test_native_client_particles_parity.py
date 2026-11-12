@@ -43,7 +43,7 @@ def main():
     binary = args.binary
     if binary is None:
         with (work / 'build.log').open('w', encoding='utf-8') as log:
-            subprocess.run(['cargo', 'build', '-p', 'horizon-client', '--bin', 'horizon-client'],
+            subprocess.run(['cargo', 'build', '-p', 'horizon-game', '--bin', 'horizon-client'],
                            cwd=lab.ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=1800)
         binary = lab.cargo_target() / 'debug' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
     with tempfile.TemporaryDirectory(prefix='hz-native-particles-') as scratch:

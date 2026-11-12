@@ -128,7 +128,7 @@ def horizon_binary(args, build):
     if args.binary:
         return Path(args.binary)
     with (build / 'cargo-build.log').open('w') as log:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client', '--bin', 'horizon-client'],
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'],
                        cwd=lab.ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))

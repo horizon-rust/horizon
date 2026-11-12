@@ -1,15 +1,48 @@
 [package]
 name = "horizon-game"
+default-run = "horizon-client"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "The game as the platform runs it: the engine's entry with the platform's parts registered, for an executable to start (docs/layers.md)"
+description = "The game as the platform runs it: the engine's entry with the platform's parts registered, for an executable to start, and this repository's plain executable (docs/layers.md)"
+
+# This repository's plain executable: the platform's game with no Horizon part (`cargo run -p
+# horizon-game`, the harnesses, horizon-ctl launch, horizon-plain, the server build). The official
+# executable is horizon-official's.
+[[bin]]
+name = "horizon-client"
+path = "src/main.rs"
+
+[[test]]
+name = "launch_api"
+path = "tests/launch_api.rs"
+
+[features]
+# The same features as horizon-client's, which they turn on (its Cargo.toml says what each does).
+default = ["audio", "controllers", "horizon-extras"]
+audio = ["horizon-client/audio"]
+controllers = ["horizon-client/controllers"]
+horizon-extras = ["horizon-client/horizon-extras"]
+friends = ["horizon-client/friends"]
+rng-trace = ["horizon-client/rng-trace"]
+system-allocator = ["horizon-client/system-allocator"]
+alloc-census = ["horizon-client/alloc-census", "horizon-threads/alloc-census"]
+windows-mimalloc = ["horizon-client/windows-mimalloc"]
+windows-segment-heap = ["horizon-client/windows-segment-heap"]
 
 [dependencies]
-horizon-client = { path = "../horizon-client" }
+horizon-client = { path = "../horizon-client", default-features = false }
 horizon-threads = { path = "../horizon-threads" }
 horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
+
+[dev-dependencies]
+horizon-core = { path = "../horizon-core" }
+serde_json = "1"
+
+[build-dependencies]
+# The build script runs on the host, but embeds resources based on the target OS.
+winresource = "0.1"
 
 [lints]
 workspace = true

@@ -1,5 +1,7 @@
-//! Generates the native mod API, and gives the Windows executable Horizon's icon and its stack
-//! (`packaging/windows/exe.rs`, shared with the official executable's build script).
+//! Generates the native mod API. The launcher's native-mod game package (`horizon-native-game`,
+//! which owns the `horizon-client` executable of a build with native mods) runs this build script
+//! too: there it also gives the Windows executable Horizon's icon and its stack
+//! (`packaging/windows/exe.rs`). horizon-client itself has no executable (horizon-game's).
 #[path = "../../packaging/windows/exe.rs"]
 mod windows_exe;
 
@@ -21,5 +23,7 @@ fn main() {
     if !staged.is_empty() {
         println!("cargo:rustc-env=HORIZON_MIXIN_MODS={}", staged.join(","));
     }
-    windows_exe::resources("horizon-client");
+    if std::env::var("CARGO_PKG_NAME").as_deref() != Ok("horizon-client") {
+        windows_exe::resources("horizon-client");
+    }
 }

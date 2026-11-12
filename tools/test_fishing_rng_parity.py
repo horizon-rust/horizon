@@ -32,7 +32,7 @@ def main():
         XDG_DATA_HOME=str(work / "data"),
         XDG_CONFIG_HOME=str(work / "config"),
     )
-    subprocess.run(["cargo", "build", "--profile", "fast", "-p", "horizon-client", "--bin", "horizon-client"],
+    subprocess.run(["cargo", "build", "--profile", "fast", "-p", "horizon-game", "--bin", "horizon-client"],
                    cwd=lab.ROOT, env=env, check=True)
     binary = lab.cargo_target() / "fast" / ("horizon-client.exe" if os.name == "nt" else "horizon-client")
     subprocess.run([sys.executable, str(lab.ROOT / "tools/test_command_exec_parity.py"),
