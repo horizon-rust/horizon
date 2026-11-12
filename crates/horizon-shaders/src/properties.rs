@@ -3,9 +3,10 @@
 //! continuing a value on the next line, and conditional directives evaluated with the
 //! standard and option macros (1.5 item 2). `#define` and `#undef` work in every one of them:
 //! a public pack defines a macro in its `shaders.properties` and tests it further down. The
-//! lines of custom uniforms and variables (`uniform.*`, `variable.*`) have those macros expanded.
-//! No other escape is read: values are names, numbers and expressions. A later duplicate key
-//! replaces the earlier one, with a note.
+//! lines of custom uniforms and variables (`uniform.*`, `variable.*`), and the values of images
+//! (`image.*`), have those macros expanded as each line is read; a definition after a line does
+//! not reach back to it. No other escape is read: values are names, numbers and expressions. A
+//! later duplicate key replaces the earlier one, with a note.
 
 use crate::Macros;
 use crate::condition::{Conditionals, split_directive};
@@ -30,11 +31,6 @@ pub struct Properties {
     /// In file order; a key appears once (a later duplicate replaces the earlier one).
     pub entries: Vec<Entry>,
     pub notes: Vec<Note>,
-    /// The macros at the end of the file: the set it was read with, changed by every
-    /// `#define`/`#undef` on a line that was reached. A pack writes sizes as macros here
-    /// (`image.<name>` uses `SKYBOX_RESOLUTION_X`), so readers that expand those values need
-    /// this set, not the one the file was read with (1.5).
-    pub macros: Macros,
 }
 
 impl Properties {
@@ -81,9 +77,12 @@ impl Properties {
                     let (mut key, mut value) = (key.trim().to_owned(), value.trim().to_owned());
                     // A custom uniform's or variable's line is read with the macros expanded, as
                     // Iris 1.11.7 reads it (probe pack): options, standard macros and this
-                    // file's own `#define`s, in the name too.
+                    // file's own `#define`s, in the name too. An image's value is read the same
+                    // way, at its own line: a later `#define` doesn't reach back to it.
                     if key.starts_with("uniform.") || key.starts_with("variable.") {
                         key = macros.expand(&key).trim().to_owned();
+                        value = macros.expand(&value).trim().to_owned();
+                    } else if key.starts_with("image.") {
                         value = macros.expand(&value).trim().to_owned();
                     }
                     out.insert(Entry {
@@ -98,7 +97,6 @@ impl Properties {
         if conditionals.open() {
             out.note(text.lines().count() as u32, "`#if` without `#endif`");
         }
-        out.macros = macros;
         out
     }
 

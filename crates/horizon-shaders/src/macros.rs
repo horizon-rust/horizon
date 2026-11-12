@@ -236,16 +236,6 @@ impl Macros {
         self.0.remove(name);
     }
 
-    /// This set with `other`'s macros replacing or adding to it: `other` wins where both
-    /// define a name.
-    pub(crate) fn overlay(&self, other: &Self) -> Self {
-        let mut out = self.clone();
-        for (name, m) in &other.0 {
-            out.0.insert(name.clone(), m.clone());
-        }
-        out
-    }
-
     pub fn is_defined(&self, name: &str) -> bool {
         self.0.contains_key(name)
     }
