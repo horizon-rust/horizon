@@ -130,6 +130,7 @@ mod tests {
                 cover: None,
                 forced_cover,
                 band: None,
+                ahead: None,
             };
             let (scan, map) = (ranges(None), ranges(Some(made)));
             let span = spread + 10;

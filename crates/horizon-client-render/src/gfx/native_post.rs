@@ -2754,7 +2754,7 @@ file = \"b.wgsl\"
                 Vec::new(),
                 &report.manifest,
                 &[],
-                format,
+                (format, format),
                 &frame,
                 tonemap,
             )

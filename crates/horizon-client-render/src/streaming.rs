@@ -1216,7 +1216,12 @@ impl Streaming {
     /// unlit column will queue itself when its light job completes.
     fn mark_loaded_sections_dirty(world: &mut World, lit: &FxHashSet<(i32, i32)>) {
         let mask = SectionMask::below(world.layout().sections());
-        let columns: Vec<(i32, i32)> = world.chunks.keys().copied().filter(|xz| lit.contains(xz)).collect();
+        let columns: Vec<(i32, i32)> = world
+            .chunks
+            .keys()
+            .copied()
+            .filter(|xz| lit.contains(xz))
+            .collect();
         for xz in columns {
             dirty_column(world, xz, mask, Dirtied::Everything);
         }

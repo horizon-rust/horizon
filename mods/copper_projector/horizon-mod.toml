@@ -1,8 +1,0 @@
-id = "copper_projector"
-name = "Copper Projector"
-version = "0.1.0"
-description = "A copper spotlight for RT lighting: a cone of light, aimed by the face it is placed on, lit by redstone."
-authors = ["Horizon"]
-api = "0.2"
-side = "both"
-capabilities = ["registries"]

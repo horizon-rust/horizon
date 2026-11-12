@@ -2619,7 +2619,10 @@ mod tests {
     fn sun_path_tilt_slider_steps_by_five_degrees() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::SunPathTilt);
-        assert_eq!(item.label(&s).plain(), "Sun Path Tilt: 40°");
+        assert_eq!(
+            item.label(&s, &Default::default()).plain(),
+            "Sun Path Tilt: 40°"
+        );
         for (v, tilt) in [(0.0, -60), (0.5, 0), (0.52, 0), (1.0, 60)] {
             H::SunPathTilt.set_slider(&mut s, v);
             assert_eq!(s.horizon.sun_path_tilt, tilt, "{v}");
@@ -2629,7 +2632,10 @@ mod tests {
             );
         }
         H::SunPathTilt.set_slider(&mut s, 0.5);
-        assert_eq!(item.label(&s).plain(), "Sun Path Tilt: 0° (Vanilla)");
+        assert_eq!(
+            item.label(&s, &Default::default()).plain(),
+            "Sun Path Tilt: 0° (Vanilla)"
+        );
     }
 
     #[test]

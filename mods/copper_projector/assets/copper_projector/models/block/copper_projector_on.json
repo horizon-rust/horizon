@@ -1,8 +1,0 @@
-{
-  "parent": "minecraft:block/cube_bottom_top",
-  "textures": {
-    "top": "minecraft:block/copper_bulb_lit",
-    "bottom": "minecraft:block/copper_block",
-    "side": "minecraft:block/chiseled_copper"
-  }
-}
