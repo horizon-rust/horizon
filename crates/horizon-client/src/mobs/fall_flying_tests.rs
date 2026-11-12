@@ -22,7 +22,7 @@ fn husk(types: &crate::mobs::MobTypes, no_ai: bool, chest_damage: Option<u32>) -
 }
 
 fn tick_once(m: &mut Mob, w: &MobWorld) {
-    let mut level_random = LegacyRandom::new(2);
+    let mut level_random = level_random(2);
     let mut events = Vec::new();
     assert!(
         tick(m, w, &mut level_random, &mut events),
@@ -170,7 +170,7 @@ fn a_glider_wears_on_the_twentieth_and_fortieth_glide_ticks() {
             let mut worn_at = Vec::new();
             for t in 1..=40 {
                 let mut events = Vec::new();
-                assert!(tick(&mut m, w, &mut LegacyRandom::new(2), &mut events));
+                assert!(tick(&mut m, w, &mut level_random(2), &mut events));
                 for e in &events {
                     if let MobEvent::GliderWear { mob, slot } = e {
                         assert_eq!((*mob, *slot), (1, EquipmentSlot::Chest));

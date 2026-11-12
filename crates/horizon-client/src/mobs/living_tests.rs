@@ -1,4 +1,5 @@
 use super::*;
+use crate::mobs::world::level_random;
 /// `AgeableMob.isBaby` is `canBeABaby() && getAge() < 0`, and `Age` alone
 /// says nothing: the six ageable classes that override `canBeABaby` to
 /// false — `Frog`, `Parrot`, `ZombieNautilus`, `CamelHusk`, `Slime` and
@@ -207,7 +208,7 @@ fn a_mob_bounces_off_a_bouncy_block_and_not_off_stone() {
         // Falling faster than gravity, so the landing is hard enough.
         m.velocity = Vec3::new(0.0, -1.0, 0.0);
         m.fall_distance = 8.0;
-        m.do_move(&w, &mut Vec::new());
+        m.do_move(&w, &mut Vec::new(), &mut level_random(0));
         assert_eq!(m.health, health, "{ground}: health after an 8 block fall");
         assert!(
             m.vertical_collision_below,
@@ -340,7 +341,7 @@ fn a_ridden_horse_floats_in_deep_water() {
         }
         m.fluids.in_water = true;
         m.fluids.water = 1.0;
-        m.travel(&w, Vec3::ZERO, &mut Vec::new());
+        m.travel(&w, Vec3::ZERO, &mut Vec::new(), &mut level_random(0));
         if ridden {
             floated = m.velocity.y;
         } else {
@@ -480,7 +481,7 @@ fn a_falling_mob_lands_on_a_shulker_or_a_held_happy_ghast() {
         let mut zombie = mob(1, "minecraft:zombie", Vec3::new(8.5, top + 3.0, 8.5));
         for _ in 0..20 {
             zombie.velocity = Vec3::new(0.0, -0.5, 0.0);
-            zombie.do_move(&w, &mut Vec::new());
+            zombie.do_move(&w, &mut Vec::new(), &mut level_random(0));
         }
         zombie.position.y - top
     };
@@ -547,7 +548,7 @@ fn a_bubble_column_lifts_a_mob_after_travel_not_inside_it() {
             let mut m = Mob::new(1, kind, Vec3::new(1.5, 2.0, 1.5), 0.0);
             m.fluids.in_water = true;
             m.fluids.water = 1.0;
-            m.travel(w, Vec3::ZERO, &mut Vec::new());
+            m.travel(w, Vec3::ZERO, &mut Vec::new(), &mut level_random(0));
             let after_travel = m.velocity.y;
             m.apply_effects_from_blocks(w, &mut Vec::new());
             out = Some((after_travel, m.velocity.y));
@@ -597,7 +598,7 @@ fn a_mob_on_soul_sand_or_honey_is_slowed_by_the_move() {
             let mut m = Mob::new(1, kind, Vec3::new(0.5, 1.0, 1.5), 0.0);
             m.on_ground = true;
             m.velocity = Vec3::new(0.2, 0.0, 0.0);
-            m.do_move(w, &mut Vec::new());
+            m.do_move(w, &mut Vec::new(), &mut level_random(0));
             let expected = f64::from(factor as f32) * 0.2;
             assert!(
                 (m.velocity.x - expected).abs() < 1.0e-9,
@@ -632,7 +633,7 @@ fn the_world_border_stops_a_mob() {
             // 1.5 blocks east from x = 11.5: past the wall at 13 if nothing stops it.
             let mut m = Mob::new(1, kind.clone(), Vec3::new(11.5, 64.0, 8.5), 0.0);
             m.velocity = Vec3::new(1.5, 0.0, 0.0);
-            m.do_move(&w, &mut Vec::new());
+            m.do_move(&w, &mut Vec::new(), &mut level_random(0));
             east_edge[i] = m.bounds().max_position().x;
             assert_eq!(m.horizontal_collision, bordered);
         }
@@ -853,7 +854,7 @@ fn a_mob_in_vines_slides_down_slowly() {
             let mut drops = Vec::new();
             for _ in 0..12 {
                 let before = m.position.y;
-                m.travel(w, Vec3::ZERO, &mut Vec::new());
+                m.travel(w, Vec3::ZERO, &mut Vec::new(), &mut level_random(0));
                 drops.push(before - m.position.y);
             }
             out = Some((drops, m.fall_distance));
@@ -947,7 +948,7 @@ fn damaging_mob_fall_plays_block_fall_sound() {
                 let mut mob = Mob::new(1, kind, Vec3::new(x, 1.0, 0.5), 0.0);
                 mob.fall_distance = 5.0;
                 let mut events = Vec::new();
-                mob.fall_on_block(w, &mut events);
+                mob.fall_on_block(w, &mut events, &mut level_random(0));
                 assert!(
                     matches!(events.as_slice(), [MobEvent::Sound("entity.hostile.small_fall", _, 1.0, 1.0), MobEvent::SoundId(id, _, 0.5, 0.75), ..] if id == block_sound),
                     "{events:?}"
@@ -981,7 +982,7 @@ fn a_mob_trampling_farmland_posts_block_change_from_it() {
             let mut mob = Mob::new(7, kind, Vec3::new(0.5, 1.0, 0.5), 0.0);
             mob.fall_distance = 5.0;
             let mut events = Vec::new();
-            mob.fall_on_block(w, &mut events);
+            mob.fall_on_block(w, &mut events, &mut level_random(0));
             // The write, then the event the rule posts for it.
             assert!(
                 matches!(
@@ -1315,7 +1316,7 @@ fn a_strider_landing_in_lava_takes_no_fall_damage() {
                 m.fall_distance = 6.0;
                 let start = m.health;
                 let mut events = Vec::new();
-                m.check_fall_damage(w, Vec3::ZERO, &mut events);
+                m.check_fall_damage(w, Vec3::ZERO, &mut events, &mut level_random(0));
                 let dust = events
                     .iter()
                     .any(|e| matches!(e, MobEvent::LandingDust { .. }));

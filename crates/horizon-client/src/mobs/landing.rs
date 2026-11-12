@@ -9,7 +9,7 @@ use crate::collisions::SceneCollisions;
 use horizon_core::{
     geometry::{Aabb, Vec3, VoxelShape},
     position::BlockPos,
-    random::RandomSource,
+    random::{LevelRandom, RandomSource},
 };
 use horizon_world::{
     block_entity_push::BlockPushWorld,
@@ -26,6 +26,9 @@ pub(super) struct MobLanding<'a, 'w> {
     pub w: &'a MobWorld<'w>,
     pub events: &'a mut Vec<MobEvent>,
     pub pos: [i32; 3],
+    /// The level's random (`level.getRandom()`): `FarmlandBlock.fallOn` and
+    /// `TurtleEggBlock.destroyEgg` roll from it, not from the mob's own.
+    pub level_random: &'a mut LevelRandom,
 }
 impl MobLanding<'_, '_> {
     fn at(&self) -> [f64; 3] {
@@ -77,11 +80,10 @@ impl BlockLandingWorld for MobLanding<'_, '_> {
         Ok(false)
     }
     fn random_float(&mut self) -> Result<f32, String> {
-        Ok(self.mob.random.next_float())
+        Ok(self.level_random.next_float())
     }
     fn random_int(&mut self, bound: i32) -> Result<i32, String> {
-        self.mob
-            .random
+        self.level_random
             .next_int_bound(bound)
             .map_err(|e| e.to_string())
     }

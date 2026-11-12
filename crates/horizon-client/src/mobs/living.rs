@@ -10,7 +10,7 @@ use crate::{
 use horizon_core::{
     geometry::{Aabb, Vec3, trig},
     position::BlockPos,
-    random::RandomSource,
+    random::{LevelRandom, RandomSource},
 };
 use horizon_world::{
     block_landing::LandingEntityKind,
@@ -861,7 +861,12 @@ impl Mob {
             || vehicle == Some(self.id)
             || (self.extra.mount.is_some() && vehicle == self.extra.mount)
     }
-    pub fn do_move(&mut self, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    pub fn do_move(
+        &mut self,
+        w: &MobWorld,
+        events: &mut Vec<MobEvent>,
+        level_random: &mut LevelRandom,
+    ) {
         let mut wanted = self.velocity;
         // Entity.move: a block the mob is stuck in (sweet berry bush) scales
         // this move once and stops it.
@@ -922,7 +927,7 @@ impl Mob {
         // Entity.setOnGroundWithMovement's checkSupportingBlock, before
         // checkFallDamage reads the landing block (getOnPosLegacy).
         self.supporting = self.supporting_block(w, moved);
-        self.species_check_fall_damage(w, moved, events);
+        self.species_check_fall_damage(w, moved, events, level_random);
         self.restitute_movement(w.world, w.movement, wanted, moved);
         self.movement_emission(w, moved, events);
         // Entity.move's last step: soul sand, honey and the like slow the
@@ -1004,11 +1009,17 @@ impl Mob {
     }
     /// `checkFallDamage` as the species has it: Strider's lava breaks any fall
     /// (the fluid state waits for the next baseTick); Bat's and Bee's do nothing.
-    fn species_check_fall_damage(&mut self, w: &MobWorld, moved: Vec3, events: &mut Vec<MobEvent>) {
+    fn species_check_fall_damage(
+        &mut self,
+        w: &MobWorld,
+        moved: Vec3,
+        events: &mut Vec<MobEvent>,
+        level_random: &mut LevelRandom,
+    ) {
         if self.kind.flags.lava_walker && self.fluids.in_lava {
             self.fall_distance = 0.0;
         } else if !matches!(self.kind.species, super::Species::Bat | super::Species::Bee) {
-            self.check_fall_damage(w, moved, events);
+            self.check_fall_damage(w, moved, events, level_random);
         }
     }
     /// `handleMoveVehicle` for a mount its rider's client moves, after the move:
@@ -1021,14 +1032,21 @@ impl Mob {
         delta: Vec3,
         on_ground: bool,
         events: &mut Vec<MobEvent>,
+        level_random: &mut LevelRandom,
     ) {
         self.on_ground = on_ground;
         self.supporting = self.supporting_block(w, delta);
-        self.species_check_fall_damage(w, delta, events);
+        self.species_check_fall_damage(w, delta, events, level_random);
     }
     /// LivingEntity.checkFallDamage: the fluid state refreshed out of water
     /// (touching water resets the fall), then Entity.checkFallDamage.
-    fn check_fall_damage(&mut self, w: &MobWorld, moved: Vec3, events: &mut Vec<MobEvent>) {
+    fn check_fall_damage(
+        &mut self,
+        w: &MobWorld,
+        moved: Vec3,
+        events: &mut Vec<MobEvent>,
+        level_random: &mut LevelRandom,
+    ) {
         if !self.fluids.in_water {
             self.update_fluids(w, events);
         }
@@ -1045,7 +1063,7 @@ impl Mob {
         if self.on_ground {
             if self.fall_distance > 0.0 {
                 self.landing_dust(w, events);
-                self.fall_on_block(w, events);
+                self.fall_on_block(w, events, level_random);
             }
             self.fall_distance = 0.0;
         }
@@ -1325,7 +1343,12 @@ impl Mob {
     /// `Block.fallOn` of the block under the mob (`Entity.checkFallDamage`):
     /// the block's own rule (hay, honey, slime, powder snow, a bed, a
     /// stalagmite, farmland, a turtle egg) decides how much of the fall hurts.
-    fn fall_on_block(&mut self, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    fn fall_on_block(
+        &mut self,
+        w: &MobWorld,
+        events: &mut Vec<MobEvent>,
+        level_random: &mut LevelRandom,
+    ) {
         let pos = self.block_on_legacy(w);
         let state = w.world.block(pos[0], pos[1], pos[2]);
         let species = self.species();
@@ -1345,6 +1368,7 @@ impl Mob {
                 w,
                 events,
                 pos,
+                level_random,
             },
             state,
             BlockPos::new(pos[0], pos[1], pos[2]),
@@ -1574,12 +1598,18 @@ impl Mob {
         }
     }
     /// LivingEntity.travel.
-    pub fn travel(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
-        if super::ai::custom_travel(self, w, input, events) {
+    pub fn travel(
+        &mut self,
+        w: &MobWorld,
+        input: Vec3,
+        events: &mut Vec<MobEvent>,
+        level_random: &mut LevelRandom,
+    ) {
+        if super::ai::custom_travel(self, w, input, events, level_random) {
             return;
         }
         if self.kind.flags.flying {
-            return self.travel_flying(w, input, events);
+            return self.travel_flying(w, input, events, level_random);
         }
         // shouldTravelInFluid: not where the fluid at its feet holds it up.
         let (x, y, z) = (
@@ -1590,18 +1620,24 @@ impl Mob {
         let stands_on_fluid = self.kind.flags.lava_walker && w.fluid(x, y, z) == Fluid::Lava;
         let in_fluid = self.is_in_liquid() || self.fluids.modded.is_some();
         if in_fluid && self.affected_by_fluids() && !stands_on_fluid {
-            self.travel_in_fluid(w, input, events);
+            self.travel_in_fluid(w, input, events, level_random);
         } else if self.extra.fall_flying {
-            self.travel_fall_flying(w, input, events);
+            self.travel_fall_flying(w, input, events, level_random);
         } else {
-            self.travel_in_air(w, input, events);
+            self.travel_in_air(w, input, events, level_random);
         }
     }
     /// `LivingEntity.travelFallFlying`: use the mob's existing authoritative move
     /// and damage routes, with the shared `updateFallFlyingMovement` arithmetic.
-    fn travel_fall_flying(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
+    fn travel_fall_flying(
+        &mut self,
+        w: &MobWorld,
+        input: Vec3,
+        events: &mut Vec<MobEvent>,
+        level_random: &mut LevelRandom,
+    ) {
         if self.on_climbable(w) {
-            self.travel_in_air(w, input, events);
+            self.travel_in_air(w, input, events, level_random);
             self.extra.fall_flying = false;
             return;
         }
@@ -1612,7 +1648,7 @@ impl Mob {
             self.yaw,
             self.effective_gravity(),
         );
-        self.do_move(w, events);
+        self.do_move(w, events, level_random);
         if self.horizontal_collision {
             let damage = ((before
                 - (self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z).sqrt())
@@ -1641,7 +1677,13 @@ impl Mob {
     /// LivingEntity.travelFlying: no gravity, `0.91F` drag in the air,
     /// `0.8F` in water and 0.5 in lava. A happy ghast swims as fast as it
     /// flies (`HappyGhast.travel`); the others at 0.02.
-    fn travel_flying(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
+    fn travel_flying(
+        &mut self,
+        w: &MobWorld,
+        input: Vec3,
+        events: &mut Vec<MobEvent>,
+        level_random: &mut LevelRandom,
+    ) {
         let fluid_speed = if self.species() == super::Species::HappyGhast {
             self.kind.air_speed
         } else {
@@ -1651,6 +1693,7 @@ impl Mob {
             w,
             input,
             events,
+            level_random,
             fluid_speed,
             fluid_speed,
             self.kind.air_speed,
@@ -1664,6 +1707,7 @@ impl Mob {
         w: &MobWorld,
         input: Vec3,
         events: &mut Vec<MobEvent>,
+        level_random: &mut LevelRandom,
         water_speed: f32,
         lava_speed: f32,
         air_speed: f32,
@@ -1676,7 +1720,7 @@ impl Mob {
             (air_speed, f64::from(0.91_f32))
         };
         self.move_relative(speed, input);
-        self.do_move(w, events);
+        self.do_move(w, events, level_random);
         self.velocity = Vec3::new(
             self.velocity.x * drag,
             self.velocity.y * drag,
@@ -1720,7 +1764,13 @@ impl Mob {
         let y = if v.y.is_nan() { v.y } else { v.y.max(-limit) };
         Vec3::new(v.x.clamp(-limit, limit), y, v.z.clamp(-limit, limit))
     }
-    fn travel_in_air(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
+    fn travel_in_air(
+        &mut self,
+        w: &MobWorld,
+        input: Vec3,
+        events: &mut Vec<MobEvent>,
+        level_random: &mut LevelRandom,
+    ) {
         let friction = if self.on_ground {
             // FRICTION_MODIFIER scales the block's slipperiness.
             let modifier = super::sulfur_cube::physics(self)
@@ -1737,7 +1787,7 @@ impl Mob {
             self.fall_distance = 0.0;
             self.velocity = Self::climbable_velocity(self.velocity);
         }
-        self.do_move(w, events);
+        self.do_move(w, events, level_random);
         let mut movement = self.velocity;
         if (self.horizontal_collision || self.ai.jumping) && self.on_climbable(w) {
             movement.y = 0.2;
@@ -1777,7 +1827,13 @@ impl Mob {
             movement.z * f64::from(f),
         );
     }
-    fn travel_in_fluid(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
+    fn travel_in_fluid(
+        &mut self,
+        w: &MobWorld,
+        input: Vec3,
+        events: &mut Vec<MobEvent>,
+        level_random: &mut LevelRandom,
+    ) {
         let falling = self.velocity.y <= 0.0;
         let old_y = self.position.y;
         let gravity = self.effective_gravity();
@@ -1799,7 +1855,7 @@ impl Mob {
                 speed += (self.ai.speed - speed) * efficiency;
             }
             self.move_relative(speed, input);
-            self.do_move(w, events);
+            self.do_move(w, events, level_random);
             let mut m = self.velocity;
             // LivingEntity.travelInWater: `horizontalCollision && onClimbable()`,
             // a ladder or scaffolding under water as well as a climbing spider.
@@ -1814,7 +1870,7 @@ impl Mob {
             self.velocity = fluid_falling(gravity, falling, self.extra.sprinting, m);
         } else {
             self.move_relative(0.02, input);
-            self.do_move(w, events);
+            self.do_move(w, events, level_random);
             if self.fluids.lava <= self.fluid_jump_threshold() {
                 self.velocity = Vec3::new(
                     self.velocity.x * 0.5,

@@ -587,6 +587,8 @@ impl Game<'_> {
         if let Some(i) = mount {
             let mut m = self.mobs[i].clone();
             let mut events = Vec::new();
+            // A landing on farmland or turtle eggs draws from the level's random.
+            let mut level_random = self.world.random.clone();
             {
                 let w = self.mob_world_base(&[]);
                 // absSnapTo: where and how its rider's client turned it; the
@@ -597,8 +599,9 @@ impl Game<'_> {
                 m.head_pitch = p.pitch;
                 // setOnGroundWithMovement and doCheckFallDamage with the client's
                 // ground and move: a landing hurts the horse and its riders.
-                m.client_moved_fall(&w, delta, p.on_ground, &mut events);
+                m.client_moved_fall(&w, delta, p.on_ground, &mut events, &mut level_random);
             }
+            self.world.random = level_random;
             self.mobs[i] = m;
             // propagateFallToPassengers reaches the guests through `host`: it is out
             // of `self.lan` while their packet is handled.

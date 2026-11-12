@@ -96,4 +96,21 @@ def cases(cmd, setup):
         # A summoned arrow without a UUID keeps the one its own random made.
         sync(16), *setup('/summon arrow 6.5 201 11.5 {NoGravity:1b}'), *get(near('arrow', 6, 11), 'UUID'),
         *setup('/kill @e[type=!player]'),
+        # FarmlandBlock.fallOn and TurtleEggBlock.fallOn roll from the level's random, not the landing mob's: whether
+        # a pig thrown down onto farmland tramples it (a fall of 1.26) or breaks one of four eggs, then where the
+        # level's next drop lands. It lands in its first tick. Ticks draw from the level's random too, so nothing
+        # else may: no random ticks (ServerLevel.tickChunk's precipitation rolls), a spectator, who anchors no
+        # spawning chunks for ServerChunkCache.tickChunks to shuffle, and a column of its own for each case, so that
+        # a killed pig, which stays 20 ticks, falls onto stone.
+        *setup('/gamerule random_tick_speed 0', '/gamemode spectator'),
+        *[c for case in range(30, 38) for x, block in [(2 * (case - 30), 'farmland' if case < 34 else 'turtle_egg[eggs=4]')]
+          for c in (
+            *setup(f'/setblock {x} 201 4 minecraft:{block}'), sync(case),
+            *setup(f'/summon pig {x}.5 203.2 4.5 {{Rotation:[0f,0f],Motion:[0d,-2d,0d]}}'), {'op': 'tick'},
+            cmd(f'/execute if block {x} 201 4 minecraft:{block}'),
+            *setup('/setblock 12 201 12 minecraft:dirt', '/setblock 12 201 12 minecraft:air destroy'),
+            *get(near('item', 12, 12), 'Pos'),
+            *setup('/kill @e[type=!player]', '/fill 0 201 0 15 203 15 minecraft:air'),
+        )],
+        *setup('/gamerule random_tick_speed 3', '/gamemode creative'),
     ]

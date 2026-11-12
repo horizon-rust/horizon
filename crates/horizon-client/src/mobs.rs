@@ -125,7 +125,7 @@ use crate::{blocks::BlockFacts, mesher::Vertex, world::World};
 pub use data::MobData;
 use horizon_core::{
     geometry::{Aabb, Vec3},
-    random::{EntityRandom, LegacyRandom, RandomSource},
+    random::{EntityRandom, LegacyRandom, LevelRandom, RandomSource},
 };
 use horizon_world::block_collision::BlockCollisionRegistry;
 use serde_json::Value;
@@ -2988,7 +2988,7 @@ impl<'a> Teams<'a> {
 /// (`mob.getRandom()`): a 10% chance of one or two silverfish, each thrown
 /// along `look` (`spawnSilverfish`). Their velocities; none when the chance
 /// fails.
-pub fn infested_silverfish(random: &mut LegacyRandom, look: [f64; 3]) -> Vec<Vec3> {
+pub fn infested_silverfish(random: &mut impl RandomSource, look: [f64; 3]) -> Vec<Vec3> {
     if random.next_float() > 0.1 {
         return Vec::new();
     }
@@ -3281,7 +3281,7 @@ impl Mob {
         &mut self,
         amount: f32,
         from: Option<[f64; 3]>,
-        _random: &mut LegacyRandom,
+        _random: &mut impl RandomSource,
     ) -> bool {
         let source = match from {
             Some(f) => Damage::player(f),
@@ -3849,7 +3849,7 @@ impl Mob {
     pub fn tick(
         &mut self,
         w: &MobWorld,
-        level_random: &mut LegacyRandom,
+        level_random: &mut LevelRandom,
         events: &mut Vec<MobEvent>,
     ) -> bool {
         self.track_section();
@@ -6332,7 +6332,6 @@ mod hurt_cooldown_incoming_tests;
 mod hidden_speed_mob_tick_tests {
     use super::*;
     fn full_tick_promotes(no_ai: bool) {
-        use horizon_core::random::LegacyRandom;
         let admitted = crate::mobs::world::with_built_test_world(
             &[],
             |world, registry| {
@@ -6354,7 +6353,7 @@ mod hidden_speed_mob_tick_tests {
                 assert!(m.add_effect_with("minecraft:speed", 200, 0, false, true));
                 assert!(m.add_effect_with("minecraft:speed", 40, 1, false, true));
                 assert_eq!(m.extra.effects, [("minecraft:speed", 40, 1)]);
-                let mut random = LegacyRandom::new(202);
+                let mut random = world::level_random(202);
                 let mut events = Vec::new();
                 for _ in 0..39 {
                     assert!(m.tick(w, &mut random, &mut events));
