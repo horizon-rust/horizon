@@ -6,9 +6,28 @@ license.workspace = true
 rust-version.workspace = true
 description = "The dedicated server's anticheat: its [anticheat] settings, violation levels and the checks' rules, with no game state (docs/anticheat.md)"
 
+[features]
+# The checks on the game's server hub (`hub`): the engine's hook (`lan::watch`) filled. Without it,
+# only the settings and the rules, which horizon-server reads.
+hub = [
+    "dep:horizon-client-lib",
+    "dep:horizon-core",
+    "dep:horizon-protocol",
+    "dep:horizon-world",
+    "dep:chrono",
+    "dep:serde_json",
+]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
+# The `hub` feature. The engine's own features stay the game's (`default-features = false`).
+horizon-client-lib = { path = "../horizon-client-lib", default-features = false, optional = true }
+horizon-core = { path = "../horizon-core", optional = true }
+horizon-protocol = { path = "../horizon-protocol", optional = true }
+horizon-world = { path = "../horizon-world", optional = true }
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"], optional = true }
+serde_json = { version = "1.0.151", optional = true }
 
 [lints]
 workspace = true

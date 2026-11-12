@@ -220,8 +220,8 @@ pub struct Guest {
     /// A position move arrived since the client's last ClientTickEnd
     /// (receivedPositionThisTick): a second one is a protocol error.
     pub position_this_tick: bool,
-    /// Violation levels and the checks' state (the anticheat, when on).
-    pub anticheat: horizon_anticheat::Player,
+    /// The anticheat's own state for this player (`lan::watch`), made at its first use.
+    pub anticheat: Option<Box<dyn std::any::Any + Send + Sync>>,
     /// The client ticks the movement prediction plays again (only while it records).
     pub record: Option<Box<Record>>,
     /// Sprinting as the client's own commands left it (ServerboundPlayerCommandPacket's
@@ -524,7 +524,7 @@ impl Guest {
             rests_on_ground: false,
             support_blocks_sent: 0,
             position_this_tick: false,
-            anticheat: Default::default(),
+            anticheat: None,
             record: None,
             client_sprinting: false,
             replay: None,

@@ -2,14 +2,11 @@
 //! prediction runs, each guest's client ticks (its moves, and its pongs to the ping that ends each server
 //! tick) go into its record (`lan::prediction::record`), which the engine's movement replay plays again.
 use super::hub::Hub;
-use horizon_anticheat::Check;
 
 impl Hub {
     /// Whether the prediction records the players' client ticks.
     pub fn recording(&self) -> bool {
-        self.anticheat
-            .as_deref()
-            .is_some_and(|ac| ac.config.runs(Check::Prediction))
+        self.anticheat.as_deref().is_some_and(|w| w.records())
     }
 
     /// A move packet from guest `i`, as it came: the prediction's record of the client tick.

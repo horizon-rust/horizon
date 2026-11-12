@@ -237,7 +237,7 @@ fn server_ping_client_pong_keeps_the_existing_prediction_route() {
     config.log.clear();
     config.strikes.clear();
     config.prediction.enabled = true;
-    hub.set_anticheat(config);
+    hub.set_anticheat(horizon_anticheat::hub::watch(config));
     hub.ticks = 123;
     let holding = horizon_client::lan::Holding::start();
     hub.anticheat_ping();

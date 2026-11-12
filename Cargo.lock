@@ -1382,7 +1382,13 @@ version = "0.1.0"
 name = "horizon-anticheat"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "horizon-client-lib",
+ "horizon-core",
+ "horizon-protocol",
+ "horizon-world",
  "serde",
+ "serde_json",
  "toml",
 ]
 

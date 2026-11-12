@@ -1,12 +1,15 @@
-//! The anticheat on a dedicated server's hub (docs/anticheat.md): the checks run where the hub handles
-//! what players send, and a flag is carried out here (send back, alert, kick, or a ban the game adds to
-//! `banned-players.json`: [`HostEvent::Ban`]). The rules and the
-//! violation levels are `horizon_anticheat`'s. A dedicated server has it on by default; the hub holds
-//! none of this when `server.toml` turns it off (or for a LAN world), and then does exactly what vanilla's
-//! server does.
-use super::hub::{HostEvent, Hub, TickCtx};
-use crate::collisions::SceneCollisions;
-use horizon_anticheat::{Check, Config, Strikes};
+//! The anticheat on a dedicated server's hub (docs/anticheat.md), the `hub` feature: the checks run
+//! through the engine's hook (`lan::watch`) where the hub handles what players send, and a flag is
+//! carried out here (send back, alert, kick, or a ban the game adds to `banned-players.json`:
+//! [`HostEvent::Ban`]). The rules and the violation levels are this crate's. A dedicated server has it on
+//! by default; the hub holds none of this when `server.toml` turns it off (or for a LAN
+//! world), and then does exactly what vanilla's server does.
+use crate::{Check, Config, Player, Strikes};
+use horizon_client_lib::collisions::SceneCollisions;
+use horizon_client_lib::lan::guest::Guest;
+use horizon_client_lib::lan::hub::{HostEvent, Hub, TickCtx};
+use horizon_client_lib::lan::prediction::Over;
+use horizon_client_lib::lan::watch::Watch;
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_world::nbt::{JavaString, Tag};
 use std::{io::Write, time::Instant};
@@ -114,17 +117,33 @@ fn text(s: &str, color: &str) -> Tag {
     ])
 }
 
-impl Hub {
-    /// Turn the anticheat on with these settings, or off (`config.enabled` false).
-    pub fn set_anticheat(&mut self, config: Config) {
-        self.anticheat = config.enabled.then(|| Box::new(Anticheat::new(config)));
-    }
+/// Guest `g`'s violation levels and the checks' state, made at its first use.
+fn player(g: &mut Guest) -> &mut Player {
+    g.anticheat
+        .get_or_insert_with(|| Box::new(Player::default()))
+        .downcast_mut()
+        .expect("the guest's anticheat state is the anticheat's Player")
+}
 
+/// The hub, while its hook runs the checks with the anticheat (`ac`) it lent.
+struct On<'a>(&'a mut Hub);
+
+impl std::ops::Deref for On<'_> {
+    type Target = Hub;
+    fn deref(&self) -> &Hub {
+        self.0
+    }
+}
+
+impl std::ops::DerefMut for On<'_> {
+    fn deref_mut(&mut self) -> &mut Hub {
+        self.0
+    }
+}
+
+impl On<'_> {
     /// The start of a server tick: the time since the previous one fills each player's timer balance.
-    pub(super) fn anticheat_tick(&mut self, tick_rate: f32) {
-        let Some(ac) = self.anticheat.as_deref_mut() else {
-            return;
-        };
+    fn anticheat_tick(&mut self, ac: &mut Anticheat, tick_rate: f32) {
         let now = Instant::now();
         let elapsed = ac.last_tick.replace(now).map(|t| now - t);
         if !ac.config.runs(Check::Timer) {
@@ -136,36 +155,26 @@ impl Hub {
         let ms = elapsed.map_or(0.0, |e| e.as_secs_f64() * 1000.0);
         for g in &mut self.guests {
             if restart {
-                g.anticheat.timer.reset();
+                player(g).timer.reset();
             }
-            g.anticheat.timer.elapse(ms, &ac.config.timer);
+            player(g).timer.elapse(ms, &ac.config.timer);
         }
     }
 
     /// ServerboundClientTickEndPacket: one client tick spent.
-    pub(super) fn anticheat_tick_end(&mut self, i: usize, events: &mut Vec<HostEvent>) {
-        let Some(ac) = self.anticheat.as_deref() else {
-            return;
-        };
+    fn anticheat_tick_end(&mut self, ac: &mut Anticheat, i: usize, events: &mut Vec<HostEvent>) {
         if ac.config.runs(Check::Combat)
-            && let Some(foul) = self.guests[i].anticheat.attacks.tick_end()
+            && let Some(foul) = player(&mut self.guests[i]).attacks.tick_end()
         {
-            self.combat_foul(i, foul, events);
-        }
-        let Some(ac) = self.anticheat.as_deref() else {
-            return;
-        };
-        if ac.config.runs(Check::Prediction) {
-            let g = &mut self.guests[i];
-            let (input, sprinting) = (g.input, g.client_sprinting);
-            g.record.get_or_insert_default().tick_end(input, sprinting);
+            self.combat_foul(ac, i, foul, events);
         }
         if !ac.config.runs(Check::Timer) {
             return;
         }
         let (rate, config) = (ac.tick_rate, &ac.config.timer);
-        if let Some(ahead) = self.guests[i].anticheat.timer.tick_end(rate, config) {
+        if let Some(ahead) = player(&mut self.guests[i]).timer.tick_end(rate, config) {
             self.flag(
+                ac,
                 i,
                 Check::Timer,
                 1.0,
@@ -177,48 +186,38 @@ impl Hub {
 
     /// ServerboundAttackPacket on entity `target`: `combat`. Returns whether the attack is dropped:
     /// from `setback` on, every attack is, until the level decays below it.
-    pub(super) fn anticheat_attack(
+    fn anticheat_attack(
         &mut self,
+        ac: &mut Anticheat,
         i: usize,
         target: i32,
         events: &mut Vec<HostEvent>,
     ) -> bool {
-        let Some(ac) = self.anticheat.as_deref() else {
-            return false;
-        };
         if !ac.config.runs(Check::Combat) {
             return false;
         }
-        if let Some(foul) = self.guests[i].anticheat.attacks.attack(target)
-            && self.combat_foul(i, foul, events)
+        if let Some(foul) = player(&mut self.guests[i]).attacks.attack(target)
+            && self.combat_foul(ac, i, foul, events)
         {
             return true;
         }
-        let Some(ac) = self.anticheat.as_deref() else {
-            return false;
-        };
-        let setback = ac.config.combat.setback;
-        setback > 0.0
-            && self.guests[i]
-                .anticheat
-                .vl(&ac.config, Check::Combat, self.ticks)
-                >= setback
+        let (setback, ticks) = (ac.config.combat.setback, self.ticks);
+        setback > 0.0 && player(&mut self.guests[i]).vl(&ac.config, Check::Combat, ticks) >= setback
     }
 
     /// ServerboundPunchPacket: the arm swung, for `combat`.
-    pub(super) fn anticheat_swing(&mut self, i: usize) {
-        if self.anticheat.is_some() {
-            self.guests[i].anticheat.attacks.swing();
-        }
+    fn anticheat_swing(&mut self, i: usize) {
+        player(&mut self.guests[i]).attacks.swing();
     }
 
     fn combat_foul(
         &mut self,
+        ac: &mut Anticheat,
         i: usize,
-        foul: horizon_anticheat::combat::Foul,
+        foul: crate::combat::Foul,
         events: &mut Vec<HostEvent>,
     ) -> bool {
-        use horizon_anticheat::combat::Foul;
+        use crate::combat::Foul;
         let detail = match foul {
             Foul::NoSwing(n) => {
                 format!("attacked without swinging ({n} more attacks than swings in a tick)")
@@ -227,7 +226,7 @@ impl Hub {
                 format!("attacked entities {first} and {then} in one tick")
             }
         };
-        self.flag(i, Check::Combat, 1.0, &detail, events)
+        self.flag(ac, i, Check::Combat, 1.0, &detail, events)
     }
 
     /// `ground`, for a move from guest `i` that says it ends on the ground at `to` (`stands`: the move
@@ -237,15 +236,17 @@ impl Hub {
     /// move doesn't count toward vanilla's floating kick. A claim at the height where the
     /// ground last held the player, within half a second, isn't judged: the block may have gone
     /// server-side (broken, pushed) before the client heard.
-    pub(super) fn anticheat_ground(
+    #[allow(clippy::too_many_arguments)]
+    fn anticheat_ground(
         &mut self,
+        ac: &mut Anticheat,
         i: usize,
         to: [f64; 3],
         stands: bool,
         ctx: &TickCtx,
         events: &mut Vec<HostEvent>,
     ) -> Option<bool> {
-        if !self.anticheat.as_deref()?.config.runs(Check::Ground) {
+        if !ac.config.runs(Check::Ground) {
             return None;
         }
         // Standing still: no fall to skip, whatever holds the player up (a block the server doesn't
@@ -260,10 +261,10 @@ impl Hub {
         let from = self.guests[i].position;
         let held_at_start = || self.ground_holds(i, [from[0], to[1], from[2]], ctx) != Some(false);
         if stands || self.ground_holds(i, to, ctx)? || held_at_start() {
-            self.guests[i].anticheat.ground = Some((ticks, to[1]));
+            player(&mut self.guests[i]).ground = Some((ticks, to[1]));
             return None;
         }
-        if self.guests[i].anticheat.ground.is_some_and(|(t, y)| {
+        if player(&mut self.guests[i]).ground.is_some_and(|(t, y)| {
             ticks.saturating_sub(t) <= GROUND_GRACE && (y - to[1]).abs() < 1.0E-3
         }) {
             return None;
@@ -281,8 +282,8 @@ impl Hub {
             "claims the ground {below} at {:.1} {:.1} {:.1}",
             to[0], to[1], to[2]
         );
-        self.flag(i, Check::Ground, 1.0, &detail, events);
-        if self.anticheat.as_deref()?.config.ground.setback == 0.0 {
+        self.flag(ac, i, Check::Ground, 1.0, &detail, events);
+        if ac.config.ground.setback == 0.0 {
             return None;
         }
         // The correction is the dropped claim, never a setback: sent back into the air it claimed to
@@ -347,23 +348,25 @@ impl Hub {
 
     /// `check` failed for guest `i`: raise its level, log it, and act on it. Returns whether the move or
     /// action is cancelled (the player is sent back, or kicked).
-    pub(super) fn flag(
+    fn flag(
         &mut self,
+        ac: &mut Anticheat,
         i: usize,
         check: Check,
         weight: f32,
         detail: &str,
         events: &mut Vec<HostEvent>,
     ) -> bool {
-        self.flag_to(i, check, weight, detail, events, None)
+        self.flag_to(ac, i, check, weight, detail, events, None)
     }
 
     /// `prediction`: guest `conn`'s ticks that landed off the replay. A setback sends the player
     /// back to `agreed`, where its moves last agreed.
-    pub fn anticheat_prediction(
+    fn anticheat_prediction(
         &mut self,
+        ac: &mut Anticheat,
         conn: u32,
-        over: &super::prediction::Over,
+        over: &Over,
         agreed: [f64; 3],
     ) -> Vec<HostEvent> {
         let mut events = Vec::new();
@@ -379,6 +382,7 @@ impl Hub {
             );
             let weight = over.weight;
             self.flag_to(
+                ac,
                 i,
                 Check::Prediction,
                 weight,
@@ -390,9 +394,11 @@ impl Hub {
         events
     }
 
-    /// [`Hub::flag`], whose setback sends the player to `back` (where it was by default).
+    /// [`On::flag`], whose setback sends the player to `back` (where it was by default).
+    #[allow(clippy::too_many_arguments)]
     fn flag_to(
         &mut self,
+        ac: &mut Anticheat,
         i: usize,
         check: Check,
         weight: f32,
@@ -401,16 +407,13 @@ impl Hub {
         back: Option<[f64; 3]>,
     ) -> bool {
         let ticks = self.ticks;
-        let Some(ac) = self.anticheat.as_deref_mut() else {
-            return false;
-        };
         // Kicked or banned already, and leaving: what it still had queued (a lagging client's ticks)
         // is dropped, and counts no second strike in the session the first kick warned.
         if !self.guests[i].left_reason.is_empty() {
             return true;
         }
         let g = &mut self.guests[i];
-        let v = g.anticheat.flag(&ac.config, check, weight, ticks);
+        let v = player(g).flag(&ac.config, check, weight, ticks);
         let (uuid, name) = (g.uuid, g.name.clone());
         let ban_after = ac.config.actions(check).ban_after;
         let (kicks, ban) = if v.kick {
@@ -474,7 +477,8 @@ impl Hub {
                 reason: format!("Horizon anticheat: {}", check.name()),
             });
         } else if v.kick {
-            self.anticheat_kick(self.guests[i].conn);
+            let conn = self.guests[i].conn;
+            self.anticheat_kick(conn);
         } else if v.setback
             && !matches!(check, Check::Combat | Check::Ground)
             && self.guests[i].awaiting_teleport.is_none()
@@ -485,10 +489,100 @@ impl Hub {
         }
         v.setback || v.kick
     }
+}
 
-    /// Disconnects `conn` for the anticheat.
-    pub fn anticheat_kick(&mut self, conn: u32) {
-        self.kick(conn, text("Kicked by the server's anticheat", "white"));
+/// What [`load`] gives: the anticheat (`None`: off) and the lines to log, as (level, line).
+#[derive(Default)]
+pub struct Loaded {
+    pub watch: Option<Box<dyn Watch>>,
+    pub log: Vec<(&'static str, String)>,
+}
+
+/// The dedicated server's anticheat from `server.toml`'s `[anticheat]` (`None`: no file): the
+/// default (on) without the file or the section, off (with an error logged) when the section is wrong.
+pub fn load(server_toml: Option<&str>) -> Loaded {
+    let mut loaded = Loaded::default();
+    let config = match server_toml.map(Config::from_server_toml) {
+        None => Config::default(),
+        Some(Ok(config)) => {
+            if config.enabled {
+                loaded.log.push((
+                    "INFO",
+                    "Anticheat on (server.toml [anticheat]; enabled = false turns it off)".into(),
+                ));
+            }
+            config
+        }
+        Some(Err(e)) => {
+            loaded.log.push((
+                "ERROR",
+                format!("server.toml: {e}; the anticheat stays off"),
+            ));
+            return loaded;
+        }
+    };
+    loaded.watch = watch(config);
+    loaded
+}
+
+/// The hub's anticheat with these settings; none when they turn it off.
+pub fn watch(config: Config) -> Option<Box<dyn Watch>> {
+    config
+        .enabled
+        .then(|| Box::new(Anticheat::new(config)) as Box<dyn Watch>)
+}
+
+impl Watch for Anticheat {
+    fn records(&self) -> bool {
+        self.config.runs(Check::Prediction)
+    }
+
+    fn tolerance(&self) -> f64 {
+        self.config.prediction.tolerance
+    }
+
+    fn tick(&mut self, hub: &mut Hub, tick_rate: f32) {
+        On(hub).anticheat_tick(self, tick_rate);
+    }
+
+    fn tick_end(&mut self, hub: &mut Hub, i: usize, events: &mut Vec<HostEvent>) {
+        On(hub).anticheat_tick_end(self, i, events);
+    }
+
+    fn attack(
+        &mut self,
+        hub: &mut Hub,
+        i: usize,
+        target: i32,
+        events: &mut Vec<HostEvent>,
+    ) -> bool {
+        On(hub).anticheat_attack(self, i, target, events)
+    }
+
+    fn swing(&mut self, hub: &mut Hub, i: usize) {
+        On(hub).anticheat_swing(i);
+    }
+
+    fn ground(
+        &mut self,
+        hub: &mut Hub,
+        i: usize,
+        to: [f64; 3],
+        stands: bool,
+        ctx: &TickCtx,
+        events: &mut Vec<HostEvent>,
+    ) -> Option<bool> {
+        On(hub).anticheat_ground(self, i, to, stands, ctx, events)
+    }
+
+    fn prediction(
+        &mut self,
+        hub: &mut Hub,
+        conn: u32,
+        over: &Over,
+        agreed: [f64; 3],
+    ) -> Vec<HostEvent> {
+        On(hub).anticheat_prediction(self, conn, over, agreed)
     }
 }
 

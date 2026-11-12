@@ -347,7 +347,7 @@ pub struct Hub {
     /// set by the game before each tick.
     pub movement_checks: (bool, bool),
     /// The anticheat, when `server.toml` turns it on (dedicated servers).
-    pub anticheat: Option<Box<super::anticheat::Anticheat>>,
+    pub anticheat: Option<Box<dyn super::watch::Watch>>,
     /// The chat filter, when `server.toml` turns it on (dedicated servers).
     pub chat_filter: Option<Box<horizon_chat_filter::Guard>>,
     /// The far ring, when `server.toml`'s `max_view_distance` turns it on (dedicated servers).
@@ -2133,7 +2133,7 @@ impl Hub {
 
     /// `ServerGamePacketListenerImpl.teleport` alone (a refused or too fast
     /// move, a teleport sent again): the flying ticks go on.
-    pub(super) fn resend_teleport(&mut self, i: usize, position: Option<[f64; 3]>) {
+    pub fn resend_teleport(&mut self, i: usize, position: Option<[f64; 3]>) {
         self.teleport_relative(i, position, 0);
     }
 
