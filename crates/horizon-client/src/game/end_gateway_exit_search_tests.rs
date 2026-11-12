@@ -5,7 +5,7 @@
 
 use super::super::Dim;
 use super::super::native_machines::tests::server_game;
-use super::{Game, GatewayJob};
+use super::{Arriving, Game, GatewayArrival, GatewayJob};
 use horizon_client::chunk::Chunk;
 use horizon_core::geometry::Vec3;
 use std::sync::Arc;
@@ -27,6 +27,23 @@ fn job() -> GatewayJob {
         gateway: GATEWAY,
         exact: false,
     }
+}
+
+/// An entity waiting at the gateway for the search to end.
+fn wait_for_exit(game: &mut Game<'_>) {
+    game.end.arrivals.push(GatewayArrival {
+        traveller: Arriving::Live(1),
+        job: job(),
+        target: TARGET,
+    });
+}
+
+/// Whether `chunk` is asked for as an area around the gateway's arrivals.
+fn kept(game: &Game<'_>, chunk: (i32, i32)) -> bool {
+    game.streaming
+        .extra
+        .iter()
+        .any(|&(c, r)| c == chunk && r == 1)
 }
 
 /// The exit the gateway's block entity holds (`setExitPosition`), if any.
@@ -152,14 +169,62 @@ fn the_exit_search_keeps_the_candidate_chunk_it_waits_for_loaded() {
     let mut game = server_game();
     game.dim = Dim::End;
     load_world(&mut game, false);
+    wait_for_exit(&mut game);
     let _ = game.resolve_gateway(job(), TARGET);
     game.keep_gateway_destinations();
     assert!(
-        game.streaming
-            .extra
-            .iter()
-            .any(|&(c, r)| c == (65, 0) && r == 1),
+        kept(&game, (65, 0)),
         "chunk (65, 0) is loaded for the search: {:?}",
+        game.streaming.extra
+    );
+}
+
+/// A retry keeps every candidate an earlier try tested: with (65, 0) tested
+/// empty and (66, 0) missing, then (65, 0) unloaded while (66, 0) loads, the
+/// retry waits for (65, 0) and must not release (66, 0), or the two could take
+/// turns being unloaded and the traveller would wait forever. Once nobody
+/// waits for the gateway, its search's chunks are released.
+#[test]
+fn the_exit_search_keeps_every_candidate_it_tested_until_it_ends() {
+    if std::env::var_os("HORIZON_TEST_RESOURCES").is_none() {
+        return;
+    }
+    let mut game = server_game();
+    game.dim = Dim::End;
+    load_world(&mut game, true);
+    // The candidates (64, 0) and (65, 0) are empty, (66, 0) is not loaded.
+    for cz in -1..=1 {
+        game.world.chunks.remove(&(66, cz));
+        game.world
+            .chunks
+            .insert((65, cz), Arc::new(Chunk::empty(65, cz)));
+    }
+    wait_for_exit(&mut game);
+    assert_eq!(game.resolve_gateway(job(), TARGET).ok(), Some(None));
+    game.keep_gateway_destinations();
+    assert!(
+        kept(&game, (65, 0)) && kept(&game, (66, 0)),
+        "{:?}",
+        game.streaming.extra
+    );
+    // A sweep unloads (65, 0) as (66, 0) arrives: the retry waits for (65, 0).
+    game.world.chunks.remove(&(65, 0));
+    game.world
+        .chunks
+        .insert((66, 0), Arc::new(Chunk::empty(66, 0)));
+    assert_eq!(game.resolve_gateway(job(), TARGET).ok(), Some(None));
+    game.keep_gateway_destinations();
+    assert!(
+        kept(&game, (65, 0)) && kept(&game, (66, 0)),
+        "the retry keeps the candidate it already tested: {:?}",
+        game.streaming.extra
+    );
+    // The traveller is gone: nothing holds the search's chunks any more.
+    game.end.arrivals.clear();
+    game.keep_gateway_destinations();
+    assert!(
+        !kept(&game, (65, 0)) && !kept(&game, (66, 0)),
+        "{:?}",
         game.streaming.extra
     );
 }

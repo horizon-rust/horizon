@@ -176,6 +176,12 @@ impl Game<'_> {
             .filter_map(|t| t.gateway.and_then(GatewayJob::source_chunk))
             .collect()
     }
+
+    /// The gateway jobs of the trips still waiting to arrive.
+    pub(super) fn gateway_trip_jobs(&self) -> impl Iterator<Item = GatewayJob> + '_ {
+        self.server_trips.iter().filter_map(|t| t.gateway)
+    }
+
     /// Whether `conn` is between two levels: the server leaves its body
     /// alone until it arrives.
     pub(super) fn on_server_trip(&self, conn: u32) -> bool {

@@ -122,9 +122,11 @@ pub(super) struct EndState {
     arrivals: Vec<GatewayArrival>,
     /// The chunks kept loaded for those arrivals.
     areas: Vec<(i32, i32)>,
-    /// The candidate chunks an exit search still waits for
-    /// (`findExitPortalXZPosTentative`), kept loaded with the areas.
-    search: Vec<(i32, i32)>,
+    /// Every candidate chunk an exit search has tested
+    /// (`findExitPortalXZPosTentative`), by the gateway whose exit it looks
+    /// for: kept loaded with the areas until no traveller waits for that
+    /// gateway, so that a retry never finds an earlier candidate unloaded.
+    search: Vec<([i32; 3], Vec<(i32, i32)>)>,
     /// `Entity.placePortalTicket` of the pearls that came out of a gateway:
     /// the chunk each landed in, kept loaded for the ticks left of its
     /// `TicketType.PORTAL`, so that it can come down and take its owner there.
@@ -1026,15 +1028,20 @@ impl Game<'_> {
     /// `TheEndGatewayBlockEntity.isChunkEmpty` for the exit search. Vanilla's
     /// `getChunk` loads the candidate on the spot; here the search asks for it
     /// ([`EndState::search`]) and waits, so that which chunks happen to be
-    /// loaded cannot change where it ends.
-    fn search_chunk_empty(&mut self, x: f64, z: f64) -> Option<bool> {
+    /// loaded cannot change where it ends. Every chunk tested stays asked for.
+    fn search_chunk_empty(&mut self, gateway: [i32; 3], x: f64, z: f64) -> Option<bool> {
         let key = ((x / 16.0).floor() as i32, (z / 16.0).floor() as i32);
-        let Some(chunk) = self.world.chunks.get(&key) else {
-            if !self.end.search.contains(&key) {
-                self.end.search.push(key);
+        let corridor = match self.end.search.iter().position(|(g, _)| *g == gateway) {
+            Some(i) => &mut self.end.search[i].1,
+            None => {
+                self.end.search.push((gateway, Vec::new()));
+                &mut self.end.search.last_mut().expect("just pushed").1
             }
-            return None;
         };
+        if !corridor.contains(&key) {
+            corridor.push(key);
+        }
+        let chunk = self.world.chunks.get(&key)?;
         Some(chunk.sections.iter().all(|s| s.is_uniform(0)))
     }
 
@@ -1104,7 +1111,7 @@ impl Game<'_> {
                 let mut pos = glam::DVec2::new(target.x, target.z);
                 let mut limit = 16;
                 while limit > 0 {
-                    match self.search_chunk_empty(pos.x, pos.y) {
+                    match self.search_chunk_empty(gateway, pos.x, pos.y) {
                         Some(false) => {
                             limit -= 1;
                             pos -= dir * 16.0;
@@ -1115,7 +1122,7 @@ impl Game<'_> {
                 }
                 let mut limit = 16;
                 while limit > 0 {
-                    match self.search_chunk_empty(pos.x, pos.y) {
+                    match self.search_chunk_empty(gateway, pos.x, pos.y) {
                         Some(true) => {
                             limit -= 1;
                             pos += dir * 16.0;
@@ -1753,13 +1760,31 @@ impl Game<'_> {
     /// The chunks the entities waiting to arrive need, kept loaded like the
     /// areas a server keeps around its players.
     pub(super) fn keep_gateway_destinations(&mut self) {
+        let in_end = self.dim == Dim::End;
         let areas = &self.end.areas;
+        // The exit searches' chunks are End chunks, asked for in the End's ticks.
+        let searched =
+            |c: &(i32, i32)| in_end && self.end.search.iter().any(|(_, s)| s.contains(c));
         self.streaming
             .extra
-            .retain(|&(c, r)| !(r == 1 && areas.contains(&c)));
+            .retain(|&(c, r)| !(r == 1 && (areas.contains(&c) || searched(&c))));
+        if in_end {
+            // A search's chunks are released once no traveller waits for its gateway.
+            let waiting: Vec<[i32; 3]> = self
+                .end
+                .arrivals
+                .iter()
+                .map(|a| a.job)
+                .chain(self.gateway_trip_jobs())
+                .filter_map(|job| match job {
+                    GatewayJob::Find { gateway, .. } => Some(gateway),
+                    GatewayJob::Known { .. } => None,
+                })
+                .collect();
+            self.end.search.retain(|(g, _)| waiting.contains(g));
+        }
         // The pearls' portal tickets hold End chunks, and run out there
         // (TicketType.PORTAL's timeout).
-        let in_end = self.dim == Dim::End;
         if in_end {
             self.end.tickets.retain_mut(|(_, ticks)| {
                 *ticks = ticks.saturating_sub(1);
@@ -1779,7 +1804,12 @@ impl Game<'_> {
             .arrivals
             .iter()
             .filter_map(|a| a.job.source_chunk());
-        let search = std::mem::take(&mut self.end.search);
+        let search = self
+            .end
+            .search
+            .iter()
+            .filter(|_| in_end)
+            .flat_map(|(_, s)| s.iter().copied());
         for c in arrivals
             .chain(tickets.map(|&(c, _)| c))
             .chain(sources)
