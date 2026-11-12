@@ -949,6 +949,8 @@ impl Game<'_> {
         self.join_world_rest()?;
         if let Err(error) = self.join_server(address, name, None, cookies, lan, realm) {
             log::warn!("Horizon: could not join server: {error}");
+            // Joining the destination server failed: clear any preserved server pack state
+            // so returning to the title screen does not leave lingering packs from the transfer.
             self.server_packs_disconnect(false);
             if self.title.is_none() {
                 self.title = Some(

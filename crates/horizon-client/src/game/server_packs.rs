@@ -731,6 +731,34 @@ mod tests {
         assert_eq!(state.user, ("other".into(), 43));
     }
 
+    #[test]
+    fn a_failed_transfer_join_cleans_up_preserved_packs() {
+        let mut state = ServerPackState::default();
+        let user = ("player".to_owned(), 42);
+        assert!(state.begin_connection(user.clone(), false));
+        state.address = Some("lobby.example".into());
+        state.packs.connect(Prompt::Allowed);
+        state.packs.push_local(1, PathBuf::from("pack-1.zip"));
+        assert_eq!(
+            state.packs.tick().reload,
+            Some(vec![(1, PathBuf::from("pack-1.zip"))])
+        );
+        assert_eq!(state.packs.reloaded(true), None);
+        state.packs.tick();
+
+        // Destination server transfer initiated: leaving lobby preserves packs.
+        assert!(!state.end_connection(true));
+
+        // Destination server join fails (e.g. connection timeout or refused):
+        // join_server calls server_packs_disconnect(false).
+        // Preserved packs must be cleared and an unload reload scheduled.
+        assert!(state.end_connection(false));
+        assert_eq!(state.packs.tick().reload, Some(vec![]));
+        state.packs.reloaded(true);
+        assert_eq!(state.packs.tick().reload, None);
+        assert_eq!(state.packs.prompt(), Prompt::Pending);
+    }
+
     fn notifier(total: usize, events: &[download::Progress]) -> PackNotifier {
         let (send, receive) = std::sync::mpsc::channel();
         for event in events {
