@@ -58,7 +58,7 @@ def compile_tests(build, scratch):
         result.check_returncode()
 
 
-def main(rust_filter="portal_blast_", rust_tests=2):
+def main(rust_filter="portal_blast_", rust_tests=3):
     lock, jars, libraries = base.verify_artifacts()
     resources = Path(os.environ.get("HORIZON_TEST_RESOURCES", lab.RESOURCES)).resolve()
     if not (resources / "movement-properties.nbt").exists():
