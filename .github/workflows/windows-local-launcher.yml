@@ -1,0 +1,68 @@
+name: Windows local launcher
+
+on:
+  push:
+    branches: ['arena/7876ddb0-horizon']
+    paths:
+      - 'launcher/**'
+      - '.github/workflows/windows-local-launcher.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+      HORIZON_LAUNCHER_NO_SELF_UPDATE: '1'
+      HORIZON_NO_AUDIO: '1'
+      HORIZON_NO_KEYCHAIN: '1'
+    defaults:
+      run:
+        working-directory: launcher
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher
+      - name: Isolate test data
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'horizon-local-tests'
+          foreach ($name in @('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'HORIZON_LAUNCHER_TRASH', 'HORIZON_LAUNCHER_CLIPBOARD', 'HORIZON_LAUNCHER_DESKTOP')) {
+            "$name=$root/$name" >> $env:GITHUB_ENV
+          }
+      - name: Test native guest and signed-in ownership behavior
+        run: cargo test --release --locked --lib the_game_plays_only_as_an_account_that_owns_it
+      - name: Test Java guest identity and download isolation
+        run: cargo test --release --locked --lib java_guest_has_an_offline_identity_and_no_credentials
+      - name: Build Windows launcher
+        run: cargo build --release --locked --bin horizon-launcher
+      - name: Package portable launcher
+        run: |
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item target/release/horizon-launcher.exe package/
+          @'
+          @echo off
+          set HORIZON_LAUNCHER_NO_SELF_UPDATE=1
+          start "" "%~dp0horizon-launcher.exe" %*
+          '@ | Set-Content -Encoding ascii package/Start-Horizon.cmd
+          @'
+          Experimental Windows x64 local-play launcher. Not an official signed release.
+          Run Start-Horizon.cmd to prevent automatic replacement by the upstream launcher.
+          Sign out of all launcher accounts for local/offline play. Existing Minecraft resources are required.
+          Online-mode servers and downloading Minecraft files still require an owning account.
+          This package changes the launcher only, not the game binary.
+          '@ | Set-Content -Encoding ascii package/README.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-launcher-windows-x64-local
+          path: launcher/package/
+          if-no-files-found: error
+          retention-days: 30

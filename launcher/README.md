@@ -162,8 +162,8 @@ The opening, then Play ([clip](docs/opening.webm)):
   [instance] [--remove]`; `HORIZON_LAUNCHER_DESKTOP` points it at another folder.
 - **Accounts and quick switch**: the top bar's account chip opens a menu of the signed-in
   Microsoft accounts. Picking one plays as it from the next Play; that account must own the game
-  ([Microsoft accounts](#microsoft-accounts)). There are no offline names: the project decided
-  that Horizon plays only with a Microsoft account that owns Minecraft: Java Edition. The
+  ([Microsoft accounts](#microsoft-accounts)). With no accounts signed in, Play starts locally without a session. Sign out of all accounts
+  to use guest mode; custom offline profiles are not supported. The
   Console's Share log takes the account names out of the log. `horizon-launcher account select
   <name>`.
 - **Accent and Home background**: on top of Dark, Light or System, Settings > Launcher picks an
@@ -474,15 +474,16 @@ The window, the command line and the MCP server all call the same core, `src/bac
 
 ## Microsoft accounts
 
-The launcher starts the game only while a Microsoft account that owns Minecraft: Java Edition is
-signed in, as other launchers do: without one, Play (Home, instances, `horizon-launcher play`, the
-MCP's `play`) says "Sign in with a Microsoft account that owns Minecraft: Java Edition to play"
-and starts nothing. Settings → Accounts signs in: the launcher shows a code, you enter it at
-microsoft.com/link, and the launcher checks that the account owns the game. It asks again at every
-Play, with the token renewal; with no network the last answer stands, and a "doesn't own" blocks
-at once. The account that plays must own the game itself, and it plays online-mode servers under
-your own name and skin, LAN and offline-mode servers too. The game binary started directly (`horizon-client`,
-`horizon-ctl launch`), the harnesses and the servers don't go through this check. Tokens live in the system keychain (Keychain,
+With no Microsoft accounts signed in, the launcher permits local/offline play with existing
+resources, without a session. Native Horizon uses its local player identity; Java instances use
+`Player` with its deterministic offline UUID and no real access token. Sign out of all launcher
+accounts to use guest mode. This does not grant access to online-mode servers or permission to
+download Minecraft files. If resources are missing, supply an existing install or sign in with
+an account that owns Java Edition.
+
+When accounts are signed in, the selected account must still own the game. Settings → Accounts
+signs in using a device code at microsoft.com/link. Ownership is checked at Play; with no network,
+the last answer stands. Tokens live in the system keychain (Keychain,
 Credential Manager, or the Secret Service on Linux), never in a log or the command line;
 `accounts.json` in the data folder keeps only names and UUIDs. On Linux without a keychain they go
 to `account-secrets.json` in the data folder, encrypted and readable by you only, and back to the keychain once it

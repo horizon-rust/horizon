@@ -68,7 +68,8 @@ MCP: `prepare`.
 
 ## `horizon-launcher play`
 
-Start the client (needs a signed-in Microsoft account that owns Minecraft: Java Edition).
+Start the client. With no signed-in accounts, local/offline play uses existing resources.
+When signed in, the selected account must own Minecraft: Java Edition.
 
     horizon-launcher play
 
@@ -148,7 +149,7 @@ MCP: `account_list`.
 
 ## `horizon-launcher account sign-in`
 
-Sign in with a Microsoft account in your browser (device code). Play needs one that owns Minecraft: Java Edition.
+Sign in with a Microsoft account in your browser (device code). Online play and Minecraft downloads need one that owns Minecraft: Java Edition; local guest play does not.
 
     horizon-launcher account sign-in
 

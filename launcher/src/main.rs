@@ -3541,7 +3541,7 @@ impl Launcher {
         // account that owns the game (Play needs one), or offline. The glass look's top bar has
         // Sign in with Microsoft and says Offline itself.
         if !t.glass {
-            if self.owner == Some(false) {
+            if self.owner == Some(false) && !self.accounts.accounts.is_empty() {
                 rows = rows.child(index_row(
                     5,
                     tr("Microsoft account"),

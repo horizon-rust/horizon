@@ -74,39 +74,23 @@ All requests use HTTPS and JSON except the two OAuth calls (form-encoded):
 7. **Profile**: `GET https://api.minecraftservices.com/minecraft/profile`: UUID, name, skins, capes.
    404 = owns the game but has no profile yet ("Create your Minecraft profile on minecraft.net first").
 
-## The owner gate
+## Local play and the owner gate
 
-Decided 2026-10-27 (Ludovic, after a modder's suggestion): like other launchers, Horizon's
-launcher starts the game only while an account in it owns Java Edition. Offline play stays
-possible; the launcher just doesn't offer it on its own.
+With no accounts signed in, `account::launch_for_game` returns an empty session without
+contacting Microsoft or the keychain. Native Horizon can play locally; Java instances use
+`Player` and its deterministic offline UUID with token `0` (not a credential). Sign out of all
+accounts in the launcher to use this mode. Existing game resources are required. The launcher
+no longer opens the ownership screen automatically on startup; explicit sign-in and account
+errors still open it.
 
-- **Play needs an owner.** Every Play (Home, instances and packs, `horizon-launcher play`,
-  `modpack play`, the MCP's `play`) asks `account::launch` first. It asks the Minecraft services
-  again for each account, the selected one first, until one owns the game: the token renewal
-  (below) if due, then entitlements and profile. Without an owner the game doesn't start and Play
-  says "Sign in with a Microsoft account that owns Minecraft: Java Edition to play", with Sign in.
-- **The window says it once.** A player without an owner (one who played offline until now) sees
-  the gate's screen once when the launcher opens: why Horizon needs the account ("like other
-  launchers"), and Sign in, which shows
-  the device code on the same screen. It comes back whenever Play is refused; Not now closes it,
-  and Home keeps a Sign in row (`launcher/src/owner_page.rs`).
-- **The answer lives with the tokens.** Each account's keychain item keeps the last answer
-  (`owns`), so accounts.json can't say yes. Where there is no keychain the answer sits in the
-  secrets file with the tokens; a player can edit that file, as they can write keychain items with
-  `secret-tool` or Keychain Access. With no network (or a sign-in that can't be renewed) the
-  last answer stands: being offline never blocks a player who passed before, and the game starts
-  without a session, offline. An answer of "doesn't own" (or no profile) blocks at once.
-- **The account that plays owns the game.** The game plays as the selected account (else the
-  first), which must own the game itself: another account's ownership doesn't let it play
-  (`account::launch_for_game`). The project decided on 2026-11-09 that Horizon plays only with a
-  Microsoft account that owns Minecraft: Java Edition: the offline names, their skins and capes,
-  and 0.2.58's hidden developer option are gone. Files from older launchers still load; the next
-  save drops them (`offline`, `offline_selected`, `looks` and `skins/` in accounts.json's folder,
-  `dev_offline` in settings.json).
-- **Who isn't affected:** the game binary itself (`horizon-client`, `horizon-ctl launch`, the
-  harnesses, CI), the dedicated server and `horizon-server`, the website. There is no bypass flag:
-  the launcher's tests use accounts in a memory store (`MemoryStore`, and `HORIZON_NO_KEYCHAIN`
-  for the CLI and MCP tests, which then have no owner).
+When signed in, the selected account must own Java Edition. Ownership checks, renewal and
+cached ownership during network outages are unchanged. Guest play never borrows another
+account's identity or session. Online-mode servers continue to require a valid session.
+
+`account::launch` remains the owner gate for downloads: guest play does not authorize fetching
+Mojang's game files. Supply your own existing install, or sign in as an owner to download them.
+The game binary, harnesses and dedicated servers remain independent of launcher accounts.
+
 
 ## Downloading the game for an owner
 

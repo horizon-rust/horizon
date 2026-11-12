@@ -694,9 +694,11 @@ fn any_owner_opens_the_gate_and_the_one_who_plays_brings_the_session() {
 fn the_game_plays_only_as_an_account_that_owns_it() {
     let store = MemoryStore::default();
     let (_, ep) = mock(|_| {});
-    // No account: no game.
-    let refused = launch_for_game(&ep, Some("test-client"), &store, &mut Accounts::default());
-    assert_eq!(refused.unwrap_err(), NoOwner::default());
+    // No account: local play, with neither credentials nor download permission.
+    let guest = launch_for_game(&ep, None, &store, &mut Accounts::default()).unwrap();
+    assert!(guest.session.is_none());
+    assert!(guest.owner.is_none());
+    assert!(guest.offline.is_none());
     // An owner, none selected: it plays, with its session.
     let mut accounts = signed_in(&store, &secrets("mc-token", true));
     accounts.selected = None;
@@ -2582,4 +2584,19 @@ fn a_launch_saving_late_keeps_sign_ins_and_outs_made_meanwhile() {
         .collect();
     assert_eq!(names, [std::ffi::OsString::from("accounts.json")]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn java_guest_has_an_offline_identity_and_no_credentials() {
+    let store = MemoryStore::default();
+    let player = java_player_with(&offline(), None, &store, &mut Accounts::default()).unwrap();
+    assert_eq!(player.name, "Player");
+    assert_eq!(
+        player.uuid,
+        format!("{:032x}", horizon_platform::protocol::offline_uuid("Player"))
+    );
+    assert_eq!(player.token, "0");
+    assert!(player.xuid.is_empty());
+    // Guest play never grants permission to download Mojang's files.
+    assert!(launch(&offline(), None, &store, &mut Accounts::default()).is_err());
 }

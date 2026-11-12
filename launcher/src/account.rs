@@ -2056,7 +2056,8 @@ pub fn launch(
     }
 }
 
-/// The owner gate before the game starts: [`launch`], where the account that plays (the selected
+/// Without a signed-in account, start locally without a session or download permission.
+/// With an account, use [`launch`], where the account that plays (the selected
 /// one, else the first) must own the game itself, by the services' answer or, when they can't be
 /// asked, its last one. Never another account's ownership for a name of its own.
 pub fn launch_for_game(
@@ -2065,6 +2066,9 @@ pub fn launch_for_game(
     store: &dyn SecretStore,
     accounts: &mut Accounts,
 ) -> Result<Launch, NoOwner> {
+    if accounts.accounts.is_empty() {
+        return Ok(Launch::default());
+    }
     if accounts.selected().is_none() {
         accounts.selected = accounts.accounts.first().map(|a| a.uuid.clone());
     }
@@ -2561,6 +2565,14 @@ fn java_player_with(
     store: &dyn SecretStore,
     accounts: &mut Accounts,
 ) -> Result<crate::java_launch::Player, String> {
+    if accounts.accounts.is_empty() {
+        return Ok(crate::java_launch::Player {
+            name: "Player".into(),
+            uuid: format!("{:032x}", horizon_platform::protocol::offline_uuid("Player")),
+            token: "0".into(),
+            xuid: String::new(),
+        });
+    }
     let pass = launch(ep, client_id, store, accounts).map_err(|e| e.to_string())?;
     let kept = || {
         let order = accounts.selected().into_iter().chain(&accounts.accounts);
