@@ -282,10 +282,16 @@ impl<M: MobSlot> Group<M> {
         conn
     }
 
-    /// Mob `i`'s turn when its chunk isn't loaded: it is kept as it is, unless it would despawn.
+    /// Mob `i`'s turn when its chunk isn't loaded: it is kept as it is, unless it would despawn
+    /// or was already marked removed.
     fn unloaded(&mut self, i: usize) {
         let m = self.mobs[i].mob();
-        self.keep.push(!m.hostile() || m.persistent);
+        let kept = !m.removed && (!m.hostile() || m.persistent);
+        if !kept {
+            self.died.remove(&m.id);
+            self.snapshot[i].alive = false;
+        }
+        self.keep.push(kept);
     }
 
     /// Mob `i`'s turn outside the entity-ticking area: only its despawn check, which reads the
@@ -505,5 +511,107 @@ impl<M: MobSlot> Group<M> {
         }
         self.grid.update(i, self.snapshot[i].bounds);
         horizon_client::mobs::apply_brain_events(&mut self.mobs, &mut self.events, from);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_client::mobs::{Anim, Brain, MobType, Part, Species};
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    fn test_mob(species: Species, category: &str) -> Mob {
+        let part = Part {
+            name: "root".into(),
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: Vec::new(),
+            children: Vec::new(),
+        };
+        let kind = MobType {
+            id: "minecraft:test_mob".into(),
+            species,
+            width: 0.6,
+            height: 1.8,
+            eye_height: 1.62,
+            category: category.into(),
+            max_health: 20.0,
+            speed: 0.1,
+            flying_speed: 0.02,
+            attack_damage: 1.0,
+            attack_knockback: 0.0,
+            follow_range: 0.0,
+            step_height: 0.6,
+            armor: 0.0,
+            armor_toughness: 0.0,
+            knockback_resistance: 0.0,
+            jump_strength: 0.42,
+            attributes: Default::default(),
+            item_stack_limits: Default::default(),
+            gravity: 0.08,
+            safe_fall_distance: 3.0,
+            fall_damage_multiplier: 1.0,
+            water_efficiency: 0.0,
+            water_slowdown: 0.8,
+            air_speed: 0.02,
+            baby_scale: 0.5,
+            head_rot_speed: 10.0,
+            max_head_x_rot: 40.0,
+            max_head_y_rot: 75.0,
+            ambient_interval: 80,
+            flags: Default::default(),
+            model: Arc::new(part),
+            layers: Default::default(),
+            texture: String::new(),
+            brain: Brain::Passive,
+            anim: Anim::Humanoid { zombie_arms: false },
+            sounds: ["", "", ""],
+            step_sound: None,
+            food: Default::default(),
+            tempt: Default::default(),
+        };
+        Mob::new(0, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+
+    fn make_group(mob: Mob) -> Group<Mob> {
+        let s = seen(&mob, None);
+        let start = Start {
+            events: Vec::new(),
+            random: LevelRandom::for_level(LegacyRandom::new(1)),
+            guests: Vec::new(),
+            player: None,
+            bindings: Default::default(),
+            died: Default::default(),
+            ticked: Default::default(),
+            targets: vec![None],
+        };
+        Group::new(vec![mob], vec![s], start)
+    }
+
+    #[test]
+    fn unloaded_drops_removed_mob() {
+        let mut m = test_mob(Species::Cow, "creature");
+        m.removed = true;
+        let mut group = make_group(m);
+        group.unloaded(0);
+        assert_eq!(group.keep, vec![false]);
+        assert!(!group.snapshot[0].alive);
+    }
+
+    #[test]
+    fn unloaded_keeps_non_removed_passive_mob() {
+        let m = test_mob(Species::Cow, "creature");
+        let mut group = make_group(m);
+        group.unloaded(0);
+        assert_eq!(group.keep, vec![true]);
+        assert!(group.snapshot[0].alive);
+    }
+
+    #[test]
+    fn unloaded_drops_non_persistent_hostile_mob() {
+        let m = test_mob(Species::Zombie, "monster");
+        let mut group = make_group(m);
+        group.unloaded(0);
+        assert_eq!(group.keep, vec![false]);
     }
 }
