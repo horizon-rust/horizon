@@ -63,3 +63,28 @@ def gateway_entity_motion(cmd, setup):
                  '/execute in minecraft:overworld run tp @s 8.5 230 8.5')
     ops.append({'op': 'settle'})
     return ops
+
+
+def gateway_entity_pair(cmd, setup):
+    """#11319: an arrow and a falling block in one gateway: the one that joined first
+    ticks first and takes it (TheEndGatewayBlockEntity.triggerCooldown); the other waits."""
+    ops = setup('/execute in minecraft:the_end run tp @s 8.5 230 8.5')
+    ops.append({'op': 'settle'})
+    x = 2
+    for age in ('200L', '0L'):
+        ops += setup('/kill @e[type=!player]',
+            f'summon arrow {x + 0.5} 200.2 2.5 {{NoGravity:1b,Tags:["gateway_entity"],pickup:0b}}',
+            f'summon falling_block {x + 0.5} 200.2 2.5 '
+            '{NoGravity:1b,Tags:["gateway_entity"],BlockState:{Name:"minecraft:sand"}}')
+        ops.append({'op': 'tick', 'n': 1})
+        ops += setup(f'setblock {x} 200 2 end_gateway{{Age:{age},exit_portal:[I;8,210,8],ExactTeleport:1b}}')
+        for n in (1, 40, 5):
+            ops.append({'op': 'tick', 'n': n})
+            for kind in ('arrow', 'falling_block'):
+                ops.append(cmd(f'/execute if entity @e[type={kind},tag=gateway_entity,'
+                               'x=0,y=210,z=0,dx=16,dy=3,dz=16]'))
+        x += 2
+    ops += setup('/kill @e[type=!player]', f'fill 2 200 2 {x} 200 2 air',
+                 '/execute in minecraft:overworld run tp @s 8.5 230 8.5')
+    ops.append({'op': 'settle'})
+    return ops

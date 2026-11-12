@@ -3,6 +3,7 @@
 //! sky. The dragon fight itself lives in game/dragon.rs: the podium is
 //! inactive until the dragon dies.
 use super::entity::{Entity as _, entity_lists_of, for_each_entity};
+use horizon_client::join_seq::{JoinSeq, Joined as _};
 use super::{Dim, Game};
 use horizon_client::{
     Result,
@@ -1462,7 +1463,7 @@ impl Game<'_> {
         };
         let ticking = self.entity_ticking_area();
         let ticks = |at: Vec3| ticking(at.x.floor() as i32, at.z.floor() as i32);
-        let mut inside: Vec<(u32, BlockPos)> = Vec::new();
+        let mut inside: Vec<(JoinSeq, u32, BlockPos)> = Vec::new();
         // `Entity.canUsePortal(false)` of every kind that sweeps a portal,
         // arrows and the other projectiles, orbs, TNT and falling blocks
         // included. An ender pearl has its own pass below.
@@ -1484,27 +1485,30 @@ impl Game<'_> {
                 height,
                 |p| is_gateway(self, p),
             ) {
-                inside.push((id, pos));
+                inside.push((entity.join_seq(), id, pos));
             }
         });
         // A pearl's move this tick, from where it started it.
-        let pearls: Vec<(u32, Option<Who>, Option<u32>, BlockPos)> = self
+        let pearls: Vec<(JoinSeq, u32, Option<Who>, Option<u32>, BlockPos)> = self
             .creatures
             .projectiles
             .iter()
             .filter(|p| ticks(p.position))
             .filter_map(|p| {
                 let pos = horizon_client::end_gateway::pearl_gateway(p, |b| is_gateway(self, b))?;
-                Some((p.id, p.owner, p.guest, pos))
+                Some((p.join_seq(), p.id, p.owner, p.guest, pos))
             })
             .collect();
-        for (id, owner, guest, pos) in pearls {
+        for (join, id, owner, guest, pos) in pearls {
             if owner == Some(Who::Player) {
                 self.pearl_owner_in_gateway(guest, pos);
             }
-            inside.push((id, pos));
+            inside.push((join, id, pos));
         }
-        for (id, pos) in inside {
+        // ServerLevel ticks its entities in the order they joined: the first
+        // one in a gateway takes it, whatever its kind.
+        inside.sort_by_key(|&(join, ..)| join);
+        for (_, id, pos) in inside {
             // One entity at a time: the gateway cools down for 40 ticks.
             if !self.gateway_enter([pos.x, pos.y, pos.z]) {
                 continue;

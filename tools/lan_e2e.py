@@ -1116,10 +1116,13 @@ def level_guest_end(host, guest, out):
     guest('command', command='tp @s 700.5 80 0.5')
     guest.wait(20)
     # #11319: other kinds take a gateway too (EndGatewayBlock.entityInside, canUsePortal): a hovering
-    # arrow and sand block go through one beside the guest's and wait at its exit, 3 blocks south.
-    guest('command', command='setblock 702 80 4 minecraft:end_gateway{exit_portal:[I;100,50,3],ExactTeleport:1b}')
-    for kind, data in (('arrow', 'pickup:0b'), ('falling_block', 'BlockState:{Name:"minecraft:sand"}')):
-        guest('command', command=f'summon minecraft:{kind} 702.5 80.2 4.5 {{NoGravity:1b,Tags:["e2e_gw"],{data}}}')
+    # arrow and sand block each go through a gateway beside the guest's and wait at its exit, 3 blocks
+    # south of the guest's. One gateway each: the first entity through cools a gateway down.
+    for x, exit_x, kind, data in ((702, 100, 'falling_block', 'BlockState:{Name:"minecraft:sand"}'),
+                                  (704, 101, 'arrow', 'pickup:0b')):
+        guest('command', command=f'setblock {x} 80 4 minecraft:end_gateway{{exit_portal:[I;{exit_x},50,3],'
+                                 'ExactTeleport:1b}')
+        guest('command', command=f'summon minecraft:{kind} {x}.5 80.2 4.5 {{NoGravity:1b,Tags:["e2e_gw"],{data}}}')
     guest.wait(10)
     guest('command', command='setblock 702 80 0 minecraft:end_gateway{exit_portal:[I;100,50,0],ExactTeleport:1b}')
     guest('command', command='tp @s 702.5 80 0.5')
