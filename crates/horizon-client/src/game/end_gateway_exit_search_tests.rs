@@ -69,7 +69,8 @@ fn end_stone(game: &Game<'_>, stone: u32) -> Vec<[i32; 3]> {
 }
 
 /// The world the search sees: the gateway's chunk, the candidate chunks around
-/// x = 1024 (and the ones `findTallestBlock` reads), and the end stone island
+/// x = 1024 (and every chunk within 21 blocks of the island, which
+/// `findTallestBlock` and `findExitPosition` read), and the end stone island
 /// in chunk (65, 0). A clean slate each time: the previous search's gateway and
 /// island are dropped with their chunks.
 fn load_world(game: &mut Game<'_>, with_island: bool) {
@@ -79,8 +80,8 @@ fn load_world(game: &mut Game<'_>, with_island: bool) {
         .registry
         .default_state("minecraft:end_gateway")
         .unwrap();
-    for cx in 64..=66 {
-        for cz in -1..=1 {
+    for cx in 63..=66 {
+        for cz in -2..=1 {
             game.world.chunks.remove(&(cx, cz));
             if !with_island && cx == 65 {
                 continue;
@@ -226,5 +227,117 @@ fn the_exit_search_keeps_every_candidate_it_tested_until_it_ends() {
         !kept(&game, (65, 0)) && !kept(&game, (66, 0)),
         "{:?}",
         game.streaming.extra
+    );
+}
+
+/// Sets `pos` to the default state of `name`.
+fn put(game: &mut Game<'_>, pos: [i32; 3], name: &str) {
+    let state = game.pack.assets.registry.default_state(name).unwrap();
+    game.world.set(pos[0], pos[1], pos[2], state).unwrap();
+}
+
+/// An end stone block in chunk (65, -1), 6 blocks from [`STONE`] in z and taller:
+/// `findTallestBlock(level, STONE, 16, true)` picks it.
+const TALLER: [i32; 3] = [1044, 70, -2];
+
+/// `findTallestBlock` reads its 33 x 33 columns through the level, which loads
+/// each chunk (`Level.getBlockState` → `getChunk`): the exit is above the
+/// tallest block in chunk (65, -1), whether that chunk was loaded or not when
+/// the search ended next to it.
+#[test]
+fn the_exit_height_waits_for_the_chunks_next_to_the_landing_spot() {
+    if std::env::var_os("HORIZON_TEST_RESOURCES").is_none() {
+        return;
+    }
+    let mut game = server_game();
+    game.dim = Dim::End;
+    // Every chunk loaded: TALLER, then above(10).
+    load_world(&mut game, true);
+    put(&mut game, TALLER, "minecraft:end_stone");
+    let _ = game.resolve_gateway(job(), TARGET);
+    assert_eq!(
+        exit_of(&game),
+        Some([1044, 80, -2]),
+        "the tallest block is TALLER"
+    );
+    // Chunk (65, -1) not loaded yet: the search ended at (65, 0), and waits for it.
+    load_world(&mut game, true);
+    game.world.chunks.remove(&(65, -1));
+    wait_for_exit(&mut game);
+    assert_eq!(game.resolve_gateway(job(), TARGET).ok(), Some(None));
+    assert_eq!(exit_of(&game), None, "no exit from a partly loaded area");
+    game.keep_gateway_destinations();
+    assert!(kept(&game, (65, -1)), "{:?}", game.streaming.extra);
+    // Loaded: the same exit as with everything loaded from the start.
+    game.world
+        .chunks
+        .insert((65, -1), Arc::new(Chunk::empty(65, -1)));
+    put(&mut game, TALLER, "minecraft:end_stone");
+    let _ = game.resolve_gateway(job(), TARGET);
+    assert_eq!(
+        exit_of(&game),
+        Some([1044, 80, -2]),
+        "the loading state did not change the exit"
+    );
+}
+
+/// `findValidSpawnInChunk` walks `BlockPos.betweenClosed`, x fastest, then y,
+/// then z, and keeps the first of two spots at the same distance from the
+/// origin. (1040, 32, 2) and (1040, 30, 11) are both at
+/// 2081² + 65² + 5² = 2081² + 61² + 23² = 4334811 quarter-blocks²: vanilla
+/// meets z = 2 first. Only around that spot does `findTallestBlock` reach the
+/// tall block at z = -14 (16 blocks away), so the exit is above it.
+#[test]
+fn of_two_landing_spots_at_the_same_distance_the_lower_z_wins() {
+    if std::env::var_os("HORIZON_TEST_RESOURCES").is_none() {
+        return;
+    }
+    let mut game = server_game();
+    game.dim = Dim::End;
+    load_world(&mut game, true);
+    put(&mut game, STONE, "minecraft:air");
+    put(&mut game, [1040, 32, 2], "minecraft:end_stone");
+    put(&mut game, [1040, 30, 11], "minecraft:end_stone");
+    put(&mut game, [1040, 50, -14], "minecraft:end_stone");
+    let _ = game.resolve_gateway(job(), TARGET);
+    assert_eq!(exit_of(&game), Some([1040, 60, -14]));
+}
+
+/// `findExitPosition` (a gateway with an exit, not exact) reads 5 blocks
+/// around the exit through the level, loading each chunk: the arrival is
+/// above the one full block there, in chunk (12, -1), and waits for that chunk
+/// instead of reading it as air.
+#[test]
+fn a_known_exit_waits_for_the_chunks_find_exit_position_reads() {
+    if std::env::var_os("HORIZON_TEST_RESOURCES").is_none() {
+        return;
+    }
+    let mut game = server_game();
+    game.dim = Dim::End;
+    let job = GatewayJob::Known {
+        exit: [200, 75, 0],
+        exact: false,
+    };
+    let target = Vec3::new(200.5, 75.0, 0.5);
+    for c in [(11, -1), (11, 0), (12, -1), (12, 0), (13, -1), (13, 0)] {
+        game.world.chunks.remove(&c);
+    }
+    game.world
+        .chunks
+        .insert((12, 0), Arc::new(Chunk::empty(12, 0)));
+    assert_eq!(
+        game.resolve_gateway(job, target).ok(),
+        Some(None),
+        "chunk (12, -1) is within 5 blocks of the exit"
+    );
+    game.world
+        .chunks
+        .insert((12, -1), Arc::new(Chunk::empty(12, -1)));
+    put(&mut game, [199, 60, -2], "minecraft:end_stone");
+    // findTallestBlock finds (199, 60, -2), findExitPosition goes above it and
+    // getPortalPosition takes its bottom center.
+    assert_eq!(
+        game.resolve_gateway(job, target).ok(),
+        Some(Some(Vec3::new(199.5, 61.0, -1.5)))
     );
 }
