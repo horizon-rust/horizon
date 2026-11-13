@@ -166,7 +166,9 @@ impl Islands<'_> {
             return None;
         }
         // A cloud's dose between the mobs' turns reaches every mob in its box, whatever their island.
-        if turns.doses.as_ref().is_some_and(|d| d.0.between_turns(mobs)) {
+        if let Some((doses, _)) = &turns.doses
+            && doses.between_turns(mobs)
+        {
             return None;
         }
         // A content mod's effect ticks through the native mods (`ModEffectTicks`), which run
