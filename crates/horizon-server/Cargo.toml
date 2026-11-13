@@ -12,6 +12,9 @@ horizon-platform = { path = "../horizon-platform", features = ["server-files", "
 horizon-server-launch = { path = "../horizon-server-launch" }
 # `horizon-server mcp`: the Model Context Protocol, shared with horizon-ctl and the launcher.
 horizon-mcp = { path = "../horizon-mcp" }
+# [tailcat]: the helper's download address (the Horizon layer owns it), the same one the game and
+# the launcher use; the helper itself runs through horizon-platform's seam.
+horizon-addresses = { path = "../horizon-addresses" }
 # server.toml's [anticheat], which the game reads: checked here before every start.
 horizon-anticheat = { path = "../horizon-anticheat" }
 # server.toml's [chat_filter], which the game reads too: checked here before every start.

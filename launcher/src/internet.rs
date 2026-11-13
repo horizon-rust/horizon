@@ -5,6 +5,9 @@
 use super::servers_page::Field;
 use super::*;
 use horizon_launcher::tailscale::{self, Api, Invite, Reach, State};
+// The Tailcat helper (host, download): the same one the game runs, shared through the engine's
+// seam (`horizon-hooks`), re-exported by the platform.
+use horizon_platform::hooks::tailcat as tailcat_helper;
 use serde_json::Value;
 
 /// How often Tailscale's state is read while the panel shows.
@@ -21,6 +24,8 @@ pub(super) enum Event {
     /// An action finished: what to tell the player, and whether to read invites and policy again.
     Done(Result<String, String>),
     Invited(Result<Invite, String>),
+    /// A Tailcat host helper started (the running helper and its invitation), or why it did not.
+    Tailcat(Result<(tailcat_helper::Running, String), String>),
 }
 
 pub(super) struct Internet {
@@ -39,6 +44,10 @@ pub(super) struct Internet {
     fresh: Option<Invite>,
     confirm_limit: bool,
     copied: Option<(String, Instant)>,
+    /// Tailcat: the running host helper sharing this server, and its `mcl1_...` invitation.
+    tailcat: Option<(tailcat_helper::Running, String)>,
+    tailcat_busy: bool,
+    tailcat_error: Option<String>,
     tx: Sender<Event>,
     rx: Receiver<Event>,
 }
@@ -64,6 +73,9 @@ impl Internet {
             fresh: None,
             confirm_limit: false,
             copied: None,
+            tailcat: None,
+            tailcat_busy: false,
+            tailcat_error: None,
             tx,
             rx,
         }
@@ -146,6 +158,16 @@ impl Launcher {
                     Err(e) => i.message = Some(Err(e)),
                 }
                 self.internet_load();
+            }
+            Event::Tailcat(r) => {
+                i.tailcat_busy = false;
+                match r {
+                    Ok(host) => {
+                        i.tailcat = Some(host);
+                        i.tailcat_error = None;
+                    }
+                    Err(e) => i.tailcat_error = Some(e),
+                }
             }
         }
     }
@@ -277,6 +299,100 @@ impl Launcher {
         }))
     }
 
+    /// Share the server on `port` over Tailcat: run the helper (downloaded and checksum-checked
+    /// once) on a worker thread and keep it alive until stopped or the launcher closes.
+    pub(super) fn tailcat_start(&mut self, port: u16) {
+        // The helper's download address (the Horizon layer owns it): the launcher runs the same
+        // helper the game does, shared through the platform's seam. The first call wins.
+        tailcat_helper::set_assets(horizon_friends::TAILCAT_HELPER_ASSETS);
+        let i = &mut self.internet;
+        if i.tailcat.is_some() || i.tailcat_busy {
+            return;
+        }
+        i.tailcat_busy = true;
+        i.tailcat_error = None;
+        let tx = i.tx.clone();
+        let cache = backend::data_dir().join("tailcat");
+        std::thread::spawn(move || {
+            let _ = tx.send(Event::Tailcat(tailcat_helper::host(port, &cache)));
+        });
+    }
+
+    /// Stop sharing over Tailcat: dropping the helper ends its tunnel.
+    pub(super) fn tailcat_stop(&mut self) {
+        self.internet.tailcat = None;
+        self.internet.tailcat_error = None;
+    }
+
+    /// The Tailcat card: share this server without a Tailscale account, through the same helper
+    /// the game runs. Shown whatever Tailscale's own state is.
+    fn tailcat_section(&mut self, port: u16, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let line = |s: String| text(theme::CAPTION).text_color(t.muted).child(s);
+        let mut d = div()
+            .border_t_1()
+            .border_color(t.rule)
+            .pt(px(12.))
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(caps(tr("Tailcat · no account")).text_color(t.muted))
+            .child(text(theme::UI).text_color(t.ink).child(tr(
+                "Or share this server over Tailcat: friends join with an invitation, with no Tailscale account on either side.",
+            )));
+        if let Some((_, invite)) = &self.internet.tailcat {
+            let invite = invite.clone();
+            d = d
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(
+                            text(theme::TITLE)
+                                .font_family(theme::MONO)
+                                .text_color(t.ink)
+                                .truncate()
+                                .child(invite.clone()),
+                        )
+                        .child(self.copy_button("tc-copy", invite, Kind::Secondary, cx)),
+                )
+                .child(line(tr(
+                    "In the game, Multiplayer, Join a Tailcat world, paste the invitation. One host at a time: stop it to make another.",
+                ).into()))
+                .child(
+                    div().flex().child(
+                        button("tc-stop", "Stop sharing", Kind::Ghost, &t).on_click(cx.listener(
+                            |this, _: &ClickEvent, _, cx| {
+                                this.tailcat_stop();
+                                cx.notify();
+                            },
+                        )),
+                    ),
+                );
+        } else if self.internet.tailcat_busy {
+            d = d.child(line(
+                tr("Starting the Tailcat helper… the first time, it is downloaded and checked.")
+                    .into(),
+            ));
+        } else {
+            d = d.child(
+                div().flex().child(
+                    button("tc-share", "Share over Tailcat", Kind::Secondary, &t)
+                        .bg(t.plate)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.tailcat_start(port);
+                            cx.notify();
+                        })),
+                ),
+            );
+        }
+        if let Some(e) = &self.internet.tailcat_error {
+            d = d.child(text(theme::CAPTION).text_color(t.danger).child(e.clone()));
+        }
+        d
+    }
+
     pub(super) fn internet_panel(&mut self, port: u16, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let mut panel = plate(&t)
@@ -292,8 +408,13 @@ impl Launcher {
                 cx.notify();
             },
         ));
+        let tailcat = self.tailcat_section(port, cx);
         match self.internet.state.clone() {
-            None => return panel.child(line(tr("Looking for Tailscale…").into())),
+            None => {
+                return panel
+                    .child(line(tr("Looking for Tailscale…").into()))
+                    .child(tailcat)
+            }
             Some(State::Missing) => {
                 return panel
                     .child(text(theme::UI).text_color(t.ink).child(tr(
@@ -309,7 +430,8 @@ impl Launcher {
                                     .on_click(|_, _, cx| cx.open_url(tailscale::install_url())),
                             )
                             .child(check),
-                    );
+                    )
+                    .child(tailcat);
             }
             Some(State::Off(why)) => {
                 let open = button("ts-open", "Open Tailscale", Kind::Secondary, &t)
@@ -327,7 +449,7 @@ impl Launcher {
                     )))
                     .when(!why.is_empty(), |d| d.child(line(why)))
                     .child(div().flex().gap(px(8.)).child(open).child(check));
-                return self.internet_message(panel);
+                return self.internet_message(panel.child(tailcat));
             }
             Some(State::SignedOut { auth_url }) => {
                 let sign_in = button("ts-login", "Sign in to Tailscale", Kind::Secondary, &t)
@@ -355,7 +477,7 @@ impl Launcher {
                         )))
                     })
                     .child(div().flex().gap(px(8.)).child(sign_in).child(check));
-                return self.internet_message(panel);
+                return self.internet_message(panel.child(tailcat));
             }
             Some(State::Running(_)) => {}
         }
@@ -411,6 +533,7 @@ impl Launcher {
             tr("Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.")
                 .into(),
         ));
+        panel = panel.child(tailcat);
         self.internet_message(panel)
     }
 
@@ -433,7 +556,7 @@ impl Launcher {
         let act = |b: Stateful<Div>, check: Stateful<Div>| {
             div().mt(px(10.)).flex().gap(px(8.)).child(b).child(check)
         };
-        match self.internet.state.clone() {
+        let panel = match self.internet.state.clone() {
             None => d.child(ui::card_note(tr("Looking for Tailscale…")).mt(px(4.))),
             Some(State::Missing) => d
                 .child(ui::card_note(trf(
@@ -516,7 +639,8 @@ impl Launcher {
                 )
                 .child(ui::card_note(tr("Through Tailscale. Only the friends you invite can reach it.")).mt(px(4.)))
             }
-        }
+        };
+        panel.child(self.tailcat_section(port, cx))
     }
 
     /// The glass Servers page's invitations (not in the mockup), under the server's Players: once

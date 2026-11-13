@@ -1369,5 +1369,9 @@
   "Performance mode draws solid panels, without glass or blur.": "Կատարողական ռեժիմը գծում է անընդմեջ վահանակներ՝ առանց ապակու և լղոզման։",
   "This theme's night draws solid panels, without glass or blur.": "Այս թեմայի գիշերը գծում է անընդմեջ վահանակներ՝ առանց ապակու և լղոզման։",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "In the game, Multiplayer, Join a Tailcat world, paste the invitation. One host at a time: stop it to make another.": "In the game, Multiplayer, Join a Tailcat world, paste the invitation. One host at a time: stop it to make another.",
+  "Or share this server over Tailcat: friends join with an invitation, with no Tailscale account on either side.": "Or share this server over Tailcat: friends join with an invitation, with no Tailscale account on either side.",
+  "Starting the Tailcat helper… the first time, it is downloaded and checked.": "Starting the Tailcat helper… the first time, it is downloaded and checked.",
+  "Tailcat · no account": "Tailcat · no account"
 }

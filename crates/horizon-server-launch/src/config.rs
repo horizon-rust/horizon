@@ -230,6 +230,10 @@ pub struct Config {
     /// `[entities]` (docs/server.md): mob settings passed to the game; written only when it isn't the default.
     #[serde(default, skip_serializing_if = "Entities::is_default")]
     pub entities: Entities,
+    /// Whether the supervisor runs a Tailcat tunnel to this server's own port; written only when it
+    /// isn't the default.
+    #[serde(default, skip_serializing_if = "Tailcat::is_default")]
+    pub tailcat: Tailcat,
 }
 
 /// `[entities]`: `villager_lobotomize = true` skips the brain of villagers that cannot move (stuck in a cell,
@@ -277,6 +281,20 @@ impl Entities {
             return Err("entities.dab_activation_dist_mod must be 30 or less".into());
         }
         Ok(())
+    }
+}
+
+/// `[tailcat]`: `host = true` runs the `tailcat-for-minecraft` helper on start and logs the `mcl1_...`
+/// invitation, so friends join this server without a Tailscale account or an open router port. The
+/// helper is the same one the game and the launcher run, shared through `horizon-platform`'s seam.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Tailcat {
+    pub host: bool,
+}
+impl Tailcat {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -930,6 +948,7 @@ pub fn render(config: &Config) -> String {
         "combat",
         "biome_regions",
         "entities",
+        "tailcat",
     ] {
         if let Some(settings) = table.get(section) {
             let mut only = toml::Table::new();
@@ -1329,6 +1348,20 @@ keep = {keep}
         assert!(Config::parse("[entities]\nvillager_lobotomize = 1\n").is_err());
         assert!(Config::parse("[entities]\nvillager_lobotomise = true\n").is_err());
         assert!(Config::parse("[entities]\nvillager_lobotomize_check_interval = 0\n").is_err());
+    }
+
+    #[test]
+    fn tailcat_hosting_is_off_unless_its_section_turns_it_on() {
+        assert!(!Config::default().tailcat.host);
+        assert!(!TEMPLATE.lines().any(|l| l.trim() == "[tailcat]"));
+        let on = Config::parse(&format!("{TEMPLATE}\n[tailcat]\nhost = true\n")).unwrap();
+        assert!(on.tailcat.host);
+        // Kept when the file is written again, and left out while off.
+        assert_eq!(Config::parse(&render(&on)).unwrap(), on);
+        let off = render(&Config::default());
+        assert!(!off.lines().any(|l| l.trim() == "[tailcat]"), "{off}");
+        assert!(Config::parse("[tailcat]\nhost = 1\n").is_err());
+        assert!(Config::parse("[tailcat]\nhst = true\n").is_err());
     }
 
     #[test]
