@@ -62,7 +62,7 @@ pub mod hooks {
     };
     pub use horizon_hooks::{
         Activity, Client, Dimension, GameMode, GetTheGame, Hooks, Play, Started, TooLate, perf,
-        register, seat, share, tunnel,
+        register, seat, share, tr, tunnel,
     };
 }
 

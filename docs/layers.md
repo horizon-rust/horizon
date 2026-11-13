@@ -365,7 +365,7 @@ pub trait Store: Sync {
 A page lives in the options screen's shell, and its entry sits on one of the game's menus.
 
 ```rust
-pub enum Place { HorizonSettings, Pause, Extras, Title }
+pub enum Place { HorizonSettings, Pause, Extras, Title, PauseFriends }
 pub trait Page: Sync {
     fn id(&self) -> &'static str;            // stable, for horizon-ctl and the page stack
     fn title(&self) -> &'static str;         // translation key
@@ -396,6 +396,9 @@ pub fn connect(address: impl Into<String>);                   // from a Title pa
   button on the title screen or the pause menu that opens the page. These buttons exist only when something
   registered, so the vanilla menus keep vanilla's look. The page is drawn with the same widgets, tooltips,
   narration, controller focus and `horizon-ctl` ids as the engine's pages.
+- `PauseFriends`: what the pause menu's vanilla Friends icon opens. The icon is active while a page is registered
+  there and the world can be shared; the page is drawn as its own screen over the paused world (title, rows down the
+  middle, footer buttons beside Done), the way Play with Friends' screen always looked.
 - `Button` and `Text` are built with `Row::button` and `Row::text` and their options: `.active(false)` greys a
   button, `.half()` puts two side by side, `.footer()` sets one beside Done on a page drawn as its own screen,
   `.quiet()` greys text, `.groups()` breaks it only between `-`-separated groups (an invite code). In the options

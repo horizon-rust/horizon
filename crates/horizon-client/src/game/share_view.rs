@@ -14,7 +14,9 @@ fn shares(game: &Game<'_>) -> bool {
 /// horizon-friends (spec #14167). Before the hooks are sealed.
 #[cfg(feature = "friends")]
 pub(crate) fn register_friends() {
-    if horizon_hooks::register(&super::friends::HOOKS).is_err() {
+    if horizon_hooks::register(&super::friends::HOOKS).is_err()
+        || horizon_hooks::pages::register(&super::friends::PAGE).is_err()
+    {
         log::warn!("Play with Friends registered after the game started: sharing is off");
     }
 }

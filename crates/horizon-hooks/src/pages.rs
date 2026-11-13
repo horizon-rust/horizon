@@ -19,6 +19,12 @@ pub enum Place {
     /// start a group of their own after the page's. A [`Row::Heading`] starts another group. A
     /// [`Row::Key`] shows its key there, without changing it: give a page of its own to a key.
     Extras,
+    /// What the pause menu's Friends icon opens (vanilla's `CommonButtons.friends`): the icon is
+    /// active while a page is registered here and the world can be shared (singleplayer). The
+    /// first page registered here is drawn as its own screen over the paused world, as a mod's
+    /// screen is: the title at the top, the rows centred down the middle, footer buttons beside
+    /// Done at the bottom. Text that would reach the footer is left out.
+    PauseFriends,
     /// The title screen's Friends icon slot (vanilla's `CommonButtons.friends`, beside Language
     /// and Accessibility): with a page registered here the icon opens the first one as a form of
     /// its own, as Join a Friend is drawn ([`Row::Field`]). It shows heading, note, text, space,

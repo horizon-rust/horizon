@@ -1,5 +1,5 @@
 //! Play with friends, host side: "Start Sharing" on the Play with Friends
-//! screen (`screen`, the pause menu's Friends button) opens the world to LAN if
+//! page (`PAGE`, what the pause menu's Friends icon opens) opens the world to LAN if
 //! it isn't (with Open to LAN's defaults) and shares that port behind an
 //! invite code (horizon-friends). The code holds this computer's addresses
 //! and the key, so friends join with no server of ours; a relay the player
@@ -8,15 +8,16 @@
 //! loopback address. The joining side is horizon-friends' (`game`), registered by
 //! horizon-official.
 //!
-//! It sees the game only through `horizon_hooks::share` (the engine's `ShareView`) and
-//! `Hooks::lan_closed`, and keeps what it shares in its own static,
-//! so it can leave the engine for horizon-friends (spec #14167). The screen and the
-//! `horizon-ctl friends` command below still reach it from `Game` until then.
+//! It sees the game only through `horizon_hooks` (the `ShareView` its `Hooks::share` tick
+//! gets, `Hooks::lan_closed`, its page, `tr`) and keeps what it shares in its own statics, so
+//! it can leave the engine for horizon-friends (spec #14167). The `horizon-ctl friends` command
+//! below still reaches it from `Game` until then.
 use super::Game;
-use horizon_client::{Result, hud::HudBatch};
+use horizon_client::Result;
 use horizon_friends::{Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun};
 use horizon_hooks::{
     Hooks,
+    pages::{Act, Page, Place, Row},
     share::{LanOptions, ShareView},
 };
 use horizon_protocol::{GAME_VERSION, PROTOCOL_VERSION};
@@ -24,10 +25,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-mod screen;
-
-use screen::{self as friends_screen, Action, FriendsView};
-pub use screen::{TITLE, title};
+/// The English title: the fallback of [`title`], and what the screen's widgets are named by.
+pub const TITLE: &str = "Play with Friends";
+/// The title in the current language.
+pub fn title() -> String {
+    tr("horizon.friends.title", TITLE)
+}
 
 struct Sharing {
     host: Host,
@@ -48,6 +51,44 @@ static SHARING: Mutex<Option<Sharing>> = Mutex::new(None);
 /// Whether [`SHARING`] holds one: a tick with nothing shared is this one load.
 static ON: AtomicBool = AtomicBool::new(false);
 
+/// What the page left for the next [`Hooks::share`] tick, which has the game's view.
+#[derive(Default)]
+struct PageState {
+    /// Chat lines (new codes, the relay stopping), said in order.
+    chat: Vec<String>,
+    /// A button pressed on the page.
+    pressed: Option<Action>,
+    /// The page was drawn since the last tick: its guests are read again.
+    open: bool,
+    /// The other players, as the last tick while the page was open read them.
+    guests: Vec<String>,
+    /// The action of each row the page last showed.
+    acts: Vec<Option<Action>>,
+}
+static PAGE_STATE: Mutex<PageState> = Mutex::new(PageState {
+    chat: Vec::new(),
+    pressed: None,
+    open: false,
+    guests: Vec::new(),
+    acts: Vec::new(),
+});
+/// Whether [`PAGE_STATE`] has something for the tick.
+static WORK: AtomicBool = AtomicBool::new(false);
+
+fn page() -> MutexGuard<'static, PageState> {
+    PAGE_STATE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A button of the page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    Share,
+    Copy,
+    Stop,
+    /// Open the troubleshooting page.
+    Help,
+}
+
 fn sharing() -> MutexGuard<'static, Option<Sharing>> {
     SHARING.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -64,9 +105,31 @@ fn take() -> Option<Sharing> {
 pub struct Friends;
 pub static HOOKS: Friends = Friends;
 
-/// No `Hooks::share` yet: the code and sessions are read while the screen is drawn or
-/// `horizon-ctl friends status` asks, as before. The screen's page uses it (#14167 step 2a).
 impl Hooks for Friends {
+    /// What the page left for the game: chat lines, a button's press, the guests while it is
+    /// open. With nothing left, one relaxed load.
+    fn share(&self, world: &mut dyn ShareView) {
+        if !WORK.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let (lines, pressed, open) = {
+            let mut page = page();
+            let open = std::mem::take(&mut page.open);
+            (std::mem::take(&mut page.chat), page.pressed.take(), open)
+        };
+        for line in lines {
+            world.chat(&line);
+        }
+        if let Some(action) = pressed {
+            press(action, world);
+        }
+        if open {
+            let mut guests = Vec::new();
+            world.players(&mut |name| guests.push(name.to_owned()));
+            page().guests = guests;
+        }
+    }
+
     /// The LAN server is closing: the code goes with it.
     fn lan_closed(&self) {
         if ON.load(Ordering::Relaxed)
@@ -84,8 +147,8 @@ pub const HELP: &[&str] = &[
 ];
 
 /// A string in the player's language, or the English one.
-fn tr(world: &dyn ShareView, key: &str, english: &str) -> String {
-    world.tr(key).unwrap_or_else(|| english.to_owned())
+fn tr(key: &str, english: &str) -> String {
+    horizon_hooks::tr(key).unwrap_or_else(|| english.to_owned())
 }
 
 /// `HORIZON_STUN_SERVERS`, else `friendsStun` in horizon.txt, else the defaults.
@@ -171,7 +234,6 @@ fn stop(world: &mut dyn ShareView) {
         world.close_lan();
     } else {
         let text = tr(
-            world,
             "horizon.friends.stopped",
             "Stopped sharing the invite code.",
         );
@@ -179,8 +241,9 @@ fn stop(world: &mut dyn ShareView) {
     }
 }
 
-/// New codes and sessions, while the screen is drawn and when `friends status` asks.
-fn tick(world: &mut dyn ShareView) {
+/// New codes and sessions, while the page is drawn and when `friends status` asks. Its chat
+/// lines wait for the next tick ([`Hooks::share`]), or for [`say`].
+fn poll() {
     if !ON.load(Ordering::Relaxed) {
         return;
     }
@@ -196,7 +259,6 @@ fn tick(world: &mut dyn ShareView) {
                 HostEvent::Code(code) => {
                     if sharing.code.is_some() && sharing.wrong >= horizon_friends::host::MAX_WRONG {
                         sharing.notice = Some(tr(
-                            world,
                             "horizon.friends.short_code_changed",
                             "Someone kept trying a wrong short code, so it changed.",
                         ));
@@ -208,7 +270,6 @@ fn tick(world: &mut dyn ShareView) {
                 HostEvent::WrongCode { count } => {
                     sharing.wrong = count;
                     sharing.notice = Some(tr(
-                        world,
                         "horizon.friends.wrong_code",
                         "Someone tried a wrong code.",
                     ));
@@ -218,7 +279,6 @@ fn tick(world: &mut dyn ShareView) {
                 HostEvent::Disconnected { .. } => {}
                 HostEvent::RelayStopped => {
                     let text = tr(
-                        world,
                         "horizon.friends.relay_stopped",
                         "Too many wrong short codes, so the relay is off until you share again. Friends can still join with the full code.",
                     );
@@ -228,16 +288,44 @@ fn tick(world: &mut dyn ShareView) {
             }
         }
     }
-    if let Some(text) = stopped {
-        world.chat(&text);
-    }
+    let mut page = page();
+    page.chat.extend(stopped);
     if announce {
-        let text = tr(
-            world,
+        page.chat.push(tr(
             "horizon.friends.code_ready",
             "Your invite code is ready: Game Menu, Play with Friends. Copy it and send it to your friends.",
-        );
-        world.chat(&text);
+        ));
+    }
+    if !page.chat.is_empty() {
+        WORK.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The chat lines waiting, said now.
+fn say(world: &mut dyn ShareView) {
+    let lines = std::mem::take(&mut page().chat);
+    for line in lines {
+        world.chat(&line);
+    }
+}
+
+/// A button of the page, on the tick after its press.
+fn press(action: Action, world: &mut dyn ShareView) {
+    match action {
+        Action::Share => {
+            if let Err(e) = start(world) {
+                let text = tr(
+                    "horizon.friends.share_failed",
+                    "Couldn't share the world: %s",
+                )
+                .replacen("%s", &e, 1);
+                world.chat(&text);
+            }
+        }
+        Action::Copy => copy(world),
+        Action::Stop => stop(world),
+        // The system browser, as the folder buttons open their folders.
+        Action::Help => world.open_url(reach::HELP_URL),
     }
 }
 
@@ -255,24 +343,31 @@ fn copy(world: &mut dyn ShareView) {
 }
 
 /// What Play with Friends shows.
-fn status(world: &dyn ShareView) -> FriendsView {
-    // Another server, or a splitscreen guest in P1's world: nothing to share.
-    if !world.can_share() {
-        return FriendsView::default();
-    }
+#[derive(Clone, Debug, Default)]
+struct View {
+    sharing: bool,
+    code: Option<String>,
+    /// Who can join and what to do when friends on the internet can't (or,
+    /// before the code, what the game is doing).
+    status: String,
+    /// Friends on the internet can reach the host.
+    reachable: bool,
+    /// The players in the world besides the host.
+    guests: Vec<String>,
+    notice: Option<String>,
+    /// The code was just copied.
+    copied: bool,
+}
+
+/// What Play with Friends shows; `guests` is asked only while sharing.
+fn view(guests: impl FnOnce() -> Vec<String>) -> View {
     let guard = sharing();
     let Some(s) = guard.as_ref() else {
-        return FriendsView {
-            shown: true,
-            ..FriendsView::default()
-        };
+        return View::default();
     };
-    let mut guests = Vec::new();
-    world.players(&mut |name| guests.push(name.to_owned()));
     let state = s.host.state();
     let mut status = if s.code.is_none() {
         tr(
-            world,
             "horizon.friends.finding_route",
             "Finding how friends can reach you…",
         )
@@ -290,18 +385,143 @@ fn status(world: &dyn ShareView) -> FriendsView {
         state.verdict,
         Some(reach::Verdict::Mapped(_) | reach::Verdict::Public)
     ) || state.short.is_some();
-    FriendsView {
-        shown: true,
+    View {
         sharing: true,
         code: s.code.clone(),
         status,
         reachable,
-        help: (!reachable && s.code.is_some()).then(|| reach::HELP_URL.to_owned()),
-        guests,
+        guests: guests(),
         notice: s.notice.clone(),
         copied: s
             .copied
             .is_some_and(|t| t.elapsed() < Duration::from_secs(2)),
+    }
+}
+
+/// The page's rows for `view`, each with the button's action: the layout today's Friends
+/// screen had (the engine draws it, `game/page_screen.rs`).
+fn rows(view: &View, rows: &mut Vec<Row>, acts: &mut Vec<Option<Action>>) {
+    let mut row = |row: Row, act: Option<Action>| {
+        rows.push(row);
+        acts.push(act);
+    };
+    let hint = || {
+        tr(
+            "horizon.friends.hint",
+            "Friends paste the code after the title screen's Friends button, in Direct Connection, or on the launcher's Play page.",
+        )
+    };
+    if !view.sharing {
+        row(
+            Row::text(tr(
+                "horizon.friends.share_intro",
+                "Share this world behind an invite code: it opens to LAN, and friends on the internet join with the code. No server of ours is involved.",
+            )),
+            None,
+        );
+        row(Row::Space(4), None);
+        row(Row::text(hint()).quiet(), None);
+        row(Row::Space(8), None);
+        row(
+            Row::button("horizon.friends.start_sharing"),
+            Some(Action::Share),
+        );
+        return;
+    }
+    row(
+        Row::text(tr("horizon.multiplayer.invite_code", "Invite Code")).quiet(),
+        None,
+    );
+    row(Row::Space(2), None);
+    match &view.code {
+        Some(code) => row(Row::text(code.clone()).groups(), None),
+        None => row(Row::text(view.status.clone()), None),
+    }
+    row(Row::Space(6), None);
+    let copy = if view.copied {
+        "horizon.friends.copied"
+    } else {
+        "horizon.friends.copy_code"
+    };
+    row(
+        Row::button(copy).half().active(view.code.is_some()),
+        Some(Action::Copy),
+    );
+    row(
+        Row::button("horizon.friends.stop_sharing").half(),
+        Some(Action::Stop),
+    );
+    if view.code.is_some() {
+        // Who can join: grey when friends anywhere can, white (it asks
+        // for something) when only the LAN and VPNs can.
+        let status = Row::text(view.status.clone());
+        row(
+            if view.reachable {
+                status.quiet()
+            } else {
+                status
+            },
+            None,
+        );
+        row(Row::Space(4), None);
+    }
+    let here = if view.guests.is_empty() {
+        tr("horizon.friends.none_yet", "No friends here yet.")
+    } else {
+        tr("horizon.friends.here_now", "Here now: %s").replacen("%s", &view.guests.join(", "), 1)
+    };
+    row(Row::text(here).quiet(), None);
+    if let Some(notice) = &view.notice {
+        row(Row::text(notice.clone()), None);
+    }
+    // Where friends paste the code, while it fits above the footer.
+    row(Row::text(hint()).quiet(), None);
+    // Troubleshooting beside Done when friends on the internet can't reach the host.
+    if !view.reachable && view.code.is_some() {
+        row(
+            Row::button("horizon.friends.troubleshooting").footer(),
+            Some(Action::Help),
+        );
+    }
+}
+
+/// Play with Friends' page: what the pause menu's Friends icon opens. Its rows are read when
+/// it is drawn; a press waits for the next tick, which has the game's view.
+pub struct FriendsPage;
+pub static PAGE: FriendsPage = FriendsPage;
+
+impl Page for FriendsPage {
+    fn id(&self) -> &'static str {
+        "horizon_friends.share"
+    }
+    fn title(&self) -> &'static str {
+        "horizon.friends.title"
+    }
+    fn place(&self) -> Place {
+        Place::PauseFriends
+    }
+    fn rows(&self, out: &mut Vec<Row>) {
+        // The world is paused under the page in singleplayer, so new codes and sessions are
+        // read while it is drawn.
+        poll();
+        let guests = std::mem::take(&mut page().guests);
+        let view = view(|| guests);
+        let mut acts = Vec::new();
+        rows(&view, out, &mut acts);
+        let mut page = page();
+        page.guests = view.guests;
+        page.acts = acts;
+        page.open = true;
+        WORK.store(true, Ordering::Relaxed);
+    }
+    fn act(&self, row: usize, act: Act) {
+        let mut page = page();
+        if act == Act::Press
+            && let Some(Some(action)) = page.acts.get(row).copied()
+        {
+            page.pressed = Some(action);
+            WORK.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -321,8 +541,17 @@ fn control(
             Ok(json!({ "ok": true }))
         }
         Some("status") => {
-            tick(world);
-            let view = status(world);
+            poll();
+            say(world);
+            let view = if world.can_share() {
+                view(|| {
+                    let mut guests = Vec::new();
+                    world.players(&mut |name| guests.push(name.to_owned()));
+                    guests
+                })
+            } else {
+                View::default()
+            };
             let guard = sharing();
             let sharing = guard.as_ref().filter(|_| view.sharing);
             let state = sharing.map(|s| s.host.state());
@@ -346,59 +575,6 @@ fn control(
 }
 
 impl Game<'_> {
-    /// Play with Friends. The world is paused under it in singleplayer, so
-    /// new codes and sessions are read while it is drawn.
-    pub(super) fn draw_friends_screen(&mut self, batch: &mut HudBatch) {
-        let world = &mut self.share_view();
-        tick(world);
-        let view = status(world);
-        horizon_client::widgets::begin_screen(|| {
-            horizon_client::widgets::ScreenInfo::new("friends", friends_screen::TITLE)
-        });
-        friends_screen::draw(batch, &self.gui.atlas, self.cursor, &view, true);
-    }
-
-    pub(super) fn friends_screen_click(&mut self) {
-        let view = status(&self.share_view());
-        let Some(action) =
-            friends_screen::click(&self.gui.atlas, self.gui_size(), self.cursor, &view)
-        else {
-            return;
-        };
-        self.audio.play_button_click();
-        if action == Action::Done {
-            self.screen = super::Screen::Paused;
-            return;
-        }
-        let world = &mut self.share_view();
-        match action {
-            Action::Share => {
-                if let Err(e) = start(world) {
-                    let text = tr(
-                        world,
-                        "horizon.friends.share_failed",
-                        "Couldn't share the world: %s",
-                    )
-                    .replacen("%s", &e, 1);
-                    world.chat(&text);
-                }
-            }
-            Action::Copy => copy(world),
-            Action::Stop => stop(world),
-            Action::Help => {
-                if let Some(url) = &view.help {
-                    world.open_url(url);
-                }
-            }
-            Action::Done => {}
-        }
-    }
-
-    /// Whether the pause menu offers Play with Friends (a singleplayer world).
-    pub(super) fn friends_shown(&self) -> bool {
-        self.can_share()
-    }
-
     /// `horizon-ctl friends ...`.
     pub(super) fn friends_control(&mut self, words: &[&str]) -> Result<Option<serde_json::Value>> {
         if words[0] != "friends" {
@@ -474,7 +650,6 @@ mod tests {
         stop(&mut guest);
         copy(&mut guest);
         assert!(guest.did.is_empty(), "{:?}", guest.did);
-        assert!(!status(&guest).shown);
         assert!(!ON.load(Ordering::Relaxed));
     }
 
@@ -490,9 +665,106 @@ mod tests {
             world.did,
             ["open_lan LanOptions { guest_commands: false, force_game_mode: true }"]
         );
-        // Offered, not shared: the guests show once sharing does.
-        let view = status(&world);
-        assert!(view.shown && !view.sharing && view.guests.is_empty());
+        // Offered, not shared: the guests aren't asked for.
+        let view = view(|| unreachable!("the guests of a world not shared"));
+        assert!(!view.sharing && view.guests.is_empty());
         assert!(!ON.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn the_page_shows_todays_screen_and_a_press_runs_on_the_next_tick() {
+        // Sharing, with a code friends on the internet can't reach yet.
+        let shared = View {
+            sharing: true,
+            code: Some("K7QM2-AAAAA".into()),
+            status: "Friends on your network can join.".into(),
+            ..View::default()
+        };
+        let (mut out, mut acts) = (Vec::new(), Vec::new());
+        rows(&shared, &mut out, &mut acts);
+        let buttons: Vec<_> = out
+            .iter()
+            .zip(&acts)
+            .filter_map(|(row, act)| match row {
+                Row::Button {
+                    label,
+                    active,
+                    half,
+                    footer,
+                    ..
+                } => Some((*label, *active, *half, *footer, *act)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            buttons,
+            [
+                (
+                    "horizon.friends.copy_code",
+                    true,
+                    true,
+                    false,
+                    Some(Action::Copy)
+                ),
+                (
+                    "horizon.friends.stop_sharing",
+                    true,
+                    true,
+                    false,
+                    Some(Action::Stop)
+                ),
+                (
+                    "horizon.friends.troubleshooting",
+                    true,
+                    false,
+                    true,
+                    Some(Action::Help)
+                ),
+            ]
+        );
+        assert!(out.iter().any(
+            |row| matches!(row, Row::Text { text, groups: true, .. } if text == "K7QM2-AAAAA")
+        ));
+        // Before the code there is nothing to copy.
+        let (mut out, mut acts) = (Vec::new(), Vec::new());
+        rows(
+            &View {
+                code: None,
+                ..shared
+            },
+            &mut out,
+            &mut acts,
+        );
+        assert!(out.iter().any(|row| matches!(
+            row,
+            Row::Button {
+                label: "horizon.friends.copy_code",
+                active: false,
+                ..
+            }
+        )));
+
+        // Not sharing: Start Sharing. Its press waits for the tick, which has the world.
+        let (mut out, mut acts) = (Vec::new(), Vec::new());
+        rows(&View::default(), &mut out, &mut acts);
+        let share = acts.iter().position(|a| *a == Some(Action::Share)).unwrap();
+        page().acts = acts;
+        PAGE.act(share, Act::Press);
+        let mut world = Fake {
+            can_share: true,
+            refuse_lan: true,
+            ..Fake::default()
+        };
+        HOOKS.share(&mut world);
+        assert_eq!(
+            world.did,
+            [
+                "open_lan LanOptions { guest_commands: false, force_game_mode: true }",
+                "chat Couldn't share the world: no free port",
+            ]
+        );
+        // Pressed once, run once.
+        HOOKS.share(&mut world);
+        assert_eq!(world.did.len(), 2);
     }
 }

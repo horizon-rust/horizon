@@ -359,6 +359,7 @@ mod pad;
 mod pad_actions;
 mod pad_craft;
 mod pad_menu;
+mod page_screen;
 mod paintings;
 mod pandas;
 mod particle_culling;
@@ -660,8 +661,7 @@ enum Screen {
     Advancements,
     /// WorldOptionsScreen (game/lan_screen.rs).
     WorldOptions,
-    /// Play with Friends, from the pause menu's Friends button
-    /// (game/friends.rs, game/friends/screen.rs).
+    /// Play with Friends, the page at `Place::PauseFriends` (game/page_screen.rs).
     Friends,
     /// `SocialInteractionsScreen` (`social_screen`, game/social.rs).
     Social,

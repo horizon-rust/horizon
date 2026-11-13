@@ -227,6 +227,15 @@ pub fn register(hooks: &'static dyn Hooks) -> Result<(), TooLate> {
 }
 
 /// The registered hooks, sealing the list on the first call.
+/// The game's translations, which it installs at start ([`engine::set_language`]).
+static LANGUAGE: std::sync::OnceLock<fn(&str) -> Option<String>> = std::sync::OnceLock::new();
+
+/// The text of a translation key in the player's language, if the game has it. For text a crate
+/// makes outside a view, such as a page's rows. None before the game installs its languages.
+pub fn tr(key: &str) -> Option<String> {
+    LANGUAGE.get().and_then(|language| language(key))
+}
+
 fn all() -> &'static [&'static dyn Hooks] {
     HOOKS.all()
 }
@@ -260,6 +269,11 @@ pub mod engine {
         crate::pages::engine::all();
         crate::hud::engine::all();
         crate::lang::all();
+    }
+
+    /// Where [`crate::tr`] reads translations from; the first call wins.
+    pub fn set_language(language: fn(&str) -> Option<String>) {
+        let _ = LANGUAGE.set(language);
     }
 
     /// [`Hooks::started`].

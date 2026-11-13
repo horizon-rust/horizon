@@ -26,6 +26,10 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     horizon_client::telemetry::mark_start();
     // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
     crash::on_report(horizon_client::telemetry::keep_crash);
+    // Crates' text in the player's language (`horizon_hooks::tr`).
+    horizon_hooks::engine::set_language(|key| {
+        horizon_client::lang::has(key).then(|| horizon_client::lang::get(key))
+    });
     // Play with Friends' host side, until it moves to horizon-friends (spec #14167).
     #[cfg(feature = "friends")]
     game::register_friends();
