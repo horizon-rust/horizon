@@ -165,6 +165,10 @@ impl Islands<'_> {
         {
             return None;
         }
+        // A cloud's dose between the mobs' turns reaches every mob in its box, whatever their island.
+        if turns.doses.as_ref().is_some_and(|d| d.0.between_turns(mobs)) {
+            return None;
+        }
         // A content mod's effect ticks through the native mods (`ModEffectTicks`), which run
         // only on the server thread.
         if defers()
@@ -2038,7 +2042,10 @@ mod tests {
         assert_eq!(runs[1].1[5], groups, "and with the doses after every mob");
         let grouped = runs[1].1.iter().filter(|&&g| g > 1).count();
         assert_eq!(runs[1].2, (grouped, 0), "verify checked the grouped ticks");
-        assert!(grouped == 0 || runs[1].1[4] == 0, "the doses between turns ran serially");
+        assert!(
+            grouped == 0 || runs[1].1[4] == 0,
+            "the doses between turns ran serially"
+        );
     }
 
     /// The groups a plan of `islands` islands runs in on three requested lanes, on this machine.

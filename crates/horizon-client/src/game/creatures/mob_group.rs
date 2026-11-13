@@ -177,7 +177,13 @@ impl<M: MobSlot> Group<M> {
         for i in 0..self.mobs.len() {
             if let Some((doses, tags)) = turns.doses.as_mut() {
                 let (snapshot, grid) = (&mut self.snapshot[..], &mut self.grid);
-                doses.run((*tags, shared.uuid), i, &mut self.mobs, &self.keep, (snapshot, grid));
+                doses.run(
+                    (*tags, shared.uuid),
+                    i,
+                    &mut self.mobs,
+                    &self.keep,
+                    (snapshot, grid),
+                );
             }
             let at = self.at(i);
             self.random.begin_item(at);

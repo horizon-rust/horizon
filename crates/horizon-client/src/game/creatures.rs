@@ -1192,7 +1192,6 @@ impl Game<'_> {
         self.init_sulfur_attribute_maps();
         let uuid = self.level.player_uuid;
         let level_id = self.dim.id();
-        // The cloud doses in the loop need the mobs in join order (`CloudDoses::run`).
         self.order_mobs_for_cloud_doses();
         // Each mob's climbing, refreshed, and its snapshot entry (creatures/prep.rs).
         let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
@@ -1264,9 +1263,6 @@ impl Game<'_> {
                 targets,
             };
             let difficulty = difficulty_reader(&self.world);
-            // A cloud's doses between the mobs' turns reach every mob in its box, whatever their
-            // island: then the turns run in one group, in order (`CloudDoses`).
-            let dosed_between_turns = doses.between_turns(&mobs);
             let mut turns = mob_group::Turns {
                 base: &base,
                 despawn: base.despawn_view(),
@@ -1288,12 +1284,7 @@ impl Game<'_> {
                     .flatten(),
                 ticking: &|| Box::new(self.entity_ticking_area()),
             };
-            let plan = if dosed_between_turns {
-                None
-            } else {
-                islands.plan(&mobs, &snapshot, &turns, &start)
-            };
-            let mut group = match plan {
+            let mut group = match islands.plan(&mobs, &snapshot, &turns, &start) {
                 Some(plan) => islands.run(plan, mobs.into(), snapshot, start, &mut turns, &shared),
                 None => {
                     let mut group = mob_group::Group::new(mobs.into(), snapshot, start);
@@ -1373,9 +1364,8 @@ impl Game<'_> {
             bindings.retain(|id, _| live.contains(id));
             host.mob_players = bindings;
         }
-        // The mobs added during the tick (into the emptied `self.mobs`) go
-        // after the ticked ones: they joined later, and `EntityTickList.add`
-        // puts a new entity at the end of its linked map, so they tick after
+        // The mobs added during the tick (into the emptied `self.mobs`) go after the ticked ones,
+        // as `EntityTickList.add` puts a new entity at the end of its linked map: they tick after
         // them next tick too. Only the new ones are copied.
         mobs.append(&mut self.mobs);
         self.mobs = mobs.into();
