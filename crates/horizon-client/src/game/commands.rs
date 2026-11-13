@@ -3300,6 +3300,7 @@ impl Game<'_> {
     /// The caller reports the level change to the mods.
     fn give_points(&mut self, amount: i32) {
         let e = &mut self.experience;
+        e.score = e.score.wrapping_add(amount);
         let mut sound_level = None;
         e.progress += amount as f32 / horizon_client::entities::Experience::needed(e.level) as f32;
         e.total = e.total.saturating_add(amount).clamp(0, i32::MAX);
@@ -4405,7 +4406,6 @@ impl Game<'_> {
         out
     }
 }
-
 /// Split at a separator outside brackets, braces and quotes.
 fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut out = Vec::new();
