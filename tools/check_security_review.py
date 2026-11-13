@@ -54,8 +54,9 @@ def verify(document, root=ROOT, against=None):
     commit = document["source_commit"]
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
         raise ValueError("source_commit must be a full lowercase Git commit ID")
-    if git(root, "cat-file", "-t", commit).strip() != b"commit":
-        raise ValueError("source_commit must identify a commit")
+    canonical = git(root, "rev-parse", "--verify", "--end-of-options", f"{commit}^{{commit}}").strip().decode("ascii")
+    if canonical != commit:
+        raise ValueError("source_commit must be a full lowercase Git commit ID, not an abbreviation or ref")
     date = document["reviewed_at"]
     if not isinstance(date, str) or datetime.date.fromisoformat(date).isoformat() != date:
         raise ValueError("reviewed_at must be an ISO date")

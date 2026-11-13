@@ -1,8 +1,11 @@
 import copy
 import hashlib
+import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -48,6 +51,44 @@ class ScopedReviewTests(unittest.TestCase):
         self.record["files"][0]["sha256"] = "0" * 64
         with self.assertRaisesRegex(ValueError, "SHA-256 differs"):
             review.verify(self.record, self.root)
+
+    def test_cli_requires_canonical_full_commit_ids_in_both_object_formats(self):
+        for object_format in ("sha1", "sha256"):
+            root = self.root / object_format
+            root.mkdir()
+
+            def git(*args):
+                return subprocess.run(["git", "-c", "core.hooksPath=" + os.devnull,
+                                       "-c", "commit.gpgSign=false", *args], cwd=root, env=self.env,
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            git("init", "-q", "-b", "main", "--object-format=" + object_format)
+            (root / "source.rs").write_bytes(self.data)
+            git("add", "source.rs")
+            git("commit", "-qm", "identity fixture")
+            commit = git("rev-parse", "HEAD")
+            # Run the real CLI from this fixture checkout, without executing reviewed code.
+            checker = root / "tools/check_security_review.py"
+            checker.parent.mkdir()
+            shutil.copyfile(review.__file__, checker)
+            record = copy.deepcopy(self.record)
+            candidates = [(commit, 0), (commit[:12], 1)]
+            if object_format == "sha256":
+                candidates.append((commit[:40], 1))
+            else:
+                moving_ref = "a" * 64
+                git("branch", moving_ref)
+                candidates.append((moving_ref, 1))
+            for candidate, expected in candidates:
+                with self.subTest(object_format=object_format, source_commit=candidate):
+                    record["source_commit"] = candidate
+                    record_path = root / "record.json"
+                    record_path.write_text(json.dumps(record), encoding="utf-8")
+                    result = subprocess.run([sys.executable, str(checker), str(record_path)],
+                                            cwd=root, env=self.env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                    if expected:
+                        self.assertIn("full lowercase Git commit ID", result.stderr)
 
     def test_new_revision_does_not_inherit_review(self):
         (self.root / "source.rs").write_bytes(self.data + b"fn new_code() {}\n")
