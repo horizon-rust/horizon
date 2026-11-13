@@ -1314,7 +1314,10 @@ fn login_and_configure(
         let packet = decode_config(id, &payload).map_err(e)?;
         note_channels(&mut configured, &packet);
         match packet {
-            cfg::Serverbound::ClientInformation(i) => info = i,
+            cfg::Serverbound::ClientInformation(i) => {
+                shared.set_allows_listing(uuid, i.allows_listing);
+                info = i;
+            }
             cfg::Serverbound::CustomPayload(p) if p.channel == "minecraft:brand" => {
                 brand = horizon_protocol::buf::Reader::new(&p.data)
                     .string(32767)
@@ -1419,7 +1422,10 @@ fn login_and_configure(
                     client_mods = horizon_protocol::mod_list::decode(&p.data).unwrap_or_default();
                 }
                 cfg::Serverbound::Pong(p) if p.id == 1 => break,
-                cfg::Serverbound::ClientInformation(i) => info = i,
+                cfg::Serverbound::ClientInformation(i) => {
+                    shared.set_allows_listing(uuid, i.allows_listing);
+                    info = i;
+                }
                 _ => {}
             }
         }
@@ -1457,7 +1463,10 @@ fn login_and_configure(
                     content_match = p.data == hash;
                 }
                 cfg::Serverbound::Pong(p) if p.id == 0 => break,
-                cfg::Serverbound::ClientInformation(i) => info = i,
+                cfg::Serverbound::ClientInformation(i) => {
+                    shared.set_allows_listing(uuid, i.allows_listing);
+                    info = i;
+                }
                 _ => {}
             }
         }
@@ -1499,10 +1508,14 @@ fn login_and_configure(
         note_channels(&mut configured, &packet);
         match packet {
             cfg::Serverbound::FinishConfiguration(_) => break,
-            cfg::Serverbound::ClientInformation(i) => info = i,
+            cfg::Serverbound::ClientInformation(i) => {
+                shared.set_allows_listing(uuid, i.allows_listing);
+                info = i;
+            }
             _ => {}
         }
     }
+    shared.set_allows_listing(uuid, info.allows_listing);
     Ok(Some(Parts {
         uuid,
         name: name.to_owned(),
