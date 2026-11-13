@@ -864,7 +864,8 @@ pub enum Standing {
 }
 
 /// [`Standing`] of the native mods `ids` (manifest ids) in `instance`, by id: from its native
-/// build's record when it plays one, else from the registry's versions.
+/// build's record when it plays one, else from each installed file's pin, else from the
+/// registry's versions.
 pub fn standings(
     instance: &crate::instances::Instance,
     ids: &[String],
@@ -896,16 +897,39 @@ pub fn standings(
             })
             .collect();
     }
-    let Ok(index) = index() else {
-        return HashMap::new();
-    };
-    let works = works_on(&index, instance);
+    let pins = crate::native_fit::pins(&instance.home);
+    let plays = crate::native_fit::plays(instance);
+    let index = index().ok();
+    let works = index.as_ref().map(|index| works_on(index, instance));
     ids.iter()
         .filter_map(|id| {
-            let (fits, line) = works(index.project(id)?)?;
+            let (fits, line) = match (plays.as_ref(), works.as_ref(), index.as_ref()) {
+                (Some(plays), ..) if pins.iter().any(|(pinned, _)| pinned == id) => {
+                    installed_fit(id, plays, &pins)?
+                }
+                (_, Some(works), Some(index)) => works(index.project(id)?)?,
+                _ => return None,
+            };
             Some((id.clone(), Standing::Expected(fits, line)))
         })
         .collect()
+}
+
+/// How the installed mod `id`, pinning the commit its own file names in `pins`, fits `plays`:
+/// whether it builds there, and the line saying so. The registry's versions don't count: the
+/// file may be newer than them, or come from GitHub.
+fn installed_fit(
+    id: &str,
+    plays: &crate::native_fit::Plays,
+    pins: &[(String, String)],
+) -> Option<(bool, String)> {
+    let (_, pin) = pins.iter().find(|(pinned, _)| pinned == id)?;
+    let fit = crate::native_fit::fit(id, None, pin, plays, pins, &[])?;
+    let fits = matches!(
+        fit,
+        crate::native_fit::Fit::Fits | crate::native_fit::Fit::MovesTo { .. }
+    );
+    Some((fits, crate::native_fit::describe(&fit, plays)))
 }
 
 /// [`works_on`] for the projects `ids` in `instance`, by id.
