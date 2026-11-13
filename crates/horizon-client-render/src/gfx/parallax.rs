@@ -708,8 +708,10 @@ fn bindings([normals, speculars, subsurfaces]: [u32; 3]) -> ([u32; 3], u32) {
 /// The parallax terrain shader for that many normal, specular and subsurface map arrays.
 /// The parallax shader over `arrays` map arrays, with the dual-source entry (`DUAL_ENTRY`) if `dual`.
 fn shader_source(arrays: [u32; 3], dual: bool) -> String {
+    // HDR lighting's functions ahead of the terrain's, as the native material stage takes them.
     let terrain = prefixed(
-        section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)"),
+        &(include_str!("../hdr_light.wgsl").to_owned()
+            + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")),
         PREFIX,
     );
     let ([normal, specular, subsurface], thin) = bindings(arrays);

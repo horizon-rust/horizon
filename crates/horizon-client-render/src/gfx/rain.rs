@@ -142,7 +142,7 @@ mod tests {
     /// The terrain's shader, with the drops and the wet world, validates (naga, no GPU).
     #[test]
     fn the_terrain_shader_validates() {
-        let module = naga::front::wgsl::parse_str(include_str!("../terrain.wgsl")).unwrap();
+        let module = naga::front::wgsl::parse_str(&crate::gfx::terrain_shader()).unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),

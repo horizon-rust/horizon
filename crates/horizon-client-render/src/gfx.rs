@@ -2779,8 +2779,8 @@ fn terrain_source() -> std::borrow::Cow<'static, str> {
 /// `source` (terrain.wgsl) with `TerrainOut`'s clip position `@invariant`.
 fn invariant_terrain(source: &str) -> String {
     let at = source
-        .find("struct TerrainOut {")
-        .expect("terrain.wgsl has TerrainOut");
+        .find("struct TerrainWire {")
+        .expect("terrain.wgsl has TerrainWire");
     let (head, tail) = source.split_at(at);
     let field = "@builtin(position) clip: vec4<f32>,";
     debug_assert!(tail.contains(field));
@@ -17488,7 +17488,7 @@ mod tests {
         // prepasses): the field is there to mark, once.
         let plain = &super::terrain_shader();
         let invariant = super::invariant_terrain(plain);
-        let out = &invariant[invariant.find("struct TerrainOut {").unwrap()..];
+        let out = &invariant[invariant.find("struct TerrainWire {").unwrap()..];
         let out = &out[..out.find('}').unwrap()];
         assert!(out.contains("@builtin(position) @invariant clip"));
         assert_eq!(invariant.matches("@invariant").count(), 1);
