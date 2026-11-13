@@ -48,3 +48,8 @@ pub const STUN_SERVERS: &[&str] = &["stun.cloudflare.com:3478", "stun.l.google.c
 /// Play with Friends' troubleshooting page, shown to hosts nobody can reach.
 pub const FRIENDS_HELP: &str =
     "https://github.com/horizon-rust/horizon/blob/main/docs/play-with-friends.md#troubleshooting";
+
+/// The `tailcat-for-minecraft` helper assets (pinned commit) used to download the
+/// Tailcat helper binary and its checksums.
+pub const TAILCAT_HELPER_ASSETS: &str =
+    "https://raw.githubusercontent.com/tailscale/tailcat-for-minecraft";

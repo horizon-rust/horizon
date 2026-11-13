@@ -141,6 +141,7 @@ pub mod stations;
 pub mod stopwatches;
 pub mod structure_blocks;
 pub mod studio;
+pub mod tailcat;
 pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_fixtures;

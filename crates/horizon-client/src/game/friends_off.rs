@@ -5,6 +5,7 @@ use super::{Game, Screen};
 use horizon_client::{Result, hud::HudBatch};
 
 pub const HELP: &[&str] = &[];
+pub const TAILCAT_HELP: &[&str] = &[];
 
 /// The pause menu's Friends icon is vanilla's, drawn inactive: its name for the widget tree.
 pub const TITLE: &str = "Play with Friends";
@@ -26,6 +27,20 @@ impl Game<'_> {
 
     pub(super) fn friends_shown(&self) -> bool {
         false
+    }
+
+    pub(super) fn tailcat_shown(&self) -> bool {
+        false
+    }
+
+    pub(super) fn tailcat_start(&mut self) -> Result<()> {
+        Err("this build has no Tailcat (the `friends` feature)".into())
+    }
+
+    pub(super) fn tailcat_stop(&mut self) {}
+
+    pub(super) fn tailcat_control(&mut self, _words: &[&str]) -> Result<Option<serde_json::Value>> {
+        Ok(None)
     }
 
     /// `horizon-ctl friends ...`.

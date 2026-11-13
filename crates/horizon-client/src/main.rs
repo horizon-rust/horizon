@@ -12,5 +12,7 @@ static MOD_API_LEVEL: [u8; 27] = horizon_mods::api_level::MARK;
 
 fn main() {
     std::hint::black_box(&MOD_API_LEVEL);
+    #[cfg(feature = "friends")]
+    horizon_hooks::tailcat::set_assets(horizon_friends::TAILCAT_HELPER_ASSETS);
     horizon_client::entry::main();
 }
