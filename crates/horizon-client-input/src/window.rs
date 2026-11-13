@@ -3,6 +3,11 @@
 //! `FramerateLimiter`, the vsync present-mode choice and the fullscreen
 //! request/state pair.
 
+/// `Window.MIN_WINDOW_WIDTH`.
+pub const MIN_WINDOW_WIDTH: u32 = 320;
+/// `Window.MIN_WINDOW_HEIGHT`.
+pub const MIN_WINDOW_HEIGHT: u32 = 240;
+
 /// `Window.calculateScale`: the largest scale that leaves at least 320x240
 /// GUI pixels, capped by `max_scale` (0 = automatic); an odd result is bumped
 /// to even when unicode is enforced.
