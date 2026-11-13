@@ -29,23 +29,28 @@ use horizon_world::{
 };
 use std::collections::HashMap;
 
+#[path = "spawn_chunk_order.rs"]
+mod spawn_chunk_order;
+#[cfg(test)]
+#[path = "spawn_chunk_order_tests.rs"]
+mod spawn_chunk_order_tests;
+
+use spawn_chunk_order::{SpawnChunkTracker, shuffle_spawning_chunks};
+
 /// Natural spawning's candidate chunks (`ChunkMap.collectSpawningChunks`):
-/// the union of every player's 17×17 chunk square, in player then dx/dz
-/// order, each chunk once. `candidates` is one pass's working list (spawning
-/// shuffles and drains it); the rest is the union for the players' last chunk
-/// positions, kept between ticks. A chunk crossing rebuilds only the squares
-/// it can change, and proximity to players is checked live on every pass.
+/// the natural spawn chunk counter's map, in the order vanilla walks it (see
+/// `spawn_chunk_order`). `candidates` is one pass's working list (spawning
+/// shuffles and drains it); the counter and each player's chunk at the last
+/// pass are kept between ticks, and proximity to players is checked live on
+/// every pass.
 #[derive(Default)]
 pub(super) struct SpawnScratch {
     pub(super) candidates: Vec<(i32, i32)>,
-    /// Each player's chunk at the last pass.
-    chunks: Vec<(i32, i32)>,
-    /// For each player, the others whose squares overlap its own, in order.
-    neighbours: Vec<Vec<usize>>,
-    /// The chunks each player adds to the union: those of its square, in
-    /// dx/dz order, that no earlier player's square holds.
-    segments: Vec<Vec<(i32, i32)>>,
-    stale: Vec<bool>,
+    /// `DistanceManager.naturalSpawnChunkCounter`: the chunks within 8 of a
+    /// player's chunk, in the order `getSpawnCandidateChunks` hands them out.
+    tracker: SpawnChunkTracker,
+    /// Each player's chunk the counter holds it at, by player.
+    sources: Vec<(u128, (i32, i32))>,
     /// Reusable buffer for spawn players across ticks to avoid heap allocation.
     pub(super) spawn_players: Vec<SpawnPlayer>,
 }
@@ -56,108 +61,56 @@ impl SpawnScratch {
             p.position.z.floor() as i32 >> 4,
         )
     }
-    /// Whether the square around chunk `centre` holds chunk `c`.
-    fn holds(centre: (i32, i32), c: (i32, i32)) -> bool {
-        centre.0.abs_diff(c.0) <= 8 && centre.1.abs_diff(c.1) <= 8
-    }
-    fn overlap(a: (i32, i32), b: (i32, i32)) -> bool {
-        a.0.abs_diff(b.0) <= 16 && a.1.abs_diff(b.1) <= 16
-    }
-    /// Bring the segments up to date with the players' chunks. A segment
-    /// depends only on its player's chunk and those of the earlier players
-    /// whose squares overlap it, so a move rebuilds the mover's segment and
-    /// the later ones its old or new square overlaps.
-    fn prepare(&mut self, players: &[LevelPlayer]) {
-        let n = players.len();
-        let all = n != self.chunks.len();
-        self.stale.clear();
-        self.stale.resize(n, all);
-        if !all {
-            let mut moved = false;
-            for m in 0..n {
-                let (old, new) = (self.chunks[m], Self::chunk(&players[m]));
-                if old == new {
-                    continue;
-                }
-                moved = true;
-                self.stale[m] = true;
-                for (i, p) in players.iter().enumerate().skip(m + 1) {
-                    let c = Self::chunk(p);
-                    self.stale[i] |= Self::overlap(old, c) || Self::overlap(new, c);
-                }
-            }
-            if !moved {
-                return;
-            }
-        }
-        self.chunks.clear();
-        self.chunks.extend(players.iter().map(Self::chunk));
-        self.neighbours.resize_with(n, Vec::new);
-        self.neighbours.truncate(n);
-        self.segments.resize_with(n, Vec::new);
-        self.segments.truncate(n);
-        let chunks = &self.chunks;
-        for (i, near) in self.neighbours.iter_mut().enumerate() {
-            near.clear();
-            near.extend((0..n).filter(|&j| j != i && Self::overlap(chunks[i], chunks[j])));
-        }
-        for (i, segment) in self.segments.iter_mut().enumerate() {
-            if !self.stale[i] {
-                continue;
-            }
-            let near = &self.neighbours[i];
-            let earlier = &near[..near.partition_point(|&j| j < i)];
-            let (pcx, pcz) = chunks[i];
-            segment.clear();
-            for dx in -8..=8 {
-                for dz in -8..=8 {
-                    let c = (pcx + dx, pcz + dz);
-                    if !earlier.iter().any(|&j| Self::holds(chunks[j], c)) {
-                        segment.push(c);
+    /// Move the counter with the players: `ChunkMap.move` removes a player
+    /// from the chunk it left and adds it to the one it entered, and
+    /// `ChunkMap.removePlayer` removes it from the level's counter, each in
+    /// the order the players are listed; `runAllUpdates` then works the
+    /// queue off (`getNaturalSpawnChunkCount` flushes it the same way).
+    fn track(&mut self, players: &[LevelPlayer]) {
+        for p in players {
+            let chunk = Self::chunk(p);
+            match self.sources.iter_mut().find(|(uuid, _)| *uuid == p.uuid) {
+                Some((_, old)) => {
+                    if *old != chunk {
+                        self.tracker.remove_player(old.0, old.1);
+                        self.tracker.add_player(chunk.0, chunk.1);
+                        *old = chunk;
                     }
                 }
+                None => {
+                    self.tracker.add_player(chunk.0, chunk.1);
+                    self.sources.push((p.uuid, chunk));
+                }
             }
         }
+        let mut i = 0;
+        while i < self.sources.len() {
+            let (uuid, chunk) = self.sources[i];
+            if players.iter().any(|p| p.uuid == uuid) {
+                i += 1;
+            } else {
+                self.tracker.remove_player(chunk.0, chunk.1);
+                self.sources.remove(i);
+            }
+        }
+        self.tracker.run_updates();
     }
-    /// Fill `candidates` with the union's chunks, in order, that are within
-    /// 128 blocks of a non-spectator holding them in its square and that
-    /// `keep` accepts. Returns the union's size.
+    /// Fill `candidates` with the counter's chunks, in its order, that are
+    /// within 128 blocks of a non-spectator and that `keep` accepts. Returns
+    /// the counter's size (`getNaturalSpawnChunkCount`).
     fn collect(
         &mut self,
         players: &[LevelPlayer],
         mut keep: impl FnMut((i32, i32)) -> bool,
     ) -> i32 {
-        self.prepare(players);
+        self.track(players);
         self.candidates.clear();
-        let mut count = 0;
-        if players.len() == 1 {
-            let p = &players[0];
-            count = self.segments.first().map_or(0, |s| s.len());
-            if !p.spectator
-                && let Some(segment) = self.segments.first()
-            {
-                for &c in segment {
-                    if close_enough_for_spawning(p, c) && keep(c) {
-                        self.candidates.push(c);
-                    }
-                }
-            }
-            return count as i32;
-        }
-        for (i, segment) in self.segments.iter().enumerate() {
-            count += segment.len();
-            let near = &self.neighbours[i];
-            for &c in segment {
-                let close = close_enough_for_spawning(&players[i], c)
-                    || near.iter().any(|&j| {
-                        Self::holds(self.chunks[j], c) && close_enough_for_spawning(&players[j], c)
-                    });
-                if close && keep(c) {
-                    self.candidates.push(c);
-                }
-            }
-        }
-        count as i32
+        self.candidates.extend(
+            self.tracker
+                .chunks()
+                .filter(|&c| players.iter().any(|p| close_enough_for_spawning(p, c)) && keep(c)),
+        );
+        self.tracker.len() as i32
     }
 }
 
@@ -784,10 +737,28 @@ impl<'a> Game<'a> {
                     || (px - x).powi(2) + (py - y).powi(2) + (pz - z).powi(2) < range * range)
         })
     }
-    /// `ChunkMap.collectSpawningChunks`: the natural spawn chunk tracker's
-    /// chunks (within 8 chunks of a player, `getSpawnCandidateChunks`) that
-    /// are ticking and within 128 blocks of a non-spectator. Also returns how
-    /// many chunks the tracker holds (`getNaturalSpawnChunkCount`).
+    /// The players that anchor spawning: everyone in the level, but not the
+    /// fake players (mods' bots), which Horizon keeps out of it.
+    pub(super) fn spawning_players(&self) -> Vec<LevelPlayer> {
+        let mut players = self.level_players();
+        if let Some(h) = self.lan.as_ref() {
+            let fake: Vec<u128> = h
+                .hub
+                .guests
+                .iter()
+                .filter(|g| g.fake)
+                .map(|g| g.uuid)
+                .collect();
+            if !fake.is_empty() {
+                players.retain(|p| !fake.contains(&p.uuid));
+            }
+        }
+        players
+    }
+    /// `ChunkMap.collectSpawningChunks`: the natural spawn chunk counter's
+    /// chunks (`getSpawnCandidateChunks`) that are ticking and within 128
+    /// blocks of a non-spectator. Also returns how many chunks the counter
+    /// holds (`getNaturalSpawnChunkCount`).
     pub(super) fn spawning_chunks(
         &self,
         players: &[LevelPlayer],
@@ -830,24 +801,15 @@ impl<'a> Game<'a> {
             return;
         }
         let mut laps = horizon_client::spans::laps();
-        let mut players = self.level_players();
-        // Fake players (mods' bots) do not anchor natural spawning.
-        if let Some(h) = self.lan.as_ref() {
-            let fake: Vec<u128> = h
-                .hub
-                .guests
-                .iter()
-                .filter(|g| g.fake)
-                .map(|g| g.uuid)
-                .collect();
-            if !fake.is_empty() {
-                players.retain(|p| !fake.contains(&p.uuid));
-            }
-        }
+        let players = self.spawning_players();
+        let mut scratch = std::mem::take(&mut self.spawn_scratch);
         if players.is_empty() {
+            // The last player left: the counter drops the chunks it held for
+            // them, as `ChunkMap.removePlayer` does.
+            scratch.track(&players);
+            self.spawn_scratch = scratch;
             return;
         }
-        let mut scratch = std::mem::take(&mut self.spawn_scratch);
         let spawnable = self.spawning_chunks(&players, &mut scratch);
         laps.lap("sn_candidates");
         for &key in &scratch.candidates {
@@ -899,10 +861,7 @@ impl<'a> Game<'a> {
             laps.lap("sn_categories");
             // Util.shuffle, every pass: it draws from the level's random even when no
             // category may spawn.
-            for i in (1..scratch.candidates.len()).rev() {
-                let j = random.next_int_bound(i as i32 + 1).unwrap_or(0) as usize;
-                scratch.candidates.swap(i, j);
-            }
+            shuffle_spawning_chunks(&mut scratch.candidates, &mut random);
             laps.lap("sn_shuffle");
             spawn_selection::attempt_counters(false);
             if !categories.is_empty() {
@@ -1186,8 +1145,11 @@ mod tests {
         );
     }
     fn player(x: f64, y: f64, z: f64, spectator: bool) -> LevelPlayer {
+        // Each player is someone of its own: the counter tells them apart.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
         LevelPlayer {
-            uuid: 0,
+            uuid: u128::from(NEXT.fetch_add(1, Ordering::Relaxed)),
             position: Vec3::new(x, y, z),
             bounds: Aabb::new(Vec3::new(x, y, z), Vec3::new(x, y, z)),
             alive: true,
@@ -1196,9 +1158,15 @@ mod tests {
         }
     }
 
-    /// The candidates as the uncached port collected them every tick: each
-    /// player's square in dx/dz order into one ordered set, close to any
-    /// player that holds the chunk. Returns the set's size too.
+    fn sorted(chunks: &[(i32, i32)]) -> Vec<(i32, i32)> {
+        let mut sorted = chunks.to_vec();
+        sorted.sort_unstable();
+        sorted
+    }
+
+    /// The candidates as a scan of every player's square finds them: the union
+    /// in dx/dz order, close to any player that holds the chunk. Returns the
+    /// union's size too.
     fn uncached_candidates(players: &[LevelPlayer]) -> (i32, Vec<(i32, i32)>) {
         let mut order = Vec::new();
         let mut close = Vec::new();
@@ -1221,8 +1189,10 @@ mod tests {
         (order.len() as i32, kept.collect())
     }
 
+    /// The counter's chunks and the live 128-block test, across passes: the
+    /// set is the union of the players' squares, whatever the counter's order.
     #[test]
-    fn spawn_candidates_keep_order_and_live_proximity_across_cache_hits() {
+    fn spawn_candidates_keep_live_proximity_across_passes() {
         let mut players = vec![
             player(0.0, 64.0, 0.0, false),
             player(16.0, 64.0, 0.0, false),
@@ -1238,7 +1208,10 @@ mod tests {
         players[0].position.x = 15.5;
         assert_eq!(scratch.collect(&players, |_| true), 306);
         assert!(!scratch.candidates.contains(&(-8, 0)));
-        assert_eq!(scratch.candidates, uncached_candidates(&players).1);
+        assert_eq!(
+            sorted(&scratch.candidates),
+            sorted(&uncached_candidates(&players).1)
+        );
         // Nothing is close to spectators, though the squares still count.
         for p in &mut players {
             p.spectator = true;
@@ -1252,7 +1225,10 @@ mod tests {
         players[1].position.x = 31.9;
         assert_eq!(scratch.collect(&players, |_| true), 306);
         assert!(scratch.candidates.contains(&(9, 0)));
-        assert_eq!(scratch.candidates, uncached_candidates(&players).1);
+        assert_eq!(
+            sorted(&scratch.candidates),
+            sorted(&uncached_candidates(&players).1)
+        );
         // `keep` filters without reordering.
         scratch.collect(&players, |(x, z)| x == z);
         let diagonal: Vec<_> = uncached_candidates(&players)
@@ -1261,11 +1237,11 @@ mod tests {
             .filter(|&(x, z)| x == z)
             .collect();
         assert!(diagonal.len() > 1);
-        assert_eq!(scratch.candidates, diagonal);
+        assert_eq!(sorted(&scratch.candidates), sorted(&diagonal));
     }
 
     /// Players walking, crossing borders, meeting, splitting, joining, leaving
-    /// and swapping order: every pass matches the uncached collection.
+    /// and swapping order: every pass matches the uncached union.
     #[test]
     fn spawn_candidates_match_the_uncached_union_while_players_move() {
         let mut seed = 0x5DEECE66Du64;
@@ -1312,7 +1288,11 @@ mod tests {
             }
             let (count, expected) = uncached_candidates(&players);
             assert_eq!(scratch.collect(&players, |_| true), count, "step {step}");
-            assert_eq!(scratch.candidates, expected, "step {step}");
+            assert_eq!(
+                sorted(&scratch.candidates),
+                sorted(&expected),
+                "step {step}"
+            );
         }
     }
 
