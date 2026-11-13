@@ -756,13 +756,11 @@ impl Game<'_> {
             p.attributes
                 .computed_value_of("minecraft:attack_speed")
                 .ok()
-        }) {
-            if self.remote.is_some()
-                || !self.applied_modifiers.is_empty()
-                || !self.potions.applied.is_empty()
-            {
-                return speed.clamp(0.0, 1024.0);
-            }
+        }) && (self.remote.is_some()
+            || !self.applied_modifiers.is_empty()
+            || !self.potions.applied.is_empty())
+        {
+            return speed.clamp(0.0, 1024.0);
         }
         // The base comes from the player's attribute map so `/attribute ... base set` applies.
         let base = self
