@@ -1238,5 +1238,9 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "ಕೊನೆಯ ಬಿಲ್ಡ್‌ನಲ್ಲಿ, {mods} ಗಾಗಿ Horizon {commit} ನಲ್ಲಿ, {horizon} ನಲ್ಲಿ ಅಲ್ಲ",
   "In the last build, on {horizon}": "ಕೊನೆಯ ಬಿಲ್ಡ್‌ನಲ್ಲಿ, {horizon} ನಲ್ಲಿ",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "In the game, Multiplayer, Join a Tailcat world, paste the invitation. One host at a time: stop it to make another.": "In the game, Multiplayer, Join a Tailcat world, paste the invitation. One host at a time: stop it to make another.",
+  "Or share this server over Tailcat: friends join with an invitation, with no Tailscale account on either side.": "Or share this server over Tailcat: friends join with an invitation, with no Tailscale account on either side.",
+  "Starting the Tailcat helper… the first time, it is downloaded and checked.": "Starting the Tailcat helper… the first time, it is downloaded and checked.",
+  "Tailcat · no account": "Tailcat · no account"
 }

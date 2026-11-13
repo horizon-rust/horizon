@@ -229,6 +229,7 @@ fn pause_icon_focus_ids(friends: bool) -> Vec<u8> {
         .collect()
 }
 const SPLIT_SETTINGS: &str = "horizon.pages.split_settings";
+const TAILCAT_PAUSE: &str = "horizon.pause.tailcat";
 /// The pause menu's first id for the pages crates registered there: id `ADDED_PAGES + i` opens
 /// registered page `i`.
 const ADDED_PAGES: u8 = 40;
@@ -467,7 +468,14 @@ impl Game<'_> {
             3 => self.open_stats(),
             4 => self.open_advancements(true),
             9 => self.open_world_options(),
-            10 => self.screen = Screen::Friends,
+            10 => {
+                self.tailcat_stop();
+                self.screen = Screen::Friends;
+            }
+            31 => {
+                let _ = self.tailcat_start();
+                self.screen = Screen::Friends;
+            }
             // DialogConnectionAccess.openDialog(Dialogs.SERVER_LINKS).
             11 => {
                 self.links_ui.scroll = 0.0;
@@ -512,6 +520,7 @@ impl Game<'_> {
         split
             .then_some((SPLIT_SETTINGS, 30))
             .into_iter()
+            .chain(self.tailcat_shown().then_some((TAILCAT_PAUSE, 31)))
             .chain(added)
             .collect()
     }

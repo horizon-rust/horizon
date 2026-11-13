@@ -2767,6 +2767,13 @@ dependencies = [
 [[package]]
 name = "horizon-hooks"
 version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ureq",
+]
 
 [[package]]
 name = "horizon-launcher"

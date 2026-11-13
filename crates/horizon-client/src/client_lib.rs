@@ -142,6 +142,9 @@ pub mod stations;
 pub mod stopwatches;
 pub mod structure_blocks;
 pub mod studio;
+// The Tailcat helper (host, join, download): shared with the launcher and the server, so it lives
+// in the engine's seam crate (`horizon-hooks`) and is re-exported here under the old path.
+pub use horizon_hooks::tailcat;
 pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_fixtures;

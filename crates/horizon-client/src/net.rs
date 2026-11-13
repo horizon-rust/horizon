@@ -517,6 +517,11 @@ impl Drop for Session {
 /// everything after is a plain join.
 pub const FRIEND: &str = tunnel::PREFIX;
 
+/// An address of the form `tailcat:mcl1_...` joins a world shared through
+/// Tailcat: the helper opens a loopback listener and everything after is a
+/// plain join. The prefix is Horizon's; the invitation is the helper's.
+pub const TAILCAT: &str = "tailcat:";
+
 /// Whether `code` is an invite code; with `full`, only a full one (a short
 /// relay code could also be a host name). Without a resolver nothing is one.
 pub fn is_invite(code: &str, full: bool) -> bool {
@@ -542,6 +547,9 @@ thread_local! {
 /// An address as players and logs see it: a friend's invite code stays
 /// out of it (its secret is in there).
 pub fn shown_address(address: &str) -> String {
+    if address.starts_with(TAILCAT) {
+        return "Tailcat world".to_owned();
+    }
     match address.strip_prefix(FRIEND) {
         Some(code) => match horizon_hooks::engine::tunnel().and_then(|r| r.nameplate(code)) {
             Some(nameplate) => format!("Friend's world ({nameplate}-****)"),
@@ -774,36 +782,58 @@ fn run(
     lan: bool,
     recorder: &RecorderSlot,
 ) -> Result<Reason, Reason> {
+    let is_tailcat = address.starts_with(TAILCAT);
+    // Held until the connection ends: dropping it stops the helper.
+    let mut tailcat_guard: Option<crate::tailcat::Running> = None;
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
     } else {
-        let (host, port, token) = match address.strip_prefix(FRIEND) {
-            Some(code) => join_friend(code, lang, send)?,
-            None => {
-                let Some(target) = parse_address(address) else {
-                    // A refusal: never retried (`horizon.multiplayer
-                    // .invalid_address` is in reconnect's key list).
-                    return Err(Reason::keyed_arg(
-                        "horizon.multiplayer.invalid_address",
-                        lang,
-                        address,
-                    ));
-                };
-                status(send, &tr(lang, "connect.connecting"));
-                log_connecting(&target.0, target.1);
-                (target.0, target.1, Vec::new())
+        let (host, port, token) = if let Some(invite) = address.strip_prefix(TAILCAT) {
+            status(send, &tr(lang, "connect.connecting"));
+            let cache = crate::logging::game_home().join("tailcat");
+            let (helper, loopback) = crate::tailcat::join(invite, &cache).map_err(Reason::plain)?;
+            let (host, port) = parse_address(&loopback).ok_or_else(|| {
+                Reason::plain(format!("the Tailcat helper gave a bad address: {loopback}"))
+            })?;
+            tailcat_guard = Some(helper);
+            (host, port, Vec::new())
+        } else {
+            match address.strip_prefix(FRIEND) {
+                Some(code) => join_friend(code, lang, send)?,
+                None => {
+                    let Some(target) = parse_address(address) else {
+                        // A refusal: never retried (`horizon.multiplayer
+                        // .invalid_address` is in reconnect's key list).
+                        return Err(Reason::keyed_arg(
+                            "horizon.multiplayer.invalid_address",
+                            lang,
+                            address,
+                        ));
+                    };
+                    status(send, &tr(lang, "connect.connecting"));
+                    log_connecting(&target.0, target.1);
+                    (target.0, target.1, Vec::new())
+                }
             }
         };
-        let (mut c, host, port) =
-            connect_tcp(&host, port, address.starts_with(FRIEND), READ_TIMEOUT)
-                .map_err(Reason::plain)?;
+        let (mut c, host, port) = connect_tcp(
+            &host,
+            port,
+            is_tailcat || address.starts_with(FRIEND),
+            READ_TIMEOUT,
+        )
+        .map_err(Reason::plain)?;
         // The tunnel's port takes only the client that sends its token first.
         if !token.is_empty() {
             c.writer
                 .write_raw(&token)
                 .map_err(|e| Reason::plain(e.to_string()))?;
         }
-        if !address.starts_with(FRIEND)
+        if let Some(helper) = tailcat_guard.as_mut() {
+            log::debug!("Tailcat helper alive: {}", helper.is_alive());
+        }
+        if !is_tailcat
+            && !address.starts_with(FRIEND)
             && let Some(version) = older_server(address)
         {
             log::info!("Joining {address} as a {} server", version.name());

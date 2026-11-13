@@ -24,6 +24,7 @@ pub mod wire;
 
 pub use code::Code;
 pub use guest::{JoinError, Tunnel};
+pub use horizon_addresses::TAILCAT_HELPER_ASSETS;
 pub use host::{Host, HostConfig, HostEvent, HostState};
 
 use std::{

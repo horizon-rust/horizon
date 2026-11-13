@@ -442,6 +442,9 @@ impl Game<'_> {
         if let Some(value) = self.friends_control(&words)? {
             return Ok(Some(value));
         }
+        if let Some(value) = self.tailcat_control(&words)? {
+            return Ok(Some(value));
+        }
         if let Some(value) = self.studio_control(&words)? {
             return Ok(Some(value));
         }
@@ -457,6 +460,7 @@ impl Game<'_> {
                 .chain(super::blockctl::HELP)
                 .chain(super::lan::HELP)
                 .chain(super::friends::HELP)
+                .chain(super::friends::TAILCAT_HELP)
                 .chain(super::render_control::HELP)
                 .chain(super::sculk::HELP)
                 .chain(super::agent::HELP)

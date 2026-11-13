@@ -32,6 +32,7 @@ const PAGES: [&dyn pages::Page; 1] = [&horizon_discord::SECTION];
 /// Registers Horizon's in-game parts with the game. The executable calls it before it runs the
 /// game, and so does the launcher's generated executable for native mods.
 pub fn register() {
+    hooks::tailcat::set_assets(horizon_friends::TAILCAT_HELPER_ASSETS);
     let late = PARTS.into_iter().map(hooks::register);
     let late = late.chain(STORES.into_iter().map(settings::register));
     for result in late.chain(PAGES.into_iter().map(pages::register)) {
