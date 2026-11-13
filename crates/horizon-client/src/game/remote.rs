@@ -6290,7 +6290,7 @@ impl Game<'_> {
         }
         self.tick_hand();
         if running {
-            self.tick_particle_spawns();
+            self.tick_particle_spawns(); // ParticleEngine.tick: tick_remote, after the rockets.
         } else if self.clock.still() {
             self.settle_rain_fog();
         }
