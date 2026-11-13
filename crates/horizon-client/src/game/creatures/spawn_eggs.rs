@@ -130,11 +130,10 @@ impl Game<'_> {
         let Some(id) = self.spawn_mob_spawned(&kind, at, SpawnYaw::Created) else {
             return Ok(false);
         };
-        // SpawnEggItem.spawnMob: `EntityType.create` finalizes the mob, then
-        // `PostSpawnProcessor` puts the egg's components on it.
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-            horizon_client::entity_nbt::apply_item_components(m, stack);
-        }
+        // SpawnEggItem.spawnMob: `EntityType.create` finalizes the mob, then the
+        // egg's `EntityType.createDefaultStackConfig` puts its
+        // `applyImplicitComponents` (the styled `custom_name`, and `custom_data`
+        // as the mob's `data`) and its `entity_data` on it.
         self.apply_spawn_egg_entity_data(id, stack);
         self.post_block_game_event("minecraft:entity_place", p, Some(Who::Player), None);
         self.award_stat("used", &stack.item, 1);
@@ -159,12 +158,13 @@ impl Game<'_> {
         };
         let kind = self.mobs[i].kind.id.clone();
         let op = self.acting_player_is_op();
-        let Some(data) = horizon_client::block_entity_item::spawn_egg_entity_data(stack, &kind, op)
-        else {
-            return;
-        };
         let own = self.mob_tree_nbt(i);
-        let tag = horizon_client::data_cmd::merged(&own, data);
+        // `EntityType.appendDefaultStackConfig`: `applyImplicitComponents` first
+        // (the egg's `custom_name`, style kept, and its `custom_data` as the
+        // mob's `data`), then `updateCustomEntityTag`'s `entity_data` when it
+        // names this type and the user may set it.
+        let tag =
+            horizon_client::block_entity_item::stack_configured_entity_by(stack, &kind, &own, op);
         // Nothing to report: the mob's own compound always loads back.
         let _ = self.apply_entity_nbt(super::super::commands::Target::Mob(id), tag);
     }

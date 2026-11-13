@@ -665,6 +665,41 @@ mod tests {
     }
 
     #[test]
+    fn a_spawn_eggs_styled_name_and_custom_data_reach_the_mob() {
+        // `SpawnEggItem.spawnMob` -> `EntityType.createDefaultStackConfig`:
+        // `applyImplicitComponents` keeps the egg's name as the component it is,
+        // style included, and stores its `minecraft:custom_data` as the mob's
+        // `data`. A plain-text name would lose the colour, and dropping the
+        // custom data loses whatever the egg carries.
+        let components = snbt(
+            "{\"minecraft:custom_name\":{\"text\":\"Egg\",\"color\":\"red\"},\"minecraft:custom_data\":{k:1b}}",
+        );
+        let (damage, extra) = crate::item_data::decode_components(Some(&components));
+        let stack = crate::items::ItemStack {
+            damage,
+            extra,
+            ..crate::items::ItemStack::new("minecraft:pig_spawn_egg", 1)
+        };
+        let own = snbt("{Health:10.0f}");
+        let tag = stack_configured_entity_by(&stack, "minecraft:pig", &own, false);
+
+        let name = tag
+            .get("CustomName")
+            .expect("the egg names the mob it makes");
+        assert_eq!(
+            name.get("color"),
+            Some(&Tag::String("red".into())),
+            "the style survives"
+        );
+        assert_eq!(name.get("text"), Some(&Tag::String("Egg".into())));
+        assert_eq!(
+            tag.get("data").and_then(|d| d.get("k")),
+            Some(&Tag::Byte(1)),
+            "the egg's custom data is the mob's `data`"
+        );
+    }
+
+    #[test]
     fn a_spawn_egg_data_needs_its_own_type_and_an_op_for_an_op_only_one() {
         let egg = |entity_data: &str| {
             let components = snbt(&format!("{{\"minecraft:entity_data\":{entity_data}}}"));
