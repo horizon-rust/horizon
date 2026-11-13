@@ -55,6 +55,7 @@ Panda.setGeneFromParents	port	crates/horizon-client/src/mobs/panda.rs::inherit	g
 Panda.PandaAttackGoal.canUse	port	crates/horizon-client/src/mobs/panda.rs::When::can_use	melee attack only while can_perform_action
 Panda.PandaAvoidGoal.canUse	port	crates/horizon-client/src/mobs/panda.rs::When::can_use	avoid goals only for a worried panda that can perform an action
 Parrot.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	random one of five variants, ageable group without babies
+Parrot.doPush	port	crates/horizon-client/src/mobs/ai/pushing.rs::push_entities	a parrot shoves every mob it walks into except a player, which Entity.push leaves alone
 Parrot.createAttributes	skip:data		attributes (health 6, flying speed 0.4) come from the entity type table
 Parrot.createNavigation	port	crates/horizon-client/src/mobs/parrot.rs::register	flying navigation and a flying move control, no doors, floats
 Parrot.calculateFlapping	port	crates/horizon-client/src/mobs/parrot.rs::calculate_flapping	

@@ -21,7 +21,7 @@ use horizon_client::{
     items::ItemStack,
     lan::data::{BIOME_REGISTRY, client_biomes},
     menu::Input,
-    mobs::{Mob, MobType, Who},
+    mobs::{Mob, MobType, Species, Who},
     motion::{MotionWorld, PlayerMotion},
     net::{Event, Session},
     particles::TrackingTarget,
@@ -6678,10 +6678,10 @@ impl Game<'_> {
         let mut push = Vec3::ZERO;
         let order = |id: u32| r.ticked_before_player.contains(&id) == before_player;
         for m in self.mobs.iter().filter(|m| order(m.id)) {
-            // Bats never push, nor passengers of one vehicle, nor a spectator; the
-            // box test comes before the lookups that far mobs never need (#14053).
+            // Bat.doPush never pushes; Parrot.doPush skips players. The box test
+            // comes before the lookups that far mobs never need (#14053).
             if !m.alive()
-                || m.species() == horizon_client::mobs::Species::Bat
+                || matches!(m.species(), Species::Bat | Species::Parrot)
                 || self
                     .riding
                     .is_some_and(|v| v == m.id || m.extra.mount == Some(v))
@@ -11446,6 +11446,70 @@ mod item_use;
 mod removal;
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn a_remote_parrot_never_pushes_the_local_player() {
+        use crate::game::{
+            Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+        };
+        use horizon_client::motion::PlayerMotion;
+        use horizon_core::geometry::Vec3;
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let (client, _server) = horizon_protocol::connection::Pipe::pair();
+        game.connect_local(client, "ParrotPushTest").unwrap();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
+
+        for kind in ["minecraft:parrot", "minecraft:chicken"] {
+            game.mobs.clear();
+            game.spawn_entity(40, kind, [0.75, 64.0, 0.5], [0.0; 3]);
+            assert!(
+                game.mobs[0]
+                    .bounds()
+                    .intersects(game.player.as_ref().unwrap().bounds())
+            );
+            for before_player in [false, true] {
+                let order = &mut game.remote.as_mut().unwrap().ticked_before_player;
+                order.clear();
+                if before_player {
+                    order.insert(40);
+                }
+                let expected = if kind == "minecraft:parrot" {
+                    Vec3::ZERO
+                } else {
+                    Vec3::new(-f64::from(0.05_f32) * 0.5, 0.0, 0.0)
+                };
+                assert_eq!(game.remote_pushes(before_player), expected, "{kind}");
+            }
+        }
+    }
+
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn joining_a_server_empties_the_off_hand_too() {

@@ -1,6 +1,9 @@
 //! The per-tick mob update in vanilla order (`Entity.baseTick`,
 //! `LivingEntity.baseTick/tick/aiStep`, `Mob.serverAiStep`) and the
 //! dispatch to each species family's goals and special behaviour.
+mod pushing;
+
+use pushing::push_entities;
 pub(crate) use freezing::{can_freeze, in_powder_snow};
 mod feeding;
 mod freezing;
@@ -1717,7 +1720,13 @@ fn hurt_by_water(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 /// block's touch, cramming), with the teleport `Enderman.hurtServer` or
 /// `Shulker.hurtServer` makes inside it: a second hurt of the same tick draws
 /// after the first one's teleport and sees where it landed.
-fn hurt(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>, amount: f32, source: Damage) {
+pub(super) fn hurt(
+    m: &mut Mob,
+    w: &MobWorld,
+    events: &mut Vec<MobEvent>,
+    amount: f32,
+    source: Damage,
+) {
     m.damage(amount, source);
     hurt_teleports(m, w, events);
 }
@@ -1746,12 +1755,12 @@ impl Mob {
     }
 }
 /// LivingEntity.onClimbable for the pusher (Spider.onClimbable: climbing a wall).
-fn on_climbable(m: &Mob, w: &MobWorld) -> bool {
+pub(super) fn on_climbable(m: &Mob, w: &MobWorld) -> bool {
     m.on_climbable(w)
 }
 /// `Entity.getRootVehicle` of the mob `id` riding `vehicle`: the bottom of
 /// its stack of vehicles (itself when it rides nothing).
-fn root_vehicle(w: &MobWorld, id: u32, vehicle: Option<u32>) -> u32 {
+pub(super) fn root_vehicle(w: &MobWorld, id: u32, vehicle: Option<u32>) -> u32 {
     let (mut root, mut next) = (id, vehicle);
     // A stack of riders is short; the bound only guards a broken loop.
     for _ in 0..16 {
@@ -1771,108 +1780,7 @@ fn drop_tiny_motion(m: &mut Mob) {
         if v.z.abs() < 0.003 { 0.0 } else { v.z },
     );
 }
-/// LivingEntity.pushEntities: every pushable entity overlapping the box is
-/// pushed apart from this one (`doPush(e)` = `e.push(this)`); pushes of other
-/// mobs are `Push` events their tick picks up.
-fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
-    m.on_climbable = on_climbable(m, w);
-    if m.species() == Species::Bat {
-        return;
-    }
-    let bounds = m.bounds();
-    // The pusher's own isPushable, checked by `e.push(this)` before moving it.
-    let self_pushable = m.alive()
-        && m.species() != Species::Shulker
-        && !m.on_climbable
-        && (m.species() != Species::Creaking || super::creaking::can_move(m))
-        && (m.species() != Species::Warden || !super::warden::digging_or_emerging(m))
-        && !super::equine::is_vehicle(m);
-    // Each with whether it rides a vehicle (`Entity.isPassenger`) and
-    // whether it shares this one's root vehicle (`isPassengerOfSameVehicle`).
-    let mut targets: Vec<(Who, Vec3, bool, bool, bool)> = Vec::new();
-    if let Some(p) = &w.player
-        // Entity.push: passengers of the same vehicle never push each other.
-        && m.rider.is_none()
-        && p.alive
-        && !p.spectator
-        && p.bounds.intersects(bounds)
-    {
-        targets.push((Who::Player, p.position, p.passenger, false, false));
-    }
-    let root = root_vehicle(w, m.id, m.extra.mount);
-    for o in w.others_near(bounds) {
-        if o.id != m.id && o.alive && o.pushable && o.bounds.intersects(bounds) {
-            let same = root_vehicle(w, o.id, o.vehicle) == root;
-            targets.push((Who::Mob(o.id), o.position, o.passenger, same, o.is_vehicle));
-        }
-    }
-    // EntitySelector.pushableBy(this): the teams' collision rules.
-    let own = w.teams.of(Who::Mob(m.id));
-    targets.retain(|(who, ..)| crate::scoreboard::pushable_by(own, w.teams.of(*who), true));
-    // Cramming: a quarter of the ticks spent with `maxEntityCramming` or more
-    // others around that are not riding anything hurts it by 6.
-    let limit = w.max_entity_cramming;
-    if limit > 0
-        && targets.len() as i64 > i64::from(limit) - 1
-        && m.random.next_int_bound(4).unwrap_or(1) == 0
-        && targets.iter().filter(|t| !t.2).count() as i64 > i64::from(limit) - 1
-    {
-        hurt(m, w, events, 6.0, Damage::of(DamageKind::Cramming));
-    }
-    for (who, at, _, same, vehicle) in targets {
-        // Warden.doPush: touching it angers it, then the push itself.
-        if m.species() == Species::Warden {
-            super::warden::do_push(m, w, who, events);
-        }
-        // IronGolem.doPush: a monster that is not a creeper becomes its target
-        // one time in 20, and the draw is made for those alone, then the push.
-        if m.species() == Species::IronGolem
-            && let Who::Mob(id) = who
-            && w.seen(id).is_some_and(super::golem::golem_prey)
-            && m.random.next_int_bound(20).unwrap_or(1) == 0
-        {
-            m.ai.target = Some(who);
-        }
-        // doPush calls the other living entity's push; sleeping vetoes both impulses.
-        let sleeping = match who {
-            Who::Player => w.player.as_ref().is_some_and(|p| p.sleeping),
-            Who::Mob(id) => w.seen(id).is_some_and(|o| o.sleeping),
-        };
-        if sleeping {
-            continue;
-        }
-        // Entity.push: passengers of the same vehicle (a rider and its mount
-        // among them) never push each other.
-        if same {
-            continue;
-        }
-        // Entity.push(Entity) with `this` the other entity.
-        let (mut xa, mut za) = (m.position.x - at.x, m.position.z - at.z);
-        let mut dd = xa.abs().max(za.abs());
-        if dd < f64::from(0.01_f32) {
-            continue;
-        }
-        dd = dd.sqrt();
-        xa /= dd;
-        za /= dd;
-        let pow = (1.0 / dd).min(1.0);
-        xa *= pow;
-        za *= pow;
-        xa *= f64::from(0.05_f32);
-        za *= f64::from(0.05_f32);
-        // A guest's server-side push never reaches its client (ServerPlayer
-        // motion is synced only when hurt): its client pushes it itself.
-        if !vehicle && (who != Who::Player || w.player.as_ref().is_none_or(|p| !p.remote)) {
-            events.push(MobEvent::Push {
-                target: who,
-                velocity: [-xa, 0.0, -za],
-            });
-        }
-        if self_pushable {
-            m.velocity = Vec3::new(m.velocity.x + xa, m.velocity.y, m.velocity.z + za);
-        }
-    }
-}
+
 /// `Mob.aiStep` -> `Mob.burnUndead`: undead burn in daylight. It runs with
 /// or without AI (`NoAI` only skips `serverAiStep`).
 fn burn_undead(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
@@ -3806,6 +3714,46 @@ mod same_vehicle_push_tests {
         )));
     }
 
+    /// `Parrot.doPush`: a parrot shoves every mob it walks into except a player,
+    /// which it never moves, while a chicken standing in the same place pushes
+    /// one.
+    #[test]
+    fn a_parrot_never_pushes_a_player() {
+        let pushes_player = |id: &str| {
+            let mut out = None;
+            let ran = crate::mobs::world::with_built_test_world(
+                &[],
+                |_, _| {},
+                |w, types| {
+                    let mut w = w.clone();
+                    w.player = Some(crate::mobs::world::test_player(Vec3::new(0.6, 64.0, 0.5)));
+                    let kind = std::sync::Arc::new(types.types[id].clone());
+                    let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    let mut events = Vec::new();
+                    push_entities(&mut m, &w, &mut events);
+                    out = Some(events.iter().any(|e| {
+                        matches!(
+                            e,
+                            MobEvent::Push {
+                                target: Who::Player,
+                                ..
+                            }
+                        )
+                    }));
+                },
+            );
+            ran.then_some(out).flatten()
+        };
+        let (Some(parrot), Some(chicken)) = (
+            pushes_player("minecraft:parrot"),
+            pushes_player("minecraft:chicken"),
+        ) else {
+            // Without the prepared mob types there is nothing to push.
+            return;
+        };
+        assert!(!parrot, "a parrot never pushes a player");
+        assert!(chicken, "a chicken standing there pushes one");
+    }
     #[test]
     fn a_ridden_horse_is_not_pushed_but_still_pushes() {
         let pair = |ridden: bool| {
