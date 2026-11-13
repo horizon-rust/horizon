@@ -175,7 +175,7 @@ impl Game<'_> {
         // Hopper cooldowns of an earlier case.
         self.hoppers.clear();
         self.ui.rules = Default::default();
-        self.dim = super::Dim::Overworld;
+        self.dim = super::Dim::OVERWORLD;
         self.respawn_config = None;
         // The oracle level plays on normal difficulty.
         self.ui.difficulty = 2;
@@ -206,12 +206,12 @@ impl Game<'_> {
         }
         self.world.game_time = case["time"].as_i64().unwrap_or(0);
         match case["dim"].as_str() {
-            Some("nether") => self.dim = super::Dim::Nether,
-            Some("end") => self.dim = super::Dim::End,
+            Some("nether") => self.dim = super::Dim::NETHER,
+            Some("end") => self.dim = super::Dim::END,
             _ => {}
         }
         // The level's build range follows its dimension, as `enter_dimension` sets it.
-        self.world.shape = self.dim.shape();
+        self.world.shape = horizon_client::chunk::LevelShapes::vanilla().shape(self.dim);
         // The oracle level's clock stands at day time 6000.
         self.world.day_time = 6000;
         if let Some(rules) = case["rules"].as_object() {

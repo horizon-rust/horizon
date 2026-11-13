@@ -371,9 +371,10 @@ impl Game<'_> {
     /// current dimension's, when a pack has some. Gameplay keeps `dim_environment`.
     pub(super) fn view_environment(&self) -> &Environment {
         match (&self.pack.environments, self.dim) {
-            (Some(e), Dim::Overworld) => &e[0],
-            (Some(e), Dim::Nether) => &e[1],
-            (Some(e), Dim::End) => &e[2],
+            (Some(e), Dim::OVERWORLD) => &e[0],
+            (Some(e), Dim::NETHER) => &e[1],
+            (Some(e), Dim::END) => &e[2],
+            (Some(e), _) => &e[0],
             (None, _) => self.dim_environment(),
         }
     }
@@ -657,7 +658,7 @@ impl Game<'_> {
                         && hi[1] > f64::from(y) + 0.375
                     {
                         portal = true;
-                    } else if &*name == "minecraft:end_gateway" && self.dim == Dim::End {
+                    } else if &*name == "minecraft:end_gateway" && self.dim == Dim::END {
                         gateway = Some([x, y, z]);
                     }
                 }
@@ -671,7 +672,7 @@ impl Game<'_> {
         if !self.end_portal_travel {
             return None;
         }
-        if target == Dim::End {
+        if target == Dim::END {
             // Vec3.atBottomCenterOf(END_SPAWN_POINT), one block lower for players.
             return Some(Vec3::new(
                 f64::from(END_SPAWN[0]) + 0.5,
@@ -701,7 +702,7 @@ impl Game<'_> {
         target: Vec3,
         finder: &mut Option<PlayerSpawnFinder>,
     ) -> Result<Option<(Vec3, Option<f32>)>> {
-        if self.dim == Dim::End {
+        if self.dim == Dim::END {
             // EndPlatformFeature.createEndPlatform below the spawn point.
             let origin = [END_SPAWN[0], END_SPAWN[1] - 1, END_SPAWN[2]];
             for dz in -2..=2 {
@@ -1453,7 +1454,7 @@ impl Game<'_> {
     /// entities in entity-ticking chunks: one past the simulation distance
     /// enters none (and costs nothing here, however many lie there).
     pub(super) fn find_end_gateway_portals(&mut self) {
-        if self.remote.is_some() || self.dim != Dim::End {
+        if self.remote.is_some() || self.dim != Dim::END {
             return;
         }
         let is_gateway = |game: &Self, p: BlockPos| {
@@ -1570,7 +1571,7 @@ impl Game<'_> {
 
     fn handle_end_gateway_portals_phase(&mut self, after_move: bool) {
         // Nobody in a gateway: nothing to look up.
-        if self.remote.is_some() || self.dim != Dim::End || self.end.gateways.is_empty() {
+        if self.remote.is_some() || self.dim != Dim::END || self.end.gateways.is_empty() {
             return;
         }
         // `handlePortal` runs in the entity's tick: one past the simulation
@@ -1689,7 +1690,7 @@ impl Game<'_> {
     /// The entities that reached a gateway's exit: they land where the
     /// gateway leads, once its chunks have loaded.
     pub(super) fn resolve_end_gateway_arrivals(&mut self) -> Result<()> {
-        if self.remote.is_some() || self.dim != Dim::End {
+        if self.remote.is_some() || self.dim != Dim::END {
             return Ok(());
         }
         for arrival in std::mem::take(&mut self.end.arrivals) {
@@ -1752,7 +1753,7 @@ impl Game<'_> {
             .retain(|&(c, r)| !(r == 1 && areas.contains(&c)));
         // The pearls' portal tickets hold End chunks, and run out there
         // (TicketType.PORTAL's timeout).
-        let in_end = self.dim == Dim::End;
+        let in_end = self.dim == Dim::END;
         if in_end {
             self.end.tickets.retain_mut(|(_, ticks)| {
                 *ticks = ticks.saturating_sub(1);

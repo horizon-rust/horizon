@@ -887,7 +887,7 @@ impl Game<'_> {
             view_distance,
             simulation_distance: self.settings.simulation_distance.max(2),
             dimension: self.dim.id().to_owned(),
-            levels: self.level_shapes,
+            levels: self.level_shapes.clone(),
             seed: self.level.seed,
             max_players: MAX_PLAYERS,
             // No player of its own: the hub runs without a host.
@@ -915,7 +915,7 @@ impl Game<'_> {
                 )
                 .then(|| translatable("multiplayer.disconnect.not_whitelisted", &[]))
             })),
-            levels: self.level_shapes,
+            levels: self.level_shapes.clone(),
             owner_profile: launch.owner_profile.clone(),
             // `IntegratedServer.getSingleplayerProfile`: the window's own player logs in
             // through memory as the account's profile, whatever the hello says.
@@ -1047,7 +1047,7 @@ impl Game<'_> {
         if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == owner && g.placed) {
             let conn = g.conn;
             // Commands.performCommand runs in the player's level.
-            let (back, theirs) = (self.dim, super::Dim::from_id(&g.dimension));
+            let (back, theirs) = (self.dim, super::Dim::builtin_or_overworld(&g.dimension));
             let entered = theirs == back || self.enter_level(Some(&mut host), theirs).is_ok();
             if entered && let Some(swap) = self.enter_guest(&mut host, conn, back) {
                 let command = command.trim_start_matches('/').to_owned();
@@ -1105,7 +1105,7 @@ impl Game<'_> {
         let owner = self.serving.as_ref().map(|s| s.owner);
         let dim = self.lan.as_ref().and_then(|h| {
             let g = h.hub.guests.iter().find(|g| Some(g.uuid) == owner)?;
-            Some(super::Dim::from_id(&g.dimension))
+            Some(super::Dim::builtin_or_overworld(&g.dimension))
         });
         let back = dim.and_then(|d| self.enter_command_level(d));
         let out = f(self);

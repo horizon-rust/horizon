@@ -19,13 +19,6 @@ pub(super) enum NativeMove {
     Respawn,
 }
 
-/// The level a mod names, of the three a server keeps.
-fn native_dim(id: &str) -> Option<Dim> {
-    [Dim::Overworld, Dim::Nether, Dim::End]
-        .into_iter()
-        .find(|d| d.id() == id)
-}
-
 /// `/tp`'s world bounds (`Level.isInSpawnableBounds`).
 fn teleportable(pos: [f64; 3]) -> bool {
     pos.iter().all(|v| v.is_finite())
@@ -60,7 +53,7 @@ impl Game<'_> {
         yaw: f32,
         pitch: f32,
     ) -> bool {
-        let Some(dim) = native_dim(dimension) else {
+        let Some(dim) = self.known_level(dimension) else {
             return false;
         };
         if !self.native_serves() || !teleportable(pos) || !yaw.is_finite() || !pitch.is_finite() {
@@ -405,7 +398,7 @@ impl Game<'_> {
                 .guests
                 .iter()
                 .find(|g| g.placed && !g.dead && g.uuid == uuid)
-                .map(|g| (g.conn, Dim::from_id(&g.dimension)))
+                .map(|g| (g.conn, Dim::builtin_or_overworld(&g.dimension)))
         }) else {
             return false;
         };

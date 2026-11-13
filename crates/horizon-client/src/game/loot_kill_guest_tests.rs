@@ -81,7 +81,7 @@ fn game() -> Game<'static> {
             hardcore: false,
             view_distance: 2,
             simulation_distance: 2,
-            dimension: Dim::Overworld.id().into(),
+            dimension: Dim::OVERWORLD.id().into(),
             allow_flight: false,
             seed: 0,
             max_players: 2,
@@ -241,7 +241,7 @@ fn an_empty_handed_guest_is_the_killer_and_a_missing_one_is_not() {
     let p = first.player.as_ref().unwrap().position;
     assert_eq!(
         ([p.x, p.y, p.z], first.dim),
-        ([4.5, 100.0, 4.5], Dim::Overworld)
+        ([4.5, 100.0, 4.5], Dim::OVERWORLD)
     );
     let g = first.lan.as_ref().unwrap().hub.guest(2).unwrap();
     assert_eq!(

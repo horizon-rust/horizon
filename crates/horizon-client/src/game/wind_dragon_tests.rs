@@ -38,8 +38,8 @@ fn end_game() -> Game<'static> {
     game.build_registries();
     game.set_allow_commands(true);
     assert_eq!(
-        game.enter_command_level(crate::game::Dim::End),
-        Some(crate::game::Dim::Overworld)
+        game.enter_command_level(crate::game::Dim::END),
+        Some(crate::game::Dim::OVERWORLD)
     );
     assert!(game.dimension_type().has_ender_dragon_fight, "the End");
     for x in -1..2 {

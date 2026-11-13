@@ -116,7 +116,7 @@ fn game_gateway_phases() -> [[i32; 2]; 4] {
                 .insert((x, z), Arc::new(Chunk::empty(x, z)));
         }
     }
-    game.dim = crate::game::Dim::End;
+    game.dim = crate::game::Dim::END;
     let mut ids = Vec::new();
     for (index, kind) in ["minecraft:oak_boat", "minecraft:ender_pearl"]
         .into_iter()

@@ -716,9 +716,7 @@ impl Hub {
         let chat_type = sync
             .id("minecraft:chat_type", "minecraft:chat")
             .unwrap_or(0);
-        let dimension_type = sync
-            .id("minecraft:dimension_type", &config.dimension)
-            .unwrap_or(0);
+        let dimension_type = sync.dimension_type_id(&config.levels, &config.dimension);
         let clock_ids = (0..sync.dynamic.len("minecraft:world_clock") as i32).collect();
         let mut encoder = encoder;
         encoder.set_dimension(config.levels.get(&config.dimension));
@@ -4983,10 +4981,7 @@ impl Hub {
         (self.last_clock, self.last_rate, self.weather) =
             (entering.last_clock, entering.last_rate, entering.weather);
         self.config.dimension = dimension.to_owned();
-        self.dimension_type = self
-            .sync
-            .id("minecraft:dimension_type", dimension)
-            .unwrap_or(0);
+        self.dimension_type = self.sync.dimension_type_id(&self.config.levels, dimension);
         self.encoder
             .set_dimension(self.config.levels.get(dimension));
     }

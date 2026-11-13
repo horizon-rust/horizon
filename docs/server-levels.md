@@ -23,8 +23,8 @@ the other dimensions' levels as `Parked` values and swaps one into place (`enter
 
 | Vanilla | Horizon |
 | --- | --- |
-| `MinecraftServer.levels` | the level in place plus `Levels::parked` |
-| `MinecraftServer.tickChildren`, every level | `tick_server`: each level with a player in it, in Overworld, Nether, End order. The first pass reads the network and runs the shared parts (clock, weather, functions, autosave). |
+| `MinecraftServer.levels` | the level in place plus `Levels::parked`, keyed by `LevelKey` (`Dim`), in `Levels::order` |
+| `MinecraftServer.tickChildren`, every level | `tick_server`: each level with a player in it, in `Levels::order` (the Overworld, the Nether, the End). The first pass reads the network and runs the shared parts (clock, weather, functions, autosave). |
 | `ServerLevel.players` | `Hub::here`: the guests whose `dimension` is the level in place |
 | `ServerPlayer.teleport` into another level | `server_travel.rs`: a Respawn packet, then the teleport once the destination has loaded (portals and `execute in … tp`). An End gateway teleports within the End. |
 | `PlayerList.respawn` | `guest_respawn`: into the respawn point's level, the Overworld unless the player has an anchor or a `spawnpoint` elsewhere (`Guest::respawn_elsewhere`), resolved through its block once that level has loaded |

@@ -345,7 +345,7 @@ fn guest_open_windows(host: &LanHost, conn: u32) -> Vec<i32> {
 fn building_player(g: &horizon_client::lan::guest::Guest) -> BuildingPlayer {
     BuildingPlayer {
         conn: Some(g.conn),
-        dimension: Dim::from_id(&g.dimension),
+        dimension: g.level(),
         bounds: (g.placed && g.loaded && !g.dead && !g.spectator()).then(|| g.bounds()),
         borrowed: false,
     }
@@ -3163,11 +3163,11 @@ impl Game<'_> {
             .guests
             .iter()
             .find(|g| g.placed && g.conn != own && g.uuid == uuid)
-            .map(|g| (g.position, g.yaw, g.pitch, Dim::from_id(&g.dimension)));
+            .map(|g| (g.position, g.yaw, g.pitch, g.level()));
         let Some((at, yaw, pitch, dim)) = target else {
             return;
         };
-        if Dim::from_id(&host.hub.guests[gi].dimension) != dim {
+        if host.hub.guests[gi].level() != dim {
             self.level_teleports
                 .push(super::server_travel::LevelTeleport {
                     conn: own,
@@ -3942,7 +3942,7 @@ impl Game<'_> {
         // In the window's world a guest has no level of its own to wait in:
         // its bed is resolved at once when its chunk is there, else it
         // comes back on the bed.
-        let mut in_frame_bed = own.filter(|c| !server && c.dim == super::Dim::Overworld);
+        let mut in_frame_bed = own.filter(|c| !server && c.dim == super::Dim::OVERWORLD);
         let spawn = in_frame_bed.map_or(spawn, |c| {
             [
                 f64::from(c.pos[0]) + 0.5,
@@ -3950,7 +3950,7 @@ impl Game<'_> {
                 f64::from(c.pos[2]) + 0.5,
             ]
         });
-        let mut level = elsewhere.map_or(super::Dim::Overworld, |c| c.dim);
+        let mut level = elsewhere.map_or(super::Dim::OVERWORLD, |c| c.dim);
         let mut spawn = elsewhere.map_or(spawn, |c| {
             [
                 f64::from(c.pos[0]) + 0.5,
@@ -3963,13 +3963,13 @@ impl Game<'_> {
         let (uuid, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
         let [yaw, pitch] = &mut rotation;
         self.native_player_respawn_position(uuid, &name, &mut dimension, &mut at, yaw, pitch);
-        let known = super::Dim::from_id(&dimension).id() == dimension;
+        let known = super::Dim::builtin_or_overworld(&dimension).id() == dimension;
         let moved = at != spawn && at.iter().all(|v| v.is_finite());
         let chosen = (known && dimension != level.id()) || moved;
         if chosen {
             (elsewhere, in_frame_bed) = (None, None);
             if known && server {
-                level = super::Dim::from_id(&dimension);
+                level = super::Dim::builtin_or_overworld(&dimension);
             }
             if moved {
                 spawn = at;
@@ -3979,7 +3979,7 @@ impl Game<'_> {
             rotation = [0.0; 2];
         }
         let back = self.dim;
-        let left = super::Dim::from_id(&host.hub.guests[i].dimension);
+        let left = host.hub.guests[i].level();
         let away = server && host.hub.guests[i].dimension != level.id();
         if server {
             self.server_trips.retain(|t| !t.is(conn));
@@ -4060,7 +4060,7 @@ impl Game<'_> {
             self.world_spawn_trip(conn);
         }
         if let Some(c) = in_frame_bed
-            && self.dim == super::Dim::Overworld
+            && self.dim == super::Dim::OVERWORLD
             && self.world.loaded(c.pos[0], c.pos[2])
         {
             let found = self

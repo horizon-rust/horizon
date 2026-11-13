@@ -5700,8 +5700,8 @@ mod dragon_fireball_spawn_tests {
         // The End as its own level (`execute in minecraft:the_end`), with a
         // forced chunk so the server ticks it.
         assert_eq!(
-            game.enter_command_level(crate::game::Dim::End),
-            Some(crate::game::Dim::Overworld)
+            game.enter_command_level(crate::game::Dim::END),
+            Some(crate::game::Dim::OVERWORLD)
         );
         assert!(game.dimension_type().has_ender_dragon_fight, "the End");
         for x in -1..2 {
@@ -5765,7 +5765,7 @@ mod dragon_fireball_spawn_tests {
         assert!(game.run_command("tick step 1"));
         game.tick_server(false).unwrap();
         // Back in the End level to read its own list.
-        let _ = game.enter_command_level(crate::game::Dim::End);
+        let _ = game.enter_command_level(crate::game::Dim::END);
         let after: Vec<(Vec3, Vec3)> = dragon_fireballs(&game)
             .iter()
             .map(|b| (b.position, b.velocity))

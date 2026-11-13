@@ -49,7 +49,7 @@ fn item(id: u32, at: Vec3) -> ItemEntity {
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn items_past_the_simulation_distance_enter_no_end_gateway() {
     let mut game = server_game();
-    game.dim = Dim::End;
+    game.dim = Dim::END;
     game.settings.simulation_distance = 4;
     game.settings.render_distance = 12;
     let gateway = game
@@ -102,7 +102,7 @@ fn items_past_the_simulation_distance_enter_no_end_gateway() {
 fn a_ticking_gateway_counts_its_age_in_its_block_entity() {
     use horizon_client::containers::BlockEntity;
     let mut game = server_game();
-    game.dim = Dim::End;
+    game.dim = Dim::END;
     game.player = Some(
         horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(8.5, 65.0, 8.5)).unwrap(),
     );

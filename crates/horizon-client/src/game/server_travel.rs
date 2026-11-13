@@ -358,10 +358,10 @@ impl Game<'_> {
                 }
             }
             "end_portal" => {
-                let from_end = self.dim == Dim::End;
+                let from_end = self.dim == Dim::END;
                 // Entity.canTeleport: out of the End only after the credits.
                 if !from_end || seen_credits {
-                    let target = if from_end { Dim::Overworld } else { Dim::End };
+                    let target = if from_end { Dim::OVERWORLD } else { Dim::END };
                     self.start_server_trip(host, conn, target, None, false);
                 }
             }
@@ -427,7 +427,7 @@ impl Game<'_> {
                 .get(&conn)
                 .is_some_and(|play| play.respawn_requested)
             {
-                if !self.server_player_portal_allowed(host, conn, Dim::Overworld, "end_portal") {
+                if !self.server_player_portal_allowed(host, conn, Dim::OVERWORLD, "end_portal") {
                     return;
                 }
                 if let Some(play) = host.play.get_mut(&conn) {
@@ -440,7 +440,7 @@ impl Game<'_> {
                     let (uuid, name) = (g.uuid, g.name.clone());
                     self.native_player_clone(uuid, &name, false);
                 }
-                self.start_server_trip(host, conn, Dim::Overworld, None, true);
+                self.start_server_trip(host, conn, Dim::OVERWORLD, None, true);
                 self.portals.player.cooldown = 10;
             }
             return;
@@ -448,7 +448,7 @@ impl Game<'_> {
         let (end_portal, gateway) = self.inside_end_portals(at, WIDTH, HEIGHT);
         if end_portal && !riding {
             // EndPortalBlock.entityInside: the first exit from the End shows the credits.
-            if self.dim == Dim::End && !host.hub.guest(conn).is_some_and(|g| g.seen_credits) {
+            if self.dim == Dim::END && !host.hub.guest(conn).is_some_and(|g| g.seen_credits) {
                 if let Some(g) = host.hub.guests.iter_mut().find(|g| g.conn == conn) {
                     g.seen_credits = true;
                 }
@@ -464,10 +464,10 @@ impl Game<'_> {
                 return;
             }
             if self.portals.player.cooldown == 0 {
-                let target = if self.dim == Dim::End {
-                    Dim::Overworld
+                let target = if self.dim == Dim::END {
+                    Dim::OVERWORLD
                 } else {
-                    Dim::End
+                    Dim::END
                 };
                 if !self.server_player_portal_allowed(host, conn, target, "end_portal") {
                     return;
@@ -556,7 +556,7 @@ impl Game<'_> {
             // Entity.canTeleport: out of the End, every rider has seen the
             // credits.
             if plan.end
-                && self.dim == Dim::End
+                && self.dim == Dim::END
                 && riders
                     .iter()
                     .any(|c| !host.hub.guest(*c).is_some_and(|g| g.seen_credits))
@@ -766,7 +766,7 @@ impl Game<'_> {
         self.server_trips.retain(|t| !t.is(conn));
         self.server_trips.push(Trip {
             conn,
-            dim: Dim::Overworld,
+            dim: Dim::OVERWORLD,
             source: self.dim,
             target: Vec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5),
             end: false,
@@ -791,7 +791,7 @@ impl Game<'_> {
         );
         self.level_teleports.push(LevelTeleport {
             conn,
-            dim: Dim::Overworld,
+            dim: Dim::OVERWORLD,
             at,
             rotation: None,
             vehicle: None,

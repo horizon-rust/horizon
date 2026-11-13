@@ -111,7 +111,7 @@ impl Game<'_> {
     /// builds wrote for their one shared border; the other levels start from the default.
     pub(super) fn load_border(&self, dim: super::Dim) -> horizon_client::worldborder::WorldBorder {
         let mut root = save::read_dat(&self.border_path(dim));
-        if root.is_none() && dim == super::Dim::Overworld {
+        if root.is_none() && dim == super::Dim::OVERWORLD {
             root = save::read_dat(&self.world_root.join("data/minecraft/world_border.dat"));
         }
         root.as_ref()

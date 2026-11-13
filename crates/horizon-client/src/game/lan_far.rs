@@ -41,7 +41,7 @@ impl Game<'_> {
             let guests = &host.hub.guests;
             far.retain(|c| guests.iter().any(|g| g.conn == c));
         }
-        let dim = Dim::from_id(&guest.dimension);
+        let dim = Dim::builtin_or_overworld(&guest.dimension);
         let source = self.lod_source_in(dim);
         let now = std::time::Instant::now();
         match far.request(conn, data, guest.position, source.is_some(), now) {

@@ -75,7 +75,7 @@ fn game() -> Game<'static> {
             hardcore: false,
             view_distance: 2,
             simulation_distance: 2,
-            dimension: Dim::Overworld.id().into(),
+            dimension: Dim::OVERWORLD.id().into(),
             allow_flight: false,
             seed: 0,
             max_players: 3,
@@ -114,7 +114,7 @@ fn game() -> Game<'static> {
 /// The other players' boxes in the Builder's turn: what blocks its placing.
 fn seen_by_builder(game: &mut Game<'_>) -> Boxes {
     let mut host = game.lan.take().unwrap();
-    let seen = game.as_guest(&mut host, 3, |g| g.lan_building_boxes.boxes(Dim::Overworld));
+    let seen = game.as_guest(&mut host, 3, |g| g.lan_building_boxes.boxes(Dim::OVERWORLD));
     game.lan = Some(host);
     seen.unwrap()
 }

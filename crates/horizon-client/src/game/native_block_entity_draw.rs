@@ -1039,7 +1039,7 @@ mod tests {
     }
 
     const KEY: KeptKey = KeptKey {
-        dim: Dim::Overworld,
+        dim: Dim::OVERWORLD,
         state: 7,
         light: 0xF0F0,
         glyphs: 0,
@@ -1128,7 +1128,7 @@ mod tests {
                 ..KEY
             },
             KeptKey {
-                dim: Dim::Nether,
+                dim: Dim::NETHER,
                 ..KEY
             },
             KeptKey { glyphs: 1, ..KEY },

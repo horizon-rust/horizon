@@ -253,7 +253,7 @@ impl Game<'_> {
                 .is_some()
                 .then(horizon_client::music::Music::credits),
             in_world: eye.is_some(),
-            in_end: self.dim == super::Dim::End,
+            in_end: self.dim == super::Dim::END,
             boss_music: self.boss_music(),
             background: &background,
             probe_volume,

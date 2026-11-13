@@ -71,7 +71,7 @@ fn added_issuer_actor_missing_guest_and_restoration_controls() {
             hardcore: false,
             view_distance: 2,
             simulation_distance: 2,
-            dimension: Dim::Overworld.id().into(),
+            dimension: Dim::OVERWORLD.id().into(),
             allow_flight: false,
             seed: 0,
             max_players: 4,
@@ -165,9 +165,9 @@ fn added_issuer_actor_missing_guest_and_restoration_controls() {
     }
     let _ = chats(&receivers[0]);
     let _ = chats(&receivers[1]);
-    game.enter_command_level(Dim::Nether);
+    game.enter_command_level(Dim::NETHER);
     let outer = Source {
-        dimension: Dim::Nether,
+        dimension: Dim::NETHER,
         pos: [31.0, 200.0, 31.0],
         silent: true,
         ..game.player_source()
@@ -184,7 +184,7 @@ fn added_issuer_actor_missing_guest_and_restoration_controls() {
     assert_eq!(chats(&receivers[0]), [component]);
     assert!(chats(&receivers[1]).is_empty());
     assert!(game.chat_capture.as_ref().unwrap().is_empty());
-    assert_eq!(game.dim, Dim::Nether);
+    assert_eq!(game.dim, Dim::NETHER);
     assert_eq!(game.lan_acting, None);
     assert_eq!(
         game.player.as_ref().unwrap().position,
@@ -205,14 +205,14 @@ fn added_issuer_actor_missing_guest_and_restoration_controls() {
     game.test_source_output(context, marker, true);
     game.game_tests
         .outbox
-        .push(Out::Coordinates(context, vec![Dim::Overworld]));
+        .push(Out::Coordinates(context, vec![Dim::OVERWORLD]));
     game.flush_game_test_output();
     for g in &game.lan.as_ref().unwrap().hub.guests {
         g.sender.flush();
     }
     assert!(chats(&receivers[1]).is_empty());
     assert!(game.chat_capture.as_ref().unwrap().is_empty());
-    assert_eq!(game.dim, Dim::Nether);
+    assert_eq!(game.dim, Dim::NETHER);
     assert_eq!(game.lan_acting, None);
     assert_eq!(
         format!("{:?}", game.command_source.unwrap()),
@@ -238,7 +238,7 @@ fn added_issuer_actor_missing_guest_and_restoration_controls() {
         "minecraft:always_pass".into(),
         game.test_def("minecraft:always_pass").unwrap(),
         Some((8, 200, 11)),
-        Dim::Overworld,
+        Dim::OVERWORLD,
         Rotation::None,
     );
     game.track_and_start_runner(vec![info], false, None, false);

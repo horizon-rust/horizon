@@ -436,7 +436,7 @@ impl Game<'_> {
         let packed = self.world.light(b[0], b[1], b[2]);
         let sky = i32::from(packed >> 4) - self.sky_darken();
         let raw = sky.max(i32::from(packed & 15)).clamp(0, 15) as u8;
-        lightmap_brightness(if self.dim == Dim::Nether { 0.1 } else { 0.0 }, raw)
+        lightmap_brightness(if self.dim == Dim::NETHER { 0.1 } else { 0.0 }, raw)
     }
     /// What `Minecraft` ticks outside the level's own tick: `GameRenderer.tick` runs the light
     /// flicker whenever the game is not paused, frozen or not, while `TextureManager.tick`

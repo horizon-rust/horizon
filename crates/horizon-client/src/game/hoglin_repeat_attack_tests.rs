@@ -326,7 +326,7 @@ fn host_with_guest(game: &mut Game<'_>, guest_at: [f64; 3]) {
         hardcore: false,
         view_distance: 2,
         simulation_distance: 2,
-        dimension: Dim::Overworld.id().into(),
+        dimension: Dim::OVERWORLD.id().into(),
         allow_flight: false,
         seed: 0,
         max_players: 2,

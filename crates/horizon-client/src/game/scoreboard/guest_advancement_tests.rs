@@ -68,7 +68,7 @@ fn selector_reads_independent_host_and_guest_progress() {
             hardcore: false,
             view_distance: 2,
             simulation_distance: 2,
-            dimension: Dim::Overworld.id().into(),
+            dimension: Dim::OVERWORLD.id().into(),
             allow_flight: false,
             seed: 0,
             max_players: 2,
@@ -96,7 +96,7 @@ fn selector_reads_independent_host_and_guest_progress() {
         [20.5, 64.0, 0.5],
         2,
     );
-    guest.dimension = Dim::Overworld.id().into();
+    guest.dimension = Dim::OVERWORLD.id().into();
     guest.placed = true;
     guest.loaded = true;
     game.lan.as_mut().unwrap().hub.guests.push(guest);

@@ -113,38 +113,38 @@ mod tests {
     fn nested_turns_preserve_host_and_live_ancestors_without_the_new_actor() {
         let hub = || {
             vec![
-                player(Some(1), 10.0, Dim::Overworld, false),
-                player(Some(2), 20.0, Dim::Overworld, false),
-                player(Some(3), 30.0, Dim::Nether, false),
+                player(Some(1), 10.0, Dim::OVERWORLD, false),
+                player(Some(2), 20.0, Dim::OVERWORLD, false),
+                player(Some(3), 30.0, Dim::NETHER, false),
             ]
         };
-        let host = player(None, 0.0, Dim::Overworld, true);
+        let host = player(None, 0.0, Dim::OVERWORLD, true);
         let first = BuildingPlayers::default().for_turn(1, Some(host), shared(hub()));
         let second = first.for_turn(
             2,
-            Some(player(Some(1), 11.0, Dim::Overworld, true)),
+            Some(player(Some(1), 11.0, Dim::OVERWORLD, true)),
             shared(hub()),
         );
-        assert_eq!(xs(&second, Dim::Overworld), [0.0, 11.0]);
+        assert_eq!(xs(&second, Dim::OVERWORLD), [0.0, 11.0]);
         // A further turn in another level keeps each ancestor's own level.
         let third = second.for_turn(
             3,
-            Some(player(Some(2), 21.0, Dim::Nether, true)),
+            Some(player(Some(2), 21.0, Dim::NETHER, true)),
             shared(hub()),
         );
-        assert_eq!(xs(&third, Dim::Overworld), [0.0, 11.0]);
-        assert_eq!(xs(&third, Dim::Nether), [21.0]);
+        assert_eq!(xs(&third, Dim::OVERWORLD), [0.0, 11.0]);
+        assert_eq!(xs(&third, Dim::NETHER), [21.0]);
     }
 
     #[test]
     fn returning_inner_turn_refreshes_moved_and_inactive_hub_bodies() {
-        let host = player(None, 0.0, Dim::Overworld, true);
+        let host = player(None, 0.0, Dim::OVERWORLD, true);
         let first = BuildingPlayers::default().for_turn(
             1,
             Some(host),
             shared(vec![
-                player(Some(1), 10.0, Dim::Overworld, false),
-                player(Some(2), 20.0, Dim::Overworld, false),
+                player(Some(1), 10.0, Dim::OVERWORLD, false),
+                player(Some(2), 20.0, Dim::OVERWORLD, false),
             ]),
         );
         // Restore the first turn after player 2 moved across dimensions.
@@ -152,40 +152,40 @@ mod tests {
             1,
             None,
             shared(vec![
-                player(Some(1), 10.0, Dim::Overworld, false),
-                player(Some(2), 25.0, Dim::Nether, false),
+                player(Some(1), 10.0, Dim::OVERWORLD, false),
+                player(Some(2), 25.0, Dim::NETHER, false),
             ]),
         );
-        assert_eq!(xs(&restored, Dim::Overworld), [0.0]);
-        assert_eq!(xs(&restored, Dim::Nether), [25.0]);
+        assert_eq!(xs(&restored, Dim::OVERWORLD), [0.0]);
+        assert_eq!(xs(&restored, Dim::NETHER), [25.0]);
         // Death, spectator mode, and unloaded bodies provide no building box.
-        let mut inactive = player(Some(2), 25.0, Dim::Nether, false);
+        let mut inactive = player(Some(2), 25.0, Dim::NETHER, false);
         inactive.bounds = None;
         let restored = restored.for_turn(1, None, shared(vec![inactive]));
-        assert_eq!(xs(&restored, Dim::Overworld), [0.0]);
-        assert!(xs(&restored, Dim::Nether).is_empty());
+        assert_eq!(xs(&restored, Dim::OVERWORLD), [0.0]);
+        assert!(xs(&restored, Dim::NETHER).is_empty());
     }
 
     #[test]
     fn disconnected_ancestors_and_inactive_outer_bodies_do_not_linger() {
         let first = BuildingPlayers::default().for_turn(
             2,
-            Some(player(Some(1), 10.0, Dim::Overworld, true)),
-            shared(vec![player(Some(1), 1.0, Dim::Overworld, false)]),
+            Some(player(Some(1), 10.0, Dim::OVERWORLD, true)),
+            shared(vec![player(Some(1), 1.0, Dim::OVERWORLD, false)]),
         );
         let disconnected = first.for_turn(3, None, shared(Vec::new()));
-        assert!(xs(&disconnected, Dim::Overworld).is_empty());
+        assert!(xs(&disconnected, Dim::OVERWORLD).is_empty());
         let disconnected_outer = first.for_turn(
             3,
-            Some(player(Some(1), 11.0, Dim::Overworld, true)),
+            Some(player(Some(1), 11.0, Dim::OVERWORLD, true)),
             shared(Vec::new()),
         );
-        assert!(xs(&disconnected_outer, Dim::Overworld).is_empty());
-        let mut outer = player(None, 0.0, Dim::Overworld, true);
+        assert!(xs(&disconnected_outer, Dim::OVERWORLD).is_empty());
+        let mut outer = player(None, 0.0, Dim::OVERWORLD, true);
         let first = BuildingPlayers::default().for_turn(1, Some(outer), shared(Vec::new()));
         outer.bounds = None;
         let second = first.for_turn(2, Some(outer), shared(Vec::new()));
-        assert!(xs(&second, Dim::Overworld).is_empty());
+        assert!(xs(&second, Dim::OVERWORLD).is_empty());
     }
 
     #[test]
@@ -255,7 +255,7 @@ mod tests {
                 hardcore: false,
                 view_distance: 2,
                 simulation_distance: 2,
-                dimension: Dim::Overworld.id().into(),
+                dimension: Dim::OVERWORLD.id().into(),
                 allow_flight: false,
                 seed: 0,
                 max_players: 2,
@@ -283,17 +283,17 @@ mod tests {
             [20.5, 64.0, 0.5],
             2,
         );
-        guest.dimension = Dim::Nether.id().into();
+        guest.dimension = Dim::NETHER.id().into();
         guest.placed = true;
         guest.loaded = true;
         game.lan.as_mut().unwrap().hub.guests.push(guest);
         let seen = game.for_player(super::super::commands::Target::Guest(2), |g| {
-            assert_eq!(g.dim, Dim::Nether);
+            assert_eq!(g.dim, Dim::NETHER);
             // for_player already switched the level before entering the guest.
             // The host's body must not become a phantom blocker in the Nether.
-            assert!(g.lan_building_boxes.boxes(Dim::Nether).is_empty());
+            assert!(g.lan_building_boxes.boxes(Dim::NETHER).is_empty());
             assert_eq!(
-                g.lan_building_boxes.boxes(Dim::Overworld),
+                g.lan_building_boxes.boxes(Dim::OVERWORLD),
                 vec![(
                     original.min_position().components(),
                     original.max_position().components()
@@ -302,7 +302,7 @@ mod tests {
             g.player.as_ref().unwrap().position
         });
         assert_eq!(seen, Some(Vec3::new(20.5, 64.0, 0.5)));
-        assert_eq!(game.dim, Dim::Overworld);
+        assert_eq!(game.dim, Dim::OVERWORLD);
         assert_eq!(
             game.player.as_ref().unwrap().position,
             Vec3::new(10.5, 64.0, 0.5)

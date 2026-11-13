@@ -137,15 +137,30 @@ pub(super) struct TickTiming {
 }
 
 /// The levels not in place, by dimension.
-#[derive(Default)]
 pub(super) struct Levels {
     parked: HashMap<Dim, Parked>,
+    /// Every level the server holds, in `MinecraftServer.levels` order (`WorldDimensions.keysInOrder`).
+    order: Vec<Dim>,
     /// The levels whose open the mods heard (`native_level_load`), each to
     /// be told closed once.
     heard_open: Vec<Dim>,
 }
 
+impl Default for Levels {
+    fn default() -> Self {
+        Self {
+            parked: HashMap::new(),
+            order: vec![Dim::OVERWORLD, Dim::NETHER, Dim::END],
+            heard_open: Vec::new(),
+        }
+    }
+}
+
 impl Levels {
+    pub(super) fn order(&self) -> &[Dim] {
+        &self.order
+    }
+
     /// Clear every parked level and dimensions recorded as heard open.
     pub(super) fn clear(&mut self) {
         self.parked.clear();
@@ -326,7 +341,7 @@ impl Game<'_> {
             return Ok(());
         }
         let back = self.dim;
-        for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
+        for dim in self.levels.order().to_vec() {
             if dim == back || self.levels.parked.contains_key(&dim) {
                 continue;
             }
@@ -355,7 +370,7 @@ impl Game<'_> {
         let deadline = Instant::now() + Duration::from_secs(600);
         self.wait_for_ticket_chunks(deadline);
         let back = self.dim;
-        for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
+        for dim in self.levels.order().to_vec() {
             if dim != back && self.levels.parked.contains_key(&dim) {
                 self.enter_level(None, dim)?;
                 self.wait_for_ticket_chunks(deadline);
@@ -633,14 +648,16 @@ impl Game<'_> {
             // Each level's share of the tick (the first one also reads the network and runs the
             // tick's shared parts): `horizon-report`'s `level_*` spans.
             horizon_threads::work::set_dim(match dim {
-                Dim::Overworld => 1,
-                Dim::Nether => 2,
-                Dim::End => 3,
+                Dim::OVERWORLD => 1,
+                Dim::NETHER => 2,
+                Dim::END => 3,
+                _ => 0,
             });
             let _level_span = horizon_client::spans::guard(match dim {
-                Dim::Overworld => "level_overworld",
-                Dim::Nether => "level_the_nether",
-                Dim::End => "level_the_end",
+                Dim::OVERWORLD => "level_overworld",
+                Dim::NETHER => "level_the_nether",
+                Dim::END => "level_the_end",
+                _ => "level_other",
             });
             // The level's own share of the pass, outside its world tick: a slow tick's line names
             // each of them, and `level_tick` holds the world tick itself (#15349).
@@ -848,9 +865,7 @@ impl Game<'_> {
 
     /// The level whose id is exactly `id` (`MinecraftServer.getLevel` of a `ResourceKey`).
     pub(super) fn known_level(&self, id: &str) -> Option<Dim> {
-        [Dim::Overworld, Dim::Nether, Dim::End]
-            .into_iter()
-            .find(|d| d.id() == id)
+        self.levels.order().iter().copied().find(|d| d.id() == id)
     }
 
     /// The levels this server tick runs, in `MinecraftServer.levels` order
@@ -861,8 +876,11 @@ impl Game<'_> {
             .lan
             .as_ref()
             .map_or(&[][..], |h| h.hub.guests.as_slice());
-        let mut dims: Vec<Dim> = [Dim::Overworld, Dim::Nether, Dim::End]
-            .into_iter()
+        let mut dims: Vec<Dim> = self
+            .levels
+            .order()
+            .iter()
+            .copied()
             .filter(|d| {
                 // `/forceload`ed chunks, or a native mod's tickets.
                 let held = |s: &Streaming| !s.forced.is_empty() || !s.mod_forced.is_empty();
@@ -893,7 +911,7 @@ impl Game<'_> {
             })
             .collect();
         if dims.is_empty() {
-            dims.push(Dim::Overworld);
+            dims.push(Dim::OVERWORLD);
         }
         dims
     }
@@ -943,7 +961,7 @@ impl Game<'_> {
                 continue;
             }
             p.idle += 1;
-            if *dim != Dim::Overworld && p.idle >= IDLE_TICKS {
+            if *dim != Dim::OVERWORLD && p.idle >= IDLE_TICKS {
                 closing.push(*dim);
             }
         }
@@ -994,7 +1012,7 @@ impl Game<'_> {
     /// (`MinecraftServer.stopServer`'s `level.close()` loop), in vanilla's
     /// order of its levels: the Overworld, the Nether, the End.
     pub(super) fn native_levels_closing(&mut self) {
-        for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
+        for dim in self.levels.order().to_vec() {
             self.native_level_closed(dim);
         }
     }
@@ -1031,7 +1049,7 @@ mod tests {
     #[test]
     fn levels_clear_empties_parked_and_heard_open() {
         let mut levels = Levels::default();
-        levels.heard_open.push(Dim::Nether);
+        levels.heard_open.push(Dim::NETHER);
         assert!(!levels.heard_open.is_empty());
         levels.clear();
         assert!(levels.heard_open.is_empty());
@@ -1074,9 +1092,9 @@ mod tests {
         game.set_allow_commands(true);
         assert!(game.run_command("worldborder set 1000"));
         assert!(game.run_command("execute in minecraft:the_nether run worldborder set 100"));
-        assert_eq!(game.dim, Dim::Overworld);
+        assert_eq!(game.dim, Dim::OVERWORLD);
         assert_eq!(game.border.size(), 1000.0);
-        let nether = game.levels.parked_border(Dim::Nether).unwrap();
+        let nether = game.levels.parked_border(Dim::NETHER).unwrap();
         assert_eq!(nether.size(), 100.0);
     }
 
@@ -1244,11 +1262,11 @@ mod tests {
         game.tick_world(true).unwrap();
         assert!(game.run_command("execute in minecraft:the_nether run worldborder get"));
         assert!(game.run_command("execute in minecraft:the_end run worldborder get"));
-        assert_eq!(game.dim, Dim::Overworld);
+        assert_eq!(game.dim, Dim::OVERWORLD);
         let sizes = (
             game.border.size(),
-            game.levels.parked_border(Dim::Nether).map(|b| b.size()),
-            game.levels.parked_border(Dim::End).map(|b| b.size()),
+            game.levels.parked_border(Dim::NETHER).map(|b| b.size()),
+            game.levels.parked_border(Dim::END).map(|b| b.size()),
         );
         if sizes != (70.0, Some(100.0), Some(59_999_968.0)) {
             failures.push(format!("after the first set and a tick: {sizes:?}"));
@@ -1279,7 +1297,7 @@ mod tests {
                     parked(d)
                 }
             };
-            (size(Dim::Overworld), size(Dim::Nether), size(Dim::End))
+            (size(Dim::OVERWORLD), size(Dim::NETHER), size(Dim::END))
         };
         const DEFAULT: f64 = 59_999_968.0;
         let mut failures = Vec::new();
@@ -1524,7 +1542,7 @@ mod tests {
             }
         }
         assert!(loaded, "the new chunk (13, 0) was not generated");
-        assert_eq!(game.dim, Dim::Overworld);
+        assert_eq!(game.dim, Dim::OVERWORLD);
         let mut want = vec![f32::MAX.to_bits(); 12];
         want.extend([70.0f32, 70.0, 69.0, 68.0].map(f32::to_bits));
         let edge = game

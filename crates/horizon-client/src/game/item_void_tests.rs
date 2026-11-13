@@ -26,12 +26,12 @@ fn items_fall_to_each_dimensions_own_void_floor() {
     assert!(game.entity_ticking_area()(8, 8));
     let keys: HashSet<(i32, i32)> = [(0, 0)].into();
     for (dim, floor) in [
-        (Dim::Overworld, -128.0),
-        (Dim::Nether, -64.0),
-        (Dim::End, -64.0),
+        (Dim::OVERWORLD, -128.0),
+        (Dim::NETHER, -64.0),
+        (Dim::END, -64.0),
     ] {
         game.dim = dim;
-        game.world.shape = dim.shape();
+        game.world.shape = horizon_client::chunk::LevelShapes::vanilla().shape(dim);
         for (y, survives) in [(floor + 0.5, true), (floor - 0.5, false)] {
             game.dropped.clear();
             game.spawn_item(

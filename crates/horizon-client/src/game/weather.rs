@@ -13,7 +13,7 @@ impl Game<'_> {
         level_can_have_weather(
             self.world.shape.sky_light,
             self.world.shape.has_ceiling,
-            self.dim == Dim::End,
+            self.dim == Dim::END,
         )
     }
 
@@ -28,10 +28,10 @@ impl Game<'_> {
     }
 
     pub(super) fn sky_darken(&self) -> i32 {
-        if self.dim == Dim::Nether {
+        if self.dim == Dim::NETHER {
             return 11;
         }
-        if self.dim == Dim::End {
+        if self.dim == Dim::END {
             let sky = self
                 .res
                 .end_environment()

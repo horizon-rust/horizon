@@ -77,7 +77,7 @@ fn game() -> Game<'static> {
             hardcore: false,
             view_distance: 2,
             simulation_distance: 2,
-            dimension: Dim::Overworld.id().into(),
+            dimension: Dim::OVERWORLD.id().into(),
             allow_flight: false,
             seed: 0,
             max_players: 2,

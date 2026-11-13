@@ -45,7 +45,7 @@ impl Game<'_> {
     /// and the End. API 567.
     pub(super) fn native_level_weather(&self, level: LevelRef) -> Option<(f32, f32)> {
         let world = self.native_level_world(level)?;
-        if level.dimension() != super::Dim::Overworld.id() {
+        if level.dimension() != super::Dim::OVERWORLD.id() {
             return Some((0.0, 0.0));
         }
         Some(world.weather.levels(1.0))

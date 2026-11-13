@@ -2,7 +2,7 @@
 //! "Server hooks for plugin ports: world"): a web map or a backup tool takes
 //! a loaded chunk as it is now and reads it later, off the server thread,
 //! with the block map colours and biome tints to draw it.
-use super::{Dim, Game};
+use super::Game;
 use horizon_client::{biome::BiomeColors, blocks::MAP_COLORS, chunk::Chunk};
 use horizon_core::{biome::BiomeZoom, position::BlockPos};
 use horizon_world::registry::BlockStateId;
@@ -91,9 +91,7 @@ impl Game<'_> {
         let world = if dimension == self.dim.id() {
             &self.world
         } else {
-            let dim = [Dim::Overworld, Dim::Nether, Dim::End]
-                .into_iter()
-                .find(|d| d.id() == dimension)?;
+            let dim = self.known_level(dimension)?;
             self.levels.parked_world(dim)?
         };
         Some(NativeChunkSnapshot {

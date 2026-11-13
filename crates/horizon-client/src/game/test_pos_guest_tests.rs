@@ -73,7 +73,7 @@ pub(super) fn game() -> Game<'static> {
             hardcore: false,
             view_distance: 2,
             simulation_distance: 2,
-            dimension: Dim::Overworld.id().into(),
+            dimension: Dim::OVERWORLD.id().into(),
             allow_flight: false,
             seed: 0,
             max_players: 2,
@@ -192,5 +192,5 @@ fn test_pos_refuses_other_sources_and_restores_the_views() {
     );
     let g = game.lan.as_ref().unwrap().hub.guest(2).unwrap();
     assert_eq!((g.position, g.pitch), ([22.5, 101.0, 9.5], -90.0));
-    assert_eq!(game.dim, Dim::Overworld);
+    assert_eq!(game.dim, Dim::OVERWORLD);
 }

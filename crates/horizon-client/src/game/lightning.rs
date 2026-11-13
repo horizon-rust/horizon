@@ -83,7 +83,7 @@ impl Game<'_> {
         let (rain, thunder) = self.world.weather.levels(1.0);
         let weather = self.world.shape.sky_light
             && !self.world.shape.has_ceiling
-            && self.dim != super::Dim::End;
+            && self.dim != super::Dim::END;
         if rain <= 0.2 || thunder <= 0.9 || !weather || self.world_debug {
             return;
         }

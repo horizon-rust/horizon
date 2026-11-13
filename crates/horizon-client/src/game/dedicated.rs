@@ -1286,7 +1286,7 @@ impl Game<'_> {
             code_of_conducts,
             // DedicatedServer.serverLinks: `bug-report-link` as the only link
             // (ServerLinks.KnownLinkType.BUG_REPORT is id 0).
-            levels: self.level_shapes,
+            levels: self.level_shapes.clone(),
             horizon_clients_only: props
                 .raw
                 .get(horizon_client::lan::HORIZON_CLIENTS_ONLY)
@@ -1325,7 +1325,7 @@ impl Game<'_> {
             view_distance: props.view_distance.clamp(2, 32),
             simulation_distance: props.simulation_distance.clamp(2, 32),
             dimension: self.dim.id().to_owned(),
-            levels: self.level_shapes,
+            levels: self.level_shapes.clone(),
             seed: self.level.seed,
             max_players: props.max_players.max(0) as usize,
             integrated: false,
@@ -2635,7 +2635,7 @@ fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
 /// the overworld (`MinecraftServer.createCommandSourceStack` uses
 /// `overworld()`), so None when it already is.
 fn console_level(active: super::Dim) -> Option<super::Dim> {
-    (active != super::Dim::Overworld).then_some(super::Dim::Overworld)
+    (active != super::Dim::OVERWORLD).then_some(super::Dim::OVERWORLD)
 }
 
 #[cfg(test)]
@@ -2654,9 +2654,9 @@ mod tests {
     #[test]
     fn console_commands_run_in_the_overworld() {
         use super::super::Dim;
-        assert_eq!(super::console_level(Dim::Nether), Some(Dim::Overworld));
-        assert_eq!(super::console_level(Dim::End), Some(Dim::Overworld));
-        assert_eq!(super::console_level(Dim::Overworld), None);
+        assert_eq!(super::console_level(Dim::NETHER), Some(Dim::OVERWORLD));
+        assert_eq!(super::console_level(Dim::END), Some(Dim::OVERWORLD));
+        assert_eq!(super::console_level(Dim::OVERWORLD), None);
     }
 
     /// `BanIpCommands.banIp`: the info line names the affected players, one or several, and is

@@ -351,7 +351,7 @@ impl Game<'_> {
         // The menu closes in the player's own level, as when it leaves (`game/lan.rs`'s close of
         // every guest): a chest's lid, a villager's trade and a dropped cursor stack belong there.
         let back = self.dim;
-        let level = Dim::from_id(&host.hub.guests[i].dimension);
+        let level = Dim::builtin_or_overworld(&host.hub.guests[i].dimension);
         if let Err(e) = self.enter_level(Some(host), level) {
             return json!({ "error": format!("the player's level could not be opened: {e}") });
         }

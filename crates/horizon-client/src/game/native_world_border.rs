@@ -15,10 +15,7 @@ impl Game<'_> {
     /// other than the Overworld, the Nether and the End. API
     /// 515.
     pub(super) fn native_world_border(&self, dimension: &str) -> Option<[f64; 4]> {
-        let known = matches!(
-            dimension,
-            "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end"
-        );
+        let known = self.known_level(dimension).is_some();
         (known && self.native_authoritative()).then(|| self.border.bounds())
     }
 }

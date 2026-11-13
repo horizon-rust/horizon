@@ -1030,7 +1030,7 @@ impl Game<'_> {
     }
     /// Highest motion-blocking (no leaves) block + 1 (Heightmap MOTION_BLOCKING_NO_LEAVES).
     pub(super) fn motion_top(&self, x: i32, z: i32) -> i32 {
-        let top = if self.dim == Dim::Nether { 127 } else { 319 };
+        let top = if self.dim == Dim::NETHER { 127 } else { 319 };
         for y in (self.world.bottom_y()..=top).rev() {
             let f = self.res.facts().get(self.world.block(x, y, z));
             if (f.full_collision || f.fluid != Fluid::None) && !f.name.ends_with("leaves") {
@@ -1062,7 +1062,7 @@ impl Game<'_> {
             others_index: None,
             others_villagers: None,
             others_solid: None,
-            daylight: self.dim != Dim::Nether && self.sky_darken() < 4,
+            daylight: self.dim != Dim::NETHER && self.sky_darken() < 4,
             // day.json: false from tick 12542, true from 23460 (a step track).
             monsters_burn: self.dimension_type().has_timeline("minecraft:day")
                 && !(12542..23460).contains(&self.world.day_time.rem_euclid(24000)),

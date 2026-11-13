@@ -271,8 +271,8 @@ impl Game<'_> {
         // either way through the End deliberately keeps the source's final
         // placement/drop branch, even though the source entity was removed.
         if let Some(target) = teleported
-            && self.dim != Dim::End
-            && target != Dim::End
+            && self.dim != Dim::END
+            && target != Dim::END
         {
             return Ok(FallStep::Gone);
         }

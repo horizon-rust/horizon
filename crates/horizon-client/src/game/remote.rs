@@ -1117,7 +1117,7 @@ impl Game<'_> {
         self.ui.chat.clear();
         self.screen = Screen::Playing;
         self.title = None;
-        self.dim = Dim::Overworld;
+        self.dim = Dim::OVERWORLD;
         self.clear_lod();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
@@ -1367,7 +1367,7 @@ impl Game<'_> {
         self.ui.chat.clear();
         self.screen = Screen::Playing;
         self.title = None;
-        self.dim = Dim::Overworld;
+        self.dim = Dim::OVERWORLD;
         self.clear_lod();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
@@ -2309,7 +2309,7 @@ impl Game<'_> {
             dimension.has_skylight,
             dimension.has_ceiling,
         )
-        .unwrap_or_else(|_| super::Dim::from_id(&dimension.name).shape());
+        .unwrap_or_else(|_| horizon_client::chunk::LevelShapes::vanilla().get(&dimension.name));
         // handleRespawn keeps the ClientLevel only for the same level key:
         // two levels sharing a dimension type are still two levels.
         let same = keep_world && r.heard_level.as_deref() == Some(spawn.dimension.as_str());
@@ -2336,7 +2336,7 @@ impl Game<'_> {
         r.position_sender = Default::default();
         r.predictions.clear();
         self.set_mode_id(spawn.game_type);
-        self.dim = Dim::from_id(&spawn.dimension);
+        self.dim = Dim::builtin_or_overworld(&spawn.dimension);
         self.audio.set_world(&spawn.dimension);
         // ClientPacketListener.handleLogin / handleRespawn: the server's
         // Player.getLastDeathLocation, for the recovery compass.
@@ -3364,7 +3364,7 @@ impl Game<'_> {
                         r.local_entity_silent = false;
                     }
                 }
-                let dimension_changed = self.dim != Dim::from_id(&p.spawn.dimension);
+                let dimension_changed = self.dim != Dim::builtin_or_overworld(&p.spawn.dimension);
                 let died = self.screen == Screen::Dead
                     || self
                         .player

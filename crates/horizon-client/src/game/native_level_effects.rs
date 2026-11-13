@@ -12,10 +12,7 @@ impl Game<'_> {
     /// The level's dimension id, for a handle of this open on the server.
     fn native_level_dimension(&self, level: LevelRef) -> Option<&'static str> {
         self.native_level_world(level)?;
-        [Dim::Overworld, Dim::Nether, Dim::End]
-            .into_iter()
-            .map(Dim::id)
-            .find(|id| *id == level.dimension())
+        self.known_level(level.dimension()).map(Dim::id)
     }
     /// Plays sound event `sound` at `at` for the players in this level
     /// within range (16 blocks, times the volume above 1), as

@@ -6,7 +6,6 @@
 //! Retries are `RetryOptions(numberOfTimes, untilFailed)`.
 use super::{Arg, Context, Game, R, err};
 use crate::game::{
-    Dim,
     game_tests::{Grid, Info, Retry, RunnerOptions, verify_batches},
     test_instances::TestDef,
 };
@@ -211,13 +210,9 @@ impl Game<'_> {
             return Ok(None);
         }
         // `server.getLevel(dimension)`: the server's levels.
-        let dim = match def.dimension.as_str() {
-            "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end" => {
-                Some(Dim::from_id(&def.dimension))
-            }
-            _ => None,
-        }
-        .filter(|d| *d == self.dim || !self.options.execution_role.is_client());
+        let dim = self
+            .known_level(&def.dimension)
+            .filter(|d| *d == self.dim || !self.options.execution_role.is_client());
         let Some(dim) = dim else {
             self.test_failure(Text::literal(format!(
                 "Could not resolve level for dimension: {}",

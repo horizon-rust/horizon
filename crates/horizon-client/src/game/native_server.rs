@@ -960,7 +960,7 @@ impl Game<'_> {
     /// it runs.
     fn run_as_server_source(&mut self, line: &str, silent: bool) -> bool {
         let server = execute::Source {
-            dimension: Dim::Overworld,
+            dimension: Dim::OVERWORLD,
             silent,
             ..self.server_source()
         };

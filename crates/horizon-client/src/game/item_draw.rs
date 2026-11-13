@@ -3,7 +3,7 @@
 //! dropped items (`ItemEntityRenderer`) and items posed in the world (hands,
 //! frames, armour stands). This binds the resolver's host services
 //! (`ItemEnv`) and the special renderers' registries to the game.
-use super::{Dim, Game, entity_culling::EntityCullDecision};
+use super::{Game, entity_culling::EntityCullDecision};
 use horizon_assets::item_model::{
     Components, ComponentsView, DisplayContext, GlobalPos, ItemEnv, LevelState, OwnerState,
     StackView,
@@ -267,11 +267,7 @@ impl Game<'_> {
     /// The client level as item models read it: worked out once a frame (a
     /// screen of items read the same level, its sky sampled once).
     pub(super) fn item_level(&self) -> LevelState {
-        let dimension = match self.dim {
-            Dim::Overworld => "minecraft:overworld",
-            Dim::Nether => "minecraft:the_nether",
-            Dim::End => "minecraft:the_end",
-        };
+        let dimension = self.dim.id();
         let key = (
             self.frames,
             self.world.game_time,

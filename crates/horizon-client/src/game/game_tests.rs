@@ -1672,7 +1672,7 @@ impl Game<'_> {
         if player.is_some_and(|(_, dim, _)| {
             dimensions.len() <= 1
                 && dimensions.contains(&dim)
-                && dimensions.contains(&Dim::Overworld)
+                && dimensions.contains(&Dim::OVERWORLD)
         }) {
             return;
         }
@@ -1746,7 +1746,7 @@ mod tests {
             "minecraft:t".into(),
             TestDef::sample(block_based, max_ticks, setup_ticks),
             Some((0, 64, 0)),
-            Dim::Overworld,
+            Dim::OVERWORLD,
             Rotation::None,
         )
     }
@@ -1754,14 +1754,14 @@ mod tests {
     #[test]
     fn a_test_keeps_its_level_awake_until_it_is_done() {
         let mut tests = GameTests::default();
-        assert!(!tests.has_tests_in(Dim::Nether));
+        assert!(!tests.has_tests_in(Dim::NETHER));
         let mut nether = info(false, 10, 0);
-        nether.dim = Dim::Nether;
+        nether.dim = Dim::NETHER;
         tests.ticker.push(nether);
-        assert!(tests.has_tests_in(Dim::Nether));
-        assert!(!tests.has_tests_in(Dim::Overworld));
+        assert!(tests.has_tests_in(Dim::NETHER));
+        assert!(!tests.has_tests_in(Dim::OVERWORLD));
         // A rerun keeps the level of the test it copies.
-        assert_eq!(tests.ticker[0].copy_reset(2).dim, Dim::Nether);
+        assert_eq!(tests.ticker[0].copy_reset(2).dim, Dim::NETHER);
     }
 
     #[test]
@@ -1769,8 +1769,8 @@ mod tests {
         let mut grid = Grid::new((4, 9), 10).clearing();
         assert!(grid.clear_on_batch);
         grid.states
-            .push((Dim::Overworld, DimGrid::new((4, 70, 12))));
-        grid.states.push((Dim::Nether, DimGrid::new((4, 32, 12))));
+            .push((Dim::OVERWORLD, DimGrid::new((4, 70, 12))));
+        grid.states.push((Dim::NETHER, DimGrid::new((4, 32, 12))));
         let nether = &grid.states[1].1;
         assert_eq!(nether.next, (4, 32, 12));
         assert_eq!(nether.row_z, (12, 13));
@@ -1894,7 +1894,7 @@ mod completed_test_coordinate_feedback_tests {
         let uuid = game.acting_player_uuid();
         assert_eq!(uuid, [0, 0, 0, 77]);
         assert_eq!(game.level.health, 20.0);
-        for dimension in [Dim::Overworld, Dim::Nether] {
+        for dimension in [Dim::OVERWORLD, Dim::NETHER] {
             game.enter_command_level(dimension);
             game.world
                 .chunks
@@ -1910,7 +1910,7 @@ mod completed_test_coordinate_feedback_tests {
             );
         }
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(8.5, 200.0, 8.5)).unwrap());
-        assert_eq!(game.dim, Dim::Nether);
+        assert_eq!(game.dim, Dim::NETHER);
         let definition = game.test_def("minecraft:always_pass").unwrap();
         assert_eq!(definition.dimension, "minecraft:overworld");
         assert!(!definition.block_based);
@@ -1925,19 +1925,19 @@ mod completed_test_coordinate_feedback_tests {
             game.game_tests
                 .ticker
                 .iter()
-                .any(|i| i.key == "minecraft:always_pass" && i.dim == Dim::Overworld)
+                .any(|i| i.key == "minecraft:always_pass" && i.dim == Dim::OVERWORLD)
         );
         let mut messages = Vec::new();
         // Real registered run, actual test ticker and completion; no injected finish.
         for _ in 0..8 {
-            game.enter_command_level(Dim::Overworld);
+            game.enter_command_level(Dim::OVERWORLD);
             game.tick_game_tests();
             for out in &game.game_tests.outbox {
                 if let Out::Console { text, .. } = out {
                     messages.push(text.component());
                 }
             }
-            game.enter_command_level(Dim::Nether);
+            game.enter_command_level(Dim::NETHER);
         }
         let runner = game.game_tests.runner.as_ref().unwrap();
         assert_eq!(runner.tracked.len(), 1);
@@ -1965,7 +1965,7 @@ mod completed_test_coordinate_feedback_tests {
             game.player.as_ref().unwrap().position,
             Vec3::new(8.5, 200.0, 8.5)
         );
-        assert_eq!(game.dim, Dim::Nether);
+        assert_eq!(game.dim, Dim::NETHER);
         assert!(
             debug.iter().any(|m| m.contains("test.player.coordinates"))
                 && debug.iter().any(|m| m.contains("test.run.coordinates")),

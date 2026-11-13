@@ -6,7 +6,7 @@ mod event_timings;
 mod level_event_targets;
 mod mob_states;
 
-use super::{Game, shield::OFFHAND_SLOT};
+use super::{Dim, Game, shield::OFFHAND_SLOT};
 use event_timings::EventTimings;
 use horizon_client::{
     Result,
@@ -238,7 +238,7 @@ pub(super) struct LanHost {
     pub broken: Vec<[f64; 3]>,
     /// Hurt time, death and swing time (while swinging) of the mobs guests
     /// see; the players' hurt time by entity id.
-    mob_state: HashMap<super::Dim, HashMap<u32, (i32, bool, Option<i32>)>>,
+    mob_state: HashMap<Dim, HashMap<u32, (i32, bool, Option<i32>)>>,
     /// Each placed guest's pose as the mods last heard it
     /// (`native_entity_pose_change`), by connection.
     pub poses: HashMap<u32, horizon_client::pose::Pose>,
@@ -1533,12 +1533,12 @@ impl Game<'_> {
         // (`ServerPlayer.disconnect` -> `doCloseContainer`), so the cursor,
         // the trade and the inputs are back in the file that is saved.
         let back = self.dim;
-        let open: Vec<(u32, super::Dim)> = host
+        let open: Vec<(u32, Dim)> = host
             .hub
             .guests
             .iter()
             .filter(|g| g.placed)
-            .map(|g| (g.conn, super::Dim::from_id(&g.dimension)))
+            .map(|g| (g.conn, g.level()))
             .collect();
         for (conn, dim) in open {
             if self.enter_level(Some(host), dim).is_ok() {
@@ -1594,7 +1594,7 @@ impl Game<'_> {
             .filter(|g| g.placed && g.dimension == dim && Some(g.uuid) != but)
             .filter_map(|g| g.vehicle)
             .collect();
-        if host && super::Dim::from_id(dim) == self.dim {
+        if host && Dim::builtin_or_overworld(dim) == self.dim {
             others.extend(self.riding);
         }
         others
@@ -1612,7 +1612,7 @@ impl Game<'_> {
     ) -> Option<(horizon_world::nbt::Tag, [i32; 4])> {
         vehicle?;
         let back = self.dim;
-        let theirs = super::Dim::from_id(dim);
+        let theirs = Dim::builtin_or_overworld(dim);
         if theirs != back
             && let Err(e) = self.enter_level(host.as_deref_mut(), theirs)
         {
@@ -2229,7 +2229,7 @@ impl Game<'_> {
                     // (`ServerPlayer.disconnect` -> `doCloseContainer`).
                     if guest.placed {
                         let back = self.dim;
-                        let theirs = super::Dim::from_id(&guest.dimension);
+                        let theirs = guest.level();
                         if self.enter_level(Some(&mut host), theirs).is_ok() {
                             let conn = guest.conn;
                             let at = host.hub.guests.len();
@@ -2933,7 +2933,7 @@ impl Game<'_> {
             // stands where PlayerSpawnFinder puts them, not all on one spot
             // (it reads the loaded level, which holds the spawn when it is
             // the overworld).
-            let feet = if self.dim == super::Dim::Overworld {
+            let feet = if self.dim == Dim::OVERWORLD {
                 self.server_player_spawn(spawn)
             } else {
                 spawn
@@ -2950,7 +2950,7 @@ impl Game<'_> {
             g.head_yaw = g.yaw;
             g.health = 20.0;
             g.food = 20;
-            g.dimension = super::Dim::Overworld.id().to_owned();
+            g.dimension = Dim::OVERWORLD.id().to_owned();
         }
         // Spigot's PlayerSpawnLocationEvent: the mods may place them elsewhere.
         let (mut dimension, mut position, mut rotation) =
@@ -2962,7 +2962,7 @@ impl Game<'_> {
             &mut position,
             &mut rotation,
         );
-        if dimension != g.dimension && super::Dim::from_id(&dimension).id() == dimension {
+        if dimension != g.dimension && Dim::builtin_or_overworld(&dimension).id() == dimension {
             g.dimension = dimension;
         }
         if position != g.position && position.iter().all(|v| v.is_finite()) {
@@ -2975,7 +2975,7 @@ impl Game<'_> {
         }
         // A server places each player in their own level (`PlayerList.placeNewPlayer`).
         let back = self.dim;
-        let level = super::Dim::from_id(&g.dimension);
+        let level = g.level();
         let elsewhere = level != back;
         if !elsewhere {
             g.dimension = in_place;
@@ -3870,7 +3870,7 @@ mod tests {
             Arc::ptr_eq(&opened, &later),
             "a late helper or disabled pack cannot replace a frozen world"
         );
-        let packet = later.registry_packets(true, &horizon_client::chunk::LevelShapes::VANILLA);
+        let packet = later.registry_packets(true, &horizon_client::chunk::LevelShapes::vanilla());
         let packet = packet
             .iter()
             .find(|p| p.registry == "minecraft:damage_type")
@@ -3976,7 +3976,7 @@ mod tests {
             "unrelated registries stay lazy"
         );
         let fall = wire.id("minecraft:damage_type", "minecraft:fall").unwrap();
-        let packets = wire.registry_packets(false, &horizon_client::chunk::LevelShapes::VANILLA);
+        let packets = wire.registry_packets(false, &horizon_client::chunk::LevelShapes::vanilla());
         let packet = packets
             .iter()
             .find(|p| p.registry == "minecraft:damage_type")

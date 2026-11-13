@@ -135,7 +135,7 @@ fn host(game: &mut Game<'_>) {
             hardcore: false,
             view_distance: 2,
             simulation_distance: 2,
-            dimension: Dim::Overworld.id().into(),
+            dimension: Dim::OVERWORLD.id().into(),
             allow_flight: false,
             seed: 0,
             max_players: 2,
@@ -257,8 +257,8 @@ fn a_knot_tied_again_after_its_last_lead_is_a_new_entity() {
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn the_same_fence_position_in_another_level_is_another_knot() {
     let mut game = game();
-    game.enter_command_level(Dim::Nether);
-    assert_eq!(game.dim, Dim::Nether);
+    game.enter_command_level(Dim::NETHER);
+    assert_eq!(game.dim, Dim::NETHER);
     for x in 0..2 {
         game.world
             .chunks
@@ -273,14 +273,14 @@ fn the_same_fence_position_in_another_level_is_another_knot() {
     ] {
         assert!(game.run_command(command), "{command}");
     }
-    game.enter_command_level(Dim::Overworld);
-    assert_eq!(game.dim, Dim::Overworld);
+    game.enter_command_level(Dim::OVERWORLD);
+    assert_eq!(game.dim, Dim::OVERWORLD);
     summon_pig(&mut game, 1, 16.5);
     step(&mut game);
     let here = knots(&game);
-    game.enter_command_level(Dim::Nether);
+    game.enter_command_level(Dim::NETHER);
     let there = knots(&game);
-    game.enter_command_level(Dim::Overworld);
+    game.enter_command_level(Dim::OVERWORLD);
     let ([here], [there]) = (&here[..], &there[..]) else {
         panic!("one knot in each level: {here:?} {there:?}");
     };

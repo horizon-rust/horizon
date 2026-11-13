@@ -30,9 +30,9 @@ impl Game<'_> {
         };
         draws.clear();
         let world = match self.dim {
-            Dim::Overworld => Some(0),
-            Dim::End => Some(1),
-            Dim::Nether => None,
+            Dim::OVERWORLD => Some(0),
+            Dim::END => Some(1),
+            _ => None,
         };
         let now = std::time::Instant::now();
         let seconds = self

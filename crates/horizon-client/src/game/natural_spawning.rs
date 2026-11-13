@@ -559,7 +559,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
     }
     fn respawn(&self) -> Option<[i32; 3]> {
         // The world spawn point lives in the overworld.
-        if self.game.dim != Dim::Overworld {
+        if self.game.dim != Dim::OVERWORLD {
             return None;
         }
         self.game.level.spawn.map(|s| {
@@ -950,7 +950,7 @@ impl<'a> Game<'a> {
     /// keeps its chunks empty (the dimension is also checked, as before, so a
     /// preset that fails to load cannot start filling the End).
     pub(super) fn spawn_generation_creatures(&mut self, cx: i32, cz: i32) {
-        if !self.world.chunks.contains_key(&(cx, cz)) || self.dim == Dim::End {
+        if !self.world.chunks.contains_key(&(cx, cz)) || self.dim == Dim::END {
             return;
         }
         let Some(terrain) = self.end.locator() else {
@@ -1052,7 +1052,7 @@ mod tests {
                 hardcore: false,
                 view_distance: 2,
                 simulation_distance: 2,
-                dimension: Dim::Overworld.id().into(),
+                dimension: Dim::OVERWORLD.id().into(),
                 allow_flight: false,
                 seed: 0,
                 max_players: 8,

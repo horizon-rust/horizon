@@ -60,7 +60,7 @@ impl RespawnConfig {
     }
     pub(super) fn from_saved((dim, pos, yaw, pitch, forced): &SavedRespawn) -> Self {
         Self {
-            dim: Dim::from_id(dim),
+            dim: Dim::builtin_or_overworld(dim),
             pos: *pos,
             yaw: *yaw,
             pitch: *pitch,
@@ -821,7 +821,7 @@ mod pitch_preservation_controls {
 
     #[test]
     fn wrapped_existing_callers_default_to_positive_zero_pitch() {
-        let c = RespawnConfig::wrapped(Dim::Overworld, [5, 100, 5], 45.0, false);
+        let c = RespawnConfig::wrapped(Dim::OVERWORLD, [5, 100, 5], 45.0, false);
         assert_eq!(c.yaw.to_bits(), 45f32.to_bits());
         assert_eq!(c.pitch.to_bits(), 0.0f32.to_bits());
         assert!(!c.forced);
@@ -866,7 +866,7 @@ mod pitch_preservation_controls {
         game.world.set(5, 100, 6, foot).unwrap();
         assert!(game.is_bed(head) && game.bed_sets_spawn(head));
         let bed = RespawnConfig {
-            dim: Dim::Overworld,
+            dim: Dim::OVERWORLD,
             pos: [5, 100, 5],
             yaw: 45.0,
             pitch: 0.0,
@@ -885,12 +885,12 @@ mod pitch_preservation_controls {
         assert_eq!(stored.1.to_bits(), look_at_yaw(stored.0, bed.pos).to_bits());
 
         // Existing built-in dimension facts select the anchor rule; no new world or actor API.
-        game.dim = Dim::Nether;
+        game.dim = Dim::NETHER;
         let anchor = state(&game, "minecraft:respawn_anchor", &[("charges", "2")]);
         game.world.set(10, 100, 10, anchor).unwrap();
         assert!(game.anchor_works() && game.is_anchor(anchor));
         let c = RespawnConfig {
-            dim: Dim::Nether,
+            dim: Dim::NETHER,
             pos: [10, 100, 10],
             yaw: 45.0,
             pitch: 0.0,
@@ -913,12 +913,12 @@ mod pitch_preservation_controls {
             "existing forced-charge behavior"
         );
 
-        game.dim = Dim::Overworld;
+        game.dim = Dim::OVERWORLD;
         game.level.world_spawn = Some([4, 100, 4]);
         game.level.world_spawn_angle = [-30.0, -5.0];
         game.world.set(12, 100, 12, stone).unwrap();
         let invalid = RespawnConfig {
-            dim: Dim::Overworld,
+            dim: Dim::OVERWORLD,
             pos: [12, 100, 12],
             yaw: 45.0,
             pitch: 10.0,

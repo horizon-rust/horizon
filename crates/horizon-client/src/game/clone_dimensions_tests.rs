@@ -126,8 +126,8 @@ fn block_in(game: &mut Game<'_>, dim: &str, at: &str, block: &str) -> bool {
 fn a_clone_to_another_dimension_lands_in_that_world_and_comes_back() {
     let mut game = game();
     let here = game.dim;
-    assert_eq!(here, Dim::Overworld);
-    load_chunk_in(&mut game, Dim::Nether, here);
+    assert_eq!(here, Dim::OVERWORLD);
+    load_chunk_in(&mut game, Dim::NETHER, here);
     assert!(game.run_command("execute in minecraft:the_nether run setblock 14 100 0 gold_block"));
     assert!(block_in(
         &mut game,

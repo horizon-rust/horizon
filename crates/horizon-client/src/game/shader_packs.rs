@@ -296,9 +296,10 @@ impl Game<'_> {
         }
         let name = selected.clone();
         let dimension = match self.dim {
-            Dim::Overworld => 0,
-            Dim::Nether => -1,
-            Dim::End => 1,
+            Dim::OVERWORLD => 0,
+            Dim::NETHER => -1,
+            Dim::END => 1,
+            _ => 0,
         };
         if (dev_pack().is_none() && selected.starts_with("horizon:"))
             || horizon_shader_api::package::is_pack(&path)

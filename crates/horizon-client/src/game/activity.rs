@@ -53,9 +53,10 @@ impl Game<'_> {
         Activity::World {
             play,
             dimension: match self.dim {
-                Dim::Overworld => Dimension::Overworld,
-                Dim::Nether => Dimension::Nether,
-                Dim::End => Dimension::End,
+                Dim::OVERWORLD => Dimension::Overworld,
+                Dim::NETHER => Dimension::Nether,
+                Dim::END => Dimension::End,
+                _ => Dimension::Overworld,
             },
             mode: match self.mode {
                 GameMode::Survival => horizon_hooks::GameMode::Survival,

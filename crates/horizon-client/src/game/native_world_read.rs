@@ -1,5 +1,5 @@
 //! Read-only block and tag queries for native server hooks.
-use super::{Dim, Game};
+use super::Game;
 use horizon_client::mod_api::NativeLifecycleContext;
 use horizon_client::{
     items::{ItemStack, Items},
@@ -112,12 +112,9 @@ impl Game<'_> {
         if !self.native_lifecycle.permits_read(context) {
             return Err(NativeBlockReadError::InactiveContext);
         }
-        let dim = match dimension {
-            "minecraft:overworld" => Dim::Overworld,
-            "minecraft:the_nether" => Dim::Nether,
-            "minecraft:the_end" => Dim::End,
-            _ => return Err(NativeBlockReadError::UnavailableDimension),
-        };
+        let dim = self
+            .known_level(dimension)
+            .ok_or(NativeBlockReadError::UnavailableDimension)?;
         let world = if dim == self.dim {
             Some(&self.world)
         } else {
@@ -135,12 +132,7 @@ impl Game<'_> {
     /// a server also its parked ones), so a caller can keep its last answer.
     /// API 424.
     pub(super) fn native_fluid_flow(&self, dimension: &str, pos: [i32; 3]) -> Option<[f64; 3]> {
-        let dim = match dimension {
-            "minecraft:overworld" => Dim::Overworld,
-            "minecraft:the_nether" => Dim::Nether,
-            "minecraft:the_end" => Dim::End,
-            _ => return None,
-        };
+        let dim = self.known_level(dimension)?;
         let world = if dim == self.dim {
             &self.world
         } else {
