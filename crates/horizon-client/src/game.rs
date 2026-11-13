@@ -11521,10 +11521,7 @@ impl<'a> Game<'a> {
             previous: now,
             last_input: now,
             pad: Default::default(),
-            input_source: play_input::input_source_for(
-                role,
-                horizon_client::input_source::factory(),
-            ),
+            input_source: play_input::input_source(role),
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),

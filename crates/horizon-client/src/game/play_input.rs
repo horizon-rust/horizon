@@ -591,6 +591,13 @@ impl Game<'_> {
     }
 }
 
+/// A new game's input source, from the registered factory ([`input_source_for`]).
+pub(super) fn input_source(
+    role: super::execution_role::ExecutionRole,
+) -> Option<Box<dyn InputSource>> {
+    input_source_for(role, horizon_client::input_source::factory())
+}
+
 /// A new game's input source: its own, from the registered `factory`, for a player's game; none
 /// for a server's (the integrated server's thread, a dedicated server), which has no device.
 pub(super) fn input_source_for(
