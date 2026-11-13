@@ -131,6 +131,11 @@ hand something back (no mod listens) and keep the two notifications, which the s
 at the join, ordered by turn. A mob carrying a content mod's effect keeps the tick serial while mods
 are loaded. The entity tick Pre's cancellations are heard before the loop and passed to every group.
 
+A lingering potion cloud doses its mobs at its own place in the join order (#12183): a cloud
+that joined before some of the loop's mobs doses before the turn of the first of them, every mob
+in its box, whatever their island. A tick with such a dose runs serially. A cloud that joined after
+every mob doses after the loop, so its tick stays grouped.
+
 The tick profiler samples on whichever thread runs a mob: each helper samples for whoever samples
 on the server thread, into its own sums, which join the server thread's when it ends. A sampled
 mob's time on a helper includes its waits for earlier mobs' level random.
