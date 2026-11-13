@@ -8188,19 +8188,16 @@ impl Game<'_> {
                     .ok_or("missing lit block state")?;
                 state.properties.insert("lit".into(), "true".into());
                 self.level_set(hit.pos, registry.resolve(&state)?)?;
-                self.audio.play(
-                    if item == "fire_charge" {
-                        "minecraft:item.firecharge.use"
-                    } else {
-                        "minecraft:item.flintandsteel.use"
-                    },
-                    Some(at(hit.pos)),
-                    1.0,
-                    horizon_client::items::fire_starter_pitch(
-                        item == "fire_charge",
-                        &mut self.world.random,
-                    ),
+                let sound = if item == "fire_charge" {
+                    "minecraft:item.firecharge.use"
+                } else {
+                    "minecraft:item.flintandsteel.use"
+                };
+                let pitch = horizon_client::items::fire_starter_pitch(
+                    item == "fire_charge",
+                    &mut self.world.random,
                 );
+                self.play_block_use_sound(sound, at(hit.pos), pitch);
                 // FlintAndSteelItem / FireChargeItem.useOn: BLOCK_CHANGE at the lit block,
                 // and ItemStack.useOn's used statistic.
                 self.post_block_game_event(
@@ -8231,7 +8228,7 @@ impl Game<'_> {
                     item == "fire_charge",
                     &mut self.world.random,
                 );
-                self.audio.play(sound, Some(at(target)), 1.0, pitch);
+                self.play_block_use_sound(sound, at(target), pitch);
                 // BLOCK_PLACE: flint and steel names the clicked block, a fire charge the
                 // fire. Then ItemStack.useOn's used statistic.
                 let placed_at = if item == "fire_charge" {
@@ -12589,6 +12586,35 @@ mod subtitles;
 #[cfg(test)]
 #[path = "game_tests.rs"]
 mod tests;
+#[cfg(test)]
+mod test_neighbourhood {
+    //! Shared fixture step for tests that tick entities on prepared data.
+    use super::*;
+
+    impl Game<'_> {
+        /// Loads the chunks within 2 columns of `(cx, cz)` that are not loaded yet.
+        /// Entity ticking waits for every chunk in that 5x5 neighbourhood
+        /// (`ChunkMap.prepareEntityTickingChunk`), so a fixture that ticks mobs,
+        /// items or TNT in a chunk calls this after setting up its own chunks.
+        pub(crate) fn load_ticking_neighbourhood(&mut self, cx: i32, cz: i32) {
+            for z in cz - 2..=cz + 2 {
+                for x in cx - 2..=cx + 2 {
+                    if self.world.chunks.contains_key(&(x, z)) {
+                        continue;
+                    }
+                    self.world.chunks.insert(
+                        (x, z),
+                        std::sync::Arc::new(horizon_client::chunk::Chunk::empty(x, z)),
+                    );
+                    // A chunk that is already registered keeps its ticks.
+                    let _ = self
+                        .block_ticks
+                        .add_empty_chunk(horizon_core::position::ChunkPos::new(x, z));
+                }
+            }
+        }
+    }
+}
 
 fn write_level_for_role(
     level: &mut Level,
