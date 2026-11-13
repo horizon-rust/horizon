@@ -2040,8 +2040,6 @@ impl Game<'_> {
         let playing_screen = |screen| self.title.is_none() && self.screen == screen;
         self.pad_keyboard_captures()
             || playing_screen(Screen::Chat)
-            || self.sign_edit.is_some()
-            || matches!(self.book, Some(super::books::BookScreen::Edit { .. }))
             || (playing_screen(Screen::Creative) && self.creative_screen.tab().search)
             || self.recipe_search_focused()
             || self.mod_browser_typing()
@@ -2228,6 +2226,20 @@ impl Game<'_> {
             && let Some(title) = self.title.as_mut()
         {
             title.blur_field();
+        }
+        if left.is_some_and(|l| l.kind == Kind::Field) && target.kind != Kind::Field {
+            if let Some(edit) = self.sign_edit.as_mut() {
+                edit.edit.focused = false;
+            }
+            if let Some(super::books::BookScreen::Edit {
+                title_edit,
+                page_edit,
+                ..
+            }) = self.book.as_mut()
+            {
+                title_edit.focused = false;
+                page_edit.focused = false;
+            }
         }
         match target.kind {
             Kind::Field => {

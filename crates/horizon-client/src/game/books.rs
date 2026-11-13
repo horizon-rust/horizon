@@ -80,12 +80,30 @@ impl BookScreen {
             signing,
             title,
             title_edit,
+            page_edit,
             ..
         } = self
         {
             *signing = true;
             title_edit.set_value(title.as_str());
             title_edit.reset_blink();
+            // `BookSignScreen.setInitialFocus`: the title box takes the focus.
+            title_edit.focused = true;
+            page_edit.focused = false;
+        }
+    }
+    /// Back from the sign screen to the page: the page field takes the focus again.
+    fn end_signing(&mut self) {
+        if let Self::Edit {
+            signing,
+            title_edit,
+            page_edit,
+            ..
+        } = self
+        {
+            *signing = false;
+            title_edit.focused = false;
+            page_edit.focused = true;
         }
     }
 }
@@ -478,7 +496,9 @@ impl Game<'_> {
             return;
         }
         if let Some(shortcut) = self.edit_shortcut(event) {
-            self.book_shortcut(shortcut);
+            if self.book_field_focused() {
+                self.book_shortcut(shortcut);
+            }
             return;
         }
         let key = match event.physical_key {
@@ -490,6 +510,7 @@ impl Game<'_> {
     /// A key and the text it typed in the open book (the keyboard, or a
     /// controller's on-screen keyboard).
     pub(super) fn book_input(&mut self, key: Option<KeyCode>, text: Option<&str>) {
+        let focused = self.book_field_focused();
         match self.book.as_mut() {
             Some(BookScreen::View { .. }) => match key {
                 Some(KeyCode::Escape) => self.close_book(),
@@ -499,11 +520,11 @@ impl Game<'_> {
             },
             Some(BookScreen::Edit { signing: true, .. }) => match key {
                 Some(KeyCode::Escape) => {
-                    if let Some(BookScreen::Edit { signing, .. }) = self.book.as_mut() {
-                        *signing = false;
+                    if let Some(book) = self.book.as_mut() {
+                        book.end_signing();
                     }
                 }
-                Some(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                Some(KeyCode::Enter | KeyCode::NumpadEnter) if focused => {
                     let blank = self.book.as_ref().is_some_and(
                         |b| matches!(b, BookScreen::Edit { title, .. } if title.trim().is_empty()),
                     );
@@ -511,37 +532,59 @@ impl Game<'_> {
                         self.save_book(true);
                     }
                 }
-                Some(key) if self.book_title_key(key) => {}
-                _ => {
+                Some(key) if focused && self.book_title_key(key) => {}
+                _ if focused => {
                     if let Some(typed) = text {
                         self.book_title_insert(typed);
                     }
                 }
+                _ => {}
             },
             Some(BookScreen::Edit { .. }) => match key {
                 Some(KeyCode::Escape) => self.save_book(false),
                 Some(KeyCode::PageUp) => self.turn_page(false),
                 Some(KeyCode::PageDown) => self.turn_page(true),
-                Some(KeyCode::ArrowUp) => self.book_move_line(-1),
-                Some(KeyCode::ArrowDown) => self.book_move_line(1),
+                Some(KeyCode::ArrowUp) if focused => self.book_move_line(-1),
+                Some(KeyCode::ArrowDown) if focused => self.book_move_line(1),
                 // MultilineTextField.keyPressed: Home and End seek the caret's
                 // line; with Ctrl they go to the page's start and end.
-                Some(edge @ (KeyCode::Home | KeyCode::End)) if !self.has_control_down() => {
+                Some(edge @ (KeyCode::Home | KeyCode::End))
+                    if focused && !self.has_control_down() =>
+                {
                     self.book_line_edge(edge == KeyCode::End)
                 }
-                Some(KeyCode::Enter | KeyCode::NumpadEnter) => self.page_insert("\n"),
-                Some(key) if self.book_page_key(key) => {}
-                _ => {
+                Some(KeyCode::Enter | KeyCode::NumpadEnter) if focused => self.page_insert("\n"),
+                Some(key) if focused && self.book_page_key(key) => {}
+                _ if focused => {
                     if let Some(typed) = text {
                         self.page_insert(typed);
                     }
                 }
+                _ => {}
             },
             None => {}
         }
     }
+    fn book_field_focused(&self) -> bool {
+        match self.book.as_ref() {
+            Some(BookScreen::Edit {
+                signing: true,
+                title_edit,
+                ..
+            }) => title_edit.focused,
+            Some(BookScreen::Edit {
+                signing: false,
+                page_edit,
+                ..
+            }) => page_edit.focused,
+            _ => false,
+        }
+    }
     /// Typing for `horizon-ctl type` (`\n` is a line break).
     pub(super) fn book_type(&mut self, text: &str) {
+        if !self.book_field_focused() {
+            return;
+        }
         let text = text.replace("\\n", "\n");
         match self.book.as_mut() {
             Some(BookScreen::Edit { signing: true, .. }) => self.book_title_insert(&text),
@@ -603,6 +646,9 @@ impl Game<'_> {
     }
     /// Ctrl+A/C/V/X: the title box while signing, else the page.
     pub(super) fn book_shortcut(&mut self, shortcut: horizon_client::clipboard::EditShortcut) {
+        if !self.book_field_focused() {
+            return;
+        }
         let signing = matches!(self.book, Some(BookScreen::Edit { signing: true, .. }));
         if signing {
             if let Some(BookScreen::Edit {
@@ -789,6 +835,7 @@ impl Game<'_> {
         else {
             return;
         };
+        title_edit.focused = true;
         let tx = field_x + ((114.0 - self.gui.atlas.font.width(title)) / 2.0).floor();
         let rel = (mx - tx).max(0.0);
         let pos = self.gui.atlas.font.fit(title, rel);
@@ -799,6 +846,7 @@ impl Game<'_> {
     fn book_page_click(&mut self, origin_x: f32, origin_y: f32, mx: f32, my: f32, double: bool) {
         if double {
             if let Some(BookScreen::Edit { page_edit, .. }) = self.book.as_mut() {
+                page_edit.focused = true;
                 page_edit.select_word_at_cursor();
             }
             return;
@@ -810,6 +858,7 @@ impl Game<'_> {
         };
         let pos = self.page_index_at(&text, mx - origin_x, my - origin_y);
         if let Some(BookScreen::Edit { page_edit, .. }) = self.book.as_mut() {
+            page_edit.focused = true;
             page_edit.set_cursor(pos, shift);
         }
     }
@@ -1112,8 +1161,8 @@ impl Game<'_> {
             },
             Some("done") => match self.book.as_mut() {
                 Some(BookScreen::Edit { signing: true, .. }) => {
-                    if let Some(BookScreen::Edit { signing, .. }) = self.book.as_mut() {
-                        *signing = false;
+                    if let Some(book) = self.book.as_mut() {
+                        book.end_signing();
                     }
                 }
                 Some(BookScreen::Edit { .. }) => self.save_book(false),
@@ -1282,6 +1331,17 @@ impl Game<'_> {
             game.audio
                 .play("minecraft:ui.button.click", None, 0.25, 1.0)
         };
+        // A mouse or keyboard activation of a control gives up the text
+        // field, just as focusing a different widget on a Screen does.
+        if let Some(BookScreen::Edit {
+            title_edit,
+            page_edit,
+            ..
+        }) = self.book.as_mut()
+        {
+            title_edit.focused = false;
+            page_edit.focused = false;
+        }
         match &self.book {
             Some(BookScreen::Edit {
                 signing: true,
@@ -1294,8 +1354,8 @@ impl Game<'_> {
                     self.save_book(true);
                 } else if inside(w / 2.0 + 2.0, 196.0, 98.0, 20.0) {
                     click(self);
-                    if let Some(BookScreen::Edit { signing, .. }) = self.book.as_mut() {
-                        *signing = false;
+                    if let Some(book) = self.book.as_mut() {
+                        book.end_signing();
                     }
                 } else if inside(left + 36.0, 50.0, 114.0, 9.0) {
                     self.book_title_click(left + 36.0, mx);
@@ -1365,7 +1425,23 @@ impl Game<'_> {
             batch.rect_uv(left, top, 192.0, 192.0, r, u32::MAX);
         }
         // The page, or the signing title on it: a field to a controller, which opens its keyboard.
-        if matches!(book, BookScreen::Edit { .. }) {
+        if let BookScreen::Edit {
+            signing: true,
+            title_edit,
+            ..
+        } = book
+        {
+            let rect = [((w - 114.0) / 2.0).floor() - 3.0, 48.0, 120.0, 13.0];
+            widgets::target_as(rect, widgets::Kind::Field);
+            widgets::narratable(|| {
+                Narratable::edit_box(
+                    screen_info::tr("book.sign.titlebox", &[]),
+                    title_edit.value.clone(),
+                    rect,
+                )
+                .focused(title_edit.focused)
+            });
+        } else if matches!(book, BookScreen::Edit { .. }) {
             widgets::target_as(
                 [
                     left + BOOK_TEXT[0],
@@ -1383,6 +1459,7 @@ impl Game<'_> {
                 (back, 43.0, "page_backward"),
             ] {
                 if show {
+                    widgets::target_as([left + x, top + 157.0, 23.0, 13.0], widgets::Kind::Button);
                     let sprite = if hover(left + x, top + 157.0, 23.0, 13.0) {
                         format!("gui/sprites/widget/{name}_highlighted")
                     } else {
@@ -1460,15 +1537,6 @@ impl Game<'_> {
                 // BookSignScreen: its title, and the title box focused.
                 widgets::begin_screen(|| {
                     ScreenInfo::new("book/sign", screen_info::tr("book.sign.title", &[]))
-                });
-                widgets::narratable(|| {
-                    let rect = [((w - 114.0) / 2.0).floor() - 3.0, 50.0, 114.0, 20.0];
-                    Narratable::edit_box(
-                        screen_info::tr("book.sign.titlebox", &[]),
-                        title_edit.value.clone(),
-                        rect,
-                    )
-                    .focused(title_edit.focused)
                 });
                 let edit = tr("book.editTitle", "Enter Book Title:");
                 let tw = HudBatch::text_width(atlas, &edit);

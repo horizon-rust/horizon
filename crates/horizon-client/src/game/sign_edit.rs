@@ -24,7 +24,7 @@ pub(super) struct SignEditor {
     pub front: bool,
     pub line: usize,
     /// The line being edited (`AbstractSignEditScreen`'s text field).
-    edit: EditBox,
+    pub(super) edit: EditBox,
     /// `AbstractSignEditScreen.messages`: the side's lines as edited, sent
     /// when the editor closes, even if the sign is gone by then.
     lines: [String; 4],
@@ -839,6 +839,9 @@ impl Game<'_> {
         let (x, y) = done_button(b.width, b.height);
         let (mx, my) = self.cursor;
         if mx >= x && mx < x + 200.0 && my >= y && my < y + 20.0 {
+            if let Some(edit) = self.sign_edit.as_mut() {
+                edit.edit.focused = false;
+            }
             self.audio.play_button_click();
             self.close_sign_editor();
             return;
@@ -865,6 +868,7 @@ impl Game<'_> {
             let lw = HudBatch::text_width(&self.gui.atlas, &value);
             let text_x = cx - (lw as i32 / 2) as f32;
             if let Some(edit) = self.sign_edit.as_mut() {
+                edit.edit.focused = true;
                 edit.edit.x = text_x;
                 edit.edit.y = ly;
                 edit.edit.width = max_width;
@@ -900,6 +904,7 @@ impl Game<'_> {
         self.render_transparent_background("sign_editor", batch);
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
+        let (mx, my) = self.cursor;
         let (key, fallback) = if sign.hanging {
             ("hanging_sign.edit", "Edit Hanging Sign Message")
         } else {
@@ -1004,9 +1009,26 @@ impl Game<'_> {
         horizon_client::widgets::narratable(|| {
             horizon_client::widgets::Narratable::button(done_label(), [bx, by, 200.0, 20.0], true)
         });
+        horizon_client::widgets::target_as(
+            [
+                cx - sign.max_line_width() / 2.0,
+                y - midpoint + edit.line as f32 * line_height,
+                sign.max_line_width(),
+                line_height,
+            ],
+            horizon_client::widgets::Kind::Field,
+        );
+        horizon_client::widgets::target_as(
+            [bx, by, 200.0, 20.0],
+            horizon_client::widgets::Kind::Button,
+        );
         batch.sprite_scaled(
             atlas,
-            "gui/sprites/widget/button",
+            if mx >= bx && mx < bx + 200.0 && my >= by && my < by + 20.0 {
+                "gui/sprites/widget/button_highlighted"
+            } else {
+                "gui/sprites/widget/button"
+            },
             bx,
             by,
             200.0,
