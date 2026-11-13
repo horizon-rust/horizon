@@ -18,7 +18,7 @@ use crate::game::Game;
 use crate::game::remote_projectiles::cloud_client_tick;
 use horizon_client::effects::EffectInstance;
 use horizon_client::join_seq::{JoinList, JoinSeq};
-use horizon_client::mobs::{Damage, Mob, Seen, Who, seen_grid::SeenGrid};
+use horizon_client::mobs::{Damage, Mob, MobSlot, Seen, Who, seen_grid::SeenGrid};
 use horizon_client::text::Text;
 use horizon_core::geometry::{Aabb, Vec3};
 use std::collections::{HashMap, HashSet};
@@ -96,6 +96,8 @@ fn takes(tags: &HashMap<String, HashSet<String>>, effects: &[Effect], m: &Mob) -
 }
 
 type Effect = (&'static str, i32, i32);
+/// The entity type tags (`inverted_healing_and_harm`, the effect immunities).
+pub(in crate::game) type EntityTags = HashMap<String, HashSet<String>>;
 
 /// One of a cloud's effects on a mob: an instant one at half strength
 /// (`HealOrHarmMobEffect.applyInstantaneousEffect`, `indirectMagic(cloud,
@@ -142,7 +144,7 @@ fn affect_mob(
 
 /// `snapshot[i]` redone from the mob as it is now (`alive` false once it has
 /// left the level), so the mobs that tick after it see that.
-pub(in crate::game) fn refresh_seen(
+fn refresh_seen(
     (snapshot, grid): (&mut [Seen], &mut SeenGrid),
     i: usize,
     m: &Mob,
@@ -161,21 +163,28 @@ fn inverted(tags: &HashMap<String, HashSet<String>>, m: &Mob) -> bool {
 }
 
 impl CloudDoses {
-    /// In the mob loop, before mob `i` ticks (`mobs.len()`: after them all):
+    /// Whether a dose is due before a mob's turn this tick, not only after
+    /// them all: a cloud due joined before one of `mobs`.
+    pub(in crate::game) fn between_turns(&self, mobs: &[Mob]) -> bool {
+        self.due
+            .first()
+            .is_some_and(|&(join, _)| mobs.iter().any(|m| join < m.join))
+    }
+
+    /// In the mob loop, before mob `i`'s turn (`mobs.len()`: after them all):
     /// the doses of the clouds that joined before it. `keep` holds the verdicts
-    /// of the mobs that have ticked (the first `keep.len()`); the ones gone
-    /// in their tick are not in the level any more. A dosed mob's snapshot
-    /// (if it has one) is redone, so the mobs after it see it as it is now.
-    pub(in crate::game) fn run(
+    /// of the mobs that have had their turn (the first `keep.len()`); the ones
+    /// gone in it are not in the level any more. A dosed mob's snapshot (if it
+    /// has one) is redone, so the mobs after it see it as it is now.
+    pub(in crate::game) fn run<M: MobSlot>(
         &mut self,
-        game: &Game<'_>,
+        (tags, uuid): (&EntityTags, Option<[i32; 4]>),
         i: usize,
-        mobs: &mut [Mob],
+        mobs: &mut [M],
         keep: &[bool],
         (snapshot, grid): (&mut [Seen], &mut SeenGrid),
     ) {
-        let uuid = game.level.player_uuid;
-        let before = mobs.get(i).map_or(JoinSeq::MAX, |m| m.join);
+        let before = mobs.get(i).map_or(JoinSeq::MAX, |m| m.mob().join);
         while let Some(&(join, area)) = self.due.first()
             && join < before
         {
@@ -187,10 +196,9 @@ impl CloudDoses {
             let Some(effects) = c.potion.as_ref().map(|p| p.effects.clone()) else {
                 continue;
             };
-            let tags = &world_stations!(game).enchantments.entity_tags;
             let inside: Vec<usize> = (0..mobs.len())
                 .filter(|&j| {
-                    let m = &mobs[j];
+                    let m = mobs[j].mob();
                     keep.get(j).copied().unwrap_or(true)
                         && m.alive()
                         && m.bounds().intersects(area)
@@ -199,7 +207,7 @@ impl CloudDoses {
                 .collect();
             let mut gone = false;
             for j in inside {
-                let m = &mut mobs[j];
+                let m = mobs[j].mob_mut();
                 if !admit(c, Victim::Mob(m.id), m.position.x, m.position.z) {
                     continue;
                 }
@@ -434,7 +442,9 @@ impl Game<'_> {
             let mut mobs = std::mem::take(&mut self.mobs);
             let all = vec![true; mobs.len()];
             let mut grid = SeenGrid::new(std::iter::empty());
-            doses.run(self, mobs.len(), &mut mobs, &all, (&mut [], &mut grid));
+            let tags = &world_stations!(self).enchantments.entity_tags;
+            let to = (tags, self.level.player_uuid);
+            doses.run(to, mobs.len(), &mut mobs[..], &all, (&mut [], &mut grid));
             mobs.append(&mut self.mobs);
             self.mobs = mobs;
         }
