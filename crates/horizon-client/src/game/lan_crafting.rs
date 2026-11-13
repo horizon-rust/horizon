@@ -179,6 +179,7 @@ impl Game<'_> {
         let brewed = std::mem::take(&mut menu.brewed);
         let crafted = std::mem::take(&mut menu.crafted);
         let item_crafted = std::mem::take(&mut menu.item_crafted);
+        let crafted_counts = std::mem::take(&mut menu.crafted_counts);
         menu.drops.clear();
         store_player(menu, &mut host.hub.guests[gi]);
         if !brewed.is_empty() {
@@ -189,21 +190,23 @@ impl Game<'_> {
                 }
             });
         }
-        if !crafted.is_empty() {
+        if !crafted_counts.is_empty() {
             let conn = host.hub.guests[gi].conn;
             self.as_guest(host, conn, |g| {
-                for (recipe, ingredients) in &crafted {
-                    g.trigger_recipe_crafted(recipe, ingredients);
+                for (item, count) in &crafted_counts {
+                    g.award_stat("crafted", item, *count);
                 }
             });
+        }
+        if !crafted.is_empty() {
+            let conn = host.hub.guests[gi].conn;
+            self.as_guest(host, conn, |g| g.award_crafted(&crafted));
         }
         if !item_crafted.is_empty() {
             let conn = host.hub.guests[gi].conn;
             self.as_guest(host, conn, |g| {
                 let player = g.native_acting_id();
                 for (recipe, stack) in &item_crafted {
-                    // ItemStack.onCraftedBy awards Stats.ITEM_CRAFTED.
-                    g.award_stat("crafted", &stack.item, stack.count as i32);
                     g.native_item_crafted(player, recipe, stack);
                 }
             });
@@ -1451,3 +1454,7 @@ mod machine_recipe_placement_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "lan_crafting_teach_tests.rs"]
+mod lan_crafting_teach_tests;
