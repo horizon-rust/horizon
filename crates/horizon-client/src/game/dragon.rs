@@ -6,6 +6,7 @@
 //! the spikes, its parts (head and neck take full damage, the rest a quarter
 //! plus one), wing knockback, block breaking, the death flight and rays, the
 //! exit portal, the egg and the next gateway; and its rendering and boss bar.
+mod crystal_damage;
 use super::commands::Target;
 use super::{
     Game,
@@ -1323,47 +1324,7 @@ impl Game<'_> {
             }
         }
     }
-    /// `EndCrystal.hurtServer`: remove it, blast only for non-explosion damage,
-    /// then notify the dragon fight even when no blast was created.
-    fn destroy_crystal(&mut self, index: usize, by: Option<FightWho>, damage: CrystalDamage) {
-        if index >= self.crystals.len() || self.crystals[index].invulnerable {
-            return;
-        }
-        let c = self.crystals.remove(index);
-        // Read before the blast, which can take other respawn crystals.
-        let respawn_crystal = self.fight.respawn.is_some()
-            && self
-                .fight
-                .respawn_crystals
-                .iter()
-                .any(|p| p.distance_squared(c.position) < 0.01);
-        if damage == CrystalDamage::Direct {
-            let at = [c.position.x, c.position.y, c.position.z];
-            // The blast's damage source carries the player, so the dragon
-            // remembers them before the blast can kill it.
-            self.fight.blast_by = by;
-            // EndCrystal.hurtServer: ExplosionInteraction.BLOCK.
-            let interaction = self.destroy_type("block_explosion_drop_decay");
-            // EndCrystal is 2 by 2 blocks: its box decides `isInWater`.
-            let (x, y, z) = (c.position.x, c.position.y, c.position.z);
-            self.combat.explosion_in_water = self.bounds_in_water(Aabb::new(
-                Vec3::new(x - 1.0, y, z - 1.0),
-                Vec3::new(x + 1.0, y + 2.0, z + 1.0),
-            ));
-            let _ = self.server_explode_from(
-                at,
-                6.0,
-                interaction,
-                false,
-                super::explosion::ExplosionSource::default()
-                    .with_silence(self.entity_silent(c.id))
-                    .with_entity(c.id, "minecraft:end_crystal"),
-            );
-            self.combat.explosion_in_water = false;
-            self.fight.blast_by = None;
-        }
-        self.crystal_destroyed(index, &c, by, respawn_crystal);
-    }
+
     /// `EndCrystal.onDestroyedBy`: also called before removal by EndCrystal.kill.
     fn crystal_destroyed(
         &mut self,
@@ -1456,6 +1417,7 @@ impl Game<'_> {
         by_player: bool,
         kind: DamageKind,
         direct: Option<&ProjectileKind>,
+        cause: Option<super::explosion::ExplosionCause>,
     ) -> Hurt {
         if id >= CRYSTAL_IDS {
             // EndCrystal.hurtServer: false while invulnerable and for fire
@@ -1465,7 +1427,7 @@ impl Game<'_> {
                 return Hurt::Refused;
             }
             let by = by_player.then(|| self.acting_player());
-            self.destroy_crystal(index, by, CrystalDamage::Direct);
+            self.destroy_crystal(index, by, CrystalDamage::Direct, cause);
             Hurt::Landed { full: true }
         } else if id >= SPECIAL {
             let by = by_player.then(|| self.acting_player());
@@ -1565,7 +1527,8 @@ impl Game<'_> {
             CrystalDamage::Direct
         };
         let player = self.command_player(cause);
-        self.destroy_crystal(index, player, damage);
+        let cause = cause.and_then(|t| self.explosion_cause(t));
+        self.destroy_crystal(index, player, damage, cause);
         true
     }
     /// `hurt_dragon_part` with no projectile behind the hit.
@@ -3739,7 +3702,7 @@ impl Game<'_> {
         for at in crystals {
             // Look up the current index after each removal.
             if let Some(i) = self.crystals.iter().position(|c| c.position == at) {
-                self.destroy_crystal(i, by, CrystalDamage::Explosion);
+                self.destroy_crystal(i, by, CrystalDamage::Explosion, None);
             }
         }
         let Some(d) = self.dragon.as_ref() else {

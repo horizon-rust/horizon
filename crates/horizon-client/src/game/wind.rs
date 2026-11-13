@@ -291,6 +291,7 @@ impl Game<'_> {
                         p.owner == Some(Who::Player),
                         horizon_client::mobs::DamageKind::WindCharge,
                         Some(&p.kind),
+                        self.projectile_explosion_cause(p),
                     );
                 }
             }

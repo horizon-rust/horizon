@@ -38,7 +38,14 @@ impl Game<'_> {
             .into_iter()
             .find(|(part, _)| *part == id)
             .map(|(_, b)| b);
-        let hurt = self.hit_special(id, amount, true, DamageKind::PlayerAttack, None);
+        let hurt = self.hit_special(
+            id,
+            amount,
+            true,
+            DamageKind::PlayerAttack,
+            None,
+            self.explosion_cause(super::commands::Target::Player),
+        );
         // The sweep and the sounds read the charge, which the hit then spends.
         if let (Some(area), Hurt::Landed { .. }) = (area, hurt) {
             let (knockback, _) = self.extra_knockback("minecraft:ender_dragon", scale);

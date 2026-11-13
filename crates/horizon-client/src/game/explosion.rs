@@ -4,6 +4,7 @@
 //! merged drops and TNT chain priming, and optional fire.
 use super::{
     Game,
+    commands::Target,
     entity::{Blast, Entity, EntityHandle, with_entity, with_entity_mut},
 };
 
@@ -257,6 +258,62 @@ impl Game<'_> {
                     ))
                 },
             )
+    }
+
+    pub(super) fn projectile_explosion_cause(
+        &self,
+        p: &horizon_client::projectiles::Projectile,
+    ) -> Option<ExplosionCause> {
+        let target = match p.owner {
+            Some(Who::Player) => p.guest.map_or(Target::Player, Target::Guest),
+            Some(Who::Mob(id)) => Target::Mob(id),
+            None if matches!(
+                p.kind,
+                horizon_client::projectiles::ProjectileKind::Arrow { .. }
+                    | horizon_client::projectiles::ProjectileKind::Trident
+                    | horizon_client::projectiles::ProjectileKind::SmallFireball
+                    | horizon_client::projectiles::ProjectileKind::LargeFireball { .. }
+            ) =>
+            {
+                return Some(ExplosionCause {
+                    entity: (p.id, self.explosion_entity_name(p.id, p.kind.id())),
+                    player: false,
+                    guest: None,
+                    species: None,
+                });
+            }
+            None => return None,
+        };
+        self.explosion_cause(target)
+    }
+
+    pub(super) fn explosion_cause(&self, target: Target) -> Option<ExplosionCause> {
+        let id = match target {
+            Target::Player => self
+                .lan_acting_entity
+                .or_else(|| self.player.as_ref().map(|p| p.entity_id as u32)),
+            Target::Guest(conn) if self.lan_acting == Some(conn) => self.lan_acting_entity,
+            _ => self.network_entity_id(target).map(|id| id as u32),
+        }?;
+        Some(ExplosionCause {
+            entity: (
+                id,
+                self.target_name(match target {
+                    Target::Guest(conn) if self.lan_acting == Some(conn) => Target::Player,
+                    other => other,
+                }),
+            ),
+            player: matches!(target, Target::Player | Target::Guest(_)),
+            guest: match target {
+                Target::Player => self.lan_acting,
+                Target::Guest(conn) => Some(conn),
+                _ => None,
+            },
+            species: match target {
+                Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).map(|m| m.species()),
+                _ => None,
+            },
+        })
     }
 
     fn explosion_cause_resolves(&self, cause: &ExplosionCause) -> bool {
@@ -2409,3 +2466,6 @@ mod shulker_lock_drop_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod cause_tests;
