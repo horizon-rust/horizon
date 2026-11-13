@@ -107,6 +107,11 @@ pub enum H {
     UpscalingSharpness,
     ScreenshotQuality,
     FrameGeneration,
+    Tfr,
+    TfrReprojectionStrength,
+    TfrHistoryStability,
+    TfrCutDistance,
+    TfrCutAngle,
     Hdr,
     HdrBlackLevel,
     /// Starts HDR calibration (`crate::hdr_calibration`).
@@ -402,6 +407,31 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::FrameGeneration,
                             Medium,
                             "Shows a made-up frame between each two real ones: smoother, a little more lag.",
+                        ),
+                        h(
+                            H::Tfr,
+                            Medium,
+                            "Temporal Frame Reprojection: alternates a fully rendered frame with a reprojected one for performance. Off by default; may add artifacts.",
+                        ),
+                        h(
+                            H::TfrReprojectionStrength,
+                            Low,
+                            "How strongly TFR reconstructs from history (1.0: full).",
+                        ),
+                        h(
+                            H::TfrHistoryStability,
+                            Low,
+                            "Stabilizes reprojection in consistent areas; too high can blur motion.",
+                        ),
+                        h(
+                            H::TfrCutDistance,
+                            Low,
+                            "Camera movement (world units) that forces a fully rendered frame.",
+                        ),
+                        h(
+                            H::TfrCutAngle,
+                            Low,
+                            "Camera rotation (degrees) that forces a fully rendered frame.",
                         ),
                     ],
                 ),
@@ -818,6 +848,10 @@ impl H {
                 n => (1.0 + crate::graphics::peak_step_of(n as f32)) / PEAK_POSITIONS as f32,
             }),
             H::HdrBlackLevel => Some(g.hdr_black_level as f32 / 100.0),
+            H::TfrReprojectionStrength => Some(g.tfr_reprojection_strength.clamp(0.0, 1.0)),
+            H::TfrHistoryStability => Some((g.tfr_history_stability.clamp(0.0, 0.35)) / 0.35),
+            H::TfrCutDistance => Some(((g.tfr_cut_distance.clamp(0.25, 16.0)) - 0.25) / 15.75),
+            H::TfrCutAngle => Some(((g.tfr_cut_angle.clamp(5.0, 90.0)) - 5.0) / 85.0),
             _ => None,
         }
     }
@@ -833,6 +867,10 @@ impl H {
             H::HdrPaperWhite | H::HdrUiBrightness => Some(crate::graphics::NITS_STEPS),
             H::HdrPeak => Some(PEAK_POSITIONS),
             H::HdrBlackLevel => Some(100),
+            H::TfrReprojectionStrength => Some(100),
+            H::TfrHistoryStability => Some(35),
+            H::TfrCutDistance => Some(63),
+            H::TfrCutAngle => Some(85),
             _ => None,
         }
     }
@@ -945,7 +983,18 @@ impl H {
             H::ScreenshotQuality => {
                 labelled("Screenshot Quality", format!("{}x", g.screenshot_quality))
             }
-            H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
+            H::FrameGeneration => labelled("Frame Generation", g.frame_generation_effective().label()),
+            H::Tfr => labelled("Temporal Reprojection", on_off(g.tfr)),
+            H::TfrReprojectionStrength => labelled(
+                "TFR Reprojection Strength",
+                format!("{:.2}", g.tfr_reprojection_strength),
+            ),
+            H::TfrHistoryStability => labelled(
+                "TFR History Stability",
+                format!("{:.2}", g.tfr_history_stability),
+            ),
+            H::TfrCutDistance => labelled("TFR Cut Distance", format!("{:.2}", g.tfr_cut_distance)),
+            H::TfrCutAngle => labelled("TFR Cut Angle", format!("{:.1}°", g.tfr_cut_angle)),
             H::Hdr => labelled("HDR", g.hdr.label()),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s, out) {
                 Setup::Unknown | Setup::Guessed => "Calibrate...",
@@ -1005,6 +1054,10 @@ impl H {
                 }
             }
             H::HdrBlackLevel => g.hdr_black_level = (v * 100.0).round() as u32,
+            H::TfrReprojectionStrength => g.tfr_reprojection_strength = v.clamp(0.0, 1.0),
+            H::TfrHistoryStability => g.tfr_history_stability = v.clamp(0.0, 1.0) * 0.35,
+            H::TfrCutDistance => g.tfr_cut_distance = 0.25 + v.clamp(0.0, 1.0) * 15.75,
+            H::TfrCutAngle => g.tfr_cut_angle = 5.0 + v.clamp(0.0, 1.0) * 85.0,
             _ => {}
         }
     }
@@ -1081,7 +1134,16 @@ impl H {
                 )
             }
             H::FrameGeneration => {
-                g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
+                g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back);
+                if g.tfr {
+                    g.frame_generation = FrameGeneration::Off;
+                }
+            }
+            H::Tfr => {
+                g.tfr = !g.tfr;
+                if g.tfr {
+                    g.frame_generation = FrameGeneration::Off;
+                }
             }
             // Any choice tries HDR output again on a driver a start failed on.
             H::Hdr => {
@@ -1197,6 +1259,7 @@ impl Item {
             Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
             Item::Horizon(H::CacheSigns) => g.cache_signs,
             Item::Horizon(H::CacheDecoratedPots) => g.cache_decorated_pots,
+            Item::Horizon(H::Tfr) => g.tfr,
             Item::Horizon(H::CacheBells) => g.cache_bells,
             Item::Horizon(H::CacheChests) => g.cache_chests,
             Item::Horizon(H::CacheBanners) => g.cache_banners,
@@ -1291,6 +1354,11 @@ impl Item {
                         | H::PresentMode
                         | H::Workers
                         | H::FrameGeneration
+                        | H::Tfr
+                        | H::TfrReprojectionStrength
+                        | H::TfrHistoryStability
+                        | H::TfrCutDistance
+                        | H::TfrCutAngle
                         | H::BatteryMode
                         | H::ShadowCache
                         | H::GraphicsApi

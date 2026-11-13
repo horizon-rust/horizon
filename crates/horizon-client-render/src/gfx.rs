@@ -1550,6 +1550,87 @@ pub struct Renderer {
     pub capture: Option<capture::Request>,
     /// Outcome of the last capture: its summary, or the error.
     pub capture_result: Option<std::result::Result<serde_json::Value, String>>,
+    /// Temporal Frame Reprojection state/config (clean-room, off by default).
+    tfr_state: crate::tfr::core::TfrState,
+    tfr_cfg: crate::tfr::config::TfrConfig,
+    /// Last presented world color for synthetic fallback (dedicated vertical slice path).
+    tfr_history: Option<TfrHistory>,
+}
+
+/// Minimal TFR history resources for the vertical-slice dedicated path.
+struct TfrHistory {
+    color: wgpu::Texture,
+    view: wgpu::TextureView,
+    size: [u32; 2],
+    format: wgpu::TextureFormat,
+}
+
+impl Renderer {
+    /// Apply TFR settings (off by default). TFR has priority over frame generation.
+    pub fn set_tfr(&mut self, cfg: crate::tfr::config::TfrConfig) {
+        let cfg = cfg.sanitized();
+        if self.tfr_cfg != cfg {
+            self.tfr_state.on_config_changed(cfg);
+            self.tfr_cfg = cfg;
+            if cfg.enabled {
+                self.frame_gen.stop();
+                self.frame_gen.on = false;
+            } else {
+                self.tfr_history = None;
+                self.tfr_state.invalidate("disabled");
+            }
+        } else if cfg.enabled {
+            self.frame_gen.stop();
+            self.frame_gen.on = false;
+        }
+    }
+
+    /// Invalidate TFR history (resize/scale/source/world changes).
+    pub fn invalidate_tfr(&mut self, reason: &'static str) {
+        self.tfr_state.invalidate(reason);
+    }
+
+    fn tfr_simple_path_supported(
+        &self,
+        frame: &Frame<'_>,
+        pack_reads_world: bool,
+        native_post: bool,
+        fg_frames: bool,
+    ) -> bool {
+        self.tfr_cfg.enabled
+            && !frame.title
+            && !pack_reads_world
+            && !native_post
+            && !fg_frames
+            && self.native.as_ref().and_then(|n| n.material.as_ref()).is_none()
+            && self.native.as_ref().and_then(|n| n.post.as_ref()).is_none()
+    }
+
+    fn ensure_tfr_history(&mut self, size: [u32; 2], format: wgpu::TextureFormat) -> &wgpu::TextureView {
+        let size = [size[0].max(1), size[1].max(1)];
+        let recreate = self
+            .tfr_history
+            .as_ref()
+            .is_none_or(|h| h.size != size || h.format != format);
+        if recreate {
+            let color = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("TFR history"),
+                size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = color.create_view(&Default::default());
+            self.tfr_history = Some(TfrHistory { color, view, size, format });
+        }
+        &self.tfr_history.as_ref().expect("created").view
+    }
 }
 /// Every layer's mip levels, layer major (`first` is the first layer's
 /// index into `settings`), made by `MipmapGenerator`.
@@ -5113,6 +5194,9 @@ impl Renderer {
                 .then(capture::Copies::default),
             capture: None,
             capture_result: None,
+            tfr_state: crate::tfr::core::TfrState::new(),
+            tfr_cfg: crate::tfr::config::TfrConfig::default(),
+            tfr_history: None,
         })
     }
     /// The first-person hand's quads, which follow `first` quads of the entity buffer.
@@ -5400,6 +5484,10 @@ impl Renderer {
         self.suspended = !drawable_size(width, height, max);
         if self.suspended {
             return;
+        }
+        if self.config.width != width || self.config.height != height {
+            self.tfr_state.on_source_or_size_changed();
+            self.tfr_history = None;
         }
         self.config.width = width;
         self.config.height = height;
@@ -6917,6 +7005,11 @@ impl Renderer {
     }
     /// Frame generation on or off (FSR 3.1's frame interpolation).
     pub fn set_frame_generation(&mut self, on: bool) {
+        if self.tfr_cfg.enabled {
+            self.frame_gen.stop();
+            self.frame_gen.on = false;
+            return;
+        }
         if !on {
             self.frame_gen.stop();
         }
@@ -9947,8 +10040,22 @@ impl Renderer {
         let clear = linear_blend::stored_clear(clear, self.output.frame.linear_light);
         let sky_visible = sky_open(frame);
         laps.lap("r_world_pass");
+        // Temporal Frame Reprojection (simple-path vertical slice): decide before world rendering.
+        // Unsupported/complex paths always take the real world path (safe fallback).
+        let tfr_simple = self.tfr_simple_path_supported(frame, pack_reads_world, native_post, fg_frames.is_some());
+        let tfr_world_size = [self.config.width, self.config.height];
+        let tfr_world_format = self.output.frame.format;
+        let tfr_synthetic = false;
+        let _tfr_do_commit_real = false;
+        if tfr_simple {
+            // TODO(TFR): depth history + camera-relative matrices + motion/compose required.
+            // Do not substitute frame-hold/repetition for TFR; fall back to real path.
+            self.tfr_state.invalidate("synthetic path not implemented");
+        }
+
         // One of Horizon's own packs: this frame's inputs; in a timed frame its sky draws in a
         // pass of its own, so that it has a time of its own.
+        if !tfr_synthetic {
         let mut native_sky_pass = false;
         if !frame.title
             && let Some(native) = &mut self.native
@@ -11642,6 +11749,8 @@ impl Renderer {
                 },
             });
         }
+        }
+        let _ = (tfr_simple, tfr_synthetic, _tfr_do_commit_real, tfr_world_size, tfr_world_format);
         // A 0.2 pack in SDR: its picture finishes on 8 bits before the hand, the camera overlays
         // and the HUD draw over it (`overlay_format`).
         let finished = (self.output.frame.overlay_format != self.output.frame.format)
