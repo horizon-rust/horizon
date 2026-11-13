@@ -25,6 +25,15 @@ pub(super) struct XrGaze {
 }
 
 impl Game<'_> {
+    /// Where the local player aims from their eyes (`Game::pick_ray`): in VR with eye tracking
+    /// where the eyes look, nowhere while they look at nothing, else where the head faces.
+    pub(super) fn aim_direction(&self) -> Option<[f64; 3]> {
+        Some(match self.pad.gaze.aim {
+            Aim::Eyes(dir) if self.lan_acting.is_none() => dir,
+            Aim::Nothing if self.lan_acting.is_none() => return None,
+            _ => super::pick_view_vector(self.yaw, self.pitch),
+        })
+    }
     /// Once per frame, after the head turned the player (`xr_look`): where the eyes aim.
     pub(super) fn xr_gaze_frame(&mut self, look: XrLook, seconds: f32) {
         let head = *self

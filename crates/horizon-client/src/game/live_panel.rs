@@ -426,6 +426,10 @@ static AT_LAUNCH: std::sync::Mutex<Option<LivePanel>> = std::sync::Mutex::new(No
 
 /// Starts the panel's server as the process starts (`entry`, the game's side only): it listens
 /// from then on whatever the game's loop does, and the log says at once whether it runs.
+/// The live settings panel's server, started with the process (`HORIZON_LIVE_PANEL`).
+pub(crate) fn start_live_panel() {
+    start_at_launch();
+}
 pub(super) fn start_at_launch() {
     let panel = LivePanel::start();
     if let Ok(mut slot) = AT_LAUNCH.lock() {

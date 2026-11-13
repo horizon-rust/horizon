@@ -131,6 +131,9 @@ mod deflect;
 mod dialogs;
 mod dispense_fixture;
 mod dispenser;
+// The dragon's phases test distances as vanilla writes them (`dt < 100.0 || dt > 22500.0`): a NaN
+// distance fails both and keeps the phase, where a range check would end it.
+#[allow(clippy::manual_range_contains)]
 mod dragon;
 mod dynamic_lights;
 mod enchant_effects;
@@ -236,6 +239,7 @@ mod level_particles;
 mod levels;
 mod lightning;
 mod live_panel;
+pub(crate) use live_panel::start_live_panel;
 mod live_perf;
 mod llamas;
 mod loading_screen;
@@ -418,6 +422,7 @@ mod resource_load;
 mod resource_loader;
 mod resource_tables;
 mod respawn_anchor;
+mod rt_frame_inputs;
 mod saves_control;
 mod saving;
 mod scoreboard;
@@ -3393,14 +3398,7 @@ impl Game<'_> {
             let eye = [x, y + f64::from(e.eye_height), z];
             return Some((eye, pick_view_vector(e.y_rot, e.x_rot)));
         }
-        let origin = self.eye_position()?;
-        // In VR with eye tracking the local player's eyes aim (game/xr_gaze.rs).
-        let dir = match self.pad.gaze.aim {
-            horizon_client::gaze_aim::Aim::Eyes(dir) if self.lan_acting.is_none() => dir,
-            horizon_client::gaze_aim::Aim::Nothing if self.lan_acting.is_none() => return None,
-            _ => pick_view_vector(self.yaw, self.pitch),
-        };
-        Some((origin, dir))
+        Some((self.eye_position()?, self.aim_direction()?))
     }
     /// `Player.blockInteractionRange`: the block pick's and mining's reach.
     fn reach(&self) -> f64 {
@@ -3491,82 +3489,6 @@ impl Game<'_> {
             .iter()
             .map(|b| std::array::from_fn(|i| base[i % 3] + b[i]))
             .collect()
-    }
-    /// The declared outline uses vanilla's inside-ray test and interaction override.
-    fn clip_declared_outline(
-        &self,
-        state: BlockStateId,
-        pos: [i32; 3],
-        origin: [f64; 3],
-        dir: [f64; 3],
-        reach: f64,
-    ) -> Option<Hit> {
-        use horizon_core::geometry::{Aabb, Vec3};
-        use std::borrow::Cow;
-        let facts = self.res.facts().get(state);
-        let cached = self.collision.cached_shapes();
-        let shape = cached.context_outline_shape(state, self.outline_context_kind());
-        let boxes: Cow<'_, [Aabb]> = if let Some(shape) = shape {
-            Cow::Borrowed(shape.boxes())
-        } else if let Some(b) = self.context_outline(pos, state) {
-            Cow::Owned(vec![Aabb::new(
-                Vec3::new(b[0], b[1], b[2]),
-                Vec3::new(b[3], b[4], b[5]),
-            )])
-        } else {
-            Cow::Owned(
-                facts
-                    .outline
-                    .iter()
-                    .map(|b| Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])))
-                    .collect(),
-            )
-        };
-        let offset = if facts.outline_offset {
-            self.pack
-                .context
-                .tables
-                .offset(state, pos[0], pos[2])
-                .unwrap_or([0.; 3])
-        } else {
-            [0.; 3]
-        };
-        let offset = Vec3::new(offset[0], offset[1], offset[2]);
-        let interaction: Cow<'_, [Aabb]> = if let Some(shape) = cached.interaction_shape(state) {
-            Cow::Borrowed(shape.boxes())
-        } else {
-            let facing = self
-                .pack
-                .assets
-                .registry
-                .state(state)
-                .and_then(|s| s.properties.get("facing"))
-                .map(String::as_str);
-            Cow::Owned(
-                interaction_shapes::boxes(&facts.name, facing)
-                    .into_iter()
-                    .map(|b| Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])))
-                    .collect(),
-            )
-        };
-        let start = Vec3::new(origin[0], origin[1], origin[2]);
-        let end = Vec3::new(
-            origin[0] + dir[0] * reach,
-            origin[1] + dir[1] * reach,
-            origin[2] + dir[2] * reach,
-        );
-        let hit = horizon_world::interaction_shapes::clip_with_interaction_override(
-            boxes.iter().map(|b| b.move_by(offset)),
-            interaction.iter().copied(),
-            start,
-            end,
-            BlockPos::new(pos[0], pos[1], pos[2]),
-        )?;
-        Some(Hit {
-            pos,
-            face: hit.direction.normal(),
-            point: [hit.location.x, hit.location.y, hit.location.z],
-        })
     }
     /// Voxel traversal against non-air, non-fluid blocks, clipped against
     /// each block's outline shape (`BlockGetter.clip` with `ClipContext.Block.OUTLINE`).
@@ -9359,17 +9281,7 @@ impl Game<'_> {
                 .map(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
                     let f = self.res.facts().get(state);
-                    let below = self.world.block(h.pos[0], h.pos[1] - 1, h.pos[2]);
-                    let upper = self.res.facts().get(below).name == f.name;
-                    let kind = horizon_client::gfx::wind::outline_class(
-                        &f.name,
-                        |c| f.has_class(c),
-                        upper,
-                    );
-                    if kind != 0 {
-                        let sky = self.world.light(h.pos[0], h.pos[1], h.pos[2]) >> 4;
-                        outline_wind = Some((kind, f32::from(sky) / 15.0, f64::from(h.pos[1])));
-                    }
+                    outline_wind = self.outline_wind(h.pos).or(outline_wind);
                     outline_after_terrain = self
                         .pack
                         .render
@@ -9595,11 +9507,7 @@ impl Game<'_> {
         } else {
             self.hand_geometry(camera_alpha)
         };
-        // RT lighting: the player's body in first person, for the hardware rays alone.
-        let mut rt_body = Vec::new();
-        if !title && self.renderer.as_ref().is_some_and(|r| r.hw_rays_on()) {
-            self.rt_body_geometry(camera, self.clock.camera_fraction(), &mut rt_body);
-        }
+        let rt_body = self.rt_body(title, camera);
         // GameRenderer.render3dHud: the screen effects after the hand, in
         // its pass (the hand pass draws with `bob * view`).
         if !title {
@@ -9657,23 +9565,7 @@ impl Game<'_> {
         let entity_motion = std::mem::take(self.entity_motion.get_mut());
         let entity_motion_posed = std::mem::take(self.entity_motion_posed.get_mut());
         let glowing = std::mem::take(self.glowing_vertices.get_mut());
-        if !title {
-            self.natural_fog(camera, sky.sun_angle);
-        }
-        let rain = if title {
-            None
-        } else {
-            let sun = horizon_client::celestial::direction(
-                sky.sun_angle,
-                self.settings.horizon.sun_path_tilt as f32,
-            );
-            let rain = self.rain_frame(camera, alpha as f32, sun.y);
-            Some((rain, self.snow_frame(camera, alpha as f32, sun.y)))
-        };
-        let (rain, snow) = match rain {
-            Some((r, s)) => (Some(r), s),
-            None => (None, Default::default()),
-        };
+        let (rain, snow) = self.weather_frames(title, camera, alpha, sky.sun_angle);
         let shadow_only = std::mem::take(self.shadow_only_vertices.get_mut());
         let skin = std::mem::take(self.skin_frame.get_mut());
         let frame = Frame {
@@ -9847,7 +9739,7 @@ impl Game<'_> {
         // Renderer encoding and GPU waiting belong to render, not prepare.
         drop(prepare);
         let debug_passes = self.debug_lists_gpu_passes();
-        let intensity = self.rain_intensity();
+        let medium = self.camera_medium(camera, alpha, frame.pack.rain, frame.pack.thunder);
         let result = match self.renderer.as_mut() {
             Some(renderer) => {
                 use horizon_client::client_perf::request::GpuSwitch;
@@ -9862,27 +9754,7 @@ impl Game<'_> {
                 } else {
                     horizon_client::debug_overlay::GPU_TIMING_GAP
                 });
-                // RT lighting's froxels, on as Remix's: the camera's medium from its block's sky
-                // light (a cave below 3), the water and the weather from `frame`.
-                let at = camera.floor().as_ivec3();
-                // The weather's levels even without a shader pack (`frame.pack` has them only with
-                // one): the rain's medium, its cloud cover and Remix's rain post-processing.
-                let (rain, thunder) = if self.dim == Dim::Overworld {
-                    self.world.weather.levels(alpha as f32)
-                } else {
-                    (0.0, 0.0)
-                };
-                renderer.set_volumetrics(
-                    true,
-                    horizon_client::gfx::CameraMedium {
-                        in_water: false,
-                        sky_light: f32::from(self.world.light(at.x, at.y, at.z) >> 4),
-                        rain: frame.pack.rain.max(rain),
-                        thunder: frame.pack.thunder.max(thunder),
-                        snow: self.snow.share(),
-                        intensity,
-                    },
-                );
+                renderer.set_volumetrics(true, medium);
                 horizon_client::spans::time("renderer", || renderer.render(&frame))
             }
             None => Err("renderer".into()),
@@ -12349,11 +12221,6 @@ fn hwnd(window: &Window) -> Option<isize> {
 }
 
 pub use launch_api::{UsageError, exit_code};
-
-/// The live settings panel's server, started with the process (`HORIZON_LIVE_PANEL`).
-pub(crate) fn start_live_panel() {
-    live_panel::start_at_launch();
-}
 
 pub fn run_with() -> Result<()> {
     let Some(mut options) = Options::read()? else {

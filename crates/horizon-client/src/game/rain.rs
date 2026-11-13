@@ -37,6 +37,12 @@ pub(super) struct RainFrame {
 }
 
 impl Game<'_> {
+    /// A new world (a server's, a replay's) starts dry: the last world's rain stays in it, its wet
+    /// ground and puddles showed in the next.
+    pub(super) fn forget_rain(&mut self) {
+        self.rain = Default::default();
+        self.fog_wetness = 0.0;
+    }
     /// Whether the renderer's physical rain replaces vanilla's: RT lighting on, in the Overworld,
     /// with the Weather option, unless `HORIZON_PHYSICAL_RAIN=0`.
     pub(super) fn physical_rain(&self) -> bool {

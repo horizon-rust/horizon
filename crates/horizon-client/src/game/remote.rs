@@ -803,40 +803,6 @@ pub(super) struct Remote {
     pub(super) debug_query: super::debug_keys::DebugQuery,
 }
 
-/// The time a frame spends on chunk packets before it leaves the rest of
-/// the received events for the next frame. A batch of 25 to 60 columns
-/// (0.1 ms each on an M4 Pro) all in one frame was a 3 to 8 ms frame every
-/// time the player crossed a chunk border at 32 chunks; they decode on the
-/// chunk decoder's thread now, and the frame only inserts them.
-const CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(1);
-/// Each time the oldest waiting event has waited this long again, the
-/// frame's time for chunk packets doubles, up to `CATCH_UP_CEILING`.
-const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
-/// The most a frame spends on chunk packets while catching up: 40 columns at
-/// 0.1 ms, 2400 a second at 60 frames, six times what flying at 100 blocks/s
-/// at 32 chunks brings (6 chunk borders a second, 65 columns each). Before,
-/// a backlog older than `BACKLOG_LIMIT` went all in one frame, and in
-/// sustained flight that was a burst of every waiting column every 50 ms.
-const CATCH_UP_CEILING: Duration = Duration::from_millis(4);
-/// A backlog this old means the frames do not keep up even at the ceiling:
-/// everything waiting goes in the next frame, as the packets behind the
-/// chunks (block changes, entities) cannot wait any longer.
-const BACKLOG_STALL: Duration = Duration::from_secs(1);
-
-/// The time a frame spends inserting chunk columns when the oldest event
-/// still waiting arrived `waited` ago (`None`: no backlog): 1 ms, doubled for
-/// each `BACKLOG_LIMIT` it has waited, up to `CATCH_UP_CEILING`; no limit
-/// once it has waited `BACKLOG_STALL`.
-fn chunk_budget(waited: Option<Duration>) -> Option<Duration> {
-    let Some(waited) = waited else {
-        return Some(CHUNK_PACKETS_PER_FRAME);
-    };
-    if waited >= BACKLOG_STALL {
-        return None;
-    }
-    let doublings = (waited.as_millis() / BACKLOG_LIMIT.as_millis()).min(8) as u32;
-    Some((CHUNK_PACKETS_PER_FRAME * (1 << doublings)).min(CATCH_UP_CEILING))
-}
 /// The open menu name of a server's horse inventory, then its chest's
 /// columns (the packet names no `MenuType`).
 const MOUNT_MENU: &str = "horizon:mount";
@@ -1097,9 +1063,7 @@ impl Game<'_> {
         streaming.radius = self.settings.render_distance;
         self.streaming = streaming;
         self.world = World::new(self.res.facts().air, 0);
-        // The last world's rain stays in it: its wet ground and puddles showed in the next.
-        self.rain = Default::default();
-        self.fog_wetness = 0.0;
+        self.forget_rain();
         self.save = Arc::new(SaveDir::new(
             std::env::temp_dir().join("horizon-remote-unused"),
             horizon_client::save::LevelShape::OVERWORLD,
@@ -1354,9 +1318,7 @@ impl Game<'_> {
         streaming.radius = self.settings.render_distance;
         self.streaming = streaming;
         self.world = World::new(self.res.facts().air, 0);
-        // The last world's rain stays in it: its wet ground and puddles showed in the next.
-        self.rain = Default::default();
-        self.fog_wetness = 0.0;
+        self.forget_rain();
         self.save = Arc::new(SaveDir::new(
             std::env::temp_dir().join("horizon-replay-unused"),
             horizon_client::save::LevelShape::OVERWORLD,
@@ -1621,9 +1583,7 @@ impl Game<'_> {
         self.streaming = Streaming::new(Arc::new(NoTerrain), self.worker_context(), 1);
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
-        // The last world's rain stays in it: its wet ground and puddles showed in the next.
-        self.rain = Default::default();
-        self.fog_wetness = 0.0;
+        self.forget_rain();
         self.player = None;
         // The vehicle went with the level: an id kept here would seat the
         // next login on an entity that is not there.
@@ -12727,35 +12687,6 @@ mod tests {
     }
 
     use super::Game;
-
-    /// The chunk budget catches up with an old backlog by doubling, never
-    /// past the ceiling, until the backlog stalls.
-    #[test]
-    fn the_chunk_budget_catches_up_gradually() {
-        use super::{
-            BACKLOG_LIMIT, BACKLOG_STALL, CATCH_UP_CEILING, CHUNK_PACKETS_PER_FRAME, chunk_budget,
-        };
-        use std::time::Duration;
-        let ms = Duration::from_millis;
-        assert_eq!(chunk_budget(None), Some(CHUNK_PACKETS_PER_FRAME));
-        assert_eq!(chunk_budget(Some(ms(0))), Some(ms(1)));
-        assert_eq!(chunk_budget(Some(ms(49))), Some(ms(1)));
-        assert_eq!(chunk_budget(Some(BACKLOG_LIMIT)), Some(ms(2)));
-        assert_eq!(chunk_budget(Some(ms(120))), Some(ms(4)));
-        assert_eq!(chunk_budget(Some(ms(900))), Some(CATCH_UP_CEILING));
-        assert_eq!(
-            chunk_budget(Some(BACKLOG_STALL - ms(1))),
-            Some(CATCH_UP_CEILING)
-        );
-        assert_eq!(chunk_budget(Some(BACKLOG_STALL)), None);
-        // Never shrinks as the backlog ages, until it is unbounded.
-        let mut last = Duration::ZERO;
-        for t in (0..1000).step_by(7) {
-            let b = chunk_budget(Some(ms(t))).unwrap();
-            assert!(b >= last && b <= CATCH_UP_CEILING);
-            last = b;
-        }
-    }
 
     /// `Entity.lookAt`: yaw 0 faces +Z, -90 faces +X; pitch -90 looks up.
     #[test]
