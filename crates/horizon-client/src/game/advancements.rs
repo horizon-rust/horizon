@@ -59,7 +59,7 @@ impl Toast {
             last_changed: 0,
         }
     }
-    /// A mod's own toast (`native_add_toast`, API @API:add_toast@): drawn as an `AdvancementToast`
+    /// A mod's own toast (`native_add_toast`, API 581): drawn as an `AdvancementToast`
     /// with `label` in the frame label's place and `description` as its
     /// title, yellow (pink, with the challenge sound, for a challenge).
     pub(super) fn of_mod(icon: &str, label: Text, description: Text, challenge: bool) -> Self {
@@ -230,15 +230,10 @@ impl adv::World for View<'_, '_> {
             _ => None,
         }
     }
+    /// `Level.canSeeSky`: sky light 15 at the position, whatever stands
+    /// above it, as `MobWorld` reads it for the spawn rules.
     fn can_see_sky(&self, p: [i32; 3]) -> bool {
-        (p[1] + 1..p[1] + 200).all(|y| {
-            !self
-                .0
-                .res
-                .facts()
-                .get(self.0.world.block(p[0], y, p[2]))
-                .full_collision
-        })
+        self.0.mob_world_base(&[]).can_see_sky(p[0], p[1], p[2])
     }
     fn light(&self, p: [i32; 3]) -> i32 {
         let l = self.0.world.light(p[0], p[1], p[2]);
@@ -1165,7 +1160,7 @@ impl Game<'_> {
         self.adv.last_inventory = key;
         // Native mods hear the change before any criterion is looked at, so
         // they do with no `inventory_changed` advancement in the tree too
-        // (`native_player_inventory_changed`, API @API:player_inventory_changed@).
+        // (`native_player_inventory_changed`, API 579).
         if self.remote.is_none()
             && !self.no_player_here()
             && !horizon_client::mod_api::mods().is_empty()
@@ -1255,7 +1250,7 @@ impl Game<'_> {
         }
         self.check_inventory_trigger();
         // ServerPlayer.tick: PlayerTrigger.TICK every tick.
-        let me = self.player_entity_for("minecraft:tick");
+        let me = self.player_entity_if_listened("minecraft:tick");
         self.trigger("minecraft:tick", |c, w| {
             let ctx = adv::Entities {
                 this: Some(&me),
@@ -1289,7 +1284,7 @@ impl Game<'_> {
         }
         self.tick_marks();
         if self.ticks.is_multiple_of(20) {
-            let me = self.player_entity_for("minecraft:location");
+            let me = self.player_entity_if_listened("minecraft:location");
             self.trigger("minecraft:location", |c, w| {
                 let ctx = adv::Entities {
                     this: Some(&me),
@@ -2566,7 +2561,7 @@ pub struct AdvancementDisplay {
 
 impl Game<'_> {
     /// The display of the advancement `id` in the loaded tree; None for an
-    /// id the tree does not have, or one with no display. API @API:advancement_display@.
+    /// id the tree does not have, or one with no display. API 591.
     pub(super) fn native_advancement_display(&mut self, id: &str) -> Option<AdvancementDisplay> {
         let tree = self.advancement_tree();
         let advancement = &tree.list[*tree.by_id.get(id)?];

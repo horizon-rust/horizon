@@ -302,7 +302,11 @@ pub struct Ext {
     pub brain: Option<Box<super::villager_brain::Brain>>,
     /// Saved memories awaiting the first brain initialization.
     pub saved_memories: Option<Box<super::villager_brain::Memories>>,
+    /// `[entities] villager_lobotomize`: whether the last check found the villager stuck
+    /// (`villager_lobotomy`). Not saved; `None` until the first check.
+    pub lobotomized: Option<bool>,
 }
+pub mod lobotomy;
 pub fn ext(m: &Mob) -> Option<&Ext> {
     m.extra.villager.as_deref()
 }
@@ -609,6 +613,10 @@ impl Ext {
 /// reads the other villager itself).
 #[derive(Clone, Debug, Default)]
 pub struct Seen {
+    /// Visibility inputs for another villager's noncombat sensor.
+    pub invisible: bool,
+    pub crouching: bool,
+    pub armor: [Option<std::sync::Arc<str>>; 4],
     pub gossips: crate::gossip::Gossips,
     pub last_gossip_time: i64,
     /// `countFoodPointsInInventory`.
@@ -622,6 +630,28 @@ pub struct Seen {
     pub golem_detected: bool,
 }
 impl Seen {
+    /// `LivingEntity.getVisibilityPercent`, for a targeting villager.
+    pub fn visibility(&self, items: Option<&crate::items::Items>) -> f64 {
+        let mut value = if self.crouching { 0.8 } else { 1.0 };
+        if self.invisible {
+            let cover = self.armor.iter().filter(|i| i.is_some()).count() as f32 / 4.0;
+            value *= 0.7 * f64::from(cover).max(0.1);
+        }
+        if let Some(items) = items {
+            for (slot, item) in ["feet", "legs", "chest", "head"]
+                .into_iter()
+                .zip(&self.armor)
+            {
+                if let Some(factor) = item
+                    .as_deref()
+                    .and_then(|i| items.worn_visibility(i, slot, "minecraft:villager"))
+                {
+                    value *= f64::from(factor);
+                }
+            }
+        }
+        if value < 0.0 { 0.0 } else { value.min(10.0) }
+    }
     /// `Villager.wantsToSpawnGolem`.
     pub fn wants_golem(&self, now: i64) -> bool {
         self.last_slept.is_some_and(|t| now - t < 24000) && !self.golem_detected
@@ -636,6 +666,26 @@ pub fn seen(m: &Mob) -> Seen {
     let (interaction_target, path_nodes, golem_detected, last_slept) =
         super::villager_brain::seen_memories(m);
     Seen {
+        invisible: m.is_invisible(),
+        crouching: m.extra.crouching,
+        armor: [
+            m.extra
+                .feet
+                .clone()
+                .or_else(|| m.extra.armor[3].as_ref().map(|s| s.item.clone())),
+            m.extra
+                .legs
+                .clone()
+                .or_else(|| m.extra.armor[2].as_ref().map(|s| s.item.clone())),
+            m.extra
+                .chest
+                .clone()
+                .or_else(|| m.extra.armor[1].as_ref().map(|s| s.item.clone())),
+            m.extra
+                .head
+                .clone()
+                .or_else(|| m.extra.armor[0].as_ref().map(|s| s.item.clone())),
+        ],
         gossips: e.map(|e| e.gossips.clone()).unwrap_or_default(),
         last_gossip_time: e.map_or(0, |e| e.last_gossip_time),
         food_points: e.map_or(0, Ext::food_in_inventory),
@@ -1006,7 +1056,8 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
         |v| int(Some(v)),
     );
     let e = ext_mut(m);
-    e.food_level = int(tag.get("FoodLevel")).unwrap_or(0) as i32;
+    // `getByteOr("FoodLevel", 0)`: any number, narrowed to a byte.
+    e.food_level = i32::from(int(tag.get("FoodLevel")).unwrap_or(0) as i8);
     e.gossips = tag
         .get("Gossips")
         .map(crate::gossip::Gossips::from_nbt)
@@ -1030,6 +1081,49 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     if asleep {
         m.extra.ints[1] = bed_facing_code(None);
     }
+}
+
+/// The villager's brain tick. While the parallel mob tick is on it draws from a random of its own, so
+/// that no other mob's turn is waited for (`parallel::villagers_own_random`); the level's random otherwise.
+/// The seed comes from the mob's id and the game time, not from a draw, so the villager's entity random
+/// (movement, looks, sounds) keeps vanilla's sequence.
+pub fn tick_brain(
+    m: &mut Mob,
+    w: &MobWorld,
+    level_random: &mut horizon_core::random::LegacyRandom,
+    events: &mut Vec<MobEvent>,
+) {
+    tick_brain_with(
+        crate::parallel::villagers_own_random(),
+        m,
+        w,
+        level_random,
+        events,
+    );
+}
+
+fn tick_brain_with(
+    own_random: bool,
+    m: &mut Mob,
+    w: &MobWorld,
+    level_random: &mut horizon_core::random::LegacyRandom,
+    events: &mut Vec<MobEvent>,
+) {
+    if own_random {
+        let mut own = horizon_core::random::LegacyRandom::new(brain_seed(m.id, w.game_time));
+        super::villager_brain::tick(m, w, &mut own, events);
+    } else {
+        super::villager_brain::tick(m, w, level_random, events);
+    }
+}
+
+/// A seed for one villager's brain tick: a splitmix64 mix of the mob's id and the game time.
+fn brain_seed(id: u32, game_time: i64) -> i64 {
+    let mut z = (u64::from(id) << 32) ^ (game_time as u64);
+    z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    (z ^ (z >> 31)) as i64
 }
 
 #[cfg(test)]
@@ -1158,6 +1252,22 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// `Villager.readAdditionalSaveData` reads `FoodLevel` with `getByteOr`:
+    /// an int is narrowed (`(byte)(value & 255)`), so 300 is 44 and 200 -56.
+    #[test]
+    fn a_villagers_food_level_is_narrowed_to_a_byte() {
+        use horizon_world::nbt::Tag;
+        for (saved, expected) in [
+            (Tag::Int(300), 44),
+            (Tag::Int(200), -56),
+            (Tag::Byte(12), 12),
+        ] {
+            let mut loaded = villager();
+            read_nbt(&mut loaded, &Tag::compound([("FoodLevel", saved)]));
+            assert_eq!(ext(&loaded).unwrap().food_level, expected);
+        }
+    }
+
     #[test]
     fn villager_memory_round_trip() {
         use horizon_world::nbt::Tag;
@@ -1205,6 +1315,36 @@ mod tests {
         assert!(mm.golem_detected_recently.present());
         mm.golem_detected_recently.tick();
         assert!(!mm.golem_detected_recently.present());
+    }
+
+    /// On its own random, a villager's brain tick leaves the level random alone and takes no draw
+    /// from the villager's entity random that the level random's tick would not take.
+    #[test]
+    fn own_random_brain_tick_keeps_the_entity_random_sequence() {
+        use horizon_core::geometry::Vec3;
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+        let ran = crate::mobs::world::with_test_world(&[], |w, types| {
+            let make = || {
+                Mob::new(
+                    1,
+                    Arc::new(types.types["minecraft:villager"].clone()),
+                    Vec3::new(0.5, 64.0, 0.5),
+                    0.0,
+                )
+            };
+            let (mut shared, mut own) = (make(), make());
+            let (mut level_shared, mut level_own) = (LegacyRandom::new(9), LegacyRandom::new(9));
+            tick_brain_with(false, &mut shared, w, &mut level_shared, &mut Vec::new());
+            tick_brain_with(true, &mut own, w, &mut level_own, &mut Vec::new());
+            assert_eq!(
+                level_own.next_long(),
+                LegacyRandom::new(9).next_long(),
+                "the level random is not drawn from"
+            );
+            assert_eq!(own.random.next_long(), shared.random.next_long());
+        });
+        let _ = ran;
     }
 
     fn villager() -> Mob {

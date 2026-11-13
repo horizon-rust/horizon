@@ -427,8 +427,8 @@ game built in `Game::new`, the integrated server on its own thread. On that base
 **Binaries.** The release archives hold `horizon-client`, `horizon-ctl`, `horizon-prepare` and
 `horizon-server`. On Linux the release also has `horizon-server-linux-x86_64.tar.gz`: `horizon-server`,
 `horizon-prepare` and `horizon-engine`, the game built with `--no-default-features` (no sound, no
-controllers, no Discord presence or Play with Friends: the `discord` and `friends` features; nor the "I'm
-playing" ping, which only the official executable has), which links neither `libasound.so.2` nor `libudev.so.1`. `release.yml` builds it after the
+controllers, no Play with Friends: the `friends` feature; nor Discord presence or the "I'm playing" ping, which
+only the official executable has), which links neither `libasound.so.2` nor `libudev.so.1`. `release.yml` builds it after the
 client archive (`xtask package-server`) and fails if `tools/check_imports.py --server` finds either library;
 CI lints the same build. `horizon-server` runs `horizon-engine` when it is beside it or on the PATH, else
 `horizon-client`. Build it yourself with `cargo build --release -p horizon-client --no-default-features`
@@ -570,10 +570,32 @@ keep = 1                     # other releases kept by updates, besides the one i
 ```
 
 This is the file `init` writes today, and it also writes `[panel]` (`bind = "127.0.0.1:8130"` and
-`allow_public = false`, section 6), `[api]`, `[transfer]` (off; a proxy's hand-overs, section 2) and `[discord]`. The defaults are vanilla 26.3's (a test checks
+`allow_public = false`, section 6), `[api]`, `[transfer]` (off; a proxy's hand-overs, section 2) and `[discord]`. `[entities]` (mob AI far from players, off) is written only when set ([hosting](hosting.md)). The defaults are vanilla 26.3's (a test checks
 each one). Unknown keys are errors, as are a typed key set again under `[properties]` and values vanilla would
 refuse. There is no `backups.before_update` setting: an update always backs up the world first (section 7).
 
+- **`[entities]`: villagers that cannot move.** Not vanilla, so off. `villager_lobotomize = true` makes the
+  engine skip the brain of a villager that is *stuck*, and `villager_lobotomize_check_interval = 100` (ticks)
+  is how often each villager is rechecked (staggered by id). The game reads the section itself, and
+  `init` leaves it out until it is set. A villager is stuck when it rides something, or when the cells it can walk to
+  (a free block at its height, down a fall of up to 3, or one block up with room above; beds and slabs count as
+  cells it can step onto) number at most 6 and no door villagers open leads out. So a 1×1 cell, a 1×2 cell with a bed, or a
+  pocket with a workstation are stuck whatever covers the head; a room of 3×3, open ground, or a cell with a door
+  are not; a sleeping villager never is. A stuck villager skips its brain (sensors,
+  behaviours, schedule, gossip spreading, sleep, farming, breeding, panic, point-of-interest searches) and
+  keeps gravity, damage, despawning, trading with its XP and level-ups, and its trades. Its job site
+  stays: while it would work (ticks 2000 to 9000 of the day) it restocks as `WorkAtPoi` does, every 300 ticks with a
+  workstation still there, at most twice a day. When the cell opens, the next recheck gives it its brain
+  back. A villager that was never free does not claim a job site or a bed.
+- **Entity collision cap (`[entities] max_collisions`).** Off (0) is vanilla. In a crowded pen every mob pushes
+  every mob it overlaps each tick, so the work grows with the square of the crowd (about 8 ms a tick on a
+  79-player server with crowded chicken farms). `max_collisions = N` (not in the file until you add it) makes a
+  mob push at most N other mobs per tick. The pushes a mob receives count as well: a mob that has had N this
+  tick is skipped by the others, and the counts start again every tick. The mobs pushed are the first N in
+  vanilla's order, so the result is the same from run to run. `max_entity_cramming` still counts every entity
+  in the box before the cap applies, so cramming damage is vanilla's. It covers mobs pushing mobs: players,
+  boats and minecarts push as in vanilla. It reaches the game as `HORIZON_MAX_ENTITY_COLLISIONS`, at the next
+  start; with the setting at 0 a variable already in the server's environment still applies.
 - **Import.** `horizon-server init` in a folder with a `server.properties`, or `horizon-server import
   server.properties`, reads it with vanilla's own parser (`ServerProperties`). Keys with typed fields go into
   their sections; any other key that differs from vanilla's default goes into `[properties]`. Keys left at
@@ -676,7 +698,8 @@ runtime or new dependency. Server-sent events can replace the polling later if a
 - **Backups.** The supervisor runs `save-off`, then `save-all flush`, then zips the world plus the vanilla
   files and `server.toml` into `backups/<UTC time>-<name>.zip`, then runs `save-on`. Players stay online. Zip
   works for everyone, Windows included. It runs on the `every` schedule, on demand and before an
-  update. It keeps the last `keep` automatic backups and never deletes one made by hand. A backup is written
+  update. It keeps the last `keep` automatic backups and never deletes one made by hand (`auto` is the automatic
+  backups' own name: a hand backup cannot take it). A backup is written
   to a temporary name and renamed when complete, so a crash never leaves a half-written backup that looks
   finished. A stopped server is backed up straight from its files.
 - **Restore.** `restore NAME` takes a file name, a unique prefix, or the name given to `backup` (the newest
@@ -763,7 +786,7 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   Discord bridges and scripts written for it. The supervisor serves it (`rcon.rs`, std only like `http.rs`), so it
   answers while the game restarts (a command then says the game isn't running), and it reads its settings as
   `RconThread.create` does: no password or a port outside 1 to 65535 leaves it off with vanilla's warning. The
-  packets are `RconClient`'s: login (3), command (2), the output in packets of 4096 characters, `-1` for a refused
+  packets are `RconClient`'s: login (3), command (2), the output in packets of 4096 UTF-16 units, `-1` for a refused
   login, `Unknown request <hex>` for another type, `Error executing: <command> (<reason>)` for a command that failed.
   A command goes to the game as an `rcon <line>` request on the control endpoint (`horizon-server cmd` sends
   `console <line>`, the same console under the `Server` source), so the
@@ -851,6 +874,11 @@ reproducible by anyone, and show the same gameplay on both sides.
   - `fight`: survival bots (`gamemode=survival`, `force-gamemode=true`, `allow-flight=true`) that track the entities the server
     sends, walk to the nearest living one and attack it every 5 ticks, vanilla's bare-hand cooldown; with `--pvp true` (the
     default) they attack each other too, which needs `pvp=true` on the server. The report counts `attacks`.
+
+  For controlled chunk-pacing tests, use `--behaviour explore --ack-mode 64`: the bot sends exactly
+  one acknowledgement per completed chunk batch, requesting 64 chunks per tick. The default
+  `--ack-mode vanilla` keeps vanilla estimation. Unlike `flood-acks`, this option adds no
+  unsolicited acknowledgements. The summary records `ack_mode`.
 
   A `build` behaviour (breaking and placing blocks) needs the bots to read terrain and comes later. Runs use
   1, 10, 25, 50 and 100 bots, joining 1 per second. Bots are needed because 100 real vanilla clients can't run
