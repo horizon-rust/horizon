@@ -8896,7 +8896,7 @@ mod tests {
         let decode: DecodeChunk =
             Box::new(move |root| decode_lit(root, registry, &biomes, ColumnLayout::VANILLA, true));
         let terrain =
-            ServerTerrain::with_bobby(own.clone(), None, Some(Bobby::new(bobby, decode, &facts)));
+            ServerTerrain::with_bobby(own.clone(), Some(Bobby::new(bobby, decode, &facts)));
         let mut upright = registry
             .state(registry.default_state("minecraft:oak_log").unwrap())
             .unwrap()
@@ -8924,7 +8924,7 @@ mod tests {
             before,
             "Bobby's folder is only read"
         );
-        assert_eq!(ServerTerrain::new(own, None).chunk(-2, 5), Some(columns));
+        assert_eq!(ServerTerrain::new(own).chunk(-2, 5), Some(columns));
         let _ = fs::remove_dir_all(&dir);
     }
     /// A cache Bobby really wrote (`HORIZON_TEST_BOBBY`, its `.bobby`: the
@@ -8973,7 +8973,7 @@ mod tests {
                 decode_lit(root, registry, &biomes, ColumnLayout::VANILLA, true)
             });
             let terrain =
-                ServerTerrain::with_bobby(own.clone(), None, Some(Bobby::new(dir, decode, &facts)));
+                ServerTerrain::with_bobby(own.clone(), Some(Bobby::new(dir, decode, &facts)));
             let read = chunks
                 .iter()
                 .filter(|pos| {

@@ -176,8 +176,7 @@ pub trait LodSampler: Send {
         self.column(x, z)
     }
     /// Whether a column since the last call was left empty because its data
-    /// is still on its way (a BlueMap tile downloading, nothing coarser to
-    /// stand in): that sample isn't drawn, what it would replace is
+    /// is still on its way (nothing coarser to stand in): that sample isn't drawn, what it would replace is
     /// (`Lod::finish_any_sample`), and it is taken again later.
     fn waited(&mut self) -> bool {
         false

@@ -12,8 +12,8 @@ pub mod parallel;
 pub mod powder_snow;
 pub use horizon_client_render::{
     assets, atlas_sources, audio, auth, autotune, ban_notice, bidi, biome, block_edit,
-    block_entities, block_entity_anim, block_entity_render, block_sprites, block_states, bluemap,
-    bluemap_detect, border_render, breaking, brewing, camera, chat, chunk, chunk_map, cit,
+    block_entities, block_entity_anim, block_entity_render, block_sprites, block_states,
+    border_render, breaking, brewing, camera, chat, chunk, chunk_map, cit,
     cit_armor, cit_assets, cit_glint, client_resources, clouds, collisions, command_block,
     containers, controller_ui, crash, custom_sky, datapack, dynamic_light, dynamic_resolution,
     effects, environment, extras, fast_hash, fluid_render, fog, font, gfx, graphics,

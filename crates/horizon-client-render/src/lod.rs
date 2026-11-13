@@ -692,8 +692,8 @@ impl TileKey {
     }
     /// Whether new data for `area` drawn in cells `widths` wide changes the
     /// tile's samples: its cells are that wide, and it covers `area` or the
-    /// blocks around it a cell's depth reads (`bluemap::SKIRT`: a block
-    /// around a chunk, the next cells' middles past one).
+    /// blocks around it a cell's depth reads (a block around a chunk, the
+    /// next cells' middles past one).
     fn refreshed_by(self, area: [i32; 4], widths: (i32, i32)) -> bool {
         let cell = self.size() / CELLS as i32;
         (widths.0..=widths.1).contains(&cell) && self.overlaps(Self::around(area, cell))
@@ -2267,7 +2267,7 @@ impl Lod {
     /// the tile was sampled again. So it is thrown away, and the tile sampled
     /// again then (at once if it came while this one was taken), or after
     /// `WAIT_RETRY`: a shorter wait let the retries of near tiles take every
-    /// slot while the rest waited. One whose waiting cells BlueMap's coarser
+    /// slot while the rest waited. One whose waiting cells a source's coarser
     /// levels stood in for is drawn (`finish_any_sample`).
     fn finish_waited(&mut self, key: TileKey) {
         self.pending.remove(&key);
@@ -5694,7 +5694,7 @@ mod tests {
     impl ServerLod {
         fn new(name: &str) -> crate::Result<Self> {
             Self::with(name, |dir| {
-                crate::server_terrain::ServerTerrain::new(dir.into(), None)
+                crate::server_terrain::ServerTerrain::new(dir.into())
             })
         }
         fn with(
@@ -5882,8 +5882,8 @@ mod tests {
         );
         Ok(())
     }
-    /// A BlueMap whose coarse levels are in, its finest (cells up to a
-    /// chunk) still downloading until `arrived`.
+    /// A source whose coarse levels are in, its finest (cells up to a
+    /// chunk) still on its way until `arrived`.
     struct Downloading {
         stone: BlockStateId,
         arrived: Arc<std::sync::atomic::AtomicBool>,
@@ -5975,7 +5975,7 @@ mod tests {
             missing.len(),
             ring.len()
         );
-        // The map's tiles arrive (`BlueMap::take_changed`): the finest replace them.
+        // The finest data arrives: it replaces them.
         arrived.store(true, Ordering::Relaxed);
         far.lod.refresh([-1024, -1024, 1024, 1024], (1, 24));
         far.run(camera, detail, distance, &none, true);

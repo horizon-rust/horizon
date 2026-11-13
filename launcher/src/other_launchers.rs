@@ -84,16 +84,13 @@ const SHARED: [&str; 9] = [
     "optionsshaders.txt",
 ];
 /// What is never copied from an instance's own game folder: logs, the CurseForge app's own
-/// files, and the BlueMap web maps the game asks for tiles around the player
-/// (`horizon_client_render::bluemap::SERVERS_FILE`): only the player names those, never a pack
-/// the other launcher installed.
-const SKIPPED: [&str; 7] = [
+/// files, and what the game keeps of servers.
+const SKIPPED: [&str; 6] = [
     "logs",
     "crash-reports",
     "minecraftinstance.json",
     ".curseclient",
-    "horizon-bluemap.txt",
-    // Far terrain's copies of what servers sent, and of their web maps.
+    // Far terrain's copies of what servers sent.
     "server-terrain",
     // The browser's list of what it installed (and may delete): only this launcher writes it.
     "mod-browser.json",
