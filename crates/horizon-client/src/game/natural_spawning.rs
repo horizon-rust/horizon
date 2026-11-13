@@ -29,13 +29,7 @@ use horizon_world::{
 };
 use std::collections::HashMap;
 
-#[path = "spawn_chunk_order.rs"]
-mod spawn_chunk_order;
-#[cfg(test)]
-#[path = "spawn_chunk_order_tests.rs"]
-mod spawn_chunk_order_tests;
-
-use spawn_chunk_order::{SpawnChunkTracker, shuffle_spawning_chunks};
+use horizon_client::spawn_chunk_order::{SpawnChunkTracker, shuffle_spawning_chunks};
 
 /// Natural spawning's candidate chunks (`ChunkMap.collectSpawningChunks`):
 /// the natural spawn chunk counter's map, in the order vanilla walks it (see
@@ -49,8 +43,6 @@ pub(super) struct SpawnScratch {
     /// `DistanceManager.naturalSpawnChunkCounter`: the chunks within 8 of a
     /// player's chunk, in the order `getSpawnCandidateChunks` hands them out.
     tracker: SpawnChunkTracker,
-    /// Each player's chunk the counter holds it at, by player.
-    sources: Vec<(u128, (i32, i32))>,
     /// Reusable buffer for spawn players across ticks to avoid heap allocation.
     pub(super) spawn_players: Vec<SpawnPlayer>,
 }
@@ -61,38 +53,18 @@ impl SpawnScratch {
             p.position.z.floor() as i32 >> 4,
         )
     }
-    /// Move the counter with the players: `ChunkMap.move` removes a player
-    /// from the chunk it left and adds it to the one it entered, and
-    /// `ChunkMap.removePlayer` removes it from the level's counter, each in
-    /// the order the players are listed; `runAllUpdates` then works the
-    /// queue off (`getNaturalSpawnChunkCount` flushes it the same way).
+    /// Move the counter with the players' sections (`SectionPos.of(player)`):
+    /// `ChunkMap.move` and `updatePlayerStatus`, in the order they are listed,
+    /// then `runAllUpdates` works the queue off (`getNaturalSpawnChunkCount`
+    /// flushes it the same way).
     fn track(&mut self, players: &[LevelPlayer]) {
         for p in players {
-            let chunk = Self::chunk(p);
-            match self.sources.iter_mut().find(|(uuid, _)| *uuid == p.uuid) {
-                Some((_, old)) => {
-                    if *old != chunk {
-                        self.tracker.remove_player(old.0, old.1);
-                        self.tracker.add_player(chunk.0, chunk.1);
-                        *old = chunk;
-                    }
-                }
-                None => {
-                    self.tracker.add_player(chunk.0, chunk.1);
-                    self.sources.push((p.uuid, chunk));
-                }
-            }
+            let (x, z) = Self::chunk(p);
+            self.tracker
+                .place(p.uuid, [x, p.position.y.floor() as i32 >> 4, z]);
         }
-        let mut i = 0;
-        while i < self.sources.len() {
-            let (uuid, chunk) = self.sources[i];
-            if players.iter().any(|p| p.uuid == uuid) {
-                i += 1;
-            } else {
-                self.tracker.remove_player(chunk.0, chunk.1);
-                self.sources.remove(i);
-            }
-        }
+        self.tracker
+            .retain(|id| players.iter().any(|p| p.uuid == id));
         self.tracker.run_updates();
     }
     /// Fill `candidates` with the counter's chunks, in its order, that are
@@ -1158,15 +1130,9 @@ mod tests {
         }
     }
 
-    fn sorted(chunks: &[(i32, i32)]) -> Vec<(i32, i32)> {
-        let mut sorted = chunks.to_vec();
-        sorted.sort_unstable();
-        sorted
-    }
-
-    /// The candidates as a scan of every player's square finds them: the union
-    /// in dx/dz order, close to any player that holds the chunk. Returns the
-    /// union's size too.
+    /// The candidates as a scan of every player's squares finds them, sorted
+    /// (the counter's order is the parity harness's): the union, close to any
+    /// player that holds the chunk. Returns the union's size too.
     fn uncached_candidates(players: &[LevelPlayer]) -> (i32, Vec<(i32, i32)>) {
         let mut order = Vec::new();
         let mut close = Vec::new();
@@ -1186,13 +1152,16 @@ mod tests {
             }
         }
         let kept = order.iter().zip(&close).filter(|c| *c.1).map(|c| *c.0);
-        (order.len() as i32, kept.collect())
+        (order.len() as i32, sorted(&kept.collect::<Vec<_>>()))
+    }
+    fn sorted(chunks: &[(i32, i32)]) -> Vec<(i32, i32)> {
+        let mut sorted = chunks.to_vec();
+        sorted.sort_unstable();
+        sorted
     }
 
-    /// The counter's chunks and the live 128-block test, across passes: the
-    /// set is the union of the players' squares, whatever the counter's order.
     #[test]
-    fn spawn_candidates_keep_live_proximity_across_passes() {
+    fn spawn_candidates_keep_order_and_live_proximity_across_cache_hits() {
         let mut players = vec![
             player(0.0, 64.0, 0.0, false),
             player(16.0, 64.0, 0.0, false),
@@ -1208,10 +1177,7 @@ mod tests {
         players[0].position.x = 15.5;
         assert_eq!(scratch.collect(&players, |_| true), 306);
         assert!(!scratch.candidates.contains(&(-8, 0)));
-        assert_eq!(
-            sorted(&scratch.candidates),
-            sorted(&uncached_candidates(&players).1)
-        );
+        assert_eq!(sorted(&scratch.candidates), uncached_candidates(&players).1);
         // Nothing is close to spectators, though the squares still count.
         for p in &mut players {
             p.spectator = true;
@@ -1225,10 +1191,7 @@ mod tests {
         players[1].position.x = 31.9;
         assert_eq!(scratch.collect(&players, |_| true), 306);
         assert!(scratch.candidates.contains(&(9, 0)));
-        assert_eq!(
-            sorted(&scratch.candidates),
-            sorted(&uncached_candidates(&players).1)
-        );
+        assert_eq!(sorted(&scratch.candidates), uncached_candidates(&players).1);
         // `keep` filters without reordering.
         scratch.collect(&players, |(x, z)| x == z);
         let diagonal: Vec<_> = uncached_candidates(&players)
@@ -1237,11 +1200,11 @@ mod tests {
             .filter(|&(x, z)| x == z)
             .collect();
         assert!(diagonal.len() > 1);
-        assert_eq!(sorted(&scratch.candidates), sorted(&diagonal));
+        assert_eq!(sorted(&scratch.candidates), diagonal);
     }
 
     /// Players walking, crossing borders, meeting, splitting, joining, leaving
-    /// and swapping order: every pass matches the uncached union.
+    /// and swapping order: every pass matches the uncached collection.
     #[test]
     fn spawn_candidates_match_the_uncached_union_while_players_move() {
         let mut seed = 0x5DEECE66Du64;
@@ -1288,11 +1251,7 @@ mod tests {
             }
             let (count, expected) = uncached_candidates(&players);
             assert_eq!(scratch.collect(&players, |_| true), count, "step {step}");
-            assert_eq!(
-                sorted(&scratch.candidates),
-                sorted(&expected),
-                "step {step}"
-            );
+            assert_eq!(sorted(&scratch.candidates), expected, "step {step}");
         }
     }
 

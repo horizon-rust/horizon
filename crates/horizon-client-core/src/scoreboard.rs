@@ -782,7 +782,11 @@ impl Default for Scoreboard {
     }
 }
 fn ranked<T>(items: &mut [T], order: &OpenOrder, name: impl Fn(&T) -> &str) {
-    let rank: BTreeMap<&str, usize> = order.iter().enumerate().map(|(i, k)| (k, i)).collect();
+    let rank: BTreeMap<&str, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, k)| (k.as_str(), i))
+        .collect();
     items.sort_by_key(|t| rank.get(name(t)).copied().unwrap_or(usize::MAX));
 }
 impl Scoreboard {
@@ -965,7 +969,7 @@ impl Scoreboard {
     }
     /// `getTrackedPlayers` (`playerScores.keySet().stream()`).
     pub fn tracked(&self) -> Vec<String> {
-        self.holder_order.stream().map(str::to_owned).collect()
+        self.holder_order.stream().cloned().collect()
     }
     /// Every holder on a team (`teamsByPlayer.keySet()`).
     pub fn team_members(&self) -> impl Iterator<Item = &str> {
@@ -1069,7 +1073,7 @@ impl Scoreboard {
             })
             .collect();
         let mut scores = Vec::new();
-        for owner in self.holder_order.stream() {
+        for owner in self.holder_order.stream().map(String::as_str) {
             let Some(per) = self.scores.get(owner) else {
                 continue;
             };

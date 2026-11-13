@@ -8,15 +8,17 @@
 //! pass land — follows the map's iteration order. Reproducing it means
 //! reproducing both the counter that fills the map (`FixedPlayerDistanceChunkTracker`,
 //! a `ChunkTracker` over a `DynamicGraphMinFixedPoint`) and the table's own
-//! order (`fastutil`'s open addressing), because the counter only ever puts
+//! order (`fastutil_order::OpenOrder`), because the counter only ever puts
 //! and removes, and the table's slots remember the order it did that in.
-use horizon_client::fast_hash::FxHashMap;
+//! tools/test_spawn_chunk_order_parity.py holds both to the real classes.
+use crate::fast_hash::FxHashMap;
+use crate::fastutil_order::OpenOrder;
 use horizon_core::random::{LegacyRandom, RandomSource};
 
 /// `Util.shuffle(chunks, level.getRandom())` in `ServerChunkCache.tickChunks`:
 /// one `nextInt` per chunk from the end down, so the order the counter hands
 /// the chunks out in decides which chunk spends which draw.
-pub(super) fn shuffle_spawning_chunks(chunks: &mut [(i32, i32)], random: &mut LegacyRandom) {
+pub fn shuffle_spawning_chunks(chunks: &mut [(i32, i32)], random: &mut LegacyRandom) {
     for i in (1..chunks.len()).rev() {
         let j = random.next_int_bound(i as i32 + 1).unwrap_or(0) as usize;
         chunks.swap(i, j);
@@ -46,10 +48,12 @@ fn unpack(pos: i64) -> (i32, i32) {
 /// `DistanceManager.naturalSpawnChunkCounter`: the chunks within 8 of a
 /// player's chunk, in the order its map walks them.
 #[derive(Default)]
-pub(super) struct SpawnChunkTracker {
-    /// `FixedPlayerDistanceChunkTracker.chunks`: the levels of the chunks in
-    /// range, and the order `getSpawnCandidateChunks` returns them in.
-    chunks: ChunkLevels,
+pub struct SpawnChunkTracker {
+    /// `FixedPlayerDistanceChunkTracker.chunks` (`new Long2ByteOpenHashMap()`):
+    /// the order `getSpawnCandidateChunks` returns the chunks in range in,
+    /// and their levels.
+    order: OpenOrder<i64>,
+    levels: FxHashMap<i64, u8>,
     /// `DynamicGraphMinFixedPoint.computedLevels`: the level each queued
     /// chunk was queued with, `NO_COMPUTED_LEVEL` when it is not queued.
     /// Its own order never matters (vanilla only gets, puts and removes).
@@ -59,18 +63,51 @@ pub(super) struct SpawnChunkTracker {
     /// `DistanceManager.playersPerChunk`, by chunk: how many players hold it
     /// (`ChunkTracker.getLevelFromSource` asks whether any does).
     players: FxHashMap<i64, u32>,
+    /// Each player in the counter and its section (`ChunkMap`'s last
+    /// `SectionPos`), in joining order.
+    sources: Vec<(u128, [i32; 3])>,
 }
 impl SpawnChunkTracker {
+    /// A player is in section `[x, y, z]`: one that just joined is added
+    /// (`ChunkMap.updatePlayerStatus`), one that changed section leaves its
+    /// old one and is added to the new one (`ChunkMap.move`). A move between
+    /// the sections of one chunk does that too, which sends a chunk still
+    /// queued to the back of its queue.
+    pub fn place(&mut self, id: u128, section: [i32; 3]) {
+        match self.sources.iter_mut().find(|(i, _)| *i == id) {
+            Some((_, old)) if *old == section => return,
+            Some((_, old)) => {
+                let left = std::mem::replace(old, section);
+                self.remove_player(left);
+            }
+            None => self.sources.push((id, section)),
+        }
+        self.add_player(section);
+    }
+    /// The players `keep` turns down leave (`ChunkMap.updatePlayerStatus`'s
+    /// `removePlayer`), in joining order.
+    pub fn retain(&mut self, mut keep: impl FnMut(u128) -> bool) {
+        let mut i = 0;
+        while i < self.sources.len() {
+            let (id, section) = self.sources[i];
+            if keep(id) {
+                i += 1;
+            } else {
+                self.sources.remove(i);
+                self.remove_player(section);
+            }
+        }
+    }
     /// `DistanceManager.addPlayer`: a player holds a level 0 chunk, which
     /// lowers the levels around it (`ChunkTracker.update(pos, 0, true)`).
-    pub(super) fn add_player(&mut self, x: i32, z: i32) {
+    fn add_player(&mut self, [x, _, z]: [i32; 3]) {
         let pos = pack(x, z);
         *self.players.entry(pos).or_insert(0) += 1;
         self.update(pos, 0, true);
     }
-    /// `DistanceManager.removePlayer`: no player holds the chunk any more, so
-    /// the levels around it rise again (`update(pos, Integer.MAX_VALUE, false)`).
-    pub(super) fn remove_player(&mut self, x: i32, z: i32) {
+    /// `DistanceManager.removePlayer`: once no player holds the chunk, the
+    /// levels around it rise again (`update(pos, Integer.MAX_VALUE, false)`).
+    fn remove_player(&mut self, [x, _, z]: [i32; 3]) {
         let pos = pack(x, z);
         if let Some(held) = self.players.get_mut(&pos) {
             *held -= 1;
@@ -80,53 +117,65 @@ impl SpawnChunkTracker {
             }
         }
     }
-    /// `FixedPlayerDistanceChunkTracker.runAllUpdates`: work off the queue.
-    pub(super) fn run_updates(&mut self) {
-        self.run_some_updates(i32::MAX);
-    }
     /// The map's key set (`getSpawnCandidateChunks`): chunk coordinates in the
     /// order `Long2ByteOpenHashMap.keySet().iterator()` visits them.
-    pub(super) fn chunks(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
-        self.chunks.keys().map(unpack)
+    pub fn chunks(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        self.order.iter().map(|&pos| unpack(pos))
     }
     /// `getNaturalSpawnChunkCount`.
-    pub(super) fn len(&self) -> usize {
-        self.chunks.size
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty()
     }
 
-    /// `ChunkTracker.update`.
+    /// `ChunkTracker.update`: `DynamicGraphMinFixedPoint.checkEdge` from the
+    /// source.
     fn update(&mut self, node: i64, new_level_from: i32, only_decreased: bool) {
-        self.check_edge(INVALID_CHUNK_POS, node, new_level_from, only_decreased);
+        let old_computed = self.stored_computed(node);
+        let level_to = self.level(node);
+        let from = INVALID_CHUNK_POS;
+        self.check_edge(
+            from,
+            node,
+            new_level_from,
+            level_to,
+            old_computed,
+            only_decreased,
+        );
+    }
+    /// `computedLevels.get(node) & 255`.
+    fn stored_computed(&self, node: i64) -> i32 {
+        self.computed
+            .get(&node)
+            .map_or(NO_COMPUTED_LEVEL, |&v| i32::from(v))
     }
     /// `FixedPlayerDistanceChunkTracker.getLevel`: the map's level, or
     /// `defaultReturnValue` (`maxDistance + 2`) for a chunk that is not in it.
     fn level(&self, node: i64) -> i32 {
-        self.chunks.get(node).map_or(MAX_DISTANCE + 2, i32::from)
+        self.levels
+            .get(&node)
+            .map_or(MAX_DISTANCE + 2, |&l| i32::from(l))
     }
     /// `FixedPlayerDistanceChunkTracker.setLevel`: a chunk further than
     /// `maxDistance` leaves the map, any other is put with its level.
     fn set_level(&mut self, node: i64, level: i32) {
         if level > MAX_DISTANCE {
-            self.chunks.remove(node);
+            self.order.remove(&node);
+            self.levels.remove(&node);
         } else {
-            self.chunks.put(node, level as u8);
-        }
-    }
-    /// `ChunkTracker.getLevelFromSource`: a player's chunk is level 0.
-    fn level_from_source(&self, node: i64) -> i32 {
-        if self.players.contains_key(&node) {
-            0
-        } else {
-            i32::MAX
+            self.order.insert(&node);
+            self.levels.insert(node, level as u8);
         }
     }
     /// `ChunkTracker.computeLevelFromNeighbor`: one more than the neighbour,
-    /// or the source level when the neighbour is `INVALID_CHUNK_POS`.
+    /// or from `INVALID_CHUNK_POS`, `getLevelFromSource` (0 on a player's chunk).
     fn level_from_neighbor(&self, from: i64, to: i64, from_level: i32) -> i32 {
-        if from == INVALID_CHUNK_POS {
-            self.level_from_source(to)
-        } else {
-            from_level + 1
+        match from {
+            INVALID_CHUNK_POS if self.players.contains_key(&to) => 0,
+            INVALID_CHUNK_POS => i32::MAX,
+            _ => from_level + 1,
         }
     }
     /// `ChunkTracker.getComputedLevel`: the lowest level the neighbours allow.
@@ -152,33 +201,14 @@ impl SpawnChunkTracker {
         }
         computed
     }
-    /// `DynamicGraphMinFixedPoint.checkEdge(from, to, newLevelFrom, onlyDecreased)`.
-    fn check_edge(&mut self, from: i64, to: i64, new_level_from: i32, only_decreased: bool) {
-        let level_to = self.level(to);
-        let old_computed = self
-            .computed
-            .get(&to)
-            .map_or(NO_COMPUTED_LEVEL, |&v| i32::from(v));
-        self.check_edge_with(
-            from,
-            to,
-            new_level_from,
-            level_to,
-            old_computed,
-            only_decreased,
-        );
-    }
     /// `DynamicGraphMinFixedPoint.checkNeighbor`.
     fn check_neighbor(&mut self, from: i64, to: i64, level: i32, only_decreased: bool) {
-        let stored_old = self
-            .computed
-            .get(&to)
-            .map_or(NO_COMPUTED_LEVEL, |&v| i32::from(v));
+        let stored_old = self.stored_computed(to);
         let level_from = self
             .level_from_neighbor(from, to, level)
             .clamp(0, LEVEL_COUNT - 1);
         if only_decreased {
-            self.check_edge_with(from, to, level_from, self.level(to), stored_old, true);
+            self.check_edge(from, to, level_from, self.level(to), stored_old, true);
             return;
         }
         let was_consistent = stored_old == NO_COMPUTED_LEVEL;
@@ -193,11 +223,11 @@ impl SpawnChunkTracker {
             } else {
                 self.level(to)
             };
-            self.check_edge_with(from, to, LEVEL_COUNT - 1, level_to, stored_old, false);
+            self.check_edge(from, to, LEVEL_COUNT - 1, level_to, stored_old, false);
         }
     }
-    /// `DynamicGraphMinFixedPoint.checkEdge`'s six-argument body.
-    fn check_edge_with(
+    /// `DynamicGraphMinFixedPoint.checkEdge`'s six-argument form.
+    fn check_edge(
         &mut self,
         from: i64,
         to: i64,
@@ -251,10 +281,10 @@ impl SpawnChunkTracker {
             }
         }
     }
-    /// `DynamicGraphMinFixedPoint.runUpdates`.
-    fn run_some_updates(&mut self, mut count: i32) {
-        while !self.queue.is_empty() && count > 0 {
-            count -= 1;
+    /// `FixedPlayerDistanceChunkTracker.runAllUpdates`: work off the queue
+    /// (`DynamicGraphMinFixedPoint.runUpdates`).
+    pub fn run_updates(&mut self) {
+        while !self.queue.is_empty() {
             let node = self.queue.remove_first();
             let level = self.level(node).clamp(0, LEVEL_COUNT - 1);
             let computed = self
@@ -335,188 +365,4 @@ impl LeveledQueue {
             }
         }
     }
-}
-
-/// fastutil's `Long2ByteOpenHashMap` (`new Long2ByteOpenHashMap()`: 16 expected
-/// entries, load factor 0.75, no shrinking), for the order its key iterator
-/// visits the keys in: the key 0 first, then the table from its end down.
-struct ChunkLevels {
-    key: Vec<i64>,
-    value: Vec<u8>,
-    /// The value of the key 0, which the table keeps apart (at index `n`).
-    null_value: Option<u8>,
-    size: usize,
-    max_fill: usize,
-    /// `minN`: the capacity the table was built with. It shrinks back no
-    /// further than this, and only once it holds a quarter of a full table.
-    min_n: usize,
-}
-impl Default for ChunkLevels {
-    fn default() -> Self {
-        let n = array_size(16);
-        Self {
-            key: vec![0; n],
-            value: vec![0; n],
-            null_value: None,
-            size: 0,
-            max_fill: max_fill(n),
-            min_n: n,
-        }
-    }
-}
-impl ChunkLevels {
-    fn n(&self) -> usize {
-        self.key.len()
-    }
-    fn mask(&self) -> usize {
-        self.n() - 1
-    }
-    /// `HashCommon.mix(long)`.
-    fn mix(key: i64) -> usize {
-        let mut h = (key as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        h ^= h >> 32;
-        (h ^ (h >> 16)) as u32 as usize
-    }
-    fn slot(&self, key: i64) -> usize {
-        Self::mix(key) & self.mask()
-    }
-    fn get(&self, key: i64) -> Option<u8> {
-        if key == 0 {
-            return self.null_value;
-        }
-        let mut pos = self.slot(key);
-        while self.key[pos] != 0 {
-            if self.key[pos] == key {
-                return Some(self.value[pos]);
-            }
-            pos = (pos + 1) & self.mask();
-        }
-        None
-    }
-    /// `put(k, v)`: a key already in the table keeps its slot.
-    fn put(&mut self, key: i64, value: u8) {
-        if key == 0 {
-            if self.null_value.is_some() {
-                self.null_value = Some(value);
-                return;
-            }
-            self.null_value = Some(value);
-        } else {
-            let mut pos = self.slot(key);
-            while self.key[pos] != 0 {
-                if self.key[pos] == key {
-                    self.value[pos] = value;
-                    return;
-                }
-                pos = (pos + 1) & self.mask();
-            }
-            self.key[pos] = key;
-            self.value[pos] = value;
-        }
-        let grow = self.size >= self.max_fill;
-        self.size += 1;
-        if grow {
-            self.rehash(array_size(self.size + 1));
-        }
-    }
-    fn remove(&mut self, key: i64) {
-        if key == 0 {
-            if self.null_value.take().is_some() {
-                self.size -= 1;
-                self.shrink();
-            }
-            return;
-        }
-        let mut pos = self.slot(key);
-        while self.key[pos] != 0 {
-            if self.key[pos] == key {
-                self.size -= 1;
-                self.shift_keys(pos);
-                self.shrink();
-                return;
-            }
-            pos = (pos + 1) & self.mask();
-        }
-    }
-    /// `remove`'s `if (n > minN && size < maxFill / 4 && n > 16) rehash(n / 2)`.
-    fn shrink(&mut self) {
-        if self.n() > self.min_n && self.size < self.max_fill / 4 && self.n() > 16 {
-            self.rehash(self.n() / 2);
-        }
-    }
-    /// `HashCommon.rehash`: the entries back into a larger table, in the order
-    /// the old one holds them from its end down.
-    fn rehash(&mut self, new_n: usize) {
-        let mask = new_n - 1;
-        let mut keys = vec![0i64; new_n];
-        let mut values = vec![0u8; new_n];
-        let real = self.size - usize::from(self.null_value.is_some());
-        let mut i = self.n();
-        for _ in 0..real {
-            loop {
-                i -= 1;
-                if self.key[i] != 0 {
-                    break;
-                }
-            }
-            let key = self.key[i];
-            let mut pos = Self::mix(key) & mask;
-            while keys[pos] != 0 {
-                pos = (pos + 1) & mask;
-            }
-            keys[pos] = key;
-            values[pos] = self.value[i];
-        }
-        self.key = keys;
-        self.value = values;
-        self.max_fill = max_fill(new_n);
-    }
-    /// `shiftKeys`: pull the entries that probed past `pos` back into the gap.
-    fn shift_keys(&mut self, mut pos: usize) {
-        let mask = self.mask();
-        loop {
-            let last = pos;
-            pos = (last + 1) & mask;
-            let curr = loop {
-                let curr = self.key[pos];
-                if curr == 0 {
-                    self.key[last] = 0;
-                    return;
-                }
-                let slot = Self::mix(curr) & mask;
-                let moves = if last <= pos {
-                    last >= slot || slot > pos
-                } else {
-                    last >= slot && slot > pos
-                };
-                if moves {
-                    break curr;
-                }
-                pos = (pos + 1) & mask;
-            };
-            self.key[last] = curr;
-            self.value[last] = self.value[pos];
-        }
-    }
-    /// `keySet().iterator()`: the key 0, then the table from its end down.
-    fn keys(&self) -> impl Iterator<Item = i64> + '_ {
-        self.null_value
-            .iter()
-            .map(|_| 0)
-            .chain((0..self.n()).rev().filter_map(|pos| {
-                let key = self.key[pos];
-                (key != 0).then_some(key)
-            }))
-    }
-}
-
-/// `HashCommon.arraySize(expected, 0.75F)`.
-fn array_size(expected: usize) -> usize {
-    ((expected as f64 / 0.75).ceil() as usize)
-        .next_power_of_two()
-        .max(2)
-}
-/// `HashCommon.maxFill(n, 0.75F)`.
-fn max_fill(n: usize) -> usize {
-    ((n as f64 * 0.75).ceil() as usize).min(n - 1)
 }
