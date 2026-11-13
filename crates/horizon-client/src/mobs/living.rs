@@ -763,6 +763,12 @@ impl Mob {
     /// nautiluses keep their own course.
     fn pushed_by_fluid(&self) -> bool {
         use super::Species as S;
+        // Drowned.isPushedByFluid: a drowned swimming after its target is not
+        // pushed by the current, one walking the bottom is (`extra.flag` holds
+        // the `isSwimming` that `Drowned.updateSwimming` sets).
+        if self.species() == S::Drowned && self.extra.flag {
+            return false;
+        }
         !matches!(
             self.species(),
             S::Tadpole
@@ -868,9 +874,16 @@ impl Mob {
         let scene = SceneCollisions {
             world: w.world,
             binding: w.collision,
-            subject: self.kind.flags.lava_walker.then(|| PowderSnowSubject {
+            // PowderSnowBlock.getCollisionShape asks every entity for its fall
+            // distance, the walkable-mob tag and leather boots on its feet.
+            subject: Some(PowderSnowSubject {
                 fall_distance: self.fall_distance,
-                lava_walker: true,
+                leather_boots: self.extra.feet.as_deref() == Some("minecraft:leather_boots")
+                    && self.extra.armor[3].as_ref().is_none_or(|s| s.count > 0),
+                walkable_type: w
+                    .data
+                    .entity_has("minecraft:powder_snow_walkable_mobs", &self.kind.id),
+                lava_walker: self.kind.flags.lava_walker,
                 ..Default::default()
             }),
         };
