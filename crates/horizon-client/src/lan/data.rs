@@ -97,6 +97,25 @@ struct Entries {
     from_pack: Vec<bool>,
 }
 
+/// `horizon:villager_profession`: vanilla's fixed first fifteen, then the
+/// content's in id order. Vanilla's ids are built in, so only the content
+/// entries carry data; neither kind has any NBT of its own.
+fn villager_profession_entries(custom: impl IntoIterator<Item = String>) -> Entries {
+    let vanilla = crate::mobs::render::PROFESSIONS.len();
+    let mut names: Vec<String> = crate::mobs::render::PROFESSIONS
+        .iter()
+        .map(|name| format!("minecraft:{name}"))
+        .collect();
+    names.extend(custom);
+    Entries {
+        data: vec![Tag::compound(Vec::<(&str, Tag)>::new()); names.len()],
+        // A vanilla id is rebuilt from the core pack a client already knows;
+        // a content id is Horizon's own, so its (empty) data is always sent.
+        from_pack: (0..names.len()).map(|i| i >= vanilla).collect(),
+        names,
+    }
+}
+
 /// The damage registry already bound for gameplay at world entry. Keeping
 /// only these entries lets unrelated pack data remain lazy until a hub needs it.
 pub struct FrozenDamage(Entries);
@@ -332,23 +351,17 @@ impl SyncData {
         };
         for key in SYNCHRONIZED {
             if *key == crate::mobs::villager_professions::SYNC_REGISTRY {
-                let mut names: Vec<String> = crate::mobs::render::PROFESSIONS
-                    .iter()
-                    .map(|name| format!("minecraft:{name}"))
-                    .collect();
-                names.extend(crate::mobs::villager_professions::entries());
+                let entries =
+                    villager_profession_entries(crate::mobs::villager_professions::entries());
                 dynamic.registries.insert(
                     (*key).into(),
-                    names.iter().map(|name| (name.clone(), None)).collect(),
+                    entries
+                        .names
+                        .iter()
+                        .map(|name| (name.clone(), None))
+                        .collect(),
                 );
-                registries.push((
-                    (*key).into(),
-                    Entries {
-                        data: vec![Tag::compound(Vec::<(&str, Tag)>::new()); names.len()],
-                        from_pack: vec![true; names.len()],
-                        names,
-                    },
-                ));
+                registries.push(((*key).into(), entries));
                 continue;
             }
             if let Some(kept) = kept.filter(|_| *key != BIOME_REGISTRY || biomes.is_none()) {
@@ -1174,6 +1187,54 @@ mod tests {
             1,
             "one entry per registry"
         );
+    }
+
+    /// The profession registry keeps vanilla's registry order first, so its
+    /// wire ids match the built-in table, and appends content by id. A client
+    /// that knows the core pack gets no data for the vanilla ids.
+    #[test]
+    fn villager_professions_keep_vanilla_first_and_mark_only_content_as_pack() {
+        let entries = villager_profession_entries([
+            "example:beekeeper".to_owned(),
+            "example:zookeeper".to_owned(),
+        ]);
+        assert_eq!(
+            &entries.names[..15],
+            &[
+                "minecraft:none",
+                "minecraft:armorer",
+                "minecraft:butcher",
+                "minecraft:cartographer",
+                "minecraft:cleric",
+                "minecraft:farmer",
+                "minecraft:fisherman",
+                "minecraft:fletcher",
+                "minecraft:leatherworker",
+                "minecraft:librarian",
+                "minecraft:mason",
+                "minecraft:nitwit",
+                "minecraft:shepherd",
+                "minecraft:toolsmith",
+                "minecraft:weaponsmith",
+            ]
+        );
+        assert_eq!(
+            &entries.names[15..],
+            &["example:beekeeper", "example:zookeeper"]
+        );
+        assert_eq!(entries.from_pack, [vec![false; 15], vec![true; 2]].concat());
+        let mut sync = SyncData::empty();
+        sync.registries
+            .push(("horizon:villager_profession".to_owned(), entries));
+        let data = |known_pack| -> Vec<bool> {
+            sync.registry_packets(known_pack, &LevelShapes::VANILLA)[0]
+                .entries
+                .iter()
+                .map(|e| e.data.is_some())
+                .collect()
+        };
+        assert_eq!(data(true), [vec![false; 15], vec![true; 2]].concat());
+        assert_eq!(data(false), vec![true; 17]);
     }
 
     /// RegistrySynchronization.packRegistry: a client that knows the core

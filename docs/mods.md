@@ -586,7 +586,7 @@ These are content rather than world data: the client needs the same names, textu
 content root at world open and a world data pack does not add them.
 `poi` is the job-site block; `work_sound` is a sound event without `minecraft:`; `look` is the vanilla profession whose
 texture and hat it wears; `gift` defaults to `<ns>:gameplay/hero_of_the_village/<name>_gift`. Vanilla's fifteen
-professions keep their indices. Custom entries start at 15; a local index stays with its id across reloads, and the
+professions keep their indices. Custom entries start at 15; a local index stays with its id across loads, and the
 server sends every id in `horizon:villager_profession` so a client uses the server's mapping. Their trades are
 ordinary `data/<ns>/villager_trade/` and `data/<ns>/trade_set/` files, using the profession's namespaced id
 (`<ns>:<name>/level_<n>`), not `minecraft:`.

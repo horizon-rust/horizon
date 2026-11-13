@@ -797,11 +797,18 @@ pub(super) fn mob_meta(
                 defaults.push((19, serializer::BOOLEAN, Value::Bool(false)));
             }
             let villager_type = VILLAGER_TYPES[e.variant as usize % VILLAGER_TYPES.len()];
-            if let (Some(t), Some(p)) = (
-                id("minecraft:villager_type", villager_type),
+            // Vanilla ids are built in; a content id is only encodable
+            // through the synchronized registry. A retained custom index the
+            // registry no longer carries becomes `none` rather than a vanilla
+            // profession whose name happens to match.
+            let profession = if e.variant2 < vp::FIRST {
+                id("minecraft:villager_profession", vp::name(e.variant2))
+            } else {
                 sync.id(vp::SYNC_REGISTRY, &vp::id(e.variant2))
-                    .or_else(|| id("minecraft:villager_profession", vp::name(e.variant2))),
-            ) {
+                    .or_else(|| sync.id(vp::SYNC_REGISTRY, "minecraft:none"))
+                    .or_else(|| id("minecraft:villager_profession", "none"))
+            };
+            if let (Some(t), Some(p)) = (id("minecraft:villager_type", villager_type), profession) {
                 let index = if kind == "minecraft:villager" { 19 } else { 20 };
                 let level = i32::from(e.variant3.max(1));
                 meta.push((

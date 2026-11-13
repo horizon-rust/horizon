@@ -14,7 +14,7 @@
 //! without `minecraft:`; `look` is the vanilla profession whose texture and
 //! hat the villager wears; `gift` defaults to
 //! `<namespace>:gameplay/hero_of_the_village/<name>_gift`. Local indices stay
-//! with an id across reloads. The server sends every id in
+//! with an id across loads. The server sends every id in
 //! `horizon:villager_profession`, so a client uses the server's mapping rather
 //! than deriving one from its own load history.
 
@@ -53,7 +53,7 @@ pub struct Profession {
 
 #[derive(Default)]
 struct Registry {
-    /// By index minus `FIRST`. A slot for a profession a later reload removes
+    /// By index minus `FIRST`. A slot for a profession a later load removes
     /// stays so live villagers keep their index and look; only the lookup maps
     /// are rebuilt.
     professions: Vec<Option<Profession>>,
@@ -65,7 +65,7 @@ struct Registry {
 }
 
 /// Bumped whenever the table is installed, so caches that derive from it
-/// (the villager POI table) rebuild on `/reload`.
+/// (the villager POI table and section lists) rebuild after a content load.
 static VERSION: AtomicU32 = AtomicU32::new(0);
 
 /// Indexes handed out across reloads, so adding a profession cannot renumber
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn reloads_keep_an_id_on_its_index() {
+    fn loads_keep_an_id_on_its_index() {
         let profession = |poi: &str| serde_json::json!({"poi": poi, "look": "farmer"});
         let mut assignments = Assignments::default();
         let first = build(
