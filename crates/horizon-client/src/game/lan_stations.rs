@@ -19,6 +19,9 @@ use horizon_client::{
 use horizon_core::random::RandomSource;
 use horizon_protocol::packets::play::{self, Clientbound as C};
 
+#[cfg(test)]
+mod anvil_rng_tests;
+
 /// A guest's open workstation menu.
 pub(super) struct GuestStation {
     pub(super) window: i32,
@@ -379,8 +382,8 @@ impl Game<'_> {
             self.level_event_at(1044, gs.pos, 0);
         } else {
             let creative = gs.menu.creative;
-            // A broken anvil closes the menu on the next stillValid check.
-            self.anvil_used(gs.pos, creative);
+            // A departed guest skips wear/sound; a broken anvil closes on the next stillValid check.
+            self.as_guest(host, conn, |g| g.anvil_used(gs.pos, creative));
             if let Some(craft) = craft
                 && let Some(guest) = host.hub.guests.iter().find(|g| g.conn == conn)
             {

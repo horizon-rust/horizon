@@ -4503,14 +4503,12 @@ impl Game<'_> {
                             1045 | 1046 | 1047 | 1052 => {
                                 self.particles.level_random().next_float() * 0.1 + 0.9
                             }
-                            1053 | 1054 => {
-                                // LevelEventHandler's client random: impact audio
-                                // must not change the server's bottle XP stream.
+                            // Client sounds must not advance anvil wear's player
+                            // RNG or the server's bottle XP stream.
+                            1029 | 1030 | 1053 | 1054 => {
                                 self.particles.level_random().next_float() * 0.1 + 0.9
                             }
-                            1029 | 1030 | 1042 | 1043 | 1044 => {
-                                self.world.random.next_float() * 0.1 + 0.9
-                            }
+                            1042..=1044 => self.world.random.next_float() * 0.1 + 0.9,
                             1026 | 1027 => {
                                 let r = self.particles.level_random();
                                 (r.next_float() - r.next_float()) * 0.2 + 1.0

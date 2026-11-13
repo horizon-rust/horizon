@@ -46,6 +46,11 @@ use horizon_client::{
 };
 use horizon_core::random::{LegacyRandom, RandomSource};
 
+mod anvil_wear;
+
+#[cfg(test)]
+mod anvil_level_rng_tests;
+
 /// The book above the enchanting table's offers: `EnchantmentScreen`'s
 /// `time`, `flip`, `oFlip`, `flipT`, `flipA`, `open`, `oOpen` and `last`.
 pub(super) struct EnchantBook {
@@ -914,38 +919,6 @@ impl Game<'_> {
             self.screen = Screen::Playing;
             self.capture(true);
         }
-    }
-    /// `AnvilMenu.onTake`'s level part: out of creative a 12% chance
-    /// (`AnvilBlock.damage`) to wear the anvil a stage, or break a damaged one
-    /// (level event 1029); otherwise level event 1030. True when it broke.
-    pub(super) fn anvil_used(&mut self, pos: [i32; 3], creative: bool) -> bool {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
-        let name = self.res.facts().get(state).name.clone();
-        let anvil = matches!(
-            &*name,
-            "minecraft:anvil" | "minecraft:chipped_anvil" | "minecraft:damaged_anvil"
-        );
-        if !creative && anvil && self.world.random.next_float() < 0.12 {
-            match &*name {
-                "minecraft:anvil" => {
-                    let _ = self.set_state_named(pos, "minecraft:chipped_anvil", &["facing"]);
-                    self.native_anvil_damaged(self.dim.id(), pos, &name, "minecraft:chipped_anvil");
-                }
-                "minecraft:chipped_anvil" => {
-                    let _ = self.set_state_named(pos, "minecraft:damaged_anvil", &["facing"]);
-                    self.native_anvil_damaged(self.dim.id(), pos, &name, "minecraft:damaged_anvil");
-                }
-                _ => {
-                    let _ = self.world.set(pos[0], pos[1], pos[2], self.world.air);
-                    self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
-                    self.native_anvil_damaged(self.dim.id(), pos, &name, "minecraft:air");
-                    self.level_event_at(1029, pos, 0);
-                    return true;
-                }
-            }
-        }
-        self.level_event_at(1030, pos, 0);
-        false
     }
     /// The grindstone result's `onTake` with a level (`amount`: the menu's
     /// `getExperienceAmount` sum): the orbs at the block's centre
