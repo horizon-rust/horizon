@@ -1,7 +1,9 @@
 //! The per-tick mob update in vanilla order (`Entity.baseTick`,
 //! `LivingEntity.baseTick/tick/aiStep`, `Mob.serverAiStep`) and the
 //! dispatch to each species family's goals and special behaviour.
+pub(crate) use freezing::{can_freeze, in_powder_snow};
 mod feeding;
+mod freezing;
 
 pub use feeding::takes_food;
 
@@ -13,6 +15,7 @@ use super::{
     hostile,
     nav::Navigation,
     path::{PATH_TYPES, Path},
+    push::{Cap, Verdict, root_vehicle},
     undead,
 };
 use crate::blocks::Fluid;
@@ -97,6 +100,7 @@ pub struct Ai {
     /// Ticks left during which kills count as player kills.
     pub last_hurt_by_player: i32,
     pub no_action_time: i32,
+    pub dab_turns: u32,
     pub aggressive: bool,
     pub panicking: bool,
     pub malus: [Option<f32>; PATH_TYPES],
@@ -480,7 +484,7 @@ pub fn register(m: &mut Mob) {
 /// every mob Horizon makes, a client's copies of a server's mobs included,
 /// before its saved data is read; goals tick only where the mob's AI runs.
 /// `goals::Float` keeps the navigation floating, as FloatGoal's
-/// constructor does. API @API:register_goals@.
+/// constructor does. API 432.
 #[inline(never)]
 pub fn native_register_goals(mob: &mut Mob) {
     crate::native_client_hooks::register_goals(mob);
@@ -724,7 +728,7 @@ pub fn tick(
         // Mob.aiStep still runs without AI: undead burn, endermites age.
         burn_undead(m, w, events);
         if m.species() == Species::Endermite {
-            endermite_lifetime(m);
+            super::hostile::endermite_lifetime(m);
         }
         // AbstractHorse.aiStep (it overrides LivingEntity.aiStep, which NoAI
         // doesn't skip) and AbstractHorse.tick: a NoAI horse still swishes
@@ -786,6 +790,7 @@ pub fn tick(
         freeze_tick(m, w, events);
     }
     extinguish_if_wet(m, w, was_on_fire, events);
+    m.reset_unlit_fire();
     if m.species() == Species::SulfurCube && m.alive() {
         // SulfurCube.doPush applies the body's contact damage even with NoAI.
         // Player contact keeps its existing player_push route.
@@ -818,6 +823,8 @@ pub fn tick(
         Species::Allay => super::allay::tick(m, w, events),
         Species::Panda => super::panda::tick(m, w, events),
         Species::Villager => super::villager::tick(m, w.game_time),
+        // Vex.tick: gravity off on every tick, AI or not.
+        Species::Vex => m.no_gravity = true,
         _ => {}
     }
     aquatic::school_tick(m, w, level_random);
@@ -1250,8 +1257,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
     if fire > 0.0 {
         m.ticks_frozen = 0;
     }
-    // Entity.baseTick counts burning damage and the fire timer before
-    // Entity.applyEffectsFromBlocks extinguishes a wet mob later in the tick.
+    // Entity.baseTick counts burn damage and the timer before a wet mob is put out.
     if m.fire_ticks > 0 {
         if m.kind.flags.fire_immune {
             m.fire_ticks = 0;
@@ -1394,43 +1400,6 @@ fn touches_lava(m: &Mob, w: &MobWorld) -> bool {
         }
     }
     false
-}
-pub(super) fn in_powder_snow(m: &Mob, w: &MobWorld) -> bool {
-    let b = m.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
-    let (min, max) = (b.min_position(), b.max_position());
-    for x in min.x.floor() as i32..=max.x.floor() as i32 {
-        for y in min.y.floor() as i32..=max.y.floor() as i32 {
-            for z in min.z.floor() as i32..=max.z.floor() as i32 {
-                if &*w.facts.get(w.world.block(x, y, z)).name == "minecraft:powder_snow" {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-/// `LivingEntity.canFreeze`: not a `#freeze_immune_entity_types` mob and no
-/// worn piece in `#freeze_immune_wearables`.
-fn can_freeze(m: &Mob, w: &MobWorld) -> bool {
-    if w.data
-        .entity_has("minecraft:freeze_immune_entity_types", &m.kind.id)
-    {
-        return false;
-    }
-    let immune = w
-        .items
-        .and_then(|i| i.item_tags.get("minecraft:freeze_immune_wearables"));
-    // A wolf's armor (its body slot) is `#freeze_immune_wearables`.
-    ![
-        &m.extra.body,
-        &m.extra.head,
-        &m.extra.chest,
-        &m.extra.legs,
-        &m.extra.feet,
-    ]
-    .into_iter()
-    .flatten()
-    .any(|item| immune.is_some_and(|t| t.contains(&**item)))
 }
 /// `Mob.playAmbientSound` on demand: a spawn egg or a mob bucket just placed `m`.
 pub fn ambient_sound(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
@@ -1700,7 +1669,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         super::piglin::before_goals(m, w, level_random, events);
     }
     if m.alive() && !immobile {
-        server_ai_step(m, w, level_random, events);
+        super::dab::step(m, w, level_random, events);
     } else {
         m.ai.jumping = false;
         m.ai.xxa = 0.0;
@@ -1782,18 +1751,6 @@ impl Mob {
 fn on_climbable(m: &Mob, w: &MobWorld) -> bool {
     m.on_climbable(w)
 }
-/// `Entity.getRootVehicle` of the mob `id` riding `vehicle`: the bottom of
-/// its stack of vehicles (itself when it rides nothing).
-fn root_vehicle(w: &MobWorld, id: u32, vehicle: Option<u32>) -> u32 {
-    let (mut root, mut next) = (id, vehicle);
-    // A stack of riders is short; the bound only guards a broken loop.
-    for _ in 0..16 {
-        let Some(v) = next else { break };
-        root = v;
-        next = w.seen(v).and_then(|s| s.vehicle);
-    }
-    root
-}
 /// `LivingEntity.aiStep`, with or without AI: a mob's motion below 0.003 on an
 /// axis stops.
 fn drop_tiny_motion(m: &mut Mob) {
@@ -1820,9 +1777,7 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         && (m.species() != Species::Creaking || super::creaking::can_move(m))
         && (m.species() != Species::Warden || !super::warden::digging_or_emerging(m))
         && !super::equine::is_vehicle(m);
-    // Each with whether it rides a vehicle (`Entity.isPassenger`) and
-    // whether it shares this one's root vehicle (`isPassengerOfSameVehicle`).
-    let mut targets: Vec<(Who, Vec3, bool, bool, bool)> = Vec::new();
+    let mut targets = super::world::take_push_targets();
     if let Some(p) = &w.player
         // Entity.push: passengers of the same vehicle never push each other.
         && m.rider.is_none()
@@ -1852,7 +1807,14 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     {
         hurt(m, w, events, 6.0, Damage::of(DamageKind::Cramming));
     }
-    for (who, at, _, same, vehicle) in targets {
+    // The server's collision cap, after the cramming check above, which counts every entity.
+    let mut cap = Cap::new(m, w);
+    for &(who, at, _, same, vehicle) in &targets {
+        match cap.check(who, w) {
+            Verdict::Push => {}
+            Verdict::Skip => continue,
+            Verdict::Stop => break,
+        }
         // Warden.doPush: touching it angers it, then the push itself.
         if m.species() == Species::Warden {
             super::warden::do_push(m, w, who, events);
@@ -1904,7 +1866,9 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         if self_pushable {
             m.velocity = Vec3::new(m.velocity.x + xa, m.velocity.y, m.velocity.z + za);
         }
+        cap.record(m, who);
     }
+    super::world::give_push_targets(targets);
 }
 /// `Mob.aiStep` -> `Mob.burnUndead`: undead burn in daylight. It runs with
 /// or without AI (`NoAI` only skips `serverAiStep`).
@@ -1939,7 +1903,7 @@ fn sun_burn_tick(m: &mut Mob, w: &MobWorld) -> bool {
     br > 0.5 && m.random.next_float() * 30.0 < (br - 0.4) * 2.0 && !wet && w.can_see_sky(x, y, z)
 }
 /// Mob.serverAiStep
-fn server_ai_step(
+pub(super) fn server_ai_step(
     m: &mut Mob,
     w: &MobWorld,
     level_random: &mut LegacyRandom,
@@ -1956,8 +1920,7 @@ fn server_ai_step(
         return;
     }
     super::riders::drive(m, w);
-    let tick_count = m.age as i64;
-    let id_based = tick_count + i64::from(m.id);
+    let id_based = super::dab::selector_tick(m) + i64::from(m.id);
     let mut targets = std::mem::take(&mut m.ai.targets);
     let mut goals = std::mem::take(&mut m.ai.goals);
     {
@@ -1966,7 +1929,7 @@ fn server_ai_step(
             lr: level_random,
             events,
         };
-        if id_based % 2 != 0 && tick_count > 1 {
+        if id_based % 2 != 0 && m.age as i64 > 1 {
             targets.tick_running(m, &mut cx, false);
             goals.tick_running(m, &mut cx, false);
         } else {
@@ -1989,7 +1952,7 @@ fn server_ai_step(
     }
     if m.species() == Species::Villager {
         // Villager.customServerAiStep: the brain, then the raid sound roll.
-        super::villager_brain::tick(m, w, level_random, events);
+        super::villager::lobotomy::brain_tick(m, w, level_random, events);
         if let Some(player) = super::villager::ext_mut(m).last_traded_player.take() {
             events.push(MobEvent::VillagerTrade { mob: m.id, player });
         }
@@ -2090,16 +2053,6 @@ fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         _ => {}
     }
 }
-/// Endermite.aiStep: `counter` is the life; an endermite not required to
-/// persist is discarded at 2400.
-fn endermite_lifetime(m: &mut Mob) {
-    if !m.persistent {
-        m.extra.counter += 1;
-    }
-    if m.extra.counter >= 2400 {
-        m.removed = true;
-    }
-}
 fn species_ai_step(
     m: &mut Mob,
     w: &MobWorld,
@@ -2113,7 +2066,7 @@ fn species_ai_step(
         Species::Enderman => super::enderman::ai_step(m, w, events),
         // Endermite.aiStep: `counter` is the life; an endermite not required
         // to persist is discarded at 2400.
-        Species::Endermite => endermite_lifetime(m),
+        Species::Endermite => super::hostile::endermite_lifetime(m),
         Species::Wolf => super::tame::ai_step(m, w, events),
         Species::Cat => super::tame::cat_ai_step(m, events),
         Species::IronGolem => super::golem::iron_ai_step(m, w),
@@ -3753,6 +3706,111 @@ mod same_vehicle_push_tests {
         assert_eq!(pushed, vec![3], "the camel pushes the zombie");
     }
 
+    /// The server's collision cap (`[entities] max_collisions`): in a pen of twelve chickens one
+    /// pushes every other (11) with no cap, and exactly the first N in vanilla's order with a cap
+    /// of N, skipping a chicken that already had N pushes this tick.
+    #[test]
+    fn a_mob_in_a_crowded_pen_pushes_at_most_the_cap() {
+        let mut pen = None;
+        with_test_world(&[], |_, types| {
+            let chicken = |id: u32| {
+                // All inside one another's boxes, none exactly on the pusher.
+                let at = Vec3::new(0.5 + f64::from(id) * 0.02, 64.0, 0.5);
+                Mob::new(
+                    id,
+                    std::sync::Arc::new(types.types["minecraft:chicken"].clone()),
+                    at,
+                    0.0,
+                )
+            };
+            pen = Some((0..12).map(chicken).collect::<Vec<_>>());
+        });
+        let Some(pen) = pen else {
+            return;
+        };
+        let pushed = |cap: u32, crowd: &[crate::mobs::Seen]| {
+            let mut pusher = pen[0].clone();
+            let mut events = Vec::new();
+            super::super::push::with_cap(cap, || {
+                with_test_world(crowd, |w, _| push_entities(&mut pusher, w, &mut events))
+            });
+            let ids: Vec<u32> = events
+                .iter()
+                .filter_map(|e| match e {
+                    MobEvent::Push {
+                        target: Who::Mob(id),
+                        ..
+                    } => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            // What the loop reports for the counts that follow.
+            assert_eq!(pusher.pushed, if cap > 0 { ids.clone() } else { vec![] });
+            ids
+        };
+        let mut crowd: Vec<crate::mobs::Seen> = pen.iter().map(|m| m.seen(None)).collect();
+        assert_eq!(pushed(0, &crowd), (1..12).collect::<Vec<u32>>());
+        assert_eq!(pushed(3, &crowd), vec![1, 2, 3]);
+        // Chickens 1 and 2 have taken 3 pushes already: skipped, the next ones are pushed.
+        crowd[1].collisions = 3;
+        crowd[2].collisions = 3;
+        assert_eq!(pushed(3, &crowd), vec![3, 4, 5]);
+        // The pusher's own count includes what it received: two left of three.
+        crowd[0].collisions = 1;
+        assert_eq!(pushed(3, &crowd), vec![3, 4]);
+        crowd[0].collisions = 3;
+        assert!(pushed(3, &crowd).is_empty());
+        // Off, the counts are not read.
+        assert_eq!(pushed(0, &crowd), (1..12).collect::<Vec<u32>>());
+    }
+
+    /// MSPT of one tick of a crowded chicken pen with the cap off and at 8 (run by hand with
+    /// `--ignored --nocapture`; needs the vanilla data). It measures the pushes a mob gives; the
+    /// received counts the mob loop adds are not simulated.
+    #[test]
+    #[ignore]
+    fn collision_cap_cost() {
+        for n in [50u32, 100, 200] {
+            let mut pen = None;
+            with_test_world(&[], |_, types| {
+                let ty = std::sync::Arc::new(types.types["minecraft:chicken"].clone());
+                pen = Some(
+                    (0..n)
+                        .map(|id| {
+                            let at = Vec3::new(
+                                0.5 + f64::from(id % 7) * 0.05,
+                                64.0,
+                                0.5 + f64::from(id / 7 % 7) * 0.05 + f64::from(id) * 0.0001,
+                            );
+                            Mob::new(id, ty.clone(), at, 0.0)
+                        })
+                        .collect::<Vec<_>>(),
+                );
+            });
+            let Some(mut pen) = pen else {
+                return;
+            };
+            for cap in [0u32, 8] {
+                let crowd: Vec<crate::mobs::Seen> = pen.iter().map(|m| m.seen(None)).collect();
+                let t = std::time::Instant::now();
+                super::super::push::with_cap(cap, || {
+                    with_test_world(&crowd, |w, _| {
+                        let mut events = Vec::new();
+                        for m in pen.iter_mut() {
+                            events.clear();
+                            push_entities(m, w, &mut events);
+                            m.pushed.clear();
+                        }
+                    })
+                });
+                println!(
+                    "{n} chickens, cap {cap}: {:.3} ms",
+                    t.elapsed().as_secs_f64() * 1e3
+                );
+            }
+        }
+    }
+
     #[test]
     fn sleeping_villager_vetoes_only_pushes_received_during_other_mobs_ticks() {
         let mut pair = None;
@@ -5273,7 +5331,9 @@ mod allay_healing_tests {
                     mob.persistent = true;
                     mob.health = initial;
                     mob.extra.ints[2] = 37;
-                    mob.extra.ints[3] = 41;
+                    // ITEM_PICKUP_COOLDOWN_TICKS lives in the allay's own state now.
+                    mob.extra.allay.get_or_insert_with(Default::default);
+                    crate::mobs::allay::set_pickup_cooldown(&mut mob, Some(41));
                     mob.extra.egg_time = 30;
                     assert_eq!(mob.attrs.max_health, 20.0);
                     assert_eq!(mob.age, 0);
@@ -5290,7 +5350,10 @@ mod allay_healing_tests {
                         assert_eq!(mob.extra.egg_time, 30 - elapsed as i32);
                         let skipped = if no_ai { 0 } else { elapsed as i32 };
                         assert_eq!(mob.extra.ints[2], 37 - skipped);
-                        assert_eq!(mob.extra.ints[3], 41 - skipped);
+                        assert_eq!(
+                            crate::mobs::allay::pickup_cooldown(&mob),
+                            Some(41 - skipped)
+                        );
                     }
                 }
             }
@@ -5742,6 +5805,87 @@ mod nautilus_noai_air_tests {
     }
 }
 
+#[cfg(test)]
+mod freeze_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// `LivingEntity.aiStep`'s freezing, through `freeze_tick`: powder snow
+    /// builds a mob's frozen ticks towards the 140 that freeze it, and at 140 a
+    /// tick that falls on the 40-tick damage interval hurts it by 1. A skeleton
+    /// answers `canFreeze` false, so it takes neither, and so does the stray (by
+    /// tag), while the bogged, parched, wither skeleton and a zombie freeze.
+    #[test]
+    fn a_skeleton_never_freezes() {
+        crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                let snow = registry.default_state("minecraft:powder_snow").unwrap();
+                for cx in -1..1 {
+                    for cz in -1..1 {
+                        world
+                            .chunks
+                            .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                    }
+                }
+                for x in -4..4 {
+                    for z in -4..4 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+                // The mob stands in this block.
+                world.set(0, 64, 0, snow).unwrap();
+            },
+            |w, types| {
+                let frozen_with = |id: &str, ticks_frozen: i32, body: Option<&str>| {
+                    let kind = Arc::new(types.types[id].clone());
+                    let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    m.ticks_frozen = ticks_frozen;
+                    m.extra.body = body.map(Into::into);
+                    // The freeze damage falls on a tick that is a multiple of 40.
+                    m.age = 40;
+                    let start = m.health;
+                    let mut events = Vec::new();
+                    freeze_tick(&mut m, w, &mut events);
+                    (m.ticks_frozen, start - m.health)
+                };
+                let frozen = |id: &str, ticks_frozen: i32| frozen_with(id, ticks_frozen, None);
+                // Powder snow builds no frozen ticks on a skeleton, and one
+                // already frozen melts two ticks a tick instead of taking the
+                // damage a fully frozen mob takes at 140.
+                for skeleton in ["minecraft:skeleton", "minecraft:stray"] {
+                    assert_eq!(frozen(skeleton, 0), (0, 0.0), "{skeleton}");
+                    assert_eq!(frozen(skeleton, 140), (138, 0.0), "{skeleton} frozen");
+                }
+                // The bogged, parched and wither skeleton extend AbstractSkeleton,
+                // not Skeleton, and freeze like a zombie.
+                for sibling in [
+                    "minecraft:bogged",
+                    "minecraft:parched",
+                    "minecraft:wither_skeleton",
+                ] {
+                    assert_eq!(frozen(sibling, 0), (1, 0.0), "{sibling}");
+                    assert_eq!(frozen(sibling, 139), (140, 1.0), "{sibling} frozen");
+                }
+                // A zombie in the same block freezes, and at 140 takes the 1.
+                assert_eq!(frozen("minecraft:zombie", 139), (140, 1.0));
+                // SulfurCube.canFreeze: a cube carrying a block in its body does
+                // not freeze; without one it freezes and takes the 1 like a zombie.
+                assert_eq!(
+                    frozen_with("minecraft:sulfur_cube", 0, Some("minecraft:stone")),
+                    (0, 0.0)
+                );
+                assert_eq!(
+                    frozen_with("minecraft:sulfur_cube", 140, Some("minecraft:stone")),
+                    (138, 0.0)
+                );
+                assert_eq!(frozen("minecraft:sulfur_cube", 0), (1, 0.0));
+                assert_eq!(frozen("minecraft:sulfur_cube", 139), (140, 1.0));
+            },
+        );
+    }
+}
 #[cfg(test)]
 mod happy_ghast_ambient_tests {
     use super::*;
