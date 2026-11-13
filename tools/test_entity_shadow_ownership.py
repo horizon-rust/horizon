@@ -33,7 +33,9 @@ def program(root):
     end = game.index("if let Some(sprite) = shadow_sprite", start)
     guard = game[start:end]
     getter = method(gfx, "pack_entity_shadows") if "pub fn pack_entity_shadows(" in gfx else ""
-    rays = method(gfx, "rt_entity_shadows") if "pub fn rt_entity_shadows(" in gfx else ""
+    # RT lighting's own entity shadows live beside its other settings (gfx/rt_settings.rs).
+    rt = (root / "crates/horizon-client-render/src/gfx/rt_settings.rs").read_text()
+    rays = method(rt, "rt_entity_shadows") if "pub fn rt_entity_shadows(" in rt else ""
     support = r'''
 #![allow(dead_code)]
 mod pack_entities {
