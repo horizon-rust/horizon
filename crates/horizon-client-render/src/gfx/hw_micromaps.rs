@@ -222,7 +222,7 @@ mod on {
                     };
                     if animated.binary_search(&l).is_ok() {
                         Alpha::Changing
-                    } else if rgba.chunks_exact(4).all(|p| p[3] >= 128) {
+                    } else if rgba.as_chunks::<4>().0.iter().all(|p| p[3] >= 128) {
                         Alpha::Opaque
                     } else {
                         Alpha::Mask(AlphaMask::from_rgba(size, size, rgba))

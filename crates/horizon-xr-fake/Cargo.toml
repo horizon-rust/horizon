@@ -14,3 +14,6 @@ crate-type = ["cdylib", "rlib"]
 ash = "0.38"
 openxr-sys = "0.14"
 png = "0.18"
+
+[lints]
+workspace = true

@@ -100,7 +100,12 @@ impl MapSet {
                 let Some(pixels) = class.pixels.get(i * bytes..(i + 1) * bytes) else {
                     continue;
                 };
-                if pixels.chunks_exact(4).any(|t| (1..=254).contains(&t[3])) {
+                if pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|t| (1..=254).contains(&t[3]))
+                {
                     out.push(layer);
                 }
             }

@@ -110,6 +110,7 @@ fn main() -> Result<(), Error> {
         smooth_lighting: true,
         cutout_leaves: true,
         smooth_fluids,
+        opaque_ice: false,
         rt_lighting: false,
         shader_pack_lighting: false,
         separate_ao: false,
