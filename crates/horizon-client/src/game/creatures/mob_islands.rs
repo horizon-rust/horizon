@@ -205,8 +205,11 @@ impl Islands<'_> {
         // Neither the global counter nor the client threads' clock/seed policy is changed.
         let serial = verifying().then(|| {
             let mut serial = Group::new(mobs.clone(), snapshot.clone(), start.clone());
+            // The copy gives no cloud doses: they are the real mobs' (none is due between turns
+            // while the islands run).
+            let doses = turns.doses.take();
             let (_, seeds) = random_source::record_seeds(|| serial.run(turns, shared, None));
-            turns.cached_difficulty = None;
+            (turns.doses, turns.cached_difficulty) = (doses, None);
             (serial, seeds)
         });
         let n = mobs.len();
