@@ -5,10 +5,11 @@
 mod bred_draws;
 mod effect_instance;
 use effect_instance::mob_effect_instance;
+pub(super) mod biome_facts;
 mod mob_geometry;
 mod mob_group;
 mod mob_islands;
-mod prep;
+pub(super) mod prep;
 mod projectile_targets;
 mod projectile_world;
 mod pufferfish_player;
@@ -33,7 +34,6 @@ use horizon_client::{
     mobs::{
         Damage, DamageKind, Mob, MobEvent, MobWorld, PlayerView, Seen, SpawnSetup, Species, Who,
         ai::{eating_sound, feed_animal, takes_food},
-        farm::Climate,
         spawning::{self, BiomeFacts},
     },
     mod_api::NativeLootDrops,
@@ -192,7 +192,7 @@ fn pickable_projectile_hitboxes_into(
 
 /// `ServerLevel.getCurrentDifficultyAt`, reading only the world: also on the mob tick's helper
 /// threads.
-fn difficulty_reader(
+pub(super) fn difficulty_reader(
     world: &horizon_client::world::World,
 ) -> impl Fn([f64; 3]) -> spawning::LocalDifficulty + Sync + '_ {
     move |at| {
@@ -488,42 +488,14 @@ impl Game<'_> {
     }
     /// Biome facts at a position for finalizeSpawn and variant rules.
     pub(super) fn biome_facts(&self, x: i32, y: i32, z: i32) -> BiomeFacts {
-        let Some(chunk) = self.world.chunks.get(&(x >> 4, z >> 4)) else {
-            return BiomeFacts::default();
-        };
-        let b = world_biomes!(self).get(chunk.biome(x, y, z));
-        let tags = self.res.mob_data();
-        let has = |t: &str| tags.biome_has(t, &b.name);
-        let climate = if has("minecraft:spawns_warm_variant_farm_animals") {
-            Climate::Warm
-        } else if has("minecraft:spawns_cold_variant_farm_animals") {
-            Climate::Cold
-        } else {
-            Climate::Temperate
-        };
-        BiomeFacts {
-            coral_nautilus: has("minecraft:spawns_coral_variant_zombie_nautilus"),
-            climate,
-            temperature: b.temperature,
-            snowy: has("minecraft:spawns_snow_foxes")
-                || b.name.contains("snow")
-                || b.name.contains("frozen"),
-            snow_fox: has("minecraft:spawns_snow_foxes"),
-            swamp: b.name.contains("swamp"),
-            ocean: has("minecraft:is_ocean"),
-            mushroom: b.name == "minecraft:mushroom_fields",
-            desert: b.name == "minecraft:desert",
-            jungle: has("minecraft:is_jungle"),
-            wolf: horizon_client::mobs::tame::wolf_variant_for(&b.name, &has),
-            full_moon: (self.world.day_time / 24000).rem_euclid(8) == 0,
-            frog: if has("minecraft:spawns_warm_variant_frogs") {
-                1
-            } else if has("minecraft:spawns_cold_variant_frogs") {
-                2
-            } else {
-                0
-            },
-        }
+        biome_facts::biome_facts_in(
+            &self.world,
+            world_biomes!(self),
+            self.res.mob_data(),
+            x,
+            y,
+            z,
+        )
     }
     /// Create a mob of `kind` at a position, finalized like a natural spawn.
     pub(super) fn spawn_mob(&mut self, kind: &str, at: [f64; 3], persistent: bool) -> Option<u32> {
@@ -1080,7 +1052,7 @@ impl Game<'_> {
             max_entity_cramming: self.ui.rules.int("max_entity_cramming"),
             dimension_type: self.dimension_type(),
             world_seed: self.level.seed,
-            sea_level: if self.dim == Dim::Nether { 32 } else { 63 },
+            sea_level: horizon_world::level::sea_level_of(self.level_key()),
             teams: std::sync::Arc::new(self.mob_teams()),
             items: Some(self.items()),
             lid_openers: &self.lid_openers,
@@ -1280,10 +1252,9 @@ impl Game<'_> {
                     .is_some()
                     .then_some(self.level.player_uuid)
                     .flatten(),
-                mods: round.listening() || !horizon_client::mod_api::mods().is_empty(),
                 ticking: &|| Box::new(self.entity_ticking_area()),
             };
-            let mut group = match islands.plan(&mobs, &snapshot, &turns) {
+            let mut group = match islands.plan(&mobs, &snapshot, &turns, &start) {
                 Some(plan) => islands.run(plan, mobs.into(), snapshot, start, &mut turns, &shared),
                 None => {
                     let mut group = mob_group::Group::new(mobs.into(), snapshot, start);
@@ -1878,10 +1849,9 @@ impl Game<'_> {
         for item in stacks {
             // Every death drop is its own ItemEntity, and the drop entity's
             // own random (not the level's) gives it the constructor's
-            // horizontal push (its motion otherwise stays [0, 0.2, 0] and
-            // the drops land stacked at the mob's centre, without disturbing
-            // the level random that the orbs' merge ids and block ticks read
-            // next).
+            // horizontal push (its motion otherwise stays [0, 0.2, 0] and the
+            // drops land stacked at the mob's centre, without disturbing the
+            // level random that the orbs' merge ids and block ticks read next).
             self.spawn_item_own(item, pos, 10);
         }
         // LivingEntity.dropExperience: a mod may change the mob's experience
@@ -1921,8 +1891,9 @@ impl Game<'_> {
                         self.spawn_item_own(item, pos, 10);
                     }
                 }
+                drops::Drop::Aged(s, age) => self.spawn_item_aged(from_loot(&s), pos, age),
                 drops::Drop::Orb(value) if !consumed => self.spawn_orbs(pos, value as u32),
-                drops::Drop::Item(_) | drops::Drop::Stack(_) | drops::Drop::Orb(_) => {}
+                _ => {}
             }
         }
     }
@@ -3234,11 +3205,7 @@ impl Game<'_> {
                 MobEvent::DolphinTreasure { mob } => {
                     // ServerLevel.findNearestMapStructure(#dolphin_located, 50).
                     let Some(at) = self.mobs.iter().find(|m| m.id == mob).map(|m| {
-                        [
-                            m.position.x.floor() as i32,
-                            m.position.y.floor() as i32,
-                            m.position.z.floor() as i32,
-                        ]
+                        [m.position.x, m.position.y, m.position.z].map(|v| v.floor() as i32)
                     }) else {
                         continue;
                     };
@@ -3249,7 +3216,11 @@ impl Game<'_> {
                         .filter(|_| !names.is_empty())
                         .and_then(|t| t.locate(&names, at, 50));
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
-                        m.extra.home = found.map(|(_, p)| p);
+                        m.extra.home = found.as_ref().map(|(_, p)| *p);
+                    }
+                    // DolphinSwimToTreasureGoal.start: entity event 38 once it has a treasure.
+                    if found.is_some() {
+                        self.mob_event_particles(mob, 38);
                     }
                 }
                 MobEvent::EffectPlayer {
@@ -9051,6 +9022,7 @@ mod h169_glide_travel_tests {
                     .unwrap();
             }
         }
+        game.load_ticking_neighbourhood(0, 0);
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
         game.creative = true;
         assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
