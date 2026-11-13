@@ -3,11 +3,8 @@
 //! Language and Resource Packs, laid out like vanilla's HeaderAndFooter /
 //! OptionsList screens and drawn with the shared widgets.
 mod pack_drop;
-
-use std::time::Instant;
-
 pub use crate::settings::Opt;
-
+use std::time::Instant;
 #[path = "options_ui_widgets.rs"]
 mod widgets;
 use crate::{
@@ -32,11 +29,9 @@ mod shell_pages;
 #[path = "options_ui_wheel.rs"]
 mod wheel;
 pub(crate) use wheel::slider_unsnapped;
-
 fn tr(key: &str) -> Text {
     Text::translate(key, &[])
 }
-
 /// False only in a game built without the `horizon-extras` feature (docs/forking.md), which says
 /// so once at startup: the Options screen then has vanilla's Telemetry Data slot instead of
 /// Horizon Settings and Mods, and Credits & Attribution names the official build.
@@ -116,7 +111,6 @@ pub(crate) const ACCESSIBILITY_OPTIONS: &[Opt] = &[
     Opt::RotateWithMinecarts,
     Opt::HighContrastBlockOutlines,
 ];
-
 /// `ControlsScreen.options`: the controls added by Java Edition 26.3, in
 /// their vanilla order. The macOS-only Control-click switch is omitted on
 /// other platforms just as `InputQuirks.EMULATE_RIGHT_CLICK_WITH_CTRL_KEY`
@@ -137,7 +131,6 @@ pub(crate) fn vanilla_control_options() -> Vec<Opt> {
     options.push(Opt::OperatorItemsTab);
     options
 }
-
 /// `MouseSettingsScreen.options` in Java Edition 26.3, in vanilla order.
 pub(crate) const MOUSE_OPTIONS: &[Opt] = &[
     Opt::Sensitivity,
@@ -147,7 +140,6 @@ pub(crate) const MOUSE_OPTIONS: &[Opt] = &[
     Opt::InvertY,
     Opt::AllowCursorChanges,
 ];
-
 impl Opt {
     /// Keep controls visible while their underlying systems are still missing.
     pub(crate) fn available(self) -> bool {
@@ -202,7 +194,6 @@ impl Opt {
             _ => return None,
         })
     }
-
     pub(crate) fn caption(self) -> &'static str {
         match self {
             Opt::Fov => "options.fov",
@@ -1209,7 +1200,6 @@ impl Opt {
         }
     }
 }
-
 /// `Options.preferredGraphicsBackend`'s tooltip: the restart note once the choice differs from
 /// the startup one, the description, and Vulkan's warning.
 fn graphics_api_tooltip(s: &Settings) -> Text {
@@ -1226,7 +1216,6 @@ fn graphics_api_tooltip(s: &Settings) -> Text {
     }
     Text::literal(lines.join("\n"))
 }
-
 /// `selected_key` while a native mod's key waits (`selected_native_key`).
 const NATIVE_KEY: &str = "horizon.nativeModKey";
 
@@ -2010,8 +1999,13 @@ impl OptionsUi {
         selected: Vec<String>,
         resources: std::path::PathBuf,
     ) {
+        let Some(infos) =
+            crate::datapack::metadata::report(crate::datapack::screen_packs(&dir, &resources))
+        else {
+            return;
+        };
         self.open_at(false, Page::Packs);
-        self.pack_infos = crate::datapack::screen_packs(&dir, &resources);
+        self.pack_infos = infos;
         self.data_pack_resources = resources;
         self.pack_selection = selected;
         self.data_pack_stamp = (crate::datapack::folder_stamp(&dir), Instant::now());
@@ -2033,7 +2027,13 @@ impl OptionsUi {
         if !changed {
             return;
         }
-        self.pack_infos = crate::datapack::screen_packs(dir, &self.data_pack_resources);
+        let Some(infos) = crate::datapack::metadata::report(crate::datapack::screen_packs(
+            dir,
+            &self.data_pack_resources,
+        )) else {
+            return;
+        };
+        self.pack_infos = infos;
         if let Some(p) = self.pack_screen.take() {
             self.pack_selection = p.commit();
             self.packs(atlas, size).changed = p.changed;

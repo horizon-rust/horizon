@@ -99,10 +99,11 @@ impl Game<'_> {
                         self.res.biomes(),
                     )
                 })
-                .unwrap_or_default();
+                .transpose();
             self.creation_job = std::thread::Builder::new()
                 .name("world-creation".into())
                 .spawn(move || {
+                    let overrides = overrides.map_err(|e| e.to_string())?.unwrap_or_default();
                     horizon_client::vanillagen::shared_data_with(&dir, &overrides, registry)
                         .map(|_| ())
                         .map_err(|e| e.to_string())
@@ -204,14 +205,14 @@ impl Game<'_> {
     }
     /// The world's packs' content files, none without packs.
     /// The biome table the world plays with, `None` before a world opens.
-    pub(super) fn packed_biomes(&self) -> Option<Arc<Biomes>> {
+    pub(super) fn packed_biomes(&self) -> Result<Option<Arc<Biomes>>> {
         let table = world_loading::packed_biomes(
             &self.world_root,
             &self.options.resources,
             self.res.biomes(),
             &self.level.enabled_features,
-        );
-        (!Arc::ptr_eq(&table, self.res.biomes())).then_some(table)
+        )?;
+        Ok((!Arc::ptr_eq(&table, self.res.biomes())).then_some(table))
     }
     /// What the chunk and far-terrain workers mesh with: the pack's context,
     /// over the world's biomes when it has its own.
@@ -242,7 +243,7 @@ impl Game<'_> {
             self.cmds.vanilla_disabled,
             enabled_features,
             contributed,
-        );
+        )?;
         let overlay = horizon_world::loot::PackOverlay { files: &files };
         let root = &self.options.resources;
         let base = if reload {

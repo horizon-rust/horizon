@@ -199,8 +199,11 @@ fn footer(w: f32, h: f32) -> [(f32, f32); 2] {
 
 /// `ExperimentsScreen.init`: every feature pack the jar ships under
 /// `data/minecraft/datapacks`, switched on when `enabled` holds its id.
-pub fn repository_flags(resources: &std::path::Path, enabled: &[String]) -> Vec<Flag> {
-    crate::datapack::feature_packs(resources)
+pub fn repository_flags(
+    resources: &std::path::Path,
+    enabled: &[String],
+) -> Result<Vec<Flag>, crate::datapack::metadata::AdmissionError> {
+    Ok(crate::datapack::feature_packs(resources)?
         .into_iter()
         .map(|pack| {
             let id = pack.id.clone();
@@ -218,5 +221,5 @@ pub fn repository_flags(resources: &std::path::Path, enabled: &[String]) -> Vec<
                 title,
             }
         })
-        .collect()
+        .collect())
 }

@@ -1,6 +1,7 @@
 //! ComponentSerialization.CODEC and Style.Serializer.MAP_CODEC decoding of
 //! SNBT text components, with the data-fixer-upper error messages
 //! (ComponentArgument, StyleArgument and component-valued item data).
+pub mod json;
 use super::codec::{get, no_key, not_list, not_map};
 use horizon_world::nbt::{Compound, Tag};
 

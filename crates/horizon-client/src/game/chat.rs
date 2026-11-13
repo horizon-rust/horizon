@@ -612,26 +612,9 @@ fn block_properties(registry: &'static BlockRegistry) -> Arc<BlockProperties> {
     properties
 }
 
-static COMMAND_EXPORTS: Mutex<Vec<(PathBuf, Option<Arc<Registries>>)>> = Mutex::new(Vec::new());
-
-/// What the registries take from a folder's `command-registries.json`
-/// (vanilla's built-in registries), read once like the resource ids: parsing
-/// its 1.6 MB again took about 15 ms of every world opening. Only the part
-/// the registries fill from stays, not the parsed export (4.2 MB, against
-/// 2.2 MB). A dedicated server opens its world once and keeps nothing.
+/// Borrow the same per-root export authority used before world loading.
 fn command_export(dir: &Path, keep: bool) -> Option<Arc<Registries>> {
-    let mut cache = COMMAND_EXPORTS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, export)) = cache.iter().find(|(cached, _)| cached == dir) {
-        return export.clone();
-    }
-    let export = std::fs::read(dir.join("command-registries.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .map(|export| Arc::new(Registries::from_export(&export)));
-    if keep {
-        cache.push((dir.to_owned(), export.clone()));
-    }
-    export
+    horizon_client_core::registries::prepared::command_export(dir, keep)
 }
 
 /// The ids of the `.json` files in `data/<namespace>/<kind>` of every

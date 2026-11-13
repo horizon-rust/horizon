@@ -91,12 +91,18 @@ impl Game<'_> {
         if listeners.is_empty() {
             return;
         }
-        let stack = functions::pack_stack(
+        let stack = match functions::pack_stack(
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
             &self.level.enabled_features,
-        );
+        ) {
+            Ok(stack) => stack,
+            Err(error) => {
+                log::error!("Horizon: reload listeners: {error}");
+                return;
+            }
+        };
         let packs: Vec<&DataPack> = stack.builtin.iter().chain(stack.enabled_packs()).collect();
         for listener in &listeners {
             if !folder_ok(&listener.folder) {
@@ -217,7 +223,10 @@ mod tests {
         fs::create_dir_all(&packs).unwrap();
         let mut zip = zip::ZipWriter::new(fs::File::create(packs.join("veins.zip")).unwrap());
         for (name, text) in [
-            ("pack.mcmeta", r#"{"pack":{"pack_format":48}}"#),
+            (
+                "pack.mcmeta",
+                r#"{"pack":{"description":"fixture","pack_format":48}}"#,
+            ),
             ("data/gt/ore_veins/iron.json", r#"{"y": -16}"#),
             ("data/gt/ore_veins_old/lead.json", "{}"),
             ("data/gt/recipe/plate.json", "{}"),
@@ -227,7 +236,11 @@ mod tests {
             std::io::Write::write_all(&mut zip, text.as_bytes()).unwrap();
         }
         zip.finish().unwrap();
-        let found = horizon_client::datapack::discover_folder(&packs);
+        let found = horizon_client::datapack::discover_folder(
+            &packs,
+            &horizon_command::component::json::context::UnavailableContext,
+        )
+        .unwrap();
         let refs: Vec<&DataPack> = found.iter().collect();
         let files = read_folder(&refs, "gt:veins", "ore_veins");
         assert_eq!(files, [("gt:iron".to_owned(), json!({"y": -16}))]);

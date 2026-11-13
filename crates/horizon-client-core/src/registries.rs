@@ -1,6 +1,7 @@
 //! Registry contents and source state that commands validate and complete
 //! arguments against (what the server's registry access holds).
 use std::collections::BTreeMap;
+pub mod prepared;
 
 /// Registry contents and source state used to validate and complete arguments.
 #[derive(Clone, Debug, Default)]

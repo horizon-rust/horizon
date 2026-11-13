@@ -1,5 +1,10 @@
 //! Data packs in the game: functions (`/function`, `/return`, tick and load
 //! tags, `/schedule`), predicates, `/reload` and `/datapack`.
+#[cfg(test)]
+mod rich_metadata_context_tests;
+#[cfg(test)]
+#[rustfmt::skip]
+mod rich_metadata_tests;
 use super::{
     Game,
     commands::{
@@ -107,15 +112,17 @@ pub(super) fn pack_stack(
     resources: &std::path::Path,
     vanilla_disabled: bool,
     enabled_features: &[String],
-) -> PackStack {
+) -> Result<PackStack, datapack::metadata::AdmissionError> {
     let builtin = (!vanilla_disabled).then(|| DataPack::builtin(resources));
-    let packs = datapack::discover_with_features(world_root, resources);
+    let packs = datapack::metadata::with_root(resources, true, |context| {
+        datapack::discover_features_with_context(world_root, resources, context)
+    })?;
     let enabled = datapack::enabled_ids(world_root, &packs, enabled_features);
-    PackStack {
+    Ok(PackStack {
         builtin,
         packs,
         enabled,
-    }
+    })
 }
 
 /// The world's enabled packs' content files (`recipe/`, `loot_table/`,
@@ -126,13 +133,13 @@ pub(super) fn content_overlay(
     resources: &std::path::Path,
     vanilla_disabled: bool,
     enabled_features: &[String],
-) -> Vec<(String, Vec<Vec<u8>>)> {
-    let stack = pack_stack(world_root, resources, vanilla_disabled, enabled_features);
+) -> Result<Vec<(String, Vec<Vec<u8>>)>, datapack::metadata::AdmissionError> {
+    let stack = pack_stack(world_root, resources, vanilla_disabled, enabled_features)?;
     let packs: Vec<&DataPack> = stack.enabled_packs().collect();
     if packs.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    DataStore::load(&packs).files.into_iter().collect()
+    Ok(DataStore::load(&packs).files.into_iter().collect())
 }
 
 /// The files the content tables load from: the world's enabled packs'
@@ -148,10 +155,10 @@ pub(super) fn overlay_files(
     vanilla_disabled: bool,
     enabled_features: &[String],
     contributed: Vec<(String, Vec<u8>)>,
-) -> Vec<(String, Vec<Vec<u8>>)> {
-    let mut files = content_overlay(world_root, resources, vanilla_disabled, enabled_features);
+) -> Result<Vec<(String, Vec<Vec<u8>>)>, datapack::metadata::AdmissionError> {
+    let mut files = content_overlay(world_root, resources, vanilla_disabled, enabled_features)?;
     if contributed.is_empty() {
-        return files;
+        return Ok(files);
     }
     // A path's mod files in contribution order, under the pack files.
     let mut mods: std::collections::BTreeMap<String, Vec<Vec<u8>>> = Default::default();
@@ -174,7 +181,7 @@ pub(super) fn overlay_files(
     }
     // The paths only a mod has.
     files.extend(mods);
-    files
+    Ok(files)
 }
 
 impl FnState {
@@ -203,20 +210,24 @@ impl Game<'_> {
     /// `ServerFunctionLibrary.reload`: validate the candidate functions with
     /// the current content before exposing them to execution.
     pub(super) fn reload_datapacks(&mut self, run_load: bool) {
-        let stack = pack_stack(
+        let stack = match pack_stack(
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
             &self.level.enabled_features,
-        );
+        ) {
+            Ok(stack) => stack,
+            Err(error) => {
+                log::error!("Horizon: data pack reload: {error}");
+                return;
+            }
+        };
+        let packs: Vec<&DataPack> = stack.builtin.iter().chain(stack.enabled_packs()).collect();
+        let store = DataStore::load(&packs);
         self.fns.packs = stack.packs;
         self.fns.enabled = stack.enabled;
-        let store = self.load_store();
         self.fns.loaded = true;
         self.fns.load_pending = true;
-        // An explicit reload (`/reload`, `/datapack`) reloads the content
-        // tables with the functions, as `ReloadableServerResources` does;
-        // the lazy first load ran after the world already built them.
         if run_load {
             self.reload_world_tables();
         }
@@ -224,17 +235,6 @@ impl Game<'_> {
         if self.fns.schedule.is_empty() {
             self.load_schedule();
         }
-    }
-    fn load_store(&self) -> DataStore {
-        // The built-in pack first (lowest priority), unless disabled.
-        let stack = pack_stack(
-            &self.world_root,
-            &self.options.resources,
-            self.cmds.vanilla_disabled,
-            &self.level.enabled_features,
-        );
-        let packs: Vec<&DataPack> = stack.builtin.iter().chain(stack.enabled_packs()).collect();
-        DataStore::load(&packs)
     }
     /// `CommandFunction.parseCommand`: compile ordinary lines without running them.
     /// Macro lines are parsed
@@ -345,15 +345,8 @@ impl Game<'_> {
         // (`command-registries.json` lists only the game's own), and so do
         // its worldgen tag ids for the `#tag` completions. The packs are the
         // ones the world's worldgen is built from.
-        let packs = horizon_client::datapack::discover_with_features(
-            &self.world_root,
-            &self.options.resources,
-        );
-        let enabled = horizon_client::datapack::enabled_ids(
-            &self.world_root,
-            &packs,
-            &self.level.enabled_features,
-        );
+        let packs = &self.fns.packs;
+        let enabled = &self.fns.enabled;
         let enabled: Vec<_> = enabled
             .iter()
             .filter_map(|id| packs.iter().find(|p| &p.id == id))
@@ -1137,11 +1130,11 @@ impl Game<'_> {
                     };
                     self.fns.enabled.insert(position, name.clone());
                 }
+                self.apply_pack_change(&selected)?;
                 self.feedback(Text::translate(
                     "commands.datapack.modify.enable",
                     &[self.pack_link(&name, true)],
                 ));
-                self.apply_pack_change();
                 Ok(self.selected_packs().len() as i32)
             }
             _ => {
@@ -1162,11 +1155,11 @@ impl Game<'_> {
                 } else {
                     self.fns.enabled.retain(|p| p != &name);
                 }
+                self.apply_pack_change(&selected)?;
                 self.feedback(Text::translate(
                     "commands.datapack.modify.disable",
                     &[self.pack_link(&name, true)],
                 ));
-                self.apply_pack_change();
                 Ok(self.selected_packs().len() as i32)
             }
         }
@@ -1174,12 +1167,47 @@ impl Game<'_> {
     /// `ReloadCommand.reloadPacks`: no message of its own. It reloads the
     /// server's data as `/reload` does (`reload_datapacks`), the content
     /// tables with the functions.
-    fn apply_pack_change(&mut self) {
+    fn apply_pack_change(&mut self, previous: &[String]) -> R<()> {
+        // Resolve metadata before publishing selection to disk or replacing
+        // the loaded store. Operational authority failures cancel the command.
+        let stack = match pack_stack(
+            &self.world_root,
+            &self.options.resources,
+            self.cmds.vanilla_disabled,
+            &self.level.enabled_features,
+        ) {
+            Ok(stack) => stack,
+            Err(error) => {
+                self.fns.enabled = previous
+                    .iter()
+                    .filter(|id| id.as_str() != "vanilla")
+                    .cloned()
+                    .collect();
+                self.cmds.vanilla_disabled = !previous.iter().any(|id| id == "vanilla");
+                return Err(horizon_client::command::CommandError::new(Text::literal(
+                    error.to_string(),
+                )));
+            }
+        };
         self.save_datapack_settings();
-        let store = self.load_store();
+        // Use the existing selection authority with the now-published config
+        // and the same admitted candidate; do not rediscover its metadata.
+        let enabled =
+            datapack::enabled_ids(&self.world_root, &stack.packs, &self.level.enabled_features);
+        let packs: Vec<&DataPack> = stack
+            .builtin
+            .iter()
+            .chain(
+                enabled
+                    .iter()
+                    .filter_map(|id| stack.packs.iter().find(|p| &p.id == id)),
+            )
+            .collect();
+        let store = DataStore::load(&packs);
         self.fns.load_pending = true;
         self.reload_world_tables();
         self.admit_store(store);
+        Ok(())
     }
 
     // ---- predicates -------------------------------------------------------------------
@@ -1967,7 +1995,7 @@ mod tests {
             }
             let json = serde_json::json!({"enabled": order, "disabled": []});
             std::fs::write(dir.join("datapacks.json"), json.to_string()).unwrap();
-            let files = content_overlay(&dir, std::path::Path::new(""), true, &[]);
+            let files = content_overlay(&dir, std::path::Path::new(""), true, &[]).unwrap();
             let (_, versions) = files.iter().find(|(id, _)| id == "recipe/x:r").unwrap();
             let last = versions.last().unwrap();
             assert_eq!(
@@ -2011,7 +2039,8 @@ mod tests {
                 ("tags/pkg:item/both".to_owned(), tag("pkg:from_mod")),
                 ("tags/pkg:item/mod_only".to_owned(), tag("pkg:only_mod")),
             ],
-        );
+        )
+        .unwrap();
         // The pack's file is the path's last (`PackOverlay::top`), and its
         // `replace` drops what the mod put below it.
         let (_, versions) = files
@@ -2035,7 +2064,8 @@ mod tests {
             true,
             &[],
             vec![("tags/pkg:item/mod_only".to_owned(), tag("pkg:second_load"))],
-        );
+        )
+        .unwrap();
         let overlay = horizon_world::loot::PackOverlay { files: &files };
         let tags = horizon_items::items::load_tags(&dir, "item", &overlay).unwrap();
         assert_eq!(
@@ -2052,7 +2082,8 @@ mod tests {
                 ("tags/pkg:item/mod_only".to_owned(), b"{not json".to_vec()),
                 ("tags/pkg:item/good".to_owned(), tag("pkg:good")),
             ],
-        );
+        )
+        .unwrap();
         let overlay = horizon_world::loot::PackOverlay { files: &files };
         let tags = horizon_items::items::load_tags(&dir, "item", &overlay).unwrap();
         assert!(!tags.contains_key("pkg:mod_only"));

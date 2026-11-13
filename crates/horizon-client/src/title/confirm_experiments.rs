@@ -53,8 +53,11 @@ pub struct ConfirmExperimentsScreen {
 impl ConfirmExperimentsScreen {
     /// `ConfirmExperimentalFeaturesScreen::new`: the picked selection's
     /// feature packs, each with the flags it asks for.
-    pub fn new(resources: &std::path::Path, selected: &[String]) -> Self {
-        let entries = crate::datapack::feature_packs(resources)
+    pub fn new(
+        resources: &std::path::Path,
+        selected: &[String],
+    ) -> Result<Self, crate::datapack::metadata::AdmissionError> {
+        let entries = crate::datapack::feature_packs(resources)?
             .into_iter()
             .filter(|p| selected.contains(&p.id))
             .filter(|p| !p.features().is_empty())
@@ -78,12 +81,12 @@ impl ConfirmExperimentsScreen {
                 Entry { title, flags }
             })
             .collect();
-        Self {
+        Ok(Self {
             entries,
             pending: selected.to_vec(),
             details: false,
             in_world: false,
-        }
+        })
     }
     /// The message's lines (`MultiLineTextWidget` at 310; the text's own
     /// line breaks kept).

@@ -2486,7 +2486,9 @@ fn the_single_biome_preset_is_customized_into_the_generator() {
         &crate::save::Level::read(&dir).unwrap_or_default(),
         false,
         &dir,
-    );
+        &dir,
+    )
+    .unwrap();
     assert_eq!(options.single_biome, "minecraft:jungle");
 }
 

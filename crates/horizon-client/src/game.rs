@@ -7414,7 +7414,7 @@ impl Game<'_> {
         self.owner_migration = owner_migration;
         // The world's packs over the game's biomes (`Biomes::with_packs`),
         // the table its chunks were built with.
-        self.world_biomes = self.packed_biomes();
+        self.world_biomes = self.packed_biomes()?;
         self.world_biomes_base = self.world_biomes.clone();
         horizon_client::crash::set_detail(
             "World",

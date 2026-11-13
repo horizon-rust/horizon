@@ -1,5 +1,6 @@
 //! Title, world selection and world creation screens (TitleScreen,
 //! SelectWorldScreen, CreateWorldScreen layouts), drawn as HUD quads.
+mod metadata;
 use crate::{
     dialog_screen::BOX,
     game_rules_screen::{Exit, RulesScreen},
@@ -10,12 +11,12 @@ use crate::{
 };
 use horizon_core::random::RandomSource;
 use horizon_world::datafix::world_upgrader::{self, WorldUpgrader};
+use metadata::metadata;
 use std::path::{Path, PathBuf};
 use std::{
     cell::{Cell, RefCell},
     sync::mpsc,
 };
-
 mod buffet;
 mod confirm_experiments;
 mod create_world;
@@ -30,13 +31,11 @@ pub use buffet::State as BuffetEditor;
 pub use create_world::{DIFFICULTIES, WorldOptions};
 pub use flat::{FlatLayer, FlatSettings, State as FlatEditor};
 pub use onboarding::Onboarding;
-
 /// SelectWorldScreen's `HeaderAndFooterLayout(8 + 9 + 8 + 20 + 4, 60)`.
 const LIST_TOP: f32 = 49.0;
 const LIST_BOTTOM: f32 = 60.0;
 const ROW_HEIGHT: f32 = 36.0;
 const ROW_WIDTH: f32 = 270.0;
-
 fn edit_top(h: f32) -> f32 {
     ((h.ceil() - 234.0) / 2.0).floor()
 }
@@ -112,7 +111,6 @@ fn draw_logo(atlas: &HudAtlas, batch: &mut HudBatch, w: f32) {
         16.0,
     );
 }
-
 /// `OptimizeWorldScreen.DIMENSION_COLORS`.
 fn dimension_color(level: &str) -> u32 {
     match level {
@@ -122,7 +120,6 @@ fn dimension_color(level: &str) -> u32 {
         _ => rgba(0xdd, 0xdd, 0xdd, 255),
     }
 }
-
 /// English text of the status keys `UpgradeStatusTranslator` returns.
 fn status_fallback(key: &str) -> &'static str {
     match key {
@@ -136,11 +133,9 @@ fn status_fallback(key: &str) -> &'static str {
         _ => "Counting chunks...",
     }
 }
-
 fn warning_top(h: f32, lines: usize) -> f32 {
     ((h.ceil() - 102.0 - lines as f32 * 9.0) / 2.0).floor()
 }
-
 fn translate(key: &str, fallback: &str, args: &[&dyn std::fmt::Display]) -> String {
     let args: Vec<Text> = args
         .iter()
@@ -148,7 +143,6 @@ fn translate(key: &str, fallback: &str, args: &[&dyn std::fmt::Display]) -> Stri
         .collect();
     format_translation(&lang::get_or(key, fallback), &args).plain()
 }
-
 enum WorldToast {
     Created {
         folder: String,
@@ -180,7 +174,6 @@ impl WorldToast {
         }
     }
 }
-
 /// Why `WorldOpenFlows.askForBackup` asks before a world opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StemIssue {
@@ -189,7 +182,6 @@ pub enum StemIssue {
     /// A `worldGenSettingsLifecycle` that is not stable.
     Experimental,
 }
-
 #[derive(Clone, Debug)]
 pub struct WorldEntry {
     pub folder: String,
@@ -507,7 +499,6 @@ impl Button {
     fn draw_label(&self, batch: &mut HudBatch, atlas: &HudAtlas, color: u32) {
         self.draw_label_at(batch, atlas, color, crate::hud_overlays::now_ms());
     }
-
     /// [`Button::draw_label`] at `now_ms`. `SpriteIconButton.TextAndIcon`
     /// (`extractContents`) hands the label to `acceptScrolling` with `left`
     /// at the button's x plus 2, `right` at its x plus width minus the
@@ -864,7 +855,7 @@ impl Title {
         let worlds = list_worlds(&self.saves);
         self.create_return_to_main = worlds.is_empty();
         self.mode = if worlds.is_empty() {
-            Self::new_world()
+            Self::new_world(&self.resources)
         } else {
             Mode::Select {
                 worlds,
@@ -872,13 +863,17 @@ impl Title {
             }
         };
     }
-    pub(crate) fn new_world() -> Mode {
+    pub(crate) fn new_world(resources: &std::path::Path) -> Mode {
+        let options = match WorldOptions::for_new_world(resources) {
+            Ok(options) => options,
+            Err(error) => return metadata::error_mode(error, Mode::Main),
+        };
         Mode::Create {
             name: lang::get_or("selectWorld.newWorld", "New World"),
             seed: String::new(),
             creative: false,
             focus: 0,
-            options: WorldOptions::for_new_world(),
+            options,
         }
     }
     /// WorldSelectionList.handleNewLevels: a singleplayer list that comes
@@ -889,7 +884,7 @@ impl Title {
         *self.recent.borrow_mut() = None;
         if worlds.is_empty() {
             self.create_return_to_main = true;
-            self.mode = Self::new_world();
+            self.mode = Self::new_world(&self.resources);
             return;
         }
         let selected = folder.and_then(|folder| {
@@ -1057,7 +1052,7 @@ impl Title {
     pub fn finish_preparing(&mut self) {
         self.preparing = false;
         if !matches!(self.mode, Mode::Create { .. }) {
-            self.mode = Self::new_world();
+            self.mode = Self::new_world(&self.resources);
         }
     }
     /// `PackSelectionScreen.onFilesDrop`: a pack dropped on the window joins
@@ -1099,13 +1094,14 @@ impl Title {
     /// screen comes up first; anything else applies at once and the data
     /// is read again.
     pub fn offer_data_packs(&mut self, resources: &std::path::Path, ids: Vec<String>) {
-        let experimental = crate::datapack::feature_packs(resources)
-            .into_iter()
-            .any(|p| ids.contains(&p.id));
+        let packs = metadata!(self, crate::datapack::feature_packs(resources), ());
+        let experimental = packs.into_iter().any(|p| ids.contains(&p.id));
         if experimental {
-            *self.confirm_experiments.get_mut() = Some(
+            *self.confirm_experiments.get_mut() = Some(metadata!(
+                self,
                 confirm_experiments::ConfirmExperimentsScreen::new(resources, &ids),
-            );
+                ()
+            ));
         } else {
             self.set_data_packs(ids);
             self.preparing = true;
@@ -1508,10 +1504,10 @@ impl Title {
         if !stem_asked {
             let issue = if crate::save::is_old_customized_world(&dir) {
                 Some(StemIssue::Customized)
-            } else if crate::save::world_gen_unstable(&dir) {
-                Some(StemIssue::Experimental)
             } else {
-                None
+                metadata!(log crate::datapack::metadata::with_root(&self.resources, true, |context| {
+                    crate::save::world_gen_unstable(&dir, context)
+                })).then_some(StemIssue::Experimental)
             };
             if let Some(stem) = issue {
                 self.mode = Mode::BackupBeforeUpgrade {
@@ -1804,8 +1800,9 @@ impl Title {
         };
         let (name, seed, creative, options) =
             (name.clone(), seed.clone(), *creative, options.clone());
-        let enabled_features = options.enabled_features(&self.resources);
-        let disabled: Vec<String> = crate::datapack::feature_packs(&self.resources)
+        let enabled_features = metadata!(self, options.enabled_features(&self.resources));
+        let packs = metadata!(self, crate::datapack::feature_packs(&self.resources));
+        let disabled: Vec<String> = packs
             .iter()
             .map(|pack| pack.id.clone())
             .filter(|id| !options.data_packs.contains(id))
@@ -3734,7 +3731,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                         // upload into the Realm's slot instead of a local world.
                         self.realms_create = Some(request);
                         self.create_return_to_main = false;
-                        self.mode = Self::new_world();
+                        self.mode = Self::new_world(&self.resources);
                         Action::None
                     }
                     crate::realms::Outcome::None => Action::None,
@@ -3869,12 +3866,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                             return Action::None;
                         };
                         self.create_return_to_main = false;
-                        let mut options = WorldOptions::of_world(
+                        let options = WorldOptions::of_world(
                             &level,
                             world.commands,
                             &self.saves.join(&world.folder),
+                            &self.resources,
                         );
-                        options.restore_feature_packs(&self.resources, &level);
+                        let mut options = metadata!(self, options);
+                        metadata!(self, options.restore_feature_packs(&self.resources, &level));
                         self.mode = Mode::Create {
                             name: level.name,
                             seed: level.seed.to_string(),
@@ -3999,9 +3998,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             }
             // CreateWorldScreen.openGameRulesScreen over a copy of the rules.
             (Mode::Create { options, .. }, Some(29)) => {
-                let rules = options
-                    .rules
-                    .copy_with_features(&options.enabled_features(&self.resources));
+                let features = metadata!(self, options.enabled_features(&self.resources));
+                let rules = options.rules.copy_with_features(&features);
                 *self.rules.get_mut() = Some(RulesScreen::for_creation(&rules));
                 Action::None
             }
@@ -4061,7 +4059,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             // CreateWorldScreen.openExperimentsScreen: the feature packs the
             // jar ships, switched on or off.
             (Mode::Create { options, .. }, Some(30)) => {
-                let flags = experiments::repository_flags(&self.resources, &options.data_packs);
+                let flags = metadata!(
+                    self,
+                    experiments::repository_flags(&self.resources, &options.data_packs)
+                );
                 *self.experiments.get_mut() = Some(experiments::ExperimentsScreen::new(flags));
                 Action::None
             }
@@ -4839,9 +4840,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
     fn close_rules(&mut self, exit: Exit) {
         *self.rules.get_mut() = None;
         if let (Exit::Apply(changes), Mode::Create { options, .. }) = (exit, &mut self.mode) {
-            options.rules = options
-                .rules
-                .copy_with_features(&options.enabled_features(&self.resources));
+            let features = metadata!(log options.enabled_features(&self.resources), ());
+            options.rules = options.rules.copy_with_features(&features);
             for (name, value) in changes {
                 options.rules.set(name, value);
             }

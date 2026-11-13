@@ -105,26 +105,35 @@ impl Default for WorldOptions {
 impl WorldOptions {
     /// A fresh Create New World in the game folder (the working directory): the defaults, with
     /// the packs this game folder gives every new world.
-    pub(super) fn for_new_world() -> Self {
-        let seeded = std::env::current_dir()
-            .ok()
-            .and_then(|dir| crate::datapack::seed_create_world(&dir));
+    pub(super) fn for_new_world(
+        resources: &std::path::Path,
+    ) -> Result<Self, crate::datapack::metadata::AdmissionError> {
+        let seeded = match std::env::current_dir() {
+            Ok(dir) => crate::datapack::metadata::with_root(resources, true, |context| {
+                crate::datapack::seed_create_world(&dir, context)
+            })?,
+            Err(_) => None,
+        };
         let mut options = Self::default();
         if let Some((dir, ids)) = seeded {
             options.pack_dir = Some(dir);
             options.data_packs.extend(ids);
         }
-        options
+        Ok(options)
     }
     /// Re-Create: the saved world's choices.
     pub(super) fn of_world(
         level: &crate::save::Level,
         commands: bool,
         dir: &std::path::Path,
-    ) -> Self {
+        resources: &std::path::Path,
+    ) -> Result<Self, crate::datapack::metadata::AdmissionError> {
         let generation = crate::save::WorldGen::read(dir).unwrap_or_default();
-        let (pack_dir, data_packs) = crate::datapack::for_recreate(dir);
-        Self {
+        let (pack_dir, data_packs) =
+            crate::datapack::metadata::with_root(resources, true, |context| {
+                crate::datapack::for_recreate(dir, context)
+            })?;
+        Ok(Self {
             hardcore: level.hardcore,
             difficulty: DIFFICULTIES
                 .iter()
@@ -142,15 +151,15 @@ impl WorldOptions {
             data_packs,
             pack_dir,
             ..Self::default()
-        }
+        })
     }
     /// Re-Create's repository enables the original world's feature packs.
     pub(super) fn restore_feature_packs(
         &mut self,
         resources: &std::path::Path,
         level: &crate::save::Level,
-    ) {
-        let packs = self.available_packs(resources);
+    ) -> Result<(), crate::datapack::metadata::AdmissionError> {
+        let packs = self.available_packs(resources)?;
         if let Some((enabled, disabled)) = &level.data_packs {
             let mut selected: Vec<_> = enabled
                 .iter()
@@ -185,26 +194,37 @@ impl WorldOptions {
                 missing.retain(|f| !required.contains(f));
             }
         }
+        Ok(())
     }
-    fn available_packs(&self, resources: &std::path::Path) -> Vec<crate::datapack::DataPack> {
-        let mut packs = crate::datapack::feature_packs(resources);
+    fn available_packs(
+        &self,
+        resources: &std::path::Path,
+    ) -> Result<Vec<crate::datapack::DataPack>, crate::datapack::metadata::AdmissionError> {
+        let mut packs = crate::datapack::feature_packs(resources)?;
         if let Some(dir) = &self.pack_dir {
-            packs.extend(crate::datapack::discover_folder(dir));
+            packs.extend(crate::datapack::metadata::with_root(
+                resources,
+                true,
+                |context| crate::datapack::discover_folder(dir, context),
+            )?);
         }
-        packs
+        Ok(packs)
     }
     /// WorldDataConfiguration's selected feature packs over vanilla's flags.
-    pub fn enabled_features(&self, resources: &std::path::Path) -> Vec<String> {
+    pub fn enabled_features(
+        &self,
+        resources: &std::path::Path,
+    ) -> Result<Vec<String>, crate::datapack::metadata::AdmissionError> {
         let mut features = vec!["minecraft:vanilla".to_owned()];
         features.extend(
-            self.available_packs(resources)
+            self.available_packs(resources)?
                 .iter()
                 .filter(|pack| self.data_packs.contains(&pack.id))
                 .flat_map(|pack| pack.features()),
         );
         features.sort();
         features.dedup();
-        features
+        Ok(features)
     }
     /// `getDifficulty`: Hardcore is always Hard.
     pub fn difficulty(&self) -> usize {

@@ -410,12 +410,18 @@ impl Game<'_> {
         // asked once, not again here.
         let files = match &self.world_tables {
             Some(tables) => tables.files.clone(),
-            None => super::functions::content_overlay(
+            None => match super::functions::content_overlay(
                 &self.world_root,
                 &self.options.resources,
                 self.cmds.vanilla_disabled,
                 &self.level.enabled_features,
-            ),
+            ) {
+                Ok(files) => files,
+                Err(error) => {
+                    log::error!("Horizon: advancement metadata: {error}");
+                    return;
+                }
+            },
         };
         self.adv.pending_tree = std::thread::Builder::new()
             .name("horizon-advancements".into())

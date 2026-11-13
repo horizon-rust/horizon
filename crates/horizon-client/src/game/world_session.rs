@@ -118,7 +118,7 @@ impl Game<'_> {
                 log::warn!("Horizon: data packs for {folder}: {}: {e}", world.display());
             } else {
                 let disabled: Vec<String> =
-                    horizon_client::datapack::feature_packs(&self.vanilla_root())
+                    horizon_client::datapack::feature_packs(&self.vanilla_root())?
                         .into_iter()
                         .map(|p| p.id)
                         .filter(|id| !o.data_packs.contains(id))
