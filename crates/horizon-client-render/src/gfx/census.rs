@@ -64,6 +64,14 @@ impl Renderer {
         let arenas = self.arena.bytes() + translucent.map_or(0, arena::Arena::bytes);
         [arenas, vertices * stride]
     }
+    /// Bytes of GPU memory used by the terrain section and translucent arenas
+    /// (their wgpu buffers, not just what resident sections occupy). Used by
+    /// the game thread to bound chunk loading to a video-memory budget.
+    pub fn arena_bytes(&self) -> u64 {
+        let translucent = self.translucent_arena.as_ref();
+        self.arena.bytes() + translucent.map_or(0, arena::Arena::bytes)
+    }
+
     /// Bytes of the renderer's largest GPU resources, by name (`scene_replay --memory`):
     /// the terrain arenas (their pages, and what resident sections and far tiles use of
     /// them), the quad indices, the block sprites with their mips, the LabPBR maps, flat

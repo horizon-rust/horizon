@@ -210,6 +210,14 @@ impl Game<'_> {
             .extra
             .extend(waiting.into_iter().map(|chunk| (chunk, 0)));
         self.streaming.upload_backlog = self.pending_uploads.len();
+        // Out of video memory (`Renderer::oom_level`): the renderer halves its render distance
+        // per level, and the world stops loading terrain past the same distance, so memory
+        // stops growing while chunk unloading keeps pace.
+        if let Some(renderer) = &self.renderer {
+            let divisor = 2u32.pow(renderer.oom_level());
+            self.streaming.radius = (self.settings.render_distance / divisor as i32)
+                .max(4.min(self.settings.render_distance));
+        }
         let (uploads, unloaded) =
             horizon_client::spans::time("streaming", || self.streaming.update(&mut self.world));
         self.streaming.extra.truncate(areas);

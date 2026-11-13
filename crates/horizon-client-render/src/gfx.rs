@@ -193,6 +193,9 @@ pub(crate) mod animate;
 mod arena;
 pub mod capture;
 mod census;
+mod oom;
+mod shrink_gate;
+use shrink_gate::{SHRINK_RETRY, SHRINK_SETTLE, ShrinkGate};
 pub mod compositor;
 pub(crate) mod core_lines;
 pub(crate) mod core_sky;
@@ -793,28 +796,9 @@ const SECTION_COPY_LIMIT: u64 = 64 << 20;
 /// first is larger (`move_off_page`): a page empties over a few frames, with
 /// no hitch.
 const COMPACT_BUDGET: u64 = 32 << 20;
-/// A large translucent page starts to shrink (`Renderer::shrink_translucent`)
-/// this long after terrain last arrived, and `SHRINK_RETRY` after a try found
-/// no room.
 /// `Renderer::remove_columns` filters each store once rather than looking up every
 /// section key from this many keys, or from as many as there are resident sections.
 const BULK_REMOVAL_KEYS: usize = 256;
-const SHRINK_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
-const SHRINK_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
-/// Not before then may a large translucent page start to shrink.
-#[derive(Default)]
-struct ShrinkGate(Option<Instant>);
-impl ShrinkGate {
-    /// Not before `wait` from `now`, nor before an earlier wait is over.
-    fn wait(&mut self, now: Instant, wait: std::time::Duration) {
-        self.0 = self.0.max(Some(now + wait));
-    }
-    /// Whether one may start now: the waits are over, and `compact_arena` copied
-    /// nothing this frame (it `left` the whole budget).
-    fn may_start(&self, now: Instant, left: u64) -> bool {
-        left == COMPACT_BUDGET && self.0.is_none_or(|at| now >= at)
-    }
-}
 pub struct Frame<'a> {
     pub camera: DVec3,
     pub yaw: f32,
@@ -1532,6 +1516,8 @@ pub struct Renderer {
     /// How many times the pending scaled screenshot ran out of video memory: each
     /// halves its size, down to the window's.
     screenshot_halvings: u32,
+    /// Out of video memory: the render distance it shrank to (`oom.rs`).
+    oom: oom::Oom,
     /// Brightness option (lightmap gamma), 0..1.
     pub gamma: f32,
     /// Optional full-light lightmap (Horizon Extras).
@@ -5102,6 +5088,7 @@ impl Renderer {
             screenshot_saves,
             screenshot_quality: 1,
             screenshot_halvings: 0,
+            oom: Default::default(),
             gamma: 0.5,
             improved_transparency: false,
             oit: None,
@@ -7847,6 +7834,7 @@ impl Renderer {
         output: output::EffectiveOutput,
     ) -> Result<bool> {
         debug_assert_eq!(output.encoding, self.hdr.as_ref().map(|hdr| hdr.output));
+        let checks = checks.or_else(|| Some(GpuChecks::push(&self.device)));
         // Its steps as spans (HORIZON_SPIKES): each lap names the step that just ended.
         let mut laps = crate::spans::laps();
         let landing = Instant::now();
@@ -8402,7 +8390,7 @@ impl Renderer {
         // under a native pack's `[displacement]`, whose grid takes its quads from the walk's
         // `visible`. Decided before the walk, so that a pass whose buffers no longer fit can
         // still switch GPU culling off.
-        let radius = (frame.detail_distance / 16.0) as i32;
+        let radius = (self.oom_detail_distance(frame.detail_distance) / 16.0) as i32;
         let displaced = self
             .native
             .as_ref()
@@ -8514,7 +8502,7 @@ impl Renderer {
         let mut shadow_visible = std::mem::take(&mut self.shadow_visible);
         shadow_visible.clear();
         if let Some(v) = &shadow_view {
-            let radius = (frame.detail_distance / 16.0) as i32;
+            let radius = (self.oom_detail_distance(frame.detail_distance) / 16.0) as i32;
             let light = ShadowCull {
                 light: shadow_box(v),
                 casters: v.view_casters.then(|| shadow_casters(cull_proj, v.light)),
@@ -11833,6 +11821,9 @@ impl Renderer {
             read();
         }
         let failed = checks.and_then(GpuChecks::pop);
+        if readback.is_none() && self.oom_frame_skipped(failed.as_ref(), frame.detail_distance) {
+            return Ok(false);
+        }
         if let Some((request, buffer)) = readback {
             // Out of memory on the way: the PNG would be black; taken again at half the size.
             if let Some(e) = failed {
