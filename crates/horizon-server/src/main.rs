@@ -109,6 +109,9 @@ Settings live in server.toml; the server writes server.properties from it before
 ";
 
 fn main() -> ExitCode {
+    // The Tailcat helper's download address (the Horizon layer owns it): the server runs the same
+    // helper the game and the launcher do, shared through the platform's seam.
+    horizon_platform::hooks::tailcat::set_assets(horizon_addresses::TAILCAT_HELPER_ASSETS);
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut dir = PathBuf::from(".");
     if let Some(i) = args.iter().position(|a| a == "--dir") {

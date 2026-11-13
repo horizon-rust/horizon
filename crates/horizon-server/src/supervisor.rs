@@ -222,6 +222,32 @@ pub fn run(dir: &Path) -> Result<(), String> {
         Ok(None) => {}
         Err(e) => note(&shared, "WARN", &e),
     }
+    // A Tailcat tunnel to this server's port, if `[tailcat] host = true`: friends join with the
+    // invitation it logs, with no Tailscale account on either side and no router port opened. Held
+    // for the whole run, so it is dropped (and the helper stopped) when the supervisor ends.
+    let _tailcat = if config.tailcat.host {
+        let cache = dir.join(".horizon").join("tailcat");
+        match horizon_platform::hooks::tailcat::host(config.server.port, &cache) {
+            Ok((running, invite)) => {
+                note(
+                    &shared,
+                    "INFO",
+                    &format!("Tailcat: friends join this server with the invitation {invite}"),
+                );
+                Some(running)
+            }
+            Err(e) => {
+                note(
+                    &shared,
+                    "WARN",
+                    &format!("Tailcat is on but the helper did not start: {e}"),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     sample(shared.clone());
     crate::events::poll_game(shared.clone());
     crate::discord::start(shared.clone(), config.discord.clone());

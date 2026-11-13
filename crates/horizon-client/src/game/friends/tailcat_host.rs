@@ -146,8 +146,9 @@ impl Game<'_> {
         }
         let port = self.lan_port().ok_or("the world isn't open to LAN")?;
         let (tx, rx) = mpsc::channel();
+        let cache = horizon_client::logging::game_home().join("tailcat");
         std::thread::spawn(move || {
-            let _ = tx.send(horizon_client::tailcat::host(port));
+            let _ = tx.send(horizon_client::tailcat::host(port, &cache));
         });
         self.set_tailcat(TailcatShare::new(rx, opened_lan));
         Ok(())

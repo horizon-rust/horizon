@@ -790,7 +790,8 @@ fn run(
     } else {
         let (host, port, token) = if let Some(invite) = address.strip_prefix(TAILCAT) {
             status(send, &tr(lang, "connect.connecting"));
-            let (helper, loopback) = crate::tailcat::join(invite).map_err(Reason::plain)?;
+            let cache = crate::logging::game_home().join("tailcat");
+            let (helper, loopback) = crate::tailcat::join(invite, &cache).map_err(Reason::plain)?;
             let (host, port) = parse_address(&loopback).ok_or_else(|| {
                 Reason::plain(format!("the Tailcat helper gave a bad address: {loopback}"))
             })?;

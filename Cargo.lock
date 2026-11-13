@@ -1796,6 +1796,13 @@ dependencies = [
 [[package]]
 name = "horizon-hooks"
 version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ureq",
+]
 
 [[package]]
 name = "horizon-items"
@@ -2042,6 +2049,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "getrandom 0.3.4",
+ "horizon-addresses",
  "horizon-anticheat",
  "horizon-chat-filter",
  "horizon-mcp",

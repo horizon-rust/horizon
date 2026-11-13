@@ -176,6 +176,24 @@ pub struct Config {
     /// The game reads this section itself (docs/pvp.md); written only when it isn't the default.
     #[serde(default, skip_serializing_if = "Combat::is_default")]
     pub combat: Combat,
+    /// Whether the supervisor runs a Tailcat tunnel to this server's own port; written only when it
+    /// isn't the default.
+    #[serde(default, skip_serializing_if = "Tailcat::is_default")]
+    pub tailcat: Tailcat,
+}
+
+/// `[tailcat]`: `host = true` runs the `tailcat-for-minecraft` helper on start and logs the `mcl1_...`
+/// invitation, so friends join this server without a Tailscale account or an open router port. The
+/// helper is the same one the game and the launcher run, shared through `horizon-platform`'s seam.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Tailcat {
+    pub host: bool,
+}
+impl Tailcat {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// `[combat]`: `legacy = true` resolves the players' melee hits by 1.8.9's rules (no attack cooldown or sweep,
@@ -681,7 +699,13 @@ pub fn render(config: &Config) -> String {
         set(&mut doc, section, field, &table[section][field]);
     }
     let mut text = doc.to_string();
-    for section in ["anticheat", "chat_filter", "prune_chunks", "combat"] {
+    for section in [
+        "anticheat",
+        "chat_filter",
+        "prune_chunks",
+        "combat",
+        "tailcat",
+    ] {
         if let Some(settings) = table.get(section) {
             let mut only = toml::Table::new();
             only.insert(section.into(), settings.clone());
@@ -945,6 +969,20 @@ mod tests {
         assert!(!off.lines().any(|l| l.trim() == "[combat]"), "{off}");
         assert!(Config::parse("[combat]\nlegacy = 1\n").is_err());
         assert!(Config::parse("[combat]\nlegcy = true\n").is_err());
+    }
+
+    #[test]
+    fn tailcat_hosting_is_off_unless_its_section_turns_it_on() {
+        assert!(!Config::default().tailcat.host);
+        assert!(!TEMPLATE.lines().any(|l| l.trim() == "[tailcat]"));
+        let on = Config::parse(&format!("{TEMPLATE}\n[tailcat]\nhost = true\n")).unwrap();
+        assert!(on.tailcat.host);
+        // Kept when the file is written again, and left out while off.
+        assert_eq!(Config::parse(&render(&on)).unwrap(), on);
+        let off = render(&Config::default());
+        assert!(!off.lines().any(|l| l.trim() == "[tailcat]"), "{off}");
+        assert!(Config::parse("[tailcat]\nhost = 1\n").is_err());
+        assert!(Config::parse("[tailcat]\nhst = true\n").is_err());
     }
 
     #[test]
