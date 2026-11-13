@@ -471,6 +471,24 @@ impl Game<'_> {
             }));
         }
     }
+
+    /// A guest hurt while the packets were handled (a blast that a command or
+    /// a hit set off: Entity.markHurt) gets its own velocity as the push left
+    /// it. Vanilla handles the packets after the levels tick
+    /// (`MinecraftServer.tickChildren`), so the next tick's
+    /// `ServerEntity.sendChanges` sends that velocity before the player
+    /// travels again. Here the travel comes later in this tick
+    /// (`guest_server_tick`), which still sends a hurt from the entity pass
+    /// after it (#15792).
+    pub(super) fn send_packet_marked_motion(&mut self, host: &mut LanHost) {
+        for (conn, id, uuid, name, velocity) in take_marked_motion(&mut host.hub.guests) {
+            self.native_player_velocity(uuid, &name, velocity);
+            host.hub.send_to(
+                conn,
+                &C::SetEntityMotion(play::SetEntityMotion { id, velocity }),
+            );
+        }
+    }
 }
 
 /// A guest as the blocks that look for players see them
@@ -541,6 +559,23 @@ pub(super) fn omen_of(
 /// A guest's bounding box, by its pose (`Avatar.POSES`).
 pub(super) fn guest_bounds(g: &horizon_client::lan::guest::Guest) -> Aabb {
     g.bounds()
+}
+
+/// The guests whose body a hurt marked (`sync_velocity`), with the velocity it
+/// has now, as `(conn, entity id, uuid, name, velocity)`; the marks are
+/// cleared, so the travel's send (`guest_server_tick`) leaves them out.
+fn take_marked_motion(
+    guests: &mut [horizon_client::lan::guest::Guest],
+) -> Vec<(u32, i32, u128, String, [f64; 3])> {
+    guests
+        .iter_mut()
+        .filter_map(|g| {
+            let body = g.motion.as_mut()?;
+            let v = body.velocity;
+            std::mem::take(&mut body.health.sync_velocity)
+                .then(|| (g.conn, g.entity_id, g.uuid, g.name.clone(), [v.x, v.y, v.z]))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -677,5 +712,69 @@ mod tests {
         golem.extra.anger = 0;
         golem.extra.angry_at = None;
         assert_eq!(player_for(&golem, None, &guests, Some(7)), Some(8));
+    }
+}
+
+#[cfg(test)]
+mod packet_marked_motion_tests {
+    use super::take_marked_motion;
+    use horizon_client::lan::{Joined, PlayerSender, guest::Guest};
+    use horizon_core::geometry::Vec3;
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    fn guest(conn: u32, resources: &horizon_client::motion::MotionResources) -> Guest {
+        let (tx, _rx) = mpsc::channel();
+        let mut g = Guest::new(
+            Joined {
+                conn,
+                uuid: u128::from(conn),
+                name: format!("Guest{conn}"),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(2),
+                brand: String::new(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:1".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            conn as i32 + 100,
+            [0.5, 80.0, 0.5],
+            2,
+        );
+        g.motion = Some(Box::new(
+            horizon_client::motion::PlayerMotion::new(resources, Vec3::ZERO).unwrap(),
+        ));
+        g
+    }
+
+    /// #15792: the guest a blast marked while the packets were handled is
+    /// sent the velocity as the push left it, once; a guest nothing marked
+    /// is left for its travel's send.
+    #[test]
+    fn a_push_marked_in_the_packets_is_taken_as_it_left_the_velocity() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = horizon_client::assets::Assets::load(&root).unwrap();
+        let resources = horizon_client::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut guests = vec![guest(1, &resources), guest(2, &resources)];
+        // Alice's push from the crystal in the issue: last tick's gravity on y.
+        let alice = guests[0].motion.as_mut().unwrap();
+        alice.velocity = Vec3::new(0.0, -0.07841 + 0.04429, -0.24605);
+        alice.health.sync_velocity = true;
+        guests[1].motion.as_mut().unwrap().velocity = Vec3::new(0.0, -0.0784, 0.0);
+
+        let taken = take_marked_motion(&mut guests);
+        assert_eq!(taken.len(), 1);
+        let (conn, id, uuid, name, velocity) = &taken[0];
+        assert_eq!((*conn, *id, *uuid, name.as_str()), (1, 101, 1, "Guest1"));
+        assert_eq!(*velocity, [0.0, -0.07841 + 0.04429, -0.24605]);
+        assert!(!guests[0].motion.as_ref().unwrap().health.sync_velocity);
+        // Sent once: the next pass (or the travel) finds nothing marked.
+        assert!(take_marked_motion(&mut guests).is_empty());
     }
 }
