@@ -25,6 +25,7 @@ pub mod perf;
 pub mod players;
 mod registry;
 pub mod settings;
+pub mod tailcat;
 pub mod tunnel;
 
 use registry::Registry;

@@ -283,7 +283,7 @@ const CONFIRM: Param = Param {
 /// MCP tools that delete or overwrite the player's things (`destructiveHint`).
 pub const DESTRUCTIVE: &[&str] = &["world-delete", "fill", "setblock"];
 /// MCP tools that reach other players or the network (`openWorldHint`): only when the player asks.
-pub const OPEN_WORLD: &[&str] = &["connect", "lan", "friends", "chat", "command"];
+pub const OPEN_WORLD: &[&str] = &["connect", "lan", "friends", "tailcat", "chat", "command"];
 
 macro_rules! cmd {
     ($name:expr, $group:ident, $usage:expr, $summary:expr, $details:expr, [$($ex:expr),* $(,)?], $params:expr, mcp: $mcp:expr, local: $local:expr, reply: $reply:expr) => {
@@ -555,6 +555,9 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("friends", Multiplayer, "friends host|stop|status", "Play with Friends: share the open world behind an invite code, stop, or see who joined",
         "status gives the code: share it only when the player asks. Friends join with connect friend:CODE.",
         ["horizon-ctl friends host", "horizon-ctl friends status"], &[p("action", Ty::Enum(&["host", "stop", "status"]), "what to do")], mcp: true, local: false),
+    cmd!("tailcat", Multiplayer, "tailcat host|stop|status", "Tailcat: share the open world through a tunnel without a relay, stop, or see it",
+        "status gives the mcl1 invitation: share it only when the player asks. Friends join with connect tailcat:mcl1_....",
+        ["horizon-ctl tailcat host", "horizon-ctl tailcat status"], &[p("action", Ty::Enum(&["host", "stop", "status"]), "what to do")], mcp: true, local: false),
     // World
     cmd!("give", World, "give ITEM [COUNT]", "add items to the inventory", "", ["horizon-ctl give oak_log 16"],
         &[p("item", Ty::Str, "item id"), opt("count", Ty::Int, "how many (default 1)")], mcp: true, local: false),

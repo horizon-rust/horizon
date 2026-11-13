@@ -7,7 +7,9 @@
 //! configured adds a short code and a fallback. The integrated server is the
 //! LAN one, unchanged: tunnelled guests are LAN guests that connect from the
 //! loopback address. The joining side is horizon-friends' (`game`), registered by
-//! horizon-official.
+//! horizon-official. Tailcat (`tailcat_host`) shares the same LAN server
+//! through a helper tunnel when the player has no relay; the screen offers it
+//! beside the invite-code share.
 use super::{Game, lan::LanSettings};
 use horizon_client::{Result, hud::HudBatch, lang, text::Text};
 use horizon_friends::{Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun};
@@ -16,11 +18,20 @@ use std::time::{Duration, Instant};
 
 #[path = "friends/screen.rs"]
 mod screen;
+pub(super) mod tailcat_host;
 
 use screen::{self as friends_screen, Action, FriendsView};
 pub use screen::{TITLE, title};
+pub use tailcat_host::HELP as TAILCAT_HELP;
 
+/// The state of the Play with Friends screen: a shared world, a Tailcat
+/// share, or both empty while the screen offers to start one.
 pub(super) struct Sharing {
+    friends: Option<FriendsShare>,
+    tailcat: Option<tailcat_host::TailcatShare>,
+}
+
+struct FriendsShare {
     host: Host,
     /// Sharing opened the world to LAN, so stopping closes it again.
     opened_lan: bool,
@@ -58,9 +69,10 @@ fn env_flag(name: &str, default: bool) -> bool {
 impl Game<'_> {
     /// Start sharing the open world.
     pub(super) fn friends_start(&mut self) -> Result<()> {
-        if self.friends.is_some() {
+        if self.friends.as_ref().is_some_and(|s| s.friends.is_some()) {
             return Ok(());
         }
+        self.tailcat_stop();
         // Single player on its server thread shares that server, as Open to
         // LAN publishes it; another server can't be shared.
         if self.title.is_some() || (self.remote.is_some() && self.integrated.is_none()) {
@@ -103,13 +115,16 @@ impl Game<'_> {
             }
         };
         self.friends = Some(Sharing {
-            host,
-            opened_lan,
-            code: None,
-            wrong: 0,
-            notice: None,
-            copied: None,
-            paths: (0, 0),
+            friends: Some(FriendsShare {
+                host,
+                opened_lan,
+                code: None,
+                wrong: 0,
+                notice: None,
+                copied: None,
+                paths: (0, 0),
+            }),
+            tailcat: None,
         });
         Ok(())
     }
@@ -117,10 +132,13 @@ impl Game<'_> {
     /// Stop sharing: the code ends (direct port closed, router mapping
     /// deleted); the world closes to LAN again if sharing opened it.
     pub(super) fn friends_stop(&mut self) {
-        let Some(mut sharing) = self.friends.take() else {
+        let Some(mut sharing) = self.friends.as_mut().and_then(|s| s.friends.take()) else {
             return;
         };
         sharing.host.stop();
+        if !self.friends.as_ref().is_some_and(|s| s.tailcat.is_some()) {
+            self.friends = None;
+        }
         if sharing.opened_lan {
             self.lan_close(true);
         } else {
@@ -133,14 +151,17 @@ impl Game<'_> {
 
     /// The LAN server is closing: the code goes with it.
     pub(super) fn friends_lan_closed(&mut self) {
-        if let Some(mut sharing) = self.friends.take() {
+        if let Some(mut sharing) = self.friends.as_mut().and_then(|s| s.friends.take()) {
             sharing.host.stop();
         }
+        // The LAN server is closing: a Tailcat helper sharing it goes too.
+        self.friends = None;
     }
 
     /// New codes and sessions, once a tick and while the pause menu is drawn.
     pub(super) fn tick_friends(&mut self) {
-        let Some(sharing) = self.friends.as_mut() else {
+        self.tick_tailcat();
+        let Some(sharing) = self.friends.as_mut().and_then(|s| s.friends.as_mut()) else {
             return;
         };
         let mut announce = false;
@@ -190,12 +211,17 @@ impl Game<'_> {
     }
 
     pub(super) fn friends_copy(&mut self) {
-        let Some(code) = self.friends.as_ref().and_then(|s| s.code.clone()) else {
+        let Some(code) = self
+            .friends
+            .as_ref()
+            .and_then(|s| s.friends.as_ref())
+            .and_then(|s| s.code.clone())
+        else {
             return;
         };
         use horizon_client::clipboard::Clipboard;
         self.clipboard.set(&code);
-        if let Some(s) = self.friends.as_mut() {
+        if let Some(s) = self.friends.as_mut().and_then(|s| s.friends.as_mut()) {
             s.copied = Some(Instant::now());
         }
     }
@@ -203,6 +229,10 @@ impl Game<'_> {
     /// Play with Friends. The world is paused under it in singleplayer, so
     /// new codes and sessions are read while it is drawn.
     pub(super) fn draw_friends_screen(&mut self, batch: &mut HudBatch) {
+        if self.friends.as_ref().is_some_and(|s| s.tailcat.is_some()) {
+            self.draw_tailcat_screen(batch);
+            return;
+        }
         self.tick_friends();
         let view = self.friends_view();
         horizon_client::widgets::begin_screen(|| {
@@ -218,6 +248,10 @@ impl Game<'_> {
         );
     }
     pub(super) fn friends_screen_click(&mut self) {
+        if self.friends.as_ref().is_some_and(|s| s.tailcat.is_some()) {
+            self.tailcat_screen_click();
+            return;
+        }
         let view = self.friends_view();
         let Some(action) =
             friends_screen::click(&self.gui.atlas, self.gui_size(), self.cursor, &view)
@@ -267,7 +301,7 @@ impl Game<'_> {
             }
             None => Vec::new(),
         };
-        let Some(s) = &self.friends else {
+        let Some(s) = self.friends.as_ref().and_then(|s| s.friends.as_ref()) else {
             return FriendsView {
                 shown: self.remote.is_none() || self.integrated.is_some(),
                 ..FriendsView::default()
@@ -326,7 +360,11 @@ impl Game<'_> {
             Some("status") => {
                 self.tick_friends();
                 let view = self.friends_view();
-                let state = self.friends.as_ref().map(|s| s.host.state());
+                let state = self
+                    .friends
+                    .as_ref()
+                    .and_then(|s| s.friends.as_ref())
+                    .map(|s| s.host.state());
                 Ok(Some(json!({
                     "sharing": view.sharing,
                     "code": view.code,
@@ -335,9 +373,21 @@ impl Game<'_> {
                     "reachable": view.reachable,
                     "verdict": state.as_ref().and_then(|s| s.verdict.as_ref().map(|v| format!("{v:?}"))),
                     "direct_port": state.as_ref().map(|s| s.port),
-                    "sessions": self.friends.as_ref().map_or(0, |s| s.host.sessions()),
-                    "direct": self.friends.as_ref().map_or(0, |s| s.paths.0),
-                    "relayed": self.friends.as_ref().map_or(0, |s| s.paths.1),
+                    "sessions": self
+                        .friends
+                        .as_ref()
+                        .and_then(|s| s.friends.as_ref())
+                        .map_or(0, |s| s.host.sessions()),
+                    "direct": self
+                        .friends
+                        .as_ref()
+                        .and_then(|s| s.friends.as_ref())
+                        .map_or(0, |s| s.paths.0),
+                    "relayed": self
+                        .friends
+                        .as_ref()
+                        .and_then(|s| s.friends.as_ref())
+                        .map_or(0, |s| s.paths.1),
                     "guests": view.guests,
                     "lan_port": self.lan_port(),
                 })))

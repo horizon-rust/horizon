@@ -103,3 +103,7 @@ pub const SDK_RELEASES: &str = "https://github.com/horizon-rust/horizon/releases
 /// The fork's newest releases, which `cargo horizon-mod` reads to find the one SDK a short sha names.
 pub const SDK_RELEASE_LIST: &str =
     "https://api.github.com/repos/horizon-rust/horizon/releases?per_page=100";
+/// The `tailcat-for-minecraft` helper assets (pinned commit) used to download the
+/// Tailcat helper binary and its checksums.
+pub const TAILCAT_HELPER_ASSETS: &str =
+    "https://raw.githubusercontent.com/tailscale/tailcat-for-minecraft";
