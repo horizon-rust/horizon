@@ -25,9 +25,30 @@ pub(super) struct Replay {
     pub(super) standalone: bool,
     pub(super) last_tick: Option<std::time::Instant>,
     pub(super) virtual_tick_ms: f32,
+    recording_error_reported: bool,
 }
 
 impl Replay {
+    fn recording_error(
+        &mut self,
+        status: Option<&horizon_client::net::RecorderStatus>,
+    ) -> Option<String> {
+        let Some(status) = status else {
+            self.recording_error_reported = false;
+            return None;
+        };
+        if status.active {
+            self.recording_error_reported = false;
+            return None;
+        }
+        let error = status.error.as_ref()?;
+        if self.recording_error_reported {
+            return None;
+        }
+        self.recording_error_reported = true;
+        Some(error.clone())
+    }
+
     /// A replay plays: the world shown is the recording's.
     pub(super) fn playing(&self) -> bool {
         self.driver.is_some()
@@ -371,6 +392,14 @@ impl Game<'_> {
 
     /// Advance active replay playback by elapsed frame time and dispatch ready packets.
     pub(super) fn advance_studio_replay(&mut self) -> Result<()> {
+        let status = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.session.recorder_status());
+        if let Some(error) = self.replay.recording_error(status.as_ref()) {
+            log::warn!("Studio recording stopped: {error}");
+            self.system_message(Text::tr("horizon.studio.record.error", &[&error]));
+        }
         let Some(driver) = self.replay.driver.as_mut() else {
             self.replay.last_tick = None;
             return Ok(());
@@ -592,6 +621,7 @@ impl Game<'_> {
         );
         match horizon_client::studio::StudioRecorder::start(path.clone(), meta) {
             Ok(recorder) => {
+                self.replay.recording_error_reported = false;
                 r.session.start_recording(recorder, |recorder| {
                     self.dump_world_snapshot_to_recorder(recorder);
                 });
@@ -623,6 +653,7 @@ impl Game<'_> {
                 "elapsed_ms": status.elapsed.as_millis(),
                 "packet_count": status.packet_count,
                 "bytes_written": status.bytes_written,
+                "error": status.error,
             })
         } else {
             json!({ "ok": true, "active": false })
@@ -851,5 +882,38 @@ impl Game<'_> {
         log::info!(
             "Studio Recorder: Dumped initial world snapshot ({count} chunks) at timestamp 0ms"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_client::net::RecorderStatus;
+
+    #[test]
+    fn recording_failure_is_notified_once_and_rearms_for_a_new_session() {
+        let mut replay = Replay::default();
+        let mut status = RecorderStatus {
+            active: true,
+            path: PathBuf::from("test.mcpr"),
+            elapsed: Duration::ZERO,
+            packet_count: 0,
+            bytes_written: 0,
+            error: None,
+        };
+        assert_eq!(replay.recording_error(Some(&status)), None);
+        status.active = false;
+        status.error = Some("recorder queue is full; capture stopped".into());
+        assert_eq!(replay.recording_error(Some(&status)), status.error);
+        assert_eq!(replay.recording_error(Some(&status)), None);
+        assert_eq!(replay.recording_error(None), None);
+        assert_eq!(replay.recording_error(Some(&status)), status.error);
+        status.active = true;
+        status.error = None;
+        assert_eq!(replay.recording_error(Some(&status)), None);
+        status.active = false;
+        status.error = Some("recorder worker stopped unexpectedly".into());
+        assert_eq!(replay.recording_error(Some(&status)), status.error);
+        assert_eq!(replay.recording_error(Some(&status)), None);
     }
 }
