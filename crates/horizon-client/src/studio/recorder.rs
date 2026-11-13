@@ -231,6 +231,12 @@ fn recordable<'a>(
             let id = reader.varint().ok()?;
             Some((id, Cow::Owned(reader.rest().to_vec())))
         }
+        P::CustomPayload(p)
+            if p.channel == horizon_protocol::mod_net::CHANNEL
+                || p.channel == horizon_protocol::attachment_sync::CHANNEL =>
+        {
+            Some((packet_id, Cow::Borrowed(payload)))
+        }
         P::CookieRequest(_)
         | P::CustomChatCompletions(_)
         | P::CustomPayload(_)
@@ -468,6 +474,38 @@ mod tests {
         assert_eq!(recorded.yaw, original.yaw);
         assert_eq!(recorded.head_yaw, original.head_yaw);
         assert_eq!(recorded.data, original.data);
+    }
+
+    #[test]
+    fn studio_recording_keeps_horizon_custom_payloads() {
+        let mod_net_packet = play::Clientbound::CustomPayload(cfg::CustomPayload {
+            channel: horizon_protocol::mod_net::CHANNEL.into(),
+            data: b"mod payload".to_vec(),
+        });
+        let attachment_packet = play::Clientbound::CustomPayload(cfg::CustomPayload {
+            channel: horizon_protocol::attachment_sync::CHANNEL.into(),
+            data: b"sync payload".to_vec(),
+        });
+        let other_packet = play::Clientbound::CustomPayload(cfg::CustomPayload {
+            channel: "other:custom".into(),
+            data: b"other payload".to_vec(),
+        });
+
+        assert_eq!(
+            recordable(&mod_net_packet, 0x19, b"raw mod payload"),
+            Some((
+                0x19,
+                std::borrow::Cow::Borrowed(b"raw mod payload".as_slice())
+            ))
+        );
+        assert_eq!(
+            recordable(&attachment_packet, 0x19, b"raw sync payload"),
+            Some((
+                0x19,
+                std::borrow::Cow::Borrowed(b"raw sync payload".as_slice())
+            ))
+        );
+        assert!(recordable(&other_packet, 0x19, b"raw other payload").is_none());
     }
 
     #[test]
