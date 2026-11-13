@@ -485,7 +485,7 @@ fn walk_kind(root: &Path, kind: &str, out: &mut HashMap<String, Value>) {
     let Ok(entries) = std::fs::read_dir(root.join("data")) else {
         return;
     };
-    for entry in entries.flatten() {
+    for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
         let namespace = entry.file_name().to_string_lossy().into_owned();
         walk(&entry.path().join(kind), &namespace, out);
     }

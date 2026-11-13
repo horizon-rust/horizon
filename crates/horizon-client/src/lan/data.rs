@@ -245,6 +245,21 @@ pub fn component_nbt(v: &Value) -> Tag {
 }
 
 impl SyncData {
+    /// The network id a server sends for a villager profession: a vanilla
+    /// index uses the built-in table, a content index the synchronized
+    /// registry. A retained custom index the registry no longer carries
+    /// becomes `none`, so the entity data still encodes.
+    pub fn villager_profession_id(&self, index: u8) -> Option<i32> {
+        use crate::mobs::villager_professions as vp;
+        let builtin = |name: &str| self.id("minecraft:villager_profession", name);
+        if index < vp::FIRST {
+            return builtin(&format!("minecraft:{}", vp::name(index)));
+        }
+        self.id(vp::SYNC_REGISTRY, &vp::id(index))
+            .or_else(|| self.id(vp::SYNC_REGISTRY, "minecraft:none"))
+            .or_else(|| builtin("minecraft:none"))
+    }
+
     /// No registries, tags or recipes: enough for tests of the login phase.
     pub fn empty() -> Self {
         Self {
@@ -1194,6 +1209,15 @@ mod tests {
     /// that knows the core pack gets no data for the vanilla ids.
     #[test]
     fn villager_professions_keep_vanilla_first_and_mark_only_content_as_pack() {
+        // Without content the registry is vanilla's own table, so a world
+        // loaded with no packs or mods still reports no pack entries.
+        let mut vanilla_only = SyncData::empty();
+        vanilla_only.registries.push((
+            "horizon:villager_profession".to_owned(),
+            villager_profession_entries([]),
+        ));
+        assert!(!vanilla_only.has_pack_entries());
+
         let entries = villager_profession_entries([
             "example:beekeeper".to_owned(),
             "example:zookeeper".to_owned(),
