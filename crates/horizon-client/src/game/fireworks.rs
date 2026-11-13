@@ -1054,6 +1054,10 @@ fn use_on_passes(fall_flying: bool) -> bool {
 mod events_tests;
 
 #[cfg(test)]
+#[path = "own_rocket_spark_tests.rs"]
+mod own_spark_tests;
+
+#[cfg(test)]
 mod tests {
 
     /// `Projectile.shoot` turns a shot rocket to its motion at once.
