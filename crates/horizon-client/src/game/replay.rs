@@ -853,3 +853,50 @@ impl Game<'_> {
         );
     }
 }
+
+/// Default registries for a standalone studio replay, populated from resource clocks
+/// so `SetTime` packets find the dimension's clock and set `world.day_time`.
+pub(super) fn replay_dynamic_registries(
+    clocks: &[String],
+    builtin: &horizon_protocol::registry::Builtin,
+) -> horizon_protocol::registry::Dynamic {
+    let mut dynamic = horizon_protocol::registry::Dynamic::default();
+    let clock_names: Vec<String> = if !clocks.is_empty() {
+        clocks.to_vec()
+    } else if let Some(builtin_clocks) = builtin.get("minecraft:world_clock") {
+        builtin_clocks.names.clone()
+    } else {
+        vec!["minecraft:overworld".into()]
+    };
+    dynamic.registries.insert(
+        "minecraft:world_clock".into(),
+        clock_names.into_iter().map(|n| (n, None)).collect(),
+    );
+    dynamic
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_dynamic_registries_provides_world_clock() {
+        let builtin = horizon_protocol::registry::Builtin::default();
+        let empty_dynamic = replay_dynamic_registries(&[], &builtin);
+        assert_eq!(
+            empty_dynamic.name("minecraft:world_clock", 0),
+            Some("minecraft:overworld")
+        );
+
+        let custom_clocks = vec!["minecraft:overworld".into(), "minecraft:the_end".into()];
+        let populated_dynamic = replay_dynamic_registries(&custom_clocks, &builtin);
+        assert_eq!(
+            populated_dynamic.name("minecraft:world_clock", 0),
+            Some("minecraft:overworld")
+        );
+        assert_eq!(
+            populated_dynamic.name("minecraft:world_clock", 1),
+            Some("minecraft:the_end")
+        );
+    }
+}
