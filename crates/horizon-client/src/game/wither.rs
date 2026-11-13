@@ -199,6 +199,7 @@ impl Game<'_> {
                     attacker: live_owner,
                     from: skull.from,
                     attacker_species: owner_species,
+                    attacker_uuid: self.damage_attacker_uuid(live_owner, p.guest),
                 };
                 let mut survived_hit = false;
                 let killed = match self.mobs.iter_mut().find(|m| m.id == id) {

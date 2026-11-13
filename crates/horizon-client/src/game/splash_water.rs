@@ -136,7 +136,13 @@ impl Game<'_> {
     /// (`Enderman.hurtServer`); one in `#extinguishes_entities` puts out
     /// those that burn; one in `#rehydrates_axolotls` refills the air of
     /// the axolotls in the box.
-    pub(super) fn affect_entities_around(&mut self, stack: &ItemStack, at: Vec3, by_player: bool) {
+    pub(super) fn affect_entities_around(
+        &mut self,
+        stack: &ItemStack,
+        at: Vec3,
+        by_player: bool,
+        attacker_uuid: Option<[i32; 4]>,
+    ) {
         let hurts = self.potion_in_tag(stack, "minecraft:hurts_water_sensitive_entities");
         let extinguishes = self.potion_in_tag(stack, "minecraft:extinguishes_entities");
         // The potion's box is 0.25 wide and high.
@@ -151,7 +157,8 @@ impl Game<'_> {
         };
         if hurts || extinguishes {
             let source =
-                Damage::indirect_magic(by_player.then_some(Who::Player), [at.x, at.y, at.z]);
+                Damage::indirect_magic(by_player.then_some(Who::Player), [at.x, at.y, at.z])
+                    .with_attacker_uuid(attacker_uuid.filter(|_| by_player));
             for m in self.mobs.iter_mut().filter(|m| !m.removed) {
                 // WATER_SENSITIVE_OR_ON_FIRE.
                 let sensitive = m.kind.flags.water_sensitive;

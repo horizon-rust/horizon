@@ -424,6 +424,26 @@ impl Game<'_> {
         };
         Some(horizon_client::lan::playerdata::uuid_ints(uuid))
     }
+    /// Capture a causing entity's identity before its damage is deferred.
+    pub(super) fn damage_attacker_uuid(
+        &mut self,
+        who: Option<horizon_client::mobs::Who>,
+        guest: Option<u32>,
+    ) -> Option<[i32; 4]> {
+        match who {
+            Some(horizon_client::mobs::Who::Player) => self.player_uuid_of(guest),
+            Some(horizon_client::mobs::Who::Mob(id)) => {
+                if let Some(uuid) = self.persist.uuids.get(&id) {
+                    Some(*uuid)
+                } else if self.mobs.iter().any(|m| m.id == id && !m.removed) {
+                    Some(self.mob_uuid(id))
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
+    }
     /// `Villager.setLastHurtByMob` and `ServerLevel.onReputationEvent`: a hit
     /// from a player counts against that player with the villager that was hit.
     pub(super) fn villager_reputation_tick(&mut self) {
@@ -595,6 +615,10 @@ mod entity_event_particle_tests {
         assert_eq!(kind("villager", 2), None);
     }
 }
+
+#[cfg(test)]
+#[path = "villager_damage_capture_tests.rs"]
+mod damage_capture_tests;
 
 #[cfg(test)]
 #[path = "villager_witness_tests.rs"]

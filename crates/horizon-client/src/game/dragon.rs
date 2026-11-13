@@ -540,13 +540,7 @@ fn vanilla_normalize(v: glam::DVec3) -> glam::DVec3 {
 /// `#minecraft:is_fire`, which the dragon's parts and the crystals refuse
 /// (`isInvulnerableToBase`: both types are fire immune).
 fn is_fire(kind: DamageKind) -> bool {
-    let source = Damage {
-        kind,
-        attacker: None,
-        from: None,
-        attacker_species: None,
-    };
-    source.is_fire()
+    Damage::of(kind).is_fire()
 }
 const PART_SIZES: [(f64, f64); 8] = [
     (1.0, 1.0),
@@ -1707,10 +1701,8 @@ impl Game<'_> {
         // KilledTrigger: the damage source `die` was given.
         let blow = blow.map(|(kind, by_player)| {
             let mut view = self.damage_view(Damage {
-                kind,
                 attacker: by_player.then_some(Who::Player),
-                from: None,
-                attacker_species: None,
+                ..Damage::of(kind)
             });
             // `damageSources().explosion(crystal, player)`: the crystal is the direct entity.
             if kind == DamageKind::Explosion {

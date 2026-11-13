@@ -111,11 +111,13 @@ impl Game<'_> {
     }
     /// The damage source of the player's hit from `from` with the held item.
     pub(super) fn attack_source(&self, from: [f64; 3]) -> Damage {
-        if self.smash_attack() {
+        let mut source = if self.smash_attack() {
             Damage::mace(from)
         } else {
             Damage::player(from)
-        }
+        };
+        source.attacker_uuid = self.player_uuid_of(self.lan_acting);
+        source
     }
     /// `MaceItem.getAttackDamageBonus` against `victim`: 4 per block for the
     /// first three blocks fallen, 2 for the next five, 1 after that, plus

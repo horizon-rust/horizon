@@ -1080,6 +1080,7 @@ impl Game<'_> {
                                     attacker: Some(Who::Player),
                                     from,
                                     attacker_species: None,
+                                    attacker_uuid: None,
                                 },
                                 aim,
                                 [t.velocity.x, t.velocity.z],

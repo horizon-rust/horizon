@@ -261,11 +261,18 @@ impl Game<'_> {
                     Some(Who::Mob(i)) => self.mobs.iter().find(|m| m.id == i).map(|m| m.species()),
                     _ => None,
                 };
+                let attacker_uuid = match cause.or(by) {
+                    Some(Target::Player) => self.player_uuid_of(self.lan_acting),
+                    Some(Target::Guest(conn)) => self.player_uuid_of(Some(conn)),
+                    Some(Target::Mob(id)) => Some(self.mob_uuid(id)),
+                    _ => None,
+                };
                 let damage = Damage {
                     kind: Self::damage_kind(ty),
                     attacker,
                     from,
                     attacker_species,
+                    attacker_uuid,
                 };
                 // DamageSource.getEntity is the causing player, even when
                 // another client issued the command or supplied the direct entity.

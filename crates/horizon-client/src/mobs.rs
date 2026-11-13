@@ -34,6 +34,8 @@ pub mod copper_golem;
 pub mod creaking;
 pub mod creaking_heart;
 pub mod cube;
+mod damage;
+pub use damage::Damage;
 pub mod data;
 pub mod dolphin;
 pub mod doors;
@@ -657,206 +659,6 @@ pub struct Aim {
     pub eye: [f64; 3],
     pub look: [f64; 3],
     pub feet: [f64; 3],
-}
-/// A damage source: its type, the attacking entity and where it came from.
-#[derive(Clone, Copy, Debug)]
-pub struct Damage {
-    pub kind: DamageKind,
-    pub attacker: Option<Who>,
-    pub from: Option<[f64; 3]>,
-    pub attacker_species: Option<Species>,
-}
-impl Damage {
-    pub fn fall() -> Self {
-        Self {
-            kind: DamageKind::Fall,
-            attacker: None,
-            from: None,
-            attacker_species: None,
-        }
-    }
-    pub fn of(kind: DamageKind) -> Self {
-        Self {
-            kind,
-            attacker: None,
-            from: None,
-            attacker_species: None,
-        }
-    }
-    pub fn player(from: [f64; 3]) -> Self {
-        Self {
-            kind: DamageKind::PlayerAttack,
-            attacker: Some(Who::Player),
-            from: Some(from),
-            attacker_species: None,
-        }
-    }
-    /// `DamageSources.mace`: a player's smash attack.
-    pub fn mace(from: [f64; 3]) -> Self {
-        Self {
-            kind: DamageKind::MaceSmash,
-            attacker: Some(Who::Player),
-            from: Some(from),
-            attacker_species: None,
-        }
-    }
-    /// `DamageSources.spear`: a player's stab with a spear.
-    pub fn spear(from: [f64; 3]) -> Self {
-        Self {
-            kind: DamageKind::Spear,
-            attacker: Some(Who::Player),
-            from: Some(from),
-            attacker_species: None,
-        }
-    }
-    /// `DamageSources.indirectMagic(potion, owner)`: `attacker` is the owner
-    /// (none for a dispenser's potion), `from` the potion's position, which
-    /// the knockback pushes away from.
-    pub fn indirect_magic(attacker: Option<Who>, from: [f64; 3]) -> Self {
-        Self {
-            kind: DamageKind::IndirectMagic,
-            attacker,
-            from: Some(from),
-            attacker_species: None,
-        }
-    }
-    /// `DamageSources.fireworks(rocket, owner)`: `attacker` is the owner
-    /// (none for a rocket nobody fired), `from` the rocket's position, which
-    /// the knockback pushes away from (`calculateHorizontalHurtKnockbackDirection`).
-    pub fn fireworks(attacker: Option<Who>, from: [f64; 3]) -> Self {
-        Self {
-            kind: DamageKind::Fireworks,
-            attacker,
-            from: Some(from),
-            attacker_species: None,
-        }
-    }
-    pub fn mob(id: u32, from: [f64; 3]) -> Self {
-        Self {
-            kind: DamageKind::MobAttack,
-            attacker: Some(Who::Mob(id)),
-            from: Some(from),
-            attacker_species: None,
-        }
-    }
-    pub fn with_species(mut self, species: Species) -> Self {
-        self.attacker_species = Some(species);
-        self
-    }
-    /// DamageTypeTags.PANIC_CAUSES
-    pub fn causes_panic(&self) -> bool {
-        if let DamageKind::Named(named) = self.kind {
-            return named.has(NamedDamage::PANIC_CAUSES);
-        }
-        !matches!(
-            self.kind,
-            DamageKind::Fall
-                | DamageKind::Drown
-                | DamageKind::DryOut
-                | DamageKind::Generic
-                | DamageKind::InWall
-                | DamageKind::SweetBerryBush
-                | DamageKind::OutOfWorld
-                | DamageKind::FallingBlock
-                | DamageKind::FallingAnvil
-                | DamageKind::Cramming
-                | DamageKind::GenericKill
-                | DamageKind::OutsideBorder
-                | DamageKind::Spit
-                | DamageKind::Stalagmite
-                | DamageKind::Starve
-                | DamageKind::Campfire
-        )
-    }
-    /// DamageTypeTags.BYPASSES_ARMOR
-    pub fn bypasses_armor(&self) -> bool {
-        if let DamageKind::Named(named) = self.kind {
-            return named.has(NamedDamage::BYPASSES_ARMOR);
-        }
-        matches!(
-            self.kind,
-            DamageKind::Fall
-                | DamageKind::FlyIntoWall
-                | DamageKind::OnFire
-                | DamageKind::Drown
-                | DamageKind::Magic
-                | DamageKind::IndirectMagic
-                | DamageKind::InWall
-                | DamageKind::Generic
-                | DamageKind::SonicBoom
-                | DamageKind::Freeze
-                | DamageKind::OutOfWorld
-                | DamageKind::Cramming
-                | DamageKind::GenericKill
-                | DamageKind::OutsideBorder
-                | DamageKind::Stalagmite
-                | DamageKind::Starve
-                | DamageKind::Wither
-        )
-    }
-    pub fn is_fire(&self) -> bool {
-        if let DamageKind::Named(named) = self.kind {
-            return named.has(NamedDamage::IS_FIRE);
-        }
-        matches!(
-            self.kind,
-            DamageKind::OnFire
-                | DamageKind::InFire
-                | DamageKind::Campfire
-                | DamageKind::HotFloor
-                | DamageKind::Lava
-                | DamageKind::Fireball
-                | DamageKind::SulfurCubeHot
-        )
-    }
-    /// DamageTypeTags.NO_KNOCKBACK
-    pub fn no_knockback(&self) -> bool {
-        if let DamageKind::Named(named) = self.kind {
-            return named.has(NamedDamage::NO_KNOCKBACK);
-        }
-        matches!(
-            self.kind,
-            DamageKind::Explosion
-                | DamageKind::Fall
-                | DamageKind::FlyIntoWall
-                | DamageKind::OnFire
-                | DamageKind::InFire
-                | DamageKind::Campfire
-                | DamageKind::HotFloor
-                | DamageKind::Lava
-                | DamageKind::Drown
-                | DamageKind::DryOut
-                | DamageKind::Magic
-                | DamageKind::Cactus
-                | DamageKind::SweetBerryBush
-                | DamageKind::Generic
-                | DamageKind::InWall
-                | DamageKind::Freeze
-                | DamageKind::OutOfWorld
-                | DamageKind::LightningBolt
-                | DamageKind::Cramming
-                | DamageKind::GenericKill
-                | DamageKind::OutsideBorder
-                | DamageKind::Stalagmite
-                | DamageKind::Starve
-                | DamageKind::SulfurCubeHot
-                | DamageKind::Wither
-                | DamageKind::Spear
-        )
-    }
-    pub fn is_projectile(&self) -> bool {
-        if let DamageKind::Named(named) = self.kind {
-            return named.has(NamedDamage::IS_PROJECTILE);
-        }
-        matches!(
-            self.kind,
-            DamageKind::Arrow
-                | DamageKind::Thrown
-                | DamageKind::Fireball
-                | DamageKind::WindCharge
-                | DamageKind::WitherSkull
-        )
-    }
 }
 /// Per-mob attribute base values (the type's defaults unless changed).
 #[derive(Clone, Copy, Debug)]
@@ -3399,6 +3201,10 @@ impl Mob {
         armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
         player_uuid: Option<[i32; 4]>,
     ) -> bool {
+        let mut source = source;
+        if source.attacker == Some(Who::Player) && player_uuid.is_some() {
+            source.attacker_uuid = player_uuid;
+        }
         axolotl::before_damage(self, amount, &source);
         raider::note_hurt(self);
         // SulfurCube.hurtServer: the priming and a block's immune knockback
@@ -5338,6 +5144,7 @@ mod fire_resistance_damage_tests {
             attacker: Some(Who::Player),
             from: None,
             attacker_species: None,
+            attacker_uuid: None,
         };
         assert!(mob.damage(1.0, source));
         assert_eq!(mob.health, 10.0);
@@ -5401,6 +5208,7 @@ mod magic_absorb_tests {
             attacker: Some(Who::Player),
             from: Some([4.0, 2.0, 3.0]),
             attacker_species: None,
+            attacker_uuid: None,
         };
         let sounds = |m: &Mob| -> Vec<(&'static str, [f64; 3], f32, f32)> {
             m.outbox
@@ -5468,6 +5276,7 @@ mod magic_absorb_tests {
             attacker: Some(Who::Mob(m.id)),
             from: None,
             attacker_species: Some(Species::Witch),
+            attacker_uuid: None,
         };
         m.damage(20.0, own);
         assert_eq!(m.health, 10.0);
@@ -5557,6 +5366,7 @@ mod armor_hurt_tests {
             attacker: None,
             from: None,
             attacker_species: None,
+            attacker_uuid: None,
         };
         let mut m = horse();
         m.extra.body = Some("minecraft:diamond_horse_armor".into());
@@ -6537,3 +6347,6 @@ mod hidden_speed_mob_tick_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod damage_identity_tests;

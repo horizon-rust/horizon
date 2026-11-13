@@ -232,6 +232,8 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
+        let attacker_uuid =
+            self.damage_attacker_uuid(owner.map(horizon_client::mobs::Who::Mob), None);
         for index in 0..self.mobs.len() {
             let m = &mut self.mobs[index];
             let id = m.id;
@@ -250,6 +252,7 @@ impl Game<'_> {
                         attacker: owner.map(horizon_client::mobs::Who::Mob),
                         from: Some(f.pos),
                         attacker_species: None,
+                        attacker_uuid,
                     },
                 )
                 && owner.is_some()
