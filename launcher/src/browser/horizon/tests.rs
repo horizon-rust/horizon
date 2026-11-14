@@ -647,3 +647,31 @@ fn a_picked_version_is_kept_until_it_is_cleared() {
     fs::write(home.join(CHOSEN), b"not json").unwrap();
     assert!(chosen(&home).is_empty(), "an unreadable file picks nothing");
 }
+
+#[test]
+fn an_installed_mod_stands_by_its_own_pin_not_the_registrys() {
+    let plays = crate::native_fit::Plays {
+        revision: "9f42064c11efe7ef3e5ed2baad7ddc2a3b36eea0".into(),
+        hooks: Some(400),
+    };
+    let pins: Vec<(String, String)> = ["flair", "freecam_plus", "skins_3d"]
+        .iter()
+        .map(|id| (id.to_string(), plays.revision.clone()))
+        .collect();
+    let (fits, line) = installed_fit("flair", &plays, &pins).unwrap();
+    assert!(fits);
+    assert_eq!(
+        line,
+        crate::native_fit::describe(&crate::native_fit::Fit::Fits, &plays)
+    );
+    let older = vec![
+        (
+            "flair".to_string(),
+            "66f3981f522b24c250b21523a70080965b940424".to_string(),
+        ),
+        ("skins_3d".to_string(), plays.revision.clone()),
+    ];
+    let (fits, _) = installed_fit("flair", &plays, &older).unwrap();
+    assert!(!fits);
+    assert_eq!(installed_fit("zoom", &plays, &pins), None);
+}
