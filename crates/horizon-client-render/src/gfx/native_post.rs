@@ -459,7 +459,7 @@ impl NativeFrame {
         lights: super::block_light::LightTable,
         pbr: Option<&[wgpu::Texture; 2]>,
         (api, linear): (Api, bool),
-    ) -> Self {
+    ) -> Result<Self, String> {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Native shader pack frame"),
             size: size_of::<FrameInputs>() as u64,
@@ -503,10 +503,12 @@ impl NativeFrame {
         ];
         entries.extend(block_light_entries);
         entries.extend(pack_texture_entries(textures.len()));
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Native shader pack frame"),
-            entries: &entries,
-        });
+        let layout = super::native_pack::checked(device, || {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Native shader pack frame"),
+                entries: &entries,
+            })
+        })?;
         let surface = surface_target(device, [1, 1]);
         let surface_view = surface.create_view(&Default::default());
         let opaque_depth = depth_copy(device, [1, 1]);
@@ -564,7 +566,7 @@ impl NativeFrame {
             &block_light,
             &pbr,
         );
-        Self {
+        Ok(Self {
             textures,
             block_light,
             pbr,
@@ -591,7 +593,7 @@ impl NativeFrame {
             start: std::time::Instant::now(),
             frames: 0,
             wetness: (0.0, None),
-        }
+        })
     }
 
     /// What the shadow camera sees this frame, for the renderer's shadow lists.
@@ -1036,62 +1038,65 @@ impl NativePost {
             .extend((0..targets.len() as u32).map(|j| {
                 texture_entry(horizon_shader_api::stages::POST_TARGET_BINDING + j, float)
             }));
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Native shader pack post"),
-            entries: &entries,
-        });
+        let layout = super::native_pack::checked(device, || {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Native shader pack post"),
+                entries: &entries,
+            })
+        })?;
         let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
         groups[GROUP as usize] = Some(&layout);
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Native shader pack post"),
-            bind_group_layouts: &groups,
-            ..Default::default()
-        });
+        let pipeline_layout = super::native_pack::checked(device, || {
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Native shader pack post"),
+                bind_group_layouts: &groups,
+                ..Default::default()
+            })
+        })?;
         let count = stages.len();
         let mut passes = Vec::with_capacity(count);
         for (i, stage) in stages.into_iter().enumerate() {
             let present = present_constants(&stage.module, constants);
-            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(&stage.label),
-                source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(stage.module)),
-            });
-            let options = wgpu::PipelineCompilationOptions {
-                constants: &present,
-                ..Default::default()
-            };
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(&stage.label),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("horizon_vs_post"),
-                    compilation_options: options.clone(),
-                    buffers: &[],
-                },
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some("horizon_fs_post"),
-                    compilation_options: options,
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: if plan[i].writes == Writes::Screen && frame.decoder.is_none() {
-                            format
-                        } else {
-                            INTERMEDIATE
-                        },
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-            if let Some(e) = pollster::block_on(scope.pop()) {
-                return Err(format!("{}: {e}", stage.file));
-            }
+            let pipeline = super::native_pack::checked(device, || {
+                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some(&stage.label),
+                    source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(stage.module)),
+                });
+                let options = wgpu::PipelineCompilationOptions {
+                    constants: &present,
+                    ..Default::default()
+                };
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(&stage.label),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("horizon_vs_post"),
+                        compilation_options: options.clone(),
+                        buffers: &[],
+                    },
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("horizon_fs_post"),
+                        compilation_options: options,
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: if plan[i].writes == Writes::Screen && frame.decoder.is_none() {
+                                format
+                            } else {
+                                INTERMEDIATE
+                            },
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            })
+            .map_err(|e| format!("{}: {e}", stage.file))?;
             passes.push((stage.label, pipeline));
         }
         let display = match &frame.decoder {
@@ -1104,21 +1109,19 @@ impl NativePost {
                 let module = naga::front::wgsl::parse_str(&source)
                     .map_err(|e| format!("{file}: {}", e.emit_to_string(&source)))?;
                 let present = present_constants(&module, constants);
-                let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("Tonemap"),
-                    source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
-                });
-                let entries = (
-                    Some(&pipeline_layout),
-                    "horizon_vs_tonemap",
-                    "horizon_fs_tonemap",
-                );
-                let pipeline =
-                    fullscreen_pipeline(device, "Tonemap", &module, entries, format, &present);
-                if let Some(e) = pollster::block_on(scope.pop()) {
-                    return Err(format!("{file}: {e}"));
-                }
+                let pipeline = super::native_pack::checked(device, || {
+                    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("Tonemap"),
+                        source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+                    });
+                    let entries = (
+                        Some(&pipeline_layout),
+                        "horizon_vs_tonemap",
+                        "horizon_fs_tonemap",
+                    );
+                    fullscreen_pipeline(device, "Tonemap", &module, entries, format, &present)
+                })
+                .map_err(|e| format!("{file}: {e}"))?;
                 Some(Display {
                     decoder: decoder.clone(),
                     label: tonemap.map(|s| s.label.clone()),
@@ -1778,7 +1781,8 @@ mod tests {
             Default::default(),
             None,
             (Api::V0_1, false),
-        );
+        )
+        .unwrap();
         frame.pack.still_ticks = Some(47_811);
         frame.pack.eye_light = [0, 15];
         frame.pack.rain = 1.0;
@@ -1829,6 +1833,7 @@ mod tests {
                 None,
                 (Api::V0_1, false),
             )
+            .unwrap()
         };
         let (mut used, mut fresh) = (new(), new());
         frame.pack.rain = 1.0;
@@ -1894,7 +1899,8 @@ file = \"c.wgsl\"
             Default::default(),
             None,
             (Api::V0_1, false),
-        );
+        )
+        .unwrap();
         let mut post = NativePost::new(
             &device,
             report.stages,
@@ -2007,7 +2013,8 @@ file = \"c.wgsl\"
             Default::default(),
             None,
             (Api::V0_1, false),
-        );
+        )
+        .unwrap();
         queue.write_buffer(
             &frame.buffer,
             0,
@@ -2135,7 +2142,8 @@ file = \"b.wgsl\"
             Default::default(),
             None,
             (Api::V0_1, false),
-        );
+        )
+        .unwrap();
         let mut post = NativePost::new(
             &device,
             report.stages,
@@ -2255,7 +2263,8 @@ file = \"b.wgsl\"
             Default::default(),
             None,
             (Api::V0_1, false),
-        );
+        )
+        .unwrap();
         let mut post = NativePost::new(
             &device,
             report.stages,
@@ -2590,7 +2599,8 @@ file = \"b.wgsl\"
                 Default::default(),
                 None,
                 (Api::V0_2, false),
-            );
+            )
+            .unwrap();
             let inputs = FrameInputs {
                 headroom: 1.0,
                 ..Default::default()
@@ -2674,7 +2684,8 @@ file = \"b.wgsl\"
             Default::default(),
             None,
             (Api::V0_2, false),
-        );
+        )
+        .unwrap();
         let fields = |i: &FrameInputs| (i.hdr, i.headroom, i.paper_white, i.peak, i.black_level);
         assert_eq!(
             fields(&native.next_inputs(&frame, [4, 4], SDR)),
@@ -2744,7 +2755,8 @@ file = \"b.wgsl\"
                 Default::default(),
                 None,
                 (Api::V0_2, false),
-            );
+            )
+            .unwrap();
             let inputs = FrameInputs {
                 hdr: u32::from(hdr),
                 headroom: if hdr { headroom } else { 1.0 },

@@ -109,11 +109,13 @@ fn build(
     let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
     groups[0] = Some(globals);
     groups[GROUP as usize] = Some(&frame.layout);
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Native shader pack sky"),
-        bind_group_layouts: &groups,
-        ..Default::default()
-    });
+    let layout = super::native_pack::checked(device, || {
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Native shader pack sky"),
+            bind_group_layouts: &groups,
+            ..Default::default()
+        })
+    })?;
     Ok((module, layout))
 }
 
@@ -130,22 +132,21 @@ impl NativeSky {
     ) -> Result<Self, String> {
         let (module, layout) = build(device, globals, frame, stage)?;
         let present = present_constants(&module, constants);
-        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(&stage.label),
-            source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
-        });
-        let pipeline = pipeline(
-            device,
-            &layout,
-            &module,
-            "horizon_sky_fs_pack",
-            &present,
-            format,
-        );
-        if let Some(e) = pollster::block_on(scope.pop()) {
-            return Err(format!("{}: {e}", stage.file));
-        }
+        let pipeline = super::native_pack::checked(device, || {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(&stage.label),
+                source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+            });
+            pipeline(
+                device,
+                &layout,
+                &module,
+                "horizon_sky_fs_pack",
+                &present,
+                format,
+            )
+        })
+        .map_err(|e| format!("{}: {e}", stage.file))?;
         Ok(Self {
             pipeline,
             label: stage.label.clone(),
@@ -263,7 +264,8 @@ mod tests {
             Default::default(),
             None,
             (horizon_shader_api::Api::V0_1, false),
-        );
+        )
+        .unwrap();
         queue.write_buffer(
             &frame.buffer,
             0,

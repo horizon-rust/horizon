@@ -479,7 +479,8 @@ impl<'a> Draw<'a> {
             Default::default(),
             None,
             (api, false),
-        );
+        )
+        .unwrap();
         self.queue.write_buffer(
             &frame.buffer,
             0,
