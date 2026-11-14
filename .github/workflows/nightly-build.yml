@@ -148,8 +148,70 @@ jobs:
       developer_id: false
       trusted: false  # it can hold unreviewed pull requests: their own cache key, never saved, not the release runner
 
+  native_cache:
+    # The compiled crates of the launcher's own native-mod build (launcher/src/native_mods.rs, no mods), per platform,
+    # so a player's launcher starts from them and compiles only what its mods change (docs/native-mods.md, "Nightly
+    # cache"). GitHub's own runners, no secret, read-only token, like `build`: it compiles the same unreviewed merge.
+    # Its failure or timeout never holds the Nightly: `sign` takes whichever archives were built.
+    needs: pick
+    if: needs.pick.outputs.build == 'true'
+    name: native cache ${{ matrix.triple }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - triple: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            timeout: 90
+          - triple: x86_64-pc-windows-gnu
+            os: windows-latest
+            timeout: 120
+          - triple: aarch64-apple-darwin
+            os: macos-14
+            timeout: 90
+          - triple: x86_64-apple-darwin
+            os: macos-15-intel
+            timeout: 90
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Files as the launcher's source has them (no CRLF)
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.pick.outputs.sha }}
+          persist-credentials: false
+          clean: true
+      - name: ALSA and udev headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev zstd
+      - name: zstd
+        if: runner.os == 'macOS'
+        run: command -v zstd > /dev/null || brew install zstd
+      - name: The archive of the compiled crates
+        # HORIZON_VERSION and HORIZON_NIGHTLY are not set here on purpose (cargo tracks them), and the script
+        # drops them and the runner's cargo and rustup settings anyway.
+        env:
+          SHA: ${{ needs.pick.outputs.sha }}
+        run: python3 tools/ci/native_cache.py --commit "$SHA" --triple "${{ matrix.triple }}" --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-cache-${{ matrix.triple }}
+          path: dist/native-cache-${{ matrix.triple }}-fast.tar.zst
+          if-no-files-found: error
+          compression-level: 0  # already zstd
+          retention-days: 3
+
   sign:
-    needs: [pick, build]
+    needs: [pick, build, native_cache]
+    # The cache archives are optional: whatever they did, the Nightly's own builds decide.
+    if: ${{ !cancelled() && needs.pick.result == 'success' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # The key's only job: main's sign_release.sh hashes the archives and signs with the runner's OpenSSL.
@@ -164,6 +226,12 @@ jobs:
         with:
           path: dist
           pattern: horizon-*
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        # Whichever native-cache-<triple>-fast.tar.zst were built (none is fine).
+        with:
+          path: dist
+          pattern: native-cache-*
           merge-multiple: true
       - name: Sign the checksums for the nightly channel (SHA256SUMS.sig) and for this build (SHA256SUMS.v2.sig)
         # SHA256SUMS.sig is for launchers from before v2 (signed for "nightly"); SHA256SUMS.v2.sig is signed for
@@ -180,8 +248,12 @@ jobs:
           else echo "::warning::horizon-windows-arm64.zip is missing: SHA256SUMS goes out without it"; fi
           musl=(); if [[ -f dist/horizon-linux-musl-x86_64.tar.gz ]]; then musl=(dist/horizon-linux-musl-x86_64.tar.gz)
           else echo "::warning::horizon-linux-musl-x86_64.tar.gz is missing: SHA256SUMS goes out without it"; fi
+          # The native-mod cache archives (docs/native-mods.md, "Nightly cache"): each one built is signed in the same
+          # SHA256SUMS as the game files, so launchers verify it as they verify those.
+          cache=(); for f in dist/native-cache-*-fast.tar.zst; do if [[ -f "$f" ]]; then cache+=("$f"); fi; done
+          echo "::notice::${#cache[@]} native cache archive(s) go into SHA256SUMS"
           bash tools/ci/sign_release.sh nightly dist/horizon-linux-x86_64.tar.gz dist/horizon-windows-x64.zip \
-            ${arm64[@]+"${arm64[@]}"} ${musl[@]+"${musl[@]}"} \
+            ${arm64[@]+"${arm64[@]}"} ${musl[@]+"${musl[@]}"} ${cache[@]+"${cache[@]}"} \
             dist/horizon-macos-arm64.zip dist/horizon-macos-x64.zip dist/horizon-server-linux-x86_64.tar.gz \
             dist/horizon-source.tar.gz
       - uses: actions/upload-artifact@v7
@@ -264,6 +336,14 @@ jobs:
           fi
           # A pre-release, never GitHub's latest: the latest stays the last vX.Y.Z, which launchers and servers from
           # before the Nightly-only switch keep (they don't read Nightlies).
+          # The native-mod cache archives SHA256SUMS lists (a file there is signed; one dist holds beside it is not).
+          cache=()
+          while read -r _ file; do
+            file=${file#\*}
+            if [[ "$file" == native-cache-*-fast.tar.zst ]]; then
+              cache+=("dist/$file#Compiled crates for native mods (Nightly): ${file#native-cache-}")
+            fi
+          done < dist/SHA256SUMS
           gh release create nightly --prerelease --latest=false --target "$SHA" \
             --title "Nightly $DATE · ${SHA:0:7}" --notes-file dist/nightly-notes.md \
             "dist/horizon-linux-x86_64.tar.gz#Game files the launcher installs (Nightly): Linux (horizon-linux-x86_64.tar.gz)" \
@@ -274,6 +354,7 @@ jobs:
             "dist/horizon-macos-x64.zip#Game files the launcher installs (Nightly): macOS on Intel (horizon-macos-x64.zip)" \
             "dist/horizon-server-linux-x86_64.tar.gz#Nightly dedicated server for Linux (horizon-server-linux-x86_64.tar.gz)" \
             "dist/horizon-source.tar.gz#Source of this Nightly, commit ${SHA:0:7} (horizon-source.tar.gz; kept for good as the tag $SOURCE_TAG)" \
+            ${cache[@]+"${cache[@]}"} \
             dist/SHA256SUMS "${signature[@]}" dist/smoke-test.json
           python3 tools/ci/nightly.py keep-source "$SHA" "$DATE"
           python3 tools/ci/nightly.py prune --days 7

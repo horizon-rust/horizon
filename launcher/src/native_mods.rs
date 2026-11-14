@@ -33,6 +33,7 @@ mod diagnostics;
 mod inject;
 mod inject_cache;
 mod isolate;
+mod prebuilt;
 mod source;
 
 use source::{
@@ -378,7 +379,8 @@ fn last_record(target: Target, profile: Profile, platform: Option<&str>) -> Opti
     if let Some(platform) = platform {
         target_dir.push(platform);
     }
-    if !target_dir.join(profile.cargo().0).is_dir() {
+    // A folder a cleanup emptied holds no build, whatever its record says.
+    if !prebuilt::has_output(&target_dir.join(profile.cargo().0)) {
         return None;
     }
     read_records(&records_path()).remove(&record_key(target, profile, platform))
@@ -1470,6 +1472,8 @@ pub fn digest<'a>(files: impl Iterator<Item = (&'a str, &'a [u8])>) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
     Rust(f32),
+    /// The Nightly's compiled crates downloading.
+    Prebuilt(f32),
     Tool,
     Source(String),
     Mixins,
@@ -1513,6 +1517,10 @@ impl Step {
                     ("version", rust_toolchain::VERSION),
                     ("done", &format!("{:.0}", done * 100.0)),
                 ],
+            ),
+            Self::Prebuilt(done) => trf(
+                "Downloading compiled game crates: {done}%",
+                &[("done", &format!("{:.0}", done * 100.0))],
             ),
             Self::Tool => tr("Building horizon-mixins (once)").into(),
             Self::Source(revision) => trf(
@@ -2353,15 +2361,37 @@ fn pipeline(
         }
         // Absolute: the compiler runs from elsewhere (`compile`).
         let stage = stage_dir(&real)?;
+        let mut target_dir = real.join("target");
+        if let Some(cache_dir) = platform.cache_dir {
+            target_dir.push(cache_dir);
+        }
+        // A first build of a Nightly's own commit starts from its compiled crates when it can:
+        // before the stage is synced, which stamps only the files the mods change with a new time.
+        if target == Target::Client
+            && platform.cache_dir.is_none()
+            && profile.cargo().0 == "fast"
+            && profile_of(&source, profile) != Profile::Release
+            && prebuilt::install(
+                &rust,
+                origin,
+                &revision,
+                &source,
+                &fresh,
+                &stage,
+                &target_dir,
+                &progress,
+            )
+        {
+            let plan =
+                Plan::Incremental(vec!["the Nightly's compiled crates, then the mods".into()]);
+            progress(Step::Plan(plan.clone(), profile));
+            built.plan = plan;
+        }
         sync(&fresh, &stage)?;
         let _ = fs::remove_dir_all(&fresh);
         if crates::any(&stage) || has_api {
             progress(Step::Crates);
             lock_crates(&rust, &source, &stage, &mods)?;
-        }
-        let mut target_dir = real.join("target");
-        if let Some(cache_dir) = platform.cache_dir {
-            target_dir.push(cache_dir);
         }
         // A revision without `[profile.fast]` builds with `release`: the build says so.
         let compiled = profile_of(&stage, profile);

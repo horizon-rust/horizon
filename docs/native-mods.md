@@ -38,6 +38,25 @@ It preserves lock files, refuses symbolic links and Windows junctions, and never
 versions, exported servers, instances, saves, mods, Rust toolchains or downloaded crates.
 
 
+### Nightly cache
+
+Each Nightly also carries, per platform, `native-cache-<triple>-fast.tar.zst` (`aarch64-apple-darwin`,
+`x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-gnu`; not Windows ARM64), the compiled crates of
+the launcher's own native build of that commit with no mods, so a launcher can start `native/target/fast` from it and
+compile only what the mods change. `tools/ci/native_cache.py` (job `native_cache` of `nightly-build.yml`) builds it
+the way the launcher does: the Rust the launcher pins (`launcher/src/rust_toolchain.rs`, and its MinGW-w64 on Windows),
+the commit's files without `.git`, a scrubbed environment (no `HORIZON_VERSION` or `HORIZON_NIGHTLY`, which Cargo
+tracks), and `cargo build --locked --profile fast --features horizon-client/mods -p horizon-official --bin
+horizon-official` from the filesystem root. The archive holds a top folder `fast/` with only `deps/`, `build/` and
+`.fingerprint/` (no `incremental/`, no final programs) and a top-level `native-cache.json`: `format` (1), `commit` (the
+Nightly's 40-hex commit), `triple`, `profile` (`fast`), `rustc` (`rustc -vV`), `cargo` (`cargo -V`), `package`,
+`features` and `cargo_lock_sha256`. Each archive is listed in the release's `SHA256SUMS`, which the `sign` job signs
+with the game files (`SHA256SUMS.sig`, `SHA256SUMS.v2.sig`), so a launcher verifies it like them. A launcher uses it
+only when `commit`, `triple`, `rustc` and `cargo_lock_sha256` match its build. Cargo goes by file times for the
+workspace's own crates: its files must be newer than the stage's (unpack or touch them after the stage is written),
+else those crates recompile. A failed or timed-out cache job leaves the Nightly without that platform's archive; it never holds the
+Nightly.
+
 ## Conditional item model properties
 
 A client mod supplies its own namespaced `minecraft:condition` property by implementing
@@ -2514,6 +2533,14 @@ the stage (`native/stage/`) is one folder for every build and the launcher write
 only the files whose content changed (Cargo goes by file times), switching mods on the same commit reuses the same
 `native/target/`, and the launcher removes `CARGO_INCREMENTAL` and `CARGO_BUILD_INCREMENTAL` from the build's
 environment. `release` has no incremental compilation (the release profile's own).
+
+**The Nightly's compiled crates.** A first build of a Nightly's own commit with `performance` or `dev` (nothing in
+`native/target/fast/`, or a cleanup emptied it) downloads `native-cache-<triple>-fast.tar.zst` from that Nightly's release
+first. It is listed in the release's signed SHA256SUMS and checked like the game's own binaries; its `native-cache.json`
+must name the same commit, triple, `fast` profile, `rustc -vV` and `Cargo.lock` as this build. The launcher unpacks `fast/`
+into `native/target/` and rewrites the stage from the commit's source with every file dated 2001, so only the files the
+mods change get a new time and compile. A missing archive, no connection or any mismatch writes one line to the build log
+and the build compiles everything, as before. Not used for Windows ARM64, `release` or the server build.
 
 **Build status.** Before it starts, the build says which case it is, with the profile: "Up to date (no build needed)",
 "Incremental rebuild: mods X, Y" (or "Horizon commit a to b", "horizon-mixins"; compared with the last build in that

@@ -2837,6 +2837,7 @@ dependencies = [
  "quote",
  "raw-window-handle",
  "reqwest",
+ "ruzstd",
  "security-framework 3.7.0",
  "semver",
  "serde",
