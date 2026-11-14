@@ -7,6 +7,8 @@
 //! the next) and the right stick moves through the suggestions.
 //! It only produces [`Output`]s; the game feeds them to the focused field
 //! the way typed keys reach it.
+use std::cell::Cell;
+
 use crate::gamepad::{Button, MenuJob};
 use crate::hud_kit::hint::HintRow;
 use crate::pad_glyph::{Glyph, Glyphs};
@@ -46,6 +48,14 @@ enum Key {
     NewLine,
     Done,
 }
+
+/// A key's width unit, the gap between keys and a key's height, in dp.
+const UNIT: f32 = 50.0;
+const GAP: f32 = 6.0;
+const KEY_H: f32 = 38.0;
+/// The five rows of keys' width and height.
+const KEYS_W: f32 = 10.0 * UNIT + 9.0 * GAP;
+const KEYS_H: f32 = 5.0 * KEY_H + 4.0 * GAP;
 
 /// A row of keys and their widths in key units (every row is 10 wide).
 type Row = &'static [(Key, f32)];
@@ -250,6 +260,10 @@ pub struct Keyboard {
     suggests: bool,
     /// The right stick has picked and not come back to rest.
     stick_out: bool,
+    /// The keys' top left corner (dp) where [`Self::draw`] last put them, for
+    /// [`Self::touch`]: the panel's height follows its hint lines, so only a
+    /// drawn frame knows. `None` until drawn.
+    drawn: Cell<Option<[f32; 2]>>,
 }
 impl Default for Keyboard {
     fn default() -> Self {
@@ -263,6 +277,7 @@ impl Default for Keyboard {
             lines: false,
             suggests: false,
             stick_out: false,
+            drawn: Cell::new(None),
         }
     }
 }
@@ -308,6 +323,17 @@ impl Keyboard {
     fn span(row: Row, col: usize) -> (f32, f32) {
         let left: f32 = row[..col].iter().map(|k| k.1).sum();
         (left, row[col].1)
+    }
+    /// The key at `col` of row `r` (`row`) as `[x, y, w, h]` in dp, with the
+    /// keys' top left corner at `origin`.
+    fn key_rect(row: Row, r: usize, col: usize, origin: [f32; 2]) -> [f32; 4] {
+        let (left, units) = Self::span(row, col);
+        [
+            origin[0] + left * (UNIT + GAP),
+            origin[1] + r as f32 * (KEY_H + GAP),
+            units * UNIT + (units - 1.0) * GAP,
+            KEY_H,
+        ]
     }
     fn key(&self) -> Key {
         self.rows()[self.row][self.col].0
@@ -433,20 +459,40 @@ impl Keyboard {
         })
     }
 
+    /// The key under `p` (dp, where the last [`Self::draw`] put the keys),
+    /// pressed as A would press it: what it types, if anything; nothing
+    /// before the keyboard is drawn. Touch typing.
+    pub fn touch(&mut self, p: [f32; 2]) -> Option<Output> {
+        let origin = self.drawn.get()?;
+        for (r, row) in self.rows().iter().enumerate() {
+            for c in 0..row.len() {
+                let [x, y, w, h] = Self::key_rect(row, r, c, origin);
+                if (x..x + w).contains(&p[0]) && (y..y + h).contains(&p[1]) {
+                    (self.row, self.col) = (r, c);
+                    return self.press();
+                }
+            }
+        }
+        None
+    }
+
+    /// The keys' top left corner (dp) as the last frame drew them.
+    #[cfg(test)]
+    pub(crate) fn keys_at(&self) -> Option<[f32; 2]> {
+        self.drawn.get()
+    }
+
     /// Draw the keyboard across the bottom of the screen, or the top when
     /// the field it types into is in the lower half.
     pub fn draw(&self, ui: &mut Ui, at_top: bool, glyphs: Glyphs) {
-        const UNIT: f32 = 50.0;
-        const GAP: f32 = 6.0;
-        const KEY_H: f32 = 38.0;
         const LABEL_PAD: f32 = 4.0;
-        let width = 10.0 * UNIT + 9.0 * GAP;
+        let width = KEYS_W;
         let hints = self.hint_lines(ui, glyphs, width);
         let line_h = HINT_LINE * ui_theme::small();
-        let keys_h = 5.0 * KEY_H + 4.0 * GAP;
-        let height = PANEL_PAD + keys_h + HINT_GAP + hints.len() as f32 * line_h + PANEL_PAD;
+        let height = PANEL_PAD + KEYS_H + HINT_GAP + hints.len() as f32 * line_h + PANEL_PAD;
         let x0 = ((ui.w - width) / 2.0).round();
         let y0 = if at_top { 16.0 } else { ui.h - height - 16.0 };
+        self.drawn.set(Some([x0, y0]));
         ui.rounded(
             x0 - PANEL_PAD,
             y0 - PANEL_PAD,
@@ -464,11 +510,8 @@ impl Keyboard {
             color::border(),
         );
         for (r, row) in self.rows().iter().enumerate() {
-            let y = y0 + r as f32 * (KEY_H + GAP);
-            for (i, (key, units)) in row.iter().enumerate() {
-                let (left, _) = Self::span(row, i);
-                let x = x0 + left * (UNIT + GAP);
-                let w = units * UNIT + (units - 1.0) * GAP;
+            for (i, (key, _)) in row.iter().enumerate() {
+                let [x, y, w, _] = Self::key_rect(row, r, i, [x0, y0]);
                 let focused = r == self.row && i == self.col;
                 let lit = matches!(key, Key::Shift) && (self.shift || self.caps)
                     || matches!(key, Key::Layer) && self.symbols;
@@ -507,7 +550,7 @@ impl Keyboard {
                 );
             }
         }
-        let top = y0 + keys_h + HINT_GAP;
+        let top = y0 + KEYS_H + HINT_GAP;
         for (i, line) in hints.iter().enumerate() {
             // Only a line of one word wider than the panel is still too wide: smaller, to fit.
             let wide = ui.measure(Face::Regular, ui_theme::small(), line);
