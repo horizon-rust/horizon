@@ -2889,11 +2889,6 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   3 accepted, 4 downloaded, 5 invalid URL, 6 failed reload, 7 discarded). It only hears. The pack a dedicated server
   offers during the configuration is answered before the player has joined and is not heard. The player's state is
   swapped in, so `native_tell` works.
-- **`native_projectile_hit(owner, kind, hit_entity, pos, cancel)`**: a projectile a server player launched (arrow,
-  snowball, egg, thrown trident, ender pearl, ...) hit an entity (`hit_entity`) or a block at `pos`, heard before any
-  of its effects (NeoForge's `ProjectileImpactEvent`). Set `cancel` and it does nothing: it vanishes, a thrown trident
-  flies on through. The shooter's state is swapped in, so `native_tell` answers them. Mobs' and the host's
-  projectiles are not heard, nor are fishing bobbers and firework rockets.
 - **`native_tnt_primed(player, pos, cancel)`**: TNT at `pos` is about to be lit by a flint and steel or fire charge
   (`player` is whoever clicked, whose state is swapped in), fire, a redstone signal, an arrow or a dispenser (`player` is
   None). Set `cancel` and it is not primed: the block stays, or is put back if fire or a signal had already taken it
@@ -4148,8 +4143,10 @@ while no mod asks for it.
   key, value, flags)`; set `handled` to skip the block's own random tick.
 - **`native_tick_block(ticks, dimension, pos, state, handled)`** (API 34, on `GameLevel`): a due scheduled tick of a block
   that is still there (`ServerLevel.tickBlock`), before its own `tick`; the same contract as `native_random_tick`.
-- **`native_explosion_detonate(dimension, center, blocks)`** (API 22): the positions an explosion is about to break,
-  before any is hit; take out the ones to spare. Entities are hurt as before.
+- **`native_explosion_detonate(dimension, center, source, blocks)`** (API 22): the positions an explosion is about to break,
+  before any is hit; take out the ones to spare. Entities are hurt as before. `source` is the entity that exploded as
+  `Some((id, kind))` when the engine knows it (`minecraft:tnt`, `minecraft:tnt_minecart`, `minecraft:creeper`,
+  `minecraft:wither`, `minecraft:fireball` or `minecraft:end_crystal`), and `None` for the other blasts.
 - **`native_explosion_knockback(dimension, center, blocks, entity, knockback_velocity)`**: a server explosion's
   calculated velocity, before it is added to the entity. Replace `knockback_velocity` to change the push;
   `entity` is None for a player, whom `native_acting_player` names. The player packet uses the same replacement. Wind bursts are heard too.
