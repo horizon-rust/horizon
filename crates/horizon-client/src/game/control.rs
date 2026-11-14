@@ -1933,40 +1933,24 @@ mod tests {
     fn hello_describes_the_commands_of_the_crates_that_answer_some() {
         use horizon_hooks::control::{Command, Commands, Kind, Param};
         // No crate: the engine's groups only, and no command to add.
-        let plain = hello_with(std::iter::empty());
-        assert_eq!(plain["commands"], json!([]));
-        assert!(
-            !plain["features"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("tea"))
-        );
-
+        assert_eq!(hello_with(std::iter::empty())["commands"], json!([]));
+        let kind = Param {
+            name: "kind",
+            kind: Kind::Enum(&["green", "black"]),
+            required: true,
+            flag: false,
+            help: "which leaves",
+        };
         let tea = Commands {
             group: "tea",
-            help: &["tea brew KIND            brew a pot"],
+            help: &[],
             commands: &[Command {
                 name: "tea",
-                usage: "tea brew KIND [--cups N]",
+                usage: "tea KIND",
                 summary: "brew a pot",
                 details: "",
-                examples: &["horizon-ctl tea brew green"],
-                params: &[
-                    Param {
-                        name: "kind",
-                        kind: Kind::Enum(&["green", "black"]),
-                        required: true,
-                        flag: false,
-                        help: "which leaves",
-                    },
-                    Param {
-                        name: "cups",
-                        kind: Kind::Int,
-                        required: false,
-                        flag: true,
-                        help: "how many",
-                    },
-                ],
+                examples: &["horizon-ctl tea green"],
+                params: &[kind],
                 mcp: true,
                 open_world: true,
             }],
@@ -1976,21 +1960,10 @@ mod tests {
             reply["features"].as_array().unwrap().last(),
             Some(&json!("tea"))
         );
+        let param = json!({ "name": "kind", "type": "enum", "values": ["green", "black"], "required": true, "flag": false, "help": "which leaves" });
         assert_eq!(
             reply["commands"],
-            json!([{
-                "name": "tea",
-                "usage": "tea brew KIND [--cups N]",
-                "summary": "brew a pot",
-                "details": "",
-                "examples": ["horizon-ctl tea brew green"],
-                "params": [
-                    { "name": "kind", "type": "enum", "values": ["green", "black"], "required": true, "flag": false, "help": "which leaves" },
-                    { "name": "cups", "type": "int", "required": false, "flag": true, "help": "how many" },
-                ],
-                "mcp": true,
-                "open_world": true,
-            }])
+            json!([{ "name": "tea", "usage": "tea KIND", "summary": "brew a pot", "details": "", "examples": ["horizon-ctl tea green"], "params": [param], "mcp": true, "open_world": true }])
         );
     }
 

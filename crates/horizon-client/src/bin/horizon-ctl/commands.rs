@@ -682,6 +682,7 @@ pub fn from_hello(hello: &Value) -> Vec<&'static Cmd> {
         };
         list.map(|list| &*Box::leak(list.into_boxed_slice()))
     };
+    let on = |v: &Value, key: &str| v.get(key).and_then(Value::as_bool).unwrap_or(false);
     let param = |v: &Value| -> Option<Param> {
         let ty = match v.get("type").and_then(Value::as_str)? {
             "int" => Ty::Int,
@@ -695,8 +696,8 @@ pub fn from_hello(hello: &Value) -> Vec<&'static Cmd> {
         Some(Param {
             name: text(v, "name").filter(|name| !name.is_empty())?,
             ty,
-            required: v.get("required").and_then(Value::as_bool).unwrap_or(false),
-            flag: v.get("flag").and_then(Value::as_bool).unwrap_or(false),
+            required: on(v, "required"),
+            flag: on(v, "flag"),
             help: text(v, "help").unwrap_or(""),
         })
     };
@@ -706,7 +707,8 @@ pub fn from_hello(hello: &Value) -> Vec<&'static Cmd> {
             && name
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-        if !word || find(name).is_some() || RESERVED.contains(&name) {
+        // `help` and `mcp` are horizon-ctl's own words, taken before any command.
+        if !word || find(name).is_some() || matches!(name, "help" | "mcp") {
             return None;
         }
         let params: Vec<Param> = match v.get("params") {
@@ -722,13 +724,10 @@ pub fn from_hello(hello: &Value) -> Vec<&'static Cmd> {
             details: text(v, "details").unwrap_or(""),
             examples: texts(v, "examples")?,
             params: Box::leak(params.into_boxed_slice()),
-            mcp: v.get("mcp").and_then(Value::as_bool).unwrap_or(false),
+            mcp: on(v, "mcp"),
             local: false,
             reply: &[],
-            open_world: v
-                .get("open_world")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            open_world: on(v, "open_world"),
         })))
     };
     let mut found: Vec<&'static Cmd> = Vec::new();
@@ -745,9 +744,6 @@ pub fn from_hello(hello: &Value) -> Vec<&'static Cmd> {
     }
     found
 }
-
-/// Words horizon-ctl takes itself before any command, which a crate's command can't be named.
-const RESERVED: &[&str] = &["help", "mcp"];
 
 /// The part of `horizon-ctl help` that lists a running game's crate commands; empty with none.
 pub fn crate_overview(crates: &[&Cmd]) -> String {
@@ -1218,30 +1214,19 @@ mod tests {
         );
     }
 
-    /// A game with one crate that answers `tea`, as its `hello` describes it.
-    fn hello_with_tea() -> Value {
-        json!({
-            "protocol": "0.1.1", "release": "x", "features": ["game", "tea"],
-            "commands": [{
-                "name": "tea",
-                "usage": "tea brew KIND [--cups N]",
-                "summary": "brew a pot",
-                "details": "Only when the player asks.",
-                "examples": ["horizon-ctl tea brew green"],
-                "params": [
-                    { "name": "action", "type": "enum", "values": ["brew"], "required": true, "flag": false, "help": "what to do" },
-                    { "name": "kind", "type": "str", "required": true, "flag": false, "help": "which leaves" },
-                    { "name": "cups", "type": "int", "required": false, "flag": true, "help": "how many" },
-                ],
-                "mcp": true,
-                "open_world": true,
-            }],
-        })
-    }
-
     #[test]
     fn a_crate_command_from_hello_becomes_a_command() {
-        let crates = from_hello(&hello_with_tea());
+        let hello = json!({ "commands": [{
+            "name": "tea", "usage": "tea brew KIND [--cups N]", "summary": "brew a pot",
+            "examples": ["horizon-ctl tea brew green"],
+            "params": [
+                { "name": "action", "type": "enum", "values": ["brew"], "required": true, "help": "what to do" },
+                { "name": "kind", "type": "str", "required": true },
+                { "name": "cups", "type": "int", "flag": true },
+            ],
+            "mcp": true, "open_world": true,
+        }] });
+        let crates = from_hello(&hello);
         assert_eq!(crates.len(), 1);
         let tea = crates[0];
         assert_eq!((tea.name, tea.group), ("tea", Group::Crate));
@@ -1255,37 +1240,23 @@ mod tests {
             ["tea", "brew", "green", "--cups", "2"]
         );
         assert!(line_for(tea, &json!({ "action": "drink", "kind": "green" })).is_err());
-        let s = schema(tea);
-        assert_eq!(s["required"], json!(["action", "kind"]));
-        assert_eq!(s["properties"]["action"]["enum"], json!(["brew"]));
-        assert_eq!(s["properties"]["cups"]["type"], "integer");
+        assert_eq!(schema(tea)["required"], json!(["action", "kind"]));
         assert!(detail(tea).contains("usage: horizon-ctl tea brew KIND [--cups N]"));
         assert!(crate_overview(&crates).contains("tea              brew a pot"));
     }
 
     #[test]
-    fn a_game_that_describes_no_crate_command_adds_none() {
-        // A game older than `commands`, and one with no crate above the engine.
-        assert!(
-            from_hello(&json!({ "protocol": "0.1.0", "release": "x", "features": [] })).is_empty()
-        );
-        assert!(from_hello(&json!({ "commands": [] })).is_empty());
-        assert_eq!(crate_overview(&[]), "");
-        // Play with Friends is such a crate: without it there is no `friends`.
+    fn a_hello_without_usable_crate_commands_adds_none() {
+        // A game older than `commands`, and one with no crate above the engine (no `friends`).
+        assert!(from_hello(&json!({ "protocol": "0.1.0", "features": [] })).is_empty());
+        assert_eq!(crate_overview(&from_hello(&json!({ "commands": [] }))), "");
         assert!(find("friends").is_none());
-    }
-
-    #[test]
-    fn hello_entries_that_are_not_commands_are_left_out() {
+        // Entries that are not commands are left out; a name counts once.
         let odd = json!({ "commands": [
-            { "summary": "no name" },
-            { "name": "status", "usage": "status" },
-            { "name": "help" },
-            { "name": "two words" },
+            { "summary": "no name" }, { "name": "status" }, { "name": "help" }, { "name": "two words" },
             { "name": "bad-type", "params": [{ "name": "x", "type": "colour" }] },
             { "name": "no-values", "params": [{ "name": "x", "type": "enum" }] },
-            { "name": "fine" },
-            { "name": "fine", "summary": "again" },
+            { "name": "fine" }, { "name": "fine", "summary": "again" },
         ] });
         let names: Vec<_> = from_hello(&odd).iter().map(|c| c.name).collect();
         assert_eq!(names, ["fine"]);

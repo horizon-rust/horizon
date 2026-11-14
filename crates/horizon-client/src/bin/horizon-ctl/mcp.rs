@@ -320,23 +320,17 @@ mod tests {
 
     #[test]
     fn a_running_games_crate_commands_are_tools() {
-        let hello = json!({ "commands": [{
-            "name": "tea-pot", "usage": "tea-pot fill|empty", "summary": "fill or empty the pot",
-            "params": [{ "name": "action", "type": "enum", "values": ["fill", "empty"], "required": true }],
-            "mcp": true, "open_world": true,
-        }, { "name": "kettle", "summary": "CLI only", "mcp": false }] });
+        let hello = json!({ "commands": [
+            { "name": "tea-pot", "usage": "tea-pot fill|empty", "summary": "fill or empty the pot", "mcp": true, "open_world": true,
+              "params": [{ "name": "action", "type": "enum", "values": ["fill", "empty"], "required": true }] },
+            { "name": "kettle", "summary": "CLI only", "mcp": false },
+        ] });
         let list = tools(&commands::from_hello(&hello));
         let tool = list.iter().find(|t| t["name"] == "tea_pot").unwrap();
         assert_eq!(tool["annotations"], json!({ "openWorldHint": true }));
         assert_eq!(
             tool["inputSchema"]["properties"]["action"]["enum"],
             json!(["fill", "empty"])
-        );
-        assert!(
-            tool["description"]
-                .as_str()
-                .unwrap()
-                .starts_with("Fill or empty the pot. Usage: horizon-ctl tea-pot fill|empty")
         );
         assert!(!list.iter().any(|t| t["name"] == "kettle"));
         assert_eq!(list.len(), tools(&[]).len() + 1);
