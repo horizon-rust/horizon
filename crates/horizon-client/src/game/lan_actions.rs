@@ -38,6 +38,7 @@ use horizon_protocol::{
 use horizon_world::entity_move::EntityMoveWorld;
 use winit::keyboard::KeyCode;
 
+mod admin_feedback;
 mod guest_body;
 mod horizon_channels;
 
@@ -3727,24 +3728,21 @@ impl Game<'_> {
 
     /// The `broadcastToAdmins` lines a command queued (`source`: the guest
     /// whose it was; none for the host's or the console's): every other
-    /// operator gets them, and the console logs them as the server's own
-    /// system messages (MinecraftServer.sendSystemMessage).
+    /// operator (`admin_feedback::is_op`) gets them, and the console logs
+    /// them as the server's own system messages (MinecraftServer.sendSystemMessage).
     pub(super) fn send_admin_feedback(&mut self, host: &mut LanHost, source: Option<u32>) {
         // server.toml's `admin_feedback_to_ops` off: the console's log only.
         let to_ops = host.hub.admin_feedback_to_ops;
         for (line, ops, console) in std::mem::take(&mut self.admin_feedback) {
             if ops && to_ops {
                 let content = horizon_client::lan::data::component_nbt(&line.component());
-                for g in host
-                    .hub
-                    .guests
-                    .iter()
-                    .filter(|g| Some(g.conn) != source && g.permission > 0)
-                {
-                    g.send(&C::SystemChat(play::SystemChat {
-                        content: content.clone(),
-                        overlay: false,
-                    }));
+                for g in &host.hub.guests {
+                    if Some(g.conn) != source && admin_feedback::is_op(&host.hub, g.uuid) {
+                        g.send(&C::SystemChat(play::SystemChat {
+                            content: content.clone(),
+                            overlay: false,
+                        }));
+                    }
                 }
             }
             if console {
