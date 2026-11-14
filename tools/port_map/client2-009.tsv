@@ -153,3 +153,4 @@ AbstractWidget.isMouseOver	port	crates/horizon-client-render/src/screen_draw.rs:
 AbstractWidget.WithInactiveMessage.defaultInactiveMessage	port	crates/horizon-client-render/src/screen_draw.rs::button	an inactive button's label is styled -6250336 (0xFFA0A0A0), as mergeStyles does
 AbstractWidget.narrationPriority	skip:other		narration only
 AbstractWidget.defaultButtonNarrationText	skip:other		narration only
+ContainerEventHandler.mouseScrolled	port	crates/horizon-client/src/social_screen.rs::list_hovered	social screen: the first child under the pointer takes the wheel; the search box wins its overlap with the list (game/social.rs::social_scroll); pack screens are mapped in client2-012.tsv

@@ -86,6 +86,16 @@ pub fn sort_entries(entries: &mut [Entry]) {
         (!e.local, !plain, e.name.to_lowercase())
     });
 }
+/// `ContainerEventHandler.mouseScrolled`: the wheel goes to the first child
+/// under the pointer. The search box precedes `SocialInteractionsPlayerList`
+/// and overlaps its top pixel row; the tabs and footer lie outside the list.
+pub fn list_hovered(size: (f32, f32), cursor: (f32, f32)) -> bool {
+    let [x, y, w, h] = search_box(size.0);
+    if ui::hovered(cursor, x, y, w, h) {
+        return false;
+    }
+    cursor.0 >= 0.0 && cursor.0 < size.0 && cursor.1 >= LIST_START && cursor.1 < list_end(size.1)
+}
 /// The most the list scrolls: its rows less its height.
 pub fn max_scroll(h: f32, rows: usize) -> f32 {
     // `AbstractSelectionList.contentHeight`: the rows and 4px.
@@ -647,6 +657,35 @@ mod tests {
         assert_eq!(scrollbar_x(854.0), 545.0);
         assert!(max_scroll(240.0, 10) > 0.0);
         assert_eq!(max_scroll(1000.0, 2), 0.0);
+    }
+
+    /// `ContainerEventHandler.mouseScrolled`: the search box wins where it
+    /// overlaps the list, and the rest of the band takes the wheel.
+    #[test]
+    fn only_the_player_list_under_the_pointer_takes_the_wheel() {
+        let size = (427.0, 360.0);
+        assert!(list_hovered(size, (10.0, 100.0)));
+        assert!(list_hovered(size, (426.0, 287.0)));
+        assert!(!list_hovered(size, (10.0, 87.0)));
+        assert!(!list_hovered(size, (10.0, 288.0)));
+        assert!(!list_hovered(size, (-1.0, 100.0)));
+        assert!(!list_hovered(size, (427.0, 100.0)));
+        assert!(!list_hovered(size, (122.0, 88.0)));
+        assert!(!list_hovered(size, (321.0, 88.0)));
+        assert!(list_hovered(size, (121.0, 88.0)));
+        assert!(list_hovered(size, (322.0, 88.0)));
+        assert!(list_hovered(size, (122.0, 89.0)));
+        // The hidden blocking-help button must not reserve the bottom of the
+        // list on All/Hidden. Horizon's Blocked page has no players to scroll.
+        assert!(list_hovered(size, (213.0, 280.0)));
+
+        // `windowHeight`'s 52px minimum leaves the short screen's list at 88..124.
+        let small = (320.0, 180.0);
+        assert!(!list_hovered(small, (69.0, 88.0)));
+        assert!(list_hovered(small, (68.0, 88.0)));
+        assert!(list_hovered(small, (69.0, 89.0)));
+        assert!(list_hovered(small, (0.0, 123.0)));
+        assert!(!list_hovered(small, (0.0, 124.0)));
     }
 
     /// `SocialInteractionsScreen.mouseClicked` gives the widgets the click
