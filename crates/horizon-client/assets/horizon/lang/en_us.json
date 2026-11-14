@@ -1223,5 +1223,7 @@
   "horizon.perf.copy_hover": "Copy the link.",
   "horizon.perf.retry_button": "[Retry]",
   "horizon.perf.retry_hover": "Try the upload again. The profile is still saved on your computer.",
+  "horizon.commands.restart.restarting": "Restarting the server",
+  "horizon.commands.restart.unsupervised": "Nothing would start the game again: /restart needs a server run by horizon-server",
   "horizon.perf.link_hover": "Open the shared profile in your browser."
 }

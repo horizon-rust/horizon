@@ -1133,7 +1133,7 @@ impl Game<'_> {
             id if id.starts_with("banlist") => self.cmd_banlist(id),
             id if id.starts_with("whitelist.") => self.cmd_whitelist(id, ctx),
             "setidletimeout" => self.cmd_setidle_timeout(ctx),
-            "stop" => self.cmd_stop(),
+            "stop" | "restart" => self.cmd_stop(id == "restart"),
             "save-all" => self.cmd_save_all(),
             "save-off" | "save-on" => self.cmd_auto_save(id == "save-on"),
             "transfer" => self.cmd_transfer(ctx),
