@@ -145,6 +145,8 @@ mod hardware;
 #[cfg(test)]
 mod parity_tests;
 mod radial_play;
+#[cfg(test)]
+mod source_tests;
 pub(super) use hardware::{PadId, PadRouter};
 
 /// How many of the radial menu's last actions `pad status` lists.
@@ -376,7 +378,10 @@ impl Game<'_> {
             self.pad_cancel_inputs(event_loop);
         }
         self.pad.context = Some(context);
-        if !self.settings.controller.enabled {
+        // A registered input source drives in the pad modules' place: they read no pad and act on
+        // nothing, as when controllers are off, so a pad's events can't disagree with what the
+        // source answers.
+        if !self.settings.controller.enabled || self.input_source.is_some() {
             self.pad_output_off();
             self.pad_cancel_inputs(event_loop);
             // The radial menu closed with the pad: its overlay fades out, as for a cancel.

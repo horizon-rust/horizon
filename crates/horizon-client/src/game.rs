@@ -2363,12 +2363,12 @@ struct Game<'a> {
     last_input: Instant,
     /// Controllers (Horizon's own).
     pad: pad::Pads,
+    /// The registered input source, this player's own (`None`: the pad modules answer).
+    input_source: Option<Box<dyn horizon_client::input_source::InputSource>>,
     frames: u64,
-    /// The glint clock and options, read once at the start of each frame
-    /// (game/item_draw.rs).
+    /// The glint clock and options, read once at the start of each frame (game/item_draw.rs).
     glint_frame: horizon_client::item_render::GlintFrame,
-    /// Mod block entities' geometry their mods kept
-    /// (game/native_block_entity_draw.rs).
+    /// Mod block entities' geometry their mods kept (game/native_block_entity_draw.rs).
     kept_block_entities: std::cell::RefCell<native_block_entity_draw::KeptGeometry>,
     /// `item_level` for one frame, game time, day time and dimension.
     item_level_cache: std::cell::RefCell<
@@ -2589,8 +2589,7 @@ struct Game<'a> {
     /// The head of the bed while sleeping; the visual timer also survives waking.
     sleeping: Option<[i32; 3]>,
     sleep_timer: u32,
-    /// The beds players sleep in that this game marked `occupied`, by level
-    /// (game/beds.rs).
+    /// The beds players sleep in that this game marked `occupied`, by level (game/beds.rs).
     player_beds: Vec<(Dim, [i32; 3])>,
     /// `SleepStatus`'s active and sleeping players at the last announcement.
     sleep_seen: (i64, i64),
@@ -11369,7 +11368,7 @@ impl<'a> Game<'a> {
         let creative = options.creative;
         let inventory = vec![None; 36];
         let now = Instant::now();
-        let look = options.look;
+        let (look, role) = (options.look, options.execution_role);
         let slow_frame_ms = options
             .spikes
             .unwrap_or(horizon_client::client_perf::SLOW_FRAME_MS);
@@ -11514,6 +11513,7 @@ impl<'a> Game<'a> {
             previous: now,
             last_input: now,
             pad: Default::default(),
+            input_source: play_input::input_source(role),
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),
