@@ -1368,7 +1368,7 @@ impl Game<'_> {
             .raw
             .get(&self.boats[i].id)
             .is_some_and(|tag| horizon_client::entity_nbt::flag(tag, "Invulnerable"));
-        !invulnerable && self.hurt_boat(i, damage, false)
+        !invulnerable && self.hurt_boat(i, damage, false, None)
     }
     /// `PowderSnowBlock.entityInside`'s `ServerLevel.sendParticles`: a boat that moved
     /// horizontally in powder snow throws snowflakes the players around see. `AbstractBoat.tick`
@@ -1399,7 +1399,7 @@ impl Game<'_> {
         }
         for _ in 0..2 {
             let p = self.boats[i].position;
-            let broke = self.hurt_boat(i, 4.0, false);
+            let broke = self.hurt_boat(i, 4.0, false, None);
             self.lava_hurt_sound([p.x, p.y, p.z]);
             if broke {
                 return true;
@@ -1713,7 +1713,12 @@ impl Game<'_> {
         let (kind, id) = (self.boats[i].entity_type(), self.boats[i].id as i32);
         let (damage, scale, _, magic) = self.melee_damage(&kind, false);
         let chest = self.boats[i].chest;
-        let hurt = self.hurt_boat_result(i, damage, self.creative);
+        let hurt = self.hurt_boat_result(
+            i,
+            damage,
+            self.creative,
+            Some(super::commands::Target::Player),
+        );
         // AbstractChestBoat.destroy -> ContainerEntity.chestVehicleDestroyed:
         // with entity_drops on, a player whose hit breaks a chest boat (not a
         // creative discard) angers the piglins that see it.
@@ -1741,14 +1746,22 @@ impl Game<'_> {
         // Player.onAttack: the hit starts the attack strength again.
         self.attack_ticks = 0;
     }
-    /// `VehicleEntity.hurtServer`: wobble, add the damage and break past 40
-    /// (`creative`: a creative player's hit discards it straight away).
+    /// `VehicleEntity.hurtServer`: wobble, post the damage event, add the
+    /// damage and break past 40 (`creative`: a creative player's hit discards
+    /// it straight away).
     /// `AbstractChestBoat.remove` drops the chest contents for every removal
     /// reason that destroys the boat (DISCARDED included), while the boat item
     /// itself only drops on the death path (`VehicleEntity.destroy`), not when
     /// a creative hit discards it. True when the boat was removed.
-    pub(super) fn hurt_boat(&mut self, i: usize, damage: f32, creative: bool) -> bool {
-        self.hurt_boat_result(i, damage, creative).unwrap_or(false)
+    pub(super) fn hurt_boat(
+        &mut self,
+        i: usize,
+        damage: f32,
+        creative: bool,
+        causing: Option<super::commands::Target>,
+    ) -> bool {
+        self.hurt_boat_result(i, damage, creative, causing)
+            .unwrap_or(false)
     }
     /// Whether a spectator must be refused this boat's menu.
     pub(super) fn boat_loot_pending(&self, id: u32) -> bool {
@@ -1826,25 +1839,34 @@ impl Game<'_> {
         }
     }
 
-    /// None means a canceled hit; Some records whether an accepted hit destroyed it.
+    /// `VehicleEntity.hurtServer`'s body: None means a canceled hit, Some
+    /// records whether an accepted hit destroyed the boat. `causing`: the
+    /// damage source's entity, which the damage event is attributed to.
     pub(super) fn hurt_boat_result(
         &mut self,
         i: usize,
         mut damage: f32,
         creative: bool,
+        causing: Option<super::commands::Target>,
     ) -> Option<bool> {
         let mut cancel = false;
         self.native_vehicle_damage("boat", &mut damage, &mut cancel);
         if cancel {
             return None;
         }
-        let b = &mut self.boats[i];
-        b.hurt_dir = -b.hurt_dir;
-        b.hurt_time = 10;
-        b.damage += damage * 10.0;
-        let destroyed = creative || b.damage > 40.0;
+        let (at, destroyed) = {
+            let b = &mut self.boats[i];
+            b.hurt_dir = -b.hurt_dir;
+            b.hurt_time = 10;
+            b.damage += damage * 10.0;
+            (
+                [b.position.x, b.position.y, b.position.z],
+                creative || b.damage > 40.0,
+            )
+        };
+        // `VehicleEntity.hurtServer`: the damage event, before any destruction.
+        self.entity_event_by("minecraft:entity_damage", at, causing);
         if destroyed {
-            let at = [b.position.x, b.position.y, b.position.z];
             self.native_vehicle_destroy("boat", at);
             self.eject_boat_mobs(i, true);
             let id = self.boats[i].id;

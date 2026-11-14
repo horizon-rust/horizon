@@ -1093,13 +1093,19 @@ impl Game<'_> {
                         // VehicleEntity.hurtServer takes the damage; an item
                         // frame's ItemFrame.hurtServer.
                         let creative = t.guest.is_none() && self.creative;
+                        // `ThrownTrident.onHitEntity`: the source's entity is
+                        // the thrower (or the guest whose trident it is).
+                        let cause = Some(t.guest.map_or(
+                            super::commands::Target::Player,
+                            super::commands::Target::Guest,
+                        ));
                         if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-                            self.hurt_boat(i, damage, creative);
+                            self.hurt_boat(i, damage, creative, cause);
                         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                             self.hurt_cart(i, damage, creative, false);
                         } else {
                             // ItemFrame.hurtServer: the item comes out, or the frame breaks.
-                            self.projectile_hurts_frame(id, true, creative);
+                            self.projectile_hurts_frame(id, cause, creative);
                         }
                         // ThrownTrident.onHitEntity on another player.
                         if let Some(conn) = self.trident_guest_conn(id) {

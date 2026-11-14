@@ -6,6 +6,9 @@ use super::{Game, commands::Target};
 #[cfg(test)]
 use super::commands;
 #[cfg(test)]
+#[path = "damage_command_entities_tests.rs"]
+mod damage_command_entities_tests;
+#[cfg(test)]
 #[path = "revenge_home_tests.rs"]
 mod revenge_home_tests;
 #[cfg(test)]
@@ -247,6 +250,53 @@ impl CombatTracker {
     }
 }
 impl Game<'_> {
+    /// `DamageSource.is(DamageTypeTags.BYPASSES_INVULNERABILITY)`.
+    pub(super) fn bypasses_invulnerability(&self, damage_type: &str) -> bool {
+        let registry = &self.motion.health.damage;
+        registry
+            .id(damage_type)
+            .is_some_and(|kind| registry.in_tag(kind, "minecraft:bypasses_invulnerability"))
+    }
+    /// `Player.hurtServer`'s refusal of a hit the player's abilities shrug off:
+    /// `abilities.invulnerable` (creative or spectator), which only
+    /// `#bypasses_invulnerability` passes.
+    pub(super) fn abilities_refuse_hit(&self, damage_type: &str) -> bool {
+        (self.creative || self.spectator()) && !self.bypasses_invulnerability(damage_type)
+    }
+    /// The causing entity's `Abilities` the decoration hurt checks read:
+    /// `hasInfiniteMaterials` (`ItemFrame.canHurtWhenFixed`, `Painting.dropItem`)
+    /// and `mayBuild` (`Cushion.isBreakingDeniedFor`).
+    pub(in crate::game) fn causing_abilities(&self, causing: Option<Target>) -> (bool, bool) {
+        match causing {
+            Some(Target::Player) => (self.creative, self.may_build()),
+            Some(Target::Guest(conn)) => self
+                .command_guest(conn)
+                .map_or((false, false), |g| (g.creative(), g.may_build())),
+            _ => (false, false),
+        }
+    }
+    /// `DamageSource.getEntity` for a projectile's owner: the guest who shot it,
+    /// else its owner (`Who::Player` is the host, or the player in place).
+    fn projectile_cause(owner: Option<Who>, guest: Option<u32>) -> Option<Target> {
+        match (guest, owner) {
+            (Some(conn), _) => Some(Target::Guest(conn)),
+            (None, Some(Who::Player)) => Some(Target::Player),
+            (None, Some(Who::Mob(id))) => Some(Target::Mob(id)),
+            (None, None) => None,
+        }
+    }
+    /// A projectile's damage source: its causing entity, and whether that is a
+    /// creative player (`DamageSource.isCreativePlayer`).
+    pub(super) fn projectile_source(
+        &self,
+        owner: Option<Who>,
+        guest: Option<u32>,
+    ) -> (Option<Target>, bool) {
+        (
+            Self::projectile_cause(owner, guest),
+            owner == Some(Who::Player) && self.creative,
+        )
+    }
     /// `Entity.igniteForSeconds`: `seconds * 20` ticks of fire, scaled by the
     /// target's burning-time attribute.
     pub(super) fn ignite_entity(

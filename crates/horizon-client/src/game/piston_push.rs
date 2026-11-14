@@ -140,7 +140,7 @@ impl Game<'_> {
     fn hurt_cactus_pricked_vehicles(&mut self, pricked: Vec<u32>) {
         for id in pricked {
             if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-                self.hurt_boat(i, 1.0, false);
+                self.hurt_boat(i, 1.0, false, None);
             } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                 self.hurt_cart(i, 1.0, false, false);
             }

@@ -711,7 +711,7 @@ impl Game<'_> {
             left -= 1;
             match h {
                 EntityHandle::Boat(i) => {
-                    self.hurt_boat(i, 5.0, false);
+                    self.hurt_boat(i, 5.0, false, None);
                 }
                 EntityHandle::Cart(i) => self.hurt_cart(i, 5.0, false, false),
                 EntityHandle::Orb(i) if self.orbs[i].hurt(5.0) => {

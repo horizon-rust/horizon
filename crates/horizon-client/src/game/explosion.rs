@@ -1002,9 +1002,11 @@ impl Game<'_> {
                         carts_gone += len - self.carts.len();
                     }
                     // `VehicleEntity.hurtServer`: damage * 10, broken past 40.
+                    // The damage event's source is the blast's cause.
                     EntityHandle::Boat(i) => {
                         let len = self.boats.len();
-                        self.hurt_boat(i, amount, false);
+                        let cause = self.explosion_kill_credit();
+                        self.hurt_boat(i, amount, false, cause);
                         boats_gone += len - self.boats.len();
                     }
                     // `hurtServer` does nothing to the rest.
@@ -1161,7 +1163,7 @@ impl Game<'_> {
         while i < self.cushions.len() {
             let p = self.cushions[i].position;
             if blast_reaches(center, diameter, [p.x, p.y, p.z]) {
-                self.break_cushion_by(i, false, self.explosion_kill_credit());
+                self.break_cushion_by(i, self.explosion_kill_credit());
             } else {
                 i += 1;
             }
