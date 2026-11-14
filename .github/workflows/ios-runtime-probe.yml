@@ -203,31 +203,16 @@ jobs:
                       },
                   }
                   // The title frame's wait starts''')
-          patch(loading, '''        if !self.shown {
-                  self.shown = true;''',
-                '''        if !self.shown {
-                  nova_diag("renderer.first-frame-attempted");
-                  self.shown = true;''')
-          patch(loading, '''                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
-                          self.title_drawn = true;''',
-                '''                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
-                          if !self.title_drawn { nova_diag("renderer.title.frame-presented"); }
-                          self.title_drawn = true;''')
+          patch(loading, "        if !self.shown {",
+                "        if !self.shown {\n            nova_diag(\"renderer.first-frame-attempted\");")
+          patch(loading, "                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {",
+                "                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {\n                    if !self.title_drawn { nova_diag(\"renderer.title.frame-presented\"); }")
 
           loader = Path("crates/horizon-client/src/game/resource_loader.rs")
-          patch(loader, '''    let progress = Progress::new();
-                  let (receiver, loader) =''',
-                '''    loading_screen::nova_diag("resources.loading.begin");
-                  let progress = Progress::new();
-                  let (receiver, loader) =''')
-          patch(loader, '''    let mut app = App::Loading(Box::new(loading));
-                  let result = EventLoop::new()?.run_app(&mut app);''',
-                '''    let mut app = App::Loading(Box::new(loading));
-                  loading_screen::nova_diag("winit.event-loop.begin");
-                  let event_loop = EventLoop::new()?;
-                  loading_screen::nova_diag("winit.event-loop.created");
-                  let result = event_loop.run_app(&mut app);
-                  loading_screen::nova_diag("winit.run-app.returned");''')
+          patch(loader, "    let progress = Progress::new();",
+                "    loading_screen::nova_diag(\"resources.loading.begin\");\n    let progress = Progress::new();")
+          patch(loader, "    let result = EventLoop::new()?.run_app(&mut app);",
+                "    loading_screen::nova_diag(\"winit.event-loop.begin\");\n    let event_loop = EventLoop::new()?;\n    loading_screen::nova_diag(\"winit.event-loop.created\");\n    let result = event_loop.run_app(&mut app);\n    loading_screen::nova_diag(\"winit.run-app.returned\");")
           PY
           git diff --stat -- crates/horizon-client/src/entry.rs \
             crates/horizon-client/src/game/loading_screen.rs \
