@@ -10,6 +10,10 @@ pub(super) enum Step {
     Prelude,
     /// The level entered and its streaming and world update run, before the world tick.
     Stream,
+    /// Inside the stream step: the chunk streaming's own update (generated chunks taken in, the unloaded sent out).
+    StreamUpdate,
+    /// Inside the stream step: the unloaded chunks' entities saved.
+    StreamEntities,
     /// The world tick's start: tickets, effects, postprocess, before the network.
     Pre,
     /// The network: the hub's packets read at the start of the world tick.
@@ -31,9 +35,21 @@ pub(super) enum Step {
     /// The world tick's later phases: sculk, sleep, the End, particles, bossbars.
     Late,
 }
-const STEPS: usize = 12;
+const STEPS: usize = 14;
 const NAMES: [&str; STEPS] = [
-    "prelude", "stream", "pre", "net", "split", "copy", "spawn", "wait", "land", "leftover", "lan",
+    "prelude",
+    "stream",
+    "stream_update",
+    "stream_entities",
+    "pre",
+    "net",
+    "split",
+    "copy",
+    "spawn",
+    "wait",
+    "land",
+    "leftover",
+    "lan",
     "late",
 ];
 const WINDOW: u32 = 200;
@@ -127,7 +143,10 @@ impl TickProfile {
             .zip(sum)
             .map(|(name, ms)| format!("{name} {:.1}", ms / n))
             .collect();
-        let measured: f32 = sum.iter().sum();
+        // The two stream steps are inside `stream`.
+        let measured: f32 = sum.iter().sum::<f32>()
+            - sum[Step::StreamUpdate as usize]
+            - sum[Step::StreamEntities as usize];
         let global =
             (sum[Step::Leftover as usize] + sum[Step::Lan as usize] + sum[Step::Late as usize]) / n;
         log::info!(

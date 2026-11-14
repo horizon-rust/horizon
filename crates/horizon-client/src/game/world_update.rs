@@ -210,8 +210,12 @@ impl Game<'_> {
             .extra
             .extend(waiting.into_iter().map(|chunk| (chunk, 0)));
         self.streaming.upload_backlog = self.pending_uploads.len();
+        let timing = std::time::Instant::now();
         let (uploads, unloaded) =
             horizon_client::spans::time("streaming", || self.streaming.update(&mut self.world));
+        self.regions
+            .prof
+            .add(super::region_profile::Step::StreamUpdate, timing);
         self.streaming.extra.truncate(areas);
         horizon_client::spans::time("spawn_fresh_chunks", || self.spawn_fresh_chunks());
         // Before the unloaded chunks' block entities are written and dropped.
@@ -249,7 +253,11 @@ impl Game<'_> {
             .filter(|c| self.world.modified.remove(&(c.x, c.z)))
             .cloned()
             .collect();
+        let timing = std::time::Instant::now();
         let modified = horizon_client::spans::time("with_entities", || self.with_entities(&dirty));
+        self.regions
+            .prof
+            .add(super::region_profile::Step::StreamEntities, timing);
         horizon_client::spans::time("unload_entities", || self.unload_entities(&unloaded));
         if !unloaded.is_empty() {
             let _span = horizon_client::spans::guard("unload_block_entities");
