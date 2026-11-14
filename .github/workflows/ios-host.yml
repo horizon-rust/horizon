@@ -1,0 +1,65 @@
+name: iOS host (scaffold)
+
+on:
+  push:
+    branches: [test]
+    paths:
+      - 'platforms/ios/**'
+      - '.github/workflows/ios-host.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ios-host:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Install Rust iOS device target
+        run: rustup target add aarch64-apple-ios
+      - name: Test standalone Rust bridge on host
+        run: cargo test --manifest-path platforms/ios/RustBridge/Cargo.toml
+      - name: Compile Rust static library for iOS
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path platforms/ios/RustBridge/Cargo.toml \
+            --release --target aarch64-apple-ios \
+            --target-dir platforms/ios/Build/rust-target
+          mkdir -p platforms/ios/Build/rust
+          cp platforms/ios/Build/rust-target/aarch64-apple-ios/release/libhorizon_ios_bridge.a \
+             platforms/ios/Build/rust/libhorizon_ios_bridge.a
+          test -s platforms/ios/Build/rust/libhorizon_ios_bridge.a
+      - name: Generate iOS Xcode project
+        working-directory: platforms/ios
+        run: xcodegen generate --spec project.yml
+      - name: Build iOS app (unsigned)
+        working-directory: platforms/ios
+        run: |
+          set -euo pipefail
+          xcodebuild -project HorizonIOS.xcodeproj -scheme HorizonIOS \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath Build/Derived CODE_SIGNING_ALLOWED=NO build
+          test -d Build/Derived/Build/Products/Release-iphoneos/HorizonIOS.app
+      - name: Package unsigned host IPA
+        working-directory: platforms/ios
+        run: |
+          set -euo pipefail
+          mkdir -p Build/package/Payload
+          ditto Build/Derived/Build/Products/Release-iphoneos/HorizonIOS.app \
+            Build/package/Payload/HorizonIOS.app
+          cd Build/package
+          zip -qry HorizonIOS-host-unsigned.ipa Payload
+          unzip -t HorizonIOS-host-unsigned.ipa
+      - name: Upload unsigned host IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: HorizonIOS-host-unsigned
+          path: platforms/ios/Build/package/HorizonIOS-host-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,11 @@
+[package]
+name = "horizon-ios-bridge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "horizon_ios_bridge"
+crate-type = ["staticlib"]
+
+[workspace]
