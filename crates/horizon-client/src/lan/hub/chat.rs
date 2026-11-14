@@ -541,16 +541,30 @@ impl Hub {
         message: Tag,
         except: Option<u32>,
     ) {
+        for (k, guest) in self.guests.iter().enumerate() {
+            if guest.placed && Some(guest.conn) != except {
+                self.send_source_chat(k, chat_type, name.clone(), None, message.clone());
+            }
+        }
+    }
+
+    /// One player's line from a command source: a disguised chat bound to
+    /// `chat_type`, the source's display name and the chat type's target name
+    /// (a team message's team).
+    pub fn send_source_chat(
+        &self,
+        k: usize,
+        chat_type: &str,
+        name: Tag,
+        target: Option<Tag>,
+        message: Tag,
+    ) {
         let bound = play::ChatTypeBound {
             chat_type: self.chat_type_id(chat_type),
             name,
-            target: None,
+            target,
         };
-        for (k, guest) in self.guests.iter().enumerate() {
-            if guest.placed && Some(guest.conn) != except {
-                self.send_disguised(k, message.clone(), bound.clone());
-            }
-        }
+        self.send_disguised(k, message, bound);
     }
 
     /// A message command's chat (SayCommand, EmoteCommands): to everyone,

@@ -1,6 +1,5 @@
 //! `/random` (RandomCommand) and `/teammsg` (TeamMsgCommand).
 use super::{Arg, Context, Game, R, Target, err};
-use crate::game::chat::PLAYER_NAME;
 use horizon_client::{
     clock::SprintReport,
     java_text::format_fixed,
@@ -299,7 +298,7 @@ impl Game<'_> {
         }
         Ok(value)
     }
-    /// `/teammsg`: the executor's team hears the message.
+    /// `/teammsg`: the sender and every player on its team hear the message.
     pub(super) fn cmd_teammsg(&mut self, ctx: &Context) -> R<i32> {
         let entity = match self.command_source {
             Some(s) => s.entity,
@@ -314,16 +313,6 @@ impl Game<'_> {
         let Some(team) = self.score.board.players_team(&holder).cloned() else {
             return Err(err("commands.teammsg.failed.noteam", &[]));
         };
-        // Only the local player can be on the receiving end.
-        let player_name = PLAYER_NAME.to_owned();
-        let player_in_team = self
-            .score
-            .board
-            .players_team(&player_name)
-            .is_some_and(|t| t.name == team.name);
-        if !player_in_team {
-            return Ok(0);
-        }
         let raw = match ctx.get("message") {
             Some(Arg::Str(m)) => m.clone(),
             _ => String::new(),
@@ -336,12 +325,64 @@ impl Game<'_> {
         };
         let team_name = team.formatted_display_name().with_style(&hover);
         let sender = self.target_name(entity);
-        let key = if entity == Target::Player {
-            "chat.type.team.sent"
-        } else {
-            "chat.type.team.text"
+        let line = |sent: bool| {
+            Text::translate(
+                if sent {
+                    "chat.type.team.sent"
+                } else {
+                    "chat.type.team.text"
+                },
+                &[team_name.clone(), sender.clone(), message.clone()],
+            )
         };
-        self.system_message(Text::translate(key, &[team_name, sender, message]));
-        Ok(1)
+        // TeamMsgCommand.receivers: every player on the team, and the sender.
+        let board = &self.score.board;
+        let same_team = |name: &str| {
+            board
+                .players_team(name)
+                .is_some_and(|t| t.name == team.name)
+        };
+        // The player in place (`Target::Player`), unless a server has none.
+        let local = self.player.is_some()
+            && (entity == Target::Player || same_team(self.acting_player_name()));
+        // The guests who hear it, and whether the line is theirs to send. The
+        // guest whose turn it is is `Target::Player`, not a guest here.
+        let guests: Vec<(usize, bool)> = self
+            .lan
+            .iter()
+            .flat_map(|host| host.hub.guests.iter().enumerate())
+            .filter(|(_, g)| g.placed && Some(g.conn) != self.lan_acting)
+            .filter(|(_, g)| entity == Target::Guest(g.conn) || same_team(&g.name))
+            .map(|(k, g)| (k, entity == Target::Guest(g.conn)))
+            .collect();
+        let receivers = guests.len() as i32 + i32::from(local);
+        // A chat line: the player in place hears it with its command's output
+        // (`player_message` keeps a guest's own line for its turn's capture).
+        if local {
+            self.player_message(line(entity == Target::Player));
+        }
+        if let Some(host) = &self.lan {
+            use horizon_client::lan::data::component_nbt;
+            let team = component_nbt(&team_name.component());
+            let name = component_nbt(&sender.component());
+            let text = component_nbt(&message.component());
+            let send = |k: usize, sent: bool| {
+                host.hub.send_source_chat(
+                    k,
+                    if sent {
+                        "team_msg_command_outgoing"
+                    } else {
+                        "team_msg_command_incoming"
+                    },
+                    name.clone(),
+                    Some(team.clone()),
+                    text.clone(),
+                );
+            };
+            for (k, sent) in guests {
+                send(k, sent);
+            }
+        }
+        Ok(receivers)
     }
 }
