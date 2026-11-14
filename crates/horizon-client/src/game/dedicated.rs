@@ -1146,6 +1146,9 @@ impl Game<'_> {
         // MinecraftServer.loadLevel's start: nothing is loaded yet.
         self.native_server_about_to_start(true);
         self.native_lifecycle_open_started();
+        // `max-world-size` limits every level's border (`MinecraftServer.createLevels`): set before
+        // `load_world` reads the borders.
+        self.levels.set_absolute_max_size(props.max_world_size);
         // The registries the server sends are read while the world prepares.
         let sync = super::lan::preload_sync_data(&self.options.resources);
         self.load_world(WorldRequest::new(
