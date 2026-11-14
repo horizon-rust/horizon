@@ -2993,6 +2993,7 @@ dependencies = [
  "log",
  "lz4_flex",
  "postcard",
+ "rayon",
  "serde",
  "serde_json",
  "sha2",
