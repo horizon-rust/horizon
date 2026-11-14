@@ -4,8 +4,7 @@ use crate::check::{MAX_EXPRESSIONS, MAX_TEXTURE_READS};
 use crate::inputs::{COMPUTE_INPUT, DISPLACEMENT_INPUT, Frame, RAY_HIT, SURFACE, Struct};
 use crate::kept::{
     Element, Format, MAX_BEFORE_WORLD, MAX_BUFFER_BYTES, MAX_COMPUTE_POST, MAX_FIXED_TEXTURE_BYTES,
-    MAX_RESOURCES, MAX_WORKGROUP, MAX_WORKGROUP_INVOCATIONS, REASON_DISPLAY, REASON_LOAD,
-    REASON_OPTION, REASON_PAUSE, REASON_RESET, REASON_SIZE, REASON_TELEPORT, REASON_WORLD,
+    MAX_RESOURCES, MAX_WORKGROUP, MAX_WORKGROUP_INVOCATIONS, REASONS,
 };
 use crate::manifest::{Api, MAX_GPU_MS, MAX_OPTIONS, MAX_POST_PASSES};
 use crate::package::{MAX_TOTAL, MAX_WGSL};
@@ -219,22 +218,25 @@ fn kept() -> String {
     for r in StageKind::BeforeWorld.resources() {
         out += &format!("| {} | `{}` | {} |\n", r.binding, r.ty, r.doc);
     }
-    out += &format!(
-        "\nA kept resource starts as zeros and is zeros again when cleared: a `keep = \"view\"` one when\n\
-         `frame.view_epoch` changes, every one when `frame.world_epoch` does (never 0, so a cleared value never\n\
-         matches). Both change before the frame that sees them draws, and `frame.reset_reasons` has a bit for each\n\
-         reason; only a pack with `[[resource]]` has these fields. A world cache keyed by `world_epoch` survives a\n\
-         camera cut. Nothing else says the world changed, not the camera's distance or `frame_index`.\n\n\
-         | Bit | Reason | Clears | When |\n| --- | --- | --- | --- |\n\
-         | {REASON_LOAD} | load | both | The pack was loaded or reloaded: its first frame. |\n\
-         | {REASON_RESET} | reset | both | Horizon restarted the pack's history (a screenshot sequence's first shot). |\n\
-         | {REASON_WORLD} | world | both | Another world or dimension, or its meshes were rebuilt (a render setting). |\n\
-         | {REASON_TELEPORT} | teleport | both | The camera moved further than `[kept] reach` since last frame. |\n\
-         | {REASON_PAUSE} | pause | view | Over half a second since last frame, as `delta_time` 0. |\n\
-         | {REASON_SIZE} | size | view | The render size or the window's changed. |\n\
-         | {REASON_DISPLAY} | display | view | The output turned HDR or SDR. |\n\
-         | {REASON_OPTION} | option | its `resets` | The player changed an option marked `resets`. |\n"
-    );
+    out += "\nA kept resource starts as zeros and is zeros again when cleared: a `keep = \"view\"` one when\n\
+            `frame.view_epoch` changes, every one when `frame.world_epoch` does (never 0, so a cleared value never\n\
+            matches). Both change before the frame that sees them draws, and `frame.reset_reasons` has a bit for each\n\
+            reason, a `const` of the prelude (`frame.reset_reasons & REASON_TELEPORT`); only a pack with `[[resource]]`\n\
+            has these fields and constants. A world cache keyed by `world_epoch` survives a camera cut. Nothing else\n\
+            says the world changed, not the camera's distance or `frame_index`.\n\n\
+            | Reason | Bit | Clears | When |\n| --- | --- | --- | --- |\n";
+    // What each clears and when, in `REASONS`' order.
+    let rows = "both | The pack was loaded or reloaded: its first frame.\n\
+                both | Horizon restarted the pack's history (a screenshot sequence's first shot).\n\
+                both | Another world or dimension, or its meshes were rebuilt (a render setting).\n\
+                both | The camera moved further than `[kept] reach` since last frame.\n\
+                view | Over half a second since last frame, as `delta_time` 0.\n\
+                view | The render size or the window's changed.\n\
+                view | The output turned HDR or SDR.\n\
+                its `resets` | The player changed an option marked `resets`.";
+    for ((name, bit), row) in REASONS.iter().zip(rows.lines()) {
+        out += &format!("| `{name}` | {bit} | {row} |\n");
+    }
     out + &format!(
         "\nLimits: {MAX_RESOURCES} resources, {MAX_BEFORE_WORLD} `[[before_world]]` entries, {MAX_COMPUTE_POST} compute\n\
          `[[post]]` entries; {} MiB of buffers and {} KiB of fixed-size textures, both versions counted; each R-relative\n\

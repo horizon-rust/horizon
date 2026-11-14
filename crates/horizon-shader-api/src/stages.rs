@@ -1219,6 +1219,9 @@ impl StageKind {
             Api::V0_2 => "// Horizon shader API 0.2 prelude (docs/api/shaders-reference-0.2.md)\n",
         };
         out += &Frame::declared(api, tracing != Tracing::None, kept).wgsl();
+        if kept && api == Api::V0_2 {
+            out += &crate::kept::reasons_wgsl();
+        }
         out += &self.input().wgsl();
         if matches!(self, StageKind::Material | StageKind::Entity) {
             out += &SURFACE.wgsl();

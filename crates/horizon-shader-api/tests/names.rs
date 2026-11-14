@@ -267,25 +267,40 @@ fn ray_tracing_brings_its_names_to_the_stages_of_the_pack_that_trace() {
     }
 }
 
-/// `[[resource]]` brings the frame's epochs to every stage of the pack that keeps resources, and
-/// no name: they are fields of `frame`.
+/// `[[resource]]` brings the frame's epochs and the reasons' constants to every stage of the pack
+/// that keeps resources, and to no other pack.
 #[test]
 fn kept_resources_bring_the_frame_s_epochs_to_their_pack_only() {
     let epochs = "    view_epoch: u32,\n    world_epoch: u32,\n    reset_reasons: u32,\n}";
     let resource =
         "[[resource]]\nname = \"cells\"\nbuffer = 64\nelement = \"u32\"\nkeep = \"view\"\n";
+    let reasons = [
+        "REASON_LOAD",
+        "REASON_RESET",
+        "REASON_WORLD",
+        "REASON_TELEPORT",
+        "REASON_PAUSE",
+        "REASON_SIZE",
+        "REASON_DISPLAY",
+        "REASON_OPTION",
+    ];
     let kept = pack_with(resource, None);
     for &kind in Api::V0_2.stages() {
         let file = format!("{}.wgsl", kind.name());
         let composed = compose(&kept, kind, &file);
         assert!(composed.text.contains(epochs), "{kind:?}");
-        assert_eq!(prelude_names(&composed, kind), listed_names(kind).0);
+        let (mut want, _) = listed_names(kind);
+        want.extend(reasons.map(str::to_owned));
+        assert_eq!(prelude_names(&composed, kind), want, "{kind:?}");
         assert!(
             !compose(&pack(None), kind, &file)
                 .text
                 .contains("view_epoch")
         );
     }
+    let post = "fn post(input: PostInput) -> vec4<f32> {\n    \
+                return input.color * f32((frame.reset_reasons & REASON_TELEPORT) == 0u);\n}\n";
+    check(&pack_with(resource, Some(("post.wgsl", post)))).unwrap();
 }
 
 fn messages(result: Result<horizon_shader_api::Report, Vec<Problem>>) -> Vec<String> {

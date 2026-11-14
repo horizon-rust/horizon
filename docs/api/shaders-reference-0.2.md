@@ -424,19 +424,20 @@ argument. Data is data: Horizon doesn't decode, clamp or force the alpha of a ke
 A kept resource starts as zeros and is zeros again when cleared: a `keep = "view"` one when
 `frame.view_epoch` changes, every one when `frame.world_epoch` does (never 0, so a cleared value never
 matches). Both change before the frame that sees them draws, and `frame.reset_reasons` has a bit for each
-reason; only a pack with `[[resource]]` has these fields. A world cache keyed by `world_epoch` survives a
-camera cut. Nothing else says the world changed, not the camera's distance or `frame_index`.
+reason, a `const` of the prelude (`frame.reset_reasons & REASON_TELEPORT`); only a pack with `[[resource]]`
+has these fields and constants. A world cache keyed by `world_epoch` survives a camera cut. Nothing else
+says the world changed, not the camera's distance or `frame_index`.
 
-| Bit | Reason | Clears | When |
+| Reason | Bit | Clears | When |
 | --- | --- | --- | --- |
-| 1 | load | both | The pack was loaded or reloaded: its first frame. |
-| 2 | reset | both | Horizon restarted the pack's history (a screenshot sequence's first shot). |
-| 4 | world | both | Another world or dimension, or its meshes were rebuilt (a render setting). |
-| 8 | teleport | both | The camera moved further than `[kept] reach` since last frame. |
-| 16 | pause | view | Over half a second since last frame, as `delta_time` 0. |
-| 32 | size | view | The render size or the window's changed. |
-| 64 | display | view | The output turned HDR or SDR. |
-| 128 | option | its `resets` | The player changed an option marked `resets`. |
+| `REASON_LOAD` | 1 | both | The pack was loaded or reloaded: its first frame. |
+| `REASON_RESET` | 2 | both | Horizon restarted the pack's history (a screenshot sequence's first shot). |
+| `REASON_WORLD` | 4 | both | Another world or dimension, or its meshes were rebuilt (a render setting). |
+| `REASON_TELEPORT` | 8 | both | The camera moved further than `[kept] reach` since last frame. |
+| `REASON_PAUSE` | 16 | view | Over half a second since last frame, as `delta_time` 0. |
+| `REASON_SIZE` | 32 | view | The render size or the window's changed. |
+| `REASON_DISPLAY` | 64 | view | The output turned HDR or SDR. |
+| `REASON_OPTION` | 128 | its `resets` | The player changed an option marked `resets`. |
 
 Limits: 8 resources, 4 `[[before_world]]` entries, 8 compute
 `[[post]]` entries; 32 MiB of buffers and 1024 KiB of fixed-size textures, both versions counted; each R-relative
@@ -613,7 +614,7 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `luminance` | `vec3<f32>` | 784 | The weights that give a colour's luminance in those primaries, `dot(c, frame.luminance)`: (0.2126, 0.7152, 0.0722) for BT.709, (0.2627, 0.6780, 0.0593) for BT.2020. |
 | `view_epoch` | `u32` | 796 | Changes when the pack's `keep = "view"` resources are cleared, to zeros (`reset_reasons` says why), and is never 0. Only a pack with `[[resource]]` has this field. |
 | `world_epoch` | `u32` | 800 | The same for its `keep = "world"` resources. `view_epoch` changes with it: what clears the world's clears the view's too. Only a pack with `[[resource]]` has this field. |
-| `reset_reasons` | `u32` | 804 | Why an epoch changed this frame, a bit per reason ("Kept resources" lists them); 0 when neither did. Only a pack with `[[resource]]` has this field. |
+| `reset_reasons` | `u32` | 804 | Why an epoch changed this frame: the prelude's `REASON_*` bits ("Kept resources"); 0 when neither did. Only a pack with `[[resource]]` has this field. |
 
 ## Anti-aliasing
 

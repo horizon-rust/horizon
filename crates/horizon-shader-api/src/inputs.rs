@@ -235,7 +235,7 @@ uniform! {
         /// The same for its `keep = "world"` resources. `view_epoch` changes with it: what
         /// clears the world's clears the view's too. Only a pack with `[[resource]]` has this field.
         world_epoch: u32,
-        /// Why an epoch changed this frame, a bit per reason ("Kept resources" lists them); 0
+        /// Why an epoch changed this frame: the prelude's `REASON_*` bits ("Kept resources"); 0
         /// when neither did. Only a pack with `[[resource]]` has this field.
         reset_reasons: u32,
         @pad padding: [u32; 2],
