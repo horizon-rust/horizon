@@ -2534,6 +2534,14 @@ only the files whose content changed (Cargo goes by file times), switching mods 
 `native/target/`, and the launcher removes `CARGO_INCREMENTAL` and `CARGO_BUILD_INCREMENTAL` from the build's
 environment. `release` has no incremental compilation (the release profile's own).
 
+**The Nightly's compiled crates.** A first build of a Nightly's own commit with `performance` or `dev` (nothing in
+`native/target/fast/`, or a cleanup emptied it) downloads `native-cache-<triple>-fast.tar.zst` from that Nightly's release
+first. It is listed in the release's signed SHA256SUMS and checked like the game's own binaries; its `native-cache.json`
+must name the same commit, triple, `fast` profile, `rustc -vV` and `Cargo.lock` as this build. The launcher unpacks `fast/`
+into `native/target/` and rewrites the stage from the commit's source with every file dated 2001, so only the files the
+mods change get a new time and compile. A missing archive, no connection or any mismatch writes one line to the build log
+and the build compiles everything, as before. Not used for Windows ARM64, `release` or the server build.
+
 **Build status.** Before it starts, the build says which case it is, with the profile: "Up to date (no build needed)",
 "Incremental rebuild: mods X, Y" (or "Horizon commit a to b", "horizon-mixins"; compared with the last build in that
 profile's folder, kept in `native/built.json`) or "First build: the whole game (several minutes)". While compiling it shows the
