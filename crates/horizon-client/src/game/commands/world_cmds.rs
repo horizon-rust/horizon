@@ -2078,9 +2078,10 @@ impl Game<'_> {
                 [p[0].floor() + 0.5, f64::from(y), p[1].floor() + 0.5],
                 None,
                 false,
+                0,
             );
             // teleportTo(..., Set.of(), ...): a transition with no motion.
-            self.teleport_stops(t);
+            self.teleport_stops(t, 0);
             let closest = points
                 .iter()
                 .enumerate()

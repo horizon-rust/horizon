@@ -234,3 +234,58 @@ fn a_command_arrival_holds_movement_until_lit_then_ticks_damage_again() {
         "the same melee hit hurts again after its cooldown"
     );
 }
+
+#[test]
+#[ignore = "prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_cross_level_tp_stops_the_item_in_use() {
+    use super::LevelTeleport;
+    let (mut game, mut host, _rx) = server();
+    // A use in progress (`LivingEntity.useItem`): the guest is eating.
+    assert_eq!(
+        game.as_guest(&mut host, CONN, |g| {
+            g.using = Some((0, 0));
+            g.using.is_some()
+        }),
+        Some(true)
+    );
+    // A command that sends them into another level: `ServerPlayer.teleport`'s
+    // cross-dimension branch, after `triggerDimensionChangeTriggers`.
+    game.level_teleports.push(LevelTeleport {
+        conn: CONN,
+        dim: crate::game::Dim::Nether,
+        at: [8.5, 64.0, 8.5],
+        rotation: None,
+        vehicle: None,
+        cause: Some("command"),
+    });
+    game.run_level_teleports(&mut host);
+    assert!(
+        game.as_guest(&mut host, CONN, |g| g.using.is_none())
+            .unwrap_or(false),
+        "the use ends with the dimension change"
+    );
+}
+
+#[test]
+#[ignore = "prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_cross_level_tp_wakes_the_sleeper_it_moves() {
+    use super::LevelTeleport;
+    let (mut game, mut host, _rx) = server();
+    // Asleep in a bed: `ServerPlayer.teleportTo`'s `stopSleepInBed(true, true)`.
+    host.hub.guests[0].bed = Some([4, 100, 4]);
+    host.hub.guests[0].sleeping = true;
+    host.hub.guests[0].sleep_timer = 100;
+    game.level_teleports.push(LevelTeleport {
+        conn: CONN,
+        dim: crate::game::Dim::Nether,
+        at: [8.5, 64.0, 8.5],
+        rotation: None,
+        vehicle: None,
+        cause: Some("command"),
+    });
+    game.run_level_teleports(&mut host);
+    let g = &host.hub.guests[0];
+    assert_eq!(g.bed, None, "the sleeper is out of bed");
+    assert!(!g.sleeping, "and not asleep any more");
+    assert_eq!(g.sleep_timer, 0, "a forceful wake-up leaves no fade");
+}

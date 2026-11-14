@@ -1380,7 +1380,7 @@ mod tests {
         game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 80, None, None);
         assert!(!game.tnts[0].used_portal);
         let id = game.tnts[0].id;
-        game.teleport_to_in_level(Target::Tnt(id), [8.5, 64.0, 8.5], None, false);
+        game.teleport_to_in_level(Target::Tnt(id), [8.5, 64.0, 8.5], None, false, 0);
         assert!(game.tnts[0].used_portal);
         let saved = game.tnt_nbt(0);
         game.tnts.clear();

@@ -2076,7 +2076,9 @@ impl Hub {
 
     /// ServerGamePacketListenerImpl.teleport: move the client and wait for its confirmation.
     pub fn teleport(&mut self, i: usize, position: Option<[f64; 3]>) {
-        let Some((position, relatives)) = self.heard_teleport(i, position, 0) else {
+        // A command's `Relative` bits (`TeleportCommand.getRelatives`) go out with it.
+        let relatives = std::mem::take(&mut self.guests[i].teleport_relatives);
+        let Some((position, relatives)) = self.heard_teleport(i, position, relatives) else {
             return;
         };
         // ServerPlayer.teleportTo: resetFlyingTicks.
@@ -2145,11 +2147,8 @@ impl Hub {
     pub fn teleport_keeping_motion(&mut self, i: usize, position: [f64; 3]) {
         use play::relative::{DELTA_X, DELTA_Y, DELTA_Z, ROTATE_DELTA, X_ROT, Y_ROT};
         let relatives = Y_ROT | X_ROT | DELTA_X | DELTA_Y | DELTA_Z | ROTATE_DELTA;
-        let Some((position, relatives)) = self.heard_teleport(i, Some(position), relatives) else {
-            return;
-        };
-        self.guests[i].above_ground_ticks = 0;
-        self.teleport_relative(i, position, relatives);
+        self.guests[i].teleport_relatives = relatives;
+        self.teleport(i, Some(position));
     }
 
     /// A rider's own teleport when its vehicle is teleported

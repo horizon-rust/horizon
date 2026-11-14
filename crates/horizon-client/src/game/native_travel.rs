@@ -79,7 +79,7 @@ impl Game<'_> {
                 return false;
             }
             if dim == self.dim {
-                self.teleport_to_in_level(Target::Player, pos, Some(rotation), false);
+                self.teleport_to_in_level(Target::Player, pos, Some(rotation), false, 0);
             } else {
                 self.level_teleports.push(LevelTeleport {
                     conn,
@@ -126,7 +126,7 @@ impl Game<'_> {
         let Some(vehicle) = self.native_vehicle_target(id) else {
             return false;
         };
-        self.teleport_to_in_level(vehicle, pos, None, false);
+        self.teleport_to_in_level(vehicle, pos, None, false, 0);
         true
     }
 
@@ -410,7 +410,7 @@ impl Game<'_> {
             return false;
         };
         if theirs == dim {
-            self.teleport_to_in_level(Target::Guest(conn), pos, Some(rotation), false);
+            self.teleport_to_in_level(Target::Guest(conn), pos, Some(rotation), false, 0);
         } else {
             self.level_teleports.push(LevelTeleport {
                 conn,
