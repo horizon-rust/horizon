@@ -141,3 +141,22 @@ IMPLEMENTATION STATUS / VERIFIED BUILD BLOCKERS (2026-11-14)
   Avoid modifying gameplay and do not silently drop original gameplay features.
 - The original game has NOT yet linked as an iOS staticlib, has NOT started on
   an iPhone/iPad, and is not bundled into the host IPA.
+
+FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
+- The Wayland root was traced with cargo tree to arboard in
+  crates/horizon-client-input/Cargo.toml; the CI checkout omits the
+  desktop-only "wayland-data-control" feature when building for iOS.
+- The next compile error was horizon-hdr unconditionally using Vulkan on every
+  non-macOS target. The ephemeral iOS build patch selects an iOS-safe no-op
+  for Vulkan HDR metadata; HDR gameplay source remains unchanged in Git.
+- The next compile error was winit::platform::modifier_supplement, unavailable
+  on iOS. The ephemeral iOS patch uses event.logical_key for learning keyboard
+  layout names, rather than depending on that desktop extension.
+- All compatibility edits above are applied at build time from
+  .github/workflows/ios-runtime-probe.yml, with exact-text assertions to force
+  review if upstream changes. These are exploratory, not a production-quality
+  platform integration; replace fragile edits with adapter interfaces where
+  possible, without permanently altering upstream gameplay.
+- The native game is not yet linked into the SwiftUI host. The Play button
+  must remain disabled until full in-process startup, iOS window ownership,
+  rendering, input, assets and on-device testing are complete.
