@@ -241,9 +241,9 @@ pub(super) trait Entity: EntityRules {
         PushReaction::PushPull
     }
     /// Width and height of the box a portal sweep follows, or None for a kind
-    /// the game does not carry through portals (so far armor stands and
-    /// falling blocks; fishing hooks are off the walk, and
-    /// `FishingHook.canUsePortal` is false in vanilla).
+    /// the game does not carry through portals (so far falling blocks; fishing
+    /// hooks are off the walk, and `FishingHook.canUsePortal` is false in
+    /// vanilla).
     fn portal_size(&self) -> Option<(f32, f32)> {
         None
     }
@@ -614,26 +614,9 @@ impl Game<'_> {
         splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
     ) -> (bool, bool) {
         let no_physics = escape_speed.is_some();
-        // Entity.baseTick splashes before moving, except on the first tick, at
-        // the motion before the currents push it.
-        let before = item.velocity;
-        let heights = item.push_by_fluid(&self.world, &self.res.motion().fluids);
-        item.water_entry(heights.0 > 0.0, item.ticks == 0, before, splash);
-        item.lava_fall(heights.1 > 0.0);
-        let step = item.tick_move_before_block_effects(
-            &self.world,
-            self.res.facts(),
-            self.collision,
-            no_physics,
-            escape_speed,
-            heights,
-            entity_boxes,
-            Some(self.border.geometry()),
-            Some(&self.res.motion().blocks),
-        );
-        item.check_fall(&step, |fall, from, moved| {
-            self.vehicle_fall_reset(fall, from, moved)
-        });
+        let step = self
+            .item_tables()
+            .move_item(item, escape_speed, entity_boxes, splash);
         if let Some(pos) = step.vertical_contact {
             let state = self.world.block(pos.x, pos.y, pos.z);
             let position = item.position;
@@ -652,24 +635,9 @@ impl Game<'_> {
                 return (false, true);
             }
         }
-        item.finish_move_block_effects(
-            &self.world,
-            self.res.facts(),
-            no_physics,
-            Some(&self.res.motion().blocks),
-            step,
-        );
-        item.push_by_bubble_column(
-            &self.world,
-            self.pack.assets.registry,
-            self.res.facts(),
-            self.collision,
-        );
-        let alive = item.tick_settle(&self.world, self.res.facts(), no_physics, step);
-        // ItemEntity.tick refreshes immersion and splashes on water entry.
-        let before = item.velocity;
-        let (water, _) = item.push_by_fluid(&self.world, &self.res.motion().fluids);
-        item.water_entry(water > 0.0, false, before, splash);
+        let alive = self
+            .item_tables()
+            .settle_item(item, no_physics, step, splash);
         (alive, false)
     }
 
@@ -1613,6 +1581,18 @@ impl Entity for ArmorStand {
             PushReaction::PushPull
         }
     }
+    /// `ArmorStand.getDefaultDimensions`: the box a portal sweep follows, and
+    /// the size its exit is placed by. `ArmorStand.readAdditionalSaveData`
+    /// makes a stand without `hasPhysics` (a marker or a `NoGravity` one)
+    /// `noPhysics`, so `Entity.isAffectedByBlocks` never runs its sweep and it
+    /// enters no portal; a marker's box is `MARKER_DIMENSIONS`, 0 by 0, too.
+    fn portal_size(&self) -> Option<(f32, f32)> {
+        if self.marker || self.no_gravity {
+            return None;
+        }
+        let (width, height) = armor_stand_size(self);
+        Some((width as f32, height as f32))
+    }
 }
 
 impl Entity for PrimedTnt {
@@ -2306,6 +2286,7 @@ mod set_rotation_tests {
     #[test]
     fn set_rotation_keeps_yaw_and_clamps_pitch_on_kinds_that_had_none() {
         let mut orb = ExperienceOrb {
+            fall_distance: 0.0,
             join: Default::default(),
             no_gravity: false,
             id: 0,
@@ -2321,6 +2302,7 @@ mod set_rotation_tests {
             air: 300,
             rotation: [0.0, 0.0],
             following: None,
+            fire_ticks: 0,
         };
         orb.set_rotation([90.0, 10.0]);
         assert_eq!(orb.rotation(), [90.0, 10.0]);

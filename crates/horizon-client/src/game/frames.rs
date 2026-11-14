@@ -3,7 +3,9 @@
 //! `hurtServer` (take the item out, then break the frame) and
 //! `ItemFrameRenderer` (the frame model and the item at a 45 degree step).
 use super::{Game, Hit, InteractTarget};
-use horizon_assets::{bake::bake_model, model::CuboidModel, resolve::ModelLibrary};
+use horizon_assets::{
+    bake::bake_model, item_model::OwnerState, model::CuboidModel, resolve::ModelLibrary,
+};
 use horizon_client::{entities::ItemFrame, items::ItemStack, mesher::Vertex};
 use horizon_core::{
     geometry::{Aabb, Vec3},
@@ -87,6 +89,41 @@ fn sound(f: &ItemFrame, what: &str) -> String {
 fn center(f: &ItemFrame) -> [f64; 3] {
     let (lo, hi) = f.bounds();
     std::array::from_fn(|i| (lo[i] + hi[i]) / 2.0)
+}
+/// A frame's item, waiting for its model: the frames' borrow of `self` ends
+/// before `resolve_item` reads the pack.
+struct FramedItem {
+    stack: ItemStack,
+    id: u32,
+    matrix: glam::Mat4,
+    light: u8,
+    cull: bool,
+    kind: &'static str,
+    owner: OwnerState,
+}
+/// `ItemFrameRenderer.extractRenderState`'s `ItemOwner` (`updateForNonLiving`
+/// with the frame entity): `ItemFrame.position` and
+/// `ItemFrame.getVisualRotationYInDegrees`.
+fn frame_owner(f: &ItemFrame) -> OwnerState {
+    super::item_draw::owner_at(center(f), visual_rotation_y_degrees(f), f.kind())
+}
+/// `ItemFrame.getVisualRotationYInDegrees`: the frame's own yaw, as an item
+/// model's owner reads it (a framed compass's needle turns with it).
+fn visual_rotation_y_degrees(f: &ItemFrame) -> f32 {
+    // `Direction.get2DDataValue` of a wall frame, and the axis direction's
+    // step for the two flat ones.
+    let s = f.step();
+    let (two_d, correction) = match (s[0], s[1], s[2]) {
+        (0, 0, 1) => (0, 0),
+        (-1, 0, 0) => (1, 0),
+        (0, 0, -1) => (2, 0),
+        (1, 0, 0) => (3, 0),
+        (0, y, _) => (-1, 90 * y),
+        _ => (0, 0),
+    };
+    crate::camera::wrap_degrees(
+        180.0 + (two_d * 90) as f32 + f32::from(f.rotation) * 45.0 + correction as f32,
+    )
 }
 impl Game<'_> {
     /// `ItemFrame.survives` (not fixed): no collision, a solid block behind
@@ -349,12 +386,45 @@ impl Game<'_> {
             }
             return true;
         }
+        self.hit_frame(i, true, self.creative);
+        true
+    }
+    /// `ItemFrame.hurtServer` from a projectile (`AbstractArrow.onHitEntity`,
+    /// `Snowball`, `ThrownEgg`, `ThrownEnderpearl`, `SmallFireball`...): the
+    /// damage source's entity is the projectile's owner. A fixed frame only
+    /// gives way to a creative player's shot (`canHurtWhenFixed`), and then
+    /// breaks whole (`BlockAttachedEntity.hurtServer`). `creative`: that player
+    /// has infinite materials. False when the frame refused the hit.
+    pub(super) fn projectile_hurts_frame(
+        &mut self,
+        id: u32,
+        by_player: bool,
+        creative: bool,
+    ) -> bool {
+        let Some(i) = self.item_frames.iter().position(|f| f.id == id) else {
+            return false;
+        };
+        if self.item_frames[i].fixed {
+            if !creative {
+                return false;
+            }
+            self.item_frames[i].item = None;
+        }
+        self.hit_frame(i, by_player, creative);
+        true
+    }
+    /// The non-fixed part of `ItemFrame.hurtServer`: a filled frame gives its
+    /// item up (`shouldDamageDropItem`), an empty one breaks
+    /// (`BlockAttachedEntity.hurtServer`). `by_player`: the damage source's
+    /// entity is the acting player, `creative` when they have infinite
+    /// materials (no drops).
+    fn hit_frame(&mut self, i: usize, by_player: bool, creative: bool) {
         let with_frame = self.item_frames[i].item.is_none();
         let entity_id = self.item_frames[i].id;
         if with_frame {
             let (kind, pos) = (self.item_frames[i].kind(), self.item_frames[i].pos);
-            if self.hanging_break_cancelled(kind, pos, true) {
-                return true;
+            if self.hanging_break_cancelled(kind, pos, by_player) {
+                return;
             }
         }
         let old_item = self.item_frames[i]
@@ -380,13 +450,14 @@ impl Game<'_> {
         if f.item.is_some() {
             self.frame_output_changed(f.pos);
         }
-        self.drop_frame_items(&mut f, with_frame, true);
+        self.drop_frame_items(&mut f, with_frame, by_player, creative);
         if !with_frame {
             self.item_frames[i].random = f.random.clone();
         }
         // BLOCK_CHANGE by the attacker after the drops: ItemFrame.hurtServer
         // for the item, ItemFrame.dropItem(level, causedBy) for the frame.
-        let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+        let who = by_player.then_some(horizon_client::mobs::Who::Player);
+        let ctx = self.who_context(who, None);
         self.post_game_event("minecraft:block_change", at, ctx);
         if !with_frame {
             // ItemFrame.hurtServer plays this after the event.
@@ -394,7 +465,9 @@ impl Game<'_> {
                 .play(&sound(&f, "remove_item"), Some(at), 1.0, 1.0);
         }
         self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
-        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+        if by_player
+            && let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone())
+        {
             self.native_player_item_frame_change(
                 player,
                 &name,
@@ -404,7 +477,6 @@ impl Game<'_> {
                 rotation.rem_euclid(8) as u8,
             );
         }
-        true
     }
     /// `ItemFrame.setItem(stack, true)`: keeps one item, plays the add sound
     /// for a non-empty stack and updates the comparators.
@@ -428,14 +500,20 @@ impl Game<'_> {
         self.with_level(|b, level, ticks| b.update_neighbour_for_output_signal(level, ticks, at));
     }
     /// `ItemFrame.dropItem`: the frame (when breaking) and the held item.
-    fn drop_frame_items(&mut self, f: &mut ItemFrame, with_frame: bool, by_player: bool) {
+    fn drop_frame_items(
+        &mut self,
+        f: &mut ItemFrame,
+        with_frame: bool,
+        by_player: bool,
+        creative: bool,
+    ) {
         // The framed map forgets the frame, except when the drops are off and
         // something caused the break (`removeFramedMap` runs only for a null
         // `causedBy` then).
         if self.ui.rules.bool("entity_drops") || !by_player {
             self.remove_framed_map(f);
         }
-        if !self.ui.rules.bool("entity_drops") || (by_player && self.creative) {
+        if !self.ui.rules.bool("entity_drops") || (by_player && creative) {
             return;
         }
         let s = f.step().map(f64::from);
@@ -498,7 +576,7 @@ impl Game<'_> {
             self.entity_killed_event_by(center(&f), self.explosion_kill_credit());
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
-            self.drop_frame_items(&mut f, true, false);
+            self.drop_frame_items(&mut f, true, false, false);
             // ItemFrame.dropItem(level, causedBy): BLOCK_CHANGE after the drops.
             let ctx = self.who_context(None, None);
             self.post_game_event("minecraft:block_change", center(&f), ctx);
@@ -532,7 +610,7 @@ impl Game<'_> {
                     if f.item.is_some() {
                         self.frame_output_changed(f.pos);
                     }
-                    self.drop_frame_items(&mut f, true, false);
+                    self.drop_frame_items(&mut f, true, false, false);
                     // ItemFrame.dropItem(level, null): sound, drops, then event.
                     let ctx = self.who_context(None, None);
                     self.post_game_event("minecraft:block_change", center(&f), ctx);
@@ -548,11 +626,15 @@ impl Game<'_> {
         // Each with its frame's type: a pack tells a glow frame and what it holds apart by its
         // `entityId` (`glow_item_frame` in entity.properties), the item drawn within its frame.
         let mut maps: Vec<(i32, glam::Mat4, u32, bool, &'static str)> = Vec::new();
-        let mut items: Vec<(ItemStack, u32, glam::Mat4, u8, bool, &'static str)> = Vec::new();
+        let mut items: Vec<FramedItem> = Vec::new();
         // ItemFrame.shouldRenderAtSqrDistance: 1024 blocks at a view scale
         // of 1.
         let range = 16.0 * 64.0 * self.view_scale();
         for f in &self.item_frames {
+            // LevelExtractor: the camera entity is not drawn from its own eyes.
+            if self.hides_as_camera(f.id) {
+                continue;
+            }
             let entity_start = out.len();
             self.mark_entity(entity_start, f.kind());
             let map = f.item.as_ref().and_then(super::maps::map_id);
@@ -700,38 +782,41 @@ impl Game<'_> {
                 * glam::DMat4::from_translation(glam::DVec3::new(0.0, 0.0, depth))
                 * glam::DMat4::from_rotation_z((f64::from(f.rotation) * 45.0).to_radians())
                 * glam::DMat4::from_scale(glam::DVec3::splat(0.5));
-            items.push((
+            items.push(FramedItem {
                 stack,
-                f.id,
-                m.as_mat4(),
-                item_light,
-                cull_contents,
-                f.kind(),
-            ));
+                id: f.id,
+                matrix: m.as_mat4(),
+                light: item_light,
+                cull: cull_contents,
+                kind: f.kind(),
+                // `ItemFrameRenderer.extractRenderState` hands the frame entity
+                // itself to the item model (`updateForNonLiving`), so a framed
+                // compass's needle reads the frame's position and yaw.
+                owner: frame_owner(f),
+            });
         }
         // `extractRenderState`: FIXED, seeded by the frame entity.
         let skinning = self.skinning();
         let lights = horizon_client::block_entity_render::diffuse_lights(self.nether_lighting());
-        for (stack, id, m, light, cull, kind) in items {
+        for item in items {
             let entity_start = out.len();
-            self.mark_entity(entity_start, kind);
-            self.mark_motion(entity_start, Self::MOTION_FRAME_ITEM | u64::from(id));
-            let owner = super::item_draw::owner_at([0.0; 3], 0.0, "minecraft:item_frame");
+            self.mark_entity(entity_start, item.kind);
+            self.mark_motion(entity_start, Self::MOTION_FRAME_ITEM | u64::from(item.id));
             let state = self.resolve_item(
-                &stack,
+                &item.stack,
                 horizon_assets::item_model::DisplayContext::Fixed,
-                Some(&owner),
-                id as i32,
+                Some(&item.owner),
+                item.id as i32,
             );
-            let light = horizon_client::block_entity_render::vertex_light(light);
+            let light = horizon_client::block_entity_render::vertex_light(item.light);
             // Posed on the GPU when every layer can be.
             let skinned = skinning
-                .then(|| self.submit_item_skinned(&state, &[m], light, lights))
+                .then(|| self.submit_item_skinned(&state, &[item.matrix], light, lights))
                 .flatten();
             if skinned.is_none() {
-                self.submit_item_world(&state, m, light, out);
+                self.submit_item_world(&state, item.matrix, light, out);
             }
-            if cull {
+            if item.cull {
                 self.cull_skinned(out, entity_start, skinned);
             }
         }
@@ -964,3 +1049,7 @@ mod game_event_tests {
         assert_eq!(posted(), [("minecraft:block_change", center, None)]);
     }
 }
+
+#[cfg(test)]
+#[path = "lodestone_compass_tests.rs"]
+mod lodestone_compass_tests;
