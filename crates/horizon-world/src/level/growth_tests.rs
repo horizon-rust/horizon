@@ -3,6 +3,7 @@
 //! absent).
 use super::*;
 use crate::{chunk::BlockState, worldgen::generator::GeneratorData, worldgen::live::LiveFeatures};
+use horizon_core::random::RandomSource;
 use std::{collections::HashMap, path::PathBuf, sync::OnceLock};
 
 struct Fixture {
@@ -666,6 +667,74 @@ fn eyeblossoms_open_at_night_and_wake_neighbours() {
         "neighbour scheduled"
     );
     assert!(w.level.events.iter().any(|e| matches!(e, LevelEvent::Sound { sound, .. } if &**sound == "minecraft:block.eyeblossom.open_long")));
+}
+/// `EyeblossomBlock.Type.spawnTransformParticle` (and the same call in
+/// `FlowerPotBlock.randomTick`): a state change draws a lifetime and a
+/// velocity from the level random and sends one trail particle from the
+/// block's centre, coloured by the type the block becomes.
+#[test]
+fn eyeblossom_state_changes_send_one_trail_particle_of_the_new_colour() {
+    let Some(f) = fixture() else { return };
+    // `EyeblossomBlock.Type.OPEN` and `CLOSED`'s `particleColor`.
+    let (open_color, closed_color) = (16_545_810_u32, 6_250_335_u32);
+    // The four draws the particle takes, from the level random as the test
+    // finds it: `velocity.scale(lifetime)` added to the block's centre.
+    fn expected(level: &Level, centre: [f64; 3]) -> ([f64; 3], i32) {
+        let mut r = level.random.clone();
+        let lifetime = 0.5 + r.next_double();
+        let velocity = [
+            r.next_double() - 0.5,
+            r.next_double() + 1.0,
+            r.next_double() - 0.5,
+        ];
+        (
+            std::array::from_fn(|i| centre[i] + velocity[i] * lifetime),
+            (20.0 * lifetime) as i32,
+        )
+    }
+    fn trails(w: &World) -> Vec<(BlockPos, [f64; 3], u32, i32)> {
+        w.level
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                LevelEvent::TrailParticle {
+                    pos,
+                    target,
+                    color,
+                    duration,
+                } => Some((*pos, *target, *color, *duration)),
+                _ => None,
+            })
+            .collect()
+    }
+    // A planted closed flower at night opens: the OPEN type's colour.
+    let mut w = World::new(f, 7);
+    w.floor("grass_block", 4);
+    let pos = BlockPos::new(0, 64, 0);
+    w.put(pos, w.id("closed_eyeblossom", &[]));
+    w.level.day = 13000;
+    let (target, duration) = expected(&w.level, [0.5, 64.5, 0.5]);
+    f.behaviours.random_tick(&mut w.level, &mut w.ticks, pos);
+    assert_eq!(w.name(pos), "minecraft:open_eyeblossom");
+    assert_eq!(
+        trails(&w),
+        vec![(pos, target, open_color, duration)],
+        "the opening flower sends the open type's trail"
+    );
+    // A potted open flower by day closes: the CLOSED type's colour.
+    let mut w = World::new(f, 9);
+    w.floor("grass_block", 4);
+    let pot = BlockPos::new(1, 64, 1);
+    w.put(pot, w.id("potted_open_eyeblossom", &[]));
+    w.level.day = 6000;
+    let (target, duration) = expected(&w.level, [1.5, 64.5, 1.5]);
+    f.behaviours.random_tick(&mut w.level, &mut w.ticks, pot);
+    assert_eq!(w.name(pot), "minecraft:potted_closed_eyeblossom");
+    assert_eq!(
+        trails(&w),
+        vec![(pot, target, closed_color, duration)],
+        "the closing pot sends the closed type's trail"
+    );
 }
 #[test]
 fn turtle_eggs_crack_at_dawn_on_sand() {

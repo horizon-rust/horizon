@@ -484,6 +484,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 LevelEvent::Player { .. } => {
                     let _ = writeln!(result, "X player");
                 }
+                // `Level.sendParticles`: the fixture draws no particles.
+                LevelEvent::TrailParticle { .. } => {
+                    let _ = writeln!(result, "X trail_particle");
+                }
             }
         }
         for e in &ticks.block_events {
