@@ -58,6 +58,10 @@ pub enum Hurting<'a> {
 pub static HURT_SERVER: OnceLock<fn(Hurting<'_>, &mut f32) -> bool> = OnceLock::new();
 /// Whether [`HURT_SERVER`] canceled the hit (never while it is unset).
 pub fn hurt_server_canceled(hurting: Hurting<'_>, amount: &mut f32) -> bool {
+    // A grouped mob turn: no mod hooks it (`native_client_hooks::Deferred`).
+    if crate::native_client_hooks::deferring() {
+        return false;
+    }
     HURT_SERVER.get().is_some_and(|hook| hook(hurting, amount))
 }
 /// The game's `LivingDamageEvent.Pre` hook (`native_living_damage_pre`), set
@@ -75,6 +79,9 @@ pub fn damage_pre(hurting: Hurting<'_>, amount: &mut f32) {
     let Some(hook) = DAMAGE_PRE.get() else {
         return;
     };
+    if crate::native_client_hooks::deferring() {
+        return;
+    }
     let before = amount.to_bits();
     hook(hurting, amount);
     if amount.to_bits() != before {
@@ -87,9 +94,22 @@ pub fn damage_pre(hurting: Hurting<'_>, amount: &mut f32) {
 }
 /// [`DAMAGE_POST`] with what came off the health (nothing while it is unset).
 pub fn damage_post(hurting: Hurting<'_>, amount: f32) {
-    if let Some(hook) = DAMAGE_POST.get() {
-        hook(hurting, amount);
+    let Some(hook) = DAMAGE_POST.get() else {
+        return;
+    };
+    // A grouped mob turn keeps it for the join. Only mobs are hurt in the mob phase (players
+    // through its events, after it), so another kind is told at once.
+    if let Hurting::Mob(mob, damage) = &hurting
+        && crate::native_client_hooks::deferring()
+    {
+        crate::native_client_hooks::defer(crate::native_client_hooks::Deferred::DamagePost {
+            mob: Box::new((*mob).clone()),
+            damage: **damage,
+            amount,
+        });
+        return;
     }
+    hook(hurting, amount);
 }
 /// A knockback's strength and direction, as `LivingEntity.knockback` has them
 /// before knockback resistance is applied. The entity is pushed away from
@@ -99,6 +119,17 @@ pub struct Knock {
     pub strength: f64,
     pub x: f64,
     pub z: f64,
+}
+/// `CombatRules.getDamageAfterAbsorb`'s weapon: the stack
+/// `DamageSource.getWeaponItem` names, the registry its `armor_effectiveness`
+/// enchantments (Breach) are read from, and the entity that swung it.
+pub struct ArmorWeapon {
+    pub stack: crate::items::ItemStack,
+    pub enchantments: std::sync::Arc<crate::enchant::Enchantments>,
+    /// The causing and direct entity's type id: one entity swung.
+    pub attacker: String,
+    /// `DamageSource.isDirect`: the causing entity swung itself.
+    pub is_direct: bool,
 }
 /// The game's native knockback hook (`native_living_knockback`), set once by
 /// the game: `LivingEntity.knockback`, at its start (`LivingKnockBackEvent`), on the raw strength
@@ -149,6 +180,9 @@ pub fn knockback_canceled(pushed: Hurting<'_>, knock: &mut Knock) -> bool {
     let Some(hook) = KNOCKBACK.get() else {
         return false;
     };
+    if crate::native_client_hooks::deferring() {
+        return false;
+    }
     let before = *knock;
     let canceled = hook(pushed, knock);
     for (now, was) in [
@@ -504,6 +538,8 @@ impl PlayerMotion {
             client_loaded: self.client_loaded,
             rules,
             source,
+            weapon: None,
+            random: &mut self.random,
             living_cause,
             events: &mut self.events,
             dead: &mut h.dead,
@@ -512,6 +548,7 @@ impl PlayerMotion {
             status: self.status.clone(),
             blocking,
             blocked: 0.0,
+            blocking_item_used: false,
             fully_blocked: false,
             block_sound: false,
             knocked: false,
@@ -530,6 +567,7 @@ impl PlayerMotion {
         let outcome = BlockOutcome {
             hurt,
             blocked: environment.blocked,
+            blocking_item_used: environment.blocking_item_used,
             fully_blocked: environment.fully_blocked,
             sound: environment.block_sound,
             knockback: environment.knocked,
@@ -613,6 +651,14 @@ pub(crate) struct Environment<'a> {
     pub(crate) client_loaded: bool,
     pub(crate) rules: HealthRules,
     pub(crate) source: DamageSource<'a, ()>,
+    /// `DamageSource.getWeaponItem` with the registry of its
+    /// `armor_effectiveness` enchantments, for `getDamageAfterArmorAbsorb`.
+    pub(crate) weapon: Option<&'a ArmorWeapon>,
+    /// The victim's own random. `Enchantment.modifyDamageFilteredValue` gives
+    /// its value effects `victim.getRandom()`; `Enchantments::modify_value`
+    /// takes one random for those and for the requirements, which vanilla
+    /// draws from the level's.
+    pub(crate) random: &'a mut horizon_core::random::EntityRandom,
     /// The causing entity is a living non-player (a mob, or its projectile's owner).
     pub(crate) living_cause: bool,
     pub(crate) events: &'a mut Vec<MotionEvent>,
@@ -624,6 +670,7 @@ pub(crate) struct Environment<'a> {
     /// The raised blocking item, if any, and what it blocked.
     pub(crate) blocking: Option<Blocking>,
     pub(crate) blocked: f32,
+    pub(crate) blocking_item_used: bool,
     /// What it blocked covers the whole hit, as difficulty scaled it.
     pub(crate) fully_blocked: bool,
     pub(crate) block_sound: bool,
@@ -704,6 +751,8 @@ pub struct AttackRecord {
 /// The outcome of a hurt with a raised blocking item.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BlockOutcome {
+    /// `hurtBlockingItem` ran, including when reductions resolve to zero.
+    pub blocking_item_used: bool,
     pub hurt: bool,
     pub blocked: f32,
     /// `applyItemBlocking`'s `damageBlocked >= damage`, against the damage
@@ -752,18 +801,44 @@ impl Observer for Environment<'_> {
         Updates(self.events).updated(data, id)
     }
 }
-impl ArmorWorld for Environment<'_> {
+impl<'a> ArmorWorld for Environment<'a> {
     type Error = io::Error;
-    type Weapon = ();
+    type Weapon = &'a ArmorWeapon;
     type ServerLevel = ();
-    fn weapon(&mut self) -> io::Result<Option<()>> {
-        Ok(None)
+    fn weapon(&mut self) -> io::Result<Option<&'a ArmorWeapon>> {
+        Ok(self.weapon)
     }
     fn server_level(&mut self) -> io::Result<Option<()>> {
         Ok(Some(()))
     }
-    fn modify_armor_effectiveness(&mut self, _: (), _: (), value: f32) -> io::Result<f32> {
-        Ok(value)
+    /// `EnchantmentHelper.modifyArmorEffectiveness`: the weapon's
+    /// `armor_effectiveness` effects over the fraction the armour, toughness
+    /// and damage left.
+    fn modify_armor_effectiveness(
+        &mut self,
+        _: (),
+        weapon: &'a ArmorWeapon,
+        value: f32,
+    ) -> io::Result<f32> {
+        let ctx = crate::enchant::EffectContext {
+            // `Enchantment.damageContext` carries no tool, so `match_tool`
+            // matches nothing and never reads the item tables.
+            items: None,
+            tool: None,
+            damage_type: Some(&self.source.definition().name),
+            is_direct: weapon.is_direct,
+            this: Some("minecraft:player"),
+            attacker: Some(&weapon.attacker),
+            direct_attacker: Some(&weapon.attacker),
+            direct_motion: None,
+        };
+        Ok(weapon.enchantments.modify_value(
+            Some(&weapon.stack),
+            "minecraft:armor_effectiveness",
+            &ctx,
+            &mut *self.random,
+            value,
+        ))
     }
 }
 impl ServerDamageEnvironment<Attributes> for Environment<'_> {
@@ -938,6 +1013,7 @@ impl HurtWorld for Environment<'_> {
         if damage <= 0.0 || b.bypassed || b.pierce {
             return Ok(0.0);
         }
+        self.blocking_item_used = true;
         self.blocked = b.rules.resolve(&mut MatchedSets, damage, b.angle)?;
         self.fully_blocked = self.blocked >= damage;
         Ok(self.blocked)

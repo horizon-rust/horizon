@@ -34,7 +34,7 @@ impl Game<'_> {
 
     /// `PlayerList.getPlayers` but the player in place: the guests who
     /// joined the world.
-    fn command_players(&self) -> impl Iterator<Item = &Guest> {
+    pub(in crate::game) fn command_players(&self) -> impl Iterator<Item = &Guest> {
         let acting = self.lan_acting;
         self.lan
             .iter()
@@ -59,6 +59,12 @@ impl Game<'_> {
         self.source_entity()
             .filter(|t| t.is_player())
             .unwrap_or(Target::Player)
+    }
+
+    /// The name of the server's own source: "Rcon" for a command an RCON client sent
+    /// (`RconConsoleSource`), "Server" otherwise (`MinecraftServer.createCommandSourceStack`).
+    pub(in crate::game) fn server_name(&self) -> Text {
+        Text::literal(if self.rcon_source { "Rcon" } else { "Server" })
     }
 
     /// `PlayerList.getPlayerByName`: names are not case sensitive. Horizon:

@@ -29,11 +29,13 @@ EXEMPT = {
     "build_release.py": "builds and packs the release",
     "release_train.py": "release bookkeeping",
     "pr_ready.py": "runs cargo checks and parity.py",
+    "test_scope.py": "names the crates a pull request's tests cover, starts no game",
     "test_friends_integration_parity.py": "builds binaries; test_friends.Game isolates every game through integration_env",
     "test_management_protocol_parity.py": "starts both servers through server_bench.Server, which uses lab.game_env",
     "test_item_use_order_parity.py": "starts servers through test_server_knockback_parity.run_side; its Server uses game_environment",
     "test_bed_explosion_parity.py": "starts servers through test_server_knockback_parity.run_side; its Server uses game_environment",
     "port_harness.py": "ports Java code, starts no game",
+    "profile_client_e2e.py": "starts its games through agent_control_e2e.scratch, which uses game_env",
 }
 
 

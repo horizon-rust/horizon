@@ -6,6 +6,9 @@ use super::{Game, commands::Target};
 #[cfg(test)]
 use super::commands;
 #[cfg(test)]
+#[path = "bee_sting_tests.rs"]
+mod bee_sting_tests;
+#[cfg(test)]
 #[path = "revenge_home_tests.rs"]
 mod revenge_home_tests;
 #[cfg(test)]
@@ -13,7 +16,7 @@ mod revenge_home_tests;
 mod zombie_ignite_tests;
 use horizon_client::{
     health::HealthEvent,
-    mobs::{Mob, Species, Who},
+    mobs::{Damage, Mob, Species, Who},
     motion::MotionEvent,
     particles::{ParticleOptions, ParticleType},
     text::Text,
@@ -143,6 +146,9 @@ pub(super) struct CombatTracker {
     /// A firework rocket's burst is hurting the player now: the rocket is
     /// the direct entity (`rocket_hurt_player`).
     pub(super) rocket_hit: bool,
+    /// The arrow hurting the player now pierces (`AbstractArrow.getPierceLevel` above 0):
+    /// `LivingEntity.applyItemBlocking` lets it past a raised shield (`arrow_hits_player`).
+    pub(super) piercing_hit: bool,
     /// The player whose melee hit is landing on the player now: where they
     /// stand and the seconds their weapon disables a shield for
     /// (`getSecondsToDisableBlocking`).
@@ -383,6 +389,9 @@ impl Game<'_> {
                         "resisted" => self.award_custom_stat("damage_resisted", *amount),
                         "absorbed" => self.award_custom_stat("damage_absorbed", *amount),
                         "blocked" => self.award_custom_stat("damage_blocked_by_shield", *amount),
+                        // ServerPlayer.jumpFromGround: a ground jump, counted
+                        // with the other statistics the tick's events carry.
+                        "jump" => self.award_custom_stat("jump", *amount),
                         _ => {}
                     }
                     continue;
@@ -823,6 +832,24 @@ fn fall_location_of(name: &str, trapdoor: bool) -> &'static str {
     }
 }
 
+/// Whether the causing entity deals `kind` itself, so it is the source's direct
+/// entity too: a melee hit (`DamageSources.mobAttack`, `playerAttack`, a mace's
+/// or a spear's, a ram's no-aggro blow), a sting, a sonic boom, thorns.
+pub(super) fn melee(kind: horizon_client::mobs::DamageKind) -> bool {
+    use horizon_client::mobs::DamageKind as K;
+    matches!(
+        kind,
+        K::PlayerAttack
+            | K::MaceSmash
+            | K::Spear
+            | K::MobAttack
+            | K::MobAttackNoAggro
+            | K::Sting
+            | K::SonicBoom
+            | K::Thorns
+    )
+}
+
 #[cfg(test)]
 mod fall_location_tests {
     use super::fall_location_of;
@@ -868,6 +895,52 @@ impl Game<'_> {
             );
         }
         hurt
+    }
+    /// `Bee.doHurtTarget`: the sting, then, only when it landed, the stinger
+    /// in the victim, the poison and the sting sound. A refused sting gives
+    /// the bee back the stinger and the anger `sting` set inside its tick.
+    pub(super) fn sting(&mut self, target: Who, amount: f32, poison_ticks: i32, source: Damage) {
+        let from = source.from.unwrap_or_default();
+        let mob = match source.attacker {
+            Some(Who::Mob(id)) => Some(id),
+            _ => None,
+        };
+        let landed = match target {
+            Who::Player => {
+                self.hurt_player_from(amount, Some(from), "minecraft:mob_attack", Some(mob))
+            }
+            Who::Mob(id) => self.mob_attacks_mob(id, amount, source),
+        };
+        self.combat.hit_landed = landed;
+        if !landed {
+            if let Some(b) = mob.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id)) {
+                horizon_client::mobs::bee::sting_refused(b);
+            }
+            return;
+        }
+        match target {
+            Who::Player => {
+                self.combat.stuck.add_stinger();
+                if poison_ticks > 0 {
+                    self.give_player_effect("minecraft:poison", poison_ticks, 0);
+                }
+            }
+            Who::Mob(id) if poison_ticks > 0 => {
+                if let Some(t) = self.mobs.iter_mut().find(|m| m.id == id) {
+                    t.add_effect("minecraft:poison", poison_ticks, 0);
+                }
+            }
+            Who::Mob(_) => {}
+        }
+        let Some(mob) = mob else {
+            return;
+        };
+        if let Some(b) = self.mobs.iter_mut().find(|m| m.id == mob)
+            && horizon_client::mobs::bee::sting_landed(b)
+        {
+            self.audio
+                .play("minecraft:entity.bee.sting", Some(from), 1.0, 1.0);
+        }
     }
     /// Whether a hit from a mob's tick on `target`, handled after the mob
     /// loop, comes after a tick of the target that vanilla runs after the hit:
@@ -1025,7 +1098,7 @@ mod stuck_tests {
 
 #[cfg(test)]
 mod guest_hit_tests {
-    use horizon_client::mobs::{Mob, MobEvent};
+    use horizon_client::mobs::{Damage, DamageKind, Mob, MobEvent, Species, Who};
     use horizon_client::motion::PlayerMotion;
     use horizon_core::geometry::Vec3;
 
@@ -1053,10 +1126,16 @@ mod guest_hit_tests {
                 ticks: 140,
                 amplifier: 0,
             },
-            MobEvent::StingPlayer {
+            MobEvent::Sting {
+                target: Who::Player,
                 amount: 2.0,
-                from,
                 poison_ticks: 200,
+                source: Damage {
+                    kind: DamageKind::Sting,
+                    attacker: Some(Who::Mob(5)),
+                    from: Some(from),
+                    attacker_species: Some(Species::Bee),
+                },
             },
         ];
         for hit in hits {

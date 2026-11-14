@@ -31,6 +31,8 @@ pub(in crate::game) enum Slot {
     /// An armor stand's equipment (`ArmorStand::SLOTS` index).
     Stand(u32, usize),
     Frame(u32),
+    /// A dropped item's stack: `ItemEntity.getSlot(0)`, the `contents` slot.
+    Item(u32),
     /// A chest or hopper minecart's slot (`ContainerEntity.getChestVehicleSlot`).
     Cart(u32, usize),
     Block([i32; 3], usize),
@@ -192,6 +194,16 @@ impl Game<'_> {
             Owner::Entity(Target::Frame(id)) => {
                 if matches_name(name, "container.0") || matches_name(name, "contents") {
                     add(Slot::Frame(*id));
+                }
+            }
+            // `ItemEntity.getSlot(0)`: `contents`, `container.0` and `hotbar.0`
+            // are all slot 0 (`SlotRanges`), and it holds the stack.
+            Owner::Entity(Target::Item(id)) => {
+                if matches_name(name, "contents")
+                    || matches_name(name, "container.0")
+                    || matches_name(name, "hotbar.0")
+                {
+                    add(Slot::Item(*id));
                 }
             }
             // `getChestVehicleSlot` takes any index below `getContainerSize`.
@@ -444,6 +456,12 @@ impl Game<'_> {
                 .cloned()
                 .flatten(),
             Slot::Frame(id) => self.item_frames.iter().find(|f| f.id == *id)?.item.clone(),
+            Slot::Item(id) => self
+                .dropped
+                .iter()
+                .find(|e| e.id == *id)
+                .map(|e| e.stack.clone())
+                .filter(|s| &*s.item != "minecraft:air" && s.count > 0),
             Slot::Cart(id, i) => self.cart_slots(*id)?.get(*i).cloned().flatten(),
             Slot::Block(p, i) => self
                 .world
@@ -729,6 +747,17 @@ impl Game<'_> {
                 }
                 true
             }
+            Slot::Item(id) => match self.dropped.iter_mut().find(|e| e.id == *id) {
+                Some(entity) => {
+                    // `ItemEntity.setItem`: the stack is the entity's.
+                    match stack.filter(|s| &*s.item != "minecraft:air" && s.count > 0) {
+                        Some(stack) => entity.stack = stack,
+                        None => entity.stack = ItemStack::new("minecraft:air", 0),
+                    }
+                    true
+                }
+                None => false,
+            },
             Slot::Frame(id) => match self.item_frames.iter().position(|f| f.id == *id) {
                 Some(i) => {
                     self.set_frame_item(i, stack);
@@ -1039,14 +1068,7 @@ impl Game<'_> {
                                 .unwrap_or(Tag::Compound(Default::default())),
                             v => horizon_client::scoreboard::json_to_tag(v),
                         };
-                        edit_components(&mut stack, |c| {
-                            let mut data = match c.get(&"minecraft:custom_data".into()) {
-                                Some(t @ Tag::Compound(_)) => t.clone(),
-                                _ => Tag::Compound(Default::default()),
-                            };
-                            merge_compound(&mut data, &tag);
-                            c.insert("minecraft:custom_data".into(), data);
-                        });
+                        set_custom_data(&mut stack, &tag);
                     }
                     "minecraft:set_components" => {
                         let patch = m["components"].clone();
@@ -1576,6 +1598,22 @@ fn edit_components(stack: &mut ItemStack, f: impl FnOnce(&mut horizon_world::nbt
     stack.damage = damage;
     stack.extra = extra;
     stack.tidy();
+}
+/// `SetCustomDataFunction.run`: `CustomData.update(stack, tag -> tag.merge(value))`.
+fn set_custom_data(stack: &mut ItemStack, value: &Tag) {
+    edit_components(stack, |c| {
+        let mut data = match c.get(&"minecraft:custom_data".into()) {
+            Some(t @ Tag::Compound(_)) => t.clone(),
+            _ => Tag::Compound(Default::default()),
+        };
+        merge_compound(&mut data, value);
+        // Vanilla CustomData.update removes the component when the result is empty.
+        if matches!(&data, Tag::Compound(m) if m.is_empty()) {
+            c.remove(&"minecraft:custom_data".into());
+        } else {
+            c.insert("minecraft:custom_data".into(), data);
+        }
+    });
 }
 /// `CompoundTag.merge`: nested compounds merge, other values replace.
 fn merge_compound(into: &mut Tag, from: &Tag) {
@@ -2815,3 +2853,19 @@ mod registered_slot_source_preservation_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod set_custom_data_tests {
+    use super::*;
+
+    #[test]
+    fn merging_an_empty_tag_into_a_stack_without_custom_data_adds_no_component() {
+        let mut stack = ItemStack::new("minecraft:stick", 1);
+        set_custom_data(&mut stack, &Tag::Compound(Default::default()));
+        let saved = horizon_client::item_data::encode_components(&stack);
+        assert!(saved.is_none_or(|c| c.get("minecraft:custom_data").is_none()));
+    }
+}
+
+#[cfg(test)]
+mod item_entity_contents_tests;

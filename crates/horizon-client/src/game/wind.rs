@@ -3,6 +3,7 @@
 //! `TRIGGER_BLOCK`: no damage, only knockback and the blocks that react).
 use super::Game;
 use super::entity::{Blast, Entity as _, for_each_entity_mut};
+use super::minecarts::CartHit;
 use horizon_client::advancements::EntityView;
 use horizon_client::join_seq::Joined as _;
 use horizon_client::{
@@ -92,6 +93,50 @@ fn triggers(name: &str) -> bool {
         || n == "bell"
 }
 impl Game<'_> {
+    /// `Player.itemAttackInteraction` applies trigger-only held-item effects
+    /// after an EnderDragonPart is successfully hit.
+    pub(super) fn post_attack_dragon_burst(&mut self) {
+        if let Some(held) = self.held().cloned() {
+            self.post_attack_bursts(&held, "minecraft:ender_dragon");
+        }
+    }
+
+    /// `ServerExplosion.hurtEntities` knockback for a trigger-only blast such
+    /// as Wind Burst. The dragon is not in the normal entity lists, but its
+    /// body still receives the blast impulse (without taking damage).
+    pub(super) fn wind_burst_knockback(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        multiplier: f32,
+        blocks: &[[i32; 3]],
+    ) {
+        let Some(d) = self.dragon.as_ref() else {
+            return;
+        };
+        let whole = d.whole_box();
+        let (lo, hi) = (whole.min_position(), whole.max_position());
+        let exposure = self.seen_percent(center, [lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+        let Some((id, mut push)) = self
+            .dragon
+            .as_ref()
+            .and_then(|d| Some((d.id, d.explosion_knockback(center, radius, exposure)?)))
+        else {
+            return;
+        };
+        for component in &mut push {
+            *component *= f64::from(multiplier);
+        }
+        self.native_explosion_knockback(self.dim.id(), center, blocks, Some(id), &mut push);
+        if let Some(d) = self.dragon.as_mut() {
+            d.velocity = Vec3::new(
+                d.velocity.x + push[0],
+                d.velocity.y + push[1],
+                d.velocity.z + push[2],
+            );
+        }
+    }
+
     /// `WindChargeItem.use`.
     pub(super) fn throw_wind_charge(&mut self) -> Result<bool> {
         let (Some(eye), Some(p)) = (self.eye_position(), self.player.as_ref()) else {
@@ -153,7 +198,13 @@ impl Game<'_> {
         if let Some(i) = self.boats.iter().position(|b| b.id == id) {
             self.hurt_boat(i, amount, creative);
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-            self.hurt_cart(i, amount, creative, false);
+            self.hurt_cart(
+                i,
+                amount,
+                creative,
+                false,
+                CartHit::projectile(p.owner, p.guest),
+            );
         } else {
             self.projectile_hurts_frame(id, p.owner == Some(Who::Player), creative);
         }
@@ -572,6 +623,7 @@ impl Game<'_> {
         self.post_game_event("minecraft:explode", center, ctx);
         let mut targets = self.wind_positions(center, radius);
         let pushed = self.wind_knockback(center, radius, multiplier, breeze, wind_charge, &targets);
+        self.wind_burst_knockback(center, radius, multiplier, &targets);
         let block_count = targets.len();
         // Explosion.canTriggerBlocks: a breeze's charge needs mob griefing.
         if !breeze || self.ui.rules.bool("mob_griefing") {
@@ -677,6 +729,7 @@ impl Game<'_> {
             may_build: true,
             can_eat: false,
             game_master: false,
+            respawn_point: None,
         };
         self.with_level(|b, level, ticks| {
             b.use_without_item(
@@ -741,6 +794,10 @@ impl Game<'_> {
     }
 }
 #[cfg(test)]
+#[path = "wind_dragon_tests.rs"]
+mod wind_dragon_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -766,6 +823,7 @@ mod tests {
         assert!(!push_waits_for_tick(false, 3, Some(7)), "ticks before it");
         assert!(!push_waits_for_tick(true, 3, None), "not a charge's burst");
         let tnt = crate::game::tnt::PrimedTnt {
+            used_portal: false,
             rotation: [0.0, 0.0],
             id: 1,
             position: Vec3::ZERO,

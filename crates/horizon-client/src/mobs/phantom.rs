@@ -55,9 +55,6 @@ fn can_attack(w: &MobWorld) -> bool {
 fn can_attack_seen(m: &mut Mob, w: &MobWorld) -> bool {
     can_attack(w) && m.sees(w, Who::Player)
 }
-fn sea_level() -> i32 {
-    63
-}
 /// `PhantomAttackPlayerTargetGoal`: every three seconds, the player
 /// within 16 blocks across and 64 up or down.
 #[derive(Clone, Debug)]
@@ -103,7 +100,7 @@ impl AttackStrategy {
             return;
         };
         let y = (t.position.y.floor() as i32 + 20 + m.random.next_int_bound(20).unwrap_or(0))
-            .max(sea_level() + 1);
+            .max(cx.w.sea_level + 1);
         m.extra.home = Some([t.position.x.floor() as i32, y, t.position.z.floor() as i32]);
     }
 }
@@ -129,9 +126,6 @@ impl Goal for AttackStrategy {
                 a[2],
             ]);
         }
-    }
-    fn every_tick(&self) -> bool {
-        true
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if !m.extra.flag {
@@ -280,9 +274,19 @@ impl Goal for SweepAttack {
         if reach.intersects(t.bounds) {
             super::ai::do_hurt_target(m, who, cx);
             m.extra.flag = false;
-            // LevelEvent 1039: the bite.
-            cx.events
-                .push(MobEvent::Sound("entity.phantom.bite", m.center(), 1.0, 1.0));
+            // LevelEvent 1039: the client plays the bite at 0.3 volume, a
+            // 0.9-1.0 pitch, and a silent phantom never sends it.
+            if !m.silent {
+                cx.events.push(MobEvent::LevelEvent {
+                    id: 1039,
+                    pos: [
+                        m.position.x.floor() as i32,
+                        m.position.y.floor() as i32,
+                        m.position.z.floor() as i32,
+                    ],
+                    data: 0,
+                });
+            }
         } else if m.horizontal_collision || m.hurt_time > 0 {
             m.extra.flag = false;
         }
@@ -376,6 +380,10 @@ pub fn flap_sound(m: &Mob, events: &mut Vec<MobEvent>) {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "phantom_dive_tests.rs"]
+mod dive_tests;
 
 #[cfg(test)]
 mod tests {

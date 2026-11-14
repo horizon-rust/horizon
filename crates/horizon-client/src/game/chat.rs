@@ -7,7 +7,7 @@ use super::{Game, Screen};
 use horizon_client::{
     chat::{
         Chat, ChatAbilities, ChatAction, ChatScreen, ChatSource, ChatVisibility, Commands,
-        SYSTEM_INDICATOR, normalize_chat_message,
+        QUEUE_EXPAND_ID, SYSTEM_INDICATOR, normalize_chat_message,
     },
     command::{ArgType, Dispatcher, MOD_COMMAND, Registries},
     gamerules::GameRules,
@@ -32,6 +32,18 @@ pub(super) fn chat_tree(
         Some(server) => &server.chat_tree,
         None => horizon_client::command::vanilla::game_dispatcher(),
     }
+}
+/// The arguments of a typed `/profiler` the client answers itself: only when the chat tree's `profiler` is Horizon's, else the server or mod that owns the name runs it.
+fn horizon_profiler_args<'a>(
+    message: &'a str,
+    server_tree: Option<&horizon_client::command::Dispatcher>,
+) -> Option<&'a str> {
+    let args = message
+        .strip_prefix('/')
+        .and_then(super::profile_capture::profiler_args)?;
+    server_tree
+        .is_none_or(|tree| tree.has_horizon_profiler())
+        .then_some(args)
 }
 use winit::{
     event::KeyEvent,
@@ -155,7 +167,7 @@ impl Game<'_> {
             Some(tree) => tree,
             None => horizon_client::command::vanilla::game_dispatcher(),
         };
-        with_studio_commands(&with_native_commands(base, &names))
+        with_studio_commands(&with_native_commands(base, &names)).with_profiler()
     }
 }
 
@@ -968,6 +980,9 @@ impl Game<'_> {
         self.sync_enchantment_registries();
         // After the export, which keys the registry with vanilla's tags.
         self.ui.registries.sync_damage_type_ids();
+        // The world's packs' item and block tags join vanilla's, as
+        // `TagLoader` binds them before the commands exist.
+        self.sync_pack_tag_ids();
     }
     /// The block the player is looking at, for coordinate suggestions, and
     /// the entity, for entity arguments (ClientSuggestionProvider).
@@ -1045,7 +1060,7 @@ impl Game<'_> {
         self.capture(false);
     }
     /// The open chat box's text and its cursor, counted in characters; `None`
-    /// while the chat screen isn't open. API @API:chat_input@.
+    /// while the chat screen isn't open. API 559.
     #[allow(dead_code)]
     pub(super) fn native_chat_input(&self) -> Option<(String, usize)> {
         let screen = self.ui.chat_screen.as_ref()?;
@@ -1055,7 +1070,7 @@ impl Game<'_> {
     /// (characters, clamped to the text), as an edit: completions refresh as
     /// they do for typing. What typing can't put in the box isn't put there
     /// either (`chat_box_text`), and the 256-character limit holds. An error
-    /// while the chat screen isn't open. API @API:chat_input@.
+    /// while the chat screen isn't open. API 559.
     #[allow(dead_code)]
     pub(super) fn native_set_chat_input(
         &mut self,
@@ -1403,6 +1418,12 @@ impl Game<'_> {
             return;
         }
         self.ui.chat.add_recent(&message);
+        if let Some(args) =
+            horizon_profiler_args(&message, self.remote.as_ref().map(|r| &r.chat_tree))
+        {
+            self.profiler_chat(args);
+            return;
+        }
         // On a server (single player's own included) the server runs it,
         // unless a client mod owns the command.
         if self.remote.is_some() {
@@ -1480,12 +1501,23 @@ impl Game<'_> {
         } else {
             return;
         }
-        let style = self.ui.chat.style_at(
-            &self.gui.atlas.font,
-            height as i32,
-            cursor.0 as f64,
-            cursor.1 as f64,
-        );
+        let style = self
+            .ui
+            .chat
+            .style_at(
+                &self.gui.atlas.font,
+                height as i32,
+                cursor.0 as f64,
+                cursor.1 as f64,
+            )
+            .or_else(|| {
+                self.ui.chat.queue_style_at(
+                    &self.gui.atlas.font,
+                    height as i32,
+                    cursor.0 as f64,
+                    cursor.1 as f64,
+                )
+            });
         // PvP & HUD's copy on click: a message where the click has nothing else to do.
         if self.pvp_chat().copy
             && !self.has_shift_down()
@@ -1530,10 +1562,23 @@ impl Game<'_> {
                 }
             }
             Some(ClickEvent::RunCommand(command)) => self.click_command(&command),
+            Some(ClickEvent::Profiler(command)) => {
+                if let Some(args) = command
+                    .strip_prefix('/')
+                    .and_then(super::profile_capture::profiler_args)
+                {
+                    self.profiler_chat(args);
+                }
+            }
             // Screen.defaultHandleGameClickEvent: the dialog opens over the
             // screen, and closes back to it.
             Some(ClickEvent::ShowDialog(dialog)) => self.show_dialog_ref(&dialog),
             // Screen.defaultHandleGameClickEvent: custom actions retain chat.
+            // ChatScreen.handleComponentClicked: the queue row's internal id
+            // shows the next held-back message; other custom ids go on.
+            Some(ClickEvent::Custom { id, .. }) if id == QUEUE_EXPAND_ID => {
+                self.accept_next_delayed_message();
+            }
             Some(ClickEvent::Custom { id, payload }) => {
                 if let Some(remote) = &self.remote {
                     remote.session.send_custom_click(&id, payload);
@@ -1683,6 +1728,8 @@ impl Game<'_> {
             .map(|s| s.value());
         self.ui.chat.set_search(&self.gui.atlas, query);
         self.ui.chat.search_prompt = focused && self.pvp.chat_search;
+        // `ChatComponent`'s queue row: the messages Chat Delay holds back.
+        self.ui.chat.queue = self.chat_queue_len();
         if self.ui.hide_gui && !focused {
             return;
         }
@@ -1778,7 +1825,16 @@ impl Game<'_> {
                 .chat
                 .focused_tags(&self.gui.atlas.font, height, cx, cy);
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &tag_icons);
-        if let Some(style) = self.ui.chat.style_at(&self.gui.atlas.font, height, cx, cy) {
+        let style = self
+            .ui
+            .chat
+            .style_at(&self.gui.atlas.font, height, cx, cy)
+            .or_else(|| {
+                self.ui
+                    .chat
+                    .queue_style_at(&self.gui.atlas.font, height, cx, cy)
+            });
+        if let Some(style) = style {
             // ActiveTextCollector.ClickableStyleFinder: a click event, or an
             // insertion while Shift is held (ChatScreen.includeInsertions).
             if style.click.is_some() || (style.insertion.is_some() && self.has_shift_down()) {
@@ -2099,6 +2155,29 @@ const LINK_COPY: usize = 1;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typed_profiler_is_the_clients_unless_the_server_owns_the_name() {
+        let vanilla = horizon_client::command::vanilla::game_dispatcher();
+        let ours = vanilla.with_profiler();
+        assert_eq!(
+            super::horizon_profiler_args("/profiler share", Some(&ours)),
+            Some(" share")
+        );
+        assert_eq!(super::horizon_profiler_args("/profiler", None), Some(""));
+        assert_eq!(
+            super::horizon_profiler_args("/profilers", Some(&ours)),
+            None
+        );
+        let mut server = vanilla.clone();
+        let node = server.literal(0, "profiler");
+        server.executes(node, "server:profiler");
+        let theirs = server.with_profiler();
+        assert_eq!(
+            super::horizon_profiler_args("/profiler share", Some(&theirs)),
+            None
+        );
+    }
 
     /// A mod's text reaches the chat box as typing would leave it: emoji and
     /// accents stay, control characters, DEL and the section sign go.
