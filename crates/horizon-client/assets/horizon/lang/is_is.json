@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Bæta við merki",
   "horizon.studio.topbar.clear_keyframes": "🗑 Hreinsa lykla",
   "horizon.studio.topbar.timeline_hud": "⏱ Tímalína",
-  "horizon.studio.topbar.split_scene": "Skipta senu"
+  "horizon.studio.topbar.split_scene": "Skipta senu",
+  "horizon.options.block_vibration": "Titringur þegar blokk er brotin",
+  "horizon.options.impulse_triggers": "Púlsgikkar",
+  "A tick when you break a block, as in Bedrock.": "Þegar þú brýtur blokk titrar hún, eins og í Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Gikkarnir á Xbox One stýripinna titra með handföngunum."
 }

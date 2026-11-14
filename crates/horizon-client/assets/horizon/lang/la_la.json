@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Notam addere",
   "horizon.studio.topbar.clear_keyframes": "🗑 Imagines clavis purgare",
   "horizon.studio.topbar.timeline_hud": "⏱ Linea temporis",
-  "horizon.studio.topbar.split_scene": "Scaenam scindere"
+  "horizon.studio.topbar.split_scene": "Scaenam scindere",
+  "horizon.options.block_vibration": "Vibratio cum globus frangitur",
+  "horizon.options.impulse_triggers": "Sclopuli impulsus",
+  "A tick when you break a block, as in Bedrock.": "Cum globum frangis, vibrat, sicut in Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Sclopuli moderatoris Xbox One cum manubriis eius vibrant."
 }

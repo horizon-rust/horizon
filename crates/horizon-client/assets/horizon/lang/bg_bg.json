@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Добави маркер",
   "horizon.studio.topbar.clear_keyframes": "🗑 Изчисти ключовите кадри",
   "horizon.studio.topbar.timeline_hud": "⏱ Времева линия",
-  "horizon.studio.topbar.split_scene": "Раздели сцената"
+  "horizon.studio.topbar.split_scene": "Раздели сцената",
+  "horizon.options.block_vibration": "Вибрация при разрушаване на блок",
+  "horizon.options.impulse_triggers": "Импулсни спусъци",
+  "A tick when you break a block, as in Bedrock.": "Когато разрушите блок, той вибрира, както в Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Спусковите бутони на контролер Xbox One вибрират заедно с дръжките му."
 }

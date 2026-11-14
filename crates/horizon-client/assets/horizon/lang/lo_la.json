@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "ເພີ່ມໝາຍ",
   "horizon.studio.topbar.clear_keyframes": "🗑 ລຶບ Keyframes",
   "horizon.studio.topbar.timeline_hud": "⏱ ໄທມ໌ລາຍ",
-  "horizon.studio.topbar.split_scene": "ແຍກສາກ"
+  "horizon.studio.topbar.split_scene": "ແຍກສາກ",
+  "horizon.options.block_vibration": "ການສັ່ນສະເທືອນເມື່ອທຳລາຍບລັອກ",
+  "horizon.options.impulse_triggers": "ທຣິກເກີອິມພັນ",
+  "A tick when you break a block, as in Bedrock.": "ເມື່ອທ່ານທຳລາຍບລັອກ ມັນຈະສັ່ນສະເທືອນ ຄືກັບໃນ Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "ທຣິກເກີຂອງຄອນໂທຣລເລີ Xbox One ສັ່ນສະເທືອນພ້ອມກັບດ້າມຂອງມັນ."
 }

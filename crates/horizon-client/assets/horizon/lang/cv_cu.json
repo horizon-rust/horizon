@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Маркер хуш",
   "horizon.studio.topbar.clear_keyframes": "🗑 Уйрӑм кадрсене тасат",
   "horizon.studio.topbar.timeline_hud": "⏱ Вӑхӑт йӗрӗ",
-  "horizon.studio.topbar.split_scene": "Сценӑна уйӑр"
+  "horizon.studio.topbar.split_scene": "Сценӑна уйӑр",
+  "horizon.options.block_vibration": "Блоксен вибрацийĕ",
+  "horizon.options.impulse_triggers": "Импульс триггерĕсем",
+  "A tick when you break a block, as in Bedrock.": "Блок çурсан вăл Bedrock пек вибрацилет.",
+  "An Xbox One controller's triggers buzz with its handles.": "Xbox One контроллерĕн триггерĕсем унăн авăрĕсемпе пĕрле вибрацилеççĕ."
 }

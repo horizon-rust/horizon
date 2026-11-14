@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Adaugă marcaj",
   "horizon.studio.topbar.clear_keyframes": "🗑 Șterge cadrele-cheie",
   "horizon.studio.topbar.timeline_hud": "⏱ Cronologie",
-  "horizon.studio.topbar.split_scene": "Desparte scena"
+  "horizon.studio.topbar.split_scene": "Desparte scena",
+  "horizon.options.block_vibration": "Vibrație la spargerea blocurilor",
+  "horizon.options.impulse_triggers": "Trăgaci cu impuls",
+  "A tick when you break a block, as in Bedrock.": "Când spargi un bloc, acesta vibrează, ca în Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Trăgacioarele unui controller Xbox One vibrează împreună cu mânerele sale."
 }

@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Pridėti žymę",
   "horizon.studio.topbar.clear_keyframes": "🗑 Išvalyti raktinius kadrus",
   "horizon.studio.topbar.timeline_hud": "⏱ Laiko juosta",
-  "horizon.studio.topbar.split_scene": "Skirti sceną"
+  "horizon.studio.topbar.split_scene": "Skirti sceną",
+  "horizon.options.block_vibration": "Vibracija laužant blokus",
+  "horizon.options.impulse_triggers": "Impulsiniai gaidukai",
+  "A tick when you break a block, as in Bedrock.": "Kai sulaužote bloką, jis vibruoja, kaip Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "„Xbox One“ pultelio gaidukai vibruoja kartu su jo rankenomis."
 }

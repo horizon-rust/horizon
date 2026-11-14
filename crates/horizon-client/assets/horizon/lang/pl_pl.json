@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Dodaj znacznik",
   "horizon.studio.topbar.clear_keyframes": "🗑 Wyczyść klatki kluczowe",
   "horizon.studio.topbar.timeline_hud": "⏱ Oś czasu",
-  "horizon.studio.topbar.split_scene": "Podziel scenę"
+  "horizon.studio.topbar.split_scene": "Podziel scenę",
+  "horizon.options.block_vibration": "Wibracja przy niszczeniu bloków",
+  "horizon.options.impulse_triggers": "Spusty impulsowe",
+  "A tick when you break a block, as in Bedrock.": "Gdy niszczysz blok, wibruje, jak w Bedrocku.",
+  "An Xbox One controller's triggers buzz with its handles.": "Spusty kontrolera Xbox One wibrują razem z jego uchwytami."
 }

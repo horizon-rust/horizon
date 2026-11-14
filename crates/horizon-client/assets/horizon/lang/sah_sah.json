@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Бэлиэ эп",
   "horizon.studio.topbar.clear_keyframes": "🗑 Көтүлгэлэри ыраастаа",
   "horizon.studio.topbar.timeline_hud": "⏱ Таймлайн",
-  "horizon.studio.topbar.split_scene": "Сценаны араар"
+  "horizon.studio.topbar.split_scene": "Сценаны араар",
+  "horizon.options.block_vibration": "Блоктары алдьаттахха дыгыйыы",
+  "horizon.options.impulse_triggers": "Импульс триггердар",
+  "A tick when you break a block, as in Bedrock.": "Блоктары алдьаттахха, Bedrock курдук дыгыйар.",
+  "An Xbox One controller's triggers buzz with its handles.": "Xbox One контроллер триггердара туттардарын кытта дыгыйаллар."
 }

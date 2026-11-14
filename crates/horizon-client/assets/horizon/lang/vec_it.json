@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Zonta marcador",
   "horizon.studio.topbar.clear_keyframes": "🗑 Descanseła i fotogrami ciave",
   "horizon.studio.topbar.timeline_hud": "⏱ Linea del tenpo",
-  "horizon.studio.topbar.split_scene": "Dividi ła sena"
+  "horizon.studio.topbar.split_scene": "Dividi ła sena",
+  "horizon.options.block_vibration": "Vibrazsion co se rompe un bloco",
+  "horizon.options.impulse_triggers": "Griléti a inpulso",
+  "A tick when you break a block, as in Bedrock.": "Co te rompi un bloco, el vibra, come in Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "I griléti de un controller Xbox One i vibra insieme a le so inprese."
 }

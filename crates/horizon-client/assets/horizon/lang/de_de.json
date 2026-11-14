@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Markierung hinzufügen",
   "horizon.studio.topbar.clear_keyframes": "🗑 Schlüsselbilder löschen",
   "horizon.studio.topbar.timeline_hud": "⏱ Zeitleiste",
-  "horizon.studio.topbar.split_scene": "Szene teilen"
+  "horizon.studio.topbar.split_scene": "Szene teilen",
+  "horizon.options.block_vibration": "Vibration beim Blockabbau",
+  "horizon.options.impulse_triggers": "Impulstrigger",
+  "A tick when you break a block, as in Bedrock.": "Wenn du einen Block abbaust, vibriert er, wie in Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Die Trigger eines Xbox-One-Controllers vibrieren zusammen mit seinen Griffen."
 }

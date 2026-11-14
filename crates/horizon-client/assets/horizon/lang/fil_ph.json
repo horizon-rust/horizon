@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Magdagdag ng Marker",
   "horizon.studio.topbar.clear_keyframes": "🗑 Burahin ang mga Keyframe",
   "horizon.studio.topbar.timeline_hud": "⏱ Timeline",
-  "horizon.studio.topbar.split_scene": "Hatiin ang Eksena"
+  "horizon.studio.topbar.split_scene": "Hatiin ang Eksena",
+  "horizon.options.block_vibration": "Pag-vibrate kapag bumabasag ng bloke",
+  "horizon.options.impulse_triggers": "Impulse triggers",
+  "A tick when you break a block, as in Bedrock.": "Kapag bumabasag ka ng bloke, ito ay nag-vibrate, tulad sa Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Ang mga trigger ng Xbox One controller ay nag-vibrate kasama ng mga hawakan nito."
 }

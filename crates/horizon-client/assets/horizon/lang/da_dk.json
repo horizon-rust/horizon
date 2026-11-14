@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Tilføj markør",
   "horizon.studio.topbar.clear_keyframes": "🗑 Ryd nøglebilleder",
   "horizon.studio.topbar.timeline_hud": "⏱ Tidslinje",
-  "horizon.studio.topbar.split_scene": "Opdel scene"
+  "horizon.studio.topbar.split_scene": "Opdel scene",
+  "horizon.options.block_vibration": "Vibration ved blokbrud",
+  "horizon.options.impulse_triggers": "Impulstriggere",
+  "A tick when you break a block, as in Bedrock.": "Når du brækker en blok, vibrerer den, som i Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "En Xbox One-controllers triggere vibrerer sammen med dens håndtag."
 }

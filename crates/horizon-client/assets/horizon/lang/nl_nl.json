@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Markering toevoegen",
   "horizon.studio.topbar.clear_keyframes": "🗑 Keyframes wissen",
   "horizon.studio.topbar.timeline_hud": "⏱ Tijdlijn",
-  "horizon.studio.topbar.split_scene": "Scène splitsen"
+  "horizon.studio.topbar.split_scene": "Scène splitsen",
+  "horizon.options.block_vibration": "Trillen bij blokken breken",
+  "horizon.options.impulse_triggers": "Impulstriggers",
+  "A tick when you break a block, as in Bedrock.": "Als je een blok breekt, trilt het, zoals in Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "De triggers van een Xbox One-controller trillen samen met de handgrepen."
 }

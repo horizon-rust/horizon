@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Ouzhpenn ur merker",
   "horizon.studio.topbar.clear_keyframes": "🗑 Skaotañ an alc'hwezioù framm",
   "horizon.studio.topbar.timeline_hud": "⏱ Linenn amzer",
-  "horizon.studio.topbar.split_scene": "Rannañ ar senenn"
+  "horizon.studio.topbar.split_scene": "Rannañ ar senenn",
+  "horizon.options.block_vibration": "Fibrusadenn ar bloc'hoù",
+  "horizon.options.impulse_triggers": "Tarzhoù impuls",
+  "A tick when you break a block, as in Bedrock.": "Pa torrit ur bloc'had e fiñv, evel e Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "An tarzhoù war ur c'hontroller Xbox One a fiñv gant e zornadoù."
 }

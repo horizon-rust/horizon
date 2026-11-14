@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Apondre una marca",
   "horizon.studio.topbar.clear_keyframes": "🗑 Escafar los imatges clau",
   "horizon.studio.topbar.timeline_hud": "⏱ Cronologia",
-  "horizon.studio.topbar.split_scene": "Fendar la scena"
+  "horizon.studio.topbar.split_scene": "Fendar la scena",
+  "horizon.options.block_vibration": "Vibracion en copant de blòcs",
+  "horizon.options.impulse_triggers": "Gachetas d'impulsion",
+  "A tick when you break a block, as in Bedrock.": "Quand copatz un blòc, vibra, coma dins Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Las gachetas d'una maneta Xbox One vibran amb sas ponhadas."
 }

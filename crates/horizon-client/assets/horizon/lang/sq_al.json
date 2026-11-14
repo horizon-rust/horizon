@@ -1053,5 +1053,9 @@
   "horizon.studio.topbar.add_marker": "Shto shënues",
   "horizon.studio.topbar.clear_keyframes": "🗑 Pastro kuadrot kyç",
   "horizon.studio.topbar.timeline_hud": "⏱ Vija kohore",
-  "horizon.studio.topbar.split_scene": "Ndaj skenën"
+  "horizon.studio.topbar.split_scene": "Ndaj skenën",
+  "horizon.options.block_vibration": "Dridhje kur thyhet blloku",
+  "horizon.options.impulse_triggers": "Tregues impulsi",
+  "A tick when you break a block, as in Bedrock.": "Kur thyen një bllok, ai dridhet, si në Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Treguesit e një kontrolluesi Xbox One dridhen së bashku me dorezat e tij."
 }
