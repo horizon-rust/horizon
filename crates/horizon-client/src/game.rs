@@ -182,6 +182,7 @@ mod golems;
 mod growth;
 mod hand;
 mod headless;
+mod hit;
 mod hud_editor;
 mod hud_room;
 mod ime;
@@ -500,6 +501,7 @@ mod zombie_reinforcements;
 mod zombie_villagers;
 use event_loop::EventLoopCtl;
 use hand::interact_location;
+pub(crate) use hit::Hit;
 use horizon_client::random_source;
 // `Action` here is the title screen's buttons (`title::Action`).
 pub use advancements::AdvancementDisplay;
@@ -562,7 +564,7 @@ use horizon_world::{
     level::{
         Behaviours, BucketContent, Dimension as LevelDimension, EntityQuery, Landing, LevelAccess,
         LevelEvent, PlaceContext, PlaceOutcome, PlacementContext, PlayerContext, PlayerEffect,
-        Ticks, flags as level_flags,
+        RandomTickMaskUpdate, Ticks, flags as level_flags,
     },
     registry::BlockStateId,
 };
@@ -597,7 +599,7 @@ pub use native_reload_listeners::NativeReloadListener;
 pub use native_server::NativeExperienceOrb;
 pub use native_slot_roles::NativeSlotRole;
 pub use native_structures::{NativeStructureBlock, NativeStructureTemplate};
-pub use native_world_columns::NativeColumnBlocks;
+pub use native_world_columns::{NativeColumnBlocks, NativeTerrainColumn};
 pub use native_world_draw::NativeWorldDraw;
 pub use native_world_edit::{NativeBlockEdit, NativeBlockNbt, NativeBlockRun, NativeHeightmap};
 pub use native_world_read::NativeBlockReadError;
@@ -718,22 +720,6 @@ struct Mining {
     /// The latest destroy-speed query, reused for server crack feedback.
     per_tick: f32,
     ticks: u32,
-}
-#[derive(Clone, Copy)]
-pub(crate) struct Hit {
-    pub(crate) pos: [i32; 3],
-    pub(crate) face: [i32; 3],
-    pub(crate) point: [f64; 3],
-}
-impl Hit {
-    /// The block the clicked face leads to (`pos.relative(direction)`).
-    fn beside(&self) -> [i32; 3] {
-        [
-            self.pos[0] + self.face[0],
-            self.pos[1] + self.face[1],
-            self.pos[2] + self.face[2],
-        ]
-    }
 }
 /// What a falling block's tick did (`FallingBlockEntity.tick`).
 enum FallStep {
@@ -3529,11 +3515,7 @@ impl Game<'_> {
             end,
             BlockPos::new(pos[0], pos[1], pos[2]),
         )?;
-        Some(Hit {
-            pos,
-            face: hit.direction.normal(),
-            point: [hit.location.x, hit.location.y, hit.location.z],
-        })
+        Some(Hit::from_block_hit(pos, &hit))
     }
     /// Voxel traversal against non-air, non-fluid blocks, clipped against
     /// each block's outline shape (`BlockGetter.clip` with `ClipContext.Block.OUTLINE`).
@@ -4115,7 +4097,7 @@ impl Game<'_> {
                 .iter()
                 .filter(|g| h.hub.here(g))
                 .filter(|g| !g.fake) // fake players hold small forced tickets below
-                .map(|g| (g.chunk(), g.spectator()))
+                .map(|g| (g.ticket_chunk(), g.spectator()))
                 .collect()
         });
         if let Some(p) = &self.player {
@@ -4483,6 +4465,8 @@ impl Game<'_> {
                         1044 => Some(("minecraft:block.smithing_table.use", 1.0)),
                         // LevelEvent.SOUND_PAGE_TURN (a lectern's page).
                         1043 => Some(("minecraft:item.book.page_turn", 1.0)),
+                        // LevelEvent.SOUND_PHANTOM_BITE: a phantom's bite.
+                        1039 => Some(("minecraft:entity.phantom.bite", 0.3)),
                         // LevelEvent.SOUND_SPLASH_POTION and its instant twin.
                         1053 | 1054 => Some(("minecraft:entity.splash_potion.break", 1.0)),
                         _ => None,
@@ -4500,12 +4484,9 @@ impl Game<'_> {
                                 let r = self.particles.level_random();
                                 2.6 + (r.next_float() - r.next_float()) * 0.8
                             }
-                            1045 | 1046 | 1047 | 1052 => {
-                                self.particles.level_random().next_float() * 0.1 + 0.9
-                            }
-                            1053 | 1054 => {
-                                // LevelEventHandler's client random: impact audio
-                                // must not change the server's bottle XP stream.
+                            1039 | 1045 | 1046 | 1047 | 1052 | 1053 | 1054 => {
+                                // LevelEventHandler draws these from the client
+                                // level's random, not the server's.
                                 self.particles.level_random().next_float() * 0.1 + 0.9
                             }
                             1029 | 1030 | 1042 | 1043 | 1044 => {
@@ -4529,6 +4510,7 @@ impl Game<'_> {
                                 | 1027
                                 | 1029
                                 | 1030
+                                | 1039
                                 | 1045
                                 | 1052
                                 | 1053
@@ -7722,6 +7704,7 @@ impl Game<'_> {
                             pos: b,
                             face,
                             point: p,
+                            inside: false,
                         });
                     }
                     let above = self.world.block(b[0], b[1] + 1, b[2]);
@@ -7733,6 +7716,7 @@ impl Game<'_> {
                             pos: b,
                             face,
                             point,
+                            inside: false,
                         });
                     }
                 } else if !first && !self.res.facts().is_air(state) && f.fluid == Fluid::None {
@@ -7765,9 +7749,7 @@ impl Game<'_> {
             .filter(|s| s.name.ends_with("cauldron"))
             .cloned()?;
         let above = self.world.block(pos[0], pos[1] + 1, pos[2]);
-        let under_water = registry
-            .state(above)
-            .is_some_and(|s| s.name == "minecraft:water");
+        let under_water = cauldrons::is_under_water(self.res.facts(), above);
         Some((state, under_water))
     }
     /// What `BlockTransformer.transformBlock` would do with a held axe, hoe
@@ -7998,7 +7980,7 @@ impl Game<'_> {
                 return Ok(UseResult::Pass);
             };
             // `BucketItem.use`: `level.mayInteract` and `mayUseItemAt`.
-            if !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
+            if self.bucket_use_refused(hit.pos) {
                 return Ok(UseResult::Fail);
             }
             let mut canceled = false;
@@ -8049,7 +8031,7 @@ impl Game<'_> {
         };
         let clicked = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
         if let Some((content, sound, mob)) = bucket {
-            if !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
+            if self.bucket_use_refused(hit.pos) {
                 return Ok(UseResult::Fail);
             }
             let target = self.bucket_target(content, &hit);
@@ -8123,15 +8105,13 @@ impl Game<'_> {
                 );
             }
             self.trigger_block("minecraft:placed_block", target, stack);
-            if !self.creative {
-                *self.held_mut() = Some(ItemStack::new("minecraft:bucket", 1));
-            }
+            self.bucket_emptied(&stack.item);
             return Ok(UseResult::Success { swing: true });
         }
-        if self.use_block_transformer(stack, hit.pos, hit.face)? {
+        if self.may_use_on(hit.pos) && self.use_block_transformer(stack, hit.pos, hit.face)? {
             return Ok(UseResult::Success { swing: true });
         }
-        if item == "honeycomb" {
+        if self.may_use_on(hit.pos) && item == "honeycomb" {
             let registry = self.pack.assets.registry;
             let old = registry.state(clicked);
             if let Some(waxed) = old.and_then(|old| self.res.transformers().waxed(registry, old))
@@ -8613,7 +8593,7 @@ impl Game<'_> {
             self.snap_player_model_pitch();
         }
         self.occupy_bed(head);
-        self.award_custom_stat("sleep_in_bed", 1);
+        self.award_custom_stat(self.slept_in_bed_stat(state), 1);
         self.trigger_player("minecraft:slept_in_bed");
         self.stats.reset("custom", "minecraft:time_since_rest");
     }
@@ -12443,6 +12423,7 @@ fn outline_stop(
         pos,
         face,
         point: std::array::from_fn(|i| origin[i] + dir[i] * t),
+        inside: false,
     })
 }
 /// `VoxelShape.clip` of a fluid source's shape for a ray that starts in the
@@ -12509,13 +12490,13 @@ fn reset_world_progress(adv: &mut advancements::AdvState, stats: &mut stats::Sta
 }
 
 #[cfg(test)]
-mod startup_cpu_tests;
-
+mod entity_model_loading_tests;
+#[cfg(test)]
+mod player_kill_credit_tests;
 #[cfg(test)]
 mod runtime_reset_tests;
-
 #[cfg(test)]
-mod entity_model_loading_tests;
+mod startup_cpu_tests;
 
 /// `LocalPlayer.moveTowardsClosestSpace` at the body's four corners (aiStep, unless a spectator or a
 /// passenger): a corner inside a suffocating block sets a 0.1 speed towards the nearest side that is
@@ -12638,6 +12619,8 @@ struct LandingVibration {
 }
 #[cfg(test)]
 mod allay_pickup_cooldown_tests;
+#[cfg(test)]
+mod cauldron_underwater_tests;
 #[cfg(test)]
 mod dragon_fireball_motion_tests;
 #[cfg(test)]

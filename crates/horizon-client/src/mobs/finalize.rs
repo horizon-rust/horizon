@@ -1007,7 +1007,8 @@ pub fn spawn_egg_is_for(egg: &str, kind: &str) -> bool {
 
 /// `SpawnEggItem.spawnOffspringFromSpawnEgg`: the offspring of a spawn egg
 /// used on a mob of the same kind is a baby of that kind: it starts with
-/// the age of a baby and keeps the parent's variant and colour.
+/// the age of a baby and takes the variant and colour it is given (the
+/// parent's, but a mooshroom's colour rolled by `MushroomCow.getOffspringVariant`).
 pub fn spawn_egg_offspring(child: &mut Mob, species: Species, variant: u8, color: u8) {
     set_baby(child, true);
     child.extra.variant = variant;
@@ -1921,18 +1922,11 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
             }
             S::Rabbit => {
                 let at = block(m);
-                let roll = self.int(100);
-                let mut variant = if self.level.biome_tag("minecraft:spawns_white_rabbits", at) {
-                    if roll < 80 { 1 } else { 3 }
-                } else if self.level.biome_tag("minecraft:spawns_gold_rabbits", at) {
-                    4
-                } else if roll < 50 {
-                    0
-                } else if roll < 90 {
-                    5
-                } else {
-                    2
-                };
+                let mut variant = super::rabbit::random_variant(
+                    self.level.biome_tag("minecraft:spawns_white_rabbits", at),
+                    self.level.biome_tag("minecraft:spawns_gold_rabbits", at),
+                    self.random,
+                );
                 let g = match g {
                     Some(Group::Rabbit(a, v)) => {
                         variant = v;
