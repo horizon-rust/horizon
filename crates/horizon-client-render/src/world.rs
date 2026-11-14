@@ -21,11 +21,78 @@ pub use modified::ModifiedChunks;
 #[derive(Clone, Debug, Default)]
 pub struct DirtySections {
     columns: crate::fast_hash::FxHashMap<(i32, i32), SectionMask>,
+    /// Sections newly marked dirty since the world opened, by [`Dirtied`]
+    /// cause (a section already dirty is not counted again): what makes the
+    /// game mesh, shown by `horizon-ctl state` (`dirtied_sections`).
+    counts: [u64; Dirtied::ALL.len()],
+}
+/// Why a section was marked to mesh again ([`DirtySections::insert_for`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dirtied {
+    /// A column arrived (from a server, the save or generation) or was lit
+    /// the first time: it and its neighbours.
+    Arrived,
+    /// A server's light update (`light_updated`).
+    ServerLight,
+    /// A column a server sent again while resident: the blocks that changed.
+    Resent,
+    /// A server's new biomes for a column.
+    Biomes,
+    /// Blocks set one at a time (`World::set_block`, bulk edits).
+    Blocks,
+    /// The column was lit again here and its light changed.
+    Relit,
+    /// Set aside past the render distance, back in it.
+    BackInView,
+    /// Every section (a setting, a shader pack, the renderer's layout).
+    Everything,
+    /// Anything else.
+    Other,
+}
+impl Dirtied {
+    pub const ALL: [Dirtied; 9] = [
+        Dirtied::Arrived,
+        Dirtied::ServerLight,
+        Dirtied::Resent,
+        Dirtied::Biomes,
+        Dirtied::Blocks,
+        Dirtied::Relit,
+        Dirtied::BackInView,
+        Dirtied::Everything,
+        Dirtied::Other,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Dirtied::Arrived => "arrived",
+            Dirtied::ServerLight => "server_light",
+            Dirtied::Resent => "resent",
+            Dirtied::Biomes => "biomes",
+            Dirtied::Blocks => "blocks",
+            Dirtied::Relit => "relit",
+            Dirtied::BackInView => "back_in_view",
+            Dirtied::Everything => "everything",
+            Dirtied::Other => "other",
+        }
+    }
 }
 impl DirtySections {
-    pub fn insert(&mut self, (x, sy, z): (i32, i32, i32)) {
+    pub fn insert(&mut self, key: (i32, i32, i32)) {
+        self.insert_for(key, Dirtied::Other);
+    }
+    /// Marks a section dirty, counted under `why` when it was not already.
+    pub fn insert_for(&mut self, (x, sy, z): (i32, i32, i32), why: Dirtied) {
         debug_assert!((0..SectionMask::CAPACITY as i32).contains(&sy));
-        self.columns.entry((x, z)).or_default().insert(sy as usize);
+        let mask = self.columns.entry((x, z)).or_default();
+        if !mask.contains(sy as usize) {
+            mask.insert(sy as usize);
+            self.counts[why as usize] += 1;
+        }
+    }
+    /// The sections newly dirtied since the world opened, by cause.
+    pub fn counts(&self) -> impl Iterator<Item = (&'static str, u64)> + '_ {
+        Dirtied::ALL
+            .iter()
+            .map(|&why| (why.name(), self.counts[why as usize]))
     }
     /// Mark all sections in `mask` dirty for column `(x, z)`.
     pub fn insert_column_mask(&mut self, (x, z): (i32, i32), mask: SectionMask) {
@@ -380,12 +447,12 @@ impl World {
             let sy = (y - min_y) >> 4;
             let local_y = y & 15;
             let mark = |dirty: &mut DirtySections, bx: i32, bz: i32| {
-                dirty.insert((bx >> 4, sy, bz >> 4));
+                dirty.insert_for((bx >> 4, sy, bz >> 4), Dirtied::Blocks);
                 if local_y == 0 && sy > 0 {
-                    dirty.insert((bx >> 4, sy - 1, bz >> 4));
+                    dirty.insert_for((bx >> 4, sy - 1, bz >> 4), Dirtied::Blocks);
                 }
                 if local_y == 15 && sy + 1 < sections {
-                    dirty.insert((bx >> 4, sy + 1, bz >> 4));
+                    dirty.insert_for((bx >> 4, sy + 1, bz >> 4), Dirtied::Blocks);
                 }
             };
             let (bx, bz) = (x & 15, z & 15);
@@ -609,7 +676,7 @@ impl Default for HealthRules {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirtySections, Weather, World};
+    use super::{Dirtied, DirtySections, Weather, World};
     use crate::chunk::{Chunk, MIN_Y, SECTIONS};
     use horizon_world::registry::BlockStateId;
     use std::sync::Arc;
@@ -638,6 +705,22 @@ mod tests {
     /// only the distinct keys: one in the interior, a neighbour section on a
     /// section face, a neighbour column on a chunk border and the diagonal at
     /// a corner (eight keys at a corner on a section face).
+    /// A section is counted once, under the cause that first marked it, until it is meshed
+    /// (taken) and marked again.
+    #[test]
+    fn dirtied_sections_count_each_mark_once_by_cause() {
+        let mut dirty = DirtySections::default();
+        dirty.insert_for((0, 3, 0), Dirtied::ServerLight);
+        dirty.insert_for((0, 3, 0), Dirtied::Blocks);
+        dirty.insert_for((0, 4, 0), Dirtied::Blocks);
+        dirty.take_column(0, 0);
+        dirty.insert_for((0, 3, 0), Dirtied::ServerLight);
+        let counts: std::collections::HashMap<_, _> = dirty.counts().collect();
+        assert_eq!(counts["server_light"], 2);
+        assert_eq!(counts["blocks"], 1);
+        assert_eq!(counts["arrived"], 0);
+    }
+
     #[test]
     fn writes_mark_exactly_the_reachable_sections() {
         let mut world = World::new(BlockStateId(0), 0);

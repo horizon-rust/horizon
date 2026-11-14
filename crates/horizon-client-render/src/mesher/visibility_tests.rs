@@ -93,10 +93,20 @@ fn info(solid: bool) -> Info {
         opaque_cube: solid,
         blocks_flow: false,
         ice: false,
+        rt_ice: 0,
+        rt_glass: false,
         opaque_ice: false,
         sturdy: 0,
         face: [0; 6],
         cover: [0.0; 6],
+        light_colour: [0; 3],
+        light_at: [255; 3],
+        flame: 0,
+        spot: 0,
+        map_color: 0,
+        ray: 0,
+        ray_shape: 0,
+        wind_anchor: false,
     }
 }
 

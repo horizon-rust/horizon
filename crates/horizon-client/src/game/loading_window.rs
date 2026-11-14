@@ -39,6 +39,7 @@ pub(super) fn build_renderer(
     shader_pack: shader_packs::PickedPack,
     display: horizon_client::gfx::DisplayReading,
     filtering: (i32, i32),
+    linear: bool,
 ) -> Result<Renderer> {
     let assets = &pack.render;
     let atlas = &gui.atlas;
@@ -76,6 +77,7 @@ pub(super) fn build_renderer(
         api,
         translucent_batching,
         shader_pack.draws_flat,
+        linear,
         settings,
         shader_pack.frame(),
         display,
@@ -84,6 +86,46 @@ pub(super) fn build_renderer(
     // adopted. Configure the world swapchain before its first gameplay frame instead of
     // waiting for `Game::apply_settings` after the handoff.
     renderer.set_present_mode(vsync, settings.present_mode);
+    renderer.set_materials(
+        assets.materials.as_ref(),
+        &assets.animations,
+        &pack.thin_layers,
+    );
+    renderer.set_wind_layers(&pack.wind_layers);
+    renderer.set_water_layers(
+        assets
+            .sprite_layers
+            .get("minecraft:block/water_still")
+            .copied(),
+        assets
+            .sprite_layers
+            .get("minecraft:block/water_flow")
+            .copied(),
+    );
+    renderer.set_lava_layers(
+        assets
+            .sprite_layers
+            .get("minecraft:block/lava_still")
+            .copied(),
+        assets
+            .sprite_layers
+            .get("minecraft:block/lava_flow")
+            .copied(),
+    );
+    renderer.set_glass_layers(
+        assets.sprite_layers.get("minecraft:block/glass").copied(),
+        assets
+            .sprite_layers
+            .get("minecraft:block/glass_pane_top")
+            .copied(),
+    );
+    renderer.set_ice_layers(
+        assets.sprite_layers.get("minecraft:block/ice").copied(),
+        assets
+            .sprite_layers
+            .get("minecraft:block/packed_ice")
+            .copied(),
+    );
     renderer.hud.sprite_animations = atlas
         .sprite_animations
         .iter()
@@ -116,6 +158,7 @@ pub(super) fn loading_renderer(
     panorama: Option<&Arc<horizon_client::gfx::panorama::Faces>>,
     previous: Option<&Renderer>,
     api: horizon_client::graphics::GraphicsApi,
+    linear: bool,
 ) -> Result<Renderer> {
     static FORCEFIELD: [u8; 4] = [0; 4];
     static EMPTY_HUD: [u8; 4] = [0, 0, 0, 255];
@@ -156,6 +199,7 @@ pub(super) fn loading_renderer(
         // It draws no terrain.
         false,
         false,
+        linear,
         // An 8-bit frame, which HDR output takes as well: HDR off until the settings apply.
         &horizon_client::graphics::Graphics::default(),
         Default::default(),
@@ -173,6 +217,10 @@ pub(super) fn loading_renderer(
 
 pub(super) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
+        rain: Default::default(),
+        wetness: Default::default(),
+        rain_map: None,
+        snow: Default::default(),
         weather: &[],
         weather_time: horizon_client::weather::Time::new(0, 0.0),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
@@ -204,6 +252,7 @@ pub(super) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         fog: None,
         dark_disc: false,
         outline: Vec::new(),
+        outline_wind: None,
         outline_after_terrain: false,
         outline_high_contrast: false,
         pvp: Default::default(),
@@ -215,6 +264,7 @@ pub(super) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         glint_ticks: 0.0,
         nether_lighting: false,
         entities: &[],
+        particles_at: u32::MAX,
         static_block_entities: &[],
         visible_static_block_entity_sections: &[],
         static_block_entity_stats: Default::default(),
@@ -234,13 +284,16 @@ pub(super) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         shadow_only: &[],
         celestial: &[],
         stars: None,
+        sun_path_tilt: 0.0,
         hand: &[],
+        rt_body: &[],
         hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),
         border: None,
         game_time: 0.0,
+        moon_phase: 0,
         shader_game_time: 0.0,
         end_portal_sprites: [[0.0; 4]; 2],
         crumbling_sprite: [0.0; 4],

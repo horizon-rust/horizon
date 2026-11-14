@@ -29,6 +29,10 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | --- | --- | --- | --- |
 | `events [--since SEQ] [--limit N]` | `events` | What happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, damage taken (hurt, with its cause), healing, food, dimensions, worlds | `--since` (integer): only events after this seq<br>`--limit` (integer): newest N events |
 | `input-log [--since SEQ] [--limit N] [--origin user\|agent\|game]` | `input_log` | Recent input and who caused it: a person, an agent or the game | `--since` (integer): only events after this seq<br>`--limit` (integer): newest N events<br>`--origin` (user, agent, game): user, agent or game |
+| `gpu-stages [on\|off\|report]` | `gpu_stages` | Time each stage of the GPU's frame in the running game, and read the times | `action` (on, off, report): start, stop or just read (default) |
+| `rt-scale N` | `rt_scale` | Trace RT lighting's rays on the screen at one for NxN pixels | `n` (integer, required): pixels a ray on each side, 0 auto |
+| `rt-sharp DEGREES` | `rt_sharp` | Set the half angle of VR's sharp zone, where RT lighting traces a ray a mask texel | `degrees` (integer, required): half angle, 0 default |
+| `rt-skip MASK` | `rt_skip` | Leave parts of RT lighting's kernel out, to time each alone | `mask` (integer, required): the parts left out |
 | `state` | `state` | Player, world, screen and crosshair target in one reply | none |
 | `looking-at` | `looking_at` | The block or entity under the crosshair | none |
 | `entities [RADIUS] [TYPE]` | `entities` | Mobs, dropped items and experience orbs near the player, nearest first | `radius` (number): search radius in blocks (default 32)<br>`type` (string): entity type filter |
@@ -123,6 +127,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | --- | --- | --- | --- |
 | `give ITEM [COUNT]` | `give` | Add items to the inventory | `item` (string, required): item id<br>`count` (integer): how many (default 1) |
 | `time TICKS` | `time` | Set the time of day (0 sunrise, 6000 noon, 13000 night) | `ticks` (integer, required): day time |
+| `aldhani start\|stop\|SECONDS` | `aldhani` | Run the Eye of Aldhani meteor storm (RT lighting), from SECONDS into its 300 | `when` (string, required): start, stop or the seconds into the event |
 | `setblock X Y Z BLOCK[props]` | `setblock` (destructive) | Set a block (with neighbour updates) | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`block` (string, required): block state such as oak_stairs[facing=east] |
 | `summon KIND [X Y Z] [baby]` | `summon` | Spawn a mob (in front of the player without a position) | `kind` (string, required): mob type<br>`x` (number): X<br>`y` (number): Y<br>`z` (number): Z<br>`baby` (boolean): a baby |
 | `effect ID SECONDS [AMPLIFIER] \| effect clear` | `effect` | Give a status effect, or clear them all | `id` (string, required): effect id such as speed, or clear<br>`seconds` (number): duration<br>`amplifier` (integer): level - 1 (default 0) |

@@ -790,6 +790,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
             depth_stencil: None,
             sample_count: desc.sample_count,
             multiview_mask: desc.multiview_mask,
+            shading_rate: None,
         };
         let mut fb_key = super::FramebufferKey {
             raw_pass: vk::RenderPass::null(),
@@ -847,6 +848,18 @@ impl crate::CommandEncoder for super::CommandEncoder {
                 stencil_ops: ds.stencil_ops,
             });
             fb_key.push_view(ds.target.view.identified_raw_view());
+        }
+        // Horizon: a pass of the foveated size takes the fragment shading rate attachment.
+        self.shading_rate_pass = false;
+        if desc.multiview_mask.is_none() {
+            let rate = self.device.fragment_shading_rate.lock();
+            if let (Some(texel), Some((view, extent))) = (rate.texel, rate.current) {
+                if extent == [desc.extent.width, desc.extent.height] {
+                    rp_key.shading_rate = Some(texel);
+                    fb_key.push_view(view);
+                    self.shading_rate_pass = true;
+                }
+            }
         }
 
         let render_area = vk::Rect2D {
@@ -914,6 +927,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
         unsafe {
             self.device.raw.cmd_end_render_pass(self.active);
         }
+        self.shading_rate_pass = false;
 
         // After all other commands but before debug marker, so this is still seen as part of this pass.
         self.write_pass_end_timestamp_if_requested();
@@ -985,11 +999,16 @@ impl crate::CommandEncoder for super::CommandEncoder {
     unsafe fn set_render_pipeline(&mut self, pipeline: &super::RenderPipeline) {
         unsafe {
             self.current_pipeline_is_multiview = pipeline.is_multiview;
-            self.device.raw.cmd_bind_pipeline(
-                self.active,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.raw,
-            )
+            // Horizon: a pass with a fragment shading rate attachment needs the twin.
+            let raw = if self.shading_rate_pass && pipeline.raw_shading_rate != vk::Pipeline::null()
+            {
+                pipeline.raw_shading_rate
+            } else {
+                pipeline.raw
+            };
+            self.device
+                .raw
+                .cmd_bind_pipeline(self.active, vk::PipelineBindPoint::GRAPHICS, raw)
         };
     }
 

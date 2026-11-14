@@ -10,12 +10,28 @@
 //! the depth test needs to reject hidden fragments early) with one call per
 //! page and band.
 //!
-//! The picture does not change: solid draws write depth and are tested
+//! Past `NEAR` the bands widen with distance, half an octave each: distant
+//! terrain reaches thousands of blocks, and 64-block bands there split its
+//! tiles into thousands of calls a frame (wgpu records each one, twice in VR)
+//! for fragments the near terrain mostly hides already.
+//!
+//! For solid draws the picture does not change: solid draws write depth and are tested
 //! against it, so their order only decides which of two fragments at the
 //! same depth stays, and sections do not share faces.
 
-/// The width of a band, in blocks.
+/// The width of a band, in blocks, up to `NEAR`.
 const BAND: f64 = 64.0;
+const NEAR: f64 = 256.0;
+
+/// The band of a draw `blocks` from the camera.
+fn band(blocks: f64) -> u64 {
+    if blocks < NEAR {
+        (blocks / BAND) as u64
+    } else {
+        (NEAR / BAND) as u64 + ((blocks / NEAR).log2() * 2.0) as u64
+    }
+}
+
 /// Where a run's group sits in its sort key, above band and page.
 const GROUP_SHIFT: u32 = 62;
 
@@ -58,7 +74,7 @@ impl PageRuns {
         tag: [u32; 3],
     ) {
         if len > 0 {
-            let band = (f64::from_bits(distance).sqrt() / BAND) as u64;
+            let band = band(f64::from_bits(distance).sqrt());
             self.runs.push(Run {
                 key: u64::from(group) << GROUP_SHIFT | band << 32 | u64::from(page),
                 start: start as u32,
@@ -163,6 +179,19 @@ mod tests {
         );
         let pages: Vec<_> = pages.iter().map(|p| p.0).collect();
         assert_eq!(pages, [0, 0, 0, 1, 1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn bands_widen_past_near_and_stay_in_order() {
+        assert_eq!([0.0, 63.0, 64.0, 255.0].map(band), [0, 0, 1, 3]);
+        assert_eq!(band(256.0), 4);
+        assert!(band(16384.0) <= 16);
+        let mut last = 0;
+        for d in 0..20000 {
+            let b = band(f64::from(d));
+            assert!(b >= last && b <= last + 1, "{d}");
+            last = b;
+        }
     }
 
     #[test]

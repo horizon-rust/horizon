@@ -40,7 +40,8 @@ impl Game<'_> {
             })
             .collect()
     }
-    /// SkyRenderer.renderSunMoonAndStars: bodies on a frame rotated Y -90 then X by angle.
+    /// SkyRenderer.renderSunMoonAndStars: bodies on a frame rotated Y -90 then X by angle,
+    /// the path tilted by the Sun Path Tilt setting (`celestial::frame`).
     /// Returns the sun and moon quads, and the stars' frame and brightness
     /// (the renderer keeps their geometry, built once). The bodies fade with
     /// the rain (`rainBrightness = 1 - rainLevel`, their colour's alpha).
@@ -53,10 +54,8 @@ impl Game<'_> {
             0x00FF_FFFF | (((1.0 - rain).clamp(0.0, 1.0) * 255.0).round() as u32) << 24;
         let mut out = Vec::new();
         let atlas = &self.gui.atlas;
-        let frame = |angle: f32| {
-            glam::Mat4::from_rotation_y((-90.0f32).to_radians())
-                * glam::Mat4::from_rotation_x(angle.to_radians())
-        };
+        let tilt = self.settings.horizon.sun_path_tilt as f32;
+        let frame = |angle: f32| horizon_client::celestial::frame(angle, tilt);
         let mut body = |name: &str, angle: f32, size: f32, moon: bool| {
             let Some(r) = atlas.sprites.get(name).copied() else {
                 return;
@@ -91,7 +90,11 @@ impl Game<'_> {
                 });
             }
         };
-        body("environment/celestial/sun", sky.sun_angle, 30.0, false);
+        // RT lighting draws the real sun in the sky (terrain.wgsl `rt_sun_disc`).
+        let rt_sky = self.settings.horizon.rt_lighting && self.settings.horizon.linear_light;
+        if !rt_sky {
+            body("environment/celestial/sun", sky.sun_angle, 30.0, false);
+        }
         let phases = [
             "full_moon",
             "waning_gibbous",
@@ -103,12 +106,15 @@ impl Game<'_> {
             "waxing_gibbous",
         ];
         let phase = phases[(self.view_day_time() / 24000).rem_euclid(8) as usize];
-        body(
-            &format!("environment/celestial/moon/{phase}"),
-            sky.moon_angle,
-            20.0,
-            true,
-        );
+        // RT lighting draws the real moon in the sky too (terrain.wgsl `rt_moon_disc`).
+        if !rt_sky {
+            body(
+                &format!("environment/celestial/moon/{phase}"),
+                sky.moon_angle,
+                20.0,
+                true,
+            );
+        }
         // SkyRenderer.renderStars: the static star buffer on the same frame.
         let stars =
             (sky.star_brightness > 0.0).then(|| (frame(sky.star_angle), sky.star_brightness));
@@ -477,6 +483,8 @@ impl Game<'_> {
             camera.y.floor() as i32,
             camera.z.floor() as i32,
         );
+        let physical = self.physical_rain();
+        let physical_snow = self.physical_snow();
         // The 32x32 direction table supports at most a 15-block radius.
         let radius = self.settings.weather_radius.clamp(0, 15);
         let eye = camera.to_array();
@@ -494,6 +502,11 @@ impl Game<'_> {
                 let Some(snow) = self.precipitation(x, cy, z) else {
                     continue;
                 };
+                // The renderer draws physical rain instead (game/rain.rs), and physical snow
+                // (game/snow.rs) unless skipped.
+                if if snow { physical_snow } else { physical } {
+                    continue;
+                }
                 let parameters = self.weather_parameters.get(x, z);
                 let light = self.world.light(x, top.max(cy), z);
                 let coords = i32::from(light & 15) << 4 | i32::from(light >> 4) << 20;

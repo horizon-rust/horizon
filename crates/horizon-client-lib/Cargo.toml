@@ -244,3 +244,19 @@ path = "../horizon-client/tests/wide_states.rs"
 [[example]]
 name = "chunk_encoding_bench"
 path = "../horizon-client/examples/chunk_encoding_bench.rs"
+
+[[example]]
+name = "fluid_mesh_bench"
+path = "../horizon-client/examples/fluid_mesh_bench.rs"
+
+[[example]]
+name = "rt_query_probe"
+path = "../horizon-client/examples/rt_query_probe.rs"
+
+[[example]]
+name = "sound_physics_bench"
+path = "../horizon-client/examples/sound_physics_bench.rs"
+
+[[example]]
+name = "wind_map"
+path = "../horizon-client/examples/wind_map.rs"

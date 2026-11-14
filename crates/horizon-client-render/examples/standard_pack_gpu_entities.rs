@@ -129,6 +129,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         GraphicsApi::Vulkan,
         false,
         true,
+        false, // Linear Light off
         &client::graphics::Graphics::default(),
         Default::default(),
         Default::default(),
@@ -331,6 +332,14 @@ fn main() {
 
 fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
+        particles_at: u32::MAX,
+        rain: Default::default(),
+        wetness: Default::default(),
+        rain_map: None,
+        snow: Default::default(),
+        sun_path_tilt: 0.0,
+        rt_body: &[],
+        moon_phase: 0,
         weather: &[],
         weather_time: client::weather::Time::new(0, 0.0),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
@@ -362,6 +371,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         fog: None,
         dark_disc: false,
         outline: Vec::new(),
+        outline_wind: None,
         outline_after_terrain: false,
         outline_high_contrast: false,
         pvp: Default::default(),

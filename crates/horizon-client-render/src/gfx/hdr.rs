@@ -195,6 +195,9 @@ pub struct Hdr {
     /// Horizon's logo as a 1-bit mask, for calibration's test pictures.
     logo: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
+    /// With Linear Light: the scene's light to the display (hdr_scene.wgsl, `present_scene`).
+    scene_layout: wgpu::BindGroupLayout,
+    scene_pipeline: wgpu::RenderPipeline,
     /// Zeroes the frame's alpha once the world is kept (`keep_world`): what draws after,
     /// the hand, HUD and menus, raises it, so HDR output knows where they cover the world.
     clear_alpha: wgpu::RenderPipeline,
@@ -433,11 +436,78 @@ impl Hdr {
                 alpha: scale_alpha,
             }),
         );
+        // With Linear Light: hdr_scene.wgsl's bindings, its `Params` (hdr.wgsl's first five) at 3.
+        let scene_texture = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Horizon HDR scene"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("hdr_scene.wgsl").into()),
+        });
+        let scene_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Horizon HDR scene bindings"),
+            entries: &[
+                scene_texture(0),
+                scene_texture(1),
+                scene_texture(2),
+                scene_texture(4),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let scene_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Horizon HDR scene"),
+                bind_group_layouts: &[Some(&scene_layout)],
+                ..Default::default()
+            });
+        let scene_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Horizon HDR scene"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &scene_shader,
+                entry_point: Some("vs_hdr"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &scene_shader,
+                entry_point: Some("fs_hdr"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: output.format(),
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         Self {
             logo: logo_mask(device, queue),
             pipeline: pipeline_for(output.format(), output == Output::Pq),
             capture_pipeline: pipeline_for(Output::Pq.format(), false),
             layout: display,
+            scene_layout,
+            scene_pipeline,
             clear_alpha,
             hand_mark,
             params: params(),
@@ -580,6 +650,12 @@ impl Hdr {
             });
         }
         self.targets.as_ref().unwrap().frame.clone()
+    }
+
+    /// The 8-bit frame last drawn (`frame`), if any: an HDR eye's SDR picture, for the window's
+    /// mirror of it.
+    pub fn last_frame(&self) -> Option<wgpu::Texture> {
+        self.targets.as_ref().map(|t| t.frame.clone())
     }
 
     /// Lets the targets go, a scaled screenshot's: the next `frame` makes them again.
@@ -895,6 +971,64 @@ impl Hdr {
             &view,
             "HDR output",
             timing,
+        );
+    }
+
+    /// With Linear Light: writes the finished frame to `target`, the world from `scene`'s light
+    /// (the same size), tone mapped to the peak; the HUD from the frame, at paper white.
+    /// `keep_world` must have run right after the SDR tone mapping.
+    pub fn present_scene(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::Texture,
+        scene: &wgpu::TextureView,
+        mask: &wgpu::TextureView,
+        world: bool,
+    ) {
+        let Some(t) = &self.targets else {
+            return;
+        };
+        queue.write_buffer(
+            &self.params,
+            0,
+            bytemuck::cast_slice(&self.params(world, self.output == Output::Pq)),
+        );
+        let view = |t: &wgpu::Texture| t.create_view(&Default::default());
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Horizon HDR scene bindings"),
+            layout: &self.scene_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view(&t.frame)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view(&t.world)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(scene),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(mask),
+                },
+            ],
+        });
+        Self::draw(
+            encoder,
+            &self.scene_pipeline,
+            &group,
+            &target.create_view(&Default::default()),
+            "Horizon HDR scene",
+            None,
         );
     }
 

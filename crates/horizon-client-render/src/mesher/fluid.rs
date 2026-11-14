@@ -17,8 +17,8 @@ use horizon_world::{
 use std::{convert::Infallible, sync::OnceLock};
 
 /// `FluidRenderer.MAX_FLUID_HEIGHT`.
-const MAX_HEIGHT: f32 = 0.888_888_9;
-const EPSILON: f32 = 0.001;
+pub(super) const MAX_HEIGHT: f32 = 0.888_888_9;
+pub(super) const EPSILON: f32 = 0.001;
 /// `super::step_index` of the unit steps of the padded index: one block east
 /// (+x), one south (+z), one up (+y).
 const X_STEP: isize = 1;
@@ -87,7 +87,7 @@ pub(super) fn coverage(shape: &VoxelShape, direction: Direction) -> f32 {
 }
 /// `isFaceOccludedByState` for a fluid box `height` tall against `state`'s
 /// face opposite `direction`.
-fn occluded_by(direction: Direction, height: f32, state: &Info) -> bool {
+pub(super) fn occluded_by(direction: Direction, height: f32, state: &Info) -> bool {
     let opposite = direction.opposite() as usize;
     match state.face[opposite] {
         0 => false,
@@ -102,7 +102,7 @@ fn occluded_by(direction: Direction, height: f32, state: &Info) -> bool {
     }
 }
 /// `isFaceOccludedBySelf`: the cell's own occlusion face toward `direction`.
-fn occluded_by_self(state: &Info, direction: Direction) -> bool {
+pub(super) fn occluded_by_self(state: &Info, direction: Direction) -> bool {
     match state.face[direction as usize] {
         0 => false,
         1 => true,
@@ -160,9 +160,9 @@ fn atan2(mut y: f64, mut x: f64) -> f64 {
     theta
 }
 /// The padded section as `FlowingFluid.getFlow` sees it (section-relative positions).
-struct FlowView<'a> {
-    pad: &'a Padded,
-    info: &'a [Info],
+pub(super) struct FlowView<'a> {
+    pub(super) pad: &'a Padded,
+    pub(super) info: &'a [Info],
 }
 impl FlowView<'_> {
     fn id(&self, p: BlockPos) -> u32 {
@@ -208,13 +208,21 @@ pub(super) fn splits_north_east(nw: f32, ne: f32, sw: f32, se: f32) -> bool {
     along_nw < along_ne || along_nw == 0.0
 }
 /// Emits one fluid cell at section-relative `[x, y, z]`.
-/// `(nether, shader_pack_lighting, separate_ao, shader_pack)`: the Nether's face shading, only the
+/// `(nether, shader_pack_lighting, separate_ao, shader_pack, rt_lighting)`: the Nether's face shading, only the
 /// up-face value when a shader pack lights the faces (`Mesher::shader_pack_lighting`), whether to
 /// keep pure alpha for separate AO, and whether a `shaders/` pack draws the terrain
-/// (`Mesher::shader_pack`: tops split as Iris splits them, [`splits_north_east`]).
+/// (`Mesher::shader_pack`: tops split as Iris splits them, [`splits_north_east`]), and RT lighting
+/// (`Mesher::rt_lighting`: the alpha's high nibble holds the water's exposure, `with_sea`, not the
+/// fluid face flags).
 pub(super) fn tesselate(
     tables: &MeshTables,
-    (nether, shader_pack_lighting, separate_ao, shader_pack): (bool, bool, bool, bool),
+    (nether, shader_pack_lighting, separate_ao, shader_pack, rt_lighting): (
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+    ),
     pad: &Padded,
     water_color: u32,
     out: &mut SectionMesh,
@@ -265,10 +273,15 @@ pub(super) fn tesselate(
     };
     let color = |by: f32| {
         let rgb = [16, 8, 0].map(|shift| lighting::scale((tint >> shift & 255) as i32, by) as u32);
-        if separate_ao {
+        let color = if separate_ao {
             pack_rgb(rgb)
         } else {
             crate::mesher::emitting(pack_rgb(rgb), emission)
+        };
+        if water {
+            crate::mesher::with_sea(color, water_color >> 24)
+        } else {
+            color
         }
     };
     let height = |step: isize| -> f32 {
@@ -355,7 +368,7 @@ pub(super) fn tesselate(
         if tables.is_animated(layer) && !sprite_layers.contains(&layer) {
             sprite_layers.push(layer);
         }
-        let color = if separate_ao {
+        let color = if separate_ao || rt_lighting {
             color
         } else {
             fluid_face(color, face)

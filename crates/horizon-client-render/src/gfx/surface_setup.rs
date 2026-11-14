@@ -2,8 +2,8 @@
 //! an adapter that can't present to the window gives way to another of its backend
 //! (#13493).
 use super::{
-    Renderer, check_layers, cull, describe_adapter, is_software, oit, pack_timing, startup_step,
-    surface_format, timing,
+    Renderer, check_layers, describe_adapter, device_features, hw_rt_features, is_software,
+    startup_step, surface_format,
 };
 // Ray tracing on request, which the device needs from its creation (gfx.rs may not grow).
 #[path = "ray_query.rs"]
@@ -134,23 +134,8 @@ pub(super) async fn open_adapter(
     // (`MC_GL_KHR_shader_subgroup_*`); storage buffers in vertex shaders, clearing and
     // atomics on images: their buffers and images. Filtering 32-bit float textures: shader
     // packs' RGBA32F buffers, which GL filters and mipmaps. Count draws: GPU culling's (`gpu_culling`).
-    let features = timing::GpuTimer::features(adapter)
-        | pack_timing::PassTiming::features(adapter)
-        | cull::Cull::features(adapter)
-        | oit::features(adapter)
-        | ray_query::features(adapter)
-        | (adapter.features()
-            & (wgpu::Features::INDIRECT_FIRST_INSTANCE
-                | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
-                | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
-                | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-                | wgpu::Features::RG11B10UFLOAT_RENDERABLE
-                | wgpu::Features::SUBGROUP
-                | wgpu::Features::VERTEX_WRITABLE_STORAGE
-                | wgpu::Features::CLEAR_TEXTURE
-                | wgpu::Features::TEXTURE_ATOMIC
-                | wgpu::Features::FLOAT32_FILTERABLE));
+    // Hardware ray queries on request (`ray_query`), and RT lighting's (`hw_rays`) below.
+    let features = device_features(adapter) | ray_query::features(adapter);
     let driver = format!("{} {}", info.driver, info.driver_info);
     startup_step(format_args!(
         "requesting the device (driver {}) with features [{features}] and the adapter's \
@@ -163,15 +148,36 @@ pub(super) async fn open_adapter(
         limits.max_storage_buffer_binding_size,
         limits.max_texture_array_layers,
     ));
+    // RT lighting's hybrid (`hw_rays`): hardware rays where Vulkan offers them, unless
+    // HORIZON_HW_RT=0.
+    let hw_rt = info.backend == wgpu::Backend::Vulkan
+        && adapter.features().contains(hw_rt_features())
+        && !hw_rt_features().is_empty();
     let desc = wgpu::DeviceDescriptor {
         label: Some("Horizon device"),
-        required_features: features,
+        required_features: if hw_rt {
+            // The RTX 4090 build (the `rtx` feature, docs/rtx-4090.md): ray tracing
+            // pipelines too, for the passes horizon-rtx records raw, where the driver has them.
+            let pipelines = if cfg!(feature = "rtx") {
+                adapter.features() & wgpu::Features::EXPERIMENTAL_RAY_TRACING_PIPELINES
+            } else {
+                wgpu::Features::empty()
+            };
+            features | wgpu::Features::EXPERIMENTAL_RAY_QUERY | pipelines
+        } else {
+            features
+        },
         required_limits: limits,
         // Video memory in blocks of 8-64 MiB instead of 128-256 MiB (Vulkan and DirectX 12):
         // with the larger blocks a few small buffers kept whole blocks the arena's pages had
         // left, and over half the video memory reserved was unused (1,344 MiB for 500).
         memory_hints: wgpu::MemoryHints::MemoryUsage,
-        experimental_features: ray_query::experimental(features),
+        // Ray queries are wgpu's experimental API: asked for only where the adapter offers them.
+        experimental_features: if hw_rt {
+            horizon_hdr::ray_query_features()
+        } else {
+            ray_query::experimental(features)
+        },
         ..Default::default()
     };
     #[cfg(not(target_os = "macos"))]

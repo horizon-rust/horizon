@@ -230,6 +230,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         settings.graphics_api(),
         settings.translucent_batching,
         false,
+        false, // Linear Light off
         // HDR off, as the replays draw.
         &horizon_client_render::graphics::Graphics::default(),
         Default::default(),
@@ -683,6 +684,8 @@ fn remesh(
             .map(|_| {
                 scope.spawn(|| {
                     let mut mesher = Mesher {
+                        rt_lighting: false,
+                        smooth_fluids: false,
                         nether_shading: false,
                         shader_pack_lighting: false,
                         separate_ao: false,

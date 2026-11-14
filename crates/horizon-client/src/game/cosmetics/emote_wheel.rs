@@ -28,7 +28,7 @@ pub(in crate::game) struct Wheel {
 /// slice 0 is straight up, then clockwise. None in the dead middle or past the ring.
 pub(in crate::game) fn slice_at(dx: f32, dy: f32, n: usize) -> Option<usize> {
     let r = dx.hypot(dy);
-    if n == 0 || r < INNER || r > OUTER * 1.6 {
+    if n == 0 || !(INNER..=OUTER * 1.6).contains(&r) {
         return None;
     }
     let turn = std::f32::consts::TAU / n as f32;

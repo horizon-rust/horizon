@@ -348,6 +348,16 @@ mod tests {
             sturdy: 0,
             face: [0; 6],
             cover: [0.0; 6],
+            rt_ice: 0,
+            rt_glass: false,
+            light_colour: [0; 3],
+            light_at: [0; 3],
+            flame: 0,
+            spot: 0,
+            map_color: 0,
+            ray: 0,
+            ray_shape: 0,
+            wind_anchor: false,
         }
     }
 

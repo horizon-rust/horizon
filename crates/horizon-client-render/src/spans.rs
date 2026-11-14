@@ -209,6 +209,20 @@ impl Laps {
         (*started, *cpu, *mark) = (now, now_cpu, recorded());
     }
 }
+/// Records the time since `started` under `name`, for a stretch of code a closure can't wrap.
+pub fn mark(name: &'static str, started: Instant) {
+    if ENABLED.load(Ordering::Relaxed) {
+        let ms = started.elapsed().as_secs_f32() * 1000.0;
+        SPANS.with(|s| {
+            s.borrow_mut().push(Span {
+                name,
+                ms,
+                cpu_ms: ms,
+                depth: DEPTH.with(Cell::get),
+            })
+        });
+    }
+}
 /// The CPU time this thread has used, where the platform tells it: a tick
 /// with more wall time than CPU time waited (for a lock, or for a core on a
 /// busy machine).

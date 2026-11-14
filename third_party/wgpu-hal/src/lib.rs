@@ -1204,6 +1204,12 @@ pub trait Device: WasmNotSendSync {
         acceleration_structure: <Self::A as Api>::AccelerationStructure,
     );
     fn tlas_instance_to_bytes(&self, instance: TlasInstance) -> Vec<u8>;
+    /// Appends `instance`'s bytes, as `tlas_instance_to_bytes` gives them, to `out`: the same
+    /// encoding without a `Vec` an instance, for a top-level structure of thousands of them
+    /// built every frame (Horizon).
+    fn tlas_instance_write_bytes(&self, instance: TlasInstance, out: &mut Vec<u8>) {
+        out.extend(self.tlas_instance_to_bytes(instance));
+    }
 
     fn get_internal_counters(&self) -> wgt::HalCounters;
 

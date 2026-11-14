@@ -4,6 +4,7 @@
 //! cardinal shading, tint sources, block offsets; see `lighting`). Fluids
 //! follow `FluidRenderer` (see `fluid`).
 mod fluid;
+mod fluid_surface;
 mod leaf_culling;
 mod lighting;
 pub mod packed;
@@ -153,6 +154,23 @@ impl TerrainVertex {
     }
 }
 #[cfg(test)]
+mod glass_edge_tests {
+    use super::{ModelDirection, glass_edges};
+
+    /// A window three blocks wide and two tall, seen through its middle bottom block's face
+    /// toward north: glass east and west of it and above it, none below.
+    #[test]
+    fn a_window_s_inner_edges_are_not_edges() {
+        let window = |n: [i32; 3]| n[2] == 0 && (-1..=1).contains(&n[0]) && (0..=1).contains(&n[1]);
+        assert_eq!(glass_edges(ModelDirection::North, window), 0b0111);
+        // A face toward east: its plane's first axis is z, along which no glass lies.
+        assert_eq!(glass_edges(ModelDirection::East, window), 0b0100);
+        // Alone: every edge is the window's.
+        assert_eq!(glass_edges(ModelDirection::Up, |_| false), 0);
+    }
+}
+
+#[cfg(test)]
 mod cull_back_tests {
     use super::{CULL_BACK, SHADED_CULL_W, cull_back};
     /// #15322: a shaded `entitySolid` quad keeps its normal and culls; a baked one has
@@ -163,6 +181,7 @@ mod cull_back_tests {
         assert_eq!(cull_back([0, 127, 0, 127]), [0, 127, 0, SHADED_CULL_W]);
     }
 }
+
 #[cfg(test)]
 mod vertex_tests {
     use super::TerrainVertex;
@@ -223,6 +242,16 @@ mod vertex_tests {
         assert_eq!(face.uv_fixed, [[0, 0], [1, 2], [49152, 65535], [65535, 0]]);
     }
 
+    #[test]
+    fn a_pinned_corner_moves_by_nothing_visible() {
+        for y in [0.0f32, 0.0625, 1.0, 7.5, 16.0] {
+            let pinned = super::wind_pin(y);
+            assert!((pinned - y).abs() < 1e-5, "{y}");
+            // terrain.wgsl `wind_pinned`.
+            assert!(pinned.to_bits() & 0x8000_0001 != 0, "{y}");
+            assert!(y.to_bits() & 0x8000_0001 == 0, "{y}");
+        }
+    }
     #[test]
     fn model_uvs_pack_exactly() {
         for i in 0..=32 {
@@ -425,6 +454,19 @@ pub struct SectionMesh {
     /// A far mesh was clipped around finer tiles or resident chunks. Keep
     /// the previous GPU mesh while its replacements fade in.
     pub keep: bool,
+    /// What the section's blocks are to the rays (`occupancy`, gfx/voxels.rs).
+    pub occupancy: crate::occupancy::Occupancy,
+    /// RT lighting's light sources (gfx/voxels.rs): the section's blocks that emit light and can
+    /// be seen (a neighbour isn't solid), as section-relative x, y, z, the level, the colour, and
+    /// where in the block the light is (`Info::light_at`). The level's high nibble is the kind of
+    /// flame the block burns (`Info::flame`), for the heat haze above it. The last byte is the
+    /// way a spotlight shines (`Info::spot`).
+    pub rt_lights: Vec<RtLight>,
+    /// RT lighting's bounced light (gfx/voxels.rs): the solid blocks' map colours (`albedo`).
+    pub albedo: crate::occupancy::Albedo,
+    /// RT lighting's opacity micromaps of its cutout quads, worked out by the meshing worker
+    /// (gfx/hw_micromaps.rs `for_mesh`); none without them.
+    pub micromaps: Option<crate::gfx::hw_micromaps::Worked>,
 }
 impl Default for SectionMesh {
     fn default() -> Self {
@@ -443,6 +485,10 @@ impl Default for SectionMesh {
             sprite_layers: Vec::new(),
             bounds: None,
             keep: false,
+            occupancy: crate::occupancy::Occupancy::Empty,
+            rt_lights: Vec::new(),
+            albedo: crate::occupancy::Albedo::default(),
+            micromaps: None,
         }
     }
 }
@@ -481,6 +527,7 @@ impl SectionMesh {
         self.visibility = ALL_VISIBLE;
         self.bounds = None;
         self.keep = false;
+        self.micromaps = None;
     }
     pub(crate) fn capacity_bytes(&self) -> usize {
         self.solid.capacity() * std::mem::size_of::<TerrainVertex>()
@@ -696,6 +743,76 @@ enum Tint {
     Redstone(u8),
     Stem(u8),
 }
+/// The section's blocks as the rays see them (`crate::occupancy`, `ray_shape`): leaves and plants
+/// let light through in part, blocks with a shape stop it there, air, fluids and glass let it
+/// pass.
+fn occupancy(pad: &Padded, info: &[Info]) -> crate::occupancy::Occupancy {
+    use crate::occupancy::{EMPTY, Occupancy};
+    Occupancy::from_fn(|x, y, z| {
+        let id = pad.blocks[pi(x as i32, y as i32, z as i32)];
+        if id == 0 {
+            EMPTY
+        } else {
+            info[id as usize].ray
+        }
+    })
+}
+/// The section's blocks' colours and shapes for RT lighting (`SectionMesh::albedo`): the map
+/// colour of each block the rays meet (`occupancy`) for the light bouncing off it, and its shape
+/// (`ray_shape`), 0 elsewhere.
+fn albedo(pad: &Padded, info: &[Info]) -> crate::occupancy::Albedo {
+    crate::occupancy::Albedo::from_fn(|x, y, z| {
+        let id = pad.blocks[pi(x as i32, y as i32, z as i32)];
+        let s = &info[id as usize];
+        if id == 0 || s.ray == crate::occupancy::EMPTY {
+            0
+        } else {
+            s.ray_shape << 6 | u16::from(s.map_color & 63)
+        }
+    })
+}
+/// The section's light sources for RT lighting (`SectionMesh::lights`): the blocks that emit light,
+/// leaving out those no neighbour lets the light out of (buried lava, a lamp inside a wall);
+/// water lets it out.
+fn lights(pad: &Padded, info: &[Info]) -> Vec<RtLight> {
+    let mut out = Vec::new();
+    for y in 0..16 {
+        for z in 0..16 {
+            for x in 0..16 {
+                let s = &info[pad.blocks[pi(x, y, z)] as usize];
+                if s.emission == 0 {
+                    continue;
+                }
+                // Touching air (or a plant, glass) or water: a light inside a lava lake, under
+                // the surface, lights nothing the rays could see, but water lets the light out
+                // (glow lichen, a sea lantern, sea pickles, magma on the sea bed).
+                let open = Direction::ALL.iter().any(|d| {
+                    let [dx, dy, dz] = d.normal();
+                    let n = &info[pad.blocks[pi(x + dx, y + dy, z + dz)] as usize];
+                    !n.solid && !matches!(n.fluid.kind(), FluidKind::Lava | FluidKind::FlowingLava)
+                });
+                if open {
+                    let [r, g, b] = s.light_colour;
+                    let [ax, ay, az] = s.light_at;
+                    out.push([
+                        x as u8,
+                        y as u8,
+                        z as u8,
+                        s.emission | s.flame << 4,
+                        r,
+                        g,
+                        b,
+                        ax,
+                        ay,
+                        az,
+                        s.spot,
+                    ]);
+                }
+            }
+        }
+    }
+    out
+}
 /// Per-state data the mesher needs on every block, flattened for speed.
 #[derive(Clone, Copy)]
 struct Info {
@@ -737,6 +854,10 @@ struct Info {
     blocks_flow: bool,
     /// `instanceof IceBlock` (frosted ice too): fluids read it.
     ice: bool,
+    /// RT lighting's ice (`rt_ice_kind`): 1 ice, 2 packed ice, 0 neither.
+    rt_ice: u8,
+    /// Plain glass and its pane, which RT lighting draws translucent (`rt_plain_glass`).
+    rt_glass: bool,
     /// Regular ice, the block the Opaque Ice option draws opaque; frosted ice
     /// keeps its see-through, cracking look.
     opaque_ice: bool,
@@ -746,6 +867,205 @@ struct Info {
     /// Height from the bottom over which face `d`, flush with the `d` side, covers
     /// the full width (vertical faces: 1 when the whole square is covered).
     cover: [f32; 6],
+    /// The colour of the light the block emits, for RT lighting's traced lights (`light_colour`).
+    light_colour: [u8; 3],
+    /// Where in the block its light is, in 32nds of a block (`light_at`; 255: the shaders' own
+    /// guess, the block's middle).
+    light_at: [u8; 3],
+    /// Which kind of flame the block burns, for the heat haze above it (`transmission::flame_kind`; 0
+    /// none): `lights` keeps it in the level's high nibble.
+    flame: u8,
+    /// A spotlight's way (`spot`): 1 + its index in `SPOT_WAYS`, 0 a light that shines all
+    /// around.
+    spot: u8,
+    /// `getMapColor(..).id`: the block's colour to RT lighting's bounced light (`albedo`).
+    map_color: u8,
+    /// What the block is to the rays (`crate::occupancy` EMPTY, SOLID or CUTOUT) and its shape's
+    /// id there (`ray_shape`).
+    ray: u8,
+    ray_shape: u16,
+    /// What a leaf block's corners touching it stay pinned to in the wind (`wind_pin`): a full
+    /// block that is not leaves (a log, the ground) or snow lying on it.
+    wind_anchor: bool,
+}
+/// What a block is to the rays (`occupancy`): its kind and its shape's id, from its model's faces
+/// where their texels are opaque (`voxelize`: iron bars' gaps, leaves' holes and plants' stems
+/// let light through), its outline for blocks drawn without faces. Glass, ice and fluids let light
+/// pass; leaves, plants, vines and coral let part of it through their cells; everything else stops
+/// it in its shape: full blocks, slabs, stairs, fences, walls, bars, carpets, lanterns.
+fn ray_shape(
+    s: &crate::blocks::StateFacts,
+    name: &str,
+    models: &[&crate::models::catalog::BakedModel],
+    render: &RenderAssets,
+    cache: &mut std::collections::HashMap<Vec<usize>, [u32; 16]>,
+) -> (u8, u16) {
+    use crate::occupancy::{CUTOUT, EMPTY, SOLID, Shape, cells_of, shape_id};
+    let leaves = s.has_class("LeavesBlock");
+    let glass = name.contains("glass") || (s.has_class("HalfTransparentBlock") && !leaves);
+    if s.outline.is_empty() || glass {
+        return (EMPTY, 0);
+    }
+    let cutout = leaves
+        || s.has_class("VegetationBlock")
+        || s.has_class("VineBlock")
+        || s.has_class("BaseCoralPlantTypeBlock")
+        || name.ends_with("_vines")
+        || name.ends_with("_roots");
+    if s.solid_render && s.outline.len() == 1 && s.outline[0] == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0] {
+        return (SOLID, 0);
+    }
+    let key: Vec<usize> = models
+        .iter()
+        .map(|m| std::ptr::from_ref(*m) as usize)
+        .collect();
+    let mut cells = *cache
+        .entry(key)
+        .or_insert_with(|| voxelize(models, &render.pixels.get(), render.sprite_size));
+    if cells == [0; 16] {
+        cells = cells_of(&s.outline);
+    }
+    if cells == [0; 16] {
+        return (EMPTY, 0);
+    }
+    let kind = if cutout { CUTOUT } else { SOLID };
+    if cells == [u32::MAX; 16] && !cutout {
+        return (SOLID, 0);
+    }
+    match shape_id(Shape { cells, cutout }) {
+        Some(id) => (kind, id),
+        None if cutout => (EMPTY, 0),
+        None => (SOLID, 0),
+    }
+}
+/// The cells (8x8x8, `occupancy::Shape`) a block's model faces cover with texels at least half
+/// opaque: each face sampled twice a texel, its point's cell set. A full cube comes out as its
+/// shell, which a ray has to cross all the same.
+fn voxelize(models: &[&crate::models::catalog::BakedModel], pixels: &[u8], size: u32) -> [u32; 16] {
+    let mut cells = [0u32; 16];
+    let size = size.max(1) as usize;
+    let lerp3 =
+        |a: [f32; 3], b: [f32; 3], t: f32| std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t);
+    let lerp2 =
+        |a: [f32; 2], b: [f32; 2], t: f32| std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t);
+    for model in models {
+        for face in &model.faces {
+            if face.translucent {
+                continue;
+            }
+            let q = &face.quad;
+            let p = q.positions;
+            let length = |a: [f32; 3], b: [f32; 3]| {
+                ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+            };
+            let nu = ((length(p[0], p[1]) * 32.0).ceil() as usize).clamp(2, 64);
+            let nv = ((length(p[1], p[2]) * 32.0).ceil() as usize).clamp(2, 64);
+            let layer = face.layer as usize * size * size * 4;
+            for i in 0..nu {
+                let s = (i as f32 + 0.5) / nu as f32;
+                for j in 0..nv {
+                    let t = (j as f32 + 0.5) / nv as f32;
+                    if !face.opaque {
+                        let uv = lerp2(lerp2(q.uv[0], q.uv[1], s), lerp2(q.uv[3], q.uv[2], s), t);
+                        let x = ((uv[0] * size as f32) as usize).min(size - 1);
+                        let y = ((uv[1] * size as f32) as usize).min(size - 1);
+                        let alpha = pixels.get(layer + (y * size + x) * 4 + 3).copied();
+                        if alpha.is_none_or(|a| a < 128) {
+                            continue;
+                        }
+                    }
+                    let at: [f32; 3] = lerp3(lerp3(p[0], p[1], s), lerp3(p[3], p[2], s), t);
+                    let [x, y, z] = at.map(|v| ((v * 8.0).floor() as i32).clamp(0, 7) as usize);
+                    crate::occupancy::set_cell(&mut cells, x, y, z);
+                }
+            }
+        }
+    }
+    cells
+}
+/// The colour (gamma-space RGB) of the light a block named `name` emits, for RT lighting: fire's
+/// warm orange by default, soul fire blue, redstone red, sea lanterns and end rods cold white.
+fn light_colour(name: &str) -> [u8; 3] {
+    let has = |part: &str| name.contains(part);
+    if has("copper_projector") {
+        // A spotlight's lamp, a cooler white than a flame: about 4000 K.
+        [255, 228, 196]
+    } else if has("soul") {
+        [110, 200, 255]
+    } else if has("redstone") && !has("lamp") {
+        [255, 50, 25]
+    } else if has("sea_lantern") || has("beacon") || has("end_rod") || has("conduit") {
+        [200, 230, 255]
+    } else if has("torch") || has("campfire") || has("candle") || has("fire") {
+        // A wood or wax flame: a black body at about 1900 K (Planck's law through the CIE 1931
+        // observer, in sRGB: deep orange, no blue).
+        [255, 135, 0]
+    } else if has("lantern") {
+        // An oil lamp's flame, hotter: about 2000 K.
+        [255, 141, 21]
+    } else if has("lava") || has("magma") {
+        [255, 120, 40]
+    } else if has("amethyst") || has("crying_obsidian") || has("respawn_anchor") {
+        [180, 100, 255]
+    } else if has("glow_lichen") || has("glow_berries") || has("sculk") {
+        [170, 255, 220]
+    } else if has("glowstone") || has("shroomlight") || has("lamp") || has("froglight") {
+        [255, 205, 130]
+    } else {
+        [255, 190, 120]
+    }
+}
+/// Where in its block a light burns, for RT lighting's shadow rays to start from the flame: a
+/// torch's at the top of its stick (TorchBlock's flame particles, 0.7 up); a wall torch's leaning
+/// out, 0.92 up and 0.23 from the wall (WallTorchBlock's: 0.27 toward the wall from the middle).
+/// In 32nds of a block; 255 the shaders' own guess for any other light.
+fn light_at(name: &str, facing: Option<&str>) -> [u8; 3] {
+    let at = |x: f32, y: f32, z: f32| [x, y, z].map(|v| (v * 32.0).round().clamp(0.0, 32.0) as u8);
+    if name.ends_with("wall_torch") {
+        // The facing points out of the wall: the wall is the other way.
+        let (wx, wz) = match facing {
+            Some("north") => (0.0, 1.0),
+            Some("south") => (0.0, -1.0),
+            Some("west") => (1.0, 0.0),
+            Some("east") => (-1.0, 0.0),
+            _ => (0.0, 0.0),
+        };
+        return at(0.5 + 0.27 * wx, 0.92, 0.5 + 0.27 * wz);
+    }
+    if name.ends_with("torch") {
+        return at(0.5, 0.7, 0.5);
+    }
+    if let Some(way) = SPOT_WAYS.get(usize::from(spot(name, facing)).wrapping_sub(1)) {
+        // A spotlight's lens, just inside the face it shines from.
+        let [x, y, z] = way.map(|v| 0.5 + 0.46 * f32::from(v));
+        return at(x, y, z);
+    }
+    [255; 3]
+}
+/// One RT light source of a section (`SectionMesh::rt_lights`): section-relative x, y, z, the
+/// level (the flame's kind in its high nibble), the colour, where in the block it is, and the way
+/// a spotlight shines (`Info::spot`).
+pub type RtLight = [u8; 11];
+/// The ways a spotlight shines, as `Info::spot` counts them (from 1): vanilla's `Direction` order.
+pub const SPOT_WAYS: [[i8; 3]; 6] = [
+    [0, -1, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+    [0, 0, 1],
+    [-1, 0, 0],
+    [1, 0, 0],
+];
+/// The way a block named `name` shines when it is a spotlight (Horizon's copper projector, a
+/// content mod's lamp with a `facing`: docs/raytracing.md "Spotlights"): 1 + the index of its
+/// facing in `SPOT_WAYS`, 0 for every other light.
+fn spot(name: &str, facing: Option<&str>) -> u8 {
+    if !name.ends_with("copper_projector") {
+        return 0;
+    }
+    let ways = ["down", "up", "north", "south", "west", "east"];
+    facing
+        .and_then(|f| ways.iter().position(|w| *w == f))
+        .map_or(0, |i| i as u8 + 1)
 }
 /// Derived per-state facts, exposed for the section-mesh parity gate.
 #[derive(Clone, Copy, Debug)]
@@ -839,6 +1159,15 @@ fn redstone_color(power: u8) -> u32 {
     ((r * 255.0) as u32) << 16 | ((g * 255.0) as u32) << 8 | (b * 255.0) as u32
 }
 impl MeshTables {
+    fn fluid_sprites(&self) -> fluid_surface::Sprites {
+        fluid_surface::Sprites {
+            water_still: self.water_still,
+            water_flow: self.water_flow,
+            water_overlay: self.water_overlay,
+            lava_still: self.lava_still,
+            lava_flow: self.lava_flow,
+        }
+    }
     pub fn new(
         assets: &Assets,
         render: &RenderAssets,
@@ -865,6 +1194,9 @@ impl MeshTables {
             animated_layers[animation.layer as usize] = true;
         }
         let mut covers = std::collections::HashMap::new();
+        // RT lighting's shapes, voxelized once a set of models (`ray_shape`).
+        let mut shape_models = Vec::new();
+        let mut shape_cache = std::collections::HashMap::new();
         let mut info = Vec::with_capacity(facts.states.len());
         for (id, s) in facts.states.iter().enumerate() {
             let state = assets
@@ -942,6 +1274,18 @@ impl MeshTables {
                     .entry((face_id, d as u8))
                     .or_insert_with(|| fluid::coverage(shape, d));
             }
+            if render
+                .model_catalog
+                .models_at(
+                    BlockStateId(id as u32),
+                    BlockPos::new(0, 0, 0),
+                    &mut shape_models,
+                )
+                .is_err()
+            {
+                shape_models.clear();
+            }
+            let (ray, ray_shape) = ray_shape(s, name, &shape_models, render, &mut shape_cache);
             info.push(Info {
                 solid: s.solid_render,
                 full: s.full_collision,
@@ -969,10 +1313,21 @@ impl MeshTables {
                 ),
                 blocks_flow: assets.blocks_fluid_flow.contains(&*s.name),
                 ice: s.has_class("IceBlock"),
+                rt_ice: rt_ice_kind(name),
+                rt_glass: rt_plain_glass(name),
                 opaque_ice: s.has_class("IceBlock") && !s.has_class("FrostedIceBlock"),
                 sturdy: s.sturdy_full,
                 face,
                 cover,
+                light_colour: light_colour(name),
+                light_at: light_at(name, props.get("facing").map(String::as_str)),
+                spot: spot(name, props.get("facing").map(String::as_str)),
+                flame: crate::gfx::transmission::flame_kind(name),
+                map_color: s.map_color,
+                ray,
+                ray_shape,
+                wind_anchor: !s.has_class("LeavesBlock")
+                    && (s.full_collision || s.has_class("SnowLayerBlock")),
             });
         }
         Ok(Self {
@@ -1515,6 +1870,27 @@ pub fn hdr_tier(name: &str, level: u8) -> u8 {
         _ => LOW,
     }
 }
+/// With RT lighting, the bits of the alpha byte that hold the face's directional shade times its
+/// ambient occlusion, 0..15 (`Mesher::rt_lighting`).
+pub const SHADE_BITS: u32 = 0xF000_0000;
+/// A water vertex `color` with its biome's exposure (0 to 15, `BiomeInfo::sea`) in the alpha's high
+/// nibble, where other faces keep RT lighting's shade (`Mesher::rt_lighting`): the waves and the
+/// surf read it (terrain.wgsl `TerrainOut::sea`), water keeping its shade in its colour.
+pub fn with_sea(color: u32, sea: u32) -> u32 {
+    color & !SHADE_BITS | (sea & 15) << 28
+}
+/// The exposure (`BiomeInfo::sea`, 0 to 15) of water under sky light level `sky` (0 to 15): the
+/// biome's in the open, falling to 0 (still water) where no sky light reaches it. The wind that
+/// raises the waves does not blow in a cave, whatever biome lies over it: a pool there is a calm
+/// mirror, and what it reflects (a lava fall, the cave's opening) stays one image instead of
+/// breaking into a glitter over every ripple.
+pub fn sheltered_sea(sea: u32, sky: u8) -> u32 {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var("HORIZON_RT_CAVE_WATER").is_ok_and(|v| v == "0")) {
+        return sea;
+    }
+    sea * u32::from(sky.min(12)) / 12
+}
 const UNSET: u32 = u32::MAX;
 const NO_BIOME: u16 = u16::MAX;
 /// The `ColorResolver`s `ClientLevel` caches block tints for.
@@ -1524,6 +1900,8 @@ enum Resolver {
     Foliage,
     Dry,
     Water,
+    /// The water's exposure (`BiomeInfo::sea`) in each channel, blended as the colours are.
+    Sea,
 }
 /// Biome tints of one block layer: the zoomed biome of every block of the
 /// layer plus the blend radius around it, and the blended colours per column.
@@ -1531,11 +1909,11 @@ struct Layer {
     zoomed: Vec<u16>,
     /// Each resolver's colour of every cell of `zoomed`, filled on first use:
     /// a cell is in the blend square of up to `(2r+1)^2` columns.
-    cells: [Vec<u32>; 4],
+    cells: [Vec<u32>; 5],
     /// `BiomeZoom::corner_jitter` of the quart cells `zoomed` reaches, by
     /// their offset from the first: each is shared by up to 16 cells of the layer.
     jitter: Vec<Option<[[f64; 3]; 8]>>,
-    colors: [[u32; 256]; 4],
+    colors: [[u32; 256]; 5],
 }
 /// `ClientLevel.calculateBlockTint` behind a per-layer `BlockTintCache`: each
 /// block averages the colours of the biomes `BiomeManager.getBiome` picks (the
@@ -1741,6 +2119,7 @@ impl<'a> Tints<'a> {
                 Resolver::Foliage => return info.foliage & 0xFF_FFFF,
                 Resolver::Dry => return info.dry_foliage & 0xFF_FFFF,
                 Resolver::Water => return info.water & 0xFF_FFFF,
+                Resolver::Sea => return u32::from(info.sea) * 0x01_0101,
             }
         }
         let r = self.radius;
@@ -1750,7 +2129,7 @@ impl<'a> Tints<'a> {
                 zoomed: vec![NO_BIOME; dim * dim],
                 cells: Default::default(),
                 jitter: Vec::new(),
-                colors: [[UNSET; 256]; 4],
+                colors: [[UNSET; 256]; 5],
             })
         });
         let slot = (z * 16 + x) as usize;
@@ -1807,6 +2186,7 @@ impl<'a> Tints<'a> {
                     Resolver::Foliage => self.biomes.get(biome).foliage,
                     Resolver::Dry => self.biomes.get(biome).dry_foliage,
                     Resolver::Water => self.biomes.get(biome).water,
+                    Resolver::Sea => u32::from(self.biomes.get(biome).sea) * 0x01_0101,
                 };
                 cells[cell] = c;
                 red += c >> 16 & 255;
@@ -1853,6 +2233,12 @@ pub struct Mesher<'a> {
     pub smooth_lighting: bool,
     /// The `cutoutLeaves` option (fancy graphics); off makes leaves opaque.
     pub cutout_leaves: bool,
+    /// RT lighting (`Graphics::rt_lighting`): a face's vertex colour is its tint alone and the
+    /// directional shade times ambient occlusion goes, to four bits, into the alpha's high nibble
+    /// (`SHADE_BITS`), for the vanilla lighting the shaders fall back to.
+    pub rt_lighting: bool,
+    /// Horizon's Smooth fluids (`fluid_surface.rs`); off meshes vanilla's cells.
+    pub smooth_fluids: bool,
     /// The `opaqueIce` option: regular ice draws opaque in the solid pass.
     pub opaque_ice: bool,
     /// Sprite layers a shader pack moves into the translucent pass, by layer.
@@ -1898,6 +2284,9 @@ impl Mesher<'_> {
                 .leaf
                 .prepare(self.leaf_culling, pad, &self.tables.info, region, base_y);
         }
+        out.occupancy = occupancy(pad, &self.tables.info);
+        out.rt_lights = lights(pad, &self.tables.info);
+        out.albedo = albedo(pad, &self.tables.info);
         let mut tints = Tints::new(
             region,
             self.biomes,
@@ -1910,6 +2299,7 @@ impl Mesher<'_> {
         let full_faces = &self.tables.full_faces;
         let catalog = &self.render.model_catalog;
         let mut models = Vec::new();
+        let mut lattice = None;
         for y in 0..16 {
             for z in 0..16 {
                 // The padded index of the row's x = 0 cell: `pi(x, y, z)` is
@@ -1935,14 +2325,39 @@ impl Mesher<'_> {
                     }
                     if state.fluid.kind() != FluidKind::Empty {
                         let start = [out.solid.len(), out.translucent.len()];
-                        let water = tints.water(x, y, z);
-                        let shade = (
-                            self.nether_shading,
-                            self.shader_pack_lighting,
-                            self.separate_ao,
-                            self.shader_pack,
-                        );
-                        fluid::tesselate(self.tables, shade, pad, water, &mut out, [x, y, z]);
+                        // The biome's water colour, and in the top byte how open it lies
+                        // (`with_sea`).
+                        let sea = tints.get(Resolver::Sea, x, y, z) & 255;
+                        // No wind reaches water the sky does not: a cave's pool lies still
+                        // (`sheltered_sea`), by the sky's light on it or just over it.
+                        let above = (cell as isize + step_index([0, 1, 0])) as usize;
+                        let sky = (pad.light[cell] >> 4).max(pad.light[above] >> 4);
+                        let sea = sheltered_sea(sea.min(15), sky);
+                        let water = tints.water(x, y, z) | sea << 24;
+                        if self.smooth_fluids {
+                            let lattice = lattice.get_or_insert_with(fluid_surface::Lattice::new);
+                            let cell = [x, y, z];
+                            let sprites = self.tables.fluid_sprites();
+                            fluid_surface::tesselate(
+                                info,
+                                sprites,
+                                self.nether_shading,
+                                pad,
+                                water,
+                                &mut out,
+                                lattice,
+                                cell,
+                            );
+                        } else {
+                            let shade = (
+                                self.nether_shading,
+                                self.shader_pack_lighting,
+                                self.separate_ao,
+                                self.shader_pack,
+                                self.rt_lighting,
+                            );
+                            fluid::tesselate(self.tables, shade, pad, water, &mut out, [x, y, z]);
+                        }
                         if self.shader_pack {
                             out.record_source(
                                 start,
@@ -2007,18 +2422,25 @@ impl Mesher<'_> {
                             }
                             _ => false,
                         };
+                        // RT lighting's packed ice lets the eye in (`rt_ice_kind`): the faces it
+                        // hides of its other neighbours show through it, as an ice block's do.
+                        let through_ice = self.rt_lighting
+                            && other.rt_ice == 2
+                            && state.rt_ice != 2
+                            && rt_ice_on();
                         visible[d as usize] = !opaque_leaves
                             && !opaque_ice
                             && !culled_leaf
-                            && self
-                                .visibility
-                                .should_render_face(
-                                    BlockStateId(id),
-                                    BlockStateId(neighbor),
-                                    d,
-                                    true,
-                                )
-                                .unwrap_or(true);
+                            && (through_ice
+                                || self
+                                    .visibility
+                                    .should_render_face(
+                                        BlockStateId(id),
+                                        BlockStateId(neighbor),
+                                        d,
+                                        true,
+                                    )
+                                    .unwrap_or(true));
                     }
                     let connected = &self.render.connected;
                     let start = [out.solid.len(), out.translucent.len()];
@@ -2077,6 +2499,18 @@ impl Mesher<'_> {
         out.finish_sprite_layers();
         out
     }
+    /// Whether a leaf block's vertex at `p` (block-relative) of the block at `pos` stays put in
+    /// the wind: one of the eight blocks around the corner nearest it is a `wind_anchor` (a
+    /// trunk, the ground, snow on the leaves). The same for every leaf block sharing the corner,
+    /// so the leaves keep their joins.
+    fn pinned(&self, pad: &Padded, pos: [i32; 3], p: [f32; 3]) -> bool {
+        let info = &self.tables.info;
+        let c = [0, 1, 2].map(|k| pos[k] + p[k].round() as i32);
+        (0..8).any(|n| {
+            let (dx, dy, dz) = (n & 1, (n >> 1) & 1, (n >> 2) & 1);
+            info[pad.blocks[pi(c[0] - dx, c[1] - dy, c[2] - dz)] as usize].wind_anchor
+        })
+    }
     /// `BlockColors` tint source `index`, or `None` for an untinted (-1) layer.
     fn tint(state: &Info, index: i32, tints: &mut Tints, [x, y, z]: [i32; 3]) -> Option<u32> {
         if index < 0 || index >= i32::from(state.tint_count) {
@@ -2116,6 +2550,16 @@ impl Mesher<'_> {
         interior_leaf: bool,
     ) {
         let q = &face.quad;
+        // RT lighting's glass: which of its face's in-plane neighbours are glass too
+        // (`glass_edges`), in its colour's low bits, for the frost to follow the whole window.
+        let glass = if self.rt_lighting && state.rt_glass && rt_glass_on() {
+            glass_edges(q.facing, |n| {
+                self.tables.info[pad.blocks[(cell as isize + step_index(n)) as usize] as usize]
+                    .rt_glass
+            })
+        } else {
+            0
+        };
         // A quad's own light (a model's glowing part) may raise the tier; whether it
         // shines all over stays the block's.
         let tier = (state.tier & !WHOLE).max(hdr_tier("", q.light[0])) | state.tier & WHOLE;
@@ -2216,19 +2660,36 @@ impl Mesher<'_> {
         };
         let vertex = |tint: Option<u32>, i: usize, uv: [u16; 2]| {
             let g = gray[i] as u32;
-            let rgb = match tint {
-                Some(t) => [16, 8, 0].map(|shift| g * (t >> shift & 255) / 255),
-                None => [g; 3],
+            // With RT lighting the colour is the tint alone, and the shade goes to the alpha's
+            // high nibble (`SHADE_BITS`).
+            let rgb = match (tint, self.rt_lighting) {
+                (Some(t), false) => [16, 8, 0].map(|shift| g * (t >> shift & 255) / 255),
+                (None, false) => [g; 3],
+                (Some(t), true) => [16, 8, 0].map(|shift| t >> shift & 255),
+                (None, true) => [
+                    255 - (glass & 1),
+                    255 - (glass >> 1 & 1),
+                    255 - (glass >> 2 & 3),
+                ],
+            };
+            let shade = if self.rt_lighting {
+                (g.min(255) >> 4) << 28 | !SHADE_BITS
+            } else {
+                u32::MAX
             };
             let p = q.positions[i];
             let color = if self.separate_ao {
                 let ao_byte = (ao_factor[i] * 255.0).round().clamp(0.0, 255.0) as u32;
                 ao_byte << 24 | (pack_rgb(rgb) & 0x00FF_FFFF)
             } else {
-                emitting(pack_rgb(rgb), tier)
+                emitting(pack_rgb(rgb), tier) & shade
             };
+            let mut at = [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]];
+            if state.leaves && self.pinned(pad, pos, p) {
+                at[1] = wind_pin(at[1]);
+            }
             TerrainVertex::packed_uv(
-                [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
+                at,
                 uv,
                 0,
                 color,
@@ -2251,12 +2712,16 @@ impl Mesher<'_> {
         };
         // Opaque leaves (forceOpaque), leaves a leaf-culling mode proved internal and Opaque
         // Ice draw in the solid layer whatever their sprite.
-        let force_solid = !self.cutout_leaves && state.leaves
-            || interior_leaf
-            || self.opaque_ice && state.opaque_ice;
+        let opaque_ice = self.opaque_ice && state.opaque_ice;
+        let force_solid = !self.cutout_leaves && state.leaves || interior_leaf || opaque_ice;
+        // RT lighting draws ice and packed ice as translucent ice (`rt_ice_kind`), and plain
+        // glass as glass (`rt_plain_glass`), whatever alpha the pack gives their textures; the
+        // Opaque Ice option still draws regular ice opaque.
+        let rt_translucent = self.rt_lighting
+            && (state.rt_ice != 0 && rt_ice_on() && !opaque_ice || state.rt_glass && rt_glass_on());
         let own = TileLayer::Layer {
             layer: face.layer as u16,
-            translucent: face.translucent,
+            translucent: face.translucent || rt_translucent,
             opaque: face.opaque,
         };
         let own_translucent = self.translucent(own);
@@ -2495,6 +2960,71 @@ fn bilinear(c: &[(TerrainVertex, [f32; 2]); 4], s: f32, t: f32) -> (TerrainVerte
     let pos = [0, 1, 2].map(|k| mix(&|c| c.0.pos[k]));
     let uv = [0, 1].map(|k| mix(&|c| c.1[k]));
     (TerrainVertex::new(pos, uv, 0, color, light), uv)
+}
+/// RT lighting's ice (terrain.wgsl `rt_ice`): ice (1) and packed ice (2) are drawn translucent,
+/// clear ice with a little frost and packed ice frosted and milky, whatever alpha the resource
+/// pack gives their textures (packs made for RTX often ship them opaque, and vanilla's packed
+/// ice is). Packed ice stays a full block to light, collisions and the faces between two packed
+/// ice blocks, but no longer hides the faces of its other neighbours, which show through it.
+pub fn rt_ice_kind(name: &str) -> u8 {
+    match name {
+        "ice" => 1,
+        "packed_ice" if rt_packed_ice_clear() => 2,
+        _ => 0,
+    }
+}
+/// Whether RT lighting draws packed ice as milky translucent ice (`HORIZON_RT_PACKED_ICE=1`).
+/// Off by default: it is the opaque block vanilla draws, since whole walls of it showed the
+/// terrain behind them.
+pub fn rt_packed_ice_clear() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_PACKED_ICE").is_ok_and(|v| v == "1"))
+}
+/// RT lighting's plain glass (terrain.wgsl `rt_glass_at`): the glass block and its pane are drawn
+/// translucent whatever alpha the pack gives their textures. A pack made for RTX (Remix's glass)
+/// ships them with a clear face and an opaque frame, no texel in between, which put them in the
+/// cutout layer: the dielectric and the weather on it (`rt_glass_weather`) never reached their
+/// faces.
+pub fn rt_plain_glass(name: &str) -> bool {
+    matches!(name, "glass" | "glass_pane")
+}
+/// Which of a glass face's four in-plane neighbours are glass too (`is_glass` of an offset), for
+/// RT lighting's frost to run along the window's outline, not each block's (terrain.wgsl
+/// `rt_glass_weather`). The face's plane has two axes, in world order: z then y for a face toward
+/// x, x then z toward y, x then y toward z. Bit 0: the next block along the first axis is glass,
+/// 1 the one before it, 2 and 3 the same along the second. Carried by an untinted face's colour,
+/// 255 less bit 0 in red, bit 1 in green, bits 2 and 3 in blue (a 1 % change at most).
+pub fn glass_edges(facing: ModelDirection, mut is_glass: impl FnMut([i32; 3]) -> bool) -> u32 {
+    let (first, second) = match facing {
+        ModelDirection::West | ModelDirection::East => ([0, 0, 1], [0, 1, 0]),
+        ModelDirection::Down | ModelDirection::Up => ([1, 0, 0], [0, 0, 1]),
+        ModelDirection::North | ModelDirection::South => ([1, 0, 0], [0, 1, 0]),
+    };
+    let neg = |a: [i32; 3]| a.map(|v| -v);
+    u32::from(is_glass(first))
+        | u32::from(is_glass(neg(first))) << 1
+        | u32::from(is_glass(second)) << 2
+        | u32::from(is_glass(neg(second))) << 3
+}
+/// Whether RT lighting draws plain glass as glass (`rt_plain_glass`): `HORIZON_RT_GLASS=0` keeps
+/// the pack's layer.
+pub fn rt_glass_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_GLASS").map_or(true, |v| v != "0"))
+}
+/// Whether RT lighting draws its own ice (`rt_ice_kind`): `HORIZON_RT_ICE=0` keeps the pack's.
+pub fn rt_ice_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_ICE").map_or(true, |v| v != "0"))
+}
+/// A section-relative height `y` (not below 0) marked as a pinned leaf corner (terrain.wgsl
+/// `wind_pinned`): its float's last bit set, or -0 for 0. A ten-millionth of a block at most.
+pub fn wind_pin(y: f32) -> f32 {
+    if y == 0.0 {
+        -0.0
+    } else {
+        f32::from_bits(y.to_bits() | 1)
+    }
 }
 /// Snapshot of the 3x3 chunk neighbourhood used by a worker job.
 pub type Region = [[Option<Arc<Chunk>>; 3]; 3];

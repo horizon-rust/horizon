@@ -6,7 +6,7 @@
 //! onto the screen. Every stage of a pack reads the same `frame`, written once a frame
 //! (`NativeFrame`).
 
-use glam::{Mat4, Vec3};
+use glam::Mat4;
 use horizon_shader_api::{
     Api, Frame as FrameInputs, Primaries, StageKind, check::CheckedStage, stages::GROUP,
 };
@@ -316,8 +316,8 @@ pub struct NativePost {
     /// size.
     scales: Vec<f32>,
     named: Option<([u32; 2], Vec<wgpu::TextureView>)>,
-    /// The screen's colour format, the world target's too.
-    format: wgpu::TextureFormat,
+    /// The world target's colour format (Linear Light's float scene, or the screen's).
+    world_format: wgpu::TextureFormat,
     /// Under 0.2: the decode, the picture and the tonemap.
     display: Option<Display>,
 }
@@ -995,14 +995,15 @@ fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 
 impl NativePost {
     /// Pipelines for `stages` (the pack's post passes, in order) with the option values
-    /// `constants`, drawing onto a screen of `format`; under 0.2 the last onto `picture`, and
-    /// `tonemap` (else Horizon's) onto the screen. Errors name the pass wgpu refused.
+    /// `constants`, drawing onto a screen of `formats.0` from a world of `formats.1`; under 0.2
+    /// the last onto `picture`, and `tonemap` (else Horizon's) onto the screen. Errors name the
+    /// pass wgpu refused.
     pub fn new(
         device: &wgpu::Device,
         stages: Vec<CheckedStage>,
         manifest: &horizon_shader_api::Manifest,
         constants: &[(String, f64)],
-        format: wgpu::TextureFormat,
+        (format, world_format): (wgpu::TextureFormat, wgpu::TextureFormat),
         frame: &NativeFrame,
         tonemap: Option<&CheckedStage>,
     ) -> Result<Self, String> {
@@ -1158,7 +1159,7 @@ impl NativePost {
             scales: targets.iter().map(|t| t.1).collect(),
             named: None,
             plan,
-            format,
+            world_format,
             display,
         })
     }
@@ -1411,7 +1412,7 @@ impl NativePost {
         let window = [screen.texture().width(), screen.texture().height()];
         self.prepare(device, world, size, window, history_reset);
         if let Some(t) = timing.as_deref_mut() {
-            t.mark(device, encoder, (world.0, self.format));
+            t.mark(device, encoder, (world.0, self.world_format));
         }
         let Some((_, _, groups)) = &self.groups else {
             return;
@@ -1522,12 +1523,9 @@ pub fn frame_inputs(
     let projection = super::world_projection(frame.fov_degrees, aspect, frame.depth_far)
         * frame.bob
         * frame.spin;
-    // A celestial body's direction at `angle` degrees (SkyRenderer: Y -90°, then X by the
-    // angle, of straight up): overhead at 0, rising in the east (+x).
-    let body = |angle: f32| {
-        let a = angle.to_radians();
-        Vec3::new(-a.sin(), a.cos(), 0.0)
-    };
+    // A celestial body's direction at `angle` degrees, rising in the east (+x), on the path
+    // tilted toward the south by the player's Sun Path Tilt (overhead at noon when 0).
+    let body = |angle: f32| crate::celestial::direction(angle, frame.sun_path_tilt);
     let (fog_color, fog_start, fog_end) = match &frame.fog {
         Some(f) => (
             [f.color[0], f.color[1], f.color[2]],
@@ -1591,7 +1589,7 @@ pub fn frame_inputs(
         mods: pack.mod_params,
         light_direction: match shadow {
             Some(s) => super::pack_uniforms::shadow_light(frame, s),
-            None => Vec3::Y,
+            None => glam::Vec3::Y,
         }
         .to_array(),
         has_shadow: u32::from(shadow.is_some()),
@@ -1900,7 +1898,7 @@ file = \"c.wgsl\"
             report.stages,
             &report.manifest,
             &[],
-            format,
+            (format, format),
             &frame,
             None,
         )
@@ -2018,7 +2016,7 @@ file = \"c.wgsl\"
             report.stages,
             &report.manifest,
             &[("gain".into(), 1.0)],
-            format,
+            (format, format),
             &frame,
             None,
         )
@@ -2141,7 +2139,7 @@ file = \"b.wgsl\"
             report.stages,
             &report.manifest,
             &[],
-            format,
+            (format, format),
             &frame,
             None,
         )
@@ -2261,7 +2259,7 @@ file = \"b.wgsl\"
             report.stages,
             &report.manifest,
             &[],
-            format,
+            (format, format),
             &frame,
             None,
         )
@@ -2602,7 +2600,7 @@ file = \"b.wgsl\"
                 passes,
                 &report.manifest,
                 &[],
-                format,
+                (format, format),
                 &frame,
                 tonemap,
             )
@@ -2756,7 +2754,7 @@ file = \"b.wgsl\"
                 Vec::new(),
                 &report.manifest,
                 &[],
-                format,
+                (format, format),
                 &frame,
                 tonemap,
             )

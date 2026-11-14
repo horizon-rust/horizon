@@ -256,7 +256,8 @@ impl NativePack {
         let post = (!post.is_empty() || api == horizon_shader_api::Api::V0_2)
             .then(|| {
                 let manifest = &report.manifest;
-                NativePost::new(device, post, manifest, constants, format, &frame, tonemap)
+                let formats = (terrain.screen, format);
+                NativePost::new(device, post, manifest, constants, formats, &frame, tonemap)
             })
             .transpose()?;
         let mut labels: Vec<String> = sky.iter().map(|s| s.label.clone()).collect();
@@ -361,6 +362,7 @@ mod tests {
             flat: None,
             sprites: [1.0, 2048.0],
             format: wgpu::TextureFormat::Rgba8Unorm,
+            screen: wgpu::TextureFormat::Rgba8Unorm,
             linear: false,
             sprite_tags: &[],
             sprite_materials: &[],

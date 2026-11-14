@@ -9,6 +9,8 @@ use crate::{
 };
 pub mod bake;
 pub mod cache;
+mod horizon;
+pub use horizon::{EARTH_RADIUS, HORIZON_MAX_CHUNKS, horizon_chunks};
 mod detail;
 mod kept;
 mod mesh;
@@ -1280,6 +1282,8 @@ pub struct Lod {
     /// Stale tiles `refresh`ed again while sampled: that sample may be older.
     restale: FxHashSet<TileKey>,
     active: FxHashSet<TileKey>,
+    /// Mesh jobs finished: the drawn tiles changed (`revision`).
+    revision: u64,
     /// The active tiles' `ready` samples, as mesh jobs read them (`sync_sample`).
     mesh_samples: samples::Samples,
     /// Tiles needing a mesh, with the revision their job must carry.
@@ -1678,6 +1682,7 @@ impl Lod {
             ready: FxHashMap::default(),
             complete: FxHashMap::default(),
             active: FxHashSet::default(),
+            revision: 0,
             mesh_samples: samples::Samples::default(),
             dirty: FxHashMap::default(),
             mesh_version: FxHashMap::default(),
@@ -1710,25 +1715,6 @@ impl Lod {
             returned_at: std::time::Instant::now(),
             keeps_observed,
         }
-    }
-    /// The solid ground at block column (x, z): its top face's height and
-    /// its block, from the finest tile sampled there. For aiming past the
-    /// resident chunks (`game.raycast`); water is passed, as the view's ray
-    /// passes it.
-    pub fn ground(&self, x: i32, z: i32) -> Option<(i32, BlockStateId)> {
-        (0..=MAX_LEVEL).find_map(|level| {
-            let size = 16 << level;
-            let key = TileKey {
-                x: x.div_euclid(size),
-                z: z.div_euclid(size),
-                level,
-            };
-            let columns = self.ready.get(&key).filter(|c| c.len() == CELLS * CELLS)?;
-            let cell = size / CELLS as i32;
-            let (cx, cz) = ((x - key.x * size) / cell, (z - key.z * size) / cell);
-            let surface = columns[cz as usize * CELLS + cx as usize].surface?;
-            Some((surface.height, surface.state))
-        })
     }
     pub fn stats(&self) -> (usize, usize) {
         (self.active.len(), self.ready.len())
@@ -2773,6 +2759,7 @@ impl Lod {
                     canceled,
                 } => {
                     self.outstanding_meshes = self.outstanding_meshes.saturating_sub(1);
+                    self.revision += 1;
                     self.accept_mesh(key, version, mesh, canceled.load(Ordering::Acquire), meshes);
                 }
                 Done::MeshCanceled { key, version } => {
@@ -3407,6 +3394,45 @@ fn retiring_detail<'a>(
 }
 #[cfg(test)]
 mod tests {
+    /// Horizon Culling stops where the tallest terrain sinks under the drawn
+    /// Earth's horizon: 3 900 chunks (62 km) from the shore, as far as LOD
+    /// Distance goes with Earth Curvature from the build limit.
+    #[test]
+    fn the_horizon_hides_the_tallest_terrain_past_horizon_chunks() {
+        use super::{EARTH_RADIUS, HORIZON_MAX_CHUNKS, horizon_chunks};
+        assert_eq!(horizon_chunks(64.6, 512.0), 3904);
+        // Under the sea or in a cave, as from its surface.
+        assert_eq!(horizon_chunks(-40.0, 512.0), horizon_chunks(63.0, 512.0));
+        assert_eq!(horizon_chunks(320.0, 1024.0), HORIZON_MAX_CHUNKS);
+        assert!(horizon_chunks(320.0, 2048.0) <= HORIZON_MAX_CHUNKS);
+        assert!(horizon_chunks(1000.0, 512.0) > HORIZON_MAX_CHUNKS);
+        // Exact on the drawn Earth (flat to `f`, then `earth_drop`): the
+        // eye's line over the sea passes above a 257-block peak at that range.
+        let r = EARTH_RADIUS;
+        for (eye_y, f) in [
+            (64.6, 512.0),
+            (63.0, 512.0),
+            (63.05, 2048.0),
+            (200.0, 256.0),
+            (320.0, 1024.0),
+        ] {
+            let (h, peak) = (eye_y - 63.0_f64, 257.0);
+            let tangent = 2.0 * r * h - f * f;
+            let slope = if tangent > 0.0 {
+                tangent.sqrt() / r
+            } else {
+                h / f
+            };
+            let d = f64::from(horizon_chunks(eye_y, f)) * 16.0;
+            let line = h - slope * d;
+            let top = peak - (d * d - f * f) / (2.0 * r);
+            assert!(
+                top < line,
+                "eye {eye_y}: the peak at {d} stands over the horizon"
+            );
+        }
+    }
+
     /// A spyglass or the zoom mod magnifies only what the narrowed view
     /// covers, so `ZoomAim` asks for finer tiles there and nowhere else. Without
     /// that cone the same request would reach the whole circle, which at the

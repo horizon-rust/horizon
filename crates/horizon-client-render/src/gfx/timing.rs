@@ -16,8 +16,9 @@ use std::sync::{
     atomic::{AtomicU8, Ordering},
 };
 
-/// Frames in flight at once; on Metal a slot is busy for about five frames.
-const SLOTS: usize = 8;
+/// Frames in flight at once; on Metal a slot is busy for about five frames, and a VR frame
+/// times each of its views (four with the quad views).
+const SLOTS: usize = 16;
 /// Each slot's timestamps have their own queries and resolve range.
 const RESOLVE_STRIDE: u64 = wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT;
 /// The frame's target and its format.

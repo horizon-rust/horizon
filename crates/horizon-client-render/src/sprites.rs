@@ -19,6 +19,29 @@ pub struct FrameBlend {
     pub millis: u32,
 }
 impl SpriteAnimation {
+    /// The same animation drawing `map`'s frames (RT lighting's material arrays,
+    /// `gfx/materials.rs`), frame for frame (a map with fewer frames repeats them), when the map
+    /// has more than one; a still map stays in its layer. `Subsurface` maps are not loaded.
+    pub fn map(&self, map: crate::labpbr::Map) -> Option<Self> {
+        let frames = match map {
+            crate::labpbr::Map::Normal => self.materials[0].as_ref()?,
+            crate::labpbr::Map::Specular => self.materials[1].as_ref()?,
+            crate::labpbr::Map::Subsurface => return None,
+        };
+        if frames.len() < 2 {
+            return None;
+        }
+        Some(Self {
+            layer: self.layer,
+            frames: Arc::new(
+                (0..self.frames.len())
+                    .map(|i| frames[i % frames.len()].clone())
+                    .collect(),
+            ),
+            clip: self.clip.clone(),
+            materials: [None, None],
+        })
+    }
     pub(crate) fn has_materials(&self) -> bool {
         self.materials.iter().any(Option::is_some)
     }
@@ -123,6 +146,9 @@ pub struct Sprites {
     pub normals: Vec<u8>,
     pub specular: Vec<u8>,
     pub pbr_size: u32,
+    /// The same maps for RT lighting (`labpbr.rs`, `gfx/materials.rs`): only the layers that
+    /// have one, at `pbr_size`; `None` when no texture has either.
+    pub materials: Option<crate::labpbr::MaterialPixels>,
     /// Still textures by their pixels, their LabPBR maps and mip settings: mods copy vanilla's
     /// textures under their own names, and one layer serves them all (the GPU's array may
     /// hold as few as 2048).
@@ -191,6 +217,47 @@ fn side_within(start: u32, layers: u64, bytes: u64) -> u32 {
     size
 }
 /// Reduce data maps by selecting whole texels: material IDs and sentinel bytes cannot be averaged.
+/// RT lighting's copy of the LabPBR maps (`labpbr::MaterialPixels`): each layer that has a map,
+/// its shown frame at `size`, in one class of that size.
+fn material_pixels(
+    pbr: &[[Option<(u32, Vec<Vec<u8>>)>; 2]],
+    native: &[(u32, Arc<Vec<Vec<u8>>>, usize)],
+    size: u32,
+) -> crate::labpbr::MaterialPixels {
+    use crate::labpbr::{Map, MapClass, NO_MAP};
+    let mut out = crate::labpbr::MaterialPixels::default();
+    for (k, map) in [Map::Normal, Map::Specular].into_iter().enumerate() {
+        let set = &mut out.maps[map as usize];
+        let mut class = MapClass {
+            size,
+            ..Default::default()
+        };
+        for (layer, maps) in pbr.iter().enumerate() {
+            let Some((from, frames)) = &maps[k] else {
+                set.index.push(NO_MAP);
+                continue;
+            };
+            let initial = native.get(layer).map_or(0, |n| n.2) % frames.len().max(1);
+            let (from, pixels) = shrink_map(frames[initial].clone(), *from, size);
+            set.index.push(class.layers.len() as u32);
+            class.layers.push(layer as u32);
+            class.pixels.extend(resample(&pixels, from, size));
+            class.mips.push(crate::mipmap::Settings {
+                native_size: from,
+                strategy: match map {
+                    Map::Specular => crate::mipmap::Strategy::Specular,
+                    _ => crate::mipmap::Strategy::Data,
+                },
+                ..Default::default()
+            });
+        }
+        if !class.layers.is_empty() {
+            set.classes.push(class);
+        }
+    }
+    out
+}
+
 fn shrink_map(frame: Vec<u8>, side: u32, max: u32) -> (u32, Vec<u8>) {
     if side <= max || !side.is_power_of_two() || !max.is_power_of_two() {
         return (side, frame);
@@ -332,6 +399,7 @@ impl Sprites {
                     })
                 });
             }
+            self.materials = Some(material_pixels(&self.pbr, &self.native, pbr_size));
             for (layer, maps) in std::mem::take(&mut self.pbr).into_iter().enumerate() {
                 for (map, (out, none)) in maps.into_iter().zip([
                     (&mut self.normals, FLAT_NORMAL),

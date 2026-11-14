@@ -236,6 +236,8 @@ fn relit_columns_keep_every_mesh_current() {
             blend_radius: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            rt_lighting: false,
+            smooth_fluids: false,
             opaque_ice: false,
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
@@ -245,7 +247,7 @@ fn relit_columns_keep_every_mesh_current() {
             biomes: &context.biomes,
             visibility: context.tables.visibility.clone(),
         };
-        // The workers sort solid quads by side, as uploads expect.
+        // The workers sort solid quads by side, opaque before cutout, as uploads expect.
         let mut fresh = mesher.mesh(&borrow(&region), sy);
         fresh.sort_solid();
         let bytes = |m: &SectionMesh| {

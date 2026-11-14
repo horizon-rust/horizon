@@ -346,6 +346,8 @@ impl Renderer {
         let next = commit(renderer, &applied, candidate, caps, &mut rejected);
         self.output_rejected = rejected;
         let [paper_white, peak, black] = next.nits;
+        // VR's HDR eyes take the same paper white and peak (`xr::draw_eye`).
+        self.hdr_levels = (paper_white, peak);
         if next.encoding != applied.encoding {
             match next.encoding {
                 Some(output) => log::info!(
@@ -406,7 +408,8 @@ impl Renderer {
     ) -> output::FrameConfiguration {
         output::resolve_frame(
             settings,
-            request,
+            // Linear Light keeps the frame (no pack float frame or HDR float frame under it).
+            super::linear_light_request(self.tonemap.is_some(), request),
             self.caps_for(settings),
             graced(self.auto_off_since, self.reading, &self.output),
             self.config.format,

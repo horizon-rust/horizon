@@ -562,6 +562,12 @@ impl Game<'_> {
             self.settings.horizon.dither_cutout_mips,
         ) {
             self.reload_packs();
+        } else if (self.settings.horizon.parallax || self.settings.horizon.rt_lighting)
+            && !horizon_client::sprites::labpbr_maps()
+        {
+            // The relief or RT lighting turned on without the LabPBR maps loaded: load them.
+            horizon_client::sprites::set_labpbr_maps(true);
+            self.reload_packs();
         }
         self.apply_fullscreen();
         // A failed HDR start that named no driver becomes the window's driver's, and another
@@ -574,11 +580,17 @@ impl Game<'_> {
         }
         self.hold_fullbright();
         let s = &self.settings;
+        let mut rebuild = false;
         if let Some(r) = self.renderer.as_mut() {
             r.gamma = s.gamma;
             r.improved_transparency = s.improved_transparency;
             r.set_present_mode(s.vsync, s.horizon.present_mode);
             r.animated_textures = s.horizon.animated_textures;
+            r.earth_curvature = s.horizon.earth_curvature;
+            r.cloud_distance = s.horizon.cloud_distance_blocks(&r.info);
+            r.rt_ambient_light = s.horizon.rt_ambient();
+            r.set_god_rays(s.horizon.god_rays);
+            r.set_god_rays_quality(s.horizon.god_rays_quality);
             r.screenshot_quality = s.horizon.screenshot_quality;
             r.set_mipmap_levels(s.mipmap_levels.max(0) as u32);
             r.set_texture_filtering(
@@ -607,6 +619,21 @@ impl Game<'_> {
                 self.gpu_culling_auto.reset();
             }
             let _ = r.set_gpu_culling(gpu_culling);
+            r.set_parallax(s.horizon.parallax);
+            rebuild = r.linear() != s.horizon.linear_light;
+            r.set_ray_traced(
+                s.horizon.ray_traced_shadows,
+                s.horizon.ray_traced_ao,
+                s.horizon.rt_lighting,
+            );
+            r.set_rt_scale(s.horizon.rt_rays);
+            r.set_rt_sky(
+                s.horizon.sun_size,
+                s.horizon.moon_size,
+                s.horizon.aerial_perspective,
+            );
+            r.set_night_vision(s.horizon.night_vision);
+            r.set_shooting_stars(s.horizon.shooting_stars);
             r.update_output(
                 &s.horizon,
                 &Self::options_path().with_file_name(horizon_client::graphics::HDR_MARKER),
@@ -641,6 +668,9 @@ impl Game<'_> {
         // and a setting restored from options.txt at start).
         if self.title.is_none() {
             self.update_remote_skins();
+        }
+        if rebuild && let Err(e) = self.rebuild_renderer() {
+            log::warn!("Horizon: Linear Light not applied: {e}");
         }
     }
     /// `Window.updateFullscreenState`: a fullscreen change made by the window
@@ -691,7 +721,11 @@ impl Game<'_> {
     /// throttled when minimised, idle, or in a menu without a world.
     pub(super) fn framerate_limit(&self) -> i32 {
         let context = FrameContext {
-            inactivity: if self.settings.inactivity_fps_limit == "minimized" {
+            // In VR the head and the hands move without a key or the mouse: the AFK throttle
+            // (30 fps after a minute, 10 after ten) would drop a headset's frames.
+            inactivity: if self.settings.inactivity_fps_limit == "minimized"
+                || std::env::var_os("HORIZON_XR").is_some_and(|v| v == "1")
+            {
                 InactivityFpsLimit::Minimized
             } else {
                 InactivityFpsLimit::Afk

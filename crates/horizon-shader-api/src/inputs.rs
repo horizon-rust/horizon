@@ -105,11 +105,13 @@ uniform! {
         camera_position: [f32; 3],
         /// Seconds since the pack was loaded, wrapping to 0 every hour.
         time: f32,
-        /// Unit vector toward the sun (below the horizon at night).
+        /// Unit vector toward the sun (below the horizon at night), in world space. Its path leans
+        /// south by the player's Sun Path Tilt (40° by default, 0° is vanilla's path through the
+        /// zenith); sunrise and sunset stay due east and west.
         sun_direction: [f32; 3],
         /// The time of day, 0..1: 0 sunrise, 0.25 noon, 0.5 sunset, 0.75 midnight.
         day_time: f32,
-        /// Unit vector toward the moon.
+        /// Unit vector toward the moon, on the same tilted path as the sun.
         moon_direction: [f32; 3],
         /// Vanilla's GameTime: (game time % 24000 + partial tick) / 24000, 0..1.
         game_time: f32,

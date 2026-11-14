@@ -236,9 +236,9 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `projection_inverse` | `mat4x4<f32>` | 192 | Clip to view space. |
 | `camera_position` | `vec3<f32>` | 256 | The camera's world position, in blocks (about a millimetre of precision 10 000 blocks out). |
 | `time` | `f32` | 268 | Seconds since the pack was loaded, wrapping to 0 every hour. |
-| `sun_direction` | `vec3<f32>` | 272 | Unit vector toward the sun (below the horizon at night). |
+| `sun_direction` | `vec3<f32>` | 272 | Unit vector toward the sun (below the horizon at night), in world space. Its path leans south by the player's Sun Path Tilt (40° by default, 0° is vanilla's path through the zenith); sunrise and sunset stay due east and west. |
 | `day_time` | `f32` | 284 | The time of day, 0..1: 0 sunrise, 0.25 noon, 0.5 sunset, 0.75 midnight. |
-| `moon_direction` | `vec3<f32>` | 288 | Unit vector toward the moon. |
+| `moon_direction` | `vec3<f32>` | 288 | Unit vector toward the moon, on the same tilted path as the sun. |
 | `game_time` | `f32` | 300 | Vanilla's GameTime: (game time % 24000 + partial tick) / 24000, 0..1. |
 | `sky_color` | `vec3<f32>` | 304 | Vanilla's sky colour this frame, 0..1. |
 | `rain` | `f32` | 316 | Rain strength, 0..1. |

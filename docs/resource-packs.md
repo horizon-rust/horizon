@@ -46,6 +46,7 @@ harness named checks that loader against vanilla).
 | Textures, any resolution (16x to 512x) | `textures/` | works | atlases stitched from the overlay; Faithful 32x, Default HD 128x and FPBR checked |
 | Texture animation: frames, frame time, frame size | `*.png.mcmeta` `animation` | works | `test_sprite_animation_parity` |
 | Texture animation: `interpolate` | `*.png.mcmeta` `animation` | works | `sprites.rs` blends each frame towards the next (`interpolated_animations_blend_towards_the_next_frame`) |
+| LabPBR 1.3 material maps: normal, material AO, height; smoothness, F0 and metals, porosity, subsurface scattering, emission | `*_n.png`, `*_s.png`, `optifine/texture.properties` | partly | loaded beside the block sprites; the Parallax setting (off by default) draws the normal maps: relief, shading, material AO. The specular map waits for the shader rework ([LabPBR maps](#labpbr-maps)); `labpbr.rs`, `sprites.rs`, `gfx/materials.rs`, `gfx/parallax.rs` tests |
 | Mipmap strategy, alpha cutoff bias | `*.png.mcmeta` `texture` | works | `test_mipmap_parity` |
 | `blur` / `clamp` | `*.png.mcmeta` `texture` | works | `hud.rs` `TextureFlags` reads them from the overlay, and `screen_effects.rs` samples the screen overlays with them |
 | Atlases and sprite sources: `directory`, `single`, `filter`, `unstitch`, `paletted_permutations` | `atlases/` | works | `test_resource_pack_parity` (merged source lists), `atlas_sources.rs` tests |
@@ -80,8 +81,8 @@ harness named checks that loader against vanilla).
 | OptiFine / CIT Resewn custom item textures (`type=item`: `texture`, `model`, `texture.<name>`, `model.<name>`; `type=armor`: `texture`, `texture.<layer>` with the pre-1.21.2 layer names such as `diamond_layer_1`, `leather_layer_2_overlay`; `type=elytra`: `texture`; `type=enchantment` layers on GUI items; `useGlint=false` in `cit.properties`, which removes vanilla's glint from items) | `optifine/cit/`, `mcpatcher/cit/`, `citresewn/cit/` | partly | `item_render/cit.rs`, `cit_armor.rs`, `cit_glint.rs` and `hud/cit_glint.rs` tests; enchantment layers on held, dropped, framed and worn items, and `anim/` glints, come later; special renderers (heads, shields, banners) keep their vanilla look; only players and armour stands wear CIT armour and elytra, other mobs keep vanilla's; worn trims are unchanged; armour textures above 1024x512 (16 times vanilla's 64x32) draw vanilla |
 | GPU warn list, regional compliance | `gpu_warnlist.json`, `regional_compliancies.json` | n/a | OpenGL driver warnings and play-time notices for some regions; not used |
 
-Summary: 50 rows; 42 work, 7 partly (OptiFine/EMF entity models, random entity textures, connected textures,
-emissive textures, CIT, GUI sprite scaling, core shaders), 1 doesn't apply. Every vanilla loader in the list above
+Summary: 51 rows; 42 work, 8 partly (OptiFine/EMF entity models, random entity textures, connected textures,
+emissive textures, CIT, GUI sprite scaling, core shaders, LabPBR material maps), 1 doesn't apply. Every vanilla loader in the list above
 reads the pack; what is left is the GUI scaling types and the core shaders, plus the OptiFine-format extras.
 
 ## Gaps and their work
@@ -90,6 +91,69 @@ reads the pack; what is left is the GUI scaling types and the core shaders, plus
 | --- | --- | --- |
 | GUI scaling `tile`, `stretch` | small | `ui.rs` |
 | Core shaders but GUI text, the block outline, the sky and the stars | large | [#13218](https://github.com/horizon-rust/horizon/issues/13218) |
+| A renderer stage that draws the LabPBR maps | large | the shader rework ([shaders.md](shaders.md#labpbr-materials)) |
+
+## LabPBR maps
+
+A pack's `<texture>_n.png` and `<texture>_s.png` beside a block texture are read as LabPBR 1.3
+(shaderlabs.org's *LabPBR Material Standard*), whatever `optifine/texture.properties` declares (the game logs the
+format it declares). `sprites.rs` keeps each map at its own size (a power of two, up to 512): maps are grouped by size, so
+SPBR's 16x maps stay 16x even though two 64x textures make the block sprite arrays 64x, and a texture without a
+map takes no room. An index gives, for each sprite layer, where its map is (`labpbr::MapSet`); a sprite
+without one reads neutral texels (`labpbr::NEUTRAL`: flat, unoccluded, rough, F0 0, no emission). Maps are
+sampled with the sprite's own texture coordinate, so they line up with it whatever their size. Mip levels
+are averaged as data, not colours (`mipmap::Strategy::Data`), and an animated texture's maps show their frames
+with the texture's own (a map of fewer frames repeats them). `gfx/materials.rs` keeps them on the GPU as one
+texture array per size (per 2048 layers) and an index buffer (`array << 16 | layer` by sprite layer,
+`Renderer::material_arrays`), the lookup a ray-traced stage can use too, and animates them with the sprites. `labpbr::decode` is
+what a texel means (predefined metals 230 to 237 with their `n` and `k`, 238 to 255 the albedo as F0, porosity
+0 to 64, subsurface scattering 65 to 255, emission 0 to 254).
+
+They are only made when a pack has maps. Options > Horizon Settings > Parallax (off by default, as it changes
+vanilla's look; saved as `parallax` in Horizon's graphics settings) draws terrain with the normal maps
+(`gfx/parallax.rs`):
+
+- **Parallax occlusion mapping**: each fragment follows the view ray into the height (alpha) texel by
+  texel, up to 48 texels, so a 16x pack keeps its pixels: the ray stops on a texel's top, lit by the map's
+  normal, or on the wall between two texels, lit as that wall. Against aliasing it runs only where a texel of
+  the map covers about a pixel or more (from the texture coordinate's derivatives): the relief fades out as
+  texels shrink below a pixel, with distance and at grazing angles (and beyond 18 to 24 blocks in any case),
+  and the normal and occlusion are then read from the map's mip level for that size. A lower resolution
+  (the resolution scale, a foveated view's periphery) gets there sooner, so it marches less. Depth is not
+  written (the silhouette stays the face's).
+- **Normal shading**: vanilla's directional face shade (up 1, north and south 0.8, east and west 0.6, down 0.5)
+  recomputed for the map's normal, relative to the face's, so the light stays vanilla's.
+- **Ambient occlusion**: the map's material AO (blue) on top of vanilla's smooth lighting, and a little darker
+  the deeper the ray went (`PARALLAX_CAVITY`, at most a quarter): a stand-in for the occlusion a ray-traced
+  AO will compute, kept apart so it can be turned off then.
+- Translucent terrain (water, glass) gets the normal shading and the AO, without the march. A shader pack's
+  material stage, when one runs, takes precedence.
+
+The specular map (reflections, emission, subsurface scattering, porosity) is not drawn yet: it needs real
+lighting, which comes with the shader rework. Item, entity and armour maps are not read (block sprites only).
+
+Cost with SPBR 22.5, measured on 2026-10-27 (RTX 4090, Vulkan, 1280x720 offscreen, `horizon-ctl bench 10`
+on a test scene of stone, bricks, glass, glowstone and logs at 4 to 8 blocks):
+
+| | GPU time per frame (median) | Video memory |
+| --- | --- | --- |
+| Vanilla | 0.36 ms | |
+| SPBR, Parallax off | 0.35 ms | +5.6 MiB of maps (1 929 normal and 2 088 specular maps) |
+| SPBR, Parallax on | 0.52 ms | the same |
+
+- **Memory**: 5.6 MiB with each map at its own size (the game logs it: `LabPBR maps: ...`). The first version
+  stored every map at the sprite arrays' size, 64x because of two 64x textures in SPBR: 91.2 MiB. The block
+  sprites still pay that factor (every sprite layer is the largest texture's size); the same grouping by
+  size would save it there too. It is the same on the desktop and in VR: it does not depend on the picture's
+  size.
+- **Parallax**: about +0.16 ms for 0.9 megapixels of mostly near terrain, about 0.2 ms per megapixel. The cost
+  is per terrain pixel where texels are at least a pixel: one texel load per texel the ray crosses (1 on a
+  flat texel, at most 48 at grazing angles); elsewhere one load. In VR (Apple Vision Pro through KRVR,
+  4096x3288 per eye, 27 megapixels for both eyes at 90 Hz), scaling that measure would be a few milliseconds
+  on the same GPU, less where the foveated views draw at a lower resolution, since their texels reach a pixel
+  sooner: not measured in VR yet.
+- Animated maps add a compute dispatch per changed tick, as animated sprites do; without the Parallax setting
+  nothing samples the maps.
 
 ## Testing a pack
 

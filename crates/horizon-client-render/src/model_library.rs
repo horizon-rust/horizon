@@ -11,6 +11,15 @@ use std::{
     sync::Arc,
 };
 
+/// Whether `namespace:path` is a resource identifier (`ResourceLocation`'s
+/// character rules).
+pub(crate) fn valid_resource_id(namespace: &str, path: &str) -> bool {
+    let valid = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c);
+    !namespace.is_empty()
+        && namespace.bytes().all(valid)
+        && path.bytes().all(|c| valid(c) || c == b'/')
+}
+
 #[derive(Default)]
 pub struct ParsedModels {
     models: BTreeMap<String, Arc<CuboidModel>>,
@@ -72,6 +81,12 @@ impl ParsedModels {
                         && let Ok(rel) = path.strip_prefix(&base)
                     {
                         let rel = rel.with_extension("").to_string_lossy().replace('\\', "/");
+                        // Vanilla's pack listing skips a file whose name is
+                        // no identifier ("podzol - Copy.json" in some packs).
+                        if !valid_resource_id(&namespace, &rel) {
+                            log::warn!("Invalid path in pack: {namespace}:{rel}, ignoring");
+                            continue;
+                        }
                         files.push((format!("{namespace}:{rel}"), path));
                     }
                 }
@@ -177,6 +192,27 @@ mod tests {
         }
     }
 
+    /// A pack's stray "podzol - Copy.json" is skipped, as vanilla does,
+    /// instead of failing the whole item library.
+    #[test]
+    fn files_named_outside_identifiers_are_skipped() -> Result<()> {
+        let fixture = Fixture(
+            std::env::temp_dir().join(format!("horizon-stray-models-{}", std::process::id())),
+        );
+        fixture.write("minecraft:block/podzol", "{}");
+        fixture.write("minecraft:block/podzol - Copy", "{}");
+        fixture.write("minecraft:block/anvil that ain't damaged table", "{}");
+        let parsed = ParsedModels::load(&fixture.0);
+        assert_eq!(
+            parsed.models.keys().collect::<Vec<_>>(),
+            ["minecraft:block/podzol"]
+        );
+        assert!(parsed.into_item_library().is_ok());
+        assert!(!valid_resource_id("minecraft", "Block/stone"));
+        assert!(valid_resource_id("horizon", "item/a-b_c.d"));
+        Ok(())
+    }
+
     #[test]
     fn shared_views_preserve_resolution_errors_builtins_and_reload() -> Result<()> {
         let fixture = Fixture(
@@ -259,8 +295,7 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(items.resolve("horizon:nested/child")?.elements().len(), 1);
-        // An unrelated bad item identifier must not make block preparation fail
-        // (which would trigger resource-pack rollback at a different stage).
+        // A file named outside identifiers fails neither stage: it is skipped.
         fixture.write("horizon:INVALID", "{}");
         let parsed = ParsedModels::load(&fixture.0);
         assert!(
@@ -268,7 +303,7 @@ mod tests {
                 .block_library(&fixture.0, vec!["horizon:nested/child".into()])
                 .is_ok()
         );
-        assert!(parsed.into_item_library().is_err());
+        assert!(parsed.into_item_library().is_ok());
         Ok(())
     }
 

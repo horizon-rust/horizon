@@ -131,6 +131,9 @@ mod deflect;
 mod dialogs;
 mod dispense_fixture;
 mod dispenser;
+// The dragon's phases test distances as vanilla writes them (`dt < 100.0 || dt > 22500.0`): a NaN
+// distance fails both and keeps the phase, where a range check would end it.
+#[allow(clippy::manual_range_contains)]
 mod dragon;
 mod dynamic_lights;
 mod enchant_effects;
@@ -236,6 +239,9 @@ mod legacy_rules;
 mod level_particles;
 mod levels;
 mod lightning;
+mod live_panel;
+pub(crate) use live_panel::start_live_panel;
+mod live_perf;
 mod llamas;
 mod loading_screen;
 mod loading_window;
@@ -346,6 +352,7 @@ pub mod native_world_draw;
 mod native_world_edit;
 mod native_world_read;
 mod native_world_seed;
+mod natural_fog;
 mod natural_spawning;
 mod nautili;
 mod net_harness;
@@ -393,6 +400,7 @@ mod profile_lines;
 mod pumpkin;
 mod quick_actions;
 mod raids;
+mod rain;
 mod random_textures;
 mod recipe_book;
 mod remote;
@@ -415,6 +423,7 @@ mod resource_load;
 mod resource_loader;
 mod resource_tables;
 mod respawn_anchor;
+mod rt_frame_inputs;
 mod saves_control;
 mod saving;
 mod scoreboard;
@@ -436,7 +445,9 @@ mod shoulders;
 mod sign_edit;
 mod skin_models;
 mod sniffers;
+mod snow;
 mod social;
+mod sound_physics;
 mod spawner;
 mod spear;
 mod spear_players;
@@ -478,7 +489,6 @@ mod trial_visuals;
 mod trident;
 mod tutorial;
 mod ui_control;
-mod upload_pace;
 mod use_hand;
 mod using_item;
 mod vault;
@@ -497,6 +507,8 @@ mod world_session;
 #[cfg(test)]
 mod world_test_def_tests;
 mod world_update;
+mod xr_gaze;
+mod xr_pointer;
 mod zombie_reinforcements;
 mod zombie_villagers;
 use event_loop::EventLoopCtl;
@@ -629,7 +641,9 @@ use winit::{
     window::{CursorGrabMode, Window, WindowId},
 };
 
-/// A frame's finished meshes up to this many upload at once, unqueued.
+/// A frame's finished meshes up to this many upload at once, unqueued, when nothing waits and
+/// the player set no Chunk Updates or Upload Budget; the rest go through the upload queue
+/// (`streaming::uploads`, its time from `uploads::time_budget`).
 const AUTO_UPLOADS_AT_ONCE: usize = 8;
 /// The most changed columns far terrain waits on behind a mod's hold (`Game::lod_held`): past
 /// it, they go in as ever.
@@ -2005,6 +2019,10 @@ pub struct PackResources {
     clouds: Arc<(u32, u32, Vec<bool>)>,
     /// misc/forcefield.png: (width, height, RGBA) for the world border wall.
     forcefield: Arc<(u32, u32, Vec<u8>)>,
+    /// The sprite layers of thin blocks (leaves, plants), for the light through them.
+    thin_layers: Arc<Vec<u32>>,
+    /// The sprite layers' ways of swaying in the wind (`gfx::wind::wind_layers`).
+    wind_layers: Arc<Vec<u8>>,
     /// Custom sky layers (OptiFine's `optifine/sky`) with their textures; none without them.
     custom_sky: Arc<dyn horizon_client::custom_sky::SkyLayers>,
     /// The overworld's, Nether's and End's attribute stacks with the packs' Polytone biome and
@@ -2157,6 +2175,13 @@ struct Game<'a> {
     /// `LocalPlayer.itemActivation`: the totem flying up to the screen.
     item_activation: horizon_client::item_activation::ItemActivation,
     weather_parameters: horizon_client::weather::ParameterCache,
+    /// The live settings panel (`game/live_panel.rs`, `HORIZON_LIVE_PANEL`), once taken from
+    /// where the process start left it.
+    live_panel: Option<live_panel::LivePanel>,
+    /// Physical rain with RT lighting (`game/rain.rs`).
+    rain: rain::RainState,
+    /// Physical snow with RT lighting (`game/snow.rs`).
+    snow: snow::SnowState,
     panorama_rotation: horizon_client::gfx::panorama::Rotation,
     world: World,
     /// The biome table the world plays with: the game's own with the world's
@@ -2184,6 +2209,10 @@ struct Game<'a> {
     /// Whether the view's columns have all arrived, and how new it is: large
     /// translucent pages wait for both before they shrink (`set_terrain_loading`).
     view_arrival: horizon_client::streaming::ViewArrival,
+    /// RT lighting's natural fogs (game/natural_fog.rs): the relief map being sampled, and the
+    /// rain of the last day and a half (a wet morning fogs more).
+    fog_maps: horizon_client::gfx::natural_fog::FogMaps,
+    fog_wetness: f32,
     options: Options,
     player: Option<PlayerMotion>,
     spawn: Option<Vec3>,
@@ -2329,6 +2358,9 @@ struct Game<'a> {
     /// Runs of `entity_vertices` by entity, for a shader pack's per-entity draws; recorded only
     /// while `pack_ids` is set (game/shader_packs.rs).
     entity_spans: std::cell::RefCell<Vec<horizon_client::gfx::pack_draw::EntitySpan>>,
+    /// Where the particles' quads begin in this frame's entity vertices (`entity_geometry`), so
+    /// RT lighting's rays leave them out (`gfx::Frame::particles_at`).
+    particles_at: usize,
     /// Which entity this frame's entity vertices belong to (`Frame::entity_motion`).
     entity_motion: std::cell::RefCell<Vec<(u32, u64)>>,
     /// The GPU-posed vertex count at each of `entity_motion`'s marks (`Frame::entity_motion_posed`).
@@ -2831,8 +2863,7 @@ struct Game<'a> {
     /// The mod whose own screen is open (`Screen::Mod`).
     native_mod_screen: Option<String>,
     /// Meshed sections waiting for an upload budget (Horizon settings).
-    pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
-    upload_pace: upload_pace::UploadPace,
+    pending_uploads: horizon_client::streaming::uploads::UploadQueue,
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::Frustum>,
     /// Whether the renderer's section-occlusion graph is active for this view.
@@ -3353,7 +3384,7 @@ impl Game<'_> {
             let eye = [x, y + f64::from(e.eye_height), z];
             return Some((eye, pick_view_vector(e.y_rot, e.x_rot)));
         }
-        Some((self.eye_position()?, pick_view_vector(self.yaw, self.pitch)))
+        Some((self.eye_position()?, self.aim_direction()?))
     }
     /// `Player.blockInteractionRange`: the block pick's and mining's reach.
     fn reach(&self) -> f64 {
@@ -3444,78 +3475,6 @@ impl Game<'_> {
             .iter()
             .map(|b| std::array::from_fn(|i| base[i % 3] + b[i]))
             .collect()
-    }
-    /// The declared outline uses vanilla's inside-ray test and interaction override.
-    fn clip_declared_outline(
-        &self,
-        state: BlockStateId,
-        pos: [i32; 3],
-        origin: [f64; 3],
-        dir: [f64; 3],
-        reach: f64,
-    ) -> Option<Hit> {
-        use horizon_core::geometry::{Aabb, Vec3};
-        use std::borrow::Cow;
-        let facts = self.res.facts().get(state);
-        let cached = self.collision.cached_shapes();
-        let shape = cached.context_outline_shape(state, self.outline_context_kind());
-        let boxes: Cow<'_, [Aabb]> = if let Some(shape) = shape {
-            Cow::Borrowed(shape.boxes())
-        } else if let Some(b) = self.context_outline(pos, state) {
-            Cow::Owned(vec![Aabb::new(
-                Vec3::new(b[0], b[1], b[2]),
-                Vec3::new(b[3], b[4], b[5]),
-            )])
-        } else {
-            Cow::Owned(
-                facts
-                    .outline
-                    .iter()
-                    .map(|b| Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])))
-                    .collect(),
-            )
-        };
-        let offset = if facts.outline_offset {
-            self.pack
-                .context
-                .tables
-                .offset(state, pos[0], pos[2])
-                .unwrap_or([0.; 3])
-        } else {
-            [0.; 3]
-        };
-        let offset = Vec3::new(offset[0], offset[1], offset[2]);
-        let interaction: Cow<'_, [Aabb]> = if let Some(shape) = cached.interaction_shape(state) {
-            Cow::Borrowed(shape.boxes())
-        } else {
-            let facing = self
-                .pack
-                .assets
-                .registry
-                .state(state)
-                .and_then(|s| s.properties.get("facing"))
-                .map(String::as_str);
-            Cow::Owned(
-                interaction_shapes::boxes(&facts.name, facing)
-                    .into_iter()
-                    .map(|b| Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])))
-                    .collect(),
-            )
-        };
-        let start = Vec3::new(origin[0], origin[1], origin[2]);
-        let end = Vec3::new(
-            origin[0] + dir[0] * reach,
-            origin[1] + dir[1] * reach,
-            origin[2] + dir[2] * reach,
-        );
-        let hit = horizon_world::interaction_shapes::clip_with_interaction_override(
-            boxes.iter().map(|b| b.move_by(offset)),
-            interaction.iter().copied(),
-            start,
-            end,
-            BlockPos::new(pos[0], pos[1], pos[2]),
-        )?;
-        Some(Hit::from_block_hit(pos, &hit))
     }
     /// Voxel traversal against non-air, non-fluid blocks, clipped against
     /// each block's outline shape (`BlockGetter.clip` with `ClipContext.Block.OUTLINE`).
@@ -6720,8 +6679,14 @@ impl Game<'_> {
         laps.lap("eg_name_tags");
         // Entity shadows (EntityRenderer.extractShadow); a native pack's sun shadows replace them.
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
+        // A native shader pack's sun shadows already fall under the entities in the Overworld:
+        // the round blob would be a second one. The Nether and the End have no sun to cast them.
+        // Nor when RT lighting's rays trace the entities: they already shade the ground under
+        // each one, and the blob would darken it twice.
         let pack_shadows = self.renderer.as_ref().is_some_and(|r| {
-            r.pack_entity_shadows() || (self.overworld_skybox() && r.native_shadow())
+            r.pack_entity_shadows()
+                || r.rt_entity_shadows()
+                || (self.overworld_skybox() && r.native_shadow())
         });
         let shadows = self.settings.entity_shadows && self.pack.polytone_colors.entity_shadows();
         let shadow_sprite = (shadows && !pack_shadows)
@@ -7187,6 +7152,7 @@ impl Game<'_> {
         laps.lap("eg_objects");
         // Particles (ParticleEngine.extract): camera-facing quads.
         self.mark_stage(out.len(), "PARTICLES");
+        self.particles_at = out.len();
         let particle_mode = self.settings.horizon.particle_culling;
         if particle_mode == horizon_client::graphics::ParticleCullingMode::Off {
             self.particles.render_in_view(
@@ -8358,6 +8324,7 @@ impl Game<'_> {
                 self.settings.file.int("textureFiltering"),
                 self.settings.file.int("maxAnisotropyBit"),
             ),
+            self.settings.horizon.linear_light,
         )?;
         (renderer.screenshot, renderer.screenshot_result) = (screenshot, screenshot_result);
         self.adopt_renderer(renderer);
@@ -9268,6 +9235,8 @@ impl Game<'_> {
         // LevelExtractor.extractBlockOutline: model translucency controls draw order;
         // no outline when an entity is targeted (Minecraft.hitResult an EntityHitResult).
         let mut outline_after_terrain = false;
+        // RT lighting's wind on the hit block, for its outline to sway with it.
+        let mut outline_wind = None;
         // GameRenderer.shouldRenderBlockOutline: not with the HUD hidden (F1), and only for a
         // player who may build. Adventure players only get one with a CAN_BREAK or
         // CAN_PLACE_ON item matching the block, and spectators with a menu block; Horizon
@@ -9296,6 +9265,7 @@ impl Game<'_> {
                 .map(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
                     let f = self.res.facts().get(state);
+                    outline_wind = self.outline_wind(h.pos).or(outline_wind);
                     outline_after_terrain = self
                         .pack
                         .render
@@ -9521,6 +9491,7 @@ impl Game<'_> {
         } else {
             self.hand_geometry(camera_alpha)
         };
+        let rt_body = self.rt_body(title, camera);
         // GameRenderer.render3dHud: the screen effects after the hand, in
         // its pass (the hand pass draws with `bob * view`).
         if !title {
@@ -9578,9 +9549,14 @@ impl Game<'_> {
         let entity_motion = std::mem::take(self.entity_motion.get_mut());
         let entity_motion_posed = std::mem::take(self.entity_motion_posed.get_mut());
         let glowing = std::mem::take(self.glowing_vertices.get_mut());
+        let (rain, snow) = self.weather_frames(title, camera, alpha, sky.sun_angle);
         let shadow_only = std::mem::take(self.shadow_only_vertices.get_mut());
         let skin = std::mem::take(self.skin_frame.get_mut());
         let frame = Frame {
+            rain: rain.as_ref().map_or(Default::default(), |r| r.rain),
+            wetness: rain.as_ref().map_or(Default::default(), |r| r.wetness),
+            rain_map: rain.as_ref().and_then(|r| r.cells.as_deref()),
+            snow,
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
             nether_lighting: self.nether_lighting(),
@@ -9638,6 +9614,7 @@ impl Game<'_> {
             fog: Some(self.frame_fog(camera, &sky, biome, water_fog)),
             dark_disc: self.dark_disc(camera),
             outline,
+            outline_wind,
             outline_after_terrain,
             outline_high_contrast: self.settings.file.bool("highContrastBlockOutline"),
             pvp: self.pvp_render_frame(),
@@ -9663,6 +9640,7 @@ impl Game<'_> {
                 color: sky.cloud_color,
             }),
             entities: &entities,
+            particles_at: self.particles_at.min(entities.len()) as u32,
             static_block_entities: &static_block_entities,
             visible_static_block_entity_sections: &visible_static_block_entity_sections,
             static_block_entity_stats,
@@ -9688,13 +9666,16 @@ impl Game<'_> {
                 &[]
             },
             stars: stars.filter(|_| self.settings.horizon.sky || title),
+            sun_path_tilt: self.settings.horizon.sun_path_tilt as f32,
             hand: &hand,
+            rt_body: &rt_body,
             hand_items: &hand_items,
             hand_fov_degrees: self.hud_fov_degrees(camera_alpha as f32, camera.to_array()),
             screen: &screen,
             pack: pack_inputs,
             border,
             game_time: self.world.game_time as f32,
+            moon_phase: (self.world.day_time / 24000).rem_euclid(8) as u32,
             shader_game_time: ((self.world.game_time % 24000) as f32 + alpha as f32) / 24000.0,
             crumbling_sprite: frame_geometry::crumbling_sprite(
                 &self.gui.atlas.sprites,
@@ -9742,6 +9723,7 @@ impl Game<'_> {
         // Renderer encoding and GPU waiting belong to render, not prepare.
         drop(prepare);
         let debug_passes = self.debug_lists_gpu_passes();
+        let medium = self.camera_medium(camera, alpha, frame.pack.rain, frame.pack.thunder);
         let result = match self.renderer.as_mut() {
             Some(renderer) => {
                 use horizon_client::client_perf::request::GpuSwitch;
@@ -9756,6 +9738,7 @@ impl Game<'_> {
                 } else {
                     horizon_client::debug_overlay::GPU_TIMING_GAP
                 });
+                renderer.set_volumetrics(true, medium);
                 horizon_client::spans::time("renderer", || renderer.render(&frame))
             }
             None => Err("renderer".into()),
@@ -11038,7 +11021,6 @@ impl Game<'_> {
                     let elapsed = now.duration_since(self.previous);
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
                     self.previous = now;
-                    self.upload_pace.frame(elapsed);
                     self.studio_fly(elapsed);
                     // Arrow-key camera controls belong to gameplay; chat and
                     // other screens use the same keys for their own navigation.
@@ -11112,6 +11094,7 @@ impl Game<'_> {
                     self.extras_retry()?;
                     self.apply_mouse_look();
                     self.input_look(elapsed.as_secs_f32());
+                    self.xr_look(elapsed.as_secs_f32());
                     self.advance_flight();
                     self.tick_world_icon();
                     let ticked = Instant::now();
@@ -11130,6 +11113,7 @@ impl Game<'_> {
                     } else {
                         Vec::new()
                     };
+                    self.live_panel_frame(&frame_spans);
                     let mut perf_times = None;
                     if let Some(r) = self.renderer.as_mut() {
                         let cpu = now.elapsed().saturating_sub(r.last_wait);
@@ -11168,7 +11152,10 @@ impl Game<'_> {
                                 .record_block_entities(r.static_block_entity_frame_stats());
                         }
                         self.frame_stats.record_gpu(&r.gpu_times);
-                        r.gpu_times.clear();
+                        let gpu = std::mem::take(&mut r.gpu_times);
+                        if rendered {
+                            r.xr_frame_times(cpu.as_secs_f32() * 1000.0, &gpu);
+                        }
                     }
                     self.limit_frame();
                     self.pause = self.pauses_game();
@@ -11386,6 +11373,9 @@ impl<'a> Game<'a> {
             screen_fx: Default::default(),
             item_activation: Default::default(),
             weather_parameters: Default::default(),
+            live_panel: None,
+            rain: Default::default(),
+            snow: Default::default(),
             panorama_rotation: Default::default(),
             world,
             streaming,
@@ -11397,6 +11387,8 @@ impl<'a> Game<'a> {
             lod_level: None,
             lod_blue_map: None,
             lod_covered_at: None,
+            fog_maps: Default::default(),
+            fog_wetness: 0.0,
             view_arrival: Default::default(),
             options,
             player: None,
@@ -11482,6 +11474,7 @@ impl<'a> Game<'a> {
             see_through_vertices: Vec::new(),
             shadow_only_vertices: Default::default(),
             entity_spans: Default::default(),
+            particles_at: usize::MAX,
             entity_motion: Default::default(),
             entity_motion_posed: Default::default(),
             skin_models: Default::default(),
@@ -11767,8 +11760,7 @@ impl<'a> Game<'a> {
             async_occlusion_culling_failed: false,
             async_particle_culler: RefCell::new(Default::default()),
             pack_shadow_casters: (false, false),
-            pending_uploads: Vec::new(),
-            upload_pace: Default::default(),
+            pending_uploads: Default::default(),
             frame_graph: Default::default(),
             extras: Default::default(),
             pvp: Default::default(),

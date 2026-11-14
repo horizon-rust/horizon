@@ -464,14 +464,18 @@ impl Game<'_> {
                 log::warn!("Horizon: biomes of chunk {x} {z}: {e}");
             }
         }
-        let mask = horizon_client::section_mask::SectionMask::below(self.world.layout().sections());
         for data in &p.chunks {
             let [x, z] = data.pos;
             for dz in -1..=1 {
                 for dx in -1..=1 {
-                    let n = (x + dx, z + dz);
-                    if self.world.chunks.contains_key(&n) {
-                        self.world.dirty_sections.insert_column_mask(n, mask);
+                    if !self.world.chunks.contains_key(&(x + dx, z + dz)) {
+                        continue;
+                    }
+                    for sy in 0..self.world.layout().sections() as i32 {
+                        self.world.dirty_sections.insert_for(
+                            (x + dx, sy, z + dz),
+                            horizon_client::world::Dirtied::Biomes,
+                        );
                     }
                 }
             }

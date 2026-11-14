@@ -15,6 +15,9 @@
 @group(0) @binding(2) var nearest_sampler: sampler;
 @group(0) @binding(4) var linear_sampler: sampler;
 override CLAMP: bool = false;
+// Linear Light (gfx/tonemap.rs): the effects draw into the float scene, in linear light.
+override LINEAR: bool = false;
+fn decode_gamma(rgb: vec3<f32>) -> vec3<f32> { return pow(max(rgb, vec3(0.0)), vec3(2.2)); }
 struct Out {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -49,7 +52,13 @@ fn atlas_uv(in: Out) -> vec2<f32> {
 }
 fn screen(c: vec4<f32>) -> vec4<f32> {
     if c.a <= 0.0 { discard; }
+    if LINEAR { return vec4(decode_gamma(c.rgb), c.a); }
     return c;
+}
+// The vignette's factor: the frame times 1 - c in gamma space is the light times (1 - c)^2.2.
+fn vignette(c: vec3<f32>) -> vec4<f32> {
+    if LINEAR { return vec4(vec3(1.0) - decode_gamma(vec3(1.0) - c), 1.0); }
+    return vec4(c, 1.0);
 }
 @fragment fn fs_screen(in: Out) -> @location(0) vec4<f32> {
     return screen(textureSampleLevel(atlas, nearest_sampler, atlas_uv(in), 0.0) * in.color);
@@ -61,9 +70,9 @@ fn screen(c: vec4<f32>) -> vec4<f32> {
 // texture colour; the blend state darkens the frame by it.
 @fragment fn fs_vignette(in: Out) -> @location(0) vec4<f32> {
     let c = textureSampleLevel(atlas, nearest_sampler, atlas_uv(in), 0.0) * in.color;
-    return vec4(c.rgb, 1.0);
+    return vignette(c.rgb);
 }
 @fragment fn fs_vignette_blur(in: Out) -> @location(0) vec4<f32> {
     let c = textureSampleLevel(atlas, linear_sampler, atlas_uv(in), 0.0) * in.color;
-    return vec4(c.rgb, 1.0);
+    return vignette(c.rgb);
 }

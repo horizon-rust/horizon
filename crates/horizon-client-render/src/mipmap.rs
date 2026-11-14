@@ -13,6 +13,16 @@ pub enum Strategy {
     Cutout,
     StrictCutout,
     DarkCutout,
+    /// Horizon's own, for LabPBR maps (`labpbr.rs`): data, not colours, so every channel is
+    /// averaged as stored and nothing is cut out. No `.mcmeta` names it.
+    Data,
+    /// LabPBR's specular map: data as `Data`, but its alpha is the emission, where 255 says none
+    /// (an image without alpha) and 254 the most: averaged as stored, a level's texel over three
+    /// texels that glow not at all and one that glows a little came out glowing nearly its most,
+    /// and a block's whole face lit up from the distance where that level is read (a powered
+    /// rail's lit dots became a glowing ladder a few blocks away). The emission is averaged, none
+    /// counting as 0.
+    Specular,
 }
 impl Strategy {
     pub fn parse(name: &str) -> Option<Self> {
@@ -351,6 +361,18 @@ fn generate_native(mut base: Image, levels: u32, settings: Settings) -> Vec<Imag
                 ];
                 let p = if strategy == Strategy::DarkCutout {
                     darkened_alpha_blend(c)
+                } else if strategy == Strategy::Data {
+                    std::array::from_fn(|k| {
+                        (c.iter().map(|p| u32::from(p[k])).sum::<u32>() / 4) as u8
+                    })
+                } else if strategy == Strategy::Specular {
+                    std::array::from_fn(|k| {
+                        let stored = |p: &[u8; 4]| match (k, p[k]) {
+                            (3, 255) => 0,
+                            (_, v) => u32::from(v),
+                        };
+                        (c.iter().map(stored).sum::<u32>() / 4) as u8
+                    })
                 } else {
                     mean_linear(c)
                 };
@@ -410,6 +432,26 @@ fn dither_cutout_levels(levels: &mut [Image]) {
 #[cfg(test)]
 mod dither_tests {
     use super::*;
+
+    #[test]
+    fn a_specular_maps_level_does_not_glow_where_its_texels_did_not() {
+        // Three texels without emission (alpha 255) and one glowing a fifth (51 of 254).
+        let quad = |alphas: [u8; 4]| Image {
+            width: 2,
+            height: 2,
+            pixels: alphas.map(|a| [10, 20, 30, a]).to_vec(),
+        };
+        let settings = Settings {
+            strategy: Strategy::Specular,
+            ..Default::default()
+        };
+        let level = |alphas| generate(quad(alphas), 1, settings)[1].pixels[0];
+        // A twentieth of the most, not the 204 of 254 the stored bytes average to.
+        assert_eq!(level([255, 255, 255, 51]), [10, 20, 30, 12]);
+        // None anywhere: none (0 glows as little as 255 says).
+        assert_eq!(level([255; 4])[3], 0);
+        assert_eq!(level([254; 4])[3], 254);
+    }
     #[test]
     fn the_dither_only_runs_when_asked_for_and_from_its_size() {
         let cutout = |side: u32| Image {

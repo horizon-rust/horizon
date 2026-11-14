@@ -376,6 +376,14 @@ fn render(
 
 fn frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
+        particles_at: u32::MAX,
+        rain: Default::default(),
+        wetness: Default::default(),
+        rain_map: None,
+        snow: Default::default(),
+        sun_path_tilt: 0.0,
+        rt_body: &[],
+        moon_phase: 0,
         eye: glam::DVec3::ZERO,
         eye_rotation: [0.0; 2],
         first_person: true,
@@ -407,6 +415,7 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         fog: None,
         dark_disc: false,
         outline: Vec::new(),
+        outline_wind: None,
         outline_after_terrain: false,
         outline_high_contrast: false,
         pvp: Default::default(),

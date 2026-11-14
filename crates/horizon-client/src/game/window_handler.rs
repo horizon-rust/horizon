@@ -229,6 +229,7 @@ impl Game<'_> {
         }
         horizon_client::spans::time("server_packs", || self.tick_server_packs());
         horizon_client::spans::time("control", || self.poll_control(event_loop));
+        horizon_client::spans::time("live_panel", || self.poll_live_panel());
         if self.pending_save.is_some() {
             return;
         }

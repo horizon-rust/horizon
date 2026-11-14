@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys"]
+exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/wgpu-core"]
 members = [
     "crates/horizon-addresses",
     "crates/horizon-core",
@@ -7,6 +7,7 @@ members = [
     "crates/horizon-narrator",
     "crates/horizon-threads",
     "crates/horizon-hdr",
+    "crates/horizon-rtx",
     "crates/horizon-world",
     "crates/horizon-client",
     "crates/horizon-client-lib",
@@ -14,6 +15,8 @@ members = [
     "crates/horizon-client-input",
     "crates/horizon-client-render",
     "crates/horizon-cosmetics",
+    "crates/horizon-xr",
+    "crates/horizon-xr-fake",
     "crates/horizon-command",
     "crates/horizon-items",
     "crates/horizon-server-files",
@@ -79,6 +82,9 @@ large_enum_variant = "allow"
 # And gfx-rs/wgpu#10714: on Windows, Vulkan waits for the acquire fence only in
 # FIFO (VSync), where it was meant to pace frames; with VSync off it made every
 # frame wait for the GPU to finish the one before (#4604).
+# Also VR's variable rate shading (`VK_KHR_fragment_shading_rate`,
+# crates/horizon-xr/src/foveation.rs): a shading rate attachment on the eyes' render passes and
+# a twin of each render pipeline for them (vulkan/{device,command,mod}.rs, marked "Horizon").
 # Drop this and the folder once a wgpu release has these fixes.
 [patch.crates-io]
 wgpu-hal = { path = "third_party/wgpu-hal" }
@@ -88,6 +94,10 @@ naga = { path = "third_party/naga" }
 # game died before main on CPUs without it (Core 2, #7264; THIRD_PARTY_NOTICES.md). Drop this and
 # the folder once a libmimalloc-sys release has microsoft/mimalloc#1291's fix.
 libmimalloc-sys = { path = "third_party/libmimalloc-sys" }
+# wgpu-core 30.0.1 giving an instance made from wgpu-hal the environment's flags (instance.rs,
+# `from_hal_instance`): VR's instance comes from the OpenXR runtime, and without this wgpu
+# validates every indirect draw there, a few ms of CPU a frame (crates/horizon-xr).
+wgpu-core = { path = "third_party/wgpu-core" }
 
 # Line tables keep file:line in backtraces; full debug info made every
 # example and test binary hundreds of megabytes and slow to link.

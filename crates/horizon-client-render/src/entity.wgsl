@@ -35,6 +35,42 @@ struct Globals {
     // y what the sky and fog get: the same, but none under water.
     // w: apply the no-pack HDR gain; HDR_WRITE_LIGHT independently keeps float alpha as coverage.
     hdr_light: vec4<f32>,
+    // Ray-traced shadows (gfx/shadow_rays.rs): xyz toward the sun or the moon, w the shadows'
+    // strength (0: no shadows).
+    rt_light: vec4<f32>,
+    // RT lighting (gfx/shadow_rays.rs): the last frame's view projection (clip space from world
+    // space relative to its camera), the camera's move since (xyz; w 1 when that frame's light can
+    // be read; w 2: this frame's, xy the world target's size), and x: the terrain's vertices hold
+    // their tint alone (mesher.rs SHADE_BITS),
+    // y: HORIZON_RT_DEBUG=7, z: the light traced toward is the moon.
+    rt_prev_view_proj: mat4x4<f32>,
+    rt_motion: vec4<f32>,
+    rt_mode: vec4<f32>,
+    // RT lighting's real sun (gfx/atmosphere.rs): xyz toward the sun, w 1 when the sky table
+    // (`rt_sky`) holds its sky; rgb the light the rays trace toward (the sun's through the
+    // atmosphere, or the moon's), in paper whites, w the sun's angular radius.
+    rt_sun: vec4<f32>,
+    rt_sun_light: vec4<f32>,
+    // RT lighting's stars (terrain.wgsl `vs_rt_star`): w their brightness (vanilla's, 0 by day);
+    // and the real sky's turn (gfx/sky_stars.rs `frame`): world directions from the equatorial
+    // ones, at the latitude the sun's path leans by and the real sidereal time.
+    rt_stars: vec4<f32>,
+    rt_star_frame: mat4x4<f32>,
+    // RT lighting's water: x and y its still and flowing sprite layers, z the time in seconds;
+    // and the camera's place in the world (xyz, wrapped every 4096 blocks), for its waves.
+    rt_water: vec4<f32>,
+    rt_camera: vec4<f32>,
+    // RT lighting's moon: toward it (xyz) and its angular radius (w); its phase in rt_stars.x.
+    rt_moon: vec4<f32>,
+    // The Earth's curvature (terrain.wgsl `earth_drop`): x below 0 off.
+    earth: vec4<f32>,
+    // The shooting stars' shower (terrain.wgsl `meteor_make`).
+    rt_shower: vec4<f32>,
+    rt_stream: vec4<f32>,
+    rain: vec4<f32>,
+    rain_sun: vec4<f32>,
+    // x 1 when the frame is drawn in linear light (scene_rgb, terrain.wgsl).
+    linear: vec4<f32>,
     hdr_settings: vec4<f32>,
     hdr_gains: vec4<f32>,
 }
@@ -49,6 +85,9 @@ struct Globals {
 // The armour layers' GlintSampler: vanilla samples enchanted_glint_armor with
 // the same repeating, linearly filtered sampler as the item glint.
 @group(0) @binding(7) var glint_armor_tex: texture_2d<f32>;
+// RT lighting's sky (gfx/atmosphere.rs, terrain.wgsl's `rt_sky_view`): its radiance by azimuth
+// from the sun (0..pi) and elevation, in paper whites.
+@group(0) @binding(8) var rt_sky_view: texture_2d<f32>;
 struct Out {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -71,13 +110,16 @@ struct Out {
     // `ARMOR_ENTITY_GLINT_TEXTURING` scrolls for overlay 36 (armour), or the
     // dissolve mask's atlas UV for overlay 38.
     @location(11) glint_uv: vec2<f32>,
-    // 1 drops the quad's back-facing pixels (Vertex::normal w = 1), like a culling render type.
-    @location(12) @interpolate(flat) cull: u32,
-    // HDR tier of a light-giving particle (mesher::hdr_tier), from the overlay's
-    // high bits (particles.rs): fs_hdr_mark marks the frame with it.
-    @location(13) @interpolate(flat) tier: u32,
-    // HDR lighting (`hdr_scene`), 0 for what isn't lit.
-    @location(14) scene: f32,
+    // x: 1 drops the quad's back-facing pixels (Vertex::normal w = 1), like a culling render
+    // type. y: HDR tier of a light-giving particle (mesher::hdr_tier), from the overlay's
+    // high bits (particles.rs): fs_hdr_mark marks the frame with it. One vector, so the
+    // stage stays within the weakest GPUs' inter-stage limit (gfx/inter_stage_tests.rs).
+    @location(12) @interpolate(flat) flags: vec2<u32>,
+    // RT lighting: the face's normal (zero: none), for `rt_entity_light`.
+    @location(13) normal: vec3<f32>,
+    // x: HDR lighting (`hdr_scene`), 0 for what isn't lit. yz: RT lighting's sky and block
+    // light levels (0 to 15, -1 unlit), for `rt_entity_light`.
+    @location(14) scene: vec3<f32>,
 }
 // Shipped light.glsl; normals are already transformed and RGBA8_SNORM packed.
 fn entity_light(normal: vec3<f32>, nether: bool) -> f32 {
@@ -143,7 +185,9 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     let unlit = overlay == 2u || overlay == 4u || overlay == 6u || overlay == 9u || overlay == 10u
         || overlay == 11u || overlay == 12u;
     out.light_color = select(lm, vec4(1.0), unlit);
-    out.scene = select(hdr_scene(l.x / 16.0, l.y / 16.0), 0.0, unlit);
+    out.normal = select(vec3(0.0), normal.xyz, normal.w != 0.0);
+    out.scene = vec3(select(hdr_scene(l.x / 16.0, l.y / 16.0), 0.0, unlit),
+        select(vec2(l.y, l.x) / 16.0, vec2(-1.0), unlit));
     if globals.colored_count.x > 0u && !unlit {
         out.light_color = vec4(min(out.light_color.rgb + native_colored_light(position), vec3(1.0)), out.light_color.a);
     }
@@ -157,8 +201,9 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     // keeps the baked colour but culls back faces (entitySolid models such as the decorated pot).
     // -126/127 shades like -127 and also culls (entityCutoutCull models such as the bat, and the
     // entitySolid decorated pot).
-    out.cull = select(0u, 1u, (normal.w > 0.0 && normal.w < 0.5) || (normal.w < 0.0 && normal.w > -0.996));
-    if abs(normal.w) >= 0.5 {
+    out.flags.x = select(0u, 1u, (normal.w > 0.0 && normal.w < 0.5) || (normal.w < 0.0 && normal.w > -0.996));
+    // With RT lighting the light comes from `rt_entity_light`, which turns to it itself.
+    if abs(normal.w) >= 0.5 && !rt_entities() {
         c = vec4(c.rgb * entity_light(normal.xyz, globals.time.y != 0.0), c.a);
         back = select(c, vec4(back.rgb * entity_light(-normal.xyz, globals.time.y != 0.0), back.a), normal.w < 0.0);
     }
@@ -182,7 +227,15 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     // [end world warp entity]
     var out = entity_vertex(at, uv, overlay & 0xffffu, color, light, normal);
     out.glint_uv = glint_uv;
-    out.tier = (overlay >> 16u) & 0xffu;
+    out.flags.y = (overlay >> 16u) & 0xffu;
+    return out;
+}
+// The celestial pass drawn after the solid terrain (gfx.rs `SkyLast`): its quads at the far plane
+// (reversed depth: 0), so the depth test keeps them where no terrain is, as the sky's.
+@vertex fn vs_sky_entity(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>, @location(5) normal: vec4<f32>) -> Out {
+    var out = entity_vertex(position, uv, overlay, color, light, normal);
+    out.clip.z = 0.0;
     return out;
 }
 // Retained bolt-local geometry, translated using the same f64 camera
@@ -192,7 +245,7 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>, @location(5) normal: vec4<f32>,
     @location(7) offset: vec3<f32>) -> Out {
     var out = entity_vertex(offset + position, uv, overlay & 0xffffu, color, light, normal);
-    out.tier = (overlay >> 16u) & 0xffu;
+    out.flags.y = (overlay >> 16u) & 0xffu;
     return out;
 }
 struct CloudInfo {
@@ -202,7 +255,10 @@ struct CloudInfo {
 @group(1) @binding(0) var<uniform> cloud: CloudInfo;
 @vertex fn vs_cloud(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
     @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>, @location(5) normal: vec4<f32>) -> Out {
-    return entity_vertex(position + cloud.offset.xyz, uv, overlay, cloud.colors[light.x], light, normal);
+    // The cloud layer bends with the Earth's curvature, from the eye (terrain.wgsl `earth_drop`).
+    var p = position + cloud.offset.xyz;
+    if globals.earth.x >= 0.0 { p.y -= dot(p.xz, p.xz) / (2.0 * 6371000.0); }
+    return entity_vertex(p, uv, overlay, cloud.colors[light.x], light, normal);
 }
 // rendertype_end_portal.fsh: the layer colours.
 const PORTAL_COLORS = array<vec3<f32>, 16>(
@@ -243,6 +299,54 @@ fn linear_fog(d: f32, start: f32, end: f32) -> f32 {
     if d <= start { return 0.0; }
     if d >= end { return 1.0; }
     return (d - start) / (end - start);
+}
+// Linear Light, as in terrain.wgsl: vanilla's gamma-space colour decoded on the way out.
+fn linear_on() -> bool { return globals.linear.x > 0.5; }
+// RT lighting lights entities physically too (`rt_entity_light`), not through vanilla's lightmap:
+// at night a sheep is as dark as the grass it stands on.
+fn rt_entities() -> bool { return globals.rt_mode.x > 0.5 && linear_on(); }
+const RT_BLOCK_LIGHT: vec3<f32> = vec3(3.0, 1.9, 0.9);
+// RT lighting's sky that way (terrain.wgsl `rt_sky`, without the Eye of Aldhani's glow).
+fn rt_entity_sky(d: vec3<f32>) -> vec3<f32> {
+    let flat = d.xz / max(length(d.xz), 1e-5);
+    let sun = globals.rt_sun.xz / max(length(globals.rt_sun.xz), 1e-5);
+    let azimuth = acos(clamp(dot(flat, sun), -1.0, 1.0)) / 3.14159265;
+    let e = clamp(asin(clamp(d.y, -1.0, 1.0)) / 1.5707963, -1.0, 1.0);
+    let v = 0.5 + 0.5 * sign(e) * sqrt(abs(e));
+    return textureSampleLevel(rt_sky_view, lightmap_sampler, vec2(azimuth, v), 0.0).rgb;
+}
+// The light on an entity's face of normal `n` (zero: none, lit from all around) with sky and
+// block light levels `levels` (0 to 15), as the terrain's model lights a face where its rays
+// don't reach (terrain.wgsl `rt_shade`): the sun's (or the moon's) on the face, as much as the
+// sky light level says it sees the sky (an entity has no shadow ray of its own); the sky's from
+// where the face sees most of it, the level's share squared; the light sources' by the inverse
+// square of the steps the block light level stands for.
+fn rt_entity_light(n: vec3<f32>, levels: vec2<f32>) -> vec3<f32> {
+    let lit = dot(n, n) > 1e-6;
+    let facing = select(0.5, max(dot(normalize(n), globals.rt_light.xyz), 0.0), lit);
+    let up = select(0.6, n.y / max(length(n), 1e-6), lit);
+    let sky_level = pow(clamp(levels.x / 15.0, 0.0, 1.0), 2.0);
+    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * facing * sky_level;
+    let dome = select(mix(0.6, 1.0, up), mix(0.6, 0.25, -up), up < 0.0);
+    let toward = select(vec3(0.0, 1.0, 0.0), normalize(normalize(n) + vec3(0.0, 1.0, 0.0)),
+        lit && n.y > -0.99);
+    let sky = rt_entity_sky(toward) * sky_level * dome;
+    let steps = max(15.0 - levels.y, 0.0);
+    let block = select(vec3(0.0), RT_BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), levels.y > 0.0);
+    // RT lighting's ambient light (shadow_rays.wgsl `rt.ambient_light`), as on the terrain: beside the
+    // surf's switch in `globals.earth.w`, its fraction.
+    return sun + sky + block + vec3(fract(globals.earth.w));
+}
+fn decode_gamma(rgb: vec3<f32>) -> vec3<f32> { return pow(max(rgb, vec3(0.0)), vec3(2.2)); }
+fn scene_rgb(rgb: vec3<f32>) -> vec3<f32> {
+    if linear_on() { return decode_gamma(rgb); }
+    return rgb;
+}
+// The colour, fogged as entity.fsh does (in gamma space), as the frame target takes it.
+fn scene_fog(rgb: vec3<f32>, spherical: f32, cylindrical: f32) -> vec3<f32> {
+    let f = max(linear_fog(spherical, globals.fog.x, globals.fog.y),
+                linear_fog(cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
+    return scene_rgb(mix(rgb, globals.fog_color.rgb, f));
 }
 // TextureTransform.setupGlintTexturing(0.16), ARMOR_ENTITY_GLINT_TEXTURING.
 // globals.time.w is (Util.getMillis() * glintSpeed * 8) modulo 330000, the
@@ -331,12 +435,29 @@ fn entity_color(in: Out, front: bool) -> vec4<f32> {
         color = vec4(c, 1.0);
     } else if in.overlay == 4u {
         // clouds.fsh: alpha fades out towards the cloud fog end.
-        return vec4(color.rgb, color.a * (1.0 - linear_fog(in.fog_distance.x, 0.0, globals.fog_ends.y)));
+        return vec4(scene_rgb(color.rgb), color.a * (1.0 - linear_fog(in.fog_distance.x, 0.0, globals.fog_ends.y)));
     }
-    if color.a < 0.1 || (in.cull != 0u && !front) { discard; }
+    if color.a < 0.1 || (in.flags.x != 0u && !front) { discard; }
     // entity.fsh calculateFinalColor: the overlay (hurt red, TNT white) over the
     // lit texture, then the lightmap, then the glint and fog.
     color = vec4(mix(in.overlay_color.rgb, color.rgb, in.overlay_color.a), color.a);
+    // RT lighting: the texel in light under the model's light, fogged in light (the glint, a
+    // sheen of its own, stays on top).
+    if rt_entities() && in.scene.y >= 0.0 {
+        let n = select(in.normal, -in.normal, !front && dot(in.normal, in.normal) > 0.0);
+        var lit = decode_gamma(color.rgb) * rt_entity_light(n, in.scene.yz);
+        if in.overlay == 7u || in.overlay == 8u || in.overlay == 33u {
+            let px = in.uv * vec2<f32>(textureDimensions(atlas));
+            let t = globals.misc.y * 0.05;
+            let band = sin((px.x + px.y) * 0.9 - t * 6.0) * 0.5 + 0.5;
+            let band2 = sin((px.x - px.y) * 0.6 + t * 4.0) * 0.5 + 0.5;
+            let shimmer = pow(band * 0.6 + band2 * 0.4, 2.0);
+            lit += decode_gamma(vec3(0.50, 0.25, 0.80) * (0.25 + 0.75 * shimmer)) * 0.6;
+        }
+        let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
+            linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
+        return vec4(mix(lit, decode_gamma(globals.fog_color.rgb), f), color.a);
+    }
     color *= in.light_color;
     if in.overlay == 7u || in.overlay == 8u || in.overlay == 33u {
         // 33: a translucent item with the glint.
@@ -350,9 +471,7 @@ fn entity_color(in: Out, front: bool) -> vec4<f32> {
             textureSample(glint_armor_tex, glint_sampler, armor_glint_uv(in.glint_uv)),
         );
     }
-    let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
-                linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
-    return vec4(mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a), color.a);
+    return vec4(scene_fog(color.rgb, in.fog_distance.x, in.fog_distance.y), color.a);
 }
 
 // rendertype_outline.fsh: the vertex colour (the team colour; outline vertices carry no
@@ -395,12 +514,12 @@ fn hdr_entity_mark(in: Out) -> f32 {
     // Fog hides a light source and the light on a surface as it hides everything else.
     let fogged = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
         linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
-    if in.tier == 0u {
-        return hdr_scene_alpha(mix(in.scene, globals.hdr_light.y, fogged));
+    if in.flags.y == 0u {
+        return hdr_scene_alpha(mix(in.scene.x, globals.hdr_light.y, fogged));
     }
     // A layer that fades (the warden's) shines by what's left of it.
     let y = brightness(texel.rgb * in.color.rgb) * in.color.a * (1.0 - fogged);
-    return hdr_mark(in.tier, y);
+    return hdr_mark(in.flags.y, y);
 }
 fn brightness(c: vec3<f32>) -> f32 {
     let l = pow(max(c, vec3(0.0)), vec3(2.2));
@@ -419,7 +538,7 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 // no longer shines; fs_hdr_mark then marks the light sources it holds.
 @fragment fn fs_hdr_hand_unmark(in: Out) -> @location(0) vec4<f32> {
     if textureSample(atlas, atlas_sampler, in.uv).a < 0.1 { discard; }
-    return vec4(0.0, 0.0, 0.0, hdr_scene_alpha(in.scene));
+    return vec4(0.0, 0.0, 0.0, hdr_scene_alpha(in.scene.x));
 }
 
 // HDR lighting on clouds, drawn again after them with only alpha written: they're lit by the
@@ -448,6 +567,9 @@ fn celestial_color(in: Out) -> vec4<f32> {
     }
     return color;
 }
+// Additive light (lightning, beacon beams, the dragon's rays): vanilla adds these gamma values
+// to the frame, so in linear light they are added as light as they are. Decoded, a dim glow
+// would nearly vanish.
 @fragment fn fs_celestial(in: Out) -> @location(0) vec4<f32> {
     let color = celestial_color(in);
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
@@ -464,20 +586,23 @@ fn celestial_color(in: Out) -> vec4<f32> {
 @fragment fn fs_sky_celestial(in: Out) -> @location(0) vec4<f32> {
     let color = celestial_color(in);
     let added = color.rgb * color.a;
-    // The sun at the brightest tier, the moon at its own (in.tier); geometry that sets
+    // The sun at the brightest tier, the moon at its own (in.flags.y); geometry that sets
     // none (the End sky, the End flash) stays brightest.
-    let tier = select(in.tier, 4u, in.tier == 0u);
+    let tier = select(in.flags.y, 4u, in.flags.y == 0u);
     let y = brightness(added);
+    // In linear light the sun's and moon's discs shine at up to 4x paper white (fs_celestial).
+    let disc = smoothstep(0.1, 0.3, max(added.r, max(added.g, added.b)));
+    let lit = added * select(1.0, 1.0 + 3.0 * disc, linear_on());
     // Only what's past the tier's window takes the mark: a soft edge keeps the sky's light,
     // or it would come out darker than the sky around it.
     let full = y >= globals.hdr_windows[1][clamp(tier, 1u, 4u) - 1u];
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        return vec4(hdr_written(added, select(1.0, hdr_mark(tier, y), full), globals.hdr_settings, globals.hdr_gains), color.a);
+        return vec4(hdr_written(lit, select(1.0, hdr_mark(tier, y), full), globals.hdr_settings, globals.hdr_gains), color.a);
     }
     // Premultiplied after the decode: the light the texel adds, at its coverage.
     if HDR_WRITE_LIGHT { return vec4(frame_stored(color).rgb * color.a, color.a); }
-    if !full { return vec4(added, 0.0); }
-    return vec4(added, 1.0 - hdr_mark(tier, y));
+    if !full { return vec4(lit, 0.0); }
+    return vec4(lit, 1.0 - hdr_mark(tier, y));
 }
 
 // RenderPipelines.ENERGY_SWIRL (entity.fsh with EMISSIVE and NO_OVERLAY): the sprite, scrolled by
@@ -489,7 +614,7 @@ fn energy_swirl_base(in: Out) -> vec4<f32> {
     let size = vec2(bytes.x + bytes.y * 256.0, bytes.z + bytes.w * 256.0) / 65535.0;
     let color = textureSample(atlas, atlas_sampler, crumbling_uv(in.uv, in.wrap, size, textureDimensions(atlas)));
     if color.a < 0.1 { discard; }
-    return vec4(color.rgb * (128.0 / 255.0), color.a);
+    return vec4(scene_rgb(color.rgb * (128.0 / 255.0)), color.a);
 }
 fn energy_swirl_fog(in: Out) -> f32 {
     let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
@@ -498,7 +623,7 @@ fn energy_swirl_fog(in: Out) -> f32 {
 }
 @fragment fn fs_energy_swirl(in: Out) -> @location(0) vec4<f32> {
     let color = energy_swirl_base(in);
-    return frame_stored(vec4(mix(color.rgb, globals.fog_color.rgb, energy_swirl_fog(in)), color.a));
+    return frame_stored(vec4(scene_rgb(mix(color.rgb, globals.fog_color.rgb, energy_swirl_fog(in))), color.a));
 }
 
 // RenderPipelines.WATER_MASK: depth only (the pipeline masks the colour off).
@@ -636,7 +761,5 @@ fn weather_color(in: Out) -> vec4<f32> {
     var color = textureLoad(atlas, texel, 0) * in.color;
     if color.a < 0.1 { discard; }
     color *= in.light_color;
-    let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
-                linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
-    return vec4(mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a), color.a);
+    return vec4(scene_fog(color.rgb, in.fog_distance.x, in.fog_distance.y), color.a);
 }

@@ -168,6 +168,8 @@ fn a_shader_pack_lights_the_faces_itself() {
     region[1][1] = Some(&chunk);
     let colours = |shader_pack_lighting| {
         let mut mesher = Mesher {
+            rt_lighting: false,
+            smooth_fluids: false,
             nether_shading: false,
             shader_pack_lighting,
             separate_ao: false,
@@ -225,6 +227,8 @@ fn a_shader_pack_lights_every_nether_face_like_an_up_face() {
     region[1][1] = Some(&chunk);
     let colours = |nether_shading| {
         let mut mesher = Mesher {
+            rt_lighting: false,
+            smooth_fluids: false,
             nether_shading,
             shader_pack_lighting: true,
             separate_ao: false,
@@ -278,6 +282,8 @@ fn separate_ao_passes_ao_in_alpha_without_darkening_rgb() {
     let mut region = [[None; 3]; 3];
     region[1][1] = Some(&chunk);
     let mut mesher = Mesher {
+        rt_lighting: false,
+        smooth_fluids: false,
         nether_shading: false,
         shader_pack_lighting: true,
         separate_ao: true,
@@ -354,6 +360,8 @@ fn reused_mesh_matches_fresh_geometry_across_sections_and_resource_reload() {
         let visibility = crate::models::load_visibility(&root, assets.registry).unwrap();
         let tables = MeshTables::new(&assets, &render, &facts, visibility.clone()).unwrap();
         let mut mesher = Mesher {
+            rt_lighting: false,
+            smooth_fluids: false,
             nether_shading: false,
             shader_pack_lighting: false,
             separate_ao: false,
@@ -504,6 +512,8 @@ fn a_shader_pack_s_still_water_top_starts_at_its_south_west_corner() {
     region[1][1] = Some(&chunk);
     let first_corner = |shader_pack| {
         let mut mesher = Mesher {
+            rt_lighting: false,
+            smooth_fluids: false,
             nether_shading: false,
             shader_pack_lighting: shader_pack,
             separate_ao: false,

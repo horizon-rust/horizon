@@ -37,6 +37,10 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Forking](forking.md): the `horizon-extras` feature that holds Horizon's own extras (cosmetics, Friends, its settings pages...), and building the game without them.
 - [Translations](translations.md): where Horizon's own text and its ~85 languages live, the unreviewed mark on machine-written strings, and how a native speaker reviews a language in #translations on Discord.
 - [Narrator](narrator.md): vanilla's text-to-speech (Ctrl+B): the voices per platform, how screens record what they narrate, `horizon-ctl narration`, and where it still differs from vanilla.
+- [Ray tracing](raytracing.md): the tilted sun path, the ray-traced shadows spike and the plan for them.
+- [The RTX 4090 build](rtx-4090.md): the one-machine branch's target (VR at 90 Hz), its measurements and phases.
+- [Smooth fluids](smooth-fluids.md): continuous water and lava surfaces (off by default): what vanilla's fluid mesh breaks, the algorithm, its cost and limits, prior mods.
+- [Sound physics](sound-physics.md): the Sound Physics Remastered extra (reverb, occlusion, underwater, sound direction), its cost and its differences from the mod.
 - [Shader packs](shaders.md): Horizon's own WGSL shader packs, how to make and check one (`horizon-shader`).
 - [Shader-pack clean room](cleanroom/README.md): how Java shader-pack support was rebuilt without another loader's code: the [format specification](cleanroom/shader-packs-spec.md) and the [provenance log](cleanroom/provenance-log.md) of every source read.
 - [Mods](mods.md): content mods (data) and native mods (Rust), how to make, install and publish them. [Native mods](native-mods.md): how the launcher builds them. [Native hook points modelled on NeoForge](native-hooks-neoforge.md): the proposal for new hooks.

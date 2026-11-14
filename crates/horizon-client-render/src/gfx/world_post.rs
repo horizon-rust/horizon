@@ -1,7 +1,9 @@
 //! Resolution scale, FXAA and TAA (Horizon settings): the world renders into its
 //! own target at the scaled size, then one full-screen pass copies or
 //! anti-aliases it onto the screen, under the hand and HUD. With none on,
-//! the world renders straight to the screen.
+//! the world renders straight to the screen. With Linear Light the world's
+//! target and "the screen" are the float scene (`tonemap`); the VR mirror
+//! still copies an eye onto the window (`finish_with`).
 //!
 //! TAA jitters the world's projection by a sub-pixel offset each frame and blends
 //! the frame into a history reprojected through the depth buffer: its motion
@@ -147,6 +149,12 @@ pub struct Post {
     sampler: wgpu::Sampler,
     copy: wgpu::RenderPipeline,
     fxaa: wgpu::RenderPipeline,
+    /// Copy and FXAA onto the window's format when it differs from the world's (Linear Light).
+    screen: Option<(
+        wgpu::TextureFormat,
+        wgpu::RenderPipeline,
+        wgpu::RenderPipeline,
+    )>,
     /// Contrast-adaptive sharpening of TAA's upscaled picture: the jittered frames are
     /// spread over more output pixels, and the blend softens edges.
     sharpen: wgpu::RenderPipeline,
@@ -175,7 +183,12 @@ pub struct Post {
 }
 
 impl Post {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    /// The world's target in `format`; `screen` is the window's.
+    pub fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        screen: wgpu::TextureFormat,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon post"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../world_post.wgsl").into()),
@@ -336,6 +349,13 @@ impl Post {
             pipeline_layout: pipeline_layout.clone(),
             copy: pipeline("fs_copy", &pipeline_layout, format),
             fxaa: pipeline("fs_fxaa", &pipeline_layout, format),
+            screen: (screen != format).then(|| {
+                (
+                    screen,
+                    pipeline("fs_copy", &pipeline_layout, screen),
+                    pipeline("fs_fxaa", &pipeline_layout, screen),
+                )
+            }),
             sharpen: sharpen_pipeline(device, &shader, &pipeline_layout, format, 0.85),
             sharpness: 0.85,
             layout,
@@ -379,6 +399,20 @@ impl Post {
     /// Whether TAA is supported on this GPU/backend.
     pub fn supports_taa(&self) -> bool {
         self.taa_resources.is_some()
+    }
+
+    /// Whether the world draws straight to the screen (`prepare`'s and `scaled_size`'s rule).
+    fn unscaled(&self, always: bool) -> bool {
+        self.scale == 1.0 && !self.antialias && !self.taa_on && !always
+    }
+
+    /// The size of the world's own target for a `window`, or `None` when the world draws straight
+    /// to the screen (`prepare`'s rule, known before the frame's targets are).
+    pub fn scaled_size(&self, window: [u32; 2], always: bool) -> Option<[u32; 2]> {
+        if self.unscaled(always) {
+            return None;
+        }
+        Some(self.sizes(window).0)
     }
 
     /// The world's rendered size and the size it is shown at (TAA's history).
@@ -452,7 +486,7 @@ impl Post {
         window: [u32; 2],
         always: bool,
     ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
-        if self.scale == 1.0 && !self.antialias && !self.taa_on && !always {
+        if self.unscaled(always) {
             self.target = None;
             return None;
         }
@@ -498,7 +532,7 @@ impl Post {
                 error.map_or_else(String::new, |e| e.to_string())
             );
             self.scale = reduced;
-            if self.scale == 1.0 && !self.antialias && !self.taa_on && !always {
+            if self.unscaled(always) {
                 return None;
             }
         }
@@ -648,11 +682,23 @@ impl Post {
     ) {
         let Some(target) = &self.target else { return };
         let Some(taa) = target.taa.as_ref().filter(|_| self.taa_previous.is_some()) else {
-            self.finish_with(encoder, screen, &target.group, timing.as_deref_mut());
+            self.finish_with(
+                encoder,
+                screen,
+                self.format,
+                &target.group,
+                timing.as_deref_mut(),
+            );
             return;
         };
         let Some(res) = &self.taa_resources else {
-            self.finish_with(encoder, screen, &target.group, timing.as_deref_mut());
+            self.finish_with(
+                encoder,
+                screen,
+                self.format,
+                &target.group,
+                timing.as_deref_mut(),
+            );
             return;
         };
         let size = self.size().unwrap_or([1, 1]);
@@ -676,19 +722,26 @@ impl Post {
         self.draw_onto(encoder, screen, shown, pipeline, timing);
     }
 
-    /// Draw what `group` binds (`bind`) onto `screen`.
+    /// Draw what `group` binds (`bind`) onto `screen`, of `format` (the world's or the window's).
+    /// The world's format, which `finish_with` draws in.
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+    #[allow(clippy::too_many_arguments)]
     pub fn finish_with(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         screen: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
         group: &wgpu::BindGroup,
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
-        let pipeline = if self.antialias {
-            &self.fxaa
-        } else {
-            &self.copy
+        // Onto the window's format (the VR mirror under Linear Light), its own pipelines.
+        let (copy, fxaa) = match &self.screen {
+            Some((f, copy, fxaa)) if *f == format => (copy, fxaa),
+            _ => (&self.copy, &self.fxaa),
         };
+        let pipeline = if self.antialias { fxaa } else { copy };
         self.draw_onto(encoder, screen, group, pipeline, timing);
     }
 
@@ -818,7 +871,11 @@ mod tests {
         let Some((device, _)) = test_device() else {
             return;
         };
-        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut post = Post::new(
+            &device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         assert!(!post.taa_on);
         assert!(post.size().is_none());
         for (window, scale, upscale, expected) in [
@@ -843,7 +900,11 @@ mod tests {
             eprintln!("TAA baked-light GPU skipped: no test device");
             return;
         };
-        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba16Float);
+        let mut post = Post::new(
+            &device,
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureFormat::Rgba16Float,
+        );
         post.taa = true;
         if !post.supports_taa() {
             eprintln!("TAA baked-light GPU skipped: TAA unsupported");
@@ -902,7 +963,11 @@ mod tests {
         let Some((device, _)) = test_device() else {
             return;
         };
-        let post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let post = Post::new(
+            &device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         // Copy and FXAA pipelines always compile; TAA compiles if supported by backend.
         let _ = post.supports_taa();
     }

@@ -1,0 +1,189 @@
+// RT lighting's primary surface replacement through water (Remix's PSR, gfx/shadow_rays.rs):
+// appended with the hybrid's hardware rays. Where `hw_reflect` met the water, the ray from the
+// camera bends into it by Snell's law (water's index 1.33; from under it, out into the air, and
+// back by total internal reflection past the critical angle), meets what lies beyond and lights
+// it as the reflection does; the water's shader shows it through its absorption over the distance
+// the ray ran in it, so what lies under the waves is seen bent by them, and from below, the sky
+// through Snell's window.
+const WATER_INDEX: f32 = 1.33;
+fn hw_refract(p: vec2<i32>) -> vec4<f32> {
+    if water_at.w < 0.0 && glass_at.w < 0.0 { return vec4(0.0); }
+    let size = rt.size.xy;
+    let ndc = vec2((f32(p.x) + 0.5) / size.x * 2.0 - 1.0, 1.0 - (f32(p.y) + 0.5) / size.y * 2.0);
+    let c = rt.inverse_view_proj * vec4(ndc, 1e-7, 1.0);
+    let ray = normalize(c.xyz / c.w);
+    if glass_at.w >= 0.0 { return hw_refract_glass(ray); }
+    let n = water_at.xyz;
+    let at = ray * water_at.w;
+    // From above (the normal up), into the water; from below, out of it.
+    let eta = select(WATER_INDEX, 1.0 / WATER_INDEX, n.y > 0.0);
+    var bent = refract(ray, n, eta);
+    // Whether the bent ray runs in the water: from above, into it; from below, past the critical
+    // angle (total internal reflection), back down into it.
+    var inside = n.y > 0.0;
+    var start = at - n * 0.02;
+    if dot(bent, bent) < 1e-6 {
+        bent = reflect(ray, n);
+        inside = true;
+        // The reflected ray starts on the camera's side of the surface, in the water.
+        start = at + n * 0.02;
+    }
+    let h = hw_hit(start, bent, 256.0);
+    if h.t < 0.0 {
+        // Into deep water, or through the surface to the sky (from below).
+        if inside { return vec4(0.0, 0.0, 0.0, 64.0); }
+        return vec4(sky_at(bent) * h.through, 0.01);
+    }
+    let seen = start + bent * h.t;
+    let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
+    // In the water, the distance it runs there (the water's shader absorbs over it); out of it, none.
+    return vec4(h.through * hw_surface(h, seen, light), select(0.01, max(h.t, 0.01), inside));
+}
+// The same through glass (shadow_rays_hw.wgsl `hw_glass`): where `hw_reflect` met it, its face
+// toward the camera (xyz) and distance (w, below 0 none), and its attenuation a block.
+var<private> glass_at: vec4<f32>;
+var<private> glass_sigma: vec3<f32>;
+// Whether that glass is ice (`hw_ice`: 1 ice, 2 packed ice, 0 neither), and its frost's colour.
+var<private> glass_ice: f32;
+var<private> glass_frost: vec3<f32>;
+// Ice is not thin-walled: the faces between two ice blocks are culled, so a ray that enters ice
+// runs through all of it to the face it leaves by, however deep, and the ice's body acts along
+// that whole length (Beer-Lambert, a block): clear ice absorbs red most (glacier blue) and
+// scatters a little, packed ice (compressed snow full of air) scatters most within a block or
+// two. What is lost is made up by the light its bubbles scatter toward the eye: its frost's colour,
+// a deeper blue, lit as the face it entered by. A pillar shows what lies behind it, deep blue; a
+// hill of ice or packed ice is opaque.
+// Their extinction a block: shadow_rays_hw.wgsl `ice_extinction`.
+fn ice_body(entry: vec3<f32>, n: vec3<f32>, through: vec3<f32>, inside: f32) -> vec3<f32> {
+    let sigma = ice_extinction(glass_ice > 1.5);
+    let t = exp(-sigma * inside);
+    let lit = sun_on(entry + n * 0.02, n) + hw_seen_light(entry, n);
+    let scattered = glass_frost * vec3(0.75, 0.9, 1.0) * lit;
+    return through * t + scattered * (1.0 - luminance(t));
+}
+// A face the ray from camera-relative `pos` along `l` meets first within `reach`: its distance (-1
+// none), its quad's normal (as wound: outward) and whether it is a solid one (the ray then meets
+// the terrain there, not the glass's far side).
+struct HwFace {
+    t: f32,
+    normal: vec3<f32>,
+    solid: bool,
+}
+fn hw_face(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwFace {
+    var q: ray_query;
+    hw_from = pos;
+    rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
+    while rayQueryProceed(&q) {
+        let c = rayQueryGetCandidateIntersection(&q);
+        if c.geometry_index == instances[c.instance_custom_data].at.w {
+            if hw_quad(c, true) != NO_QUAD { rayQueryConfirmIntersection(&q); }
+        } else if hw_opaque(c) {
+            rayQueryConfirmIntersection(&q);
+        }
+    }
+    let hit = rayQueryGetCommittedIntersection(&q);
+    if hit.kind == RAY_QUERY_INTERSECTION_NONE { return HwFace(-1.0, vec3(0.0), false); }
+    if hit.geometry_index != instances[hit.instance_custom_data].at.w {
+        return HwFace(hit.t, -l, true);
+    }
+    let base = hw_quad(hit, true);
+    let p0 = hw_position(base);
+    let f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
+    return HwFace(hit.t, select(-l, normalize(f), dot(f, f) > 1e-12), false);
+}
+// Remix's primary surface replacement through glass: the ray from the camera bends into it by
+// Snell's law (index 1.52) at the face `hw_reflect` met, runs inside to the face it leaves by,
+// bounces off that face back in by total internal reflection past the critical angle (up to three
+// times: the light caught along a pane's length, a window's edges seen at a slant), and bends out
+// through it; then meets what lies beyond, lit as the reflection is. That light comes back through
+// the walls it crossed (shadow_rays_hw.wgsl `glass_wall`: each one's colour over its thickness
+// along the bent ray, deeper where the ray slants; the far face's Fresnel, the near face's being
+// the glass's shader's): a window shifts what is behind it by its thickness. Where the glass lies
+// against a solid block the ray meets that block inside it. rgb that light; a 1 plus how much of
+// the sun's beam reaches the far face (0 to 1, for the glass's shader to spread the sun's light
+// through it over its roughness: terrain.wgsl `rt_glass_at`), or 0 where the ray stays caught in
+// the glass or meets no face within 32 blocks (the shader then blends what was drawn behind it).
+fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
+    let n = glass_at.xyz;
+    let g = vec4(glass_sigma, 0.0);
+    let entry = ray * glass_at.w;
+    var pos = entry - n * 0.002;
+    // Ice's faces are uneven (shadow_rays_hw.wgsl `ice_uneven`): the ray bends by the face as it
+    // stands there, packed ice's rougher.
+    // A slope of a few hundredths: at 0.45 the ray inside turned toward a side face over much of
+    // the block, so the face showed bands of whatever lay to its sides (FIXE01, tout23: black and
+    // torch-orange stripes over ice). `HORIZON_RT_SKIP` 33554432 keeps the clear ice of before.
+    let uneven = select(0.0, select(0.05, 0.1, glass_ice > 1.5), glass_ice > 0.0 && ice_cloudy());
+    let origin = rt.camera.xyz + rt.fraction.xyz;
+    var dir = refract(ray, n, 1.0 / GLASS_INDEX);
+    if uneven > 0.0 {
+        let leaned = refract(ray, ice_uneven(entry + origin, n, uneven), 1.0 / GLASS_INDEX);
+        if dot(leaned, leaned) > 1e-6 && dot(leaned, n) < 0.0 { dir = leaned; }
+    }
+    // The near wall (its Fresnel is the shader's): its colour over its thickness along the bent ray.
+    var absorbed = exp(-g.rgb * GLASS_WALL / max(-dot(dir, n), 0.05));
+    var out = false;
+    // The length run inside (ice's body, `ice_body`).
+    var inside = 0.0;
+    for (var i = 0u; i < 4u; i++) {
+        let f = hw_face(pos, dir, 32.0);
+        if f.t < 0.0 {
+            // Ice deeper than 32 blocks: its body hides all that lies beyond.
+            inside += 32.0;
+            break;
+        }
+        inside += f.t;
+        if f.solid {
+            pos += dir * max(f.t - 0.01, 0.0);
+            out = true;
+            break;
+        }
+        pos += dir * f.t;
+        // The face's normal against the ray (the far side's points along it).
+        let m = select(f.normal, -f.normal, dot(f.normal, dir) > 0.0);
+        var bent = refract(dir, m, GLASS_INDEX);
+        if uneven > 0.0 && dot(bent, bent) >= 1e-6 {
+            let leaned = refract(dir, ice_uneven(pos + origin, m, uneven), GLASS_INDEX);
+            if dot(leaned, leaned) > 1e-6 && dot(leaned, m) < 0.0 { bent = leaned; }
+        }
+        if dot(bent, bent) < 1e-6 {
+            // Reflected back in off the wall, through its colour there and back.
+            let w = exp(-g.rgb * GLASS_WALL / max(-dot(dir, m), 0.05));
+            absorbed *= w * w;
+            dir = reflect(dir, m);
+            pos += m * 0.002;
+            continue;
+        }
+        absorbed *= glass_wall(g, -dot(bent, m));
+        dir = bent;
+        pos -= m * 0.004;
+        out = true;
+        break;
+    }
+    if !out {
+        if glass_ice > 0.0 { return vec4(ice_body(entry, n, vec3(0.0), 64.0), 1.0); }
+        return vec4(0.0);
+    }
+    // The sun's beam on the far face, where the sun is behind the glass on the side the eye looks
+    // (its light through the glass reaches the eye only near the sun's direction).
+    var beam = 0.0;
+    let l = rt.light.xyz;
+    if rt.light.w > 0.0 && dot(n, l) < 0.0 && dot(ray, l) > 0.3 && dot(pos - entry, n) < 0.0 {
+        beam = luminance(hw_light(pos, l, 4096.0));
+    }
+    if glass_ice > 0.0 {
+        let sigma = ice_extinction(glass_ice > 1.5);
+        beam *= luminance(exp(-sigma * inside));
+    }
+    let h = hw_hit(pos, dir, 256.0);
+    var seen_light = vec3(0.0);
+    if h.t < 0.0 {
+        seen_light = absorbed * (sky_at(dir) * h.through + hw_water_glint(h, dir));
+    } else {
+        let seen = pos + dir * h.t;
+        let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
+        seen_light = absorbed * (h.through * hw_surface(h, seen, light) + hw_water_glint(h, dir));
+    }
+    if glass_ice > 0.0 { seen_light = ice_body(entry, n, seen_light, inside); }
+    return vec4(seen_light, 1.0 + beam);
+}

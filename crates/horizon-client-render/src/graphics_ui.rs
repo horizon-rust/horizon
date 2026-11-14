@@ -71,6 +71,7 @@ impl Page {
 pub enum H {
     Preset,
     LodDistance,
+    CloudDistance,
     FarDetail,
     BlueMapAutoDetect,
     BlueMapRadius,
@@ -91,6 +92,7 @@ pub enum H {
     ChunkUpdates,
     UploadBudget,
     Sky,
+    SunPathTilt,
     Fog,
     Weather,
     AnimatedTextures,
@@ -104,6 +106,24 @@ pub enum H {
     DynamicResolution,
     TargetFps,
     Antialiasing,
+    Parallax,
+    LinearLight,
+    RayTracedShadows,
+    RayTracedAo,
+    RtLighting,
+    RtRays,
+    SunSize,
+    MoonSize,
+    RtAmbientLight,
+    GodRays,
+    GodRaysQuality,
+    NightVision,
+    ShootingStars,
+    AerialPerspective,
+    EarthCurvature,
+    HorizonCulling,
+    NaturalFog,
+    SmoothFluids,
     Upscaling,
     UpscalingSharpness,
     ScreenshotQuality,
@@ -276,7 +296,17 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Cloud layer: off, flat (fast) or 3D (fancy).",
                         ),
                         v(Opt::CloudRange, Low, "How far clouds reach, in chunks."),
+                        h(
+                            H::CloudDistance,
+                            Low,
+                            "How far RT Lighting's clouds reach. Auto: 40 km, or as far as LOD Distance.",
+                        ),
                         h(H::Sky, Low, "Draws the sky, sun, moon and stars."),
+                        h(
+                            H::SunPathTilt,
+                            None,
+                            "Leans the sun's path south, as shader packs do. 0° is vanilla.",
+                        ),
                         h(
                             H::Fog,
                             None,
@@ -403,6 +433,101 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::FrameGeneration,
                             Medium,
                             "Shows a made-up frame between each two real ones: smoother, a little more lag.",
+                        ),
+                    ],
+                ),
+                (
+                    "Ray tracing",
+                    vec![
+                        h(
+                            H::Parallax,
+                            Medium,
+                            "Relief and shading from PBR resource packs (LabPBR, such as SPBR).",
+                        ),
+                        h(
+                            H::LinearLight,
+                            Low,
+                            "Light in linear HDR: lava and the sun glow. Base of PBR and RT.",
+                        ),
+                        h(
+                            H::RayTracedShadows,
+                            High,
+                            "Sun and moon shadows traced through the blocks within 8 chunks.",
+                        ),
+                        h(
+                            H::RayTracedAo,
+                            Medium,
+                            "Short rays darken corners, overhangs and tunnels (Linear Light).",
+                        ),
+                        h(
+                            H::RtLighting,
+                            High,
+                            "Terrain lit by rays alone, not vanilla's shading (Linear Light).",
+                        ),
+                        h(
+                            H::RtRays,
+                            None,
+                            "Half: one ray for 2x2 pixels, a quarter of the trace. Auto: by screen size.",
+                        ),
+                        h(
+                            H::SunSize,
+                            None,
+                            "RT Lighting's sun, times its real size: softer shadows, same light.",
+                        ),
+                        h(
+                            H::MoonSize,
+                            None,
+                            "RT Lighting's moon, times its real size: its disc and night shadows.",
+                        ),
+                        h(
+                            H::RtAmbientLight,
+                            None,
+                            "RT Lighting: a light on every face, so caves are not pitch black.",
+                        ),
+                        h(
+                            H::GodRays,
+                            None,
+                            "RT Lighting's sunbeams in the air and their haze. The water keeps its own.",
+                        ),
+                        h(
+                            H::GodRaysQuality,
+                            Medium,
+                            "The god rays' grid and steps: finer shafts and fog edges, more GPU time.",
+                        ),
+                        h(
+                            H::NightVision,
+                            None,
+                            "RT Lighting: dim scenes fade to grey, as eyes do at night. Off: colours stay.",
+                        ),
+                        h(
+                            H::ShootingStars,
+                            None,
+                            "RT Lighting's shooting stars: none, the real sky's showers, or frequent.",
+                        ),
+                        h(
+                            H::AerialPerspective,
+                            None,
+                            "RT Lighting: far blocks fade blue into the haze, times real air's.",
+                        ),
+                        h(
+                            H::EarthCurvature,
+                            None,
+                            "Distant terrain and clouds curve away with the Earth: islands sink.",
+                        ),
+                        h(
+                            H::HorizonCulling,
+                            None,
+                            "With Earth Curvature, far terrain stops where it sinks under the horizon.",
+                        ),
+                        h(
+                            H::NaturalFog,
+                            None,
+                            "RT Lighting: valley fog at sunrise, mist over cold water.",
+                        ),
+                        h(
+                            H::SmoothFluids,
+                            Low,
+                            "Water and lava surfaces in one piece: no steps or seams between blocks.",
                         ),
                     ],
                 ),
@@ -693,6 +818,15 @@ const LOD_STEPS: [u32; 24] = [
     2097152,
     crate::lod::MAX_CHUNKS,
 ];
+/// The LOD Distance slider's stops for these settings: `LOD_STEPS` up to
+/// `Graphics::lod_distance_max`, which ends it (the curved horizon's
+/// `lod::HORIZON_MAX_CHUNKS` while Earth Curvature is on).
+fn lod_steps(g: &crate::graphics::Graphics) -> Vec<u32> {
+    let max = g.lod_distance_max();
+    let mut steps: Vec<u32> = LOD_STEPS.iter().copied().filter(|&d| d < max).collect();
+    steps.push(max);
+    steps
+}
 
 /// `out`: the output of the renderer the settings are shown for, with what its display reports.
 fn setup(s: &Settings, out: &EffectiveOutput) -> Setup {
@@ -768,6 +902,11 @@ fn on_off(on: bool) -> String {
 /// A control's caption and its value, both through the language table: Horizon's captions are
 /// English sentences, and some of the values ("Off", "12 chunks") are words too.
 /// "Caption: value" (`options.generic_value`), both looked up in the language table.
+/// RT Ambient Light's slider stops, in ten thousandths (`Graphics::rt_ambient_light`): finer
+/// near the dark end, where the eye tells them apart (0.0005, 0.003 the default).
+const RT_AMBIENT_STEPS: [u32; 24] = [
+    0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 80, 100, 150, 200, 300, 400, 500,
+];
 fn labelled(caption: &str, value: impl std::fmt::Display) -> Text {
     let value = value.to_string();
     Text::option_name_value(
@@ -805,14 +944,31 @@ impl H {
                 Some(i as f32 / (UPLOAD_STEPS.len() - 1) as f32)
             }
             H::LodDistance => {
-                let i = LOD_STEPS
+                let steps = lod_steps(g);
+                let i = steps
                     .iter()
                     .position(|&d| d >= g.lod_distance)
-                    .unwrap_or(LOD_STEPS.len() - 1);
-                Some(i as f32 / (LOD_STEPS.len() - 1) as f32)
+                    .unwrap_or(steps.len() - 1);
+                Some(i as f32 / (steps.len() - 1) as f32)
             }
             H::Workers => Some(g.workers as f32 / max_workers() as f32),
             H::ResolutionScale => Some((g.resolution_scale as f32 - 50.0) / 150.0),
+            H::SunPathTilt => Some((g.sun_path_tilt as f32 + 60.0) / 120.0),
+            H::SunSize => Some((g.sun_size as f32 - 1.0) / 19.0),
+            H::MoonSize => Some((g.moon_size as f32 - 1.0) / 19.0),
+            H::RtAmbientLight => {
+                let i = RT_AMBIENT_STEPS
+                    .iter()
+                    .position(|&a| a >= g.rt_ambient_light)
+                    .unwrap_or(RT_AMBIENT_STEPS.len() - 1);
+                Some(i as f32 / (RT_AMBIENT_STEPS.len() - 1) as f32)
+            }
+            H::GodRays => Some(g.god_rays as f32 / crate::graphics::MAX_GOD_RAYS as f32),
+            H::GodRaysQuality => Some(g.god_rays_quality.min(3) as f32 / 3.0),
+            H::AerialPerspective => Some(match g.aerial_perspective {
+                0 => 0.0,
+                n => (1.0 + (n as f32).log2()) / 7.0,
+            }),
             H::TargetFps => Some((g.target_fps as f32 - 30.0) / 210.0),
             H::UpscalingSharpness => Some(g.upscaling_sharpness as f32 / 100.0),
             // Auto, then 10..480 by 10.
@@ -829,6 +985,13 @@ impl H {
     }
     pub fn slider_steps(self) -> Option<u32> {
         match self {
+            H::SunPathTilt => Some(24),
+            H::SunSize => Some(19),
+            H::MoonSize => Some(19),
+            H::RtAmbientLight => Some((RT_AMBIENT_STEPS.len() - 1) as u32),
+            H::GodRays => Some(crate::graphics::MAX_GOD_RAYS / 10),
+            H::GodRaysQuality => Some(3),
+            H::AerialPerspective => Some(7),
             H::ChunkUpdates => Some(64),
             H::EntityCullingPrecheck => Some(32),
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
@@ -863,6 +1026,10 @@ impl H {
             H::LodDistance => match g.lod_distance {
                 0 => labelled("LOD Distance", "Off"),
                 n => labelled("LOD Distance", lang::tr("%s chunks", &[&n])),
+            },
+            H::CloudDistance => match g.cloud_distance {
+                0 => labelled("RT Cloud Distance", "Auto"),
+                n => labelled("RT Cloud Distance", format!("{n} chunks")),
             },
             H::FarDetail => labelled("Far Detail", g.far_detail.label()),
             H::BlueMapAutoDetect => labelled("Find BlueMap", on_off(g.blue_map.auto_detect)),
@@ -915,7 +1082,58 @@ impl H {
                 k => labelled("Upload Budget", lang::tr("%s KiB/frame", &[&k])),
             },
             H::Sky => labelled("Sky", on_off(g.sky)),
+            H::SunPathTilt => match g.sun_path_tilt {
+                0 => labelled("Sun Path Tilt", "0° (Vanilla)"),
+                n => labelled("Sun Path Tilt", format!("{n}°")),
+            },
             H::Fog => labelled("Fog", on_off(g.fog)),
+            H::SunSize => match g.sun_size {
+                1 => labelled("Sun Size", "1x (Real)"),
+                n => labelled("Sun Size", format!("{n}x")),
+            },
+            H::NightVision => labelled("Night Grey", on_off(g.night_vision)),
+            H::ShootingStars => labelled(
+                "Shooting Stars",
+                match g.shooting_stars {
+                    0 => "Off",
+                    1 => "Rare",
+                    _ => "Frequent",
+                },
+            ),
+            H::NaturalFog => labelled(
+                "Natural Fog",
+                match g.natural_fog {
+                    0 => "Off",
+                    1 => "Light",
+                    _ => "Normal",
+                },
+            ),
+            H::MoonSize => match g.moon_size {
+                1 => labelled("Moon Size", "1x (Real)"),
+                n => labelled("Moon Size", format!("{n}x")),
+            },
+            H::RtAmbientLight => match g.rt_ambient_light {
+                0 => labelled("RT Ambient Light", "Off"),
+                n => labelled("RT Ambient Light", format!("{:.4}", n as f32 / 10_000.0)),
+            },
+            H::GodRays => match g.god_rays {
+                0 => labelled("God Rays", "Off"),
+                n => labelled_percent("God Rays", n),
+            },
+            H::GodRaysQuality => labelled(
+                "God Rays Quality",
+                match g.god_rays_quality {
+                    0 => "Low",
+                    1 => "Medium",
+                    2 => "High",
+                    _ => "Ultra",
+                },
+            ),
+            H::AerialPerspective => match g.aerial_perspective {
+                0 => labelled("Aerial Perspective", "Off"),
+                1 => labelled("Aerial Perspective", "1x (Real)"),
+                n => labelled("Aerial Perspective", format!("{n}x")),
+            },
             H::Weather => labelled("Weather", on_off(g.weather)),
             H::AnimatedTextures => labelled("Animated Textures", on_off(g.animated_textures)),
             H::DitherCutoutMips => labelled("Distant Plant Dither", on_off(g.dither_cutout_mips)),
@@ -953,6 +1171,22 @@ impl H {
                 labelled("Screenshot Quality", format!("{}x", g.screenshot_quality))
             }
             H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
+            H::Parallax => labelled("Parallax", on_off(g.parallax)),
+            H::LinearLight => labelled("Linear Light", on_off(g.linear_light)),
+            H::RayTracedShadows => labelled("Ray-Traced Shadows", on_off(g.ray_traced_shadows)),
+            H::RayTracedAo => labelled("Ray-Traced AO", on_off(g.ray_traced_ao)),
+            H::RtLighting => labelled("RT Lighting", on_off(g.rt_lighting)),
+            H::RtRays => labelled(
+                "RT Ray Density",
+                match g.rt_rays {
+                    0 => "Auto",
+                    1 => "Full",
+                    _ => "Half",
+                },
+            ),
+            H::EarthCurvature => labelled("Earth Curvature", on_off(g.earth_curvature)),
+            H::HorizonCulling => labelled("Horizon Culling", on_off(g.horizon_culling)),
+            H::SmoothFluids => labelled("Smooth Fluids", on_off(g.smooth_fluids)),
             H::Hdr => labelled("HDR", g.hdr.label()),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s, out) {
                 Setup::Unknown | Setup::Guessed => "Calibrate...",
@@ -997,10 +1231,28 @@ impl H {
                     UPLOAD_STEPS[(v * (UPLOAD_STEPS.len() - 1) as f32).round() as usize]
             }
             H::LodDistance => {
-                g.lod_distance = LOD_STEPS[(v * (LOD_STEPS.len() - 1) as f32).round() as usize]
+                let steps = lod_steps(g);
+                g.lod_distance = steps[(v * (steps.len() - 1) as f32).round() as usize]
             }
             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
             H::ResolutionScale => g.resolution_scale = (50.0 + (v * 30.0).round() * 5.0) as u32,
+            H::SunPathTilt => g.sun_path_tilt = -60 + (v * 24.0).round() as i32 * 5,
+            H::SunSize => g.sun_size = 1 + (v * 19.0).round() as u32,
+            H::MoonSize => g.moon_size = 1 + (v * 19.0).round() as u32,
+            H::RtAmbientLight => {
+                g.rt_ambient_light =
+                    RT_AMBIENT_STEPS[(v * (RT_AMBIENT_STEPS.len() - 1) as f32).round() as usize]
+            }
+            H::GodRaysQuality => g.god_rays_quality = (v * 3.0).round() as u32,
+            H::GodRays => {
+                g.god_rays = (v * (crate::graphics::MAX_GOD_RAYS / 10) as f32).round() as u32 * 10
+            }
+            H::AerialPerspective => {
+                g.aerial_perspective = match (v * 7.0).round() as u32 {
+                    0 => 0,
+                    step => 1 << (step - 1),
+                }
+            }
             H::TargetFps => g.target_fps = (30.0 + (v * 42.0).round() * 5.0) as u32,
             H::UpscalingSharpness => g.upscaling_sharpness = (v * 20.0).round() as u32 * 5,
             H::HdrPaperWhite => g.hdr_paper_white = crate::graphics::nits_at(v),
@@ -1029,6 +1281,20 @@ impl H {
         }
         let g = &mut s.horizon;
         match self {
+            H::CloudDistance => {
+                g.cloud_distance = step(
+                    &[
+                        0,
+                        512,
+                        1024,
+                        2048,
+                        4096,
+                        crate::graphics::MAX_CLOUD_DISTANCE,
+                    ],
+                    g.cloud_distance,
+                    back,
+                )
+            }
             H::FarDetail => {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
             }
@@ -1093,6 +1359,24 @@ impl H {
             H::FrameGeneration => {
                 g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
             }
+            H::Parallax => g.parallax = !g.parallax,
+            H::LinearLight => g.linear_light = !g.linear_light,
+            H::RayTracedShadows => g.ray_traced_shadows = !g.ray_traced_shadows,
+            H::RayTracedAo => g.ray_traced_ao = !g.ray_traced_ao,
+            H::RtLighting => g.rt_lighting = !g.rt_lighting,
+            H::RtRays => g.rt_rays = (g.rt_rays + if back { 2 } else { 1 }) % 3,
+            H::NightVision => g.night_vision = !g.night_vision,
+            H::ShootingStars => {
+                g.shooting_stars = (g.shooting_stars + if back { 2 } else { 1 }) % 3
+            }
+            H::EarthCurvature => {
+                g.earth_curvature = !g.earth_curvature;
+                // The LOD Distance slider stops at the curved horizon.
+                g.lod_distance = g.lod_distance.min(g.lod_distance_max());
+            }
+            H::HorizonCulling => g.horizon_culling = !g.horizon_culling,
+            H::NaturalFog => g.natural_fog = (g.natural_fog + if back { 2 } else { 1 }) % 3,
+            H::SmoothFluids => g.smooth_fluids = !g.smooth_fluids,
             // Any choice tries HDR output again on a driver a start failed on.
             H::Hdr => {
                 g.hdr_failed_start = None;
@@ -1178,6 +1462,9 @@ impl Item {
             {
                 Some("Your GPU or graphics API doesn't support it.")
             }
+            Item::Horizon(H::HorizonCulling) if !s.horizon.earth_curvature => {
+                Some("Turn Earth Curvature on to use it.")
+            }
             Item::Horizon(H::EntityCullingPrecheck)
                 if s.horizon.entity_culling != EntityCullingMode::Asynchronous =>
             {
@@ -1215,6 +1502,15 @@ impl Item {
             Item::Horizon(H::Fog) => g.fog,
             Item::Horizon(H::Weather) => g.weather,
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
+            Item::Horizon(H::Parallax) => g.parallax,
+            Item::Horizon(H::LinearLight) => g.linear_light,
+            Item::Horizon(H::RayTracedShadows) => g.ray_traced_shadows,
+            Item::Horizon(H::RayTracedAo) => g.ray_traced_ao,
+            Item::Horizon(H::RtLighting) => g.rt_lighting,
+            Item::Horizon(H::NightVision) => g.night_vision,
+            Item::Horizon(H::EarthCurvature) => g.earth_curvature,
+            Item::Horizon(H::HorizonCulling) => g.horizon_culling,
+            Item::Horizon(H::SmoothFluids) => g.smooth_fluids,
             Item::Horizon(H::DynamicResolution) => g.dynamic_resolution,
             Item::Horizon(H::DitherCutoutMips) => g.dither_cutout_mips,
             Item::Horizon(H::HdrLighting) => g.hdr_lighting,
@@ -1756,7 +2052,10 @@ mod tests {
             found,
             [
                 (Page::Quality, Item::Vanilla(Opt::Clouds)),
-                (Page::Quality, Item::Vanilla(Opt::CloudRange))
+                (Page::Quality, Item::Vanilla(Opt::CloudRange)),
+                // Earth Curvature's description names the clouds it curves.
+                (Page::Quality, Item::Horizon(H::CloudDistance)),
+                (Page::Quality, Item::Horizon(H::EarthCurvature)),
             ]
         );
         // Words of a description find it too.
@@ -2135,8 +2434,54 @@ mod tests {
     }
 
     #[test]
+    fn lod_distance_stops_at_the_curved_horizon() {
+        use crate::lod::{HORIZON_MAX_CHUNKS, MAX_CHUNKS};
+        let mut s = Settings::default();
+        assert!(s.horizon.earth_curvature);
+        let item = Item::Horizon(H::LodDistance);
+        // The doubling stops up to 4096, then the horizon ends the slider.
+        item.set_slider(&mut s, 1.0, &NONE);
+        assert_eq!(s.horizon.lod_distance, HORIZON_MAX_CHUNKS);
+        assert_eq!(item.slider(&s), Some(1.0));
+        assert_eq!(
+            item.label(&s, &NONE).plain(),
+            format!("LOD Distance: {HORIZON_MAX_CHUNKS} chunks")
+        );
+        let steps = lod_steps(&s.horizon);
+        assert_eq!(steps[steps.len() - 2], 4096);
+        item.set_slider(
+            &mut s,
+            (steps.len() - 2) as f32 / (steps.len() - 1) as f32,
+            &NONE,
+        );
+        assert_eq!(s.horizon.lod_distance, 4096);
+        // Flat, the slider reaches the world; curved again, it comes back.
+        let curvature = Item::Horizon(H::EarthCurvature);
+        curvature.cycle(&mut s, false, FB, &NONE);
+        assert!(!s.horizon.earth_curvature);
+        item.set_slider(&mut s, 1.0, &NONE);
+        assert_eq!(s.horizon.lod_distance, MAX_CHUNKS);
+        // Horizon Culling has nothing to cull on a flat world.
+        assert!(
+            Item::Horizon(H::HorizonCulling)
+                .blocked(&s, &NONE)
+                .is_some()
+        );
+        curvature.cycle(&mut s, false, FB, &NONE);
+        assert_eq!(s.horizon.lod_distance, HORIZON_MAX_CHUNKS);
+        assert!(
+            Item::Horizon(H::HorizonCulling)
+                .blocked(&s, &NONE)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn lod_distance_slides_after_render_distance_without_changing_it() {
         let mut s = Settings::default();
+        // A flat world: the slider goes as far as the world
+        // (`lod_distance_stops_at_the_curved_horizon` for a curved one).
+        s.horizon.earth_curvature = false;
         let item = Item::Horizon(H::LodDistance);
         let near = s.render_distance;
         assert_eq!(item.label(&s, &NONE).plain(), "LOD Distance: Off");
@@ -2295,6 +2640,29 @@ mod tests {
         assert_eq!(H::UploadBudget.slider(&s), Some(1.0));
         H::UploadBudget.set_slider(&mut s, 0.0);
         assert_eq!(s.horizon.upload_budget_kib, 0);
+    }
+
+    #[test]
+    fn sun_path_tilt_slider_steps_by_five_degrees() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::SunPathTilt);
+        assert_eq!(
+            item.label(&s, &Default::default()).plain(),
+            "Sun Path Tilt: 40°"
+        );
+        for (v, tilt) in [(0.0, -60), (0.5, 0), (0.52, 0), (1.0, 60)] {
+            H::SunPathTilt.set_slider(&mut s, v);
+            assert_eq!(s.horizon.sun_path_tilt, tilt, "{v}");
+            assert_eq!(
+                H::SunPathTilt.slider(&s),
+                Some((tilt as f32 + 60.0) / 120.0)
+            );
+        }
+        H::SunPathTilt.set_slider(&mut s, 0.5);
+        assert_eq!(
+            item.label(&s, &Default::default()).plain(),
+            "Sun Path Tilt: 0° (Vanilla)"
+        );
     }
 
     #[test]

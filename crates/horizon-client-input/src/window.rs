@@ -67,7 +67,13 @@ pub struct FrameContext {
 
 /// `getThrottleReason`.
 pub fn throttle_reason(c: FrameContext) -> ThrottleReason {
-    if !c.iconified && (c.focused || !c.exclusive_fullscreen) {
+    // Vanilla also throttles an unfocused exclusive fullscreen window as if minimised. With two
+    // monitors it stays in view while another window has the focus, so only a minimised
+    // window is throttled here (`HORIZON_THROTTLE_UNFOCUSED_FULLSCREEN=1` for vanilla's).
+    let unfocused_fullscreen = !c.focused
+        && c.exclusive_fullscreen
+        && std::env::var("HORIZON_THROTTLE_UNFOCUSED_FULLSCREEN").is_ok_and(|v| v == "1");
+    if !c.iconified && !unfocused_fullscreen {
         if c.inactivity == InactivityFpsLimit::Afk {
             let afk = c.now_ms - c.latest_input_ms;
             if afk > 600_000 {

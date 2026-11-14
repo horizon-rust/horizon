@@ -49,6 +49,7 @@ impl Game<'_> {
                 self.settings.file.int("textureFiltering"),
                 self.settings.file.int("maxAnisotropyBit"),
             ),
+            self.settings.horizon.linear_light,
         )
     }
     /// Under `HORIZON_HDR_FRAME=float` the frame follows what draws the picture
@@ -102,7 +103,7 @@ impl Game<'_> {
     /// The renderer made again on the same device from the resources loaded, keeping the
     /// pipelines that come out the same and the world the old one holds (`Renderer::take_world`):
     /// only what draws in the frame is made again, and no section is meshed again.
-    fn rebuild_renderer(&mut self) -> Result<()> {
+    pub(super) fn rebuild_renderer(&mut self) -> Result<()> {
         let Some(window) = self.window.clone() else {
             return Ok(());
         };
@@ -145,23 +146,30 @@ impl Game<'_> {
         // LevelExtractor.allChanged when they change.
         let leaf_culling = self.effective_leaf_culling();
         let (s, st) = (&self.settings, &self.streaming);
+        let rt_lighting = s.horizon.rt_lighting && s.horizon.linear_light;
         let reload = render_distance_changed
             || (
                 s.biome_blend,
                 s.smooth_lighting,
                 s.cutout_leaves,
+                rt_lighting,
+                s.horizon.smooth_fluids,
                 s.horizon.opaque_ice,
                 leaf_culling,
             ) != (
                 st.biome_blend,
                 st.smooth_lighting,
                 st.cutout_leaves,
+                st.rt_lighting,
+                st.smooth_fluids,
                 st.opaque_ice,
                 st.leaf_culling,
             );
         self.streaming.biome_blend = self.settings.biome_blend;
         self.streaming.smooth_lighting = self.settings.smooth_lighting;
         self.streaming.cutout_leaves = self.settings.cutout_leaves;
+        self.streaming.rt_lighting = rt_lighting;
+        self.streaming.smooth_fluids = self.settings.horizon.smooth_fluids;
         self.streaming.opaque_ice = self.settings.horizon.opaque_ice;
         self.streaming.leaf_culling = leaf_culling;
         if reload {
@@ -191,9 +199,12 @@ impl Game<'_> {
     pub(super) fn far_terrain_choice(&self) -> (u32, bool) {
         let g = &self.settings.horizon;
         let reduced = g.far_detail == horizon_client::graphics::FarDetail::Reduced;
+        // No farther than the curved horizon with Earth Curvature on, whatever
+        // an older file saved (`Graphics::lod_distance_max`).
+        let chosen = g.lod_distance.min(g.lod_distance_max());
         let distance = match self.server_far_terrain() {
-            Some(offer) => g.lod_distance.min(offer.distance),
-            None => g.lod_distance,
+            Some(offer) => chosen.min(offer.distance),
+            None => chosen,
         };
         (distance, reduced)
     }
@@ -274,7 +285,12 @@ impl Game<'_> {
 
     /// `LevelExtractor.allChanged`: displayed sections and mesh work are
     /// discarded, then every loaded section is rebuilt.
+    #[track_caller]
     pub(super) fn all_sections_changed(&mut self) {
+        log::info!(
+            "Horizon: every section meshes again ({})",
+            std::panic::Location::caller()
+        );
         self.clear_lod();
         self.pending_uploads.clear();
         if let Some(renderer) = self.renderer.as_mut() {

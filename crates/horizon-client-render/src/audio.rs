@@ -4,13 +4,20 @@
 //! rolloff 1), looping, relative flag and source state, Ogg/Vorbis decoding
 //! (streams on a worker thread) and OpenAL Soft's mixing: mono sources panned
 //! and attenuated, multi-channel buffers (stereo music and records) played
-//! direct as OpenAL does.
+//! direct as OpenAL does. With sound physics on (`sound_physics`, a Horizon
+//! extra), each positional channel also gets EFX-style filters and reverb
+//! sends (`reverb`), worked out off this thread (`acoustics`). Binaural
+//! panning and the Doppler effect (`spatial`) are extras of their own.
 use crate::Result;
+use crate::acoustics::{Acoustics, Sink};
+use crate::reverb::{self, Bus, Crossover, Split};
 use crate::sound_engine::{
     Attenuation, Backend, Bound, ChannelId, InstanceId, PlayResult, SoundEngine, SoundInstance,
     Sounds, TickContext,
 };
 use crate::sound_events::{Sound, SoundRegistry};
+use crate::sound_physics::{Environment, Request, Settings as PhysicsSettings};
+use crate::spatial::{self, Binaural, Ear, Motion};
 #[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_core::random::{LegacyRandom, RandomSource};
@@ -19,6 +26,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 /// An OpenAL source's state.
@@ -41,6 +49,25 @@ struct Channel {
     looping: bool,
     at: [f32; 3],
     relative: bool,
+    /// Sound physics' result for this channel, once worked out.
+    environment: Option<Environment>,
+    /// The filters' state.
+    split: Split,
+    /// Waiting for its environment: plays from this instant at the latest.
+    hold: Option<Instant>,
+    /// The sound event and `SoundSource` it plays, for re-evaluation.
+    tag: Option<(Arc<str>, usize)>,
+    /// The tick it was last traced at.
+    traced: u64,
+    /// Its velocity, for the Doppler effect.
+    motion: Motion,
+    /// Its ears' state, for binaural panning.
+    binaural: Option<Box<Binaural>>,
+    /// How it was mixed in the last buffer: the next one ramps from there.
+    last: Option<Voice>,
+    /// The share of its sound sent to the reverb buses (1 but for the arrow
+    /// whoosh).
+    reverb_share: f32,
     /// Whose sounds these are: 0 the game's, another splitscreen player's (`Audio::share`).
     owner: u8,
     /// Its world (`Mixer::world_id`; 0 none).
@@ -95,6 +122,95 @@ impl Muffle {
         }
     }
 }
+impl Channel {
+    fn new() -> Self {
+        Channel {
+            samples: None,
+            position: 0.0,
+            state: State::Initial,
+            gain: 1.0,
+            pitch: 1.0,
+            linear: None,
+            looping: false,
+            at: [0.0; 3],
+            relative: false,
+            environment: None,
+            split: Split::default(),
+            hold: None,
+            tag: None,
+            traced: 0,
+            motion: Motion::default(),
+            binaural: None,
+            last: None,
+            reverb_share: 1.0,
+            owner: 0,
+            world: 0,
+            started: None,
+            unmuffled: false,
+        }
+    }
+    /// Seconds of sound left (looping sounds never end).
+    fn remaining(&self) -> f32 {
+        match &self.samples {
+            _ if self.looping => f32::INFINITY,
+            Some((s, rate, channels)) => {
+                ((s.len() as f64 / f64::from((*channels).max(1)) - self.position)
+                    / f64::from(*rate)
+                    / f64::from(self.pitch.max(0.01))) as f32
+            }
+            None => f32::INFINITY,
+        }
+    }
+}
+/// Horizon's spatial extras the mixer applies (`spatial`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Spatial {
+    hrtf: bool,
+    doppler: Option<f32>,
+    whoosh: bool,
+    /// `sound_range` when not 1.
+    range: Option<f32>,
+}
+/// How a voice is mixed for one buffer: its pan gains, its gain on a mono
+/// output, its filters and sends, and its ears when binaural.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Voice {
+    pan: [f32; 2],
+    mono: f32,
+    wet: Option<Wet>,
+    ears: Option<[Ear; 2]>,
+}
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+impl Voice {
+    /// The gains `t` of the way from `self` to `to` (the ears ramp in
+    /// `Binaural::process`).
+    fn toward(&self, to: &Voice, t: f32) -> Voice {
+        let wet = match (self.wet, to.wet) {
+            (Some(a), Some(b)) => Some(Wet {
+                direct_gain: lerp(a.direct_gain, b.direct_gain, t),
+                direct_hf: lerp(a.direct_hf, b.direct_hf, t),
+                sends: std::array::from_fn(|k| {
+                    (
+                        lerp(a.sends[k].0, b.sends[k].0, t),
+                        lerp(a.sends[k].1, b.sends[k].1, t),
+                    )
+                }),
+            }),
+            (_, wet) => wet,
+        };
+        Voice {
+            pan: [
+                lerp(self.pan[0], to.pan[0], t),
+                lerp(self.pan[1], to.pan[1], t),
+            ],
+            mono: lerp(self.mono, to.mono, t),
+            wet,
+            ears: to.ears,
+        }
+    }
+}
 #[derive(Default)]
 struct Mixer {
     channels: HashMap<ChannelId, Channel>,
@@ -111,12 +227,19 @@ struct Mixer {
     /// The callback's cameras (position, basis, world), kept to be refilled without allocating.
     cameras: Vec<([f64; 3], Basis, u32)>,
     /// Per-source gain/pan/step cache for one buffer, reused across callbacks.
-    voices: Vec<(ChannelId, [f32; 3], f64)>,
+    voices: Vec<(ChannelId, Voice, f64)>,
     /// Mods' audio sources (`push_voice`), each with its queue.
     mod_audio: Vec<ModAudioSource>,
     /// A mod's muffle of the sounds it does not exempt.
     muffle: Muffle,
     limiter_peak: f32,
+    /// Sound physics' settings while it is on.
+    physics_settings: Option<PhysicsSettings>,
+    /// The reverb buses and their buffers, built at the output's rate.
+    physics: Option<Box<MixPhysics>>,
+    spatial: Spatial,
+    /// The listener's velocity, for the Doppler effect.
+    listener_motion: Motion,
     /// The output device the stream was opened on (`Library.currentDeviceName`).
     #[cfg(feature = "audio")]
     device_name: String,
@@ -191,6 +314,42 @@ impl Reopen {
         }
         self.ticks += 1;
         self.ticks >= Self::TICKS
+    }
+}
+/// The mixer's sound physics state.
+struct MixPhysics {
+    settings: PhysicsSettings,
+    rate: u32,
+    crossover: Crossover,
+    buses: Vec<Bus>,
+    /// Each bus's input for the buffer being mixed, one sample a frame.
+    sends: [Vec<f32>; reverb::SENDS],
+}
+impl MixPhysics {
+    fn new(settings: &PhysicsSettings, rate: u32) -> Self {
+        Self {
+            settings: settings.clone(),
+            rate,
+            crossover: Split::coefficient(rate),
+            buses: reverb::presets(settings)
+                .into_iter()
+                .map(|p| Bus::new(p, rate))
+                .collect(),
+            sends: Default::default(),
+        }
+    }
+}
+/// Where the sound physics thread delivers: the channel's environment, which
+/// also ends its hold.
+struct MixerSink(Arc<Mutex<Mixer>>);
+impl Sink for MixerSink {
+    fn environment(&self, channel: ChannelId, environment: Environment) {
+        if let Ok(mut m) = self.0.lock()
+            && let Some(c) = m.channels.get_mut(&channel)
+        {
+            c.environment = Some(environment);
+            c.hold = None;
+        }
     }
 }
 /// A camera's forward, up and right vectors.
@@ -341,6 +500,21 @@ pub struct MixerBackend {
     decoder: Option<std::sync::mpsc::Sender<Decode>>,
     next: ChannelId,
     live: bool,
+    /// Sound physics: off unless the extra is on.
+    acoustics: Acoustics,
+    /// The camera is underwater (`isUnderWater`), for sound physics.
+    listener_underwater: bool,
+    /// Client ticks, for re-evaluating moving sounds.
+    ticks: u64,
+    /// The block the listener was in at the last tick.
+    listener_cell: Option<[i32; 3]>,
+    /// The whooshing arrows' channels, by the arrow's key.
+    whooshes: HashMap<u32, ChannelId>,
+    whoosh_samples: Option<Arc<Vec<f32>>>,
+    /// The bow creak playing, and the one fading out after a release.
+    creak: Option<ChannelId>,
+    creak_fading: Option<ChannelId>,
+    creak_samples: Option<Arc<Vec<f32>>>,
     /// Whose channels these are (`Channel::owner`).
     owner: u8,
     world: u32,
@@ -620,6 +794,77 @@ fn variantless(key: &str) -> &str {
         .trim_end_matches(|c: char| c.is_ascii_digit())
 }
 impl MixerBackend {
+    /// Traces playing sounds again: every `sound_update_interval` ticks with
+    /// `update_moving_sounds` (the mod's `tickInGameSound` hook; music discs
+    /// only then get sound physics), and with `update_on_listener_move` the
+    /// ones still playing for a while when the listener enters another
+    /// block, at most `MOVE_BATCH` a tick.
+    fn reevaluate(&mut self) {
+        const MOVE_BATCH: usize = 24;
+        let settings = self.acoustics.settings();
+        if !settings.enabled || !self.live {
+            return;
+        }
+        let (moving, on_move) = (
+            settings.update_moving_sounds,
+            settings.update_on_listener_move,
+        );
+        let interval = u64::from(settings.sound_update_interval.max(1));
+        let Ok(mut m) = self.mixer.lock() else {
+            return;
+        };
+        let cell = m.listener.map(|v| v.floor() as i32);
+        let moved = on_move && self.listener_cell.is_some_and(|c| c != cell);
+        self.listener_cell = Some(cell);
+        if !moving && !moved {
+            return;
+        }
+        let ticks = self.ticks;
+        let mut moved_left = MOVE_BATCH;
+        let due: Vec<ChannelId> = m
+            .channels
+            .iter()
+            .filter(|(_, c)| c.state == State::Playing && c.hold.is_none() && c.tag.is_some())
+            .filter(|(id, c)| {
+                if moving && (ticks + **id).is_multiple_of(interval) {
+                    return true;
+                }
+                if moved && moved_left > 0 && ticks >= c.traced + 2 && c.remaining() > 0.4 {
+                    moved_left -= 1;
+                    return true;
+                }
+                false
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &due {
+            if let Some(c) = m.channels.get_mut(id) {
+                c.traced = ticks;
+            }
+        }
+        let due: Vec<(ChannelId, Request, f32)> = due
+            .into_iter()
+            .filter_map(|id| Some((id, m.channels.get(&id)?)))
+            .filter_map(|(id, c)| {
+                let (event, source) = c.tag.as_ref()?;
+                Some((
+                    id,
+                    Request {
+                        at: c.at.map(f64::from),
+                        listener: m.listener,
+                        listener_underwater: self.listener_underwater,
+                        source: *source,
+                        event: event.to_string(),
+                    },
+                    c.linear?,
+                ))
+            })
+            .collect();
+        drop(m);
+        for (channel, request, max_distance) in due {
+            self.acoustics.evaluate(channel, request, max_distance);
+        }
+    }
     /// Splitscreen: another player's game started this same sound here just now (both clients
     /// heard it); this copy stays stopped, the first is heard from the nearest camera.
     ///
@@ -673,6 +918,18 @@ impl MixerBackend {
         }
     }
 }
+/// `alSource3f(AL_POSITION)`: the channel's new place, and its motion for the Doppler effect.
+fn move_to(c: &mut Channel, p: [f64; 3], now: Instant) {
+    c.motion.update(p, now);
+    let at = [p[0] as f32, p[1] as f32, p[2] as f32];
+    // A sound that moved is heard from where it is until re-evaluated.
+    if c.at != at
+        && let Some(e) = &mut c.environment
+    {
+        e.redirect = None;
+    }
+    c.at = at;
+}
 impl Backend for MixerBackend {
     fn create(&mut self, _streaming: bool) -> Option<ChannelId> {
         self.next += 1;
@@ -680,19 +937,9 @@ impl Backend for MixerBackend {
         self.mixer.lock().ok()?.channels.insert(
             id,
             Channel {
-                samples: None,
-                position: 0.0,
-                state: State::Initial,
-                gain: 1.0,
-                pitch: 1.0,
-                linear: None,
-                looping: false,
-                at: [0.0; 3],
-                relative: false,
                 owner: self.owner,
                 world: self.world,
-                started: None,
-                unmuffled: false,
+                ..Channel::new()
             },
         );
         Some(id)
@@ -715,10 +962,43 @@ impl Backend for MixerBackend {
         self.with(channel, |c| c.looping = looping);
     }
     fn set_position(&mut self, channel: ChannelId, p: [f64; 3]) {
-        self.with(channel, |c| c.at = [p[0] as f32, p[1] as f32, p[2] as f32]);
+        let now = Instant::now();
+        self.with(channel, |c| move_to(c, p, now));
     }
     fn set_relative(&mut self, channel: ChannelId, relative: bool) {
         self.with(channel, |c| c.relative = relative);
+    }
+    /// Sound physics for a positional sound starting: hold it until the
+    /// thread has its environment (`HOLD` at most), as the mod works it out
+    /// before `alSourcePlay`.
+    fn starting(&mut self, channel: ChannelId, event: &str, source: usize) {
+        if !self.acoustics.enabled() || !self.live {
+            return;
+        }
+        let underwater = self.listener_underwater;
+        let Ok(mut m) = self.mixer.lock() else {
+            return;
+        };
+        let listener = m.listener;
+        let Some(c) = m.channels.get_mut(&channel) else {
+            return;
+        };
+        let Some(max_distance) = c.linear.filter(|_| !c.relative) else {
+            return;
+        };
+        c.tag = Some((event.into(), source));
+        c.traced = self.ticks;
+        c.hold = Some(Instant::now() + crate::acoustics::HOLD);
+        let request = Request {
+            at: c.at.map(f64::from),
+            listener,
+            listener_underwater: underwater,
+            source,
+            event: event.to_owned(),
+        };
+        if !self.acoustics.evaluate(channel, request, max_distance) {
+            c.hold = None;
+        }
     }
     fn set_unmuffled(&mut self, channel: ChannelId, unmuffled: bool) {
         self.with(channel, |c| c.unmuffled = unmuffled);
@@ -729,7 +1009,7 @@ impl Backend for MixerBackend {
         {
             c.gain = volume;
             c.pitch = pitch;
-            c.at = [position[0] as f32, position[1] as f32, position[2] as f32];
+            move_to(c, position, Instant::now());
         }
     }
     fn filter_stopped(&mut self, live: &[(u64, ChannelId)], stopped: &mut Vec<u64>) {
@@ -866,6 +1146,15 @@ fn stereo_gains_with_length(right: f32, up: f32, forward: f32, length: f32) -> [
     let front = cos_az * cos_elev * 0.095_660_8;
     [0.5 - 0.5 * side + front, 0.5 + 0.5 * side + front]
 }
+/// A channel's filters and sends for one buffer: the direct path's EFX
+/// low-pass, then each send's (gain, high-frequency gain), with distance and
+/// air absorption applied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Wet {
+    direct_gain: f32,
+    direct_hf: f32,
+    sends: [(f32, f32); reverb::SENDS],
+}
 /// The gain OpenAL applies for distance (`AL_LINEAR_DISTANCE` with reference
 /// distance 0 and rolloff 1: the distance clamps to the max distance).
 fn distance_gain(linear: Option<f32>, distance: f32) -> f32 {
@@ -917,7 +1206,34 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
     );
     let shared = mixer.cameras.len() > 1;
     let dot = |a: [f64; 3], b: [f64; 3]| (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) as f32;
-    // Gains and pans per source for this buffer.
+    // Sound physics: built at this rate while on, dropped when off.
+    match (&mixer.physics_settings, &mut mixer.physics) {
+        (None, physics) => *physics = None,
+        (Some(s), Some(p)) if p.rate == rate => {
+            if p.settings != *s {
+                for (bus, params) in p.buses.iter_mut().zip(reverb::presets(s)) {
+                    bus.set_params(params);
+                }
+                p.settings = s.clone();
+            }
+        }
+        (Some(s), physics) => *physics = Some(Box::new(MixPhysics::new(s, rate))),
+    }
+    let mut physics = mixer.physics.take();
+    if let Some(p) = &mut physics {
+        let frames = data.len() / channels.max(1);
+        for send in &mut p.sends {
+            send.clear();
+            send.resize(frames, 0.0);
+        }
+    }
+    let now = Instant::now();
+    let spatial = mixer.spatial;
+    // Gains ramp over the buffer while anything of Horizon's can change them
+    // between buffers; vanilla's mix jumps, as OpenAL's gains do.
+    let ramp = physics.is_some() || spatial != Spatial::default();
+    let listener_velocity = mixer.listener_motion.velocity(now);
+    // How each source is mixed in this buffer, and its step.
     let mut voices = std::mem::take(&mut mixer.voices);
     voices.clear();
     for (id, c) in &mut mixer.channels {
@@ -928,72 +1244,119 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         // (`CalcVoiceParams`' non-spatialized path, vanilla's HRTF-off stereo context). Vanilla's
         // music and records are stereo. A mono buffer is the positional one.
         let direct = *source_channels > 1;
-        if c.state != State::Playing {
+        if c.state != State::Playing || c.hold.is_some_and(|until| now < until) {
             continue;
         }
-
-        let at = [f64::from(c.at[0]), f64::from(c.at[1]), f64::from(c.at[2])];
-        let away = |listener: [f64; 3]| {
+        let environment = physics
+            .as_ref()
+            .and(c.environment.as_ref())
+            .filter(|_| !direct);
+        let real = c.at.map(f64::from);
+        let at = environment.and_then(|e| e.redirect).unwrap_or(real);
+        let away = |at: [f64; 3], listener: [f64; 3]| {
             [
                 at[0] - listener[0],
                 at[1] - listener[1],
                 at[2] - listener[2],
             ]
         };
-        let length_sq = |d: [f64; 3]| d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        let length = |d: [f64; 3]| d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        // The nearest camera hears it (one camera but in splitscreen).
         let camera = if !shared {
             let cam = &mixer.cameras[0];
-            if c.relative || cam.2 == c.world {
-                Some((cam.0, cam.1))
-            } else {
-                None
-            }
+            (c.relative || cam.2 == c.world).then_some((cam.0, cam.1))
         } else {
             mixer
                 .cameras
                 .iter()
                 .filter(|camera| c.relative || camera.2 == c.world)
-                .min_by(|a, b| length_sq(away(a.0)).total_cmp(&length_sq(away(b.0))))
+                .min_by(|a, b| length(away(real, a.0)).total_cmp(&length(away(real, b.0))))
                 .map(|camera| (camera.0, camera.1))
         };
+        // Unheard sources still advance: returning to a world must not resume stale sounds.
+        let heard = camera.is_some();
         let (listener, (forward, up, right)) = camera.unwrap_or(([0.0; 3], basis(0.0, 0.0)));
-        let d = if c.relative { at } else { away(listener) };
-        let d_sqr = length_sq(d);
-
-        let (gain, [left, right]) = if camera.is_none() {
-            (0.0, [0.0, 0.0])
-        } else if direct {
-            let gain = c.gain.clamp(0.0, 1.0);
-            (gain, [gain, gain])
-        } else {
-            let mut zero = false;
-            if let Some(max) = c.linear {
-                let max_d = max as f64;
-                if max <= 0.0 || (!c.relative && d_sqr >= max_d * max_d) {
-                    zero = true;
-                }
-            }
-            if zero {
-                (0.0, [0.0, 0.0])
+        let d = if c.relative { real } else { away(at, listener) };
+        let distance = length(d).sqrt() as f32;
+        // The mod's attenuation factor and Horizon's sound range stretch
+        // the linear range.
+        let linear = c.linear.map(|max| {
+            let factor = physics
+                .as_ref()
+                .map_or(1.0, |p| p.settings.attenuation_factor);
+            max * spatial.range.unwrap_or(1.0) / factor
+        });
+        let level = if heard { c.gain.clamp(0.0, 1.0) } else { 0.0 };
+        let gain = level
+            * if direct {
+                1.0
             } else {
-                let distance = d_sqr.sqrt() as f32;
-                let gain = c.gain.clamp(0.0, 1.0) * distance_gain(c.linear, distance);
-                let [mut left, mut right] = if c.relative {
-                    stereo_gains_with_length(d[0] as f32, d[1] as f32, -d[2] as f32, distance)
-                } else {
-                    stereo_gains_with_length(dot(d, right), dot(d, up), dot(d, forward), distance)
-                };
-                if shared {
-                    let middle = (left + right) * 0.5;
-                    left = middle + (left - middle) * 0.5;
-                    right = middle + (right - middle) * 0.5;
-                }
-                (gain, [left * gain, right * gain])
+                distance_gain(linear, distance)
+            };
+        let wet = match (environment, &physics) {
+            (Some(e), Some(p)) if !c.relative && heard => {
+                let air = reverb::AIR_ABSORPTION_HF.powf(p.settings.air_absorption * distance);
+                Some(Wet {
+                    direct_gain: e.direct_gain,
+                    direct_hf: e.direct_cutoff * air,
+                    sends: std::array::from_fn(|k| {
+                        let room = reverb::room_attenuation(
+                            distance,
+                            linear,
+                            p.buses[k].params().room_rolloff,
+                        );
+                        (
+                            level * room * e.send_gain[k] * c.reverb_share,
+                            e.send_cutoff[k] * air,
+                        )
+                    }),
+                })
             }
+            _ => None,
         };
-        let step = f64::from(*source_rate) / f64::from(rate) * f64::from(c.pitch.max(0.0));
-        voices.push((*id, [left, right, gain], step));
+        // Relative sources are already in OpenAL's listener space (-Z ahead).
+        let local = if c.relative {
+            [d[0] as f32, d[1] as f32, -d[2] as f32]
+        } else {
+            [dot(d, right), dot(d, up), dot(d, forward)]
+        };
+        // Binaural for positional sources: their ears replace the panning (one listener's ears:
+        // not with several players on the speakers).
+        let ears = (spatial.hrtf && !c.relative && !direct && !shared && channels >= 2)
+            .then(|| spatial::ears(local[0], local[1], local[2], rate));
+        let pan = if direct {
+            [gain, gain]
+        } else if ears.is_some() {
+            [gain * spatial::BINAURAL_GAIN; 2]
+        } else if gain == 0.0 {
+            [0.0; 2]
+        } else {
+            let [mut left, mut right] =
+                stereo_gains_with_length(local[0], local[1], local[2], distance);
+            if shared {
+                // Several players on the speakers: half the stereo width, as left and right are
+                // nobody's in particular.
+                let middle = (left + right) / 2.0;
+                left = middle + (left - middle) / 2.0;
+                right = middle + (right - middle) / 2.0;
+            }
+            [left * gain, right * gain]
+        };
+        let mut pitch = c.pitch.max(0.0);
+        if let Some(factor) = spatial.doppler.filter(|_| !c.relative && !direct) {
+            let to_source = away(real, listener).map(|v| v as f32);
+            pitch *= spatial::doppler(to_source, c.motion.velocity(now), listener_velocity, factor);
+        }
+        let step = f64::from(*source_rate) / f64::from(rate) * f64::from(pitch);
+        let voice = Voice {
+            pan,
+            mono: gain,
+            wet,
+            ears,
+        };
+        voices.push((*id, voice, step));
     }
+    let frames = (data.len() / channels.max(1)).max(1) as f32;
     // A mod's muffle: the sounds it doesn't exempt mix into a bus of their own first.
     let muffling = mixer.muffle.active();
     let mut bus = std::mem::take(&mut mixer.muffle.bus);
@@ -1001,27 +1364,40 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         bus.clear();
         bus.resize(data.len(), 0.0);
     }
-    for (id, [left, right, gain], step) in voices.iter().copied() {
+    for &(id, voice, step) in &voices {
         let Some(c) = mixer.channels.get_mut(&id) else {
             continue;
         };
         let Some((samples, _, source_channels)) = c.samples.clone() else {
             continue;
         };
-        let source_channels = source_channels as usize;
-        let frames = samples.len() / source_channels;
-        let inaudible = if channels >= 2 {
-            left == 0.0 && right == 0.0
+        let source_channels = (source_channels as usize).max(1);
+        let length = samples.len() / source_channels;
+        let from = if ramp {
+            c.last
+                .filter(|l| l.ears.is_some() == voice.ears.is_some())
+                .unwrap_or(voice)
         } else {
-            gain == 0.0
+            voice
         };
-        if inaudible {
-            let buffer_frames = data.len() / channels;
+        c.last = ramp.then_some(voice);
+        let still = from == voice;
+        // Nothing to hear over the whole buffer (out of range, or in another world): the source
+        // only advances, as the loop below would move it.
+        let silent = |v: &Voice| {
+            (if channels >= 2 {
+                v.pan == [0.0; 2]
+            } else {
+                v.mono == 0.0
+            }) && v.wet.is_none_or(|w| w.sends.iter().all(|s| s.0 <= 0.0))
+        };
+        if still && silent(&voice) {
+            let buffer_frames = data.len() / channels.max(1);
             // As the loop below: a sound of one frame or none stops, looping or not.
-            if !c.looping || frames <= 1 {
-                // `frames` may be 0: no `frames - 1` in usize. A step of 0 never
+            if !c.looping || length <= 1 {
+                // `length` may be 0: no `length - 1` in usize. A step of 0 never
                 // reaches the end, as in the loop below.
-                let needed = frames as f64 - 1.0 - c.position;
+                let needed = length as f64 - 1.0 - c.position;
                 if needed <= 0.0 {
                     c.state = State::Stopped;
                 } else if step > 0.0 {
@@ -1035,7 +1411,7 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
             } else {
                 for _ in 0..buffer_frames {
                     let i = c.position as usize;
-                    if i + 1 >= frames {
+                    if i + 1 >= length {
                         c.position = 0.0;
                     }
                     c.position += step;
@@ -1043,16 +1419,22 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
             }
             continue;
         }
-
+        let (from_ears, to_ears) = (from.ears, voice.ears);
+        if to_ears.is_some() && c.binaural.is_none() {
+            c.binaural = Some(Box::default());
+        }
         let out: &mut [f32] = if muffling && !c.unmuffled {
             &mut bus
         } else {
             &mut *data
         };
-        for frame in out.chunks_mut(channels) {
+        for (f, frame) in out.chunks_mut(channels).enumerate() {
+            let t = (f + 1) as f32 / frames;
+            let v = if still { voice } else { from.toward(&voice, t) };
+            let (left, right, gain, wet) = (v.pan[0], v.pan[1], v.mono, v.wet);
             let mut i = c.position as usize;
-            if i + 1 >= frames {
-                if c.looping && frames > 1 {
+            if i + 1 >= length {
+                if c.looping && length > 1 {
                     c.position = 0.0;
                     i = 0;
                 } else {
@@ -1070,19 +1452,42 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                 } else {
                     frame[0] += (l + r) * 0.5 * gain;
                 }
-            } else {
-                let s = samples[i] + (samples[i + 1] - samples[i]) * t;
-                if channels >= 2 {
-                    frame[0] += s * left;
-                    frame[1] += s * right;
-                } else {
-                    // A mono output has no panning: the source's own gain.
-                    frame[0] += s * gain;
+                c.position += step;
+                continue;
+            }
+            let mut s = samples[i] + (samples[i + 1] - samples[i]) * t;
+            if let (Some(w), Some(p)) = (&wet, &mut physics) {
+                let parts = c.split.split(s, p.crossover);
+                for (send, &(g, hf)) in p.sends.iter_mut().zip(&w.sends) {
+                    if g > 0.0 {
+                        send[f] += reverb::lowpass(parts, g, hf);
+                    }
                 }
+                s = reverb::lowpass(parts, w.direct_gain, w.direct_hf);
+            }
+            if let (Some(to), Some(b)) = (&to_ears, &mut c.binaural) {
+                let [l, r] = b.process(s, from_ears.as_ref().unwrap_or(to), to, t, rate);
+                frame[0] += l * left;
+                frame[1] += r * right;
+            } else if channels >= 2 {
+                frame[0] += s * left;
+                frame[1] += s * right;
+            } else {
+                // A mono output has no panning: the source's own gain.
+                frame[0] += s * gain;
             }
             c.position += step;
         }
     }
+    // The rooms' reverb joins the sounds it came from: under a mod's muffle, with them.
+    if let Some(p) = &mut physics {
+        let MixPhysics { buses, sends, .. } = &mut **p;
+        let out: &mut [f32] = if muffling { &mut bus } else { &mut *data };
+        for (reverb_bus, send) in buses.iter_mut().zip(sends.iter()) {
+            reverb_bus.process(send, out, channels);
+        }
+    }
+    mixer.physics = physics;
     mixer.voices = voices;
     if muffling {
         mixer.muffle.apply(&bus, data, channels, rate);
@@ -1162,6 +1567,134 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         }
         mixer.limiter_peak = (mixer.limiter_peak * release).max(peak);
     }
+}
+/// The mixer's cost, for `examples/sound_physics_bench.rs`: `voices` looping
+/// positional channels mixed to 48 kHz stereo in 10 ms buffers for
+/// `seconds`, each with a reverb environment when `physics` is on, binaural
+/// with `hrtf`.
+#[doc(hidden)]
+pub fn mix_benchmark(
+    voices: usize,
+    physics: bool,
+    hrtf: bool,
+    seconds: f32,
+) -> std::time::Duration {
+    let mut mixer = Mixer::default();
+    let mut random = LegacyRandom::new(1);
+    let noise: Arc<Vec<f32>> = Arc::new((0..48_000).map(|_| random.next_float() - 0.5).collect());
+    for id in 0..voices as ChannelId {
+        let angle = id as f32;
+        mixer.channels.insert(
+            id,
+            Channel {
+                samples: Some((noise.clone(), 44_100, 1)),
+                position: 0.0,
+                state: State::Playing,
+                gain: 1.0,
+                pitch: 1.0,
+                linear: Some(16.0),
+                looping: true,
+                at: [angle.cos() * 6.0, 0.0, angle.sin() * 6.0],
+                relative: false,
+                environment: physics.then_some(Environment {
+                    direct_gain: 0.8,
+                    direct_cutoff: 0.3,
+                    send_gain: [0.3, 0.3, 0.2, 0.1],
+                    send_cutoff: [0.8; 4],
+                    redirect: None,
+                }),
+                ..Channel::new()
+            },
+        );
+    }
+    mixer.physics_settings = physics.then(|| PhysicsSettings {
+        enabled: true,
+        ..PhysicsSettings::default()
+    });
+    mixer.spatial.hrtf = hrtf;
+    let mut out = vec![0.0f32; 480 * 2];
+    let started = Instant::now();
+    for _ in 0..(seconds * 100.0) as usize {
+        mix(&mut mixer, &mut out, 2, 48_000);
+    }
+    started.elapsed()
+}
+/// A sound file decoded to mono samples and their rate, for tools
+/// (`examples/sound_capture.rs`).
+#[doc(hidden)]
+pub fn decode_file(path: &Path) -> Option<(Vec<f32>, u32)> {
+    decode(path).map(|(samples, rate, _)| (samples, rate))
+}
+/// One sound for `render_offline`: its samples, when it starts (seconds),
+/// its volume and pitch as the engine would set them, where it is and the
+/// environment sound physics gave it.
+#[doc(hidden)]
+pub struct OfflineSound {
+    pub samples: Arc<Vec<f32>>,
+    pub rate: u32,
+    pub start: f32,
+    pub volume: f32,
+    pub pitch: f32,
+    pub at: [f64; 3],
+    pub environment: Option<Environment>,
+}
+/// The mixer's output (48 kHz stereo, interleaved) for `sounds` heard at
+/// `listener` facing `yaw`, `pitch`, with sound physics' mixing when
+/// `settings` is given: the game's mix without an output device, for
+/// recordings and listening tests (`examples/sound_capture.rs`).
+#[doc(hidden)]
+pub fn render_offline(
+    sounds: &[OfflineSound],
+    listener: [f64; 3],
+    yaw: f32,
+    pitch: f32,
+    settings: Option<&PhysicsSettings>,
+    seconds: f32,
+) -> Vec<f32> {
+    const RATE: u32 = 48_000;
+    const BUFFER: usize = 480;
+    let mut mixer = Mixer {
+        listener,
+        listener_yaw: yaw,
+        listener_pitch: pitch,
+        physics_settings: settings.filter(|s| s.enabled).cloned(),
+        ..Mixer::default()
+    };
+    if let Some(s) = settings {
+        mixer.spatial = Spatial {
+            hrtf: s.hrtf,
+            doppler: None,
+            whoosh: false,
+            range: (s.sound_range != 1.0).then_some(s.sound_range),
+        };
+    }
+    let buffers = (seconds * RATE as f32) as usize / BUFFER;
+    let mut out = Vec::with_capacity(buffers * BUFFER * 2);
+    let mut buffer = vec![0.0f32; BUFFER * 2];
+    let mut next = 0;
+    for b in 0..buffers {
+        let now = (b * BUFFER) as f32 / RATE as f32;
+        while let Some(s) = sounds.get(next).filter(|s| s.start <= now) {
+            mixer.channels.insert(
+                next as ChannelId,
+                Channel {
+                    samples: Some((s.samples.clone(), s.rate, 1)),
+                    state: State::Playing,
+                    gain: s.volume,
+                    pitch: s.pitch,
+                    linear: Some(16.0 * s.volume.max(1.0)),
+                    at: s.at.map(|v| v as f32),
+                    environment: s.environment,
+                    ..Channel::new()
+                },
+            );
+            next += 1;
+        }
+        mix(&mut mixer, &mut buffer, 2, RATE);
+        out.extend_from_slice(&buffer);
+        mixer.channels.retain(|_, c| c.state != State::Stopped);
+    }
+    out
 }
 /// Why the game should not open an output, if it should not:
 /// `HORIZON_NO_AUDIO`, or a virtual screen (`vscreen`), where agents and
@@ -1477,6 +2010,15 @@ impl Audio {
                 decoder: None,
                 next: 0,
                 live,
+                acoustics: Acoustics::default(),
+                listener_underwater: false,
+                ticks: 0,
+                listener_cell: None,
+                whooshes: HashMap::new(),
+                whoosh_samples: None,
+                creak: None,
+                creak_fading: None,
+                creak_samples: None,
                 owner: 0,
                 world: 0,
                 shares: Arc::default(),
@@ -1619,6 +2161,7 @@ impl Audio {
                 m.listener = position;
                 m.listener_yaw = yaw;
                 m.listener_pitch = pitch;
+                m.listener_motion.update(position, Instant::now());
             } else {
                 m.listeners
                     .insert(self.backend.owner, (position, yaw, pitch));
@@ -1649,6 +2192,15 @@ impl Audio {
                 owner,
                 world: self.backend.world,
                 shares: self.backend.shares.clone(),
+                acoustics: Acoustics::default(),
+                listener_underwater: false,
+                ticks: 0,
+                listener_cell: None,
+                whooshes: HashMap::new(),
+                whoosh_samples: None,
+                creak: None,
+                creak_fading: None,
+                creak_samples: None,
             },
             record_heard: false,
             listener: [0.0; 3],
@@ -1816,6 +2368,10 @@ impl Audio {
         }
         self.sync_volumes();
         self.engine.tick(paused, ctx, &mut self.backend);
+        self.backend.ticks += 1;
+        if !paused {
+            self.backend.reevaluate();
+        }
         // A paused game holds a mod's muffle where it is, as it holds the sounds.
         if !paused && let Some(fade) = &mut self.muffle {
             fade.left = fade.left.saturating_sub(1);
@@ -1825,6 +2381,179 @@ impl Audio {
                 self.engine.set_unmuffled(Vec::new(), &mut self.backend);
             }
             self.set_muffle_level(level);
+        }
+    }
+    /// Sound physics' settings (the extra's), applied from the next sound.
+    pub fn set_sound_physics(&mut self, settings: &PhysicsSettings) {
+        if self.backend.acoustics.settings() == settings {
+            return;
+        }
+        if let Ok(mut m) = self.backend.mixer.lock() {
+            m.spatial = Spatial {
+                hrtf: settings.hrtf,
+                doppler: settings.doppler.then_some(settings.doppler_factor),
+                whoosh: settings.arrow_whoosh,
+                range: (settings.sound_range != 1.0).then_some(settings.sound_range),
+            };
+            crate::sound_physics::set_shared_range(settings.sound_range);
+        }
+        self.backend.acoustics.set_settings(settings);
+        if settings.enabled && self.backend.live {
+            self.backend
+                .acoustics
+                .start(MixerSink(self.backend.mixer.clone()));
+        }
+        if let Ok(mut m) = self.backend.mixer.lock() {
+            m.physics_settings = settings.enabled.then(|| settings.clone());
+            if !settings.enabled {
+                for c in m.channels.values_mut() {
+                    c.environment = None;
+                    c.hold = None;
+                }
+            }
+        }
+    }
+    /// Once a tick: the arrows in flight (a key of their own, position,
+    /// speed in blocks a second), each whooshing on a channel of its own
+    /// while `arrow_whoosh` is on, on the players' volume.
+    pub fn set_whooshes(&mut self, flying: &[(u32, [f64; 3], f32)]) {
+        const EVENT: &str = "horizon:entity.arrow.whoosh";
+        let on = self.backend.acoustics.settings().arrow_whoosh && self.backend.live;
+        let volume = self.engine.source_volumes[crate::sound_engine::MASTER]
+            * self.engine.source_volumes[crate::sound_engine::PLAYERS];
+        let gone: Vec<u32> = self
+            .backend
+            .whooshes
+            .keys()
+            .filter(|k| !on || !flying.iter().any(|f| f.0 == **k))
+            .copied()
+            .collect();
+        for key in gone {
+            if let Some(channel) = self.backend.whooshes.remove(&key) {
+                self.backend.destroy(channel);
+            }
+        }
+        if !on {
+            return;
+        }
+        let samples = self
+            .backend
+            .whoosh_samples
+            .get_or_insert_with(|| Arc::new(crate::spatial::whoosh_samples()))
+            .clone();
+        for &(key, at, speed) in flying {
+            let (gain, pitch) = crate::spatial::whoosh(speed);
+            let channel = match self.backend.whooshes.get(&key) {
+                Some(&c) => c,
+                None => {
+                    if gain <= 0.0 {
+                        continue;
+                    }
+                    let Some(c) = self.backend.create(false) else {
+                        continue;
+                    };
+                    let start = f64::from(key % 97) / 97.0 * samples.len() as f64;
+                    self.backend.with(c, |ch| {
+                        ch.samples = Some((samples.clone(), crate::spatial::WHOOSH_RATE, 1));
+                        ch.position = start;
+                        ch.looping = true;
+                        ch.linear = Some(16.0);
+                        ch.state = State::Playing;
+                        ch.tag = Some((EVENT.into(), crate::sound_engine::PLAYERS));
+                        ch.reverb_share = crate::spatial::WHOOSH_REVERB;
+                    });
+                    self.backend.whooshes.insert(key, c);
+                    self.backend.set_position(c, at);
+                    let request = Request {
+                        at,
+                        listener: self.listener,
+                        listener_underwater: self.backend.listener_underwater,
+                        source: crate::sound_engine::PLAYERS,
+                        event: EVENT.into(),
+                    };
+                    self.backend.acoustics.evaluate(c, request, 16.0);
+                    c
+                }
+            };
+            self.backend.set_position(channel, at);
+            self.backend.set_volume(channel, gain * volume);
+            self.backend.set_pitch(channel, pitch);
+        }
+    }
+    /// Once a tick: whether the player is drawing a bow, and where the bow
+    /// is. A draw starts the creak there; a release fades it out over a
+    /// buffer (the mixer ramps gains while a Horizon sound extra is on).
+    pub fn set_bow_draw(&mut self, drawing: Option<[f64; 3]>) {
+        const EVENT: &str = "horizon:item.bow.creak";
+        if let Some(c) = self.backend.creak_fading.take() {
+            self.backend.destroy(c);
+        }
+        let on = self.backend.acoustics.settings().bow_creak && self.backend.live;
+        let drawing = drawing.filter(|_| on);
+        match (drawing, self.backend.creak) {
+            (Some(at), Some(c)) => self.backend.set_position(c, at),
+            (Some(at), None) => {
+                let samples = self
+                    .backend
+                    .creak_samples
+                    .get_or_insert_with(|| Arc::new(crate::spatial::creak_samples()))
+                    .clone();
+                let Some(c) = self.backend.create(false) else {
+                    return;
+                };
+                let volume = self.engine.source_volumes[crate::sound_engine::MASTER]
+                    * self.engine.source_volumes[crate::sound_engine::PLAYERS];
+                self.backend.with(c, |ch| {
+                    ch.samples = Some((samples, crate::spatial::WHOOSH_RATE, 1));
+                    ch.linear = Some(16.0);
+                    ch.gain = 0.6 * volume;
+                    ch.state = State::Playing;
+                    ch.tag = Some((EVENT.into(), crate::sound_engine::PLAYERS));
+                    ch.reverb_share = 0.6;
+                });
+                self.backend.set_position(c, at);
+                let request = Request {
+                    at,
+                    listener: self.listener,
+                    listener_underwater: self.backend.listener_underwater,
+                    source: crate::sound_engine::PLAYERS,
+                    event: EVENT.into(),
+                };
+                self.backend.acoustics.evaluate(c, request, 16.0);
+                self.backend.creak = Some(c);
+            }
+            (None, Some(c)) => {
+                self.backend.creak = None;
+                self.backend.set_volume(c, 0.0);
+                self.backend.creak_fading = Some(c);
+            }
+            (None, None) => {}
+        }
+    }
+    pub fn sound_physics_enabled(&self) -> bool {
+        self.backend.acoustics.enabled() && self.backend.live
+    }
+    pub fn sound_physics_settings(&self) -> &PhysicsSettings {
+        self.backend.acoustics.settings()
+    }
+    /// Whether sound physics needs the `count` block states (`set_sound_states`).
+    pub fn needs_sound_states(&self, count: usize) -> bool {
+        self.sound_physics_enabled() && self.backend.acoustics.needs_states(count)
+    }
+    pub fn set_sound_states(&mut self, states: Vec<crate::acoustics::BlockState>) {
+        self.backend.acoustics.set_states(states);
+    }
+    /// Once a tick with sound physics on: whether the camera is underwater,
+    /// and the chunk sections around the listener (`chunk` gives a loaded
+    /// chunk's).
+    pub fn sync_sound_physics<'c>(
+        &mut self,
+        underwater: bool,
+        chunk: impl FnMut(i32, i32) -> Option<&'c [Arc<crate::chunk::Section>]>,
+    ) {
+        self.backend.listener_underwater = underwater;
+        if self.sound_physics_enabled() {
+            self.backend.acoustics.sync(self.listener, chunk);
         }
     }
     /// A mod's muffle (`native_muffle_sounds`): `amount` (0 to 1) of every sound's volume taken
@@ -2079,6 +2808,16 @@ impl Audio {
         }
         self.sync_volumes();
         let event = crate::sound_events::normalize(event);
+        let (volume, pitch) = if self.backend.acoustics.settings().soft_pickup
+            && event == "minecraft:entity.item.pickup"
+        {
+            (
+                volume * crate::sound_physics::SOFT_PICKUP_VOLUME,
+                crate::sound_physics::soft_pickup_pitch(pitch),
+            )
+        } else {
+            (volume, pitch)
+        };
         let source = self
             .source_override
             .unwrap_or_else(|| crate::settings::sound_source(&event));
@@ -2150,6 +2889,34 @@ impl Audio {
         if let Ok(cache) = self.backend.cache.lock() {
             census["decoded"] = cache.entries.len().into();
             census["decoded_mib"] = (cache.bytes >> 20).into();
+        }
+        if self.backend.acoustics.enabled() {
+            census["soundPhysics"] = self.backend.acoustics.stats().json();
+        }
+        // The playing voices as the mixer last mixed them, while a Horizon
+        // sound extra is on (`last` is kept only then).
+        if let Ok(m) = self.backend.mixer.lock() {
+            let voices: Vec<serde_json::Value> = m
+                .channels
+                .values()
+                .filter(|c| c.state == State::Playing && c.last.is_some())
+                .map(|c| {
+                    let v = c.last.expect("filtered");
+                    serde_json::json!({
+                        "event": c.tag.as_ref().map(|(e, _)| e.to_string()),
+                        "at": c.at,
+                        "volume": c.gain,
+                        "gain": v.mono,
+                        "direct": v.wet.map(|w| [w.direct_gain, w.direct_hf]),
+                        "sends": v.wet.map(|w| w.sends.map(|s| s.0)),
+                        "held": c.hold.is_some(),
+                        "speed": c.motion.velocity(Instant::now()).iter().map(|x| x * x).sum::<f32>().sqrt(),
+                    })
+                })
+                .collect();
+            if !voices.is_empty() {
+                census["voices"] = voices.into();
+            }
         }
         census
     }
@@ -2389,10 +3156,7 @@ mod tests {
             looping,
             at,
             relative: false,
-            owner: 0,
-            world: 0,
-            started: None,
-            unmuffled: false,
+            ..Channel::new()
         }
     }
 
@@ -2406,6 +3170,230 @@ mod tests {
         let mut c = channel(Vec::new(), linear, at, looping);
         c.samples = Some((Arc::new(samples), 48_000, 2));
         c
+    }
+
+    /// Mix `mixer` for `frames` stereo frames at 48 kHz.
+    fn render(mixer: &mut Mixer, frames: usize) -> Vec<f32> {
+        let mut out = vec![0.0; frames * 2];
+        mix(mixer, &mut out, 2, 48_000);
+        out
+    }
+    fn noise(n: usize) -> Vec<f32> {
+        let mut r = LegacyRandom::new(5);
+        (0..n).map(|_| r.next_float() * 0.4 - 0.2).collect()
+    }
+    fn physics_mixer(environment: Option<Environment>, on: bool) -> Mixer {
+        let mut m = Mixer::default();
+        let mut c = channel(noise(48_000), Some(16.0), [0.0, 0.0, 4.0], false);
+        c.environment = environment;
+        m.channels.insert(1, c);
+        m.physics_settings = on.then(|| PhysicsSettings {
+            enabled: true,
+            air_absorption: 0.0,
+            ..PhysicsSettings::default()
+        });
+        m
+    }
+
+    #[test]
+    fn sound_physics_off_or_dry_leaves_the_mix_as_vanilla() {
+        let vanilla = render(&mut physics_mixer(None, false), 4096);
+        // An environment left from before it was turned off is ignored.
+        let off = render(
+            &mut physics_mixer(
+                Some(Environment {
+                    direct_gain: 0.1,
+                    ..Environment::DRY
+                }),
+                false,
+            ),
+            4096,
+        );
+        assert_eq!(vanilla, off);
+        let dry = render(&mut physics_mixer(Some(Environment::DRY), true), 4096);
+        for (a, b) in vanilla.iter().zip(&dry) {
+            assert!((a - b).abs() < 1e-5, "{a} {b}");
+        }
+    }
+
+    #[test]
+    fn occlusion_darkens_and_sends_ring_on() {
+        let energy = |s: &[f32]| s.iter().map(|x| x * x).sum::<f32>();
+        // High frequencies: the sample-to-sample differences.
+        let bright = |s: &[f32]| {
+            energy(
+                &s.chunks(2)
+                    .map(|f| f[0])
+                    .collect::<Vec<_>>()
+                    .windows(2)
+                    .map(|w| w[1] - w[0])
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let dry = render(&mut physics_mixer(Some(Environment::DRY), true), 8192);
+        let muffled = Environment {
+            direct_gain: 0.9,
+            direct_cutoff: 0.05,
+            ..Environment::DRY
+        };
+        let behind_wall = render(&mut physics_mixer(Some(muffled), true), 8192);
+        assert!(bright(&behind_wall) < 0.2 * bright(&dry));
+        let cave = Environment {
+            send_gain: [0.0, 0.0, 0.0, 0.8],
+            ..Environment::DRY
+        };
+        let mut m = physics_mixer(Some(cave), true);
+        m.channels.get_mut(&1).unwrap().samples = Some((Arc::new(noise(4800)), 48_000, 1));
+        render(&mut m, 4800);
+        // The source has ended; the 4-second bus still rings.
+        let tail = render(&mut m, 9600);
+        assert!(energy(&tail) > 1e-3, "{}", energy(&tail));
+        let mut m = physics_mixer(Some(Environment::DRY), true);
+        m.channels.get_mut(&1).unwrap().samples = Some((Arc::new(noise(4800)), 48_000, 1));
+        render(&mut m, 4800);
+        assert_eq!(energy(&render(&mut m, 9600)), 0.0);
+    }
+
+    #[test]
+    fn binaural_and_doppler_are_extras_of_their_own() {
+        let side = |m: &mut Mixer| {
+            let out = render(m, 4096);
+            let energy = |k: usize| out.chunks(2).map(|f| f[k] * f[k]).sum::<f32>();
+            (energy(0), energy(1))
+        };
+        // A source on the right (yaw 0 faces +z; right is -x).
+        let mut m = Mixer::default();
+        m.channels.insert(
+            1,
+            channel(noise(48_000), Some(16.0), [-4.0, 0.0, 0.0], false),
+        );
+        let vanilla = side(&mut m);
+        let mut m = Mixer::default();
+        m.channels.insert(
+            1,
+            channel(noise(48_000), Some(16.0), [-4.0, 0.0, 0.0], false),
+        );
+        m.spatial.hrtf = true;
+        let (l, r) = side(&mut m);
+        assert!(r > 4.0 * l, "{l} {r}");
+        assert_ne!((l, r), vanilla);
+        // Off again: vanilla's mix.
+        let mut m = Mixer::default();
+        m.channels.insert(
+            1,
+            channel(noise(48_000), Some(16.0), [-4.0, 0.0, 0.0], false),
+        );
+        m.spatial = Spatial::default();
+        assert_eq!(side(&mut m), vanilla);
+
+        // Doppler: a source coming at the listener plays faster.
+        let advance = |doppler: Option<f32>| {
+            let mut m = Mixer::default();
+            let mut c = channel(noise(48_000), Some(64.0), [0.0, 0.0, 30.0], true);
+            let t0 = Instant::now();
+            c.motion
+                .update([0.0, 0.0, 32.0], t0 - std::time::Duration::from_millis(100));
+            c.motion
+                .update([0.0, 0.0, 30.0], t0 - std::time::Duration::from_millis(50));
+            m.channels.insert(1, c);
+            m.spatial.doppler = doppler;
+            render(&mut m, 4800);
+            m.channels[&1].position
+        };
+        let still = advance(None);
+        let coming = advance(Some(1.0));
+        assert!(coming > still * 1.05, "{still} {coming}");
+    }
+
+    #[test]
+    fn moving_on_traces_long_sounds_again() {
+        let mut b = MixerBackend {
+            mixer: Arc::new(Mutex::new(Mixer::default())),
+            root: PathBuf::new(),
+            cache: Arc::default(),
+            decoder: None,
+            next: 0,
+            live: true,
+            acoustics: Acoustics::default(),
+            listener_underwater: false,
+            ticks: 10,
+            listener_cell: None,
+            whooshes: HashMap::new(),
+            whoosh_samples: None,
+            creak: None,
+            creak_fading: None,
+            creak_samples: None,
+            owner: 0,
+            world: 0,
+            shares: Arc::default(),
+        };
+        let (send, receive) = std::sync::mpsc::channel();
+        struct Count(Mutex<std::sync::mpsc::Sender<ChannelId>>);
+        impl Sink for Count {
+            fn environment(&self, channel: ChannelId, _: Environment) {
+                let _ = self.0.lock().unwrap().send(channel);
+            }
+        }
+        b.acoustics.set_settings(&PhysicsSettings {
+            enabled: true,
+            ..PhysicsSettings::default()
+        });
+        b.acoustics.start(Count(Mutex::new(send)));
+        b.acoustics.set_states(vec![crate::acoustics::BlockState {
+            block: "minecraft:air".into(),
+            break_sound: "".into(),
+            step_sound: "".into(),
+            fluid: crate::sound_physics::FluidKind::None,
+            collides: false,
+            sturdy: 0,
+            closes: 0,
+        }]);
+        {
+            let mut m = b.mixer.lock().unwrap();
+            for (id, looping) in [(1, true), (2, false)] {
+                let mut c = channel(noise(4_800), Some(16.0), [0.0, 64.0, 4.0], looping);
+                c.tag = Some(("minecraft:block.note_block.harp".into(), 4));
+                m.channels.insert(id, c);
+            }
+            m.listener = [0.5, 64.5, 0.5];
+        }
+        b.reevaluate();
+        assert!(receive.try_recv().is_err(), "nothing on the first tick");
+        b.ticks += 3;
+        b.mixer.lock().unwrap().listener = [1.5, 64.5, 0.5];
+        b.reevaluate();
+        // The loop is traced again; the 0.1 s sound is about to end.
+        let traced = receive
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(traced, 1);
+        assert!(
+            receive
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn held_sounds_wait_for_their_environment_and_redirects_pan() {
+        let mut m = physics_mixer(None, true);
+        m.channels.get_mut(&1).unwrap().hold =
+            Some(Instant::now() + std::time::Duration::from_secs(60));
+        assert!(render(&mut m, 512).iter().all(|x| *x == 0.0));
+        assert_eq!(m.channels[&1].position, 0.0);
+        MixerSink(Arc::new(Mutex::new(Mixer::default()))).environment(1, Environment::DRY);
+        let shared = Arc::new(Mutex::new(m));
+        MixerSink(shared.clone()).environment(1, Environment::DRY);
+        let mut m = Arc::try_unwrap(shared).ok().unwrap().into_inner().unwrap();
+        assert!(render(&mut m, 512).iter().any(|x| *x != 0.0));
+        // Heard from the right instead of straight ahead (yaw 0 faces +z).
+        let right = Environment {
+            redirect: Some([-4.0, 0.0, 0.0]),
+            ..Environment::DRY
+        };
+        let out = render(&mut physics_mixer(Some(right), true), 4096);
+        let side = |k: usize| out.chunks(2).map(|f| f[k] * f[k]).sum::<f32>();
+        assert!(side(1) > 4.0 * side(0), "{} {}", side(0), side(1));
     }
 
     #[test]
@@ -2757,6 +3745,15 @@ mod tests {
             decoder: None,
             next: (u64::from(owner)) << 40,
             live: true,
+            acoustics: Acoustics::default(),
+            listener_underwater: false,
+            ticks: 0,
+            listener_cell: None,
+            whooshes: HashMap::new(),
+            whoosh_samples: None,
+            creak: None,
+            creak_fading: None,
+            creak_samples: None,
             owner,
             world: 0,
             shares: shares.clone(),

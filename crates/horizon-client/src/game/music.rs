@@ -211,6 +211,7 @@ impl Game<'_> {
         self.audio
             .set_listener_reserve(self.settings.extras.ui_sound_reserve);
         self.audio.tick(self.pause, &ctx);
+        self.tick_sound_physics();
     }
     /// `Minecraft.setLevel` -> `updateLevelInEngines`: `SoundManager.stop()`.
     /// The music manager keeps its stopped track and, on its next tick, waits

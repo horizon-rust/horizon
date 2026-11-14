@@ -5,23 +5,30 @@ use std::collections::HashSet;
 type Chunks = HashSet<(i32, i32)>;
 
 /// What queued jobs were ranked from (`Streaming::requeue`): the centre, the
-/// band, the extra areas, and the forced chunks.
+/// band, the sector ahead, the extra areas, and the forced chunks.
 #[derive(Default)]
 pub(super) struct Basis {
-    player: ((i32, i32), Option<Band>),
+    player: ((i32, i32), Option<Band>, Option<i32>),
     extra: Vec<((i32, i32), i32)>,
     forced: (Chunks, Chunks),
 }
 
 /// Whether the queued jobs' ranking is out of date; it is brought up to date.
 pub(super) fn basis_changed(s: &mut Streaming) -> bool {
+    let player = (
+        s.center,
+        s.band,
+        s.ahead
+            .filter(|_| super::ahead_on())
+            .map(super::ahead_sector),
+    );
     let b = &mut s.queue_basis;
-    let same = b.player == (s.center, s.band)
+    let same = b.player == player
         && b.extra == s.extra
         && b.forced.0 == s.forced
         && b.forced.1 == s.mod_forced;
     if !same {
-        b.player = (s.center, s.band);
+        b.player = player;
         b.extra.clone_from(&s.extra);
         b.forced.0.clone_from(&s.forced);
         b.forced.1.clone_from(&s.mod_forced);
@@ -91,6 +98,7 @@ mod tests {
             extra: &[],
             forced,
             mod_forced: &NO_CHUNKS,
+            ahead: None,
             cover: None,
             forced_cover: None,
             band: None,
@@ -170,6 +178,7 @@ mod tests {
                 extra: &[],
                 forced,
                 mod_forced: &NO_CHUNKS,
+                ahead: None,
                 cover: None,
                 forced_cover: None,
                 band: None,

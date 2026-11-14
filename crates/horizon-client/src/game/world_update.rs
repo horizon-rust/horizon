@@ -17,7 +17,9 @@ impl Game<'_> {
         self.lod_blue_map = None;
         self.far_beacons.clear();
         self.lod_covered_at = None;
+        self.fog_maps.clear();
         if let Some(renderer) = &mut self.renderer {
+            renderer.clear_fog_map();
             renderer.clear_lods();
         }
     }
@@ -197,6 +199,16 @@ impl Game<'_> {
                 (p.position.x.floor() as i32) >> 4,
                 (p.position.z.floor() as i32) >> 4,
             );
+            // Columns ahead load first (`Streaming::ahead`): where the player flies, faster
+            // than 5 blocks a second, else where they look.
+            let (vx, vz) = (p.velocity.x as f32, p.velocity.z as f32);
+            let speed = vx.hypot(vz);
+            self.streaming.ahead = Some(if speed > 0.25 {
+                [vx / speed, vz / speed]
+            } else {
+                let yaw = self.yaw.to_radians();
+                [-yaw.sin(), yaw.cos()]
+            });
         }
         horizon_client::spans::time("tick_pregen", || self.tick_pregen());
         // A headless game has nothing to draw sections with: like a server's, they aren't
@@ -325,85 +337,73 @@ impl Game<'_> {
                     }
                 }
             }
-            let g = &self.settings.horizon;
-            let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
+            // Uploads wait in a queue nearest the camera's section first
+            // (`streaming::uploads`), and a frame takes what its budget allows:
+            // the player's Chunk Updates and Upload Budget (0 is no limit), and
+            // in any case `uploads::time_budget` of the main thread (2 ms, more
+            // after a frame that waited on the GPU), past which only the
+            // sections around the camera still go. A heap, not a sort of every
+            // waiting mesh each frame; a newer mesh of a waiting section
+            // replaces it, and the sections of unloaded columns are dropped.
             // The meshes, once copied, are freed by a worker (`Streaming::free`).
-            if !budgeted && self.pending_uploads.is_empty() && uploads.len() <= AUTO_UPLOADS_AT_ONCE
-            {
+            let g = &self.settings.horizon;
+            let budget = horizon_client::streaming::uploads::Budget::new(
+                g.chunk_updates,
+                g.upload_budget_kib,
+                renderer.last_wait,
+            );
+            // Section keys count from the world's bottom (`origin`'s min_y + y * 16).
+            let bottom = self.world.bottom_y();
+            let camera = match &self.player {
+                Some(p) => (
+                    (p.position.x.floor() as i32) >> 4,
+                    (p.position.y.floor() as i32 - bottom) >> 4,
+                    (p.position.z.floor() as i32) >> 4,
+                ),
+                None => (self.streaming.center.0, 0, self.streaming.center.1),
+            };
+            let pending = &mut self.pending_uploads;
+            let chunks = &self.world.chunks;
+            let mut spent = Vec::with_capacity(uploads.len());
+            // A frame's few meshes and nothing waiting (an edit, water or redstone changing, a
+            // standing player): uploaded at once, the queue left alone.
+            let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
+            let at_once = !budgeted && pending.is_empty() && uploads.len() <= AUTO_UPLOADS_AT_ONCE;
+            let queued = if at_once {
                 horizon_client::spans::time("upload", || {
                     for (key, mesh) in &uploads {
                         renderer.upload(*key, mesh);
                     }
                 });
-                self.streaming.free(uploads);
+                spent = uploads;
+                Vec::new()
             } else {
-                // Horizon's chunk-update and upload budgets: the nearest
-                // sections go first, the rest wait for later frames; a newer
-                // mesh of a waiting section replaces it, and sections of
-                // chunks no longer loaded are dropped.
-                let pending = &mut self.pending_uploads;
-                let fresh: horizon_client::fast_hash::FxHashSet<(i32, i32, i32)> =
-                    uploads.iter().map(|(k, _)| *k).collect();
-                let chunks = &self.world.chunks;
-                let loaded = |k: &(i32, i32, i32)| chunks.contains_key(&(k.0, k.2));
-                let mut spent: Vec<_> = pending
-                    .extract_if(.., |(k, _)| fresh.contains(k) || !loaded(k))
-                    .collect();
-                for upload in uploads {
-                    if loaded(&upload.0) {
-                        pending.push(upload);
+                uploads
+            };
+            horizon_client::spans::time("upload_queue", || {
+                // Columns leave by `unloaded` and by a server's forget packets
+                // (`Streaming::forget`): a lookup per waiting section.
+                if !pending.is_empty() {
+                    pending.retain_columns(|x, z| chunks.contains_key(&(x, z)), &mut spent);
+                }
+                pending.set_centre(camera);
+                for (key, mesh) in queued {
+                    if chunks.contains_key(&(key.0, key.2)) {
+                        if let Some(old) = pending.push(key, mesh) {
+                            spent.push((key, old));
+                        }
                     } else {
-                        spent.push(upload);
+                        spent.push((key, mesh));
                     }
                 }
-                let centre = self.streaming.center;
-                // Section keys count from the world's bottom (`origin`'s min_y + y * 16).
-                let bottom = f64::from(self.world.bottom_y());
-                let cam_y = self
-                    .player
-                    .as_ref()
-                    .map_or(4, |p| ((p.position.y - bottom) / 16.0).floor() as i32);
-                let far = |k: &(i32, i32, i32)| {
-                    (k.0 - centre.0).pow(2) + (k.1 - cam_y).pow(2) + (k.2 - centre.1).pow(2)
-                };
-                pending.sort_unstable_by_key(|(k, _)| std::cmp::Reverse(far(k)));
-                let (limit, budget) = if budgeted {
-                    (
-                        g.chunk_updates as usize,
-                        u64::from(g.upload_budget_kib) * 1024,
-                    )
-                } else {
-                    (0, 0)
-                };
-                let (mut count, mut bytes) = (0, 0u64);
-                // Without the player's budgets, uploads stop once they took this
-                // frame's share (`UploadPace::budget`: a quarter of the recent frame
-                // time, more with a backlog, at most 2 ms; at least one goes): a burst
-                // of finished meshes spreads over frames, nearest first.
-                let auto = (!budgeted).then(|| self.upload_pace.budget(pending.len(), arriving));
-                let started = Instant::now();
-                let upload_span = horizon_client::spans::guard("upload_queue");
-                while let Some((_, mesh)) = pending.last() {
-                    if auto.is_some_and(|time| count > 0 && started.elapsed() >= time) {
-                        break;
-                    }
-                    let size = ((mesh.solid.len() + mesh.translucent.len())
-                        * std::mem::size_of::<horizon_client::mesher::TerrainVertex>())
-                        as u64;
-                    if (limit > 0 && count >= limit)
-                        || (budget > 0 && bytes > 0 && bytes + size > budget)
-                    {
-                        break;
-                    }
-                    let (key, mesh) = pending.pop().expect("checked above");
+            });
+            horizon_client::spans::time("upload", || {
+                pending.drain(&budget, |key, mesh| {
                     renderer.upload(key, &mesh);
                     spent.push((key, mesh));
-                    count += 1;
-                    bytes += size;
-                }
-                drop(upload_span);
-                self.streaming.free(spent);
-            }
+                });
+            });
+            horizon_client::spans::time("upload_free", || self.streaming.free(spent));
             renderer.remove_columns(unloaded.iter().map(|c| (c.x, c.z)));
             // Meshes in the works are the view's terrain while it is new, then edits'.
             let meshing = self.streaming.busy() || !self.pending_uploads.is_empty();
@@ -442,10 +442,20 @@ impl Game<'_> {
                     self.streaming.radius.min(r.sent_radius())
                 });
                 let camera = [player.position.x, player.position.y, player.position.z];
+                // Horizon Culling: no tile past where the tallest terrain sinks
+                // under the curved horizon seen from the eye, the loaded chunks
+                // flat to the render distance as the renderer draws them.
+                let lod_distance = self.settings.horizon.horizon_culled(
+                    lod_distance,
+                    player.position.y + 1.62,
+                    f64::from(self.streaming.radius * 16),
+                );
                 let meshes = horizon_client::spans::time("lod_update", || {
                     lod.update(camera, detail, lod_distance, covered, lod_aim)
                 });
                 renderer.queue_lods(meshes, lod.removed(), lod.take_cutout());
+                // RT lighting's far heights (`far_heights`): the far terrain's drawn columns.
+                horizon_client::spans::time("far_terrain", || renderer.set_far_terrain(lod));
                 // A finished job can hold hundreds of tiles: spread them
                 // over frames rather than stall one.
                 horizon_client::spans::time("lod_upload", || {

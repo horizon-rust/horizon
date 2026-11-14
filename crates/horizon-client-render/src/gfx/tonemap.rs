@@ -1,0 +1,1155 @@
+//! Linear Light (Horizon setting, docs/graphics.md): the world, the hand and the screen effects
+//! draw in linear light into a float scene target of the view's size (the window, or each VR
+//! eye), and one pass tone maps it onto the screen's 8-bit target, under the HUD. Light sources
+//! can go above 1.0 there (lava, the sun), the base the PBR and ray tracing work in
+//! (docs/raytracing.md). Without it the frame is drawn as vanilla's, straight to the screen.
+//!
+//! A shader pack's last pass writes gamma-space 8-bit colour: it goes to `scratch`, which
+//! `decode` takes back into the scene before the overlays.
+//!
+//! With RT lighting (`set_post`) the scene is graded before the curve, as a camera would: the
+//! auto-exposure (`exposure`) scales its light to the eye's adaptation and the bloom (`bloom`)
+//! lets the brightest of it glow. Both are measured on a chain of halved copies of the scene,
+//! and the grading pass writes the result into a float target of its own (`Post`), which the
+//! curve reads and HDR output reads in place of the scene (`graded`); when nothing reads it after
+//! (no HDR output, screenshot or video), the grading pass applies the curve itself, onto the
+//! screen's target. Env switches, for A/B: `HORIZON_POST=0` (no grading), `HORIZON_EXPOSURE=0`
+//! (the exposure stays 1; a number is a fixed value in stops), `HORIZON_BLOOM=0` (a number is the
+//! bloom's burn intensity), `HORIZON_TONE_SHADOWS` and `_HIGHLIGHTS` (the local tone mapping's), `HORIZON_TONEMAP=shoulder` (today's curve in place of ACES) and
+//! `HORIZON_GRADE_FUSED=0` (the graded light's target and the curve's own pass every frame),
+//! `HORIZON_NIGHT_VISION=pixel` (the night's greying by each pixel's light, not the eye's
+//! adaptation; `0` none) and `HORIZON_NIGHT_VISION_EV` (the eye's greying moved, in stops).
+//!
+//! The grading follows RTX Remix's post-processing and its rtx.conf values (`PostParams`): the
+//! auto-exposure of `exposure`, a threshold bloom that is added to the scene (burn intensity),
+//! a local tone mapping that fuses three exposures, and the non-legacy ACES curve.
+
+use super::bloom::{self, Bloom};
+use super::exposure::{Exposure, Meter};
+
+/// What the post-processing is set by, at run time: Remix's rtx.conf values by default, and a
+/// few situations' (`DUSK`, `NIGHT`, `RAIN`, `THUNDER`) for the caller to switch between with
+/// `Tonemap::set_params`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PostParams {
+    /// The auto-exposure's limits, in stops.
+    pub ev_min: f32,
+    pub ev_max: f32,
+    /// The bloom's burn intensity: how much of its glow is added to the scene.
+    pub bloom_burn: f32,
+    /// The bloom's luminance threshold in Remix's scene units: light below it does not glow.
+    /// It is converted with `REMIX_UNITS`.
+    pub bloom_threshold: f32,
+    /// The local tone mapping's exposure, shadows, highlights, exposure preference sigma and
+    /// offset (Remix's `rtx.localtonemap.*`).
+    pub exposure: f32,
+    pub shadows: f32,
+    pub highlights: f32,
+    pub sigma: f32,
+    pub offset: f32,
+}
+
+/// Remix's units of luminance in paper white's: Remix lights a scene in units where a lit surface
+/// reads about 200 before its exposure, so the bloom threshold of 250 starts just above white
+/// (1.25 paper whites: the sun, lava and lamps glow, a lit wall does not). A measured guess.
+const REMIX_UNITS: f32 = 200.0;
+/// The local tone mapping exposure at which Remix's own scale is the scene's, 1.
+const REMIX_EXPOSURE: f32 = 0.214_057_28;
+
+/// `PostParams::INDOOR_EV_MAX`, or `HORIZON_INDOOR_EV_MAX`'s stops (-2 to 6).
+fn indoor_ev_max() -> f32 {
+    static TOP: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *TOP.get_or_init(|| {
+        std::env::var("HORIZON_INDOOR_EV_MAX")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| (-2.0..=6.0).contains(v))
+            .unwrap_or(PostParams::INDOOR_EV_MAX)
+    })
+}
+impl PostParams {
+    /// Remix's rtx.conf values.
+    pub const REMIX: Self = Self {
+        ev_min: -2.5,
+        ev_max: 1.5,
+        bloom_burn: 0.1,
+        bloom_threshold: 250.0,
+        exposure: REMIX_EXPOSURE,
+        shadows: 1.4,
+        highlights: 2.5,
+        sigma: 3.5,
+        offset: -0.1,
+    };
+    /// Remix's dusk: the exposure's top lowered to -0.5 stops.
+    pub const DUSK: Self = Self {
+        ev_max: -0.5,
+        ..Self::REMIX
+    };
+    /// The night: the top at -0.5, the bloom a little more than the day's (0.2 over the day's
+    /// threshold, above white). Remix's own night (`NIGHT_REMIX`) burns at 1.5 over anything above
+    /// 1 of its units, a two-hundredth of white: every lit thing glowed, a lamp's room was a veil
+    /// and the moon a white ball in a halo, its maria gone.
+    pub const NIGHT: Self = Self {
+        ev_max: -0.5,
+        bloom_burn: 0.2,
+        ..Self::REMIX
+    };
+    /// Remix's night: the top at -0.5, a bloom that burns at 1.5 over anything above 1
+    /// (`HORIZON_NIGHT_BLOOM=remix`).
+    pub const NIGHT_REMIX: Self = Self {
+        ev_max: -0.5,
+        bloom_burn: 1.5,
+        bloom_threshold: 1.0,
+        ..Self::REMIX
+    };
+    /// The night's values: `NIGHT`, or Remix's own with `HORIZON_NIGHT_BLOOM=remix`.
+    pub fn night() -> Self {
+        static REMIX: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *REMIX.get_or_init(|| std::env::var("HORIZON_NIGHT_BLOOM").is_ok_and(|v| v == "remix")) {
+            Self::NIGHT_REMIX
+        } else {
+            Self::NIGHT
+        }
+    }
+    /// Remix's rain: the top at -1, shadows at 1.75.
+    pub const RAIN: Self = Self {
+        ev_max: -1.0,
+        shadows: 1.75,
+        ..Self::REMIX
+    };
+    /// Remix's thunder: the top at -1, shadows at 2.
+    pub const THUNDER: Self = Self {
+        ev_max: -1.0,
+        shadows: 2.0,
+        ..Self::REMIX
+    };
+
+    /// The exposure's top in stops for a closed room: Remix's situations cap it for the open air
+    /// (+1.5 by day, -0.5 at dusk and by night, -1 in the rain), so that the night stays dark;
+    /// indoors the eye adapts to the room's own light whatever the hour. A room lit by lamps
+    /// averages about 2^-5 paper white, which the key (exposure.wgsl, 2^-2.6) wants 2.4 stops up:
+    /// under the dusk cap it showed three stops too dark, its bounced light crushed to black.
+    /// Not higher: an unlit cave would be lifted into its own noise.
+    /// `HORIZON_INDOOR_EV_MAX` sets another (`indoor_ev_max`).
+    pub const INDOOR_EV_MAX: f32 = 3.0;
+
+    /// These with the exposure's top raised toward `INDOOR_EV_MAX` as the camera is shut in from
+    /// the sky: by its vanilla sky light level `sky` (0..15), from 9 (under a tree, a porch, a cave's
+    /// mouth: still the open air's top, or the night's exposure rose under every tree and the moon
+    /// burnt to a white disc) down to 2 (well inside: the room's). It only lifts the top, and only
+    /// matters where the scene is darker than the key.
+    pub fn indoors(self, sky: i32) -> Self {
+        let t = ((9.0 - sky as f32) / 7.0).clamp(0.0, 1.0);
+        let inside = t * t * (3.0 - 2.0 * t);
+        Self {
+            ev_max: self.ev_max + (indoor_ev_max() - self.ev_max).max(0.0) * inside,
+            ..self
+        }
+    }
+
+    /// These for a headset's eye: 0.4 stops brighter (`HORIZON_VR_EXPOSURE_STOPS` sets another, 0
+    /// the screen's). An eye is 8-bit SDR and fills the view: measured in the headset, the
+    /// foreground under a noon sun stayed near black at the screen's exposure, where the screen's
+    /// own image was right, and lifting the local tone mapping's shadows changed little.
+    pub fn for_eye(self) -> Self {
+        static STOPS: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        let stops = *STOPS.get_or_init(|| {
+            std::env::var("HORIZON_VR_EXPOSURE_STOPS")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .map_or(0.4, |v| v.clamp(-2.0, 2.0))
+        });
+        Self {
+            exposure: self.exposure * stops.exp2(),
+            ..self
+        }
+    }
+
+    /// The uniform the grading shaders read (tonemap.wgsl `Params`), with the time step.
+    fn words(&self, dt: f32, burn: Option<f32>) -> [f32; 16] {
+        [
+            dt,
+            self.ev_max,
+            self.ev_min,
+            0.0,
+            burn.unwrap_or(self.bloom_burn),
+            self.bloom_threshold / REMIX_UNITS,
+            0.0,
+            0.0,
+            self.exposure / REMIX_EXPOSURE,
+            tone("SHADOWS").unwrap_or(self.shadows),
+            tone("HIGHLIGHTS").unwrap_or(self.highlights),
+            tone("SIGMA").unwrap_or(self.sigma),
+            tone("OFFSET").unwrap_or(self.offset),
+            0.0,
+            0.0,
+            0.0,
+        ]
+    }
+}
+
+/// The eye's night vision mode for tonemap.wgsl `night_vision`: 0 off, 1 by the eye's adaptation
+/// (the auto-exposure's adapted mean), 2 by each pixel's own light. The setting turns it off;
+/// `HORIZON_NIGHT_VISION=pixel` brings back the per-pixel greying, `=0` turns it off.
+fn night_vision_mode(on: bool) -> f32 {
+    static MODE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    let mode = *MODE.get_or_init(|| {
+        match std::env::var("HORIZON_NIGHT_VISION")
+            .as_deref()
+            .map(str::trim)
+        {
+            Ok("pixel") | Ok("2") => 2.0,
+            Ok("0") | Ok("off") => 0.0,
+            _ => 1.0,
+        }
+    });
+    if on { mode } else { 0.0 }
+}
+
+/// `HORIZON_NIGHT_VISION_EV`: the eye's night vision range moved up (the view greys sooner as the
+/// light falls) or down, in stops (-4 to 4); 0 by default.
+fn night_vision_shift() -> f32 {
+    static SHIFT: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SHIFT.get_or_init(|| {
+        std::env::var("HORIZON_NIGHT_VISION_EV")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .map_or(0.0, |v| v.clamp(-4.0, 4.0))
+    })
+}
+
+/// The local tone mapping's values when `HORIZON_TONE_SHADOWS`, `_HIGHLIGHTS`, `_SIGMA` or
+/// `_OFFSET` set them (how far the dark is lifted and the bright lowered, as factors; the
+/// exposure preference's width and offset in stops), for tuning in a headset whose 8-bit eyes
+/// crush what the monitor's HDR shows.
+fn tone(name: &str) -> Option<f32> {
+    static VALUES: std::sync::OnceLock<[Option<f32>; 4]> = std::sync::OnceLock::new();
+    const NAMES: [&str; 4] = ["SHADOWS", "HIGHLIGHTS", "SIGMA", "OFFSET"];
+    let values = VALUES.get_or_init(|| {
+        NAMES.map(|n| {
+            std::env::var(format!("HORIZON_TONE_{n}"))
+                .ok()
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+        })
+    });
+    values[NAMES.iter().position(|n| *n == name)?]
+}
+
+/// The scene target's format.
+pub const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Different sizes kept at once: the window, two eyes, two quad-view insets.
+const KEPT: usize = 5;
+/// Remix's bloom steps, the levels of its chain; the exposure's chain has 6.
+const BLOOM_STEPS: u32 = 8;
+
+struct Target {
+    size: [u32; 2],
+    view: wgpu::TextureView,
+    group: wgpu::BindGroup,
+    post: Option<Post>,
+}
+
+/// A scene size's grading: its chains and the graded light.
+struct Post {
+    /// The scene's light, unthresholded: the exposure is measured on it and the local tone
+    /// mapping reads its average.
+    chain: bloom::Chain,
+    /// The bloom's: the light over the threshold, blurred.
+    glow: bloom::Chain,
+    /// The grading pass's target, and the curve's source (the tone mapping layout, no mask).
+    graded: wgpu::TextureView,
+    /// Its texture, for an F2 screenshot's HDR copy (`graded_texture`).
+    graded_texture: wgpu::Texture,
+    graded_group: wgpu::BindGroup,
+    /// The glow and the exposure, for the grading pass.
+    group: wgpu::BindGroup,
+}
+
+/// What grading needs, made when RT lighting first draws.
+struct Grading {
+    bloom: Bloom,
+    exposure: Exposure,
+    /// One exposure for every scene size: the two eyes, and in quad views the insets and the
+    /// wide views, all read it, so the views of one frame never differ in brightness at their
+    /// seams. Each size's run measures its own scene and moves it a little.
+    meter: Meter,
+    /// `PostParams::words`, copied in at each run.
+    params: wgpu::Buffer,
+    /// The parameters and the exposure for bloom.wgsl's first level.
+    first: wgpu::BindGroup,
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    pipeline: wgpu::RenderPipeline,
+    /// The curve of the graded light: ACES.
+    aces: wgpu::RenderPipeline,
+    /// `pipeline` and `aces` in one pass onto the screen's format, when nothing reads the graded
+    /// light (`Tonemap::run`'s `keep_graded`).
+    grade_aces: wgpu::RenderPipeline,
+    /// `grade_aces`'s vignette (`Vignette`): the atlas, its sampler and the sprite's uniform.
+    vignette_layout: wgpu::BindGroupLayout,
+    /// Bound without a vignette to draw (a 1x1 texture, the uniform's mode 0).
+    no_vignette: wgpu::BindGroup,
+}
+
+/// The vignette (`RenderPipelines.VIGNETTE`, screen_effects.rs `Blend::Vignette`), for the grading
+/// and the curve's one pass to draw over the finished frame as vanilla does, the frame times 1 - the
+/// sprite times its colour, rather than a quad blended over the scene's light before it (`run`'s
+/// `vignette`).
+pub struct Vignette<'a> {
+    /// The shared 2D atlas the sprite is in, and the sampler its sampling takes (nearest, or
+    /// linear for a blurred sprite).
+    pub atlas: &'a wgpu::TextureView,
+    pub sampler: &'a wgpu::Sampler,
+    /// The sprite's atlas rectangle (u0, v0, u1, v1).
+    pub rect: [f32; 4],
+    /// Its colour: how dark it makes the frame.
+    pub color: [f32; 4],
+    /// Clamp-to-edge addressing, else repeat (`TextureMetadataSection.clamp`).
+    pub clamp: bool,
+}
+
+/// Whether the vignette draws in the grading and the curve's pass, over the finished frame as
+/// vanilla draws it (`Vignette`): on unless `HORIZON_VIGNETTE_CURVE=0`, which blends its quad over
+/// the scene's light before the tone mapping, as before.
+#[expect(
+    dead_code,
+    reason = "its caller in gfx.rs (68218d890, the vignette in the grading's pass) was lost merging main into final-all; kept to port it back"
+)]
+pub fn vignette_in_curve() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_VIGNETTE_CURVE").map_or(true, |v| v != "0"))
+}
+
+/// `HORIZON_TONEMAP=shoulder`: the old curve with its shoulder in place of ACES.
+fn shoulder() -> bool {
+    static SHOULDER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SHOULDER.get_or_init(|| std::env::var("HORIZON_TONEMAP").as_deref() == Ok("shoulder"))
+}
+
+pub struct Tonemap {
+    layout: wgpu::BindGroupLayout,
+    /// Bound for the shadow mask without ray-traced shadows (1x1: no shadows, tonemap.wgsl).
+    no_mask: wgpu::TextureView,
+    tonemap: wgpu::RenderPipeline,
+    decode: wgpu::RenderPipeline,
+    shader: wgpu::ShaderModule,
+    screen: wgpu::TextureFormat,
+    scenes: Vec<Target>,
+    scratch: Option<Target>,
+    /// RT lighting draws: grade the scene (`set_post`).
+    post: bool,
+    params: PostParams,
+    /// `HORIZON_POST_SITUATION` holds `params`.
+    held: bool,
+    /// The eye's night vision (`set_night_vision`).
+    night_vision: bool,
+    grading: Option<Grading>,
+}
+
+/// `HORIZON_RT_DEBUG=1` or `2` (tonemap.wgsl `DEBUG`), for developing ray-traced shadows; the
+/// rays' own views (3, 4, 5, 7: shadow_rays.wgsl) show as the mask (1).
+fn debug_constant() -> (&'static str, f64) {
+    (
+        "DEBUG",
+        std::env::var("HORIZON_RT_DEBUG")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .map_or(0.0, |v| {
+                f64::from(if (3..=5).contains(&v) || v == 7 { 1 } else { v })
+            }),
+    )
+}
+
+/// Whether the grading and the curve draw in one pass when nothing reads the graded light
+/// (`Tonemap::run`): on unless `HORIZON_GRADE_FUSED=0`, which draws the graded light first, then
+/// the curve, as always.
+fn fuse_grading() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_GRADE_FUSED").map_or(true, |v| v != "0"))
+}
+
+/// The bloom's burn intensity when `HORIZON_BLOOM` sets it (0 for none).
+fn bloom_burn() -> Option<f32> {
+    std::env::var("HORIZON_BLOOM")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .map(|v| v.max(0.0))
+}
+
+impl Grading {
+    fn new(
+        device: &wgpu::Device,
+        shader: &wgpu::ShaderModule,
+        scene_layout: &wgpu::BindGroupLayout,
+        screen: wgpu::TextureFormat,
+    ) -> Self {
+        let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility,
+            ty,
+            count: None,
+        };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Horizon grading"),
+            entries: &[
+                entry(
+                    0,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(
+                    1,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
+                entry(
+                    2,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                entry(
+                    3,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                entry(
+                    4,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+            ],
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Horizon grading"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Horizon grading"),
+            bind_group_layouts: &[Some(scene_layout), Some(&layout)],
+            ..Default::default()
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fs_grade"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_full"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_grade"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[debug_constant()],
+                    ..Default::default()
+                },
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SCENE_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let exposure = Exposure::new(device);
+        let meter = exposure.meter(device);
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Horizon post-processing parameters"),
+            size: 64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bloom = Bloom::new(device, scene_layout);
+        let first = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Horizon bloom's parameters"),
+            layout: bloom.params_layout(),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: meter.state().as_entire_binding(),
+                },
+            ],
+        });
+        // ACES reads the graded light, which has no mask left.
+        let aces_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Horizon ACES"),
+            bind_group_layouts: &[Some(scene_layout)],
+            ..Default::default()
+        });
+        let aces = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fs_tonemap_aces"),
+            layout: Some(&aces_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_full"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_tonemap_aces"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: screen,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let vignette_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Horizon vignette"),
+            entries: &[
+                entry(
+                    0,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(
+                    1,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
+                entry(
+                    2,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+            ],
+        });
+        let none = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Horizon no vignette"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let no_vignette = vignette_group(device, &vignette_layout, &none, &sampler, [0.0; 12]);
+        let fused_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Horizon grading and tone mapping"),
+            bind_group_layouts: &[Some(scene_layout), Some(&layout), Some(&vignette_layout)],
+            ..Default::default()
+        });
+        let grade_aces = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fs_grade_aces"),
+            layout: Some(&fused_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_full"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_grade_aces"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[debug_constant()],
+                    ..Default::default()
+                },
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: screen,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        Self {
+            bloom,
+            meter,
+            exposure,
+            params,
+            first,
+            layout,
+            sampler,
+            pipeline,
+            aces,
+            grade_aces,
+            vignette_layout,
+            no_vignette,
+        }
+    }
+}
+
+/// The vignette's group (tonemap.wgsl `VignetteParams`: the rectangle, the colour, the mode).
+fn vignette_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    atlas: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    words: [f32; 12],
+) -> wgpu::BindGroup {
+    use wgpu::util::DeviceExt;
+    // A buffer of its own each time: in VR an eye's frame can still be queued when the other's
+    // is encoded.
+    let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Horizon vignette"),
+        contents: bytemuck::cast_slice(&words),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Horizon vignette"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(atlas),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: params.as_entire_binding(),
+            },
+        ],
+    })
+}
+
+impl Tonemap {
+    /// Tone mapping onto targets of `screen`'s format.
+    pub fn new(device: &wgpu::Device, screen: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Horizon tone mapping"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("tonemap.wgsl").into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Horizon tone mapping"),
+            entries: &[0, 1].map(|binding| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }),
+        });
+        let no_mask = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("No ray-traced light"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Horizon tone mapping"),
+            bind_group_layouts: &[Some(&layout)],
+            ..Default::default()
+        });
+        let debug = [debug_constant()];
+        let pipeline = |entry: &str, format| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_full"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &debug,
+                        ..Default::default()
+                    },
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        Self {
+            tonemap: pipeline("fs_tonemap", screen),
+            decode: pipeline("fs_decode", SCENE_FORMAT),
+            layout,
+            no_mask,
+            shader,
+            screen,
+            scenes: Vec::new(),
+            scratch: None,
+            post: false,
+            // `HORIZON_POST_SITUATION=dusk|night|rain|thunder` holds a situation's values, to
+            // look at one whatever the sky (`set_params` then changes nothing).
+            held: std::env::var_os("HORIZON_POST_SITUATION").is_some(),
+            night_vision: true,
+            params: match std::env::var("HORIZON_POST_SITUATION").as_deref() {
+                Ok("dusk") => PostParams::DUSK,
+                Ok("night") => PostParams::night(),
+                Ok("rain") => PostParams::RAIN,
+                Ok("thunder") => PostParams::THUNDER,
+                _ => PostParams::REMIX,
+            },
+            grading: None,
+        }
+    }
+
+    /// Grades the scene before the curve (RT lighting): exposure and bloom, tonemap.rs's header.
+    /// The eye's night vision on or off (tonemap.wgsl `night_vision`), from the next frame.
+    pub fn set_night_vision(&mut self, on: bool) {
+        self.night_vision = on;
+    }
+    pub fn set_post(&mut self, on: bool) {
+        self.post = on && std::env::var("HORIZON_POST").as_deref() != Ok("0");
+    }
+
+    /// What the grading is set by (`PostParams::REMIX`, or a situation's), from the next frame.
+    pub fn set_params(&mut self, params: PostParams) {
+        if !self.held {
+            self.params = params;
+        }
+    }
+
+    /// The graded light of the scene of `size`, drawn by the last `run`: where HDR output reads
+    /// the scene when it is graded (its shadows applied: bind `no_mask` with it).
+    pub fn graded(&self, size: [u32; 2]) -> Option<&wgpu::TextureView> {
+        if !self.post {
+            return None;
+        }
+        let t = self.scenes.iter().find(|t| t.size == size)?;
+        t.post.as_ref().map(|p| &p.graded)
+    }
+
+    /// The graded light's texture of the scene of `size` (`graded`'s), for a screenshot.
+    pub fn graded_texture(&self, size: [u32; 2]) -> Option<&wgpu::Texture> {
+        if !self.post {
+            return None;
+        }
+        let t = self.scenes.iter().find(|t| t.size == size)?;
+        t.post.as_ref().map(|p| &p.graded_texture)
+    }
+
+    /// The grading of the scene at `index` (made on first use).
+    fn prepare(&mut self, device: &wgpu::Device, index: usize) {
+        let layout = &self.layout;
+        let grading = self
+            .grading
+            .get_or_insert_with(|| Grading::new(device, &self.shader, layout, self.screen));
+        if self.scenes[index].post.is_some() {
+            return;
+        }
+        let size = self.scenes[index].size;
+        let graded_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Horizon scene (graded)"),
+            size: wgpu::Extent3d {
+                width: size[0].max(1),
+                height: size[1].max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SCENE_FORMAT,
+            // COPY_SRC: an F2 screenshot keeps the graded light as it is (gfx.rs `copy_graded`).
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let graded = graded_texture.create_view(&Default::default());
+        let chain = grading.bloom.chain(device, size, 6, 3);
+        let glow = grading.bloom.chain(device, size, BLOOM_STEPS, 1);
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Horizon grading"),
+            layout: &grading.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(glow.glow()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: grading.params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(chain.level(2)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&grading.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: grading.meter.state().as_entire_binding(),
+                },
+            ],
+        });
+        let graded_group = self.group(device, &graded, &self.no_mask);
+        self.scenes[index].post = Some(Post {
+            chain,
+            glow,
+            graded,
+            graded_texture,
+            graded_group,
+            group,
+        });
+    }
+
+    fn target(&self, device: &wgpu::Device, size: [u32; 2], format: wgpu::TextureFormat) -> Target {
+        let view = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some(if format == SCENE_FORMAT {
+                    "Horizon scene (linear light)"
+                } else {
+                    "Horizon shader pack output"
+                }),
+                size: wgpu::Extent3d {
+                    width: size[0].max(1),
+                    height: size[1].max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let group = self.group(device, &view, &self.no_mask);
+        Target {
+            size,
+            view,
+            group,
+            post: None,
+        }
+    }
+
+    fn group(
+        &self,
+        device: &wgpu::Device,
+        source: &wgpu::TextureView,
+        mask: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Horizon tone mapping"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(mask),
+                },
+            ],
+        })
+    }
+
+    /// The mask bound without ray-traced shadows.
+    pub fn no_mask(&self) -> &wgpu::TextureView {
+        &self.no_mask
+    }
+
+    /// The scene target of `size` (made on first use).
+    pub fn scene(&mut self, device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
+        let index = match self.scenes.iter().position(|t| t.size == size) {
+            Some(index) => index,
+            None => {
+                if self.scenes.len() == KEPT {
+                    self.scenes.remove(0);
+                }
+                let t = self.target(device, size, SCENE_FORMAT);
+                self.scenes.push(t);
+                self.scenes.len() - 1
+            }
+        };
+        if self.post {
+            self.prepare(device, index);
+        }
+        self.scenes[index].view.clone()
+    }
+
+    /// The 8-bit target a shader pack's last pass draws into, of `size`.
+    pub fn scratch(&mut self, device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
+        if self.scratch.as_ref().is_none_or(|t| t.size != size) {
+            self.scratch = Some(self.target(device, size, self.screen));
+        }
+        self.scratch
+            .as_ref()
+            .map(|t| t.view.clone())
+            .expect("just made")
+    }
+
+    fn draw(
+        encoder: &mut wgpu::CommandEncoder,
+        label: &str,
+        pipeline: &wgpu::RenderPipeline,
+        groups: &[&wgpu::BindGroup],
+        target: &wgpu::TextureView,
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(pipeline);
+        for (i, group) in groups.iter().enumerate() {
+            pass.set_bind_group(i as u32, *group, &[]);
+        }
+        pass.draw(0..3, 0..1);
+    }
+
+    /// Tone maps the scene of `size` onto `target` (the screen's format, the same size), its
+    /// solid terrain scaled by the ray-traced shadows' `mask` when there is one. With `set_post`
+    /// the scene is graded first (and the mask applied then), into the graded light's target when
+    /// `keep_graded` (HDR output, a screenshot or a video reads it after: `graded`), else straight
+    /// onto `target` with the curve (ACES), one full-size pass and target less. `source` is the
+    /// scene's light when another texture of its size and format holds it (the TAA's resolved
+    /// frame, nothing drawn over it after: taa.rs `Inputs::copy_back`). `vignette` is drawn over
+    /// the finished frame when the grading and the curve draw in one pass (`fuses`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn run(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        size: [u32; 2],
+        target: &wgpu::TextureView,
+        mask: Option<&wgpu::TextureView>,
+        keep_graded: bool,
+        source: Option<&wgpu::TextureView>,
+        vignette: Option<Vignette<'_>>,
+    ) {
+        let Some(t) = self.scenes.iter().find(|t| t.size == size) else {
+            return;
+        };
+        let scene = match (source, mask) {
+            (None, None) => &t.group,
+            (source, mask) => &self.group(
+                device,
+                source.unwrap_or(&t.view),
+                mask.unwrap_or(&self.no_mask),
+            ),
+        };
+        if let (true, Some(post), Some(grading)) = (self.post, &t.post, &self.grading) {
+            // The parameters are copied in with the commands, not written ahead of them: in VR
+            // an eye's frame can still be queued when the other's is encoded.
+            let mut words = self.params.words(grading.meter.step(), bloom_burn());
+            words[3] = night_vision_mode(self.night_vision);
+            words[13] = night_vision_shift();
+            let staging = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Horizon post-processing parameters"),
+                size: 64,
+                usage: wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: true,
+            });
+            staging
+                .slice(..)
+                .get_mapped_range_mut()
+                .expect("mapped at creation")
+                .copy_from_slice(bytemuck::cast_slice(&words));
+            staging.unmap();
+            encoder.copy_buffer_to_buffer(&staging, 0, &grading.params, 0, 64);
+            // The exposure is measured on the scene's light halved a few times, then the bloom
+            // keeps what is over its threshold, after the exposure it has just adapted.
+            grading
+                .bloom
+                .down(encoder, &post.chain, scene, &grading.first, false);
+            super::gpu_passes::stamp(encoder, "exposure: meter (downsample)");
+            grading.exposure.adapt(
+                device,
+                encoder,
+                &grading.meter,
+                post.chain.meter(),
+                &grading.params,
+            );
+            super::gpu_passes::stamp(encoder, "exposure: adapt");
+            grading
+                .bloom
+                .down(encoder, &post.glow, scene, &grading.first, true);
+            grading.bloom.up(encoder, &post.glow);
+            super::gpu_passes::stamp(encoder, "bloom");
+            let shoulder = shoulder();
+            if !keep_graded && !shoulder && fuse_grading() {
+                let drawn = vignette.map(|v| {
+                    let mode = [1.0, f32::from(u8::from(v.clamp)), 0.0, 0.0];
+                    let mut words = [0.0; 12];
+                    words[..4].copy_from_slice(&v.rect);
+                    words[4..8].copy_from_slice(&v.color);
+                    words[8..].copy_from_slice(&mode);
+                    vignette_group(device, &grading.vignette_layout, v.atlas, v.sampler, words)
+                });
+                Self::draw(
+                    encoder,
+                    "Grading and tone mapping",
+                    &grading.grade_aces,
+                    &[
+                        scene,
+                        &post.group,
+                        drawn.as_ref().unwrap_or(&grading.no_vignette),
+                    ],
+                    target,
+                );
+                super::gpu_passes::stamp(encoder, "grading and tone curve (ACES)");
+                return;
+            }
+            Self::draw(
+                encoder,
+                "Grading",
+                &grading.pipeline,
+                &[scene, &post.group],
+                &post.graded,
+            );
+            super::gpu_passes::stamp(encoder, "grading (local tone mapping)");
+            Self::draw(
+                encoder,
+                "Tone mapping",
+                if shoulder {
+                    &self.tonemap
+                } else {
+                    &grading.aces
+                },
+                &[&post.graded_group],
+                target,
+            );
+            super::gpu_passes::stamp(encoder, "tone curve (ACES)");
+        } else {
+            Self::draw(encoder, "Tone mapping", &self.tonemap, &[scene], target);
+        }
+    }
+
+    /// Whether `run` grades the scene of `size` and draws the curve in the same pass, `keep_graded`
+    /// as `run` takes it: the pass that draws a `Vignette`.
+    #[expect(
+        dead_code,
+        reason = "its caller in gfx.rs (68218d890, the vignette in the grading's pass) was lost merging main into final-all; kept to port it back"
+    )]
+    pub fn fuses(&self, size: [u32; 2], keep_graded: bool) -> bool {
+        self.post
+            && self.grading.is_some()
+            && self
+                .scenes
+                .iter()
+                .any(|t| t.size == size && t.post.is_some())
+            && !keep_graded
+            && !shoulder()
+            && fuse_grading()
+    }
+
+    /// Decodes `scratch` (a pack's gamma-space output) into `scene`.
+    pub fn decode_scratch(&self, encoder: &mut wgpu::CommandEncoder, scene: &wgpu::TextureView) {
+        if let Some(t) = &self.scratch {
+            Self::draw(
+                encoder,
+                "Shader pack output to linear light",
+                &self.decode,
+                &[&t.group],
+                scene,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PostParams;
+
+    #[test]
+    fn a_closed_room_may_expose_up_to_its_own_light_whatever_the_hour() {
+        for situation in [
+            PostParams::REMIX,
+            PostParams::DUSK,
+            PostParams::NIGHT,
+            PostParams::RAIN,
+        ] {
+            // The open air (and a block under a tree's edge) keeps Remix's caps.
+            assert_eq!(situation.indoors(15), situation);
+            assert_eq!(situation.indoors(13), situation);
+            assert_eq!(situation.indoors(9), situation);
+            // Well inside, the room's top, at any hour.
+            assert_eq!(situation.indoors(0).ev_max, 3.0);
+            assert_eq!(situation.indoors(2).ev_max, 3.0);
+            // Between, between; never lower than the open air's, and nothing else changes.
+            let half = situation.indoors(6);
+            assert!(half.ev_max > situation.ev_max && half.ev_max < 3.0);
+            assert_eq!(half.ev_min, situation.ev_min);
+            assert_eq!(half.exposure, situation.exposure);
+        }
+    }
+}

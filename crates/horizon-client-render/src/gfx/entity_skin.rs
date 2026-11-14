@@ -215,7 +215,8 @@ impl EntitySkin {
     pub(super) fn usage(skinning: bool) -> wgpu::BufferUsages {
         let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
         if skinning {
-            usage | wgpu::BufferUsages::STORAGE
+            // COPY_SRC: RT lighting's hardware rays copy the posed vertices (`hw_rays::Dynamic`).
+            usage | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC
         } else {
             usage
         }

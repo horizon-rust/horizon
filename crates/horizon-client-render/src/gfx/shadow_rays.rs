@@ -1,0 +1,1769 @@
+//! Ray-traced shadows' and ambient occlusion's rays (docs/raytracing.md): after the world pass, a
+//! compute pass traces, for each pixel of the view's depth, a ray toward the sun or the moon and
+//! six short ones around the surface, through the voxel grid (`voxels`), and writes how much light
+//! reaches into a mask of the depth's size. The tone mapping scales each
+//! pixel by it, over the share of its light the solid terrain keeps in the shadow (the scene's
+//! alpha, terrain.wgsl `sun_share`). Rays don't depend on what was drawn over the pixel, and the
+//! window and every VR eye run the same pass on their own depth.
+
+use super::upload::Uploads;
+use glam::{DVec3, Mat4};
+
+/// The views kept at once: the window (0), two eyes, two quad-view insets.
+const KEPT: usize = 5;
+/// A sparse ray's bytes (shadow_rays.wgsl `SparseRay`: nine vectors of four).
+const SPARSE_RAY_BYTES: u64 = 9 * 16;
+
+/// Where the rays go, a view's choice: on the screen one a pixel up to about 1440p, one for 2x2
+/// pixels past it (a 4K screen traces 1920x1080 rays, as Remix's path tracing renders at DLSS
+/// Performance's resolution there: the terrain reads the masks through a depth-aware upsampling,
+/// terrain.wgsl `rt_taps`); in VR one for 2x2 pixels where the eyes look, about the density KRVR
+/// streams to the headset, and one for 8x8 away from it (shared by a 4x4 block of mask texels,
+/// shadow_rays.wgsl).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Foveation {
+    /// Depth pixels a mask texel stands for, on each side.
+    pub scale: u32,
+    /// Where the eyes look (camera-relative, unit), and the cosine of the sharp zone's half
+    /// angle; `None`: all of the view is sharp.
+    pub gaze: Option<([f32; 3], f32)>,
+}
+
+/// The screen's pixels a ray stands for on each side, set in a running game (`horizon-ctl rt-scale`,
+/// 1 to 8); 0 chooses by the screen's size (`Foveation::screen`).
+pub static SCREEN_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The most pixels the screen traces a ray each for (3440x1440 and below; 4K traces one for 2x2).
+pub const SHARP_PIXELS: u64 = 3440 * 1440;
+
+/// The sharp zone's half angle, as VRS's (horizon-xr `foveation.rs`): a 12-degree gaze step on
+/// each side stays sharp.
+pub const SHARP_DEGREES: f32 = 25.0;
+
+/// The sharp zone's half angle in degrees set in a running game (`horizon-ctl rt-sharp`, 1 to
+/// 180); 0 keeps `HORIZON_RT_SHARP`'s or `SHARP_DEGREES`.
+pub static SHARP_SET: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+impl Foveation {
+    /// The screen's of `size` pixels: one ray a pixel, one for 2x2 past `SHARP_PIXELS`, or
+    /// `set_screen_scale`'s, or `HORIZON_RT_SCALE`'s.
+    pub fn screen(size: [u32; 2]) -> Self {
+        static SCALE: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+        let forced = *SCALE.get_or_init(|| {
+            std::env::var("HORIZON_RT_SCALE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v| (1..=8).contains(v))
+        });
+        let pixels = u64::from(size[0]) * u64::from(size[1]);
+        let set = SCREEN_SCALE.load(std::sync::atomic::Ordering::Relaxed);
+        let scale = (set > 0)
+            .then_some(set)
+            .or(forced)
+            .unwrap_or(if pixels > SHARP_PIXELS { 2 } else { 1 });
+        Self { scale, gaze: None }
+    }
+
+    /// A VR eye looking along `gaze`; `None` for a quad view's inset, sharp all over.
+    pub fn eye(gaze: Option<glam::Vec3>) -> Self {
+        // `HORIZON_RT_SHARP` (degrees) moves the sharp zone's edge, to measure what the foveation
+        // saves: 0 traces sparsely everywhere, 180 sharp everywhere.
+        static SHARP: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        let sharp = *SHARP.get_or_init(|| {
+            std::env::var("HORIZON_RT_SHARP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v| (0.0..=180.0).contains(v))
+                .unwrap_or(SHARP_DEGREES)
+        });
+        let set = SHARP_SET.load(std::sync::atomic::Ordering::Relaxed);
+        let sharp = if set > 0 { set as f32 } else { sharp };
+        Self {
+            scale: 2,
+            gaze: gaze.map(|g| {
+                (
+                    g.normalize_or(glam::Vec3::NEG_Z).to_array(),
+                    sharp.to_radians().cos(),
+                )
+            }),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Uniform {
+    inverse_view_proj: [[f32; 4]; 4],
+    light: [f32; 4],
+    camera: [f32; 4],
+    fraction: [f32; 4],
+    grid: [f32; 4],
+    size: [f32; 4],
+    fovea: [f32; 4],
+    mode: [f32; 4],
+    prev_view_proj: [[f32; 4]; 4],
+    motion: [f32; 4],
+    sun: [f32; 4],
+    frame: [f32; 4],
+    sun_light: [f32; 4],
+    water: [f32; 4],
+    hw_offset: [f32; 4],
+    held: [f32; 4],
+    far: [f32; 4],
+    moving: [[f32; 4]; MOVING_LIGHTS],
+    rain: [f32; 4],
+    rain_sun: [f32; 4],
+    first_view_proj: [[f32; 4]; 4],
+    first_inverse_view_proj: [[f32; 4]; 4],
+    /// x: the ambient light (`Rays::ambient_light`).
+    ambient_light: [f32; 4],
+}
+
+/// The moving lights the rays light the terrain with at most (`Rays::moving`).
+pub const MOVING_LIGHTS: usize = 8;
+
+/// This frame's rays (`Renderer::ray_traced_shadows`): toward the light and the strength (0: no
+/// shadows); the camera's block (and the Y above the grid's highest block) and its place in it;
+/// the grid's first block (x, z), width and budget; the ambient occlusion's strength (0: off).
+#[derive(Clone, Copy, Default)]
+pub struct Rays {
+    pub light: [f32; 4],
+    pub camera: [f32; 4],
+    pub fraction: [f32; 4],
+    pub grid: [f32; 4],
+    pub ambient: f32,
+    /// The sun's shadows are traced (else its light only depends on the faces' facing).
+    pub shadows: bool,
+    /// RT lighting: the mask also holds each pixel's distance (a), for the terrain to read it the
+    /// next frame (terrain.wgsl `rt_visibility`).
+    pub lighting: bool,
+    /// RT lighting: toward the real sun, w 1 when the sky table (`atmosphere`) holds its sky.
+    pub sun: [f32; 4],
+    /// RT lighting: the light traced toward (the sun's or the moon's), for the bounced light.
+    pub sun_light: [f32; 4],
+    /// The water's sprite layers and the time, for the caustics.
+    pub water: [f32; 4],
+    /// The plain glass's sprite layers, packed (`Renderer::set_glass_layers`; -1 none).
+    pub glass: f32,
+    /// The ice's and the packed ice's sprite layers, packed plus one (`Renderer::set_ice_layers`;
+    /// 0 none, the default), for the refraction through ice (shadow_rays_psr.wgsl).
+    pub ice: f32,
+    /// The camera's offset from the hardware rays' instances' anchor (`HwRays::offset`).
+    pub hw_offset: [f32; 4],
+    /// RT lighting's moving lights (a held torch, a burning mob, a dropped lantern: Remix's held
+    /// light and its dynamic lights): camera-relative position and light level, the first
+    /// `moving_count` of them.
+    pub moving: [[f32; 4]; MOVING_LIGHTS],
+    pub moving_count: usize,
+    /// The Eye of Aldhani (`aldhani`): the seconds into it (below 0 none) and a full moon's light
+    /// overhead, its meteors' light's unit.
+    pub aldhani: [f32; 2],
+    /// RT lighting's rain (terrain.wgsl's `Globals::rain` and `rain_sun`), for the puddles the
+    /// reflections turn off.
+    pub rain: [f32; 4],
+    pub rain_sun: [f32; 4],
+    /// RT lighting's ambient light on every face (shadow_rays.wgsl `rt.ambient_light`): the
+    /// RT Ambient Light option (`Renderer::rt_ambient`).
+    pub ambient_light: f32,
+    /// The far field (`far_heights::FarHeights::update`): the window's first texel, 1 once built,
+    /// the highest top.
+    pub far: [f32; 4],
+}
+
+impl Rays {
+    /// Whether the pass has anything to trace.
+    pub fn any(&self) -> bool {
+        self.lighting || (self.shadows && self.light[3] > 0.0) || self.ambient > 0.0
+    }
+}
+
+/// A view's last mask, for the terrain to light the next frame with (RT lighting): what it was
+/// seen through and from.
+pub struct History<'a> {
+    pub mask: &'a wgpu::TextureView,
+    pub view_proj: Mat4,
+    pub camera: DVec3,
+}
+
+/// A view's two masks, written in turn: one is traced while the terrain reads the other.
+struct ViewMasks {
+    view: usize,
+    size: [u32; 2],
+    masks: [wgpu::TextureView; 2],
+    /// RT lighting's sky and bounced light, accumulated, one a mask.
+    blocks: [wgpu::TextureView; 2],
+    /// RT lighting's light sources' direct light and faces (this frame's), the denoiser's half-way
+    /// texture, and its output one a mask: what the terrain reads, and the last one the bounce
+    /// rays read.
+    direct: [wgpu::TextureView; 2],
+    scratch: wgpu::TextureView,
+    /// RT lighting's sun through what tints it, one a mask.
+    sun: [wgpu::TextureView; 2],
+    /// RT lighting's ReSTIR DI reservoirs, one a mask.
+    reservoirs: [wgpu::TextureView; 2],
+    /// RT lighting's ReSTIR GI reservoirs (the sample's point and weight; its light, count and
+    /// normal), one a mask.
+    gi: [[wgpu::TextureView; 2]; 2],
+    /// RT lighting's fast history (ReLAX's), one a mask.
+    fast: [wgpu::TextureView; 2],
+    /// RT lighting's water reflections and refractions (Remix's primary surface replacement).
+    reflection: wgpu::TextureView,
+    refraction: wgpu::TextureView,
+    light: [wgpu::TextureView; 2],
+    /// VR's second eye: where its light is the first eye's, the first eye's texel
+    /// (shadow_rays.wgsl `taken_out`), for its denoiser.
+    taken: wgpu::TextureView,
+    /// The mask the next pass writes.
+    next: usize,
+    /// The last pass's view projection and camera.
+    last: Option<(Mat4, DVec3)>,
+    /// This view's passes so far: what rests in turn (shadow_rays.wgsl `trace`) turns with the
+    /// view's own frames, not with the passes of all views (two eyes would each see every other).
+    frame: u32,
+}
+
+/// RT lighting's hybrid's (`hw_rays`) for the shadow rays: the terrain's top-level structure,
+/// the vertex arena's first pages (`hw_rays::ARENA_PAGES`) and the first sprite array, for their
+/// alpha test.
+pub struct Hardware<'a> {
+    pub tlas: &'a wgpu::Tlas,
+    pub arena: &'a [wgpu::Buffer; super::hw_rays::ARENA_PAGES],
+    pub sprites: &'a wgpu::TextureView,
+    /// Where each instance's quads are (`hw_rays::HwRays::instances`).
+    pub instances: &'a wgpu::Buffer,
+    /// The entities' and the view model's vertices (`hw_rays::HwRays::dynamics`) and the shared
+    /// atlas their texels are in, for the alpha test and the hits' colour.
+    pub dynamics: &'a wgpu::Buffer,
+    pub atlas: &'a wgpu::TextureView,
+    /// The wind's buffer (`wind::Wind`), for the shadows of what sways.
+    pub wind: &'a wgpu::Buffer,
+}
+
+/// The hybrid's part of the shader (`hw_rays`): the sun's and the light sources' shadow rays
+/// against the drawn terrain, alpha-tested; without hardware rays, `hw_light` says to use the
+/// voxel grid's.
+const HARDWARE: &str = concat!(
+    include_str!("shadow_rays_hw.wgsl"),
+    include_str!("shadow_rays_psr.wgsl"),
+    include_str!("shadow_rays_moving.wgsl")
+);
+const NO_HARDWARE: &str = "
+const HW: bool = false;
+var<private> hw_caustic_on: bool = false;
+var<private> hw_light_moving: f32 = -1.0;
+const GI_HW_VISIBILITY: bool = false;
+fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> { return vec3(-1.0); }
+fn hw_visible(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> bool { return true; }
+fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
+    return HwHit(-1.0, vec3(0.0), vec3(0.0), vec3(1.0), false, -1.0);
+}
+fn hw_reflect(p: vec2<i32>) -> vec4<f32> { return vec4(0.0); }
+fn hw_refract(p: vec2<i32>) -> vec4<f32> { return vec4(0.0); }
+fn hw_moving_shadow(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> bool { return false; }
+";
+
+/// The lava's look (terrain.wgsl `lava_look`): the very text the terrain's shader draws lava with,
+/// so a ray that meets lava (through water or glass, in a mirror: shadow_rays_hw.wgsl
+/// `hw_surface`) sees it as drawn, not as the atlas's sprite.
+fn lava_look() -> &'static str {
+    super::wgsl_prefix::section(
+        super::wgsl_prefix::TERRAIN,
+        "fn lava_hash",
+        "// End of the lava's look.",
+    )
+}
+
+/// The pass's shader, with the hybrid's hardware rays or without (`ShadowRays::new`).
+pub fn source(hardware: bool, split: u32) -> String {
+    if hardware {
+        let hardware = if force_opaque() {
+            with_forced_opaque(HARDWARE)
+        } else {
+            HARDWARE.to_string()
+        };
+        // The wind's functions, terrain.wgsl's (`hw_swayed_texel`).
+        let wind = super::wgsl_prefix::section(
+            super::wgsl_prefix::TERRAIN,
+            "// WIND-BEGIN",
+            "// WIND-END",
+        );
+        format!(
+            "enable wgpu_ray_query;
+const SPRITE_SPLIT: u32 = {split}u;
+             const FIRST_HIT: u32 = {}u;
+const GI_HW_VISIBILITY: bool = {};
+             const SHARE_CHECK: bool = {};
+const GI_TURN_BITS: u32 = {}u;
+{}{hardware}{}{wind}",
+            first_hit_flag(),
+            !gi_dda(),
+            share_check(),
+            gi_turn_bits(),
+            include_str!("shadow_rays.wgsl"),
+            lava_look()
+        )
+    } else {
+        format!(
+            "const SHARE_CHECK: bool = {};\nconst GI_TURN_BITS: u32 = {}u;\n{}{NO_HARDWARE}",
+            share_check(),
+            gi_turn_bits(),
+            include_str!("shadow_rays.wgsl")
+        )
+    }
+}
+
+/// `HORIZON_RT_FORCE_OPAQUE=1`: every hardware ray is traced with the force-opaque ray flag, so
+/// no candidate hit comes back to the shader for its alpha test (cutouts shadow as squares, glass
+/// and water stop the light). A measurement switch, not a look: the trace kernel's time with it is
+/// the floor the any-hit round trips can be brought down to (opaque geometries, opacity micromaps).
+pub fn force_opaque() -> bool {
+    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| std::env::var("HORIZON_RT_FORCE_OPAQUE").is_ok_and(|v| v == "1"))
+}
+
+/// `text`'s ray queries with the force-opaque ray flag (`0x1`) in place of none (`0x0`).
+pub fn with_forced_opaque(text: &str) -> String {
+    text.replace("RayDesc(0x0u", "RayDesc(0x1u")
+}
+
+/// The ray flag the hardware shadow rays take (`FIRST_HIT` in shadow_rays_hw.wgsl and
+/// froxels_hw.wgsl): terminate on the first hit (`0x4`), so the first opaque triangle a shadow ray
+/// meets ends its search rather than the nearest one being looked for. `HORIZON_RT_FIRST_HIT=0`
+/// traces them as before (`0x0`).
+pub fn first_hit_flag() -> u32 {
+    static FLAG: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| {
+        if std::env::var("HORIZON_RT_FIRST_HIT").is_ok_and(|v| v == "0") {
+            0
+        } else {
+            4
+        }
+    })
+}
+
+/// `HORIZON_RT_GI_DDA=1`: ReSTIR GI's visibility ray toward a reused sample goes through the voxel
+/// grid, as before, rather than against the hardware's triangles (shadow_rays_hw.wgsl
+/// `hw_visible`) that the sample was found on.
+fn gi_dda() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_GI_DDA").is_ok_and(|v| v == "1"))
+}
+
+/// RT lighting's radiance cache's cells (a power of two).
+const CACHE_CELLS: usize = 1 << 20;
+
+/// The denoiser's passes' tap spacings (denoise.wgsl): 3x3 taps each, reaching 31 pixels as four
+/// passes of 5x5 did, for 45 taps a pixel rather than 100.
+const DENOISE_STEPS: [i32; 5] = [1, 2, 4, 8, 16];
+
+/// Whether the denoiser filters VR's periphery by its 4x4 blocks of texels sharing a ray, from
+/// the passes of 4 on (denoise.wgsl `span`): on unless `HORIZON_RT_DENOISE_FOVEA=0`. The screen's
+/// rays are sharp all over, untouched either way.
+fn denoise_fovea() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_DENOISE_FOVEA").map_or(true, |v| v != "0"))
+}
+
+/// Whether VR's second eye takes the first eye's denoised light where it takes its light
+/// (shadow_rays.wgsl `taken_out`, denoise.wgsl `taken`): the denoiser then filters only what the
+/// second eye traced itself. On unless `HORIZON_RT_SHARE_DENOISED=0`, which denoises the second eye
+/// whole again, its taken light as the first eye accumulated it.
+fn share_denoised() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_SHARE_DENOISED").map_or(true, |v| v != "0"))
+}
+
+/// Whether VR's second eye, where a block of its periphery takes the first eye's denoised light
+/// (`share_denoised`), takes each texel's from where the first eye shows that texel's own surface
+/// (shadow_rays.wgsl `first_texel_of`), and filters the texels the first eye doesn't show from its
+/// own light. On unless `HORIZON_RT_SHARE_CHECK=0`, which shifts the block's centre's texel onto
+/// all sixteen unchecked, as before (a block standing out of the first eye's view at the second
+/// eye's edge came out black).
+/// How many frames the bounced light (ReSTIR GI) takes turns over, as the bits of its tile
+/// pattern (shadow_rays.wgsl `GI_TURN_BITS`): `HORIZON_RT_GI_TURNS=8` traces each 8x8 tile one
+/// frame in eight (3, the default) instead of four (`HORIZON_RT_GI_TURNS=4`, 2).
+fn gi_turn_bits() -> u32 {
+    static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BITS.get_or_init(|| match std::env::var("HORIZON_RT_GI_TURNS").as_deref() {
+        Ok("4") => 2,
+        _ => 3,
+    })
+}
+fn share_check() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_SHARE_CHECK").map_or(true, |v| v != "0"))
+}
+
+/// The RTX 4090 build's pipeline passes for a view (`ShadowRays::run`'s `sun_pass`): given the
+/// encoder, the kernel's uniform and the mask's size, the sun pass's texture and the bounce pass's
+/// two, for those that ran.
+pub type PipelinePass<'a> = dyn FnMut(
+        &mut wgpu::CommandEncoder,
+        &wgpu::Buffer,
+        [u32; 2],
+        &PassReads<'_>,
+    ) -> (Option<wgpu::TextureView>, Option<[wgpu::TextureView; 2]>)
+    + 'a;
+
+/// What of the kernel's own the bounce pass reads (horizon-rtx `KernelReads`): the sky table, the
+/// view's last masks and reservoirs, the radiance cache.
+#[cfg_attr(not(feature = "rtx"), allow(dead_code))]
+pub struct PassReads<'a> {
+    pub sky: &'a wgpu::TextureView,
+    pub last_mask: &'a wgpu::TextureView,
+    pub last_light: &'a wgpu::TextureView,
+    pub last_direct: &'a wgpu::TextureView,
+    pub last_gi: [&'a wgpu::TextureView; 2],
+    pub cache: &'a wgpu::Buffer,
+}
+
+pub struct ShadowRays {
+    /// RT lighting's denoiser (denoise.wgsl): its pipeline and layout, a uniform a pass.
+    denoise: wgpu::ComputePipeline,
+    denoise_layout: wgpu::BindGroupLayout,
+    /// What `denoise` is made of, to make it again with another `SKIP` (`set_skip`).
+    denoise_shader: wgpu::ShaderModule,
+    denoise_pipeline_layout: wgpu::PipelineLayout,
+    denoise_params: [wgpu::Buffer; 5],
+    /// RT lighting's radiance cache (shadow_rays.wgsl `CacheCell`, radiance_cache.wgsl), shared by
+    /// every view, and its resolve's pipeline and group.
+    cache: wgpu::Buffer,
+    resolve: wgpu::ComputePipeline,
+    resolve_group: wgpu::BindGroup,
+    /// What `resolve` is made of, to make it again with another `SKIP` (`set_skip`).
+    resolve_shader: wgpu::ShaderModule,
+    resolve_pipeline_layout: wgpu::PipelineLayout,
+    /// Whether the pipeline traces hardware rays (`Hardware` is then bound).
+    hardware: bool,
+    layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::ComputePipeline,
+    sparse_pipeline: wgpu::ComputePipeline,
+    /// What `pipeline` and `sparse_pipeline` are made of, to make them again with another
+    /// `SKIP` (`set_skip`).
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    /// What the kernel leaves out (shadow_rays.wgsl `SKIP`).
+    skip: u32,
+    /// The sparse zone's rays (`cs_sparse`), one a 4x4 block of mask texels, for the largest
+    /// mask yet.
+    sparse: wgpu::Buffer,
+    uniform: wgpu::Buffer,
+    /// The Eye of Aldhani's field (`aldhani::Aldhani::field`), its meteors the rays light with.
+    aldhani: wgpu::Buffer,
+    /// The rain map (`rain::Rain::map`), where the puddles are.
+    rain: wgpu::Buffer,
+    views: Vec<ViewMasks>,
+    /// Passes run, for the rays' directions to change.
+    frame: u32,
+    /// The pass VR's first eye (view 1) ran in last (`frame` then): the second eye's, right after
+    /// it, takes its light where both see the surface (shadow_rays.wgsl `from_first`).
+    first_eye: Option<u32>,
+    /// The far field's stand-ins until it is built (`Rays::far` z 0).
+    no_far: [wgpu::TextureView; 3],
+    /// The sun pass's stand-in when it does not run (`sun_pass`, bound at 61).
+    no_sun_pass: wgpu::TextureView,
+    /// The bounce pass's stand-ins (`gi_pass_a`, `gi_pass_b`, bound at 62 and 63).
+    no_gi_pass: [wgpu::TextureView; 2],
+}
+
+/// `HORIZON_RT_SKIP`'s bit for white noise everywhere (shadow_rays.wgsl `blue2`): the kernel's own
+/// `SKIP`, and bit 4 of `rt.mode.w` for the RTX 4090 build's passes (horizon-rtx shaders/sun.rgen,
+/// gi.rgen), whose `SKIP` this is not.
+const WHITE_NOISE: u32 = 2_097_152;
+
+/// VR's second eye takes the first eye's light (`ShadowRays::run`); off, it traces its own
+/// (`horizon-ctl rt-skip 32`, to time it).
+pub static SHARE_EYES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The kernel's `entry` (`cs_shadow`, `cs_sparse`) leaving out what `skip` says
+/// (shadow_rays.wgsl `SKIP`), with `HORIZON_RT_DEBUG`'s view of the rays.
+fn kernel(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    entry: &str,
+    skip: u32,
+) -> wgpu::ComputePipeline {
+    let debug = std::env::var("HORIZON_RT_DEBUG")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v >= 3)
+        .map_or(0.0, f64::from);
+    let centre = f64::from(u8::from(
+        std::env::var("HORIZON_RT_SUN_CENTRE").is_ok_and(|v| v != "0"),
+    ));
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Ray-traced shadows"),
+        layout: Some(layout),
+        module: shader,
+        entry_point: Some(entry),
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &[
+                ("DEBUG", debug),
+                ("SKIP", f64::from(skip)),
+                ("SUN_CENTRE", centre),
+                ("EDGE_BAND", edge_band()),
+                ("HELD_LIGHT", held_light()),
+                ("HELD_REACH", held_reach()),
+            ],
+            ..Default::default()
+        },
+        cache: None,
+    })
+}
+
+/// The denoiser (denoise.wgsl `cs_denoise`) leaving out what `skip` says (denoise.wgsl `SKIP`:
+/// `DENOISE_EARLY_OUT`), with `HORIZON_RT_DEBUG=12`'s view of what VR's second eye took
+/// (`debug_share`).
+fn denoiser(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    skip: u32,
+) -> wgpu::ComputePipeline {
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("RT lighting's denoiser"),
+        layout: Some(layout),
+        module: shader,
+        entry_point: Some("cs_denoise"),
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &[
+                (
+                    "DEBUG",
+                    std::env::var("HORIZON_RT_DEBUG")
+                        .ok()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .map_or(0.0, f64::from),
+                ),
+                // `HORIZON_RT_SHARE_GUARD=1`, a trial (denoise.wgsl `takes`).
+                (
+                    "SHARE_GUARD",
+                    f64::from(u8::from(
+                        std::env::var("HORIZON_RT_SHARE_GUARD").is_ok_and(|v| v == "1"),
+                    )),
+                ),
+                ("SKIP", f64::from(skip & DENOISE_EARLY_OUT)),
+            ],
+            ..Default::default()
+        },
+        cache: None,
+    })
+}
+
+/// `HORIZON_RT_SKIP`'s bit for the denoiser's early-out (denoise.wgsl `SKIP_EARLY_OUT`): set, every
+/// pixel takes every pass as before it.
+const DENOISE_EARLY_OUT: u32 = 4_194_304;
+/// `HORIZON_RT_SKIP`'s bit for closed rooms as before (shadow_rays.wgsl `SKIP_INTERIOR`).
+const SKIP_INTERIOR: u32 = 134_217_728;
+/// `HORIZON_RT_SKIP`'s bit for the bounced light as before (radiance_cache.wgsl and
+/// shadow_rays.wgsl `SKIP_GI`: the cache's cells averaging up to 1000 frames, the history's
+/// darkening on noise; gfx.rs: the exposure's top by day the open air's in a room).
+const SKIP_GI: u32 = 1_073_741_824;
+
+/// The radiance cache's resolve (radiance_cache.wgsl `cs_resolve`) as `skip` says (its `SKIP`:
+/// `SKIP_GI`).
+fn resolver(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    skip: u32,
+) -> wgpu::ComputePipeline {
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("RT lighting's radiance cache"),
+        layout: Some(layout),
+        module: shader,
+        entry_point: Some("cs_resolve"),
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &[("SKIP", f64::from(skip & SKIP_GI))],
+            ..Default::default()
+        },
+        cache: None,
+    })
+}
+
+impl ShadowRays {
+    /// Makes the kernel again leaving out what `skip` says (shadow_rays.wgsl `SKIP`: 1 the sun's
+    /// ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 16 the bounced light's turns; 32 VR's second
+    /// eye's own light, `SHARE_EYES`; 64 the far field, 128 the translucent tint, 32768 a dark history
+    /// left to climb by itself, 8388608 the moving casters' own second ray toward the sun instead
+    /// of the sun's ray telling them, shadow_rays_moving.wgsl; 4194304 the denoiser's early-out on
+    /// converged pixels, denoise.wgsl `SKIP`, which then filters every pixel through every pass as
+    /// before; 2097152 white noise for every sample, not `blue2`'s blue noise: `WHITE_NOISE`;
+    /// 134217728 closed rooms as before, `SKIP_INTERIOR`; 1073741824 the bounced light as before,
+    /// `SKIP_GI`), in
+    /// a running game, to time each part alone (`horizon-ctl rt-skip`); 0 traces it all again.
+    pub fn set_skip(&mut self, device: &wgpu::Device, skip: u32) {
+        SHARE_EYES.store(skip & 32 == 0, std::sync::atomic::Ordering::Relaxed);
+        let skip = skip & !32;
+        if skip == self.skip {
+            return;
+        }
+        if (skip ^ self.skip) & DENOISE_EARLY_OUT != 0 {
+            self.denoise = denoiser(
+                device,
+                &self.denoise_pipeline_layout,
+                &self.denoise_shader,
+                skip,
+            );
+        }
+        if (skip ^ self.skip) & SKIP_GI != 0 {
+            self.resolve = resolver(
+                device,
+                &self.resolve_pipeline_layout,
+                &self.resolve_shader,
+                skip,
+            );
+        }
+        self.skip = skip;
+        self.pipeline = kernel(
+            device,
+            &self.pipeline_layout,
+            &self.shader,
+            "cs_shadow",
+            skip,
+        );
+        self.sparse_pipeline = kernel(
+            device,
+            &self.pipeline_layout,
+            &self.shader,
+            "cs_sparse",
+            skip,
+        );
+    }
+
+    /// The pass, with the hybrid's hardware rays when `hardware` (sprite layers past `split` go to
+    /// the next arrays, which the alpha test takes as opaque); `aldhani` the Eye of Aldhani's field.
+    pub fn new(
+        device: &wgpu::Device,
+        hardware: bool,
+        split: u32,
+        aldhani: &wgpu::Buffer,
+        rain: &wgpu::Buffer,
+    ) -> Self {
+        let source = source(hardware, split);
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Ray-traced shadows"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty,
+            count: None,
+        };
+        let grid = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Uint,
+            view_dimension: wgpu::TextureViewDimension::D3,
+            multisampled: false,
+        };
+        let output = wgpu::BindingType::StorageTexture {
+            access: wgpu::StorageTextureAccess::WriteOnly,
+            format: wgpu::TextureFormat::Rgba16Float,
+            view_dimension: wgpu::TextureViewDimension::D2,
+        };
+        let first_depth = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Depth,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
+        let last_uint = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Uint,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
+        let last = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
+        let cache_binding = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let storage = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Ray-traced shadows"),
+            entries: &[
+                entry(
+                    0,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                entry(
+                    1,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(2, grid),
+                entry(3, grid),
+                entry(4, grid),
+                entry(5, grid),
+                entry(6, output),
+                entry(7, storage),
+                entry(8, storage),
+                entry(9, output),
+                entry(
+                    10,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(11, last),
+                entry(12, last),
+                entry(13, grid),
+                entry(14, storage),
+                entry(18, output),
+                entry(19, last),
+                entry(20, last),
+                entry(21, output),
+                entry(22, last),
+                entry(
+                    24,
+                    wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba32Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                ),
+                entry(
+                    25,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(26, cache_binding),
+                entry(
+                    27,
+                    wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba32Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                ),
+                entry(
+                    28,
+                    wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba32Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                ),
+                entry(29, last),
+                entry(
+                    30,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(31, output),
+                entry(32, last),
+                entry(33, output),
+                entry(34, output),
+                entry(
+                    35,
+                    wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::R32Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                ),
+                entry(38, cache_binding),
+                entry(39, storage),
+                entry(47, cache_binding),
+                entry(48, storage),
+                entry(49, last),
+                entry(50, last),
+                entry(51, last),
+                entry(52, last),
+                entry(53, last),
+                entry(54, last_uint),
+                entry(55, last),
+                entry(56, last_uint),
+                entry(57, first_depth),
+                entry(64, last),
+                entry(58, last),
+                entry(59, last),
+                entry(60, last),
+                entry(61, last),
+                entry(62, last),
+                entry(63, last_uint),
+            ]
+            .into_iter()
+            .chain(
+                hardware
+                    .then(|| {
+                        [
+                            entry(
+                                15,
+                                wgpu::BindingType::AccelerationStructure {
+                                    vertex_return: false,
+                                },
+                            ),
+                            entry(16, storage),
+                            entry(23, storage),
+                            entry(36, storage),
+                            // The wind (`wind`): the shadows sway with the foliage.
+                            entry(65, storage),
+                            entry(
+                                17,
+                                wgpu::BindingType::Texture {
+                                    sample_type: wgpu::TextureSampleType::Float {
+                                        filterable: true,
+                                    },
+                                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                                    multisampled: false,
+                                },
+                            ),
+                            entry(
+                                37,
+                                wgpu::BindingType::Texture {
+                                    sample_type: wgpu::TextureSampleType::Float {
+                                        filterable: true,
+                                    },
+                                    view_dimension: wgpu::TextureViewDimension::D2,
+                                    multisampled: false,
+                                },
+                            ),
+                        ]
+                        .into_iter()
+                        .chain(
+                            super::hw_rays::ARENA_BINDINGS
+                                .iter()
+                                .map(|&binding| entry(binding, storage)),
+                        )
+                    })
+                    .into_iter()
+                    .flatten(),
+            )
+            .collect::<Vec<_>>(),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Ray-traced shadows"),
+            bind_group_layouts: &[Some(&layout)],
+            ..Default::default()
+        });
+        let skip = std::env::var("HORIZON_RT_SKIP")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(64); // Far field off by default: since main its shadows fall in 16-block squares.
+        let pipeline = kernel(device, &pipeline_layout, &shader, "cs_shadow", skip);
+        // The sparse zone's rays, a thread a block, before `pipeline`.
+        let sparse_pipeline = kernel(device, &pipeline_layout, &shader, "cs_sparse", skip);
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Ray-traced shadows"),
+            size: std::mem::size_of::<Uniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let denoise_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("RT lighting's denoiser"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("denoise.wgsl").into()),
+        });
+        let read = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
+        let denoise_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("RT lighting's denoiser"),
+            entries: &[
+                entry(
+                    0,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                entry(1, read),
+                entry(2, read),
+                entry(3, read),
+                entry(4, output),
+                entry(5, read),
+                entry(6, read),
+                // The rays' uniform, for where VR's periphery shares a ray a block.
+                entry(
+                    7,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                // VR's second eye: where it took the first eye's light, and that eye's denoised.
+                entry(
+                    8,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(9, read),
+            ],
+        });
+        let denoise_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("RT lighting's denoiser"),
+                bind_group_layouts: &[Some(&denoise_layout)],
+                ..Default::default()
+            });
+        let denoise = denoiser(device, &denoise_pipeline_layout, &denoise_shader, skip);
+        let denoise_params = std::array::from_fn(|i| {
+            use wgpu::util::DeviceExt;
+            let last = i32::from(i == DENOISE_STEPS.len() - 1);
+            let fovea = i32::from(denoise_fovea());
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("RT lighting's denoiser"),
+                contents: bytemuck::cast_slice(&[DENOISE_STEPS[i], last, fovea, 0]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        });
+        // RT lighting's radiance cache: 2^20 cells of 36 bytes, every light word starting as "none".
+        let cache = {
+            use wgpu::util::DeviceExt;
+            let mut cells = vec![0u32; CACHE_CELLS * 9];
+            for cell in cells.chunks_mut(9) {
+                cell[5..8].fill(u32::MAX);
+            }
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("RT lighting's radiance cache"),
+                contents: bytemuck::cast_slice(&cells),
+                usage: wgpu::BufferUsages::STORAGE,
+            })
+        };
+        let resolve_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("RT lighting's radiance cache"),
+            entries: &[entry(0, cache_binding)],
+        });
+        let resolve_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("RT lighting's radiance cache"),
+                bind_group_layouts: &[Some(&resolve_layout)],
+                ..Default::default()
+            });
+        let resolve_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("RT lighting's radiance cache"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("radiance_cache.wgsl").into()),
+        });
+        let resolve = resolver(device, &resolve_pipeline_layout, &resolve_shader, skip);
+        let resolve_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("RT lighting's radiance cache"),
+            layout: &resolve_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: cache.as_entire_binding(),
+            }],
+        });
+        Self {
+            cache,
+            resolve,
+            resolve_group,
+            resolve_shader,
+            resolve_pipeline_layout,
+            denoise,
+            denoise_layout,
+            denoise_shader,
+            denoise_pipeline_layout,
+            denoise_params,
+            hardware,
+            layout,
+            pipeline,
+            sparse_pipeline,
+            shader,
+            pipeline_layout,
+            skip,
+            sparse: Self::sparse_rays(device, 1),
+            uniform,
+            aldhani: aldhani.clone(),
+            rain: rain.clone(),
+            views: Vec::new(),
+            frame: 0,
+            first_eye: None,
+            no_far: [
+                wgpu::TextureFormat::Rg32Float,
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ]
+            .map(|format| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("No far field"),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            }),
+            no_gi_pass: [
+                wgpu::TextureFormat::Rgba32Float,
+                wgpu::TextureFormat::Rgba32Uint,
+            ]
+            .map(|format| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("No bounce pass"),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            }),
+            no_sun_pass: device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("No sun pass"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default()),
+        }
+    }
+
+    /// Whether `HORIZON_RT_SKIP` (as `set_skip` last made the kernel) keeps closed rooms as before
+    /// (shadow_rays.wgsl `SKIP_INTERIOR`), for the exposure's top indoors too (gfx.rs).
+    pub fn interior_skipped(&self) -> bool {
+        self.skip & SKIP_INTERIOR != 0
+    }
+
+    /// Whether `HORIZON_RT_SKIP` keeps the bounced light as before (`SKIP_GI`), for the exposure's
+    /// top by day too (gfx.rs).
+    pub fn gi_skipped(&self) -> bool {
+        self.skip & SKIP_GI != 0
+    }
+
+    /// The mask view `view` (0 the window, then the VR views) traced last.
+    pub fn history(&self, view: usize) -> Option<History<'_>> {
+        let v = self.views.iter().find(|v| v.view == view)?;
+        let (view_proj, camera) = v.last?;
+        Some(History {
+            mask: &v.masks[1 - v.next],
+            view_proj,
+            camera,
+        })
+    }
+
+    fn masks(&mut self, device: &wgpu::Device, view: usize, size: [u32; 2]) -> &mut ViewMasks {
+        let i = match self.views.iter().position(|v| v.view == view) {
+            Some(i) if self.views[i].size == size => i,
+            found => {
+                if let Some(i) = found {
+                    self.views.remove(i);
+                } else if self.views.len() == KEPT {
+                    self.views.remove(0);
+                }
+                let mask = || Self::mask(device, size);
+                self.views.push(ViewMasks {
+                    view,
+                    size,
+                    masks: [mask(), mask()],
+                    blocks: [mask(), mask()],
+                    direct: [mask(), mask()],
+                    sun: [mask(), mask()],
+                    reservoirs: [0, 1].map(|_| Self::reservoir(device, size)),
+                    gi: [0, 1].map(|_| {
+                        [
+                            Self::texture(device, size, wgpu::TextureFormat::Rgba32Float),
+                            Self::reservoir(device, size),
+                        ]
+                    }),
+                    scratch: mask(),
+                    fast: [mask(), mask()],
+                    reflection: mask(),
+                    refraction: mask(),
+                    light: [mask(), mask()],
+                    taken: Self::texture(device, size, wgpu::TextureFormat::R32Uint),
+                    next: 0,
+                    last: None,
+                    frame: 0,
+                });
+                self.views.len() - 1
+            }
+        };
+        &mut self.views[i]
+    }
+
+    /// Room for the sparse zone's rays (`cs_sparse`) in `bytes`.
+    fn sparse_rays(device: &wgpu::Device, bytes: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("RT lighting's sparse rays"),
+            size: bytes.max(SPARSE_RAY_BYTES),
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn reservoir(device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
+        Self::texture(device, size, wgpu::TextureFormat::Rgba32Uint)
+    }
+
+    fn texture(
+        device: &wgpu::Device,
+        size: [u32; 2],
+        format: wgpu::TextureFormat,
+    ) -> wgpu::TextureView {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("RT lighting's light reservoirs"),
+                size: wgpu::Extent3d {
+                    width: size[0].max(1),
+                    height: size[1].max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default())
+    }
+
+    fn mask(device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Ray-traced light mask"),
+                size: wgpu::Extent3d {
+                    width: size[0].max(1),
+                    height: size[1].max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default())
+    }
+
+    /// Traces view `view` (0 the window, then the VR views), whose depth is `depth` (`size`, seen
+    /// through `view_proj` from `camera`), as `foveation` says, and returns its mask and the light
+    /// sources' light and the sun through what tints it (RT lighting). `grid` is the voxel grid's views (`Voxels::views`), `lights`
+    /// its light sources and cells (`Voxels::light_buffers`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn run(
+        &mut self,
+        device: &wgpu::Device,
+        uploads: &mut Uploads,
+        encoder: &mut wgpu::CommandEncoder,
+        view: usize,
+        depth: &wgpu::TextureView,
+        size: [u32; 2],
+        view_proj: Mat4,
+        camera: DVec3,
+        rays: &Rays,
+        foveation: Foveation,
+        grid: [&wgpu::TextureView; 5],
+        lights: [&wgpu::Buffer; 3],
+        visibility: &wgpu::Buffer,
+        sky: &wgpu::TextureView,
+        far: Option<[&wgpu::TextureView; 3]>,
+        hardware: Option<Hardware<'_>>,
+        first_depth: Option<&wgpu::TextureView>,
+        // The translucent terrain's cover over `depth` (gfx.rs `draw_cover`): where water or glass
+        // lies in front, the only texels whose mirrors and refraction look for it.
+        cover: Option<&wgpu::TextureView>,
+        // The RTX 4090 build's ray tracing pipeline (horizon-rtx `sun`): which of its passes run
+        // (`rt.mode.w`'s bits: 1 the sun, 2 the bounce; 4, set here, `WHITE_NOISE`), and what
+        // records them for this view once the uniform is written, given the encoder, the uniform
+        // and the mask's size, giving the textures the kernel reads in place of its own rays.
+        sun_pass: Option<(u32, &mut PipelinePass<'_>)>,
+    ) -> [wgpu::TextureView; 5] {
+        let scale = foveation.scale;
+        let mask_size = size.map(|v| v.div_ceil(scale));
+        // VR's second eye right after the first, at its size, with the first eye's depth: the first
+        // eye's masks of this frame (written last, `1 - next`) and its view projection.
+        let first = (view == 2
+            && rays.lighting
+            && first_depth.is_some()
+            && self.first_eye == Some(self.frame)
+            && SHARE_EYES.load(std::sync::atomic::Ordering::Relaxed))
+        .then(|| {
+            self.views
+                .iter()
+                .find(|v| v.view == 1 && v.size == mask_size)
+        })
+        .flatten()
+        .and_then(|v| {
+            let i = 1 - v.next;
+            Some((
+                v.last?.0,
+                [
+                    v.masks[i].clone(),
+                    v.blocks[i].clone(),
+                    v.direct[i].clone(),
+                    v.sun[i].clone(),
+                    v.fast[i].clone(),
+                    v.reservoirs[i].clone(),
+                    v.gi[i][0].clone(),
+                    v.gi[i][1].clone(),
+                ],
+                v.light[i].clone(),
+            ))
+        });
+        // The first eye's denoised light, where the second eye takes it whole (`share_denoised`).
+        let first_light = first
+            .as_ref()
+            .filter(|_| share_denoised())
+            .map(|(_, _, light)| light.clone());
+        let masks = self.masks(device, view, mask_size);
+        let mask = masks.masks[masks.next].clone();
+        let blocks = masks.blocks[masks.next].clone();
+        let last_mask = masks.masks[1 - masks.next].clone();
+        let last_blocks = masks.blocks[1 - masks.next].clone();
+        let direct = masks.direct[masks.next].clone();
+        let last_direct = masks.direct[1 - masks.next].clone();
+        let sun = masks.sun[masks.next].clone();
+        let last_sun = masks.sun[1 - masks.next].clone();
+        let reservoirs = masks.reservoirs[masks.next].clone();
+        let last_reservoirs = masks.reservoirs[1 - masks.next].clone();
+        let gi = masks.gi[masks.next].clone();
+        let last_gi = masks.gi[1 - masks.next].clone();
+        let fast = masks.fast[masks.next].clone();
+        let last_fast = masks.fast[1 - masks.next].clone();
+        let reflection = masks.reflection.clone();
+        let refraction = masks.refraction.clone();
+        let scratch = masks.scratch.clone();
+        let light = masks.light[masks.next].clone();
+        let last_light = masks.light[1 - masks.next].clone();
+        let taken = masks.taken.clone();
+        let last = masks.last.replace((view_proj, camera));
+        masks.next = 1 - masks.next;
+        masks.frame = masks.frame.wrapping_add(1);
+        let view_frame = (masks.frame % 65536) as f32;
+        self.frame = self.frame.wrapping_add(1);
+        if view == 1 {
+            self.first_eye = Some(self.frame);
+        }
+        let uniform = Uniform {
+            inverse_view_proj: view_proj.inverse().to_cols_array_2d(),
+            light: rays.light,
+            camera: rays.camera,
+            fraction: rays.fraction,
+            grid: rays.grid,
+            size: [size[0] as f32, size[1] as f32, scale as f32, rays.ambient],
+            fovea: match foveation.gaze {
+                Some(([x, y, z], cos)) => [x, y, z, cos],
+                None => [0.0, 0.0, 0.0, -2.0],
+            },
+            mode: [
+                f32::from(u8::from(rays.lighting)),
+                f32::from(u8::from(rays.shadows)),
+                match (&first, &first_light) {
+                    (Some(_), Some(_)) => 2.0,
+                    (Some(_), None) => 1.0,
+                    (None, _) => 0.0,
+                },
+                (sun_pass.as_ref().map_or(0, |(bits, _)| *bits)
+                    | if self.skip & WHITE_NOISE != 0 { 4 } else { 0 }) as f32,
+            ],
+            prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
+            motion: match last {
+                Some((_, last_camera)) => {
+                    let m = (camera - last_camera).as_vec3();
+                    [m.x, m.y, m.z, 1.0]
+                }
+                None => [0.0; 4],
+            },
+            sun: rays.sun,
+            frame: [
+                (self.frame % 65536) as f32,
+                rays.glass,
+                view_frame,
+                f32::from(u8::from(cover.is_some())),
+            ],
+            sun_light: rays.sun_light,
+            water: rays.water,
+            hw_offset: rays.hw_offset,
+            held: [
+                rays.moving_count.min(MOVING_LIGHTS) as f32,
+                rays.aldhani[0],
+                rays.aldhani[1],
+                rays.ice,
+            ],
+            far: rays.far,
+            moving: rays.moving,
+            rain: rays.rain,
+            rain_sun: rays.rain_sun,
+            first_view_proj: first
+                .as_ref()
+                .map_or([[0.0; 4]; 4], |(m, _, _)| m.to_cols_array_2d()),
+            first_inverse_view_proj: first
+                .as_ref()
+                .map_or([[0.0; 4]; 4], |(m, _, _)| m.inverse().to_cols_array_2d()),
+            ambient_light: [rays.ambient_light, 0.0, 0.0, 0.0],
+        };
+        uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
+        // The sun pass, after the uniform it reads is written and before the kernel reads it.
+        let (sun_view, gi_views) = sun_pass.map_or((None, None), |(_, pass)| {
+            let reads = PassReads {
+                sky,
+                last_mask: &last_mask,
+                last_light: &last_light,
+                last_direct: &last_direct,
+                last_gi: [&last_gi[0], &last_gi[1]],
+                cache: &self.cache,
+            };
+            pass(encoder, &self.uniform, mask_size, &reads)
+        });
+        let view = |binding, view| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::TextureView(view),
+        };
+        // Without the hybrid's this frame (no section yet), a pipeline that traces hardware rays
+        // has nothing to bind: the pass waits.
+        if self.hardware && hardware.is_none() {
+            return [mask, blocks, sun, reflection, refraction];
+        }
+        let block_count = mask_size.map(|v| v.div_ceil(4));
+        let needed = u64::from(block_count[0] * block_count[1]) * SPARSE_RAY_BYTES;
+        if self.sparse.size() < needed {
+            self.sparse = Self::sparse_rays(device, needed);
+        }
+        // Without the first eye's, this view's own last masks stand in, unread.
+        let first_views = first.map(|(_, t, _)| t).unwrap_or_else(|| {
+            [
+                last_mask.clone(),
+                last_blocks.clone(),
+                last_direct.clone(),
+                last_sun.clone(),
+                last_fast.clone(),
+                last_reservoirs.clone(),
+                last_gi[0].clone(),
+                last_gi[1].clone(),
+            ]
+        });
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.uniform.as_entire_binding(),
+            },
+            view(1, depth),
+            view(57, first_depth.unwrap_or(depth)),
+            view(2, grid[0]),
+            view(3, grid[1]),
+            view(4, grid[2]),
+            view(5, grid[3]),
+            view(6, &mask),
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: lights[0].as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: lights[1].as_entire_binding(),
+            },
+            view(9, &blocks),
+            view(10, sky),
+            view(11, &last_mask),
+            view(12, &last_blocks),
+            view(13, grid[4]),
+            wgpu::BindGroupEntry {
+                binding: 14,
+                resource: lights[2].as_entire_binding(),
+            },
+            view(18, &direct),
+            view(19, &last_light),
+            view(20, &last_direct),
+            view(21, &sun),
+            view(22, &last_sun),
+            view(24, &reservoirs),
+            view(25, &last_reservoirs),
+            wgpu::BindGroupEntry {
+                binding: 26,
+                resource: self.cache.as_entire_binding(),
+            },
+            view(27, &gi[0]),
+            view(28, &gi[1]),
+            view(29, &last_gi[0]),
+            view(30, &last_gi[1]),
+            view(31, &fast),
+            view(32, &last_fast),
+            view(33, &reflection),
+            view(34, &refraction),
+            view(35, &taken),
+            // Unread without a cover (`frame.w` 0): the sun pass's stand-in.
+            view(64, cover.unwrap_or(&self.no_sun_pass)),
+            wgpu::BindGroupEntry {
+                binding: 38,
+                resource: visibility.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 39,
+                resource: self.aldhani.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 47,
+                resource: self.sparse.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 48,
+                resource: self.rain.as_entire_binding(),
+            },
+            view(58, far.map_or(&self.no_far[0], |f| f[0])),
+            view(59, far.map_or(&self.no_far[1], |f| f[1])),
+            view(60, far.map_or(&self.no_far[2], |f| f[2])),
+            view(61, sun_view.as_ref().unwrap_or(&self.no_sun_pass)),
+            view(62, gi_views.as_ref().map_or(&self.no_gi_pass[0], |v| &v[0])),
+            view(63, gi_views.as_ref().map_or(&self.no_gi_pass[1], |v| &v[1])),
+        ];
+        entries.extend(
+            (49..)
+                .zip(&first_views)
+                .map(|(binding, t)| view(binding, t)),
+        );
+        if let (true, Some(hw)) = (self.hardware, &hardware) {
+            entries.extend([
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: wgpu::BindingResource::AccelerationStructure(hw.tlas),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 16,
+                    resource: hw.arena[0].as_entire_binding(),
+                },
+                view(17, hw.sprites),
+                wgpu::BindGroupEntry {
+                    binding: 23,
+                    resource: hw.instances.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 36,
+                    resource: hw.dynamics.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 65,
+                    resource: hw.wind.as_entire_binding(),
+                },
+                view(37, hw.atlas),
+            ]);
+            entries.extend(
+                super::hw_rays::ARENA_BINDINGS
+                    .iter()
+                    .zip(&hw.arena[1..])
+                    .map(|(&binding, page)| wgpu::BindGroupEntry {
+                        binding,
+                        resource: page.as_entire_binding(),
+                    }),
+            );
+        }
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Ray-traced shadows"),
+            layout: &self.layout,
+            entries: &entries,
+        });
+        // Foveated, the sparse zone's rays first, a thread a block (shadow_rays.wgsl `cs_sparse`).
+        if foveation.gaze.is_some() {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("RT lighting's sparse rays"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.sparse_pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(block_count[0].div_ceil(8), block_count[1].div_ceil(8), 1);
+        }
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Ray-traced shadows"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.dispatch_workgroups(mask_size[0].div_ceil(8), mask_size[1].div_ceil(8), 1);
+        drop(pass);
+        // One kernel traces the sun, the direct lights, the bounces and the mirrors at once.
+        super::gpu_passes::stamp(encoder, "rays: trace (sun, DI, GI, PSR)");
+        if !rays.lighting {
+            return [mask, blocks, sun, reflection, refraction];
+        }
+        // The radiance cache: this pass's sums become its cells' light for the next views.
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("RT lighting's radiance cache"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.resolve);
+            pass.set_bind_group(0, &self.resolve_group, &[]);
+            pass.dispatch_workgroups((CACHE_CELLS as u32).div_ceil(64), 1, 1);
+        }
+        super::gpu_passes::stamp(encoder, "rays: radiance cache resolve");
+        // RT lighting's denoiser: the sky and bounced light from `blocks` to `light` by way of
+        // `scratch`, a pass a tap spacing, the direct light added by the last.
+        let passes = [
+            (&blocks, &light),
+            (&light, &scratch),
+            (&scratch, &light),
+            (&light, &scratch),
+            (&scratch, &light),
+        ];
+        for ((from, to), params) in passes.into_iter().zip(&self.denoise_params) {
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("RT lighting's denoiser"),
+                layout: &self.denoise_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: params.as_entire_binding(),
+                    },
+                    view(1, from),
+                    view(2, &mask),
+                    view(3, &direct),
+                    view(4, to),
+                    view(5, &blocks),
+                    view(6, &sun),
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: self.uniform.as_entire_binding(),
+                    },
+                    view(8, &taken),
+                    // Unread unless the second eye takes it (`mode.z` 2): this view's last light
+                    // stands in, which no pass writes.
+                    view(9, first_light.as_ref().unwrap_or(&last_light)),
+                ],
+            });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("RT lighting's denoiser"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.denoise);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(mask_size[0].div_ceil(8), mask_size[1].div_ceil(8), 1);
+            drop(pass);
+            super::gpu_passes::stamp(encoder, "rays: denoiser (5 passes)");
+        }
+        [mask, light, sun, reflection, refraction]
+    }
+}
+
+/// `HORIZON_RT_AMBIENT`: RT lighting's ambient light, on every face whatever reaches it
+/// (shadow_rays.wgsl `rt.ambient_light`), 0 to 1; 0.003 by default (very low: a floor under the
+/// traced light), 0 none. The RT Ambient Light option's default (`Graphics::rt_ambient`), which
+/// sets it in game.
+pub fn ambient() -> f64 {
+    std::env::var("HORIZON_RT_AMBIENT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .map_or(0.003, |v| v.clamp(0.0, 1.0))
+}
+/// `HORIZON_RT_HELD_LIGHT`: how bright RT lighting's moving lights are (a torch in the hand)
+/// against a placed light of their level (shadow_rays.wgsl `HELD_LIGHT`), 0 to 16; 2.5 by default
+/// (the light is at the eye, so what it lights faces it and looks flat: it wants more to read as
+/// a torch's), 1 as bright as a placed one.
+fn held_light() -> f64 {
+    std::env::var("HORIZON_RT_HELD_LIGHT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .map_or(2.5, |v| v.clamp(0.0, 16.0))
+}
+/// `HORIZON_RT_HELD_REACH`: how far a moving light of level 15 reaches, in blocks
+/// (shadow_rays.wgsl `HELD_REACH`): a placed light's 24 by default, 15 as before.
+fn held_reach() -> f64 {
+    std::env::var("HORIZON_RT_HELD_REACH")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .map_or(24.0, |v| v.clamp(1.0, 64.0))
+}
+/// `HORIZON_RT_EDGE_BAND`: the share of the voxel grid's reach (toward its edge) over which the
+/// traced rays fade into the far field and vanilla's light (shadow_rays.wgsl `EDGE_BAND`), 0.05
+/// to 0.9; 0.25 without it. A wider band softens where the near terrain's traced shadows and
+/// light give way to the distant terrain's.
+fn edge_band() -> f64 {
+    std::env::var("HORIZON_RT_EDGE_BAND")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| (0.05..=0.9).contains(v))
+        .unwrap_or(0.25)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_radiance_cache_cell_is_nine_words() {
+        // The buffer is made with nine words a cell (`CACHE_CELLS * 9`), as both shaders lay it out.
+        for source in [
+            include_str!("radiance_cache.wgsl"),
+            &super::source(false, 2048),
+            &super::source(true, 2048),
+        ] {
+            let module = naga::front::wgsl::parse_str(source).expect("the shader");
+            // Validated too, so a type error in the kernel shows here rather than on the GPU.
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .expect("a valid shader");
+            let mut layouter = naga::proc::Layouter::default();
+            layouter.update(module.to_ctx()).expect("its layout");
+            let (cell, _) = module
+                .types
+                .iter()
+                .find(|(_, t)| t.name.as_deref() == Some("CacheCell"))
+                .expect("the cache's cells");
+            assert_eq!(layouter[cell].size, 36);
+        }
+    }
+
+    #[test]
+    fn the_denoiser_reads_the_rays_uniform_as_it_is_laid_out() {
+        // denoise.wgsl's `Rt` is the uniform's start, as far as the fovea (`sharp_block`) and the
+        // mode (`taken`).
+        let source = include_str!("denoise.wgsl");
+        let module = naga::front::wgsl::parse_str(source).expect("the denoiser");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("the denoiser: {e:?}"));
+        let (_, rt) = module
+            .types
+            .iter()
+            .find(|(_, t)| t.name.as_deref() == Some("Rt"))
+            .expect("the rays' uniform");
+        let naga::TypeInner::Struct { members, .. } = &rt.inner else {
+            panic!("Rt is a struct");
+        };
+        let offsets: Vec<(String, u32)> = members
+            .iter()
+            .map(|m| (m.name.clone().unwrap_or_default(), m.offset))
+            .collect();
+        let expected = [
+            (
+                "inverse_view_proj",
+                std::mem::offset_of!(super::Uniform, inverse_view_proj),
+            ),
+            ("light", std::mem::offset_of!(super::Uniform, light)),
+            ("camera", std::mem::offset_of!(super::Uniform, camera)),
+            ("fraction", std::mem::offset_of!(super::Uniform, fraction)),
+            ("grid", std::mem::offset_of!(super::Uniform, grid)),
+            ("size", std::mem::offset_of!(super::Uniform, size)),
+            ("fovea", std::mem::offset_of!(super::Uniform, fovea)),
+            ("mode", std::mem::offset_of!(super::Uniform, mode)),
+        ]
+        .map(|(name, offset)| (name.to_string(), offset as u32));
+        assert_eq!(offsets, expected);
+    }
+
+    #[test]
+    fn the_denoiser_builds_with_and_without_its_early_out() {
+        // wgpu refuses a pipeline constant the shader lacks: `denoiser` sets these three, and the
+        // denoiser must translate with `HORIZON_RT_SKIP`'s bit (`DENOISE_EARLY_OUT`) set or not.
+        let source = include_str!("denoise.wgsl");
+        let module = naga::front::wgsl::parse_str(source).expect("the denoiser");
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("a valid denoiser");
+        for skip in [0, super::DENOISE_EARLY_OUT, u32::MAX] {
+            let mut constants = naga::back::PipelineConstants::default();
+            constants.insert("DEBUG".to_string(), 0.0);
+            constants.insert("SHARE_GUARD".to_string(), 0.0);
+            constants.insert(
+                "SKIP".to_string(),
+                f64::from(skip & super::DENOISE_EARLY_OUT),
+            );
+            let (m, i) = naga::back::pipeline_constants::process_overrides(
+                &module,
+                &info,
+                Some((naga::ShaderStage::Compute, "cs_denoise")),
+                &constants,
+            )
+            .unwrap_or_else(|e| panic!("the denoiser's constants, SKIP {skip}: {e}"));
+            naga::back::spv::write_vec(
+                &m,
+                &i,
+                &naga::back::spv::Options::default(),
+                Some(&naga::back::spv::PipelineOptions {
+                    shader_stage: naga::ShaderStage::Compute,
+                    entry_point: "cs_denoise".to_string(),
+                }),
+            )
+            .unwrap_or_else(|e| panic!("the denoiser in SPIR-V, SKIP {skip}: {e}"));
+        }
+    }
+
+    #[test]
+    fn the_forced_opaque_flag_reaches_every_hardware_ray() {
+        // Every ray query of the hybrid and of the froxels spells its flags from `RayDesc(0x0u`
+        // (a shadow ray's `| FIRST_HIT` after it), so that `HORIZON_RT_FORCE_OPAQUE` turns them all.
+        for text in [super::HARDWARE, include_str!("froxels_hw.wgsl")] {
+            let rays = text.matches("RayDesc(").count();
+            assert!(rays > 0);
+            assert_eq!(text.matches("RayDesc(0x0u").count(), rays);
+            let forced = super::with_forced_opaque(text);
+            assert_eq!(forced.matches("RayDesc(0x1u").count(), rays);
+            assert!(!forced.contains("RayDesc(0x0u"));
+        }
+        // The shadow rays (the sun's, the light sources', the froxels', GI's visibility) end on
+        // their first hit; the rays that look for what they meet don't.
+        for text in [super::HARDWARE, include_str!("froxels_hw.wgsl")] {
+            assert!(text.contains("RayDesc(0x0u | FIRST_HIT"));
+        }
+    }
+
+    #[test]
+    fn the_shaders_map_colours_are_the_blocks() {
+        let source = include_str!("shadow_rays.wgsl");
+        let body = source
+            .split("const MAP_COLORS: array<u32, 62> = array<u32, 62>(")
+            .nth(1)
+            .and_then(|b| b.split(");").next())
+            .expect("the palette");
+        let colours: Vec<u32> = body
+            .split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.trim_end_matches('u').parse().expect("a colour"))
+            .collect();
+        assert_eq!(colours, crate::blocks::MAP_COLORS);
+    }
+}

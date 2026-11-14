@@ -363,8 +363,14 @@ impl Game<'_> {
         }
         let in_water =
             fog_type(&self.world, self.res.facts(), eye, &self.near_plane()) == FogType::Water;
-        let water =
-            (in_water && !spectator).then(|| (self.eye_brightness(eye), self.yaw, self.pitch));
+        // RT lighting draws the water around the eye as a medium (the froxels' absorption and
+        // in-scatter, gfx/froxels.rs): vanilla's flat overlay texture in front of the camera goes
+        // (`HORIZON_RT_SKIP=16384` keeps it, to compare).
+        let rt_medium = self.settings.horizon.rt_lighting
+            && self.settings.horizon.linear_light
+            && !rt_skip_bit(16384);
+        let water = (in_water && !spectator && !rt_medium)
+            .then(|| (self.eye_brightness(eye), self.yaw, self.pitch));
         // Hud.extractCameraOverlays; the spyglass scope (and its easing) is
         // drawn on the HUD by draw_spyglass.
         let fx = &self.screen_fx;
@@ -584,8 +590,9 @@ impl Game<'_> {
             }
             animate_tick(self.res.animate(), &mut self.particles, &ctx, block);
             laps.lap("tp_animate");
-            // The Horizon Weather option off means no rain visuals or sounds at all.
-            if rain > 0.0 && self.settings.horizon.weather {
+            // The Horizon Weather option off means no rain visuals or sounds at all; physical rain
+            // makes its own splashes (game/rain.rs).
+            if rain > 0.0 && self.settings.horizon.weather && !self.physical_rain() {
                 // ClientLevel.tickWeatherEffects: rain splashes within the weather
                 // radius, and the rain sound.
                 let mut random = LegacyRandom::new(self.world.game_time.wrapping_mul(312_987_231));
@@ -776,6 +783,19 @@ impl Game<'_> {
         }
     }
 }
+
+/// Whether `HORIZON_RT_SKIP` (gfx/shadow_rays.wgsl `SKIP`) has `bit` set.
+fn rt_skip_bit(bit: u32) -> bool {
+    static SKIP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *SKIP.get_or_init(|| {
+        std::env::var("HORIZON_RT_SKIP")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0)
+    }) & bit
+        != 0
+}
+
 impl Game<'_> {
     /// What the packs' Polytone animation modes read this tick (wiki "Variant Textures"): the
     /// time of day, the weather, and for expressions the packs' Polytone frame, or the time and

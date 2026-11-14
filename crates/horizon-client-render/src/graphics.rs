@@ -1,7 +1,8 @@
 //! Horizon's own graphics settings, beyond vanilla's options: kept in
 //! `horizon-graphics.txt` next to `options.txt` so that file stays exactly
-//! vanilla's. Every default reproduces vanilla's rendering; only choices the
-//! player makes here depart from it.
+//! vanilla's. Every default reproduces vanilla's rendering, but the Sun Path
+//! Tilt (`sun_path_tilt`) and the Earth's curvature on the distant terrain
+//! (`earth_curvature`); only choices the player makes here depart from it.
 use std::{fs, path::Path};
 
 pub const FILE: &str = "horizon-graphics.txt";
@@ -757,10 +758,66 @@ pub fn lod_distance_capped(distance: u32, info: &wgpu::AdapterInfo) -> u32 {
         distance
     }
 }
+/// RT lighting's clouds' reach on Auto when the far terrain ends nearer, in blocks.
+pub const AUTO_CLOUD_DISTANCE: f32 = 40_000.0;
+/// The farthest RT Cloud Distance, in chunks: the far terrain's with the Earth's curvature
+/// (115 km; cumulus at 800 blocks sink under the horizon about there).
+pub const MAX_CLOUD_DISTANCE: u32 = 7168;
+/// The RT Ambient Light option's top, in ten thousandths (`Graphics::rt_ambient_light`): 0.05.
+pub const MAX_RT_AMBIENT_LIGHT: u32 = 500;
+/// The God Rays option's top, in percent (`Graphics::god_rays`).
+pub const MAX_GOD_RAYS: u32 = 200;
+
+/// RT Ambient Light's default: `HORIZON_RT_AMBIENT` (horizon-env.txt can set it) in ten
+/// thousandths, else 0.003's 30.
+fn default_rt_ambient_light() -> u32 {
+    ((crate::gfx::rt_ambient_default() * 10_000.0).round() as u32).min(MAX_RT_AMBIENT_LIGHT)
+}
+
+impl Graphics {
+    /// RT Ambient Light as the light it adds (`Renderer::rt_ambient_light`).
+    pub fn rt_ambient(&self) -> f32 {
+        self.rt_ambient_light as f32 / 10_000.0
+    }
+}
 impl Graphics {
     /// `lod_distance` as far terrain uses it on this adapter.
     pub fn lod_distance_on(&self, info: &wgpu::AdapterInfo) -> u32 {
-        lod_distance_capped(self.lod_distance, info)
+        lod_distance_capped(self.lod_distance.min(self.lod_distance_max()), info)
+    }
+    /// How far RT lighting's volumetric clouds reach, in blocks: the RT Cloud Distance picked,
+    /// or on Auto the farther of 40 km and the far terrain, at most `MAX_CLOUD_DISTANCE` chunks.
+    pub fn cloud_distance_blocks(&self, info: &wgpu::AdapterInfo) -> f32 {
+        let chunks = match self.cloud_distance {
+            0 => self.lod_distance_on(info),
+            chunks => chunks,
+        };
+        let blocks = chunks.min(MAX_CLOUD_DISTANCE) as f32 * 16.0;
+        if self.cloud_distance == 0 {
+            blocks.max(AUTO_CLOUD_DISTANCE)
+        } else {
+            blocks
+        }
+    }
+    /// How far the LOD Distance slider goes: no farther than the curved
+    /// horizon while Earth Curvature is on (`lod::HORIZON_MAX_CHUNKS`), the
+    /// whole world otherwise.
+    pub fn lod_distance_max(&self) -> u32 {
+        if self.earth_curvature {
+            crate::lod::HORIZON_MAX_CHUNKS
+        } else {
+            crate::lod::MAX_CHUNKS
+        }
+    }
+    /// Far terrain's distance `distance` for an eye at `eye_y` with the loaded
+    /// chunks flat to `flat_radius` blocks: Horizon Culling stops it where the
+    /// tallest terrain sinks under the curved horizon (`lod::horizon_chunks`).
+    pub fn horizon_culled(&self, distance: u32, eye_y: f64, flat_radius: f64) -> u32 {
+        if self.earth_curvature && self.horizon_culling {
+            distance.min(crate::lod::horizon_chunks(eye_y, flat_radius))
+        } else {
+            distance
+        }
     }
     /// Whether the selected packs leave vanilla's block models in place.
     /// Horizon's occlusion assumptions (entity and leaf culling) hold only
@@ -803,11 +860,18 @@ impl Graphics {
         }
     }
 }
+/// `Graphics::aerial_perspective`'s default.
+pub const DEFAULT_AERIAL_PERSPECTIVE: u32 = 1;
+/// `Graphics::sun_path_tilt`'s default, in degrees.
+pub const DEFAULT_SUN_PATH_TILT: i32 = 40;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Graphics {
     pub preset: Preset,
     /// Distant surface terrain range, in chunks; 0 disables LODs.
     pub lod_distance: u32,
+    /// How far RT lighting's volumetric clouds reach, in chunks; 0 Auto
+    /// (`cloud_distance_blocks`). Vanilla's clouds keep Cloud Distance (`cloudRange`).
+    pub cloud_distance: u32,
     /// How finely far terrain is drawn; Full unless the player picks Reduced.
     pub far_detail: FarDetail,
     /// Far terrain from servers' BlueMap web maps; no server has one unless
@@ -847,14 +911,26 @@ pub struct Graphics {
     pub cache_banners: bool,
     /// Cache copper-golem statue models.
     pub cache_copper_golem_statues: bool,
-    /// Meshed sections uploaded per frame; 0 uploads all that are ready.
+    /// Meshed sections uploaded per frame at most, nearest the camera first;
+    /// 0 is no count limit. Whatever it is, a frame stops uploading after
+    /// `streaming::uploads::time_budget` (2 ms, up to 8 ms after a frame that
+    /// waited on the GPU) except for the sections around the camera, so the
+    /// rest wait for later frames.
     pub chunk_updates: u32,
-    /// Section mesh bytes uploaded per frame, in KiB; 0 is unlimited.
+    /// Section mesh bytes uploaded per frame, in KiB (one section always
+    /// goes); 0 is no byte limit, the time ceiling above still holds.
     pub upload_budget_kib: u32,
     /// The block textures' video memory (their top mip level), in MiB; 0 leaves it to
     /// Horizon (`sprites::DEFAULT_TEXTURE_BUDGET`). Applies when resources next load.
     pub texture_budget_mib: u32,
     pub sky: bool,
+    /// How far the sun's and moon's path leans toward the south, in degrees (-60..=60, steps of
+    /// 5; 0 is vanilla's path through the zenith). Rendering only (`celestial`): the time of
+    /// day and everything that reads it are untouched. 40 by default, the `sunPathRotation`
+    /// most shader packs ship (-40 in their sign): the noon sun stands 50° high, about the
+    /// equinox sun at the latitudes of Europe and the northern US, so shadows fall to the
+    /// north, a little shorter than what casts them.
+    pub sun_path_tilt: i32,
     pub fog: bool,
     pub weather: bool,
     pub animated_textures: bool,
@@ -878,6 +954,77 @@ pub struct Graphics {
     pub target_fps: u32,
     /// FXAA over the world.
     pub fxaa: bool,
+    /// Relief from LabPBR resource packs' normal maps (parallax and their ambient occlusion,
+    /// `gfx/parallax.rs`). Off by default: it changes vanilla's look.
+    pub parallax: bool,
+    /// Linear Light (`gfx/tonemap.rs`): the world drawn in linear light into a float scene,
+    /// light sources above paper white, tone mapped to the screen. The base PBR and ray tracing
+    /// work in (docs/raytracing.md). Off by default: vanilla blends in gamma space.
+    pub linear_light: bool,
+    /// Ray-traced sun and moon shadows on solid terrain (`gfx/voxels.rs`), within 8 chunks.
+    /// Off by default: vanilla has no shadows.
+    pub ray_traced_shadows: bool,
+    /// Ray-traced ambient occlusion on solid terrain (`gfx/shadow_rays.rs`), within 8 chunks, over
+    /// vanilla's smooth lighting. Off by default.
+    pub ray_traced_ao: bool,
+    /// RT lighting (`gfx/shadow_rays.rs`): the terrain within 8 chunks lit by the rays alone (the
+    /// sun with its shadows, the sky and block light with the AO) instead of vanilla's shading.
+    /// With Linear Light; off by default.
+    pub rt_lighting: bool,
+    /// RT Ray Density: the screen's pixels a ray stands for on each side. 1 a ray a pixel; 2 one
+    /// for 2x2 pixels, the trace kernel and the denoiser a quarter, the terrain reading the masks
+    /// through a depth-aware upsampling (edges and shadows hold, the water's refraction a little
+    /// softer: docs/raytracing.md); 0 by the screen's size (a ray a pixel up to 3440x1440, 2x2
+    /// past it). The Performance and Balanced presets take 2. `horizon-ctl rt-scale` sets the
+    /// same in a running game until the options are applied again.
+    pub rt_rays: u32,
+    /// RT lighting's sun, as many times its real size across (1..=20; 1 the real 0.53 degrees):
+    /// softer shadows, a bigger disc, the same light.
+    pub sun_size: u32,
+    /// RT lighting's moon, as many times its real size across (1..=20; 1 the real 0.52 degrees,
+    /// 2 by default: as it looks to the eye near the horizon): its disc, and its shadows' penumbra.
+    pub moon_size: u32,
+    /// RT Ambient Light: RT lighting's light on every face, whatever reaches it, in ten
+    /// thousandths of a torch's on a wall beside it (0..=`MAX_RT_AMBIENT_LIGHT`; shadow_rays.wgsl
+    /// `rt.ambient_light`): a floor so that a cave is not pitch black. Its default is
+    /// `HORIZON_RT_AMBIENT`'s, else 30 (0.003).
+    pub rt_ambient_light: u32,
+    /// God Rays: RT lighting's volumetric air (the froxels: the sun's shafts and the haze they
+    /// leave), in percent of its density; 0 none, 100 by default. The water keeps its own.
+    pub god_rays: u32,
+    /// God Rays Quality: the froxels' grid and their per-pixel march (gfx/froxels.rs
+    /// `quality_grid`), 0 Low, 1 Medium, 2 High (the grid as it was, the default), 3 Ultra.
+    pub god_rays_quality: u32,
+    /// RT lighting's night vision: a dim scene fades to the eye's rods' cool grey (the Purkinje
+    /// shift, gfx/tonemap.wgsl `night_vision`). On by default.
+    pub night_vision: bool,
+    /// RT lighting's shooting stars (gfx/sky_stars.rs `meteors`): 0 none, 1 a few a night (the
+    /// default), 2 one every couple of seconds.
+    pub shooting_stars: u32,
+    /// RT lighting's aerial perspective: how many times denser than real air the air between
+    /// the eye and distant terrain is (0 none, 1 real, up to 64): far blocks fade into the
+    /// horizon's blue and lose their contrast. Real air by default: with the LOD terrain's
+    /// thousand chunks (16 km) it shows as it does on real landscapes; denser air brings it
+    /// nearer for short view distances.
+    pub aerial_perspective: u32,
+    /// The Earth's curvature (gfx.rs `Renderer::earth_curvature`): the distant terrain beyond the
+    /// loaded chunks, the clouds and the sea's horizon drawn on an Earth of its real radius, so
+    /// far islands sink behind the sea (21 m at 16 km). Drawn only: the world stays flat for the
+    /// game. On by default: vanilla has no distant terrain to bend.
+    pub earth_curvature: bool,
+    /// Horizon Culling (`lod::horizon_chunks`): with Earth Curvature on, far terrain is planned
+    /// only as far as the tallest terrain can still stand over the horizon from the eye's
+    /// height (62 km from the shore, 114 km from the build limit); past it every tile is
+    /// under the sea's horizon and costs work for nothing. On by default: nothing visible
+    /// changes.
+    pub horizon_culling: bool,
+    /// RT lighting's natural fogs (`gfx/natural_fog.rs`): a morning's valley fog in the hollows
+    /// and steam fog over cold water. 0 off, 1 light, 2 normal (the default).
+    pub natural_fog: u32,
+    /// Continuous water and lava surfaces (`mesher/fluid_surface.rs`): shared corner
+    /// heights, smooth light and shading, world-anchored textures. Off by default: it
+    /// changes vanilla's look.
+    pub smooth_fluids: bool,
     /// TAA over the world (FXAA is off while it is on).
     pub taa: bool,
     /// TAA upscaling; anything but `Native` comes with `taa` on.
@@ -942,6 +1089,7 @@ impl Default for Graphics {
         Self {
             preset: Preset::Custom,
             lod_distance: 0,
+            cloud_distance: 0,
             far_detail: FarDetail::Full,
             blue_map: crate::bluemap::Settings::default(),
             cave_culling: true,
@@ -963,6 +1111,7 @@ impl Default for Graphics {
             upload_budget_kib: 0,
             texture_budget_mib: 0,
             sky: true,
+            sun_path_tilt: DEFAULT_SUN_PATH_TILT,
             fog: true,
             weather: true,
             animated_textures: true,
@@ -976,6 +1125,24 @@ impl Default for Graphics {
             dynamic_resolution: false,
             target_fps: 60,
             fxaa: false,
+            parallax: false,
+            linear_light: false,
+            ray_traced_shadows: false,
+            ray_traced_ao: false,
+            rt_lighting: false,
+            rt_rays: 0,
+            sun_size: 1,
+            moon_size: 2,
+            rt_ambient_light: default_rt_ambient_light(),
+            god_rays: 100,
+            god_rays_quality: 2,
+            night_vision: true,
+            shooting_stars: 1,
+            aerial_perspective: DEFAULT_AERIAL_PERSPECTIVE,
+            earth_curvature: true,
+            horizon_culling: true,
+            natural_fog: 2,
+            smooth_fluids: false,
             taa: false,
             upscaling: Upscaling::Native,
             upscaling_sharpness: 85,
@@ -1077,6 +1244,9 @@ impl Graphics {
                 "lodDistance" => {
                     g.lod_distance = number(g.lod_distance).min(crate::lod::MAX_CHUNKS)
                 }
+                "cloudDistance" => {
+                    g.cloud_distance = number(g.cloud_distance).min(MAX_CLOUD_DISTANCE)
+                }
                 "farDetail" => g.far_detail = FarDetail::parse(value),
                 "blueMapRadius" => {
                     if let Some(radius) = crate::bluemap::Settings::parse_radius(value) {
@@ -1123,6 +1293,9 @@ impl Graphics {
                     g.texture_budget_mib = number(g.texture_budget_mib).min(16384);
                 }
                 "sky" => g.sky = flag(g.sky),
+                "sunPathTilt" => {
+                    g.sun_path_tilt = value.parse().unwrap_or(g.sun_path_tilt).clamp(-60, 60)
+                }
                 "fog" => g.fog = flag(g.fog),
                 "weather" => g.weather = flag(g.weather),
                 "animatedTextures" => g.animated_textures = flag(g.animated_textures),
@@ -1140,6 +1313,26 @@ impl Graphics {
                 "dynamicResolution" => g.dynamic_resolution = flag(g.dynamic_resolution),
                 "targetFps" => g.target_fps = number(g.target_fps).clamp(30, 240),
                 "fxaa" => g.fxaa = flag(g.fxaa),
+                "parallax" => g.parallax = flag(g.parallax),
+                "linearLight" => g.linear_light = flag(g.linear_light),
+                "rayTracedShadows" => g.ray_traced_shadows = flag(g.ray_traced_shadows),
+                "rayTracedAo" => g.ray_traced_ao = flag(g.ray_traced_ao),
+                "rtLighting" => g.rt_lighting = flag(g.rt_lighting),
+                "rtRays" => g.rt_rays = number(g.rt_rays).min(2),
+                "sunSize" => g.sun_size = number(g.sun_size).clamp(1, 20),
+                "rtAmbientLight" => {
+                    g.rt_ambient_light = number(g.rt_ambient_light).min(MAX_RT_AMBIENT_LIGHT)
+                }
+                "godRays" => g.god_rays = number(g.god_rays).min(MAX_GOD_RAYS),
+                "godRaysQuality" => g.god_rays_quality = number(g.god_rays_quality).min(3),
+                "moonSize" => g.moon_size = number(g.moon_size).clamp(1, 20),
+                "nightVision" => g.night_vision = flag(g.night_vision),
+                "shootingStars" => g.shooting_stars = number(g.shooting_stars).min(2),
+                "aerialPerspective" => g.aerial_perspective = number(g.aerial_perspective).min(64),
+                "earthCurvature" => g.earth_curvature = flag(g.earth_curvature),
+                "horizonCulling" => g.horizon_culling = flag(g.horizon_culling),
+                "naturalFog" => g.natural_fog = number(g.natural_fog).min(2),
+                "smoothFluids" => g.smooth_fluids = flag(g.smooth_fluids),
                 "taa" => g.taa = flag(g.taa),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
                 "upscalingSharpness" => {
@@ -1193,9 +1386,10 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nparallelTick:{}\n",
+            "preset:{}\nlodDistance:{}\ncloudDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nrtRays:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nhorizonCulling:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nrtAmbientLight:{}\ngodRays:{}\ngodRaysQuality:{}\nparallelTick:{}\n",
             self.preset.name(),
             self.lod_distance,
+            self.cloud_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
             self.entity_culling.name(),
@@ -1214,6 +1408,7 @@ impl Graphics {
             self.upload_budget_kib,
             self.texture_budget_mib,
             bool_text(self.sky),
+            self.sun_path_tilt,
             bool_text(self.fog),
             bool_text(self.weather),
             bool_text(self.animated_textures),
@@ -1238,6 +1433,21 @@ impl Graphics {
             self.upscaling_sharpness,
             self.screenshot_quality,
             self.frame_generation.name(),
+            bool_text(self.parallax),
+            bool_text(self.linear_light),
+            bool_text(self.ray_traced_shadows),
+            bool_text(self.ray_traced_ao),
+            bool_text(self.rt_lighting),
+            self.rt_rays,
+            self.sun_size,
+            self.moon_size,
+            bool_text(self.night_vision),
+            self.shooting_stars,
+            self.aerial_perspective,
+            bool_text(self.earth_curvature),
+            bool_text(self.horizon_culling),
+            self.natural_fog,
+            bool_text(self.smooth_fluids),
             self.hdr.key(),
             self.hdr_paper_white,
             self.hdr_peak,
@@ -1251,6 +1461,9 @@ impl Graphics {
             bool_text(self.translucent_batching),
             bool_text(self.hdr_smooth_gradients),
             self.gpu_culling.key(),
+            self.rt_ambient_light,
+            self.god_rays,
+            self.god_rays_quality,
             self.parallel_tick.name(),
         );
         if let Some(driver) = &self.hdr_failed_start {
@@ -1544,6 +1757,7 @@ mod tests {
                 servers: Vec::new(),
             },
             cave_culling: false,
+            cloud_distance: 1024,
             gpu_culling: GpuCullingMode::On,
             entity_culling: EntityCullingMode::Synchronous,
             entity_culling_precheck: 128,
@@ -1561,6 +1775,7 @@ mod tests {
             upload_budget_kib: 4096,
             texture_budget_mib: 1536,
             sky: false,
+            sun_path_tilt: -25,
             fog: false,
             weather: false,
             animated_textures: false,
@@ -1574,6 +1789,24 @@ mod tests {
             dynamic_resolution: false,
             target_fps: 60,
             fxaa: true,
+            parallax: true,
+            linear_light: true,
+            ray_traced_shadows: true,
+            ray_traced_ao: true,
+            rt_lighting: true,
+            rt_rays: 2,
+            sun_size: 7,
+            moon_size: 3,
+            rt_ambient_light: 5,
+            god_rays: 40,
+            god_rays_quality: 1,
+            night_vision: false,
+            shooting_stars: 1,
+            aerial_perspective: 32,
+            earth_curvature: false,
+            horizon_culling: false,
+            natural_fog: 1,
+            smooth_fluids: true,
             taa: true,
             upscaling: Upscaling::Balanced,
             upscaling_sharpness: 40,
@@ -1736,6 +1969,10 @@ mod tests {
             ),
             Graphics::default()
         );
+        // The Sun Path Tilt is kept within ±60° and stays at its default when unreadable.
+        assert_eq!(Graphics::parse("sunPathTilt:x\n"), Graphics::default());
+        assert_eq!(Graphics::parse("sunPathTilt:85\n").sun_path_tilt, 60);
+        assert_eq!(Graphics::parse("sunPathTilt:0\n").sun_path_tilt, 0);
     }
 
     #[test]
@@ -1877,6 +2114,49 @@ mod tests {
                     .contains(&format!("{INTEGRATED_LOD_DISTANCE} chunks"))),
             "the LOD Distance description names the cap"
         );
+    }
+
+    #[test]
+    fn earth_curvature_bounds_far_terrain_by_the_horizon() {
+        use crate::lod::{HORIZON_MAX_CHUNKS, MAX_CHUNKS};
+        let discrete = wgpu::AdapterInfo {
+            name: "NVIDIA GeForce RTX 4090".into(),
+            vendor: 0,
+            device: 0,
+            device_type: wgpu::DeviceType::DiscreteGpu,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        };
+        let mut g = Graphics {
+            lod_distance: MAX_CHUNKS,
+            ..Graphics::default()
+        };
+        assert!(g.earth_curvature && g.horizon_culling);
+        // A saved whole-world distance stops at the curved horizon.
+        assert_eq!(g.lod_distance_max(), HORIZON_MAX_CHUNKS);
+        assert_eq!(g.lod_distance_on(&discrete), HORIZON_MAX_CHUNKS);
+        // From the shore, nearer still; a short distance stays as chosen.
+        assert_eq!(g.horizon_culled(HORIZON_MAX_CHUNKS, 64.6, 512.0), 3904);
+        assert_eq!(g.horizon_culled(1024, 64.6, 512.0), 1024);
+        g.horizon_culling = false;
+        assert_eq!(
+            g.horizon_culled(HORIZON_MAX_CHUNKS, 64.6, 512.0),
+            HORIZON_MAX_CHUNKS
+        );
+        // A flat world goes as far as the world.
+        g.earth_curvature = false;
+        g.horizon_culling = true;
+        assert_eq!(g.lod_distance_max(), MAX_CHUNKS);
+        assert_eq!(g.lod_distance_on(&discrete), MAX_CHUNKS);
+        assert_eq!(g.horizon_culled(MAX_CHUNKS, 64.6, 512.0), MAX_CHUNKS);
+        // Saved and read back.
+        assert!(!Graphics::parse("horizonCulling:false\n").horizon_culling);
     }
 
     #[test]

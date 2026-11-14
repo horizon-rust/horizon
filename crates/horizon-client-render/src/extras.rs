@@ -145,6 +145,8 @@ pub struct Extras {
     /// F3+R and F3+E start/stop a repro recording and write its bundle (off by
     /// default: a recording copies the world).
     pub repro_keys: bool,
+    /// Sound physics (`sound_physics`): reverb, occlusion and reflections.
+    pub sound_physics: crate::sound_physics::Settings,
     /// Another controller can join P1's world (`splitscreen`, off by default).
     pub splitscreen: bool,
     /// Two players in one window: 0 auto (side by side when wider than tall), 1 side by side,
@@ -213,6 +215,7 @@ impl Default for Extras {
             no_ai: false,
             agent_control: false,
             repro_keys: false,
+            sound_physics: Default::default(),
             splitscreen: false,
             splitscreen_two: 0,
             splitscreen_three: 0,
@@ -326,6 +329,7 @@ impl Extras {
                 SKIN_LAYERS_KEY => e.three_d_skin_layers = flag(e.three_d_skin_layers),
                 key => {
                     e.pvp.parse_line(key, value);
+                    e.sound_physics.parse_line(key, value);
                 }
             }
         }
@@ -387,6 +391,7 @@ impl Extras {
         );
         text.push_str(&format!("{EMOTE_KEY}:{}\n", self.emote_key));
         self.pvp.serialize(&mut text);
+        text.push_str(&self.sound_physics.serialize());
         text
     }
     /// Adopts the settings `options.txt` held before they moved here, while
@@ -559,6 +564,22 @@ pub enum Item {
     /// Not on the Extras page: Horizon Settings shows No AI, its AI Agent page Agent Control.
     NoAi,
     AgentControl,
+    /// On the Horizon Settings page.
+    SoundPhysics,
+    SoundReverb,
+    SoundOcclusion,
+    SoundUnderwater,
+    SoundReflections,
+    SoundReverbGain,
+    SoundBlockAbsorption,
+    SoundRays,
+    SoundBounces,
+    SoundHrtf,
+    SoundDoppler,
+    SoundWhoosh,
+    SoundBowCreak,
+    SoundRange,
+    SoundSoftPickup,
     /// On the AI Agent page, next to Agent Control: the F3 recording shortcuts.
     ReproKeys,
     /// On the Splitscreen settings page.
@@ -595,6 +616,21 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Err("horizon.extras.header.sound"),
         Ok(UiSoundReserve),
         Ok(MusicPage),
+        Ok(SoundPhysics),
+        Ok(SoundReverb),
+        Ok(SoundOcclusion),
+        Ok(SoundUnderwater),
+        Ok(SoundReflections),
+        Ok(SoundReverbGain),
+        Ok(SoundBlockAbsorption),
+        Ok(SoundRays),
+        Ok(SoundBounces),
+        Ok(SoundHrtf),
+        Ok(SoundDoppler),
+        Ok(SoundWhoosh),
+        Ok(SoundBowCreak),
+        Ok(SoundRange),
+        Ok(SoundSoftPickup),
         Err("horizon.extras.header.menus"),
         Ok(WheelCyclesSettings),
         Ok(PackBrowser),
@@ -624,6 +660,21 @@ impl Item {
             Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_settings",
             Item::PackBrowser => "horizon.extras.pack_browser",
             Item::Pregen => "horizon.extras.pregen",
+            Item::SoundPhysics => "horizon.extras.sound_physics",
+            Item::SoundReverb => "horizon.extras.sound_reverb",
+            Item::SoundOcclusion => "horizon.extras.sound_occlusion",
+            Item::SoundUnderwater => "horizon.extras.sound_underwater",
+            Item::SoundReflections => "horizon.extras.sound_reflections",
+            Item::SoundReverbGain => "horizon.extras.sound_reverb_gain",
+            Item::SoundBlockAbsorption => "horizon.extras.sound_block_absorption",
+            Item::SoundRays => "horizon.extras.sound_rays",
+            Item::SoundBounces => "horizon.extras.sound_bounces",
+            Item::SoundHrtf => "horizon.extras.sound_hrtf",
+            Item::SoundDoppler => "horizon.extras.sound_doppler",
+            Item::SoundWhoosh => "horizon.extras.sound_whoosh",
+            Item::SoundBowCreak => "horizon.extras.sound_bow_creak",
+            Item::SoundRange => "horizon.extras.sound_range",
+            Item::SoundSoftPickup => "horizon.extras.sound_soft_pickup",
             Item::Pvp(o) => o.caption_key(),
         }
     }
@@ -650,6 +701,21 @@ impl Item {
             Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_list_settings.tooltip",
             Item::PackBrowser => "horizon.extras.pack_browser.tooltip",
             Item::Pregen => "horizon.extras.pregen.tooltip",
+            Item::SoundPhysics => "horizon.extras.sound_physics.tooltip",
+            Item::SoundReverb => "horizon.extras.sound_reverb.tooltip",
+            Item::SoundOcclusion => "horizon.extras.sound_occlusion.tooltip",
+            Item::SoundUnderwater => "horizon.extras.sound_underwater.tooltip",
+            Item::SoundReflections => "horizon.extras.sound_reflections.tooltip",
+            Item::SoundReverbGain => "horizon.extras.sound_reverb_gain.tooltip",
+            Item::SoundBlockAbsorption => "horizon.extras.sound_block_absorption.tooltip",
+            Item::SoundRays => "horizon.extras.sound_rays.tooltip",
+            Item::SoundBounces => "horizon.extras.sound_bounces.tooltip",
+            Item::SoundHrtf => "horizon.extras.sound_hrtf.tooltip",
+            Item::SoundDoppler => "horizon.extras.sound_doppler.tooltip",
+            Item::SoundWhoosh => "horizon.extras.sound_whoosh.tooltip",
+            Item::SoundBowCreak => "horizon.extras.sound_bow_creak.tooltip",
+            Item::SoundRange => "horizon.extras.sound_range.tooltip",
+            Item::SoundSoftPickup => "horizon.extras.sound_soft_pickup.tooltip",
             Item::Pvp(o) => o.description_key(),
         }
     }
@@ -681,6 +747,21 @@ impl Item {
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
             Item::ReproKeys => "Recording shortcuts",
+            Item::SoundPhysics => "Sound physics",
+            Item::SoundReverb => "Reverb",
+            Item::SoundOcclusion => "Occlusion",
+            Item::SoundUnderwater => "Underwater filter",
+            Item::SoundReflections => "Sound direction",
+            Item::SoundReverbGain => "Reverb gain",
+            Item::SoundBlockAbsorption => "Block absorption",
+            Item::SoundRays => "Rays",
+            Item::SoundBounces => "Ray bounces",
+            Item::SoundHrtf => "Binaural sound",
+            Item::SoundDoppler => "Doppler effect",
+            Item::SoundWhoosh => "Arrow whoosh",
+            Item::SoundBowCreak => "Bow creak",
+            Item::SoundRange => "Sound range",
+            Item::SoundSoftPickup => "Soft item pickup",
             Item::Splitscreen => "Splitscreen",
             Item::WheelCyclesSettings => "Scroll wheel changes settings",
             Item::PackBrowser => "Resource pack browser",
@@ -695,11 +776,14 @@ impl Item {
             UiSoundReserve => return None,
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
+            SoundReverb | SoundOcclusion | SoundUnderwater | SoundReflections | SoundReverbGain
+            | SoundBlockAbsorption | SoundRays | SoundBounces => SoundPhysics,
             ChatIndicator => ChatAnimation,
             Pvp(o) => return o.parent().map(Pvp),
             Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
             | AutoReconnect | NoAi | AgentControl | ReproKeys | Splitscreen | ChatAnimation
-            | WheelCyclesSettings | MusicPage | PackBrowser | Pregen => {
+            | WheelCyclesSettings | MusicPage | PackBrowser | Pregen | SoundPhysics | SoundHrtf
+            | SoundDoppler | SoundWhoosh | SoundBowCreak | SoundRange | SoundSoftPickup => {
                 return None;
             }
         })
@@ -754,6 +838,39 @@ impl Item {
             Item::AgentControl => {
                 "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
             }
+            Item::SoundPhysics => {
+                "Sounds echo in caves and rooms, are muffled by the blocks in the way and come through doorways, as Sound Physics Remastered does."
+            }
+            Item::SoundReverb => {
+                "Reverberation from the blocks around a sound: short in rooms, long in caves."
+            }
+            Item::SoundOcclusion => {
+                "Blocks between you and a sound muffle it by their material: wool most, glass little."
+            }
+            Item::SoundUnderwater => "Sounds are muffled while you or they are underwater.",
+            Item::SoundReflections => {
+                "A sound behind a wall is heard from where its reflections reach you, such as an open door."
+            }
+            Item::SoundReverbGain => "How loud the reverberation is.",
+            Item::SoundBlockAbsorption => "How much sound the blocks in the way absorb.",
+            Item::SoundRays => "Rays traced around each sound. More is steadier and costs more.",
+            Item::SoundBounces => "Bounces of each ray: more gives longer echoes and costs more.",
+            Item::SoundHrtf => {
+                "3D sound for headphones: sounds above, below and behind you are heard there. Use with headphones."
+            }
+            Item::SoundDoppler => {
+                "The pitch of a sound rises as it comes at you and falls as it goes away."
+            }
+            Item::SoundBowCreak => "A bow creaks as you draw it, tighter as the string comes back.",
+            Item::SoundSoftPickup => {
+                "Picking up items pops lower and softer, a fifth below vanilla's with less spread: easier on the ears when mining in a row."
+            }
+            Item::SoundRange => {
+                "How far you hear sounds: vanilla's 16 blocks, or further. In single player the world sends them that far too; on a server only your own mix changes."
+            }
+            Item::SoundWhoosh => {
+                "Arrows whistle through the air, louder and higher the faster they fly."
+            }
             Item::ReproKeys => {
                 "F3+R starts or stops a repro recording and F3+E writes its bundle. Off by default: a recording copies the world."
             }
@@ -783,6 +900,11 @@ impl Item {
             | Item::Splitscreen
             | Item::WheelCyclesSettings
             | Item::PackBrowser => Some(Cost::None),
+            // Traced off the game thread; the mixer's reverb runs on the audio thread.
+            Item::SoundPhysics => Some(Cost::Low),
+            Item::SoundHrtf | Item::SoundDoppler | Item::SoundWhoosh | Item::SoundBowCreak => {
+                Some(Cost::None)
+            }
             _ => None,
         }
     }
@@ -804,6 +926,16 @@ impl Item {
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
             Item::ReproKeys => e.repro_keys,
+            Item::SoundPhysics => e.sound_physics.enabled,
+            Item::SoundReverb => e.sound_physics.reverb,
+            Item::SoundOcclusion => e.sound_physics.occlusion,
+            Item::SoundUnderwater => e.sound_physics.underwater,
+            Item::SoundReflections => e.sound_physics.reflections,
+            Item::SoundHrtf => e.sound_physics.hrtf,
+            Item::SoundDoppler => e.sound_physics.doppler,
+            Item::SoundWhoosh => e.sound_physics.arrow_whoosh,
+            Item::SoundBowCreak => e.sound_physics.bow_creak,
+            Item::SoundSoftPickup => e.sound_physics.soft_pickup,
             Item::Splitscreen => e.splitscreen,
             Item::WheelCyclesSettings => e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser,
@@ -816,6 +948,17 @@ impl Item {
     pub fn value(self, e: &Extras) -> String {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
+            Item::SoundReverbGain => format!("{}x", e.sound_physics.reverb_gain),
+            Item::SoundRange => match e.sound_physics.sound_range {
+                r if r <= 1.0 => "Vanilla (16)".into(),
+                r => format!("{r}x ({} blocks)", (16.0 * r).round()),
+            },
+            Item::SoundBlockAbsorption => format!("{}x", e.sound_physics.block_absorption),
+            Item::SoundRays => e.sound_physics.environment_evaluation_ray_count.to_string(),
+            Item::SoundBounces => e
+                .sound_physics
+                .environment_evaluation_ray_bounces
+                .to_string(),
             Item::Pvp(o) if o.switch(&e.pvp).is_none() => o.value(&e.pvp).unwrap_or_default(),
             other => match other.switch(e) {
                 Some(true) => crate::lang::get_or("On", "On"),
@@ -826,6 +969,7 @@ impl Item {
     /// A click (`back` for the right button: a PvP & HUD choice steps back; a switch flips
     /// either way). The sort key binds instead.
     pub fn cycle(self, e: &mut Extras, back: bool) {
+        use crate::sound_physics as sp;
         match self {
             Item::Fullbright => e.fullbright = !e.fullbright,
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
@@ -842,6 +986,38 @@ impl Item {
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::ReproKeys => e.repro_keys = !e.repro_keys,
+            Item::SoundPhysics => e.sound_physics.enabled = !e.sound_physics.enabled,
+            Item::SoundReverb => e.sound_physics.reverb = !e.sound_physics.reverb,
+            Item::SoundOcclusion => e.sound_physics.occlusion = !e.sound_physics.occlusion,
+            Item::SoundUnderwater => e.sound_physics.underwater = !e.sound_physics.underwater,
+            Item::SoundReflections => e.sound_physics.reflections = !e.sound_physics.reflections,
+            Item::SoundHrtf => e.sound_physics.hrtf = !e.sound_physics.hrtf,
+            Item::SoundDoppler => e.sound_physics.doppler = !e.sound_physics.doppler,
+            Item::SoundWhoosh => e.sound_physics.arrow_whoosh = !e.sound_physics.arrow_whoosh,
+            Item::SoundBowCreak => e.sound_physics.bow_creak = !e.sound_physics.bow_creak,
+            Item::SoundSoftPickup => e.sound_physics.soft_pickup = !e.sound_physics.soft_pickup,
+            Item::SoundRange => {
+                let s = &mut e.sound_physics;
+                s.sound_range = sp::cycle(&sp::SOUND_RANGES, s.sound_range, back)
+            }
+            Item::SoundReverbGain => {
+                let s = &mut e.sound_physics;
+                s.reverb_gain = sp::cycle(&sp::REVERB_GAINS, s.reverb_gain, back)
+            }
+            Item::SoundBlockAbsorption => {
+                let s = &mut e.sound_physics;
+                s.block_absorption = sp::cycle(&sp::BLOCK_ABSORPTIONS, s.block_absorption, back)
+            }
+            Item::SoundRays => {
+                let s = &mut e.sound_physics;
+                s.environment_evaluation_ray_count =
+                    sp::cycle(&sp::RAY_COUNTS, s.environment_evaluation_ray_count, back)
+            }
+            Item::SoundBounces => {
+                let s = &mut e.sound_physics;
+                s.environment_evaluation_ray_bounces =
+                    sp::cycle(&sp::RAY_BOUNCES, s.environment_evaluation_ray_bounces, back)
+            }
             Item::Splitscreen => e.splitscreen = !e.splitscreen,
             Item::WheelCyclesSettings => e.wheel_cycles_settings = !e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser = !e.pack_browser,
@@ -1033,5 +1209,25 @@ mod tests {
         for item in rows().into_iter().flatten() {
             assert!(!item.caption().is_empty() && !item.description().is_empty());
         }
+        // Sound physics: off, its settings under its switch, kept in the file.
+        assert_eq!(Item::SoundPhysics.switch(&e), Some(false));
+        assert_eq!(Item::SoundRays.parent(), Some(Item::SoundPhysics));
+        Item::SoundPhysics.cycle(&mut e, false);
+        Item::SoundRays.cycle(&mut e, false);
+        Item::SoundReverbGain.cycle(&mut e, true);
+        assert_eq!(Item::SoundRays.value(&e), "64");
+        assert_eq!(Item::SoundReverbGain.value(&e), "0.75x");
+        assert_eq!(Item::SoundRange.value(&e), "Vanilla (16)");
+        Item::SoundRange.cycle(&mut e, false);
+        assert_eq!(Item::SoundRange.value(&e), "1.5x (24 blocks)");
+        Item::SoundRange.cycle(&mut e, false);
+        Item::SoundRange.cycle(&mut e, false);
+        assert_eq!(e.sound_physics.sound_range, 1.0);
+        Item::SoundRange.cycle(&mut e, true);
+        assert_eq!(Item::SoundRange.value(&e), "2x (32 blocks)");
+        let back = Extras::parse(&e.serialize());
+        assert!(back.sound_physics.enabled);
+        assert_eq!(back.sound_physics.environment_evaluation_ray_count, 64);
+        assert_eq!(back, e);
     }
 }

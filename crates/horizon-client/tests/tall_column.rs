@@ -127,6 +127,8 @@ fn a_tall_column_streams_lights_and_meshes_to_its_top() {
             })
         });
         let mut mesher = Mesher {
+            rt_lighting: false,
+            smooth_fluids: false,
             nether_shading: false,
             shader_pack_lighting: false,
             separate_ao: false,

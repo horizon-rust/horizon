@@ -48,6 +48,8 @@ fn state(f: &Fixture, name: &str) -> u32 {
 fn mesh(f: &Fixture, chunk: &Chunk, opaque_ice: bool) -> SectionMesh {
     let region = [[Some(chunk); 3]; 3];
     let mut mesher = Mesher {
+        rt_lighting: false,
+        smooth_fluids: false,
         nether_shading: false,
         shader_pack_lighting: false,
         separate_ao: false,

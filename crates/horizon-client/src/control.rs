@@ -756,6 +756,18 @@ fn percentiles(values: &[f32]) -> serde_json::Value {
 
 impl FrameStats {
     const LIMIT: usize = 1 << 20;
+    /// Every recorded frame time, in milliseconds, in order.
+    pub fn frame_millis(&self) -> &[f32] {
+        &self.millis
+    }
+    /// CPU time of every recorded frame, in milliseconds.
+    pub fn cpu_millis(&self) -> &[f32] {
+        &self.cpu
+    }
+    /// GPU time of every frame the GPU timed, in milliseconds.
+    pub fn gpu_millis(&self) -> &[f32] {
+        &self.gpu
+    }
     pub fn record(&mut self, millis: f32) {
         if self.millis.len() < Self::LIMIT {
             self.millis.push(millis);

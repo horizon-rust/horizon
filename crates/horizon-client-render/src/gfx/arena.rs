@@ -131,13 +131,17 @@ impl Arena {
     /// Vertices; `storage` also lets shaders read them as a storage buffer (a shader pack's
     /// terrain program reads the other corners of a vertex's quad for its normal).
     pub fn new(device: &wgpu::Device, stride: u64, capacity: u64, storage: bool) -> Self {
-        let usage = if storage {
+        let mut usage = if storage {
             wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE
         } else {
             wgpu::BufferUsages::VERTEX
         };
-        // BLAS builds read sections' vertices here (`ray_scene`).
-        let usage = usage | super::surface_setup::ray_query::blas_input(device);
+        // BLAS builds read sections' vertices here (`ray_scene`, RT lighting's `hw_rays`), and
+        // the shadow rays' alpha test reads their texture coordinates.
+        let blas = super::surface_setup::ray_query::blas_input(device);
+        if !blas.is_empty() {
+            usage |= blas | wgpu::BufferUsages::STORAGE;
+        }
         Self::with_usage(device, stride, capacity, usage, PAGE_BYTES)
     }
     /// Sorted translucent indices; `storage` when compute passes read them.
@@ -1049,13 +1053,14 @@ mod tests {
             assert_eq!(records.page_sections(), [recorded], "split {split}");
             arena.close(0);
             let mut encoder = device.create_command_encoder(&Default::default());
-            let meshes = sections.iter_mut();
+            let meshes = sections.iter_mut().map(|s| (None, s));
             let mut budget = u64::MAX;
             assert!(move_off_page(
                 &mut arena,
                 &mut encoder,
                 None,
                 Some(&mut records),
+                None,
                 meshes,
                 0,
                 Part::Section { split },
@@ -1214,7 +1219,8 @@ mod tests {
             &mut encoder,
             Some((&mut flat, &device, &mut uploads)),
             None,
-            std::iter::once(&mut section),
+            None,
+            std::iter::once((None, &mut section)),
             0,
             Part::Translucent,
             &mut budget
@@ -1482,9 +1488,9 @@ mod tests {
                          encoder: &mut _,
                          meshes: &mut [(u32, SectionGpu)],
                          budget: &mut u64| {
-                let held = meshes.iter_mut().map(|(_, s)| s);
+                let held = meshes.iter_mut().map(|(_, s)| (None, s));
                 assert!(move_off_page(
-                    arena, encoder, None, None, held, 0, part, budget
+                    arena, encoder, None, None, None, held, 0, part, budget
                 ));
                 let on = |s: &SectionGpu| part.of(s).is_some_and(|r| r.0 == 1);
                 meshes.iter().filter(|(_, s)| on(s)).count()

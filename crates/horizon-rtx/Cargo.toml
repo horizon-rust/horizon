@@ -1,0 +1,19 @@
+[package]
+name = "horizon-rtx"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.85"
+description = "The RTX 4090 build's raw Vulkan pieces of RT lighting: the top-level structure built outside wgpu's API (docs/rtx-4090.md)"
+
+[dependencies]
+bytemuck = { version = "1.24", features = ["derive"] }
+log = "0.4"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulkan"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# The version wgpu-hal already uses.
+ash = { version = "0.38", default-features = false }
+
+[lints]
+workspace = true

@@ -2935,6 +2935,7 @@ impl super::Adapter {
             texture_identity_factory: super::ResourceIdentityFactory::new(),
             texture_view_identity_factory: super::ResourceIdentityFactory::new(),
             empty_descriptor_set_layout,
+            fragment_shading_rate: Mutex::new(Default::default()),
         });
 
         let relay_semaphores = super::RelaySemaphores::new(&shared)?;

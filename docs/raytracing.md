@@ -1,0 +1,888 @@
+# Ray tracing ("RTX"): where it stands and the plan
+
+Goal: a hybrid renderer, rays where they beat raster (sun and moon shadows, AO, reflections on smooth surfaces,
+GI last) and classic techniques elsewhere, working with LabPBR materials
+([resource-packs.md](resource-packs.md#labpbr-maps)), HDR output ([graphics.md](graphics.md)) and VR's foveated
+rendering ([vr.md](vr.md)), on a whole world, not just the few chunks around the player. **Every ray effect works
+on the screen and in VR through one code path.** The base for all of it, decided before the rays: **the scene
+drawn in linear HDR light** (step 2), with a tone mapping per output.
+
+## Step 1, done: a tilted sun path
+
+Vanilla's sun crosses the zenith, so noon shadows fall straight down and show nothing. **Sun Path Tilt**
+(Advanced Graphics → Quality, 40° by default, 0° = vanilla; [graphics.md](graphics.md)) leans the path south as shader
+packs' `sunPathRotation` does. One function gives the light direction (`crates/horizon-client/src/celestial.rs`,
+`celestial::direction(angle, frame.sun_path_tilt)`): the sky's sun, moon and stars, `frame.sun_direction` for
+Horizon packs, Iris packs' `sunPosition` / `shadowLightPosition` and shadow map. The ray-traced shadows below trace toward
+that same direction. Iris's sign was checked against its `CelestialUniforms` (`Y -90, Z sunPathRotation,
+X angle`): a pack's -40 puts the noon sun in the south; Horizon used to mirror it to the north.
+
+HDR: the HDR pass lifts the sun and moon by the mark their celestial pass leaves in the frame's alpha, wherever they
+are, so the tilted sun shines the same (by construction; not yet looked at on an HDR display, the captures are
+offscreen SDR).
+
+## Step 2, started: the scene in linear HDR light
+
+**Done (Linear Light, [graphics.md](graphics.md))**: the float scene per view (window and VR eyes), shaders
+writing linear light with sources above 1.0, the hand and screen effects in the scene, the SDR tone mapping
+(identity below 0.9, shoulder above), vanilla's frame untouched when it is off; HDR output from the scene (PQ
+or scRGB, the shoulder at the display's peak, the HUD at paper white where it drew). **Next in this step**:
+glowing particles and entities' emissive parts.
+
+Today the world is drawn in SDR, in vanilla's gamma space, into an 8-bit target of the window's format, and
+`hdr.wgsl` guesses the light sources afterwards (the emission mark in the alpha, `shows_world` to leave out the hand,
+the HUD and the vignette) and lifts them. That is a patch, not light: glowing particles and far LOD terrain are not
+lifted, a pixel the vignette darkens loses its lift (the fade on `fix/hdr-vignette-lift` softens the edge), and
+nothing above 1.0 exists for the PBR or the shadows to work with. The plan:
+
+1. **A scene-referred linear target** (`Rgba16Float`, one per view; the eyes' too). Sky, terrain, entities,
+   particles, clouds and LOD tiles write linear radiance in multiples of paper white; sources go above 1.0: the sun
+   and moon discs, lava, emissive blocks (the mesher's `EMISSION_BITS`), LabPBR emission (`_s` alpha), glowing
+   particles. The PBR sun term, the RT shadows and the sky are all computed here.
+2. **A tone mapping per output**, one last pass: **SDR** (the window in SDR, and the Vision Pro through KRVR,
+   which is SDR only) maps with a real curve (a shoulder toward white, hue kept), not a clamp at 1.0; **HDR10 PQ**
+   or **scRGB** (an HDR desktop) map paper white and the peak from the existing Paper White and Peak Brightness
+   options, rolling off toward the peak. HDR metadata as `horizon-hdr` sends it now.
+3. **Screen-wide effects in linear, before the tone mapping**: vignette, damage and nausea tints, the underwater
+   and powder-snow overlays, the night-vision and darkness effects. **The hand, the HUD and text are composed after
+   it, at paper white**, so they are never tone mapped or lifted: `shows_world` and the alpha mark go away.
+4. **A vanilla mode that stays exact**: with HDR off, no shader pack and no PBR, the frame is drawn as it is today
+   (8-bit, vanilla's gamma-space blending, which a linear target would change: vanilla blends translucency and fog
+   in gamma space), so 26.3's look and the screenshot parities keep holding pixel for pixel. Linear light is what
+   HDR output, LabPBR lighting and RT shadows turn on; the tone mapping of the SDR window is chosen so that a scene
+   with no source above 1.0 maps to itself.
+5. **Shader packs**: Horizon packs' `post` stage gets the linear scene (its `scene_color` documented as such, a new
+   API version); Iris packs keep their own targets and gamma (they tone map themselves), composed as SDR.
+
+Cost, by bandwidth (one target read or written once = one pass; the scene is about 4 passes a frame: clear,
+drawing with its overdraw and blending, the tone mapping's read):
+
+| | Pixels | 8-bit target, a pass | `Rgba16Float`, a pass | Extra a frame (x4) | At 1 TB/s (RTX 4090) |
+|---|---|---|---|---|---|
+| Desktop 3440x1440 | 4.95 M | 20 MB | 40 MB | 80 MB | +0.08 ms (+11 GB/s at 144 Hz) |
+| VR stereo 4096x3288 an eye | 26.9 M | 108 MB | 215 MB | 430 MB | +0.43 ms (+39 GB/s at 90 Hz) |
+
+Memory: one more `Rgba16Float` per view, 40 MB at 3440x1440 and 215 MB for the two 4096x3288 eyes. In VR the GPU
+works 2.5 ms of an 11 ms frame (vr.md), so the 0.4 ms fits; the quad views have 9.2 M pixels, a third of that.
+To measure, not assume: GPU timestamps of the tone-mapping pass and of the frame with HDR off and on, at 3440x1440
+and on the fake VR runtime (stereo and quad views). Where VR stands: the quad views draw no shader pack yet, and
+**shader packs don't draw in the VR eyes at all** (a pack draws through the world post target, which the eyes
+skip; vr.md, "Not there yet"); the linear target per view is the place to fix both, since the eyes and the window
+would then share one scene path.
+
+## Step 3, started: ray-traced sun and moon shadows (approach A)
+
+**Done**, the voxel grid traced in compute, approach A below, with no hardware ray tracing and no experimental API:
+
+- `crates/horizon-client/src/occupancy.rs`: each section's blocks to the rays (solid, cutout, nothing), two bits a
+  block, computed by the mesher with the mesh (uniform sections cost nothing).
+- `gfx/voxels.rs`: the grid around the camera, 16x16 chunks and the world's height, toroidal: 512-bit masks per
+  8x8x8 brick (solid, cutout) plus brick and 32-block brick occupancy, about 6 MB. A camera chunk border writes
+  only the columns that came in, as runs of sections per column (one copy a texture and run) and at most four
+  columns a frame, the nearest first: a crossing in flight used to write 384 to 744 sections in one frame, five
+  `write_texture` calls each, every call its own staging buffer (the frame spikes of [rtx-4090.md](rtx-4090.md));
+  a block change rewrites its section's 1 KB of masks and 8 KB of colours.
+- `gfx/shadow_rays.rs`: a ray per pixel of the view's depth, after the world pass; the solid terrain writes the
+  share of its light it keeps in the shadow into the scene's alpha, the tone mapping (SDR and HDR) applies the mask.
+  The same pass for the window and each VR eye, with the foveation the views carry: the screen sharp all over,
+  VR 2x2 pixels a ray in the 25-degree sharp zone around the gaze and 8x8 beyond (workgroup-shared rays).
+- Measured (RTX 4090): +1.2 ms GPU at 3440x1440, morning sun, noise at noon; fake VR, two 4096x3288 eyes, about
+  +0.3 ms GPU and +0.3 ms CPU (grid writes). Inline rays in the terrain shader cost 2-5x that (every fragment drawn
+  traced, overdraw included): the pass on the depth is what made it fit.
+
+**Also done**: ambient occlusion from the same pass and grid (six fixed rays two blocks long a pixel, the ambient
+share only), +1-1.4 ms GPU at 3440x1440.
+
+**Direction**: the rays replace vanilla's shading rather than adding to it. Today they scale vanilla's lit
+colour (vertex AO, face shading and the lightmap stay baked in). Next is an RT lighting mode where the terrain
+writes only its albedo (no vertex AO, no face shading baked into its vertex colour) and the light comes from the
+rays: the sun with its shadows, the sky through the AO rays (sky visibility), block light from the light levels
+until rays or a probe cache take it over (GI). The RT AO then shades corners alone, which is why it already
+counts the blocks right beside a surface.
+
+**The target** (asked for): all of the lighting redone, nothing kept from vanilla's:
+
+1. RT lighting from the albedo: the sun with its shadows, the sky seen through rays, block light with the
+   AO (done, `rtLighting`).
+   - With Parallax and a LabPBR pack the same model lights the material: the normal map's normal, the
+     map's AO, from `_s` the roughness (GGX highlight, Smith visibility, Schlick Fresnel), the reflectance
+     or metal, the subsurface scattering (leaves, plants lit from behind) and the emission (done).
+2. Shadows from every block as it is shaped (done in the voxel grid, static): each state's model voxelized at
+   8x8x8 from its faces' opaque texels (iron bars' gaps, leaves' holes, plants' stems), its outline for blocks
+   drawn without faces; up to 1024 shapes, an id beside the block's colour in the grid's `R16Uint` texels,
+   rays crossing a shaped block cell by cell (leaves and plants let 35 % through a cell). It stays for the
+   diffuse light (sky, GI, bounces) and for GPUs without hardware rays.
+   - The hybrid (done for the terrain, `gfx/hw_rays.rs`): where the GPU traces rays (wgpu's experimental
+     `EXPERIMENTAL_RAY_QUERY`, Vulkan, on the screen's device and on the headset's, which the OpenXR runtime
+     creates; `HORIZON_HW_RT=0` turns it off), the sun's and the light sources'
+     shadow rays meet the drawn triangles themselves. Each section within the grid's reach gets a
+     bottom-level structure over its solid quads where they lie in the vertex arena (no copy, the shared
+     quad indices); a top-level one, made each frame, holds them relative to the camera. The quads
+     whose sprite has no transparent texel in any frame (stone, dirt, logs, planks, sand; leaves with
+     fancy graphics off) are opaque geometries, whose hits the hardware confirms itself; every
+     candidate hit on the others (the cutouts) is alpha-tested in the shader against the quad's
+     sprite at the hit's texture coordinate, so iron bars, fences, leaves and flowers shadow exactly
+     as drawn. The mesher lays each side bucket out opaque quads first, then cutouts (an overlay
+     still draws after its base), so both are runs where the quads lie, as the raster draws them: a
+     section's structure has one geometry a run, 14 at most, each instance's row in `instances` the
+     first quad of each (`hw_rays.rs` `row`). Forcing every ray opaque
+     (`HORIZON_RT_FORCE_OPAQUE=1`) had measured what the alpha test cost on an RTX 4090 at 3440x1440
+     before the split: the trace stage 2.41 ms against 0.75 in open terrain, 4.01 against 2.99 in a
+     forest. Measured at 3440x1440: 3.0 to 3.7 ms
+     GPU with RT lighting against 3.9 with the voxel grid's shadow rays. `examples/rt_query_probe.rs`
+     checks a machine's hardware rays. Entities, the view model and the cloud tiles are in it too (see the
+     table). Next: VR's device, the arena's later pages in the alpha test.
+   - Translucent quads (stained glass, water, ice) are a second geometry of each section's structure:
+     the shadow rays cross them and take their colour (texel times tint, as much as it is opaque), so
+     stained glass colours the sunlight and the light sources' light; water gives caustics instead.
+8. Denoising (done): the sky's and the bounced light, accumulated over frames, then an edge-stopping
+   a-trous filter (`gfx/denoise.wgsl`: 5x5 taps, steps 1, 2, 4, 8, weights stopped at distance jumps
+   and changes of face). The light sources' direct light is kept apart, accumulated but not blurred.
+9. Light sources are areas (done): a full block emitting light its whole volume, a torch's flame a
+   tenth of a block above its floor; a point of it a frame, accumulated: soft shadows whose
+   penumbra widens with distance. The falloff is from that point (the block under a torch is no
+   longer lit as if touching the light). Each 8-block cell keeps its eight strongest lights, four
+   drawn a frame and weighted, and only lights touching air count (a lava lake lights its shores,
+   not from under its surface). A ray that spends its budget in a long cave is taken as stopped: no
+   sky leaks into caves.
+10. The real night sky (done, `gfx/sky_stars.rs`): the Yale Bright Star Catalogue's 9096 stars
+   (public domain, by way of Bretton Wade's MIT-licensed conversion) drawn where they are over the
+   latitude the sun's path leans by (43 degrees for Aix-en-Provence) at the real sidereal time (the
+   date and the in-game hour), coloured by their temperature, dimmed and reddened toward the horizon,
+   outshone by the sky's light; the Milky Way along the galactic plane, brighter toward Sagittarius.
+   The naked-eye planets (`gfx/sky_planets.rs`): Mercury, Venus, Mars, Jupiter, Saturn and Uranus
+   where their orbits put them on the sky's date (Standish's JPL Keplerian elements for 1800 to 2050,
+   the Earth's too, a few arcminutes off the full ephemeris; recomputed once a day), turned with the
+   stars, as bright as their distances and phase make them (Mallama & Hilton 2018, Saturn's rings by
+   their tilt to us), in the colour their surfaces reflect (Mars orange-red, Jupiter cream, Saturn
+   pale yellow); they do not twinkle, but for a faint flicker right on the horizon. Tested against
+   JPL Horizons' places and magnitudes on eight dates (Saturn 0.09 degrees off, the others within a
+   hundredth; magnitudes within 0.06).
+11. Water (done, first step): no texture; waves for its normal; the sky and the sun's glint reflected
+   by Fresnel; its depth from the depth prepass, what lies under it tinted by pure water's
+   absorption (dual-source blending, where the GPU has it) and its blue-green glow in its place;
+   caustics on what it covers from its waves' curvature. Refraction is next (a copy of the frame
+   before the water).
+   - Sun Size (1x real to 20x): the disc's angular size, the shadows' penumbra with it, the same light.
+   - Aerial perspective: the air between the eye and the terrain takes light away (blue most) and scatters
+     the horizon's sky in, real air's density by default (16 km of LOD terrain shows it), denser as set.
+   - Light keeps bouncing: a bounce ray hitting a surface the last frame showed takes the light found
+     there (sky, light sources, bounced light), a bounce more each frame.
+   - Test worlds used by shader developers (not shipped, downloaded by hand): PTGISM by wrenchie48
+     (planetminecraft.com, coloured rooms for colour bleeding, RGB room, coloured lights, path-traced AO)
+     and TobyNight's Ray Tracing Shader Test Map (2026, GI, materials, glass, water). Seen in TobyNight's:
+     the coloured panels' light bleeds onto the walls; two rays a pixel over eight frames leave too much
+     grain, which a spatial denoiser is to take out.
+3. Emissive blocks that light: lava, torches, glowstone as light sources traced with rays; hard shadows for
+   torches and small lights (done). The mesher lists each section's visible emitters with a colour by
+   block (`mesher.rs` `light_colour`); `gfx/voxels.rs` keeps for every 8-block cell of the grid the four
+   whose light reaches it most, and the rays' pass traces a shadow ray toward each, falling off as the
+   inverse square of the distance to the light's block. The level's light stands in past the grid.
+   Rays start past their own block, so slab and path tops are lit until the grid holds shapes.
+4. The real sun, not vanilla's (done): its light and colour through the atmosphere by its elevation, white
+   overhead and red as it sets (`gfx/atmosphere.rs`); its 0.53° disc drawn in the sky in place of vanilla's
+   sprite, and its shadow rays toward a new point of the disc each frame, accumulated: the penumbra widens
+   with the distance to what casts it as the real one does (under a pixel for a slab, centimetres for a
+   wall, visible from trees and overhangs).
+5. Atmospheric scattering for the sky (done): Rayleigh and Mie scattering and ozone, Bruneton's and
+   Hillaire's Earth, single scattering times measured multiple scattering, from a transmittance table made
+   once and a 64x32 sky-view table made again on the CPU as the sun moves. The sky drawn, the sky's light on
+   the terrain and the fog all come from it, nothing of vanilla's sky colour or sunrise fan.
+7. Global illumination, one bounce (done): two rays a pixel over the surface's hemisphere, cosine weighted,
+   in directions new each frame; one that gets out brings the sky's light from the sky table, one that hits
+   a block that block's light (its map colour from a block-colour grid beside the voxel masks, `R8Uint`,
+   25 MB, run-length encoded on the CPU, lit by the sun through a shadow ray, the sky and the nearest light
+   source through a shadow ray). The rays' results are accumulated over frames (about eight, reprojected,
+   recognised by their distance): no fixed pattern's bands, no second shadow, light round corners. RT AO's
+   six rays no longer run with RT lighting: these rays are the occlusion.
+   Measured on the RTX 4090 at 3440x1440 in the test scene: 4.06 ms GPU with RT lighting, 3.88 ms with the
+   shadows alone (RT lighting off). Not yet measured in a headset.
+6. RT AO (done, from the albedo once 1 lands) and MSAA, if its cost on the float scene allows (VR first).
+12. The far field (done): the distant terrain's shadows and sky past the voxel grid. Before it, the traced
+   light faded out from 96 to 128 blocks and the terrain beyond lit itself from the light levels: no
+   shadow, the sky from a dome, a mountain range seen from above as flat as a map. RTX Remix has no far
+   terrain (its rays reach whatever the game draws), so this is the adaptation: what Remix's rays would
+   find there, from the terrain's heights.
+   - `gfx/far_heights.rs`: a height map around the camera, a texel 2x2 blocks (the top of the highest),
+     1024 texels a side (2048 blocks, as far as `lodDistance` 64 chunks), addressed toroidally as the
+     grid is, R16 with a pyramid of maxima in its mip levels (2.8 MB). The resident chunks' tops come
+     from their sections' occupancy (`Voxels::column_tops`), beyond them the drawn distant tiles' cells
+     (`Lod::drawn_columns`). A section meshed again with the same tops writes nothing; one whose tops
+     changed rewrites its 8x8 texels and their maxima up the levels, and so do a chunk leaving and the
+     distant tiles that came, went or changed (the chunk columns under them); the camera 128 blocks
+     from the centre moves the window by whole chunk columns, writing only those it moved onto in the
+     slots of those it left. A pass takes what changed at most twice a second and writes 2048 chunk
+     columns a frame of it (span `far_heights`); a full rebuild, once on opening a world or after a
+     jump, costs 3.3 ms on the CPU and was paid every 500 ms in flight before.
+   - `gfx/far_field.wgsl`, once a frame at most and for every view (the screen, each VR eye, foveated or
+     not, read the same textures): for each texel the height under which the terrain shades its column
+     from the sun or the moon and the caster's distance (the highest top along the light's way, each
+     lowered by the light's rise to it: a hierarchical march over the maxima, Tevs et al. 2008), and the
+     sky its top sees toward eight directions (the horizon's steepest rise over twelve distances from 4
+     to 345 blocks, horizon-based occlusion as HBAO and GTAO find it in a depth buffer). The light part
+     runs when the light moves, the sky part when the heights change.
+   - The rays' pass (`shadow_rays.wgsl` `trace`) reads it bilinearly: past the grid a point is lit above
+     its texel's shadow height, the penumbra as wide as the light's disc makes it at the caster's distance;
+     within the grid, the ray toward the light is traced to the grid's edge and the far field takes it on
+     from where it leaves (the far mountains' shadows reach the near terrain at sunset); across the
+     96-128 band the two blend as the traced rays fade, so the grid's square no longer shows. The sky seen
+     (the mask's `b`) is the eight directions' share weighted by how much the face turns to each, which
+     takes the place of the light level's dome in `terrain.wgsl` `rt_shade`.
+   - Measured on the RTX 4090, at sunset (11700 ticks), y = 700 above mountains (seed 1234, near 620, 820),
+     NVIDIA's RTX-Remix-Materials and `parallax:true`, the fogs off, the far field turned on and off every
+     20 seconds in one run (the GPU shared with another game): at 3440x1440 the trace kernel 0.263 ms off,
+     0.269 on looking north-east at 45 degrees, 1.24 off and 1.07 on looking straight down (within the
+     noise); the far field's pass 0.29 ms when it runs whole (light and sky, after the heights changed),
+     0.185 ms a frame while the time of day runs (the light part alone). Fake VR, two eyes of 1648x1328,
+     the same view (head 45 degrees down), in the stretches the GPU wasn't shared: the trace kernel 0.303 to 0.304 ms an eye off, 0.306 to 0.338 on, the frame 2.8 to 3.1 ms an eye either way; the far field's pass about 0.30 ms once for both eyes (the eyes' foveated rays read it as the screen's do). A per-pixel march over the heights (the first try)
+     cost 4.8 ms of trace at 3440x1440 under the same sharing (the sun 1.7, the sky's eight directions 3).
+   - Captures: `docs/media/rt-far-field-down.jpg` (straight down: before, the traced shadow stops at the
+     grid's square; after, the peaks' shadows run on across it) and `docs/media/rt-far-field-ne.jpg`.
+     `HORIZON_RT_SKIP=64` (or `horizon-ctl rt-skip 64`) leaves the far field out, `HORIZON_RT_DEBUG=7` shows its light toward the sun
+     (with RT lighting off).
+
+**Next**: that RT lighting mode; soft shadows (a jittered cone and temporal
+accumulation, careful in VR); plants and entities; cascades past the grid; comparing with approach B.
+
+## Next: the state of the art, NVIDIA's RTX Remix for Minecraft Java (October 2026)
+
+The reference to reproduce, read but not run: renderer 0.1.0, materials 0.58, showcase world 0.11.1. A Fabric
+mod for 1.21.1 that hands the scene to the dxvk-remix runtime, which **path traces** it. Its techniques:
+- **Direct light:** ReSTIR DI, every emissive block a light, culled by a "light reach".
+- **Indirect light:** ReSTIR GI with NVIDIA's neural radiance cache (CUDA) and SHaRC's hash-grid cache, up to four
+  bounces.
+- **Denoising and upscaling:** DLSS Ray Reconstruction.
+- **Volumetrics:** froxels, with one medium keyed to the camera (water, rain, cave).
+- **Sky, clouds:** a LUT sky; mesh clouds.
+- **Geometry:** one BLAS per section, GPU-resident.
+- **Distance:** a noisy fade into the sky at 70-80 % of the render distance.
+- **Post:** auto-exposure, bloom and local tone mapping.
+- **Materials:** LabPBR plus a `_sss` tint map, thin or thick SSS by block.
+
+No VR and no performance figures. Its code is Apache-2.0 (ideas free; the sky shader reusable with its notices);
+NVIDIA's SDK binaries and headers are not. Its materials pack and showcase world are CC BY 4.0, tested locally,
+never put in the repository.
+
+**Where Horizon stands against it** (after c0a06f7cd):
+- **Already there:** shadows from the drawn triangles (hardware rays, alpha-tested); area lights (eight a cell,
+  four sampled); one bounce plus feedback from the last frame; an a-trous denoiser; coloured shadows through stained
+  glass; water (absorption, caustics); the real sky and stars.
+- **Missing, ranked by what shows:**
+
+1. **ReSTIR DI:** reservoirs over each cell's candidates, reused in time and between neighbours, so that every
+   torch, lantern, glowstone and lava face casts soft shadows at a shadow ray or two a pixel; the "light reach" is
+   the cells' range.
+   Done (`shadow_rays.wgsl` `restir_light`):
+   - **Candidates:** a pixel weighs its cell's lights (up to eight) by their unshadowed light and draws one (RIS).
+   - **Reuse:** it merges the last frame's reservoirs where the surface was and at two neighbours (history capped
+     at twenty frames), so lights found nearby carry over.
+   - **Shading:** one shadow ray toward a point of the chosen light, then accumulated.
+   - **Stale reservoirs:** each holds its light's block, so the list being made again drops the stale ones.
+   - **Check:** in the test scene's hall (thirty torches and lanterns), the same light as four rays a light cell
+     a pixel, at a quarter of the shadow rays. Its cost is unmeasured so far: RTX Remix Minecraft held the GPU at
+     99 % during the run.
+2. **A world-space radiance cache** (SHaRC-like hash grid): the bounce rays write the light they find into
+   voxel-sized world cells, and read it where they hit, for multi-bounce light that holds still at two rays a pixel.
+   It is portable; NRC isn't.
+   Done (`shadow_rays.wgsl` `CacheCell`, `radiance_cache.wgsl`):
+   - **The table:** 2^20 cells, half a block near the camera and twice as large each doubling of the distance, one
+     a face direction.
+   - **Writing:** every pixel adds the light other than the sun's that its rays found (fixed-point atomics); a
+     pass once a frame averages each cell over about ten frames and empties those unseen for 240.
+   - **Reading:** a bounce ray reads the cell it hits before falling back to the last frame's screen, so light
+     bounces off surfaces the screen no longer shows, the same for both eyes.
+3. **The denoiser:** variance-guided (SVGF-class) for the indirect and the direct light, stable in VR (no ghosting
+   between the eyes, history kept per eye), and maybe sparse tracing (a third of the pixels a frame).
+   Variance-guided, done for the indirect light (`denoise.wgsl`):
+   - **Variance:** the accumulation keeps the indirect light's second moment (the sun mask's alpha), giving each
+     pixel's variance.
+   - **Filtering:** the a-trous passes also weigh a neighbour by how far its light differs, against six standard
+     deviations of that noise (less at the coarser steps). Grain smooths out and contact shadows and lit edges
+     stay.
+   - **Per eye:** the history is per eye already.
+   - **Still to do:** sparse tracing and the direct light's own filter.
+4. **Post-processing on the linear HDR scene:**
+   - auto-exposure, capped by day, night and rain;
+   - bloom;
+   - a local or ACES tone mapping;
+   - KRVR's SDR output kept right.
+5. **Water, second step:** refraction (a copy of the frame before the water), normal detail, the view from under
+   water (a camera medium). Already better than Remix: a pool lit from above.
+6. **Volumetric clouds** in the sky and in the rays (their shadows), replacing vanilla's.
+7. **Froxel volumetrics:** god rays through the air, the camera's medium (water, cave, rain), shadows through glass
+   within it.
+8. **SSS:** `_sss` tint maps when a pack has them, and a thin/thick list by block (leaves and plants thin).
+9. **The distance fade:** a coherent-noise fade into the LOD terrain's shading (Horizon draws 1024 blocks, against
+   Remix's 400).
+10. **Scene residency:** sections' structures rebuilt only when they are meshed again (already); the top-level
+    structure on the GPU (instances written by a compute pass from the resident list), for the CPU in VR.
+    Started: the instances stand around an anchor block that moves only when the camera is 64 blocks away (the
+    rays add the camera's offset from it). The top-level structure is made again only when the anchor moves or
+    sections come and go, not each frame the camera moves.
+11. **Entities, particles, the held light** in the rays: entities' structures made each frame from their drawn
+    vertices.
+
+**Where Horizon is to do better:**
+- **VR:** one path for both eyes, rays at KRVR's 1648x1328 an eye, foveated ray density.
+- **Portability:** wgpu and Vulkan, no CUDA, hardware rays optional, with the voxel grid behind them.
+- **Range:** 1024 blocks of LOD terrain.
+- **Version:** 26.3.
+
+**The order, decided by the user: Remix first, as it is, then Horizon's adaptations.**
+
+- **Step one: reproduce Remix's techniques and values**, without the old hybrid plan's shortcuts.
+  - **Language:** the host code stays in Rust in Horizon's crates, the GPU work in WGSL through wgpu.
+  - **Nothing native from Remix:** no Remix runtime, no dxvk, no JNI or Java, no CUDA, no NVIDIA DLL at run time.
+  - **NVIDIA-only pieces** are reimplemented from their published papers, with every gap noted below: NRC on CUDA,
+    DLSS Ray Reconstruction, the RTXDI and SHaRC SDKs. No SDK code or header is copied.
+  - **Escape hatches**, allowed if measurements call for them:
+    - wgpu's experimental features (ray queries, subgroups);
+    - Vulkan extensions through `wgpu-hal`, behind an availability check and always with a plain-WGSL fallback:
+      ray reordering (`VK_EXT_ray_tracing_invocation_reorder`), cooperative matrices (`VK_KHR_cooperative_matrix`)
+      for a neural cache.
+- **Step two, apart: the adaptations to Horizon.**
+  - VR, rays at KRVR's resolution, foveation.
+  - The 1024-block LOD terrain.
+  - The CPU budget.
+  - Meanwhile one code path for the screen and VR is kept, without optimising for VR at fidelity's expense.
+- **Test scene for each step:** a copy of "NVIDIA RTX Demo" with the RTX-Remix-Materials pack, the scene to compare
+  with Remix. Each step's GPU cost is noted beside what Remix shows on the same scene, to see where an escape hatch
+  would pay.
+
+Remix's values, from its `native/rtx.conf` and its per-situation confs (`minecraft-logic/confs`):
+
+- **Scale:** sceneScale 0.01, so 1 block = 1 m.
+- **Auto-exposure:**
+  - average mode 0, speed 10, centre metering 0.75;
+  - EV from -2.5 to +1.5, capped at -0.5 at dusk and night, and at -1.0 in rain and thunder.
+- **Local tone mapping:**
+  - exposure 0.214;
+  - shadows 1.4 (1.75 in rain, 2.0 in thunder);
+  - highlights 2.5;
+  - preference sigma 3.5, offset -0.1;
+  - the non-legacy ACES.
+- **Bloom:** 8 steps; burn 0.1 and threshold 250 by day, burn 1.5 and threshold 1 by night.
+- **Translucency and materials:**
+  - direct and indirect translucent shadows on;
+  - opacity micromaps off;
+  - anisotropic filtering off, smooth relief filtering off, UV bounds looping on.
+- **Volumetrics:** froxels to 256 m; the runtime's own atmosphere off; settling over 8 frames. Media:
+  - water: transmittance 0.6, 0.9, 0.89 over 20 m; albedo 0.206, 0.999, 0.903; anisotropy 0.4;
+  - cave: transmittance 0.85 over 20 m; albedo 0.9; anisotropy -0.2; no fog remap;
+  - rain: transmittance 0.996 over 10 m;
+  - thunder: transmittance 0.97 over 10 m.
+- **Distance:** a noise fade (mode 3, function 1, noise scale 20) from 358.4 to 409.6 m, scaled with the view
+  distance.
+- **Sparse rendering:** quality 0.3, with RTXDI's reuse for the pixels not traced.
+- **Caches:**
+  - SHaRC: 1000 frames accumulated, stale after 1024, queried for thin opaque primary hits;
+  - NRC: 600 m bounds, wrapped positions, no reset on camera cuts;
+  - NEE cache: reshuffle resilience off.
+- **Scene:** GPU-resident; BLAS merging minimised (one dynamic BLAS a mesh); the view model (the arms) on, with
+  perspective correction.
+
+**Each technique, as Remix or an open equivalent** (status after 9348fe274):
+
+| Technique | Horizon | Status |
+|---|---|---|
+| Primary visibility | rasterised G-buffer (the depth prepass and the terrain's fragments), rays from it; on water, stained glass and ice the ray pass replaces the reflected surface (`hw_reflect`): a ray from the camera meets the nearest translucent triangle in front of the solid depth, turns off it (off the waves on water), meets what it reflects and lights it with the sun's shadow ray and the radiance cache; the material model takes it in place of the sky (`rt_mirror`) | open equivalent of Remix's PSR for reflections. On the water's top the ray also bends by Snell's law (1.33, total internal reflection from below: Snell's window) and what it meets replaces the scene behind (`shadow_rays_psr.wgsl`), absorbed over the distance run in the water; through glass too (see Glass). Gaps: primary visibility rasterised, not traced; one reflection and one refraction, no PSR chain (glass or water behind the first glass only tints); what the reflected and refracted rays meet is lit by the sun's shadow ray and the radiance cache, at least by its faces' block light level (the light sources' light over the square of the steps from them) and, within a block of a light source, by that source's light at point-blank range unshadowed: the light of a lantern behind a window or under water reaches what is around it, but the lantern's own body looks duller than seen directly (the terrain's vertices carry no emission there to make it shine) |
+| Direct light | ReSTIR DI over the 8 lights each 8-block cell lists (those lighting its centre most, chosen on the CPU from all lights in range: a static NEE cache), temporal and spatial reuse from the last frame, one shadow ray; a light reaches 24 blocks at level 15 (half again vanilla's), falling off by the inverse square under a window; the moving lights (held torch, burning mobs, dropped items) added by RIS with one shadow ray | open equivalent of RTXDI. An NEE cache as Remix's in kind: each cell counts its shadow rays toward each of its lights and those that got there, and the draw weighs each light by that learnt visibility (at least a tenth), so lights behind walls are drawn less. Gaps: the cells' lists are chosen on the CPU by unshadowed light, the cache only reweighs them; Remix's lights have no cut-off; no sparse rendering (`quality 0.3`): every pixel traces, more rays than Remix for the same image |
+| Every emissive block a light | emitters touching air, coloured by block (`mesher.rs` `light_colour`) | as Remix in kind; to do: per-block multipliers, the held light |
+| Indirect light | ReSTIR GI: one cosine ray a pixel (traced one frame in four on a surface already seen, in turns by 8x8 tiles), resampled with the last frame's reservoir and two neighbours' (same face and distance), a visibility ray for reused samples. With hardware rays the bounce rays meet the drawn triangles (alpha-tested, through tinted glass and water), the hit's normal from its triangle and its colour from its texel times the vertex tint; the hit is lit by the sun's shadow ray and the radiance cache, and a cache miss traces a second bounce (lit by the sun and the cache). Without them, the voxel grid's blocks and map colours. GPU: unchanged within the noise (8.5 against 8.7 ms, 3440x1440, the night hall) | open equivalent of Remix's ReSTIR GI and path tracer. Gaps: two traced bounces then the cache, where Remix traces up to 4; the neighbours' Jacobian taken as 1; the hit's material is its albedo only (no normal map, roughness or emission at the hit); the vertex tint keeps vanilla's directional shade |
+| Radiance cache | a hash grid of surface cells (SHaRC-like): each cell averages its frames up to 64 (an exponential average past them; Remix's SHaRC averages 1000, but its update rays trace four bounces where ours trace one and take the rest from the cache, which over 1000 frames never converged to its multiple bounces: `HORIZON_RT_SKIP` 1073741824 keeps 1000) and is emptied after 1024 frames unseen; read by the bounce rays' hits | open equivalent of SHaRC. Gaps: NRC is not reproduced, since an MLP trained each frame needs cooperative matrices to be fast (later escape hatch: `VK_KHR_cooperative_matrix`); the cells are surface cells a 1/1024 block of light apart, not SHaRC's level-of-detail by distance |
+| Denoiser | after NRD's ReLAX, Remix's denoiser without DLSS Ray Reconstruction: a per-pixel history of up to 30 frames (each frame adds 1/(n+1)), reprojected bilinearly with face and distance checks; then a variance-guided a-trous filter (5 passes of 3x3, SVGF) over the indirect and the direct light together, blurring wider where the history is under 4 frames (ReLAX's history fix); the slow history clamped to a 6-frame fast history's mean within 2 standard deviations (ReLAX's history clamping), so a light switched on or off shows within 6 frames | open equivalent of ReLAX, gaps: Remix's default is DLSS Ray Reconstruction (NVIDIA-only, not reproduced; left for an optional native mod, NVIDIA's SDK may not be in the repository); the first pass brings a pixel brighter than 4 times its brightest neighbour on its face down to that (ReLAX's anti-firefly) | open equivalent of ReLAX; to do: separate specular |
+| Translucent shadows | direct (sun, lights) and indirect (the bounce rays, `hw_hit`'s `through`) through stained glass and water, with the water's caustics; each glass face crossed is a wall of its colour (`glass_wall`: Fresnel, Beer-Lambert over the wall along the ray bent inside it, plain glass's diffuse layer), so layers of colours multiply (yellow over cyan lights the floor green) | as Remix; the walls are the thin-walled adaptation (see Glass) |
+| Sky | `sky_atmosphere.wgsl`, a WGSL port of Remix's `sky_atmosphere.comp` (Apache-2.0, notices in `THIRD_PARTY_NOTICES.md`): its constants, a 1024x256 transmittance table, a 64x32 single-scattering view of 16 view and 16 light steps, analytic multiple scattering 0.65 and the faked ground, on the GPU when the sun moves | as Remix. Differs: the air's coefficients are the spectrum's seen through the sRGB primaries (Rayleigh 6.62, 13.72, 32.32e-6, ozone 2.52, 1.79, 0e-6, aerosols 6e-6: within 2 % of a spectral sky's colour from noon through the civil twilight; `HORIZON_SKY_AIR=old` for 5.5, 13, 22.4e-6 and the three-wavelength ozone), the view march takes steps that lengthen with the distance and integrates each through its own air (`HORIZON_SKY_MARCH=old` for Remix's even steps with the sun's Mie halo doubled), and the multiple scattering is Hillaire's 2020 table (32x32, made once; `HORIZON_SKY_MULTIPLE=old` for Remix's 0.65 of the upper sky's mean, some 40 % less sky light by day); a last pass resamples its world-fixed sky into Horizon's sky-view table (azimuth from the sun, square-root elevation); the sun and moon discs have angular radius 0 in the table (they are drawn on their own); Mie anisotropy 0.8 is assumed (the mod sets it); the sun's light on the ground is the CPU twin of the transmittance table (16 steps, sea level); the moon scatters in the table like the sun, its light scaled by the phase (a full moon lifts the night sky and the terrain's ambient and hides the faint stars and the Milky Way, which are dimmed by the sky's own light, a new moon leaves a tenth of it, NIGHT_GLOW, and shows them fully; the table is made again when the phase changes); shooting stars (`rt_meteor`, `meteor_make` in terrain.wgsl): stateless, hashed from real-time slots, each a meteoroid on a straight line from a radiant: the year's showers on their real dates (`sky_stars::meteors`, the IMO's working list: Quadrantids, Lyrids, eta Aquariids, Southern delta Aquariids, Perseids, Draconids, Orionids, Leonids, Geminids, Ursids, each its peak, zenithal hourly rate, activity half-width, radiant, speed and population index; one year in ten an outburst of five times the rate, one in thirty a storm of a hundred times for the Leonids and Draconids), only while the radiant is above the horizon and as many as the sine of its height says, and about ten sporadic meteors an hour from random radiants (index 2.8); magnitudes to 6 from the population index (a fireball, -4, one in a few hundred), 80-125 km start and a 15 km + 5 km/mag burn, the classical single-body light curve L/Lmax = 9/4 (rho/rho_max)(1 - rho/3 rho_max)^2 in the air's exponential density (a long faint rise, a late peak, an abrupt end; a quarter flare), a colour mixed from Na/Mg/Fe/Ca/air by composition and speed along the path (a fireball's blue-green magnesium head, its end turning orange), a line as wide as it is bright (a needle: thin where it lights up and where its wake fades), only the bright ones showing a head brighter than the trail in a glare, a faint green train for the bright fast ones; by the Shooting Stars setting: Rare by default (the real sky's showers at eight times their rates: a game's night is minutes), Frequent a hundred times, Off none (`HORIZON_METEORS=off|rare|frequent` overrides it, `HORIZON_SKY_DATE` picks the night of a shower), dimmed like the stars |
+| Eye of Aldhani (experimental) | `HORIZON_METEORS=aldhani` arms it, `horizon-ctl aldhani start\|stop\|SECONDS` runs it (300 s: a minute to build, a minute to die out, as a stream of meteoroids whose front and then tail sweep the sky from beyond the northern horizon to the eye over 35 s: the first ones rise over the northern horizon, the last burn toward the eye). A compute prepass (`gfx/aldhani.rs`, `aldhani.wgsl`) makes the field each frame from the event's clock alone (stateless, the same for the screen and every eye): 270336 slots of 12.5 microseconds (some seventy thousand meteors burning at the height), 40960 long slots of 1/2560 s (the earthgrazers) and 16384 orbiters' slots of 1/50 s; 1024 streaks a sky tile. Each is a meteoroid at 130-160 km flying away from the observer toward the eye, 8 degrees under the southern horizon, where the streaks converge, out of a radiant 8 degrees over the northern horizon (35-70 km/s, a 20-80 km path, the single-body light curve, population index 2.2, a 0.2-0.5 s glow behind the head), lit anywhere from near the eye to the radiant, a quarter of the short ones within 30 degrees of it (seen head-on: short streaks and points); the earthgrazers cross the whole sky in 4-15 s. They are dimmed by distance, airmass and the horizon's haze, short ones thinner. The show's palette by patches of sky (measured on its frame: about 75 % turquoise and cyan, 10 % blue, a little gold and red on the west, and among them anywhere gold to orange ones, three in twenty, and violet, one in forty). The streaks are binned into a 64x64 folded-hemisphere grid of sky tiles (1024 a tile) so the sky (`aldhani_streaks`, and the water's reflection) only reads those crossing its pixel's tile, drawn as the shooting stars are (Gaussian lines a pixel wide at least, a sharp head, the ember behind, a bright one's green train; the short bright ones sparkle). The sky's glow is the meteors' own: each adds its light into that grid, blurred by a pass of its own (`cs_aldhani_glow`) and read by the sky (`aldhani_burning`), beside a pale haze and the eye's core (`aldhani_glow`, in the sky table's light for the terrain, the bounce rays and the GI); each meteor is a light (its share of 16 full moons by its power over its distance squared): a running sum of the shares, two candidates drawn from it by binary search, one kept by its facing (RIS), one shadow ray, added to the direct light (bounded, no firefly). On the side the stream comes from, orbiters: bound bodies at 8 to 10.5 km/s, their perigee 85 to 115 km up north of the observer, integrated under the Earth's inverse-square pull, rise from below the northern horizon as if from round the planet, skim the air and climb out of it, their light by the air's density. The meteors burn in front of the Moon. The shared part (sizes, eye, envelope, palette, glow) is one text in the three shaders, kept equal by a test | Horizon's own (no Remix counterpart); to do: froxel scattering of the meteors, entities' rim light, a graphics option |
+| Clouds | `rt_clouds.rs` (the default since the clouds' rework): a volume, after Nubis and Frostbite's clouds and the packs that follow them. Cumulus in a slab 800 to 2200 blocks up (Perlin-Worley shape cut by a weather map of coverage and type, from stratocumulus to congestus; Worley erosion, an octave finer near the eye), an altocumulus layer at 3.8-3.95 km (small flattened cells in patches, a march of its own in steps of about 100 blocks) and a cirrus sheet at 8 km streaked along the wind, the layers aloft drifting faster; each day's weather its own (more or less altocumulus and cirrus; thicker in the rain), the cumulus' cover wandering at random over the ticks (`cover_bias`: value noise over two days, half a day and 2.5 minutes, too slow to see happen; `HORIZON_CLOUD_WEATHER=daily` the old one value a day, `HORIZON_CLOUD_COVER=0..1` or `rt_clouds::set_cover` holds it). Lit by the sun through six steps toward it in four octaves of multiple scattering with a dual-lobe phase, by the sky and the ground through short marches up and down, the powder effect, Hillaire's integration; the march skips clear air in long steps. Marched once a frame into a dome of the sky's directions (4096x1024, rows finer at the horizon), a sixteenth of it a frame, reprojected by each texel's distance and the wind (as a difference of two mappings, so the trigonometry's rounding cancels) and accumulated, the neighbours clamping the history only as far as it moved; every view, both eyes included, looks it up (`HORIZON_RT_CLOUD_DOME` rows, `HORIZON_RT_CLOUD_CHECKER` 1/2/4). **RT Cloud Distance** (Horizon's graphics settings, `cloudDistance`; vanilla's Cloud Distance keeps the mesh clouds) sets how far the cumulus reach: Auto is 40 km or the far terrain's distance if farther, at most 7168 chunks (115 km, where cumulus sink under the curved horizon); the haze keeps one scale at every distance, and the altocumulus and cirrus reach farther with it. A camera within 150 blocks of the base marches per view (`HORIZON_RT_CLOUDS=march` always). `HORIZON_RT_CLOUD_STILLS=dir cargo test -p horizon-client --lib rt_clouds::tests::stills -- --ignored` renders stills without the game (lavapipe works). **Shadows:** a 1024x1024 map of the light's transmittance through the three layers by where its ray crosses the cumulus' base, 4 blocks a texel, wrapping every 4096 blocks (the period `rt_camera` wraps at), a sixteenth of it marched a frame (all of it after a jump); the terrain, the water and the glass (terrain.wgsl `rt_cloud_shadow`) read it in 7 taps over the penumbra the light's disc casts from the clouds (its angular radius times the distance, so the Sun Size setting widens it), faded past 2 km and as the light nears the horizon; the entities do not read it yet. `HORIZON_RT_SKIP=2048` or `HORIZON_RT_CLOUDS=mesh` keeps the mesh below, whose tiles the rays meet. Before it, `rt_cloud_mesh.rs`: meshes of the clouds' noise density (surface nets), a 700-1300 block slab in 1024-block tiles to 6.5 km, 32-block cells near and 64 beyond, moved by the wind without meshing again, meshed on a worker (65k triangles, 63 ms for the whole ring); shaded by a pass with the sun, the sky table and a through-the-edge lobe. `HORIZON_RT_CLOUDS=march` keeps a raymarched variant, `0` vanilla's. GPU about 0.2 ms at 3440x1440 | open equivalent, gaps: surface nets rather than marching cubes (fewer triangles, no table); in the rays since: each tile is an opaque BLAS built once (rebuilt when its key changes), its instance moved by the wind (placed again after a block of drift), so the sun's and the lights' shadow rays meet them (cloud shadows on the terrain); the bounce and reflection rays skip them (ray mask), the sky pass already carries their light; a crack can show at the 32/64 seam; the clouds are drawn after water and glass |
+| Volumetrics | froxels to 256 m (`froxels.rs`) with Remix's camera media (water, cave, rain, thunder), the sun's shadow rays through tinted glass and water (its caustics), the sky's light and one importance-picked light source a froxel, 8-frame settling, each froxel sampled at an R3-jittered point and reprojected in world space from the view's own eye (the bobbing included), the history shortened and clamped to the new samples' neighbourhood where its froxel moved, the composite read through a cubic B-spline (smooth, stable shafts while walking); on with RT lighting, the medium from the camera's sky light and the weather; under water it replaces vanilla's water fog. GPU about 0.4 ms in the open at 3440x1440 | as Remix's media; gaps: the open-air medium is ours (0.985 over 100 m, `HORIZON_FROXEL_AIR` to test another: at 0.95 it laid a white veil over the sky toward the sun); rain and thunder albedo and anisotropy guessed; the voxel fallback treats shaped blocks as full cubes |
+| Natural fogs | in the froxels (`natural_fog.rs`, the Natural Fog setting: off, light, normal): a morning's valley (radiation) fog pooled in the hollows to a sharp top (the valley floor around each column plus 45 % of the relief, from a relief map of the world and the far terrain: 512 blocks at 2 a texel, 16 km at 64), forming from 1 h, thickest at sunrise, lifting from below and tearing from 6:45 to 10:30, likelier in humid biomes and after rain, rare in deserts; the steam fog ("sea smoke") a few blocks over calm water when the air is colder than the water (night, morning, evening, cold biomes), rising wisps drifting with the wind, burnt off by the sun, reflected in the water; lit in the inject by the sun's shadow rays through the fog toward the sun (its top lit gold, its depths in its own shade, a share of multiple scattering), a forward phase (HG 0.8 with a back lobe); density stepped through each slice in the integration (deterministic: the same for both eyes and every frame's history), 32 more slices to 16 km for the far valleys, lit without rays. `FogWeather` (humidity, air and water temperature) is what a real weather will drive; `HORIZON_FOG_HUMIDITY`, `HORIZON_FOG_AIR` force it | Remix has no natural fog: ours, on its froxels |
+| Water | its own look whatever the pack (no texture, only the biome's colour): sixteen plane waves from a 5 m swell to 15 cm capillary ripples (gravity-capillary dispersion, crests bent by a slow swirl, finer ones fading at a pixel's size), Fresnel, the traced reflection and Snell refraction, Remix's medium (transmittance 0.6, 0.9, 0.89 over 20 m, single-scattering albedo 0.206, 0.999, 0.903) plus pure water's absorption and the biome's, so shallows are turquoise and depth night blue; caustics on the sun's rays through the surface: the inverse area ratio of the Snell-refracted rays (the surface's curvature through the refraction's Jacobian), a fine continuous network in world space, per colour with water's dispersion (indices 1.3311, 1.3337, 1.3378) so its edges fringe | as Remix for the medium and reflections; gaps: procedural waves where Remix uses its normal-map flipbook; the caustics are a first-order Jacobian of the waves on the sun's rays, not traced photons (Remix has none either), washed out with depth and distance; the shadow ray still runs along the air direction, not bent by the surface |
+| Rain and wet ground | with RT lighting the rain is the renderer's own (`rain.rs`, `gfx/rain.rs`, terrain.wgsl's `RAIN` block; `HORIZON_PHYSICAL_RAIN=0` keeps vanilla's): no `rain.png`, its rate in mm/h (vanilla's rain level 8 mm/h, its thunder 35 mm/h, times this shower's intensity: each shower, each snowfall too, draws its own when it starts, 0.3 to 2.5 times log-uniformly around 0.9 from the game time it started at, steady through it (the drops' sizes and speeds follow the rate: a drifting rate left them hanging), the wind past a thunderstorm's in a cloudburst; `rain::Intensity`, `HORIZON_WEATHER_INTENSITY` forces the factor, 1 vanilla's; the log names each shower's draw. On glass (not ice) where the rain reaches it, `rt_glass_weather`: beads, each a lens bending the face, renewed every few seconds, and on walls drops that run down a block in a second or two leaving a wavering wet trail, drying off with the wetness; where it snows frost creeping in from each block face's edges as the cover builds, most along the bottom, feathery, a rough diffuse layer as ice's frost, receding as it melts; `HORIZON_RAIN_MM_H` forces it; `rain::Rain` is what a weather system will set). **Drops:** instanced streaks without vertex data, 40 tracks a cell of a 64x64 grid of one-block cells in a band 16 blocks tall and 24 a cell of a 32x32 grid of four-block ones (to 64 blocks) in one 48 tall, about 1.2 drawn drops a cubic metre near at 8 mm/h, hashed from the cells' world coordinates (the same drops for both eyes); their sizes Marshall-Palmer's for the rate (0.5 to 6 mm drawn, the share of tracks holding a drop the visible drops' density against a 50 mm/h downpour's), each at its terminal velocity (Atlas et al. 1973's fit to Gunn and Kinzer: 2 m/s at 0.5 mm, 9 m/s from 5 mm), leaning with a slowly turning wind (1 to 4 m/s, stronger in a storm); a streak is the path over a 33 ms exposure (the eye's persistence), a pixel wide at least, as opaque as the drop's diameter over the streak's length (Garg and Nayar 2006, times 60) and less when thinner than a pixel; its light the sky seen through the drop (bent, turned over: the sky above the eye's line), the sun's forward lobe through it (Henyey-Greenstein 0.8) and the rainbow at 40.8-42.3 degrees from the antisolar point, shadowed where the rain map's columns toward the sun stand above it, the block light above its column and the moving lights; it stops on vanilla's rain heightmap (MOTION_BLOCKING) and leaves a thin circle there, flat on the ground or the water, spreading and fading over 0.5 s (no Minecraft-like droplet splash); drawn over the scene after the TAA's resolve (whose history, a sixteenth new a frame, washed thin moving streaks out), with the still matrix, blended, depth tested against the world's. **Overcast:** whether or not the clouds are drawn, the rain covers the sky (`atmosphere::overcast`): the sky table is blended toward a CIE overcast sky (the zenith three times the horizon) by the rain level (all of it from two thirds), letting through a third of what a clear day gives a level surface (a tenth in a storm); the sun's and the moon's light dim to 3 % behind it, their discs, the glare, the stars and the Milky Way hidden; Remix's rain and thunder exposure caps (set for a light Remix does not dim) are raised by the stops the cover takes off. The weather's levels now reach the froxels and the post-processing without a shader pack (`frame.pack` holds them only with one). **Veil:** the froxels' medium is the air plus the drops' extinction (pi N0 / slope^3, geometric optics): Remix's rain (0.996 over 10 m) is about 1.5 mm/h of it, its thunder (0.97) about 25 mm/h. **Where it is wet:** a 256x256 rain map around the camera (one word a column: its rain height, its top block's surface by name and step sound, the block light above it, whether it rains there, how many neighbours stand higher; refreshed 8 rows a frame, new strips at once), read by the terrain, the parallax terrain and the rays; a surface is exposed when the columns around the point it faces let the rain down to it, blended between column centres with a little noise (no staircase under a roof's edge), the sky light past the map. **Materials** (after Lagarde 2013's dynamic rain): darker by porosity (from 0.6 closed to 0.25 open; LabPBR's blue up to 64 when the pack gives it, else the surface's: stone 0.35, wood 0.5, soil 0.7, sand 0.9, wool 1), a smooth water film (roughness 0.08 closed to 0.45 open), sand and wool drink it (matte) and grass half, metal and glass run off (a film, no darkening); with hardware rays the film on the tops of stone, wood and soil mirrors what the rays meet too (`hw_puddle`), not grass. **Puddles:** on the tops of the columns that hold them (stone, wood, soil and paths, grass more rarely, sand only in a long downpour; never leaves, plants, partial blocks, metal, glass), where a world-space noise (3 octaves, 0.5 to 4.5 blocks) plus the hollows (neighbours higher, blended between columns) plus the pack's relief (POM depth, or the height map's) rises above the level the rain filled them to; they keep back from edges over lower ground or blocks that hold none and run on across blocks at the same height; flat water (roughness 0.02, Fresnel 0.02), the rain's ripples on them, and with hardware rays the traced reflection (`hw_puddle`, the water's `hw_reflect` path) of the sky, the terrain and the lights. **Impacts** (SEUS's idea of impacts over every wet surface, with a procedural field instead of its 60-frame ripple flipbook): rings spreading from strikes in two layers of quarter-block cells, about thirty a square metre a second in moderate rain, on puddles and on the water's top where the rain reaches it trains of capillary rings about 1.7 cm apart that cross their neighbours' (only their fronts past a pixel's size), small circles on the film of every wet top, sharper on a surface that is drying (only the strongest show), their fronts steep enough (slope 2.5 on standing water, 2 on a film) to show in an overcast sky's reflection, their broken crests scattering 8 % of the zenith's light; as a top soaks, the water fills its relief and the normal map's slopes fade (the water's waves untouched, the ripples added to their slope in its shader and its traced reflection). **Time:** the surfaces soak in about 50 s of moderate rain (faster in a downpour), the puddles fill over 4 minutes once soaked; dry, the surfaces dry in 7 minutes in the shade, the puddles in 15, three times as fast under the noon sun, per pixel by its sun visibility (`HORIZON_WET_SPEED` for time lapses). Debug: `HORIZON_RT_DEBUG=9` the puddles' traced reflection, `10` where the rain reaches (red), the puddles (green), the map known (blue) and the drops in magenta, `11` wetness, porosity, gloss; `HORIZON_RAIN_DEBUG` logs the rain every 2 s. Test scene: `tools/rain_test_scene.sh` | Remix has no rain of its own beyond its rain and thunder media (and the GTA IV Remix mod's particle rain and wetness layer with puddles and occlusion checks); Minecraft RTX only greyed the sky. Gaps: the drops' light sources are the block light above their column, not traced; puddles reflect only with hardware rays (else the sky); a puddle's shore is per pixel, not a meniscus; walls get no drips or rivulets; the rain map reaches 128 blocks (past it the sky light says where it is wet, without puddles) (snow: the row below) |
+| Snow | with RT lighting and the physical rain the snow is the renderer's own too (`snow.rs`, `gfx/snow.rs`, `game/snow.rs`, terrain.wgsl's `vs_snow`/`fs_snow` and `rt_snow`; `HORIZON_RT_SKIP=1048576` or `HORIZON_PHYSICAL_SNOW=0` keeps vanilla's snow columns), but not the rain drawn white. Where it falls is the rain map's (bit 11 of a column: vanilla's precipitation by biome and height says snow; the height is now 11 bits, -1024 to 1023). Its rate in mm of water an hour (vanilla's rain level 1.5, its thunder a 5 mm/h blizzard; `HORIZON_SNOW_MM_H` forces it). **Flakes:** instanced quads without vertex data, 64 tracks a cell of a 48x48 grid of one-block cells in a band 12 blocks tall and 32 a cell of a 32x32 grid of four-block ones in one 24 tall; the cells tile the world (every tile the same, hashed from the cell in its tile: the same flakes for both eyes) and each flake is drawn at the copy of its place nearest the camera, so the wind blows the field through the grid with no edge to empty from and the flakes stay put in the world, vertically too, as the head moves (the rain's band follows the camera, unseen at 8 m/s, not at 1); their sizes Gunn and Marshall's for the rate (1 to 5 mm of water, flakes four times as wide: 4 mm to 2 cm, drawn three times that so the snow reads as snow in a headset, falling at their real size's speed; one well under a pixel is left to the veil), their share of the tracks growing with the rate to a heavy blizzard's (8 mm/h), each at Locatelli and Hobbs' terminal velocity for aggregates (0.8 D^0.16: 0.7 to 1.1 m/s), carried by the wind: the prevailing wind over the whole fall, near the camera the wind the terrain makes where the flake is (gfx/wind.rs: ridges, lee, valleys) and its gust over the last 1.5 s, each on its own tumbling spiral (2 to 10 cm, 1.5 to 4.5 rad/s, swirled wider by the wind: three times at 4 m/s); faded where its fall wraps. A flake is a small white body: the sky's light around it, the sun by a diffuse sphere's phase plus the crystals' forward lobe (Henyey-Greenstein 0.7, the flakes lit up against a low sun), shadowed by the rain map's columns toward the sun, now and then near a crystal's glint, the block light and the moving lights; blurred along its path over 20 ms as much as the path crosses the view, a pixel wide at least, its coverage spread over the quad; one that lands rests 1.2 s on the ground (melts on water). Drawn in the rain's pass (after the TAA's resolve, depth tested, blended; the `rain drops` GPU stamp covers both). **Veil:** the froxels' snow medium where the camera's column snows (eased over 3 s across a biome's edge): the air plus 3.912 over the visibility snow leaves (about 2.5 km at 1 mm/h, 2.2 km in vanilla's snow, 1.5 km in a blizzard: as the rate to the -0.3, lighter in a storm than real snow, some 800 m after Rasmussen et al. 1999, which drowned the land a hundred blocks out), albedo 0.98, g 0.5. **Cover:** a depth in cm that builds while it snows (ten times the water, the game's time 72 times the real one: about 1.8 cm a minute of moderate snow, at most 12 cm; a world opened in the snow starts at 4 cm) and the sun melts once it stops (a centimetre in 4 minutes at noon, none in the shade or at night; `HORIZON_SNOW_SPEED` for time lapses, `HORIZON_SNOW_COVER_CM` forces it); where the rain map says it snows: the top faces of a column's top block whiten in patches (3 octaves of noise against the depth over what the surface needs: 1 cm sand and wool, 1.5 stone, wood, soil, paths, 2 partial blocks, 2.5 leaves, 3 grass, 5 metal and glass; none on water, snow, ice, lava, magma), then whole; the top edge of that block's sides where they stand clear takes the cover's thickness, ragged; the walls facing the prevailing wind take drifts plastered on them, more the harder it blows; the snow is white (0.88-0.92), rough (0.7), flat (it fills the normal map), opaque to the light through a leaf, its crystals glinting in the sun (8 % of 4 cm grains, a facet tilted at random, near only). The terrain and the parallax terrain (`rt_wet` calls `rt_snow` after the rain's wetting). `HORIZON_RT_DEBUG=10` shows the flakes in cyan; `HORIZON_SNOW_DEBUG` logs the snow every 2 s | Remix has no snow; vanilla has its snow columns and snow layers placed by random ticks (kept: the cover adds to them). Gaps: the cover is shading, not geometry (no depth to walk on, no silhouette past the rim); one depth for the whole world (shown only where it snows), not per column; the rays' bounces and reflections see the surfaces without it; plants and grass blades take none; no flakes in the reflections |
+| Lava | its own look whatever the pack: domain-warped noise flowing with the time (an integer hash, PCG3D), black-body glow from dark red to yellow-white up to 14 paper whites, a cooling basalt crust lit as the terrain | open equivalent (Remix's lava is its material asset); to do: its light in the bounce rays' hits |
+| Heat haze and fire | haze: the air above torches, wall torches, campfires, fire, soul fire, candles and lanterns refracts the scene behind it (`gfx/haze.rs`, `haze.wgsl`): a column of rising noise (an integer-hash value noise, a few blocks tall above a fire or a campfire, 0.7 block above a torch, a quarter of one above a candle), strongest just above the flame and fading with height, across its width and with distance (14 to 24 blocks), bending the light by up to 0.1 block (0.03 a torch), on the linear scene after the TAA resolve and before the exposure and tone mapping. The flames are the light sources tagged with a kind in the level's high nibble (`mesher.rs` `lights`, `transmission::flame_kind`; `Voxels::flames` lists the 32 nearest); the pass draws one screen rectangle a flame, in two draws (the scene sampled at the offset into a scratch target, then copied back: no full-screen work), nothing with no flame in range; the depth buffer keeps what is in front of the column undistorted and out of the haze. One path for the window and each eye. `HORIZON_HAZE=0` leaves it off. Fire: the sprites of fire, soul fire and the campfires' flames (`thin_layers` bit 2) keep their alpha shape but the shader gives them their heat (`rt_fire`: world-fixed noise streaming up with the time, hot at the foot, cooling to the tips that the noise tears off, cut by a dither the TAA softens), coloured as a black body by that heat (`rt_flame`), soul fire blue; a few ALU on those fragments, no geometry. GPU at 3440x1440 on a 4090 with 24 flames in view (the many-lights test scene, night): 9.77 ms with `HORIZON_HAZE=0`, 9.79 ms with the haze (p50 of ten 4 s benches each, within the noise); 7.66 and 7.55 ms looking at the sky with no flame in range (nothing is recorded) | open equivalent in kind (Remix has no haze of its own); gaps: the haze is screen space on the scene behind (it does not bend the rays or the reflections), a flame in a VR eye uses that eye's own matrices (untested in a headset); the procedural fire is in the Parallax shader (a pack with maps and `parallax`), the plain terrain shader keeps the sprite |
+| Glass | stained glass, panes, plain glass and every translucent block but water (`terrain.wgsl` `rt_glass_at`, `shadow_rays_psr.wgsl` `hw_refract_glass`, `shadow_rays_hw.wgsl` `hw_glass`): RTX Remix for Minecraft's translucent material (its `BlockTextureManager`): a dielectric of index 1.52, transmittance 0.97 over 0.35 block times the texel's colour (the atlas as its transmittance texture), plain glass (`block/glass`, `block/glass_pane_top`) grey 0.97 under a diffuse layer as opaque as its texel's alpha (`useDiffuseLayer`); the pack's normal map. Adapted: thin-walled (Remix's `thinWalled`) with the measurement distance shared between the two walls, since over a whole block Remix's colours leave red glass black (3 % of red through): square on a block or a pane shows its texture's colour, deeper and darker as the ray slants. The PSR ray bends in at the face, runs to the face it leaves by (total internal reflection off it up to three times), bends out and meets what lies beyond, lit as the reflection. Energy is kept: each face reflects what Fresnel says, lets through what its colour does and absorbs the rest (Remix's translucent material scatters nothing of its own); the sun behind the glass reaches the eye only as that let-through light spread over the faces' roughness (a GGX lobe widened by (1 - 1/n) at each face, integrating to what the floor behind receives): a sharp sun through clear glass, a wide glow in the glass's colour through frosted texels. The fragment adds what the rays cannot see: the map's facets bend the view further (the traced picture read where the tilted facet sends the ray over the distance behind, (n - 1) times the tilt through a flat back face) and the reflection likewise, Fresnel (Schlick, F0 0.0426), the sun's GGX glint, a rough face's blur (four taps over its GGX alpha; LabPBR smoothness, none without a specular map). Without a normal map, drawn glass's faint waviness (a world-fixed noise's slopes, 0.035). Without hardware rays, dual-source blending tints the scene behind by the colour over the measurement distance. One path for the screen and each eye. GPU at 3440x1440 on a 4090 shared with other games, the glass wall filling a third of the view (A/B alternated, normalised by the untouched denoiser): the trace kernel +23 to +32 %, the translucent raster from 0.02 to 0.25 of the denoiser's time (about +0.3 ms idle); VR 1648x1328 an eye with hardware rays now in the headset: 6.3 ms GPU for both eyes against 10.9 with the voxel grid | Remix's model first; gaps: refraction off the normal map is screen space (the rays bend at the faces as built); only the first glass bends, later ones tint; the beam's visibility is a grey shadow ray from the far face; thick glass is not thicker than one block (the walls carry the colour) |
+| Ice | ice and packed ice (`mesher.rs` `rt_ice_kind`, `terrain.wgsl` `rt_ice` in `rt_glass_at`): with RT lighting both are meshed translucent whatever alpha the pack gives their textures (RTX packs and vanilla's packed ice ship them opaque), and packed ice no longer hides its other neighbours' faces (they show through it; the faces between two packed ice blocks stay culled, and it stays a full block to light and collisions). They take the glass's path with ice's optics: index 1.31 (F0 0.018); clear ice smooth (roughness at least 0.12), packed ice frosted (at least 0.5: its refraction and the sun's beam through it blurred); a frost layer lit as the terrain (the texel's colour half way to snow's blue-white, the sun scattering through it from behind), about 15 % on clear ice and 35 % on packed ice, more on the texture's light streaks, 10 % on clear ice and 30 % on packed ice, more on the texture's light streaks. Ice is not thin-walled: the faces between two ice blocks are culled, so the refraction ray (`shadow_rays_psr.wgsl` `ice_body`) runs through all of it to the face it leaves by and the body acts over that whole length (Beer-Lambert, a block: clear ice 0.14, 0.08, 0.06, glacier blue; packed ice 0.75, 0.66, 0.6), what it loses made up by the light its bubbles scatter (the frost's colour, a deeper blue, lit as the face it entered by); past 32 blocks it is opaque. A pillar of clear ice shows what is behind it, deep blue; a hill of ice or packed ice is opaque. The sun's shadow rays take the same body (`hw_light`: the length inside is the distance to the faces the ray leaves by less that to those it enters by, whatever order the hits come in), so the ground under a hill of ice is in its shade. Untraced, the body is guessed from what lies behind (up to 6 blocks for ice, 2.5 for packed ice). `HORIZON_RT_ICE=0` keeps the pack's ice | gaps: the froxels and the bounce rays still see both as stained glass of their texel's colour (no body); water next to packed ice keeps the faces packed ice hides; the voxel grid (no hardware rays) keeps packed ice solid |
+| SSS | `_sss` maps' tints (labPBR's subsurface channel), thin transmission for leaves, plants and glass-like blocks and thick for the rest (`gfx/transmission.rs`) | as Remix in kind |
+| Post-processing | `exposure.rs`, `bloom.rs`, `tonemap.rs`: auto-exposure (centre metering 0.75, EV -2.5..+1.5, a log-luminance mean), local tone mapping (exposure fusion: 0.214, shadows 1.4, highlights 2.5, sigma 3.5, offset -0.1), Hill's fit of ACES, a threshold bloom of 8 steps; Remix's situations (`PostParams` dusk, night, rain, thunder) picked each frame from the storm levels and the sun's height (`HORIZON_POST_SITUATION` holds one). About 0.25 ms at 3440x1440 (estimated) | Remix's values; open equivalent of its algorithms, gaps: the exposure speed's formula, its target key (-2.6, measured on a noon scene), the fusion's preferred level (-1.5 stops) and the bloom threshold's units (200 Remix units a paper white) are guesses; HDR output keeps its own curve |
+| Distance fade | Remix's noise fade (mode 3, noise scale 20): from 87.5 % of the render distance to all of it, each pixel gives way to the horizon where a world-space noise 20 blocks across is below how far it is into the fade; the environment's fog stays vanilla's | as Remix; adaptation to do: Horizon's LOD terrain past the render distance (step two) |
+| Normal-map shading | the sky's reflection fades as it dips under the face (horizon fading), the parallax relief shadows itself toward the sun (8 steps through the height map), a facet gets at most 1.5 times its face's light (micro-shadowing, Chan 2018), the sun's highlight under Remix's firefly filter | open equivalent: Remix's path tracer gets the first two from its rays and its displacement; without them a low sun glittered in the grooves of the NVIDIA pack's planks |
+| Anti-aliasing | `taa.rs`, `taa.wgsl`: a Halton(2, 3) jitter of 16 phases in the world's projection (the depth prepass, the world and the rays take the same jittered matrix, so the rays' position rebuild and reprojection stay exact), then a resolve on the linear HDR scene before the exposure, the bloom and the tone mapping: the history reprojected by depth and the camera's motion, Catmull-Rom sampled, clipped to the 3x3 neighbourhood's box in YCoCg (Salvi, gamma 1.25) of Karis-compressed colour, blended 1/16 new (1 where a depth mismatch uncovers a pixel, a cut or a new size forgets the history), weighted by inverse luminance (Karis 2014); the scene's alpha (sun share) resolved with it. A history a view (the window, each VR eye). `HORIZON_TAA=0` turns it off. GPU at 3440x1440 on a 4090 in the test scene: about +0.2 ms (15.4 to 15.6 ms with a busy GPU, within the noise); 120 MB of history | open equivalent of Remix's DLSS (its temporal anti-aliasing). Gaps: no motion vectors, so what moves (entities, water waves, particles) ghosts within the clip box; the hand and the HUD are drawn after the resolve, unjittered, and stay aliased; no mip bias; a groove a texel wide that the sun grazes, stable across jitters (nearest texels), is not aliasing and stays: it needs the normal-map filtering, not the TAA; VR untested; the rays' history is resampled bilinearly on the moving pixel grid, a little soft light |
+| Presets | Performance, Balanced, Quality, Ultra (`graphics.rs` `apply_preset`) set the ray tracing as Remix's low to ultra do: linear light always, traced shadows and ambient occlusion from Balanced, the full RT lighting (GI, PSR, froxels, clouds in the rays) from Quality, the packs' normal and parallax maps at Ultra | open equivalent: Remix's presets keep path tracing and change its resolution (DLSS modes) and sample counts; ours turn whole techniques on and off (to do: an RT quality knob for the rays' resolution, `HORIZON_RT_SCALE` today) |
+| Scene residency | one BLAS a section, built once; the top-level structure rebuilt only when its anchor moves or sections change | as Remix in kind; to do: instances written on the GPU |
+| View model, entities, particles, held light | `hw_rays.rs` `finish`: the entities' solid quads as drawn (a dynamic BLAS over a copy of their vertices, fast-build, remade every frame; one merged BLAS rather than one a mesh) and the view model in a BLAS of its own, both in the TLAS at the camera's offset from the anchor. The shadow rays alpha-test the entity texel from the shared atlas (entity.wgsl's 0.1 cut-off) and the bounce and reflection rays take its colour and face normal. Particles drawn with the entities (material 0) come with them. `HORIZON_HW_DYNAMIC=0` leaves it all out. GPU cost: under 0.1 ms at 3440x1440 with a pig, a cow and a zombie near (13.1 ms against 13.2 ms on a busy GPU, within the noise) | as Remix in kind (dynamic geometry in the rays, shadows and reflections of entities and of the arms); gaps: one merged BLAS for all entities, not one a mesh; the view model's perspective correction is the ratio of the two fields of view on the view-space xy (Remix's own is a projection fix of its shader); translucent entity layers, crumbling, glint and water masks are left out, and translucent entity texels are opaque above alpha 0.1; the froxels treat entities as opaque quads (no atlas binding there); the hand shades no terrain but its own shadow and bounce; the held light is not a ray-traced light |
+
+**Work order** (step one):
+
+1. Primary surface replacement through water and glass.
+2. ReSTIR GI, with bounces up to four through the cache.
+3. The NEE cache, light reach and sparse rendering.
+4. The sky ported from Remix.
+5. Froxel volumetrics with the camera's media.
+6. Water's normals and its underwater medium.
+7. The distance fade.
+8. Presets.
+9. Entities, particles, the view model and the held light.
+
+Alongside, in their own worktrees: post-processing, clouds and SSS (merged), froxel volumetrics (in progress).
+
+**Who does what:**
+
+- **The main session:** the ray pass and the integration (`shadow_rays.*`, `denoise.wgsl`, `voxels.rs`, `hw_rays.rs`,
+  `gfx.rs`, `terrain.wgsl`).
+- **Sonnet helper agents:** pieces in files of their own.
+- **Haiku agents:** repetitive measurements and inventories.
+
+**Measuring:** each step is one commit, measured on the desktop (3440x1440) and in the simulated headset
+(`tools/vr_fake_run.py`), and compared on the copy of NVIDIA's world.
+
+**Measured (30 October 2026, RTX 4090, the GPU otherwise idle, NVIDIA's RTX-Remix-Materials pack, every technique above on):**
+
+| Scene | Resolution | GPU or frame time |
+|---|---|---|
+| Copy of NVIDIA RTX Demo, at its spawn, noon | 3440x1440 | 15.8 ms GPU p50 (16.2 p95) |
+| RT test scene, the many-lights hall at night | 3440x1440 | 8.5 ms GPU p50 (before the PSR, the held light and the moving geometry) |
+| Simulated headset (`tools/vr_fake_run.py`, a forest world, unpaced) | 1648x1328 an eye | 6.1 ms a frame median (165 fps) |
+| Simulated headset, the same | 4096x3288 an eye | 18.5 ms a frame median (54 fps) |
+
+Remix itself could not be measured on the same scene here: it runs inside Minecraft Java with its
+own runtime, which cannot be driven offscreen by `horizon-ctl`; its numbers on the same copy are
+to be taken by hand (its in-game profiler) for the comparison.
+
+## Spotlights: the copper projector
+
+Remix's Java mod adds a directional lamp, its Copper Beacon: mounted on the face it is placed on, redstone-controlled,
+its beam a real light that shows in mist and rain. Horizon's own equivalent, built without its assets or code:
+
+- **The block** is a content mod in this repository, [`mods/copper_projector`](../mods/copper_projector): block
+  `copper_projector:copper_projector` from template `minecraft:redstone_lamp` (lit by a redstone signal, as a lamp,
+  light 15) with a `facing` of its own. Placed, it faces away from the face clicked, as an end rod does: on a
+  ceiling it shines down, on a floor up, on a wall straight out (`level/place.rs`, the lamp's placement; vanilla's
+  lamp has no `facing` and keeps its state). Its model is vanilla's copper textures (chiseled copper, the copper
+  bulb as the lens), read from the player's own install. Recipe: copper ingots around a copper bulb, glass above,
+  redstone below. It loads as any content mod: in `horizon-mods/`, or `--dev-mod mods/copper_projector`.
+- **The light** (`mesher.rs` `spot`, `gfx/voxels.rs` `Spot`): the lit block's RT light sits on its lens and carries
+  its way and its cone, `aim` in the GPU light. ReSTIR DI weighs it through the cone (`spot_cone` in
+  shadow_rays.wgsl: full inside two thirds of the half angle, gone at its edge), its shadow rays aim at a lens a
+  quarter of a block across, so its shadows soften with distance. Its light gathered into a cone, it is 12 times a
+  lamp's strength and reaches 48 blocks; the light cells only list it where its cone can reach, so it takes no
+  slot behind it.
+- **The beam** is the froxels' own light sources pass (`light_to` in froxels.wgsl, with the cone): no new pass. It
+  shows where the medium is thick enough to scatter it (fog, rain, water, a cave's air), as a real beam does.
+
+Switches: `HORIZON_RT_SPOT_REACH` (blocks, default 48), `HORIZON_RT_SPOT_GAIN` (default 12, 0 puts the spotlights
+out) and `HORIZON_RT_SPOT_ANGLE` (half angle in degrees, default 24). Cost: one light more where it is placed, as a
+lamp; nothing where there is none.
+
+## Live settings panel
+
+`HORIZON_LIVE_PANEL=1` (environment or `horizon-env.txt`) has the game serve a page on this computer
+and open it in the browser: a window beside the game (or on another screen, or a phone with
+`HORIZON_LIVE_PANEL=lan`) to move effects while playing, VR included, without a restart. Its
+address, with a random token, is in the log (`Horizon live panel: http://127.0.0.1:25590/…/`;
+`HORIZON_LIVE_PANEL_PORT` picks the port, `HORIZON_LIVE_PANEL_OPEN=0` only logs it). It holds the
+RT Ambient Light, God Rays and God Rays Quality options (the same settings as the graphics screen,
+saved two seconds after the last move), the Natural Fog option and the fogs' density (x0 to x5,
+this session only, `Renderer::set_fog_density`), the cumulus' cover (`rt_clouds::set_cover`, or
+drifting), the weather (`/weather clear|rain|thunder` as the world's owner: rain falls as snow
+where it is cold) and the shower's or blizzard's intensity (held at x0 to x3, or drawn at random
+each shower, with what this one drew). Every control is one entry of
+`game/live_panel.rs` `KNOBS`; the page draws whatever that table holds.
+
+Its **Performance** switch (off by default) shows, refreshed three times a second, the means a
+frame over the last second: frames a second, frame time (mean and worst), the render thread's
+wait on the GPU, its steps (`spans`, wall time, the outermost and the ones inside them) and the
+GPU's stages per view (`gfx::gpu_passes`: `desktop`, `eye1`, `eye2`; timestamps read back a few
+frames late, never waited for; `take_panel_means` keeps tallies of its own, so the VR log's every
+300 frames still has its own). On, spans are recorded on the render thread and the GPU stamps
+its stages; off, what it turned on goes off again (`game/live_perf.rs`). The page shows the CPU
+time the view itself costs the render thread (ms a second); the GPU stamps' cost is measured by
+comparing the frame time with the switch on and off.
+
+## GPU budget for Vision Pro (90 Hz, two eyes)
+
+The target: 11.1 ms of GPU a frame for both eyes, with RT lighting on. Measured on 30 October 2026 on the
+RTX 4090, with the copy of NVIDIA's RTX Demo world (the player at its spawn), NVIDIA's RTX-Remix-Materials pack,
+`parallax:true`, HDR on, every technique of the RT lighting on. The simulated headset (`tools/vr_fake_run.py`,
+`--hz 1000`) at KRVR's 1648x1328 an eye, the size the Vision Pro is streamed at; bigger eyes are listed apart.
+
+**How it was timed.** `HORIZON_GPU_PASSES=1` (`gfx/gpu_passes.rs`) writes a GPU timestamp between the frame's
+stages and logs each stage's median every 60 frames, per view (`desktop`, `eye1`, `eye2`); `tools/gpu_passes_report.py
+game.log` sums the reports (`--by-look` one a head pose, `--best 0.25` the shortest-framed ones, for a run that
+shares the GPU). The medians take only frames whose head pose stayed put, and each stage only the frames it ran in,
+so their sum need not be the GPU time the VR line logs every 300 frames: beside that line, `Horizon VR: GPU means`
+gives each view's stages' means over the same frames (a stage that did not run counts 0), and the time between the
+views of a frame (other submissions' work, or the GPU idle). `HORIZON_RT_SKIP` (a mask: 1 the sun's ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 64 the far field; 2048, read at start, the mesh clouds instead of the dome's; 2097152 white noise for every sample instead of the sun disc's, the bounce's and the light point's blue noise, `blue2`) leaves parts of the
+trace kernel out to time each alone, `HORIZON_RT_SHARP` (degrees) moves the foveation's sharp zone (0: sparse all over,
+180: sharp all over). `HORIZON_RT_FORCE_OPAQUE=1` traces every hardware ray (the trace kernel's and the froxels') with
+the force-opaque ray flag, so no candidate hit comes back to the shader for its alpha test (cutouts shadow as squares,
+glass and water stop the light: a measurement, not a look): the kernel's time with it is the floor the any-hit round
+trips can be brought down to (opaque quads in an opaque geometry, opacity micromaps). The head's sweep is
+`tools/vr_fake_scripts/gpu_budget.txt`.
+
+**Caveat on the numbers.** The GPU was shared with the player's own running game (86 % of the 3D engine) the whole
+time, which time-slices it. In VR the stages were stable from window to window (the raster 1.9 to 2.6 ms an eye), so those
+are taken as they are, perhaps 10-20 % high. On the desktop the long kernels were hit hard (the same frame measured 25 to 95
+ms by the minute, 15.8 ms on an idle GPU), so the desktop is given as shares of the frame, with the idle frame
+(15.8 ms) spread over them; re-measure both on an idle GPU before relying on a second decimal.
+
+### Where it goes
+
+| Stage (ms) | Desktop 3440x1440, shares of 15.8 ms idle | VR 1648x1328, both eyes | VR 2560x2048, both eyes | VR 3660x3200, both eyes |
+|---|---|---|---|---|
+| World raster (terrain with parallax, entities, water; phase 1 and rest on the desktop) | 2.7 (17 %) | 4.5 | 8.0 | 18 |
+| RT trace kernel (sun, ReSTIR DI, ReSTIR GI, PSR, one dispatch) | 10 (65 %) | 1.6 | 3.6 | 17 (4-9 an eye, see below) |
+| Depth prepass for the rays | 0.6 | 1.6 | 1.7 | 1.9 |
+| Denoiser (4 passes) | 1.2 (7 %) | 0.4 | 0.9 | 2.0 |
+| Froxels (inject, blend, integrate, apply) | 0.3 | 1.0 | 2.1 | 4.1 |
+| BLAS/TLAS structures | 0.2 | 0.0 | 0.0 | 0.0 |
+| TAA, bloom, exposure, grading, tone curve, HUD | 0.5 | 0.5 | 1.1 | 2.2 |
+| Window view drawn again in VR (HDR on), 1280x720 | | 4.2 | 4.3 | 7.7 |
+| **Frame** | 15.8 (26.9 measured shared) | **13.8** (9.6 of eyes) | **23.1** (18.8 of eyes) | **54** (46 of eyes) |
+
+Sweeping the head (`gpu_budget.txt`: ahead, 90 degrees to each side, behind, 40 degrees up, 50 down) the two eyes take
+8.7 to 11.6 ms at 1648x1328 (behind the least, the sky 40 degrees up the most). In the desktop frame the trace
+kernel is the budget: by `HORIZON_RT_SKIP`, ReSTIR GI is about 70 % of it (6.8 ms of 9.8), the light sources (DI) 14 %, the
+PSR 15 %, the sun's own ray nothing (its shadow rays at the bounce hits are in GI). In the headset, foveated, the kernel
+is small (0.84 ms an eye): GI 51 %, the rest 34 %, a floor of 14 % (the accumulation and the stores).
+
+### Findings
+
+1. **With HDR on, VR draws the window too.** `Renderer::render` mirrors an eye into the window only with HDR off
+   (`present_mirror`); with HDR on it calls `draw_frame` for the window as well, a whole RT frame at the window's size, every
+   frame: 4.2 ms at 1280x720 (13.8 ms against 9.54 ms with `hdr:false`, measured), and a monitor of 3440x1440 is 5.4 times as
+   many pixels, unfoveated. This is the largest item of the budget and costs the headset nothing to remove.
+2. **Foveation of the rays already pays** at 1648x1328: sharp all over the trace is 3.0 ms an eye, at 25 degrees 0.84, sparse
+   all over 0.54. Little is left to take there. At 3660x3200 it did not hold: the foveated trace (8.6 ms an eye, 3.7 to 9.2
+   from window to window) was slower than sharp all over (5.0), so the sparse blocks (one thread of sixteen traces) are not
+   free there: every warp still traced (explained and fixed under the levers, 5).
+3. **The raster is now the biggest stage in the headset**: 4.5 of the 9.6 ms of the eyes at 1648x1328, and it grows with the
+   pixels (x4 for x5.3 the pixels). The pack's parallax makes the fragments heavy, and nothing is foveated in it.
+4. The structure builds are nothing (0.001 ms in VR: the scene was static), the denoiser runs on the 2x2 mask (0.2 ms an eye)
+   and the radiance cache resolve is 0.03 ms: neither is worth work. Measured again on 4 November 2026 on the desktop
+   (3440x1440, 1024 chunks, 934b65a98) with the scene moving: the structures take 0.15 ms a frame standing still, 0.14 in
+   fast flight at 100 blocks/s and 0.35 placing and breaking blocks in bursts, 1.5 to 3 % of the frame; the GPU frame's
+   p99 stays at 12.1 to 12.2 ms. The CPU frame's p99 goes from 14 ms at rest to 38 in flight: the stutter is the main
+   thread's work on arriving sections ([rtx-4090.md](rtx-4090.md), phase 0), not the structures, so DirectX's
+   clustered geometry and partitioned TLAS (their Vulkan forms `VK_NV_cluster_acceleration_structure` and
+   `VK_NV_partitioned_acceleration_structure`) are the last lever here.
+
+### The levers, ranked (ms of a two-eye frame at 1648x1328 unless said)
+
+| # | Lever | Saving, estimated | Done (31 October 2026), measured |
+|---|---|---|---|
+| 1 | Do not draw the window's own frame in VR with HDR on (mirror the eye, or one HDR blit, as with HDR off) | 4.2 (more on a big window) | **Done** (`present_mirror`, the eye into HDR's 8-bit frame, then its pass): the window's frame 12.2 ms under the shared GPU (4.2 idle, 13.80 to 9.54 ms) becomes the mirror's 0.02; at 3440x1440, 66 ms shared (about 16 idle, the desktop frame) for 0.02 |
+| 2 | Per-eye resolution | about 3 for each million pixels an eye gains (1648x1328 to 2560x2048: 9.2 of the eyes; 3660x3200 is 46 ms, out of reach at 90 Hz) | not a lever to apply: the headset's choice |
+| 3 | Foveated raster (a rate image from the gaze, as `HORIZON_XR_VRS`; the pack's parallax cut off the periphery) | 1.5 to 2.2 | **Done**: variable rate shading on by default in stereo (`HORIZON_XR_VRS=0` turns it off, [vr.md](vr.md)): the raster 2.17 and 2.09 ms an eye against 2.82 and 2.77, **1.3** (the eyes' frame 1.7 less); the periphery beyond 40 degrees in 4x4 blocks, the sharp zone identical |
+| 4 | Reuse between the eyes: one froxel volume (0.5), the depth prepass once or at the mask's size (0.8), the trace and denoiser once for a view between the eyes then reprojected (0.9) | 1.5 to 2.2 | **One froxel volume done** (`froxels::Inputs::share`: the second eye composites the first's): **0.5** (the eyes' frame 8.62 to 8.10 ms), the captures' difference the runs' own noise. The prepass and the trace not done: the prepass is the solid terrain's geometry (half the pixels would save little of it), and a trace shared between the eyes is a reprojection with its own disocclusions, to try against the headset's eyes |
+| 5 | Fewer ray samples: GI on a checkerboard of the mask texels over two frames (half of 51 % of the trace), the sparse zone's rays compacted | 0.3 to 0.6 | **Compaction done** (`cs_sparse`, a pass of its own, a thread a 4x4 block): the trace 0.78 and 0.79 ms an eye against 1.00 and 1.36, **0.4 to 0.8** (the eyes' frame 1.0 less). The GI checkerboard not done: it halves the GI's samples where the eyes look, twice the time for its noise to settle, for 0.2 to 0.3 now that the sparse zone is cheap |
+| - | Already in: ray foveation (sharp all over would add 4.3), the denoiser at the 2x2 mask, one TLAS for both eyes | | measured |
+| - | Not worth it: fewer denoiser passes (0.1), exposure and bloom once for both eyes (0.1) | < 0.2 | measured stage times |
+
+**How the levers were measured.** The GPU was shared with up to four other games the whole time (the eyes took 8 to 30
+ms by the minute), so each lever was timed A/B within one run: a temporary switch read every frame from a file the
+runner created and deleted every 20 seconds, the 60-frame reports tagged by it (`HORIZON_GPU_PASSES=1`), the same pose
+held (`head 0 -15`), and the medians of each side's reports compared. The savings are the stages' own differences,
+which hold under the sharing; the absolute times are high.
+
+The sparse zone's cost (finding 2): its block's ray was traced by the block's corner thread, one lane in sixteen, two
+in every warp, so every warp of the sparse zone traced as long as for thirty-two rays. Moving the workgroup's rays to
+its first warp was slower still (the idle warps keep their registers until the barrier); a pass of their own, a
+thread a block, is what pays.
+
+With 1, 3, 4 (froxels) and 5 (compaction) the eyes at 1648x1328 take 2.2 to 2.6 ms less by the stages' savings (3.2
+by the eyes' frames), and the window's 4.2 is gone: from the study's 13.8 ms about 7.0 to 7.4 ms of eyes, room inside
+the 11.1 ms for an eye of about 2050x1650 (at about 3 ms a million pixels, lever 2), to confirm on an idle GPU.
+
+**Still to do:** the whole table again on an idle GPU; 3 on the Vision Pro's real gaze (fixed foveation without it:
+the periphery's blocks show when the eyes turn); the depth prepass and the shared trace of 4.
+
+### The screen first, at 4K, and what it gives VR (1 November 2026)
+
+RTX 4090 on an idle GPU, 3840x2160, the player's settings (render distance 24, distant terrain 1024, RT lighting,
+parallax, natural fog, HDR); the copy of NVIDIA's RTX Demo world with RTX-Remix-Materials and RTX-Remix-Glass, and the
+player's own world (its packs). Timed in the running game (`horizon-ctl gpu-passes`, `tools/gpu_now.py`), each change
+against its own absence within one session (`horizon-ctl rt-skip 16`, `horizon-ctl rt-scale 1`), the same pose held:
+
+| View | Frame before (ms) | Frame after (ms) | Trace before | Trace after |
+|---|---|---|---|---|
+| RTX Demo, spawn, east (interior, lanterns) | 77 | 18-20 | 67 | 8-12 |
+| RTX Demo, spawn, west | 60 | 18-20 | 50 | 9 |
+| Player's world, at the beach (water fills the view) | 111 | 25-30 | 90 | 12-16 |
+| Player's world, the lake by day / by night | 30 / 30 | 14.4 / 14.7 | 15 / 18 | 1.5 / 1.6 |
+| Player's world, the player's place (high up) | 18 | 14.5 | 7.0 | 0.8 |
+
+What changed, each a compromise, its cost to the picture checked on captures of the same pose:
+
+1. **The bounced light (ReSTIR GI) in turns** (shadow_rays.wgsl `trace`): a surface the last frame showed traces it one
+   frame in four, in 8x8 tiles (a wave of threads skips it whole), a 2x2 pattern turning with the view's own frames; the
+   frames between keep the last frame's light, reservoir and sky and feed the radiance cache with them; behind water or
+   glass whose refraction replaces it, one frame in eight. A surface just seen traces every frame. GI was 70 to 80 % of
+   the trace; one frame in two took the trace from 50 to 35 ms in the RTX Demo, one in four 3.4 ms more of 12. The
+   captures differ by 0.9 to 1.9 levels of 255 against 0.7 between two of the same: noise. The light sources (ReSTIR DI)
+   stay every frame. Each view counts its own frames (`ViewMasks::frame`): two eyes sharing the passes' counter would
+   each have seen every other frame, half the tiles never.
+2. **One ray for 2x2 pixels on a screen past 3440x1440** (`shadow_rays::Foveation::screen`, `SHARP_PIXELS`): 4K traces
+   1920x1080 rays, as Remix's path tracing renders at DLSS Performance's resolution there; the trace and the denoiser a
+   quarter (45 to 9.5 ms, 2.3 to 0.6). The terrain reads the masks through a depth-aware upsampling (terrain.wgsl
+   `rt_taps`: the four texels around a fragment weighed bilinearly and by how near their surface lies to it, 0.2 to
+   0.6 ms of the world's raster), the mirrors and the refraction bilinearly without a texel brighter than four times its
+   neighbours (`rt_psr_at`: the light at a mirror's hit is one sample, a firefly would cover 2x2 pixels). The water's
+   refraction is a little softer than at a ray a pixel; edges and shadows hold. `horizon-ctl rt-scale N` (or
+   `HORIZON_RT_SCALE`) chooses.
+3. **The froxels' composite in one pass** (`froxels_dual.wgsl`, dual-source blending): the in-scatter added and the
+   scene times the transmittance from one march of the fogs a pixel instead of one for each: 3.1 to about 1.8 ms with
+   the natural fogs at 4K.
+4. **In VR the first eye builds the rays' structures** (BLAS and TLAS) for the frame's views; the second eye traces the
+   same (0.4 ms an eye).
+
+**What it gives VR**, the simulated headset (`tools/vr_fake_run.py --hz 1000`) at 3660x3200 an eye in the RTX Demo,
+the head ahead: the two eyes' frames 22.2 ms before 1 and 4, 18.4 ms after (the trace 11.5 to 4.4 ms of both eyes).
+What is left of the eyes (first eye / second eye): the trace 2.4 / 1.9, the raster 1.5 / 1.4, the denoiser 1.0 / 1.0,
+the depth prepass 0.9 / 0.7, the froxels' inject 1.25 (the first eye's alone), the TAA 0.3 / 0.3. Not yet tried in a
+headset.
+
+Then two more, timed by stage in the simulated headset (the frames' totals there moved by a millisecond from one window
+to the next with nothing changed, the game itself sharing the GPU), the captures on the 3440x1440 screen against two of
+the same pose (the day cycle stopped: 1.41 / 0.92, 1.13 / 1.21, 0.62 / 0.40 levels of 255, the rest the banners in the
+wind):
+
+5. **The denoiser in five passes of 3x3** (denoise.wgsl, `DENOISE_STEPS` 1 to 16) for four of 5x5: as far, 45 taps a
+   pixel for 100; 1.0-1.2 to 0.62 ms an eye, 1.5 to 1.0 on the screen.
+6. **Half the froxels injected a frame** (froxels.wgsl `injected`: a checker along the slices, turning each frame; the
+   other half keeps its 128-frame history): the inject 1.28 to 0.81 ms in VR, the froxels 2.25 to 1.95 on the screen;
+   a change of light reaches the fog a frame later.
+7. **VR's periphery traces its mirrors and refraction a 2x2 quad of texels at a time** (shadow_rays.wgsl `cs_shadow`,
+   shared through the workgroup): each texel found the water or glass before it with a ray of its own, though the
+   periphery's lighting is one ray a 4x4 block; with them out (`rt-skip 8`) the two eyes' trace was 1.5 ms less, the
+   quads take it from 4.7 to 4.1 ms. Away from the sharp zone the water's edges step by 4 pixels. `horizon-ctl rt-sharp
+   DEGREES` sets the sharp zone in a running game: 180 sharp everywhere took the two eyes' frames from 19.3 to 33 ms,
+   1 (periphery everywhere) to 17.1.
+8. **Both eyes' depth prepass in one multiview pass** (gfx.rs `EyeDepths`, terrain_views.wgsl: the first eye draws a
+   two-layer depth, each layer with its eye's matrix, the second eye's rays take layer 1), where the device has
+   `MULTIVIEW`: 0.9 + 0.7 to 1.5 ms, and one pass less to record. Little, the prepass's cost being its pixels (the
+   alpha test at 3660x3200) more than its vertices: multiview for the world's raster would give as little, the eyes'
+   GPU time being per pixel.
+9. **The second eye takes the first eye's light** (shadow_rays.wgsl `from_first`, `horizon-ctl rt-skip 32` to trace
+   it again): a surface's sun, sky and light sources don't depend on the eye that looks, so where the first eye's
+   depth (its layer of 8) shows the same point and its mask texel the same face, the second eye takes that texel's
+   light, already accumulated over the first eye's frames, its reservoirs and its fast history; in the periphery a
+   4x4 block at a time, by its ray's point. It traces only what the first eye doesn't see (past an edge, out of its
+   frustum) and, for each eye, the mirrors and the refraction. Both eyes' grain is then the same. The second eye's
+   trace 4.9 to 2.7 ms (3.3 to 1.2 without the mirrors), its frame 9.45 to 7.35; no light bleeds at the near
+   edges in the captures. It needs 8's multiview.
+10. **The second eye takes the first eye's denoised light too** (shadow_rays.wgsl `taken_out`, denoise.wgsl `taken`,
+   `HORIZON_RT_SHARE_DENOISED=0` for the old): where 9 took a texel's light, the kernel writes the first eye's texel
+   there (in the periphery, where a block took its centre's light, the first eye's texel showing each texel's own
+   surface, `first_texel_of`; none where the first eye doesn't show it), and the second eye's denoiser
+   copies the first eye's light as its five passes left it on the first pass, into the other texture they write on
+   the second, and leaves those texels be on the three after. Only what the second eye traced itself is filtered,
+   the copied light among its taps. A surface's diffuse light being the same from either eye, both eyes then show the
+   same denoised light; before, the second eye filtered the taken light again. Its denoiser 0.59 to 0.25 ms at
+   4400x3520 on the RTX 4090 (109a15996), the frame 9.44 to 9.19 ms (68218d890). The periphery's blocks first shifted
+   their centre's texel onto all sixteen (`HORIZON_RT_SHARE_CHECK=0`): a texel past an edge took the light of
+   whatever the first eye showed there, and a block at the second eye's edge, standing out of the first eye's view
+   against the sky, came out black. The denoiser also keeps its light finite and within half floats
+   (`usable`): one texel of infinity would spread NaNs through every pass after. Measured on 93137e0d4: the check
+   costs nothing (9.13 and 9.20 ms a frame against 9.16 without it), but a large zone at the right eye's right edge
+   stays black where `HORIZON_RT_SHARE_DENOISED=0` shows stone and a leaf shadow (38 levels of 255). Being looked
+   into: `HORIZON_RT_DEBUG=12` colours the second eye's light by what it took (taken from the first eye: green lit,
+   cyan black though the accumulated light there isn't, blue both; its own: red lit, yellow black from the filter
+   though its accumulated light isn't, magenta both), and `HORIZON_RT_SHARE_GUARD=1` is a trial that copies the
+   first eye's light only where it isn't under a quarter of the texel's accumulated light. On a60b1747f the zone is
+   red (the second eye's own light, lit at the last pass's input) and the guard changes nothing; but 12 writes its
+   colours into the light the next frame's bounces read. The kernel and the denoiser now keep their light from going below 0
+   (a light below 0 would blacken the terrain past its sun, as the zone is); `HORIZON_RT_DEBUG=8` shows the light
+   the terrain reads, untouched. On cd49cc97e the zone stays black, its sun included, though 8 shows its light grey
+   there: the black comes from another of the terrain's inputs, and a NaN in the lit colour turns black at the TAA
+   (`load_scene`). `HORIZON_RT_DEBUG=13` (terrain.wgsl `rt_checked`) shows the lit colour, or red where the
+   sun's mask isn't finite, blue the traced light, green the sun's tint, yellow the colour though its inputs are,
+   cyan a colour below 0 and magenta one too dark to show (under 1e-3 paper white: ACES's toe turns it black).
+   On e8b54293e (threshold 1e-6 then) the zone shows none of these, still black. `HORIZON_RT_DEBUG=14`
+   (`rt_terms_view`) shows the lit colour's parts: red the sun's and green the light around's, on a log scale from
+   1e-4 to 1 paper white, blue the denoised light's alpha (how much of the light around is traced, the light
+   levels standing in for the rest). On 3aec3cf47, 14 showed the cause: the sun's part 0 in the zone in both modes,
+   the light around lower. The second eye's own hardware rays left from the structures' anchor, not from the
+   camera's offset to it (`hw_offset`, set with the structures' update, which since 4956cf386 the first eye alone
+   runs): wherever the second eye traced itself, its rays started from the wrong place. Every view takes the offset
+   again (29c78b580). Measured there at the fixed pose: the zone as the left eye shows it, 0.16 of 255 from
+   `HORIZON_RT_SHARE_DENOISED=0`; 9.51 ms a frame against 9.88 without the shared light.
+11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
+   shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
+   quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary
+   ray over the whole structure, though most of a view has none. After the rays' prepass the translucent terrain's
+   draws (every quad whole, back faces culled as the world draws them) are drawn into a cover of the prepass's size
+   (one pass for both eyes in VR), tested against its depth; where the cover and its neighbours on the quad's side are
+   empty, the kernel skips that ray (a puddle still reflects). The GPU stage `rays: translucent cover` times it:
+   0.05 ms for both eyes, against 0.09 ms of the first eye's trace and 0.05 of the second's in a view without water
+   (109a15996).
+12. **The TAA's resolved frame goes back over the scene only when something draws over it** (taa.rs
+   `Inputs::copy_back`, `HORIZON_TAA_BLIT=1` for the old): the resolve writes the next history, which a blit copied
+   back over the scene for what reads it after. Before the tone mapping only the rain, the heat haze, a pack, the
+   hand, the glowing outline, the screen effects and the debug crosshair draw over it, and HDR output without the
+   grading reads it: with none of them the tone mapping reads the history itself (tonemap.rs `run`'s `source`), one
+   full-size write of half floats an eye less (VR's eyes being 15 million pixels each, that write is the blit's cost
+   whatever the shading rate).
+13. **ReSTIR GI's visibility ray with hardware rays** (shadow_rays_hw.wgsl `hw_visible`, `HORIZON_RT_GI_DDA=1` for
+   the old): a sample reused from the last frame or a neighbour is kept only if the pixel sees it, a ray that went
+   through the voxel grid (24 bricks of budget, a long cave's taken as stopped) though the sample was found on the
+   hardware's triangles. It goes against those now, translucent surfaces letting it through, cutouts alpha-tested,
+   ended by the first opaque hit. ReSTIR GI was 0.27 ms of the first eye's 0.76 ms trace at 4400x3520
+   (`HORIZON_RT_SKIP=2`, 109a15996). Back to back at one pose (68218d890) the two cost the same, and the captures
+   are the same in the open; kept for its triangles.
+14. **Shadow rays end on their first hit** (`FIRST_HIT`, the ray flag `0x4`; `HORIZON_RT_FIRST_HIT=0` for the old): the
+   sun's, the light sources', the froxels' and GI's visibility rays let the hardware commit the first opaque triangle
+   they meet and stop, where it went on looking for a nearer one no shadow needs. What they return is the same.
+   Measured on dd9002142: about 0.05 ms on the froxels' inject and on the trace. Item 12 there: the TAA 0.38 to 0.25
+   ms an eye, but not while the vignette shows (it draws over the scene, item 15); item 13 within the noise, kept for
+   its triangles.
+15. **The vignette draws over the finished frame, in the tone mapping's pass** (tonemap.rs `Vignette`,
+   `HORIZON_VIGNETTE_CURVE=0` for the old): a full-size quad blended over the scene's light before the tone mapping,
+   0.087 ms an eye in VR, and the reason the TAA copied its frame back (item 12) wherever the vignette showed (at
+   night, underground). When the grading and the curve draw in one pass and the vignette is the last screen effect
+   (vanilla's other camera overlays draw after it), that pass multiplies its output by 1 - the sprite times its
+   colour: vanilla's own blend, over the frame as the screen shows it, where the quad darkened the light before the
+   curve. Measured on 68218d890 with the vignette forced (`/worldborder warning distance 2147483647`, its red at
+   once whatever the light): the frame 9.66 ms with the old, 9.18 and 9.30 with the new, the stage `hand, outline, screen effects` 0.081 to
+   0.001. The two looks differ: darkened before the ACES curve, the old one's edges came out more saturated and
+   redder (9 to 14 levels of 255 on average) than vanilla's blend over the finished frame.
+
+**Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
+loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks
+through walls).
+
+## What exists: the spike (`origin/feat/raytracing-spike`, 42c752d6b)
+
+A research spike, not on main (it branched 2 800 commits ago; a worktree of it is `../horizon-rt`, and its build is
+the `horizon-client-rt.exe` of a player install). Its report is `docs/raytracing.md` on that branch. In short:
+
+- **wgpu 30** `EXPERIMENTAL_RAY_QUERY` behind `ExperimentalFeatures::enabled()` (unsafe, so in a tiny
+  `horizon-gpu-experimental` crate), Vulkan and Metal checked; DX12 needs DXC (Horizon compiles DX12 with FXC).
+- **One BLAS per chunk section**, built in place from the section arena's vertex buffer and the shared quad index
+  buffer (no copy), compacted, at most 512 builds a frame; a remeshed section rebuilds its BLAS. **One TLAS rebuilt
+  every frame** with every section, camera-relative. **One shadow ray per solid-terrain pixel** from a variant of the
+  terrain fragment shader (`terrain_rt.wgsl`): a shadowed pixel's sky light is scaled by 0.55, block light untouched.
+- Measured at 1280x720 (RTX 4080, Vulkan): rays + TLAS **about +1 ms of GPU**; the **CPU** is the problem, the
+  TLAS fill costing 0.6-1.1 ms a frame at 12 chunks and **2-7 ms at 32** (wgpu validating every instance). Capped
+  to 8 chunks, it came back near vanilla. BLAS: 35-41 µs GPU + 21-26 µs CPU per section; memory about **22 bytes
+  per triangle** compacted. Limits: leaves and plants cast square shadows (cutouts are opaque in the BLAS), only
+  solid terrain receives, no shader packs, hard shadows only.
+
+## Ray tracing: the plan (from step 3)
+
+### Rules
+
+- **One code path for the screen and VR.** Every ray effect is a pass that takes a list of views: one for the
+  window, two for the stereo eyes, four for the quad views. The same passes, structures and denoiser run in both
+  modes; nothing is written for the desktop and ported to VR later. A desktop frame is the one-view case.
+- **Rays at their own resolution.** Each pass traces into a ray target sized by a *ray scale* of the view, not by
+  the render target: KRVR streams about 1648x1328 an eye, so tracing at 4096x3288 throws away about 84 % of the
+  rays (1 - 4.4 M / 26.9 M). In VR the ray targets default to the streamed size; on the desktop to the window's.
+- **Shared between the eyes**: one world structure, one probe cache, and world-space denoising state where
+  possible (probes, voxel AO); screen-space history stays per view, reprojected with each eye's own matrices.
+- **Hybrid, not all rays**: rays where they beat raster, classic techniques elsewhere. Everything works in the
+  linear HDR scene of step 2, and vanilla's sky light, block light and vertex AO stay the base that rays refine.
+
+### What is traced, and what stays classic
+
+| Effect | Near | Far / fallback | Rays per ray pixel |
+|---|---|---|---|
+| Sun and moon shadows | rays, 1 a pixel or fewer, temporal denoise for the penumbra (a cone of the 0.5° disc) | the far field (done, step 3 item 12): a height map of the resident and LOD terrain to 1024 blocks, its shadow heights worked out once a frame for every view | 1 |
+| Ambient occlusion | short rays (1-2 m) at half resolution, accumulated, multiplied over vanilla's vertex AO | the far field's horizon toward eight directions (done, the sky seen past the grid) | 2 on a quarter of the pixels = 0.5 |
+| Reflections | smooth surfaces only (water, glass, metals, LabPBR smoothness above a threshold): screen space first, a ray when it misses | sky or probe colour | 1 on 10-20 % of pixels = 0.1-0.2 |
+| Global illumination | last: a probe cache (a grid around the camera, rays from probes, a few thousand probes a frame) | vanilla sky and block light | per probe, not per pixel: about 0.3 |
+| Classic | emissive sources (block light, dynamic lights; shadows only for the sun and a few near sources), refraction and caustics, sky, volumetric fog, clouds | | 0 |
+
+### Two ways to trace, to evaluate first
+
+**A. A voxel grid traced in compute** (as SEUS PTGI, Rethinking Voxels and Photon do). A camera-centred 3D texture,
+addressed toroidally (moving one chunk writes one slab, nothing is rebuilt): one byte a block (an id into a small
+table: full cube, cutout, slab or stair shape, emissive, transparent), plus a bit-per-block occupancy mip or a
+brickmap (8³ bricks under a grid of brick pointers) so the DDA skips empty space. **A block change is one byte
+written** (`queue.write_texture` of the dirty bricks), with no build. It is plain compute, so it runs on every
+backend wgpu has (Vulkan, DX12 with FXC, Metal from M1, GPUs without RT hardware), without the experimental API.
+Weaknesses: non-cubic shapes are approximated (or get a sub-voxel mask per id), and entities aren't in it.
+
+**B. Hardware BLAS/TLAS with ray queries** (the spike): exact triangles, and entities possible, but a build per
+remeshed section and a TLAS to maintain. Rebuilt every frame, the spike's TLAS cost 2-7 ms of CPU a frame at 32
+chunks; the plan is to keep it and rebuild only on change, writing the instances ourselves
+(`build_acceleration_structures_unsafe_tlas`), under 0.3 ms. It also depends on wgpu's experimental API: wgpu 30
+has **ray queries only**. `EXPERIMENTAL_RAY_TRACING_PIPELINES` is implemented in wgpu-hal, but it has no wgpu-core
+or wgpu entry point, so there is no shader binding table. A Vulkan-direct pipeline would lose Metal and duplicate
+wgpu's resource tracking, and it buys nothing for shadow or AO rays.
+
+**Proposed**: A as the base (near shadows, AO, GI probes, rough reflections), then B for what A gets wrong: non-cubic
+shapes close to the camera, entities and sharp reflections. The first measurement decides: the same shadow rays
+from the same depth buffer, through A and through B (the spike's BLAS), at 12 and 32 chunks, desktop and fake VR.
+
+| Memory and updates | 12 chunks (25² chunks x 384 = 61 M blocks) | 32 chunks (65² x 384 = 415 M blocks) |
+|---|---|---|
+| A: 1 byte a block, dense | 61 MB | 415 MB |
+| A: brickmap (10-20 % of bricks stored) + 1-bit occupancy | 6-12 MB + 8 MB | 40-80 MB + 52 MB |
+| B: BLAS, compacted, 22 B a triangle (spike) | 65-110 MB | 0.6-0.85 GB (Metal: 2-3 GB) |
+| B: TLAS + instances (64 B each) | about 1 MB | 6-10 MB |
+| A block change | A: a few bytes, < 0.01 ms; B: 1-3 BLAS, 40 µs GPU + 25 µs CPU each | same |
+| Whole world loaded, or a teleport | A: 0.06 GB written over a few frames; B: 0.2 s of GPU, spread over frames | A: 0.4 GB; B: 1.1 s GPU + 0.65 s CPU, spread |
+
+Rays don't need the whole render distance: shadows and AO trace within `rt_distance` (8-12 chunks by default) and
+hand over to the cascades; GI probes and reflections may read coarser mips farther out.
+
+### Cost a frame (estimates, to measure: rays at 0.25-1 ms per million on an RTX 4090)
+
+The spike bounds hardware shadow rays at about 1 ms per million on a 4080; coherent shadow rays and a brickmap DDA
+should come nearer 0.25-0.5. Per ray pixel the table above sums to about 2 rays (shadows 1, AO 0.5, reflections
+0.1-0.2, GI 0.3).
+
+| Target | Ray pixels | Rays a frame (about 2 a pixel) | GPU | Budget |
+|---|---|---|---|---|
+| Desktop 3440x1440 | 4.95 M | 9.9 M | 2.5-10 ms | 6.9 ms a frame at 144 Hz, 2-3 of them raster |
+| VR, rays at 4096x3288 an eye (not planned) | 26.9 M | 54 M | 13-54 ms | over budget |
+| VR, rays at KRVR's 1648x1328 an eye | 4.4 M | 8.8 M | 2.2-8.8 ms | about 8 ms of GPU spare at 90 Hz (2.5 used of 11) |
+| The same, foveated (full density within 25° of the gaze, a quarter beyond) | about 1.9 M equivalent | 3.8 M | 1-3.8 ms | fits |
+| The linear HDR target (step 2), for reference | | | +0.08 ms desktop, +0.43 ms VR | |
+
+**Foveation pays here.** In raster it was slower: Horizon is CPU-bound (7.2 ms CPU against 2.5 ms GPU) and pixels
+are cheap. Rays are GPU work per pixel, so fewer rays away from the gaze is a direct saving. The ray passes read the
+gaze (`Frame::gaze`) through a rate image like VRS's; in the quad views, the insets trace at full density and the
+wide views sparsely. Rays traced inline in a fragment shader already get cheaper with `HORIZON_XR_VRS=1`.
+
+**Denoise carefully in VR**: trails and shimmer show much more in a headset. Temporal accumulation is clamped
+(neighbourhood clamp, short history after a disocclusion, reset on fast head turns), the history is reprojected per
+eye, and world-space caches (probes, voxel AO) carry what can be shared, so the two eyes don't disagree. An effect
+too noisy for VR stays off there rather than being smeared.
+
+### PBR and HDR
+
+- Rays gate the **direct sun term**. With LabPBR: `N·L` on the normal-mapped normal, the specular lobe from `_s`
+  (smoothness, F0 or metals), and POM's self-shadowing kept. Without a pack's maps: vanilla's flat normal and a
+  sky-light dimming (the spike settled on 0.55), so the vanilla look stays the default.
+- In the linear scene the sun term is radiance in multiples of paper white. Sunlit metal and water highlights go
+  above 1.0, and each output's tone mapping takes them to the HDR peak, or rolls them off in SDR (KRVR is SDR only).
+
+### Measuring on a whole world, desktop and VR
+
+- **Desktop**: bring the spike's `tools/rt_shadow_bench.py` over (perf_bench's world, seed 1234, clear noon, a
+  village and the snowy peaks, 10 s still), plus a flight across the world at constant speed for the update churn.
+  12 and 32 chunks, LOD 0 and 1024, tilt 0° and 40° (a tilted sun makes rays longer), each effect on and off, A
+  against B. Report GPU timestamps per pass (`gfx/timing.rs`), the CPU frame without waits, structure updates a
+  frame and video memory (wgpu's allocation report and `nvidia-smi`), in SDR and HDR, at 3440x1440.
+- **VR, the same runs with the same binary**: the fake runtime (`tools/vr_fake_run.py`, `look_around.txt`,
+  unpaced) in stereo, quad views and VRS, rays at 4096x3288 and at 1648x1328, foveated or not. Then the Vision Pro
+  through KRVR with SteamVR's frame timing, looking for trails and shimmer during fast head turns. Pass: 90 Hz with
+  CPU and GPU under 11 ms, and the CPU no more than 0.3 ms above ray tracing off.
+- **Visual**: captures at noon, tilt 0° and 40°, effects on and off, in a forest (cutouts), a village and a cave;
+  the HDR debug view (`HORIZON_HDR_DEBUG=1`).
+
+### Order and rough size
+
+1. The linear HDR scene, a tone mapping per output, the vanilla mode kept exact, measured (five to seven days).
+2. The ray pass frame: a list of views (1, 2 or 4), ray targets at their own scale, per-view history, the gaze's
+   rate image (two to three days). Everything after it runs on the desktop and in VR from its first commit.
+3. Prototype A (voxel brickmap, toroidal updates, DDA) and port B (the spike, with `celestial::direction`) far
+   enough to trace the same shadow rays; measure both (four to five days), and pick the base.
+4. Near sun and moon shadows with a temporal penumbra; cascades and the LOD heightmap far away (five days).
+5. AO at half resolution (two days); reflections, screen space and then rays (four days).
+6. LabPBR's sun term and specular in the linear scene (three days).
+7. The GI probe cache (a project of its own, two to three weeks).
+8. Settings ("Ray tracing", per effect, off by default) and the launcher toggle; Metal from M3 and DXC on DX12 for B.

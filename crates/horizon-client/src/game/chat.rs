@@ -2110,7 +2110,71 @@ impl Game<'_> {
             background: true,
         });
         self.ui.screenshot_messages.push(path.clone());
+        self.write_screenshot_notes(&path);
         Some(path)
+    }
+    /// Beside a screenshot, `<name>.json`: where and when it was taken and how the game was set
+    /// (the world, the place, the view, the hour, the weather, the frame's times, the build and
+    /// its `HORIZON_*` switches), for whoever is shown the picture to find the spot again.
+    /// `HORIZON_SCREENSHOT_NOTES=0` writes none.
+    fn write_screenshot_notes(&self, picture: &std::path::Path) {
+        if std::env::var("HORIZON_SCREENSHOT_NOTES").is_ok_and(|v| v == "0") {
+            return;
+        }
+        let switches: std::collections::BTreeMap<String, String> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("HORIZON_"))
+            .collect();
+        let notes = serde_json::json!({
+            "picture": picture.file_name().map(|n| n.to_string_lossy().into_owned()),
+            "build": {
+                "exe": std::env::current_exe().ok().map(|p| p.display().to_string()),
+                "commit": option_env!("HORIZON_BUILD_COMMIT"),
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            "switches": switches,
+            "frame": {
+                "fps": self.fps,
+                "frame_ms": self.frame_stats.frame_millis(),
+                "cpu_ms": self.frame_stats.cpu_millis(),
+                "gpu_ms": self.frame_stats.gpu_millis(),
+            },
+            "looking_at": self.looking_at(),
+            "state": self.state_value(),
+        });
+        let path = picture.with_extension("json");
+        match serde_json::to_string_pretty(&notes) {
+            Ok(text) => {
+                if let Err(e) = std::fs::write(&path, text) {
+                    log::warn!("the screenshot's notes were not written: {e}");
+                }
+            }
+            Err(e) => log::warn!("the screenshot's notes were not written: {e}"),
+        }
+    }
+    /// Shift+F2: four seconds of RT lighting's HDR video (gfx/capture.rs) into a folder of
+    /// `screenshots/` named as a screenshot would be.
+    pub(super) fn record_video(&mut self) {
+        let dir = std::env::current_dir()
+            .unwrap_or_default()
+            .join("screenshots");
+        let name = screenshot_name(&dir, &[]);
+        let folder = dir.join(name.trim_end_matches(".png"));
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        let text = match renderer.start_recording(folder.clone(), 4.0) {
+            Ok(()) => format!("Recording 4 s of HDR video into {}", folder.display()),
+            Err(e) => format!("Couldn't record a video: {e}"),
+        };
+        let focused = self.screen == Screen::Chat;
+        self.ui.chat.add(
+            &self.gui.atlas,
+            Text::literal(text),
+            None,
+            ChatSource::Client,
+            self.ticks,
+            focused,
+        );
     }
     /// `Minecraft.handleGlobalKeyPress`'s screenshot branch: the
     /// `key.screenshot` mapping (F2 by default) takes the picture before a
@@ -2130,7 +2194,12 @@ impl Game<'_> {
         if self.debug_keys.modifier_down {
             return false;
         }
-        self.take_screenshot();
+        // Shift+screenshot starts or stops RT lighting's HDR video (Horizon-only).
+        if self.modifiers.shift_key() {
+            self.record_video();
+        } else {
+            self.take_screenshot();
+        }
         true
     }
     /// A screenshot written on its thread: F2's reports in chat. Any other was the world

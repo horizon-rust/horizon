@@ -36,11 +36,10 @@ impl Game<'_> {
         &self,
         alpha: f64,
     ) -> impl Iterator<Item = (Source, Option<&str>)> {
-        let lum = self
-            .settings
-            .extras
-            .dynamic_lights
-            .then(|| self.luminance());
+        // RT lighting traces them whatever the extra (Remix's held light): only the light levels'
+        // dynamic light is the extra's.
+        let rt = self.settings.horizon.rt_lighting && self.settings.horizon.linear_light;
+        let lum = (self.settings.extras.dynamic_lights || rt).then(|| self.luminance());
         lum.into_iter().flat_map(move |lum| {
             let player = self.player.as_ref().filter(|p| !p.spectator).map(move |p| {
                 let feet = self

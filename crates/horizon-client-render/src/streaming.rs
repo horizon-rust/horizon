@@ -10,7 +10,7 @@ use crate::{
     graphics::LeafCullingMode,
     light::{LightChanges, LightTables, light_chunk},
     mesher::{MeshScratch, MeshTables, Mesher, Region, SectionMesh, borrow},
-    world::World,
+    world::{Dirtied, World},
 };
 use horizon_core::biome::BiomeZoom;
 use horizon_threads::jobs::{Class, PerWorker, Rank, Registration, Source};
@@ -20,6 +20,8 @@ use std::{
     collections::{BinaryHeap, HashSet, VecDeque},
     sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, TryLockError},
 };
+
+pub mod uploads;
 
 /// How long a worker waits with nothing to do before it gives back its
 /// generator's scratch buffers ([`ChunkGenerator::idle`]).
@@ -244,6 +246,8 @@ struct MeshSettings {
     blend_radius: i32,
     smooth_lighting: bool,
     cutout_leaves: bool,
+    rt_lighting: bool,
+    smooth_fluids: bool,
     opaque_ice: bool,
     translucent_layers: Arc<[bool]>,
     leaf_culling: LeafCullingMode,
@@ -508,6 +512,9 @@ pub struct Streaming {
     mesh_columns_scratch: Vec<((i32, i32), SectionMask)>,
     sequence: u64,
     pub center: (i32, i32),
+    /// Where the player looks or flies, as a unit (x, z) (`Ranges::ahead`): the columns ahead
+    /// load first.
+    pub ahead: Option<[f32; 2]>,
     /// The view distance around `center`; below 0, no area there (a dedicated
     /// server nobody is on).
     pub radius: i32,
@@ -540,6 +547,10 @@ pub struct Streaming {
     /// The `ao` and `cutoutLeaves` options.
     pub smooth_lighting: bool,
     pub cutout_leaves: bool,
+    /// RT lighting (gfx/shadow_rays.rs): faces keep their tint alone, the rays light them.
+    pub rt_lighting: bool,
+    /// Horizon's Smooth fluids (`mesher/fluid_surface.rs`).
+    pub smooth_fluids: bool,
     /// Draw regular ice opaque in the solid pass (`Mesher::opaque_ice`).
     pub opaque_ice: bool,
     /// Sprite layers a shader pack draws in the translucent pass (`[[materials]]
@@ -555,7 +566,17 @@ pub struct Streaming {
     /// Edit sequence at each in-flight light job's snapshot.
     light_snapshots: FxHashMap<(i32, i32), u64>,
     pub generated_total: u64,
+    /// Of the columns a server sent (`insert_remote`), those it had sent before in this
+    /// level (forgotten since), and the columns forgotten (`forget_columns`).
+    pub arrived_again_total: u64,
+    pub forgotten_total: u64,
+    /// Every column a server sent in this level, for `arrived_again_total`.
+    arrived_ever: FxHashSet<(i32, i32)>,
     pub meshed_total: u64,
+    /// Of `meshed_total`, the sections that had been meshed before (and kept since).
+    pub remeshed_total: u64,
+    /// Meshes made for nothing: asked for again (or their column unloaded) before they came back.
+    pub stale_meshed_total: u64,
     /// Chunks come from a server (`insert_remote`/`forget`): nothing is
     /// generated and columns are only unloaded when the server says so.
     pub remote: bool,
@@ -774,6 +795,7 @@ impl GenerationScan {
             }
             let ranges = Ranges {
                 center: input.ranges.center,
+                ahead: input.ranges.ahead,
                 radius: input.ranges.radius,
                 extra: input.ranges.extra,
                 forced: input.ranges.forced,
@@ -1016,6 +1038,8 @@ impl<G: ChunkGenerator> Jobs<G> {
                     opaque_ice: settings.opaque_ice,
                     translucent_layers: &settings.translucent_layers,
                     leaf_culling: settings.leaf_culling,
+                    rt_lighting: settings.rt_lighting,
+                    smooth_fluids: settings.smooth_fluids,
                     assets: &context.assets,
                     render: &context.render,
                     tables: &context.tables,
@@ -1025,6 +1049,7 @@ impl<G: ChunkGenerator> Jobs<G> {
                 let recycled = shared.meshes.lock().unwrap().take();
                 let mut mesh = mesher.mesh_reusing(&borrow(&region), sy, recycled, mesh_scratch);
                 mesh.sort_solid();
+                mesh.micromaps = crate::gfx::hw_micromaps::for_mesh((x, sy, z), &mesh);
                 *faces = Some((context.tables.clone(), mesher.visibility));
                 Done::Meshed(x, sy, z, mesh, seq)
             }
@@ -1044,9 +1069,11 @@ mod queue_census;
 pub use queue_census::QueueCensus;
 mod forced_cover;
 mod forced_ring;
+mod ranges;
 mod relight_now;
 use bounded::nearest_first;
 use forced_cover::ForcedCover;
+use ranges::{ahead_on, ahead_sector};
 impl Streaming {
     pub fn new<G: ChunkGenerator>(
         generator: Arc<G>,
@@ -1127,6 +1154,7 @@ impl Streaming {
             mesh_columns_scratch: Vec::new(),
             sequence: 0,
             center: (0, 0),
+            ahead: None,
             radius: 8,
             forced: HashSet::new(),
             mod_forced: HashSet::new(),
@@ -1141,6 +1169,8 @@ impl Streaming {
             biome_blend: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            rt_lighting: false,
+            smooth_fluids: false,
             opaque_ice: false,
             translucent_layers: Arc::from([]),
             leaf_culling: LeafCullingMode::Off,
@@ -1149,7 +1179,12 @@ impl Streaming {
             light_edit_sequence: 0,
             light_snapshots: Default::default(),
             generated_total: 0,
+            arrived_again_total: 0,
+            forgotten_total: 0,
+            arrived_ever: Default::default(),
             meshed_total: 0,
+            remeshed_total: 0,
+            stale_meshed_total: 0,
             remote: false,
             relight_resent: false,
             extra: Vec::new(),
@@ -1183,11 +1218,14 @@ impl Streaming {
     /// unlit column will queue itself when its light job completes.
     fn mark_loaded_sections_dirty(world: &mut World, lit: &FxHashSet<(i32, i32)>) {
         let mask = SectionMask::below(world.layout().sections());
-        for &(x, z) in world.chunks.keys() {
-            if !lit.contains(&(x, z)) {
-                continue;
-            }
-            world.dirty_sections.insert_column_mask((x, z), mask);
+        let columns: Vec<(i32, i32)> = world
+            .chunks
+            .keys()
+            .copied()
+            .filter(|xz| lit.contains(xz))
+            .collect();
+        for xz in columns {
+            dirty_column(world, xz, mask, Dirtied::Everything);
         }
     }
     /// A column received from a server, with the light it sent
@@ -1200,12 +1238,15 @@ impl Streaming {
         world.chunks.insert(key, Arc::new(chunk));
         self.lit.insert(key);
         self.generated_total += 1;
+        if !self.arrived_ever.insert(key) {
+            self.arrived_again_total += 1;
+        }
         let mask = SectionMask::below(world.layout().sections());
         for dz in -1..=1 {
             for dx in -1..=1 {
                 let n = (key.0 + dx, key.1 + dz);
                 if n == key || world.chunks.contains_key(&n) {
-                    world.dirty_sections.insert_column_mask(n, mask);
+                    dirty_column(world, n, mask, Dirtied::Arrived);
                 }
             }
         }
@@ -1241,7 +1282,9 @@ impl Streaming {
                     for dx in -1..=1 {
                         let s = sy as i32 + dy;
                         if (0..world.layout().sections() as i32).contains(&s) {
-                            world.dirty_sections.insert((x + dx, s, z + dz));
+                            world
+                                .dirty_sections
+                                .insert_for((x + dx, s, z + dz), Dirtied::ServerLight);
                         }
                     }
                 }
@@ -1292,6 +1335,10 @@ impl Streaming {
             release_columns(&mut queue, gone);
         }
         let mut chunks = Vec::with_capacity(gone.len());
+        self.forgotten_total += gone
+            .iter()
+            .filter(|column| world.chunks.contains_key(column))
+            .count() as u64;
         for &(x, z) in gone {
             self.lit.remove(&(x, z));
             self.meshed.remove(&(x, z));
@@ -1450,7 +1497,9 @@ impl Streaming {
         if loaded {
             self.lit.insert(key);
             for sy in 0..world.layout().sections() as i32 {
-                world.dirty_sections.insert((key.0, sy, key.1));
+                world
+                    .dirty_sections
+                    .insert_for((key.0, sy, key.1), Dirtied::Arrived);
             }
         }
         for dz in -1..=1 {
@@ -1714,18 +1763,22 @@ impl Streaming {
                 }
                 Done::Meshed(x, sy, z, mesh, seq) => {
                     if self.meshing.get(&(x, sy, z)) != Some(&seq) {
+                        self.stale_meshed_total += 1;
                         stale.push(((x, sy, z), mesh));
                         continue;
                     }
                     // Its column unloaded while it was meshed: nothing would
                     // ever remove the uploaded section.
                     if !world.chunks.contains_key(&(x, z)) {
+                        self.stale_meshed_total += 1;
                         self.meshing.remove(&(x, sy, z));
                         stale.push(((x, sy, z), mesh));
                         continue;
                     }
                     self.meshing.remove(&(x, sy, z));
-                    self.compile_started.insert((x, sy, z), seq);
+                    if self.compile_started.insert((x, sy, z), seq).is_some() {
+                        self.remeshed_total += 1;
+                    }
                     self.meshed_total += 1;
                     uploads.push(((x, sy, z), mesh));
                 }
@@ -1846,6 +1899,7 @@ impl Streaming {
             self.order_area = Some((self.center, self.radius));
             let ranges = Ranges {
                 center: self.center,
+                ahead: self.ranges_ahead(),
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
@@ -2020,6 +2074,7 @@ impl Streaming {
             self.waiting_area = area;
             let ranges = Ranges {
                 center: self.center,
+                ahead: self.ranges_ahead(),
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
@@ -2031,7 +2086,9 @@ impl Streaming {
             self.waiting.retain(|&(x, sy, z)| {
                 let back = ranges.in_view(x, z);
                 if back {
-                    world.dirty_sections.insert((x, sy, z));
+                    world
+                        .dirty_sections
+                        .insert_for((x, sy, z), Dirtied::BackInView);
                 }
                 !back
             });
@@ -2109,6 +2166,8 @@ impl Streaming {
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,
                             cutout_leaves: self.cutout_leaves,
+                            rt_lighting: self.rt_lighting,
+                            smooth_fluids: self.smooth_fluids,
                             opaque_ice: self.opaque_ice,
                             translucent_layers: self.translucent_layers.clone(),
                             leaf_culling: self.leaf_culling,
@@ -2128,6 +2187,7 @@ impl Streaming {
         let input = GenerationInputs {
             ranges: Ranges {
                 center: self.center,
+                ahead: self.ranges_ahead(),
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
@@ -2261,12 +2321,13 @@ impl Streaming {
             }
         }
         changed.dirty_sections(|section| {
-            world.dirty_sections.insert(section);
+            world.dirty_sections.insert_for(section, Dirtied::Relit);
         });
     }
     fn ranges(&self) -> Ranges<'_> {
         Ranges {
             center: self.center,
+            ahead: self.ranges_ahead(),
             radius: self.radius,
             extra: &self.extra,
             forced: &self.forced,
@@ -2545,6 +2606,8 @@ const FORCED_TERRAIN_RING: i32 = 4;
 /// The areas kept loaded: circles around the player and `extra`, and forced chunks.
 struct Ranges<'a> {
     center: (i32, i32),
+    /// `Streaming::ahead`, quantized (`ahead_sector`); `None` without `ahead_on`.
+    ahead: Option<[f32; 2]>,
     radius: i32,
     extra: &'a [((i32, i32), i32)],
     forced: &'a HashSet<(i32, i32)>,
@@ -2831,100 +2894,6 @@ impl CoverGrid {
             && i32::from(self.cells[(dz * self.width + dx) as usize]) <= margin
     }
 }
-impl Ranges<'_> {
-    /// `distance`, or the band's nearer priority close to it.
-    fn priority(&self, x: i32, z: i32) -> i64 {
-        let own = self.distance(x, z);
-        match self.band {
-            Some(band) if band.within(x, z, 4) => own.min(band.priority(x, z)),
-            _ => own,
-        }
-    }
-    fn player_distance(&self, x: i32, z: i32) -> i64 {
-        let d = |c: (i32, i32)| {
-            let (dx, dz) = (i64::from(x - c.0), i64::from(z - c.1));
-            dx * dx + dz * dz
-        };
-        if let Some(cover) = self.cover {
-            return d(self.center).min(cover.nearest_sq(x, z));
-        }
-        self.extra
-            .iter()
-            .map(|(c, _)| d(*c))
-            .fold(d(self.center), i64::min)
-    }
-
-    /// How far past the view distance chunks are generated, and how far around
-    /// a finished chunk (`near_finished`): decorated chunks need their
-    /// neighbours generated too.
-    fn margins(decorates: bool) -> (i32, i32) {
-        if decorates { (3, 2) } else { (1, 1) }
-    }
-    /// Chunks generation asks for: loaded from the save, or generated as protos.
-    fn requested(&self, x: i32, z: i32, decorates: bool) -> bool {
-        let (margin, reach) = Self::margins(decorates);
-        self.in_range(x, z, margin) || self.near_finished(x, z, reach)
-    }
-    /// Finished columns kept when they arrive: within two of the view distance
-    /// or next to a finished chunk, and every column generation asked for (a
-    /// saved one loads finished; dropping it had it asked for and loaded again
-    /// every frame).
-    fn chunk_kept(&self, x: i32, z: i32, decorates: bool) -> bool {
-        self.in_range(x, z, 2) || self.near_finished(x, z, 1) || self.requested(x, z, decorates)
-    }
-    /// Columns unloaded: past every column kept.
-    fn unloaded(&self, x: i32, z: i32, decorates: bool) -> bool {
-        !self.in_range(x, z, 3) && !self.near_finished(x, z, Self::margins(decorates).1)
-    }
-    /// Whether a chunk finished here (`in_range(_, _, 1)`) lies within `reach`
-    /// chunks of (x, z) on both axes: its decoration needs its 3x3 neighbours
-    /// decorated, which need their own 3x3 neighbours generated. The ranges are
-    /// circles, so a fixed margin alone misses the corners of those squares
-    /// (render distance 2 never finished the chunks next to the player).
-    fn near_finished(&self, x: i32, z: i32, reach: i32) -> bool {
-        let gap = |d: i32| i64::from((d.abs() - reach).max(0));
-        let (dx, dz) = (gap(x - self.center.0), gap(z - self.center.1));
-        let r = i64::from(self.radius + 1);
-        // The extra areas are squares: their finished square grown by `reach`.
-        (self.radius >= 0 && dx * dx + dz * dz <= r * r)
-            || self.in_extra(x, z, 1 + reach)
-            || self.in_band(x, z, 1 + reach)
-    }
-    fn in_range(&self, x: i32, z: i32, margin: i32) -> bool {
-        self.in_main_range(x, z, margin)
-            || self.in_extra(x, z, margin)
-            || self.in_band(x, z, margin)
-    }
-    /// Within `margin` of the pregeneration band.
-    fn in_band(&self, x: i32, z: i32, margin: i32) -> bool {
-        self.band.is_some_and(|b| b.within(x, z, margin))
-    }
-    /// Within `margin` of an extra area's square (Chebyshev distance, as
-    /// vanilla's ticket levels spread).
-    fn in_extra(&self, x: i32, z: i32, margin: i32) -> bool {
-        if let Some(cover) = self.cover
-            && (0..=ExtraCover::REACH).contains(&margin)
-        {
-            return cover.within(x, z, margin);
-        }
-        self.extra
-            .iter()
-            .any(|&(c, radius)| (x - c.0).abs().max((z - c.1).abs()) <= radius + margin)
-    }
-    /// The columns meshed for drawing: those vanilla draws around the
-    /// player (`in_view_distance`), and forced ones.
-    fn in_view(&self, x: i32, z: i32) -> bool {
-        in_view_distance(self.center, self.radius, x, z) || self.is_forced(x, z)
-    }
-    fn in_main_range(&self, x: i32, z: i32, margin: i32) -> bool {
-        let r = i64::from(self.radius + margin);
-        let (dx, dz) = (i64::from(x - self.center.0), i64::from(z - self.center.1));
-        if self.radius >= 0 && dx * dx + dz * dz <= r * r {
-            return true;
-        }
-        self.near_forced(x, z, margin)
-    }
-}
 impl Drop for Streaming {
     fn drop(&mut self) {
         self.abort_generation();
@@ -2940,6 +2909,13 @@ impl Drop for Streaming {
         }
         // `jobs` leaves the pool after this, once its running jobs are
         // done; the jobs still queued go with the queue.
+    }
+}
+/// Marks column `column`'s sections in `mask` dirty, each counted under `why` when it was not
+/// already (`DirtySections::insert_for`).
+fn dirty_column(world: &mut World, (x, z): (i32, i32), mask: SectionMask, why: Dirtied) {
+    for sy in mask.iter() {
+        world.dirty_sections.insert_for((x, sy as i32, z), why);
     }
 }
 /// The queued jobs' priorities computed again from each one's column
@@ -3096,7 +3072,7 @@ fn take_resent_column(
         }
     }
     cells.dirty_sections(|section| {
-        world.dirty_sections.insert(section);
+        world.dirty_sections.insert_for(section, Dirtied::Resent);
     });
 }
 
@@ -3451,6 +3427,7 @@ mod tests {
         let forced = HashSet::new();
         let ranges = |center| Ranges {
             center,
+            ahead: None,
             radius: 32,
             extra: &[],
             forced: &forced,
@@ -3692,6 +3669,7 @@ mod tests {
             GenerationInputs {
                 ranges: Ranges {
                     center: self.center,
+                    ahead: None,
                     radius: self.radius,
                     extra: &self.extra,
                     forced: &self.forced,
@@ -4076,6 +4054,7 @@ mod tests {
             for radius in 2..=32 {
                 let r = Ranges {
                     center: (5, -7),
+                    ahead: None,
                     radius,
                     extra: &[],
                     forced: &forced,
@@ -4134,6 +4113,7 @@ mod tests {
             for radius in 2..=32 {
                 let r = Ranges {
                     center: (5, -7),
+                    ahead: None,
                     radius,
                     extra: &[((radius * 2 + 9, 3), 4)],
                     forced: &forced,
@@ -4179,6 +4159,7 @@ mod tests {
             cover: None,
             forced_cover: None,
             band: None,
+            ahead: None,
         };
         for x in -5i32..=15 {
             for z in -13i32..=7 {
@@ -4207,6 +4188,7 @@ mod tests {
             let r = Ranges {
                 // The window's own area, far away.
                 center: (-400, 300),
+                ahead: None,
                 radius: 2,
                 extra: &extra,
                 forced: &forced,
@@ -4270,6 +4252,7 @@ mod tests {
             cover: None,
             forced_cover: None,
             band: None,
+            ahead: None,
         };
         let level = |x: i32, z: i32| 31 + (x - 40).abs().max((z + 40).abs());
         for x in 40 - 6..=40 + 6 {
@@ -4404,6 +4387,7 @@ mod cover_tests {
             let cover = ExtraCover::new(&extra).expect("a grid");
             let ranges = |cover| Ranges {
                 center: (3, -2),
+                ahead: None,
                 radius: 10,
                 extra: &extra,
                 forced: &forced,
@@ -4455,6 +4439,7 @@ mod cover_tests {
                 cover,
                 forced_cover: None,
                 band: None,
+                ahead: None,
             };
             let (scan, buckets) = (ranges(None), ranges(Some(&cover)));
             // Around each area, and on a coarse lattice over the whole spread. A debug build
@@ -4525,6 +4510,7 @@ mod cover_tests {
             let cover = ExtraCover::new(&extra).unwrap();
             let ranges = |cover| Ranges {
                 center: (0, 0),
+                ahead: None,
                 radius: 10,
                 extra: &extra,
                 forced: &forced,

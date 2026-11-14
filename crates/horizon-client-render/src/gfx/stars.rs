@@ -57,14 +57,13 @@ pub(super) struct Stars {
     uniform: wgpu::Buffer,
     vertices: wgpu::Buffer,
     count: u32,
+    /// Linear Light: the brightness decoded to light (`tonemap`).
+    linear: bool,
 }
 
 impl Stars {
     /// The stars onto a frame of `format`, holding linear light when `linear`.
-    pub(super) fn new(
-        device: &wgpu::Device,
-        (format, linear): (wgpu::TextureFormat, bool),
-    ) -> Self {
+    pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat, linear: bool) -> Self {
         let triangles = star_triangles();
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Stars vertex buffer"),
@@ -166,6 +165,7 @@ impl Stars {
             uniform,
             vertices,
             count: triangles.len() as u32,
+            linear,
         }
     }
 
@@ -179,7 +179,10 @@ impl Stars {
         brightness: f32,
         globals: &super::Globals,
     ) {
-        let b = brightness.clamp(0.0, 1.0);
+        let mut b = brightness.clamp(0.0, 1.0);
+        if self.linear {
+            b = b.powf(2.2);
+        }
         let uniform = Uniform {
             clip_from_sky: clip_from_sky.to_cols_array_2d(),
             color: [b; 4],

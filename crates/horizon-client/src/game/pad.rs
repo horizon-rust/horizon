@@ -88,6 +88,10 @@ pub(super) struct Pads {
     connections: Vec<Connection>,
     /// The cursor the pad drives in menus.
     pub(super) menu: super::pad_menu::MenuCursor,
+    /// A VR controller's laser in menus.
+    pub(super) xr: super::xr_pointer::XrMenu,
+    /// What aims in VR: the head or the eyes.
+    pub(super) gaze: super::xr_gaze::XrGaze,
     /// The radial menu while its opener is held, and the page it stays on.
     pub(super) radial: radial::RadialMenu,
     /// What the radial menu ran, for `pad status`.
@@ -422,7 +426,13 @@ impl Game<'_> {
         }
         self.ui.options.pad_glyphs = Glyphs::of(&self.settings.controller, self.pad.style);
         self.ui.options.pad_driving = self.pad.in_use && self.pad_focus_mode();
-        let mut state = hardware.merge(&self.pad.injected);
+        // VR's controllers come in as one more pad, played without the window's focus (the
+        // player is in the headset).
+        let xr = self.renderer.as_mut().and_then(|r| r.xr_pad());
+        self.pad.virtual_input |= xr.is_some();
+        let mut state = hardware
+            .merge(&self.pad.injected)
+            .merge(&xr.unwrap_or_default());
         let activity = self.pad.activity.observe(&state, &self.settings.controller);
         for (i, (stick, deadzone)) in [
             (&mut state.left, self.settings.controller.move_deadzone),
@@ -494,6 +504,7 @@ impl Game<'_> {
             }
         }
         self.pad_menu_frame(event_loop);
+        self.xr_pointer_frame(event_loop);
     }
 
     fn pad_edge(&mut self, event_loop: &dyn EventLoopCtl, button: Button, down: bool) {
@@ -803,6 +814,24 @@ impl Game<'_> {
             return None;
         }
         gamepad::move_vector(self.pad.state.left, settings.move_deadzone)
+    }
+
+    /// In VR the head aims: the player turns with the head's yaw and takes its pitch, once
+    /// per frame, before the frame is built. With eye tracking the eyes then pick the block
+    /// targeted (`xr_gaze_frame`).
+    pub(super) fn xr_look(&mut self, seconds: f32) {
+        if self.player.is_none() {
+            return;
+        }
+        let Some(look) = self.renderer.as_mut().and_then(|r| r.xr_look()) else {
+            return;
+        };
+        let (turn, pitch) = (look.turn, look.pitch);
+        self.turn_player(
+            f64::from(turn / 0.15),
+            f64::from((pitch - self.pitch) / 0.15),
+        );
+        self.xr_gaze_frame(look, seconds);
     }
 
     /// The right stick turns the view, once per frame (`Entity.turn`).

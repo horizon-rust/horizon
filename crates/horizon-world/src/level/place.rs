@@ -1084,7 +1084,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             Class::Note => Some(self.note_block_instrument(pos, default)),
             Class::RedstoneLamp => {
                 let signal = self.has_neighbor_signal(pos);
-                Some(table.set_bool(default, p.lit, signal))
+                let lit = table.set_bool(default, p.lit, signal);
+                // A lamp of a content mod that declares `facing` of its own (vanilla's has none,
+                // so its state is unchanged): it faces away from the face it was placed on, as an
+                // end rod does, so a spotlight on a ceiling shines down (docs/raytracing.md).
+                Some(table.set_dir(lit, p.facing, ctx.face))
             }
             Class::RedstoneWire => {
                 let cross = self.wire_cross_state(0);

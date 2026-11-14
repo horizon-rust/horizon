@@ -159,6 +159,7 @@ impl PackResources {
             render,
             tables,
             item_renderer,
+            facts,
             biomes,
             light,
         ))
@@ -180,15 +181,25 @@ impl PackResources {
     }
     /// The pack tables over their parts, which `load_resources` builds on
     /// separate workers.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn assemble(
         root: &std::path::Path,
         assets: Arc<Assets>,
         render: Arc<RenderAssets>,
         tables: Arc<MeshTables>,
         item_renderer: horizon_client::item_render::ItemRenderer,
+        facts: &BlockFacts,
         biomes: Arc<Biomes>,
         light: Arc<LightTables>,
     ) -> Self {
+        let layer_count = render
+            .sprite_layers
+            .values()
+            .max()
+            .map_or(0, |l| *l as usize + 1);
+        let thin_layers =
+            horizon_client::gfx::transmission::thin_layers(facts, &render, layer_count);
+        let wind_layers = horizon_client::gfx::wind::wind_layers(facts, &render, layer_count);
         // These pack-local resources do not depend on one another. Decode the
         // images and language map together so a custom-sky pack cannot put all
         // of the pack assembly on the critical path behind its own files.
@@ -259,6 +270,8 @@ impl PackResources {
             polytone_particles,
             polytone_post,
             polytone_colors: Arc::new(read_colors(root)),
+            thin_layers: Arc::new(thin_layers),
+            wind_layers: Arc::new(wind_layers),
         }
     }
 }

@@ -506,7 +506,7 @@ impl Game<'_> {
     }
 
     /// The block or entity under the crosshair.
-    fn looking_at(&self) -> Value {
+    pub(super) fn looking_at(&self) -> Value {
         let Some(eye) = self.eye_position() else {
             return Value::Null;
         };

@@ -55,6 +55,10 @@ fn blur(uv: vec2<f32>, step: vec2<f32>) -> vec4<f32> {
 }
 
 // blit_screen.fsh, blended by RenderPipelines.ENTITY_OUTLINE_BLIT.
+// Linear Light (gfx/tonemap.rs): the outline decoded to linear light for the float scene.
+override LINEAR: bool = false;
 @fragment fn fs_blit(in: PostOut) -> @location(0) vec4<f32> {
-    return tap(in.uv);
+    let c = tap(in.uv);
+    if LINEAR { return vec4(pow(max(c.rgb, vec3(0.0)), vec3(2.2)), c.a); }
+    return c;
 }

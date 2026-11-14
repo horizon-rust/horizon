@@ -97,8 +97,14 @@ pub struct RenderAssets {
     /// OptiFine's emissive block overlays: base sprite and overlay sprite names.
     pub emissive: Vec<(String, String)>,
     pub translucent_layers: Vec<bool>,
+    /// Per layer, whether every texel of every frame is opaque (alpha 255): RT lighting's opaque
+    /// geometry (`mesher::Sides::geometries`).
+    pub opaque_layers: Vec<bool>,
     /// Each layer's `MipmapGenerator` settings.
     pub sprite_mips: Vec<crate::mipmap::Settings>,
+    /// The layers' LabPBR normal, specular and subsurface maps for RT lighting, when the packs
+    /// have any (`labpbr.rs`).
+    pub materials: Option<crate::labpbr::MaterialPixels>,
     /// The resource packs' LabPBR maps (normals, specular), layer by layer at `pbr_size`:
     /// empty when they ship none.
     pub pbr_normals: Vec<u8>,
@@ -377,6 +383,9 @@ impl RenderAssets {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
             sprites.insert(root, &format!("minecraft:block/destroy_oit_stage_{stage}"))?;
         }
+        if let Some(format) = crate::labpbr::declared_format(root) {
+            log::info!("Horizon: resource packs declare the material format {format}");
+        }
         let fusion = if draws {
             let _step = crate::spans::startup::step("core.fusion");
             crate::fusion::FusionTextures::load(root, registry, &mut sprites, &mut models.catalog)
@@ -439,7 +448,9 @@ impl RenderAssets {
             sprite_layers: sprites.layers,
             emissive,
             translucent_layers: sprites.translucent,
+            opaque_layers: sprites.opaque,
             sprite_mips: sprites.mips,
+            materials: sprites.materials,
             pbr_normals: sprites.normals,
             pbr_specular: sprites.specular,
             pbr_size: sprites.pbr_size,

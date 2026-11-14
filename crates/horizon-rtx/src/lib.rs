@@ -1,0 +1,510 @@
+//! The RTX 4090 build's raw Vulkan pieces of RT lighting ([docs/rtx-4090.md](../../docs/rtx-4090.md),
+//! phase 3). The game crate forbids `unsafe`; what must reach Vulkan under wgpu lives here, as the
+//! HDR metadata does in `horizon-hdr`.
+//!
+//! First brick: **the top-level structure built outside wgpu's API.** wgpu's `build_acceleration_structures`
+//! takes every instance through the CPU every time (its resolution, encoding and tracking, then the
+//! submission's validation of every dependency), and RT lighting's structure holds thousands of
+//! section instances and is built every frame the hand or an entity moves. Here the instances live in
+//! a buffer of Horizon's own (`RawTlas::instances`), written only where they change
+//! (`RawTlas::write`), and the build is one raw command on wgpu's own structure
+//! (`RawTlas::build`), then marked built for wgpu (`mark_acceleration_structures_built`) with no
+//! dependency list to walk.
+
+/// One instance as Vulkan reads it (`VkAccelerationStructureInstanceKHR`): a 3x4 row-major
+/// transform, the custom index (24 bits) and mask (8), the hit group offset (24) and flags (8), and
+/// the bottom-level structure's device address (0: an inactive instance, which the build skips).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Instance {
+    pub transform: [f32; 12],
+    custom_and_mask: u32,
+    offset_and_flags: u32,
+    pub address: u64,
+}
+
+/// An instance's bytes, and a row's in the instance buffer.
+pub const INSTANCE_SIZE: u64 = std::mem::size_of::<Instance>() as u64;
+
+impl Instance {
+    /// An instance of the structure at `address`, placed by `transform` (as wgpu's
+    /// `TlasInstance::new` takes it), with `custom` as its custom index (24 bits) and `mask`.
+    pub fn new(address: u64, transform: [f32; 12], custom: u32, mask: u8) -> Self {
+        Self {
+            transform,
+            custom_and_mask: (custom & 0x00ff_ffff) | (u32::from(mask) << 24),
+            offset_and_flags: 0,
+            address,
+        }
+    }
+
+    /// An instance the build skips.
+    pub const NONE: Self = Self {
+        transform: [0.0; 12],
+        custom_and_mask: 0,
+        offset_and_flags: 0,
+        address: 0,
+    };
+}
+
+/// Whether the raw build is wanted: on with the crate (the `rtx` feature of the game), unless
+/// `HORIZON_RAW_TLAS=0`.
+pub fn wanted() -> bool {
+    !std::env::var("HORIZON_RAW_TLAS").is_ok_and(|v| v == "0")
+}
+
+#[cfg(not(target_os = "macos"))]
+mod vulkan {
+    use super::{INSTANCE_SIZE, Instance};
+    use ash::vk;
+    use wgpu::hal::api::Vulkan;
+
+    /// The scratch buffer's address alignment the build needs at most (the specification bounds
+    /// `minAccelerationStructureScratchOffsetAlignment` by 256): the buffer gets that much slack
+    /// and its address is rounded up.
+    const SCRATCH_ALIGN: u64 = 256;
+
+    /// wgpu's top-level structure, built by raw commands from `instances`.
+    pub struct RawTlas {
+        device: ash::Device,
+        structures: ash::khr::acceleration_structure::Device,
+        tlas: vk::AccelerationStructureKHR,
+        max_instances: u32,
+        /// The instances, `INSTANCE_SIZE` bytes a row, `max_instances` rows.
+        pub instances: wgpu::Buffer,
+        instances_address: u64,
+        _scratch: wgpu::Buffer,
+        scratch_address: u64,
+        /// Whether the device has `VK_KHR_ray_tracing_pipeline` (wgpu then enables its
+        /// `rayTracingPipeline` feature): the barriers name the ray tracing stage only then
+        /// (VUID-vkCmdPipelineBarrier-srcStageMask-07946 and dstStageMask-07946).
+        pipelines: bool,
+        /// This structure's own number, never given to another: the sun pass's descriptor sets
+        /// tell structures apart by it, a destroyed handle's value being free for a new one.
+        id: u64,
+    }
+
+    // The handles are plain Vulkan handles wgpu keeps alive as long as its own objects, which
+    // this holds (the buffers) or outlives nothing of (the structure: `build` takes it).
+    unsafe impl Send for RawTlas {}
+    unsafe impl Sync for RawTlas {}
+
+    impl RawTlas {
+        /// The raw build of `tlas` (made by wgpu for `max_instances` instances, with
+        /// `PREFER_FAST_TRACE`), on a Vulkan device; `None` on another backend.
+        pub fn new(
+            device: &wgpu::Device,
+            tlas: &mut wgpu::Tlas,
+            max_instances: u32,
+        ) -> Option<Self> {
+            if !super::wanted() {
+                return None;
+            }
+            let (raw_device, raw_instance, pipelines) = {
+                // Safety: read, cloned (the handles and function tables), dropped before wgpu
+                // takes the device back.
+                let hal = unsafe { device.as_hal::<Vulkan>() }?;
+                (
+                    hal.raw_device().clone(),
+                    hal.shared_instance().raw_instance().clone(),
+                    hal.enabled_device_extensions()
+                        .contains(&ash::khr::ray_tracing_pipeline::NAME),
+                )
+            };
+            let structures =
+                ash::khr::acceleration_structure::Device::new(&raw_instance, &raw_device);
+            let raw_tlas = {
+                // Safety: the handle is only used while `tlas` lives (`build` takes it).
+                let hal = unsafe { tlas.as_hal::<Vulkan>() }?;
+                unsafe { hal.raw_handle() }
+            };
+            // What the build of `max_instances` instances needs in scratch.
+            let geometry = Self::geometry(0);
+            let geometries = [geometry];
+            let info = Self::build_info(&geometries, raw_tlas, 0);
+            // Safety: a query, the structure and the function table valid.
+            let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
+            unsafe {
+                structures.get_acceleration_structure_build_sizes(
+                    vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                    &info,
+                    &[max_instances],
+                    &mut sizes,
+                );
+            }
+            // `TLAS_INPUT` gives both buffers a device address; the scratch is a storage buffer
+            // for the build to write.
+            let scratch = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("RT lighting's raw top-level scratch"),
+                size: sizes.build_scratch_size.max(1) + SCRATCH_ALIGN,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::TLAS_INPUT,
+                mapped_at_creation: false,
+            });
+            let instances = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("RT lighting's raw top-level instances"),
+                size: u64::from(max_instances) * INSTANCE_SIZE,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::TLAS_INPUT,
+                mapped_at_creation: false,
+            });
+            let address = |buffer: &wgpu::Buffer| -> Option<u64> {
+                // Safety: the buffer's own handle, the device that made it.
+                let hal = unsafe { buffer.as_hal::<Vulkan>() }?;
+                let raw = unsafe { hal.raw_handle() };
+                Some(unsafe {
+                    raw_device.get_buffer_device_address(
+                        &vk::BufferDeviceAddressInfo::default().buffer(raw),
+                    )
+                })
+            };
+            let instances_address = address(&instances)?;
+            let scratch_address = address(&scratch)?.next_multiple_of(SCRATCH_ALIGN);
+            log::info!(
+                "Horizon RTX: the top-level structure built by raw Vulkan commands, {max_instances} instances, {} KB of scratch",
+                sizes.build_scratch_size / 1024
+            );
+            Some(Self {
+                device: raw_device,
+                structures,
+                tlas: raw_tlas,
+                max_instances,
+                instances,
+                instances_address,
+                _scratch: scratch,
+                scratch_address,
+                pipelines,
+                id: {
+                    static NEXT: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(1);
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                },
+            })
+        }
+
+        /// This structure's number, unique in the process (`id`).
+        pub(crate) fn id(&self) -> u64 {
+            self.id
+        }
+
+        /// The structure's handle, for the passes that bind it raw (`sun`).
+        pub(crate) fn raw_handle(&self) -> vk::AccelerationStructureKHR {
+            self.tlas
+        }
+
+        /// The device address of `blas`, for its instances; `None` on another backend.
+        pub fn blas_address(&self, blas: &mut wgpu::Blas) -> Option<u64> {
+            // Safety: the structure's own handle; the address stays valid as long as it lives.
+            let hal = unsafe { blas.as_hal::<Vulkan>() }?;
+            let raw = unsafe { hal.raw_handle() };
+            Some(unsafe {
+                self.structures.get_acceleration_structure_device_address(
+                    &vk::AccelerationStructureDeviceAddressInfoKHR::default()
+                        .acceleration_structure(raw),
+                )
+            })
+        }
+
+        /// Writes `rows` from row `first` (copied before the frame's commands run, as every
+        /// `write_buffer` is).
+        pub fn write(&self, queue: &wgpu::Queue, first: u32, rows: &[Instance]) {
+            debug_assert!(first as usize + rows.len() <= self.max_instances as usize);
+            if !rows.is_empty() {
+                queue.write_buffer(
+                    &self.instances,
+                    u64::from(first) * INSTANCE_SIZE,
+                    bytemuck::cast_slice(rows),
+                );
+            }
+        }
+
+        fn geometry<'a>(address: u64) -> vk::AccelerationStructureGeometryKHR<'a> {
+            vk::AccelerationStructureGeometryKHR::default()
+                .geometry_type(vk::GeometryTypeKHR::INSTANCES)
+                .geometry(vk::AccelerationStructureGeometryDataKHR {
+                    instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+                        .array_of_pointers(false)
+                        .data(vk::DeviceOrHostAddressConstKHR {
+                            device_address: address,
+                        }),
+                })
+        }
+
+        fn build_info<'a>(
+            geometries: &'a [vk::AccelerationStructureGeometryKHR<'a>],
+            tlas: vk::AccelerationStructureKHR,
+            scratch: u64,
+        ) -> vk::AccelerationStructureBuildGeometryInfoKHR<'a> {
+            vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
+                .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                .dst_acceleration_structure(tlas)
+                .geometries(geometries)
+                .scratch_data(vk::DeviceOrHostAddressKHR {
+                    device_address: scratch,
+                })
+        }
+
+        /// The build of the first `count` instances into `tlas` (the structure given to `new`),
+        /// marked built for wgpu, in a command buffer of its own: wgpu records its commands when
+        /// an encoder finishes, so raw commands can't share an encoder with them (wgpu-core panics
+        /// at the mix). Submit it after the encoder holding the bottom-level builds and before the
+        /// one whose shaders read the structure.
+        pub fn build(
+            &self,
+            device: &wgpu::Device,
+            tlas: &wgpu::Tlas,
+            count: u32,
+        ) -> wgpu::CommandBuffer {
+            let count = count.min(self.max_instances);
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Horizon RTX: the top-level build"),
+            });
+            // Safety: raw commands on the encoder's own command buffer, between wgpu's commands:
+            // the barriers below order them against the transfer of the instances, the
+            // bottom-level builds before and the shaders after.
+            unsafe {
+                encoder.as_hal_mut::<Vulkan, _, _>(|hal| {
+                    let Some(hal) = hal else {
+                        return;
+                    };
+                    let cb = hal.raw_handle();
+                    // The shaders that trace the structure: ray queries in the kernel and the
+                    // draws, and the ray tracing pipeline's passes (`sun`) where the device has
+                    // them.
+                    // (wgpu-hal's own barriers for a structure read by shaders name the same).
+                    let mut tracing = vk::PipelineStageFlags::VERTEX_SHADER
+                        | vk::PipelineStageFlags::COMPUTE_SHADER
+                        | vk::PipelineStageFlags::FRAGMENT_SHADER;
+                    if self.pipelines {
+                        tracing |= vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR;
+                    }
+                    // Before the build: the instances' copy and the bottom-level builds written
+                    // (read after write), the scratch's last build done (write after write: the
+                    // scratch is read and written at ACCELERATION_STRUCTURE_BUILD, spec 7.1.3's
+                    // table of access types), and the last frame's traces of the structure done
+                    // before it is written again (write after read: an execution dependency on
+                    // the stages that read it, which the last frame's barriers don't chain to
+                    // the build stage).
+                    let before = [vk::MemoryBarrier::default()
+                        .src_access_mask(
+                            vk::AccessFlags::TRANSFER_WRITE
+                                | vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                        )
+                        .dst_access_mask(
+                            vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR
+                                | vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR
+                                | vk::AccessFlags::SHADER_READ,
+                        )];
+                    self.device.cmd_pipeline_barrier(
+                        cb,
+                        vk::PipelineStageFlags::TRANSFER
+                            | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR
+                            | tracing,
+                        vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                        vk::DependencyFlags::empty(),
+                        &before,
+                        &[],
+                        &[],
+                    );
+                    let geometries = [Self::geometry(self.instances_address)];
+                    let info = Self::build_info(&geometries, self.tlas, self.scratch_address);
+                    let range = [vk::AccelerationStructureBuildRangeInfoKHR::default()
+                        .primitive_count(count)];
+                    self.structures
+                        .cmd_build_acceleration_structures(cb, &[info], &[&range]);
+                    // The shaders read it next (the ray tracing pipeline's too: without its
+                    // stage here the sun pass's reads of the structure were not ordered after
+                    // the build, spec 7.1's synchronization scopes); the next frame's transfer
+                    // rewrites the instances.
+                    let after = [vk::MemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+                        .dst_access_mask(
+                            vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR
+                                | vk::AccessFlags::SHADER_READ
+                                | vk::AccessFlags::TRANSFER_WRITE,
+                        )];
+                    self.device.cmd_pipeline_barrier(
+                        cb,
+                        vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                        tracing | vk::PipelineStageFlags::TRANSFER,
+                        vk::DependencyFlags::empty(),
+                        &after,
+                        &[],
+                        &[],
+                    );
+                });
+                // Built, with nothing for wgpu to walk at submission.
+                encoder.mark_acceleration_structures_built(&[], [tlas]);
+            }
+            encoder.finish()
+        }
+    }
+}
+
+pub mod micromap;
+#[cfg(not(target_os = "macos"))]
+pub mod omm;
+
+#[cfg(not(target_os = "macos"))]
+pub use vulkan::RawTlas;
+
+/// Which of the ray tracing pipeline's passes run (`sun`): `HORIZON_RT_PIPELINE=1` or `sun` the
+/// sun pass, `gi` the bounce pass (ReSTIR GI's new sample), `all` both; unset, neither.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Kinds {
+    pub sun: bool,
+    pub gi: bool,
+}
+
+impl Kinds {
+    pub fn parse(value: &str) -> Self {
+        match value.trim() {
+            "1" | "sun" => Self {
+                sun: true,
+                gi: false,
+            },
+            "gi" => Self {
+                sun: false,
+                gi: true,
+            },
+            "all" => Self {
+                sun: true,
+                gi: true,
+            },
+            _ => Self::default(),
+        }
+    }
+
+    pub fn wanted() -> Self {
+        std::env::var("HORIZON_RT_PIPELINE").map_or(Self::default(), |v| Self::parse(&v))
+    }
+
+    pub fn any(self) -> bool {
+        self.sun || self.gi
+    }
+
+    /// The trace kernel's `rt.mode.w`: bit 0 the sun pass ran, bit 1 the bounce pass.
+    pub fn bits(self) -> u32 {
+        u32::from(self.sun) | u32::from(self.gi) << 1
+    }
+}
+
+/// What the passes that ran give the kernel: the sun's light through, and the bounce pass's hits
+/// and surfaces.
+pub struct PassViews {
+    pub sun: Option<wgpu::TextureView>,
+    pub gi: Option<[wgpu::TextureView; 2]>,
+}
+
+#[cfg(not(target_os = "macos"))]
+pub mod sun;
+#[cfg(not(target_os = "macos"))]
+pub use sun::{KernelReads, SunInputs, SunPass};
+
+/// No raw Vulkan on macOS: the kernel traces its own sun.
+#[cfg(target_os = "macos")]
+pub mod sun {
+    pub const ARENA_PAGES: usize = 8;
+    pub struct SunInputs<'a> {
+        pub view: usize,
+        pub uniform: &'a wgpu::Buffer,
+        pub depth: &'a wgpu::TextureView,
+        pub mask_size: [u32; 2],
+        pub tlas: &'a super::RawTlas,
+        pub arena: &'a [wgpu::Buffer; ARENA_PAGES],
+        pub sprites: &'a wgpu::TextureView,
+        pub instances: &'a wgpu::Buffer,
+        pub dynamics: &'a wgpu::Buffer,
+        pub atlas: &'a wgpu::TextureView,
+        pub sprite_split: u32,
+        pub kernel: KernelReads<'a>,
+    }
+    pub struct KernelReads<'a> {
+        pub sky: &'a wgpu::TextureView,
+        pub last_mask: &'a wgpu::TextureView,
+        pub last_light: &'a wgpu::TextureView,
+        pub last_direct: &'a wgpu::TextureView,
+        pub last_gi: [&'a wgpu::TextureView; 2],
+        pub cache: &'a wgpu::Buffer,
+    }
+    pub struct SunPass;
+    impl SunPass {
+        pub fn new(_: &wgpu::Device) -> Option<Self> {
+            None
+        }
+        pub fn run(
+            &mut self,
+            _: &wgpu::Device,
+            _: &mut wgpu::CommandEncoder,
+            _: &mut Vec<wgpu::CommandBuffer>,
+            _: SunInputs<'_>,
+        ) -> super::PassViews {
+            unreachable!("never made")
+        }
+        pub fn kinds(&self) -> super::Kinds {
+            super::Kinds::default()
+        }
+        pub fn submitted(&mut self, _: &wgpu::Queue) {}
+    }
+}
+#[cfg(target_os = "macos")]
+pub use sun::{KernelReads, SunInputs, SunPass};
+
+/// No raw Vulkan on macOS: the structure is wgpu's to build.
+#[cfg(target_os = "macos")]
+pub struct RawTlas {
+    pub instances: wgpu::Buffer,
+}
+
+#[cfg(target_os = "macos")]
+impl RawTlas {
+    pub fn new(_: &wgpu::Device, _: &mut wgpu::Tlas, _: u32) -> Option<Self> {
+        None
+    }
+    pub fn blas_address(&self, _: &mut wgpu::Blas) -> Option<u64> {
+        None
+    }
+    pub fn write(&self, _: &wgpu::Queue, _: u32, _: &[Instance]) {}
+    pub fn build(&self, _: &mut wgpu::CommandEncoder, _: &wgpu::Tlas, _: u32) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_pipeline_variable_names_the_passes() {
+        assert_eq!(Kinds::parse("1").bits(), 1);
+        assert_eq!(Kinds::parse("sun").bits(), 1);
+        assert_eq!(Kinds::parse("gi").bits(), 2);
+        assert_eq!(Kinds::parse("all").bits(), 3);
+        assert!(!Kinds::parse("0").any());
+        assert!(!Kinds::parse("").any());
+    }
+
+    #[test]
+    fn an_instance_is_laid_out_as_vulkan_reads_it() {
+        assert_eq!(INSTANCE_SIZE, 64);
+        let transform = [1.0, 0.0, 0.0, 4.0, 0.0, 1.0, 0.0, 5.0, 0.0, 0.0, 1.0, 6.0];
+        let instance = Instance::new(
+            0x1234_5678_9abc_def0,
+            transform,
+            0x00ab_cdef | 0xff00_0000,
+            0x3c,
+        );
+        let bytes: &[u8] = bytemuck::bytes_of(&instance);
+        // The transform first, as 12 floats.
+        assert_eq!(&bytes[..48], bytemuck::cast_slice::<f32, u8>(&transform));
+        // The custom index kept to 24 bits, the mask in the top byte.
+        assert_eq!(
+            u32::from_le_bytes(bytes[48..52].try_into().unwrap()),
+            0x3cab_cdef
+        );
+        assert_eq!(u32::from_le_bytes(bytes[52..56].try_into().unwrap()), 0);
+        assert_eq!(
+            u64::from_le_bytes(bytes[56..64].try_into().unwrap()),
+            0x1234_5678_9abc_def0
+        );
+        assert_eq!(Instance::NONE.address, 0);
+    }
+}

@@ -388,6 +388,7 @@ impl<'a> Split<'a> {
                 self.host.settings.file.int("textureFiltering"),
                 self.host.settings.file.int("maxAnisotropyBit"),
             ),
+            self.host.settings.horizon.linear_light,
         );
         let renderer = match built {
             Ok(r) => r,
@@ -473,6 +474,7 @@ impl<'a> Split<'a> {
                 self.host.settings.file.int("textureFiltering"),
                 self.host.settings.file.int("maxAnisotropyBit"),
             ),
+            self.host.settings.horizon.linear_light,
         );
         let renderer = match built {
             Ok(r) => r,

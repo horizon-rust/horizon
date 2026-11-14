@@ -1,0 +1,1318 @@
+//! RT lighting's hybrid (docs/raytracing.md): the terrain as it is drawn, in hardware acceleration
+//! structures, so the sun's and the light sources' shadow rays meet the exact triangles, their
+//! texels alpha-tested, where the GPU traces rays (`Features::EXPERIMENTAL_RAY_QUERY`). The voxel
+//! grid (`voxels`) keeps the diffuse light: the sky, global illumination, what the rays bounce off.
+//!
+//! Each section near the camera (`RADIUS`) gets a bottom-level structure over its solid quads,
+//! read where they lie in the vertex arena with the shared quad indices: no copy. The quads whose
+//! sprites have no transparent texel (stone, dirt, logs, planks, sand; forceOpaque leaves) are
+//! opaque geometries, whose hits the hardware confirms itself; the cutouts (leaves, plants,
+//! fences, iron bars, grass's overlays) non-opaque ones, so each of their candidate hits reaches
+//! the shader's alpha test. The mesher lays each side bucket out opaque quads first, then cutouts
+//! (mesher/sides.rs `Sides::geometries`), so both are runs in the arena as they are drawn, a few
+//! geometries a section (14 at most). Measured on the RTX 4090 at 3440x1440 before the split, with
+//! every hit forced opaque (`HORIZON_RT_FORCE_OPAQUE`): the trace stage 0.75 ms against 2.41 in
+//! open terrain, 2.99 against 4.01 in a forest, the alpha test's round trips on quads that were
+//! opaque anyway the most of it. A last geometry holds the translucent quads (stained glass,
+//! water, ice), which tint the light that crosses them. The top-level structure, made again each
+//! frame, holds them relative to the camera, each instance's custom data its row in `instances`
+//! (`row`): where each geometry's quads are in the arena, for the alpha test and the tint to read
+//! their texels and the committed hits their colour and face.
+//!
+//! The moving geometry joins them as Remix's does, made again each frame (`finish`): the entities'
+//! quads as drawn (a dynamic structure over the vertices copied to `dynamics`, rebuilt every frame
+//! with the fast-build flag), the first-person view model (the arms and the held item) in a
+//! structure of its own, and the cloud tiles (`rt_cloud_mesh`), one structure each, built once and
+//! moved by the wind in the top-level structure. Their rows in `instances` say what they are (a
+//! kind in the first word, which the terrain's paths read as an arena page they don't have), so
+//! the shader's terrain code is left as it was.
+
+use super::SectionKey;
+use super::rt_cloud_mesh::{CloudTile, TileKey};
+use crate::mesher::Vertex;
+use std::collections::HashMap;
+
+/// The moving vertices' stride in words, as the shaders read `dynamics` (shadow_rays_hw.wgsl,
+/// horizon-rtx's gi.rgen and sun.rahit, `DYN_WORDS`). A field added to `Vertex` must change
+/// them too: read with the old stride, every entity quad's texel came from another vertex, and
+/// the alpha test cut their shadows into grey streaks.
+pub const DYN_WORDS: usize = 11;
+const _: () = assert!(std::mem::size_of::<Vertex>() == DYN_WORDS * 4);
+
+/// The RTX 4090 build's raw top-level build (crate `horizon-rtx`, the game's `rtx` feature,
+/// docs/rtx-4090.md): the instances in a buffer of its own, written where they change, the build
+/// one raw Vulkan command on `tlas`. Without the feature wgpu builds it from `tlas`'s own
+/// instances, every one of them through the CPU every frame.
+#[cfg(feature = "rtx")]
+use horizon_rtx::{Instance as RawInstance, RawTlas};
+#[cfg(not(feature = "rtx"))]
+mod raw_stub {
+    /// Nothing: wgpu's own build (`RawTlas::new` gives `None`).
+    pub struct RawTlas;
+    #[derive(Clone, Copy)]
+    pub struct Instance;
+    impl Instance {
+        pub fn new(_: u64, _: [f32; 12], _: u32, _: u8) -> Self {
+            Self
+        }
+    }
+    impl RawTlas {
+        pub fn new(_: &wgpu::Device, _: &mut wgpu::Tlas, _: u32) -> Option<Self> {
+            None
+        }
+        pub fn blas_address(&self, _: &mut wgpu::Blas) -> Option<u64> {
+            None
+        }
+        pub fn write(&self, _: &wgpu::Queue, _: u32, _: &[Instance]) {}
+        pub fn build(&self, _: &wgpu::Device, _: &wgpu::Tlas, _: u32) -> wgpu::CommandBuffer {
+            unreachable!("no raw build without the rtx feature")
+        }
+    }
+}
+#[cfg(not(feature = "rtx"))]
+use raw_stub::{Instance as RawInstance, RawTlas};
+
+/// Sections within this many chunks of the camera's have a structure: the voxel grid's reach,
+/// where the rays run.
+pub const RADIUS: i32 = super::voxels::RADIUS;
+/// The vertex arena's pages the rays read (shadow_rays_hw.wgsl `ARENA_PAGES`, bound at 16 and 40
+/// on): quads on a later page are taken as opaque, without their texels.
+pub const ARENA_PAGES: usize = 8;
+/// The bindings of the arena's pages after the first (16).
+pub const ARENA_BINDINGS: [u32; ARENA_PAGES - 1] = [40, 41, 42, 43, 44, 45, 46];
+/// Instances the top-level structure holds at most (a 17x17-chunk square is about 7000 sections).
+const MAX_INSTANCES: u32 = 16384;
+/// Of them, those kept for the moving geometry: the entities, the view model and the cloud tiles
+/// (13 by 13 at most).
+const DYNAMIC_INSTANCES: u32 = 256;
+/// What an instance is, in the first word of its row (shadow_rays_hw.wgsl `DYN_ENTITY`,
+/// `DYN_CLOUD`); below these it is a terrain section's arena page.
+const KIND_ENTITY: u32 = 0xffff_fff0;
+const KIND_CLOUD: u32 = 0xffff_fff1;
+/// The clouds' ray mask bit: the bounce rays leave it out (shadow_rays_hw.wgsl `NO_CLOUDS`), since
+/// what they hit is lit from the voxel grid and the cache, which know nothing of the sky's slab.
+const CLOUD_MASK: u8 = 0x04;
+/// The moving geometry's own ray mask bit (the entities, the player's body, the view model): the
+/// terrain's instances leave it out, so a ray masked to it meets the moving geometry alone
+/// (shadow_rays_moving.wgsl `MOVING_MASK`: which shadows a moving caster throws, for the
+/// accumulation to keep their history short). Every other ray's mask has it.
+const MOVING_MASK: u8 = 0x08;
+/// The terrain sections' mask: every bit but the moving geometry's.
+const TERRAIN_MASK: u8 = !MOVING_MASK;
+/// Cloud structures built a frame at most.
+const CLOUDS_PER_FRAME: usize = 32;
+/// Entity vertices the dynamic structures take at most, so a crowd stays bounded.
+const MAX_DYNAMIC_VERTICES: usize = 1 << 19;
+/// How far the clouds drift before their instances are placed again, in blocks (a shadow a block
+/// off, 700 blocks up, is far under what the eye sees).
+const CLOUD_DRIFT: f64 = 1.0;
+/// Bottom-level structures built a frame at most (the nearest first, gfx.rs `hw_update`), so
+/// arriving in a new place spreads them out: about 25 µs of CPU each (docs/raytracing.md), a
+/// chunk border crossed in flight brings 384 to 744 sections.
+const BUILDS_PER_FRAME: usize = 64;
+/// A row of `instances`, in words (shadow_rays_hw.wgsl `HwInstance`): the page or kind, the solid
+/// quads' first vertex, the translucent ones', the translucent geometry; then each solid
+/// geometry's first quad from the solid ones' first, 16 bits each.
+const ROW_WORDS: usize = 12;
+const ROW_BYTES: u64 = (ROW_WORDS * 4) as u64;
+/// Solid geometries a section's structure has at most (the row's 16-bit slots: 16).
+const MAX_SOLID_GEOMETRIES: usize = 16;
+/// No translucent geometry, in a row's fourth word.
+const NO_GEOMETRY: u32 = u32::MAX;
+
+/// A stale structure's page (`HwRays::forget`): past every arena page, so the rays find no quads
+/// of it to read (shadow_rays_hw.wgsl `hw_quad`) and take its hits as opaque.
+const PAGE_GONE: u32 = u32::MAX;
+/// How many frames a stale structure stands in for a section's new mesh at most.
+const STALE_FRAMES: u32 = 30;
+/// A section's structure and where its quads were when it was built: its page, first vertex,
+/// solid quads, and its geometries (`row`).
+struct Built {
+    blas: wgpu::Blas,
+    /// Its device address, for the raw build's instances (0 without it).
+    address: u64,
+    page: u32,
+    start: u64,
+    solid: u32,
+    /// Its solid geometries' runs (`solid_geometries`) and whether it has translucent quads.
+    geometries: Vec<(u32, u32, bool)>,
+    translucent: bool,
+    /// Its opacity micromap, where its structure has one (`hw_micromaps`).
+    _micromap: Option<super::hw_micromaps::Hold>,
+}
+
+/// The solid geometries of a section of `quads` solid quads laid out in `runs` (`(first, count,
+/// opaque)`, `mesher::Sides::geometries`): those runs, or one non-opaque geometry over them all
+/// where the row can't hold them (more runs than its slots, a first quad past 16 bits) or they
+/// don't cover the quads.
+pub(super) fn solid_geometries(quads: u32, runs: &[(u32, u32, bool)]) -> Vec<(u32, u32, bool)> {
+    let mut next = 0;
+    let fits = runs.len() <= MAX_SOLID_GEOMETRIES
+        && runs.iter().all(|&(first, count, _)| {
+            let follows = first == next && count > 0 && first <= u32::from(u16::MAX);
+            next = first + count;
+            follows
+        })
+        && next == quads;
+    match (quads, fits) {
+        (0, _) => Vec::new(),
+        (_, true) => runs.to_vec(),
+        (_, false) => vec![(0, quads, false)],
+    }
+}
+
+/// A section's row in `instances` (shadow_rays_hw.wgsl `HwInstance`): its arena `page`, the
+/// first vertex of its `solid` quads (`start`) and of its translucent ones (after them), which
+/// geometry is the translucent one (after the solid ones; `NO_GEOMETRY`: none), and each solid
+/// geometry's first quad from `start`.
+fn row(
+    page: u32,
+    start: u32,
+    solid: u32,
+    geometries: &[(u32, u32, bool)],
+    translucent: bool,
+) -> [u32; ROW_WORDS] {
+    let mut row = [0; ROW_WORDS];
+    row[0] = page;
+    row[1] = start;
+    row[2] = start + solid * 4;
+    row[3] = if translucent {
+        geometries.len() as u32
+    } else {
+        NO_GEOMETRY
+    };
+    for (g, &(first, _, _)) in geometries.iter().enumerate() {
+        row[4 + g / 2] |= (first & 0xffff) << ((g % 2) * 16);
+    }
+    row
+}
+
+/// A structure's quads at (`page`, `start`) go to `to` if they are the range that moved (`from`):
+/// a stale structure's (`PAGE_GONE`) or one of an older mesh, whose range is no longer its
+/// section's, stays. Whether they went.
+fn follow(page: &mut u32, start: &mut u64, from: (u32, u64), to: (u32, u64)) -> bool {
+    let moved = (*page, *start) == from;
+    if moved {
+        (*page, *start) = to;
+    }
+    moved
+}
+
+/// A moving structure (the entities, the view model, a cloud tile): the quads it was made to
+/// hold, and its device address for the raw build's instances (0 without it).
+struct Moving {
+    blas: wgpu::Blas,
+    quads: u32,
+    address: u64,
+}
+
+/// Frames a replaced or dropped section's structure is kept alive: the raw top-level build
+/// references it by device address, which wgpu doesn't track, so freeing it the frame it goes
+/// lost the device while a frame in flight (or the other eye's) still traced it. A full remesh
+/// (a world opened again, a setting changed) replaced thousands at once.
+const GRAVE_FRAMES: u64 = 8;
+
+/// A structure kept in the graveyard: a section's, or a moving one outgrown or gone (the
+/// entities', the view model's, a cloud tile's), which the raw build references the same way.
+/// Only held, never read.
+#[allow(dead_code)]
+enum Grave {
+    Section(Built),
+    Moving(Moving),
+}
+
+pub struct HwRays {
+    built: HashMap<SectionKey, Built>,
+    /// Structures gone from `built` or replaced, kept `GRAVE_FRAMES` frames (by `frames`).
+    graveyard: std::collections::VecDeque<(u64, Grave)>,
+    frames: u64,
+    /// Sections meshed again whose old structure stands in until the new one is built, and the
+    /// frames it has stood in: the section never leaves the rays between its two meshes (it
+    /// would let the light through it for a frame, the world flickering as a block is placed).
+    stale: HashMap<SectionKey, u32>,
+    pub tlas: wgpu::Tlas,
+    /// The raw build of `tlas`, where the `rtx` feature and the device give it.
+    raw: Option<RawTlas>,
+    /// This frame's raw top-level build (`RawTlas::build`), for the renderer to submit between
+    /// the commands before it and after (`take_raw_build`).
+    raw_build: Option<wgpu::CommandBuffer>,
+    /// The raw builds of sections with opacity micromaps not yet submitted, submitted before
+    /// the next top-level build (`take_raw_build`). Their structures are already marked built,
+    /// so none may be dropped unsubmitted: a structure in the top level never built is garbage
+    /// to the GPU (the device lost).
+    raw_sections: Vec<wgpu::CommandBuffer>,
+    /// The cutout sections' opacity micromaps (the `rtx` feature, `HORIZON_RT_OMM=0` turns them off).
+    pub micromaps: super::hw_micromaps::Micromaps,
+    /// Where each instance's quads are, by its custom data (shadow_rays_hw.wgsl `instances`,
+    /// `row`): the page, the solid quads' first vertex, the translucent ones', the translucent
+    /// geometry, each solid geometry's first quad.
+    pub instances: wgpu::Buffer,
+    /// Instances set in `tlas` last frame.
+    used: usize,
+    /// Where the instances are placed from (a block, `ANCHOR_REACH` from the camera at most): the
+    /// top-level structure is made again only when it moves or the sections change, not each
+    /// frame the camera moves (the rays add the camera's offset from it, `offset`).
+    anchor: Option<glam::DVec3>,
+    /// The sections changed since the top-level structure was made.
+    changed: bool,
+    /// Instances the terrain's sections take (the moving ones follow), and whether their slots
+    /// changed since the top-level structure was made.
+    terrain: usize,
+    terrain_changed: bool,
+    /// The moving geometry's vertices (`mesher::Vertex`: the entities', then the view model's),
+    /// which the shader reads and the structures build from, and how many fit.
+    pub dynamics: wgpu::Buffer,
+    capacity: usize,
+    /// Structures for the entities and the view model.
+    entities: Option<Moving>,
+    hand: Option<Moving>,
+    /// Each cloud tile's structure, and where the first tile was when the instances were placed.
+    clouds: HashMap<TileKey, Moving>,
+    cloud_origin: Option<glam::DVec3>,
+    /// Moving instances set in `tlas` last frame, and the view model's vertices moved to the world.
+    moving: usize,
+    hand_scratch: Vec<Vertex>,
+    /// The solid quads built so far in opaque geometries and in alpha-tested ones, logged every
+    /// `STAT_EVERY` sections: whether the pack's sprites let the opaque geometries pay
+    /// (docs/rtx-4090.md, phase 1: the measured gain was 0.3 ms of the 1.3 the any-hit floor
+    /// promised).
+    stat: [u64; 3],
+    /// To wait for the GPU before the structures go (`Drop`).
+    device: wgpu::Device,
+}
+
+impl Drop for HwRays {
+    /// Frames in flight may still trace the structures the raw build references by address,
+    /// which wgpu doesn't hold for them: the renderer made again (a setting, the window) would
+    /// free them all under those frames, the device lost. It is rare, so it waits.
+    fn drop(&mut self) {
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+    }
+}
+
+/// Sections between two lines of the opaque share in the log.
+const STAT_EVERY: u64 = 2048;
+
+/// The moving geometry of a frame, as drawn, for `HwRays::finish`.
+pub struct Dynamic<'a> {
+    /// The entities posed on the GPU (`entity_skin`): the buffer whose first vertices they are,
+    /// and how many, in `Vertex`'s own layout. Copied on the GPU ahead of `entities`.
+    pub posed: Option<(&'a wgpu::Buffer, u32)>,
+    /// The entities' quads, four vertices each, relative to the camera.
+    pub entities: &'a [Vertex],
+    /// The player's own body in first person, relative to the camera as the entities are: drawn
+    /// in the rays only (its shadow, its reflection), the camera never sees it.
+    pub body: &'a [Vertex],
+    /// The view model's quads, relative to the camera as the hand's own projection sees them.
+    pub hand: &'a [Vertex],
+    /// Takes the view model's vertices to where the world's projection shows what the hand's
+    /// shows (Remix's view model perspective correction): the bob, then the fields of view's ratio.
+    pub hand_to_world: glam::Mat4,
+    /// The cloud tiles to put in the rays, when the mesh clouds are drawn.
+    pub clouds: Vec<CloudTile<'a>>,
+}
+
+/// What the rays bind of the hybrid, owned (`Renderer::hw_bindings`).
+pub struct Bindings {
+    pub tlas: wgpu::Tlas,
+    /// The arena's first `ARENA_PAGES` pages, the missing ones the first again.
+    pub arena: [wgpu::Buffer; ARENA_PAGES],
+    pub sprites: wgpu::TextureView,
+    pub instances: wgpu::Buffer,
+    pub dynamics: wgpu::Buffer,
+    pub atlas: wgpu::TextureView,
+    /// The wind's buffer (`wind::Wind`).
+    pub wind: wgpu::Buffer,
+}
+
+impl Bindings {
+    pub fn hardware(&self) -> super::shadow_rays::Hardware<'_> {
+        super::shadow_rays::Hardware {
+            tlas: &self.tlas,
+            arena: &self.arena,
+            sprites: &self.sprites,
+            instances: &self.instances,
+            dynamics: &self.dynamics,
+            atlas: &self.atlas,
+            wind: &self.wind,
+        }
+    }
+}
+
+/// A triangle geometry of `quads` quads (four vertices, two triangles each).
+/// How much larger a section's structure is made for its micromaps: 8/5 its quads.
+const OMM_GROWTH: [u32; 2] = [8, 5];
+/// And this many quads more a geometry: a small section's structure grows more than 8/5 with
+/// its micromap (4352 bytes against 3712 made at 8/5 on the 4090).
+const OMM_SLACK: u32 = 16;
+
+/// A section's structure, for geometries of `sizes`.
+fn section_blas(
+    device: &wgpu::Device,
+    sizes: Vec<wgpu::BlasTriangleGeometrySizeDescriptor>,
+) -> wgpu::Blas {
+    device.create_blas(
+        &wgpu::CreateBlasDescriptor {
+            label: Some("RT lighting's section"),
+            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+        },
+        wgpu::BlasGeometrySizeDescriptors::Triangles { descriptors: sizes },
+    )
+}
+
+fn quads_geometry(
+    quads: u32,
+    flags: wgpu::AccelerationStructureGeometryFlags,
+) -> wgpu::BlasTriangleGeometrySizeDescriptor {
+    wgpu::BlasTriangleGeometrySizeDescriptor {
+        vertex_format: wgpu::VertexFormat::Float32x3,
+        vertex_count: quads * 4,
+        index_format: Some(wgpu::IndexFormat::Uint32),
+        index_count: Some(quads * 6),
+        flags,
+    }
+}
+
+/// The build of a moving structure from the quads of `vertices` from vertex `first`.
+fn moving_entry<'a>(
+    blas: &'a wgpu::Blas,
+    size: &'a wgpu::BlasTriangleGeometrySizeDescriptor,
+    vertices: &'a wgpu::Buffer,
+    indices: &'a wgpu::Buffer,
+    first: u32,
+) -> wgpu::BlasBuildEntry<'a> {
+    wgpu::BlasBuildEntry {
+        blas,
+        geometry: wgpu::BlasGeometries::TriangleGeometries(vec![wgpu::BlasTriangleGeometry {
+            size,
+            vertex_buffer: vertices,
+            first_vertex: first,
+            vertex_stride: std::mem::size_of::<Vertex>() as u64,
+            index_buffer: Some(indices),
+            first_index: Some(0),
+            transform_buffer: None,
+            transform_buffer_offset: None,
+        }]),
+    }
+}
+
+/// Makes `slot`'s structure again for `quads` quads when it is missing or too small (a power of
+/// two, so a growing crowd does not remake it every frame), handing back the one it replaces for
+/// the graveyard (frames in flight may still trace it).
+fn ensure_moving(
+    device: &wgpu::Device,
+    raw: Option<&RawTlas>,
+    slot: &mut Option<Moving>,
+    quads: u32,
+    label: &'static str,
+) -> Option<Moving> {
+    if slot.as_ref().is_some_and(|m| m.quads >= quads) {
+        return None;
+    }
+    let held = quads.next_power_of_two().max(64);
+    let mut blas = device.create_blas(
+        &wgpu::CreateBlasDescriptor {
+            label: Some(label),
+            // Built again each frame: the fast build, as Remix's dynamic structures.
+            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_BUILD,
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+        },
+        wgpu::BlasGeometrySizeDescriptors::Triangles {
+            descriptors: vec![quads_geometry(
+                held,
+                wgpu::AccelerationStructureGeometryFlags::empty(),
+            )],
+        },
+    );
+    let address = raw.and_then(|r| r.blas_address(&mut blas)).unwrap_or(0);
+    slot.replace(Moving {
+        blas,
+        quads: held,
+        address,
+    })
+}
+
+/// How far the camera may move from the anchor before the instances are placed again, in blocks
+/// (the rays' precision stays well under a millimetre this near).
+const ANCHOR_REACH: f64 = 64.0;
+
+/// A section to build: its key, its arena page and first vertex, its solid quads, how they lie
+/// (`mesher::Sides::geometries`: runs of opaque quads and of cutouts) and its translucent ones
+/// (after them).
+pub struct ToBuild {
+    pub key: SectionKey,
+    pub page: u32,
+    pub start: u64,
+    pub quads: u32,
+    pub runs: Vec<(u32, u32, bool)>,
+    pub translucent: u32,
+}
+
+impl HwRays {
+    /// The raw build of the top-level structure, where it runs (the `rtx` feature): what the
+    /// passes that bind the structure raw take (horizon-rtx `sun`).
+    #[cfg_attr(not(feature = "rtx"), allow(dead_code))]
+    pub fn raw(&self) -> Option<&RawTlas> {
+        self.raw.as_ref()
+    }
+    /// This frame's raw builds, once, in their order (the sections' with micromaps, then the
+    /// top-level one): submit them after the encoder `update` and `finish` recorded into and
+    /// before the commands that read the structure.
+    pub fn take_raw_build(&mut self) -> Vec<wgpu::CommandBuffer> {
+        // The sections' first, then the top level's (without a top-level build this frame, the
+        // sections' still go).
+        let mut builds = std::mem::take(&mut self.raw_sections);
+        builds.extend(self.raw_build.take());
+        builds
+    }
+
+    /// Whether `device` traces hardware rays (and `HORIZON_HW_RT` isn't 0).
+    pub fn supported(device: &wgpu::Device) -> bool {
+        device
+            .features()
+            .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+    }
+
+    pub fn new(device: &wgpu::Device) -> Self {
+        let mut tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
+            label: Some("RT lighting's terrain"),
+            max_instances: MAX_INSTANCES,
+            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+        });
+        let raw = RawTlas::new(device, &mut tlas, MAX_INSTANCES);
+        Self {
+            built: HashMap::new(),
+            graveyard: std::collections::VecDeque::new(),
+            frames: 0,
+            stale: HashMap::new(),
+            tlas,
+            raw,
+            raw_build: None,
+            raw_sections: Vec::new(),
+            micromaps: super::hw_micromaps::Micromaps::new(device),
+            instances: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("RT lighting's terrain instances"),
+                size: u64::from(MAX_INSTANCES) * ROW_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            used: 0,
+            anchor: None,
+            changed: true,
+            terrain: 0,
+            terrain_changed: true,
+            dynamics: Self::dynamics_buffer(device, 1024),
+            capacity: 1024,
+            entities: None,
+            hand: None,
+            clouds: HashMap::new(),
+            cloud_origin: None,
+            moving: 0,
+            hand_scratch: Vec::new(),
+            stat: [0; 3],
+            device: device.clone(),
+        }
+    }
+
+    /// A buffer for `vertices` moving vertices.
+    fn dynamics_buffer(device: &wgpu::Device, vertices: usize) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("RT lighting's moving geometry"),
+            size: (vertices * std::mem::size_of::<Vertex>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::BLAS_INPUT
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// The camera's offset from the instances' anchor, for the rays (`hw_light`'s origin).
+    pub fn offset(&self, camera: glam::DVec3) -> [f32; 3] {
+        self.anchor
+            .map_or(glam::Vec3::ZERO, |a| (camera - a).as_vec3())
+            .to_array()
+    }
+
+    /// Section `key` was meshed again or went: its structure goes, made again if still near.
+    pub fn forget(&mut self, key: SectionKey) {
+        if let Some(built) = self.built.get_mut(&key) {
+            // Its vertices are freed: the old structure's quads are taken as opaque, without
+            // their texels (`PAGE_GONE`), until the new mesh's structure replaces it.
+            built.page = PAGE_GONE;
+            self.stale.insert(key, 0);
+            self.changed = true;
+        }
+    }
+
+    /// Every section went at once (another level, another world): their structures leave the rays
+    /// now, none standing in for a new mesh (the new level's section at the same key is other
+    /// terrain, and a key the new level leaves empty would keep the old one's shadow for good).
+    /// They wait in the graveyard `GRAVE_FRAMES` frames like any other, the frames in flight and
+    /// the raw builds not yet submitted (`raw_sections`) still reading them; the micromaps worked
+    /// out for the old meshes go too, so the new level's sections don't take them.
+    pub fn clear(&mut self) {
+        let now = self.frames;
+        self.graveyard.extend(
+            self.built
+                .drain()
+                .map(|(_, old)| (now, Grave::Section(old))),
+        );
+        self.stale.clear();
+        self.micromaps.retain(|_| false);
+        self.changed = true;
+    }
+
+    /// Section `key`'s quads moved in the arena from `from` to `to` (`(page, first vertex)`,
+    /// gfx.rs `move_off_page`): its row reads their texels there from the next table, its
+    /// structure kept (the build copied its geometry in). With the rays on, the translucent
+    /// quads move with the solid ones, after them in the same range (`row`).
+    pub fn relocate(&mut self, key: SectionKey, from: (u32, u64), to: (u32, u64)) {
+        if let Some(built) = self.built.get_mut(&key)
+            && follow(&mut built.page, &mut built.start, from, to)
+        {
+            self.changed = true;
+        }
+    }
+
+    /// Whether `key` is within `RADIUS` chunks of chunk `center`.
+    pub fn near(center: (i32, i32), key: SectionKey) -> bool {
+        (key.0 - center.0).abs() <= RADIUS && (key.2 - center.1).abs() <= RADIUS
+    }
+
+    /// Whether section `key` already has its structure (a stale one, standing in, doesn't count).
+    pub fn has(&self, key: SectionKey) -> bool {
+        self.built.contains_key(&key) && !self.stale.contains_key(&key)
+    }
+
+    /// How many more sections this frame may build.
+    pub fn budget(&self) -> usize {
+        BUILDS_PER_FRAME
+    }
+
+    /// Builds `todo`'s structures from `arena`'s pages and the quad `indices`, drops those far from
+    /// chunk `center`, and makes the top-level structure again around `camera`.
+    pub fn update(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        todo: &[ToBuild],
+        pages: impl Fn(u32) -> wgpu::Buffer,
+        indices: &wgpu::Buffer,
+        center: (i32, i32),
+        camera: glam::DVec3,
+    ) {
+        let before = self.built.len();
+        // A stale structure no new mesh replaced within a few frames (the section went empty,
+        // or out of range) goes.
+        let mut gone = Vec::new();
+        for (key, frames) in &mut self.stale {
+            *frames += 1;
+            if *frames > STALE_FRAMES {
+                gone.push(*key);
+            }
+        }
+        self.frames += 1;
+        while self
+            .graveyard
+            .front()
+            .is_some_and(|(at, _)| at + GRAVE_FRAMES <= self.frames)
+        {
+            self.graveyard.pop_front();
+        }
+        let now = self.frames;
+        for key in gone {
+            self.stale.remove(&key);
+            if let Some(old) = self.built.remove(&key) {
+                self.graveyard.push_back((now, Grave::Section(old)));
+            }
+        }
+        for t in todo {
+            self.stale.remove(&t.key);
+        }
+        let far: Vec<SectionKey> = self
+            .built
+            .keys()
+            .filter(|key| !Self::near(center, **key))
+            .copied()
+            .collect();
+        for key in far {
+            if let Some(old) = self.built.remove(&key) {
+                self.graveyard.push_back((now, Grave::Section(old)));
+            }
+        }
+        self.micromaps.frame();
+        self.micromaps.retain(|key| Self::near(center, key));
+        self.changed |= self.built.len() != before || !todo.is_empty();
+        // A section's geometries: its solid quads, the opaque runs' hits confirmed by the hardware,
+        // the cutouts' alpha-tested; then its translucent ones (stained glass, water, ice), which
+        // tint the light instead of stopping it, each once a ray (no duplicate any-hit). Each is
+        // its first vertex in the arena and its size.
+        use wgpu::AccelerationStructureGeometryFlags as Flags;
+        let layouts: Vec<_> = todo
+            .iter()
+            .map(|t| {
+                let solid = solid_geometries(t.quads, &t.runs);
+                let mut parts: Vec<_> = solid
+                    .iter()
+                    .map(|&(first, count, opaque)| {
+                        let flags = if opaque {
+                            Flags::OPAQUE
+                        } else {
+                            Flags::empty()
+                        };
+                        (t.start + u64::from(first) * 4, count, flags)
+                    })
+                    .collect();
+                if t.translucent > 0 {
+                    parts.push((
+                        t.start + u64::from(t.quads) * 4,
+                        t.translucent,
+                        Flags::NO_DUPLICATE_ANY_HIT_INVOCATION,
+                    ));
+                }
+                (solid, parts)
+            })
+            .collect();
+        let sizes: Vec<Vec<_>> = layouts
+            .iter()
+            .map(|(_, parts)| {
+                parts
+                    .iter()
+                    .map(|&(_, quads, flags)| quads_geometry(quads, flags))
+                    .collect()
+            })
+            .collect();
+        let buffers: Vec<_> = todo.iter().map(|t| pages(t.page)).collect();
+        // The cutout sections with micromaps (`hw_micromaps`), with the raw top-level build: their
+        // structure is made larger than wgpu's own for its quads (a micromap's structure takes
+        // 35 to 45 % more on the 4090), then built by raw commands, the micromaps attached.
+        let plans: Vec<_> = todo
+            .iter()
+            .map(|t| self.micromaps.take(t.key).filter(|_| self.raw.is_some()))
+            .collect();
+        let mut entries = Vec::with_capacity(todo.len());
+        let mut made = Vec::with_capacity(todo.len());
+        for ((t, size), plan) in todo.iter().zip(&sizes).zip(&plans) {
+            let mut blas = if plan.is_some() {
+                let larger: Vec<_> = size
+                    .iter()
+                    .map(|g| {
+                        let quads = (g.vertex_count / 4 * OMM_GROWTH[0]).div_ceil(OMM_GROWTH[1])
+                            + OMM_SLACK;
+                        quads_geometry(quads, g.flags)
+                    })
+                    .collect();
+                section_blas(device, larger)
+            } else {
+                section_blas(device, size.clone())
+            };
+            let address = self
+                .raw
+                .as_ref()
+                .and_then(|r| r.blas_address(&mut blas))
+                .unwrap_or(0);
+            for &(_, count, opaque) in &t.runs {
+                self.stat[usize::from(!opaque)] += u64::from(count);
+            }
+            self.stat[2] += 1;
+            if self.stat[2].is_multiple_of(STAT_EVERY) {
+                let total = (self.stat[0] + self.stat[1]).max(1);
+                log::info!(
+                    "Horizon RT lighting: {} sections' structures built, {:.0} % of their solid quads in opaque geometries, {:.0} % alpha-tested",
+                    self.stat[2],
+                    100.0 * self.stat[0] as f64 / total as f64,
+                    100.0 * self.stat[1] as f64 / total as f64,
+                );
+            }
+            made.push((blas, address));
+        }
+        // Those that don't fit after all go through wgpu, in a structure of their own size.
+        let mut holds: Vec<Option<super::hw_micromaps::Hold>> =
+            (0..todo.len()).map(|_| None).collect();
+        if plans.iter().any(Option::is_some) {
+            let mut which = Vec::new();
+            let mut jobs = Vec::new();
+            for (i, (((blas, _), plan), (_, parts))) in
+                made.iter_mut().zip(&plans).zip(&layouts).enumerate()
+            {
+                let Some(plan) = plan else {
+                    continue;
+                };
+                which.push(i);
+                jobs.push((
+                    blas,
+                    &buffers[i],
+                    parts
+                        .iter()
+                        .map(|&(first, quads, flags)| {
+                            (
+                                first,
+                                quads,
+                                flags.contains(Flags::OPAQUE),
+                                flags.contains(Flags::NO_DUPLICATE_ANY_HIT_INVOCATION),
+                            )
+                        })
+                        .collect(),
+                    plan,
+                ));
+            }
+            let (built, commands) = self.micromaps.build(device, indices, jobs);
+            for (i, hold) in which.into_iter().zip(built) {
+                holds[i] = hold;
+            }
+            self.raw_sections.extend(commands);
+            for (i, ((blas, address), size)) in made.iter_mut().zip(&sizes).enumerate() {
+                if plans[i].is_some() && holds[i].is_none() {
+                    *blas = section_blas(device, size.clone());
+                    *address = self
+                        .raw
+                        .as_ref()
+                        .and_then(|r| r.blas_address(blas))
+                        .unwrap_or(0);
+                }
+            }
+        }
+        let raw_built: Vec<bool> = holds.iter().map(Option::is_some).collect();
+        for (((t, (blas, address)), (solid, _)), hold) in
+            todo.iter().zip(made).zip(&layouts).zip(&mut holds)
+        {
+            let old = self.built.insert(
+                t.key,
+                Built {
+                    blas,
+                    address,
+                    page: t.page,
+                    start: t.start,
+                    solid: t.quads,
+                    geometries: solid.clone(),
+                    translucent: t.translucent > 0,
+                    _micromap: hold.take(),
+                },
+            );
+            if let Some(old) = old {
+                self.graveyard.push_back((self.frames, Grave::Section(old)));
+            }
+        }
+        for ((((t, size), buffer), (_, parts)), raw) in todo
+            .iter()
+            .zip(&sizes)
+            .zip(&buffers)
+            .zip(&layouts)
+            .zip(&raw_built)
+        {
+            if *raw {
+                continue;
+            }
+            entries.push(wgpu::BlasBuildEntry {
+                blas: &self.built[&t.key].blas,
+                geometry: wgpu::BlasGeometries::TriangleGeometries(
+                    size.iter()
+                        .zip(parts)
+                        .map(|(size, &(first, _, _))| wgpu::BlasTriangleGeometry {
+                            size,
+                            vertex_buffer: buffer,
+                            first_vertex: first as u32,
+                            vertex_stride: std::mem::size_of::<crate::mesher::TerrainVertex>()
+                                as u64,
+                            index_buffer: Some(indices),
+                            first_index: Some(0),
+                            transform_buffer: None,
+                            transform_buffer_offset: None,
+                        })
+                        .collect(),
+                ),
+            });
+        }
+        let moved = self
+            .anchor
+            .is_none_or(|a| (camera - a).abs().max_element() > ANCHOR_REACH);
+        // The top-level structure is made in `finish`, with the moving geometry.
+        encoder.build_acceleration_structures(entries.iter(), std::iter::empty());
+        if !(moved || self.changed) {
+            return;
+        }
+        self.terrain_changed = true;
+        if moved {
+            self.anchor = Some(camera.floor());
+        }
+        self.changed = false;
+        let anchor = self.anchor.unwrap_or(camera);
+        let mut n = 0usize;
+        let mut table = Vec::with_capacity(self.built.len().min(MAX_INSTANCES as usize));
+        // The raw build's rows, written to its buffer in one go; without it, wgpu's instances.
+        let mut raw_rows = Vec::with_capacity(if self.raw.is_some() {
+            table.capacity()
+        } else {
+            0
+        });
+        for (&(x, sy, z), built) in &self.built {
+            if n as u32 >= MAX_INSTANCES - DYNAMIC_INSTANCES {
+                break;
+            }
+            let origin = glam::DVec3::new(
+                f64::from(x * 16),
+                f64::from(crate::chunk::MIN_Y + sy * 16),
+                f64::from(z * 16),
+            ) - anchor;
+            let o = origin.as_vec3();
+            table.push(row(
+                built.page,
+                built.start as u32,
+                built.solid,
+                &built.geometries,
+                built.translucent,
+            ));
+            let transform = [1.0, 0.0, 0.0, o.x, 0.0, 1.0, 0.0, o.y, 0.0, 0.0, 1.0, o.z];
+            if self.raw.is_some() {
+                raw_rows.push(RawInstance::new(
+                    built.address,
+                    transform,
+                    n as u32,
+                    TERRAIN_MASK,
+                ));
+            } else {
+                self.tlas[n] = Some(wgpu::TlasInstance::new(
+                    &built.blas,
+                    transform,
+                    n as u32,
+                    TERRAIN_MASK,
+                ));
+            }
+            n += 1;
+        }
+        if let Some(raw) = &self.raw {
+            raw.write(queue, 0, &raw_rows);
+        } else {
+            for i in n..self.used {
+                self.tlas[i] = None;
+            }
+        }
+        self.used = n;
+        self.terrain = n;
+        if !table.is_empty() {
+            queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&table));
+        }
+    }
+
+    /// Puts the frame's moving geometry in the rays (after `update`, once the entities are drawn)
+    /// and makes the top-level structure if the terrain, the moving geometry or the clouds changed.
+    /// `indices` are the quad indices (`Renderer::indices`), long enough for the entities' and the
+    /// view model's quads.
+    pub fn finish(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        dynamic: &Dynamic,
+        indices: &wgpu::Buffer,
+        camera: glam::DVec3,
+    ) {
+        let Some(anchor) = self.anchor else {
+            return;
+        };
+        // `HORIZON_HW_DYNAMIC=0` leaves the moving geometry out (the terrain alone, to compare).
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let enabled =
+            *ENABLED.get_or_init(|| std::env::var("HORIZON_HW_DYNAMIC").map_or(true, |v| v != "0"));
+        let none = Dynamic {
+            posed: None,
+            entities: &[],
+            body: &[],
+            hand: &[],
+            hand_to_world: dynamic.hand_to_world,
+            clouds: Vec::new(),
+        };
+        let dynamic = if enabled { dynamic } else { &none };
+        // The vertices: the entities', the player's body (one structure with the entities'), then
+        // the view model's moved to where the world sees them.
+        let posed = dynamic
+            .posed
+            .map_or(0, |(_, n)| (n as usize).min(MAX_DYNAMIC_VERTICES) / 4 * 4);
+        let entity_room = MAX_DYNAMIC_VERTICES - posed;
+        let entities = &dynamic.entities[..dynamic.entities.len().min(entity_room) / 4 * 4];
+        let body_room = entity_room - entities.len();
+        let body = &dynamic.body[..dynamic.body.len().min(body_room) / 4 * 4];
+        let solid = posed + entities.len() + body.len();
+        let hand_room = MAX_DYNAMIC_VERTICES - solid;
+        let hand = &dynamic.hand[..dynamic.hand.len().min(hand_room) / 4 * 4];
+        self.hand_scratch.clear();
+        self.hand_scratch.extend(hand.iter().map(|v| {
+            let at = dynamic
+                .hand_to_world
+                .transform_point3(glam::Vec3::from(v.pos));
+            let n = glam::Vec3::new(
+                f32::from(v.normal[0]),
+                f32::from(v.normal[1]),
+                f32::from(v.normal[2]),
+            );
+            let n = dynamic.hand_to_world.transform_vector3(n);
+            // The face normal stays in its bytes (the fourth, the lighting mode, is left alone).
+            let n = (n / n.abs().max_element().max(1.0e-6) * 127.0).round();
+            Vertex {
+                pos: at.to_array(),
+                normal: [n.x as i8, n.y as i8, n.z as i8, v.normal[3]],
+                ..*v
+            }
+        }));
+        let total = solid + self.hand_scratch.len();
+        if total > self.capacity {
+            self.capacity = total.next_power_of_two();
+            self.dynamics = Self::dynamics_buffer(device, self.capacity);
+        }
+        let stride = std::mem::size_of::<Vertex>() as u64;
+        // The posed ones stay on the GPU: copied from where the skinning wrote them (earlier in
+        // this encoder), before the structures are built.
+        if let (Some((from, _)), true) = (dynamic.posed, posed > 0) {
+            encoder.copy_buffer_to_buffer(from, 0, &self.dynamics, 0, posed as u64 * stride);
+        }
+        if !entities.is_empty() {
+            queue.write_buffer(
+                &self.dynamics,
+                posed as u64 * stride,
+                bytemuck::cast_slice(entities),
+            );
+        }
+        if !body.is_empty() {
+            queue.write_buffer(
+                &self.dynamics,
+                (posed + entities.len()) as u64 * stride,
+                bytemuck::cast_slice(body),
+            );
+        }
+        if !self.hand_scratch.is_empty() {
+            queue.write_buffer(
+                &self.dynamics,
+                (solid * std::mem::size_of::<Vertex>()) as u64,
+                bytemuck::cast_slice(&self.hand_scratch),
+            );
+        }
+        // The cloud tiles: a structure each, made when the tile comes (a tile with another level of
+        // detail has another key) and buried with it; the wind only moves its instance.
+        let gone: Vec<TileKey> = self
+            .clouds
+            .keys()
+            .filter(|key| !dynamic.clouds.iter().any(|t| t.key == **key))
+            .copied()
+            .collect();
+        let mut changed = !gone.is_empty();
+        for key in gone {
+            if let Some(old) = self.clouds.remove(&key) {
+                self.graveyard.push_back((self.frames, Grave::Moving(old)));
+            }
+        }
+        let mut fresh = Vec::new();
+        for tile in &dynamic.clouds {
+            if self.clouds.contains_key(&tile.key) || fresh.len() >= CLOUDS_PER_FRAME {
+                continue;
+            }
+            let size = wgpu::BlasTriangleGeometrySizeDescriptor {
+                vertex_format: wgpu::VertexFormat::Float32x3,
+                vertex_count: tile.vertex_count,
+                index_format: Some(wgpu::IndexFormat::Uint32),
+                index_count: Some(tile.index_count),
+                // Opaque for the rays: no alpha test, a hit is a hit.
+                flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
+            };
+            let mut blas = device.create_blas(
+                &wgpu::CreateBlasDescriptor {
+                    label: Some("RT lighting's cloud tile"),
+                    flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+                    update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+                },
+                wgpu::BlasGeometrySizeDescriptors::Triangles {
+                    descriptors: vec![size.clone()],
+                },
+            );
+            let address = self
+                .raw
+                .as_ref()
+                .and_then(|r| r.blas_address(&mut blas))
+                .unwrap_or(0);
+            self.clouds.insert(
+                tile.key,
+                Moving {
+                    blas,
+                    quads: 0,
+                    address,
+                },
+            );
+            fresh.push((tile, size));
+            changed = true;
+        }
+        let origin = dynamic.clouds.first().map(|t| t.origin);
+        if let (Some(now), Some(placed)) = (origin, self.cloud_origin)
+            && (now - placed).abs().max_element() > CLOUD_DRIFT
+        {
+            changed = true;
+        }
+        let entity_quads = (solid / 4) as u32;
+        let hand_quads = (self.hand_scratch.len() / 4) as u32;
+        if !(changed || entity_quads + hand_quads > 0 || self.moving > 0 || self.terrain_changed) {
+            return;
+        }
+        // The moving structures, built again from this frame's vertices.
+        if entity_quads > 0
+            && let Some(old) = ensure_moving(
+                device,
+                self.raw.as_ref(),
+                &mut self.entities,
+                entity_quads,
+                "RT lighting's entities",
+            )
+        {
+            self.graveyard.push_back((self.frames, Grave::Moving(old)));
+        }
+        if hand_quads > 0
+            && let Some(old) = ensure_moving(
+                device,
+                self.raw.as_ref(),
+                &mut self.hand,
+                hand_quads,
+                "RT lighting's view model",
+            )
+        {
+            self.graveyard.push_back((self.frames, Grave::Moving(old)));
+        }
+        let flags = wgpu::AccelerationStructureGeometryFlags::empty();
+        let entity_size = quads_geometry(entity_quads, flags);
+        let hand_size = quads_geometry(hand_quads, flags);
+        let mut entries: Vec<wgpu::BlasBuildEntry<'_>> = Vec::new();
+        if let (true, Some(m)) = (entity_quads > 0, &self.entities) {
+            entries.push(moving_entry(
+                &m.blas,
+                &entity_size,
+                &self.dynamics,
+                indices,
+                0,
+            ));
+        }
+        if let (true, Some(m)) = (hand_quads > 0, &self.hand) {
+            entries.push(moving_entry(
+                &m.blas,
+                &hand_size,
+                &self.dynamics,
+                indices,
+                solid as u32,
+            ));
+        }
+        for (tile, size) in &fresh {
+            entries.push(wgpu::BlasBuildEntry {
+                blas: &self.clouds[&tile.key].blas,
+                geometry: wgpu::BlasGeometries::TriangleGeometries(vec![
+                    wgpu::BlasTriangleGeometry {
+                        size,
+                        vertex_buffer: tile.vertices,
+                        first_vertex: 0,
+                        vertex_stride: std::mem::size_of::<super::rt_cloud_mesh::Vertex>() as u64,
+                        index_buffer: Some(tile.indices),
+                        first_index: Some(0),
+                        transform_buffer: None,
+                        transform_buffer_offset: None,
+                    },
+                ]),
+            });
+        }
+        // Their instances follow the terrain's: the entities and the view model where the camera's
+        // offset from the anchor puts them (their vertices are relative to the camera), each cloud
+        // tile where the wind has taken it. Each row says what the instance is (the shader reads
+        // it as a kind where terrain rows hold an arena page), its first vertex, and no
+        // translucent geometry.
+        let offset = (camera - anchor).as_vec3();
+        let moving_row = |kind: u32, first: u32| row(kind, first, 0, &[], false);
+        let mut slots: Vec<(&Moving, glam::Vec3, [u32; ROW_WORDS], u8)> = Vec::new();
+        if let (true, Some(m)) = (entity_quads > 0, &self.entities) {
+            slots.push((m, offset, moving_row(KIND_ENTITY, 0), 0xff));
+        }
+        if let (true, Some(m)) = (hand_quads > 0, &self.hand) {
+            let first = solid as u32;
+            slots.push((m, offset, moving_row(KIND_ENTITY, first), 0xff));
+        }
+        for tile in &dynamic.clouds {
+            if let Some(m) = self.clouds.get(&tile.key) {
+                let at = (tile.origin - anchor).as_vec3();
+                slots.push((m, at, moving_row(KIND_CLOUD, 0), CLOUD_MASK));
+            }
+        }
+        let mut rows = Vec::with_capacity(slots.len());
+        let mut raw_rows = Vec::with_capacity(if self.raw.is_some() { slots.len() } else { 0 });
+        let mut n = self.terrain;
+        for (m, at, row, mask) in slots {
+            if n as u32 >= MAX_INSTANCES {
+                break;
+            }
+            let transform = [
+                1.0, 0.0, 0.0, at.x, 0.0, 1.0, 0.0, at.y, 0.0, 0.0, 1.0, at.z,
+            ];
+            if self.raw.is_some() {
+                raw_rows.push(RawInstance::new(m.address, transform, n as u32, mask));
+            } else {
+                self.tlas[n] = Some(wgpu::TlasInstance::new(&m.blas, transform, n as u32, mask));
+            }
+            rows.push(row);
+            n += 1;
+        }
+        if self.raw.is_none() {
+            for i in n..self.used {
+                self.tlas[i] = None;
+            }
+        }
+        self.moving = n - self.terrain;
+        self.used = n;
+        self.cloud_origin = origin;
+        self.terrain_changed = false;
+        if !rows.is_empty() {
+            queue.write_buffer(
+                &self.instances,
+                self.terrain as u64 * ROW_BYTES,
+                bytemuck::cast_slice(&rows),
+            );
+        }
+        match &self.raw {
+            // The moving rows after the terrain's, the bottom-level builds through wgpu, then the
+            // raw top-level build of the `n` instances, marked built for wgpu.
+            Some(raw) => {
+                raw.write(queue, self.terrain as u32, &raw_rows);
+                encoder.build_acceleration_structures(entries.iter(), std::iter::empty());
+                self.raw_build = Some(raw.build(device, &self.tlas, n as u32));
+            }
+            None => encoder.build_acceleration_structures(entries.iter(), [&self.tlas]),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_three_copies_of_the_water_waves_are_the_same() {
+        let waves = |text: &'static str| {
+            let start = text.find("fn water_hash(").expect("the sea state");
+            let end = text.find("fn water_waves(").expect("the waves");
+            // Whatever line endings the checkout gave each file.
+            text[start..end].replace('\r', "")
+        };
+        let shown = waves(include_str!("../terrain.wgsl"));
+        assert_eq!(shown, waves(include_str!("shadow_rays_hw.wgsl")));
+        assert_eq!(shown, waves(include_str!("froxels_hw.wgsl")));
+    }
+
+    #[test]
+    fn a_structure_follows_only_the_range_it_was_built_from() {
+        let (from, to) = ((2, 4000), (0, 128));
+        let mut at = from;
+        assert!(follow(&mut at.0, &mut at.1, from, to));
+        assert_eq!(at, to);
+        // Gone (`forget`): its old range is another mesh's now.
+        let mut gone = (PAGE_GONE, 4000);
+        assert!(!follow(&mut gone.0, &mut gone.1, from, to));
+        assert_eq!(gone, (PAGE_GONE, 4000));
+        // Built from another range than the one that moved.
+        let mut other = (2, 8000);
+        assert!(!follow(&mut other.0, &mut other.1, from, to));
+        assert_eq!(other, (2, 8000));
+    }
+
+    /// The first arena vertex shadow_rays_hw.wgsl's `hw_quad` finds for quad `primitive / 2` of
+    /// geometry `g` in `row`, as it reads it.
+    fn hw_quad(row: &[u32; ROW_WORDS], g: u32, primitive: u32, translucent: bool) -> u32 {
+        let first = if translucent {
+            row[2]
+        } else {
+            let w = row[4 + (g / 8 * 4 + (g / 2) % 4) as usize];
+            row[1] + ((w >> ((g & 1) * 16)) & 0xffff) * 4
+        };
+        first + primitive / 2 * 4
+    }
+
+    #[test]
+    fn every_geometry_finds_its_quads_in_the_row() {
+        // A section from vertex 4000: stone, grass's overlays, more stone, leaves (as
+        // `Sides::geometries` gives them), then 5 translucent quads.
+        let runs = [
+            (0, 300, true),
+            (300, 20, false),
+            (320, 900, true),
+            (1220, 7, false),
+        ];
+        let geometries = solid_geometries(1227, &runs);
+        assert_eq!(geometries, runs);
+        let r = row(3, 4000, 1227, &geometries, true);
+        assert_eq!(r[0], 3);
+        // The translucent geometry follows the solid ones.
+        assert_eq!(r[3], 4);
+        for (g, &(first, count, _)) in geometries.iter().enumerate() {
+            for quad in [0, count - 1] {
+                let found = hw_quad(&r, g as u32, quad * 2 + 1, false);
+                assert_eq!(found, 4000 + (first + quad) * 4);
+            }
+        }
+        assert_eq!(hw_quad(&r, 4, 8, true), 4000 + (1227 + 4) * 4);
+        // Without translucent quads no geometry matches the test for them.
+        assert_eq!(row(0, 0, 5, &[(0, 5, true)], false)[3], NO_GEOMETRY);
+        // Moving rows: a kind, a first vertex, no translucent geometry.
+        let moving = row(KIND_ENTITY, 96, 0, &[], false);
+        assert_eq!(&moving[..4], &[KIND_ENTITY, 96, 96, NO_GEOMETRY]);
+    }
+
+    #[test]
+    fn rows_the_shader_cannot_hold_fall_back_to_one_alpha_tested_geometry() {
+        // The 16-bit slots: a first quad past them.
+        let far = [(0, 70000, true), (70000, 10, false)];
+        assert_eq!(solid_geometries(70010, &far), [(0, 70010, false)]);
+        // Runs that don't cover the quads (a mesh that was not sorted).
+        assert_eq!(solid_geometries(10, &[(0, 4, true)]), [(0, 10, false)]);
+        assert_eq!(solid_geometries(10, &[]), [(0, 10, false)]);
+        // More runs than slots.
+        let many: Vec<_> = (0..17).map(|i| (i, 1, i % 2 == 0)).collect();
+        assert_eq!(solid_geometries(17, &many), [(0, 17, false)]);
+        assert!(solid_geometries(0, &[]).is_empty());
+        // As many as the mesher makes (7 buckets, opaque then cutout) fit.
+        let fourteen: Vec<_> = (0..14).map(|i| (i * 3, 3, i % 2 == 0)).collect();
+        assert_eq!(solid_geometries(42, &fourteen), fourteen);
+    }
+
+    #[test]
+    fn the_shaders_rows_are_the_rows_written() {
+        // shadow_rays_hw.wgsl's and froxels_hw.wgsl's `HwInstance`, assembled as the passes do.
+        for text in [
+            super::super::shadow_rays::source(true, 2048),
+            super::super::froxels::source(true, 2048),
+        ] {
+            let module = naga::front::wgsl::parse_str(&text)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
+            let mut layouter = naga::proc::Layouter::default();
+            layouter.update(module.to_ctx()).expect("its layout");
+            let (instance, _) = module
+                .types
+                .iter()
+                .find(|(_, t)| t.name.as_deref() == Some("HwInstance"))
+                .expect("the rows");
+            assert_eq!(u64::from(layouter[instance].size), ROW_BYTES);
+        }
+    }
+
+    #[test]
+    fn the_shaders_read_as_many_arena_pages_as_are_bound() {
+        for text in [
+            include_str!("shadow_rays_hw.wgsl"),
+            include_str!("froxels_hw.wgsl"),
+        ] {
+            assert!(text.contains(&format!("const ARENA_PAGES: u32 = {ARENA_PAGES}u;")));
+            assert!(text.contains("@group(0) @binding(16) var<storage, read> arena: array<u32>;"));
+            for (page, binding) in ARENA_BINDINGS.iter().enumerate() {
+                let page = page + 1;
+                assert!(text.contains(&format!(
+                    "@group(0) @binding({binding}) var<storage, read> arena{page}: array<u32>;"
+                )));
+                assert!(
+                    text.contains(&format!("case {page}u: {{ return arena{page}[i]; }}"))
+                        || page == ARENA_PAGES - 1
+                );
+            }
+        }
+    }
+}

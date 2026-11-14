@@ -1,0 +1,1444 @@
+//! Froxel volumetrics, as NVIDIA's RTX Remix has them (docs/raytracing.md, "Next: the state of the
+//! art"): a homogeneous medium keyed to where the camera is (water, cave, rain, thunder, open air),
+//! lit by the sun, the sky and the light sources in a grid of frustum voxels, per view.
+//!
+//! The grid: `x` by `y` froxels across the view (one per `TILE` pixels), `SLICES` slices along each
+//! ray, exponential from `NEAR` to `FAR` blocks (1 block = 1 metre, Remix's `rtx.sceneScale` 0.01 over
+//! centimetre units). Each frame, for every view (the window, each VR eye), `Froxels::run`:
+//!
+//! 1. *injects* (`cs_inject`): for half the froxels, a checker along the slices turning each frame
+//!    (`ViewFroxels::turn`; the other half keeps its history, 128 frames long), a point drawn
+//!    inside it (a 3D R-sequence shifted per froxel, so the history supersamples the froxel), the
+//!    light the medium scatters toward the camera: the sun (a shadow ray, tinted by stained glass
+//!    and water, times the Henyey-Greenstein phase), the sky (a ray toward it, times the sky's mean light) and one light source drawn by
+//!    importance (a shadow ray), through hardware ray queries against the terrain's TLAS (`hw_rays`)
+//!    where the GPU has them, else the voxel grid's DDA; then *blends* (`cs_blend`) that sample with
+//!    the last frame's froxels reprojected in world space (the sky's light first averaged over the
+//!    froxel's 27 neighbours, `sky_filter`) (the history `MAX_ACCUMULATION` frames
+//!    long, `SETTLING_ACCUMULATION` for `SETTLING_FRAMES` after the medium changes or the view is
+//!    new), the history shortened where its froxel moved a lot and clamped to the neighbourhood of
+//!    the new samples;
+//! 2. *integrates* (`cs_integrate`): front to back along each column, the in-scatter up to every
+//!    slice (the transmittance is Beer-Lambert's, closed form for a homogeneous medium);
+//! 3. *applies* (two full-screen draws onto the world's colour, before the tone mapping): the scene
+//!    times the transmittance at the pixel's distance, plus the in-scatter there (read through a
+//!    cubic B-spline across the screen).
+//!
+//! What the main session fills: `CameraMedium` (where the camera is) through `Renderer::
+//! set_volumetrics`; `CameraMedium::medium` turns it into the medium.
+//!
+//! Into that medium go the natural fogs (natural_fog.rs: a morning's valley fog, the steam fog over
+//! cold water), which are not homogeneous: the inject lights them (the sun through the fog toward
+//! it, by their own phase), the integration steps their density through each slice (made in the
+//! shader from the relief map and a drifting noise, the same for every view and every frame's
+//! history), and `FAR_SLICES` more slices carry them past the froxels out to the far terrain.
+
+use super::natural_fog::{self, FogLayer, NaturalFog};
+use super::shadow_rays::{Hardware, Rays};
+use super::upload::Uploads;
+use glam::{DVec3, Mat4, Vec3};
+
+/// Pixels a froxel spans on each side (Remix's `froxelGridResolutionScale` is 16).
+pub const TILE: u32 = 16;
+
+/// Pixels a froxel spans on each side in a VR view: a 4400x3520 eye over about 100 degrees has
+/// some 44 pixels a degree where a 3440x1440 screen has some 30, so 24 of them span the angle 16
+/// span on the screen, with 2.3 times fewer froxels than 16 (11.85 to 11.16 ms a VR frame on the
+/// RTX 4090, KRVR's fake runtime).
+pub const EYE_TILE: u32 = 24;
+
+/// The pixels a froxel spans on each side in view `view` (0 the window, from 1 the VR views):
+/// `TILE` on the screen, `EYE_TILE` in VR, or `HORIZON_FROXEL_TILE`'s (8 to 64) in both, to
+/// weigh the grid's cost against its detail. The inject, the blend and the integration go by
+/// the froxels.
+pub fn tile(view: usize) -> u32 {
+    static TILE_SET: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    let set = *TILE_SET.get_or_init(|| {
+        std::env::var("HORIZON_FROXEL_TILE")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .map(|t| t.clamp(8, 64))
+    });
+    set.unwrap_or(if view == 0 { TILE } else { EYE_TILE })
+}
+/// Slices along the rays.
+pub const SLICES: u32 = 96;
+
+/// The God Rays Quality option's steps (`Graphics::god_rays_quality`, `Froxels::quality`): Low,
+/// Medium, High (the grid as it was: `TILE`/`EYE_TILE` pixels, `SLICES`, 32 march steps) and Ultra.
+pub const QUALITIES: u32 = 4;
+/// God Rays Quality's default: High, the grid as it was.
+pub const DEFAULT_QUALITY: u32 = 2;
+/// At quality `q`: a froxel's side against `tile`'s, in quarters (8: twice as wide), the slices
+/// and the per-pixel fog march's steps (froxels.wgsl `fog_march`, `fx.prev_eye.w`).
+fn quality_grid(q: u32) -> (u32, u32, u32) {
+    match q {
+        0 => (8, 48, 12),
+        1 => (6, 64, 20),
+        2 => (4, SLICES, 32),
+        _ => (3, 128, 48),
+    }
+}
+/// Where the first slice ends and the last slice ends, in blocks (`froxelMaxDistanceMeters` 256).
+/// The share of the light the open air lets through 100 m. It was 0.95 (12 % scattered over the
+/// grid's 256 m): toward the sun that adds half the light of a sunlit white wall to the sky, more
+/// than the sky's own within 30 degrees of the sun, a white veil over the view (the sky's table
+/// already holds the atmosphere's aureole). At 0.985 the grid scatters 4 %: about the sky's own
+/// light at the sun, the shafts still showing against shade; on FIXE01 it still left a white halo
+/// some 40 degrees across around the sun in VR. At 0.995 (1.3 % over 256 m) the sky stays blue a
+/// few tens of degrees off the sun and the shafts still show in shade (`HORIZON_FROXEL_AIR=0.95`
+/// for the old look).
+pub const AIR_THROUGH: f32 = 0.995;
+pub const NEAR: f32 = 0.5;
+pub const FAR: f32 = 256.0;
+/// How many frames the history holds at most (Remix's default 128), and while settling
+/// (`maxAccumulationFrames` 8), for how many frames after the medium changes or the view is new.
+pub const MAX_ACCUMULATION: f32 = 128.0;
+pub const SETTLING_ACCUMULATION: f32 = 8.0;
+pub const SETTLING_FRAMES: u32 = 8;
+/// The natural fogs' slices past the froxels, exponential from `FAR` to `FAR_END` blocks (the far
+/// terrain's 1024 chunks): the fogs only, lit without rays.
+pub const FAR_SLICES: u32 = 32;
+pub const FAR_END: f32 = 16384.0;
+
+/// A medium: how much light it absorbs and scatters, and where it scatters it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Medium {
+    /// The extinction a block (a metre), per colour channel: `-ln(transmittance) / distance`.
+    pub sigma_t: Vec3,
+    /// The share of the extinction that scatters (Remix's `singleScatteringAlbedo`).
+    pub albedo: Vec3,
+    /// The phase's anisotropy (Henyey-Greenstein's g, -1 back to 1 forward).
+    pub anisotropy: f32,
+}
+
+impl Medium {
+    /// The medium that lets `transmittance` of the light through over `distance` blocks (Remix's
+    /// `transmittanceColor` over `transmittanceMeasurementDistanceMeters`).
+    pub fn measured(transmittance: Vec3, distance: f32, albedo: Vec3, anisotropy: f32) -> Self {
+        Self {
+            sigma_t: Vec3::new(
+                -transmittance.x.clamp(1e-4, 1.0).ln(),
+                -transmittance.y.clamp(1e-4, 1.0).ln(),
+                -transmittance.z.clamp(1e-4, 1.0).ln(),
+            ) / distance,
+            albedo,
+            anisotropy,
+        }
+    }
+
+    /// Remix's water: `transmittanceColor` (0.6, 0.9, 0.89) over 20 m, `singleScatteringAlbedo`
+    /// (0.206, 0.999, 0.903), anisotropy 0.4.
+    pub fn water() -> Self {
+        Self::measured(
+            Vec3::new(0.6, 0.9, 0.89),
+            20.0,
+            Vec3::new(0.206, 0.999, 0.903),
+            0.4,
+        )
+    }
+
+    /// Remix's cave: albedo 0.9, transmittance 0.85 over 20 m, anisotropy -0.2 (`enableFogRemap`
+    /// false: the distances are the real ones).
+    pub fn cave() -> Self {
+        Self::measured(Vec3::splat(0.85), 20.0, Vec3::splat(0.9), -0.2)
+    }
+
+    /// Remix's rain: transmittance 0.996 over 10 m. Its albedo and anisotropy aren't in the settings
+    /// the task gave: water droplets scatter, forward a little (0.95, 0.3).
+    pub fn rain() -> Self {
+        Self::measured(Vec3::splat(0.996), 10.0, Vec3::splat(0.95), 0.3)
+    }
+
+    /// Remix's thunder: transmittance 0.97 over 10 m (the same albedo and anisotropy as the rain's,
+    /// a little darker: 0.8).
+    pub fn thunder() -> Self {
+        Self::measured(Vec3::splat(0.97), 10.0, Vec3::splat(0.8), 0.3)
+    }
+
+    /// The open air with rain of `rate` mm/h falling through it: the air's medium plus the drops'
+    /// own extinction (`rain::extinction`, Marshall-Palmer sizes; Remix's rain, 0.996 over 10 m,
+    /// is about 1.5 mm/h of it and its thunder, 0.97, about 25 mm/h), scattering as the rain's
+    /// medium does, a downpour's a little darker as Remix's thunder.
+    pub fn falling(rate: f32) -> Self {
+        let air = Self::air();
+        let drops = crate::rain::extinction(rate);
+        if drops <= 0.0 {
+            return air;
+        }
+        let storm = (rate / crate::rain::THUNDER_MM_H).clamp(0.0, 1.0);
+        let rain = Self::rain().mix(Self::thunder(), storm);
+        let share = drops / (drops + air.sigma_t.x);
+        Self {
+            sigma_t: air.sigma_t + Vec3::splat(drops),
+            albedo: air.albedo.lerp(rain.albedo, share),
+            anisotropy: air.anisotropy + (rain.anisotropy - air.anisotropy) * share,
+        }
+    }
+
+    /// The open air with snow of `rate` mm/h (water) falling through it: the air's medium plus the
+    /// flakes' extinction (`snow::extinction`, from the visibility snow leaves, several times the
+    /// rain's for the same water). Ice scatters nearly all it takes (albedo 0.98), less forward
+    /// than the rain's drops for its size but more than the air's haze would say (g 0.5).
+    pub fn snowing(rate: f32) -> Self {
+        let air = Self::air();
+        let flakes = crate::snow::extinction(rate);
+        if flakes <= 0.0 {
+            return air;
+        }
+        let share = flakes / (flakes + air.sigma_t.x);
+        Self {
+            sigma_t: air.sigma_t + Vec3::splat(flakes),
+            albedo: air.albedo.lerp(Vec3::splat(0.98), share),
+            anisotropy: air.anisotropy + (0.5 - air.anisotropy) * share,
+        }
+    }
+
+    /// The open air by day, a thin default (Remix's is the runtime's, its own atmosphere being off):
+    /// `AIR_THROUGH` of the light through 100 m, no absorption, scattering forward (g 0.7) so the
+    /// sun's shafts show past shadows and toward it without a haze over the rest of the view.
+    /// `HORIZON_FROXEL_AIR` sets that share (0.5 to 1) for testing.
+    pub fn air() -> Self {
+        static THROUGH: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        let through = *THROUGH.get_or_init(|| {
+            std::env::var("HORIZON_FROXEL_AIR")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .map_or(AIR_THROUGH, |v| v.clamp(0.5, 1.0))
+        });
+        Self::measured(Vec3::splat(through), 100.0, Vec3::splat(1.0), 0.7)
+    }
+
+    /// Between two media (the extinction and the albedo linearly, `t` 0: `self`).
+    pub fn mix(self, other: Self, t: f32) -> Self {
+        Self {
+            sigma_t: self.sigma_t.lerp(other.sigma_t, t),
+            albedo: self.albedo.lerp(other.albedo, t),
+            anisotropy: self.anisotropy + (other.anisotropy - self.anisotropy) * t,
+        }
+    }
+
+    /// A medium by name (`HORIZON_FROXEL_MEDIUM`: water, cave, rain, thunder or air), for testing.
+    pub fn named(name: &str) -> Option<Self> {
+        Some(match name {
+            "water" => Self::water(),
+            "cave" => Self::cave(),
+            "rain" => Self::rain(),
+            "thunder" => Self::thunder(),
+            "air" => Self::air(),
+            _ => return None,
+        })
+    }
+
+    /// Whether the grid's history is stale after a change from `other`: the phase or the albedo
+    /// moved, or the extinction by a quarter (a weather fading in moves it smoothly and never does).
+    fn differs(&self, other: &Self) -> bool {
+        let sigma = (self.sigma_t - other.sigma_t).abs().max_element();
+        sigma > 0.25 * other.sigma_t.max_element().max(1e-4)
+            || (self.albedo - other.albedo).abs().max_element() > 0.05
+            || (self.anisotropy - other.anisotropy).abs() > 0.05
+    }
+}
+
+/// Where the camera is, for the medium the froxels fill (Remix switches its media by it). The main
+/// session fills it every frame (`Renderer::set_volumetrics`); what `Frame` already says is merged
+/// in by the renderer (the camera under water, the rain and thunder levels).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraMedium {
+    /// The camera's eye is in water.
+    pub in_water: bool,
+    /// The sky light level at the camera's block, 0 to 15 (the world's stored light, not dimmed by
+    /// the night): 15 under the open sky, down to 0 deep in a cave.
+    pub sky_light: f32,
+    /// The rain and thunder levels, 0 to 1 (`Frame::weather`'s, as `pack.rain`, `pack.thunder`).
+    pub rain: f32,
+    pub thunder: f32,
+    /// How much of what falls at the camera is snow (0 to 1, eased across a biome's edge), with
+    /// RT lighting's physical snow on: its medium in place of the rain's.
+    pub snow: f32,
+    /// This shower's intensity against vanilla's levels (`rain::Intensity`, 1: theirs).
+    pub intensity: f32,
+}
+
+impl Default for CameraMedium {
+    /// Open air under the sky, in clear weather.
+    fn default() -> Self {
+        Self {
+            in_water: false,
+            sky_light: 15.0,
+            rain: 0.0,
+            thunder: 0.0,
+            snow: 0.0,
+            intensity: 1.0,
+        }
+    }
+}
+
+impl CameraMedium {
+    /// The medium for the camera's place: water in water; else the cave's where the sky light is
+    /// low (all of it at level 3 and below, none from 9 up, a smooth change between); else the open
+    /// air, with the rain's drops in it as it falls harder (`Medium::falling`).
+    pub fn medium(&self) -> Medium {
+        if self.in_water {
+            return Medium::water();
+        }
+        let k = self.intensity.max(0.0);
+        let mut weather = Medium::falling(crate::rain::rate_mm_h(self.rain, self.thunder) * k);
+        if self.snow > 0.0 {
+            let snow = Medium::snowing(crate::snow::rate_mm_h(self.rain, self.thunder) * k);
+            weather = weather.mix(snow, self.snow.clamp(0.0, 1.0));
+        }
+        let open = ((self.sky_light - 3.0) / 6.0).clamp(0.0, 1.0);
+        let open = open * open * (3.0 - 2.0 * open);
+        Medium::cave().mix(weather, open)
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Uniform {
+    inverse_view_proj: [[f32; 4]; 4],
+    prev_view_proj: [[f32; 4]; 4],
+    light: [f32; 4],
+    camera: [f32; 4],
+    fraction: [f32; 4],
+    grid: [f32; 4],
+    sun: [f32; 4],
+    sun_light: [f32; 4],
+    hw_offset: [f32; 4],
+    water: [f32; 4],
+    motion: [f32; 4],
+    dims: [f32; 4],
+    depth: [f32; 4],
+    sigma_t: [f32; 4],
+    albedo: [f32; 4],
+    history: [f32; 4],
+    size: [f32; 4],
+    eye: [f32; 4],
+    prev_eye: [f32; 4],
+    jitter: [f32; 4],
+    map: [f32; 4],
+    map_scale: [f32; 4],
+    fog: [f32; 4],
+    fog2: [f32; 4],
+    valley_drift: [f32; 4],
+    valley_drift_f: [f32; 4],
+    steam_drift: [f32; 4],
+    steam_drift_f: [f32; 4],
+    far: [f32; 4],
+    other_view_proj: [[f32; 4]; 4],
+    other_eye: [f32; 4],
+}
+
+/// A drift in blocks, split into whole blocks and the fraction (the shader's noise lattice is
+/// exact for whole blocks at any distance).
+fn split(v: DVec3) -> ([f32; 4], [f32; 4]) {
+    let whole = v.floor();
+    let f = v - whole;
+    (
+        [whole.x as f32, whole.y as f32, whole.z as f32, 0.0],
+        [f.x as f32, f.y as f32, f.z as f32, 0.0],
+    )
+}
+
+/// Where a view's rays start, camera-relative: the point whose clip x, y and w are all 0 (the view
+/// bobbing moves it off the camera). Float64, the projection's reversed depth being ill-conditioned.
+fn eye_of(view_proj: Mat4) -> Vec3 {
+    let e = view_proj.as_dmat4().inverse() * glam::DVec4::new(0.0, 0.0, 1.0, 0.0);
+    if e.w.abs() < 1e-12 {
+        return Vec3::ZERO;
+    }
+    (e.truncate() / e.w).as_vec3()
+}
+
+/// Frame `n`'s offset within a froxel: the 3D R-sequence (Roberts), whose points spread evenly in
+/// the unit cube however many are taken.
+fn jitter(n: u32) -> [f32; 4] {
+    // The plastic number, whose powers' reciprocals step the three axes.
+    const G: f64 = 1.220_744_084_605_759_5;
+    let f = f64::from(n);
+    let axis = |k: i32| (0.5 + f * G.powi(-k)).fract() as f32;
+    [axis(1), axis(2), axis(3), 0.0]
+}
+
+/// Whether the sky's light in the medium is filtered across neighbouring froxels and drawn by a
+/// low-discrepancy sequence (froxels.wgsl `sky_filter`): on unless `HORIZON_FROXEL_SKY_FILTER=0`,
+/// which draws it as before (white noise, each froxel's own ray), to compare. In a dark cave with
+/// one opening to the sky, one ray in fifty or so toward the sky reaches it: a froxel's single
+/// ray every other frame was all or nothing, and the history, its reprojection resampling it
+/// bilinearly and the neighbourhood's clamp, spread that into large grey blotches.
+pub fn sky_filter() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("HORIZON_FROXEL_SKY_FILTER").is_ok_and(|v| v.trim() == "0"))
+}
+
+/// Whether the air steadies (froxels.wgsl `steady_air`): it ends at the froxels' reach whether the
+/// natural fogs are on or not, and what the camera's place picks (the cave's share of the medium,
+/// the natural fogs' `open`) eases over `EASE_SECONDS` instead of following the camera's block.
+/// On unless `HORIZON_FROXEL_STEADY_AIR=0`, to compare. Off, a step out from under an arch (its
+/// shade lowering the camera's sky light enough to turn the natural fogs off) laid a veil four
+/// times thicker over the sky and the far terrain at once, and a step back took it away.
+/// The light sources' share in the air (froxels.wgsl `lights_scatter`): `HORIZON_FROXEL_LIGHTS`,
+/// 0.25 by default (1: as before). In a dark cave the eye's exposure made the air around a glow
+/// lichen or a sculk's specks a haze with shafts.
+pub fn lights_share() -> f32 {
+    static SHARE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SHARE.get_or_init(|| {
+        std::env::var("HORIZON_FROXEL_LIGHTS")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .map_or(0.25, |v| v.clamp(0.0, 4.0))
+    })
+}
+/// Whether the pixels' dither along their ray turns with the frame (froxels.wgsl `pixel_dither`):
+/// only with `HORIZON_FROXEL_DITHER=frame`, as before. Still, the far mist no longer flickers
+/// under a still camera, and a long step of the fogs' march reads them at two points.
+pub fn dither_turns() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_FROXEL_DITHER").is_ok_and(|v| v.trim() == "frame"))
+}
+/// Whether a froxel's bright outliers are held to its neighbourhood's light (froxels.wgsl
+/// `cs_blend`). On unless `HORIZON_FROXEL_OUTLIERS=old`: the floor was 0.5 whatever the light, a
+/// thousand times a moonlit night's, whose far mist flickered.
+pub fn outliers_held() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("HORIZON_FROXEL_OUTLIERS").is_ok_and(|v| v.trim() == "old"))
+}
+pub fn steady_air() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("HORIZON_FROXEL_STEADY_AIR").is_ok_and(|v| v.trim() == "0"))
+}
+
+/// The time constant (seconds) of the ease of what the camera's place picks (`steady_air`): a
+/// step under an arch or into a cave's mouth fades the medium and the fogs over a couple of
+/// seconds, as eyes adapt, rather than in a frame.
+pub const EASE_SECONDS: f32 = 1.5;
+
+/// `from` eased toward `to` over `dt` seconds (`EASE_SECONDS`' exponential), reaching it within a
+/// hundredth.
+fn ease(from: f32, to: f32, dt: f32) -> f32 {
+    let eased = from + (to - from) * (1.0 - (-dt / EASE_SECONDS).exp());
+    if (eased - to).abs() < 0.01 { to } else { eased }
+}
+
+/// A value eased over time (`ease`), from the first one it is given.
+#[derive(Clone, Copy, Debug, Default)]
+struct Eased {
+    value: Option<(f32, std::time::Instant)>,
+}
+
+impl Eased {
+    fn toward(&mut self, to: f32) -> f32 {
+        let now = std::time::Instant::now();
+        let value = match self.value {
+            Some((v, at)) => ease(v, to, now.duration_since(at).as_secs_f32().min(0.5)),
+            None => to,
+        };
+        self.value = Some((value, now));
+        value
+    }
+}
+
+/// A view's froxels: two grids of the source (the last frame's is the history) and the integrated
+/// one.
+struct ViewFroxels {
+    view: usize,
+    dims: [u32; 3],
+    source: [wgpu::TextureView; 2],
+    /// The samples drawn this frame, before they meet the history.
+    fresh: wgpu::TextureView,
+    integrated: wgpu::TextureView,
+    /// The grid written next.
+    next: usize,
+    /// The last frame's view projection and camera, for the reprojection.
+    last: Option<(Mat4, DVec3)>,
+    /// The medium the history was made in, and the frames of settling left.
+    medium: Option<Medium>,
+    settling: u32,
+    /// The frames this view injected: which half of the froxels it injects (`cs_inject`).
+    turn: u32,
+    /// The `Froxels::frame` it last ran in.
+    drawn: u32,
+}
+
+fn texture_entry(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+    wgpu::BindGroupEntry {
+        binding,
+        resource: wgpu::BindingResource::TextureView(view),
+    }
+}
+
+fn buffer_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+    wgpu::BindGroupEntry {
+        binding,
+        resource: buffer.as_entire_binding(),
+    }
+}
+
+/// The views kept at once: the window, two eyes, two quad-view insets.
+const KEPT: usize = 5;
+
+/// The pass's shader, with the hardware rays (`froxels_hw.wgsl` in place of the stub between the
+/// `HARDWARE` markers) or without (`sprite_split`: the sprite layers past it are taken as opaque).
+pub fn source(hardware: bool, sprite_split: u32) -> String {
+    let text = include_str!("froxels.wgsl");
+    if !hardware {
+        return text.to_string();
+    }
+    let begin = text
+        .find("// HARDWARE:BEGIN")
+        .expect("the hardware section");
+    let end = text.find("// HARDWARE:END").expect("the hardware section");
+    // `HORIZON_RT_FORCE_OPAQUE=1` (shadow_rays.rs `force_opaque`): the same measurement switch
+    // for the froxels' rays.
+    let hardware = if super::shadow_rays::force_opaque() {
+        super::shadow_rays::with_forced_opaque(include_str!("froxels_hw.wgsl"))
+    } else {
+        include_str!("froxels_hw.wgsl").to_string()
+    };
+    format!(
+        "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {sprite_split}u;\n\
+         const FIRST_HIT: u32 = {}u;\n{}{hardware}{}",
+        super::shadow_rays::first_hit_flag(),
+        &text[..begin],
+        &text[end..]
+    )
+}
+
+/// The same with the one-pass composite (`froxels_dual.wgsl`), for a GPU that blends two sources.
+pub fn dual_source(hardware: bool, sprite_split: u32) -> String {
+    format!(
+        "enable dual_source_blending;\n{}{}",
+        source(hardware, sprite_split),
+        include_str!("froxels_dual.wgsl")
+    )
+}
+
+pub struct Froxels {
+    /// The volumetrics are drawn (`Renderer::set_volumetrics`, or `HORIZON_FROXELS=1`).
+    pub enabled: bool,
+    /// Where the camera is (`Renderer::set_volumetrics`).
+    pub camera: CameraMedium,
+    /// The God Rays option (`Renderer::set_god_rays`): the share of the medium's density out of
+    /// the water (the sun's shafts and their haze), 1 as measured, 0 none.
+    pub strength: f32,
+    /// The God Rays Quality option (`Renderer::set_god_rays_quality`, `quality_grid`): 0 Low to
+    /// `QUALITIES - 1` Ultra.
+    pub quality: u32,
+    /// The natural fogs' density against their own (`Renderer::set_fog_density`, the live settings
+    /// panel): 1 by default, 0 none.
+    pub fog_density: f32,
+    /// A medium forced for testing (`HORIZON_FROXEL_MEDIUM`).
+    forced: Option<Medium>,
+    hardware: bool,
+    inject: wgpu::ComputePipeline,
+    inject_layout: wgpu::BindGroupLayout,
+    blend: wgpu::ComputePipeline,
+    blend_layout: wgpu::BindGroupLayout,
+    integrate: wgpu::ComputePipeline,
+    integrate_layout: wgpu::BindGroupLayout,
+    shader: wgpu::ShaderModule,
+    /// The shader with the one-pass composite (`froxels_dual.wgsl`), where the GPU blends two
+    /// sources.
+    dual: Option<wgpu::ShaderModule>,
+    apply_layout: wgpu::BindGroupLayout,
+    /// The composite's pipelines (the scene times the transmittance, then the in-scatter added; or
+    /// both at once with `dual`), for the colour format they were made for.
+    apply: Option<(wgpu::TextureFormat, Vec<wgpu::RenderPipeline>)>,
+    sampler: wgpu::Sampler,
+    uniform: wgpu::Buffer,
+    views: Vec<ViewFroxels>,
+    frame: u32,
+    /// The natural fogs this frame (`Renderer::set_natural_fog`), their noise's drifts (whole
+    /// blocks and fraction, the valley fog's then the steam fog's: one per frame, the same for
+    /// both eyes), the relief map (`natural_fog::MAP_LAYERS` layers) with where its two levels
+    /// lie, and the layers waiting to go to it.
+    pub fog: NaturalFog,
+    drifts: [([f32; 4], [f32; 4]); 2],
+    drift_at: Option<std::time::Instant>,
+    drift: [DVec3; 2],
+    map: wgpu::Buffer,
+    map_origins: [Option<[i32; 2]>; 2],
+    map_pending: Vec<FogLayer>,
+    /// The camera's sky light and the natural fogs' `open`, eased (`steady_air`).
+    eased_sky: Eased,
+    eased_open: Eased,
+}
+
+/// What `Froxels::run` draws from, for one view.
+pub struct Inputs<'a> {
+    /// The view (0 the window, an eye's index in VR): each keeps its own history.
+    pub view: usize,
+    /// The world's depth (reversed, 0 the sky) of `size`, and the colour it was drawn into.
+    pub depth: &'a wgpu::TextureView,
+    pub color: &'a wgpu::TextureView,
+    pub color_format: wgpu::TextureFormat,
+    pub size: [u32; 2],
+    pub view_proj: Mat4,
+    pub camera: DVec3,
+    /// This frame's rays: the sun's direction and light, the grid's place, the hybrid's offset
+    /// (`Renderer::ray_traced_shadows`).
+    pub rays: &'a Rays,
+    /// The voxel grid (`voxels.views()`), the light sources (`voxels.light_buffers()`), the sky
+    /// (`atmosphere.view`) and the hybrid's structures (`Renderer::hw_bindings`).
+    pub grid: [&'a wgpu::TextureView; 5],
+    pub lights: [&'a wgpu::Buffer; 3],
+    pub sky: &'a wgpu::TextureView,
+    pub hardware: Option<Hardware<'a>>,
+    /// The view whose froxels this one reads instead of making its own, when it drew them this
+    /// frame at the same size (the second VR eye reads the first's: the medium seen from 6 cm away
+    /// is the same, and its inject is the volumetrics' cost).
+    pub share: Option<usize>,
+}
+
+impl Froxels {
+    pub fn new(device: &wgpu::Device, hardware: bool, sprite_split: u32) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Froxel volumetrics"),
+            source: wgpu::ShaderSource::Wgsl(source(hardware, sprite_split).into()),
+        });
+        let dual = device
+            .features()
+            .contains(wgpu::Features::DUAL_SOURCE_BLENDING)
+            .then(|| {
+                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("Froxel volumetrics' one-pass composite"),
+                    source: wgpu::ShaderSource::Wgsl(dual_source(hardware, sprite_split).into()),
+                })
+            });
+        let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility,
+            ty,
+            count: None,
+        };
+        let compute = wgpu::ShaderStages::COMPUTE;
+        let uniform = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let grid = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Uint,
+            view_dimension: wgpu::TextureViewDimension::D3,
+            multisampled: false,
+        };
+        let storage = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let froxels = |filterable| wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable },
+            view_dimension: wgpu::TextureViewDimension::D3,
+            multisampled: false,
+        };
+        let output = wgpu::BindingType::StorageTexture {
+            access: wgpu::StorageTextureAccess::WriteOnly,
+            format: wgpu::TextureFormat::Rgba16Float,
+            view_dimension: wgpu::TextureViewDimension::D3,
+        };
+        let sampler = wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering);
+        let sky_texture = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
+        let fragment = wgpu::ShaderStages::FRAGMENT;
+        let fog_map = entry(24, compute | fragment, storage);
+        let mut inject_entries = vec![
+            fog_map,
+            entry(0, compute, uniform),
+            entry(2, compute, grid),
+            entry(3, compute, grid),
+            entry(4, compute, grid),
+            entry(5, compute, grid),
+            entry(7, compute, storage),
+            entry(8, compute, storage),
+            entry(10, compute, sky_texture),
+            entry(22, compute, output),
+        ];
+        if hardware {
+            inject_entries.extend([
+                entry(
+                    15,
+                    compute,
+                    wgpu::BindingType::AccelerationStructure {
+                        vertex_return: false,
+                    },
+                ),
+                entry(16, compute, storage),
+                entry(23, compute, storage),
+                entry(
+                    17,
+                    compute,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                ),
+                // The moving geometry and its atlas, for the entities' alpha test.
+                entry(36, compute, storage),
+                entry(
+                    37,
+                    compute,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+            ]);
+            inject_entries.extend(
+                super::hw_rays::ARENA_BINDINGS
+                    .iter()
+                    .map(|&binding| entry(binding, compute, storage)),
+            );
+        }
+        let inject_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Froxel volumetrics' inject"),
+            entries: &inject_entries,
+        });
+        let blend_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Froxel volumetrics' blend"),
+            entries: &[
+                entry(0, compute, uniform),
+                entry(11, compute, froxels(true)),
+                entry(12, compute, sampler),
+                entry(13, compute, output),
+                entry(21, compute, froxels(false)),
+                // The sky, for the sky's light the inject left apart (`sky_filter`).
+                entry(10, compute, sky_texture),
+            ],
+        });
+        let integrate_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Froxel volumetrics' integrate"),
+            entries: &[
+                entry(0, compute, uniform),
+                entry(19, compute, froxels(false)),
+                entry(14, compute, output),
+                entry(10, compute, sky_texture),
+                fog_map,
+            ],
+        });
+        let apply_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Froxel volumetrics' composite"),
+            entries: &[
+                fog_map,
+                entry(0, fragment, uniform),
+                entry(
+                    1,
+                    fragment,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(12, fragment, sampler),
+                entry(19, fragment, froxels(true)),
+                entry(20, fragment, froxels(true)),
+            ],
+        });
+        let pipeline = |label, layout: &wgpu::BindGroupLayout, entry_point| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(
+                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some(label),
+                        bind_group_layouts: &[Some(layout)],
+                        ..Default::default()
+                    }),
+                ),
+                module: &shader,
+                entry_point: Some(entry_point),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
+        let inject = pipeline("Froxel volumetrics' inject", &inject_layout, "cs_inject");
+        let blend = pipeline("Froxel volumetrics' blend", &blend_layout, "cs_blend");
+        let integrate = pipeline(
+            "Froxel volumetrics' integrate",
+            &integrate_layout,
+            "cs_integrate",
+        );
+        let forced = std::env::var("HORIZON_FROXEL_MEDIUM")
+            .ok()
+            .and_then(|name| Medium::named(name.trim()));
+        Self {
+            enabled: std::env::var("HORIZON_FROXELS").is_ok_and(|v| v != "0"),
+            camera: CameraMedium::default(),
+            strength: 1.0,
+            quality: DEFAULT_QUALITY,
+            fog_density: 1.0,
+            forced,
+            hardware,
+            inject,
+            inject_layout,
+            blend,
+            blend_layout,
+            integrate,
+            integrate_layout,
+            shader,
+            dual,
+            apply_layout,
+            apply: None,
+            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Froxel volumetrics"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            }),
+            uniform: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Froxel volumetrics"),
+                size: std::mem::size_of::<Uniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            views: Vec::new(),
+            frame: 0,
+            fog: NaturalFog {
+                setting: 0,
+                ..NaturalFog::default()
+            },
+            drifts: [([0.0; 4], [0.0; 4]); 2],
+            drift_at: None,
+            drift: [DVec3::ZERO; 2],
+            map: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Natural fogs' relief map"),
+                size: (natural_fog::MAP_LAYERS * natural_fog::MAP_SIZE * natural_fog::MAP_SIZE * 16)
+                    as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            map_origins: [None; 2],
+            map_pending: Vec::new(),
+            eased_sky: Eased::default(),
+            eased_open: Eased::default(),
+        }
+    }
+
+    /// The natural fogs this frame: their state, and the noise's drift moved on by the time since
+    /// the last frame (the wind; the steam rising off the water). Call once a frame, before the
+    /// views.
+    pub fn set_fog(&mut self, fog: NaturalFog) {
+        let now = std::time::Instant::now();
+        let dt = self
+            .drift_at
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.25));
+        self.drift_at = Some(now);
+        let wind = DVec3::new(f64::from(fog.wind[0]), 0.0, f64::from(fog.wind[1]));
+        // The noise read at `p + drift`: its features move by minus the drift.
+        self.drift[0] -= wind * 0.6 * dt;
+        self.drift[1] -= (wind + DVec3::new(0.0, 0.45, 0.0)) * dt;
+        self.drifts = self.drift.map(split);
+        self.fog = fog;
+        if steady_air() {
+            self.fog.open = self.eased_open.toward(fog.open);
+        }
+    }
+
+    /// A layer of the relief map, to upload with the next view.
+    pub fn queue_fog_layer(&mut self, layer: FogLayer) {
+        self.map_pending.retain(|l| l.layer != layer.layer);
+        self.map_pending.push(layer);
+    }
+
+    /// Forget the relief map (another world).
+    pub fn clear_fog_map(&mut self) {
+        self.map_origins = [None; 2];
+        self.map_pending.clear();
+    }
+
+    /// The medium this frame: the forced one, else the camera's place.
+    pub fn medium(&self) -> Medium {
+        self.forced.unwrap_or_else(|| self.camera.medium())
+    }
+
+    /// The composite's two pipelines for a colour target of `format`: the scene multiplied by the
+    /// transmittance, then the in-scatter added. The scene's alpha (the terrain's sun share, read by
+    /// the tone mapping) is left alone.
+    fn apply_pipelines(
+        &mut self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+    ) -> &[wgpu::RenderPipeline] {
+        if self.apply.as_ref().is_none_or(|(f, _)| *f != format) {
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Froxel volumetrics' composite"),
+                bind_group_layouts: &[Some(&self.apply_layout)],
+                ..Default::default()
+            });
+            let keep_alpha = wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            };
+            let make = |label, module, entry_point, color: wgpu::BlendComponent| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: &self.shader,
+                        entry_point: Some("vs_apply"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module,
+                        entry_point: Some(entry_point),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState {
+                                color,
+                                alpha: keep_alpha,
+                            }),
+                            write_mask: wgpu::ColorWrites::COLOR,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+            let pipelines = match &self.dual {
+                // One march of the fogs: the in-scatter plus the scene times the transmittance.
+                Some(dual) => vec![make(
+                    "Froxel volumetrics' composite",
+                    dual,
+                    "fs_apply_dual",
+                    wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::Src1,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                )],
+                None => vec![
+                    make(
+                        "Froxel volumetrics' transmittance",
+                        &self.shader,
+                        "fs_transmit",
+                        wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::Src,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    ),
+                    make(
+                        "Froxel volumetrics' in-scatter",
+                        &self.shader,
+                        "fs_scatter",
+                        wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    ),
+                ],
+            };
+            self.apply = Some((format, pipelines));
+        }
+        &self.apply.as_ref().expect("just made").1
+    }
+
+    /// The pixels a froxel spans on each side in view `view` at the God Rays Quality: `tile`'s at
+    /// High, `HORIZON_FROXEL_TILE` (when set) at every quality.
+    fn tile(&self, view: usize) -> u32 {
+        if std::env::var_os("HORIZON_FROXEL_TILE").is_some() {
+            return tile(view);
+        }
+        (tile(view) * quality_grid(self.quality).0).div_ceil(4)
+    }
+
+    /// The view's froxels, made (and its history dropped) when its size changed.
+    fn view_froxels(&mut self, device: &wgpu::Device, view: usize, size: [u32; 2]) -> usize {
+        let dims = [
+            size[0].div_ceil(self.tile(view)).max(1),
+            size[1].div_ceil(self.tile(view)).max(1),
+            quality_grid(self.quality).1,
+        ];
+        if let Some(i) = self.views.iter().position(|v| v.view == view) {
+            if self.views[i].dims == dims {
+                return i;
+            }
+            self.views.remove(i);
+        }
+        if self.views.len() >= KEPT {
+            self.views.remove(0);
+        }
+        let texture = |label, depth| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: dims[0],
+                        height: dims[1],
+                        depth_or_array_layers: depth,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D3,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        self.views.push(ViewFroxels {
+            view,
+            dims,
+            source: [
+                texture("Froxel volumetrics' source", dims[2]),
+                texture("Froxel volumetrics' source", dims[2]),
+            ],
+            fresh: texture("Froxel volumetrics' samples", dims[2]),
+            integrated: texture("Froxel volumetrics' integral", dims[2] + FAR_SLICES),
+            next: 0,
+            last: None,
+            medium: None,
+            settling: SETTLING_FRAMES,
+            turn: 0,
+            drawn: 0,
+        });
+        self.views.len() - 1
+    }
+
+    /// One view's froxels this frame, inject, integrate and composite, onto `inputs.color` (the
+    /// world drawn, `inputs.depth` its depth). Call once per view (the window, each VR eye) after
+    /// the world pass and before the tone mapping; a view that `Inputs::share`s reads another's
+    /// froxels and only composites.
+    pub fn run(
+        &mut self,
+        device: &wgpu::Device,
+        uploads: &mut Uploads,
+        encoder: &mut wgpu::CommandEncoder,
+        inputs: Inputs<'_>,
+    ) {
+        // A pipeline that traces hardware rays has nothing to bind before the hybrid's first
+        // structures exist.
+        if self.hardware && inputs.hardware.is_none() {
+            return;
+        }
+        let mut medium = if steady_air() && self.forced.is_none() {
+            let sky_light = self.eased_sky.toward(self.camera.sky_light);
+            CameraMedium {
+                sky_light,
+                ..self.camera
+            }
+            .medium()
+        } else {
+            self.medium()
+        };
+        // The God Rays option thins the air, the weather's and a cave's (their shafts and haze,
+        // and the light they dim with them); the water stays the fog it is.
+        if !self.camera.in_water {
+            medium.sigma_t *= self.strength.max(0.0);
+        }
+        self.frame = self.frame.wrapping_add(1);
+        let frame = self.frame;
+        let index = self.view_froxels(device, inputs.view, inputs.size);
+        // The froxels another view made just before this one, the same size: its integrated
+        // froxels, its view and the light it injected (written last, `1 - next`), which the
+        // per-pixel fog march reads.
+        let shared = inputs.share.and_then(|view| {
+            let s = self.views.iter().find(|s| s.view == view)?;
+            let (view_proj, _) = s.last?;
+            (s.dims == self.views[index].dims && s.drawn == frame.wrapping_sub(1)).then(|| {
+                (
+                    s.integrated.clone(),
+                    view_proj,
+                    s.source[1 - s.next].clone(),
+                )
+            })
+        });
+        let state = &mut self.views[index];
+        state.drawn = frame;
+        let dims = state.dims;
+        if state.medium.is_some_and(|m| m.differs(&medium)) {
+            state.settling = SETTLING_FRAMES;
+        }
+        state.medium = Some(medium);
+        let cap = if state.settling > 0 {
+            SETTLING_ACCUMULATION
+        } else {
+            MAX_ACCUMULATION
+        };
+        state.settling = state.settling.saturating_sub(1);
+        state.turn = state.turn.wrapping_add(1);
+        // Which half of the froxels this frame injects: 1 or 2 (froxels.wgsl `injected`).
+        let half = 1 + state.turn % 2;
+        let state_turn = state.turn;
+        let last = state.last.replace((inputs.view_proj, inputs.camera));
+        let from = state.source[1 - state.next].clone();
+        let to = state.source[state.next].clone();
+        state.next = 1 - state.next;
+        let fresh = state.fresh.clone();
+        let integrated = state.integrated.clone();
+        if shared.is_some() {
+            // No history of its own: should it make its froxels again, it starts afresh.
+            state.last = None;
+        }
+        let rays = inputs.rays;
+        let eye = eye_of(inputs.view_proj);
+        let prev_eye = last.map_or(eye, |l| eye_of(l.0));
+        for layer in self.map_pending.drain(..) {
+            let texels = natural_fog::MAP_SIZE * natural_fog::MAP_SIZE;
+            uploads.buffer(
+                encoder,
+                &self.map,
+                (layer.layer * 2 * texels * 16) as u64,
+                bytemuck::cast_slice(&layer.texels),
+            );
+            self.map_origins[layer.layer] = Some(layer.origin);
+        }
+        // The relief map's levels relative to the camera's block; the fogs on once one is made.
+        let block = [rays.camera[0] as i32, rays.camera[2] as i32];
+        let offset = |l: usize| {
+            self.map_origins[l].map_or([0.0; 2], |o| {
+                [(block[0] - o[0]) as f32, (block[1] - o[1]) as f32]
+            })
+        };
+        let (near, far) = (offset(0), offset(1));
+        let made = self.map_origins.map(|o| f32::from(u8::from(o.is_some())));
+        let density = self.fog_density.max(0.0);
+        let fog_on =
+            self.fog.active() && density > 0.0 && self.map_origins.iter().any(Option::is_some);
+        let mut fog = self.fog.uniform();
+        // The valley fog's and the steam fog's density scales.
+        fog.fog[0] *= density;
+        fog.fog[1] *= density;
+        let uniform = Uniform {
+            inverse_view_proj: inputs.view_proj.inverse().to_cols_array_2d(),
+            prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
+            light: rays.light,
+            camera: rays.camera,
+            fraction: rays.fraction,
+            grid: rays.grid,
+            sun: rays.sun,
+            sun_light: rays.sun_light,
+            hw_offset: rays.hw_offset,
+            water: rays.water,
+            motion: match last {
+                Some((_, last_camera)) => {
+                    let m = (inputs.camera - last_camera).as_vec3();
+                    [m.x, m.y, m.z, 1.0]
+                }
+                None => [0.0; 4],
+            },
+            dims: [
+                dims[0] as f32,
+                dims[1] as f32,
+                dims[2] as f32,
+                (frame % 65536) as f32,
+            ],
+            depth: [NEAR, FAR, (FAR / NEAR).ln(), rays.glass],
+            sigma_t: [
+                medium.sigma_t.x,
+                medium.sigma_t.y,
+                medium.sigma_t.z,
+                medium.anisotropy,
+            ],
+            albedo: [medium.albedo.x, medium.albedo.y, medium.albedo.z, 1.0],
+            history: [
+                cap,
+                lights_share(),
+                half as f32,
+                ((state_turn / 2) % 65536) as f32,
+            ],
+            size: [
+                inputs.size[0] as f32,
+                inputs.size[1] as f32,
+                f32::from(u8::from(steady_air())),
+                f32::from(u8::from(outliers_held())),
+            ],
+            eye: [eye.x, eye.y, eye.z, f32::from(u8::from(dither_turns()))],
+            prev_eye: [
+                prev_eye.x,
+                prev_eye.y,
+                prev_eye.z,
+                quality_grid(self.quality).2 as f32,
+            ],
+            jitter: {
+                let [x, y, z, _] = jitter(frame);
+                [x, y, z, f32::from(u8::from(sky_filter()))]
+            },
+            map: [near[0], near[1], far[0], far[1]],
+            map_scale: [
+                1.0 / natural_fog::TEXEL[0] as f32,
+                1.0 / natural_fog::TEXEL[1] as f32,
+                made[0],
+                made[1],
+            ],
+            fog: fog.fog,
+            fog2: fog.fog2,
+            valley_drift: self.drifts[0].0,
+            valley_drift_f: self.drifts[0].1,
+            steam_drift: self.drifts[1].0,
+            steam_drift_f: self.drifts[1].1,
+            far: [
+                FAR_END,
+                (FAR_END / FAR).ln(),
+                FAR_SLICES as f32,
+                f32::from(u8::from(fog_on)),
+            ],
+            other_view_proj: shared
+                .as_ref()
+                .map_or([[0.0; 4]; 4], |s| s.1.to_cols_array_2d()),
+            other_eye: shared.as_ref().map_or([0.0; 4], |s| {
+                let e = eye_of(s.1);
+                [e.x, e.y, e.z, 1.0]
+            }),
+        };
+        uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
+        let (view, buffer) = (texture_entry, buffer_entry);
+        if shared.is_none() {
+            let mut entries = vec![
+                buffer(0, &self.uniform),
+                buffer(24, &self.map),
+                view(2, inputs.grid[0]),
+                view(3, inputs.grid[1]),
+                view(4, inputs.grid[2]),
+                view(5, inputs.grid[3]),
+                buffer(7, inputs.lights[0]),
+                buffer(8, inputs.lights[1]),
+                view(10, inputs.sky),
+                view(22, &fresh),
+            ];
+            if let (true, Some(hw)) = (self.hardware, &inputs.hardware) {
+                entries.extend([
+                    wgpu::BindGroupEntry {
+                        binding: 15,
+                        resource: wgpu::BindingResource::AccelerationStructure(hw.tlas),
+                    },
+                    buffer(16, &hw.arena[0]),
+                    view(17, hw.sprites),
+                    buffer(23, hw.instances),
+                    buffer(36, hw.dynamics),
+                    view(37, hw.atlas),
+                ]);
+                entries.extend(
+                    super::hw_rays::ARENA_BINDINGS
+                        .iter()
+                        .zip(&hw.arena[1..])
+                        .map(|(&binding, page)| buffer(binding, page)),
+                );
+            }
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Froxel volumetrics' inject"),
+                layout: &self.inject_layout,
+                entries: &entries,
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Froxel volumetrics' inject"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.inject);
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(
+                    dims[0].div_ceil(4),
+                    dims[1].div_ceil(4),
+                    dims[2].div_ceil(2).div_ceil(4),
+                );
+            }
+            super::gpu_passes::stamp(encoder, "froxels: inject (lights, shadows)");
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Froxel volumetrics' blend"),
+                layout: &self.blend_layout,
+                entries: &[
+                    buffer(0, &self.uniform),
+                    view(11, &from),
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    view(13, &to),
+                    view(21, &fresh),
+                    view(10, inputs.sky),
+                ],
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Froxel volumetrics' blend"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.blend);
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(
+                    dims[0].div_ceil(4),
+                    dims[1].div_ceil(4),
+                    dims[2].div_ceil(4),
+                );
+            }
+            super::gpu_passes::stamp(encoder, "froxels: blend (temporal)");
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Froxel volumetrics' integrate"),
+                layout: &self.integrate_layout,
+                entries: &[
+                    buffer(0, &self.uniform),
+                    view(19, &to),
+                    view(14, &integrated),
+                    view(10, inputs.sky),
+                    buffer(24, &self.map),
+                ],
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Froxel volumetrics' integrate"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.integrate);
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(dims[0].div_ceil(8), dims[1].div_ceil(8), 1);
+            }
+            super::gpu_passes::stamp(encoder, "froxels: integrate");
+        }
+        let (integrated, to) = shared.map_or((integrated, to), |s| (s.0, s.2));
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Froxel volumetrics' composite"),
+            layout: &self.apply_layout,
+            entries: &[
+                buffer(0, &self.uniform),
+                buffer(24, &self.map),
+                view(1, inputs.depth),
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                view(19, &to),
+                view(20, &integrated),
+            ],
+        });
+        let pipelines = self.apply_pipelines(device, inputs.color_format).to_vec();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Froxel volumetrics' composite"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: inputs.color,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_bind_group(0, &group, &[]);
+        for pipeline in &pipelines {
+            pass.set_pipeline(pipeline);
+            pass.draw(0..3, 0..1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extinction_is_the_measured_transmittance() {
+        // sigma_t = -ln(T) / d: the light left over the measured distance is the colour's.
+        let water = Medium::water();
+        for (sigma, t) in water.sigma_t.to_array().into_iter().zip([0.6, 0.9, 0.89]) {
+            assert!(((-sigma * 20.0).exp() - t).abs() < 1e-5);
+        }
+        let rain = Medium::rain();
+        assert!(((-rain.sigma_t.x * 10.0).exp() - 0.996).abs() < 1e-5);
+        let air = Medium::air();
+        assert!(((-air.sigma_t.y * 100.0).exp() - AIR_THROUGH).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_camera_picks_the_medium() {
+        let open = CameraMedium::default();
+        assert_eq!(open.medium(), Medium::air());
+        let water = CameraMedium {
+            in_water: true,
+            ..open
+        };
+        assert_eq!(water.medium(), Medium::water());
+        let cave = CameraMedium {
+            sky_light: 0.0,
+            ..open
+        };
+        assert_eq!(cave.medium(), Medium::cave());
+        // Between the cave and the open: in between.
+        let mouth = CameraMedium {
+            sky_light: 6.0,
+            ..open
+        }
+        .medium();
+        assert!(
+            mouth.sigma_t.x > Medium::air().sigma_t.x && mouth.sigma_t.x < Medium::cave().sigma_t.x
+        );
+        let storm = CameraMedium {
+            rain: 1.0,
+            thunder: 1.0,
+            ..open
+        };
+        let rain = CameraMedium { rain: 1.0, ..open };
+        let air = Medium::air().sigma_t.x;
+        // The drops' extinction over the air's, a storm's beyond Remix's thunder.
+        assert!(rain.medium().sigma_t.x > air + Medium::rain().sigma_t.x);
+        assert!(storm.medium().sigma_t.x > air + Medium::thunder().sigma_t.x);
+        // Snow hides more than the rain of the same levels.
+        let snow = CameraMedium { snow: 1.0, ..rain };
+        assert!(snow.medium().sigma_t.x > rain.medium().sigma_t.x);
+    }
+
+    #[test]
+    fn the_cameras_place_eases_in() {
+        // A step from the open (15) into a cave's shade (0): a frame later the medium has barely
+        // moved, after a few time constants it is the cave's, never past it.
+        let one_frame = ease(15.0, 0.0, 1.0 / 60.0);
+        assert!(one_frame > 14.5 && one_frame < 15.0);
+        let mut v = 15.0;
+        for _ in 0..(60.0 * EASE_SECONDS * 8.0) as usize {
+            v = ease(v, 0.0, 1.0 / 60.0);
+            assert!(v >= 0.0);
+        }
+        assert_eq!(v, 0.0);
+    }
+
+    #[test]
+    fn a_medium_change_unsettles_the_history() {
+        assert!(Medium::water().differs(&Medium::air()));
+        assert!(Medium::cave().differs(&Medium::air()));
+        let a = Medium::air();
+        assert!(!a.differs(&a.mix(Medium::rain(), 0.01)));
+    }
+
+    #[test]
+    fn the_uniform_matches_the_shader() {
+        for hardware in [false, true] {
+            let text = source(hardware, 2048);
+            let module = naga::front::wgsl::parse_str(&text)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+            let mut layouter = naga::proc::Layouter::default();
+            layouter.update(module.to_ctx()).expect("its layout");
+            let (fx, _) = module
+                .types
+                .iter()
+                .find(|(_, t)| t.name.as_deref() == Some("Fx"))
+                .expect("the uniform");
+            assert_eq!(layouter[fx].size as usize, std::mem::size_of::<Uniform>());
+        }
+    }
+}

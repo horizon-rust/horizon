@@ -117,6 +117,26 @@ by The Pixelify Sans Project Authors, licensed under the SIL Open Font License 1
 license (`crates/horizon-theme/icons/pixel/LICENSE-pixelarticons.txt`). `star.svg` is Horizon's own, drawn on
 the same grid.
 
+## RTX Remix for Minecraft's sky
+
+`crates/horizon-client-render/src/gfx/sky_atmosphere.wgsl` is a WGSL port of `sky_atmosphere.comp` from
+RTX Remix for Minecraft (the renderer's `shaders/sky_atmosphere.comp`), Copyright (c) 2026 NVIDIA
+CORPORATION & AFFILIATES, licensed under the Apache License, Version 2.0
+(<https://www.apache.org/licenses/LICENSE-2.0>). The file's header says what was ported and what is
+Horizon's own (the last pass, which resamples the sky into Horizon's sky-view table).
+
+## The Moon's map
+
+`crates/horizon-client-render/src/gfx/moon_lroc.png` is NASA's LROC colour map of the Moon from the
+[CGI Moon Kit](https://svs.gsfc.nasa.gov/4720/) (NASA's Scientific Visualization Studio, from the
+Lunar Reconnaissance Orbiter Camera), scaled to 1024x512. NASA's imagery is in the public domain.
+
+## The Milky Way's map
+
+`crates/horizon-client-render/src/gfx/milky_way_luminance.png` and `milky_way_colour.png` are the Milky
+Way layer of NASA's [Deep Star Maps 2020](https://svs.gsfc.nasa.gov/4851/) (NASA's Scientific
+Visualization Studio, from the Hipparcos, Tycho-2 and Gaia catalogues): its luminance at its full
+4096x2048, its colour averaged to 1024x512. NASA's imagery is in the public domain.
 ## Hugeicons
 
 `crates/horizon-theme/icons/glass/*.svg` are icons from the free set of

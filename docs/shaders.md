@@ -125,7 +125,8 @@ A pack has at least one stage; a stage it leaves out keeps vanilla's look. Each 
 (`input.color` in the sky and post stages; `albedo * tint * vec4(lightmap, 1.0)` for a material), so a pack can start
 from vanilla and change only what it means to.
 
-Every stage can read `frame`: the camera's matrices and position, the sun and moon directions, the time of day,
+Every stage can read `frame`: the camera's matrices and position, the sun and moon directions (on the path the
+player's Sun Path Tilt leans south, [graphics.md](graphics.md)), the time of day,
 vanilla's sky and fog colours, rain and thunder, fog distances, the light at the camera, effects and the dimension.
 Post passes also read `scene_color`, `scene_depth`, `previous` (the last pass's output), two samplers and the helpers
 `depth_at(uv)` and `view_position(uv, depth)`.
@@ -277,7 +278,23 @@ stage draws in a pass of its own (it shares the world's pass otherwise), so its 
 material stage runs inside terrain's own draws, so it has no time of its own: compare the frame's GPU time with and
 without the pack.
 
+## LabPBR materials
+
+Resource packs with LabPBR 1.3 maps (`_n` and `_s` beside block textures, such as SPBR) are loaded for whatever
+draws them next: the renderer keeps the normal and specular maps in texture arrays grouped by size, with an
+index by sprite layer, their mip levels and the sprites' animation frames, so a surface finds its maps from its
+sprite's layer and samples them at its texture coordinate ([resource-packs.md](resource-packs.md#labpbr-maps): channels, neutral values, cost). The Parallax
+setting already draws the normal maps without any shader pack (`gfx/parallax.rs`: parallax occlusion mapping
+texel by texel, normal shading, material AO). Shader stages do not read them yet: neither the material stage of
+Horizon's packs nor the `shaders/` format's `normals` and `specular` samplers. Shaders are to be rebuilt around a
+new renderer (hardware ray tracing included), and its lighting stage is where the rest goes: reflections from
+smoothness and F0, emission, subsurface scattering, porosity, and ray-traced ambient occlusion over the material
+AO. `labpbr::decode` is the reference for what each texel means.
+
+Connected textures (`optifine/ctm`) do not wait for it: the mesher draws them for every renderer.
+
 ## Next
 
+The overlay, lighting and shadow stages (with the LabPBR maps), and option values other than the defaults.
 An overlay showing what each pass draws (F3 already shows what each costs), and stages for entities, block entities
 and particles (the material stage covers terrain only).

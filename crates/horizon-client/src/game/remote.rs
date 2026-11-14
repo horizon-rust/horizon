@@ -792,10 +792,9 @@ pub(super) struct Remote {
     clock_game_time: i64,
     /// `ClientChunkCache.Storage`'s view centre (ClientboundSetChunkCacheCenterPacket).
     chunk_center: (i32, i32),
-    /// Received events a frame left for the next one, in order, and when
-    /// the oldest of them first waited (`poll_remote`).
-    backlog: VecDeque<Received>,
-    backlog_since: Option<Instant>,
+    /// Received events a frame left for the next one, in order, each with
+    /// the frame it arrived in (`poll_remote`).
+    backlog: VecDeque<(Instant, Received)>,
     /// `ClientboundTransferPacket`'s target: when the connection ends the
     /// game connects here, the stored cookies carried over (`TransferState`).
     transfer: Option<String>,
@@ -807,16 +806,6 @@ pub(super) struct Remote {
     pub(super) debug_query: super::debug_keys::DebugQuery,
 }
 
-/// The time a frame spends on chunk packets before it leaves the rest of
-/// the received events for the next frame. A batch of 25 to 60 columns
-/// (0.1 ms each on an M4 Pro) all in one frame was a 3 to 8 ms frame every
-/// time the player crossed a chunk border at 32 chunks; they decode on the
-/// chunk decoder's thread now, and the frame only inserts them.
-const CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(1);
-/// Events that have waited this long are all handled in the next frame,
-/// whatever inserting their columns costs, up to a column still decoding:
-/// the packets after a slow machine's chunks don't wait on its frames.
-const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
 /// The open menu name of a server's horse inventory, then its chest's
 /// columns (the packet names no `MenuType`).
 const MOUNT_MENU: &str = "horizon:mount";
@@ -1077,6 +1066,7 @@ impl Game<'_> {
         streaming.radius = self.settings.render_distance;
         self.streaming = streaming;
         self.world = World::new(self.res.facts().air, 0);
+        self.forget_rain();
         self.save = Arc::new(SaveDir::new(
             std::env::temp_dir().join("horizon-remote-unused"),
             horizon_client::save::LevelShape::OVERWORLD,
@@ -1284,7 +1274,6 @@ impl Game<'_> {
             clock_game_time: 0,
             chunk_center: (0, 0),
             backlog: VecDeque::new(),
-            backlog_since: None,
             server_links: Vec::new(),
             debug_query: Default::default(),
             transfer: None,
@@ -1332,6 +1321,7 @@ impl Game<'_> {
         streaming.radius = self.settings.render_distance;
         self.streaming = streaming;
         self.world = World::new(self.res.facts().air, 0);
+        self.forget_rain();
         self.save = Arc::new(SaveDir::new(
             std::env::temp_dir().join("horizon-replay-unused"),
             horizon_client::save::LevelShape::OVERWORLD,
@@ -1514,7 +1504,6 @@ impl Game<'_> {
             clock_game_time: 0,
             chunk_center: (0, 0),
             backlog: VecDeque::new(),
-            backlog_since: None,
             server_links: Vec::new(),
             debug_query: Default::default(),
             transfer: None,
@@ -1597,6 +1586,7 @@ impl Game<'_> {
         self.streaming = Streaming::new(Arc::new(NoTerrain), self.worker_context(), 1);
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
+        self.forget_rain();
         self.player = None;
         // The vehicle went with the level: an id kept here would seat the
         // next login on an entity that is not there.
@@ -5814,7 +5804,7 @@ impl Game<'_> {
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
     /// entities whose own tick moves them on a client: dropped items, experience
-    /// orbs, falling blocks and primed TNT.
+    /// orbs, falling blocks and primed TNT; and minecarts, whose rolling sound reads it.
     fn remote_motion(&mut self, id: i32, velocity: [f64; 3]) {
         self.remote_dragon_motion(id, velocity);
         let v = Vec3::new(velocity[0], velocity[1], velocity[2]);
@@ -5859,6 +5849,11 @@ impl Game<'_> {
             }
         } else if let Some(r) = self.rockets.iter_mut().find(|r| r.id == id as u32) {
             r.velocity = v;
+        } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id as u32) {
+            // The server moves minecarts; their motion is what
+            // MinecartSoundInstance reads (getDeltaMovement), so without it
+            // a rolling cart stayed silent on a server's client.
+            c.velocity = v;
         } else if self.remote_hook_motion(id as u32, v) {
         } else if let Some(p) = self
             .remote

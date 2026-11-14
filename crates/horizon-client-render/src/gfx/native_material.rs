@@ -284,6 +284,9 @@ pub struct TerrainShape<'a> {
     pub sprites: [f64; 2],
     /// The world target's colour format, and whether it holds linear light (`linear_blend`).
     pub format: wgpu::TextureFormat,
+    /// The screen's: a post stage's last pass draws onto it (with Linear Light it differs from
+    /// the world's, `tonemap`).
+    pub screen: wgpu::TextureFormat,
     pub linear: bool,
     /// The pack's tags of each tagged sprite layer, as `(layer, bits)`
     /// (`Manifest::sprite_tags`).
@@ -451,19 +454,73 @@ impl NativeMaterial {
             constants.push(("horizon_displace_cells", f64::from(d.cells)));
             constants.push(("horizon_displace_steps", f64::from(u8::from(d.steps))));
         }
+        Self::build_full(
+            device,
+            shape,
+            &stage.label,
+            module,
+            constants,
+            (GROUP, &frame.layout),
+            ["horizon_material_vs", "horizon_material_vs_flat"],
+            [
+                "horizon_material_fs_solid",
+                "horizon_material_fs_translucent",
+            ],
+            None,
+            writes_surface,
+            displaced,
+        )
+        .map_err(|e| format!("{}: {e}", stage.file))
+    }
+
+    /// Terrain pipelines from `module`: `vertex` (instanced, flat) and `fragment` (solid,
+    /// translucent) entries, reading the terrain's group 0, the flat draws' group 1 and
+    /// `group` (its index and layout); `constants` are set beside terrain.wgsl's own. With `dual`,
+    /// the translucent pipelines draw that entry instead, blending with two sources (what it adds,
+    /// and in colour what of the frame shows through: gfx.rs's dual-source translucent terrain).
+    #[allow(clippy::too_many_arguments)]
+    pub fn build(
+        device: &wgpu::Device,
+        shape: &TerrainShape<'_>,
+        label: &str,
+        module: naga::Module,
+        constants: Vec<(&str, f64)>,
+        group: (u32, &wgpu::BindGroupLayout),
+        vs: [&str; 2],
+        fs: [&str; 2],
+        dual: Option<&str>,
+    ) -> Result<Self, String> {
+        Self::build_full(
+            device, shape, label, module, constants, group, vs, fs, dual, false, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_full(
+        device: &wgpu::Device,
+        shape: &TerrainShape<'_>,
+        label: &str,
+        module: naga::Module,
+        constants: Vec<(&str, f64)>,
+        (group, group_layout): (u32, &wgpu::BindGroupLayout),
+        [vs, vs_flat]: [&str; 2],
+        [fs_solid, fs_translucent]: [&str; 2],
+        dual: Option<&str>,
+        writes_surface: bool,
+        displaced: Option<&DisplacedShape<'_>>,
+    ) -> Result<Self, String> {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(&stage.label),
+            label: Some(label),
             source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
         });
         let layout = |flat: Option<&wgpu::BindGroupLayout>| {
-            let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] =
-                Default::default();
+            let mut groups: Vec<Option<&wgpu::BindGroupLayout>> = vec![None; group as usize + 1];
             groups[0] = Some(shape.globals);
             groups[1] = flat;
-            groups[GROUP as usize] = Some(&frame.layout);
+            groups[group as usize] = Some(group_layout);
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Native shader pack terrain"),
+                label: Some(label),
                 bind_group_layouts: &groups,
                 ..Default::default()
             })
@@ -502,7 +559,7 @@ impl NativeMaterial {
                 }),
             ];
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(&stage.label),
+                label: Some(label),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &module,
@@ -526,7 +583,7 @@ impl NativeMaterial {
                     module: &module,
                     entry_point: Some(fragment),
                     compilation_options: options,
-                    targets: if fragment != "horizon_material_fs_translucent" && writes_surface {
+                    targets: if fragment != fs_translucent && writes_surface {
                         &solid_targets
                     } else {
                         &solid_targets[..1]
@@ -536,36 +593,30 @@ impl NativeMaterial {
                 cache: None,
             })
         };
-        let blend = Some(wgpu::BlendState::ALPHA_BLENDING);
+        let (fs_translucent, blend) = match dual {
+            Some(entry) => (
+                entry,
+                Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::Src1,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendState::ALPHA_BLENDING.alpha,
+                }),
+            ),
+            None => (fs_translucent, Some(wgpu::BlendState::ALPHA_BLENDING)),
+        };
         let instanced = layout(None);
         let buffers = [Some(vertices.clone()), Some(instances)];
-        let solid = pipeline(
-            &instanced,
-            "horizon_material_vs",
-            &buffers,
-            "horizon_material_fs_solid",
-            None,
-        );
-        let translucent = pipeline(
-            &instanced,
-            "horizon_material_vs",
-            &buffers,
-            "horizon_material_fs_translucent",
-            blend,
-        );
+        let solid = pipeline(&instanced, vs, &buffers, fs_solid, None);
+        let translucent = pipeline(&instanced, vs, &buffers, fs_translucent, blend);
         let flat = shape.flat.map(|group| {
             let layout = layout(Some(group));
             let buffers = [Some(vertices.clone())];
-            let vs = "horizon_material_vs_flat";
             (
-                pipeline(&layout, vs, &buffers, "horizon_material_fs_solid", None),
-                pipeline(
-                    &layout,
-                    vs,
-                    &buffers,
-                    "horizon_material_fs_translucent",
-                    blend,
-                ),
+                pipeline(&layout, vs_flat, &buffers, fs_solid, None),
+                pipeline(&layout, vs_flat, &buffers, fs_translucent, blend),
             )
         });
         // The grid's corners come from its group 1, not from vertex buffers.
@@ -579,7 +630,7 @@ impl NativeMaterial {
             )
         });
         if let Some(e) = pollster::block_on(scope.pop()) {
-            return Err(format!("{}: {e}", stage.file));
+            return Err(e.to_string());
         }
         Ok(Self {
             solid,

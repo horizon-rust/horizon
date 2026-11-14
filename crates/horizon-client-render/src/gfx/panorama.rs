@@ -1,6 +1,6 @@
 //! Vanilla 26.3's CubeMapTexture and CubeMap, separate from the pixel-filtered GUI atlas.
 use crate::{Result, hud::decode_bytes};
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -181,8 +181,43 @@ fn projection(width: u32, height: u32, yaw: f32, pitch: f32) -> Mat4 {
         * Mat4::from_rotation_y(yaw.to_radians())
 }
 
+/// VR's title backdrop as one eye sees it: the cube painted onto a floor under the head and
+/// a sphere around it, so the scene has depth and stays put as the head turns (`fs_backdrop`).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Backdrop {
+    /// The eye's clip space to the backdrop's space (stage metres from the sphere's centre).
+    pub inverse_view_proj: Mat4,
+    /// The eye in the backdrop's space.
+    pub eye: Vec3,
+    /// How far below the centre the floor is, and the sphere's radius (metres).
+    pub floor: f32,
+    pub radius: f32,
+}
+
+impl Backdrop {
+    /// Where a ray from the eye meets the floor or the sphere (`fs_backdrop`): the cube is
+    /// sampled towards that point from the centre.
+    #[cfg(test)]
+    pub(super) fn point(&self, ray: Vec3) -> Vec3 {
+        let e = self.eye;
+        let b = e.dot(ray);
+        let c = e.length_squared() - self.radius * self.radius;
+        let mut t = -b + (b * b - c).max(0.0).sqrt();
+        if ray.y < 0.0 {
+            let to_floor = (-self.floor - e.y) / ray.y;
+            if to_floor > 0.0 {
+                t = t.min(to_floor);
+            }
+        }
+        e + ray * t
+    }
+}
+
 pub(super) struct Panorama {
     pipeline: wgpu::RenderPipeline,
+    /// VR's title backdrop (`Backdrop`), one eye at a time.
+    stereo: wgpu::RenderPipeline,
+    stereo_uniform: wgpu::Buffer,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform: wgpu::Buffer,
@@ -195,8 +230,24 @@ impl Panorama {
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
+        linear: bool,
         faces: Arc<Faces>,
     ) -> Self {
+        // Linear Light decodes the picture (`LINEAR`); a frame that holds light keeps it opaque
+        // (`HDR_WRITE_LIGHT`).
+        let constants = [
+            ("LINEAR", f64::from(u8::from(linear))),
+            (
+                "HDR_WRITE_LIGHT",
+                f64::from(u8::from(format == super::LINEAR_FRAME)),
+            ),
+        ];
+        let stereo_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("VR title backdrop"),
+            size: 96,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         // CubeMapTexture's blur=true metadata: linear minification and magnification, no mips.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Title panorama linear filtering"),
@@ -239,6 +290,16 @@ impl Panorama {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -250,48 +311,49 @@ impl Panorama {
             bind_group_layouts: &[Some(&layout)],
             ..Default::default()
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Title panorama"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_panorama"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_panorama"),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[(
-                        "HDR_WRITE_LIGHT",
-                        f64::from(u8::from(format == super::LINEAR_FRAME)),
-                    )],
+        let pipeline = |label: &str, vertex: &str, fragment: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vertex),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
                     ..Default::default()
                 },
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &constants,
+                        ..Default::default()
+                    },
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         Self {
-            pipeline,
+            pipeline: pipeline("Title panorama", "vs_panorama", "fs_panorama"),
+            stereo: pipeline("VR title backdrop", "vs_backdrop", "fs_backdrop"),
+            stereo_uniform,
             layout,
             sampler,
             uniform,
@@ -366,18 +428,47 @@ impl Panorama {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.stereo_uniform.as_entire_binding(),
+                },
             ],
         })
     }
 
-    /// Draw the cube `prepare` made for this frame.
-    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+    /// One eye's backdrop in VR, drawn by `draw` with `eye` set; the cube, made if it is not on
+    /// the GPU.
+    pub(super) fn prepare_eye(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        backdrop: &Backdrop,
+    ) {
+        let mut data = [0.0f32; 24];
+        data[..16].copy_from_slice(&backdrop.inverse_view_proj.to_cols_array());
+        data[16..19].copy_from_slice(&backdrop.eye.to_array());
+        data[19] = backdrop.floor;
+        data[20] = backdrop.radius;
+        queue.write_buffer(&self.stereo_uniform, 0, bytemuck::cast_slice(&data));
+        if self.cube.is_none() {
+            self.cube = Some(self.cube(device, queue));
+        }
+    }
+
+    /// Draw the cube `prepare` made for this frame, or with `eye` VR's backdrop `prepare_eye`
+    /// set.
+    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, eye: bool) {
         let Some(cube) = &self.cube else {
             return;
         };
-        pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, cube, &[]);
-        pass.draw(0..36, 0..1);
+        if eye {
+            pass.set_pipeline(&self.stereo);
+            pass.draw(0..3, 0..1);
+        } else {
+            pass.set_pipeline(&self.pipeline);
+            pass.draw(0..36, 0..1);
+        }
     }
 }
 

@@ -85,6 +85,7 @@ impl super::DeviceShared {
                     ref depth_stencil,
                     sample_count,
                     multiview_mask,
+                    shading_rate,
                 } = *e.key();
 
                 let mut vk_attachments = Vec::new();
@@ -183,6 +184,19 @@ impl super::DeviceShared {
                     vk_attachments.push(vk_attachment);
                 }
 
+                if let Some(texel) = shading_rate {
+                    let raw = unsafe {
+                        self.make_shading_rate_pass(
+                            &vk_attachments,
+                            &color_refs,
+                            &resolve_refs,
+                            ds_ref,
+                            texel,
+                        )?
+                    };
+                    return Ok(*e.insert(raw));
+                }
+
                 let vk_subpasses = [{
                     let mut vk_subpass = vk::SubpassDescription::default()
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
@@ -228,6 +242,102 @@ impl super::DeviceShared {
                 *e.insert(raw)
             }
         })
+    }
+
+    /// Horizon: `make_render_pass`'s pass through `vkCreateRenderPass2`, with a fragment shading
+    /// rate attachment after the others (`VK_KHR_fragment_shading_rate`). It is in
+    /// `TRANSFER_DST_OPTIMAL` before and after the pass, as the writes that fill it leave it,
+    /// and the pass waits for them.
+    unsafe fn make_shading_rate_pass(
+        &self,
+        attachments: &[vk::AttachmentDescription],
+        color_refs: &[vk::AttachmentReference],
+        resolve_refs: &[vk::AttachmentReference],
+        ds_ref: Option<vk::AttachmentReference>,
+        texel: [u32; 2],
+    ) -> Result<vk::RenderPass, crate::DeviceError> {
+        let reference = |r: &vk::AttachmentReference| {
+            vk::AttachmentReference2::default()
+                .attachment(r.attachment)
+                .layout(r.layout)
+        };
+        let mut vk_attachments: Vec<vk::AttachmentDescription2> = attachments
+            .iter()
+            .map(|a| {
+                vk::AttachmentDescription2::default()
+                    .format(a.format)
+                    .samples(a.samples)
+                    .load_op(a.load_op)
+                    .store_op(a.store_op)
+                    .stencil_load_op(a.stencil_load_op)
+                    .stencil_store_op(a.stencil_store_op)
+                    .initial_layout(a.initial_layout)
+                    .final_layout(a.final_layout)
+            })
+            .collect();
+        let rate_ref = vk::AttachmentReference2::default()
+            .attachment(vk_attachments.len() as u32)
+            .layout(vk::ImageLayout::FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR);
+        vk_attachments.push(
+            vk::AttachmentDescription2::default()
+                .format(vk::Format::R8_UINT)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .load_op(vk::AttachmentLoadOp::LOAD)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .initial_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .final_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL),
+        );
+        let colors: Vec<_> = color_refs.iter().map(reference).collect();
+        let resolves: Vec<_> = resolve_refs.iter().map(reference).collect();
+        let depth = ds_ref.as_ref().map(reference);
+        let mut rate_info = vk::FragmentShadingRateAttachmentInfoKHR::default()
+            .fragment_shading_rate_attachment(&rate_ref)
+            .shading_rate_attachment_texel_size(vk::Extent2D {
+                width: texel[0],
+                height: texel[1],
+            });
+        let mut subpass = vk::SubpassDescription2::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(&colors)
+            .resolve_attachments(&resolves)
+            .push_next(&mut rate_info);
+        if resolves.is_empty() {
+            subpass.p_resolve_attachments = ptr::null();
+        }
+        if let Some(depth) = &depth {
+            subpass = subpass.depth_stencil_attachment(depth);
+        }
+        let subpasses = [subpass];
+        // The writes that filled the attachment come first; the next ones wait for the pass.
+        // Explicit dependencies replace the implicit ones, which do nothing that wgpu's own
+        // barriers don't.
+        let dependencies = [
+            vk::SubpassDependency2::default()
+                .src_subpass(vk::SUBPASS_EXTERNAL)
+                .dst_subpass(0)
+                .src_stage_mask(vk::PipelineStageFlags::TRANSFER)
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags::FRAGMENT_SHADING_RATE_ATTACHMENT_KHR)
+                .dst_access_mask(vk::AccessFlags::FRAGMENT_SHADING_RATE_ATTACHMENT_READ_KHR),
+            vk::SubpassDependency2::default()
+                .src_subpass(0)
+                .dst_subpass(vk::SUBPASS_EXTERNAL)
+                .src_stage_mask(vk::PipelineStageFlags::FRAGMENT_SHADING_RATE_ATTACHMENT_KHR)
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_stage_mask(vk::PipelineStageFlags::TRANSFER)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+        ];
+        let info = vk::RenderPassCreateInfo2::default()
+            .attachments(&vk_attachments)
+            .subpasses(&subpasses)
+            .dependencies(&dependencies);
+        unsafe {
+            self.raw
+                .create_render_pass2(&info, None)
+                .map_err(super::map_host_device_oom_err)
+        }
     }
 
     fn make_memory_ranges<'a, I: 'a + Iterator<Item = crate::MemoryRange>>(
@@ -843,6 +953,48 @@ impl super::Device {
         &self.shared.instance
     }
 
+    /// Horizon: render pipelines made from now on also get a twin for render passes with a
+    /// fragment shading rate attachment of `texel` pixels per texel, which takes the
+    /// attachment's rate (`VK_KHR_fragment_shading_rate`).
+    ///
+    /// # Safety
+    ///
+    /// The device was created with `VK_KHR_fragment_shading_rate`, its
+    /// `attachmentFragmentShadingRate` feature and Vulkan 1.2, and `texel` is within the
+    /// implementation's attachment texel sizes. Call before any render pipeline is made.
+    pub unsafe fn enable_fragment_shading_rate(&self, texel: [u32; 2]) {
+        self.shared.fragment_shading_rate.lock().texel = Some(texel);
+    }
+
+    /// Horizon: render passes of `extent` begun from now on get `view` as their fragment
+    /// shading rate attachment, until this is called with `None`.
+    ///
+    /// # Safety
+    ///
+    /// The fragment shading rate is enabled (`enable_fragment_shading_rate`); `view` is an
+    /// `R8_UINT` view of an image with `FRAGMENT_SHADING_RATE_ATTACHMENT` and transfer-dst
+    /// usage, at least `extent` divided by the texel size (rounded up), in
+    /// `TRANSFER_DST_OPTIMAL` layout whenever a pass begins (as `Queue::write_texture` leaves
+    /// it), and it lives until the commands using it have run.
+    pub unsafe fn set_fragment_shading_rate(&self, attachment: Option<(vk::ImageView, [u32; 2])>) {
+        let mut rate = self.shared.fragment_shading_rate.lock();
+        rate.current = attachment.map(|(raw, extent)| {
+            // One identity per view: framebuffers are cached by it.
+            let view = match rate.views.iter().find(|v| v.raw == raw) {
+                Some(view) => *view,
+                None => {
+                    let view = super::IdentifiedTextureView {
+                        raw,
+                        identity: self.shared.texture_view_identity_factory.next(),
+                    };
+                    rate.views.push(view);
+                    view
+                }
+            };
+            (view, extent)
+        });
+    }
+
     fn get_memory_properties(&self) -> Option<MemoryProperties> {
         if !self
             .shared
@@ -1400,6 +1552,7 @@ impl crate::Device for super::Device {
             temp_texture_views: Default::default(),
             counters: Arc::clone(&self.counters),
             current_pipeline_is_multiview: false,
+            shading_rate_pass: false,
         })
     }
 
@@ -2144,6 +2297,21 @@ impl crate::Device for super::Device {
         let vk_dynamic_state =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
+        // Horizon: the twin for passes with a fragment shading rate attachment, from their own
+        // compatible pass.
+        let shading_rate = self
+            .shared
+            .fragment_shading_rate
+            .lock()
+            .texel
+            .filter(|_| desc.multiview_mask.is_none());
+        let shading_rate_pass = match shading_rate {
+            Some(texel) => Some(self.shared.make_render_pass(super::RenderPassKey {
+                shading_rate: Some(texel),
+                ..compatible_rp_key.clone()
+            })?),
+            None => None,
+        };
         let raw_pass = self.shared.make_render_pass(compatible_rp_key)?;
 
         let vk_infos = [{
@@ -2180,6 +2348,30 @@ impl crate::Device for super::Device {
         if let Some(label) = desc.label {
             unsafe { self.shared.set_object_name(raw, label) };
         }
+        // Horizon: the twin takes the attachment's rate (the pipeline's own stays 1x1).
+        let raw_shading_rate = match shading_rate_pass {
+            Some(pass) => {
+                let mut rate = vk::PipelineFragmentShadingRateStateCreateInfoKHR::default()
+                    .fragment_size(vk::Extent2D {
+                        width: 1,
+                        height: 1,
+                    })
+                    .combiner_ops([
+                        vk::FragmentShadingRateCombinerOpKHR::KEEP,
+                        vk::FragmentShadingRateCombinerOpKHR::REPLACE,
+                    ]);
+                let info = vk_infos[0].render_pass(pass).push_next(&mut rate);
+                profiling::scope!("vkCreateGraphicsPipelines");
+                let mut twin = unsafe {
+                    self.shared
+                        .raw
+                        .create_graphics_pipelines(pipeline_cache, &[info], None)
+                        .map_err(|(_, e)| super::map_pipeline_err(e))
+                }?;
+                twin.pop().unwrap()
+            }
+            None => vk::Pipeline::null(),
+        };
 
         if let Some(CompiledStage {
             temp_raw_module: Some(raw_module),
@@ -2214,12 +2406,20 @@ impl crate::Device for super::Device {
 
         Ok(super::RenderPipeline {
             raw,
+            raw_shading_rate,
             is_multiview: desc.multiview_mask.is_some(),
         })
     }
 
     unsafe fn destroy_render_pipeline(&self, pipeline: super::RenderPipeline) {
         unsafe { self.shared.raw.destroy_pipeline(pipeline.raw, None) };
+        if pipeline.raw_shading_rate != vk::Pipeline::null() {
+            unsafe {
+                self.shared
+                    .raw
+                    .destroy_pipeline(pipeline.raw_shading_rate, None)
+            };
+        }
 
         self.counters.render_pipelines.sub(1);
     }
@@ -2908,6 +3108,7 @@ impl crate::Device for super::Device {
                 buffer: raw_buffer,
                 allocation,
                 compacted_size_query: pool,
+                size: desc.size,
             })
         }
     }
@@ -2985,6 +3186,12 @@ impl crate::Device for super::Device {
     }
 
     fn tlas_instance_to_bytes(&self, instance: TlasInstance) -> Vec<u8> {
+        let mut out = Vec::with_capacity(size_of::<RawTlasInstance>());
+        self.tlas_instance_write_bytes(instance, &mut out);
+        out
+    }
+
+    fn tlas_instance_write_bytes(&self, instance: TlasInstance, out: &mut Vec<u8>) {
         const MAX_U24: u32 = (1u32 << 24u32) - 1u32;
         let temp = RawTlasInstance {
             transform: instance.transform,
@@ -2995,7 +3202,7 @@ impl crate::Device for super::Device {
                 & MAX_U24),
             acceleration_structure_reference: instance.blas_address,
         };
-        bytemuck::bytes_of(&temp).to_vec()
+        out.extend_from_slice(bytemuck::bytes_of(&temp));
     }
 
     fn check_if_oom(&self) -> Result<(), crate::DeviceError> {

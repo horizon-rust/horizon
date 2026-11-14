@@ -182,6 +182,36 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
                 + include_str!("../oit.wgsl")
                 + include_str!("../oit_border.wgsl"),
         ),
+        (
+            "volumetrics one-pass composite",
+            vec!["froxels.wgsl", "froxels_dual.wgsl"],
+            super::froxels::dual_source(false, 1),
+        ),
+        (
+            "volumetrics with hardware rays",
+            vec!["froxels.wgsl", "froxels_hw.wgsl"],
+            super::froxels::source(true, 1),
+        ),
+        (
+            "RT shadow rays with hardware rays",
+            vec![
+                "shadow_rays.wgsl",
+                "shadow_rays_hw.wgsl",
+                "shadow_rays_psr.wgsl",
+                "shadow_rays_moving.wgsl",
+            ],
+            super::shadow_rays::source(true, 1),
+        ),
+        (
+            "translucent terrain one-pass blend",
+            vec!["terrain.wgsl", "terrain_dual.wgsl"],
+            super::dual_source_terrain(),
+        ),
+        (
+            "VR two-view depth prepass",
+            vec!["terrain.wgsl", "terrain_views.wgsl"],
+            super::terrain_views(),
+        ),
     ]
 }
 

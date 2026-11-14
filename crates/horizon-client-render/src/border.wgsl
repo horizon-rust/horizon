@@ -23,6 +23,8 @@ struct Out {
     out.uv = uv + vec2(border.offset.w);
     return out;
 }
+// Linear Light (gfx/tonemap.rs): the colour decoded to linear light for the float scene.
+override LINEAR: bool = false;
 @fragment fn fs_border(in: Out) -> @location(0) vec4<f32> {
     return frame_stored(border_color(in));
 }
@@ -31,5 +33,7 @@ fn border_color(in: Out) -> vec4<f32> {
     if color.a == 0.0 {
         discard;
     }
-    return color * border.color;
+    let c = color * border.color;
+    if LINEAR { return vec4(pow(max(c.rgb, vec3(0.0)), vec3(2.2)), c.a); }
+    return c;
 }

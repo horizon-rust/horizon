@@ -1,0 +1,14 @@
+# The title screen with the right hand's laser (tools/vr_fake_run.py --title --world-frames 2200
+# --capture-seconds 6,11,15,18). Times are seconds since the OpenXR session started; the
+# title shows within the first few. The panel opens 1.5 m ahead of the head (0, 1.6, 0), a
+# little low; the hand sits low on the right and aims at panel pixels (1280x720 window).
+0    head 0 0
+2    pose /user/hand/right/input/aim/pose 9.46 7.28 0.2 1.3 -0.3   # Singleplayer: hovered (t6)
+6.5  pose /user/hand/right/input/aim/pose 9.46 7.28
+7.5  pose /user/hand/right/input/aim/pose 17.12 -7.14              # Options...
+8.5  input /user/hand/right/input/trigger/value 1                 # click: the options open (t11)
+9    input /user/hand/right/input/trigger/value 0
+12   head 0 0
+13.5 head 60 0                                                     # look left: the panel stays (t15)
+16   input /user/hand/left/input/thumbstick/click 1                # recentre in front of the head (t18)
+16.4 input /user/hand/left/input/thumbstick/click 0

@@ -53,7 +53,8 @@ use semaphore_list::SemaphoreList;
 
 use crate::vulkan::semaphore_list::{SemaphoreListMode, SemaphoreType};
 
-const MAX_TOTAL_ATTACHMENTS: usize = crate::MAX_COLOR_ATTACHMENTS * 2 + 1;
+/// Colors and their resolves, depth, and Horizon's fragment shading rate attachment.
+const MAX_TOTAL_ATTACHMENTS: usize = crate::MAX_COLOR_ATTACHMENTS * 2 + 2;
 
 #[derive(Clone, Debug)]
 pub struct Api;
@@ -500,6 +501,21 @@ struct RenderPassKey {
     depth_stencil: Option<DepthStencilAttachmentKey>,
     sample_count: u32,
     multiview_mask: Option<NonZeroU32>,
+    /// Horizon: a fragment shading rate attachment of this texel size follows the others
+    /// (`VK_KHR_fragment_shading_rate`, `Device::set_fragment_shading_rate`).
+    shading_rate: Option<[u32; 2]>,
+}
+
+/// Horizon: foveated rendering through `VK_KHR_fragment_shading_rate`.
+#[derive(Default)]
+struct FragmentShadingRate {
+    /// The attachments' texel size, once enabled (`Device::enable_fragment_shading_rate`):
+    /// every render pipeline made after it has a twin for the passes with the attachment.
+    texel: Option<[u32; 2]>,
+    /// The attachment render passes of this extent get, until it is cleared.
+    current: Option<(IdentifiedTextureView, [u32; 2])>,
+    /// Every view given so far, each with its one identity.
+    views: Vec<IdentifiedTextureView>,
 }
 
 struct DeviceShared {
@@ -530,6 +546,9 @@ struct DeviceShared {
     texture_view_identity_factory: ResourceIdentityFactory<vk::ImageView>,
 
     empty_descriptor_set_layout: vk::DescriptorSetLayout,
+
+    /// Horizon: the fragment shading rate attachment, when enabled.
+    fragment_shading_rate: Mutex<FragmentShadingRate>,
 
     // The `drop_guard` field must be the last field of this struct so it is dropped last.
     // Do not add new fields after it.
@@ -797,6 +816,38 @@ pub struct AccelerationStructure {
     buffer: vk::Buffer,
     allocation: gpu_allocator::vulkan::Allocation,
     compacted_size_query: Option<vk::QueryPool>,
+    /// The size it was created with, for builds recorded outside wgpu.
+    size: wgt::BufferAddress,
+}
+
+impl AccelerationStructure {
+    /// The underlying `VkAccelerationStructureKHR`, for commands recorded outside wgpu (a
+    /// top-level structure built from instances a compute pass wrote, extensions wgpu doesn't
+    /// know: gfx-rs/wgpu#10187, backported for Horizon). What is built this way is marked with
+    /// `CommandEncoder::mark_acceleration_structures_built`.
+    ///
+    /// # Safety
+    ///
+    /// - The handle is only valid while this structure lives and must not be destroyed.
+    /// - What is recorded against it must respect wgpu's own use of it.
+    pub unsafe fn raw_handle(&self) -> vk::AccelerationStructureKHR {
+        self.raw
+    }
+
+    /// The buffer the structure lives in (its storage).
+    ///
+    /// # Safety
+    ///
+    /// As `raw_handle`.
+    pub unsafe fn raw_buffer(&self) -> vk::Buffer {
+        self.buffer
+    }
+
+    /// The size the structure was created with: a build recorded outside wgpu (with an opacity
+    /// micromap, an extension wgpu doesn't know) must fit in it.
+    pub fn size(&self) -> wgt::BufferAddress {
+        self.size
+    }
 }
 
 impl crate::DynAccelerationStructure for AccelerationStructure {}
@@ -1086,6 +1137,10 @@ pub struct CommandEncoder {
     counters: Arc<wgt::HalCounters>,
 
     current_pipeline_is_multiview: bool,
+
+    /// Horizon: the render pass begun has a fragment shading rate attachment: pipelines bind
+    /// their twin (`RenderPipeline::raw_shading_rate`).
+    shading_rate_pass: bool,
 }
 
 impl Drop for CommandEncoder {
@@ -1157,6 +1212,9 @@ impl crate::DynShaderModule for ShaderModule {}
 #[derive(Debug)]
 pub struct RenderPipeline {
     raw: vk::Pipeline,
+    /// Horizon: the same pipeline for render passes with a fragment shading rate attachment
+    /// (a different pass is not compatible), taking its rate; null when not enabled.
+    raw_shading_rate: vk::Pipeline,
     is_multiview: bool,
 }
 

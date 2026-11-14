@@ -8,6 +8,8 @@ pub fn main() {
 
 /// Start the game with trait mods in dispatch order.
 pub fn main_with(mods: crate::mod_api::Mods) {
+    // Before anything reads the environment: the switches a launcher's relaunch lost.
+    let from_file = horizon_threads::env_file::apply();
     // First: a trait injection into anything below (logging, the crash handler) calls its mod.
     if crate::mod_api::MODS.set(mods).is_err() {
         log::warn!("Trait mods already installed; ignoring the second list");
@@ -72,7 +74,14 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         );
         // The log's first line names the build, so a bug report that carries the log says which one it was.
         log::info!("Horizon {}", crash::version());
+        if !from_file.is_empty() {
+            log::info!("Switches from horizon-env.txt: {}", from_file.join(" "));
+        }
         crash::install(home.clone(), side);
+        // The live settings panel listens from the start, the game's side only.
+        if side == "client" {
+            crate::game::start_live_panel();
+        }
     }
     let renderers = crate::mod_api::mods()
         .iter()

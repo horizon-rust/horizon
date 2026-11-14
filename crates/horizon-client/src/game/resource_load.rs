@@ -355,7 +355,13 @@ pub(super) fn load_resources(
     // server thread's (horizon_threads::jobs), sized before any world opens.
     horizon_threads::jobs::configure(threads);
     horizon_client::sprites::set_texture_budget(settings.horizon.texture_budget_mib);
-    horizon_client::sprites::set_labpbr_maps(shader_packs::picks_material_pack(settings));
+    // The resource packs' LabPBR maps: a material shader pack reads them, and so do the relief
+    // (parallax) and RT lighting's materials without one.
+    horizon_client::sprites::set_labpbr_maps(
+        shader_packs::picks_material_pack(settings)
+            || settings.horizon.parallax
+            || settings.horizon.rt_lighting,
+    );
     // Stage A: the menu bundle (atlas and panorama). With a loading screen it is
     // published at once so the title screen can appear while the world bundle
     // loads; the synchronous launch instead carries it in `Loaded`.
@@ -457,6 +463,7 @@ pub(super) fn load_resources(
         render,
         tables,
         item_renderer,
+        &facts,
         biomes.clone(),
         Arc::new(light),
     );

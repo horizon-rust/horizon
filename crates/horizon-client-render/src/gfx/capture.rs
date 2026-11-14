@@ -77,6 +77,10 @@ fn copy(mesh: &SectionMesh) -> SectionMesh {
         sprite_layers: mesh.sprite_layers.clone(),
         bounds: mesh.bounds,
         keep: mesh.keep,
+        occupancy: mesh.occupancy.clone(),
+        rt_lights: mesh.rt_lights.clone(),
+        albedo: mesh.albedo.clone(),
+        micromaps: None,
     }
 }
 
@@ -492,6 +496,14 @@ impl Scene {
         Frame {
             weather: &[],
             hand_items: &[],
+            particles_at: u32::MAX,
+            rain: Default::default(),
+            wetness: Default::default(),
+            rain_map: None,
+            snow: Default::default(),
+            sun_path_tilt: 0.0,
+            rt_body: &[],
+            moon_phase: 0,
             weather_time: crate::weather::Time::new(0, 0.0),
             camera: DVec3::from_array(f.camera),
             yaw: f.yaw,
@@ -522,6 +534,7 @@ impl Scene {
             fog: f.fog,
             dark_disc: f.dark_disc,
             outline: Vec::new(),
+            outline_wind: None,
             outline_after_terrain: false,
             outline_high_contrast: false,
             pvp: Default::default(),

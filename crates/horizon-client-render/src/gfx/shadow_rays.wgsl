@@ -1,0 +1,2481 @@
+// Ray-traced shadows' and ambient occlusion's rays (gfx/shadow_rays.rs, docs/raytracing.md): for
+// every pixel of a view's depth, how much of the sun's (or the moon's) light reaches the surface it
+// shows, and how open it is to the light around, traced through the voxel grid around the camera
+// (gfx/voxels.rs). One ray a pixel shown, whatever was drawn over it,
+// in the screen's and every VR eye's view alike.
+struct Rt {
+    // Clip space to camera-relative world space.
+    inverse_view_proj: mat4x4<f32>,
+    // xyz toward the light, w the shadows' strength.
+    light: vec4<f32>,
+    // xyz: the camera's block, w: the Y above the grid's highest block.
+    camera: vec4<f32>,
+    // xyz: the camera within its block.
+    fraction: vec4<f32>,
+    // x, y: the grid's first block's x and z, z: its width, w: the ray's budget.
+    grid: vec4<f32>,
+    // xy: the depth's size, z: depth pixels a mask texel side (the rays' scale), w: the ambient
+    // occlusion's strength (0: off).
+    size: vec4<f32>,
+    // Foveated rays (VR): xyz where the eyes look (camera-relative), w the cosine of the sharp
+    // zone's half angle; below -1 the whole view is sharp (the screen, the quad views' insets).
+    fovea: vec4<f32>,
+    // x: RT lighting (the mask also holds the distance), y: the sun's shadows traced, z: VR's
+    // second eye takes the first eye's light where both see the surface (`from_first`): 1 as it
+    // was accumulated, then denoised again; 2 its denoised light too (`taken_out`).
+    mode: vec4<f32>,
+    // RT lighting's accumulation over frames: the view's last view projection (clip space from
+    // world space relative to its camera) and the camera's move since (xyz, w 1 when the last
+    // masks can be read).
+    prev_view_proj: mat4x4<f32>,
+    motion: vec4<f32>,
+    // xyz toward the real sun (the sky table's frame), w 1 when the sky table holds its sky.
+    sun: vec4<f32>,
+    // x: this frame's number (the rays' directions change with it), y: the plain glass's sprite
+    // layers, packed (shadow_rays_hw.wgsl `hw_glass`), z: this view's own frame number (what rests
+    // in turn, `trace`), w: 1 when the translucent terrain's cover is bound (`psr_cover`).
+    frame: vec4<f32>,
+    // rgb: the light the rays trace toward (the sun's through the atmosphere, or the moon's), in
+    // paper whites, for the light bouncing off what the rays hit; w its disc's angular radius.
+    sun_light: vec4<f32>,
+    // The water's still and flowing sprite layers (-1 none) and the time in seconds, for the
+    // caustics (shadow_rays_hw.wgsl `hw_tint`).
+    water: vec4<f32>,
+    // The camera's offset from the hardware rays' instances' anchor (gfx/hw_rays.rs).
+    hw_offset: vec4<f32>,
+    // x: how many of `moving` are set, y: the seconds into the Eye of Aldhani (below 0 none), z: a
+    // full moon's light overhead (paper whites), its meteors' light's unit; w the ice's and the
+    // packed ice's sprite layers, packed plus one (0 none: shadow_rays_hw.wgsl `hw_ice`).
+    held: vec4<f32>,
+    // The far field (gfx/far_heights.rs): its window's first texel (x, z), 1 once built (z), the
+    // highest top in it (w, a world Y).
+    far: vec4<f32>,
+    // RT lighting's moving lights (a held torch, a burning mob: Remix's held light): camera-relative
+    // position and light level (`moving_light`).
+    moving: array<vec4<f32>, 8>,
+    // RT lighting's rain (terrain.wgsl's `Globals::rain`, `rain_sun`): x the rate (mm/h), z the
+    // shade's puddles; y the sun's puddles.
+    rain: vec4<f32>,
+    rain_sun: vec4<f32>,
+    // VR's second eye: the first eye's view projection this frame and its inverse (`from_first`).
+    first_view_proj: mat4x4<f32>,
+    first_inverse_view_proj: mat4x4<f32>,
+    // x: the ambient light on every face, whatever reaches it (shadow_rays.rs `Rays::ambient_light`:
+    // the RT Ambient Light option, HORIZON_RT_AMBIENT its default): very low, a floor under the
+    // traced light so that a place no light reaches is not pitch black; a torch's light on a wall
+    // beside it is about 1.
+    ambient_light: vec4<f32>,
+}
+@group(0) @binding(0) var<uniform> rt: Rt;
+// The RTX 4090 build's sun pass (horizon-rtx `sun`, docs/rtx-4090.md): the sun's light through, a
+// texel a ray, traced by a ray tracing pipeline before this kernel, read in place of
+// `sun_disc_ray` for the primary surface where `rt.mode.w`'s bit 0 says it was (1x1 otherwise).
+@group(0) @binding(61) var sun_pass: texture_2d<f32>;
+// The same pipeline's bounce pass (horizon-rtx `gi.rgen`): this kernel's ReSTIR GI (`restir_gi`)
+// ported whole, each hit shaded after the threads were reordered by what they hit, where
+// `rt.mode.w`'s bit 1 says it ran (1x1 otherwise): the reservoir as `gi_out_a` and `gi_out_b`
+// store it, `gi_pass_b`'s w 0 where this kernel is to trace (water or glass on a ray's way, a
+// second bounce lit by neither cache, the Eye of Aldhani), 1 the pass's, 2 the same and the
+// pixel's own ray reached the sky.
+@group(0) @binding(62) var gi_pass_a: texture_2d<f32>;
+@group(0) @binding(63) var gi_pass_b: texture_2d<u32>;
+fn pass_ran(bit: u32) -> bool {
+    return (u32(rt.mode.w) & bit) != 0u;
+}
+// Whether this thread's `trace` is for the sun pass's own texel (the sharp zone: `cs_shadow`),
+// not a sparse block's corner traced for its neighbours (`cs_sparse`).
+var<private> sun_from_pass: bool = false;
+// Whether this texel's sun ray crossed water on its way to the light (its caustics move with the
+// waves): `accumulate` keeps a short history of its sun there.
+var<private> sun_caustic: bool = false;
+// Whether this texel's ray toward the sun met a moving caster (`trace`, `hw_moving_shadow`).
+var<private> moving_shade: bool = false;
+@group(0) @binding(1) var depth: texture_depth_2d;
+// 512 bits an 8x8x8 brick in four texels along x, the solid blocks and the cutout ones; one texel
+// a brick (bit 0 any block, bit 1 cutout ones); one texel a 32x32x32 brick (1: any block).
+@group(0) @binding(2) var solid_masks: texture_3d<u32>;
+@group(0) @binding(3) var cutout_masks: texture_3d<u32>;
+@group(0) @binding(4) var bricks: texture_3d<u32>;
+@group(0) @binding(5) var supers: texture_3d<u32>;
+// r: the sun's light reaching the pixel, g: the ambient light (1 open, less occluded).
+@group(0) @binding(6) var mask: texture_storage_2d<rgba16float, write>;
+// RT lighting's light sources in range (gfx/voxels.rs `light_cells`): the centre relative to the
+// grid's first block (y from the world's bottom) and the reach; the colour (gamma) and strength.
+struct Light {
+    at: vec4<f32>,
+    colour: vec4<f32>,
+    // A spotlight's way and the cosine of its cone's half angle (gfx/voxels.rs `Spot`); the way
+    // (0, 0, 0) for a light that shines all around.
+    aim: vec4<f32>,
+}
+// How much of a light leaves toward `out` (unit, from the light): all of it all around, a
+// spotlight's within its cone, fading over the cone's outer third to nothing at its edge.
+fn spot_cone(aim: vec4<f32>, out: vec3<f32>) -> f32 {
+    if dot(aim.xyz, aim.xyz) < 0.5 { return 1.0; }
+    let inner = cos(acos(aim.w) * 0.67);
+    let t = smoothstep(aim.w, inner, dot(out, aim.xyz));
+    return t * t;
+}
+@group(0) @binding(7) var<storage, read> lights: array<Light>;
+// For each 8-block cell of the grid (x, then z, then y), the eight lights lighting it most
+// (indices + 1, 0 none, 16 bits each, two to a word).
+@group(0) @binding(8) var<storage, read> cells: array<vec4<u32>>;
+// RT lighting's NEE cache (gfx/voxels.rs `Grid::visibility`): for each cell's eight lights, the
+// shadow rays drawn toward it and those that got there, so a light the cell can't see (behind a
+// wall) is drawn less, as Remix's NEE cache learns which lights reach a place.
+struct Seen {
+    tried: atomic<u32>,
+    reached: atomic<u32>,
+}
+@group(0) @binding(38) var<storage, read_write> visibility: array<Seen>;
+// The Eye of Aldhani's field this frame (gfx/aldhani.wgsl): its meteors' light and its running sum.
+@group(0) @binding(39) var<storage, read> aldhani_field: AldhaniField;
+// RT lighting's rain map (gfx/rain.rs): where the puddles are, for the reflections.
+@group(0) @binding(48) var<storage, read> rain_map: array<u32>;
+// RAIN-BEGIN: physical rain and the wet world it leaves (rain.rs, gfx/rain.rs), the same text in
+// terrain.wgsl (the drops, the wet surfaces, the puddles) and gfx/shadow_rays.wgsl (what the
+// puddles reflect); a test keeps them equal. `rain_map` is the rain map (rain.rs `RainMap`).
+const RAIN_MAP: i32 = 256;
+// A world column's word in the rain map (`c` in any wrap of 4096 blocks), 0 where the map doesn't
+// hold it: outside its window (the texel holds another column) or not loaded.
+fn rain_cell(c: vec2<i32>) -> u32 {
+    let w = rain_map[u32((c.y & (RAIN_MAP - 1)) * RAIN_MAP + (c.x & (RAIN_MAP - 1)))];
+    let key = u32((c.x >> 8u) & 15) | (u32((c.y >> 8u) & 15) << 4u);
+    if (w >> 24u) != key || ((w >> 12u) & 15u) == 0u { return 0u; }
+    return w;
+}
+// A column's rain height (one above its top block), its surface (rain.rs `Surface`), whether it
+// rains there, whether it snows there (snow.rs), how many of its neighbours stand higher, the block
+// light above it.
+fn rain_height(w: u32) -> f32 { return f32(i32(w & 2047u) - 1024); }
+fn snow_falls(w: u32) -> bool { return ((w >> 11u) & 1u) == 1u; }
+fn rain_surface(w: u32) -> u32 { return (w >> 12u) & 15u; }
+fn rain_falls(w: u32) -> bool { return ((w >> 20u) & 1u) == 1u; }
+fn rain_higher(w: u32) -> f32 { return f32((w >> 21u) & 7u); }
+fn rain_light(w: u32) -> f32 { return f32((w >> 16u) & 15u); }
+// How far under the rain height a surface's top is (paths and farmland: a sixteenth).
+fn rain_top(w: u32) -> f32 {
+    return rain_height(w) - select(0.0, 0.0625, rain_surface(w) == 11u);
+}
+// How porous a surface is where the pack says nothing (0 the water runs off, 1 it drinks it all;
+// Lagarde 2013's porosity): stone, wood, soil, sand, wool, metal and glass, leaves, partial
+// blocks, grass.
+fn rain_porosity(s: u32) -> f32 {
+    switch s {
+        case 1u: { return 0.35; }
+        case 2u: { return 0.5; }
+        case 3u, 11u: { return 0.7; }
+        case 4u: { return 0.9; }
+        case 5u: { return 1.0; }
+        case 6u: { return 0.0; }
+        case 7u: { return 0.1; }
+        case 9u: { return 0.6; }
+        default: { return 0.4; }
+    }
+}
+// How much of the water a surface drinks rather than holding as a film (sand and wool stay matte,
+// grass half: its blades hold drops, not a film).
+fn rain_absorbs(s: u32) -> f32 {
+    switch s {
+        case 4u: { return 0.7; }
+        case 5u: { return 1.0; }
+        case 9u: { return 0.5; }
+        default: { return 0.0; }
+    }
+}
+// How readily puddles sit on a surface, added to the puddle field; below -1 never (leaves, metal
+// and glass, partial blocks, water, the dry ones).
+fn rain_puddle_bias(s: u32) -> f32 {
+    switch s {
+        case 1u, 2u: { return 0.0; }
+        case 3u, 11u: { return 0.1; }
+        case 9u: { return -0.45; }
+        case 4u: { return -0.4; }
+        default: { return -9.0; }
+    }
+}
+// A cell's random number (PCG2D, Jarzynski and Olano 2020: exact on integers, so neighbouring
+// pixels and both eyes agree), and a seed's.
+fn rain_seed(c: vec2<i32>, k: u32) -> u32 {
+    var v = bitcast<vec2<u32>>(c) * 1664525u + 1013904223u;
+    v.x += v.y * 1664525u + k * 2654435761u;
+    v.y += v.x * 1664525u;
+    v ^= v >> vec2(16u);
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    return v.x ^ (v.y >> 16u);
+}
+fn rain_rand(n: u32) -> f32 {
+    let state = n * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return f32(((word >> 22u) ^ word) >> 8u) / 16777216.0;
+}
+// Smooth value noise over the world's plane, 0 to 1, a feature a unit across.
+fn rain_noise(p: vec2<f32>) -> f32 {
+    let i = vec2<i32>(floor(p));
+    let f = p - floor(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = rain_rand(rain_seed(i, 7u));
+    let b = rain_rand(rain_seed(i + vec2(1, 0), 7u));
+    let c = rain_rand(rain_seed(i + vec2(0, 1), 7u));
+    let d = rain_rand(rain_seed(i + vec2(1, 1), 7u));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+// How much rain reaches a surface at world `p` facing `n` (0 to 1; -1 where the map knows
+// nothing): the columns around the point the face looks onto let the rain down to their height,
+// blended over a block between their centres so a roof's edge leaves no staircase on the ground,
+// read a little off where a noise says so that the dry line under an awning is not ruled.
+fn rain_exposure(p: vec3<f32>, n: vec3<f32>) -> f32 {
+    if n.y < -0.5 { return 0.0; }
+    let jitter = vec2(rain_noise(p.xz * 1.3), rain_noise(p.zx * 1.3 + 19.0)) - 0.5;
+    let q = p.xz + n.xz * 0.5 + jitter * 0.5 - 0.5;
+    let base = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    var sum = 0.0;
+    var known = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let o = vec2(i & 1, i >> 1u);
+        let weight = mix(1.0 - f.x, f.x, f32(o.x)) * mix(1.0 - f.y, f.y, f32(o.y));
+        let w = rain_cell(base + o);
+        if w == 0u { continue; }
+        known += weight;
+        let top = rain_top(w);
+        sum += weight * smoothstep(top - 0.6, top - 0.05, p.y) * select(0.0, 1.0, rain_falls(w));
+    }
+    if known < 0.5 { return -1.0; }
+    return sum / known;
+}
+// How deep a puddle is at world `p` on a top face (0 none, 1 a full water surface). Puddles sit on
+// the tops of the columns that hold them, where a field rises above the level the rain has filled
+// them to (`level`, 0 to 1): a world-space noise a few blocks across, plus the hollows (neighbours
+// standing higher, blended between column centres), plus the pack's relief (`relief`: 0 the top,
+// 1 its deepest, 0.5 unknown), minus near an edge over lower ground or a block that holds none, so
+// their shores are organic and run on across blocks at the same height.
+fn rain_puddle(p: vec3<f32>, level: f32, relief: f32) -> f32 {
+    if level <= 0.0 { return 0.0; }
+    let c = vec2<i32>(floor(p.xz));
+    let w = rain_cell(c);
+    if w == 0u || !rain_falls(w) { return 0.0; }
+    let bias = rain_puddle_bias(rain_surface(w));
+    if bias < -1.0 { return 0.0; }
+    let top = rain_top(w);
+    if abs(p.y - top) > 0.02 { return 0.0; }
+    let f = p.xz - floor(p.xz);
+    // Toward a neighbour lower or holding none, the shore keeps back from the edge.
+    var edge = 1.0;
+    for (var i = 0; i < 4; i++) {
+        let side = select(vec2<i32>(select(-1, 1, i == 1), 0), vec2<i32>(0, select(-1, 1, i == 3)),
+            i >= 2);
+        let distance = select(select(f.x, 1.0 - f.x, i == 1), select(f.y, 1.0 - f.y, i == 3), i >= 2);
+        let n = rain_cell(c + side);
+        let higher = n != 0u && rain_top(n) > top + 0.5;
+        let level_with = n != 0u && abs(rain_top(n) - top) < 0.01
+            && rain_puddle_bias(rain_surface(n)) > -1.0;
+        if !(higher || level_with) { edge = min(edge, smoothstep(0.05, 0.45, distance)); }
+    }
+    // The hollows, blended between the centres of the columns level with this one.
+    let q = p.xz - 0.5;
+    let b = vec2<i32>(floor(q));
+    let g = q - floor(q);
+    var hollow = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let o = vec2(i & 1, i >> 1u);
+        let weight = mix(1.0 - g.x, g.x, f32(o.x)) * mix(1.0 - g.y, g.y, f32(o.y));
+        let n = rain_cell(b + o);
+        let k = select(rain_higher(w), rain_higher(n), n != 0u && abs(rain_top(n) - top) < 0.01);
+        hollow += weight * k;
+    }
+    let noise = 0.55 * rain_noise(p.xz * 0.22) + 0.3 * rain_noise(p.xz * 0.57 + 7.0)
+        + 0.15 * rain_noise(p.xz * 1.9 + 3.0);
+    let field = noise + 0.08 * hollow + bias + 0.3 * (relief - 0.5) - 0.7 * (1.0 - edge);
+    let threshold = 1.02 - 0.52 * level;
+    return smoothstep(threshold, threshold + 0.05, field);
+}
+// Whether world `p` is on the top of its column under the rain with a film of water on it that
+// mirrors (not a surface that drinks it, not grass, whose blades break the film, not a dry one):
+// the rays trace its reflection.
+fn rain_film(p: vec3<f32>) -> bool {
+    let w = rain_cell(vec2<i32>(floor(p.xz)));
+    if w == 0u || !rain_falls(w) { return false; }
+    let s = rain_surface(w);
+    return abs(p.y - rain_top(w)) < 0.02 && rain_absorbs(s) == 0.0 && s != 9u && s != 10u
+        && s != 12u;
+}
+// The rain's impacts at world `p` (x, z), `t` seconds: rings spreading from where the drops strike,
+// in two offset layers of quarter-block cells, each cell struck once a period (0.5 to 0.9 s) with a
+// chance growing with the rate (`rate` mm/h): about thirty impacts a square metre a second in
+// moderate rain. `spread` is how far a ring runs (blocks): from 0.15 standing water, a train of
+// rings; under it the thin film of a wet surface, a small circle. `wet` (0 to 1) sharpens them: on a surface that is drying only the
+// strongest show, a soaked one shows all (SEUS's idea, with a procedural field instead of its
+// flipbook). The slope (x, z); a ring finer than a pixel (`footprint` blocks) fades out.
+// RAIN_RING: how steep a ring's front stands at most on standing water (its slope), RAIN_CROWN on
+// a film: steep enough to show in the reflection of an overcast sky, whose light barely changes
+// with the direction.
+const RAIN_RING: f32 = 2.5;
+const RAIN_CROWN: f32 = 2.0;
+fn rain_ripples(p: vec2<f32>, t: f32, rate: f32, footprint: f32, spread: f32, wet: f32)
+    -> vec2<f32> {
+    let fade = 1.0 - smoothstep(0.25 * spread, 0.6 * spread, footprint);
+    if rate <= 0.0 || fade <= 0.0 { return vec2(0.0); }
+    let chance = clamp(rate / 6.0, 0.3, 1.0);
+    // Standing water's rings, finer than the film's: where they shrink under a pixel only their
+    // fronts remain (no shimmer).
+    let standing = spread >= 0.15;
+    let fine = 1.0 - smoothstep(0.3, 0.8, footprint / select(0.4 * spread, 0.017, standing));
+    var slope = vec2(0.0);
+    for (var layer = 0u; layer < 2u; layer++) {
+        let q = p / 0.25 + f32(layer) * vec2(0.5, 0.37);
+        let base = vec2<i32>(floor(q));
+        for (var i = 0; i < 9; i++) {
+            let cell = base + vec2(i % 3 - 1, i / 3 - 1);
+            let seed = rain_seed(cell, 11u + layer);
+            let period = 0.5 + 0.4 * rain_rand(seed);
+            let phase = t / period + rain_rand(seed + 1u);
+            let age = fract(phase);
+            let strike = seed ^ (u32(i32(floor(phase))) * 2654435761u);
+            if rain_rand(strike) > chance { continue; }
+            let centre = vec2<f32>(cell) + vec2(rain_rand(strike + 2u), rain_rand(strike + 3u));
+            let d = (q - centre) * 0.25;
+            let r = length(d);
+            let x = r - sqrt(age) * spread;
+            // On a film one ring; on standing water the drop's momentum goes into the surface as
+            // a train of capillary rings about 1.7 cm apart, spreading behind the front and
+            // crossing its neighbours'.
+            var width = spread * (0.08 + 0.12 * age);
+            var wavelength = 2.0 * width;
+            if standing {
+                width = spread * (0.15 + 0.35 * age);
+                wavelength = 0.017 + 0.01 * age;
+            }
+            let envelope = exp(-x * x / (width * width)) * (1.0 - age) * (1.0 - age);
+            let wave = mix(1.0, cos(x * 6.2832 / wavelength), fine);
+            slope += 0.5 * wave * envelope * d / max(r, 1e-4);
+        }
+    }
+    let sharp = 2.0 - 1.2 * wet * wet * wet;
+    return sign(slope) * pow(min(abs(slope), vec2(1.0)), vec2(sharp)) * fade;
+}
+// RAIN-END
+// RT lighting's light from the light sources reaching the pixel (rgb, linear, the faces' facing
+// in); a below 0 past the grid, where the terrain falls back on the block light level.
+@group(0) @binding(9) var block_mask: texture_storage_2d<rgba16float, write>;
+// RT lighting's sky (gfx/atmosphere.rs): its radiance by azimuth from the sun and elevation.
+@group(0) @binding(10) var sky_view: texture_2d<f32>;
+// The view's masks from the last frame, accumulated into.
+@group(0) @binding(11) var last_mask: texture_2d<f32>;
+@group(0) @binding(12) var last_blocks: texture_2d<f32>;
+// RT lighting's light sources' direct light (rgb, sharp, not accumulated nor denoised) and the face
+// the pixel shows (a, `face_of`), for the denoiser (denoise.wgsl).
+@group(0) @binding(18) var direct_mask: texture_storage_2d<rgba16float, write>;
+// The last frame's light other than the sun's, denoised and with the direct light: what a bounce
+// ray finds where the last frame showed the surface it hits (`last_light`).
+@group(0) @binding(19) var last_light_mask: texture_2d<f32>;
+// The last frame's direct light (`direct_mask`), accumulated into: the light sources are areas,
+// sampled at a point a frame, and their penumbrae average out.
+@group(0) @binding(20) var last_direct: texture_2d<f32>;
+// RT lighting's sun reaching the pixel through what tints it (stained glass, water: rgb, 1 all of
+// it), accumulated (the disc's penumbra), and the last frame's.
+@group(0) @binding(21) var sun_mask: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(22) var last_sun: texture_2d<f32>;
+// RT lighting's ReSTIR DI reservoirs (`restir_light`), this frame's and the last frame's: the light
+// (index + 1), its block, the candidates seen and the weight (the last two as float bits).
+@group(0) @binding(24) var reservoirs: texture_storage_2d<rgba32uint, write>;
+@group(0) @binding(25) var last_reservoirs: texture_2d<u32>;
+// The reservoir the pixel's `restir_light` chose, for `cs_shadow` to store.
+var<private> reservoir_out: vec4<u32>;
+// RT lighting's ReSTIR GI reservoirs (`restir_gi`), this frame's and the last frame's: the sample's
+// point and the weight (a); its light, the candidates seen and its normal, packed (b).
+@group(0) @binding(27) var gi_a: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(28) var gi_b: texture_storage_2d<rgba32uint, write>;
+@group(0) @binding(29) var last_gi_a: texture_2d<f32>;
+@group(0) @binding(30) var last_gi_b: texture_2d<u32>;
+// RT lighting's fast history (ReLAX's) over the last few frames: the indirect and direct light's
+// luminance and its second moment (x, y), the sun's visibility (z) and the sky seen (w), this
+// frame's and the last frame's, which the slow history is clamped to (`accumulate`).
+@group(0) @binding(31) var fast: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(32) var last_fast: texture_2d<f32>;
+var<private> fast_out: vec4<f32>;
+// Whether this frame's `trace` kept the last frame's sky (the bounced light's turns), so the fast
+// history's sky seen isn't fed the slow history's own value back.
+var<private> sky_rested: bool = false;
+// RT lighting's primary surface replacement on water (Remix's PSR, shadow_rays_hw.wgsl
+// `hw_reflect`): the light of what the water at the pixel reflects (rgb), a 1 a surface, 0 the
+// sky or no water (the water's shader then reflects its own sky).
+@group(0) @binding(33) var reflection: texture_storage_2d<rgba16float, write>;
+// The same for what the water refracts (shadow_rays_psr.wgsl `hw_refract`): rgb its light, a the
+// distance the ray runs in the water (0: none).
+@group(0) @binding(34) var refraction: texture_storage_2d<rgba16float, write>;
+// VR's second eye, when it takes the first eye's denoised light too (`rt.mode.z` 2): where its light
+// is the first eye's (`from_first`), the first eye's mask texel there (`pack_texel`), 0 where it
+// traced its own; the denoiser (denoise.wgsl) copies the first eye's light there and filters the rest.
+@group(0) @binding(35) var taken_out: texture_storage_2d<r32uint, write>;
+// The first eye's mask texel `from_first` found, while it holds.
+var<private> first_texel: vec2<i32>;
+// Where `hw_reflect` met the water: its normal toward the camera (xyz) and distance (w, below 0
+// none), for `hw_refract`.
+var<private> water_at: vec4<f32>;
+var<private> gi_out_a: vec4<f32>;
+// Whether what this pixel's ray met lies behind water or glass whose refraction replaces it
+// (`hw_refract` traced something there: Remix's primary surface replacement), so its own light is
+// never seen (`trace` rests its bounced light).
+var<private> behind_psr: bool;
+var<private> gi_out_b: vec4<u32>;
+// RT lighting's radiance cache (SHaRC-like, gfx/radiance_cache.wgsl resolves it): a hash table of
+// world-space surface cells, half a block across near the camera and twice as large each doubling
+// of the distance, one a face direction. Every pixel adds the light other than the sun's its rays
+// found (the sky's, bounced, the light sources') to its cell; a bounce ray reads what the cell it
+// hits held last frame. So light keeps bouncing off surfaces the screen no longer shows, the same
+// for both eyes, and holds still at two rays a pixel.
+struct CacheCell {
+    key: atomic<u32>,
+    // This frame's sums (fixed point, `CACHE_SCALE` a unit) and how many added to them.
+    r: atomic<u32>,
+    g: atomic<u32>,
+    b: atomic<u32>,
+    count: atomic<u32>,
+    // What the cell held after the last resolve (f32 bits), and its age in frames unseen.
+    light: array<u32, 3>,
+    age: u32,
+}
+@group(0) @binding(26) var<storage, read_write> cache: array<CacheCell>;
+const CACHE_SCALE: f32 = 1024.0;
+const CACHE_PROBES: u32 = 8u;
+// The cell key of world-relative camera-relative `pos` on a face of normal `n` (never 0).
+fn cache_key(pos: vec3<f32>, n: vec3<f32>) -> u32 {
+    let d = max(length(pos), 1.0);
+    let level = u32(clamp(floor(log2(d / 8.0)), 0.0, 9.0));
+    let size = 0.5 * exp2(f32(level));
+    let world = pos + rt.camera.xyz + rt.fraction.xyz;
+    let c = vec3<i32>(floor(world / size));
+    var h = u32(c.x) * 73856093u ^ u32(c.y) * 19349663u ^ u32(c.z) * 83492791u;
+    h ^= (level * 2654435761u) ^ (u32(face_of(n)) * 2246822519u);
+    h = (h ^ (h >> 15u)) * 2246822519u;
+    h = (h ^ (h >> 13u)) * 3266489917u;
+    h ^= h >> 16u;
+    return max(h, 1u);
+}
+// The slot holding `key`, taken if `insert` and none does; `u32` max when the probes find none.
+fn cache_slot(key: u32, insert: bool) -> u32 {
+    let mask = arrayLength(&cache) - 1u;
+    for (var i = 0u; i < CACHE_PROBES; i++) {
+        let slot = (key + i * i) & mask;
+        let held = atomicLoad(&cache[slot].key);
+        if held == key { return slot; }
+        if held == 0u {
+            if !insert { return 0xffffffffu; }
+            let taken = atomicCompareExchangeWeak(&cache[slot].key, 0u, key);
+            if taken.exchanged || taken.old_value == key { return slot; }
+        }
+    }
+    return 0xffffffffu;
+}
+// A value with its NaNs and infinities as 0 (by their bits: a compiler's fast maths may drop
+// `x != x`), as Remix sanitises its buffers: one bad sample would spread through the histories,
+// the reservoirs and the cache.
+fn finite(x: f32) -> f32 {
+    return select(x, 0.0, (bitcast<u32>(x) & 0x7f800000u) == 0x7f800000u);
+}
+fn finite3(v: vec3<f32>) -> vec3<f32> {
+    return vec3(finite(v.x), finite(v.y), finite(v.z));
+}
+fn finite4(v: vec4<f32>) -> vec4<f32> {
+    return vec4(finite(v.x), finite(v.y), finite(v.z), finite(v.w));
+}
+// The fixed point is rounded at random (by `texel`'s numbers), up as often as the fraction says:
+// cut down, every light under a 1024th of a paper white (a closed room's second bounce, a cave's
+// light off the lit walls) was stored as none and every dim cell held a step under its light.
+// `HORIZON_RT_SKIP` 134217728 cuts it down as before.
+fn cache_add(pos: vec3<f32>, n: vec3<f32>, light: vec3<f32>, texel: vec2<i32>) {
+    let slot = cache_slot(cache_key(pos, n), true);
+    if slot == 0xffffffffu { return; }
+    var round = vec3(0.0);
+    if (SKIP & SKIP_INTERIOR) == 0u {
+        let u = random2(texel, 95u);
+        round = vec3(u.x, u.y, fract(u.x + u.y * 0.618034));
+    }
+    let fixed = vec3<u32>(clamp(finite3(light), vec3(0.0), vec3(64.0)) * CACHE_SCALE + round);
+    atomicAdd(&cache[slot].r, fixed.r);
+    atomicAdd(&cache[slot].g, fixed.g);
+    atomicAdd(&cache[slot].b, fixed.b);
+    atomicAdd(&cache[slot].count, 1u);
+}
+// What the cell at `pos` (normal `n`) held last frame; a below 0 when it holds nothing yet.
+fn cache_light(pos: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
+    let slot = cache_slot(cache_key(pos, n), false);
+    if slot == 0xffffffffu { return vec4(0.0, 0.0, 0.0, -1.0); }
+    let held = cache[slot].light;
+    if held[0] == 0xffffffffu { return vec4(0.0, 0.0, 0.0, -1.0); }
+    return vec4(bitcast<f32>(held[0]), bitcast<f32>(held[1]), bitcast<f32>(held[2]), 1.0);
+}
+
+// The face a normal `n` stands for: its largest axis and the sign there, 0..5.
+fn face_of(n: vec3<f32>) -> f32 {
+    let a = abs(n);
+    var axis = 2.0;
+    if a.x >= a.y && a.x >= a.z {
+        axis = 0.0;
+    } else if a.y >= a.z {
+        axis = 1.0;
+    }
+    let s = select(n.z, select(n.y, n.x, axis == 0.0), axis < 2.0);
+    return axis * 2.0 + select(0.0, 1.0, s < 0.0);
+}
+// RT lighting's bounced light and shapes: each block's map colour (the low six bits,
+// `MAP_COLORS` ids) and shape (the rest, `shapes` ids, 0 the whole block) (gfx/voxels.rs).
+@group(0) @binding(13) var albedo_grid: texture_3d<u32>;
+// The blocks' shapes by id (occupancy.rs `shapes`): 8x8x8 cells from their models' opaque
+// texels, bit (z * 8 + y) * 8 + x of sixteen words, and whether light passes the cells in part
+// (leaves, plants).
+struct Shape {
+    cells: array<vec4<u32>, 4>,
+    flags: vec4<u32>,
+}
+@group(0) @binding(14) var<storage, read> shapes: array<Shape>;
+// Light a cutout shape's cell lets through (a leaf's, a petal's).
+const CUTOUT_CELL: f32 = 0.35;
+// World block `v`'s texel in the grid's per-block textures.
+fn block_slot(v: vec3<i32>) -> vec3<i32> {
+    let w = i32(rt.grid.z);
+    return vec3(((v.x % w) + w) % w, v.y + 64, ((v.z % w) + w) % w);
+}
+// A ray (from `o`, relative to the camera's block, along `l`) through world block `block` of shape
+// `id`, from where it entered (`entered`) to where it leaves it (`leaving`), cell by cell: the
+// light its cells let through, and where a solid cell stopped it (t, below 0 when none did).
+fn through_shape(o: vec3<f32>, l: vec3<f32>, block: vec3<i32>, id: u32, entered: f32,
+    leaving: f32) -> vec2<f32> {
+    let cutout = shapes[id].flags.x != 0u;
+    let base = vec3<f32>(block - vec3<i32>(rt.camera.xyz));
+    let q = (o + l * (entered + 1e-4) - base) * 8.0;
+    var cell = clamp(vec3<i32>(floor(q)), vec3(0), vec3(7));
+    let step = vec3<i32>(sign(l));
+    let delta = 0.125 / max(abs(l), vec3(1e-6));
+    let f = q - floor(q);
+    var next = entered + select(1.0 - f, f, l < vec3(0.0)) * delta;
+    var at = entered;
+    var light = 1.0;
+    for (var i = 0; i < 24; i++) {
+        if any(cell < vec3(0)) || any(cell > vec3(7)) || at >= leaving { break; }
+        let bit = u32((cell.z * 8 + cell.y) * 8 + cell.x);
+        let word = shapes[id].cells[bit >> 7u][(bit >> 5u) & 3u];
+        if ((word >> (bit & 31u)) & 1u) != 0u {
+            if !cutout { return vec2(0.0, at); }
+            light *= CUTOUT_CELL;
+        }
+        if next.x <= next.y && next.x <= next.z {
+            cell.x += step.x;
+            at = next.x;
+            next.x += delta.x;
+        } else if next.y <= next.z {
+            cell.y += step.y;
+            at = next.y;
+            next.y += delta.y;
+        } else {
+            cell.z += step.z;
+            at = next.z;
+            next.z += delta.z;
+        }
+    }
+    return vec2(light, -1.0);
+}
+// blocks.rs `MAP_COLORS`: MapColor.col by id (gamma RGB).
+const MAP_COLORS: array<u32, 62> = array<u32, 62>(
+    0u, 8368696u, 16247203u, 13092807u, 16711680u, 10526975u, 10987431u, 31744u,
+    16777215u, 10791096u, 9923917u, 7368816u, 4210943u, 9402184u, 16776437u, 14188339u,
+    11685080u, 6724056u, 15066419u, 8375321u, 15892389u, 5000268u, 10066329u, 5013401u,
+    8339378u, 3361970u, 6704179u, 6717235u, 10040115u, 1644825u, 16445005u, 6085589u,
+    4882687u, 55610u, 8476209u, 7340544u, 13742497u, 10441252u, 9787244u, 7367818u,
+    12223780u, 6780213u, 10505550u, 3746083u, 8874850u, 5725276u, 8014168u, 4996700u,
+    4993571u, 5001770u, 9321518u, 2430480u, 12398641u, 9715553u, 6035741u, 1474182u,
+    3837580u, 5647422u, 1356933u, 6579300u, 14200723u, 8365974u,
+);
+// `HORIZON_RT_DEBUG` 3, 4, 5 or 7 (with tonemap.wgsl's 1 showing the mask): the depth, the facing,
+// the ray alone, the far field's light toward the sun.
+override DEBUG: u32 = 0u;
+// `HORIZON_RT_SKIP`, a mask of what the kernel leaves out, to time each part alone (the GPU budget,
+// docs/raytracing.md): 1 the sun's ray, 2 the sky and bounced light (ReSTIR GI), 4 the light
+// sources' (ReSTIR DI), 8 the mirrors and water (PSR); 16 traces the bounced light every frame
+// instead of in turns (`trace`), to measure what the turns save and what they change; 64 the far
+// field (`far_light`, `far_sky`); 128 the translucent candidates' tint (glass, water, ice pass the
+// light untinted: what their shading costs against the force-opaque floor); 256 leaves the
+// denoiser's anti-lag out (`accumulate`), to see what it changes; 32768 leaves a dark history to
+// climb by itself when the light comes on (`accumulate`), as it did before; 512 the water's fixes
+// of the camera under it (the sun pass's rays through water and glass traced again here with their
+// tint and caustics, the surface's backward face tinting a second time, the caustics' short history
+// in `accumulate`), to compare with before; 8192 the rays' hits as before the one look (lava met by
+// a mirror or seen through water or glass in its atlas sprite, a ray down into water absorbed over
+// the air before it: shadow_rays_hw.wgsl `hw_surface`); 2097152 white noise for every sample, as
+// before the blue noise (`blue2`; the pass's shaders read it from `rt.mode.w`'s bit 4); 134217728
+// closed rooms as before (`SKIP_INTERIOR`: `open_light`'s sky unseen, the radiance cache's fixed
+// point cut down, and gfx.rs's exposure top the open air's indoors too); 1073741824 the bounced
+// light as before (`SKIP_GI`: the history's darkening on any darker frame, radiance_cache.wgsl's
+// cells averaging up to 1000 frames, gfx.rs's exposure top by day the open air's). (32, VR's
+// second eye's own light, never reaches the kernel: shadow_rays.rs `set_skip`.)
+override SKIP: u32 = 0u;
+// `HORIZON_RT_SUN_CENTRE=1`: RT lighting traces the ray toward the sun's centre too, which it
+// never reads (`trace`), as before 8121f258f, to tell what leaving it out changed.
+override SUN_CENTRE: u32 = 0u;
+// The share of the grid's reach, toward its edge, over which the rays fade into the far field
+// (shadow_rays.rs `edge_band`, HORIZON_RT_EDGE_BAND).
+override EDGE_BAND: f32 = 0.25;
+// How bright the moving lights are (a torch in the hand) against a placed light of their level
+// (shadow_rays.rs `held_light`, HORIZON_RT_HELD_LIGHT; 1: as bright).
+override HELD_LIGHT: f32 = 2.5;
+override HELD_REACH: f32 = 24.0;
+
+// Ray-traced shadows (gfx/voxels.rs, docs/raytracing.md): whether world block `v` is in the grid.
+fn in_grid(v: vec3<i32>) -> bool {
+    let g = rt.grid;
+    let w = i32(g.z);
+    let o = vec2<i32>(i32(g.x), i32(g.y));
+    return v.y < 320 && v.x >= o.x && v.x < o.x + w && v.z >= o.y && v.z < o.y + w;
+}
+// The grid's texel of the brick of 2^`bits` blocks a side holding world block `v` (in the grid).
+fn brick_slot(v: vec3<i32>, bits: u32) -> vec3<i32> {
+    let w = i32(rt.grid.z) >> bits;
+    let b = vec3<i32>(v.x >> bits, (v.y + 64) >> bits, v.z >> bits);
+    return vec3<i32>(((b.x % w) + w) % w, b.y, ((b.z % w) + w) % w);
+}
+// The ray's parameter where it leaves the brick of 2^`bits` blocks holding world block `world`
+// (`o` and the result relative to the camera's block); an axis the ray runs along never ends it.
+fn brick_exit(world: vec3<i32>, bits: u32, o: vec3<f32>, l: vec3<f32>) -> f32 {
+    let size = f32(1u << bits);
+    let low = vec3<f32>(((world + vec3(0, 64, 0)) >> vec3(bits)) << vec3(bits))
+        - vec3(0.0, 64.0, 0.0) - rt.camera.xyz;
+    let far = select(low, low + size, l > vec3(0.0));
+    let exit = select((far - o) / l, vec3(1e30), abs(l) < vec3(1e-6));
+    return min(min(exit.x, exit.y), exit.z);
+}
+// Whether block `l` (local to its brick, 0..8) is set in a brick's 512 bits, four texels of `masks`
+// from `slot`: word `l.z * 2 + l.y / 4`, bit `(l.y % 4) * 8 + l.x`.
+fn mask_bit(masks: texture_3d<u32>, slot: vec3<i32>, l: vec3<i32>) -> bool {
+    let k = l.z * 2 + (l.y >> 2u);
+    let word = textureLoad(masks, vec3(slot.x * 4 + (k >> 2u), slot.y, slot.z), 0)[k & 3];
+    return ((word >> u32((l.y & 3) * 8 + l.x)) & 1u) != 0u;
+}
+// How much of the sun's (or the moon's) light reaches camera-relative `pos` on a face of normal
+// `n`: a ray toward the light through the grid, an empty brick crossed in one step, the others
+// block by block (Amanatides and Woo) in their bit masks; a solid block stops it, leaves let half
+// through each, leaving the grid (or rising above its highest block) ends it in the light.
+// Coordinates are relative to the camera's block, so they stay small far from the world's origin.
+fn sun_visibility(pos: vec3<f32>, n: vec3<f32>) -> f32 {
+    let facing = dot(n, rt.light.xyz);
+    if facing <= 0.0 { return 0.0; }
+    return sun_ray(pos) * smoothstep(0.0, 0.15, facing);
+}
+// The light the ray from `pos` toward the sun lets through (1 all of it, 0 none), whatever the face.
+fn sun_ray(pos: vec3<f32>) -> f32 {
+    if HW { return dot(hw_light(pos, rt.light.xyz, 4096.0), vec3(0.2126, 0.7152, 0.0722)); }
+    return ray(pos, rt.light.xyz, i32(rt.grid.w), 1e30);
+}
+// RT lighting: the same toward a point of the sun's (or the moon's) disc, 0.53 degrees across
+// (times the Sun Size setting: its angular radius in `sun_light.w`), a new one each frame
+// (`random`): accumulated, the shadows' penumbra widens with the distance to what casts them, as
+// the real sun's does.
+fn sun_disc_ray(pos: vec3<f32>, random: vec2<f32>) -> vec3<f32> {
+    let d = sun_disc_dir(random);
+    // The hybrid's exact triangles where the GPU traces rays (shadow_rays_hw.wgsl).
+    if HW { return hw_light(pos, d, 4096.0); }
+    return vec3(ray(pos, d, i32(rt.grid.w), 1e30));
+}
+// The direction toward the point of the sun's disc `random` picks (`sun_disc_ray`).
+fn sun_disc_dir(random: vec2<f32>) -> vec3<f32> {
+    let l = rt.light.xyz;
+    let t = normalize(select(cross(l, vec3(0.0, 1.0, 0.0)), cross(l, vec3(1.0, 0.0, 0.0)),
+        abs(l.y) > 0.9));
+    let b = cross(l, t);
+    let r = sqrt(random.x) * rt.sun_light.w;
+    let a = 6.2831853 * random.y;
+    return normalize(l + (t * cos(a) + b * sin(a)) * r);
+}
+// A pixel's and a frame's random numbers (PCG), 0..1.
+fn random2(texel: vec2<i32>, salt: u32) -> vec2<f32> {
+    var v = u32(texel.x) * 1973u + u32(texel.y) * 9277u + u32(rt.frame.x) * 26699u + salt * 7919u;
+    v = v * 747796405u + 2891336453u;
+    var w = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+    w = (w >> 22u) ^ w;
+    var u = w * 747796405u + 2891336453u;
+    u = ((u >> ((u >> 28u) + 4u)) ^ u) * 277803737u;
+    u = (u >> 22u) ^ u;
+    return vec2(f32(w >> 8u), f32(u >> 8u)) / 16777216.0;
+}
+// The samples that are averaged over the frames and the denoiser's taps (the sun disc's point, the
+// bounce's direction, the light source's point) draw `blue2`'s numbers instead of `random2`'s:
+// blue noise over the screen (neighbouring texels' numbers spread over 0..1 rather than clump, so
+// the error is fine-grained and the denoiser's taps cancel it) and low-discrepancy over the frames
+// (a texel's numbers fill 0..1 evenly within the history rather than at random). `HORIZON_RT_SKIP`
+// 2097152 draws `random2`'s white noise everywhere again, to compare. The random decisions stay
+// `random2`'s (which candidate a reservoir keeps, which neighbours it merges, which lights a bounce
+// draws): resampling needs its choices uncorrelated with its neighbours' and its candidates'.
+// The streams, a transform each of the texel (`blue2`; a shifted texel would only add a constant
+// to the numbers): the sun's numbers at a texel are unrelated to the other two's, the bounce's and
+// the light point's less so (they are separate estimates: it costs a little variance, no bias).
+const BLUE_SUN: u32 = 0u;
+const BLUE_GI: u32 = 1u;
+const BLUE_LIGHT: u32 = 2u;
+// Set by `cs_sparse`: the ray is a 4x4 block's, its numbers the block's own (the blocks' corners
+// every fourth texel would take every fourth texel's numbers, as uneven as white noise).
+var<private> blue_block: bool = false;
+// A texel's and a frame's numbers in stream `stream` (0..1); `salt` is `random2`'s, for the
+// white noise `HORIZON_RT_SKIP` 2097152 asks for. Each dimension is a dither over the texel in
+// fixed point (exact: horizon-rtx shaders/sun.rgen and gi.rgen draw the same numbers): x Roberts'
+// R2 dither, y Jimenez's interleaved gradient noise of the transposed texel (two different
+// lattices: the pair spreads over the square, not along a line), both turned each frame by a
+// Kronecker step (Cranley-Patterson rotation) over the view's own frames, so both eyes of a frame
+// draw the same. The step (0.18012, 0.70194) keeps the points spread whether a texel draws every
+// frame or one frame in 2, 4 or 8 (the bounced light's turns, `GI_TURN_BITS`): R2's own step
+// (0.7549, 0.5698) taken every fourth frame barely moves (4 x 0.7549 = 3.02). The pass's shaders
+// draw the same numbers bit for bit: the sun pass's ray is traced again here through water
+// (`trace`), and the moving casters' shadow aims at the same point of the disc.
+fn blue2(texel: vec2<i32>, salt: u32, stream: u32) -> vec2<f32> {
+    if (SKIP & 2097152u) != 0u { return random2(texel, salt); }
+    let t = vec2<u32>(select(texel, texel >> vec2(2u), blue_block));
+    var q = t;
+    if stream == BLUE_GI { q = t.yx; }
+    if stream == BLUE_LIGHT { q = vec2(0u - t.y, t.x); }
+    let k = u32(rt.frame.z);
+    let r2 = q.x * 3242174889u + q.y * 2447445413u + k * 773608062u;
+    let inner = q.y * 288237660u + q.x * 25070368u;
+    let ign = inner * 52u + (inner >> 16u) * 64417u + (((inner & 0xffffu) * 64417u) >> 16u)
+        + k * 3014823329u;
+    return vec2(f32(r2 >> 8u), f32(ign >> 8u)) / 16777216.0;
+}
+// The light a ray from `pos` along `l` (unit) lets through before it leaves the grid, rises above
+// its highest block, spends `budget` (1 an empty brick crossed, 4 a full one) or goes `reach`. The
+// block it starts in never stops it: a slab's or a path's top is inside a block the grid holds
+// whole (until the grid holds blocks' shapes).
+fn ray(pos: vec3<f32>, l: vec3<f32>, budget_in: i32, reach: f32) -> f32 {
+    return cast_ray(pos, l, budget_in, reach).light;
+}
+// What a ray hit: the light it let through, and where it stopped (its parameter and the world
+// block) when a block stopped it.
+struct RayHit {
+    light: f32,
+    t: f32,
+    cell: vec3<i32>,
+    hit: bool,
+}
+fn cast_ray(pos: vec3<f32>, l: vec3<f32>, budget_in: i32, reach: f32) -> RayHit {
+    let o = pos + rt.fraction.xyz;
+    let camera = vec3<i32>(rt.camera.xyz);
+    let start = vec3<i32>(floor(o)) + camera;
+    let step = vec3<i32>(sign(l));
+    let delta = 1.0 / max(abs(l), vec3(1e-6));
+    let top = rt.camera.w - rt.camera.y;
+    var light = 1.0;
+    var t = 0.0;
+    var budget = budget_in;
+    while budget > 0 && t < reach {
+        let p = o + l * t;
+        if l.y > 0.0 && p.y >= top { break; }
+        var cell = vec3<i32>(floor(p));
+        let world = cell + camera;
+        if !in_grid(world) { break; }
+        if world.y < -64 { return RayHit(0.0, t, world, true); }
+        if textureLoad(supers, brick_slot(world, 5u), 0).r == 0u {
+            t = max(brick_exit(world, 5u, o, l), t) + 1e-3;
+            budget -= 1;
+            continue;
+        }
+        let corner = (world >> vec3(3u)) << vec3(3u);
+        let leave = brick_exit(world, 3u, o, l);
+        let slot = brick_slot(world, 3u);
+        let kinds = textureLoad(bricks, slot, 0).r;
+        if kinds != 0u {
+            let leaves = (kinds & 2u) != 0u;
+            let into = select(floor(p) + 1.0 - p, p - floor(p), l < vec3(0.0));
+            var next = t + into * delta;
+            var local = world - corner;
+            // Where the ray entered the block `local`.
+            var entered = t;
+            for (var i = 0; i < 25; i++) {
+                if any(local < vec3(0)) || any(local > vec3(7)) { break; }
+                if entered >= reach { return RayHit(light, entered, vec3(0), false); }
+                let block = local + corner;
+                let own = all(block == start);
+                let solid = !own && mask_bit(solid_masks, slot, local);
+                let cut = !own && !solid && leaves && mask_bit(cutout_masks, slot, local);
+                if solid || cut {
+                    // A block with a shape (slabs, fences, bars, plants, leaves): its cells.
+                    let id = textureLoad(albedo_grid, block_slot(block), 0).r >> 6u;
+                    if id == 0u {
+                        if solid { return RayHit(0.0, entered, block, true); }
+                        light *= 0.5;
+                    } else {
+                        let leaving = min(next.x, min(next.y, next.z));
+                        let crossed = through_shape(o, l, block, id, entered, leaving);
+                        if crossed.y >= 0.0 { return RayHit(0.0, crossed.y, block, true); }
+                        light *= crossed.x;
+                    }
+                    if light < 0.1 { return RayHit(0.0, entered, block, true); }
+                }
+                if next.x <= next.y && next.x <= next.z {
+                    local.x += step.x;
+                    entered = next.x;
+                    next.x += delta.x;
+                } else if next.y <= next.z {
+                    local.y += step.y;
+                    entered = next.y;
+                    next.y += delta.y;
+                } else {
+                    local.z += step.z;
+                    entered = next.z;
+                    next.z += delta.z;
+                }
+            }
+            budget -= 4;
+        } else {
+            budget -= 1;
+        }
+        t = max(leave, t) + 1e-3;
+    }
+    // A ray that spent its budget without getting out (a long cave) is taken as stopped: no sky
+    // leaks into caves the rays can't see out of.
+    if budget <= 0 && t < reach { return RayHit(0.0, t, vec3(0), false); }
+    return RayHit(light, t, vec3(0), false);
+}
+// The camera-relative position pixel `p` of the depth shows.
+// `p` is in the depth's pixels.
+fn surface_at(p: vec2<i32>) -> vec3<f32> {
+    let size = rt.size.xy;
+    let d = textureLoad(depth, clamp(p, vec2(0), vec2<i32>(size) - 1), 0);
+    let ndc = vec2((f32(p.x) + 0.5) / size.x * 2.0 - 1.0, 1.0 - (f32(p.y) + 0.5) / size.y * 2.0);
+    let c = rt.inverse_view_proj * vec4(ndc, d, 1.0);
+    return c.xyz / c.w;
+}
+// Whether world block `v` is solid in the grid (none outside it, all below the world).
+fn solid_at(v: vec3<i32>) -> bool {
+    if !in_grid(v) { return false; }
+    if v.y < -64 { return true; }
+    let slot = brick_slot(v, 3u);
+    if (textureLoad(bricks, slot, 0).r & 1u) == 0u { return false; }
+    return mask_bit(solid_masks, slot, v - ((v >> vec3(3u)) << vec3(3u)));
+}
+// Ambient occlusion's rays: six short rays (AO_LENGTH blocks) fanned around the normal at a fixed
+// pattern, so it neither flickers nor needs accumulating; each solid block hit closes its share,
+// more the nearer. 1 is open. It counts the corners vanilla's smooth lighting shades too: the rays
+// are to replace that shading (docs/raytracing.md).
+const AO_LENGTH: f32 = 2.0;
+const AO_STEPS: i32 = 5;
+fn ambient(pos: vec3<f32>, n: vec3<f32>) -> f32 {
+    let t = normalize(select(cross(n, vec3(0.0, 1.0, 0.0)), cross(n, vec3(1.0, 0.0, 0.0)),
+        abs(n.y) > 0.9));
+    let b = cross(n, t);
+    let o = pos + rt.fraction.xyz;
+    let camera = vec3<i32>(rt.camera.xyz);
+    var closed = 0.0;
+    for (var i = 0; i < 6; i++) {
+        let a = f32(i) * 1.0471976 + 0.5;
+        let d = normalize(n * 0.75 + (t * cos(a) + b * sin(a)) * 0.66);
+        for (var s = 1; s <= AO_STEPS; s++) {
+            let along = f32(s) / f32(AO_STEPS) * AO_LENGTH;
+            if solid_at(vec3<i32>(floor(o + d * along)) + camera) {
+                closed += 1.0 - (along - AO_LENGTH / f32(AO_STEPS)) / AO_LENGTH;
+                break;
+            }
+        }
+    }
+    return 1.0 - rt.size.w * closed / 6.0;
+}
+// RT lighting's sky toward `d` (unit), from the sky table, bilinear (terrain.wgsl `rt_sky`), and
+// during the Eye of Aldhani its glow.
+fn sky_at(d: vec3<f32>) -> vec3<f32> {
+    var glow = vec3(0.0);
+    if rt.held.y >= 0.0 { glow = aldhani_glow(d, rt.held.y); }
+    return sky_table(d) + glow;
+}
+fn sky_table(d: vec3<f32>) -> vec3<f32> {
+    let flat = d.xz / max(length(d.xz), 1e-5);
+    let sun = rt.sun.xz / max(length(rt.sun.xz), 1e-5);
+    let azimuth = acos(clamp(dot(flat, sun), -1.0, 1.0)) / 3.14159265;
+    let e = asin(clamp(d.y, -1.0, 1.0)) / 1.5707963;
+    let size = vec2<f32>(textureDimensions(sky_view));
+    let p = vec2(azimuth, 0.5 + 0.5 * sign(e) * sqrt(abs(e))) * size - 0.5;
+    let base = vec2<i32>(floor(p));
+    let f = p - floor(p);
+    let top = vec2<i32>(size) - 1;
+    let low = mix(sky_texel(base, top), sky_texel(base + vec2(1, 0), top), f.x);
+    let high = mix(sky_texel(base + vec2(0, 1), top), sky_texel(base + vec2(1, 1), top), f.x);
+    return mix(low, high, f.y);
+}
+fn sky_texel(at: vec2<i32>, top: vec2<i32>) -> vec3<f32> {
+    return textureLoad(sky_view, clamp(at, vec2(0), top), 0).rgb;
+}
+// RT lighting's sky and bounced light: the light of the sky the surface at `pos` (normal `n`) sees
+// and of the blocks around it lit (`bounced`), rgb, diffuse, in paper whites (Lambert's 1/pi in the
+// units), and how much of the sky it sees (a), from rays over its hemisphere, cosine weighted, in
+// directions new each frame (`texel`'s random numbers): their average over frames is the light
+// without the bands a fixed pattern leaves. A ray that gets out brings the sky's light, one that
+// hits a block that block's light: a closed tunnel sees no sky, and a torch's light reaches round
+// a corner off the wall it lights.
+const SKY_BUDGET: i32 = 24;
+const SKY_RAYS: i32 = 2;
+// RT lighting's global illumination: the light leaving the surface a ray from the pixel hit at
+// camera-relative `at`, its colour times the light reaching it there: the sun's (or the moon's)
+// through a shadow ray and the rest from the radiance cache (any surface the frames before saw:
+// the light keeps bouncing, a bounce more a frame, as SHaRC's), the last frame's screen, or else
+// a second traced bounce (with hardware rays) or the sky over the face's open half and the
+// brightest light source. Remix path traces up to 4 bounces and ends the paths in its caches.
+const BOUNCE_BUDGET: i32 = 24;
+// A ray's hit: where (its parameter, below 0 none), the face's normal, the surface's colour in
+// light, what the translucent surfaces on the way let through (the hardware rays'
+// `hw_hit`; the voxel grid's `cast_ray` gives its block instead), whether the surface is lava
+// (what the eye sees of it is its own look, not its colour: shadow_rays_hw.wgsl `hw_surface`),
+// and where the ray went down into water (its parameter, below 0 not).
+struct HwHit {
+    t: f32,
+    normal: vec3<f32>,
+    albedo: vec3<f32>,
+    through: vec3<f32>,
+    lava: bool,
+    water: f32,
+}
+// The map colour of world block `cell`, in light: the voxel grid's colour of a surface (none: -1).
+fn map_albedo(cell: vec3<i32>) -> vec3<f32> {
+    let id = textureLoad(albedo_grid, block_slot(cell), 0).r & 63u;
+    if id == 0u || id >= 62u { return vec3(-1.0); }
+    let c = MAP_COLORS[id];
+    return pow(vec3(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0,
+        vec3(2.2));
+}
+fn bounced(at: vec3<f32>, cell: vec3<i32>) -> vec3<f32> {
+    let albedo = map_albedo(cell);
+    if albedo.x < 0.0 { return vec3(0.0); }
+    return bounce_light(at, hit_normal(at, cell), albedo);
+}
+// The sun's (or the moon's) light reaching a face at camera-relative `lifted` (normal `n`).
+fn sun_on(lifted: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let facing = dot(n, rt.light.xyz);
+    if facing <= 0.0 || rt.light.w <= 0.0 { return vec3(0.0); }
+    var through = 0.0;
+    if HW {
+        through = luminance(hw_light(lifted, rt.light.xyz, 4096.0));
+    } else {
+        through = ray(lifted, rt.light.xyz, BOUNCE_BUDGET, 1e30);
+    }
+    return rt.sun_light.rgb * (rt.light.w * facing * through);
+}
+// The rest of the light reaching a face at camera-relative `at`: the radiance cache's, else the
+// last frame's screen (w below 0: neither).
+fn cached_on(at: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
+    let cached = cache_light(at, n);
+    if cached.a >= 0.0 { return cached; }
+    return last_light(at);
+}
+// The light leaving a surface at camera-relative `at` (normal `n`, colour `albedo`) toward where
+// the ray came from; a cache miss traces one more bounce with hardware rays.
+fn bounce_light(at: vec3<f32>, n: vec3<f32>, albedo: vec3<f32>) -> vec3<f32> {
+    return albedo * (sun_on(at + n * 0.02, n) + bounce_rest(at, n));
+}
+// The light other than the sun's reaching a face at camera-relative `at` that a bounce ray hit:
+// the radiance cache's or the last frame's, else a second bounce (hardware rays) or the open
+// sky's guess.
+fn bounce_rest(at: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let lifted = at + n * 0.02;
+    let last = cached_on(at, n);
+    if last.a >= 0.0 { return last.rgb; }
+    if HW { return second_bounce(lifted, n, vec2<i32>(floor(at.xz * 16.0 + at.y * 7.0))); }
+    return open_light(lifted, n, at);
+}
+// Without a cache cell or a further ray: the sky over the face's open half and the brightest
+// light source. The sky only as much as the surface sees of it: no ray says how much here, so its
+// vanilla sky light level does (`hw_sky`, the quad the last hardware ray met: its share of full
+// daylight squared, terrain.wgsl `rt_sky_level`'s law), as the terrain past the grid lights itself.
+// Without it every surface a bounce ray met off the screen and out of the cache (behind the camera
+// in a closed room, a cave) was lit by a quarter to a half of the open sky, through the walls;
+// open air (level 15) is lit as before. Unknown (the voxel grid's rays, an entity): as before.
+// `HORIZON_RT_SKIP` 134217728 keeps the guess unseen. (A face turned down has no open half: no sky,
+// and no `normalize` of nothing, which is not a number.)
+const SKIP_INTERIOR: u32 = 134217728u;
+var<private> hw_sky: f32 = -1.0;
+fn open_light(lifted: vec3<f32>, n: vec3<f32>, at: vec3<f32>) -> vec3<f32> {
+    let share = 0.25 + 0.25 * n.y;
+    var sky = vec3(0.0);
+    if share > 1e-3 {
+        sky = sky_at(normalize(n + vec3(0.0, 1.0, 0.0))) * share;
+        if hw_sky >= 0.0 && (SKIP & SKIP_INTERIOR) == 0u { sky *= hw_sky * hw_sky; }
+    }
+    return sky + block_light(lifted, n, 1, vec2<i32>(floor(at.xz * 16.0)));
+}
+// The light reaching camera-relative `pos` (normal `n`) along one more cosine-weighted ray: the
+// sky's, or the surface it meets lit by the sun and its cache cell (or the open sky's guess).
+fn second_bounce(pos: vec3<f32>, n: vec3<f32>, salt: vec2<i32>) -> vec3<f32> {
+    // White (`random2`): `salt` is a world position, not a texel, so screen-space blue noise means
+    // nothing here.
+    let d = cosine_dir(n, random2(salt, 3u));
+    let h = hw_hit(pos, d, 256.0);
+    if h.t < 0.0 { return sky_at(d) * h.through; }
+    let at = pos + d * h.t;
+    let lifted = at + h.normal * 0.02;
+    var light = sun_on(lifted, h.normal);
+    let last = cached_on(at, h.normal);
+    light += select(open_light(lifted, h.normal, at), last.rgb, last.a >= 0.0);
+    return h.through * h.albedo * light;
+}
+// A cosine-weighted direction about `n` from two random numbers.
+fn cosine_dir(n: vec3<f32>, u: vec2<f32>) -> vec3<f32> {
+    let t = normalize(select(cross(n, vec3(0.0, 1.0, 0.0)), cross(n, vec3(1.0, 0.0, 0.0)),
+        abs(n.y) > 0.9));
+    let b = cross(n, t);
+    let r = sqrt(u.x);
+    let a = 6.2831853 * u.y;
+    return normalize((t * cos(a) + b * sin(a)) * r + n * sqrt(max(1.0 - u.x, 0.0)));
+}
+// The diffuse light other than the sun's the last frame's rays found at camera-relative `at`
+// (`last_light_mask`), when the last frame showed that surface; a below 0 when it didn't.
+fn last_light(at: vec3<f32>) -> vec4<f32> {
+    if rt.motion.w < 0.5 { return vec4(0.0, 0.0, 0.0, -1.0); }
+    let q = at + rt.motion.xyz;
+    let c = rt.prev_view_proj * vec4(q, 1.0);
+    if c.w <= 0.0 { return vec4(0.0, 0.0, 0.0, -1.0); }
+    let ndc = c.xy / c.w;
+    if any(abs(ndc) > vec2(1.0)) { return vec4(0.0, 0.0, 0.0, -1.0); }
+    let size = vec2<f32>(textureDimensions(last_mask));
+    let texel = clamp(vec2<i32>(vec2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y)),
+        vec2(0), vec2<i32>(size) - 1);
+    let d = length(q);
+    let shown = textureLoad(last_mask, texel, 0).a;
+    if shown < 0.0 || abs(shown - d) > 0.1 + 0.03 * d { return vec4(0.0, 0.0, 0.0, -1.0); }
+    let light = textureLoad(last_light_mask, texel, 0);
+    if light.a < 0.0 { return vec4(0.0, 0.0, 0.0, -1.0); }
+    return vec4(light.rgb, 1.0);
+}
+fn sky_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> vec4<f32> {
+    let t = normalize(select(cross(n, vec3(0.0, 1.0, 0.0)), cross(n, vec3(1.0, 0.0, 0.0)),
+        abs(n.y) > 0.9));
+    let b = cross(n, t);
+    let random = random2(texel, 1u);
+    var light = vec3(0.0);
+    var seen = 0.0;
+    for (var i = 0; i < SKY_RAYS; i++) {
+        let u = fract(random + vec2(f32(i) * 0.618034, f32(i) * 0.754878));
+        let r = sqrt(u.x);
+        let a = 6.2831853 * u.y;
+        let d = normalize((t * cos(a) + b * sin(a)) * r + n * sqrt(max(1.0 - u.x, 0.0)));
+        let hit = cast_ray(pos, d, SKY_BUDGET, 1e30);
+        light += sky_at(d) * hit.light;
+        seen += hit.light;
+        if hit.hit {
+            light += bounced(pos + d * hit.t, hit.cell);
+        }
+    }
+    return vec4(light, seen) / f32(SKY_RAYS);
+}
+// RT lighting's indirect light, ReSTIR GI (Ouyang et al. 2021), as RTX Remix uses it: each pixel
+// traces one cosine-weighted ray a frame, its sample the point it hits and the light leaving it
+// toward the pixel (`bounced`: that block's colour times the sun's and the radiance cache's light
+// there), or the sky's where it gets out. The sample is resampled with the last frame's reservoir
+// where the surface was and with two neighbours' there (their sample weighed by the solid angle's
+// change, the Jacobian, and dropped across a jump in distance or a change of face); a sample taken
+// from elsewhere is kept only if this pixel sees it (a visibility ray). The pixel's light: the
+// chosen sample's, cosine-weighted, times the reservoir's weight.
+struct GiSample {
+    // The point (camera-relative; far along the ray for the sky) and its normal, the light it
+    // sends back toward the pixel.
+    at: vec3<f32>,
+    normal: vec3<f32>,
+    light: vec3<f32>,
+}
+// The face a ray hit at camera-relative `at` on block `cell`: the side the point is nearest.
+fn hit_normal(at: vec3<f32>, cell: vec3<i32>) -> vec3<f32> {
+    let off = at + rt.camera.xyz + rt.fraction.xyz - vec3<f32>(cell) - 0.5;
+    let a = abs(off);
+    if a.x >= a.y && a.x >= a.z { return vec3(sign(off.x), 0.0, 0.0); }
+    if a.y >= a.z { return vec3(0.0, sign(off.y), 0.0); }
+    return vec3(0.0, 0.0, sign(off.z));
+}
+// This frame's sample at camera-relative `pos` (normal `n`), and whether it is the sky's (w 1).
+fn gi_sample(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> GiSample {
+    let d = cosine_dir(n, blue2(texel, 1u, BLUE_GI));
+    // The hybrid's exact triangles and their textures where the GPU traces rays, as Remix's.
+    if HW {
+        let h = hw_hit(pos, d, 4096.0);
+        if h.t >= 0.0 {
+            let at = pos + d * h.t;
+            return GiSample(at, h.normal, h.through * bounce_light(at, h.normal, h.albedo));
+        }
+        return GiSample(pos + d * 4096.0, -d, sky_at(d) * h.through);
+    }
+    let hit = cast_ray(pos, d, SKY_BUDGET, 1e30);
+    if hit.hit {
+        let at = pos + d * hit.t;
+        return GiSample(at, hit_normal(at, hit.cell), bounced(at, hit.cell));
+    }
+    // The sky, as a point far along the ray (its light whatever the direction it is seen from).
+    return GiSample(pos + d * 4096.0, -d, sky_at(d) * hit.light);
+}
+// A sample's target at a pixel at `pos` (normal `n`): its light's luminance by the cosine there.
+fn gi_target(s: GiSample, pos: vec3<f32>, n: vec3<f32>) -> f32 {
+    return luminance(s.light) * max(dot(n, normalize(s.at - pos)), 0.0);
+}
+// The last frame's reservoir at texel `at`: its sample (moved to this frame's camera), its weight
+// and the candidates it saw; `seen` 0 when there is none.
+struct GiReservoir {
+    s: GiSample,
+    weight: f32,
+    seen: f32,
+}
+fn last_gi(at: vec2<i32>) -> GiReservoir {
+    let size = vec2<i32>(textureDimensions(last_gi_a));
+    let c = clamp(at, vec2(0), size - 1);
+    let a = textureLoad(last_gi_a, c, 0);
+    let b = textureLoad(last_gi_b, c, 0);
+    let rg = unpack2x16float(b.x);
+    let bm = unpack2x16float(b.y);
+    let normal = unpack4x8snorm(b.z).xyz;
+    // Stored relative to the last frame's camera: this frame's camera moved by `motion`.
+    let s = GiSample(a.xyz - rt.motion.xyz, normal, vec3(rg, bm.x));
+    return GiReservoir(s, a.w, bm.y);
+}
+const GI_HISTORY: f32 = 20.0;
+fn restir_gi(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i32>, has_last: bool)
+    -> vec4<f32> {
+    // The bounce pass's reservoir where it made one: the light it stands for, as below.
+    if HW && pass_ran(2u) && sun_from_pass {
+        let b = textureLoad(gi_pass_b, texel, 0);
+        if b.w != 0u {
+            let a = textureLoad(gi_pass_a, texel, 0);
+            gi_out_a = a;
+            gi_out_b = vec4(b.xyz, 0u);
+            let rg = unpack2x16float(b.x);
+            let bm = unpack2x16float(b.y);
+            let cosine = max(dot(n, normalize(a.xyz - pos)), 0.0);
+            return vec4(vec3(rg, bm.x) * cosine * a.w / 3.14159265, select(0.0, 1.0, b.w == 2u));
+        }
+    }
+    let own = gi_sample(pos, n, texel);
+    // The new candidate, drawn by the cosine: its weight its aim over that chance (pi cancels
+    // the cosine, Lambert's 1/pi is in the light's units).
+    var chosen = own;
+    var aim = gi_target(own, pos, n);
+    var sum = luminance(own.light) * 3.14159265;
+    var seen = 1.0;
+    var reused = false;
+    // White (`random2`), not `blue2`: which candidate the reservoir keeps and which neighbours it
+    // merges must not correlate with the neighbours' own choices (whose samples it takes).
+    var u = random2(texel, 70u);
+    if has_last {
+        for (var j = 0; j < 3; j++) {
+            let jitter = random2(texel, 80u + u32(j));
+            let off = select(vec2<i32>((jitter * 2.0 - 1.0) * 8.0), vec2(0), j == 0);
+            let q = last_gi(last_at + off);
+            if q.seen <= 0.0 || q.weight <= 0.0 { continue; }
+            // The same surface: the face it showed and its distance (a floor's pixel doesn't take
+            // the wall's sample across the corner).
+            if j > 0 {
+                let size = vec2<i32>(textureDimensions(last_mask));
+                let c = clamp(last_at + off, vec2(0), size - 1);
+                let depth = length(pos);
+                if abs(face_in(textureLoad(last_direct, c, 0).a) - face_of(n)) > 0.5
+                    || abs(textureLoad(last_mask, c, 0).a - depth) > 0.05 * depth + 0.1 {
+                    continue;
+                }
+            }
+            // A neighbour a few texels away sees the sample from about the same point: the solid
+            // angle's change (the Jacobian) is taken as 1 (a gap from Remix's exact one, which
+            // needs the neighbour's own point; the visibility ray below keeps it honest).
+            let p = gi_target(q.s, pos, n);
+            // The neighbours' history counts for less than the pixel's own (no blotches of one
+            // sample spread over a patch).
+            let m = min(q.seen, select(GI_HISTORY / 4.0, GI_HISTORY, j == 0));
+            let w = p * q.weight * m;
+            sum += w;
+            seen += m;
+            u = fract(u + vec2(0.618034, 0.754878));
+            if w > 0.0 && u.x * sum < w {
+                chosen = q.s;
+                aim = p;
+                reused = true;
+            }
+        }
+    }
+    var weight = 0.0;
+    if aim > 0.0 { weight = sum / (seen * aim); }
+    // A sample from elsewhere: this pixel has to see it.
+    if reused && aim > 0.0 {
+        let to = chosen.at - pos;
+        let d = length(to);
+        let reach = select(d - 0.05, 1e30, d > 4000.0);
+        // With hardware rays against the triangles the sample was found on (`hw_visible`), else
+        // (and with `HORIZON_RT_GI_DDA=1`) through the voxel grid, a long cave's ray taken as
+        // stopped once its budget is spent.
+        var visible = true;
+        if HW && GI_HW_VISIBILITY {
+            visible = hw_visible(pos, to / d, min(reach, 4096.0));
+        } else {
+            visible = ray(pos, to / d, SKY_BUDGET, reach) >= 0.5;
+        }
+        if !visible {
+            chosen = own;
+            aim = gi_target(own, pos, n);
+            weight = select(0.0, 3.14159265 * luminance(own.light) / aim, aim > 0.0);
+            seen = 1.0;
+        }
+    }
+    // Half floats past 65504 are infinite: the sample's light kept within them.
+    chosen.light = min(finite3(chosen.light), vec3(60000.0));
+    weight = min(finite(weight), 1e6);
+    gi_out_a = finite4(vec4(chosen.at, weight));
+    gi_out_b = vec4(pack2x16float(chosen.light.rg), pack2x16float(vec2(chosen.light.b, seen)),
+        pack4x8snorm(vec4(chosen.normal, 0.0)), 0u);
+    let cosine = max(dot(n, normalize(chosen.at - pos)), 0.0);
+    // The light the chosen sample stands for, in the diffuse light's units (Lambert's 1/pi).
+    let light = chosen.light * cosine * weight / 3.14159265;
+    let sky = select(0.0, 1.0, length(own.at - pos) > 4000.0);
+    return vec4(light, sky);
+}
+// RT lighting's light sources: the light those of the cell holding camera-relative `pos` (on a face
+// of normal `n`) give it, each an area: a full block emitting light (glowstone, lava, a lamp) all
+// of its volume, a torch's or a lantern's flame a tenth of a block around its middle. A shadow ray
+// a frame toward a point of it (`texel`'s random numbers), stopped where it enters the light's
+// block, so the shadows' penumbrae widen with the distance to what casts them once accumulated.
+// Physical falloff, the inverse square of the distance to the light's block, eased to nothing at
+// the light's reach; through stained glass the light takes its colour (hardware rays).
+const BLOCK_LIGHT: f32 = 3.0;
+// The luminance of every light's colour (that of the warm white lights had before their colours
+// came from their black bodies).
+const LIGHT_LUMINANCE: f32 = 0.59;
+const LIGHT_BUDGET: i32 = 16;
+// The cell of the grid holding grid-local `local`, its lights (up to eight, two indices a word) and
+// how many there are.
+fn light_cell(local: vec3<f32>) -> vec4<u32> {
+    let i = light_cell_index(local);
+    if i < 0 { return vec4(0u); }
+    return cells[i];
+}
+// The index of the cell `local` is in (-1 outside the grid).
+fn light_cell_index(local: vec3<f32>) -> i32 {
+    let cell = vec3<i32>(floor(local / 8.0));
+    let count = vec3<i32>(i32(rt.grid.z) / 8, 48, i32(rt.grid.z) / 8);
+    if any(cell < vec3(0)) || any(cell >= count) { return -1; }
+    return (cell.y * count.z + cell.z) * count.x + cell.x;
+}
+// How often the shadow rays from cell `cell` toward its light in `slot` got there, as learnt so
+// far (a prior of one in two; at least a tenth, so a light that comes into view is found again).
+fn learnt(cell: i32, slot: i32) -> f32 {
+    if cell < 0 || slot < 0 { return 1.0; }
+    let s = u32(cell) * 8u + u32(slot);
+    let tried = f32(atomicLoad(&visibility[s].tried));
+    let reached = f32(atomicLoad(&visibility[s].reached));
+    return max((reached + 1.0) / (tried + 2.0), 0.1);
+}
+// The slot of light `index` in the cell's list (-1 not in it).
+fn slot_of(words: vec4<u32>, index: u32) -> i32 {
+    for (var k = 0; k < 8; k++) {
+        if cell_light(words, k) == index { return k; }
+    }
+    return -1;
+}
+fn cell_light(words: vec4<u32>, i: i32) -> u32 {
+    return (words[i / 2] >> (u32(i % 2) * 16u)) & 0xffffu;
+}
+// Light source `index` (+ 1) at grid-local `local` on a face of normal `n`, toward its point
+// `offset` (-1..1 of its size: a torch's flame or a full block's volume): its light, unshadowed,
+// and the ray's direction and how far it may go (to where it enters the light's block; w below 0
+// when the light can't reach).
+struct LightPath {
+    light: vec3<f32>,
+    dir: vec4<f32>,
+}
+fn light_path(index: u32, local: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> LightPath {
+    let none = LightPath(vec3(0.0), vec4(0.0, 1.0, 0.0, -1.0));
+    if index == 0u { return none; }
+    let light = lights[index - 1u];
+    let block = floor(light.at.xyz);
+    let world = vec3<i32>(block) + vec3<i32>(i32(rt.grid.x), -64, i32(rt.grid.y));
+    let cube = solid_at(world);
+    // A light with its own point (a torch's flame, gfx/voxels.rs): there, small; else the block's
+    // middle (a lamp's whole cube), or a little above it for a shape.
+    let within = light.at.xyz - block;
+    let own = any(abs(within - vec3(0.5)) > vec3(0.01));
+    let size = select(select(0.1, 0.5, cube), 0.06, own);
+    let middle = select(block + vec3(0.5, select(0.6, 0.5, cube), 0.5), light.at.xyz, own);
+    // A spotlight's lens: a disc a quarter of a block across its way, so its shadows soften
+    // with the distance as a real lamp's do.
+    let spot = dot(light.aim.xyz, light.aim.xyz) > 0.5;
+    let lens = (offset - light.aim.xyz * dot(offset, light.aim.xyz)) * 0.25;
+    let to = middle + select(offset * size, lens, spot) - local;
+    let length_to = length(to);
+    let l = to / max(length_to, 1e-4);
+    // Where the ray enters the light's block (0 inside it).
+    let low = (block - local) / select(l, vec3(1e-6), abs(l) < vec3(1e-6));
+    let high = (block + 1.0 - local) / select(l, vec3(1e-6), abs(l) < vec3(1e-6));
+    let near = min(low, high);
+    // A flame's ray runs into its own block, to just short of it: the torch's stick shadows.
+    let d = select(max(max(max(near.x, near.y), near.z), 0.0), max(length_to - 0.1, 0.0), own);
+    let reach = light.at.w;
+    if d >= reach { return none; }
+    // In the light's own block the light is all around (a lamp's face, lichen on the wall beside):
+    // no cosine there. That eases into the cosine over the first blocks' three quarters outside it
+    // (a flame's 0.15), so the block's outline is not drawn on the walls and the floor around it
+    // as a step in the light (`HORIZON_RT_SKIP` 536870912: the step of before).
+    let around = select(0.75, 0.15, own);
+    var facing = mix(1.0, max(dot(n, l), 0.0), smoothstep(0.0, around, d));
+    if (SKIP & 536870912u) != 0u { facing = select(dot(n, l), 1.0, d < 0.05); }
+    // Near its own flame (a torch's stick): the fire is a volume wrapping the stick's top, not a
+    // point above it, so the stick's sides get some of it.
+    if own && length_to < 0.8 { facing = max(facing, 0.35); }
+    if facing <= 0.0 { return none; }
+    let cone = spot_cone(light.aim, -l);
+    if cone <= 0.0 { return none; }
+    let window = 1.0 - (d / reach) * (d / reach);
+    // The distance to the point of the light drawn (a torch's flame stands above its block's
+    // floor, so the block it stands on isn't lit as if touching it).
+    let gain = light.colour.w * window * window * facing * cone
+        / ((1.0 + length_to) * (1.0 + length_to));
+    // The colour tints the light, the level sets how bright it is (as vanilla's light levels do):
+    // a 1900 K flame's deep orange as bright as a white lamp of its level.
+    let tint = pow(light.colour.rgb, vec3(2.2));
+    let colour = tint * (LIGHT_LUMINANCE / max(dot(tint, vec3(0.2126, 0.7152, 0.0722)), 1e-3));
+    return LightPath(colour * (BLOCK_LIGHT * gain), vec4(l, max(d - 0.02, 0.0)));
+}
+// What the terrain lets through along `path` from camera-relative `pos`.
+fn light_through(pos: vec3<f32>, path: LightPath) -> vec3<f32> {
+    if path.dir.w < 0.0 { return vec3(0.0); }
+    if HW { return hw_light(pos, path.dir.xyz, path.dir.w); }
+    return vec3(ray(pos, path.dir.xyz, LIGHT_BUDGET, path.dir.w));
+}
+fn luminance(c: vec3<f32>) -> f32 {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+// The light sources' light at camera-relative `pos` (normal `n`) from `most` of its cell's lights
+// drawn this frame, each through a shadow ray (the bounce rays' cheap estimate; the pixels' own is
+// `restir_light`).
+fn block_light(pos: vec3<f32>, n: vec3<f32>, most: i32, texel: vec2<i32>) -> vec3<f32> {
+    let local = pos + rt.camera.xyz + rt.fraction.xyz - vec3(rt.grid.x, -64.0, rt.grid.y);
+    let words = light_cell(local);
+    var all = 0;
+    for (var k = 0; k < 8; k++) {
+        if cell_light(words, k) != 0u { all = k + 1; }
+    }
+    if all == 0 { return vec3(0.0); }
+    let drawn = min(most, all);
+    // White (`random2`): the bounce rays' cheap estimate, `texel` a world position there.
+    let offset = i32(random2(texel, 30u).x * f32(all));
+    let share = f32(all) / f32(drawn);
+    var sum = vec3(0.0);
+    for (var j = 0; j < drawn; j++) {
+        let i = (offset + j) % all;
+        let r = vec3(random2(texel, 10u + u32(i)), random2(texel, 20u + u32(i)).x) * 2.0 - 1.0;
+        let path = light_path(cell_light(words, i), local, n, r);
+        if luminance(path.light) * share < 1e-3 { continue; }
+        sum += path.light * share * light_through(pos, path);
+    }
+    return sum;
+}
+// RT lighting's light sources at a pixel, ReSTIR DI (Bitterli et al. 2020): resampled importance
+// sampling over the cell's lights (each weighed by its unshadowed light, `light_path` toward its
+// middle, no ray), merged with the last frame's reservoirs where this surface was and at two
+// neighbours there, so a light a neighbour found carries over and thousands of lights cost a
+// shadow ray a pixel. The chosen light's light, through one shadow ray toward a point of it drawn
+// this frame, times the reservoir's weight. A reservoir keeps the light's block (its index changes
+// when the list is made again) so a stale one is recognised and dropped.
+struct Reservoir {
+    // The light (index + 1, 0 none), the sum of the weights, the candidates seen, the weight.
+    light: u32,
+    sum: f32,
+    seen: f32,
+    weight: f32,
+}
+// A light's block, packed (grid-local x, y, z: 9 bits each).
+fn light_key(index: u32) -> u32 {
+    if index == 0u { return 0u; }
+    let b = vec3<u32>(floor(lights[index - 1u].at.xyz));
+    return (b.x & 511u) | ((b.y & 511u) << 9u) | ((b.z & 511u) << 18u) | (1u << 27u);
+}
+// The last frame's reservoirs at texel `at`: (light, its block, seen, weight).
+fn last_reservoir(at: vec2<i32>) -> vec4<u32> {
+    let size = vec2<i32>(textureDimensions(last_reservoirs));
+    return textureLoad(last_reservoirs, clamp(at, vec2(0), size - 1), 0);
+}
+// The most a reservoir carries over from the frames before, in candidates (twenty frames' worth).
+const RESERVOIR_HISTORY: f32 = 160.0;
+fn restir_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i32>,
+    has_last: bool) -> vec4<f32> {
+    let local = pos + rt.camera.xyz + rt.fraction.xyz - vec3(rt.grid.x, -64.0, rt.grid.y);
+    let cell = light_cell_index(local);
+    let words = light_cell(local);
+    var r = Reservoir(0u, 0.0, 0.0, 0.0);
+    var chosen = 0.0;
+    // White (`random2`), as ReSTIR GI's: the reservoir's choices.
+    var u = random2(texel, 40u);
+    // The cell's lights, all of them (eight at most): each candidate's weight its light over the
+    // chance of drawing it among them.
+    var candidates = 0.0;
+    for (var k = 0; k < 8; k++) {
+        if cell_light(words, k) != 0u { candidates += 1.0; }
+    }
+    for (var k = 0; k < 8; k++) {
+        let index = cell_light(words, k);
+        if index == 0u { continue; }
+        // The target: the light's unshadowed light times how often it gets here (the NEE cache).
+        let p = luminance(light_path(index, local, n, vec3(0.0)).light) * learnt(cell, k);
+        let w = p * candidates;
+        r.sum += w;
+        u = fract(u + vec2(0.618034, 0.754878));
+        if w > 0.0 && u.x * r.sum < w {
+            r.light = index;
+            chosen = p;
+        }
+    }
+    r.seen = candidates;
+    // The last frame's, where this surface was and at two neighbours: their light weighed here.
+    if has_last {
+        for (var j = 0; j < 3; j++) {
+            let jitter = random2(texel, 50u + u32(j));
+            let off = select(vec2<i32>((jitter * 2.0 - 1.0) * 6.0), vec2(0), j == 0);
+            let last = last_reservoir(last_at + off);
+            if last.x == 0u || light_key(last.x) != last.y { continue; }
+            // The same surface, as ReSTIR GI's neighbours (`restir_gi`): the face it showed and
+            // its distance (a floor's pixel doesn't take the wall's light across the corner).
+            if j > 0 {
+                let size = vec2<i32>(textureDimensions(last_mask));
+                let c = clamp(last_at + off, vec2(0), size - 1);
+                let depth = length(pos);
+                if abs(face_in(textureLoad(last_direct, c, 0).a) - face_of(n)) > 0.5
+                    || abs(textureLoad(last_mask, c, 0).a - depth) > 0.05 * depth + 0.1 {
+                    continue;
+                }
+            }
+            let p = luminance(light_path(last.x, local, n, vec3(0.0)).light)
+                * learnt(cell, slot_of(words, last.x));
+            let seen = min(bitcast<f32>(last.z), RESERVOIR_HISTORY / 3.0);
+            let w = p * bitcast<f32>(last.w) * seen;
+            r.sum += w;
+            r.seen += seen;
+            u = fract(u + vec2(0.618034, 0.754878));
+            if w > 0.0 && u.x * r.sum < w {
+                r.light = last.x;
+                chosen = p;
+            }
+        }
+    }
+    if r.light == 0u || chosen <= 0.0 { return vec4(0.0); }
+    r.weight = r.sum / (r.seen * chosen);
+    // The light chosen, toward a point of it drawn this frame, through one shadow ray.
+    // Its x and y `blue2`'s, its z white: a third number from another stream would follow the
+    // first two (they are lattices) and sample a plane through the block, not all of it.
+    let offset = vec3(blue2(texel, 60u, BLUE_LIGHT), random2(texel, 61u).x) * 2.0 - 1.0;
+    let path = light_path(r.light, local, n, offset);
+    let through = light_through(pos, path);
+    let light = path.light * through * r.weight;
+    // What this shadow ray found, for the cell's NEE cache.
+    let slot = slot_of(words, r.light);
+    if cell >= 0 && slot >= 0 {
+        let s = u32(cell) * 8u + u32(slot);
+        atomicAdd(&visibility[s].tried, 1u);
+        if luminance(through) > 0.01 { atomicAdd(&visibility[s].reached, 1u); }
+    }
+    reservoir_out = vec4(r.light, light_key(r.light), bitcast<u32>(r.seen), bitcast<u32>(r.weight));
+    return vec4(light, 1.0);
+}
+// The moving lights' light at camera-relative `pos` (normal `n`): one of them drawn each frame by
+// its unshadowed light (RIS over them all), toward a point of a small sphere around it through
+// one shadow ray, weighed by the chance of drawing it. A torch's warm colour; its reach its level
+// in blocks, as the block lights'.
+const MOVING_COLOUR: vec3<f32> = vec3(1.0, 0.62, 0.3);
+fn moving_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> vec3<f32> {
+    let count = min(i32(rt.held.x), 8);
+    if count == 0 { return vec3(0.0); }
+    var sum = 0.0;
+    var chosen = -1;
+    var chosen_p = 0.0;
+    // White (`random2`) throughout: the choice among the lights, and the point of a small sphere
+    // (a few moving lights, their penumbra a fraction of a block's).
+    var u = random2(texel, 70u).x;
+    for (var k = 0; k < count; k++) {
+        let p = moving_gain(rt.moving[k], pos, n, vec3(0.0));
+        sum += p;
+        u = fract(u + 0.618034);
+        if p > 0.0 && u * sum < p {
+            chosen = k;
+            chosen_p = p;
+        }
+    }
+    if chosen < 0 { return vec3(0.0); }
+    let light = rt.moving[chosen];
+    let offset = (vec3(random2(texel, 71u), random2(texel, 72u).x) * 2.0 - 1.0) * 0.15;
+    let to = light.xyz + offset - pos;
+    let d = length(to);
+    let l = to / max(d, 1e-4);
+    var through = vec3(0.0);
+    if HW {
+        through = hw_light(pos, l, max(d - 0.1, 0.0));
+    } else {
+        through = vec3(ray(pos, l, LIGHT_BUDGET, max(d - 0.1, 0.0)));
+    }
+    let gain = moving_gain(light, pos, n, offset);
+    // The chosen light's own light times the sum over the chance of drawing it (p / sum).
+    return pow(MOVING_COLOUR, vec3(2.2)) * (BLOCK_LIGHT * HELD_LIGHT) * through
+        * (gain * sum / chosen_p);
+}
+// A moving light's unshadowed light at `pos` (normal `n`), as the block lights' fall off.
+fn moving_gain(light: vec4<f32>, pos: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> f32 {
+    let to = light.xyz + offset - pos;
+    let d = length(to);
+    // Its level (w) reaches as far as a placed light's (gfx/voxels.rs `LIGHT_REACH`, 24 blocks at
+    // level 15) and is as strong: its own reach was its level in blocks, so a torch in the hand
+    // gave out at 14 blocks where the one on the wall lights 22 (`HELD_REACH` 15: as before).
+    let level = light.w;
+    if level <= 0.0 { return 0.0; }
+    let reach = HELD_REACH * (level + 1.0) / 16.0;
+    if d >= reach { return 0.0; }
+    let facing = dot(n, to / max(d, 1e-4));
+    if facing <= 0.0 { return 0.0; }
+    let window = 1.0 - (d / reach) * (d / reach);
+    return (level / 15.0) * (level / 15.0) * window * window * facing / ((1.0 + d) * (1.0 + d));
+}
+// ALDHANI-BEGIN: the Eye of Aldhani's field, the same text in gfx/aldhani.wgsl (which makes it),
+// terrain.wgsl (the sky draws it) and gfx/shadow_rays.wgsl (the terrain is lit by it); a test keeps
+// them equal.
+// The slots a frame looks back over (one meteor at most each), the sky's tiles a side (a square
+// folded over the upper half of the sky, `aldhani_tile`) and the streaks a tile holds at most.
+const ALDHANI_METEORS: u32 = 327680u;
+const ALDHANI_TILES: u32 = 64u;
+const ALDHANI_TILE_CAP: u32 = 1024u;
+// The burning meteors' glow by tile, red, green and blue, in `tiles` after the lists: summed by the
+// field (fixed point, ALDHANI_GLOW_UNIT a paper white), then blurred over the sky (f32).
+const ALDHANI_GLOW_SUM: u32 = 64u * 64u + 64u * 64u * 1024u;
+const ALDHANI_GLOW_BLUR: u32 = ALDHANI_GLOW_SUM + 3u * 64u * 64u;
+const ALDHANI_GLOW_UNIT: f32 = 1024.0;
+// How far from its line a streak's light reaches at most, in radians (its glow fades to nothing
+// there): a streak is binned into every tile within it.
+const ALDHANI_REACH: f32 = 0.012;
+// The event's seconds: the storm builds over a minute, holds, and dies out over the last minute.
+const ALDHANI_EVENT: f32 = 300.0;
+// Where the meteors go (the eye): a fixed direction of the world, due south eight degrees under
+// the horizon, far beyond it. They fly away from the observer toward it, their streaks converging
+// on it as they shrink into the haze beyond the mountains (their radiant, the opposite point, is
+// eight degrees over the northern horizon, behind the observer facing the eye).
+const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, -0.1392, 0.99027);
+// The light the field gives a face turned to it at the storm's height, in full moons (the moon's
+// light overhead, `rt.held.z`), and the glow of the sky around the radiant at its brightest, in
+// paper whites (radiance; Lambert's 1/pi in the units, as the sky table's).
+const ALDHANI_MOONS: f32 = 16.0;
+const ALDHANI_GLOW: f32 = 0.2;
+// A meteor of the field: toward its streak's tail (xyz) and its core's width in pixels (w); toward
+// its head (xyz) and its seed (w, for the sparkles); the light of its core at the head (rgb, paper
+// whites) and its head's glow (w); the light it gives the terrain (rgb, luminance 1) and its share
+// (w, the cdf's weight; 0: not burning).
+struct AldhaniMeteor {
+    tail: vec4<f32>,
+    head: vec4<f32>,
+    colour: vec4<f32>,
+    light: vec4<f32>,
+}
+// x: the meteors' shares summed, y: the meteors burning, z: those drawn in the sky; the shares'
+// running sum (`cdf[i]` the sum up to meteor i); each streak's great circle (its normal, xyz, 0
+// for a point, and its angle, w), for the sky to pass a streak by from one read; and the meteors.
+struct AldhaniField {
+    total: vec4<f32>,
+    cdf: array<f32, ALDHANI_METEORS>,
+    lines: array<vec4<f32>, ALDHANI_METEORS>,
+    meteors: array<AldhaniMeteor, ALDHANI_METEORS>,
+}
+// A hash of `n` to [0, 1) (a PCG round, as terrain.wgsl's `meteor_hash`).
+fn aldhani_rand(n: u32) -> f32 {
+    let state = n * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return f32(((word >> 22u) ^ word) >> 8u) / 16777216.0;
+}
+// How strong the storm is `t` seconds into the event (0 to 1; 0 before and after it).
+fn aldhani_envelope(t: f32) -> f32 {
+    return smoothstep(0.0, 60.0, t) * (1.0 - smoothstep(ALDHANI_EVENT - 60.0, ALDHANI_EVENT, t));
+}
+// The sky tile direction `d` falls in: the upper half of the sky folded flat (an octahedron's top,
+// turned to a square), ALDHANI_TILES a side, the horizon on the square's edges.
+fn aldhani_tile(d: vec3<f32>) -> u32 {
+    let c = min(vec2<u32>(aldhani_square(d) * f32(ALDHANI_TILES)), vec2(ALDHANI_TILES - 1u));
+    return c.y * ALDHANI_TILES + c.x;
+}
+// Where direction `d` falls on that square, 0 to 1 a side.
+fn aldhani_square(d: vec3<f32>) -> vec2<f32> {
+    let up = vec3(d.x, max(d.y, 0.0), d.z);
+    let p = up.xz / (abs(up.x) + up.y + abs(up.z) + 1e-6);
+    return clamp(vec2(p.x + p.y, p.x - p.y) * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+}
+// The colours of the show's frame, in light (ALDHANI_PALETTE), by patches of sky rather than
+// meteor by meteor (neighbours there differ by some 10 degrees of hue), richer than the frame.
+// `around` and `theta` are where a meteor lights up about the radiant (0 east, pi west). The cold
+// ones there, nine in ten of all, from turquoise to cyan, drifting slowly across the sky, and in
+// the sky's bluest patches blue (`u` a meteor's own draw, 0.5 the patch's own colour):
+fn aldhani_cold(around: f32, theta: f32, u: f32) -> vec3<f32> {
+    let drift = 0.5 + 0.35 * sin(1.9 * around + 4.0 * theta + 1.0) + 0.25 * sin(3.7 * around - 6.0 * theta);
+    let h = clamp(drift + 0.2 * (u - 0.5), 0.0, 1.0);
+    let cold = mix(vec3(0.0, 1.0, 0.6), vec3(0.0, 0.78, 1.0), smoothstep(0.2, 0.8, h));
+    return mix(cold, vec3(0.25, 0.45, 1.0), smoothstep(0.88, 0.98, h));
+}
+// The warm ones there, gold and red:
+fn aldhani_warm(around: f32, theta: f32) -> vec3<f32> {
+    let red = smoothstep(0.55, 0.85, 0.5 + 0.5 * sin(6.0 * theta + 2.0 * around));
+    return mix(vec3(1.0, 0.7, 0.12), vec3(1.0, 0.22, 0.12), red);
+}
+// And their share there: none on the east, a fifth on the far west (the right, facing the
+// radiant), one in twenty of all.
+fn aldhani_warmth(around: f32) -> f32 {
+    let west = smoothstep(0.1, 1.0, -cos(around));
+    return 0.2 * west * west;
+}
+// The sky's own light toward `d` during the event (`t` seconds in), in paper whites, beside the
+// glow its meteors make as they burn (terrain.wgsl `aldhani_burning`, from the field): the haze
+// they light, pale and the same everywhere, thicker toward the eye and the radiant, and the eye
+// itself, a bright glow on the horizon around it, white-hot in its middle.
+fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
+    let strength = aldhani_envelope(t);
+    if strength <= 0.0 { return vec3(0.0); }
+    let c = clamp(dot(d, ALDHANI_RADIANT), -1.0, 1.0);
+    let theta = acos(c);
+    let up = max(d.y, 0.0);
+    let pale = vec3(0.72, 0.9, 0.9);
+    let sky = pale * (1.2 * (0.35 + 0.65 * abs(c)) * (0.55 + 0.45 * exp(-up * 2.0)));
+    let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
+    let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
+    let eye = pale * (8.0 * wide) + mix(pale, vec3(1.0), 0.6) * (60.0 * core);
+    // Under the horizon the ground hides it (the rays see the ground there).
+    let above = smoothstep(-0.06, 0.0, d.y);
+    return (sky + eye) * (ALDHANI_GLOW * strength * above);
+}
+// ALDHANI-END
+// The Eye of Aldhani's meteors' light on camera-relative `pos` (normal `n`): every meteor burning
+// is a light far away toward its head, its light its share of the field's (ALDHANI_MOONS full
+// moons at the storm's height, split by each one's power and the inverse square of its distance).
+// Two candidates are drawn by their share from the running sum (a binary search, no loop over the
+// thousands), one of them kept by its share times its facing (resampled importance sampling), and
+// one shadow ray toward it: the light is the field's times the candidates' mean facing in the
+// chosen one's colour, bounded (no firefly), the shadows moving with the meteors. Their light
+// changes only as their curves do, so the frames' average holds still.
+fn aldhani_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> vec3<f32> {
+    let t = rt.held.y;
+    let total = aldhani_field.total.x;
+    if t < 0.0 || total <= 0.0 { return vec3(0.0); }
+    var sum = 0.0;
+    var chosen = 0u;
+    var chosen_facing = 0.0;
+    // White (`random2`): already stratified over the two candidates, and `y` is the choice.
+    let random = random2(texel, 90u);
+    var pick = random.y;
+    for (var c = 0u; c < 2u; c++) {
+        // Stratified over the running sum.
+        let want = (f32(c) + random.x) * 0.5 * total;
+        var lo = 0u;
+        var hi = ALDHANI_METEORS - 1u;
+        while lo < hi {
+            let mid = (lo + hi) / 2u;
+            if aldhani_field.cdf[mid] > want { hi = mid; } else { lo = mid + 1u; }
+        }
+        let facing = max(dot(n, aldhani_field.meteors[lo].head.xyz), 0.0);
+        sum += facing;
+        pick = fract(pick + 0.618034);
+        if facing > 0.0 && pick * sum < facing {
+            chosen = lo;
+            chosen_facing = facing;
+        }
+    }
+    if chosen_facing <= 0.0 { return vec3(0.0); }
+    let m = aldhani_field.meteors[chosen];
+    var through = vec3(0.0);
+    if HW {
+        through = hw_light(pos, m.head.xyz, 4096.0);
+    } else {
+        through = vec3(ray(pos, m.head.xyz, BOUNCE_BUDGET, 1e30));
+    }
+    let field = rt.held.z * ALDHANI_MOONS * aldhani_envelope(t);
+    return m.light.rgb * through * (field * sum * 0.5);
+}
+// The far field (gfx/far_heights.rs, far_field.wgsl): over the terrain's heights around the camera
+// (a texel 2x2 blocks, `FAR_SIZE` a side, toroidal), worked out once for every view, the height
+// under which each texel's column is in the terrain's shadow toward the sun (or the moon) and
+// the caster's distance (`far_light_map`), and how much sky its top sees toward eight directions
+// (`far_sky_map`, `far_sky_map2`). Past the voxel grid the distant terrain's mountains cast
+// their shadows by it and its valleys see less of the sky; within the grid, what lies beyond it
+// still shades the rays that leave it.
+@group(0) @binding(58) var far_light_map: texture_2d<f32>;
+@group(0) @binding(59) var far_sky_map: texture_2d<f32>;
+@group(0) @binding(60) var far_sky_map2: texture_2d<f32>;
+const FAR_SIZE: i32 = 1024;
+// The least distance a ray toward the light goes before the far field takes over (blocks).
+const FAR_START: f32 = 3.0;
+// The far field's four texels around block-relative `o` (x, z: the camera's block's corner is
+// 0), bilinear: their slots and weights; `inside` false off the window.
+struct FarTaps {
+    slots: array<vec2<i32>, 4>,
+    weights: vec4<f32>,
+    inside: bool,
+}
+fn far_taps(o: vec2<f32>) -> FarTaps {
+    let first = vec2<i32>(rt.far.xy);
+    let rel = (vec2<f32>(vec2<i32>(rt.camera.xz) - 2 * first) + o) * 0.5 - 0.5;
+    let base = vec2<i32>(floor(rel));
+    let f = rel - floor(rel);
+    var taps: FarTaps;
+    taps.inside = all(base >= vec2(0)) && all(base + 1 < vec2(FAR_SIZE));
+    for (var i = 0; i < 4; i++) {
+        taps.slots[i] = (first + base + vec2(i & 1, i >> 1u)) & vec2(FAR_SIZE - 1);
+    }
+    taps.weights = vec4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+    return taps;
+}
+// The light the distant terrain lets reach camera-relative `pos` from the sun (or the moon),
+// `extra` blocks (horizontally) nearer the light than the point the ray started from: lit above
+// its texel's shadow height (bilinear), the penumbra as wide as the light's disc makes it at the
+// caster's distance (a heightfield's soft shadow).
+fn far_light(pos: vec3<f32>, extra: f32) -> f32 {
+    let l = rt.light.xyz;
+    if rt.far.z < 0.5 || l.y <= 0.0 { return 1.0; }
+    let o = pos + rt.fraction.xyz;
+    let taps = far_taps(o.xz);
+    if !taps.inside { return 1.0; }
+    var shade = vec2(0.0);
+    for (var i = 0; i < 4; i++) {
+        shade += textureLoad(far_light_map, taps.slots[i], 0).rg * taps.weights[i];
+    }
+    // A height under the shadow's at the caster's distance, as an angle (cos^2 of the light's
+    // elevation: the height across the ray), in the disc's radii.
+    let radius = max(rt.sun_light.w, 0.002);
+    let below = (rt.camera.y + o.y - shade.x) * dot(l.xz, l.xz);
+    return smoothstep(-1.0, 1.0, below / ((shade.y + extra) * radius));
+}
+// Where a ray from camera-relative `pos` along `l` leaves the square the grid's rays reach
+// (`reach` blocks each side of the camera).
+fn grid_leave(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> f32 {
+    let along = select(l.xz, vec2(1e-6), abs(l.xz) < vec2(1e-6));
+    let side = select(vec2(-reach), vec2(reach), along > vec2(0.0));
+    let leave = (side - pos.xz) / along;
+    return max(min(leave.x, leave.y), FAR_START);
+}
+// How much of the sky a face of normal `n` at camera-relative `pos` sees over the distant terrain,
+// cosine-weighted as the traced sky rays count it (the mask's `b`): each of the eight directions'
+// share of the sky (bilinear) weighted by how much the face turns to it, and a face sees
+// (1 + n.y) / 2 of the sky's cosine lobe at most (a wall half of it).
+fn far_sky(pos: vec3<f32>, n: vec3<f32>) -> f32 {
+    let taps = far_taps(pos.xz + rt.fraction.xz);
+    if !taps.inside { return -1.0; }
+    var a = vec4(0.0);
+    var b = vec4(0.0);
+    for (var i = 0; i < 4; i++) {
+        a += textureLoad(far_sky_map, taps.slots[i], 0) * taps.weights[i];
+        b += textureLoad(far_sky_map2, taps.slots[i], 0) * taps.weights[i];
+    }
+    var open = 0.0;
+    var weights = 0.0;
+    for (var k = 0; k < 8; k++) {
+        let angle = (f32(k) + 0.5) * 6.2831853 / 8.0;
+        let facing = 1.0 + dot(vec2(cos(angle), sin(angle)), n.xz);
+        open += facing * select(b[k & 3], a[k & 3], k < 4);
+        weights += facing;
+    }
+    return 0.5 * (1.0 + n.y) * open / max(weights, 1e-4);
+}
+// What the rays give the surface depth pixel `p` shows.
+struct Traced {
+    // The sun's light reaching it and the light around (r, g), and with RT lighting the sky seen
+    // (b) and its distance (a). The sky: (1, 1), with RT lighting no distance (-1).
+    rays: vec4<f32>,
+    // RT lighting's sky and bounced light (rgb), accumulated over frames, a below 0 past the grid
+    // (`block_mask`).
+    blocks: vec4<f32>,
+    // RT lighting's light sources' direct light and the face (`direct_mask`).
+    direct: vec4<f32>,
+    // RT lighting's sun through what tints it (`sun_mask`).
+    sun: vec4<f32>,
+    // RT lighting's ReSTIR DI reservoir (`reservoirs`).
+    reservoir: vec4<u32>,
+}
+// The surface's normal at depth pixel `p` (at `pos`) from its neighbours, on each axis the side
+// nearer in depth (an edge's other side belongs to another surface).
+fn surface_normal(p: vec2<i32>, pos: vec3<f32>) -> vec3<f32> {
+    let r = surface_at(p + vec2(1, 0)) - pos;
+    let l = pos - surface_at(p - vec2(1, 0));
+    let d = surface_at(p + vec2(0, 1)) - pos;
+    let u = pos - surface_at(p - vec2(0, 1));
+    let dx = select(l, r, dot(r, r) < dot(l, l));
+    let dy = select(u, d, dot(d, d) < dot(u, u));
+    let n = normalize(cross(dx, dy));
+    return select(n, -n, dot(n, pos) > 0.0);
+}
+fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
+    moving_shade = false;
+    let lit_mode = rt.mode.x > 0.5;
+    let none = Traced(select(vec4(1.0), vec4(1.0, 1.0, 1.0, -1.0), lit_mode), vec4(0.0, 0.0, 0.0, -1.0),
+        vec4(0.0, 0.0, 0.0, -1.0), vec4(1.0), vec4(0u));
+    if f32(p.x) >= rt.size.x || f32(p.y) >= rt.size.y { return none; }
+    // Reverse depth: 0 is the sky.
+    if textureLoad(depth, p, 0) <= 0.0 { return none; }
+    let pos = surface_at(p);
+    let n = surface_normal(p, pos);
+    if DEBUG == 4u { return Traced(vec4(dot(n, rt.light.xyz)), none.blocks, none.direct, none.sun, none.reservoir); }
+    // The rays fade out toward the grid's edge; RT lighting stops short of it (the terrain past it
+    // lights itself as vanilla does).
+    let reach = 0.5 * rt.grid.z;
+    let far = max(abs(pos.x), abs(pos.z));
+    let edge = 1.0 - smoothstep((1.0 - EDGE_BAND) * reach, reach, far);
+    // Off the surface by more as the depth's precision falls with distance.
+    let lifted = pos + n * (0.02 + 0.002 * length(pos));
+    // The far field: past the grid the heights alone, from the surface (`far_sun`); within it,
+    // what lies beyond the grid, from where the ray leaves it (`beyond`); the band between blends
+    // one into the other as the traced rays fade out.
+    let shadows = rt.mode.y > 0.5 && rt.light.w > 0.0;
+    var far_sun = 1.0;
+    var beyond = 1.0;
+    if shadows && (SKIP & 64u) == 0u {
+        if edge < 1.0 { far_sun = far_light(lifted, 0.0); }
+        if edge > 0.0 {
+            let t = grid_leave(lifted, rt.light.xyz, reach);
+            beyond = far_light(lifted + rt.light.xyz * t, t * length(rt.light.xz));
+        }
+    }
+    var far_seen = -1.0;
+    if lit_mode && edge < 1.0 && rt.far.z > 0.5 && (SKIP & 64u) == 0u { far_seen = far_sky(lifted, n); }
+    if DEBUG == 7u {
+        return Traced(vec4(far_sun * beyond, max(far_seen, 0.0), 0.0, 1.0), none.blocks, none.direct,
+            none.sun, none.reservoir);
+    }
+    let facing = dot(n, rt.light.xyz);
+    let far_facing = select(0.0, far_sun * smoothstep(0.0, 0.15, facing), facing > 0.0);
+    if edge <= 0.0 {
+        if lit_mode {
+            return Traced(vec4(far_sun, 1.0, far_seen, length(pos)), none.blocks, none.direct,
+                vec4(vec3(far_sun), 0.0), none.reservoir);
+        }
+        return Traced(vec4(select(1.0, mix(1.0, far_facing, rt.light.w), shadows), 1.0, 0.0, 1.0),
+            none.blocks, none.direct, none.sun, none.reservoir);
+    }
+    var sun = 1.0;
+    // The sun's shadows alone (without RT lighting, or their debug view). RT lighting's sun is
+    // `sun_through` below, a ray toward a point of the disc: this ray toward its centre went
+    // unused there, traced for nothing unless the compiler dropped it (a ray query's loop).
+    if shadows && (!lit_mode || DEBUG == 5u || SUN_CENTRE == 1u) {
+        let v = sun_visibility(lifted, n);
+        if DEBUG == 5u { return Traced(vec4(v), none.blocks, none.direct, none.sun, none.reservoir); }
+        sun = mix(1.0, mix(far_facing, v * beyond, edge), rt.light.w);
+    }
+    // The ambient occlusion's six short rays, but for RT lighting: its sky and bounced light's rays
+    // are the occlusion itself.
+    var open = 1.0;
+    if rt.size.w > 0.0 && !lit_mode {
+        open = mix(1.0, ambient(lifted, n), edge);
+    }
+    if lit_mode {
+        // The terrain lights itself with these (terrain.wgsl `rt_lit`): the sun's visibility
+        // without the faces' facing (the terrain has its own normal), the light around, and the
+        // distance to recognise the surface by.
+        var sun_through = vec3(1.0);
+        if rt.mode.y > 0.5 && rt.light.w > 0.0 && (SKIP & 1u) == 0u {
+            var disc = vec3(1.0);
+            var traced = false;
+            var merged = false;
+            if pass_ran(1u) && sun_from_pass {
+                let from_pass = textureLoad(sun_pass, texel, 0);
+                disc = from_pass.rgb;
+                // The pass lets the light through water and glass untinted (sun.rahit): where
+                // its ray crossed one (alpha below 0) the same ray is traced here, with the
+                // tint, the depth's absorption and the caustics, so the floor seen from under
+                // the water is lit as the refraction shows it from above. Not behind water or
+                // glass whose refraction replaces this surface (`behind_psr`, the sea seen from
+                // above): its light never shows there (the refraction's own ray lights what the
+                // bent ray meets), and the whole sea would trace its caustics for nothing.
+                traced = from_pass.a < 0.0 && !behind_psr && (SKIP & 512u) == 0u;
+            }
+            if traced || !(pass_ran(1u) && sun_from_pass) {
+                disc = sun_disc_ray(lifted, blue2(texel, 2u, BLUE_SUN));
+                sun_caustic = HW && hw_caustic_on && (SKIP & 512u) == 0u;
+                merged = HW && (SKIP & 8388608u) == 0u;
+            }
+            sun_through = mix(vec3(far_sun), disc * beyond, edge);
+            // Whether a moving caster (an entity, the player's body, the view model) stands
+            // between this surface and the point of the disc this frame's ray aimed at
+            // (shadow_rays_moving.wgsl): its shadow moves, `accumulate` keeps it sharp. The ray
+            // just traced toward that point says it (`hw_light_moving`): what stopped it. A
+            // moving caster behind the terrain that shadows first may go unseen, where its shadow
+            // changes nothing. The sun pass's texels, and `SKIP` 8388608, trace the second ray.
+            if HW && edge > 0.0 && (SKIP & 1024u) == 0u {
+                if merged {
+                    moving_shade = hw_light_moving >= 0.0 && hw_light_moving < MOVING_REACH;
+                } else {
+                    moving_shade = hw_moving_shadow(lifted,
+                        sun_disc_dir(blue2(texel, 2u, BLUE_SUN)), MOVING_REACH);
+                }
+            }
+        }
+        let v = max(sun_through.r, max(sun_through.g, sun_through.b));
+        // The sky's and the light sources' light; it fades out toward the grid's edge into the
+        // levels' (a).
+        // The light sources' light (ReSTIR DI) and the sky's and bounced light (ReSTIR GI), over
+        // the reservoirs the last frame left where this surface was.
+        let back = restir_last(pos);
+        var sky = vec4(0.0, 0.0, 0.0, 1.0);
+        // The bounced light is traced in turns, in 8x8 tiles (a workgroup's: a wave of threads
+        // skips it whole or not at all): a surface the last frame showed traces it one frame in
+        // four, a 2x2 pattern of tiles turning with the view's frames, its 30 frames' history
+        // averaging a quarter as many rays (the sky's and the bounces' light changes slowly; the
+        // light sources', ReSTIR DI's, is traced every frame); the frames between keep the last
+        // frame's light, reservoir and sky, without a ray, and feed the cache with that. A surface
+        // just seen traces every frame. Behind water or glass the refraction replaced
+        // (`behind_psr`), this surface's light never shows (what does is what the bent ray met,
+        // lit by the radiance cache): one frame in eight, a 4x2 pattern, to keep the cache fed.
+        let t = vec2<u32>(texel) >> vec2(3u);
+        let frame = u32(rt.frame.z);
+        // `GI_TURN_BITS` (shadow_rays.rs `gi_turn_bits`, `HORIZON_RT_GI_TURNS`): 2 one frame in
+        // four, 3 one in eight.
+        var rest = tile_of(t, GI_TURN_BITS) != (frame & ((1u << GI_TURN_BITS) - 1u));
+        if behind_psr { rest = tile_of(t, 3u) != (frame & 7u); }
+        // A surface whose history the anti-lag cut (`accumulate`: its light changed) traces every
+        // frame until its history is long again, so a light switched on, a torch drawn or a
+        // mob's shadow passing by settles within a few frames rather than a few frames in four
+        // (the metals show the sky seen whole, there it showed most). Only those: a surface just
+        // seen, or past the grid's band, rests in turns as before (each frame's GI is most of
+        // the kernel's cost).
+        let cut = antilag_in(textureLoad(last_direct, back.xy, 0).a);
+        rest = rest && back.z == 1 && !cut && (SKIP & 16u) == 0u;
+        sky_rested = rest;
+        if rest {
+            sky = vec4(textureLoad(last_blocks, back.xy, 0).rgb, textureLoad(last_mask, back.xy, 0).b);
+            gi_out_a = textureLoad(last_gi_a, back.xy, 0);
+            gi_out_b = textureLoad(last_gi_b, back.xy, 0);
+        } else if (SKIP & 2u) == 0u {
+            sky = restir_gi(lifted, n, texel, back.xy, back.z == 1);
+            // The ambient light: the same on every face, so nothing is pitch black.
+            sky = vec4(sky.rgb + vec3(rt.ambient_light.x), sky.a);
+        }
+        let blocks = vec4(sky.rgb, select(edge, -1.0, edge < 0.5));
+        var direct = vec4(0.0, 0.0, 0.0, face_of(n));
+        if (SKIP & 4u) == 0u {
+            direct = vec4(restir_light(lifted, n, texel, back.xy, back.z == 1).rgb
+                + moving_light(lifted, n, texel) + aldhani_light(lifted, n, texel), face_of(n));
+        }
+        // What this pixel found, into the radiance cache for the bounce rays of the frames after
+        // (a resting one what it kept, so that the cache the refraction reads stays as full).
+        cache_add(pos, n, sky.rgb + direct.rgb, texel);
+        // The sun mask's alpha: the indirect and direct light's luminance squared, its second
+        // moment once accumulated, for the denoiser's variance (denoise.wgsl).
+        let moment = luminance(sky.rgb + direct.rgb) * luminance(sky.rgb + direct.rgb);
+        // The sky seen: the traced rays', toward the far field's horizon across the band.
+        let seen = select(sky.a, mix(far_seen, sky.a, edge), far_seen >= 0.0);
+        // A moving caster's shadow rides to `accumulate` (through `cs_sparse`'s blocks too) as a
+        // quarter past the face in the direct light's alpha; `accumulate` takes it off again.
+        if moving_shade { direct.a += MOVING_MARK; }
+        return Traced(vec4(v, open, seen, length(pos)), blocks, direct, vec4(sun_through, moment),
+            reservoir_out);
+    }
+    return Traced(vec4(sun, open, 0.0, 1.0), none.blocks, none.direct, none.sun, none.reservoir);
+}
+// An 8x8 tile's place (`t`, in tiles) in a pattern of 2^`bits` tiles (2: 2x2, 3: 4x2), the turn it
+// is traced on (`trace`'s bounced light).
+fn tile_of(t: vec2<u32>, bits: u32) -> u32 {
+    let k = (t.x & 1u) | ((t.y & 1u) << 1u) | (((t.x >> 1u) & 1u) << 2u);
+    return k & ((1u << bits) - 1u);
+}
+// Where camera-relative `pos` was in the last frame's masks (xy), and z 1 when it showed it there.
+fn restir_last(pos: vec3<f32>) -> vec3<i32> {
+    if rt.motion.w < 0.5 { return vec3(0); }
+    let q = pos + rt.motion.xyz;
+    let c = rt.prev_view_proj * vec4(q, 1.0);
+    if c.w <= 0.0 { return vec3(0); }
+    let ndc = c.xy / c.w;
+    if any(abs(ndc) > vec2(1.0)) { return vec3(0); }
+    let size = vec2<f32>(textureDimensions(last_mask));
+    let at = vec2<i32>(vec2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y));
+    let last = textureLoad(last_mask, clamp(at, vec2(0), vec2<i32>(size) - 1), 0);
+    let d = length(q);
+    if last.a < 0.0 || abs(last.a - d) > 0.05 + 0.02 * d { return vec3(at, 0); }
+    return vec3(at, 1);
+}
+// The frames a pixel's light averages at most (NRD ReLAX's diffuse `maxAccumulatedFrameNum`, which
+// Remix runs): each frame adds 1/(n+1) of its rays, n the
+// frames already in the pixel's history, so a surface just seen converges as fast as its frames
+// allow and a long-seen one keeps 30 frames' light.
+const MAX_HISTORY: f32 = 30.0;
+// The fast history's frames (ReLAX's `maxFastAccumulatedFrameNum`) and how many of its standard
+// deviations the slow history may stray from its mean (`historyClampingColorBoxSigmaScale`), so
+// a light switched on or off shows within 6 frames, not 30.
+const FAST_HISTORY: f32 = 6.0;
+const CLAMP_SIGMA: f32 = 2.0;
+// ReLAX's anti-lag: where the clamp had to pull the slow history back (the light really changed:
+// a torch drawn, a mob's shadow going by), its history is cut to this many frames, so the frames
+// after weigh the new light as a surface just seen would, not 1/31 each.
+const ANTILAG_HISTORY: f32 = 3.0;
+// How far the clamp must have pulled the light (its share of the fast mean), or the sun's
+// visibility and the sky seen (0 to 1), for the anti-lag to cut the history.
+const ANTILAG_LIGHT: f32 = 0.25;
+const ANTILAG_VISIBILITY: f32 = 0.15;
+// The fast history's frames while the light falls, and how far under the slow history the fast
+// mean must be (with this frame under twice that) for the light to count as gone (`accumulate`).
+const DARKEN_HISTORY: f32 = 3.0;
+const DARKEN_RATIO: f32 = 0.35;
+// A light gone out, told from the noise of a light that only a few rays find (a closed room's sky
+// through a skylight, the patch of sun a room's bounces see: most frames find none of it, one now
+// and then many times its mean). The fast history follows a frame darker than it at once only
+// when that frame is under its mean by more than its noise (`darkens`), and the slow history
+// drops to the fast mean only where its frames were steady, their deviation under their mean
+// (`steady`, from the second moment it keeps in the sun mask's alpha). Without them, in such
+// light, every run of dark frames pulled the fast mean down three times as fast as a bright frame
+// lifted it and dropped the slow history to it as a light gone: the room held a fraction of its
+// light, in blotches where the runs fell. A lamp switched off (steady light, then none) goes as
+// fast as before. `HORIZON_RT_SKIP` 1073741824 darkens on any darker frame as before.
+const SKIP_GI: u32 = 1073741824u;
+fn darkens(lum_now: f32, quick: vec4<f32>) -> bool {
+    if (SKIP & SKIP_GI) != 0u { return true; }
+    let sigma = sqrt(max(quick.y - quick.x * quick.x, 0.0));
+    return lum_now < quick.x - CLAMP_SIGMA * sigma;
+}
+fn steady(held: f32, moment: f32) -> bool {
+    if (SKIP & SKIP_GI) != 0u { return true; }
+    return moment - held * held < held * held;
+}
+// The frames the sun's light keeps where its ray crossed water (`sun_caustic`): the caustics move
+// with the waves, and over 30 frames (and the bilinear reprojection each frame) they smeared into
+// trails that spread over the face until it was even.
+const CAUSTIC_HISTORY: f32 = 3.0;
+// Below this many frames of history a surface the anti-lag cut traces its bounced light every
+// frame (`trace`'s turns).
+const RESTED_HISTORY: f32 = 8.0;
+// The frames the sun's history stays short where a moving caster's shadow is or just was, what
+// each frame's ray weighs then at least, and how far toward the sun the rays look for one
+// (shadow_rays_moving.wgsl). The frames left ride in the fast history's sun visibility, as twice
+// their count added to it (`fast_shade`); this frame's, from `trace`, as MOVING_MARK past the
+// face in the direct light's alpha.
+const MOVING_FRAMES: f32 = 3.0;
+const MOVING_SUN_WEIGHT: f32 = 0.5;
+const MOVING_REACH: f32 = 64.0;
+const MOVING_MARK: f32 = 0.25;
+// The frames a fast history's sun visibility (z) carries (`MOVING_FRAMES`), and the visibility.
+fn fast_shade(z: f32) -> f32 {
+    return floor(z / 2.0);
+}
+// The face (0..5) and the history length packed in the direct light's alpha (`face + 8 n`, exact in
+// a half float), for the denoiser and the reuse's checks.
+fn face_in(a: f32) -> f32 {
+    return a - 8.0 * floor(a / 8.0);
+}
+// The history length (0..30) and whether the anti-lag cut it and the surface still traces every
+// frame for it (`trace`): `n + 32` in place of n while it does.
+fn history_in(a: f32) -> f32 {
+    let n = floor(a / 8.0);
+    return n - 32.0 * floor(n / 32.0);
+}
+fn antilag_in(a: f32) -> bool {
+    return floor(a / 8.0) >= 32.0;
+}
+// A visibility's slow history `held` clamped to its fast mean `mean` give or take its noise: a
+// visibility is a few rays' share each frame, about a coin toss's noise (m(1 - m)), which the fast
+// history's exponential average of weight 1/FAST_HISTORY brings down by 1/(2 FAST_HISTORY - 1).
+fn clamp_visibility(held: f32, mean: f32) -> f32 {
+    let m = clamp(mean, 0.0, 1.0);
+    let sigma = sqrt(m * (1.0 - m) / (2.0 * FAST_HISTORY - 1.0));
+    let reach = CLAMP_SIGMA * sigma + 0.05;
+    return clamp(held, mean - reach, mean + reach);
+}
+// RT lighting: this frame's rays at mask texel `texel` added to the last frames' at the same
+// surface, reprojected bilinearly (ReLAX's temporal accumulation): the four last texels around
+// where the surface was, each kept when it showed the same face at about the same distance; a
+// surface none of them showed starts over from this frame's.
+// The fast history (`fast_out`): the indirect and direct light's luminance and its square (x, y),
+// the sun's visibility (z) and the sky seen (w), over the last FAST_HISTORY frames. The slow
+// history's light, sun and sky seen are each clamped to it, so the metals (which show the sun's
+// highlight and the sky seen whole, with no diffuse light to hide them) don't trail a change of
+// light by 30 frames.
+fn accumulate(texel: vec2<i32>, traced: Traced) -> Traced {
+    // This frame's moving caster (`trace`), off the face again.
+    var v = traced;
+    let shade_now = v.direct.a - floor(v.direct.a) > 0.5 * MOVING_MARK;
+    v.direct.a = floor(v.direct.a);
+    let now = v.blocks.rgb + v.direct.rgb;
+    let lum_now = luminance(now);
+    fast_out = vec4(lum_now, lum_now * lum_now,
+        v.rays.r + select(0.0, 2.0 * MOVING_FRAMES, shade_now), v.rays.b);
+    if rt.motion.w < 0.5 || v.rays.a < 0.0 { return v; }
+    // Past the grid's band (`block_mask`'s a below 0) no history is kept, and none ever grows:
+    // its history is marked long, so its bounced light keeps resting in turns as it did (`trace`,
+    // gi.rgen), rather than being traced every frame across the far terrain.
+    if v.blocks.a < 0.0 {
+        var far = v;
+        far.direct.a = face_in(v.direct.a) + 8.0 * MAX_HISTORY;
+        return far;
+    }
+    let q = surface_at(pixel_of(texel)) + rt.motion.xyz;
+    let c = rt.prev_view_proj * vec4(q, 1.0);
+    if c.w <= 0.0 { return v; }
+    let ndc = c.xy / c.w;
+    if any(abs(ndc) > vec2(1.0)) { return v; }
+    let size = vec2<f32>(textureDimensions(last_mask));
+    let at = vec2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y) - 0.5;
+    let base = vec2<i32>(floor(at));
+    let f = at - floor(at);
+    let d = length(q);
+    let face = face_in(v.direct.a);
+    var last_shade = 0.0;
+    var mask = vec3(0.0);
+    var blocks = vec3(0.0);
+    var direct = vec3(0.0);
+    var sun = vec4(0.0);
+    var quick = vec4(0.0);
+    var history = 0.0;
+    var cut = 0.0;
+    var weight = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let o = vec2(i & 1, i >> 1u);
+        let t = base + o;
+        if any(t < vec2(0)) || any(t >= vec2<i32>(size)) { continue; }
+        let last = textureLoad(last_mask, t, 0);
+        if last.a < 0.0 || abs(last.a - d) > 0.05 + 0.02 * d { continue; }
+        let b = textureLoad(last_blocks, t, 0);
+        let l = textureLoad(last_direct, t, 0);
+        if b.a < 0.0 || abs(face_in(l.a) - face) > 0.5 { continue; }
+        let w = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1) + 1e-4;
+        mask += last.rgb * w;
+        blocks += b.rgb * w;
+        direct += l.rgb * w;
+        sun += textureLoad(last_sun, t, 0) * w;
+        var last_quick = textureLoad(last_fast, t, 0);
+        let left = fast_shade(last_quick.z);
+        last_shade = max(last_shade, left);
+        last_quick.z -= 2.0 * left;
+        quick += last_quick * w;
+        history += history_in(l.a) * w;
+        cut += select(0.0, w, antilag_in(l.a));
+        weight += w;
+    }
+    if weight < 1e-3 { return v; }
+    var n = min(floor(history / weight + 0.5) + 1.0, MAX_HISTORY);
+    let quick_mean = quick / weight;
+    // (This frame's sun visibility without the frames `fast_out.z` carries for the early returns.)
+    fast_out = mix(quick_mean, vec4(fast_out.xy, v.rays.r, fast_out.w),
+        max(1.0 / (n + 1.0), 1.0 / FAST_HISTORY));
+    // A light going out shows faster than one coming on (a lamp switched off, a torch put away):
+    // when this frame is darker than the fast history, its light's mean and moment follow it over
+    // DARKEN_HISTORY frames instead.
+    if lum_now < quick_mean.x && darkens(lum_now, quick_mean) {
+        let quick_dark = mix(quick_mean.xy, vec2(lum_now, lum_now * lum_now),
+            max(1.0 / (n + 1.0), 1.0 / DARKEN_HISTORY));
+        fast_out = vec4(quick_dark, fast_out.zw);
+    }
+    // On a frame that kept the last frame's sky, the sky seen is the slow history's own: the fast
+    // history keeps its own instead.
+    if sky_rested { fast_out.w = quick_mean.w; }
+    // The slow history clamped to the fast one's mean, give or take its noise: what changed
+    // within the last frames overrides what the long average still holds.
+    var slow_blocks = blocks / weight;
+    var slow_direct = direct / weight;
+    var slow_mask = mask / weight;
+    var slow_sun = sun / weight;
+    let mean = fast_out.x;
+    let sigma = sqrt(max(fast_out.y - mean * mean, 0.0));
+    let held = luminance(slow_blocks + slow_direct);
+    var bound = clamp(held, mean - CLAMP_SIGMA * sigma, mean + CLAMP_SIGMA * sigma);
+    var lag = false;
+    // The clamp can't see a light going out: the fast history's spread grows as its mean falls
+    // (its moment still holds the light's square), so mean + 2 sigma stays above the old light
+    // for a dozen frames. A fast mean and a frame both far under the slow history are a light
+    // gone: the slow history drops to the fast mean at once.
+    if held > 1e-4 && mean < DARKEN_RATIO * held && lum_now < 2.0 * DARKEN_RATIO * held
+        && steady(held, slow_sun.a) {
+        bound = mean;
+    }
+    if bound > held && (SKIP & 32768u) == 0u {
+        // Darker than the last frames saw: a light come on, or a torch carried onto rock the
+        // history holds black. No factor lifts a black history (it was left to climb by 1/31 a
+        // frame, the lit patch's leading edge trailing half a second behind a torch in a cave);
+        // the light it lacks is added in this frame's colours, the new light's.
+        let lacking = bound - held;
+        let lit_blocks = max(v.blocks.rgb, vec3(0.0));
+        let lit_direct = max(v.direct.rgb, vec3(0.0));
+        let lit = luminance(lit_blocks + lit_direct);
+        if lit > 1e-6 {
+            slow_blocks += lit_blocks * (lacking / lit);
+            slow_direct += lit_direct * (lacking / lit);
+            lag = lacking > ANTILAG_LIGHT * max(mean, 1e-3);
+        }
+    } else if held > 1e-5 && bound != held {
+        slow_blocks *= bound / held;
+        slow_direct *= bound / held;
+        lag = abs(bound - held) > ANTILAG_LIGHT * max(mean, 1e-3);
+    }
+    // The sun's visibility, and its colour through tinted glass with it (the terrain divides one by
+    // the other, `rt_sun_colour`); the sky seen.
+    let sun_held = slow_mask.r;
+    let sun_bound = clamp_visibility(sun_held, fast_out.z);
+    if sun_bound != sun_held {
+        slow_mask.r = sun_bound;
+        slow_sun = vec4(slow_sun.rgb * (sun_bound / max(sun_held, 1e-4)), slow_sun.a);
+        // Not where the sun's ray crossed water: its caustics move with the waves every frame, a
+        // change of light the anti-lag would see on every frame (and trace the bounced light
+        // every frame for, `trace`'s turns); their own short history follows them.
+        lag = lag || (abs(sun_bound - sun_held) > ANTILAG_VISIBILITY && !sun_caustic);
+    }
+    let seen_held = slow_mask.b;
+    let seen_bound = clamp_visibility(seen_held, fast_out.w);
+    if seen_bound != seen_held {
+        slow_mask.b = seen_bound;
+        lag = lag || abs(seen_bound - seen_held) > ANTILAG_VISIBILITY;
+    }
+    // The anti-lag's flag: set where it cuts the history, kept until the history is long again.
+    var flag = cut > 0.5 * weight && n < RESTED_HISTORY;
+    if lag && (SKIP & 256u) == 0u {
+        n = min(n, ANTILAG_HISTORY);
+        flag = true;
+    }
+    let k = 1.0 / (n + 1.0);
+    // Under water the sun's visibility and colour (the caustics) keep a few frames only.
+    var k_sun = select(k, max(k, 1.0 / (CAUSTIC_HISTORY + 1.0)), sun_caustic);
+    // Where a moving caster's shadow is or was within MOVING_FRAMES frames, the sun's visibility
+    // keeps two frames' (the fast history follows it), so the shadow neither trails nor blurs.
+    let shade = select(max(last_shade - 1.0, 0.0), MOVING_FRAMES, shade_now);
+    if shade > 0.5 { k_sun = max(k_sun, MOVING_SUN_WEIGHT); }
+    var rays = mix(slow_mask, v.rays.rgb, k);
+    rays.r = mix(slow_mask.r, v.rays.r, k_sun);
+    if shade > 0.5 { fast_out.z = rays.r; }
+    fast_out.z += 2.0 * shade;
+    let sun_now = mix(slow_sun, v.sun, k_sun);
+    return Traced(vec4(rays, v.rays.a),
+        vec4(mix(slow_blocks, v.blocks.rgb, k), v.blocks.a),
+        vec4(mix(slow_direct, v.direct.rgb, k), face + 8.0 * (n + select(0.0, 32.0, flag))),
+        vec4(sun_now.rgb, mix(slow_sun.a, v.sun.a, k)),
+        v.reservoir);
+}
+// VR's second eye: the first eye's depth (its layer of the prepass both eyes share) and masks of
+// this frame (gfx/shadow_rays.rs `run`): its light once accumulated over its frames (not yet
+// denoised), the sun's, its fast history and reservoirs.
+@group(0) @binding(57) var first_depth: texture_depth_2d;
+@group(0) @binding(49) var first_mask: texture_2d<f32>;
+@group(0) @binding(50) var first_blocks: texture_2d<f32>;
+@group(0) @binding(51) var first_direct: texture_2d<f32>;
+@group(0) @binding(52) var first_sun: texture_2d<f32>;
+@group(0) @binding(53) var first_fast: texture_2d<f32>;
+@group(0) @binding(54) var first_reservoirs: texture_2d<u32>;
+@group(0) @binding(55) var first_gi_a: texture_2d<f32>;
+@group(0) @binding(56) var first_gi_b: texture_2d<u32>;
+// The first eye's light at a depth pixel's surface, where it sees it (`from_first`).
+struct FromFirst {
+    found: bool,
+    v: Traced,
+}
+// VR's second eye at depth pixel `p`: what the first eye found this frame on the same surface. A
+// surface's sun, sky and light sources don't depend on the eye that looks (what does, the mirrors
+// and the refraction, is traced for each eye), so the second eye traces only what the first doesn't
+// see: past an edge, out of its frustum. The surface is the first eye's where its depth there is
+// the same point, and its light is the first eye's mask texel there (in the first eye's periphery
+// its 4x4 block's ray, as the first eye shows it), when that texel holds the same face. Also sets
+// `fast_out` and the GI reservoir (`gi_out_a`, `gi_out_b`), for this eye's next frame.
+// Blocks from the eye within which the second eye never takes the first eye's light (`from_first`).
+const NEAR_OWN: f32 = 2.0;
+fn from_first(p: vec2<i32>) -> FromFirst {
+    var out: FromFirst;
+    out.found = false;
+    if f32(p.x) >= rt.size.x || f32(p.y) >= rt.size.y { return out; }
+    if textureLoad(depth, p, 0) <= 0.0 { return out; }
+    let pos = surface_at(p);
+    // Within NEAR_OWN of the eye (the arm and the held item, drawn for each eye with its own
+    // view model) this eye traces its own light: the first eye's at the same point is another
+    // face of it, or none (the arm's side the right eye alone sees came out black).
+    if length(pos) < NEAR_OWN { return out; }
+    let c = rt.first_view_proj * vec4(pos, 1.0);
+    if c.w <= 0.0 { return out; }
+    let ndc = c.xy / c.w;
+    if any(abs(ndc) >= vec2(1.0)) { return out; }
+    let q = vec2<i32>(vec2((ndc.x * 0.5 + 0.5) * rt.size.x, (0.5 - ndc.y * 0.5) * rt.size.y));
+    let z = textureLoad(first_depth, q, 0);
+    if z <= 0.0 { return out; }
+    let at = vec2((f32(q.x) + 0.5) / rt.size.x * 2.0 - 1.0, 1.0 - (f32(q.y) + 0.5) / rt.size.y * 2.0);
+    let w = rt.first_inverse_view_proj * vec4(at, z, 1.0);
+    let d = length(pos);
+    if distance(w.xyz / w.w, pos) > 0.05 + 0.02 * d { return out; }
+    let t = q / i32(rt.size.z);
+    let m = textureLoad(first_mask, t, 0);
+    let b = textureLoad(first_blocks, t, 0);
+    let l = textureLoad(first_direct, t, 0);
+    if m.a < 0.0 || b.a < 0.0 || abs(face_in(l.a) - face_of(surface_normal(p, pos))) > 0.5 {
+        return out;
+    }
+    out.found = true;
+    first_texel = t;
+    out.v = Traced(vec4(m.rgb, d), b, l, textureLoad(first_sun, t, 0),
+        textureLoad(first_reservoirs, t, 0));
+    fast_out = textureLoad(first_fast, t, 0);
+    gi_out_a = textureLoad(first_gi_a, t, 0);
+    gi_out_b = textureLoad(first_gi_b, t, 0);
+    return out;
+}
+// VR's second eye away from the sharp zone, in a 4x4 block that took the first eye's light from
+// its centre (`cs_sparse`): the first eye's mask texel showing mask texel `texel`'s own surface
+// (`pack_texel`), 0 where the first eye doesn't show it (out of its view, past an edge): the
+// denoiser then filters the texel from this eye's light (the block's), as without
+// `taken_out`. The block's centre shifted onto every texel (`HORIZON_RT_SHARE_CHECK=0`) put the
+// light of whatever the first eye shows there on a texel past an edge: a block standing out of
+// the first eye's view against the sky took the sky's black.
+fn first_texel_of(texel: vec2<i32>) -> u32 {
+    let p = pixel_of(texel);
+    if f32(p.x) >= rt.size.x || f32(p.y) >= rt.size.y { return 0u; }
+    if textureLoad(depth, p, 0) <= 0.0 { return 0u; }
+    let pos = surface_at(p);
+    if length(pos) < NEAR_OWN { return 0u; }
+    let c = rt.first_view_proj * vec4(pos, 1.0);
+    if c.w <= 0.0 { return 0u; }
+    let ndc = c.xy / c.w;
+    if any(abs(ndc) >= vec2(1.0)) { return 0u; }
+    let q = vec2<i32>(vec2((ndc.x * 0.5 + 0.5) * rt.size.x, (0.5 - ndc.y * 0.5) * rt.size.y));
+    let t = q / i32(rt.size.z);
+    // The first eye's mask holds the distance from the camera both eyes share (`trace`).
+    let d = length(pos);
+    let m = textureLoad(first_mask, t, 0);
+    if m.a < 0.0 || abs(m.a - d) > 0.05 + 0.02 * d { return 0u; }
+    if textureLoad(first_blocks, t, 0).a < 0.0 { return 0u; }
+    return pack_texel(t);
+}
+// The depth pixel at the centre of mask texel `texel`.
+fn pixel_of(texel: vec2<i32>) -> vec2<i32> {
+    let scale = i32(rt.size.z);
+    return texel * scale + scale / 2;
+}
+// Whether mask texel `texel` is in the sharp zone, from its view ray.
+fn sharp(texel: vec2<i32>) -> bool {
+    if rt.fovea.w < -1.0 { return true; }
+    let p = pixel_of(texel);
+    let ndc = vec2((f32(p.x) + 0.5) / rt.size.x * 2.0 - 1.0, 1.0 - (f32(p.y) + 0.5) / rt.size.y * 2.0);
+    let c = rt.inverse_view_proj * vec4(ndc, 1.0, 1.0);
+    return dot(normalize(c.xyz / c.w), rt.fovea.xyz) >= rt.fovea.w;
+}
+// Away from the sharp zone a 4x4 block of mask texels shares one ray, its corner's, traced
+// beforehand by `cs_sparse`, a thread a block: traced here by the corner's own thread (one lane in
+// sixteen), every warp took as long as for thirty-two rays.
+struct SparseRay {
+    rays: vec4<f32>,
+    blocks: vec4<f32>,
+    direct: vec4<f32>,
+    sun: vec4<f32>,
+    reservoir: vec4<u32>,
+    gi_a: vec4<f32>,
+    gi_b: vec4<u32>,
+    // VR's second eye: x 1 when the block's light is the first eye's (`from_first`, already
+    // accumulated over frames), with its fast history; y the first eye's texel for the block's
+    // centre (`pack_texel`).
+    taken: vec4<u32>,
+    fast: vec4<f32>,
+}
+// The sparse blocks' rays, row by row of blocks.
+@group(0) @binding(47) var<storage, read_write> sparse: array<SparseRay>;
+// A first eye's mask texel as `taken_out` holds it: x + 1 in the low 16 bits, y in the high ones.
+fn pack_texel(t: vec2<i32>) -> u32 {
+    return u32(t.x + 1) | (u32(t.y) << 16u);
+}
+fn blocks_across() -> i32 {
+    return (i32(textureDimensions(mask).x) + 3) / 4;
+}
+@compute @workgroup_size(8, 8) fn cs_sparse(@builtin(global_invocation_id) id: vec3<u32>) {
+    let block = vec2<i32>(id.xy);
+    let corner = block * 4;
+    if any(corner >= vec2<i32>(textureDimensions(mask))) || sharp(corner + 2) { return; }
+    // VR's second eye: the first eye's light where it sees the block's surface.
+    if rt.mode.z > 0.5 {
+        let seen = from_first(pixel_of(corner + 2));
+        if seen.found {
+            let v = seen.v;
+            sparse[block.y * blocks_across() + block.x] = SparseRay(v.rays, v.blocks, v.direct,
+                v.sun, v.reservoir, gi_out_a, gi_out_b, vec4(1u, pack_texel(first_texel), 0u, 0u),
+                fast_out);
+            return;
+        }
+    }
+    blue_block = true;
+    let v = trace(pixel_of(corner + 2), corner);
+    sparse[block.y * blocks_across() + block.x] = SparseRay(v.rays, v.blocks, v.direct, v.sun,
+        v.reservoir, gi_out_a, gi_out_b, vec4(0u), vec4(0.0));
+}
+// Away from the sharp zone, the mirrors and the refraction of a 2x2 quad of mask texels (4x4
+// pixels): its first texel's, shared through the workgroup (`cs_shadow`).
+var<workgroup> quad_reflected: array<vec4<f32>, 16>;
+var<workgroup> quad_refracted: array<vec4<f32>, 16>;
+@compute @workgroup_size(8, 8) fn cs_shadow(@builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(local_invocation_id) local: vec3<u32>) {
+    let texel = vec2<i32>(id.xy);
+    let corner = (texel / 4) * 4;
+    let fine = sharp(corner + 2);
+    var v = Traced(vec4(1.0), vec4(0.0, 0.0, 0.0, -1.0), vec4(0.0, 0.0, 0.0, -1.0), vec4(1.0),
+        vec4(0u));
+    // The mirrors and the refraction first: where the refraction replaces what lies behind, the
+    // ray there rests its bounced light (`behind_psr`). Away from the sharp zone a 2x2 quad of
+    // texels shares its first texel's (each finds the water or glass before it with a ray of its
+    // own: they were 1.5 ms of the two eyes' 4.7 in VR, the view mostly away from the gaze).
+    let inside = all(vec2<u32>(texel) < textureDimensions(mask));
+    let first = all((texel & vec2(1)) == vec2(0));
+    let quad = (local.y / 2u) * 4u + local.x / 2u;
+    var reflected = vec4(0.0);
+    var refracted = vec4(0.0);
+    if inside && rt.mode.x > 0.5 && (SKIP & 8u) == 0u && (fine || first) {
+        // A quad's rays from its centre pixel.
+        let scale = i32(rt.size.z);
+        let at = select(pixel_of(texel), texel * scale + scale, !fine);
+        reflected = finite4(hw_reflect(at));
+        refracted = finite4(hw_refract(at));
+    }
+    if first {
+        quad_reflected[quad] = reflected;
+        quad_refracted[quad] = refracted;
+    }
+    workgroupBarrier();
+    if !fine && !first {
+        reflected = quad_reflected[quad];
+        refracted = quad_refracted[quad];
+    }
+    behind_psr = refracted.a > 0.0;
+    // VR's second eye: the first eye's light where it sees the surface, already accumulated over
+    // its frames (in the periphery a block's, `cs_sparse`).
+    var taken = false;
+    var taken_from = 0u;
+    if fine && rt.mode.z > 0.5 && inside {
+        let seen = from_first(pixel_of(texel));
+        taken = seen.found;
+        v = seen.v;
+        if taken { taken_from = pack_texel(first_texel); }
+    }
+    sun_caustic = false;
+    if fine && !taken {
+        sun_from_pass = true;
+        v = trace(pixel_of(texel), texel);
+        sun_from_pass = false;
+    } else if !fine {
+        let s = sparse[(corner.y / 4) * blocks_across() + corner.x / 4];
+        v = Traced(s.rays, s.blocks, s.direct, s.sun, s.reservoir);
+        taken = s.taken.x == 1u;
+        if taken {
+            fast_out = s.fast;
+            if rt.mode.z > 1.5 && SHARE_CHECK {
+                taken_from = first_texel_of(texel);
+            } else {
+                // The block's texels shifted as its centre is from the first eye's.
+                let centre = vec2<i32>(i32(s.taken.y & 0xffffu) - 1, i32(s.taken.y >> 16u));
+                let size = vec2<i32>(textureDimensions(mask));
+                taken_from = pack_texel(clamp(centre + texel - (corner + 2), vec2(0), size - 1));
+            }
+        }
+        // The block's GI reservoir is its corner's; the other texels keep none.
+        if all(texel == corner) {
+            gi_out_a = s.gi_a;
+            gi_out_b = s.gi_b;
+        }
+    }
+    if rt.mode.x > 0.5 && !taken { v = accumulate(texel, v); }
+    if DEBUG == 3u { v.rays = vec4(textureLoad(depth, pixel_of(texel), 0) * 20.0 + 0.25); }
+    if all(vec2<u32>(texel) < textureDimensions(mask)) {
+        v.rays = finite4(v.rays);
+        // Light is never below 0: a negative bounce would come back through the last frame's light
+        // (`last_light`) and the history's clamp (`accumulate`) larger each frame.
+        v.blocks = finite4(vec4(max(v.blocks.rgb, vec3(0.0)), v.blocks.a));
+        v.direct = finite4(vec4(max(v.direct.rgb, vec3(0.0)), v.direct.a));
+        v.sun = finite4(v.sun);
+        fast_out = finite4(fast_out);
+        textureStore(mask, texel, v.rays);
+        if rt.mode.x > 0.5 {
+            textureStore(block_mask, texel, v.blocks);
+            textureStore(direct_mask, texel, v.direct);
+            textureStore(reservoirs, texel, v.reservoir);
+            textureStore(gi_a, texel, gi_out_a);
+            textureStore(gi_b, texel, gi_out_b);
+            textureStore(sun_mask, texel, v.sun);
+            textureStore(fast, texel, fast_out);
+            textureStore(reflection, texel, reflected);
+            textureStore(refraction, texel, refracted);
+        }
+        if rt.mode.z > 1.5 {
+            textureStore(taken_out, texel, vec4(taken_from, 0u, 0u, 0u));
+        }
+    }
+}

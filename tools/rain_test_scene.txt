@@ -1,0 +1,54 @@
+# Rain test scene (docs/raytracing.md, "Rain and wet ground"): a 48x48 platform at y = 200 above any
+# world, with what the rain has to get right: a cobbled street half under a roof, a dirt path
+# through grass into a small forest, a pond, sand and wool, a metal roof, torches. One /command a
+# line, run in order by tools/rain_test_scene.sh; blank lines and # are skipped.
+#
+# The ground: grass, and air above it.
+fill -8 199 -8 39 199 39 minecraft:grass_block
+fill -8 198 -8 39 198 39 minecraft:dirt
+fill -8 200 -8 39 215 39 minecraft:air
+# A cobbled street along x, a stone brick pavement on either side, a dip of two lowered blocks.
+fill -8 199 10 39 199 14 minecraft:cobblestone
+fill -8 199 9 39 199 9 minecraft:stone_bricks
+fill -8 199 15 39 199 15 minecraft:stone_bricks
+fill 6 198 11 8 198 13 minecraft:cobblestone
+fill 6 199 11 8 199 13 minecraft:air
+setblock 3 198 12 minecraft:cobblestone
+setblock 3 199 12 minecraft:air
+# A house on the north side with a roof over the pavement and half the street (dry beneath).
+fill 10 200 16 20 204 22 minecraft:stone_bricks hollow
+fill 10 205 10 20 205 22 minecraft:spruce_planks
+fill 14 200 16 15 202 16 minecraft:air
+fill 10 200 10 10 204 10 minecraft:oak_fence
+fill 20 200 10 20 204 10 minecraft:oak_fence
+# Torches along the street and under the roof.
+setblock 0 200 15 minecraft:torch
+setblock 9 200 15 minecraft:lantern
+setblock 24 200 15 minecraft:torch
+setblock 13 200 15 minecraft:torch
+setblock 17 200 15 minecraft:torch
+setblock 30 200 9 minecraft:torch
+# A dirt path south through the grass into a forest.
+fill 2 199 -8 4 199 8 minecraft:dirt_path
+fill 3 199 -2 3 199 0 minecraft:coarse_dirt
+fill 5 199 -6 6 199 -4 minecraft:mud
+# The forest, oaks and birches either side of the path.
+place feature minecraft:oak -3 200 -4
+place feature minecraft:fancy_oak 9 200 -5
+place feature minecraft:birch -4 200 2
+place feature minecraft:oak 10 200 1
+place feature minecraft:birch 0 200 -7
+place feature minecraft:oak 7 200 -1
+setblock 1 200 -1 minecraft:torch
+# A pond, sand around it, wool and a metal roof east.
+fill 24 196 -4 32 198 4 minecraft:water
+fill 24 199 -4 32 199 4 minecraft:water
+fill 23 199 -5 33 199 -5 minecraft:sand
+fill 23 199 5 33 199 5 minecraft:sand
+fill 34 199 -2 37 199 2 minecraft:white_wool
+fill 34 203 6 38 203 8 minecraft:iron_block
+fill 34 200 6 34 202 6 minecraft:iron_bars
+fill 38 200 8 38 202 8 minecraft:iron_bars
+# Slabs and stairs on the street (wet, never puddles).
+fill 26 200 11 28 200 11 minecraft:stone_slab
+fill 26 200 13 28 200 13 minecraft:cobblestone_stairs

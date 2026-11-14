@@ -191,6 +191,7 @@ mod tests {
                 cover: None,
                 forced_cover,
                 band: None,
+                ahead: None,
             };
             let (scan, map) = (ranges(None), ranges(Some(made)));
             let span = spread + 10;
@@ -288,6 +289,7 @@ mod tests {
                     cover: None,
                     forced_cover,
                     band: None,
+                    ahead: None,
                 };
                 let (scan, map) = (ranges(None), ranges(Some(made)));
                 // The scan goes through every forced chunk: fewer columns for more of them.
@@ -365,6 +367,7 @@ mod tests {
                     cover: None,
                     forced_cover,
                     band: None,
+                    ahead: None,
                 };
                 let spread = forced
                     .iter()

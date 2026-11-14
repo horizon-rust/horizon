@@ -70,6 +70,8 @@ fn mesh(
     mode: LeafCullingMode,
 ) -> SectionMesh {
     let mut mesher = Mesher {
+        rt_lighting: false,
+        smooth_fluids: false,
         nether_shading: false,
         shader_pack_lighting: false,
         separate_ao: false,

@@ -958,6 +958,7 @@ impl AvatarBob {
     /// `ClientAvatarState.tick` (at the start of `AbstractClientPlayer.tick`)
     /// with the player's position then: `moveCloak` eases the cloak a quarter
     /// of the way there, or puts it there from 10 blocks away.
+    #[allow(clippy::manual_range_contains)] // vanilla's comparison, NaN included
     pub fn tick(&mut self, position: [f64; 3]) {
         self.walk_dist_o = self.walk_dist;
         self.cloak_o = self.cloak;

@@ -141,6 +141,9 @@ alloc-census = ["horizon-threads/alloc-census"]
 windows-mimalloc = []
 # Opt-in Windows heap experiment; see docs/windows-allocators.md.
 windows-segment-heap = []
+# The RTX 4090 build (docs/rtx-4090.md): RT lighting's top-level structure built by raw Vulkan
+# commands (`HORIZON_RAW_TLAS=0` keeps wgpu's build with the feature on).
+rtx = ["horizon-client-render/rtx"]
 
 # The binaries hold no tests (the library does): `cargo test` builds no empty test harness for them, each of which
 # linked the whole crate again. They still build for integration tests (CARGO_BIN_EXE_*) and clippy --all-targets.

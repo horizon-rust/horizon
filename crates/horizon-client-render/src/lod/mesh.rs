@@ -219,10 +219,17 @@ impl Mesher {
                         light: span.light,
                         // The HDR tier, as the section mesher writes it, so a light source
                         // keeps shining across the LOD boundary.
-                        color: crate::mesher::emitting(
-                            channel(16) | channel(8) << 8 | channel(0) << 16 | 0xff000000,
-                            context.tables.hdr_tier(span.state),
-                        ),
+                        // Water also carries how open it lies, as the sections' (`with_sea`).
+                        color: {
+                            let color = crate::mesher::emitting(
+                                channel(16) | channel(8) << 8 | channel(0) << 16 | 0xff000000,
+                                context.tables.hdr_tier(span.state),
+                            );
+                            match face.tint {
+                                Tint::Water => crate::mesher::with_sea(color, u32::from(biome.sea)),
+                                _ => color,
+                            }
+                        },
                         translucent: face.translucent,
                     }
                 })

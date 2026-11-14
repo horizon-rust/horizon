@@ -6,7 +6,7 @@ use crate::{
     chunk::Light,
     light::{LightChanges, apply_lighting, apply_relighting, light_chunk},
     mesher::borrow,
-    world::World,
+    world::{Dirtied, World},
 };
 use std::sync::Arc;
 
@@ -44,7 +44,9 @@ impl Streaming {
                 for dz in -1..=1 {
                     for dx in -1..=1 {
                         for sy in 0..world.layout().sections() as i32 {
-                            world.dirty_sections.insert((x + dx, sy, z + dz));
+                            world
+                                .dirty_sections
+                                .insert_for((x + dx, sy, z + dz), Dirtied::Arrived);
                         }
                     }
                 }

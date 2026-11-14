@@ -74,11 +74,16 @@ impl Renderer {
         self.queue.wait();
     }
     pub(super) fn wait_frames(&mut self) {
-        while self.in_flight.len() > 2 {
+        // A VR frame is a submission per view (two eyes, four with the quad views), paced by
+        // the headset: two frames' worth.
+        let most = self.eye.map_or(2, |e| 2 * e.views);
+        while self.in_flight.len() > most {
             let index = self.in_flight.pop_front();
-            let _ = self.device.poll(wgpu::PollType::Wait {
-                submission_index: index,
-                timeout: Some(std::time::Duration::from_secs(5)),
+            crate::spans::time("gpu_wait", || {
+                let _ = self.device.poll(wgpu::PollType::Wait {
+                    submission_index: index,
+                    timeout: Some(std::time::Duration::from_secs(5)),
+                });
             });
         }
     }

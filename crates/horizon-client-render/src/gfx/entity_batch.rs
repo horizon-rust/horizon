@@ -120,6 +120,9 @@ pub(super) struct EntityBatch {
     /// last material (improved transparency on): the dragon's eyes, which share
     /// the additive buffer with its rays.
     pub(super) moved_additive: u32,
+    /// The ordinary entity quads before the particles' (`update`'s `particles_at`): the first
+    /// ones of `combined`, which RT lighting's rays take (gfx.rs `hw_finish`).
+    pub(super) before_particles: usize,
 }
 
 impl EntityBatch {
@@ -131,6 +134,7 @@ impl EntityBatch {
     pub(super) fn update(
         &mut self,
         entities: &[Vertex],
+        particles_at: u32,
         additive: &[Vertex],
         hand: &[Vertex],
         see_through: &[Vertex],
@@ -152,6 +156,13 @@ impl EntityBatch {
             counts[kind] += end - start;
             start = end;
         }
+        // Material 0's runs lead `combined` in quad order: the rays take those before the
+        // particles (`particles_at`, in vertices).
+        let particles = particles_at as usize / 4;
+        self.before_particles = self.runs[0]
+            .iter()
+            .map(|&(first, count)| (first + count).min(particles).saturating_sub(first))
+            .sum();
         let entity_vertices = quads.len() * 4;
         self.combined.clear();
         self.combined
@@ -227,6 +238,27 @@ mod tests {
     use super::*;
     use std::{hint::black_box, time::Instant};
     #[test]
+    fn the_rays_take_the_entities_before_the_particles() {
+        // Two entity quads, a crack, then two particle quads and a crack: the rays' share of
+        // `combined` is the two entity quads, which lead it.
+        let mut entities = geometry(6, false);
+        for (quad, layer) in [(2, 11), (5, 11)] {
+            for v in &mut entities[quad * 4..quad * 4 + 4] {
+                v.layer = layer;
+            }
+        }
+        let mut batch = EntityBatch::default();
+        batch.update(&entities, 3 * 4, &[], &[], &[], false);
+        assert_eq!(batch.before_particles, 2);
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(&batch.combined[..8]),
+            bytemuck::cast_slice::<_, u8>(&entities[..8])
+        );
+        batch.update(&entities, u32::MAX, &[], &[], &[], false);
+        assert_eq!(batch.before_particles, 4);
+    }
+
+    #[test]
     fn native_models_keep_opaque_order_and_do_not_move_existing_materials_or_tails() {
         let quad = |layer, x| {
             [Vertex {
@@ -251,6 +283,7 @@ mod tests {
         let mut batch = EntityBatch::default();
         let counts = batch.update(
             &entities,
+            u32::MAX,
             &quad(0, 8.0),
             &quad(0, 9.0),
             &quad(0, 12.0),
@@ -304,7 +337,14 @@ mod tests {
             .collect();
         let mut batch = EntityBatch::default();
         assert_eq!(
-            batch.update(&entities, &additive, &quad(0, 9.0), &quad(0, 10.0), true),
+            batch.update(
+                &entities,
+                u32::MAX,
+                &additive,
+                &quad(0, 9.0),
+                &quad(0, 10.0),
+                true
+            ),
             [1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 1, 0, 0, 0]
         );
         let positions: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
@@ -373,7 +413,10 @@ mod tests {
         hand: &[Vertex],
     ) {
         let (expected, counts) = baseline(entities, additive, hand);
-        assert_eq!(batch.update(entities, additive, hand, &[], false), counts);
+        assert_eq!(
+            batch.update(entities, u32::MAX, additive, hand, &[], false),
+            counts
+        );
         assert_eq!(
             bytemuck::cast_slice::<_, u8>(&batch.combined),
             bytemuck::cast_slice::<_, u8>(&expected)
@@ -411,12 +454,12 @@ mod tests {
         .collect();
         let mut batch = EntityBatch::default();
         // Off: the tag changes nothing, the quads keep their place.
-        let counts = batch.update(&entities, &[], &[], &[], false);
+        let counts = batch.update(&entities, u32::MAX, &[], &[], &[], false);
         assert_eq!(counts, [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 1.0, 2.0, 4.0, 3.0]);
         // On: the tagged quads come last, in order.
-        let counts = batch.update(&entities, &[], &[], &[], true);
+        let counts = batch.update(&entities, u32::MAX, &[], &[], &[], true);
         assert_eq!(counts, [2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0]);
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 2.0, 3.0, 1.0, 4.0]);
@@ -440,12 +483,12 @@ mod tests {
         let entities: Vec<Vertex> = quad(0, 0.0).collect();
         let mut batch = EntityBatch::default();
         // Off: untouched.
-        let counts = batch.update(&entities, &additive, &[], &[], false);
+        let counts = batch.update(&entities, u32::MAX, &additive, &[], &[], false);
         assert_eq!((counts[9], batch.moved_additive), (0, 0));
         assert_eq!(batch.combined.len(), 12);
         assert_eq!(batch.combined[4].layer, 2 | OIT_ENTITY | 3 << 16);
         // On: the eyes are an entity quad without the additive overlay, the ray stays.
-        let counts = batch.update(&entities, &additive, &[], &[], true);
+        let counts = batch.update(&entities, u32::MAX, &additive, &[], &[], true);
         assert_eq!((counts[0], counts[9], batch.moved_additive), (1, 1, 1));
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 1.0, 2.0]);
@@ -518,7 +561,14 @@ mod tests {
             equivalent(&mut batch, &entities, &additive, &hand);
             for _ in 0..50 {
                 black_box(baseline(black_box(&entities), &additive, &hand));
-                black_box(batch.update(black_box(&entities), &additive, &hand, &[], false));
+                black_box(batch.update(
+                    black_box(&entities),
+                    u32::MAX,
+                    &additive,
+                    &hand,
+                    &[],
+                    false,
+                ));
                 black_box(&batch.combined);
             }
             let mut before = Vec::new();
@@ -531,7 +581,14 @@ mod tests {
                 before.push(start.elapsed().as_nanos() / 100);
                 let start = Instant::now();
                 for _ in 0..100 {
-                    black_box(batch.update(black_box(&entities), &additive, &hand, &[], false));
+                    black_box(batch.update(
+                        black_box(&entities),
+                        u32::MAX,
+                        &additive,
+                        &hand,
+                        &[],
+                        false,
+                    ));
                     black_box(&batch.combined);
                 }
                 after.push(start.elapsed().as_nanos() / 100);

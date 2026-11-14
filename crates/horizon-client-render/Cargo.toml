@@ -17,6 +17,8 @@ horizon-client-input = { path = "../horizon-client-input" }
 horizon-command = { path = "../horizon-command" }
 horizon-core = { path = "../horizon-core" }
 horizon-hdr = { path = "../horizon-hdr" }
+# The RTX 4090 build's raw Vulkan pieces (the `rtx` feature, docs/rtx-4090.md).
+horizon-rtx = { path = "../horizon-rtx", optional = true }
 horizon-items = { path = "../horizon-items" }
 # The narrator option's status and whether the narrator is there (Options.narrator).
 horizon-narrator = { path = "../horizon-narrator" }
@@ -69,12 +71,16 @@ wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
+# EXPERIMENTAL VR through OpenXR (`HORIZON_XR=1`, gfx/xr.rs); the loader is opened at run time.
+horizon-xr = { path = "../horizon-xr" }
 
 [features]
 # Sound output: horizon-client's `audio` feature.
 audio = ["dep:cpal"]
 # Helpers horizon-client's tests build their fixtures with.
 test-support = []
+# The RTX 4090 build (docs/rtx-4090.md): RT lighting's raw Vulkan pieces (horizon-rtx).
+rtx = ["dep:horizon-rtx"]
 # The `scene_replay` example's allocator counts allocations (horizon-threads' `alloc-count`).
 alloc-count = ["horizon-threads/alloc-count"]
 

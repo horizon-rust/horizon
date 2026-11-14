@@ -112,9 +112,29 @@ pub struct BiomeInfo {
     /// `BiomeGenerationSettings.features`: the placed feature ids of each
     /// `GenerationStep.Decoration` step, in order.
     pub features: Vec<Vec<String>>,
+    /// How open its water is to the wind, 0 (a swamp's still water) to 15 (the open sea): RT
+    /// lighting's waves and surf (`sea_exposure`).
+    pub sea: u8,
     /// The biome's environment attributes (`Biome.getAttributes`): its layer in the
     /// environment attribute stack.
     pub attributes: horizon_world::environment_attributes::AttributeMap,
+}
+/// How open biome `name`'s water lies to the wind and the swell, 0 to 15 (terrain.wgsl
+/// `water_sea`): the open sea's, a beach's or a stony shore's (its edge), a lake's (water in any
+/// other biome), a river's, a swamp's or a mangrove's still water.
+pub fn sea_exposure(name: &str) -> u8 {
+    let name = name.strip_prefix("minecraft:").unwrap_or(name);
+    if name.ends_with("ocean") {
+        15
+    } else if name == "beach" || name == "snowy_beach" || name == "stony_shore" {
+        14
+    } else if name.ends_with("river") {
+        6
+    } else if name.ends_with("swamp") {
+        2
+    } else {
+        9
+    }
 }
 impl BiomeInfo {
     fn ambient_particles(v: &Value) -> Vec<(ParticleType, f32)> {
@@ -280,6 +300,7 @@ impl BiomeInfo {
                         .collect()
                 })
                 .collect(),
+            sea: sea_exposure(&name),
             attributes: horizon_world::environment_attributes::AttributeMap::parse(attributes)
                 .unwrap_or_else(|e| {
                     log::warn!("biome attributes: {e}");
@@ -426,6 +447,7 @@ impl Biomes {
                 water_fog: 0x3f_76_e4,
                 ambient_particles: Vec::new(),
                 features: Vec::new(),
+                sea: sea_exposure("minecraft:plains"),
                 attributes: Default::default(),
             });
         }
@@ -824,6 +846,17 @@ mod blend_tests {
             last = v;
         }
         assert!(at(-2.0) > 0.0 && at(-2.0) < 0.5);
+    }
+
+    #[test]
+    fn the_open_sea_lies_more_open_than_a_lake_a_river_or_a_swamp() {
+        let sea = |name| sea_exposure(name);
+        assert_eq!(sea("minecraft:deep_lukewarm_ocean"), 15);
+        assert_eq!(sea("minecraft:frozen_ocean"), 15);
+        assert!(sea("minecraft:beach") > sea("minecraft:plains"));
+        assert!(sea("minecraft:plains") > sea("minecraft:frozen_river"));
+        assert!(sea("minecraft:river") > sea("minecraft:mangrove_swamp"));
+        assert_eq!(sea("minecraft:swamp"), sea("minecraft:mangrove_swamp"));
     }
 
     /// An empty biome table (a resource pack with no biome files) must not

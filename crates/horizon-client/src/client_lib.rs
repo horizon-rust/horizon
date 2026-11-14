@@ -11,24 +11,24 @@ pub mod block_contact;
 pub mod parallel;
 pub mod powder_snow;
 pub use horizon_client_render::{
-    assets, atlas_sources, audio, auth, autotune, ban_notice, bidi, biome, block_edit,
+    acoustics, assets, atlas_sources, audio, auth, autotune, ban_notice, bidi, biome, block_edit,
     block_entities, block_entity_anim, block_entity_render, block_sprites, block_states, bluemap,
-    bluemap_detect, border_render, breaking, brewing, camera, chat, chunk, chunk_map, cit,
-    cit_armor, cit_assets, cit_glint, client_resources, clouds, collisions, command_block,
+    bluemap_detect, border_render, breaking, brewing, camera, celestial, chat, chunk, chunk_map,
+    cit, cit_armor, cit_assets, cit_glint, client_resources, clouds, collisions, command_block,
     containers, controller_ui, crash, custom_sky, datapack, dynamic_light, dynamic_resolution,
-    effects, environment, extras, fast_hash, fluid_render, fog, font, gfx, graphics,
+    effects, environment, extras, fast_hash, fluid_render, fog, font, gaze_aim, gfx, graphics,
     graphics_style, graphics_ui, hdr_calibration, hud, hud_kit, hud_layout, hud_overlays,
-    inventory_effects, java_text, jigsaw_block, json_folder, level_loading, light, lod, logging,
-    mark_sprite, menu_blur, menu_style, mesher, minimap, mipmap, mod_browser, mod_list,
-    model_library, models, multiline_edit, native_emissive, options_file, options_fixes,
+    inventory_effects, java_text, jigsaw_block, json_folder, labpbr, level_loading, light, lod,
+    logging, mark_sprite, menu_blur, menu_style, mesher, minimap, mipmap, mod_browser, mod_list,
+    model_library, models, multiline_edit, native_emissive, occupancy, options_file, options_fixes,
     options_ui, overlay, pack_browser, pack_formats, pack_hooks, pack_palette, pack_screen, packs,
     pad_cursor, pad_glyph, par, particles, poi_sections, polytone_creative_tabs, polytone_post,
-    post_chain, potent_sulfur, preedit, providers, pvp, pvp_hud, random_source, screen_draw,
-    screen_effects, sculk, section_mask, server_terrain, settings, shader_options,
-    shader_pack_list, signs, skins, social, sound_engine, sound_events, sound_preview, spans,
-    split_layout, split_map, split_profiles, sprites, streaming, structure_block, tab_list,
-    terrain_model, test_block, test_instance_block, testgen, title_edition, trims, ui, vault,
-    weather, widgets, world, worldborder, zip,
+    post_chain, potent_sulfur, preedit, providers, pvp, pvp_hud, rain, random_source, reverb,
+    screen_draw, screen_effects, sculk, section_mask, server_terrain, settings, shader_options,
+    shader_pack_list, signs, skins, snow, social, sound_engine, sound_events, sound_physics,
+    sound_preview, spans, spatial, split_layout, split_map, split_profiles, sprites, streaming,
+    structure_block, tab_list, terrain_model, test_block, test_instance_block, testgen,
+    title_edition, trims, ui, vault, weather, widgets, world, worldborder, zip,
 };
 pub mod attack_strength;
 pub mod attribute_updates;

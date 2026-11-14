@@ -907,6 +907,9 @@ pub trait Backend {
     fn set_looping(&mut self, channel: ChannelId, looping: bool);
     fn set_position(&mut self, channel: ChannelId, position: [f64; 3]);
     fn set_relative(&mut self, channel: ChannelId, relative: bool);
+    /// The instance a channel is about to start for (Horizon's sound physics
+    /// hook, where Sound Physics Remastered injects into `Channel.play`).
+    fn starting(&mut self, _channel: ChannelId, _event: &str, _source: usize) {}
     /// Attach the sound's buffer or stream (when loaded) and play it.
     fn start(&mut self, channel: ChannelId, sound: &Sound, looping: bool);
     fn stop(&mut self, channel: ChannelId);
@@ -1465,6 +1468,7 @@ impl SoundEngine {
         backend.set_position(channel, position);
         backend.set_relative(channel, relative);
         backend.set_unmuffled(channel, unmuffled);
+        backend.starting(channel, &instance.identifier, source);
         backend.start(channel, &sound, looping);
         if tickable {
             self.ticking.push(id);

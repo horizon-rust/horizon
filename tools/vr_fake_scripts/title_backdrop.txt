@@ -1,0 +1,9 @@
+# The title's backdrop around the player (tools/vr_fake_run.py --title --world-frames 1300
+# --script tools/vr_fake_scripts/title_backdrop.txt --capture-seconds 5,8,11, then
+# tools/vr_backdrop_check.py on the captures). Times are seconds since the OpenXR session
+# started; the title shows within the first few. The head stands at (0, 1.6, 0).
+0   head 0 0
+5   head 0 0       # ahead (t5)
+7   head 20 0      # turned 20 degrees left: the backdrop stays where it was (t8)
+9   head 20 0
+10  head 20 -30    # looking down at the floor in front (t11)

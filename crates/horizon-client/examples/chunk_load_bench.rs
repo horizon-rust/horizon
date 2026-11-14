@@ -217,6 +217,8 @@ fn main() -> Result<(), Error> {
 
 fn mesher<'a>(context: &'a WorkerContext, seed: i64) -> Mesher<'a> {
     Mesher {
+        rt_lighting: false,
+        smooth_fluids: false,
         nether_shading: false,
         shader_pack_lighting: false,
         separate_ao: false,

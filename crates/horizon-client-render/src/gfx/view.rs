@@ -59,6 +59,16 @@ impl ViewSet {
         }
     }
 
+    /// A frame drawn from `view` alone, culled with `cull` (a headset's eye, culled with the
+    /// frustum around both eyes).
+    pub fn culled_by(view: View, cull: View) -> Self {
+        Self {
+            views: [view; MAX_VIEWS],
+            len: 1,
+            cull,
+        }
+    }
+
     /// The view the HUD, hand and screen-space effects follow.
     pub fn primary(&self) -> &View {
         &self.views[0]

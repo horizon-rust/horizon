@@ -124,6 +124,58 @@ impl Sides {
         self.ends[13]
     }
 
+    /// The solid quads in runs of one kind, in mesh order: `(first, count, opaque)`, opaque runs
+    /// holding quads whose sprites have no transparent texel (or forceOpaque leaves:
+    /// `OPAQUE_LAYER`), the others the cutouts. Empty parts are left out and neighbours of one
+    /// kind merged, so a section of stone and grass is one or two runs. RT lighting's hybrid puts
+    /// the opaque runs in opaque geometries of the section's structure (gfx/hw_rays.rs), which
+    /// the hardware confirms without asking the shader's alpha test. A mesh whose parts are not
+    /// split is all cutout.
+    pub fn geometries(&self) -> Vec<(u32, u32, bool)> {
+        let mut out: Vec<(u32, u32, bool)> = Vec::with_capacity(4);
+        self.parts(0, self.quads(), |first, count, kind| match out.last_mut() {
+            Some(last) if last.2 == kind && last.0 + last.1 == first => last.1 += count,
+            _ => out.push((first, count, kind)),
+        });
+        out
+    }
+
+    /// Splits the quads `first..first + count` (a run of `visible`'s) into runs of one kind, in
+    /// mesh order: `draw(first, count, opaque)`, as `geometries` splits the whole mesh,
+    /// neighbours of one kind merged. A depth prepass draws the opaque runs without a fragment
+    /// shader.
+    pub fn split(&self, first: u32, count: u32, mut draw: impl FnMut(u32, u32, bool)) {
+        let mut run: Option<(u32, u32, bool)> = None;
+        self.parts(first, count, |a, n, kind| match &mut run {
+            Some((s, m, k)) if *k == kind && *s + *m == a => *m += n,
+            _ => {
+                if let Some((s, m, k)) = run.take() {
+                    draw(s, m, k);
+                }
+                run = Some((a, n, kind));
+            }
+        });
+        if let Some((s, m, k)) = run {
+            draw(s, m, k);
+        }
+    }
+
+    /// Each part's quads within `first..first + count`, in mesh order: `part(first, count,
+    /// opaque)`.
+    fn parts(&self, first: u32, count: u32, mut part: impl FnMut(u32, u32, bool)) {
+        let end = first + count;
+        let mut start = 0;
+        for (n, &part_end) in self.ends.iter().enumerate() {
+            let (a, b) = (start.max(first), part_end.min(end));
+            start = part_end;
+            if a >= b {
+                continue;
+            }
+            let cutout = !self.split || slot(self.grouped, n).1;
+            part(a, b - a, !cutout);
+        }
+    }
+
     /// Calls `draw(first, count)` for each run of quads an eye at `eye`
     /// (relative to the mesh's origin) can see the front of, nearest the
     /// start first. Empty buckets do not break a run.

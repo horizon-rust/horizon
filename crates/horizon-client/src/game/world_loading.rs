@@ -965,6 +965,8 @@ pub(super) fn make_streaming(
     streaming.biome_blend = settings.biome_blend;
     streaming.smooth_lighting = settings.smooth_lighting;
     streaming.cutout_leaves = settings.cutout_leaves;
+    streaming.rt_lighting = settings.horizon.rt_lighting && settings.horizon.linear_light;
+    streaming.smooth_fluids = settings.horizon.smooth_fluids;
     streaming.opaque_ice = settings.horizon.opaque_ice;
     streaming.leaf_culling = settings
         .horizon

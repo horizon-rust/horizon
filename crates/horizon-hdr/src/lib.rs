@@ -20,15 +20,39 @@ pub fn open_vulkan_device(
         let hal = unsafe { adapter.as_hal::<Vulkan>() }?;
         let instance = hal.shared_instance().raw_instance();
         // Safety: the adapter's own physical device on its own instance.
-        let offered =
+        let extensions =
             unsafe { instance.enumerate_device_extension_properties(hal.raw_physical_device()) }
-                .ok()?
+                .ok()?;
+        let offers = |name: &std::ffi::CStr| {
+            extensions
                 .iter()
-                .any(|e| e.extension_name_as_c_str() == Ok(ash::ext::hdr_metadata::NAME));
-        if !offered {
+                .any(|e| e.extension_name_as_c_str() == Ok(name))
+        };
+        if !offers(ash::ext::hdr_metadata::NAME) {
             return None;
         }
-        // Safety: what wgpu's own request_device does, with one more extension.
+        // The RTX 4090 build's shader execution reordering (horizon-rtx `sun`,
+        // docs/rtx-4090.md): the extension and its feature where the driver offers them and the
+        // device gets ray tracing pipelines (wgpu's EXPERIMENTAL_RAY_TRACING_PIPELINES).
+        let reorder = offers(ash::nv::ray_tracing_invocation_reorder::NAME)
+            && desc
+                .required_features
+                .contains(wgpu::Features::EXPERIMENTAL_RAY_TRACING_PIPELINES);
+        let mut reorder_features =
+            ash::vk::PhysicalDeviceRayTracingInvocationReorderFeaturesNV::default()
+                .ray_tracing_invocation_reorder(true);
+        // The RTX 4090 build's opacity micromaps (horizon-rtx `omm`, `HORIZON_RT_OMM=0` turns them off): the
+        // extension, its feature and what it builds on, where the driver offers them and the
+        // device traces rays.
+        let micromaps = !std::env::var("HORIZON_RT_OMM").is_ok_and(|v| v == "0")
+            && offers(ash::ext::opacity_micromap::NAME)
+            && desc
+                .required_features
+                .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
+        let synchronization2 = micromaps && offers(ash::khr::synchronization2::NAME);
+        let mut micromap_features =
+            ash::vk::PhysicalDeviceOpacityMicromapFeaturesEXT::default().micromap(true);
+        // Safety: what wgpu's own request_device does, with one or two more extensions.
         unsafe {
             hal.open_with_callback(
                 desc.required_features,
@@ -37,6 +61,20 @@ pub fn open_vulkan_device(
                 Some(Box::new(
                     |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs| {
                         args.extensions.push(ash::ext::hdr_metadata::NAME);
+                        if reorder {
+                            args.extensions
+                                .push(ash::nv::ray_tracing_invocation_reorder::NAME);
+                            *args.create_info = args.create_info.push_next(&mut reorder_features);
+                        }
+                        if micromaps {
+                            args.extensions.push(ash::ext::opacity_micromap::NAME);
+                            if synchronization2
+                                && !args.extensions.contains(&ash::khr::synchronization2::NAME)
+                            {
+                                args.extensions.push(ash::khr::synchronization2::NAME);
+                            }
+                            *args.create_info = args.create_info.push_next(&mut micromap_features);
+                        }
                     },
                 )),
             )
@@ -117,4 +155,14 @@ mod tests {
         assert_eq!(m.max_luminance, 1000.0);
         assert_eq!(m.min_luminance, 0.05);
     }
+}
+
+/// wgpu's experimental features, for RT lighting's hardware ray queries
+/// (`Features::EXPERIMENTAL_RAY_QUERY`, the client's `gfx/hw_rays.rs`): the
+/// token wgpu asks for before it opens a device with them, which the client,
+/// forbidding unsafe code, can't make itself.
+pub fn ray_query_features() -> wgpu::ExperimentalFeatures {
+    // Safety: only asked for with ray queries, which the client turns off with
+    // HORIZON_HW_RT=0; the API may change between wgpu versions, not misbehave.
+    unsafe { wgpu::ExperimentalFeatures::enabled() }
 }

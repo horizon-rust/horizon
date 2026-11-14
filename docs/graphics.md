@@ -47,6 +47,7 @@ Every preset also turns on the optimizations that leave the picture as it is: as
 | Quality | clouds, cloud distance, weather radius, particles, smooth lighting, biome blend, entity distance, entity shadows, vignette, chunk fade, mipmap levels, texture filtering, max anisotropy, cutout leaves, improved transparency | `options.txt` |
 | | hide block-break particles, dynamic lights, fullbright ([extras.md](extras.md)) | `horizon-extras.txt` |
 | | sky, fog, weather, animated textures, distant plant dither (`ditherCutoutMips`, off by default: cutouts from 64 texels up), resolution scale, dynamic resolution and its target FPS, anti-aliasing (FXAA or TAA), TAA upscaling, screenshot quality, frame generation | `horizon-graphics.txt` |
+| | sun path tilt, parallax, smooth fluids ([smooth-fluids.md](smooth-fluids.md)), linear light, ray-traced shadows and AO, RT lighting (LabPBR resource packs, [resource-packs.md](resource-packs.md#labpbr-maps)) | `horizon-graphics.txt` |
 | Performance | chunk builder | `options.txt` |
 | | chunk updates and upload budget per frame, worker threads, parallel tick, cave culling, GPU culling, entity and particle culling modes, leaf culling, battery mode, and the block-entity caches (shulker boxes, signs, decorated pots, bells, chests, banners, copper golem statues) | `horizon-graphics.txt` |
 | Shaders | **Shader Packs...**: the list of shader packs, Horizon's `.hshader` ones and `shaders/` folder ones ([shaders.md](shaders.md)), and the picked pack's options; shadow cache | `horizon-graphics.txt`, the pack's own options file |
@@ -62,6 +63,108 @@ Every preset also turns on the optimizations that leave the picture as it is: as
 **GPU Culling** (Performance, after Cave Culling; Off, On or Auto, off by default, `gpuCulling` in `horizon-graphics.txt` as `false`, `true` or `auto`; it applies at once, and every preset sets it to Auto) is for a fast GPU at high render distances, where the render thread is the frame. A compute pass decides for every resident section with solid quads what the CPU's walk decides (the render distance, cave culling, the view, the sides that can face the eye) and writes its draws, and each page of the section arena is drawn with one count draw, instead of lists the render thread sorts, groups and encodes. The picture is the same, except that where faces of two sections meet at exactly the same depth the other one can win the pixel, the same way every frame. On Vulkan its frames run occlusion culling too, the same two-phase test with each section's part decided on the GPU (the sections whose box the last test saw first, then those this frame's test finds in sight), under the same gate as CPU frames; elsewhere they run none. The GPU does more: where it is the limit (4K, a slower GPU) frames can be slower, hence off by default. **Auto** leaves the choice to the frames: in a settled world it takes the median CPU time and the median GPU time of each 240 frames (the CPU's without its waits), and when the CPU's is at least 1.5 ms and over 1.3 times the GPU's in two windows running it turns GPU Culling on, leaves the next window out while that settles, and measures again. It keeps it if the busier of the two dropped under 97% of what it was, and otherwise switches it off and doesn't try again for 5 minutes of play, after a second rejection 20, and after a third not before the next start. A GPU whose frames can't be timed, or a machine that isn't offered GPU Culling, stays Off, and so does one whose GPU is the slower side, such as a GPU-bound laptop or an old card at 1080p. The status's `gpu_culling_mode` and `gpu_culling_auto` (`watching`, `trial` or `kept`) say where it is. Translucent quads, sections fading in or out, distant terrain and the columns past the render distance stay on the CPU, and frames with a `shaders/` pack's terrain or shadow pass, the `[shadow]` pass, `[displacement]` or water mirror of one of Horizon's own packs, or the title screen take the CPU's path whole. It needs a GPU that draws a count it wrote (Vulkan with `VK_KHR_draw_indirect_count`) and compute shaders: OpenGL, Metal, Intel Gen11 and Gen12 on Vulkan, devices whose vanilla frames draw flat and software rendering (WARP, lavapipe, where the pass would run on the CPU too) don't offer it, nor, for now, DirectX 12, whose count draws lose each draw's base vertex, by which the near sections' packed faces are read. There the switch is greyed out, reads Off and says why, and the saved value waits; macOS doesn't show it. If its buffers stop fitting in video memory, or the graphics device is lost in one of its frames, it switches itself off until the next start, and the switch says so. In its frames F3's `C:` count and the draw statistics come from the GPU's own counts, read back once the frame is done, a frame or a few late (the status's `stats_lag`): at the edges of the view they can count a few sections more than without it, which the GPU's whole-block test keeps and draws. `gpu-culling on|off|auto` over the control socket sets it, unsaved, for A/B checks.
 
 **Parallel Tick** (Performance, after Worker Threads; `parallelTick` in `horizon-graphics.txt` as `off`, `auto` or `on`; it applies from the next tick and is no part of a preset) is for the worlds this game runs itself, single player and open to LAN: the phases of the server tick that give the same result in any order (mob preparation and independent groups of mobs, item moves, random-tick masks, the mob states sent to players) share their work among helper threads, at most 8. What happens in the world is the same either way. **On** shares every tick. **Auto** keeps the tick on one thread until it is heavy: it takes the median of each 100 ticks (five seconds), and when the server thread's time on the processor is at 25 ms or more in two windows running (ticks that are slow because the machine is busy or swapping don't count) it shares the tick, leaves the next window out while the helper threads start, and measures again. It keeps sharing if the median dropped under 95% of what it was, and otherwise goes back to one thread and doesn't try again for 5 minutes, after a later rejection 20. Once the shared tick's median is under 10 ms for two windows it goes back to one thread. A quiet world never starts the helper threads, and a machine with fewer than 4 hardware threads never shares on Auto. `HORIZON_PARALLEL_TICK` wins over the setting (`0` keeps the tick serial, `1` shares it, `verify` also checks the phases against the serial code), and is all a dedicated server follows ([hosting.md](hosting.md), `parallel_tick`). The status's `parallel_tick` says the setting, whether the next tick is shared and where Auto is (`watching`, `trial` or `kept`), and `parallel-tick off|auto|on` over the control socket sets it, unsaved, for A/B checks.
+
+**Sun Path Tilt** (Quality, 40° by default, -60° to 60° in steps of 5°, `sunPathTilt` in `horizon-graphics.txt`) leans the path of the sun, moon and stars toward the south, as shader packs' `sunPathRotation` does. Vanilla's sun crosses the zenith from east to west, so at noon shadows fall straight down and show nothing; tilted, the noon sun stands at 90° minus the tilt and shadows fall to the north. 40° is what most shader packs ship (they write it -40, Iris's sign) and puts the noon sun 50° high, about the equinox sun over Europe and the northern US; 25 to 40 is the usual range, 0° is vanilla. Sunrise and sunset stay due east and west, so the sunrise colours and the fog's tint are unchanged. It is rendering only: the time of day, the day/night cycle, beds, clocks and daylight detectors read the untilted angles. One function gives the direction everywhere (`crates/horizon-client/src/celestial.rs`): the sun, moon and stars the sky draws (in the window and in both VR eyes), `frame.sun_direction` and `moon_direction` for Horizon's own shader packs, and for Iris/OptiFine packs `sunPosition`, `moonPosition`, `shadowLightPosition`, their sky and their shadow map. An Iris pack that declares its own `sunPathRotation` keeps it (its shadows are tuned for it); one that doesn't gets the player's. Ray-traced shadows ([raytracing.md](raytracing.md)) will trace toward the same direction.
+
+Noon (`time 6000`, clear, 1280x720), the same place and view, facing south 40° up: at 0° the sun is not in view,
+straight overhead (third picture, looking up); at 40° it stands in the south, also with Horizon's Golden Hour pack,
+whose sky reads `frame.sun_direction`.
+
+![Noon, tilt 0° (vanilla), facing south](media/sun-path-tilt-0-south.jpg)
+![Noon, tilt 40°, facing south](media/sun-path-tilt-40-south.jpg)
+![Noon, tilt 0°, looking straight up: the sun at the zenith](media/sun-path-tilt-0-overhead.jpg)
+![Noon, tilt 40°, Golden Hour pack](media/sun-path-tilt-40-golden-hour.jpg)
+
+**Linear Light** (Quality, off by default, `linearLight`) draws the world in linear light into a float scene
+target (`Rgba16Float`, one per view: the window, and each VR eye) and tone maps it to the screen under the HUD
+(`crates/horizon-client/src/gfx/tonemap.rs`). Light sources go above paper white: blocks that emit light by up
+to 4x for level 15 (lava, glowstone, sea lanterns), the sun's and moon's discs by up to 4x. The tone mapping is
+the identity below 90 % of paper white and rolls off above it, half keeping the hue, half toward white, so
+ordinary surfaces come out as vanilla's and sources glow instead of clipping. Shaders still compute vanilla's
+gamma-space colour and decode it on the way out (a product of gamma values decodes to the product of decoded
+ones); fog is mixed in gamma space as vanilla's distances expect, and additive light (the sun's glow,
+lightning, beams) is added as it is. The hand, the glowing outlines and the screen effects (vignette, overlays)
+draw into the scene too, before the tone mapping; the HUD after it. It is the base the PBR and the ray tracing
+build on ([raytracing.md](raytracing.md)). Turning it on or off makes the renderer again (as a resource reload:
+the sections mesh again). With a shader pack, the pack draws as before and its output is decoded into the scene. With HDR
+output on, the world goes to the display from the scene's light (`gfx/hdr_scene.wgsl`): the identity up to 80 %
+of the peak, a shoulder to the peak above it, so lava and the sun reach Peak Brightness while everything else
+sits where it does in SDR; the HUD, menus and text stay at Paper White. A pixel shows the scene wherever the
+frame is still what the SDR tone mapping wrote (the HUD did not draw there), with no guessing from colours:
+`HORIZON_HDR_DEBUG=1` paints light above paper white magenta.
+Measured in the same world and view against it off (1280x720): stone, grass and the hand within 0-3/255 (the
+lightmap's flicker), the bright sky 4-7/255 darker (its blue is past the shoulder's start), light sources
+brighter. In VR on the fake runtime (two eyes of 4096x3288, RTX 4090) it cost about 0.2 ms of GPU a frame (2.3
+against 2.1 ms, median of nine 300-frame lines) and no CPU.
+
+![Linear Light off (left) and on (right), day](media/linear-light-day.jpg)
+![Linear Light off (left) and on (right), night](media/linear-light-night.jpg)
+
+**Ray-Traced Shadows** (Quality, off by default, `rayTracedShadows`, with Linear Light on) traces the sun's
+(by night the moon's) shadows on the terrain within 8 chunks, along the tilted path. The blocks around the camera
+live in a voxel grid on the GPU (`crates/horizon-client/src/gfx/voxels.rs`), written from each section as it is
+meshed, so a changed block reaches the shadows with its section. After the world pass a compute pass
+(`gfx/shadow_rays.rs`) traces one ray per pixel of the depth toward the light, crossing empty 32- and 8-block bricks
+in one step; a solid block stops the light, leaves let half of it through. The tone mapping then dims what the
+solid terrain loses in the shadow: its sky light, never its block light (torches still light a shadowed wall).
+On the screen there is a ray for every pixel up to 3440x1440; in VR one for 2x2 pixels within 25 degrees of where the eyes look
+(the headset's gaze, else ahead) and one for 8x8 beyond (the quad views' insets are sharp all over), the same
+pass for every view. Measured on an RTX 4090: +1.2 ms of GPU a frame at 3440x1440 with a low morning sun, under
+the noise at noon; about +0.3 ms for the two 4096x3288 eyes of the fake VR runtime. Not yet: entities, water and
+glass neither cast nor receive, plants cast nothing, shadows are hard (no penumbra) and end at 8 chunks.
+Past 3440x1440 the screen traces one ray for 2x2 pixels (a 4K screen 1920x1080 rays, read back through a depth-aware
+upsampling); **RT Ray Density** (Auto, Full, Half: `rtRays` 0, 1, 2; Half for the Performance and Balanced presets) chooses
+it in the menu, `HORIZON_RT_SCALE=N` or `horizon-ctl rt-scale N` traces one ray for NxN pixels on the screen; `HORIZON_RT_DEBUG=1` shows the light the rays
+found, `2` the share the terrain keeps in the shadow, `6` the ambient occlusion.
+
+**Ray-Traced AO** (Quality, off by default, `rayTracedAo`, with Linear Light on) adds ambient occlusion over
+vanilla's smooth lighting, from the same pass and grid: six rays two blocks long fanned around each pixel's
+surface, a solid block hit closing its share of the light around (more the nearer, at most 60 %). The pattern is
+fixed, so it neither flickers nor needs accumulating over frames (which shows as trails in a headset). It darkens
+only the light around (sky and block light), not the sun's: a sunlit floor stays lit, the foot of a wall and the
+inside of a tunnel get darker. VR foveates it like the shadows. About +1-1.4 ms of GPU at 3440x1440 on an RTX 4090 outdoors, +0.5 ms in a cave (a copy of the "Grottes son" world); about +1 ms for the two 4096x3288 eyes of the fake VR runtime in that cave, no CPU. Parallax (LabPBR) terrain takes it over the pack's own AO.
+
+![Ray-traced ambient occlusion alone (HORIZON_RT_DEBUG=6)](media/rt-ao-debug.jpg)
+
+**RT Lighting** (Quality, off by default, `rtLighting`, with Linear Light on) replaces vanilla's shading
+on the terrain, water and glass with physical light, nothing kept of vanilla's lightmap, minimum
+brightness, directional shade or vertex ambient occlusion. The mesher writes each face's tint alone; the
+terrain shader lights the albedo from the face's normal: the sun (by night the moon) by its facing where the
+shadow rays reach it, the sky's colour as much as rays fanned over the surface's hemisphere see of it (times
+the ray-traced AO), and light sources (torches, lava, glowstone, in their colours) traced with a shadow ray each,
+falling off as the inverse square of the distance: their shadows are hard. With Parallax and a LabPBR pack, the
+material is lit by the same model: its normal map, its roughness and reflectance (a specular highlight), metals,
+subsurface scattering through leaves and plants, and its emission. The sun is the real one (its light through
+the atmosphere, its 0.53° disc and penumbra) and so is the sky (scattered by the atmosphere, drawn and lighting
+the world); light bounces once off what it hits, in that block's colour (`docs/raytracing.md`). A sealed room is black; a shadow is lit by the sky alone (blue) until global
+illumination brings the light bouncing off the ground. The rays (shadows, AO, sky) run on a depth prepass of
+the solid terrain before the world pass, so the terrain reads this frame's visibility at its own pixel: nothing
+lags or pops in when the head turns fast. The lighting itself is computed per pixel at full resolution on the
+screen and in each VR eye. (Metal's flat draws still read the last frame's rays, reprojected.) Turning it on meshes the world again.
+
+Test it in the ray tracing test scene: `tools/rt_test_scene.sh` builds a platform at y = 200 with every case
+(albedo strip, slabs, stairs, fences, plants, a tree, glass, water, lava, light sources, a wall and overhang,
+a torch-lit tunnel, a sealed room) and captures five views at noon, sunset and night.
+
+![Noon: vanilla (left), RT lighting (right)](media/rt-lighting-noon.jpg)
+![Sunset: vanilla (left), RT lighting (right)](media/rt-lighting-sunset.jpg)
+![A torch traced: its falloff, the wall post's hard shadow and the light bounced off the walls](media/rt-torch-tunnel.jpg)
+![Noon: the overhang lit by the light bounced off the floor](media/rt-gi-overhang-noon.jpg)
+![Sunset: the real sun's light and the atmosphere's sky](media/rt-real-sun-sunset.jpg)
+![Shadows from the drawn triangles (hardware rays): iron bars, fence rails, leaves' holes, flowers](media/rt-shapes-noon.jpg)
+![Stained glass colours the sunlight](media/rt-stained-glass.jpg)
+![The real stars over Aix-en-Provence](media/rt-stars.jpg)
+![The GI denoiser: before (left), after (right)](media/rt-denoiser.jpg)
+
+Where the GPU traces hardware rays (Vulkan), the sun's and the light sources' shadows come from the terrain's
+own triangles, alpha-tested at their texels: every block shadows exactly as it is drawn.
+
+**Sun Size** (RT lighting) makes the sun up to 20 times its real 0.53° across: softer shadows, the same light.
+**Aerial Perspective** (RT lighting) sets the air between the eye and far terrain, from real air (the default,
+which shows over the LOD terrain's kilometres) to 64 times denser: far blocks turn blue and hazy.
+![RT lighting, plain (left) and with SPBR and Parallax (right)](media/rt-lighting-labpbr.jpg)
+
+![Ray-traced shadows off (left) and on (right), morning](media/rt-shadows-morning.jpg)
 
 **Battery mode** (Performance, off by default) is for laptops and handhelds: at most 60 frames per second in a world, 30 in menus without a world or while another window has focus, and half the automatic worker threads (chunks load slower). It changes only when frames are drawn: what they show and the game's 20 ticks per second stay as they are.
 

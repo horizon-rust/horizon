@@ -96,6 +96,8 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
         sprite_layers: BTreeMap::new(),
         emissive: vec![],
         translucent_layers: vec![false],
+        opaque_layers: vec![true],
+        materials: None,
         sprite_mips: vec![],
         pbr_normals: vec![],
         pbr_specular: vec![],
@@ -140,6 +142,16 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
         sturdy: 0,
         face: [0; 6],
         cover: [0.0; 6],
+        rt_ice: 0,
+        rt_glass: false,
+        light_colour: [0; 3],
+        light_at: [255; 3],
+        flame: 0,
+        spot: 0,
+        map_color: 0,
+        ray: 0,
+        ray_shape: 0,
+        wind_anchor: false,
     };
     let info = vec![
         air,
@@ -190,6 +202,8 @@ fn terrain_source_cpu_multipart_and_waterlogged_faces_keep_their_owner() {
         [None, None, None],
     ];
     let mut mesher = Mesher {
+        rt_lighting: false,
+        smooth_fluids: false,
         nether_shading: false,
         shader_pack_lighting: false,
         separate_ao: false,

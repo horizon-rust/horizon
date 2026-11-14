@@ -858,6 +858,54 @@ impl Game<'_> {
             self.mark_outline(&out[start..], color);
         }
     }
+    /// RT lighting (Horizon-only): the player's body in first person, for the hardware rays alone
+    /// (`Frame::rt_body`), so the player throws a shadow and shows in the water and the mirrors as
+    /// a shader pack's shadow pass would have it (shadowPlayer). Without what the hands hold: the
+    /// view model is in the rays already, its shadow the one the eye expects. Nothing in third
+    /// person (the entities hold the model) or while a pack's shadow pass builds it.
+    pub(super) fn rt_body_geometry(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+        out: &mut Vec<horizon_client::mesher::Vertex>,
+    ) {
+        if self.own_body_in_view()
+            || self.pack_shadow_casters.1
+            || self.spectator()
+            || !self.own_body_visible()
+            || self
+                .player
+                .as_ref()
+                .is_none_or(|p| p.health.dead_or_dying())
+        {
+            return;
+        }
+        let Some(m) = self.player_model.as_ref() else {
+            return;
+        };
+        let eye = self
+            .player
+            .as_ref()
+            .map_or_else(|| m.eye_height(), |p| f64::from(p.dimensions.eye_height));
+        let probe = entity_light_block(m.position, m.extra.crouching, eye);
+        let light = self.world.light(probe[0], probe[1], probe[2]);
+        let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
+        let atlas = &self.gui.atlas;
+        let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
+        horizon_client::mobs::render::render_with(
+            m,
+            alpha as f32,
+            camera,
+            &lookup,
+            packed,
+            self.res.mob_data(),
+            &self.player_armor_layers(),
+            out,
+        );
+        let chest = self.armor[1].as_ref().map(|s| &*s.item);
+        self.player_elytra_geometry(m, chest, camera, alpha as f32, packed, out);
+        self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
+    }
     /// `extractEntityInInventoryFollowsMouse`: the player in the box
     /// `[x0, x1) x [y0, y1)`, `size` pixels per block, turned toward the
     /// cursor; drawn with a depth buffer and back-face culling.

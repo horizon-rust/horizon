@@ -54,6 +54,7 @@ const HELP: &[&str] = &[
     "fill X1 Y1 Z1 X2 Y2 Z2 BLOCK   set a box of loaded blocks",
     "resume                         leave the pause menu",
     "screenshot PATH                write the next frame as PNG",
+    "record SECONDS DIR             record RT lighting's HDR video (half size) into DIR",
     "screenshot-sequence FRAMES STEP_MS PATH|cancel  a shader pack's first frames on a set clock (HORIZON_STILL), the last as PNG",
     "chat TEXT                      send a chat line or /command as if typed",
     "type TEXT                      type into the open chat box (key enter tap sends)",
@@ -1120,6 +1121,77 @@ impl Game<'_> {
                 self.pending_screenshot = Some(reply.clone());
                 Ok(None)
             }
+            "record" => {
+                let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
+                let seconds: f32 = arg(1)?.parse().map_err(|_| "SECONDS: a number")?;
+                arg(2)?;
+                // The rest of the line: a path may hold spaces.
+                let rest = line
+                    .trim_start()
+                    .strip_prefix("record")
+                    .unwrap_or("")
+                    .trim_start();
+                let dir = rest
+                    .split_once(char::is_whitespace)
+                    .map_or("", |(_, d)| d.trim());
+                renderer
+                    .start_recording(dir.into(), seconds)
+                    .map_err(|e| e.to_string())?;
+                ok()
+            }
+            "rt-scale" => {
+                let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
+                let scale = arg(1)?.parse::<u32>().ok().filter(|s| *s <= 8).ok_or(
+                    "rt-scale N (pixels a ray on each side, 1 to 8; 0 by the screen's size)",
+                )?;
+                renderer.set_rt_scale(scale);
+                Ok(Some(json!({ "ok": true, "scale": scale })))
+            }
+            "rt-sharp" => {
+                let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
+                let degrees = arg(1)?.parse::<u32>().ok().filter(|d| *d <= 180).ok_or(
+                    "rt-sharp DEGREES (the VR sharp zone's half angle, 1 to 180; 0 the default)",
+                )?;
+                renderer.set_rt_sharp(degrees);
+                Ok(Some(json!({ "ok": true, "sharp": degrees })))
+            }
+            "rt-skip" => {
+                let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
+                let skip = arg(1)?.parse::<u32>().map_err(
+                    |_| "rt-skip MASK (1 sun, 2 GI, 4 DI, 8 PSR, 16 GI every frame, 32 VR's second eye's own light, 64 the far field, 2097152 white noise, 4194304 the denoiser's early-out, 8388608 the moving casters' second ray; 0 all)",
+                )?;
+                let skip = skip & (127 | 2_097_152 | 4_194_304 | 8_388_608);
+                renderer.set_rt_skip(skip);
+                Ok(Some(json!({ "ok": true, "skip": skip })))
+            }
+            "gpu-stages" => {
+                let on = match line.split_whitespace().nth(1) {
+                    None | Some("report") => None,
+                    Some("on") => Some(true),
+                    Some("off") => Some(false),
+                    Some(_) => return Err("gpu-stages [on|off|report]".into()),
+                };
+                if let Some(on) = on
+                    && !horizon_client::gfx::gpu_passes::set_enabled(on)
+                {
+                    return Err("this GPU cannot time inside encoders".into());
+                }
+                let report = horizon_client::gfx::gpu_passes::snapshot()
+                    .ok_or("this GPU cannot time inside encoders")?;
+                Ok(Some(json!({ "ok": true, "gpu": report })))
+            }
+            "aldhani" => {
+                let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
+                let seconds = match arg(1)? {
+                    "start" => Some(0.0),
+                    "stop" => None,
+                    s => Some(s.parse::<f32>().map_err(|_| "aldhani start|stop|SECONDS")?),
+                };
+                renderer.set_aldhani(seconds)?;
+                Ok(Some(
+                    json!({ "ok": true, "seconds": renderer.aldhani_time() }),
+                ))
+            }
             "chat" => {
                 let text = line.trim_start().strip_prefix("chat").unwrap_or("").trim();
                 self.require_world()?;
@@ -1277,10 +1349,15 @@ impl Game<'_> {
                 if self.title.is_none() {
                     return Err("a world is already open".into());
                 }
-                let folder = arg(1)?;
-                let seed = words.get(2).map(|s| s.parse::<i64>()).transpose()?;
-                let creative = words.get(3) == Some(&"creative");
-                self.open_world(folder, Some(folder), seed, creative, None)?;
+                arg(1)?;
+                let rest = line.trim_start().strip_prefix("open").unwrap_or("");
+                let saves = super::saves_control::saves()?;
+                let (folder, after) =
+                    super::saves_control::split_folder(rest, |f| saves.join(f).is_dir())
+                        .ok_or("open WORLD: a closing \" is missing")?;
+                let seed = after.first().map(|s| s.parse::<i64>()).transpose()?;
+                let creative = after.get(1) == Some(&"creative");
+                self.open_world(&folder, Some(&folder), seed, creative, None)?;
                 ok()
             }
             "connect" => {
@@ -1663,6 +1740,19 @@ impl Game<'_> {
                 .eye_position()
                 .map(|e| self.shown_name_tags(glam::DVec3::from_array(e))),
         });
+        // What makes the game mesh: sections meshed again, meshes made for nothing, and the sections
+        // marked to mesh by cause.
+        status["remeshed_sections"] = self.streaming.remeshed_total.into();
+        status["stale_meshes"] = self.streaming.stale_meshed_total.into();
+        status["arrived_again_columns"] = self.streaming.arrived_again_total.into();
+        status["forgotten_columns"] = self.streaming.forgotten_total.into();
+        status["dirtied_sections"] = self
+            .world
+            .dirty_sections
+            .counts()
+            .map(|(k, v)| (k.to_string(), v.into()))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
         status["lod"] = lod;
         // Parallel Tick: the setting, whether the next tick shares its work, and Auto's state.
         let (setting, on, auto) = horizon_client::parallel::status();

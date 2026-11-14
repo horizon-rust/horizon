@@ -36,7 +36,8 @@ pub(super) struct EntityOutline {
 
 impl EntityOutline {
     /// `entity` draws the silhouettes with the entity shader's vertex stage and
-    /// `fs_outline`; `format` is what it draws onto (`Renderer::overlay_format`).
+    /// `fs_outline`; `format` is what it draws onto (`Renderer::overlay_format`), `linear` whether
+    /// it takes linear light (`tonemap`).
     pub(super) fn new(
         device: &wgpu::Device,
         entity: (
@@ -45,8 +46,10 @@ impl EntityOutline {
             &[Option<wgpu::VertexBufferLayout>],
         ),
         format: wgpu::TextureFormat,
+        linear: bool,
     ) -> Self {
         let (entity_shader, entity_layout, entity_vertex) = entity;
+        let constants = [("LINEAR", f64::from(u8::from(linear)))];
         // RenderPipelines.OUTLINE_NO_CULL: no depth test, the colour replaced.
         let silhouette = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Entity outline silhouettes"),
@@ -99,7 +102,7 @@ impl EntityOutline {
             bind_group_layouts: &[Some(&layout)],
             ..Default::default()
         });
-        let pass = |entry: &str, target: wgpu::ColorTargetState| {
+        let pass = |entry: &str, target: wgpu::ColorTargetState, constants: &[(&str, f64)]| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(entry),
                 layout: Some(&pipeline_layout),
@@ -115,7 +118,10 @@ impl EntityOutline {
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(entry),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants,
+                        ..Default::default()
+                    },
                     targets: &[Some(target)],
                 }),
                 multiview_mask: None,
@@ -150,10 +156,10 @@ impl EntityOutline {
         Self {
             silhouette,
             passes: [
-                pass("fs_sobel", FORMAT.into()),
-                pass("fs_blur_x", FORMAT.into()),
-                pass("fs_blur_y", FORMAT.into()),
-                pass("fs_blit", blit),
+                pass("fs_sobel", FORMAT.into(), &[]),
+                pass("fs_blur_x", FORMAT.into(), &[]),
+                pass("fs_blur_y", FORMAT.into(), &[]),
+                pass("fs_blit", blit, &constants),
             ],
             layout,
             nearest: sampler("Entity outline nearest", wgpu::FilterMode::Nearest),
@@ -260,6 +266,15 @@ impl EntityOutline {
             swap,
             groups,
         });
+    }
+
+    /// Whether `draw` draws anything this frame (glowing entities in view).
+    #[expect(
+        dead_code,
+        reason = "its caller in gfx.rs (1df247284, the TAA's copy back only when something draws over the resolved frame) was lost merging main into final-all; kept to port it back"
+    )]
+    pub(super) fn draws(&self) -> bool {
+        self.targets.is_some() && self.quads > 0
     }
 
     /// `LevelRenderer.executeOutline`, the post chain and `blitEntityOutline` onto `frame`.

@@ -12,6 +12,9 @@ PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java"}
 ORIGINAL_JDK_TOOLS = {"tools/JfrSummary.java", "tests/java/JfrFixture.java"}
 # The prepared folder's files in one file (crates/horizon-core/src/prepared_files.rs): Mojang's data.
 PRIVATE_NAMES = {"horizon-data.bin"}
+# NVIDIA's DLSS SDK (never in the repository; a native mod downloads it): its headers and static libraries (nvsdk_ngx*) and its
+# runtime DLLs and shared objects (nvngx_*.dll, libnvidia-ngx-*.so*) stay on the developer's machine.
+PRIVATE_PREFIXES = ("nvsdk_ngx", "nvngx", "libnvidia-ngx")
 # Vanilla's 1.13 data fixer tables, copied from its code until 2026-11; horizon-prepare now exports them from the
 # player's jar (datafix-tables.json). Their old paths stay in history, so only the current tree is checked.
 RETIRED_TABLES = {"crates/horizon-world/src/datafix/flat_tables.rs",
@@ -34,6 +37,7 @@ def prohibited(path):
         bool(parsed.parts and parsed.parts[0] in PRIVATE_ROOTS)
         or parsed.suffix.lower() in PRIVATE_EXTENSIONS
         or parsed.name in PRIVATE_NAMES
+        or parsed.name.lower().startswith(PRIVATE_PREFIXES)
     )
 
 

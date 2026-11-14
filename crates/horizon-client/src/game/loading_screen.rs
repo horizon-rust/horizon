@@ -159,6 +159,7 @@ impl Loading {
             None,
             None,
             self.settings.horizon.api,
+            self.settings.horizon.linear_light,
         ) {
             Ok(r) => self.renderer = Some(r),
             Err(e) => {
@@ -224,6 +225,7 @@ impl Loading {
             Some(&bundle.panorama),
             self.renderer.as_ref(),
             self.settings.horizon.api,
+            self.settings.horizon.linear_light,
         ) {
             Ok(r) => {
                 horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
@@ -331,6 +333,7 @@ impl Loading {
                     self.settings.file.int("textureFiltering"),
                     self.settings.file.int("maxAnisotropyBit"),
                 ),
+                self.settings.horizon.linear_light,
             )
         })?;
         log::info!(
