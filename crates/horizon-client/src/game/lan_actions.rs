@@ -3247,7 +3247,7 @@ impl Game<'_> {
     /// eye. A boat, minecart, armor stand, item frame or painting is aimed at
     /// the point the client hit (the interact packet's location) when that
     /// is on it, else at its centre.
-    fn look_at_entity(
+    pub(super) fn look_at_entity(
         &mut self,
         host: &mut LanHost,
         gi: usize,
@@ -3500,6 +3500,9 @@ impl Game<'_> {
             if let Ok(id) = u32::try_from(id) {
                 host.mob_players.insert(id, conn);
             }
+            return;
+        }
+        if self.queue_crystal_strike(host, conn, id) {
             return;
         }
         let (old_yaw, old_pitch) = (host.hub.guests[gi].yaw, host.hub.guests[gi].pitch);

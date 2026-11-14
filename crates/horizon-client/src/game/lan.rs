@@ -257,6 +257,8 @@ pub(super) struct LanHost {
     /// Guests' commands waiting for the hub to be back in `self.lan`, where
     /// a command can reach every player (game/lan_actions.rs).
     pub commands: Vec<super::lan_actions::GuestCommand>,
+    /// Guests' crystal blows waiting for the hub (game/lan_pvp.rs).
+    pub strikes: Vec<(u32, i32)>,
     /// Mods' quiet commands waiting to run a few a tick (game/lan_quiet.rs).
     pub quiet: std::collections::VecDeque<super::lan_quiet::QuietBatch>,
     /// Far terrain sampled for Horizon clients (game/lan_far.rs); None when
@@ -1469,6 +1471,7 @@ impl Game<'_> {
             waypoint_dead: Default::default(),
             border_sent: None,
             commands: Vec::new(),
+            strikes: Vec::new(),
             quiet: std::collections::VecDeque::new(),
             far,
             native_commands: None,
@@ -2385,11 +2388,7 @@ impl Game<'_> {
                 }
                 HostEvent::Packet(conn, packet) => {
                     self.lan_guest_packet(&mut host, conn, *packet);
-                    if !host.commands.is_empty() {
-                        self.lan = Some(host);
-                        self.run_guest_commands();
-                        host = self.lan.take().expect("the hub is back after the commands");
-                    }
+                    host = self.run_guest_queues(host);
                 }
                 HostEvent::Jump { conn, from, yaw } => {
                     self.guest_jump(&mut host, conn, from, yaw);
@@ -3756,6 +3755,7 @@ mod tests {
             waypoint_dead: Default::default(),
             border_sent: None,
             commands: Default::default(),
+            strikes: Default::default(),
             quiet: Default::default(),
             far: None,
             native_commands: None,
@@ -5069,6 +5069,7 @@ mod merchant_packet_tests {
             waypoint_dead: Default::default(),
             border_sent: None,
             commands: Default::default(),
+            strikes: Default::default(),
             quiet: Default::default(),
             far: None,
             native_commands: None,

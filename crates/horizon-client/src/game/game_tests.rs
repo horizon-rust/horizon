@@ -1977,3 +1977,7 @@ mod completed_test_coordinate_feedback_tests {
 #[cfg(test)]
 #[path = "test_summary_context_tests.rs"]
 mod added_test_summary_context_tests;
+
+#[cfg(test)]
+#[path = "struck_crystal_blast_tests.rs"]
+mod struck_crystal_blast_tests;

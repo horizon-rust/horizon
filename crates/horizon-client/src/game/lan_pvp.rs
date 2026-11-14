@@ -693,3 +693,84 @@ impl Game<'_> {
         }
     }
 }
+
+impl Game<'_> {
+    /// Queues the blow when `id` is an End crystal: its blast hurts and pushes
+    /// every player in reach (`ServerExplosion.hurtEntities`), which only the
+    /// hub in `self.lan` lets `explosion_hurt_entities` reach, so the blow
+    /// waits for the packet to be handled (`run_guest_strikes`).
+    pub(super) fn queue_crystal_strike(&self, host: &mut LanHost, conn: u32, id: i32) -> bool {
+        if !u32::try_from(id).is_ok_and(|id| id != 0 && self.crystals.iter().any(|c| c.id == id)) {
+            return false;
+        }
+        host.strikes.push((conn, id));
+        true
+    }
+
+    /// Runs the queued guest blows, then the queued commands (the order the
+    /// packet handler always used), each with the hub in `self.lan`.
+    pub(super) fn run_guest_queues(&mut self, mut host: LanHost) -> LanHost {
+        if !host.commands.is_empty() {
+            self.lan = Some(host);
+            self.run_guest_commands();
+            host = self.lan.take().expect("the hub is back after the commands");
+        }
+        if !host.strikes.is_empty() {
+            self.lan = Some(host);
+            self.run_guest_strikes();
+            host = self.lan.take().expect("the hub is back after the strikes");
+        }
+        host
+    }
+
+    /// The blows guests struck on End crystals (`guest_attack`), each as that
+    /// guest with the hub in `self.lan`, so that the blast reaches the other
+    /// players too (`ServerExplosion.hurtEntities`).
+    pub(super) fn run_guest_strikes(&mut self) {
+        while let Some(mut host) = self.lan.take() {
+            if host.strikes.is_empty() {
+                self.lan = Some(host);
+                return;
+            }
+            let (conn, id) = host.strikes.remove(0);
+            self.lan = Some(self.guest_strike(host, conn, id));
+        }
+    }
+
+    /// `guest_attack`'s blow on the entity `id` as the guest `conn`, which
+    /// takes the hub and gives it back.
+    fn guest_strike(&mut self, mut host: LanHost, conn: u32, id: i32) -> LanHost {
+        let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+            return host;
+        };
+        let (old_yaw, old_pitch) = (host.hub.guests[gi].yaw, host.hub.guests[gi].pitch);
+        if self.look_at_entity(&mut host, gi, id, None).is_none() {
+            return host;
+        }
+        let Some(swap) = self.enter_guest(&mut host, conn, self.dim) else {
+            return host;
+        };
+        self.lan = Some(host);
+        let dimension =
+            (self.serving.is_some() || self.options.dedicated.is_some()).then_some(self.dim.id());
+        let sent = horizon_client::block_contact::in_level(dimension, || {
+            // A mace's smash sets the attacker's velocity and sends it at once.
+            let marked = self
+                .player
+                .as_mut()
+                .is_some_and(|p| std::mem::take(&mut p.health.sync_velocity));
+            self.attack();
+            let p = self.player.as_mut()?;
+            let sent = std::mem::replace(&mut p.health.sync_velocity, marked);
+            sent.then_some(p.velocity)
+        });
+        let mut host = self.lan.take().expect("an attack puts the hub back");
+        self.leave_guest(&mut host, swap);
+        self.send_guest_motion(&mut host, conn, sent);
+        if let Some(g) = host.hub.guest_mut(conn) {
+            g.yaw = old_yaw;
+            g.pitch = old_pitch;
+        }
+        host
+    }
+}
