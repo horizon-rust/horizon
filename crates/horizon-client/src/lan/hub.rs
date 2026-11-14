@@ -3467,7 +3467,51 @@ impl Hub {
     }
 
     /// All entities as one client sees them: the world's and the other players.
+    /// A region's entities tracked for its players on its thread (its tracker holds their states, from
+    /// [`Self::lend_trackers`]), after its chunks: the server's hub skips these players once.
+    pub fn region_track(&mut self, ctx: &mut TickCtx) {
+        self.track_entities(ctx);
+        let dimension = self.config.dimension.clone();
+        for g in &mut self.guests {
+            g.tracked_done = g.placed && g.dimension == dimension;
+        }
+    }
+
+    /// The level's entity states for the region trackers, by the chunk each was last seen in.
+    pub fn lend_trackers(&mut self, regions: usize, region_of: impl Fn((i32, i32)) -> Option<usize>) -> Vec<Entities> {
+        self.entities.entry(self.config.dimension.clone()).or_default().lend(regions, region_of)
+    }
+
+    /// A region tracker for this (region) hub's level.
+    pub fn set_tracker(&mut self, tracker: Entities) {
+        self.entities.insert(self.config.dimension.clone(), tracker);
+    }
+
+    /// A region hub's tracker back in this (the server's) hub's, parked.
+    pub fn park_tracker(&mut self, region: &mut Hub) {
+        if let Some(t) = region.entities.remove(&region.config.dimension) {
+            self.entities.entry(self.config.dimension.clone()).or_default().park(t);
+        }
+    }
+
     fn track_entities(&mut self, ctx: &mut TickCtx) {
+        // The players whose region tracked their entities this tick are left out, once; with nobody left the
+        // level's tracker waits (its parked states stay the regions').
+        let skipped: crate::fast_hash::FxHashSet<u32> = self
+            .guests
+            .iter_mut()
+            .filter_map(|g| std::mem::take(&mut g.tracked_done).then_some(g.conn))
+            .collect();
+        if !skipped.is_empty() {
+            let dimension = &self.config.dimension;
+            let others = self.guests.iter().any(|g| g.placed && g.dimension == *dimension && !skipped.contains(&g.conn));
+            if !others {
+                return;
+            }
+        }
+        if let Some(level) = self.entities.get_mut(&self.config.dimension) {
+            level.unpark();
+        }
         let mut all: Vec<EntityState> = Vec::with_capacity(ctx.entities.len() + self.guests.len());
         let placed: Vec<usize> = (0..self.guests.len())
             .filter(|&i| self.here(&self.guests[i]))
@@ -3525,7 +3569,7 @@ impl Hub {
         // around them, but are not among the entities shown (`track_entities`).
         // A fake player (a bot with no client) is not shown anything: it is tracked by the others
         // but tracks none itself.
-        let here = |g: &Guest| (g.placed || g.held) && g.dimension == *dimension && !g.fake;
+        let here = |g: &Guest| (g.placed || g.held) && g.dimension == *dimension && !g.fake && !skipped.contains(&g.conn);
         outs.resize_with(self.guests.iter().filter(|g| here(g)).count(), Vec::new);
         // The prediction's replay excuses a client that may still have an entity that left it.
         let recording = self.recording();

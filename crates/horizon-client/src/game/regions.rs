@@ -661,6 +661,10 @@ impl Game<'_> {
         let mut split_guests = host
             .hub
             .split_guests(regions.count, |conn| region_of_conn.get(&conn).copied());
+        let mut trackers = host
+            .hub
+            .lend_trackers(regions.count, |chunk| regions.of_chunk(chunk))
+            .into_iter();
         let split = self.split_level(&regions);
         let mut flights: Vec<(Box<Game<'static>>, Vec<ChunkPos>, Vec<u32>)> =
             Vec::with_capacity(regions.count);
@@ -677,6 +681,9 @@ impl Game<'_> {
             let conns: Vec<u32> = guests.iter().map(|g| g.conn).collect();
             let mut shell = w.lan.take().unwrap_or_else(|| host.region_shell());
             host.lend_region(&mut shell, &conns, &mob_ids, dim, guests);
+            if let Some(tracker) = trackers.next() {
+                shell.hub.set_tracker(tracker);
+            }
             w.lan = Some(shell);
             flights.push((w, chunks, conns));
         }
@@ -720,6 +727,7 @@ impl Game<'_> {
         for (mut w, chunks, _) in flights {
             self.take_region_back(&mut w, &chunks);
             if let Some(shell) = w.lan.as_mut() {
+                host.hub.park_tracker(&mut shell.hub);
                 host.take_region_back(shell);
             }
             back.push(w);
@@ -784,6 +792,9 @@ impl Game<'_> {
             if !host.hub.guests.is_empty() {
                 host.hub.region_chunks(&self.world);
                 host.hub.region_changes(&mut self.world);
+                self.lan = Some(host);
+                self.region_track();
+                return Ok(());
             }
             self.lan = Some(host);
         }

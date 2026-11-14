@@ -379,6 +379,8 @@ pub struct Guest {
     pub placed: bool,
     /// A region thread sent this player's chunks this tick: the server's hub skips them once.
     pub chunks_done: bool,
+    /// A region thread tracked the entities for this player this tick: the server's hub skips them once.
+    pub tracked_done: bool,
     /// The hand-over a proxy started by exporting it with `freeze`
     /// (`arrivals::Handover`): while it lasts, what it sends other than its
     /// acknowledgements is not acted on, and every export answers with the
@@ -616,6 +618,7 @@ impl Guest {
             death_time: 0,
             placed: false,
             chunks_done: false,
+            tracked_done: false,
             handover: None,
             expected: j.expected,
             held: false,
