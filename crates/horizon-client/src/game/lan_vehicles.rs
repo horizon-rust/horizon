@@ -894,6 +894,44 @@ mod controller_tests {
             game.boats[0].fall_distance, 0.0,
             "a guest's boat on the ground"
         );
+        // `AbstractBoat.tick` still runs `applyEffectsFromBlocks` on the server
+        // for the boat its guest drives: `WebBlock.entityInside` resets the fall
+        // (`Entity.makeStuckInBlock`).
+        let cobweb = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:cobweb")
+            .unwrap();
+        let p = game.boats[0].position;
+        game.world
+            .set(
+                p.x.floor() as i32,
+                p.y.floor() as i32,
+                p.z.floor() as i32,
+                cobweb,
+            )
+            .unwrap();
+        game.boats[0].fall_distance = 4.0;
+        game.guest_move_vehicle(
+            &mut host,
+            3,
+            &play::MoveVehicleRequest {
+                position: [p.x, p.y, p.z],
+                yaw: 0.0,
+                pitch: 0.0,
+                on_ground: false,
+            },
+        );
+        assert_eq!(game.boats[0].fall_distance, 4.0, "still falling");
+        // Put the host back so `tick_boats` sees the boat as guest-driven and
+        // runs `boat_server_passes` instead of `tick_boat`.
+        game.lan = Some(host);
+        game.tick_boats();
+        assert_eq!(
+            game.boats[0].fall_distance, 0.0,
+            "a cobweb resets the fall of a boat its guest drives"
+        );
     }
 
     /// handleMoveVehicle for a horse its guest's client moves: `vehicle.move`
