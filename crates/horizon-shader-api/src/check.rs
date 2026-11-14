@@ -10,7 +10,7 @@
 use crate::inputs::{DISPLACEMENT_INPUT, Frame};
 use crate::manifest::{OptionKind, PackOption};
 use crate::package::Pack;
-use crate::stages::{Composed, StageKind, compose};
+use crate::stages::{Composed, StageKind};
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 use std::collections::HashSet;
 use std::fmt;
@@ -171,7 +171,8 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
         .chain(m.entity.iter().map(|s| (StageKind::Entity, s)));
     let (mut checked, mut problems) = (Vec::new(), Vec::new());
     for (kind, stage) in stages {
-        match check_stage(pack, kind, &stage.file) {
+        // Each entry with its own `files`, also two `[[post]]` entries of one file.
+        match check_entry(pack, kind, &stage.file, Some(stage)) {
             Ok(mut c) => {
                 c.label = stage.name.clone().unwrap_or_else(|| stage.file.clone());
                 checked.push(c);
@@ -228,11 +229,23 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
     }
 }
 
-/// Builds and checks one stage of `pack` from its file.
+/// Builds and checks one stage of `pack` from its file; of `[[post]]` entries that share a file,
+/// the first one's.
 pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedStage, Vec<Problem>> {
+    let stage = crate::stages::stage_of(&pack.manifest, kind, file);
+    check_entry(pack, kind, file, stage)
+}
+
+/// Builds and checks the manifest entry `stage` of kind `kind`, whose own file is `file`.
+fn check_entry(
+    pack: &Pack,
+    kind: StageKind,
+    file: &str,
+    stage: Option<&crate::manifest::Stage>,
+) -> Result<CheckedStage, Vec<Problem>> {
     // First without the entry points, so a missing or mistyped stage function
     // is reported as such rather than as a call that doesn't resolve.
-    let mut own = compose(pack, kind, file);
+    let mut own = crate::stages::compose_stage(pack, kind, file, stage);
     let entries = own.parts.pop().expect("entries are the last part");
     own.text.truncate(entries.1.start);
     // The material prelude's LabPBR functions call into the renderer: a stand-in here.
@@ -261,7 +274,7 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
     if !problems.is_empty() {
         return Err(problems);
     }
-    let composed = compose(pack, kind, file);
+    let composed = crate::stages::compose_stage(pack, kind, file, stage);
     let module = parse(&composed)?;
     let info = Validator::new(ValidationFlags::all(), Capabilities::default())
         .validate(&module)

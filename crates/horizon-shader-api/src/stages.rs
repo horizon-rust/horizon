@@ -944,7 +944,49 @@ pub fn post_target_declarations(manifest: &crate::manifest::Manifest) -> String 
 
 /// The WGSL of the stage `kind` whose own file is `file`: the prelude, the
 /// pack's shared files in order, the file, then the entry points, all of the pack's line.
+/// Of `[[post]]` entries that share a file, this is the first one's; [`compose_post`] composes
+/// each by its index.
 pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
+    compose_stage(pack, kind, file, stage_of(&pack.manifest, kind, file))
+}
+
+/// The manifest entry of the stage `kind` whose own file is `file`: the first `[[post]]` entry
+/// of that file.
+pub(crate) fn stage_of<'a>(
+    m: &'a crate::manifest::Manifest,
+    kind: StageKind,
+    file: &str,
+) -> Option<&'a crate::manifest::Stage> {
+    match kind {
+        StageKind::Sky => m.sky.as_ref(),
+        StageKind::Material => m.material.as_ref(),
+        StageKind::Vertex => m.vertex.as_ref(),
+        StageKind::Weather => m.weather.as_ref(),
+        StageKind::Post => m.post.iter().find(|s| s.file == file),
+        StageKind::Tonemap => m.tonemap.as_ref(),
+        StageKind::Entity => m.entity.as_ref(),
+    }
+}
+
+/// The WGSL of the pack's `[[post]]` entry `index`, with its own `files`, even where another
+/// entry uses the same file; None past the last entry.
+pub fn compose_post(pack: &Pack, index: usize) -> Option<Composed> {
+    let stage = pack.manifest.post.get(index)?;
+    Some(compose_stage(
+        pack,
+        StageKind::Post,
+        &stage.file,
+        Some(stage),
+    ))
+}
+
+/// [`compose`] of the manifest entry `stage` (its `files`) of kind `kind`, whose own file is `file`.
+pub(crate) fn compose_stage(
+    pack: &Pack,
+    kind: StageKind,
+    file: &str,
+    stage: Option<&crate::manifest::Stage>,
+) -> Composed {
     let api = pack.manifest.api;
     let mut composed = Composed {
         text: String::new(),
@@ -970,15 +1012,6 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
     }
     // The stage's own extra files, between the shared ones and its file.
     let m = &pack.manifest;
-    let stage = match kind {
-        StageKind::Sky => m.sky.as_ref(),
-        StageKind::Material => m.material.as_ref(),
-        StageKind::Vertex => m.vertex.as_ref(),
-        StageKind::Weather => m.weather.as_ref(),
-        StageKind::Post => m.post.iter().find(|s| s.file == file),
-        StageKind::Tonemap => m.tonemap.as_ref(),
-        StageKind::Entity => m.entity.as_ref(),
-    };
     for extra in stage.into_iter().flat_map(|s| &s.files) {
         if extra != file && !m.shared.contains(extra) {
             push(extra, pack.source(extra).unwrap_or_default());

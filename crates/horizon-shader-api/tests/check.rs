@@ -218,6 +218,46 @@ fn a_stages_files_are_its_own() {
     check(&pack).unwrap();
 }
 
+/// Two `[[post]]` entries of one file each get their own `files` (#16234).
+#[test]
+fn a_reused_post_file_takes_each_entrys_files() {
+    let mut pack = sample();
+    for (name, value) in [("horizontal.wgsl", "1.0"), ("vertical.wgsl", "2.0")] {
+        let function = name.trim_end_matches(".wgsl");
+        pack.files.insert(
+            name.into(),
+            format!("fn {function}() -> f32 {{ return {value}; }}\n").into_bytes(),
+        );
+    }
+    let mut second = pack.manifest.post[0].clone();
+    pack.manifest.post[0].files.push("horizontal.wgsl".into());
+    second.files.push("vertical.wgsl".into());
+    second.name = Some("Second pass".into());
+    pack.manifest.post.insert(1, second);
+    let parts = |index| -> Vec<String> {
+        horizon_shader_api::compose_post(&pack, index)
+            .unwrap()
+            .parts
+            .into_iter()
+            .map(|p| p.0)
+            .collect()
+    };
+    let (first, second) = (parts(0), parts(1));
+    assert!(first.iter().any(|p| p == "horizontal.wgsl"), "{first:?}");
+    assert!(first.iter().all(|p| p != "vertical.wgsl"), "{first:?}");
+    assert!(second.iter().any(|p| p == "vertical.wgsl"), "{second:?}");
+    assert!(second.iter().all(|p| p != "horizontal.wgsl"), "{second:?}");
+    let report = check(&pack).unwrap();
+    let source = |label: &str| {
+        let stage = report.stages.iter().find(|s| s.label == label).unwrap();
+        stage.source.clone()
+    };
+    assert!(source("Colour grade").contains("fn horizontal()"));
+    assert!(!source("Colour grade").contains("fn vertical()"));
+    assert!(source("Second pass").contains("fn vertical()"));
+    assert!(!source("Second pass").contains("fn horizontal()"));
+}
+
 #[test]
 fn a_vertex_stage_checks_alone_and_joins_the_material() {
     let mut files = sample().files;
