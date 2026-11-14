@@ -273,6 +273,7 @@ impl BlockEntities {
         regions: usize,
         region_of: impl Fn(Pos) -> Option<usize>,
     ) -> Vec<BlockEntities> {
+        let mut lt = std::time::Instant::now();
         let mut out: Vec<BlockEntities> = (0..regions)
             .map(|_| BlockEntities {
                 states: self.states.clone(),
@@ -285,6 +286,7 @@ impl BlockEntities {
                 ..Default::default()
             })
             .collect();
+        crate::world::lend_lap(&mut lt, "be.setup");
         // Each region's share of the ticking list, in the list's order: without it a region's ticks would find
         // nothing to tick.
         let mut tickers: Vec<Vec<(Pos, u32)>> = (0..regions).map(|_| Vec::new()).collect();
@@ -295,6 +297,18 @@ impl BlockEntities {
         }
         for (r, list) in tickers.into_iter().enumerate() {
             out[r].tickers = Arc::new(list);
+        }
+        crate::world::lend_lap(&mut lt, "be.tickers");
+        // Each region's map at its size from the start: a block entity is about a kilobyte, and a map that grew
+        // as they came moved every one of them again each time.
+        let mut sizes = vec![0usize; regions];
+        for pos in self.map.keys() {
+            if let Some(r) = region_of(*pos).filter(|&r| r < regions) {
+                sizes[r] += 1;
+            }
+        }
+        for (r, n) in sizes.into_iter().enumerate() {
+            out[r].map.reserve(n);
         }
         for (pos, entity) in self.map.extract_if(|pos, _| region_of(*pos).is_some()) {
             let r = region_of(pos).expect("extracted for its region");
@@ -355,6 +369,7 @@ impl BlockEntities {
                 }
             }
         }
+        crate::world::lend_lap(&mut lt, "be.sets+map");
         self.mods.retain(|_, set| !set.is_empty());
         out
     }

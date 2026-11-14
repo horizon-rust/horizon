@@ -758,6 +758,20 @@ impl Game<'_> {
                         .map(|(n, us)| format!("{n} {:.1}", *us as f64 / 200_000.0))
                         .collect();
                     laps.clear();
+                    let mut world = horizon_client::world::LEND_LAPS
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let wline: Vec<String> = world
+                        .iter()
+                        .map(|(n, us)| format!("{n} {:.1}", *us as f64 / 200_000.0))
+                        .collect();
+                    world.clear();
+                    log::info!("world.lend laps (ms/tick): {}", wline.join(", "));
+                    log::info!(
+                        "block entities {} tickers-ish, asleep etc; chunks {}",
+                        self.world.block_entities.len(),
+                        self.world.chunks.len()
+                    );
                     log::info!("regions laps (ms/tick): {}", line.join(", "));
                 }
                 log::info!(
