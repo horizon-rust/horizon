@@ -432,6 +432,7 @@ mod tests {
             sound: false,
             knockback: false,
             canceled: false,
+            stopped_sleeping: false,
         };
         assert_eq!(game.stats.get("used", "minecraft:shield"), 0);
         game.after_block(outcome, (None, false), source);

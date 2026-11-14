@@ -204,7 +204,12 @@ impl Game<'_> {
             return;
         };
         let (hurt, amount) = match self.hurt_player_equipment(id, amount, None, false, 0) {
-            Ok((outcome, actual)) => (outcome.hurt, actual),
+            Ok((outcome, actual)) => {
+                if outcome.stopped_sleeping {
+                    self.wake_up();
+                }
+                (outcome.hurt, actual)
+            }
             Err(error) => {
                 log::warn!("falling block damage failed: {error}");
                 (false, amount)
@@ -234,3 +239,35 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod helmet_tests;
+
+#[cfg(test)]
+mod bed_sleep_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn falling_damage_wakes_before_the_next_sleep_tick() {
+        super::super::dispense_fixture::bed_sleep_tests::with_scratch_game(|game| {
+            let position = Vec3::new(0.5, 64.0, 0.5);
+            game.player =
+                Some(horizon_client::motion::PlayerMotion::new(game.motion, position).unwrap());
+            for (amount, immune, expected_wake, expected_hurt) in [
+                (2.0, false, true, true),
+                (1.0, false, true, false),
+                (3.0, true, false, false),
+            ] {
+                let player = game.player.as_mut().unwrap();
+                player.invulnerable = immune;
+                player.set_sleeping(true).unwrap();
+                game.sleeping = Some([0, 64, 0]);
+                game.sleep_timer = 1;
+                game.falling_hurt_player(position, amount, "minecraft:falling_anvil");
+                assert_eq!(game.sleeping.is_none(), expected_wake);
+                let player = game.player.as_ref().unwrap();
+                assert_eq!(!player.sleeping, expected_wake);
+                assert_eq!(player.hurt_log.last().unwrap().hurt, expected_hurt);
+                assert_eq!(game.sleep_timer, if expected_wake { 100 } else { 1 });
+            }
+        });
+    }
+}

@@ -24,6 +24,7 @@ pub struct EquipmentHurt {
     totem_fired: bool,
     canceled: bool,
     damages_helmet: bool,
+    stopped_sleeping: bool,
 }
 impl EquipmentHurt {
     pub fn damage(&self) -> Option<f32> {
@@ -84,6 +85,8 @@ impl PlayerMotion {
             totem: h.totem_ready,
             totem_fired: hit.totem_fired,
             canceled: hit.canceled,
+            sleeping: self.sleeping,
+            stopped_sleeping: false,
         };
         let mut combat = ServerPlayerCombat::new(
             &mut self.attributes,
@@ -100,7 +103,14 @@ impl PlayerMotion {
         hit.knocked = environment.knocked;
         hit.totem_fired = environment.totem_fired;
         hit.canceled = environment.canceled;
-        result
+        let stopped_sleeping = environment.stopped_sleeping;
+        hit.stopped_sleeping |= stopped_sleeping;
+        let value = result?;
+        // Wake before equipment hooks continue, retaining the signal for Game.
+        if stopped_sleeping && self.sleeping {
+            self.set_sleeping(false)?;
+        }
+        Ok(value)
     }
     #[doc(hidden)]
     pub fn prepare_equipment_hurt(
@@ -133,6 +143,7 @@ impl PlayerMotion {
             totem_fired: false,
             canceled: false,
             damages_helmet: resources.damage.in_tag(source, "minecraft:damages_helmet"),
+            stopped_sleeping: false,
         };
         if !self.client_side {
             hit.prepared = self.equipment_step(resources, &mut hit, |state, combat| {
@@ -228,6 +239,7 @@ impl PlayerMotion {
             sound: hit.block_sound,
             knockback: hit.knocked,
             canceled: hit.canceled,
+            stopped_sleeping: hit.stopped_sleeping,
         })
     }
 }

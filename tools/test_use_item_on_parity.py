@@ -1007,6 +1007,37 @@ def kind(case, facts):
     return f'{item} on {first}'
 
 
+def sleep_cases(facts):
+    """Real bed interaction, with partial-height suffocating blocks and straw controls."""
+    states = d.States(facts)
+    for name in ('white_bed', 'straw_bed'):
+        for above in ('air', 'glass', 'stone', 'farmland', 'dirt_path', 'mud', 'soul_sand'):
+            for half in (0, 1):
+                cells = [[0, 0, 0, states.get(name, facing='north', part='head', occupied='false')],
+                         [0, 0, 1, states.get(name, facing='north', part='foot', occupied='false')],
+                         [0, -1, 0, states.get('stone')], [0, -1, 1, states.get('stone')],
+                         [0, 1, half, states.get(above)]]
+                yield {'seed': 0, 'pos': [0, 0, 0], 'cells': cells, 'items': [],
+                       'use_item': {'item': '-', 'creative': False, 'sneaking': False,
+                                    'food': 20, 'distance': 2.0, 'sleep_probe': True}}
+    for name in ('white_bed', 'straw_bed'):
+        for operation in ({'wake_day': True}, {'hurt': 1.0}):
+            yield {'seed': 0, 'pos': [0, 0, 0], 'items': [],
+                   'cells': [[0, 0, 0, states.get(name, facing='north', part='head', occupied='false')],
+                             [0, 0, 1, states.get(name, facing='north', part='foot', occupied='false')],
+                             [0, -1, 0, states.get('stone')], [0, -1, 1, states.get('stone')]],
+                   'use_item': {'item': '-', 'creative': False, 'sneaking': False,
+                                'food': 20, 'distance': 2.0, 'sleep_probe': True, **operation}}
+    for position in ([8.7, 0, 0.5], [8.9, 0, 0.5], [0.5, 0, 9.0], [0.5, -6.8, 0.5]):
+        yield {'seed': 0, 'pos': [0, 0, 0], 'items': [],
+               'cells': [[0, 0, 0, states.get('white_bed', facing='north', part='head', occupied='false')],
+                         [0, 0, 1, states.get('white_bed', facing='north', part='foot', occupied='false')],
+                         [0, -1, 0, states.get('stone')], [0, -1, 1, states.get('stone')]],
+               'entities': [{'type': 'minecraft:zombie', 'pos': position}],
+               'use_item': {'item': '-', 'creative': False, 'sneaking': False,
+                            'food': 20, 'distance': 2.0, 'sleep_probe': True}}
+
+
 def main():
     parser = h.argument_parser(__doc__)
     parser.add_argument('--no-transformers', action='store_true',
@@ -1019,7 +1050,7 @@ def main():
     resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'use-item-on-parity'
     work.mkdir(parents=True, exist_ok=True)
-    all_cases = [*cases(facts, args.count, args.seed, not args.no_transformers),
+    all_cases = [*sleep_cases(facts), *cases(facts, args.count, args.seed, not args.no_transformers),
                  *wake_cases(facts, max(args.count // 10, 1), args.seed),
                  *used_stat_cases(facts, max(args.count // 10, 1), args.seed),
                  *placement_cases(facts, max(args.count // 10, 1), args.seed), *forced_respawn_cases(facts)]

@@ -542,6 +542,8 @@ impl PlayerMotion {
             totem: totem_ready,
             totem_fired: false,
             canceled: false,
+            sleeping: self.sleeping,
+            stopped_sleeping: false,
         };
         let hurt = ServerPlayerCombat::new(
             &mut self.attributes,
@@ -559,6 +561,7 @@ impl PlayerMotion {
             sound: environment.block_sound,
             knockback: environment.knocked,
             canceled: environment.canceled,
+            stopped_sleeping: environment.stopped_sleeping,
         };
         if environment.totem_fired {
             h.totem_used = true;
@@ -607,6 +610,9 @@ impl PlayerMotion {
             fire_ticks,
             knockback: None,
         });
+        if outcome.stopped_sleeping {
+            self.set_sleeping(false)?;
+        }
         Ok(outcome)
     }
     pub fn set_health(&mut self, value: f32, absorption: bool) -> Result<()> {
@@ -660,6 +666,8 @@ pub(crate) struct Environment<'a> {
     pub(crate) totem_fired: bool,
     /// A native mod canceled the hit (`living_incoming_damage`).
     pub(crate) canceled: bool,
+    pub(crate) sleeping: bool,
+    pub(crate) stopped_sleeping: bool,
 }
 /// `LivingEntity.applyItemBlocking` inputs for a raised `BlocksAttacks` item:
 /// reductions whose damage-type sets are already matched against the source.
@@ -744,6 +752,8 @@ pub struct BlockOutcome {
     pub knockback: bool,
     /// A native mod canceled the hit: its attacker must not be credited.
     pub canceled: bool,
+    /// `LivingEntity.hurtServer` reached stopSleeping, before cooldown or blocking.
+    pub stopped_sleeping: bool,
 }
 struct MatchedSets;
 impl horizon_world::blocking_rules::TypeMatchWorld for MatchedSets {
@@ -951,9 +961,10 @@ impl HurtWorld for Environment<'_> {
         Ok(canceled)
     }
     fn sleeping(&mut self, _: &mut State) -> io::Result<bool> {
-        Ok(false)
+        Ok(self.sleeping)
     }
     fn stop_sleeping(&mut self, _: &mut State) -> io::Result<()> {
+        self.stopped_sleeping = true;
         Ok(())
     }
     fn use_item(&mut self, _: &mut State) -> io::Result<()> {
@@ -1164,6 +1175,114 @@ mod tests {
         // A weaker one doesn't hurt at all.
         let third = hit(1.5);
         assert!(!third.hurt && !third.knockback);
+    }
+
+    /// LivingEntity.hurtServer wakes before checking the hurt cooldown, but
+    /// after rejecting invulnerable damage. Exercise the resident player adapter.
+    #[test]
+    #[ignore = "requires explicit HORIZON_TEST_RESOURCES; run the focused prepared-data check"]
+    fn eligible_damage_wakes_even_when_the_cooldown_rejects_the_hit() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES")
+                .expect("set HORIZON_TEST_RESOURCES to the prepared vanilla resources"),
+        );
+        assert!(
+            root.join("movement-properties.nbt").exists(),
+            "prepared resources missing"
+        );
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let resources = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut player =
+            crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
+                .unwrap();
+        let health = &resources.health;
+        let id = health.damage.id("minecraft:mob_attack").unwrap();
+        let rules = super::HealthRules::default();
+        player.set_sleeping(true).unwrap();
+        let first = player.hurt_blocking(health, rules, id, 2.0, None).unwrap();
+        assert!(first.hurt && first.stopped_sleeping);
+        assert!(!player.sleeping);
+        player.set_sleeping(true).unwrap();
+        let cooldown = player.hurt_blocking(health, rules, id, 1.0, None).unwrap();
+        assert!(!cooldown.hurt && cooldown.stopped_sleeping);
+        assert!(!player.sleeping);
+        player.set_sleeping(true).unwrap();
+        player.invulnerable = true;
+        let immune = player.hurt_blocking(health, rules, id, 3.0, None).unwrap();
+        assert!(!immune.hurt && !immune.stopped_sleeping);
+        assert!(player.sleeping);
+    }
+
+    /// The equipment continuation must wake before durability hooks and retain
+    /// that outcome even when the cooldown rejects the prepared hit.
+    #[test]
+    #[ignore = "requires explicit HORIZON_TEST_RESOURCES; run the focused prepared-data check"]
+    fn equipment_damage_retains_waking_across_continuations() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES")
+                .expect("set HORIZON_TEST_RESOURCES to the prepared vanilla resources"),
+        );
+        assert!(root.join("movement-properties.nbt").exists());
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let resources = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut player =
+            crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
+                .unwrap();
+        let health = &resources.health;
+        let source = health.damage.id("minecraft:mob_attack").unwrap();
+        for (amount, invulnerable, expected_hurt, expected_wake) in [
+            (2.0, false, true, true),
+            (1.0, false, false, true),
+            (3.0, true, false, false),
+        ] {
+            player.set_sleeping(true).unwrap();
+            player.invulnerable = invulnerable;
+            let mut hit = player
+                .prepare_equipment_hurt(
+                    health,
+                    super::HealthRules::default(),
+                    source,
+                    amount,
+                    None,
+                    false,
+                    -1,
+                )
+                .unwrap();
+            assert_eq!(player.sleeping, !expected_wake, "before equipment hooks");
+            let _ = player.select_equipment_hurt(health, &mut hit).unwrap();
+            assert_eq!(player.sleeping, !expected_wake, "after selecting damage");
+            let outcome = player.finish_equipment_hurt(health, hit).unwrap();
+            assert_eq!(outcome.hurt, expected_hurt);
+            assert_eq!(outcome.stopped_sleeping, expected_wake);
+            assert_eq!(player.sleeping, !expected_wake);
+        }
+        // A durability hook can change the live player between continuations.
+        // A retained outcome is not a new stopSleeping request from vanilla.
+        let mut player =
+            crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
+                .unwrap();
+        player.set_sleeping(true).unwrap();
+        let mut hit = player
+            .prepare_equipment_hurt(
+                health,
+                super::HealthRules::default(),
+                source,
+                2.0,
+                None,
+                false,
+                -1,
+            )
+            .unwrap();
+        assert!(!player.sleeping);
+        player.set_sleeping(true).unwrap();
+        let _ = player.select_equipment_hurt(health, &mut hit).unwrap();
+        assert!(
+            player.sleeping,
+            "a retained outcome must not wake a second time"
+        );
+        let outcome = player.finish_equipment_hurt(health, hit).unwrap();
+        assert!(outcome.hurt && outcome.stopped_sleeping);
+        assert!(player.sleeping);
     }
 
     /// #2800: on Easy a mob's 4 is scaled to 3 before `applyItemBlocking`,

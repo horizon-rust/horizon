@@ -104,7 +104,7 @@ Player.deflectProjectile	port	crates/horizon-client/src/game/deflect.rs::Game::a
 Player.baseDamageScaleFactor	inline	crates/horizon-client/src/game/mace.rs::Game::sweep_damage	
 Player.isEffectiveAi	skip:other		client-side AI gate; Horizon has no effective-AI check in its loop
 Player.hasContainerOpen	missing		no test for an open container menu: screens are `self.screen`, and nothing distinguishes a container menu from the inventory menu
-Player.startSleepInBed	port	crates/horizon-client/src/game.rs::Game::try_sleep	
+Player.startSleepInBed	port	crates/horizon-client/src/game/beds.rs::Game::try_sleep	reach, obstruction, rule and hostile-mob checks before entering sleep
 Player.isSleepingLongEnough	port	crates/horizon-client/src/game/lan_actions.rs::sleep_counts	100 ticks in bed is what counts a sleeper as deep for SleepStatus.update
 Player.updateSwimming	port	crates/horizon-client/src/motion.rs::MotionWorld::swimming	
 Player.getXpNeededForNextLevel	port	crates/horizon-client/src/entities.rs::Experience::needed	

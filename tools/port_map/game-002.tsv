@@ -44,7 +44,7 @@ ServerLevel.announceSleepStatus	port	crates/horizon-client/src/game/lan_actions.
 ServerLevel.getMoonBrightness	inline	crates/horizon-client/src/game/creatures.rs::Game::local_difficulty	MOON_BRIGHTNESS table indexed by day / 24000 mod 8
 ServerLevel.prepareWeather	port	crates/horizon-client/src/save.rs::Level::read	rain and thunder levels start at 1 when the saved flags are on
 ServerLevel.advanceWeatherCycle	port	crates/horizon-client-render/src/world.rs::Weather::tick_timers	level fade in tick_levels, game events broadcast in Hub::sync_world
-ServerLevel.resetWeatherCycle	inline	crates/horizon-client/src/game.rs::Game::tick_sleep	the sleep-through-night reset; /weather sets the timers itself
+ServerLevel.resetWeatherCycle	inline	crates/horizon-client/src/game/beds.rs::Game::tick_sleep	the sleep-through-night reset; /weather sets the timers itself
 ServerLevel.tickFluid	port	crates/horizon-world/src/level/tick.rs::Behaviours::scheduled_step	
 ServerLevel.tickBlock	port	crates/horizon-world/src/level/tick.rs::Behaviours::scheduled_step	
 ServerLevel.tickPassenger	inline	crates/horizon-client/src/game/passengers.rs::Game::sync_riders	a rider whose vehicle is gone or dead lets go; others are re-seated each tick
@@ -108,8 +108,8 @@ ServerPlayer.removePostEffect	port	crates/horizon-client/src/game/commands/extra
 ServerPlayer.forceSetRotation	inline	crates/horizon-client/src/game/commands/world_cmds.rs::Game::cmd_rotate	/rotate turns a guest through a teleport packet with the new rotation
 ServerPlayer.triggerDimensionChangeTriggers	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_dimension	nether_travel fires on the way back to the Overworld from the position the Nether was entered at (adv.marks.nether); gap: minor: that position is not restored from entered_nether_pos after a reload
 ServerPlayer.broadcastToPlayer	port	crates/horizon-client/src/lan/entity.rs::broadcast_to_player	a spectator viewer sees a player only while its camera is that player; anyone else never sees a spectator
-ServerPlayer.startSleeping	port	crates/horizon-client/src/game.rs::Game::try_sleep	
-ServerPlayer.isReachableBedBlock	inline	crates/horizon-client/src/game.rs::Game::try_sleep	the reachable closure: 3 blocks sideways, 2 vertically
+ServerPlayer.startSleeping	port	crates/horizon-client/src/game/beds.rs::Game::try_sleep	position, pose and occupied bed state are applied after the sleep checks
+ServerPlayer.isReachableBedBlock	inline	crates/horizon-client/src/game/beds.rs::Game::try_sleep	the reachable closure: 3 blocks sideways, 2 vertically
 ServerPlayer.isInvulnerableTo	inline	crates/horizon-client/src/game/lan_mobs.rs::Game::lan_guest_views	gap: minor: only the not-loaded part (a guest that has not sent PlayerLoaded is ignored by mobs); no invulnerability while a dimension change is pending
 ServerPlayer.openNautilusInventory	inline	crates/horizon-client/src/game/mount_menu.rs::Game::open_mount_menu	the nautilus opens the same mount screen (NautilusInventoryMenu's two slots) as the horse; game/lan_mount_menu.rs sends it to guests
 ServerPlayer.doCloseContainer	inline	crates/horizon-client/src/lan/containers.rs::Hub::container_closed	the carried stack and a crafting grid go back through Game::guest_carried_back and lan_crafting_closed
