@@ -19,7 +19,7 @@ use std::cell::{Cell, RefCell};
 pub(super) const BOARDING_COOLDOWN: i32 = 60;
 /// `Player.DEFAULT_VEHICLE_ATTACHMENT`: how far below the seat a player's
 /// feet are.
-const PLAYER_RIDING_OFFSET: f64 = 0.6;
+pub(super) const PLAYER_RIDING_OFFSET: f64 = 0.6;
 
 /// How many box queries the walk over every mob answers, once a write to the mob list has
 /// made the grid stale, before a new grid is built: about what building one costs (with
@@ -270,8 +270,20 @@ impl Game<'_> {
     /// mob.
     pub(super) fn player_boat_seat(&self, i: usize) -> Vec3 {
         let b = &self.boats[i];
-        let count = self.boat_players(b.id).max(1) + self.boat_mobs(b.id).len();
-        b.seat(0, count, false, PLAYER_RIDING_OFFSET, false)
+        let (index, count) = if let Some(r) = self.remote.as_ref() {
+            let count = r
+                .vehicle_passengers
+                .get(&b.id)
+                .map(|p| p.len())
+                .unwrap_or_else(|| self.boat_players(b.id).max(1) + self.boat_mobs(b.id).len());
+            (r.passenger_index, count.max(1))
+        } else {
+            (
+                0,
+                self.boat_players(b.id).max(1) + self.boat_mobs(b.id).len(),
+            )
+        };
+        b.seat(index, count, false, PLAYER_RIDING_OFFSET, false)
     }
     /// `getRootVehicle` of mob `j`: the mob or boat at the bottom of what it
     /// rides, None when it rides nothing.
@@ -552,8 +564,17 @@ impl Game<'_> {
             if mobs.is_empty() {
                 continue;
             }
+            let (known_passengers, count) = if let Some(r) = self.remote.as_ref() {
+                let p = r.vehicle_passengers.get(&id);
+                let c = p.map_or_else(
+                    || self.boat_players(id) + mobs.len(),
+                    |p| p.len().max(self.boat_players(id) + mobs.len()),
+                );
+                (p, c)
+            } else {
+                (None, self.boat_players(id) + mobs.len())
+            };
             let players = self.boat_players(id);
-            let count = players + mobs.len();
             let b = &self.boats[i];
             let full = count == b.max_passengers();
             let delta = b.delta_rotation;
@@ -571,7 +592,22 @@ impl Game<'_> {
                     // Another player's too, on a server's client.
                     // AbstractBoat's box is 1.375 wide.
                     let offset = riders::vehicle_attachment(m, 1.375);
-                    let index = players + n;
+                    let index = if let Some(passengers) = known_passengers {
+                        passengers
+                            .iter()
+                            .position(|&p| p == m.id as i32)
+                            .unwrap_or(players + n)
+                    } else if self.riding == Some(id)
+                        && self.remote.as_ref().is_some_and(|r| r.passenger_index > 0)
+                    {
+                        if n < self.remote.as_ref().unwrap().passenger_index {
+                            n
+                        } else {
+                            n + 1
+                        }
+                    } else {
+                        players + n
+                    };
                     // calculatePassengerBodyYRot.
                     let turn = match (animal && full, m.id.is_multiple_of(2)) {
                         (false, _) => 0.0,
@@ -643,6 +679,40 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boat_seats_driver_and_passenger_at_distinct_offsets() {
+        let b = Boat::new(1, "oak".into(), Vec3::new(0.0, 64.0, 0.0), 0.0);
+        // Single rider sits centered (z = 0.0).
+        let solo = b.seat(0, 1, false, PLAYER_RIDING_OFFSET, false);
+        assert!((solo.z - 0.0).abs() < 1e-6);
+
+        // Two riders: index 0 (driver) sits in front (z = 0.2), index 1 (passenger) sits in back (z = -0.6).
+        let driver = b.seat(0, 2, false, PLAYER_RIDING_OFFSET, false);
+        let passenger = b.seat(1, 2, false, PLAYER_RIDING_OFFSET, false);
+        assert!(
+            (driver.z - 0.2).abs() < 1e-6,
+            "driver at z = 0.2: {driver:?}"
+        );
+        assert!(
+            (passenger.z - (-0.6)).abs() < 1e-6,
+            "passenger at z = -0.6: {passenger:?}"
+        );
+        assert!(driver.z > passenger.z, "driver is in front of passenger");
+    }
+
+    #[test]
+    fn boat_seat_rotates_with_boat_yaw() {
+        let b90 = Boat::new(1, "oak".into(), Vec3::new(10.0, 64.0, 10.0), 90.0);
+        let driver = b90.seat(0, 2, false, PLAYER_RIDING_OFFSET, false);
+        let passenger = b90.seat(1, 2, false, PLAYER_RIDING_OFFSET, false);
+        assert_ne!(driver, passenger);
+        let dist = driver.distance(passenger);
+        assert!(
+            (dist - 0.8).abs() < 1e-5,
+            "inter-seat distance is 0.8 blocks: {dist}"
+        );
+    }
 
     #[test]
     fn push_is_capped_and_scaled() {

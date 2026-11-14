@@ -641,6 +641,8 @@ pub(super) struct Remote {
     tick_water_fx: Vec<horizon_client::mobs::MobEvent>,
     /// Complete network riding graph, including invisible plugin seat entities.
     pub(super) passenger_vehicles: HashMap<u32, u32>,
+    /// Ordered passengers per vehicle from `SetPassengers`.
+    pub(super) vehicle_passengers: HashMap<u32, Vec<i32>>,
     lerps: HashMap<i32, Lerp>,
     /// The minecarts the server moves with `ClientboundMoveMinecartPacket`
     /// (`NewMinecartBehavior`), which have no interpolation handler.
@@ -649,20 +651,16 @@ pub(super) struct Remote {
     stepped: HashMap<i32, SteppedInterpolation>,
     /// `LivingEntity.lerpHeadTo`: the head yaw and the ticks left to reach it.
     head_lerps: HashMap<i32, (f32, u32)>,
-    /// The happy ghast the player just got off, until the server's teleport
-    /// puts the player on top of it (`place_ghast_under`).
+    /// The happy ghast the player got off, until teleported on top (`place_ghast_under`).
     pub(super) ghast_dismount: Option<u32>,
-    /// Whether the player is the first passenger of its vehicle, the one
-    /// `getControllingPassenger` names.
+    /// Whether the player is the first passenger of its vehicle (`getControllingPassenger`).
     pub(super) first_passenger: bool,
     /// The player's place in its vehicle's `getPassengers`.
     pub(super) passenger_index: usize,
-    /// Item entities waiting for their item data: where they are and their
-    /// motion.
+    /// Item entities waiting for their item data: position and motion.
     pending_items: HashMap<i32, ([f64; 3], Vec3)>,
     health: (f32, i32, f32),
-    /// `LocalPlayer.flashOnSetHealth`: set by the first health the server
-    /// sends; from then on a drop starts the hurt animation.
+    /// `LocalPlayer.flashOnSetHealth`: set by first health packet to track hurt drops.
     flash_on_set_health: bool,
     game_mode: i32,
     pub chat: Vec<(String, Instant)>,
@@ -1212,6 +1210,7 @@ impl Game<'_> {
             tick_standings: Vec::new(),
             tick_water_fx: Vec::new(),
             passenger_vehicles: HashMap::new(),
+            vehicle_passengers: HashMap::new(),
             lerps: HashMap::new(),
             cart_lerps: HashMap::new(),
             stepped: HashMap::new(),
@@ -1442,6 +1441,7 @@ impl Game<'_> {
             tick_standings: Vec::new(),
             tick_water_fx: Vec::new(),
             passenger_vehicles: HashMap::new(),
+            vehicle_passengers: HashMap::new(),
             lerps: HashMap::new(),
             cart_lerps: HashMap::new(),
             stepped: HashMap::new(),
@@ -2377,13 +2377,13 @@ impl Game<'_> {
             if let Some(r) = self.remote.as_mut() {
                 r.entities.clear();
                 r.passenger_vehicles.clear();
+                r.vehicle_passengers.clear();
                 r.lerps.clear();
                 r.cart_lerps.clear();
                 r.stepped.clear();
                 r.head_lerps.clear();
                 r.pending_items.clear();
-                // The entity ids are the old world's; the new dimension's
-                // player entities re-map to their profiles on AddEntity.
+                // Old world's player entities re-map to their profiles on AddEntity.
                 r.level_players.clear();
                 r.level_player_names.clear();
                 r.level_player_textures.clear();

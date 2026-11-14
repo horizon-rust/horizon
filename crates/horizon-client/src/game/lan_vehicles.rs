@@ -313,7 +313,7 @@ impl Game<'_> {
         }
         // Getting out goes through leave_guest, which tells the client and
         // teleports it (ServerPlayer.dismountTo).
-        let seat = self.as_guest(host, conn, |game| {
+        let seat = self.as_guest_with_host(host, conn, |game, host| {
             // A cushion does not move: the rider sits on it until it sneaks
             // (`Cushion.removePassenger` plays the get-up sound).
             if game.cushions.iter().any(|c| Some(c.id) == game.riding) {
@@ -336,7 +336,17 @@ impl Game<'_> {
                     game.dismount(i);
                     return None;
                 }
-                let p = game.player_boat_seat(i);
+                let is_controller = game.guest_controls_vehicle(host, conn, game.riding.unwrap());
+                let b = &game.boats[i];
+                let count = game.boat_players(b.id).max(1) + game.boat_mobs(b.id).len();
+                let seat_index = if is_controller { 0 } else { 1 };
+                let p = b.seat(
+                    seat_index,
+                    count,
+                    false,
+                    super::boat_passengers::PLAYER_RIDING_OFFSET,
+                    false,
+                );
                 return Some([p.x, p.y, p.z]);
             }
             // The minecart moves with the rider's input, and lets it out when
@@ -374,11 +384,26 @@ impl Game<'_> {
             host.hub.guests[gi].vehicle = before;
             return;
         }
+        let is_controller = self.guest_controls_vehicle(host, conn, vehicle);
+        let seat_index = if is_controller { 0 } else { 1 };
         let at = self
             .boats
             .iter()
             .position(|b| b.id == vehicle)
-            .map(|i| (self.boats[i].position, self.player_boat_seat(i)))
+            .map(|i| {
+                let b = &self.boats[i];
+                let count = self.boat_players(b.id).max(1) + self.boat_mobs(b.id).len();
+                (
+                    b.position,
+                    b.seat(
+                        seat_index,
+                        count,
+                        false,
+                        super::boat_passengers::PLAYER_RIDING_OFFSET,
+                        false,
+                    ),
+                )
+            })
             .or_else(|| {
                 self.carts
                     .iter()

@@ -70,6 +70,10 @@ impl Game<'_> {
                 r.glowing.remove(&id);
                 r.entities.remove(&id);
                 r.passenger_vehicles.remove(&(id as u32));
+                r.vehicle_passengers.remove(&(id as u32));
+                for pass in r.vehicle_passengers.values_mut() {
+                    pass.retain(|&p| p != id);
+                }
                 r.lerps.remove(&id);
                 r.cart_lerps.remove(&id);
                 r.stepped.remove(&id);
@@ -91,6 +95,7 @@ impl Game<'_> {
         self.tnts.retain(|t| keep(t.id));
         if let Some(r) = self.remote.as_mut() {
             r.passenger_vehicles.retain(|_, v| keep(*v));
+            r.vehicle_passengers.retain(|v, _| keep(*v));
         }
     }
 }
