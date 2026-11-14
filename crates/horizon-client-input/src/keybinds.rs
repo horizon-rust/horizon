@@ -381,6 +381,14 @@ impl KeyBinds {
             .map(|(n, _, _)| (*n, self.get(n).to_owned()))
             .collect()
     }
+    /// `KeyMapping.ALL` as a `keybind` text component reads it: every mapping's bound
+    /// key (`key_display::mapping_display_name`). The live settings call this after
+    /// loading and after a rebind.
+    pub fn publish(&self) {
+        for (name, key) in &self.keys {
+            horizon_client_core::key_display::learn_binding(name, key);
+        }
+    }
     pub fn reset_all(&mut self) {
         *self = Self::default();
     }
@@ -671,5 +679,26 @@ mod tests {
     fn display_names() {
         assert_eq!(display_name("key.keyboard.w").plain(), "W");
         assert_eq!(display_name("key.keyboard.slash").plain(), "/");
+    }
+
+    /// KeyMapping.createNameSupplier: a `keybind` text component shows the key its
+    /// mapping is bound to now, so rebinding jump to K makes the action bar print K.
+    #[test]
+    fn a_keybind_component_shows_the_bound_key() {
+        use horizon_client_core::{component, text::Text};
+        let mut keys = KeyBinds::default();
+        keys.set("key.jump", "key.keyboard.k");
+        keys.publish();
+        let (jump, _) = component::parse_snbt(r#"{keybind:"key.jump"}"#).unwrap();
+        let text = component::to_text(&jump, &mut |selector| Text::literal(selector));
+        assert_eq!(text.plain(), "K");
+        // KeybindContents has no `resolve`: the component sent on is still the
+        // keybind, so each client shows the key it has bound.
+        assert_eq!(text.component()["keybind"], "key.jump");
+        // A name no mapping has keeps its translation (createNameSupplier's null map).
+        let (unmapped, _) = component::parse_snbt(r#"{keybind:"key.test.unmapped"}"#).unwrap();
+        let text = component::to_text(&unmapped, &mut |selector| Text::literal(selector));
+        assert_eq!(text.plain(), "key.test.unmapped");
+        assert_eq!(text.component()["keybind"], "key.test.unmapped");
     }
 }

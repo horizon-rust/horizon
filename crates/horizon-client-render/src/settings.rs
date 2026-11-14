@@ -408,6 +408,9 @@ impl Settings {
         // Horizon's own key bindings live in horizon-extras.txt, not in options.txt.
         let emote = settings.extras.emote_key.clone();
         settings.keys.set("key.emote", &emote);
+        // `KeyMapping.ALL`: a `keybind` text component shows the keys bound now, so a
+        // player without an options.txt still sees the defaults.
+        settings.keys.publish();
         // `Options.load`: `sharePresence` decides what the friends service posts.
         crate::social::set_share_presence(crate::social::SharePresence::of(
             settings.file.int("sharePresence").clamp(0, 2) as u8,
@@ -692,7 +695,19 @@ impl Settings {
         };
         // Horizon's own bindings aren't in options.txt.
         next.keys.set("key.emote", self.keys.get("key.emote"));
+        next.keys.publish();
         Ok(next)
+    }
+    /// `KeyMapping.setKey` on the live options: a `keybind` text component shows the key
+    /// from now on (`key_display::mapping_display_name`).
+    pub fn bind_key(&mut self, name: &str, key: &str) {
+        self.keys.set(name, key);
+        self.keys.publish();
+    }
+    /// The key bindings screen's Reset All: every mapping back to its default.
+    pub fn reset_bindings(&mut self) {
+        self.keys.reset_all();
+        self.keys.publish();
     }
     /// The `options.txt` text (Options.save).
     pub fn serialize(&self) -> String {

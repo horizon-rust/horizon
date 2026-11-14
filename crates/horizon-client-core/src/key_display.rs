@@ -22,6 +22,27 @@ const SYMBOLS: [(&str, &str); 11] = [
 /// something, by key name, as the window reported it (`learn_layout`).
 static LAYOUT: RwLock<BTreeMap<String, String>> = RwLock::new(BTreeMap::new());
 
+/// The key each mapping is bound to now (`key.jump` -> `key.keyboard.space`),
+/// `KeyMapping.ALL`'s keys, published by the player's settings (`KeyBinds::publish`).
+static BINDINGS: RwLock<BTreeMap<String, String>> = RwLock::new(BTreeMap::new());
+
+/// `KeyMapping.setKey`: `mapping` is bound to `key` from now on.
+pub fn learn_binding(mapping: &str, key: &str) {
+    if let Ok(mut bindings) = BINDINGS.write() {
+        bindings.insert(mapping.to_owned(), key.to_owned());
+    }
+}
+
+/// `KeyMapping.createNameSupplier` for a `keybind` component: the key the mapping
+/// is bound to now (`KeyMapping.getTranslatedKeyMessage`), or the mapping's own
+/// translation when no mapping has that name.
+pub fn mapping_display_name(mapping: &str) -> Text {
+    match BINDINGS.read().ok().and_then(|b| b.get(mapping).cloned()) {
+        Some(key) => display_name(&key),
+        None => Text::translate(mapping, &[]),
+    }
+}
+
 /// The keyboard layout writes `text` on the key `key` (`key.keyboard.q`):
 /// its name from now on, as `SDL_GetKeyFromScancode` names it with SDL's
 /// default keycode options. Only letter and symbol keys take it; a letter

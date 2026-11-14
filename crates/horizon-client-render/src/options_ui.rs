@@ -3963,11 +3963,11 @@ impl OptionsUi {
                         }
                         Act::Key(name) => self.selected_key = Some(name),
                         Act::ResetKey(name) => {
-                            s.keys.set(name, KeyBinds::default_of(name));
+                            s.bind_key(name, KeyBinds::default_of(name));
                             events.push(Event::Changed);
                         }
                         Act::ResetKeys => {
-                            s.keys.reset_all();
+                            s.reset_bindings();
                             events.push(Event::Changed);
                         }
                         Act::ToggleMod(i) => {
@@ -4479,7 +4479,7 @@ impl OptionsUi {
             return self.bind_native_key(s, name, value);
         }
         if !s.extras.set_key(name, value.clone()) {
-            s.keys.set(name, &value);
+            s.bind_key(name, &value);
         }
         vec![Event::Changed]
     }
@@ -4843,11 +4843,11 @@ impl OptionsUi {
                         }
                         Act::Key(name) => self.selected_key = Some(name),
                         Act::ResetKey(name) => {
-                            s.keys.set(name, KeyBinds::default_of(name));
+                            s.bind_key(name, KeyBinds::default_of(name));
                             events.push(Event::Changed);
                         }
                         Act::ResetKeys => {
-                            s.keys.reset_all();
+                            s.reset_bindings();
                             events.push(Event::Changed);
                         }
                         Act::ToggleMod(i) => {
