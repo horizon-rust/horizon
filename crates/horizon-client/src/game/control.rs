@@ -18,16 +18,19 @@ const PROTOCOL: &str = "0.1.0";
 
 /// The command groups the game serves, as `help` chains them: what `hello` reports as its features.
 const FEATURES: &[&str] = &[
-    "game", "station", "blocks", "lan", "friends", "render", "sculk", "agent", "ui", "options",
-    "events", "saves", "pad", "studio",
+    "game", "station", "blocks", "lan", "render", "sculk", "agent", "ui", "options", "events",
+    "saves", "pad", "studio",
 ];
 
-/// `hello`: the protocol the socket speaks, the game's release and the command groups it serves.
+/// `hello`: the protocol the socket speaks, the game's release and the command groups it serves
+/// (the engine's, then those of the crates that answer commands, `Hooks::control_commands`).
 fn hello() -> Value {
+    let groups = horizon_hooks::engine::control_commands().map(|(group, _)| group);
+    let features: Vec<&str> = FEATURES.iter().copied().chain(groups).collect();
     json!({
         "protocol": PROTOCOL,
         "release": horizon_core::release::VERSION,
-        "features": FEATURES,
+        "features": features,
     })
 }
 
@@ -439,7 +442,7 @@ impl Game<'_> {
         if let Some(value) = self.lan_control(&words)? {
             return Ok(Some(value));
         }
-        if let Some(value) = self.friends_control(&words)? {
+        if let Some(value) = self.hooks_control(&words)? {
             return Ok(Some(value));
         }
         if let Some(value) = self.studio_control(&words)? {
@@ -456,7 +459,7 @@ impl Game<'_> {
                 .chain(super::station_control::HELP)
                 .chain(super::blockctl::HELP)
                 .chain(super::lan::HELP)
-                .chain(super::friends::HELP)
+                .chain(horizon_hooks::engine::control_commands().flat_map(|(_, help)| help))
                 .chain(super::render_control::HELP)
                 .chain(super::sculk::HELP)
                 .chain(super::agent::HELP)
@@ -1447,7 +1450,7 @@ impl Game<'_> {
             Screen::Stats => "stats",
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world-options",
-            Screen::Friends => "friends",
+            Screen::AddedPage => "friends",
             Screen::Social => "social",
             Screen::ServerLinks => "server-links",
             Screen::ConfirmLink => "confirm-link",

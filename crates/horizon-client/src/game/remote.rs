@@ -1577,7 +1577,7 @@ impl Game<'_> {
         self.left = false;
         self.right = false;
         // The shared world is closing: its invite code ends with it.
-        self.friends_lan_closed();
+        self.lan_closed_hooks();
         // Single player's server thread saves the world before the title shows.
         let single_player = match self.integrated.take() {
             Some(server) => {

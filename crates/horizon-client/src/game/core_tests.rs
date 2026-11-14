@@ -123,7 +123,7 @@ fn screen_ids_are_distinct_and_stable() {
         Screen::Stats,
         Screen::Advancements,
         Screen::WorldOptions,
-        Screen::Friends,
+        Screen::AddedPage,
         Screen::Social,
         Screen::CommandBlock,
         Screen::BlockEditor,

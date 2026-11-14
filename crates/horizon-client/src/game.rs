@@ -142,6 +142,8 @@ mod enderman_hurt_teleport_tests;
 mod enderman_placement_tests;
 mod entity;
 mod entity_culling;
+#[cfg(test)]
+mod entity_inside_tests;
 mod entity_sounds;
 mod event_loop;
 mod events;
@@ -163,15 +165,6 @@ mod frame_geometry;
 mod frames;
 #[cfg(feature = "friends")]
 mod friends;
-mod held_items;
-#[cfg(test)]
-mod setblock_order_tests;
-// Without Play with Friends: nothing shared, no Friends button (game/friends_off.rs).
-#[cfg(test)]
-mod entity_inside_tests;
-#[cfg(not(feature = "friends"))]
-#[path = "game/friends_off.rs"]
-mod friends;
 mod functions;
 mod game_mode;
 mod game_tests;
@@ -182,6 +175,7 @@ mod golems;
 mod growth;
 mod hand;
 mod headless;
+mod held_items;
 mod hud_editor;
 mod hud_room;
 mod ime;
@@ -359,6 +353,7 @@ mod pad;
 mod pad_actions;
 mod pad_craft;
 mod pad_menu;
+mod page_screen;
 mod paintings;
 mod pandas;
 mod particle_culling;
@@ -427,7 +422,10 @@ mod seats;
 mod server_links;
 mod server_packs;
 mod server_travel;
+#[cfg(test)]
+mod setblock_order_tests;
 mod shader_packs;
+mod share_view;
 mod sheep_dye;
 mod shelf;
 mod shield;
@@ -606,6 +604,8 @@ use resource_loader::{
     EntityModels, GameCpuResources, Loaded, LoaderMsg, PendingWorldEntry, WorldRestLoader,
     run_loading, write_report,
 };
+#[cfg(feature = "friends")]
+pub(crate) use share_view::register_friends;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -651,9 +651,9 @@ enum Screen {
     Advancements,
     /// WorldOptionsScreen (game/lan_screen.rs).
     WorldOptions,
-    /// Play with Friends, from the pause menu's Friends button
-    /// (game/friends.rs, game/friends/screen.rs).
-    Friends,
+    /// The page a crate registered at `Place::PauseFriends` (Play with Friends in the official
+    /// build), from the pause menu's Friends icon, drawn as its own screen (game/page_screen.rs).
+    AddedPage,
     /// `SocialInteractionsScreen` (`social_screen`, game/social.rs).
     Social,
     /// CommandBlockEditScreen (game/command_blocks.rs).
@@ -697,7 +697,7 @@ impl Screen {
             Screen::Stats => "stats",
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world_options",
-            Screen::Friends => "friends",
+            Screen::AddedPage => "friends",
             Screen::Social => "social",
             Screen::CommandBlock => "command_block",
             Screen::BlockEditor => "block_editor",
@@ -2903,9 +2903,6 @@ struct Game<'a> {
     level_shapes: horizon_client::chunk::LevelShapes,
     /// This game is that server thread's (game/integrated.rs).
     serving: Option<integrated::Serving>,
-    /// The open world is shared behind an invite code (game/friends.rs).
-    #[cfg(feature = "friends")]
-    friends: Option<friends::Sharing>,
     /// The Social Interactions screen and the players whose chat is hidden (game/social.rs).
     social: social::Social,
     world_options: Option<lan_screen::WorldOptions>,
@@ -5735,7 +5732,6 @@ impl Game<'_> {
         if let Some(log) = self.world.block_log.as_mut() {
             log.extend(held);
         }
-        span("tick_friends", || self.tick_friends());
         horizon_client::spans::time("tick_hand", || self.tick_hand());
         horizon_client::spans::time("tick_sleep", || self.tick_sleep());
         span("sleep_status", || self.announce_sleep_status());
@@ -6241,7 +6237,7 @@ impl Game<'_> {
             Screen::Advancements => self.draw_advancements(&mut batch),
             Screen::Mod => {}
             Screen::WorldOptions => self.draw_world_options(&mut batch),
-            Screen::Friends => self.draw_friends_screen(&mut batch),
+            Screen::AddedPage => self.draw_added_page(&mut batch),
             Screen::Social => self.draw_social_screen(&mut batch),
             Screen::ServerLinks => self.draw_server_links(&mut batch),
             Screen::ConfirmLink => self.draw_confirm_link(&mut batch),
@@ -10717,8 +10713,8 @@ impl Game<'_> {
                         Screen::WorldOptions if button == MouseButton::Left => {
                             self.world_options_release()
                         }
-                        Screen::Friends if pressed && button == MouseButton::Left => {
-                            self.friends_screen_click()
+                        Screen::AddedPage if pressed && button == MouseButton::Left => {
+                            self.added_page_click()
                         }
                         Screen::Social if pressed && button == MouseButton::Left => {
                             self.social_click()
@@ -11095,6 +11091,7 @@ impl Game<'_> {
                         // the world's own ticks.
                         horizon_client::social::set_presence_status(self.presence_status());
                         horizon_client::social::tick();
+                        self.share_tick();
                         // Minecraft.tick: ClientTickEvent.Pre before any of it.
                         self.native_client_tick_pre();
                         if self.title.is_none() && !self.pause {
@@ -11824,8 +11821,6 @@ impl<'a> Game<'a> {
             test_defs_snapshot: false,
             test_highlights: HashMap::new(),
             game_tests: game_tests::GameTests::default(),
-            #[cfg(feature = "friends")]
-            friends: None,
             social: Default::default(),
             debug_keys: Default::default(),
             debug_charts: Default::default(),
