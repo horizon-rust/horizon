@@ -12,10 +12,6 @@
 //! game rules, the scoreboard, the maps and the entities waiting to arrive
 //! through a portal.
 
-// The regions of a level (which chunks tick on which thread); the file sits beside this one.
-#[path = "regions.rs"]
-pub(super) mod regions;
-
 use super::{
     Dim, ExperienceOrb, FallingBlock, Game, ItemEntity, Mob, boats, commands,
     creaking::CreakingState, dragon, fireworks, lan::LanHost, lightning, machines, minecarts,
