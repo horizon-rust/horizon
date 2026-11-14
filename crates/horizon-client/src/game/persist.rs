@@ -1151,6 +1151,11 @@ impl Game<'_> {
             }
         }
         let id = m.id;
+        // A body saved mid-death is already dead: `die()` ran when it was
+        // killed, so only the death animation continues, with no second drop.
+        if !m.alive() {
+            self.died.insert(id);
+        }
         self.remember(id, Some(uuid.unwrap_or(fresh)), tag);
         self.mobs.push(m);
         if finalize {
@@ -2209,7 +2214,6 @@ impl Game<'_> {
                 self.boats.iter().all(|b| b.id != v) && self.carts.iter().all(|c| c.id != v)
             })
             && keys.contains(&chunk_of(m.position))
-            && m.alive()
             && !m.removed;
         saves.then(|| (chunk_of(self.mobs[i].position), self.mob_tree_nbt(i)))
     }
