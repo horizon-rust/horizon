@@ -35,6 +35,8 @@ from a `ACTIONS_RUNNER_HOOK_JOB_STARTED` hook in the NixOS configuration.
   minutes of work on GitHub, 11–13 on a desktop runner with a cold build folder) and `launcher` (1–11). Three
   runners give ~180 runner-minutes an hour: about the fifth of the pull requests they take. Main's pushes also save
   the Rust cache GitHub's runs of pull requests read. `SELF_HOSTED_CI=all` sends them all to ours.
+- **The merge queue's `verify`**, whatever `SELF_HOSTED_CI` says: the queue's commit can hold a fork's code, which
+  `job-started.sh` refuses on ours ([release flow](release-flow.md#merge-queue)).
 
 ## Which jobs, and when
 
@@ -44,7 +46,7 @@ for):
 | `SELF_HOSTED_CI` | Bots (`horizon-light`) | `checks`, `mod-registry`, `telemetry-server`, `pack load bench` (`horizon-checks`) |
 | --- | --- | --- |
 | unset (default) | ours | `verify`, `launcher`: ours for this repository's own pull requests ending in 0 or 1, GitHub's for the others, forks' and main's pushes; the rest ours, forks' pull requests excepted |
-| `all` | ours | ours, every pull request |
+| `all` | ours | ours, every pull request and main's pushes (not the merge queue's runs) |
 | `light` | ours | GitHub's: the desktop is paused |
 | `off` | GitHub's | GitHub's: everything back, in one switch |
 

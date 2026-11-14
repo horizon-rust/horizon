@@ -127,6 +127,25 @@ class OwnRunnerTests(unittest.TestCase):
                 if "horizon-checks" in value:
                     self.assertIn(FORK_GUARD, value, f"{path.name} {name}")
 
+    def test_the_merge_queue_runs_the_required_verify_on_githubs_runners(self):
+        # main requires verify; with a merge queue on, every entry waits for a verify of its merge_group run. A skipped
+        # job counts as passed, so verify has no condition. The queue's commit can hold a fork's code, which
+        # job-started.sh refuses on ours: SELF_HOSTED_CI=all must not send it there.
+        ci = (WORKFLOWS / "ci.yml").read_text()
+        self.assertIn("merge_group", triggers(ci))
+        verify = dict(jobs(ci))["verify"]
+        self.assertFalse([l for l in verify.splitlines() if l.startswith("    if:")])
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            text = path.read_text()
+            if "merge_group" not in triggers(text):
+                continue
+            for name, block in jobs(text):
+                value = runs_on(block)
+                job_if = next((l for l in block.splitlines() if l.startswith("    if:")), "")
+                # A job that runs only for another event never sees the queue.
+                if "self-hosted" in value and not re.search(r"github\.event_name (== '(?!merge_group)|!= 'merge_group')", job_if):
+                    self.assertIn("github.event_name != 'merge_group'", value, f"{path.name} {name}")
+
     def test_the_light_runners_refuse_forks_themselves(self):
         script = (ROOT / "tools/ci/checks-runners.sh").read_text()
         self.assertIn("ACTIONS_RUNNER_HOOK_JOB_STARTED=$shared/job-started.sh", script)

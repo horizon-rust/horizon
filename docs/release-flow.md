@@ -16,7 +16,8 @@ reopened; labels never start it):
 | `verify` | Our checks runners (label `horizon-checks`, the desktop's) for this repository's own pull requests whose number ends in 0 or 1; GitHub `ubuntu-latest` for the others, forks' pull requests (they see no repository variable, so no switch could move them off a machine that is off) and main's pushes. `SELF_HOSTED_CI` moves them: `all` all to ours, `light` or `off` all to GitHub ([CI runners](ci-runners.md)) | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests, one after another in one job. Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (ours) | ~8 min |
 | `parity / parity` | A runner with the label `horizon-game`: the Mac mini's and playhorizon's (below) | Only for a change to a harness, an oracle, a probe or the runner (or the `run-parity` label): the vanilla harnesses the change can affect (`tools/parity.py --changed <base>`). Other pull requests skip it: [parity-main](#parity-on-main) checks them on main | seconds when nothing is affected; minutes per affected harness |
 
-Pushes to main run `verify` only; the nightly audit covers main's harnesses.
+Pushes to main run `verify` and `launcher`; parity-main covers main's harnesses. The merge queue, once an owner
+turns it on, runs `verify` alone ([merge queue](#merge-queue)).
 
 `verify` is the check main requires, so it has no condition and runs in every run of `checks`: GitHub counts a
 *skipped* required check as passed, and labels used to start runs whose `verify` was skipped, which let
@@ -123,7 +124,7 @@ run there (parity has none). It is also a parity host (`playhorizon` in `tools/p
 Pull requests merge with a merge commit, by hand: never `gh pr merge --auto`. Branch protection on main
 requires `verify` for everyone, and Ludovic's review for the files `.github/CODEOWNERS` lists (what builds, signs
 and ships releases). Branches don't have to be up to date with main: main's own `checks` run catches the rare
-semantic conflict.
+semantic conflict, and the [merge queue](#merge-queue), once on, before it lands.
 
 **Who merges.** The Horizon Team (GitHub team `horizon-team`: kacpherek, levzzz5154, rdbtCVS, Online5277, dezer-x) and
 Ludovic. The orchestrator's agents prove only the risky pull requests (below), so a contributor's ordinary pull
@@ -153,6 +154,42 @@ paths, `lan_e2e`, a screenshot for anything visible) before it merges. Risky mea
 - over ~500 lines of code ([what counts](../CONTRIBUTING.md#pull-requests)), or `parity` failed, was skipped or ran no harness for gameplay code.
 
 Unsure? Add `needs-proof`: it costs a few hours, a broken release costs more.
+
+### Merge queue
+
+The Council decided on a merge queue (poll P43, decision D17, 2026-11-12). With it, merging a pull request adds it to
+main's queue; GitHub builds a temporary branch (`gh-readonly-queue/main/...`) of main's tip, the entries ahead of it
+and this one, starts `checks` on it (`merge_group`), and moves main there only once the required checks pass on it.
+Two pull requests that each pass alone but break main together no longer both land.
+
+In a queue run (`.github/workflows/ci.yml`):
+
+- `verify` runs as on a pull request, on the queue's commit against main's tip (`merge_group.base_sha`): the
+  public-tree check reads only the new commits, and a change with no Rust runs only the quick steps.
+- It always runs on GitHub's runners, whatever `SELF_HOSTED_CI` says: the commit can hold a fork's code, which
+  `job-started.sh` refuses on ours ([CI runners](ci-runners.md)).
+- Each entry has its own concurrency group and nothing in the workflow cancels it; the queue does when it drops
+  or rebuilds an entry.
+- `parity` and `launcher` are skipped (a skipped job counts as passed): parity-main and `launcher` run on main's push
+  that follows, as today. Main's push still runs `checks` and parity-main, so releases change nothing.
+
+Turning it on is an organisation owner's step; the workflow side is in place:
+
+1. Settings → Rules → Rulesets → New branch ruleset: target `main` (Default branch), enforcement Active, rule
+   **Require merge queue** with merge method **Merge commit** (the release train and parity-main read `Merge pull
+   request #N` first-parent merges), build concurrency 5, minimum group size 1 (no wait), maximum group size 5,
+   "Require all queue entries to pass required checks" on, status check timeout 60 minutes (`verify` takes ~15 at
+   most). Add **Require status checks to pass** with `verify` (source GitHub Actions) in the same ruleset. Bypass
+   list: only whoever may still merge past the queue (`gh pr merge --admin`).
+2. Classic branch protection on main keeps requiring `verify`: the queue's `merge_group` run reports `verify` on the
+   queue's commit, which satisfies it. Before requiring any other check in either place (`parity / parity` below
+   included), make sure queue runs report it under that name, or every entry waits for it until the timeout: a
+   skipped reusable-workflow call reports only `parity`.
+
+After that, `gh pr merge N --match-head-commit SHA` queues the pull request instead of merging it: the command
+returns at once and the pull request is merged later, or dropped from the queue (its timeline says why). Scripts that
+treat its success as "merged" have to check the pull request's state afterwards. `--auto` stays forbidden;
+`--admin` merges directly, past the queue, only for someone on the ruleset's bypass list.
 
 `parity` becomes required once it has run green on pull requests for a while (a week without a false failure):
 

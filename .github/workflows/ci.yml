@@ -1,5 +1,5 @@
 name: checks
-# verify: every pull request and every push to main, on GitHub's runners (the repository is public). It is the
+# verify: every pull request, every merge queue entry and every push to main (runners: see the job). It is the
 # check main requires, so it never has a condition: a skipped job counts as passed, and every run of this workflow
 # must report a real verify (a pull request that changes no Rust finishes it in seconds instead).
 # parity: the vanilla harnesses a pull request's changes can affect, on the Mac mini's runner, which holds the
@@ -7,11 +7,15 @@ name: checks
 # request that changes a harness, oracle, probe or the runner: the rest are checked on main by parity-main. A fork's pull
 # request runs it only when a maintainer adds the run-parity label (.github/workflows/run-parity.yml), so labels
 # never start this workflow. See docs/release-flow.md.
+# merge_group: the merge queue's commit (main's tip, the pull requests ahead in the queue and this one) runs verify
+# before it lands, on GitHub's runners; parity and launcher wait for main's push (docs/release-flow.md#merge-queue).
 on:
   push:
     branches: [main]
   pull_request:
     types: [opened, synchronize, reopened]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,7 +23,8 @@ concurrency:
   # A new push to a pull request replaces its running checks. On main, the running check finishes and only the
   # newest push waits behind it: GitHub cancels a waiting run when a newer one joins the group. A burst of merges
   # queued ~100 main runs on 2026-11-09; the release follows the newest finished main run (docs/release-flow.md).
-  group: checks-${{ github.event.pull_request.number || (github.event_name == 'push' && 'main') || github.sha }}
+  # Each merge queue entry has a group of its own (its temporary branch), and nothing cancels it: the queue does.
+  group: checks-${{ github.event.pull_request.number || github.event.merge_group.head_ref || (github.event_name == 'push' && 'main') || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
@@ -34,11 +39,14 @@ jobs:
   # forks' pull requests and main's pushes (which also save the Rust cache GitHub's pull request runs read), so both
   # pools work at once. The repository variable SELF_HOSTED_CI moves them: `all` every job to ours, `light` (the
   # desktop paused) or `off` every job to GitHub's. A fork's pull request sees no repository variable, so no switch
-  # could move it off a machine that is off: it always runs on GitHub's. On ours the build folder persists
-  # (CARGO_TARGET_DIR, outside the checkout), so the apt packages, Python and the Rust cache steps are GitHub's only.
+  # could move it off a machine that is off: it always runs on GitHub's. So does a merge queue's run, whatever
+  # SELF_HOSTED_CI says: its commit can hold a fork's code, which job-started.sh refuses on ours. On ours the build
+  # folder persists (CARGO_TARGET_DIR, outside the checkout), so the apt packages, Python and the Rust cache steps are
+  # GitHub's only.
   verify:
     runs-on: >-
-      ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && (vars.SELF_HOSTED_CI == 'all' ||
+      ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && github.event_name != 'merge_group' &&
+      (vars.SELF_HOSTED_CI == 'all' ||
       github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository &&
       (endsWith(format('{0}', github.event.pull_request.number), '0') ||
       endsWith(format('{0}', github.event.pull_request.number), '1'))) &&
@@ -52,22 +60,24 @@ jobs:
         if: runner.environment == 'github-hosted'
         with:
           python-version: '3.12'
+      # A merge queue's run reads its commit against main's tip (merge_group's base and head).
       - name: Does this pull request need Rust checks?
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         id: rust
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: python3 tools/ci/rust_changes.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
-      # A pull request adds only its own commits to main, so it reads those; main's pushes read every ref's history.
+      # A pull request (or a merge queue entry) adds only its own commits to main, so it reads those; main's pushes
+      # read every ref's history.
       - name: Keep game artifacts out of Git
         env:
           EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           python tools/check_public_tree.py
-          if [ "$EVENT" = pull_request ]; then
+          if [ "$EVENT" = pull_request ] || [ "$EVENT" = merge_group ]; then
             python tools/check_public_tree.py --range "$BASE_SHA..$HEAD_SHA"
           else
             python tools/check_public_tree.py --history
@@ -84,21 +94,22 @@ jobs:
           echo "WGPU_BACKEND=dx12" >> "$GITHUB_ENV"
       # On a pull request, the next three checks compare with HEAD^1: the main that GitHub's merge commit puts the pull
       # request on. pull_request.base.sha is main at the pull request's last push and falls behind, so main's own
-      # changes since then would count as the pull request's (#13874).
+      # changes since then would count as the pull request's (#13874). A merge queue's entry compares with main's tip
+      # (merge_group.base_sha), whatever the queue's merge method makes of HEAD^1.
       # docs/layers.md: a crate depends only on its own layer or a lower one; today's exceptions only shrink.
       - name: Crates follow the layers
         env:
-          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.merge_group.base_sha || '' }}
         run: python3 tools/check_layers.py ${BASE:+--base "$BASE"}
       # docs/layers.md#built-in-addresses: every built-in outside address in the Horizon layer's home; the rest only shrinks.
       - name: Built-in addresses stay in their home
         env:
-          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.merge_group.base_sha || '' }}
         run: python3 tools/check_addresses.py ${BASE:+--base "$BASE"}
       # docs/layers.md#file-size: a Rust file over 3000 lines may not grow (pull requests; main has no base to compare).
       - name: Big files don't grow
         env:
-          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.merge_group.base_sha || '' }}
         run: python3 tools/check_file_size.py ${BASE:+--base "$BASE"}
       - name: Test offline research tooling
         run: python -m unittest discover -s tests -v
@@ -139,10 +150,13 @@ jobs:
           cargo +stable test --locked --workspace --doc
   # The launcher is its own workspace (launcher/Cargo.toml), so verify's cargo runs never build it. A pull request that
   # changes it or a crate it builds is checked here, and so is every push to main: two pull requests can each pass
-  # alone and break it together (#2059 and the registry ratings did, 2026-10-26).
+  # alone and break it together (#2059 and the registry ratings did, 2026-10-26). Not in the merge queue: no check of
+  # its is required, so the queue wouldn't wait for it, and main's push runs it anyway.
   launcher:
+    if: github.event_name != 'merge_group'
     runs-on: >-
-      ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && (vars.SELF_HOSTED_CI == 'all' ||
+      ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && github.event_name != 'merge_group' &&
+      (vars.SELF_HOSTED_CI == 'all' ||
       github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository &&
       (endsWith(format('{0}', github.event.pull_request.number), '0') ||
       endsWith(format('{0}', github.event.pull_request.number), '1'))) &&
