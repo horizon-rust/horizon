@@ -55,6 +55,8 @@ fn a_death_drops_the_off_hand_before_the_armour() {
 
 #[path = "knot_command_view_tests.rs"]
 mod knot_command_view_tests;
+#[path = "tag_load_tests.rs"]
+mod tag_load_tests;
 /// `MinecraftServer.computeNextAutosaveInterval`: three hundred seconds of
 /// ticks at the rate the server runs at, never fewer than a hundred.
 #[test]

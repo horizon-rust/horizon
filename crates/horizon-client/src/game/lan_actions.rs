@@ -3826,9 +3826,8 @@ impl Game<'_> {
         let own_banned = std::mem::replace(&mut reg.banned_players, banned_players);
         let own_banned_ips = std::mem::replace(&mut reg.banned_ips, banned_ips);
         let own_whitelisted = std::mem::replace(&mut reg.whitelisted, whitelisted);
-        let parse = d.parse(command, &self.ui.registries);
         let ((mut start, mut end), mut suggestions) =
-            d.suggestions(&parse, command.len(), &self.ui.registries);
+            self.guest_command_suggestions(host, conn, d, command);
         let (label, rest) = command.split_once(' ').unwrap_or((command, ""));
         let arguments: Vec<String> = if command.contains(' ') {
             rest.split(' ').map(str::to_owned).collect()

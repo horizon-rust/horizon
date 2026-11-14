@@ -317,6 +317,9 @@ pub enum Suggests {
     /// SuggestionProviders.ASK_SERVER: the server completes the node
     /// (ClientSuggestionProvider.customSuggestion); nothing locally.
     AskServer,
+    /// TagCommand: the tags of the parsed `targets` (`getTags`), which only
+    /// the server can resolve; the answer comes as the server's reply.
+    EntityTags,
     /// OpCommand: the online players who are not operators.
     NonOperators,
     /// DeOpCommands: the operators' names (PlayerList.getOpNames).
@@ -744,7 +747,7 @@ impl Suggests {
             Suggests::Whitelisted => {
                 builder.suggest_matching(reg.whitelisted.iter().map(String::as_str))
             }
-            Suggests::Nothing | Suggests::AskServer => {}
+            Suggests::Nothing | Suggests::AskServer | Suggests::EntityTags => {}
         }
     }
 }
@@ -1124,6 +1127,22 @@ impl Dispatcher {
     ) -> (Range, Vec<Suggestion>, bool) {
         self.suggestions_within(parse, cursor, reg, reg.permission)
     }
+    /// The custom provider of the node the completion at `cursor` comes from,
+    /// for a source at `permission` (`suggestions_within` skips the others).
+    pub fn suggests_at(
+        &self,
+        parse: &ParseResults,
+        cursor: usize,
+        permission: u8,
+    ) -> Option<&Suggests> {
+        let (parent, _, _) = parse.context.suggestion_context(cursor);
+        self.nodes[parent].children.iter().find_map(|&child| {
+            let node = &self.nodes[child];
+            (node.permission <= permission)
+                .then_some(node.suggests.as_ref())
+                .flatten()
+        })
+    }
     fn suggestions_within(
         &self,
         parse: &ParseResults,
@@ -1140,7 +1159,10 @@ impl Dispatcher {
             if self.nodes[child].permission > permission {
                 continue;
             }
-            ask |= matches!(self.nodes[child].suggests, Some(Suggests::AskServer));
+            ask |= matches!(
+                self.nodes[child].suggests,
+                Some(Suggests::AskServer | Suggests::EntityTags)
+            );
             let mut builder = SuggestionsBuilder::new(truncated, start);
             match &self.nodes[child].kind {
                 NodeKind::Literal(l) => {
