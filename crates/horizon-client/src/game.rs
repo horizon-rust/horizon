@@ -4899,17 +4899,7 @@ impl Game<'_> {
                     None,
                 );
             }
-            let stat = match &*name {
-                "minecraft:chest" => "open_chest",
-                "minecraft:trapped_chest" => "trigger_trapped_chest",
-                "minecraft:barrel" => "open_barrel",
-                "minecraft:hopper" => "inspect_hopper",
-                "minecraft:dropper" => "inspect_dropper",
-                "minecraft:dispenser" => "inspect_dispenser",
-                n if storage::is_shulker_box(n) => "open_shulker_box",
-                _ => "",
-            };
-            if !stat.is_empty() {
+            if let Some(stat) = storage::open_stat(&name) {
                 self.award_custom_stat(stat, 1);
             }
             // Opening a piglin-guarded container angers the piglins who see it.
@@ -12618,6 +12608,8 @@ struct LandingVibration {
 mod allay_pickup_cooldown_tests;
 #[cfg(test)]
 mod cauldron_underwater_tests;
+#[cfg(test)]
+mod container_open_stat_tests;
 #[cfg(test)]
 mod dragon_fireball_motion_tests;
 #[cfg(test)]
