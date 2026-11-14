@@ -363,7 +363,7 @@ impl Game<'_> {
         let Some(server) = &self.integrated else {
             return;
         };
-        let enabled = self.options.pregen || self.settings.extras.pregen;
+        let enabled = self.options.pregen || horizon_hooks::engine::pregen_command();
         // Check on the server, after earlier updates have run, so a later toggle
         // wins. Do not block the window when an unrelated setting changes.
         server.queue_pregen_option(enabled);
@@ -407,7 +407,7 @@ impl Game<'_> {
         // The window's mod configs before the server's, as on NeoForge.
         self.native_configs_client_start();
         horizon_client::command::vanilla::set_horizon_commands(
-            self.options.pregen || self.settings.extras.pregen,
+            self.options.pregen || horizon_hooks::engine::pregen_command(),
         );
         let auth = horizon_client::auth::current();
         let player = auth
