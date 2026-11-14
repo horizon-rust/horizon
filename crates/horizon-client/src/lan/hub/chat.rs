@@ -11,6 +11,20 @@ use horizon_protocol::{
 };
 use horizon_world::nbt::{JavaString, Tag};
 
+/// A message command's chat (`SayCommand`, `EmoteCommands`, `MsgCommand`),
+/// waiting for the hub to be back in the game's `self.lan`: its selectors
+/// resolve as the sender, who reaches every player only then
+/// (`MessageArgument.resolveComponent`).
+#[derive(Clone, Debug)]
+pub struct PendingChat {
+    /// `say_command` or `emote_command`; None for a whisper.
+    pub chat_type: Option<&'static str>,
+    pub text: String,
+    /// A whisper's targets, as the guests' indices in join order.
+    pub targets: Vec<usize>,
+    pub message: Option<ChatMessage>,
+}
+
 /// A player's chat message is about to be sent to everyone (after the secure-chat chain and the chat
 /// filter took it). A mod may cancel it, which drops it for everybody (the sender is not told, so push
 /// a line to `replies` to answer them), or only answer. It cannot change the text: a signed message
@@ -138,6 +152,12 @@ impl ChatMessage {
 }
 
 impl Hub {
+    /// A guest's message command is waiting for the hub to be back in the
+    /// game's `self.lan` (`PendingChat`).
+    pub fn has_pending_chats(&self) -> bool {
+        self.guests.iter().any(|g| g.chat.is_some())
+    }
+
     /// MinecraftServer.enforceSecureProfile.
     pub fn enforces_secure_chat(&self) -> bool {
         self.lan.shared.config.enforces_secure_chat()
@@ -554,13 +574,16 @@ impl Hub {
     }
 
     /// A message command's chat (SayCommand, EmoteCommands): to everyone,
-    /// bound to `chat_type` and the sender's name.
+    /// bound to `chat_type` and the sender's name. `text` is what
+    /// `MessageArgument.resolveComponent` made of the message, which is a
+    /// plain literal (and leaves nothing unsigned) when `parts` is false.
     pub fn broadcast_command_chat(
         &mut self,
         i: usize,
         chat_type: &str,
         message: Option<ChatMessage>,
-        text: &str,
+        text: &Text,
+        parts: bool,
         events: &mut Vec<HostEvent>,
     ) {
         let (uuid, name) = (self.guests[i].uuid, self.guests[i].name.clone());
@@ -569,12 +592,20 @@ impl Hub {
             name: self.player_display_name(uuid, &name),
             target: None,
         };
+        let plain = text.plain();
         let line = match chat_type {
-            "say_command" => format!("[{name}] {text}"),
-            _ => format!("* {name} {text}"),
+            "say_command" => format!("[{name}] {plain}"),
+            _ => format!("* {name} {plain}"),
         };
         match message {
-            Some(message) => self.broadcast_chat(&message, &bound, line, events),
+            // PlayerChatMessage.withUnsignedContent: the resolved text is what
+            // clients show, beside the body the sender signed.
+            Some(mut message) => {
+                if parts {
+                    message.decorate(Some(text.clone()));
+                }
+                self.broadcast_chat(&message, &bound, line, events)
+            }
             // An unsigned command packet (no signing context):
             // PlayerChatMessage.system, a disguised chat.
             None => {
@@ -582,9 +613,14 @@ impl Hub {
                     line,
                     secure: false,
                 });
+                let disguised = if parts {
+                    crate::lan::data::component_nbt(&text.component())
+                } else {
+                    literal(&plain)
+                };
                 for k in 0..self.guests.len() {
                     if self.guests[k].placed {
-                        self.send_disguised(k, literal(text), bound.clone());
+                        self.send_disguised(k, disguised.clone(), bound.clone());
                     }
                 }
             }
@@ -598,9 +634,16 @@ impl Hub {
         i: usize,
         targets: &[usize],
         message: Option<ChatMessage>,
-        text: &str,
+        text: &Text,
+        parts: bool,
     ) {
         let (uuid, name) = (self.guests[i].uuid, self.guests[i].name.clone());
+        let plain = text.plain();
+        let shown = if parts {
+            crate::lan::data::component_nbt(&text.component())
+        } else {
+            literal(&plain)
+        };
         let (outgoing, incoming) = (
             self.chat_type_id("msg_command_outgoing"),
             self.chat_type_id("msg_command_incoming"),
@@ -619,12 +662,16 @@ impl Hub {
             };
             match &message {
                 Some(m) => {
-                    self.send_chat(i, m, &out);
-                    self.send_chat(t, m, &inc);
+                    let mut m = m.clone();
+                    if parts {
+                        m.decorate(Some(text.clone()));
+                    }
+                    self.send_chat(i, &m, &out);
+                    self.send_chat(t, &m, &inc);
                 }
                 None => {
-                    self.send_disguised(i, literal(text), out);
-                    self.send_disguised(t, literal(text), inc);
+                    self.send_disguised(i, shown.clone(), out);
+                    self.send_disguised(t, shown.clone(), inc);
                 }
             }
         }

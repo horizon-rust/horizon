@@ -187,7 +187,7 @@ impl Game<'_> {
                 let reason = match ctx.get("reason") {
                     Some(Arg::Str(raw)) => {
                         let raw = raw.clone();
-                        Some(self.expand_selectors(&raw).plain().to_string())
+                        Some(self.expand_selectors(&raw).0.plain().to_string())
                     }
                     _ => None,
                 };
@@ -305,7 +305,7 @@ impl Game<'_> {
         let reason = match ctx.get("reason") {
             Some(Arg::Str(raw)) => {
                 let raw = raw.clone();
-                Some(self.expand_selectors(&raw).plain().to_string())
+                Some(self.expand_selectors(&raw).0.plain().to_string())
             }
             _ => None,
         };
