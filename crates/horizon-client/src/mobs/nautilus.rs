@@ -177,7 +177,7 @@ pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>
 }
 /// `tickRidden` and `getRiddenInput`: turn half way to the rider, swim along
 /// their look, faster in water (`getRiddenSpeed`), and dash on the jump.
-pub fn ridden(m: &mut Mob) {
+pub fn ridden(m: &mut Mob, w: Option<&MobWorld>) {
     let Some(r) = m.rider else { return };
     let diff = super::living::wrap(r.yaw - m.yaw);
     m.yaw += diff * 0.5;
@@ -204,7 +204,7 @@ pub fn ridden(m: &mut Mob) {
     m.ai.zza = forward;
     if r.jump > 0.0 {
         if m.extra.anim_ticks <= 0 && !m.extra.flag2 {
-            dash(m, r.jump);
+            dash(m, r.jump, w);
         }
         if let Some(rider) = m.rider.as_mut() {
             rider.jump = 0.0;
@@ -227,9 +227,11 @@ pub fn on_player_jump(m: &mut Mob, data: i32) -> bool {
     true
 }
 /// `executeRidersJump` (with `handleStartJump`'s sound): along the rider's
-/// look, 1.2 in water and 0.5 on land.
-fn dash(m: &mut Mob, amount: f32) {
+/// look, 1.2 in water and 0.5 on land, times the blocks' speed factor (honey
+/// and soul sand slow it to 0.4).
+fn dash(m: &mut Mob, amount: f32, w: Option<&MobWorld>) {
     let Some(r) = m.rider else { return };
+    let speed_factor = super::equine::block_speed_factor(m, w);
     let (yaw, pitch) = (r.yaw.to_radians(), r.pitch.to_radians());
     let look = Vec3::new(
         f64::from(-yaw.sin() * pitch.cos()),
@@ -237,7 +239,7 @@ fn dash(m: &mut Mob, amount: f32) {
         f64::from(yaw.cos() * pitch.cos()),
     );
     let power = if m.fluids.in_water { 1.2 } else { 0.5 };
-    let k = f64::from(power * amount) * m.movement_speed();
+    let k = f64::from(power * amount) * m.movement_speed() * f64::from(speed_factor);
     m.velocity = Vec3::new(
         m.velocity.x + look.x * k,
         m.velocity.y + look.y * k,
@@ -839,7 +841,7 @@ mod tests {
         let mut m = ridden();
         assert!(on_player_jump(&mut m, 100));
         assert_eq!(m.rider.expect("the rider stays on").jump, 1.0);
-        super::super::equine::ridden_step(&mut m);
+        super::super::equine::ridden_step(&mut m, None);
         assert_eq!(
             m.rider.expect("the rider stays on").jump,
             0.0,

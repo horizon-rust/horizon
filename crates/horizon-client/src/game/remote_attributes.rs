@@ -67,6 +67,7 @@ impl Game<'_> {
             }
             if let Some(jump) = jump {
                 m.extra.vector[0] = jump;
+                m.attrs.jump_strength = jump;
             }
         }
         if let Some(max_health) = max_health {
