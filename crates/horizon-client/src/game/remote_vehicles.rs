@@ -163,6 +163,11 @@ impl Game<'_> {
             for &passenger in passengers {
                 r.passenger_vehicles.insert(passenger as u32, vehicle_id);
             }
+            if passengers.is_empty() {
+                r.vehicle_passengers.remove(&vehicle_id);
+            } else {
+                r.vehicle_passengers.insert(vehicle_id, passengers.to_vec());
+            }
         }
         self.remote_seat_passengers(vehicle_id, passengers);
         let player_controls = passengers.first().is_some_and(|&id| {
