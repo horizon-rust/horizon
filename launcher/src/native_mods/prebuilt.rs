@@ -157,7 +157,13 @@ fn unpacked(
         .map_err(|_| format!("{asset} has no native-cache.json"))?;
     let manifest: serde_json::Value = serde_json::from_slice(&manifest)
         .map_err(|e| format!("{asset}'s native-cache.json: {e}"))?;
-    let text = |name: &str| manifest[name].as_str().unwrap_or_default().trim().to_owned();
+    let text = |name: &str| {
+        manifest[name]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    };
     if manifest["format"].as_u64() != Some(FORMAT) {
         return Err(format!("{asset} is of a format this launcher doesn't read"));
     }
