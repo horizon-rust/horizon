@@ -96,13 +96,13 @@ pub(super) fn picked_pack(settings: &horizon_client::settings::Settings) -> &str
 pub(crate) struct PickedPack {
     /// It draws flat where the device can (`pack_draws_flat`): the sections are laid out so.
     pub draws_flat: bool,
-    /// It is a shader API 0.2 pack under `HORIZON_HDR_FRAME=float`, with its `[frame] blend`:
-    /// the frame is float.
+    /// It is a shader API 0.2 pack, with its `[frame] blend`: the frame is float.
     pub linear: Option<horizon_shader_api::Blend>,
-    /// Under `HORIZON_HDR_FRAME=float`, with no pack available or a 0.2 one: the frame is the
-    /// layered float one where HDR output is on (docs/design/hdr-linear-light.md, The HUD and
-    /// menus; the renderer decides, `FrameRequest::hdr_float`).
-    pub hdr_float: bool,
+    /// It is a 0.1 or `shaders/` pack: HDR output keeps the compatibility frame under it.
+    /// With no pack available or a 0.2 one, the frame is the layered float one where HDR
+    /// output is on (docs/design/hdr-linear-light.md, The HUD and menus; the renderer decides,
+    /// `FrameRequest::compatibility`).
+    pub compatibility: bool,
 }
 impl PickedPack {
     /// What it asks of the renderer's frame.
@@ -110,7 +110,7 @@ impl PickedPack {
         horizon_client::gfx::FrameRequest {
             linear_pack: self.linear.is_some(),
             linear_blend: self.linear == Some(horizon_shader_api::Blend::Linear),
-            hdr_float: self.hdr_float,
+            compatibility: self.compatibility,
         }
     }
 }
@@ -124,12 +124,12 @@ pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -
         horizon_client::shader_pack_list::resolve(&dir, picked).1
     };
     let active = !picked.is_empty()
-        && (!super::native_shaders::linear_frame_switch()
-            || (path.exists() && outcome(&path) != Some(None)))
+        && path.exists()
+        && outcome(&path) != Some(None)
         && path
             .file_name()
             .is_none_or(|f| !active_pack(&f.to_string_lossy(), &settings.mods).is_empty());
-    let linear = (active && super::native_shaders::linear_frame_switch())
+    let linear = active
         .then(|| horizon_shader_api::Pack::read_manifest(&path).ok())
         .flatten()
         .filter(|m| m.api == horizon_shader_api::Api::V0_2)
@@ -137,7 +137,7 @@ pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -
     PickedPack {
         draws_flat: active && pack_draws_flat(&path),
         linear,
-        hdr_float: (!active || linear.is_some()) && super::native_shaders::linear_frame_switch(),
+        compatibility: active && linear.is_none(),
     }
 }
 
@@ -307,7 +307,7 @@ impl Game<'_> {
             self.tick_native_shader_pack(&path);
         } else if let Some(renderer) = &mut self.renderer
             && renderer.shader_pack_dimension() != Some(dimension)
-            && !(super::native_shaders::linear_frame_switch() && refused(&path, fingerprint(&path)))
+            && !refused(&path, fingerprint(&path))
         {
             let name = name.as_str();
             let started = std::time::Instant::now();
@@ -1092,11 +1092,10 @@ mod native_pack_tests {
         std::fs::write(path.join(horizon_shader_api::MANIFEST),
             "schema = 1\nid = \"fixture\"\nname = \"Fixture\"\nversion = \"1\"\napi = \"0.2\"\n[[post]]\nfile = \"p.wgsl\"\n").unwrap();
         settings.horizon.shader_pack = path.to_string_lossy().into_owned();
-        let switch = crate::game::native_shaders::linear_frame_switch();
         // A 0.2 pack with HDR on asks for the layered frame, as no pack does.
         let shape = picked_pack_shape(&settings);
-        assert_eq!(shape.linear, switch.then_some(Blend::Gamma));
-        assert_eq!(shape.hdr_float, switch);
+        assert_eq!(shape.linear, Some(Blend::Gamma));
+        assert!(!shape.compatibility);
         for api in [Api::V0_1, Api::V0_2] {
             let manifest = path.join(horizon_shader_api::MANIFEST);
             let text = std::fs::read_to_string(&manifest).unwrap();
@@ -1108,8 +1107,8 @@ mod native_pack_tests {
             .unwrap();
             remember(&path, fingerprint(&path), Some(api));
             let shape = picked_pack_shape(&settings);
-            assert_eq!(shape.linear.is_some(), switch && api == Api::V0_2);
-            assert_eq!(shape.hdr_float, switch && api == Api::V0_2);
+            assert_eq!(shape.linear.is_some(), api == Api::V0_2);
+            assert_eq!(shape.compatibility, api == Api::V0_1);
         }
         // The frame's blend comes with it: the frame a pack that changes it asks for is
         // another, so the game makes the renderer again (`follow_frame`).
@@ -1118,24 +1117,25 @@ mod native_pack_tests {
         std::fs::write(&manifest, text.clone() + "[frame]\nblend = \"linear\"\n").unwrap();
         remember(&path, fingerprint(&path), Some(Api::V0_2));
         let shape = picked_pack_shape(&settings);
-        assert_eq!(shape.linear, switch.then_some(Blend::Linear));
-        assert_eq!(shape.frame().linear_blend, switch);
+        assert_eq!(shape.linear, Some(Blend::Linear));
+        assert!(shape.frame().linear_blend);
         std::fs::write(&manifest, text).unwrap();
         remember(&path, fingerprint(&path), Some(Api::V0_2));
         assert!(!picked_pack_shape(&settings).frame().linear_blend);
         settings.mods.disabled.insert("frame_owner".into());
         let shape = picked_pack_shape(&settings);
         assert_eq!(shape.linear, None);
-        assert_eq!(shape.hdr_float, switch);
+        assert!(!shape.compatibility);
         settings.mods.disabled.clear();
-        assert_eq!(picked_pack_shape(&settings).linear.is_some(), switch);
+        assert!(picked_pack_shape(&settings).linear.is_some());
         remember(&path, fingerprint(&path), None);
-        assert_eq!(picked_pack_shape(&settings).hdr_float, switch);
+        let refused = picked_pack_shape(&settings);
+        assert!(refused.linear.is_none() && !refused.compatibility);
         remember(&path, fingerprint(&path), Some(Api::V0_2));
         std::fs::remove_dir_all(root).unwrap();
         let missing = picked_pack_shape(&settings);
         assert_eq!(missing.linear, None);
-        assert_eq!(missing.hdr_float, switch);
+        assert!(!missing.compatibility);
     }
 
     #[test]
