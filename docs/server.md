@@ -425,7 +425,8 @@ game built in `Game::new`, the integrated server on its own thread. On that base
 ## 3. Packaging
 
 **Binaries.** The release archives hold `horizon-client`, `horizon-ctl`, `horizon-prepare` and
-`horizon-server`. On Linux the release also has `horizon-server-linux-x86_64.tar.gz`: `horizon-server`,
+`horizon-server`. On Linux the release also has `horizon-server-linux-x86_64.tar.gz` (and, when its build succeeded,
+`horizon-server-linux-arm64.tar.gz` for ARM64, built the same way): `horizon-server`,
 `horizon-prepare` and `horizon-engine`, the game built with `--no-default-features` (no sound, no
 controllers, no Play with Friends: the `friends` feature; nor Discord presence or the "I'm playing" ping, which
 only the official executable has), which links neither `libasound.so.2` nor `libudev.so.1`. `release.yml` builds it after the

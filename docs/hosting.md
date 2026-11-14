@@ -62,8 +62,9 @@ for Windows includes it), else against the SHA-256 GitHub publishes, and never a
 - `horizon-server` and `horizon-prepare` in `~/.local/bin` (Windows: added to your PATH);
 - a `game-files` folder for the files you prepare, kept across updates.
 
-Options: `--version vX.Y.Z`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version`, `-Dir`). Other systems,
-such as Linux on ARM, build from source: `cargo build --release -p horizon-client --bin horizon-client -p
+Options: `--version vX.Y.Z`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version`, `-Dir`). Linux on ARM64
+(a Raspberry Pi 5, a Graviton instance) gets the server build, `horizon-server-linux-arm64.tar.gz`, from releases that
+have it. Other systems build from source: `cargo build --release -p horizon-client --bin horizon-client -p
 horizon-server` and keep both programs in one folder.
 
 On Nix and NixOS, the repository's flake builds `horizon-server` from source and has a

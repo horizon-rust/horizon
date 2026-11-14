@@ -30,9 +30,12 @@ WINDOWS_SYSTEM = {
     "xinput1_4.dll",
 }
 LINUX_LOADER = "/lib64/ld-linux-x86-64.so.2"
+# ELF e_machine of ARM64 (the server archive for Linux on ARM) and its glibc loader.
+EM_AARCH64 = 183
+LINUX_LOADER_AARCH64 = "/lib/ld-linux-aarch64.so.1"
 LINUX_SYSTEM = {
     "libc.so.6", "libm.so.6", "libgcc_s.so.1", "libdl.so.2", "libpthread.so.0", "librt.so.1",
-    "ld-linux-x86-64.so.2", "libasound.so.2", "libudev.so.1",
+    "ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1", "libasound.so.2", "libudev.so.1",
 }
 MUSL_LOADER = "/lib/ld-musl-x86_64.so.1"
 MUSL_SYSTEM = {"libc.musl-x86_64.so.1", "libgcc_s.so.1", "libasound.so.2", "libudev.so.1"}
@@ -130,7 +133,8 @@ def check(path, server=False, musl=False):
         summary = ", ".join(sorted(set(n.lower() for n in names)))
     else:
         interpreter, needed, runpath = elf_needs(data)
-        loader = MUSL_LOADER if musl else LINUX_LOADER
+        arm64 = struct.unpack_from("<H", data, 18)[0] == EM_AARCH64
+        loader = MUSL_LOADER if musl else LINUX_LOADER_AARCH64 if arm64 else LINUX_LOADER
         libraries = MUSL_SYSTEM if musl else LINUX_SYSTEM
         # The desktop musl build must be dynamic: GPU and window libraries use dlopen.
         if interpreter != loader and (musl or interpreter is not None):

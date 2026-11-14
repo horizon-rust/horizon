@@ -28,6 +28,8 @@ fn assets_for(os: &str, arch: &str, musl: bool) -> &'static [&'static str] {
             "horizon-server-linux-x86_64.tar.gz",
             "horizon-linux-x86_64.tar.gz",
         ],
+        // Only the server build exists for ARM64 Linux: a release without it has no archive for this computer.
+        ("linux", "aarch64") => &["horizon-server-linux-arm64.tar.gz"],
         ("macos", "aarch64") => &["horizon-macos-arm64.zip"],
         ("macos", "x86_64") => &["horizon-macos-x64.zip"],
         // A release without an ARM64 build: the x64 one, which Windows runs under emulation.
@@ -934,6 +936,14 @@ mod tests {
         assert_eq!(
             assets_for("windows", "aarch64", false),
             &["horizon-windows-arm64.zip", "horizon-windows-x64.zip"]
+        );
+    }
+
+    #[test]
+    fn linux_arm64_updates_take_only_the_arm64_server_archive() {
+        assert_eq!(
+            assets_for("linux", "aarch64", false),
+            &["horizon-server-linux-arm64.tar.gz"]
         );
     }
 

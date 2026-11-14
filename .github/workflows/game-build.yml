@@ -1,6 +1,6 @@
 name: game build
-# Builds the game for every platform from `ref`: the Java exporters, then Linux and the Linux server, Windows x64
-# and ARM64 on GitHub, and macOS on the Mac mini's runner with a 1500-frame offscreen run of a new world (smoke-test.json): Apple
+# Builds the game for every platform from `ref`: the Java exporters, then Linux and the Linux server, the Linux ARM64
+# server, Windows x64 and ARM64 on GitHub, and macOS on the Mac mini's runner with a 1500-frame offscreen run of a new world (smoke-test.json): Apple
 # Silicon, and Intel cross-built there for x86_64-apple-darwin and checked under Rosetta 2 (#1161). Called by
 # release.yml (the releases) and nightly-build.yml (the opt-in Nightly), always from main's copy of this file: the
 # caller's commit, never the one being built. It holds no secrets: signing the checksums is the callers' own job,
@@ -85,10 +85,10 @@ jobs:
   build:
     needs: exporters
     name: build ${{ matrix.name }}
-    # Windows ARM64 and musl are new: a failure never holds the other platforms' release (the signing job
-    # needs this job, and a failed entry of it would fail it). The release steps leave the missing
+    # Windows ARM64, musl and Linux ARM64 are new: a failure never holds the other platforms' release (the signing
+    # job needs this job, and a failed entry of it would fail it). The release steps leave the missing
     # optional archives out with a warning.
-    continue-on-error: ${{ matrix.name == 'windows-arm64' || matrix.name == 'linux-musl' }}
+    continue-on-error: ${{ matrix.name == 'windows-arm64' || matrix.name == 'linux-musl' || matrix.name == 'linux-arm64' }}
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +105,13 @@ jobs:
             musl: true
             dir: horizon-linux-musl-x86_64
             asset: horizon-linux-musl-x86_64.tar.gz
+          # The dedicated server only, built natively on GitHub's ARM Linux runner (#15597): no game archive until
+          # the game has been tried on an ARM board.
+          - name: linux-arm64
+            os: ubuntu-22.04-arm
+            server_only: true
+            server_dir: horizon-server-linux-arm64
+            server_asset: horizon-server-linux-arm64.tar.gz
           - name: windows
             os: windows-latest
             dir: horizon-windows-x64
@@ -172,15 +179,18 @@ jobs:
         if: runner.os == 'Linux' && !matrix.musl
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
       - name: Build the official game, horizon-ctl, horizon-prepare and horizon-server
-        if: ${{ !matrix.musl }}
+        if: ${{ !matrix.musl && !matrix.server_only }}
         run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -p horizon-official --bin horizon-official -p horizon-client-lib --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+      - name: Build horizon-prepare and horizon-server (the server archive's programs)
+        if: matrix.server_only
+        run: cargo build --release --locked -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
       - name: The official game is the game players get, under its name
         # horizon-official: horizon-client's game with Horizon's own parts plugged in (docs/layers.md, "How a
         # Horizon crate plugs in"). Everything below, the launcher and players know it as horizon-client.
-        if: ${{ !matrix.musl }}
+        if: ${{ !matrix.musl && !matrix.server_only }}
         run: cp -f "$BIN/horizon-official${{ matrix.exe }}" "$BIN/horizon-client${{ matrix.exe }}"
       - name: Every program the release folder takes was built
-        if: ${{ !matrix.musl }}
+        if: ${{ !matrix.musl && !matrix.server_only }}
         run: |
           for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do
             test -f "$BIN/$binary${{ matrix.exe }}" || { echo "::error::$BIN/$binary${{ matrix.exe }} is missing"; exit 1; }
@@ -208,7 +218,8 @@ jobs:
             codesign --verify --strict --verbose=2 "$BIN/$binary"
           done
       - name: Only system libraries
-        if: ${{ !matrix.musl }}
+        # A server-only entry: the server step below checks its programs (check_imports.py --server).
+        if: ${{ !matrix.musl && !matrix.server_only }}
         # Windows: no non-system DLL (a "DLL not found" dialog on some players' machines). Linux: the standard
         # loader and libraries every desktop distribution has. macOS: only the system's own libraries.
         run: |
@@ -224,14 +235,14 @@ jobs:
       - name: Baseline x86-64 CPUs only
         # No POPCNT or LZCNT at all (the script says why only those): a C library's count intrinsic killed the
         # game before main on a Core 2 (#7264). Not the Mac builds: every Intel Mac that runs macOS 11 has both.
-        if: runner.os != 'macOS' && matrix.pe_arch != 'arm64' && !matrix.musl
+        if: runner.os != 'macOS' && matrix.pe_arch != 'arm64' && !matrix.musl && !matrix.server_only
         run: |
           set -euo pipefail
           rustup component add llvm-tools
           ${{ runner.os == 'Windows' && 'python' || 'python3' }} tools/check_cpu_baseline.py \
             $(for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do echo "$BIN/$binary${{ matrix.exe }}"; done)
       - name: Every program starts
-        if: ${{ !matrix.musl }}
+        if: ${{ !matrix.musl && !matrix.server_only }}
         run: |
           set -euo pipefail
           bin=$BIN
@@ -295,7 +306,7 @@ jobs:
             -e HORIZON_VERSION -e HORIZON_NIGHTLY \
             rust:alpine3.22 sh tools/ci/build-musl.sh
       - name: Package
-        if: ${{ !matrix.musl }}
+        if: ${{ !matrix.musl && !matrix.server_only }}
         run: |
           set -euo pipefail
           cargo run --locked -p xtask -- package "$BIN/horizon-client${{ matrix.exe }}" "dist/${{ matrix.dir }}"
@@ -328,6 +339,7 @@ jobs:
           done
           packaging/macos/notarize.sh "dist/${{ matrix.asset }}"
       - uses: actions/upload-artifact@v7
+        if: ${{ !matrix.server_only }}
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}

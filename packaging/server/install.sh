@@ -2,7 +2,7 @@
 # Installs horizon-server (docs/server.md) on Linux or macOS: the current Horizon Nightly for this computer (the
 # only build Horizon ships; GitHub's latest release while there is none), downloaded from GitHub Releases and
 # checked against the release's signed SHA256SUMS when OpenSSL 3 is installed (docs/release-flow.md, "Signed
-# checksums"), else against the SHA-256 GitHub publishes for it. On Linux that is the server build (horizon-server-linux-x86_64.tar.gz), which needs neither ALSA nor udev.
+# checksums"), else against the SHA-256 GitHub publishes for it. On Linux that is the server build (horizon-server-linux-x86_64.tar.gz, or -arm64 on ARM), which needs neither ALSA nor udev.
 #
 #   curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --version v0.5.0 --dir /opt/horizon --bin /usr/local/bin
@@ -43,6 +43,8 @@ MACHINE=$(uname -m)
 [ "$(uname -s)" = Darwin ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ] && MACHINE=arm64
 case "$(uname -s)-$MACHINE" in
   Linux-x86_64) ASSETS="horizon-server-linux-x86_64.tar.gz horizon-linux-x86_64.tar.gz" ;;
+  # ARM64 Linux (a Raspberry Pi 5, Graviton): the server build only, which has no ALSA or udev to miss.
+  Linux-aarch64|Linux-arm64) ASSETS=horizon-server-linux-arm64.tar.gz ;;
   Darwin-arm64) ASSETS=horizon-macos-arm64.zip ;;
   # Intel Macs: the Nightlies built since #1161.
   Darwin-x86_64) ASSETS=horizon-macos-x64.zip ;;
