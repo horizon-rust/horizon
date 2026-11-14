@@ -479,7 +479,6 @@ impl Game<'_> {
         let region_world = std::mem::replace(&mut w.world, stand_in);
         let region_ticks = std::mem::take(&mut w.block_ticks);
         let region_sections = std::mem::take(&mut w.random_tick_sections);
-        let mut lt = std::time::Instant::now();
         let world = &mut self.world;
         std::thread::scope(|scope| {
             let back = scope.spawn(move || world.take_back(region_world));
@@ -489,7 +488,6 @@ impl Game<'_> {
                 std::panic::resume_unwind(e);
             }
         });
-        lap(&mut lt, "land.world+ticks+sections");
         append_all(&mut self.mobs, drain(&mut w.mobs));
         self.creaking.take_scanned_back(&mut w.creaking);
         append_all(&mut self.dropped, drain(&mut w.dropped));
@@ -528,7 +526,6 @@ impl Game<'_> {
         a.pots.extend(b.pots.drain());
         a.gateway_servers.extend(b.gateway_servers.drain());
         a.conduit_servers.extend(b.conduit_servers.drain());
-        lap(&mut lt, "land.entity lists");
         self.persist.uuids.extend(w.persist.uuids.drain());
         self.persist.raw.extend(w.persist.raw.drain());
         self.persist
@@ -539,7 +536,6 @@ impl Game<'_> {
         self.love_cause.extend(w.love_cause.drain());
         self.last_hurt_by_player
             .extend(w.last_hurt_by_player.drain());
-        lap(&mut lt, "land.persist maps");
         // What the region's tick left for the server's game, after the server's own.
         self.level_events.append(&mut w.level_events);
         self.pending.absorb(std::mem::take(&mut w.pending));
@@ -558,7 +554,6 @@ impl Game<'_> {
         self.lan_songs.append(&mut w.lan_songs);
         self.lan_kinetic_hits.append(&mut w.lan_kinetic_hits);
         self.lan_global_events.append(&mut w.lan_global_events);
-        lap(&mut lt, "land.events");
         std::mem::take(&mut w.rand_sequences)
     }
 }
@@ -676,16 +671,12 @@ impl Game<'_> {
                 .zip(split_guests.iter_mut().map(std::mem::take)),
         ) {
             let mob_ids: Vec<u32> = part.mobs.iter().map(|m| m.id).collect();
-            let mut lt = std::time::Instant::now();
             self.lend_region(&mut w, part);
-            lap(&mut lt, "lend.lend_region");
             w.copy_tick_settings_from(self);
             w.refill_entity_ids(&pool);
-            lap(&mut lt, "lend.settings");
             let conns: Vec<u32> = guests.iter().map(|g| g.conn).collect();
             let mut shell = w.lan.take().unwrap_or_else(|| host.region_shell());
             host.lend_region(&mut shell, &conns, &mob_ids, dim, guests);
-            lap(&mut lt, "lend.host");
             w.lan = Some(shell);
             flights.push((w, chunks, conns));
         }
@@ -749,31 +740,6 @@ impl Game<'_> {
             let n = N.fetch_add(1, Ordering::Relaxed) + 1;
             if n % 200 == 0 {
                 let avg = |i: usize| SUM[i].swap(0, Ordering::Relaxed) as f64 / 200_000.0;
-                {
-                    let mut laps = LAPS
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let line: Vec<String> = laps
-                        .iter()
-                        .map(|(n, us)| format!("{n} {:.1}", *us as f64 / 200_000.0))
-                        .collect();
-                    laps.clear();
-                    let mut world = horizon_client::world::LEND_LAPS
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let wline: Vec<String> = world
-                        .iter()
-                        .map(|(n, us)| format!("{n} {:.1}", *us as f64 / 200_000.0))
-                        .collect();
-                    world.clear();
-                    log::info!("world.lend laps (ms/tick): {}", wline.join(", "));
-                    log::info!(
-                        "block entities {} tickers-ish, asleep etc; chunks {}",
-                        self.world.block_entities.len(),
-                        self.world.chunks.len()
-                    );
-                    log::info!("regions laps (ms/tick): {}", line.join(", "));
-                }
                 log::info!(
                     "regions: split+lend {:.1} ms, run {:.1} ms, land {:.1} ms (avg of 200 ticks, {} regions)",
                     avg(0),
@@ -814,22 +780,6 @@ impl Game<'_> {
         self.tick_moving_pistons()?;
         self.tick_block_entities()?;
         Ok(())
-    }
-}
-
-/// Time spent in the region phases by name, summed (`lap`) and logged every 200 ticks.
-static LAPS: std::sync::Mutex<Vec<(&'static str, u64)>> = std::sync::Mutex::new(Vec::new());
-
-/// The time since `t`, added to `name`'s; `t` starts again.
-fn lap(t: &mut std::time::Instant, name: &'static str) {
-    let us = t.elapsed().as_micros() as u64;
-    *t = std::time::Instant::now();
-    let mut laps = LAPS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match laps.iter_mut().find(|(n, _)| *n == name) {
-        Some(entry) => entry.1 += us,
-        None => laps.push((name, us)),
     }
 }
 
@@ -959,7 +909,6 @@ impl Game<'_> {
             .map(|_| horizon_core::random::RandomSource::next_long(&mut self.world.random))
             .collect();
         let tick_seeds: Vec<i32> = seeds.iter().map(|s| *s as i32).collect();
-        let mut lt = std::time::Instant::now();
         // The world's chunks, the scheduled ticks and the random-tick sections move on threads of their own at
         // once (each touches only its own part of the level), the entities are sorted meanwhile on this one.
         let (world, block_ticks, sections_of) = (
@@ -969,27 +918,14 @@ impl Game<'_> {
         );
         let (chunks_ref, seeds_ref, tick_seeds_ref) = (&chunks, &seeds, &tick_seeds);
         let (worlds, ticks, sections) = std::thread::scope(|scope| {
-            let worlds = scope.spawn(move || {
-                let mut t = std::time::Instant::now();
-                let w = world.lend(n, of_chunk, seeds_ref);
-                lap(&mut t, "thread.world.lend");
-                w
-            });
-            let ticks = scope.spawn(move || {
-                let mut t = std::time::Instant::now();
-                let r = block_ticks.lend(chunks_ref, tick_seeds_ref);
-                lap(&mut t, "thread.ticks.lend");
-                r
-            });
-            let mut t = std::time::Instant::now();
+            let worlds = scope.spawn(move || world.lend(n, of_chunk, seeds_ref));
+            let ticks = scope.spawn(move || block_ticks.lend(chunks_ref, tick_seeds_ref));
             let sections = sections_of.lend(n, of_chunk);
-            lap(&mut t, "thread.sections.lend");
             match (worlds.join(), ticks.join()) {
                 (Ok(w), Ok(t)) => (w, t, sections),
                 (Err(e), _) | (_, Err(e)) => std::panic::resume_unwind(e),
             }
         });
-        lap(&mut lt, "split.world+ticks+sections");
         let mut sequences = self.rand_sequences.split(n + 1);
         // The level's own sequences stay with the level (the first of the split).
         self.rand_sequences = sequences.remove(0);
@@ -1003,7 +939,6 @@ impl Game<'_> {
             v3(&p.position)
         });
         let mut falling = split(&mut drain(&mut self.falling), regions, |f| v3(&f.position));
-        lap(&mut lt, "split.mobs+items+orbs+proj+falling");
         let mut paintings = split(&mut self.paintings, regions, |p| b3(&p.pos));
         let mut item_frames = split(&mut self.item_frames, regions, |f| b3(&f.pos));
         let mut armor_stands = split(&mut drain(&mut self.armor_stands), regions, |s| {
@@ -1020,7 +955,6 @@ impl Game<'_> {
         let mut rockets = split(&mut drain(&mut self.rockets), regions, |r| v3(&r.position));
         let mut ominous_spawners = split(&mut self.ominous_spawners, regions, |o| a3(&o.position));
         let mut tnts = split(&mut drain(&mut self.tnts), regions, |t| v3(&t.position));
-        lap(&mut lt, "split.other entities");
         let mut hoppers = split_map(&mut self.hoppers, regions, |p| block_chunk(*p));
         let mut jukebox_sounds = split_map(&mut self.jukebox_sounds, regions, |p| block_chunk(*p));
         let mut lid_openers = split_map(&mut self.lid_openers, regions, |p| block_chunk(*p));
@@ -1046,7 +980,6 @@ impl Game<'_> {
         let mut pots = fx_split(&mut a.pots, regions, array_chunk);
         let mut gateway_servers = fx_split(&mut a.gateway_servers, regions, array_chunk);
         let mut conduit_servers = fx_split(&mut a.conduit_servers, regions, array_chunk);
-        lap(&mut lt, "split.maps+anims");
         let mut parts = Vec::with_capacity(n);
         for (r, ((world, ticks), sections)) in
             worlds.into_iter().zip(ticks).zip(sections).enumerate()
@@ -1095,7 +1028,6 @@ impl Game<'_> {
                 },
             });
         }
-        lap(&mut lt, "split.parts");
         LevelSplit { parts, chunks }
     }
 }

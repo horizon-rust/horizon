@@ -61,21 +61,6 @@ impl DirtySections {
         self.columns.values().map(SectionMask::len).sum()
     }
 }
-/// Time spent in [`World::lend`] by step, summed, for the server's region log.
-pub static LEND_LAPS: std::sync::Mutex<Vec<(&'static str, u64)>> =
-    std::sync::Mutex::new(Vec::new());
-pub(crate) fn lend_lap(t: &mut std::time::Instant, name: &'static str) {
-    let us = t.elapsed().as_micros() as u64;
-    *t = std::time::Instant::now();
-    let mut laps = LEND_LAPS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match laps.iter_mut().find(|(n, _)| *n == name) {
-        Some(entry) => entry.1 += us,
-        None => laps.push((name, us)),
-    }
-}
-
 pub struct World {
     /// Server-owned mod data attached to this dimension.
     pub attachments: horizon_world::attachments::Attachments,
@@ -287,13 +272,10 @@ impl World {
         region_of: impl Fn((i32, i32)) -> Option<usize>,
         seeds: &[i64],
     ) -> Vec<World> {
-        let mut lt = std::time::Instant::now();
         let chunks = self.chunks.lend(regions, &region_of);
-        lend_lap(&mut lt, "chunks");
         let mut entities = self
             .block_entities
             .lend(regions, |p| region_of((p.0 >> 4, p.2 >> 4)));
-        lend_lap(&mut lt, "block_entities");
         let mut inhabited: Vec<FxHashMap<(i32, i32), i64>> =
             (0..regions).map(|_| FxHashMap::default()).collect();
         for (key, t) in self
@@ -304,7 +286,6 @@ impl World {
                 inhabited[r].insert(key, t);
             }
         }
-        lend_lap(&mut lt, "inhabited");
         let mut out: Vec<World> = chunks
             .into_iter()
             .enumerate()
@@ -323,7 +304,6 @@ impl World {
                 w
             })
             .collect();
-        lend_lap(&mut lt, "build worlds");
         // What a region's ticks read of these, by position: copies of the region's own.
         for (&pos, &v) in &self.chest_openers {
             if let Some(r) = region_of((pos.0 >> 4, pos.2 >> 4)) {
@@ -335,7 +315,6 @@ impl World {
                 out[r].block_names.insert(*pos, name.clone());
             }
         }
-        lend_lap(&mut lt, "openers+names");
         // The block and light changes not sent yet (a command's, made on the server's thread) go with their
         // chunks: a region's thread sends its own players its chunks' changes.
         if let Some(log) = self.block_log.as_mut() {
