@@ -1484,8 +1484,8 @@ pub(crate) mod v26_1 {
     }
 }
 
-/// 1.21.6 to 1.21.8. Clientbound nothing changes for a server: 1.21.6 sends set_equipment without the saddle
-/// slot (7), which 1.21.8 added, and entity data is laid out alike (the serializer ids differ only from 1.21.9,
+/// 1.21.6 to 1.21.8. Clientbound nothing changes for a server: set_equipment has the saddle slot (7) since 1.21.5,
+/// and entity data is laid out alike (the serializer ids differ only from 1.21.9,
 /// see adapter.rs). Serverbound, 1.21.8's `test_instance_block_action` names its test by identifier and 1.21.6
 /// by a VarInt id in a registry.
 pub(crate) mod v1_21_6 {
@@ -1644,7 +1644,6 @@ pub(crate) mod client_layout_v1_21_4 {
             return Ok(None);
         }
         Ok(Some(match id {
-            cb::EXPLODE => explode_up(payload)?,
             cb::PLAYER_CHAT => player_chat_up(payload)?,
             cb::SET_PLAYER_TEAM => team_up(payload)?,
             cb::UPDATE_ADVANCEMENTS => advancements_up(payload),
@@ -1675,25 +1674,6 @@ pub(crate) mod client_layout_v1_21_4 {
             .position(|n| *n == name)
             .map(|i| i as i32)
             .ok_or_else(|| crate::Error::new(format!("unknown team enum {name}")))
-    }
-
-    /// The explosion's player knockback: 1.21.4 writes a double, then two floats; 1.21.5 three doubles.
-    #[cfg(test)]
-    fn explode_up(payload: &[u8]) -> Result<Vec<u8>> {
-        let mut r = Reader::new(payload);
-        let mut w = Writer::new();
-        for _ in 0..3 {
-            w.f64(r.f64()?);
-        }
-        let knockback = r.bool()?;
-        w.bool(knockback);
-        if knockback {
-            w.f64(r.f64()?);
-            w.f64(f64::from(r.f32()?));
-            w.f64(f64::from(r.f32()?));
-        }
-        w.bytes(r.rest());
-        Ok(w.data)
     }
 
     /// A player chat with the global index 1.21.5 starts it with.
@@ -2101,9 +2081,8 @@ pub(crate) mod client_layout_v1_21_8 {
 
 /// 1.20.6 to 1.21 (protocol 766 to 767): the mirror of `client_session::step_1_20_6`. Clientbound, from the two
 /// Packets pages:
-/// - `level_particles` sends the particle (a VarInt) first in 1.20.6 and after the count in 1.21.
-/// - `explode`'s sound is a sound event holder in 1.21 (a VarInt, 0 for an inline one, then the location and the
-///   range); 1.20.6 sends the inline one alone.
+/// - `explode`'s sound is a sound event holder in both (a VarInt, 0 for an inline one, then the location and the
+///   range; javap on both clients' `ClientboundExplodePacket`), so it is the same bytes.
 /// - `projectile_power` is one double, the power, in 1.21; 1.20.6 sends the vector.
 /// - `merchant_offers`: a trade's costs are trade items in 1.21 (an item id, a count and the components they add,
 ///   no stack flag), and the second cost is optional. The stacks are read under 1.20.6's ids and components.
@@ -2142,10 +2121,6 @@ pub(crate) mod client_layout_v1_20_6 {
         Ok(&tail[..len])
     }
 
-    /// The bytes of `LEVEL_PARTICLES` between the particle and its data in both layouts: the long-distance flag,
-    /// three doubles, four floats and the count.
-    pub(crate) const LEVEL_PARTICLES_HEAD: usize = 1 + 24 + 16 + 4;
-
     /// The clientbound packet `id` a 1.20.6 server sent (`payload` in 1.20.6's layout), in 1.21's layout; `None`
     /// when laid out alike.
     #[cfg(test)]
@@ -2160,7 +2135,6 @@ pub(crate) mod client_layout_v1_20_6 {
             return Ok(None);
         }
         Ok(match id {
-            cb::LEVEL_PARTICLES => Some(level_particles(payload)?),
             cb::EXPLODE => Some(explode(payload)?),
             cb::PROJECTILE_POWER => Some(projectile_power(payload)?),
             cb::MERCHANT_OFFERS => Some(merchant_offers(session, payload)?),
@@ -2168,21 +2142,7 @@ pub(crate) mod client_layout_v1_20_6 {
         })
     }
 
-    /// level_particles: the particle goes after the count, before its data.
-    #[cfg(test)]
-    fn level_particles(payload: &[u8]) -> Result<Vec<u8>> {
-        let mut r = Reader::new(payload);
-        let particle = r.varint()?;
-        let head = r.bytes(LEVEL_PARTICLES_HEAD)?;
-        let mut w = Writer::new();
-        w.bytes(head);
-        w.varint(particle);
-        w.bytes(r.rest());
-        Ok(w.data)
-    }
-
-    /// explode: the sound is a holder in 1.21, and an inline one (0) here; the two explosion particles have no
-    /// data, so they are read as their ids alone.
+    /// explode: the sound is a holder in both releases; the packet is the same bytes.
     #[cfg(test)]
     fn explode(payload: &[u8]) -> Result<Vec<u8>> {
         let mut r = Reader::new(payload);
@@ -2195,7 +2155,6 @@ pub(crate) mod client_layout_v1_20_6 {
         r.varint()?; // the large explosion particle's id
         let mut w = Writer::new();
         w.bytes(r.since(0));
-        w.varint(0);
         w.bytes(r.rest());
         Ok(w.data)
     }

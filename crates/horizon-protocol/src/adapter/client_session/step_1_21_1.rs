@@ -36,6 +36,70 @@ use crate::{
     packets::{login::Property, play},
 };
 
+/// A pinned boat or raft of any wood as 1.21.1 shows it: the plain `boat` (oak) or `chest_boat` type in the
+/// pinned ids, and the wood as `Boat.Type`'s ordinal, which 1.21.1 keeps in entity data (index 11) until 1.21.2
+/// split the entity type per wood (`translate::v1_21_1::boats` is the mirror). Pale oak and poplar, which no
+/// 1.21.1 `Boat.Type` has, are shown as birch.
+pub(super) fn boat(kind: i32) -> Option<(i32, i32)> {
+    use crate::adapter::translate::v1_21_1::boats::{CHEST_TYPES, TYPES};
+    // pale_oak_boat, pale_oak_chest_boat, poplar_boat, poplar_chest_boat
+    let kind = match kind {
+        95 | 106 => TYPES[2],
+        96 | 107 => CHEST_TYPES[2],
+        _ => kind,
+    };
+    let ordinal = |types: [i32; 9]| types.iter().position(|&k| k == kind);
+    if let Some(i) = ordinal(TYPES) {
+        return Some((TYPES[0], i as i32));
+    }
+    ordinal(CHEST_TYPES).map(|i| (CHEST_TYPES[0], i as i32))
+}
+
+/// A boat's entity data in 1.21.1's indexes: the wood took index 11, which pushes the paddles and the bubble
+/// time (11 to 13 from 1.21.2) up by one.
+pub(super) fn boat_data(kind: Option<i32>, data: &mut play::SetEntityData) {
+    use crate::adapter::translate::v1_21_1::boats::{CHEST_TYPES, TYPES};
+    if kind == Some(TYPES[0]) || kind == Some(CHEST_TYPES[0]) {
+        for (index, _, _) in &mut data.values {
+            if (11..=13).contains(index) {
+                *index += 1;
+            }
+        }
+    }
+}
+
+/// Entity data in 1.21.1's indexes from 1.21.2's (1.21.4's layout), for an entity of `kind` (a pinned type; `None`
+/// leaves the data alone). 1.21.2 added a field to three families and the rest of each moved up:
+/// - AbstractArrow's `in_ground` boolean at 10 (arrow, spectral arrow, trident): it goes, and the arrow's colour and
+///   the trident's loyalty and foil move back down one.
+/// - AgeableWaterCreature's baby flag at 16 (squid, glow squid, dolphin): it goes, and the dolphin's fields and the
+///   glow squid's dark ticks move back down one.
+/// - The salmon's variant at 17 goes (see `step_1_21_3::entity_data` for the 1.21.2 string).
+///
+/// Boats are [`boat_data`]'s.
+pub(super) fn entity_data(kind: Option<i32>, data: &mut play::SetEntityData) {
+    use crate::adapter::pinned_ids::entity_type as entity;
+    let Some(kind) = kind else { return };
+    // The first index that is new in 1.21.2, and what stays below it.
+    let first_new = match kind {
+        entity::ARROW | entity::SPECTRAL_ARROW | entity::TRIDENT => 10,
+        entity::SQUID | entity::GLOW_SQUID | entity::DOLPHIN => 16,
+        entity::SALMON => 17,
+        _ => return,
+    };
+    let own_fields = kind != entity::SALMON;
+    data.values.retain_mut(|(index, _, _)| {
+        if *index == first_new {
+            false
+        } else {
+            if own_fields && *index > first_new {
+                *index -= 1;
+            }
+            true
+        }
+    });
+}
+
 /// The strength written for an explosion. 1.21.2's explode has no radius; `ClientSession` overwrites this with
 /// 26.3's radius, which the steps in between drop. It only chooses the blast's particles and sound volume.
 const EXPLODE_STRENGTH: f32 = 3.0;
@@ -265,11 +329,11 @@ pub(super) fn player_info(payload: &[u8], list_order: bool) -> Result<Vec<u8>> {
 /// the block interaction (0 keep), and two particles: the small and the large one. Both are the one particle here.
 fn explode(payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
-    // The knockback arrives as 1.21.4's step leaves it: a double, then two floats.
+    // The knockback is three doubles, as it is in every release from 1.21.2 on.
     let (center, knockback, particle, sound) = super::read_in_client_ids(|| {
         let center = Vec3d::read(&mut r)?;
         let knockback = if r.bool()? {
-            Some([r.f64()?, f64::from(r.f32()?), f64::from(r.f32()?)])
+            Some([r.f64()?, r.f64()?, r.f64()?])
         } else {
             None
         };
@@ -325,8 +389,30 @@ pub(super) fn serverbound(state: State, id: i32, payload: &[u8]) -> Result<Optio
             Ok(Some(out))
         }
         sb::PLAYER_INPUT => player_input(payload).map(Some),
+        sb::USE_ITEM_ON => use_item_on(payload).map(Some),
         _ => Ok(None),
     }
+}
+
+/// A 1.21.1 client's use_item_on ends its block hit with `inside` and goes straight to the sequence; 1.21.2 added
+/// the world-border flag between them (`BlockHitResult` in `FriendlyByteBuf`, read by javap on both clients). The
+/// client was never at a world border hit: the flag is false.
+fn use_item_on(payload: &[u8]) -> Result<Vec<u8>> {
+    let mut r = Reader::new(payload);
+    let mut w = Writer::new();
+    w.varint(r.varint()?);
+    w.bytes(r.bytes(8)?);
+    w.varint(r.varint()?);
+    for _ in 0..3 {
+        w.f32(r.f32()?);
+    }
+    w.bool(r.bool()?);
+    w.bool(false);
+    w.varint(r.varint()?);
+    if r.remaining() != 0 {
+        return Err(Error::new("1.21.1 use_item_on with trailing bytes"));
+    }
+    Ok(w.data)
 }
 
 /// 1.21.1's client information with 1.21.2's particle status after it: all particles
@@ -405,6 +491,80 @@ mod tests {
     //! Each change written here is read back with `translate`'s 1.21.1 reader: 1.21.1's layout, 1.21.2's and back.
     use super::*;
     use crate::adapter::{ServerVersion, session::Session, translate};
+
+    /// 1.21.4's `set_entity_data` payload (literal bytes) through `step`, as the bytes written back.
+    fn through(
+        bytes: &[u8],
+        kind: i32,
+        step: impl Fn(Option<i32>, &mut crate::packets::play::SetEntityData),
+    ) -> Vec<u8> {
+        use crate::buf::{Codec, Reader, Writer};
+        let mut d =
+            <crate::packets::play::SetEntityData as Codec<_>>::read(&mut Reader::new(bytes))
+                .unwrap();
+        step(Some(kind), &mut d);
+        let mut w = Writer::new();
+        <crate::packets::play::SetEntityData as Codec<_>>::write(&d, &mut w);
+        w.data
+    }
+
+    /// 1.21.4's arrow (entity 5; the flags and pierce level at 8 and 9) has `in_ground` at 10 and the effect
+    /// colour (-1) at 11; 1.21.1's colour is at 10.
+    #[test]
+    fn an_arrow_loses_in_ground_and_its_colour_moves_down() {
+        use crate::adapter::pinned_ids::entity_type::ARROW;
+        let newer = [
+            5, 8, 0, 0, 9, 0, 0, 10, 8, 1, 11, 1, 255, 255, 255, 255, 15, 255,
+        ];
+        assert_eq!(
+            through(&newer, ARROW, entity_data),
+            [5, 8, 0, 0, 9, 0, 0, 10, 1, 255, 255, 255, 255, 15, 255]
+        );
+    }
+
+    #[test]
+    fn a_spectral_arrow_loses_in_ground_and_a_trident_s_fields_move_down() {
+        use crate::adapter::pinned_ids::entity_type::{SPECTRAL_ARROW, TRIDENT};
+        assert_eq!(
+            through(&[5, 8, 0, 0, 10, 8, 1, 255], SPECTRAL_ARROW, entity_data),
+            [5, 8, 0, 0, 255]
+        );
+        // in_ground, loyalty 3, foil
+        let trident = [5, 10, 8, 0, 11, 0, 3, 12, 8, 1, 255];
+        assert_eq!(
+            through(&trident, TRIDENT, entity_data),
+            [5, 10, 0, 3, 11, 8, 1, 255]
+        );
+    }
+
+    /// The baby flag at 16 goes for the squid and the glow squid (dark ticks 17 move to 16); the dolphin's
+    /// treasure position, got-fish and moistness (17 to 19) move to 16 to 18.
+    #[test]
+    fn the_baby_flag_of_the_water_animals_goes_and_what_follows_moves_down() {
+        use crate::adapter::pinned_ids::entity_type::{DOLPHIN, GLOW_SQUID, SQUID};
+        assert_eq!(through(&[5, 16, 8, 1, 255], SQUID, entity_data), [5, 255]);
+        assert_eq!(
+            through(&[5, 16, 8, 0, 17, 1, 40, 255], GLOW_SQUID, entity_data),
+            [5, 16, 1, 40, 255]
+        );
+        let dolphin = [
+            5, 16, 8, 1, 17, 10, 0, 0, 0, 0, 0, 0, 0, 0, 18, 8, 1, 19, 1, 3, 255,
+        ];
+        assert_eq!(
+            through(&dolphin, DOLPHIN, entity_data),
+            [5, 16, 10, 0, 0, 0, 0, 0, 0, 0, 0, 17, 8, 1, 18, 1, 3, 255]
+        );
+    }
+
+    /// 1.21.1 has no salmon variant: 1.21.4's at 17 goes.
+    #[test]
+    fn a_salmon_has_no_variant() {
+        use crate::adapter::pinned_ids::entity_type::SALMON;
+        assert_eq!(
+            through(&[6, 16, 8, 1, 17, 1, 2, 255], SALMON, entity_data),
+            [6, 16, 8, 1, 255]
+        );
+    }
 
     /// A 1.21.1 client's information (no particle status) reads as 1.21.2's with all particles.
     #[test]
@@ -664,14 +824,14 @@ mod tests {
 
     #[test]
     fn an_explosion_is_1_21_1_s_bytes() {
-        // 1.21.4's step out: centre, a knockback (a double, two floats), the particle (id 5, no data), the sound
-        // inline ("a:b", no range).
+        // 1.21.2's explode: centre, a knockback (three doubles), the particle (id 5, no data), the sound inline
+        // ("a:b", no range).
         let mut i = Writer::new();
         [1.0, 2.0, 3.0].iter().for_each(|v| i.f64(*v));
         i.bool(true);
         i.f64(0.5);
-        i.f32(0.0);
-        i.f32(-1.0);
+        i.f64(0.0);
+        i.f64(-1.0);
         i.varint(5);
         i.varint(0);
         i.string("a:b");
@@ -690,5 +850,39 @@ mod tests {
         e.string("a:b");
         e.bool(false);
         assert_eq!(out, e.data);
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// The 1.21.1 client's use_item_on (no world-border flag) reaches 26.3's reader with the flag false.
+    #[test]
+    fn a_1_21_1_use_item_on_gains_the_world_border_flag() {
+        // The same independent vanilla bytes as translate's test: 1.21.1's and 1.21.2's ServerboundUseItemOnPacket.
+        let old = hex("010000007fffffd040023e8000003f0000003f40000001ac02");
+        let modern = hex("010000007fffffd040023e8000003f0000003f4000000101ac02");
+        // Byte 22 is `inside`, byte 23 the world-border flag (set in the 1.21.2 bytes).
+        let mut with_flag = modern.clone();
+        with_flag[23] = 0;
+        assert_eq!(
+            serverbound(
+                State::Play,
+                packet_ids::play::serverbound::USE_ITEM_ON,
+                &old
+            )
+            .unwrap(),
+            Some(with_flag.clone())
+        );
+        let p = play::UseItemOn::read(&mut Reader::new(&with_flag)).unwrap();
+        assert!(p.inside && !p.world_border);
+        assert_eq!(p.sequence, 300);
+        assert!(use_item_on(&old[..old.len() - 1]).is_err());
+        let mut trailing = old;
+        trailing.push(0);
+        assert!(use_item_on(&trailing).is_err());
     }
 }

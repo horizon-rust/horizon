@@ -491,6 +491,13 @@ impl ConnReader {
         if let Some(packet) = self.adapter.as_ref().and_then(|a| a.next_incoming()) {
             return Ok(packet);
         }
+        if let Some(packet) = self
+            .older_client
+            .as_ref()
+            .and_then(|c| c.next_serverbound())
+        {
+            return Ok(packet);
+        }
         loop {
             match self.next()? {
                 Next::Packet((id, payload)) if self.older_client.is_some() => {
@@ -519,6 +526,13 @@ impl ConnReader {
     /// more: for a detached reader, after [`Self::read_from`]. Only an older
     /// client's renumbering applies (a server's connection has no other).
     pub fn buffered(&mut self) -> Result<Option<(i32, Vec<u8>)>> {
+        if let Some(packet) = self
+            .older_client
+            .as_ref()
+            .and_then(|c| c.next_serverbound())
+        {
+            return Ok(Some(packet));
+        }
         loop {
             match self.next()? {
                 Next::Packet((id, payload)) if self.older_client.is_some() => {
@@ -682,13 +696,23 @@ impl ConnWriter {
             Some(client) => Ok(client.clientbound(body)?.map(std::borrow::Cow::Owned)),
         }
     }
+    /// The packet bodies, in the client's numbering, that [`Self::for_client`]'s last packet brought with it
+    /// (a boat's wood, an experience orb's value): they go after what it returned.
+    pub fn client_extras(&self) -> Vec<Vec<u8>> {
+        self.older_client
+            .as_ref()
+            .map_or_else(Vec::new, |client| client.take_extra())
+    }
     /// Send one packet body (VarInt id + payload).
     pub fn send(&mut self, body: &[u8]) -> Result<()> {
         if self.older_client.is_some() {
-            return match self.for_client(body)? {
-                Some(body) => self.send_contents(&frame::contents(&body, self.threshold)?),
-                None => Ok(()),
-            };
+            if let Some(body) = self.for_client(body)? {
+                self.send_contents(&frame::contents(&body, self.threshold)?)?;
+            }
+            for body in self.client_extras() {
+                self.send_contents(&frame::contents(&body, self.threshold)?)?;
+            }
+            return Ok(());
         }
         if let Some(a) = self.adapter.clone() {
             if let Some(body) = a.serverbound(body)? {

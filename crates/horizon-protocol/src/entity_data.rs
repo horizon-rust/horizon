@@ -182,6 +182,21 @@ pub enum PositionSource {
     Entity { id: i32, y_offset: f32 },
 }
 impl Particle {
+    /// A pinned particle as a client through 1.21.8 knows it: `effect`, `instant_effect`, `dragon_breath` and
+    /// `flash` have no options there (1.21.9 added them), so they carry none.
+    pub fn without_plain_options(&mut self) {
+        // pinned ids of dragon_breath, effect, instant_effect and flash
+        if matches!(self.id, 15 | 23 | 56 | 52)
+            && matches!(
+                self.data,
+                Some(
+                    ParticleData::Scalar(_) | ParticleData::ColorPower(..) | ParticleData::Color(_)
+                )
+            )
+        {
+            self.data = None;
+        }
+    }
     pub fn read(r: &mut Reader) -> Result<Particle> {
         let id = r.varint()?;
         let id = if matches!(
@@ -328,7 +343,10 @@ impl Particle {
             ParticleData::Trail(at, c, d) => {
                 at.iter().for_each(|v| w.f64(*v));
                 w.i32(*c);
-                w.varint(*d);
+                // 1.21.4 added the duration.
+                if !ids::quirks_written().trail_without_duration {
+                    w.varint(*d);
+                }
             }
             ParticleData::Item(s) => Template::write(s, w),
             ParticleData::Mod(name) => w.string(name),

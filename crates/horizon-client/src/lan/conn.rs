@@ -2080,11 +2080,23 @@ pub(super) fn frame_body(
     body: &[u8],
     out: &mut Vec<u8>,
 ) -> horizon_protocol::Result<()> {
-    // Renumbered first for a client of an older release; one with no such packet gets nothing.
-    let Some(body) = writer.for_client(body)? else {
-        return Ok(());
-    };
-    let body = &body[..];
+    // Renumbered first for a client of an older release; one with no such packet gets nothing. What that
+    // packet brought with it (a boat's wood, an experience orb's value) follows.
+    if let Some(body) = writer.for_client(body)? {
+        frame_one(writer, &body, out)?;
+    }
+    for body in writer.client_extras() {
+        frame_one(writer, &body, out)?;
+    }
+    Ok(())
+}
+
+/// One packet body, already in the client's numbering, framed into `out`.
+fn frame_one(
+    writer: &mut ConnWriter,
+    body: &[u8],
+    out: &mut Vec<u8>,
+) -> horizon_protocol::Result<()> {
     match writer.threshold {
         Some(t) if body.len() >= t.max(SHARED_FRAME_MIN) => {
             writer.frame_into(&SharedFrames::get().contents(body, t)?, out);

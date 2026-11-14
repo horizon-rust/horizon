@@ -37,6 +37,12 @@ impl HolderSet {
                 w.string(name);
             }
             Self::Items(ids) => {
+                // Written for an older client, an item it lacks (no stand-in either) is left out.
+                let ids: Vec<i32> = ids
+                    .iter()
+                    .map(|&id| crate::adapter::ids::item(id))
+                    .filter(|&id| id >= 0)
+                    .collect();
                 w.varint(ids.len() as i32 + 1);
                 ids.iter().for_each(|id| w.varint(*id));
             }
@@ -109,6 +115,31 @@ impl SlotDisplay {
                 .fold(0usize, |sum, d| sum.saturating_add(d.weight())),
             Self::Tag(HolderSet::Items(items)) => items.len(),
             _ => 0,
+        }
+    }
+
+    /// Whether this shows an item `has` rejects: a recipe holding one cannot be written for a client that
+    /// lacks the item (a list of items counts when none of them is one the client has).
+    pub fn lacks_item(&self, has: &dyn Fn(i32) -> bool) -> bool {
+        match self {
+            Self::Empty | Self::AnyFuel | Self::Tag(HolderSet::Tag(_)) => false,
+            Self::Item(id) => !has(*id),
+            Self::ItemStack(stack) => !has(stack.item),
+            Self::Tag(HolderSet::Items(items)) => {
+                !items.is_empty() && !items.iter().any(|&i| has(i))
+            }
+            Self::WithAnyPotion(d) | Self::OnlyWithComponent(d, _) => d.lacks_item(has),
+            Self::Dyed { dye: a, target: b }
+            | Self::SmithingTrim {
+                base: a,
+                material: b,
+                ..
+            }
+            | Self::WithRemainder {
+                input: a,
+                remainder: b,
+            } => a.lacks_item(has) || b.lacks_item(has),
+            Self::Composite(list) => list.iter().any(|d| d.lacks_item(has)),
         }
     }
 
@@ -217,47 +248,67 @@ impl SlotDisplay {
         }
         Ok(())
     }
+    /// The type id a client of the active older version knows this display type by; `None` when it has no
+    /// such type (1.21.2 to 1.21.11 lack `with_any_potion`, `only_with_component` and `dyed`).
+    fn type_id(pinned: i32) -> Option<i32> {
+        let id = crate::adapter::ids::slot_display(pinned);
+        (id >= 0).then_some(id)
+    }
     pub fn write(&self, w: &mut Writer) {
+        let ty = |w: &mut Writer, pinned| w.varint(Self::type_id(pinned).unwrap_or(0));
         match self {
-            Self::Empty => w.varint(0),
-            Self::AnyFuel => w.varint(1),
+            Self::Empty => ty(w, 0),
+            Self::AnyFuel => ty(w, 1),
+            // A client without the type shows what it wraps: the potions and components only narrow it.
+            Self::WithAnyPotion(d) | Self::OnlyWithComponent(d, _)
+                if Self::type_id(2).is_none() =>
+            {
+                d.write(w)
+            }
             Self::WithAnyPotion(d) => {
-                w.varint(2);
+                ty(w, 2);
                 d.write(w);
             }
             Self::OnlyWithComponent(d, component) => {
-                w.varint(3);
+                ty(w, 3);
                 d.write(w);
                 w.varint(*component);
             }
             Self::Item(id) => {
-                w.varint(4);
+                ty(w, 4);
                 w.varint(crate::adapter::ids::item(*id));
             }
             Self::ItemStack(stack) => {
-                w.varint(5);
+                ty(w, 5);
                 Template::write(stack, w);
             }
             Self::Tag(set) if crate::adapter::ids::quirks_written().tag_slot_display_is_id => {
                 match set {
                     // TagSlotDisplay of 26.2: the tag's bare id.
                     HolderSet::Tag(name) => {
-                        w.varint(6);
+                        ty(w, 6);
                         w.string(name);
                     }
                     // A list of items has no such form: a composite of item displays shows the same.
-                    HolderSet::Items(items) => {
-                        Self::Composite(items.iter().map(|&item| Self::Item(item)).collect())
-                            .write(w)
-                    }
+                    // An item the client lacks would be written as the id -1 (refused): it is left out.
+                    HolderSet::Items(items) => Self::Composite(
+                        items
+                            .iter()
+                            .filter(|&&item| crate::adapter::ids::item(item) >= 0)
+                            .map(|&item| Self::Item(item))
+                            .collect(),
+                    )
+                    .write(w),
                 }
             }
             Self::Tag(set) => {
-                w.varint(6);
+                ty(w, 6);
                 set.write(w);
             }
+            // The dyed result is the target; the dye only tints it.
+            Self::Dyed { target, .. } if Self::type_id(7).is_none() => target.write(w),
             Self::Dyed { dye, target } => {
-                w.varint(7);
+                ty(w, 7);
                 dye.write(w);
                 target.write(w);
             }
@@ -266,11 +317,20 @@ impl SlotDisplay {
                 material,
                 pattern,
             } => {
-                w.varint(8);
+                ty(w, 8);
                 base.write(w);
                 material.write(w);
+                if crate::adapter::ids::quirks_written().components_before_1_21_5 {
+                    // Through 1.21.4 the pattern is a display of its template item. The item behind a
+                    // pattern id is not known here, so the preview shows no template.
+                    w.varint(Self::type_id(0).unwrap_or(0));
+                    return;
+                }
                 match pattern {
-                    TrimPattern::Id(id) => w.varint(id + 1),
+                    TrimPattern::Id(id) => w.varint(
+                        crate::adapter::ids::synced_down_or_first("minecraft:trim_pattern", *id)
+                            + 1,
+                    ),
                     TrimPattern::Direct {
                         asset,
                         description,
@@ -284,12 +344,12 @@ impl SlotDisplay {
                 }
             }
             Self::WithRemainder { input, remainder } => {
-                w.varint(9);
+                ty(w, 9);
                 input.write(w);
                 remainder.write(w);
             }
             Self::Composite(list) => {
-                w.varint(10);
+                ty(w, 10);
                 w.varint(list.len() as i32);
                 list.iter().for_each(|d| d.write(w));
             }
@@ -347,6 +407,42 @@ pub enum RecipeDisplay {
     },
 }
 impl RecipeDisplay {
+    /// Whether any slot of this recipe shows an item `has` rejects ([`SlotDisplay::lacks_item`]).
+    pub fn lacks_item(&self, has: &dyn Fn(i32) -> bool) -> bool {
+        let any = |list: &[&SlotDisplay]| list.iter().any(|d| d.lacks_item(has));
+        match self {
+            Self::Shapeless {
+                ingredients,
+                result,
+                station,
+            }
+            | Self::Shaped {
+                ingredients,
+                result,
+                station,
+                ..
+            } => ingredients.iter().any(|d| d.lacks_item(has)) || any(&[result, station]),
+            Self::Furnace {
+                ingredient,
+                fuel,
+                result,
+                station,
+                ..
+            } => any(&[ingredient, fuel, result, station]),
+            Self::Stonecutter {
+                input,
+                result,
+                station,
+            } => any(&[input, result, station]),
+            Self::Smithing {
+                template,
+                base,
+                addition,
+                result,
+                station,
+            } => any(&[template, base, addition, result, station]),
+        }
+    }
     pub fn result(&self) -> &SlotDisplay {
         match self {
             Self::Shapeless { result, .. }
