@@ -127,9 +127,18 @@ impl Goal for LandOnOwnersShoulder {
         0
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        let Some((at, _, spectator)) = owner(m, cx.w) else {
+            return false;
+        };
+        let (x, y, z) = (
+            at.x.floor() as i32,
+            at.y.floor() as i32,
+            at.z.floor() as i32,
+        );
         // ShoulderRidingEntity.canSitOnShoulder: rideCooldownCounter > 100.
-        is_owner(m, cx.w)
-            && owner(m, cx.w).is_some_and(|(_, _, spectator)| !spectator)
+        !spectator
+            && cx.w.fluid(x, y, z) != crate::blocks::Fluid::Water
+            && cx.w.block_name(x, y, z) != "minecraft:powder_snow"
             && !m.extra.sitting
             && m.age > 100
     }
@@ -2149,6 +2158,78 @@ mod tests {
         m
     }
 
+    /// `LandOnOwnersShoulderGoal.canUse` refuses an owner who is in water or
+    /// powder snow. The test puts the owner in water: the parrot must not
+    /// start to land.
+    #[test]
+    fn a_parrot_does_not_land_on_an_owner_in_water() {
+        use crate::mobs::goals::Cx;
+        use crate::mobs::world::{test_player, with_built_test_world};
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+        let mut outcomes = Vec::new();
+        if !with_built_test_world(
+            &[],
+            |world, registry| {
+                for (cx, cz) in [
+                    (-1, -1),
+                    (-1, 0),
+                    (-1, 1),
+                    (0, -1),
+                    (0, 0),
+                    (0, 1),
+                    (1, -1),
+                    (1, 0),
+                    (1, 1),
+                ] {
+                    world
+                        .chunks
+                        .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                }
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                let water = registry.default_state("minecraft:water").unwrap();
+                for x in -4..5 {
+                    for z in -4..5 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+                world.set(3, 64, 0, water).unwrap();
+            },
+            |w, _| {
+                for wet in [false, true] {
+                    let mut world = w.clone();
+                    let x = if wet { 3.5 } else { 0.5 };
+                    let p = test_player(Vec3::new(x, 64.0, 0.5));
+                    world.player = Some(p.clone());
+                    let mut kind = (*kind()).clone();
+                    kind.species = Species::Parrot;
+                    let mut parrot = Mob::new(1, Arc::new(kind), Vec3::new(x, 64.0, 0.5), 0.0);
+                    parrot.extra.owner = Some(p.uuid);
+                    parrot.extra.tame = true;
+                    parrot.age = 200;
+                    parrot.ai.goals.add(1, LandOnOwnersShoulder);
+                    let mut lr = LegacyRandom::new(0);
+                    let mut events = Vec::new();
+                    let mut cx = Cx {
+                        w: &world,
+                        lr: &mut lr,
+                        events: &mut events,
+                    };
+                    let mut goals = std::mem::take(&mut parrot.ai.goals);
+                    goals.tick(&mut parrot, &mut cx);
+                    outcomes.push(goals.is_running("LandOnOwnersShoulder"));
+                    parrot.ai.goals = goals;
+                }
+            },
+        ) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a dry owner can be landed on; one in water cannot"
+        );
+    }
     #[test]
     fn a_hit_stands_a_sitting_wolf_or_parrot_up() {
         // Wolf.hurtServer and Parrot.hurtServer call setOrderedToSit(false)
