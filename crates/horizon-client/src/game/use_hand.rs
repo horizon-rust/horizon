@@ -121,9 +121,11 @@ impl Game<'_> {
             // player faces has click commands to run
             // (`shouldTryToChainAnotherHangingSign`).
             let chains_sign = self.chains_hanging_sign(hit.pos, hit.face, held.as_ref());
-            // TRY_WITH_EMPTY_HAND: only the main hand's turn uses the block
-            // itself (useWithoutItem).
-            if !anchor_passed && !chains_sign && self.hand == Hand::Main {
+            // `ServerPlayerGameMode.useItemOn` runs `BlockState.useItemOn` for
+            // either hand; only the main hand follows its TRY_WITH_EMPTY_HAND
+            // with `useWithoutItem`.
+            if !anchor_passed && !chains_sign {
+                let main_hand = self.hand == Hand::Main;
                 let face = match hit.face {
                     [0, 1, 0] => Direction::Up,
                     [0, -1, 0] => Direction::Down,
@@ -145,15 +147,20 @@ impl Game<'_> {
                 // vanilla keeps the click consumed (`executedClickCommand`).
                 let sign_consumes = self.sign_consumes_click(hit.pos);
                 let (result, branch) = self.with_level(|b, level, ticks| {
-                    b.use_item_on_branch(
-                        level,
-                        ticks,
-                        BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
-                        face,
-                        at,
-                        player,
-                        item.as_deref(),
-                    )
+                    let pos = BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]);
+                    let item = item.as_deref();
+                    if main_hand {
+                        return b.use_item_on_branch(level, ticks, pos, face, at, player, item);
+                    }
+                    match b.block_use_item_on(level, ticks, pos, face, at, player, item) {
+                        Some(result) => (result, horizon_world::level::UseBranch::ItemOn),
+                        // The off hand never runs `useWithoutItem`: the click
+                        // passes on to the hand's own item.
+                        None => (
+                            horizon_world::level::InteractionResult::Pass,
+                            horizon_world::level::UseBranch::WithoutItem,
+                        ),
+                    }
                 });
                 self.process_level_events()?;
                 // CakeBlock.useItemOn: the candle is used up and counted.
@@ -352,13 +359,17 @@ impl Game<'_> {
             || self.use_empty_map(&stack)
                 || self.use_book(&stack)
                 // KnowledgeBookItem.use: the recipes it names become known.
-                || self.use_knowledge_book(&stack)
-                // Block items (heads, carved pumpkins) aimed at a block are
-                // placed first (useItemOn before useItem).
-                || (!(info.block.is_some() && block_hit.is_some())
-                    && self.equip_from_hand(&stack)))
+                || self.use_knowledge_book(&stack))
         {
             return Ok(true);
+        }
+        // Block items (heads, carved pumpkins) aimed at a block are placed
+        // first (useItemOn before useItem).
+        if !on_block
+            && !(info.block.is_some() && block_hit.is_some())
+            && let Some(ends) = self.equip_use(&stack)
+        {
+            return Ok(ends);
         }
         if !on_block && &*stack.item == "minecraft:spyglass" {
             self.use_spyglass();
@@ -802,3 +813,6 @@ mod adventure_use_on_tests;
 #[cfg(test)]
 #[path = "jigsaw_place_tests.rs"]
 mod jigsaw_place_tests;
+#[cfg(test)]
+#[path = "offhand_use_tests.rs"]
+mod offhand_use_tests;

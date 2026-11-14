@@ -1860,13 +1860,21 @@ fn swap_with_equipment_slot(
         to_inventory: current,
     }
 }
+/// `Equippable.swapWithEquipmentSlot`'s answer: the swap (`SUCCESS`), a
+/// refusal (`FAIL`, which does not consume the click, so `startUseItem` still
+/// gives the other hand its turn), or nothing to swap (`PASS`).
+enum EquipUse {
+    Swapped,
+    Refused,
+    Pass,
+}
 impl Game<'_> {
     /// `Equippable.swapWithEquipmentSlot`: right-clicking armor swaps it into
     /// its slot (the worn piece comes back to the hand). It runs on a client
     /// too (`Item.use`), as the prediction the server's slot packets confirm.
-    pub(super) fn equip_from_hand(&mut self, stack: &ItemStack) -> bool {
+    fn equip_from_hand(&mut self, stack: &ItemStack) -> EquipUse {
         let Some(info) = self.items().get(&stack.item) else {
-            return false;
+            return EquipUse::Pass;
         };
         let components = self
             .pack
@@ -1874,7 +1882,7 @@ impl Game<'_> {
             .models
             .components(&horizon_client::item_render::stack_view(stack));
         let Some(equippable) = components.get("minecraft:equippable") else {
-            return false;
+            return EquipUse::Pass;
         };
         let actual = stack
             .data()
@@ -1899,7 +1907,7 @@ impl Game<'_> {
             Some("chest") => (1, "chest"),
             Some("legs") => (2, "legs"),
             Some("feet") => (3, "feet"),
-            _ => return false,
+            _ => return EquipUse::Pass,
         };
         // The component codec replaces the whole value: an override which
         // omits swappable uses true, rather than its item's prototype flag.
@@ -1917,7 +1925,7 @@ impl Game<'_> {
                 .unwrap_or(true)
         };
         if !swappable {
-            return false;
+            return EquipUse::Pass;
         }
         let current = self.armor[index].clone();
         // PREVENT_ARMOR_CHANGE (Curse of Binding) outside creative, or the same item.
@@ -1925,7 +1933,7 @@ impl Game<'_> {
             (c.enchantment_level("minecraft:binding_curse") > 0 && !self.creative)
                 || c.same_item_same_components(stack)
         }) {
-            return true;
+            return EquipUse::Refused;
         }
         // Counted on the server only, before the swap.
         if self.remote.is_none() {
@@ -1953,8 +1961,22 @@ impl Game<'_> {
         if self.remote.is_none() {
             self.apply_equipment();
         }
-        self.swing_arm();
-        true
+        EquipUse::Swapped
+    }
+
+    /// `Item.use`'s equippable branch as `Minecraft.startUseItem` sees it:
+    /// whether the click ends at this hand. `Equippable.swapWithEquipmentSlot`'s
+    /// SUCCESS swings; its FAIL does not consume the click, so the other hand
+    /// still gets its turn. `None` when the item has no swap to try (PASS).
+    pub(super) fn equip_use(&mut self, stack: &ItemStack) -> Option<bool> {
+        match self.equip_from_hand(stack) {
+            EquipUse::Swapped => {
+                self.swing_arm();
+                Some(true)
+            }
+            EquipUse::Refused => Some(false),
+            EquipUse::Pass => None,
+        }
     }
 }
 impl Game<'_> {

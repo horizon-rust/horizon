@@ -864,9 +864,11 @@ impl Behaviours {
         }
     }
     /// `BlockState.useItemOn`: the result, or `None` for
-    /// `TRY_WITH_EMPTY_HAND`.
+    /// `TRY_WITH_EMPTY_HAND`. The off hand's turn calls this alone:
+    /// `ServerPlayerGameMode.useItemOn` follows a `TRY_WITH_EMPTY_HAND` with
+    /// `useWithoutItem` for the main hand only.
     #[allow(clippy::too_many_arguments)]
-    fn block_use_item_on<L: LevelAccess + ?Sized>(
+    pub fn block_use_item_on<L: LevelAccess + ?Sized>(
         &self,
         level: &mut L,
         ticks: &mut Ticks,

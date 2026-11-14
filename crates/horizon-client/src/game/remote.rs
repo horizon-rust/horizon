@@ -8016,7 +8016,7 @@ impl Game<'_> {
     /// `Minecraft.startUseItem`'s block turn for `hand`: a use that swung drops
     /// the hand (`LocalPlayer.itemUsed`) when it spent the held item or the
     /// player has infinite materials.
-    fn remote_use_block(&mut self, hand: Hand) -> bool {
+    pub(super) fn remote_use_block(&mut self, hand: Hand) -> bool {
         let before = self.with_hand(hand, |g| g.held().map(|s| s.count));
         let swings = self.swings_started;
         let done = self.remote_use_item_on(hand);
@@ -8050,22 +8050,12 @@ impl Game<'_> {
                     && (self.stack_in(self.selected).is_some() || self.offhand.is_some()))
                 && self.shelf_hit(&hit).is_some();
             let spectator = self.spectator();
-            let (result, changes) = if hand == Hand::Main && !spectator {
-                self.remote_block_reacts(&hit, held.as_ref())
+            // useItemOn runs for either hand; useWithoutItem (inside
+            // `remote_block_reacts`) for the main hand only.
+            let (result, changes) = if spectator {
+                (InteractionResult::Pass, DryUse::default())
             } else {
-                // useItemOn runs for the off hand too (useWithoutItem doesn't):
-                // RespawnAnchorBlock.useItemOn charges an anchor with its
-                // glowstone, SUCCESS.
-                let sneaking = self.remote_shift_down();
-                let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
-                let charges =
-                    !(sneaking && hands_full) && self.anchor_takes(hit.pos, held.as_ref());
-                let result = if charges {
-                    InteractionResult::Success
-                } else {
-                    InteractionResult::Pass
-                };
-                (result, DryUse::default())
+                self.remote_block_reacts(hand, &hit, held.as_ref())
             };
             let may_use_on =
                 !result.consumes_action() && self.with_hand(hand, |g| g.may_use_on(hit.pos));
@@ -8088,11 +8078,11 @@ impl Game<'_> {
                 }
             };
             let reacts = result.consumes_action();
-            // useItemOn on this client, unless a sneak with something in hand
-            // skips it: RedStoneOreBlock's dust, and the wick smoke of a lit
-            // candle an empty hand snuffs (CandleBlock.useItemOn) or a lit
-            // candle cake (CandleCakeBlock.useItemOn).
-            if hand == Hand::Main && !spectator {
+            // useItemOn on this client, for either hand, unless a sneak with
+            // something in hand skips it: RedStoneOreBlock's dust, and the wick
+            // smoke of a lit candle an empty hand snuffs (CandleBlock.useItemOn)
+            // or a lit candle cake (CandleCakeBlock.useItemOn).
+            if !spectator {
                 let sneaking = self.remote_shift_down();
                 let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
                 if !(sneaking && hands_full) {
@@ -8374,7 +8364,9 @@ impl Game<'_> {
     /// Whether a main-hand right click with `held` would end on the block hit, for the gameplay
     /// guide: what `remote_block_reacts` answers on its dry level.
     pub(super) fn block_takes_click(&mut self, hit: &super::Hit, held: Option<&ItemStack>) -> bool {
-        self.remote_block_reacts(hit, held).0.consumes_action()
+        self.remote_block_reacts(Hand::Main, hit, held)
+            .0
+            .consumes_action()
     }
     /// `InteractionResult.CONSUME` for this click: the block keeps it and does nothing, so the
     /// item in hand never gets it either (an empty flower pot, a pressed button).
@@ -8384,18 +8376,19 @@ impl Game<'_> {
         held: Option<&ItemStack>,
     ) -> bool {
         matches!(
-            self.remote_block_reacts(hit, held).0,
+            self.remote_block_reacts(Hand::Main, hit, held).0,
             InteractionResult::Consume
         )
     }
 
-    /// Whether the block hit takes a main-hand right click with `held`
-    /// (`BlockState.useItemOn`, then `useWithoutItem`): a door, a button, a
-    /// container, and the blocks it changed. Vanilla's client runs it on its
-    /// own level first; this runs it on a copy, and `predict_use` keeps the
-    /// changes it predicts.
+    /// Whether the block hit takes a right click with `held` in `hand`
+    /// (`BlockState.useItemOn`, then `useWithoutItem` for the main hand only):
+    /// a door, a button, a container, and the blocks it changed. Vanilla's
+    /// client runs it on its own level first; this runs it on a copy, and
+    /// `predict_use` keeps the changes it predicts.
     fn remote_block_reacts(
         &mut self,
+        hand: Hand,
         hit: &super::Hit,
         held: Option<&ItemStack>,
     ) -> (InteractionResult, DryUse) {
@@ -8414,10 +8407,14 @@ impl Game<'_> {
         if self.jukebox_takes(hit.pos, held) {
             return (InteractionResult::Success, DryUse::default());
         }
-        // RespawnAnchorBlock.useItemOn: PASS when the off hand's glowstone is to
-        // charge the anchor, so useWithoutItem doesn't run and the off hand's turn
-        // comes (glowstone in this hand charges it in `use_item_on`).
-        if !self.anchor_takes(hit.pos, held) && self.anchor_takes(hit.pos, self.offhand.as_ref()) {
+        // RespawnAnchorBlock.useItemOn: PASS when the main hand's turn leaves the
+        // off hand's glowstone to charge the anchor, so useWithoutItem doesn't run
+        // and the off hand's turn comes (glowstone in this hand charges it in
+        // `use_item_on`).
+        if hand == Hand::Main
+            && !self.anchor_takes(hit.pos, held)
+            && self.anchor_takes(hit.pos, self.offhand.as_ref())
+        {
             return (InteractionResult::Pass, DryUse::default());
         }
         // BeehiveBlock.useItemOn: shears or a glass bottle on a full hive
@@ -8448,15 +8445,18 @@ impl Game<'_> {
         let player = self.use_context();
         self.with_level(|b, level, _| {
             let mut level = DryLevel::new(level);
-            let result = b.use_item_on(
-                &mut level,
-                &mut horizon_world::level::Ticks::default(),
-                horizon_core::position::BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
-                face,
-                horizon_core::geometry::Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
-                player,
-                held.map(|s| &*s.item),
-            );
+            let pos = horizon_core::position::BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]);
+            let at = horizon_core::geometry::Vec3::new(hit.point[0], hit.point[1], hit.point[2]);
+            let item = held.map(|s| &*s.item);
+            let mut ticks = horizon_world::level::Ticks::default();
+            // `ServerPlayerGameMode.useItemOn`: only the main hand follows a
+            // TRY_WITH_EMPTY_HAND with `useWithoutItem`.
+            let result = if hand == Hand::Main {
+                b.use_item_on(&mut level, &mut ticks, pos, face, at, player, item)
+            } else {
+                b.block_use_item_on(&mut level, &mut ticks, pos, face, at, player, item)
+                    .unwrap_or(InteractionResult::Pass)
+            };
             (result, (level.changed.into_iter().collect(), level.sounds))
         })
     }
@@ -8709,10 +8709,10 @@ impl Game<'_> {
         }
         // Item.use: Equippable.swapWithEquipmentSlot runs on this client too, so
         // the armor slot and the hand change at once (the server confirms).
-        if info.equip_slot.is_some() && self.with_hand(hand, |g| g.equip_from_hand(&held)) {
-            // Equippable.swapWithEquipmentSlot's SUCCESS (SwingSource.CLIENT).
-            self.with_hand(hand, Game::swing_arm);
-            return true;
+        if info.equip_slot.is_some()
+            && let Some(ends) = self.with_hand(hand, |g| g.equip_use(&held))
+        {
+            return ends;
         }
         // `ItemStack.use` runs on this client too: a bucket's own ray and its
         // pick/empty contents decide whether the click succeeds (a failed
