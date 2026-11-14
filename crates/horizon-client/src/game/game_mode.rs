@@ -65,28 +65,33 @@ pub(super) fn projectile_predicate_supported(tag: &horizon_world::nbt::Tag) -> b
 }
 /// `InventoryScreen.containerTick`: a survival inventory left open when the
 /// player gains infinite materials becomes the creative one, so the player
-/// stays in a menu. A spectator's inventory is closed (`Playing`), which is
-/// what Horizon did for every mode before; vanilla has no spectator branch
-/// and leaves it open.
+/// stays in a menu. `CreativeModeInventoryScreen.containerTick` is the way
+/// back: without infinite materials, in any mode (spectator included), the
+/// creative screen is replaced by the survival one. A spectator's survival
+/// inventory is closed (`Playing`), which is what Horizon did for every mode
+/// before and is not vanilla, which leaves it open.
 fn inventory_after_mode(screen: Screen, creative: bool, spectator: bool) -> Screen {
-    if screen != Screen::Inventory {
-        return screen;
-    }
-    if creative {
-        Screen::Creative
-    } else if spectator {
-        Screen::Playing
-    } else {
-        screen
+    match screen {
+        Screen::Inventory if creative => Screen::Creative,
+        Screen::Inventory if spectator => Screen::Playing,
+        Screen::Creative if !creative => Screen::Inventory,
+        _ => screen,
     }
 }
 
+/// `AbstractContainerMenu.removed` returns the carried stack only on the
+/// server. The survival one is real; the creative one is client-only (picking
+/// from a tab sends no packet), so it is discarded, like the creative trash.
+fn carried_kept_on_leaving<T>(from: Screen, carried: Option<T>) -> Option<T> {
+    carried.filter(|_| from != Screen::Creative)
+}
+
 impl Game<'_> {
-    /// `InventoryScreen.containerTick` on a mode change: the inventory the player has
-    /// open follows the mode. (`CreativeModeInventoryScreen.containerTick`, the way back
-    /// to survival, is not ported yet.)
+    /// `InventoryScreen.containerTick` and `CreativeModeInventoryScreen.containerTick`
+    /// on a mode change: the inventory the player has open follows the mode.
     fn mode_changed_under_inventory(&mut self) {
-        match inventory_after_mode(self.screen, self.creative, self.spectator()) {
+        let from = self.screen;
+        match inventory_after_mode(from, self.creative, self.spectator()) {
             Screen::Creative => {
                 if let Some(c) = self.carried.take() {
                     let _ = self.give(c);
@@ -96,7 +101,12 @@ impl Game<'_> {
                 self.creative_screen.reopen();
                 self.refresh_saved_hotbars();
             }
-            next if next != self.screen => self.screen = next,
+            next if next != from => {
+                if let Some(c) = carried_kept_on_leaving(from, self.carried.take()) {
+                    let _ = self.give(c);
+                }
+                self.screen = next;
+            }
             _ => {}
         }
     }
@@ -319,7 +329,10 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Screen, inventory_after_mode, loads_chunks, projectile_predicate_supported};
+    use super::{
+        Screen, carried_kept_on_leaving, inventory_after_mode, loads_chunks,
+        projectile_predicate_supported,
+    };
 
     // Added after the frozen old Game proof: unsupported conjuncts must not
     // become permission from their otherwise matching blocks portion.
@@ -358,15 +371,29 @@ mod tests {
         // both before; vanilla has no spectator branch and leaves it open.
         let closed = inventory_after_mode(Screen::Inventory, false, true);
         assert!(closed == Screen::Playing);
+        // `CreativeModeInventoryScreen.containerTick`: no infinite materials
+        // replaces the creative screen with the survival one, spectator
+        // included; infinite materials keep it.
+        assert!(inventory_after_mode(Screen::Creative, false, false) == Screen::Inventory);
+        assert!(inventory_after_mode(Screen::Creative, false, true) == Screen::Inventory);
+        assert!(inventory_after_mode(Screen::Creative, true, false) == Screen::Creative);
         for screen in [
             Screen::Playing,
-            Screen::Creative,
             Screen::Paused,
             Screen::Stats,
             Screen::Advancements,
         ] {
             assert!(inventory_after_mode(screen, true, false) == screen);
         }
+    }
+
+    /// Leaving the creative screen discards its client-only carried stack;
+    /// the survival screen's is real and goes back to the inventory.
+    #[test]
+    fn only_a_survival_carried_stack_is_kept_on_leaving() {
+        assert_eq!(carried_kept_on_leaving(Screen::Creative, Some(7)), None);
+        assert_eq!(carried_kept_on_leaving(Screen::Inventory, Some(7)), Some(7));
+        assert_eq!(carried_kept_on_leaving::<i32>(Screen::Creative, None), None);
     }
 
     /// `ChunkMap.skipPlayer`: only a spectator with `spectators_generate_chunks`
