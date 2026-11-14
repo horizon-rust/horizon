@@ -13,7 +13,7 @@ file with vanilla's own parser:
 - keys that have a field below go into their section of `server.toml`;
 - any other key that differs from vanilla's default goes into `[properties]`;
 - keys left at their defaults are dropped, so the file stays short;
-- your original is kept as `server.properties.imported`.
+- `init` keeps your original as `server.properties.imported`; `import` leaves the file it read where it is.
 
 The world folder, `ops.json`, `whitelist.json`, the ban lists and `usercache.json` keep vanilla's names and
 formats, so going back to a vanilla server works too.

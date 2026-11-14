@@ -599,8 +599,8 @@ refuse. There is no `backups.before_update` setting: an update always backs up t
 - **Import.** `horizon-server init` in a folder with a `server.properties`, or `horizon-server import
   server.properties`, reads it with vanilla's own parser (`ServerProperties`). Keys with typed fields go into
   their sections; any other key that differs from vanilla's default goes into `[properties]`. Keys left at
-  their defaults are dropped, so the TOML stays short. The original file is kept as
-  `server.properties.imported`.
+  their defaults are dropped, so the TOML stays short. `init` keeps the original beside the new file as
+  `server.properties.imported`; `import` only writes `server.toml` and leaves the file it read where it is.
 - **Changes made in game.** The engine writes `server.properties` itself, for example after `/whitelist on`.
   After it stops, the supervisor compares the file with what it wrote and copies any changed keys back into
   `server.toml`, so an in-game change survives the next start. Edits go through `toml_edit`, so the owner's
