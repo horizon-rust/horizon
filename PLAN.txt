@@ -210,3 +210,23 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
   owns UIApplication, so blindly invoking horizon_game::main() from Play is
   not a safe solution. Implement a genuine iOS lifecycle/event-loop adapter
   before enabling Play or claiming game menu rendering.
+
+2026-11-14: NOVA GRAPHICS DIAGNOSTIC
+- The iOS app is branded Nova and includes a user ZIP picker that stores
+  selected archives unexpanded in Documents/Nova/Imports/GameFiles.zip.
+- Added GameSurfaceView's Metal command queue/MTKView diagnostic renderer,
+  opened with the "Test Metal display" button. It presents a clear color,
+  not Horizon gameplay and not the Horizon renderer.
+- RustBridge and GameRuntime expose horizon_ios_set_metal_view(void*)
+  and horizon_ios_has_metal_view() so the iOS host can pass a non-owning
+  UIView pointer across the Swift/Rust ABI. Swift clears the pointer
+  before disposing the view. No Rust code dereferences the pointer.
+- This proves the app/bridge integration point but DOES NOT yet connect wgpu,
+  winit ApplicationHandler, asset loading or the original game entry.
+- The SwiftUI launcher cannot safely call a fresh nested
+  EventLoop::new()?.run_app() inside an already-running UIApplication.
+  A proper lifecycle adapter or Rust-owned application launch design is
+  required before enabling Play. Do not suggest native gameplay works.
+- Before adding game resources, inspect user-supplied ZIP entry names and
+  prepared resource manifest/version; do not assume a random old ZIP is
+  compatible. Avoid redistributing copyrighted third-party game assets.
