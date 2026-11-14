@@ -187,9 +187,62 @@ pub(super) struct RegionState {
     pub entity_pool: Option<Arc<AtomicU32>>,
     /// Region games made and not in use, by dimension.
     pub idle: std::collections::HashMap<Dim, Vec<Box<Game<'static>>>>,
+    /// Region games being made on threads of their own (making one reads files and builds a whole game: a stall
+    /// of seconds on the server's thread), taken in once made.
+    factory: Vec<std::sync::mpsc::Receiver<std::result::Result<Box<Game<'static>>, String>>>,
 }
 
 impl Game<'_> {
+    /// `n` more region games made on threads of their own.
+    fn request_region_games(&mut self, n: usize) {
+        let res = self.static_resources();
+        for _ in 0..n {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (pack, options, settings) = (
+                self.pack.clone(),
+                self.options.clone(),
+                self.settings.clone(),
+            );
+            let spawned = std::thread::Builder::new()
+                .name("Region game maker".into())
+                .spawn(move || {
+                    let made = super::integrated::server_game(res, pack, options, settings)
+                        .map(Box::new)
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(made);
+                });
+            if spawned.is_ok() {
+                self.regions.factory.push(rx);
+            }
+        }
+    }
+
+    /// The region games made since, set up for the level in place and kept.
+    fn collect_region_games(&mut self) {
+        let mut i = 0;
+        while i < self.regions.factory.len() {
+            match self.regions.factory[i].try_recv() {
+                Ok(made) => {
+                    self.regions.factory.remove(i);
+                    match made {
+                        Ok(mut w) => {
+                            w.copy_world_settings_from(self);
+                            w.regions.worker = true;
+                            w.next_entity = 0;
+                            w.regions.entity_id_end = 0;
+                            self.regions.idle.entry(self.dim).or_default().push(w);
+                        }
+                        Err(e) => log::warn!("a region game could not be made: {e}"),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => i += 1,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.regions.factory.remove(i);
+                }
+            }
+        }
+    }
+
     /// The resources as a region game holds them: its own handle, made once and kept for the server's life.
     fn static_resources(&mut self) -> &'static Arc<Resources> {
         match self.regions.static_res {
@@ -482,18 +535,27 @@ impl Game<'_> {
             return Ok(false);
         }
         let dim = self.dim;
-        // Games for the regions: made on demand, kept for the next ticks.
-        let mut games = self.regions.idle.remove(&dim).unwrap_or_default();
-        while games.len() < regions.count {
-            match self.region_worker() {
-                Ok(w) => games.push(Box::new(w)),
-                Err(e) => {
-                    log::warn!("a region game could not be made: {e}");
-                    self.regions.idle.insert(dim, games);
-                    return Ok(false);
-                }
-            }
+        static LAST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        if LAST.swap(regions.count, Ordering::Relaxed) != regions.count {
+            log::info!(
+                "ticking {} regions for {} players",
+                regions.count,
+                players.len()
+            );
         }
+        // Games for the regions: made on demand, kept for the next ticks.
+        self.collect_region_games();
+        let have = self.regions.idle.get(&dim).map_or(0, Vec::len);
+        if have < regions.count {
+            // Not enough games yet: they are made meanwhile, and this tick runs as one.
+            let coming = self.regions.factory.len();
+            let wanted = (regions.count - have).saturating_sub(coming).min(4);
+            if wanted > 0 {
+                self.request_region_games(wanted);
+            }
+            return Ok(false);
+        }
+        let mut games = self.regions.idle.remove(&dim).unwrap_or_default();
         let extra: Vec<Box<Game<'static>>> = games.split_off(regions.count);
         let pool = Arc::clone(
             self.regions
