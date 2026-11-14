@@ -619,16 +619,12 @@ impl Game<'_> {
         let m = &mut self.mobs[i];
         if jump > 0.0 {
             // AbstractHorse.onPlayerJump: slide on the keys and rear (horses,
-            // donkeys and mules).
+            // donkeys and mules). The jump sound is not played here: vanilla's
+            // server plays it in `handleStartJump`, which the guest's
+            // START_RIDING_JUMP reaches (`lan_start_riding_jump`), and
+            // `playJumpSound` must not sound twice (#16360).
             if equine::is_equine(m.species()) {
                 equine::on_player_jump(m);
-            }
-            // The nautilus plays its dash sound itself.
-            if equine::is_equine(m.species()) {
-                // playJumpSound, which the server broadcasts for a guest.
-                let sound = format!("minecraft:{}", equine::jump_sound(m));
-                let at = m.center();
-                self.audio.play(&sound, Some(at), 0.4, 1.0);
             }
         }
         let m = &mut self.mobs[i];
@@ -2124,3 +2120,7 @@ mod ride_dismount_tests;
 #[cfg(test)]
 #[path = "ride_seat_tests.rs"]
 mod ride_seat_tests;
+
+#[cfg(test)]
+#[path = "horse_jump_sound_tests.rs"]
+mod horse_jump_sound_tests;

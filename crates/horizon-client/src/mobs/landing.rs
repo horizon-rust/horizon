@@ -149,8 +149,12 @@ impl BlockLandingWorld for MobLanding<'_, '_> {
         volume: f32,
         pitch: f32,
     ) -> Result<(), String> {
+        // `ClientLevel.playSeededSound` plays a mob's `playSound` nowhere: the
+        // server's broadcast is the one the rider hears, so the copy a client
+        // drives keeps quiet.
         if let Some(name) = sound
             && !self.mob.silent
+            && !self.mob.extra.client_side
         {
             let at = self.at();
             self.events.push(MobEvent::Sound(name, at, volume, pitch));
@@ -164,7 +168,9 @@ impl BlockLandingWorld for MobLanding<'_, '_> {
         volume: f32,
         pitch: f32,
     ) -> Result<(), String> {
-        if let Some(name) = sound {
+        if let Some(name) = sound
+            && !self.mob.extra.client_side
+        {
             let at = [
                 f64::from(position.x) + 0.5,
                 f64::from(position.y) + 0.5,
