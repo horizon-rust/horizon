@@ -41,6 +41,8 @@ targets:
         OTHER_LDFLAGS:
           - $(inherited)
           - -l$(HORIZON_IOS_RUST_LIB)
+          - -framework
+          - AudioToolbox
         CODE_SIGN_STYLE: Manual
         ENABLE_USER_SCRIPT_SANDBOXING: NO
 schemes:

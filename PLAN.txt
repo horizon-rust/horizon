@@ -178,3 +178,16 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
   integration are implemented and tested. The Play button remains disabled.
 - Main must remain untouched. Check the latest GitHub Actions combined
   workflow for verified results; never assume success from this note.
+
+2026-11-14: FIRST COMBINED XCODE LINK FAILURE AND FIX
+- CI run 43623307292: real Rust game check and 233 MB optimized staticlib succeeded.
+- Xcode app link failed with unresolved AudioComponentFindNext,
+  AudioUnitInitialize, AudioUnitSetProperty, AudioOutputUnitStart, etc.
+  These are system AudioToolbox.framework functions used by CPAL/CoreAudio.
+- iOS Xcode project now explicitly links AudioToolbox.framework.
+- The combined-app Xcode build step now runs with set -euo pipefail to
+  preserve the actual xcodebuild exit code; earlier a pipeline could report
+  a misleading success while the native linker failed.
+- Linker also warned about C/assembly objects built for iOS 18.5 while the
+  app targets iOS 16.0. Audit and align deployment targets before shipping.
+- Linking successfully is not evidence of gameplay startup or Metal rendering.
