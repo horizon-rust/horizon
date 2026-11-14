@@ -152,10 +152,20 @@ pub fn register(m: &mut Mob) {
     m.ai.goals.add(5, Celebration);
 }
 
-/// `Raid.getOminousBannerInstance`.
+/// `Raid.getOminousBannerInstance`: the white banner with
+/// `Raid.getBannerComponentPatch`. The layers are on the stack as a loaded
+/// one has them (what draws, washes and decorates a banner reads them);
+/// `ominous_banner` stands for the name, rarity and hidden tooltip.
 pub fn ominous_banner() -> crate::items::ItemStack {
     let mut stack = crate::items::ItemStack::new(BANNER, 1);
-    stack.data_mut().ominous_banner = true;
+    let data = stack.data_mut();
+    data.banner_patterns = crate::item_data::OMINOUS_LAYERS
+        .iter()
+        .map(|(pattern, color)| {
+            crate::banner::BannerLayer::new(&format!("minecraft:{pattern}"), color)
+        })
+        .collect();
+    data.ominous_banner = true;
     stack
 }
 
@@ -193,7 +203,9 @@ pub fn find_patrol_target_from(m: &mut Mob, [x, y, z]: [i32; 3]) {
 /// Also keeps the full ominous stack in `armor[0]` so `SetEquipment` sends
 /// the patterned banner to clients (`Raid.getOminousBannerInstance`).
 pub fn wear_banner(m: &mut Mob) {
-    m.extra.head = Some(BANNER.into());
+    // setItemSlot(HEAD, the whole stack): getItemBySlot, the death drop and
+    // the saved equipment read it, not a plain white banner (#15334).
+    super::finalize::set_item_stack(m, super::finalize::HEAD, ominous_banner());
     m.extra.armor[0] = Some(ominous_banner());
     // Raid.setLeader and PatrollingMonster.finalizeSpawn: EquipmentSlot.HEAD.
     super::finalize::set_drop_chance(m, 5, 2.0);
@@ -827,6 +839,30 @@ mod tests {
                 .is_some_and(|d| d.ominous_banner)
         );
         assert!(is_captain(&m));
+        // getItemBySlot(HEAD), which the death drop reads (#15334): the
+        // white banner with Raid.getBannerComponentPatch's eight layers.
+        let head = super::super::finalize::item_stack(&m, super::super::finalize::HEAD).unwrap();
+        assert_eq!(&*head.item, "minecraft:white_banner");
+        let d = head.data().expect("the ominous components");
+        assert!(d.ominous_banner);
+        let layers: Vec<(&str, &str)> = d
+            .banner_patterns
+            .iter()
+            .map(|l| (&*l.pattern, &*l.color))
+            .collect();
+        assert_eq!(
+            layers,
+            [
+                ("minecraft:rhombus", "cyan"),
+                ("minecraft:stripe_bottom", "light_gray"),
+                ("minecraft:stripe_center", "gray"),
+                ("minecraft:border", "light_gray"),
+                ("minecraft:stripe_middle", "black"),
+                ("minecraft:half_horizontal", "light_gray"),
+                ("minecraft:circle", "light_gray"),
+                ("minecraft:border", "black"),
+            ]
+        );
         let saved = crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None, |_| None);
         let chances = saved.get("drop_chances").unwrap();
         assert_eq!(

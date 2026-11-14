@@ -1596,8 +1596,8 @@ fn network_stack(
         }
         // BannerPatternLayers: each pattern a reference into the synced registry;
         // a layer that has none leaves the stack without the component. An
-        // ominous banner made by the raid keeps only its flag, so its layers
-        // are the ones the NBT encoder synthesises from it.
+        // ominous banner that kept only its flag gets the layers the NBT
+        // encoder synthesises from it.
         let patterns: Vec<(&str, &str)> = if d.ominous_banner && d.banner_patterns.is_empty() {
             crate::item_data::OMINOUS_LAYERS.to_vec()
         } else {
