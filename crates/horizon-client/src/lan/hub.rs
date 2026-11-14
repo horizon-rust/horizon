@@ -1402,12 +1402,10 @@ impl Hub {
         let entity_id = *ctx.next_entity as i32;
         let conn = j.conn;
         let mut guest = Guest::new(j, entity_id, ctx.spawn, self.config.view_distance);
-        guest.last_action_tick = self.ticks;
+        (guest.last_action_tick, guest.joined_tick) = (self.ticks, self.ticks);
+        (guest.position, guest.previous_position) = (ctx.spawn, ctx.spawn);
         guest.game_mode = self.config.default_game_mode;
         guest.permission = self.default_permission(guest.uuid);
-        guest.joined_tick = self.ticks;
-        guest.position = ctx.spawn;
-        guest.previous_position = ctx.spawn;
         guest.dimension = self.config.dimension.clone();
         // A mod announced this name as a fake player (`native_expect_fake_player`): fake from its
         // first packet on.
@@ -1418,6 +1416,9 @@ impl Hub {
             guest.fake = true;
             guest.sender.set_fake(true);
         }
+        self.lan
+            .shared
+            .set_allows_listing(guest.uuid, guest.info.allows_listing);
         self.guests.push(guest);
         conn
     }
@@ -4015,13 +4016,8 @@ impl Hub {
                 // the display the player looked at stops being a new one, so
                 // the next `RecipeBookAdd` it is sent does not animate.
                 S::RecipeBookSeenRecipe(p) => {
-                    let seen = self
-                        .sync
-                        .advancements
-                        .recipe_of_display(p.recipe)
-                        .map(str::to_owned);
-                    if let Some(id) = seen {
-                        self.guests[i].recipe_book.remove_highlight(&id);
+                    if let Some(id) = self.sync.advancements.recipe_of_display(p.recipe) {
+                        self.guests[i].recipe_book.remove_highlight(id);
                     }
                 }
                 // ServerGamePacketListenerImpl.handleSeenAdvancements: the tab the
@@ -4051,8 +4047,10 @@ impl Hub {
                         let settings = &mut self.guests[i].recipe_book;
                         let changed = settings.open[book.index()] != p.open
                             || settings.filtering[book.index()] != p.filtering;
-                        settings.open[book.index()] = p.open;
-                        settings.filtering[book.index()] = p.filtering;
+                        (
+                            settings.open[book.index()],
+                            settings.filtering[book.index()],
+                        ) = (p.open, p.filtering);
                         if changed {
                             events.push(HostEvent::RecipeBookSettings {
                                 conn,
@@ -4065,8 +4063,7 @@ impl Hub {
                 }
                 S::ClientInformation(info) => {
                     let g = &mut self.guests[i];
-                    let old_main_hand = g.info.main_hand;
-                    let old_language = g.info.language.clone();
+                    let (old_main_hand, old_language) = (g.info.main_hand, g.info.language.clone());
                     // PlayerModelPart.HAT (bit 6): the tab list shows the hat layer.
                     let was_hat = g.info.model_customisation & 0x40 != 0;
                     g.view_distance =
@@ -4079,8 +4076,10 @@ impl Hub {
                         events.push(HostEvent::LocaleChanged(conn, g.info.language.clone()));
                     }
                     g.center = None;
-                    let hat = g.info.model_customisation & 0x40 != 0;
-                    let uuid = g.uuid;
+                    self.lan
+                        .shared
+                        .set_allows_listing(g.uuid, g.info.allows_listing);
+                    let (hat, uuid) = (g.info.model_customisation & 0x40 != 0, g.uuid);
                     // ServerGamePacketListenerImpl.handleClientInformation: UPDATE_HAT to everyone.
                     if hat != was_hat {
                         self.broadcast(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
