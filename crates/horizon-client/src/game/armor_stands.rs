@@ -499,6 +499,8 @@ impl Game<'_> {
         if let horizon_world::nbt::Tag::Compound(map) = &mut raw {
             map.remove(&"UUID".into());
         }
+        // The item's `entity_data` is a compound `Entity.load` reads, `Tags` included.
+        Self::normalize_loaded_tags(&mut raw);
         self.persist.raw.insert(stand.id, raw);
         let foot = stand.position;
         // EntityType.create's spawn yaw, `level.getRandom().nextFloat() * 360`, before

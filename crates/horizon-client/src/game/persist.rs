@@ -788,7 +788,10 @@ impl Game<'_> {
     }
 
     /// A saved falling block.
-    pub(super) fn load_falling(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
+    pub(super) fn load_falling(&mut self, mut tag: Tag, uuid: Option<[i32; 4]>) {
+        // `Entity.load` reads `Tags` into the entity's set; the retained
+        // compound below is the only copy of them this kind keeps.
+        Self::normalize_loaded_tags(&mut tag);
         if let Some((state, position, velocity, age, fall_distance)) =
             entity_nbt::falling_block_from_nbt(&tag)
             && let Some(state) =
@@ -1065,9 +1068,11 @@ impl Game<'_> {
             self.persist.unknown.entry(key).or_default().push(tag);
         }
     }
-    /// `Entity.load`: adopt the bounded TAG_LIST_CODEC input as a set.
-    /// Keep that adopted Mob state in the retained compound for commands and saves.
-    pub(in crate::game) fn normalize_loaded_mob_tags(tag: &mut Tag) {
+    /// `Entity.load`: adopt the bounded TAG_LIST_CODEC input as a set
+    /// (`this.tags.clear(); input.read("Tags", TAG_LIST_CODEC).ifPresent(this.tags::addAll)`,
+    /// Entity.java:2230-2231, into the `Set<String> tags` of :286).
+    /// Keep that adopted state in the retained compound for commands and saves.
+    pub(in crate::game) fn normalize_loaded_tags(tag: &mut Tag) {
         let Tag::Compound(raw) = tag else {
             return;
         };
@@ -1095,7 +1100,7 @@ impl Game<'_> {
         // Structure mobs that generation left to finish: saves from before
         // they were finalized at placement, or a placement that could not.
         let mut tag = tag;
-        Self::normalize_loaded_mob_tags(&mut tag);
+        Self::normalize_loaded_tags(&mut tag);
         let mut finalize = false;
         if let Tag::Compound(c) = &mut tag {
             finalize = c.remove(&"horizon:finalize".into()).is_some();
@@ -1722,7 +1727,9 @@ impl Game<'_> {
             }
         }
         if !map.is_empty() {
-            self.persist.raw.insert(id, Tag::Compound(map));
+            let mut kept = Tag::Compound(map);
+            Self::normalize_loaded_tags(&mut kept);
+            self.persist.raw.insert(id, kept);
         }
     }
     /// `Entity.isSilent`: mobs model it directly; other entities retain it
@@ -1751,6 +1758,7 @@ impl Game<'_> {
         if let Tag::Compound(c) = &mut tag {
             c.remove(&"Team".into());
         }
+        Self::normalize_loaded_tags(&mut tag);
         self.persist.raw.insert(id, tag);
     }
     /// The UUID entity `id` was loaded with, and the attachments `tag` saved under it.
