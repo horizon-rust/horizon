@@ -1490,7 +1490,7 @@ impl Game<'_> {
                 None => self.unpublish(),
             };
             if closed {
-                self.friends_lan_closed();
+                self.lan_closed_hooks();
             }
             if closed && announce && self.integrated.is_some() {
                 self.system_message(Text::translate(
@@ -1500,7 +1500,7 @@ impl Game<'_> {
             }
             return;
         }
-        self.friends_lan_closed();
+        self.lan_closed_hooks();
         self.native_players_leaving();
         let Some(mut host) = self.lan.take() else {
             return;

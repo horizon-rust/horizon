@@ -73,7 +73,7 @@ impl Screen {
             | Self::Stats
             | Self::Advancements
             | Self::WorldOptions
-            | Self::Friends
+            | Self::AddedPage
             | Self::ServerLinks
             | Self::ConfirmLink
             | Self::DialogWarning
@@ -92,7 +92,7 @@ impl Screen {
             | Self::Stats
             | Self::Advancements
             | Self::WorldOptions
-            | Self::Friends
+            | Self::AddedPage
             | Self::Social
             | Self::ServerLinks
             | Self::ConfirmLink
@@ -191,8 +191,8 @@ fn pause_buttons(
 }
 
 /// The icon row: report bugs, feedback, friends, player reporting.
-/// `FRIENDS_ICON` (vanilla's `CommonButtons.friends`) opens Horizon's
-/// Play with Friends; the first two open their link through
+/// `FRIENDS_ICON` (vanilla's `CommonButtons.friends`) opens the page registered at
+/// `Place::PauseFriends` (Play with Friends in the official build); the first two open their link through
 /// `ConfirmLinkScreen`; player reporting opens `SocialInteractionsScreen`.
 const FRIENDS_ICON: usize = 2;
 /// `CommonLinks.SNAPSHOT_BUGS_FEEDBACK`, behind `PauseScreen.REPORT_BUGS`.
@@ -341,6 +341,7 @@ impl Game<'_> {
     }
     pub(super) fn draw_pause_menu(&mut self, batch: &mut HudBatch) {
         let friends = self.friends_shown();
+        let friends_name = super::page_screen::friends_name();
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
@@ -402,7 +403,7 @@ impl Game<'_> {
             // The icon has no label: name it for controller focus and the
             // control socket's widget tree.
             if i == FRIENDS_ICON {
-                horizon_client::widgets::record(super::friends::TITLE, [x, y, 20.0, 20.0], active);
+                horizon_client::widgets::record(&friends_name, [x, y, 20.0, 20.0], active);
             }
             ui::button(
                 batch,
@@ -439,7 +440,7 @@ impl Game<'_> {
             batch.sprite_scaled(atlas, sprite, x + 3.0, y + 3.0, 15.0, 15.0, u32::MAX);
             if hover {
                 tooltip = Some(if i == FRIENDS_ICON {
-                    Text::literal(super::friends::title())
+                    Text::literal(friends_name.clone())
                 } else {
                     Text::translate(ICON_LABELS[i], &[])
                 });
@@ -467,7 +468,7 @@ impl Game<'_> {
             3 => self.open_stats(),
             4 => self.open_advancements(true),
             9 => self.open_world_options(),
-            10 => self.screen = Screen::Friends,
+            10 => self.screen = Screen::AddedPage,
             // DialogConnectionAccess.openDialog(Dialogs.SERVER_LINKS).
             11 => {
                 self.links_ui.scroll = 0.0;
@@ -1058,7 +1059,7 @@ mod tests {
             Screen::Stats,
             Screen::Advancements,
             Screen::WorldOptions,
-            Screen::Friends,
+            Screen::AddedPage,
             Screen::ServerLinks,
             Screen::ConfirmLink,
             Screen::DialogWarning,

@@ -41,8 +41,6 @@ horizon-chat-filter = { path = "../horizon-chat-filter" }
 horizon-shaders = { path = "../horizon-shaders" }
 # Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).
 horizon-shader-api = { path = "../horizon-shader-api" }
-# Play with Friends: invite codes and their tunnel; the `friends` feature.
-horizon-friends = { path = "../horizon-friends", optional = true }
 # The narrator (GameNarrator): text-to-speech of chat, system messages and screens.
 horizon-narrator = { path = "../horizon-narrator" }
 # Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
@@ -123,10 +121,7 @@ controllers = ["horizon-client-lib/controllers", "dep:gilrs", "dep:horizon-duals
 # request (`HORIZON_RAY_TRACING=1`). Players always get them; there is no switch. `grep -rn horizon-extras crates/` lists
 # every place it gates. Without it (`--no-default-features --features audio,controllers`) the
 # client is best effort: CI builds only the default.
-horizon-extras = ["horizon-client-render/horizon-extras", "friends"]
-# Play with Friends: sharing a world behind an invite code (game/friends.rs). Joining one is
-# horizon-friends' `game` side, which horizon-official registers (`horizon_hooks::tunnel`).
-friends = ["dep:horizon-friends"]
+horizon-extras = ["horizon-client-render/horizon-extras"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace", "horizon-client-lib/rng-trace"]
 # Rust's allocations go to the system heap instead of mimalloc, where heap profilers that replace

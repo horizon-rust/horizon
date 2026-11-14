@@ -351,8 +351,14 @@ def mark_old_rust(steps, warning):
 
 def mod_features(crates):
     """The features CI's workspace-wide test run gives these crates. Cargo unifies features over the packages it
-    builds, so a crate tested alone needs the ones the workspace would have turned on for it: horizon-mods' index."""
-    return " --features horizon-mods/index" if crates is not None and "horizon-mods" in crates else ""
+    builds, so a crate tested alone needs the ones the workspace would have turned on for it: horizon-mods' index,
+    horizon-friends' game."""
+    if crates is None:
+        return ""
+    # horizon-official turns on horizon-friends' `game` side (Play with Friends in the game).
+    wanted = {"horizon-mods": "horizon-mods/index", "horizon-friends": "horizon-friends/game"}
+    features = [f for crate, f in wanted.items() if crate in crates]
+    return f" --features {','.join(features)}" if features else ""
 
 
 # What horizon-client's full content-root tests load (mod_content_tests.rs). They take minutes on prepared data, so

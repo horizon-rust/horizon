@@ -90,7 +90,6 @@
     "horizon-client -> horizon-chat-filter",
     "horizon-client -> horizon-cosmetics",
     "horizon-client -> horizon-dualsense",
-    "horizon-client -> horizon-friends",
     "horizon-client -> horizon-hdr",
     "horizon-client -> horizon-mod-api-gen",
     "horizon-client -> horizon-mods",
