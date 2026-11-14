@@ -15,7 +15,7 @@ alpha:
 | Alpha | Means |
 | --- | --- |
 | below 0.75 | a light source: its tier and how much it is lifted |
-| 0.76 to 1 | HDR lighting's gain on a surface |
+| 0.75 and above | nothing lifted |
 | 1/255 | the first-person hand |
 | what the HUD and menus leave | how much they cover the world |
 
@@ -82,7 +82,7 @@ below); where HDR's settings live (a later note).
   in HDR a roll-off into the headroom (ITU-R BT.2390's EETF in PQ; HDR's black level already uses the same
   recommendation's lift), in SDR a clip at white, as vanilla. A pack that only grades keeps Horizon's tone curve;
   one that only tone maps needs no post chain. Horizon's curve keeps light as it is up to its knee, 60% of the peak
-  and at least paper white, where HDR lighting eased into the peak before it. The source's peak is where the EETF
+  and at least paper white. The source's peak is where the EETF
   puts its knee there (13.7 times paper white at 203 and 1000 nits, PQ's 10 000 nits at most), and light past it
   shows at the peak. The curve acts on the brightest channel and scales the others with it, so light keeps its hue
   as it eases and no channel passes the peak.
@@ -147,8 +147,8 @@ Each shader that marks the frame today writes the light instead:
 
 - **Light sources** (`mesher` `EMISSION_BITS`, `hdr_tier`, `gfx/hdr.rs` `TIERS`): the face's colour times its tier's
   gain, in units of paper white. Easing into the peak moves to the tone curve.
-- **HDR lighting** (light levels 11 to 15, up to 4 times): the lightmap going past 1, which is what its alpha means
-  now.
+- **Lit surfaces** get no gain, however strongly the sun or a torch lights them: diffuse white stays at paper white,
+  where ITU-R BT.2408 puts it, and HDR's range above it is the light sources' and the sun's.
 - **Where:** terrain and fluids (`terrain.wgsl`, `mesher/fluid.rs`, distant terrain in `lod/mesh.rs`, the visibility
   buffer), particles (`particles.rs`), the sun and moon (`fs_sky_celestial`), entities, dropped and held items
   (`entity.wgsl`, `dynamic_light.rs`) and lightning (`gfx/lightning.rs`).
@@ -308,16 +308,20 @@ Behind `HORIZON_HDR_FRAME=float` until the last step, each a small pull request:
      derived from the same headroom. The rule: the scene's peak S sits just above the brightest light the world
      writes, and the world is mastered for a 1000-nit display at ITU-R BT.2408's 203-nit reference white, as HDR10
      content usually is: S = 1000/203 (4.93). The tiers multiply their brightest pixels by 1.6 (low), 2.4
-     (incandescent), 2.8 (bright) and 4.0 (very bright), and HDR lighting the strongest-lit surfaces by 3.0
-     (`gfx/hdr.rs` `TIERS`, `SUNLIT_GAIN`, `SCENE_PEAK`). The curve holds light above S at S, keeping its hue (where
+     (incandescent), 2.8 (bright) and 4.0 (very bright), and lit surfaces stay at their SDR light, diffuse
+     white at paper white (`gfx/hdr.rs` `TIERS`, `SCENE_PEAK`). The curve holds light above S at S, keeping its hue (where
      the sky adds onto the sun), then maps S onto the display's peak T with BT.2390's EETF in PQ on the brightest
      channel: the identity where T reaches S, that is where Peak Brightness is at least 1000/203 times Paper White,
      so at a paper white of 203 a display at 1000 nits or more shows the scene as written and one above 1000 shows
      it as at 1000. Light Horizon doesn't lift (HDR Lighting off, the title, a 0.2 pack's own) has
      no known peak, so there the curve's source still follows the display, as the 0.2 rule above describes. HDR off,
-     the HUD, the black lift, the SDR screenshot's shoulder and the compatibility frame (HDR's default until step 5,
-     whose look then changes once) don't change.
-   - 6b: the SDR screenshot from the same scene light.
+     the HUD, the black lift and the compatibility frame (HDR's default until step 5, whose look then changes once)
+     don't change.
+   - 6b: the SDR screenshot from the same scene light. With surfaces and the sky at paper white at most, it keeps
+     the light exactly up to paper white, where it is the SDR game's picture, and scales light above it (light
+     sources, the sun) down to white by its brightest channel, hue kept. Its shoulder from 0.6 of paper white was
+     made for a world lifted up to 3 times and now only darkened: white came out at 230 of 255. A knee just below
+     white (0.9) keeps no more of a light source's shape in captures, and still darkens a noon sky.
 
 The HUD's layer and the tone curve come before light is written: once a shader writes light above white into the
 frame, nothing at the end can take it back out from under the HUD (`shows_world` only skips lifting a mark), and
