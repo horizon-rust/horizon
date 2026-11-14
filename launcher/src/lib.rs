@@ -8,6 +8,7 @@ pub mod data_location;
 pub mod datapacks;
 pub mod desktop;
 pub mod desktop_seams;
+pub mod downloads;
 pub mod export;
 pub mod file_safety;
 #[cfg(unix)]

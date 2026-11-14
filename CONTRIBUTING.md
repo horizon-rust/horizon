@@ -119,6 +119,8 @@ including examples. The dependency scope includes optional, platform, build and 
 library, binary, integration and doc tests without building unrelated example executables. Shared Cargo
 configuration and toolchain changes select the whole workspace; CI also keeps its workspace-wide checks.
 
+For a quick check while you work, `python3 tools/check_changed.py` runs rustfmt, clippy and tests for only the crates your branch changed and the crates that depend on them (`--dry-run` lists the commands).
+
 ### Translations
 
 Most of Horizon's translations were written by machine and stay marked unreviewed until someone who speaks the
@@ -144,7 +146,9 @@ it (edited on every push, never repeated): talk to its author in the thread befo
 
 - **Small.** One change per pull request, under about 500 lines of code where you can; split bigger work into
   pieces that each make sense alone. Small pull requests get reviewed and merged the same day. Bigger than that:
-  [large pull requests](#large-pull-requests).
+  [large pull requests](#large-pull-requests). What counts: lines added plus lines removed, outside Markdown (`.md`)
+  files and test files (any `tests/` or `test/` folder, and `test_*.py`). Tests written inside a source file do count.
+  pr_ready counts it the same way and warns when a pull request is over.
 - **Fill in the template**: what and why, the vanilla reference, the pr_ready block, screenshots for anything you
   can see.
 - **Tick "Allow edits by maintainers".** When something small is left (a lint, a rebase, a nit) we push the fixup
@@ -153,9 +157,14 @@ it (edited on every push, never repeated): talk to its author in the thread befo
   replaces our commits with yours and erases the fixes we added (it happened on #5188 and #5203). Tell your agent
   too: `git merge origin/main`, never `git rebase` or `git push --force` on a branch a maintainer has touched. If
   our fixes get erased anyway, we finish the work in our own pull request that keeps your commits and credits you.
+- **Title: `kind(area): what changes`**, so the queue reads at a glance: `parity(mobs): a ghast's fireball uses its
+  ExplosionPower`, `perf(launcher): download the game's files in parallel`, `bug(saves): keep /attribute modifiers
+  through a save`. The kind is one of the words below; the area is an area label, several with commas
+  (`perf(chunks,rendering): ...`), or leave it out (`docs: ...`). Release notes drop the prefix.
 - **Tick its kind** in the template: `parity` (Horizon now does what vanilla does), `bug` (a crash or breakage),
   `perf`, `feature` (new for players), `extra` (Horizon-only, off by default), `tooling` or `docs`. A workflow sets
-  that label, and area labels (`launcher`, `mobs`, `worldgen`, `rendering`...) from the paths you change.
+  that label from the box, else from the title, and area labels (`launcher`, `mobs`, `worldgen`, `rendering`...)
+  from the title and the paths you change.
   `label:parity` is the list of real progress toward vanilla.
 - **Release labels** (we set them if you can't): `feature` also puts it under "New" in the release notes,
   `skip-release` when players see no change (tooling, docs, tests), nothing for a fix. `release-now` is for crash
@@ -169,7 +178,8 @@ How agents, checks, releases and signed updates keep this safe: [security](docs/
 
 ### Large pull requests
 
-500 lines stays the default. A pull request that can't be split below it starts from a spec:
+500 lines of code ([what counts](#pull-requests)) stays the default. A pull request that can't be split below it
+starts from a spec:
 
 1. **Open an issue with the spec** before the code: what changes, the files it touches, the behaviour players and
    other code will see, and the tests or harnesses that prove it.

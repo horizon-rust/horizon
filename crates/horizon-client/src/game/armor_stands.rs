@@ -11,7 +11,7 @@ use horizon_client::{
     entities::ArmorStand,
     items::ItemStack,
     mesher::Vertex,
-    mobs::{Mob, Part, anim::Poses},
+    mobs::{Mob, Part, Who, anim::Poses},
     trims::{TrimOverride, TrimRegistry, TrimTexture},
 };
 use horizon_core::{
@@ -533,7 +533,8 @@ impl Game<'_> {
         let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, a) in self.armor_stands.iter().enumerate() {
-            if a.marker {
+            // Minecraft.pick never hits the camera entity it looks from.
+            if a.marker || self.remote_camera_id() == Some(a.id) {
                 continue;
             }
             let b = a.bounds();
@@ -608,18 +609,22 @@ impl Game<'_> {
                 return false;
             }
             let id = stand.id;
+            let at = [stand.position.x, stand.position.y, stand.position.z];
             let name = stand.custom_name.as_ref().map(|name| name.plain());
             if alive {
-                // NameTagItem shrinks the stack even with infinite materials.
-                let mut rest = stack.clone();
-                rest.count -= 1;
-                *self.held_mut() = (rest.count > 0).then_some(rest);
+                // `Player.interactOn` gives a creative player the count back.
+                self.consume_held();
                 if let (Some(player), Some(player_name), Some(name)) =
                     (self.lan_acting_uuid, self.lan_acting_name.clone(), name)
                 {
                     self.native_player_name_entity(player, &player_name, id, &name);
                 }
             }
+            // `Player.interactOn`: the tag consumed the use, so the stand
+            // posts `gameEvent(GameEvent.ENTITY_INTERACT)` from the player,
+            // alive or not (`NameTagItem` succeeds either way).
+            let ctx = self.who_context(Some(Who::Player), None);
+            self.post_game_event("minecraft:entity_interact", at, ctx);
             self.swing_arm();
             return true;
         }
@@ -1437,7 +1442,11 @@ impl Game<'_> {
     ) {
         // The stands' models posed on the GPU path (`mobs::skin`), when it runs this frame.
         let skinning = self.skinning();
-        for a in &self.armor_stands {
+        for a in self
+            .armor_stands
+            .iter()
+            .filter(|a| !self.hides_as_camera(a.id))
+        {
             // ArmorStand.shouldRenderAtSqrDistance: 256 times the box's mean
             // edge (4 for a marker's empty box), whatever the entity distance.
             // LivingEntityRenderer grows the culling box by 0.5 for a dragon head.
@@ -2704,6 +2713,7 @@ mod postbaseline_lodestone_controls {
         game.block_ticks
             .add_empty_chunk(BlockPos::new(64, 0, 64).chunk())
             .unwrap();
+        game.load_ticking_neighbourhood(0, 0);
         assert!(game.run_command("fill 64 199 64 79 199 79 stone"));
         assert!(game.run_command(&format!("summon armor_stand 65.5 200.0 65.5 {{UUID:[I;42321,0,0,102],Health:20f,NoGravity:1b,equipment:{{mainhand:{}}}}}",item("minecraft:compass",tracked,100,1))));
         let id = |n| {

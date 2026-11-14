@@ -238,7 +238,8 @@ impl Goal for DefendVillage {
         }
         // The box around the golem: 10 across, 8 up and down.
         let b = m.bounds().inflate(Vec3::new(10.0, 8.0, 10.0));
-        if !b.intersects(p.bounds) || m.position.distance_squared(p.position) > 64.0 * 64.0 {
+        let range = (64.0 * p.visibility_percent(Some(m.kind.id.as_str()), cx.w.items)).max(2.0);
+        if !b.intersects(p.bounds) || m.position.distance_squared(p.position) > range * range {
             return false;
         }
         // A position inside `b` puts the box's bottom face there (one block
@@ -530,12 +531,16 @@ pub fn iron_anim(m: &Mob, s: &State, p: &mut Poses) {
 }
 
 pub fn register_snow(m: &mut Mob) {
+    // `new WaterAvoidingRandomStrollGoal(this, 1.0, 1.0000001E-5F)`: the probability of a plain
+    // stroll is the constructor's third argument, not the default 0.001.
+    let mut stroll = Stroll::avoiding_water(1.0);
+    stroll.water_avoiding = Some(1.000_000_1e-5);
     let g = &mut m.ai.goals;
     g.add(
         1,
         super::witch::RangedAttack::new(1.25, 20, 20, 10.0, snowball_attack),
     );
-    g.add(2, Stroll::avoiding_water(1.0));
+    g.add(2, stroll);
     g.add(3, LookAtPlayer::new(6.0));
     g.add(4, RandomLookAround::default());
     m.ai.targets.add(
@@ -589,7 +594,8 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     for i in 0..4 {
         let xx = (m.position.x + f64::from((i % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
         let zz = (m.position.z + f64::from((i / 2 % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
-        let below = w.facts.get(w.world.block(xx, y - 1, zz));
+        let below_state = w.world.block(xx, y - 1, zz);
+        let below = w.facts.get(below_state);
         // SnowLayerBlock.canSurvive: the two snow-layer tags decide first,
         // then a full top face (or a full snow layer) supports the snow.
         let in_tag = |tag: &str| {
@@ -600,7 +606,10 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         let supported = if in_tag("minecraft:cannot_support_snow_layer") {
             false
         } else {
-            in_tag("minecraft:support_override_snow_layer") || below.full_collision
+            in_tag("minecraft:support_override_snow_layer")
+                || w.top_face_full([xx, y - 1, zz])
+                || (&*below.name == "minecraft:snow"
+                    && w.prop(xx, y - 1, zz, "layers") == Some("8"))
         };
         if w.facts.is_air(w.world.block(xx, y, zz)) && supported && !placed.contains(&[xx, y, zz]) {
             placed.push([xx, y, zz]);
@@ -757,32 +766,71 @@ mod tests {
     }
 
     /// `SnowGolem.aiStep` tests `isAir` (cave and void air too) and
-    /// `SnowLayerBlock.canSurvive` (the two snow-layer tags, then a full top face).
+    /// `SnowLayerBlock.canSurvive`: the two snow-layer tags, then the block
+    /// below's top face (`Block.isFaceFull(collisionShape, UP)`), or a snow
+    /// layer eight deep, whose collision shape is only 14/16 high.
     #[test]
     fn snow_trail_follows_is_air_and_the_snow_layer_tags() {
-        let cases = [
-            ("minecraft:stone", "minecraft:cave_air", true),
-            ("minecraft:stone", "minecraft:void_air", true),
-            ("minecraft:soul_sand", "minecraft:air", true),
-            ("minecraft:mud", "minecraft:air", true),
-            ("minecraft:honey_block", "minecraft:air", true),
-            ("minecraft:ice", "minecraft:air", false),
-            ("minecraft:packed_ice", "minecraft:air", false),
-            ("minecraft:barrier", "minecraft:air", false),
-            ("minecraft:stone", "minecraft:water", false),
+        let cases: &[(&str, &[(&str, &str)], &str, bool)] = &[
+            ("minecraft:stone", &[], "minecraft:cave_air", true),
+            ("minecraft:stone", &[], "minecraft:void_air", true),
+            ("minecraft:soul_sand", &[], "minecraft:air", true),
+            ("minecraft:mud", &[], "minecraft:air", true),
+            ("minecraft:honey_block", &[], "minecraft:air", true),
+            ("minecraft:ice", &[], "minecraft:air", false),
+            ("minecraft:packed_ice", &[], "minecraft:air", false),
+            ("minecraft:barrier", &[], "minecraft:air", false),
+            ("minecraft:stone", &[], "minecraft:water", false),
+            // A top slab's and upside-down stairs' top face is full even
+            // though neither is a full block; a bottom one's is not.
+            (
+                "minecraft:stone_slab",
+                &[("type", "top")],
+                "minecraft:air",
+                true,
+            ),
+            (
+                "minecraft:stone_slab",
+                &[("type", "bottom")],
+                "minecraft:air",
+                false,
+            ),
+            (
+                "minecraft:stone_stairs",
+                &[("half", "top"), ("facing", "north")],
+                "minecraft:air",
+                true,
+            ),
+            (
+                "minecraft:stone_stairs",
+                &[("half", "bottom"), ("facing", "north")],
+                "minecraft:air",
+                false,
+            ),
+            // Eight layers of snow take a layer on top, seven do not.
+            ("minecraft:snow", &[("layers", "8")], "minecraft:air", true),
+            ("minecraft:snow", &[("layers", "7")], "minecraft:air", false),
         ];
-        for (floor, here, expect) in cases {
+        for (floor, properties, here, expect) in cases {
             crate::mobs::world::with_built_test_world(
                 &[],
                 |world, reg| {
+                    let mut floor_state = reg
+                        .state(reg.default_state(floor).unwrap())
+                        .unwrap()
+                        .clone();
+                    for (key, value) in *properties {
+                        floor_state
+                            .properties
+                            .insert((*key).into(), (*value).into());
+                    }
+                    let floor = reg.id(&floor_state).unwrap();
                     world
                         .chunks
                         .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
                     for x in 0..3 {
                         for z in 0..3 {
-                            world
-                                .set(x, 0, z, reg.default_state(floor).unwrap())
-                                .unwrap();
+                            world.set(x, 0, z, floor).unwrap();
                             world
                                 .set(x, 1, z, reg.default_state(here).unwrap())
                                 .unwrap();
@@ -797,7 +845,11 @@ mod tests {
                         .iter()
                         .filter(|e| matches!(e, MobEvent::SetBlockName { .. }))
                         .count();
-                    assert_eq!(placed > 0, expect, "{floor} under {here}");
+                    assert_eq!(
+                        placed,
+                        usize::from(*expect),
+                        "{floor}{properties:?} under {here}"
+                    );
                 },
             );
         }
@@ -987,6 +1039,54 @@ mod tests {
             assert_eq!(golem.ai.target, Some(Who::Player));
         });
     }
+    /// `DefendVillageTargetGoal` finds players with
+    /// `TargetingConditions.forCombat().range(64)`, whose range is scaled by
+    /// visibility: an invisible player at 9.5 blocks is out of reach.
+    #[test]
+    fn an_invisible_player_does_not_make_a_golem_defend_the_village() {
+        use crate::gossip::{GossipType, Gossips};
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for invisible in [false, true] {
+                let mut world = w.clone();
+                let mut p = test_player(Vec3::new(9.5, 64.0, 0.5));
+                p.invisible = invisible;
+                world.player = Some(p.clone());
+                let mut villager = mob(2, Species::Villager, Vec3::new(2.5, 64.0, 0.5));
+                let mut gossips = Gossips::default();
+                gossips.add(p.uuid, GossipType::MajorNegative, 100);
+                villager.extra.villager = Some(Box::new(crate::mobs::villager::Ext {
+                    gossips,
+                    ..Default::default()
+                }));
+                let seen = [villager.seen(None)];
+                let world = crate::mobs::MobWorld {
+                    others: &seen,
+                    ..world
+                };
+                let mut golem = mob(1, Species::IronGolem, Vec3::new(0.5, 64.0, 0.5));
+                golem.ai.targets.add(1, DefendVillage);
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut golem.ai.targets);
+                goals.tick(&mut golem, &mut cx);
+                outcomes.push(goals.is_running("DefendVillage"));
+                golem.ai.targets = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a visible hostile player is defended against; an invisible one is not"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1132,5 +1232,36 @@ mod crack_sound_tests {
         assert_eq!(cracks(&mut m, 20.0), 1, "60 to 40 crosses 0.5");
         assert_eq!(cracks(&mut m, 10.0), 0, "40 to 30 stays at the same crack");
         assert_eq!(cracks(&mut m, 10.0), 1, "30 to 20 crosses 0.25");
+    }
+}
+
+#[cfg(test)]
+mod snow_golem_stroll_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A snow golem of a made-up type: only its goals matter here.
+    fn snow_golem() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        Arc::make_mut(&mut kind).id = "minecraft:snow_golem".into();
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `SnowGolem.registerGoals` adds `new WaterAvoidingRandomStrollGoal(this, 1.0, 1.0000001E-5F)`
+    /// (the bytecode's float constant): the chance of a plain stroll instead of a land one is
+    /// that, not the two-argument constructor's default 0.001.
+    #[test]
+    fn a_snow_golem_strolls_with_the_rare_probability() {
+        let mut m = snow_golem();
+        // The made-up type brings goals of its own.
+        m.ai.goals.clear();
+        register_snow(&mut m);
+        let goals = format!("{:?}", m.ai.goals);
+        let rare = format!("water_avoiding: {:?}", Some(1.000_000_1e-5_f32));
+        let default = format!("water_avoiding: {:?}", Some(0.001_f32));
+        assert!(goals.contains(&rare), "{goals}");
+        assert!(!goals.contains(&default), "{goals}");
+        // One stroll goal, not two.
+        assert_eq!(goals.matches("water_avoiding:").count(), 1, "{goals}");
     }
 }
