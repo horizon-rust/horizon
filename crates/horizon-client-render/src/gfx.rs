@@ -5937,11 +5937,12 @@ impl Renderer {
         let translucent_key = (split && translucent > 0)
             .then(|| (translucent_at.0 + flat::TRANSLUCENT_KEYS, translucent_at.1));
         let flat_id = self.flat.as_mut().and_then(|f| {
-            let ranges = [(main > 0).then_some((page, start, main))]
-                .into_iter()
-                .chain([translucent_key.map(|(key, first)| (key, first, translucent_vertices))]);
+            let ranges = [
+                (main > 0).then_some((page, start, main)),
+                translucent_key.map(|(key, first)| (key, first, translucent_vertices)),
+            ];
             let mut id = None;
-            for (key, first, vertices) in ranges.flatten() {
+            for (key, first, vertices) in ranges.into_iter().flatten() {
                 let uploads = &mut self.section_uploads;
                 match id {
                     None => id = Some(f.add(&self.device, encoder, uploads, key, first, vertices)),
@@ -5951,30 +5952,32 @@ impl Renderer {
             id
         });
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
+        let (dev, up) = (&self.device, &mut self.section_uploads);
         if solid_slots > 0 {
             self.arena.write_sources(
-                &self.device,
+                dev,
                 encoder,
-                &mut self.section_uploads,
+                up,
                 page,
                 start,
                 solid_slots,
-                if packed { &[] } else { &mesh.solid_sources },
+                &mesh.solid_sources,
+                packed,
             );
         }
         if translucent_vertices > 0 {
-            self.translucent_arena
-                .as_mut()
-                .unwrap_or(&mut self.arena)
-                .write_sources(
-                    &self.device,
-                    encoder,
-                    &mut self.section_uploads,
-                    translucent_at.0,
-                    translucent_at.1,
-                    translucent_vertices,
-                    &mesh.translucent_sources,
-                );
+            let (p, s) = (translucent_at.0, translucent_at.1);
+            let arena = self.translucent_arena.as_mut().unwrap_or(&mut self.arena);
+            arena.write_sources(
+                dev,
+                encoder,
+                up,
+                p,
+                s,
+                translucent_vertices,
+                &mesh.translucent_sources,
+                false,
+            );
         }
         let translucent_arena = self.translucent_arena.as_ref().unwrap_or(&self.arena);
         let solid_bytes: &[u8] = if packed {
@@ -5982,13 +5985,10 @@ impl Renderer {
         } else {
             bytemuck::cast_slice(&mesh.solid)
         };
+        let trans_bytes: &[u8] = bytemuck::cast_slice(&mesh.translucent);
         for (bytes, arena, (part_page, first)) in [
             (solid_bytes, &self.arena, (page, start)),
-            (
-                bytemuck::cast_slice(&mesh.translucent),
-                translucent_arena,
-                translucent_at,
-            ),
+            (trans_bytes, translucent_arena, translucent_at),
         ] {
             if !bytes.is_empty() {
                 self.uploaded_bytes += bytes.len() as u64;

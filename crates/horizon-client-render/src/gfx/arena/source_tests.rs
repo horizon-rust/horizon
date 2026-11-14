@@ -56,12 +56,13 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         first.1,
         4,
         &[source],
+        false,
     );
     let second = arena.alloc(&device, &mut encoder, GRAIN).unwrap();
     assert_eq!(second, (first.0, GRAIN), "grew the first page");
     let third = arena.alloc(&device, &mut encoder, GRAIN).unwrap();
     assert_ne!(third.0, first.0, "move crosses pages");
-    arena.copy(&mut encoder, first, third, 4);
+    arena.copy(&mut encoder, first, third, 4, false);
     arena.release(first.0, first.1, 4);
     let reused = arena.alloc_existing(4).unwrap();
     assert_eq!(reused, first);
@@ -73,6 +74,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         reused.1,
         4,
         &[],
+        false,
     );
     uploads.finish(&encoder);
     queue.submit([encoder.finish()]);
@@ -130,6 +132,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         at.1,
         4,
         &[source],
+        false,
     );
     assert!(
         arena.sources(at.0).is_none(),

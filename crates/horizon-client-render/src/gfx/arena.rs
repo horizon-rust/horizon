@@ -300,13 +300,13 @@ impl Arena {
     }
 
     fn source_buffer(device: &wgpu::Device, capacity: u64) -> Option<wgpu::Buffer> {
-        if capacity / 4 * 8 > device.limits().max_storage_buffer_binding_size {
+        if capacity * 8 > device.limits().max_storage_buffer_binding_size {
             return None;
         }
         try_create(
             device,
             "Terrain quad sources",
-            capacity / 4 * 8,
+            capacity * 8,
             wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
@@ -323,8 +323,9 @@ impl Arena {
         uploads: &mut super::upload::Uploads,
         page: u32,
         start: u64,
-        vertices: u64,
+        slots_or_vertices: u64,
         sources: &[crate::mesher::TerrainSource],
+        packed: bool,
     ) {
         if !sources.is_empty() && !self.sources_enabled {
             self.sources_enabled = true;
@@ -337,18 +338,22 @@ impl Arena {
             p.sources = Self::source_buffer(device, p.capacity);
         }
         if let Some(buffer) = &p.sources {
-            let bytes = vertices / 4 * 8;
+            let (byte_offset, bytes) = if packed {
+                (start * 8, slots_or_vertices * 8)
+            } else {
+                (start / 4 * 8, slots_or_vertices / 4 * 8)
+            };
             if bytes > 0 {
                 // Recycled ranges must never keep another mesh's identity, even for a
                 // missing or incomplete sidecar. Zero records have no valid bit.
-                encoder.clear_buffer(buffer, start / 4 * 8, Some(bytes));
-                if sources.len() as u64 == vertices / 4 {
-                    uploads.buffer(
-                        encoder,
-                        buffer,
-                        start / 4 * 8,
-                        bytemuck::cast_slice(sources),
-                    );
+                encoder.clear_buffer(buffer, byte_offset, Some(bytes));
+                let valid = if packed {
+                    sources.len() as u64 <= slots_or_vertices
+                } else {
+                    sources.len() as u64 == slots_or_vertices / 4
+                };
+                if valid && !sources.is_empty() {
+                    uploads.buffer(encoder, buffer, byte_offset, bytemuck::cast_slice(sources));
                 }
             }
         }
@@ -553,7 +558,8 @@ impl Arena {
         encoder: &mut wgpu::CommandEncoder,
         from: (u32, u64),
         to: (u32, u64),
-        vertices: u64,
+        slots_or_vertices: u64,
+        packed: bool,
     ) {
         debug_assert_ne!(from.0, to.0);
         encoder.copy_buffer_to_buffer(
@@ -561,20 +567,24 @@ impl Arena {
             from.1 * self.stride,
             self.buffer(to.0),
             to.1 * self.stride,
-            vertices * self.stride,
+            slots_or_vertices * self.stride,
         );
         if let Some(to_sources) = self.sources(to.0) {
-            let bytes = vertices / 4 * 8;
+            let (from_offset, to_offset, bytes) = if packed {
+                (from.1 * 8, to.1 * 8, slots_or_vertices * 8)
+            } else {
+                (from.1 / 4 * 8, to.1 / 4 * 8, slots_or_vertices / 4 * 8)
+            };
             if bytes > 0 {
                 match self.sources(from.0) {
                     Some(from_sources) => encoder.copy_buffer_to_buffer(
                         from_sources,
-                        from.1 / 4 * 8,
+                        from_offset,
                         to_sources,
-                        to.1 / 4 * 8,
+                        to_offset,
                         bytes,
                     ),
-                    None => encoder.clear_buffer(to_sources, to.1 / 4 * 8, Some(bytes)),
+                    None => encoder.clear_buffer(to_sources, to_offset, Some(bytes)),
                 }
             }
         }
@@ -938,7 +948,7 @@ mod tests {
         let to = arena.alloc_existing(GRAIN).unwrap();
         assert_eq!(to.0, second);
         let mut encoder = device.create_command_encoder(&Default::default());
-        arena.copy(&mut encoder, (page, start), to, GRAIN);
+        arena.copy(&mut encoder, (page, start), to, GRAIN, false);
         queue.submit([encoder.finish()]);
         arena.release(page, start, GRAIN);
         assert_eq!(read(&device, &queue, arena.buffer(to.0), to.1 * 4), 100);
