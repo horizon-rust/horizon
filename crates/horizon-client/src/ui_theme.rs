@@ -388,35 +388,34 @@ fn pack_scale(px: f32) -> f32 {
 }
 /// `text` laid out in the resource pack's own font, `px` physical pixels in size: what the
 /// overlays draw when `menu_style` gives them no fonts (vanilla's look), so the on-screen
-/// keyboard's keys keep their labels. Returns the width, ascent, descent and glyph quads, as
+/// keyboard's keys keep their labels. Returns the advance and emits the glyph quads, as
 /// `Ui::layout`.
 fn pack_layout(
     atlas: &HudAtlas,
+    density: f32,
+    line: Option<f32>,
     px: f32,
     text: &str,
-    draw: bool,
-) -> (f32, f32, f32, Vec<(f32, f32, f32, f32, Rect)>) {
+    mut emit: impl FnMut(f32, f32, f32, f32, Rect),
+) -> f32 {
     let gui = pack_scale(px);
-    let (mut pen, mut quads) = (0.0, Vec::new());
+    let ascent = PACK_ASCENT * gui;
+    let baseline = line.map(|l| ((l * density - PACK_LINE * gui) / 2.0 + ascent).round());
+    let mut pen = 0.0;
     for ch in unformatted(text) {
         let g = atlas.font.glyph(ch);
-        if let (true, Some(rect)) = (draw, g.rect) {
-            let (x, y) = (
+        if let (Some(base), Some(rect)) = (baseline, g.rect) {
+            emit(
                 (pen + g.left * gui).round(),
-                ((g.top - PACK_ASCENT) * gui).round(),
-            );
-            quads.push((
-                x,
-                y,
+                base + ((g.top - PACK_ASCENT) * gui).round(),
                 (g.right - g.left) * gui,
                 (g.bottom - g.top) * gui,
                 rect,
-            ));
+            );
         }
         pen += g.advance * gui;
     }
-    let ascent = PACK_ASCENT * gui;
-    (pen, ascent, ascent - PACK_LINE * gui, quads)
+    pen
 }
 impl<'a> Ui<'a> {
     /// `cursor` is in GUI pixels, like every screen's input.
@@ -542,52 +541,70 @@ impl<'a> Ui<'a> {
     }
 
     // ---- text ----
-    /// `text` laid out at `px` pixels to the em: its advance, the face's ascent
-    /// and descent, and (`draw`) its glyphs as `(x, y, w, h, rect)` from the pen
-    /// on the baseline, all in physical pixels. `§` codes are dropped (the
-    /// design system keeps its own colours). A character Geist lacks, such as a
-    /// pack's private-use icon, is the resource pack's default-font glyph:
-    /// vanilla's 9px line scaled onto Geist's, or at GUI scale as the pack
-    /// draws it when every character is such a glyph (a picture title).
+    /// `text` laid out at `px` pixels to the em: its advance in physical pixels.
+    /// `§` codes are dropped (the design system keeps its own colours). A
+    /// character Geist lacks, such as a pack's private-use icon, is the
+    /// resource pack's default-font glyph: vanilla's 9px line scaled onto
+    /// Geist's, or at GUI scale as the pack draws it when every character is
+    /// such a glyph (a picture title).
+    ///
+    /// If `line` is provided, each quad's `(gx, gy, w, h, rect)` is emitted
+    /// relative to `(x0, y0)` with baseline alignment in physical pixels,
+    /// without heap allocation.
     fn layout(
-        &self,
+        atlas: &HudAtlas,
+        gui: f32,
+        density: f32,
+        line: Option<f32>,
         face: Face,
         px: f32,
         text: &str,
-        draw: bool,
-    ) -> (f32, f32, f32, Vec<(f32, f32, f32, f32, Rect)>) {
-        let atlas = self.atlas;
-        let gui = self.scale;
+        mut emit: impl FnMut(f32, f32, f32, f32, Rect),
+    ) -> f32 {
         with_cache(atlas, |c| {
-            let Some(fonts) = &c.fonts else {
-                return pack_layout(atlas, px, text, draw);
-            };
-            let scale = fonts.scale(face, px);
-            let (ascent, descent) = {
+            let (ascent, descent, scale, all_pack) = {
+                let Some(fonts) = &c.fonts else {
+                    return pack_layout(atlas, density, line, px, text, &mut emit);
+                };
+                let scale = fonts.scale(face, px);
                 let f = fonts.face(face).as_scaled(scale);
-                (f.ascent(), f.descent())
-            };
-            let chars: Vec<(char, Option<crate::font::Glyph>)> = unformatted(text)
-                .map(|ch| {
-                    let pack = (!ch.is_whitespace() && fonts.face(face).glyph_id(ch).0 == 0)
+                let (ascent, descent) = (f.ascent(), f.descent());
+                let all_pack = unformatted(text).all(|ch| {
+                    (!ch.is_whitespace() && fonts.face(face).glyph_id(ch).0 == 0)
                         .then(|| atlas.font.glyph(ch))
-                        // The pack lacks it too (its missing glyph): Geist's box, like vanilla's.
-                        .filter(|g| g.rect.is_some() || g.right <= 0.0);
-                    (ch, pack)
-                })
-                .collect();
-            let k = if chars.iter().all(|(_, g)| g.is_some()) {
+                        .filter(|g| g.rect.is_some() || g.right <= 0.0)
+                        .is_some()
+                });
+                (ascent, descent, scale, all_pack)
+            };
+            let baseline =
+                line.map(|l| ((l * density - (ascent - descent)) / 2.0 + ascent).round());
+            let k = if all_pack {
                 gui
             } else {
                 (ascent - descent) / 9.0
             };
-            let (mut pen, mut prev, mut quads) = (0.0, None, Vec::new());
-            for (ch, pack) in chars {
+            let (mut pen, mut prev) = (0.0, None);
+            for ch in unformatted(text) {
+                let is_pack = !ch.is_whitespace()
+                    && c.fonts
+                        .as_ref()
+                        .is_some_and(|f| f.face(face).glyph_id(ch).0 == 0);
+                let pack = is_pack
+                    .then(|| atlas.font.glyph(ch))
+                    // The pack lacks it too (its missing glyph): Geist's box, like vanilla's.
+                    .filter(|g| g.rect.is_some() || g.right <= 0.0);
                 if let Some(g) = pack {
-                    if let (true, Some(rect)) = (draw, g.rect) {
+                    if let (Some(base), Some(rect)) = (baseline, g.rect) {
                         // Vanilla's baseline is 7 below the line's top.
                         let (x, y) = ((pen + g.left * k).round(), ((g.top - 7.0) * k).round());
-                        quads.push((x, y, (g.right - g.left) * k, (g.bottom - g.top) * k, rect));
+                        emit(
+                            x,
+                            base + y,
+                            (g.right - g.left) * k,
+                            (g.bottom - g.top) * k,
+                            rect,
+                        );
                     }
                     pen += g.advance * k;
                     prev = None;
@@ -603,22 +620,24 @@ impl<'a> Ui<'a> {
                     (id, f.h_advance(id), prev.map_or(0.0, |p| f.kern(p, id)))
                 };
                 pen += kern;
-                if draw && !ch.is_whitespace() {
+                if let Some(base) = baseline
+                    && !ch.is_whitespace()
+                {
                     let g = c.glyph(atlas, face, id, px);
                     if let Some(rect) = g.rect {
-                        quads.push((
+                        emit(
                             (pen + g.left).round(),
-                            g.top,
+                            base + g.top,
                             rect.w as f32,
                             rect.h as f32,
                             rect,
-                        ));
+                        );
                     }
                 }
                 pen += advance;
                 prev = Some(id);
             }
-            (pen, ascent, descent, quads)
+            pen
         })
     }
     /// The largest size, up to `size`, at which `text` fits `room` dp: what a label wider than
@@ -651,7 +670,16 @@ impl<'a> Ui<'a> {
     /// The advance of `text` in dp.
     pub(crate) fn measure(&self, face: Face, size: f32, text: &str) -> f32 {
         let px = (size * self.density * 4.0).round() / 4.0;
-        self.layout(face, px, text, false).0 / self.density
+        Self::layout(
+            self.atlas,
+            self.scale,
+            self.density,
+            None,
+            face,
+            px,
+            text,
+            |_, _, _, _, _| {},
+        ) / self.density
     }
     /// Draw a line of text in a `line`-tall box whose top is `y` (the
     /// launcher's line heights: about 1.45 × size for the interface);
@@ -668,19 +696,21 @@ impl<'a> Ui<'a> {
     ) -> f32 {
         let px = (size * self.density * 4.0).round() / 4.0;
         let (x0, y0) = (self.px_x(x), self.px_y(y));
-        let (width, ascent, descent, quads) = self.layout(face, px, text, color >> 24 != 0);
-        let baseline = y0 + ((line * self.density - (ascent - descent)) / 2.0 + ascent).round();
+        let draw_line = if color >> 24 != 0 { Some(line) } else { None };
         let s = self.scale;
-        for (gx, gy, w, h, rect) in quads {
-            self.batch.rect_uv(
-                (x0 + gx) / s,
-                (baseline + gy) / s,
-                w / s,
-                h / s,
-                rect,
-                color,
-            );
-        }
+        let batch = &mut self.batch;
+        let width = Self::layout(
+            self.atlas,
+            self.scale,
+            self.density,
+            draw_line,
+            face,
+            px,
+            text,
+            |gx, gy, w, h, rect| {
+                batch.rect_uv((x0 + gx) / s, (y0 + gy) / s, w / s, h / s, rect, color);
+            },
+        );
         width / self.density
     }
     /// Text in a `1.45 × size` line box whose top is `y`.
@@ -1005,15 +1035,25 @@ mod tests {
             "a 22.8 px line is nearer three than two"
         );
         assert_eq!(pack_scale(2.0), 1.0, "never below the font's own pixels");
-        let (w, ascent, descent, quads) = pack_layout(&atlas, 23.0, "aa", true);
+        // A 27 px line holds the pack's 9-pixel line at scale 3 exactly: the baseline, 7 down,
+        // is 21 px, so a glyph whose top is the font's ascent starts at the line's top.
+        let mut quads = Vec::new();
+        let w = pack_layout(&atlas, 1.0, Some(27.0), 23.0, "aa", |x, y, w, h, r| {
+            quads.push((x, y, w, h, r))
+        });
         assert_eq!(quads.len(), 2);
         assert!(quads.iter().all(|q| [q.4.u0, q.4.v0] == uv));
+        assert!(
+            quads
+                .iter()
+                .all(|q| q.1 == 21.0 + ((a.top - 7.0) * 3.0).round()),
+            "{quads:?}"
+        );
         assert!((w - 2.0 * a.advance * 3.0).abs() < 0.01, "{w}");
-        // Vanilla's 9-pixel line, its baseline 7 down.
-        assert_eq!((ascent, descent), (21.0, -6.0));
         // Measuring draws nothing but keeps the width.
-        let (mw, _, _, none) = pack_layout(&atlas, 23.0, "aa", false);
-        assert!(none.is_empty() && mw == w);
+        let mut drawn = 0;
+        let mw = pack_layout(&atlas, 1.0, None, 23.0, "aa", |_, _, _, _, _| drawn += 1);
+        assert!(drawn == 0 && mw == w);
         reset_atlas();
     }
 

@@ -36,6 +36,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(super) mod capture;
+
 /// How long the window waits for the server thread to answer a `call`.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// The error of a `call` without an answer: the server stopped, or it was
@@ -472,6 +474,7 @@ impl Game<'_> {
         ));
         self.world_biomes_base = self.world_biomes.clone();
         let (res, pack, settings) = (self.res.clone(), self.pack.clone(), self.settings.clone());
+        horizon_client::parallel::set_setting(settings.horizon.parallel_tick);
         let flags = Arc::new(Flags::default());
         flags
             .render_distance
@@ -678,6 +681,7 @@ impl Game<'_> {
         opening: Opening,
     ) -> Result<()> {
         let result = self.run_integrated_inner(launch, flags, tasks, ready, opening);
+        self.finish_server_capture();
         if let Err(error) = &result {
             self.native_players_leaving();
             self.native_lifecycle_close_failed(&error.to_string());
@@ -711,6 +715,13 @@ impl Game<'_> {
             let stopped = self.stop_integrated();
             return result.and(stopped);
         }
+        let slow_ms = self
+            .options
+            .spikes
+            .unwrap_or(super::dedicated::SLOW_TICK_MS);
+        self.profile
+            .server
+            .get_or_insert_with(|| capture::ServerSide::new(slow_ms));
         self.integrated_tick_loop(&flags)
     }
 
@@ -746,13 +757,20 @@ impl Game<'_> {
                     was_paused = paused;
                     if paused {
                         // Only the connections run.
-                        self.tick_server_timed(true)?;
+                        self.tick_server_measured(true)?;
                     } else {
                         self.follow_distances(flags);
+                        let cpu = horizon_client::spans::thread_cpu();
                         let started = Instant::now();
-                        self.tick_server_timed(false)?;
+                        self.tick_server_measured(false)?;
                         // MinecraftServer.tickServer's tick times, for /tick query.
                         self.clock.record(started.elapsed());
+                        // Parallel Tick's Auto decides here, between ticks, how the next one runs.
+                        let on_cpu = horizon_client::spans::thread_cpu().zip(cpu);
+                        horizon_client::parallel::after_tick(
+                            started.elapsed().as_secs_f32() * 1000.0,
+                            on_cpu.map(|(end, start)| (end - start).as_secs_f32() * 1000.0),
+                        );
                         self.debug_charts.log_tick(started, started.elapsed());
                         flags.smoothed_tick_ms.store(
                             self.debug_charts.smoothed_tick_ms.to_bits(),
@@ -787,7 +805,19 @@ impl Game<'_> {
             self.publish_load_view();
             self.wait_for_next_server_tick(&mut next, paused);
         }
+        if failure.is_none() {
+            self.finish_server_capture();
+        }
         if let Some(error) = failure {
+            let finished = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.finish_server_capture();
+            }));
+            if let Err(payload) = finished {
+                log::error!(
+                    "Horizon: the server capture could not be closed after the crash: {}",
+                    super::dedicated::panic_message(payload.as_ref())
+                );
+            }
             let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.stop_after_crash(&error.to_string())
             }));
