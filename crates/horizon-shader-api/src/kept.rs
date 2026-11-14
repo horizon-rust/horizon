@@ -30,6 +30,17 @@ pub enum Keep {
     World,
 }
 
+/// `frame.reset_reasons`' bits: why `view_epoch` or `world_epoch` changed this frame
+/// (docs/api/shaders-reference-0.2.md, "Kept resources", says which and when).
+pub const REASON_LOAD: u32 = 1;
+pub const REASON_RESET: u32 = 1 << 1;
+pub const REASON_WORLD: u32 = 1 << 2;
+pub const REASON_TELEPORT: u32 = 1 << 3;
+pub const REASON_PAUSE: u32 = 1 << 4;
+pub const REASON_SIZE: u32 = 1 << 5;
+pub const REASON_DISPLAY: u32 = 1 << 6;
+pub const REASON_OPTION: u32 = 1 << 7;
+
 /// A kept buffer's element type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Element {

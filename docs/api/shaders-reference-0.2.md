@@ -421,6 +421,23 @@ argument. Data is data: Horizon doesn't decode, clamp or force the alpha of a ke
 | 9 | `var shadow_map_translucent: texture_depth_2d` | `shadow_map` with the translucent terrain (water, stained glass, ice) the light passes through drawn in too, read with `shadow_sampler` the same way: a point lit in `shadow_map` but not here lies under such a surface, which `shadow_color` gives the colour of. |
 | 10 | `var shadow_color: texture_2d<f32>` | The texture colour times the vertex colour (rgb: the tint, the face's directional shade and ambient occlusion) of the nearest translucent surface the light passes through at each texel of `shadow_map_translucent`, white where there is none; alpha is 1 on a fluid (water) and the texture's alpha, at most 0.99, on anything else. Read it with `textureLoad` at `shadow_position`'s xy times `textureDimensions(shadow_color)`. |
 
+A kept resource starts as zeros and is zeros again when cleared: a `keep = "view"` one when
+`frame.view_epoch` changes, every one when `frame.world_epoch` does (never 0, so a cleared value never
+matches). Both change before the frame that sees them draws, and `frame.reset_reasons` has a bit for each
+reason; only a pack with `[[resource]]` has these fields. A world cache keyed by `world_epoch` survives a
+camera cut. Nothing else says the world changed, not the camera's distance or `frame_index`.
+
+| Bit | Reason | Clears | When |
+| --- | --- | --- | --- |
+| 1 | load | both | The pack was loaded or reloaded: its first frame. |
+| 2 | reset | both | Horizon restarted the pack's history (a screenshot sequence's first shot). |
+| 4 | world | both | Another world or dimension, or its meshes were rebuilt (a render setting). |
+| 8 | teleport | both | The camera moved further than `[kept] reach` since last frame. |
+| 16 | pause | view | Over half a second since last frame, as `delta_time` 0. |
+| 32 | size | view | The render size or the window's changed. |
+| 64 | display | view | The output turned HDR or SDR. |
+| 128 | option | its `resets` | The player changed an option marked `resets`. |
+
 Limits: 8 resources, 4 `[[before_world]]` entries, 8 compute
 `[[post]]` entries; 32 MiB of buffers and 1024 KiB of fixed-size textures, both versions counted; each R-relative
 kept texture takes two of the post targets `output`s share; a workgroup of up to [256, 256, 64] and
@@ -594,6 +611,9 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `has_ray_tracing` | `u32` | 776 | 1 while `trace` and `trace_any` read this frame's scene, else 0 (a GPU without ray queries, ray tracing off, no world): every ray then misses. Only a pack with `[ray_tracing]` has this field. |
 | `ray_distance` | `f32` | 780 | How far from the camera along x and along z, in blocks, the scene is sure to reach; 0 while `has_ray_tracing` is 0. Only a pack with `[ray_tracing]` has this field. |
 | `luminance` | `vec3<f32>` | 784 | The weights that give a colour's luminance in those primaries, `dot(c, frame.luminance)`: (0.2126, 0.7152, 0.0722) for BT.709, (0.2627, 0.6780, 0.0593) for BT.2020. |
+| `view_epoch` | `u32` | 796 | Changes when the pack's `keep = "view"` resources are cleared, to zeros (`reset_reasons` says why), and is never 0. Only a pack with `[[resource]]` has this field. |
+| `world_epoch` | `u32` | 800 | The same for its `keep = "world"` resources. `view_epoch` changes with it: what clears the world's clears the view's too. Only a pack with `[[resource]]` has this field. |
+| `reset_reasons` | `u32` | 804 | Why an epoch changed this frame, a bit per reason ("Kept resources" lists them); 0 when neither did. Only a pack with `[[resource]]` has this field. |
 
 ## Anti-aliasing
 

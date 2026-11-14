@@ -267,6 +267,27 @@ fn ray_tracing_brings_its_names_to_the_stages_of_the_pack_that_trace() {
     }
 }
 
+/// `[[resource]]` brings the frame's epochs to every stage of the pack that keeps resources, and
+/// no name: they are fields of `frame`.
+#[test]
+fn kept_resources_bring_the_frame_s_epochs_to_their_pack_only() {
+    let epochs = "    view_epoch: u32,\n    world_epoch: u32,\n    reset_reasons: u32,\n}";
+    let resource =
+        "[[resource]]\nname = \"cells\"\nbuffer = 64\nelement = \"u32\"\nkeep = \"view\"\n";
+    let kept = pack_with(resource, None);
+    for &kind in Api::V0_2.stages() {
+        let file = format!("{}.wgsl", kind.name());
+        let composed = compose(&kept, kind, &file);
+        assert!(composed.text.contains(epochs), "{kind:?}");
+        assert_eq!(prelude_names(&composed, kind), listed_names(kind).0);
+        assert!(
+            !compose(&pack(None), kind, &file)
+                .text
+                .contains("view_epoch")
+        );
+    }
+}
+
 fn messages(result: Result<horizon_shader_api::Report, Vec<Problem>>) -> Vec<String> {
     result
         .expect_err("should fail")
