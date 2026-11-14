@@ -24,8 +24,8 @@ Sessions, each a fresh game and world (seed 7) per build:
 - float_unlit: the float frame with HDR on and HDR Lighting off, on that display.
 
 The float frame's HDR shots are also held to their SDR ones in each build (hdr_gates, Tests 3 and 4): with HDR
-Lighting off the picture is HDR off's, and with it on the SDR screenshot is the HDR shot clipped at white, white
-HUD shows at UI Brightness and nothing passes the peak.
+Lighting off the picture is HDR off's, and with it on the SDR screenshot is the HDR shot with light above white
+scaled down to it, its hue kept, white HUD shows at UI Brightness and nothing passes the peak.
 
 Both builds draw on the same adapter: Mesa's lavapipe where its Vulkan driver is installed (Linux), else the machine's
 default. When the base and the change differ only in files no game binary is built from (tools/, tests/, .github/,
@@ -556,17 +556,39 @@ def hud_boxes(width, height):
             (x - 92 * scale, height - 24 * scale, x + 92 * scale, height))
 
 
-def unclipped(light):
-    """The most light the SDR screenshot (hdr.wgsl screenshot_world) shows as `light`: itself below white, and
-    anything from white up, which it scales down to white by its brightest channel."""
-    return light if max(light) < 1 else [float('inf')] * 3
-
-
-def shows(sdr, paper, cap=float('inf'), mapped=lambda light: light):
-    """The HDR10 codes an 8-bit SDR pixel allows: half a step either way (its rounding), its light through `mapped`
-    first, and a code either way (the HDR shot's own rounding)."""
+def shows(sdr, paper, cap=float('inf')):
+    """The HDR10 codes an 8-bit SDR pixel allows: half a step either way (its rounding), and a code either way (the
+    HDR shot's own rounding)."""
     low, high = ([(max(v + step, 0) / 255) ** 2.2 for v in sdr] for step in (-0.5, 0.5))
-    return [c - 1 for c in hdr10(mapped(low), paper, cap)], [c + 1 for c in hdr10(mapped(high), paper, cap)]
+    return [c - 1 for c in hdr10(low, paper, cap)], [c + 1 for c in hdr10(high, paper, cap)]
+
+
+def scaled(sdr, hdr, paper, cap):
+    """Whether HDR10 codes `hdr` can be the light of an 8-bit SDR pixel with a channel at white: the SDR screenshot
+    (hdr.wgsl screenshot_world) divides light from white up by its brightest channel, in gamma, which divides the
+    light by one factor k, so the HDR shot holds the SDR pixel's light times one k from 1 to `cap`, each channel at
+    most `cap` (as hdr10), within the rounding `shows` allows.
+    🤖 Agent: BT.2020's matrix has no negative entry, so each code only grows with k and allows k in an interval;
+    one k must lie in all three, so a hue the screenshot doesn't keep fails even where each code alone fits."""
+    low, high = ([(max(v + step, 0) / 255) ** 2.2 for v in sdr] for step in (-0.5, 0.5))
+
+    def code(light, row, k):
+        return 1023 * pq(paper * sum(m * min(c * k, cap) for m, c in zip(row, light)))
+
+    def edge(turns):
+        """Where `turns`, false then true as k grows from 1 to `cap`, turns true."""
+        a, b = 1.0, cap
+        for _ in range(40):
+            a, b = (a, (a + b) / 2) if turns((a + b) / 2) else ((a + b) / 2, b)
+        return b
+
+    least, most = 1.0, cap
+    for row, h in zip(BT2020, hdr):
+        if code(low, row, 1) - 1 > h or code(high, row, cap) + 1 < h:
+            return False
+        least = max(least, edge(lambda k: code(high, row, k) + 1 >= h))
+        most = min(most, edge(lambda k: code(low, row, k) - 1 > h))
+    return least <= most
 
 
 def unpq(code):
@@ -608,8 +630,8 @@ def hdr_gates(shots, sessions):
     and HDR off clips it too, the screenshot clips it and the HDR shot keeps it, so there the HDR shot is only never darker; and the later
     blends over that light come out brighter than vanilla's over its clipped sky (Why gamma storage), so there the
     screenshot isn't held to HDR off.
-    With HDR Lighting on, the SDR screenshot is the HDR shot clipped at white (in the world scenes, outside the
-    HUD), nothing passes the peak, and the night's lights pass paper white. White in the screenshot under the HUD is
+    With HDR Lighting on, the SDR screenshot is the HDR shot with light above white scaled down to it, its hue kept
+    (`scaled`; in the world scenes, outside the HUD), nothing passes the peak, and the night's lights pass paper white. White in the screenshot under the HUD is
     the HUD's white at UI Brightness times paper white, the world's light from paper white up, or one over the other,
     which lies between them; each HUD scene shows HUD_WHITE pixels of it at the HUD's white itself."""
     problems = []
@@ -672,10 +694,14 @@ def hdr_gates(shots, sessions):
                 if scene in HUD or any(x0 <= x < x1 and y0 <= y < y1 for x0, y0, x1, y1 in boxes):
                     # 🤖 Agent: White is the HUD's white, the world's light from white up, or one over the other.
                     return s != (255, 255, 255) or min(h) >= min(white, world) - 1
+                if 255 in s:
+                    if (s, h) not in ranges:
+                        ranges[s, h] = scaled(s, h, paper, peak / paper)
+                    return ranges[s, h]
                 if s not in ranges:
-                    ranges[s] = shows(s, paper, peak / paper, unclipped)
+                    ranges[s] = shows(s, paper, peak / paper)
                 return all(lo <= c <= hi for c, lo, hi in zip(h, *ranges[s]))
-            sdr, hdr = each(name, scene, test, 'the SDR screenshot isn\'t the HDR shot clipped at white, white '
+            sdr, hdr = each(name, scene, test, 'the SDR screenshot isn\'t the HDR shot scaled down to white, white '
                             'under the HUD is dimmer than the HUD\'s and the world\'s, or the HDR shot passes the peak')
             if scene in HUD:
                 # 🤖 Agent: The rule above can't tell the HUD's white from light behind it, so the HUD's opaque white

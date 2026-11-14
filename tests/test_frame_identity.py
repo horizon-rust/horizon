@@ -184,13 +184,31 @@ class HdrGateTests(unittest.TestCase):
         for nits, signal in ((0, 0.0), (100, 0.5081), (203, 0.5807), (1000, 0.7518), (10000, 1.0)):
             self.assertAlmostEqual(identity.pq(nits), signal, places=4)
 
-    def test_unclipped_is_the_light_below_white_and_unbounded_from_it(self):
-        # 🤖 Agent: hdr.rs sdr_screenshots_keep_the_world_up_to_white_and_the_hud_as_drawn: below white the shot is
-        # the light, and at white it may be any light from white up.
-        for shot in ([0.5, 0.25, 0.0], [0.999, 0.999, 0.999]):
-            self.assertEqual(identity.unclipped(shot), shot)
-        for shot in ([1.0, 0.5, 0.0], [1.002, 1.0, 0.9]):
-            self.assertEqual(identity.unclipped(shot), [float('inf')] * 3)
+    def test_light_above_white_keeps_its_hue_in_a_lit_screenshot(self):
+        # 🤖 Agent: float_hdr: paper white 203, peak 1000. hdr.wgsl screenshot_world divides light from white up by
+        # its brightest channel: the HDR shot is the screenshot's light times one factor, up to the peak. A 64x64
+        # world shot, its corner pixel `sdr` over HDR light `light`, the rest black.
+        peak = 1000 / 203
+
+        def problems(sdr, light):
+            sdr_rows = [bytes(sdr) + bytes(3 * 63)] + [bytes(3 * 64)] * 63
+            word = b''.join((round(c) << 6).to_bytes(2, 'big') for c in identity.hdr10(light, 203, peak))
+            hdr_rows = [word + bytes(6 * 63)] + [bytes(6 * 64)] * 63
+            encode(self.dir / 'float_hdr.day_water.png', 64, 64, 8, sdr_rows, 0)
+            encode(self.dir / 'float_hdr.day_water-hdr.png', 64, 64, 16, hdr_rows, 0)
+            return identity.hdr_gates(self.dir, ['float_hdr'])
+        orange = [1.0, (128 / 255) ** 2.2, 0.0]
+        # 🤖 Agent: White, red and orange at white, scaled up, and neutral white at the peak and past it.
+        for sdr, light in (((255, 0, 0), [1.0, 0, 0]), ((255, 0, 0), [3.0, 0, 0]), ((255, 0, 0), [peak, 0, 0]),
+                           ((255, 128, 0), orange), ((255, 128, 0), [3 * c for c in orange]),
+                           ((255, 255, 255), [1.0] * 3), ((255, 255, 255), [peak] * 3), ((255, 255, 255), [6.0] * 3)):
+            self.assertEqual(problems(sdr, light), [], (sdr, light))
+        # 🤖 Agent: Red shot as white at the peak, orange with its green raised, each channel alone in range; and
+        # orange darker than white, or past the peak's factor.
+        for sdr, light in (((255, 0, 0), [peak] * 3), ((255, 0, 0), [3.0, 1.0, 1.0]),
+                           ((255, 128, 0), [3.0, 1.15 * 3 * orange[1], 0.0]), ((255, 128, 0), [0.9 * c for c in orange]),
+                           ((255, 128, 0), [6.0, 6 * orange[1], 0.0])):
+            self.assertIn('1 pixels', '\n'.join(problems(sdr, light)), (sdr, light))
 
     def test_white_in_a_lit_screenshot_is_the_huds_white_or_the_worlds_light_from_white_up(self):
         # 🤖 Agent: float_visbuffer: paper white 200, peak 300, the HUD at half of paper white. A 64x64 shot's corner
