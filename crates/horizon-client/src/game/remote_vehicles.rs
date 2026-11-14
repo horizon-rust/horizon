@@ -307,6 +307,7 @@ impl Game<'_> {
             // Another animal moves on the server with the rider's input
             // (PlayerInput); the rider sits where `positionRider` puts it.
             self.position_rider();
+            self.rider_flight_toggle(keys.jump);
             return Ok(true);
         }
         // Generic entities are valid vehicles too (plugins use displays as seats).
@@ -346,6 +347,7 @@ impl Game<'_> {
                     p.velocity = Vec3::ZERO;
                     p.fall_distance = 0.0;
                 }
+                self.rider_flight_toggle(keys.jump);
                 return Ok(true);
             }
         }
@@ -419,7 +421,20 @@ impl Game<'_> {
             p.velocity = Vec3::ZERO;
             p.fall_distance = 0.0;
         }
+        self.rider_flight_toggle(keys.jump);
         Ok(true)
+    }
+
+    /// `LocalPlayer.aiStep`'s creative-flight toggle for a rider, whose tick
+    /// runs here instead of the walking one. `Player.tick` counts the
+    /// jump-trigger window down and clears a passenger's `onGround` before
+    /// `aiStep`, so the mount must be jumpable (`Player.jumpableVehicle`) and
+    /// the toggle's jump from the ground never runs for a rider.
+    fn rider_flight_toggle(&mut self, jumping: bool) {
+        let vehicle_jumpable = self.jumpable_mount();
+        if let Some(player) = self.player.as_mut() {
+            player.creative_flight_toggle(jumping, vehicle_jumpable);
+        }
     }
 
     /// `LocalPlayer.tick` for a passenger: the boat it controls goes to the
@@ -671,6 +686,10 @@ fn mount_move(m: &Mob) -> S {
 }
 
 /// Avatar's VEHICLE attachment scales independently of the vehicle's seat.
+#[cfg(test)]
+#[path = "creative_flight_tests.rs"]
+mod creative_flight_tests;
+
 fn generic_player_seat(at: glam::DVec3, before: glam::DVec3, scale: f32) -> (Vec3, Vec3) {
     let offset = 0.6 * f64::from(scale);
     (
