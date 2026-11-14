@@ -274,6 +274,8 @@ pub(super) struct RegionState {
     factory: Vec<std::sync::mpsc::Receiver<std::result::Result<Box<Game<'static>>, String>>>,
     /// Each level's resident regions: their games keep their parts of the level and their players.
     pub resident: std::collections::HashMap<Dim, ResidentSet>,
+    /// A level's resident regions started before its server-side work, waited for by its world tick.
+    flight: Option<(Dim, Flight)>,
     /// The regions just came home for nothing the server's thread has to do (their age, a player near the edge
     /// of its region): the level is split again in the same tick, instead of ticking whole on this thread.
     resplit: bool,
@@ -306,6 +308,16 @@ impl ResidentSet {
                 .collect(),
         );
     }
+}
+
+/// Resident regions started on their threads this tick, not yet waited for.
+struct Flight {
+    set: ResidentSet,
+    /// The regions started this tick.
+    launched: Vec<usize>,
+    failed: Option<String>,
+    /// When they started: the deadline counts from here.
+    started: std::time::Instant,
 }
 
 /// One resident region: its game when it is home, or the channel its thread sends it back on while it ticks.
@@ -778,6 +790,10 @@ impl Game<'_> {
         }
         let dim = self.dim;
         let mut entered = std::time::Instant::now();
+        if self.regions.flight.as_ref().is_some_and(|f| f.0 == dim) {
+            self.finish_flight()?;
+            return Ok(false);
+        }
         if let Some(set) = self.regions.resident.remove(&dim) {
             self.regions.prof.note_resident();
             if let Some(set) = self.resident_tick(set, false)? {
@@ -928,7 +944,16 @@ impl Game<'_> {
 
     /// One tick of the resident regions `set`, on threads of their own; `None` once they are back (the tick ran
     /// by landing them, or one of them failed).
-    fn resident_tick(&mut self, mut set: ResidentSet, first: bool) -> Result<Option<ResidentSet>> {
+    fn resident_tick(&mut self, set: ResidentSet, first: bool) -> Result<Option<ResidentSet>> {
+        match self.resident_launch(set, first) {
+            Some(flight) => self.resident_finish(flight),
+            None => Ok(None),
+        }
+    }
+
+    /// Starts the tick of the resident regions `set` on their threads, without waiting for them: `None` once
+    /// they are back (the tick ran by landing them).
+    fn resident_launch(&mut self, mut set: ResidentSet, first: bool) -> Option<Flight> {
         if !first {
             // The regions that came home alone last tick are lent again.
             let relending = std::time::Instant::now();
@@ -949,7 +974,7 @@ impl Game<'_> {
                     let landing = std::time::Instant::now();
                     horizon_client::spans::time("regions_land", || self.land_resident_set(set));
                     self.regions.prof.add(Step::Land, landing);
-                    return Ok(None);
+                    return None;
                 }
                 Some(Land::Slots(list)) => {
                     let landing = std::time::Instant::now();
@@ -1047,6 +1072,58 @@ impl Game<'_> {
         for slot in set.games.iter_mut().filter(|s| !s.landed) {
             slot.age += 1;
         }
+        Some(Flight {
+            set,
+            launched,
+            failed,
+            started,
+        })
+    }
+
+    /// Starts the resident regions of the level being ticked before the rest of its server-side work (streaming,
+    /// the tick's prelude, the network of the connections no region owns), so that work overlaps their tick;
+    /// [`Game::finish_flight`] waits for them. Only for a set that stays out this tick: one that must land, or
+    /// has a region back alone, is left to [`Game::tick_world_regions`].
+    pub(super) fn launch_residents_early(&mut self) {
+        let dim = self.dim;
+        if !region_threads_on() || self.regions.worker || self.regions.flight.is_some() {
+            return;
+        }
+        let Some(set) = self.regions.resident.get(&dim) else {
+            return;
+        };
+        if set.games.iter().any(|s| s.landed) || self.residents_must_land(set).is_some() {
+            return;
+        }
+        let Some(set) = self.regions.resident.remove(&dim) else {
+            return;
+        };
+        self.regions.prof.note_resident();
+        if let Some(flight) = self.resident_launch(set, false) {
+            self.regions.flight = Some((dim, flight));
+        }
+    }
+
+    /// Waits for the regions [`Game::launch_residents_early`] started (until the regions' deadline) and keeps
+    /// the set resident: the second half of their tick.
+    pub(super) fn finish_flight(&mut self) -> Result<()> {
+        let Some((dim, flight)) = self.regions.flight.take() else {
+            return Ok(());
+        };
+        if let Some(set) = self.resident_finish(flight)? {
+            self.regions.resident.insert(dim, set);
+        }
+        Ok(())
+    }
+
+    /// Waits for the regions of `flight` until the deadline: what runs past it carries on by itself.
+    fn resident_finish(&mut self, flight: Flight) -> Result<Option<ResidentSet>> {
+        let Flight {
+            mut set,
+            launched,
+            mut failed,
+            started,
+        } = flight;
         let waiting = std::time::Instant::now();
         // Waited for until the deadline: what runs past it carries on by itself.
         let deadline = started + region_deadline();
