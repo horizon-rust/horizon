@@ -84,8 +84,8 @@ SAVED = re.compile(r'Saved (.+?\.hzperf) \(the file stays')
 
 PROPERTIES = {
     'level-seed': '12345',
-    'view-distance': '10',
-    'simulation-distance': '10',
+    'view-distance': os.environ.get('HORIZON_BENCH_VIEW', '10'),
+    'simulation-distance': os.environ.get('HORIZON_BENCH_VIEW', '10'),
     'online-mode': 'false',
     'white-list': 'false',
     'gamemode': 'creative',
@@ -497,7 +497,7 @@ def run_once(kind, bots, behaviour, args, out):
                 server.console(f'summon {kind} {x} 100 {z} {{PersistenceRequired:1b}}')
         time.sleep(5)
         report = out / f'{name}-bots.json'
-        total = bots * args.join_every + args.warmup + args.seconds
+        total = bots * args.join_every + args.warmup + args.seconds + (200 if os.environ.get('HORIZON_BENCH_GRID') else 0)
         # The summary comes back on stdout after the per-second lines, so it works over ssh too.
         # No bots: the idle server, measured the same way.
         bot_process = subprocess.Popen(['true'] if bots == 0 else [
@@ -517,6 +517,17 @@ def run_once(kind, bots, behaviour, args, out):
             time.sleep(args.warmup)
         else:
             time.sleep(bots * args.join_every + args.warmup)
+        grid = int(os.environ.get('HORIZON_BENCH_GRID', '0'))
+        if grid:
+            # Static players far enough apart to be regions of their own: a grid, one bot to a cell.
+            for b in range(bots):
+                server.console(f'tp Bot{b} {(b % 13 - 6) * grid} 169 {(b // 13 - 6) * grid}')
+                time.sleep(0.02)
+            time.sleep(45)
+        if os.environ.get('HORIZON_BENCH_PROBE'):
+            for b in range(0, bots, max(1, bots // 12)):
+                server.console(f'data get entity Bot{b} Pos')
+            time.sleep(2)
         profiling = start_profile(server, kind, args)
         measure_start = time.time()
         rss, cpu, ticks = [], [], []
