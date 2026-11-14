@@ -377,6 +377,8 @@ pub struct Guest {
     pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
+    /// A region thread sent this player's chunks this tick: the server's hub skips them once.
+    pub chunks_done: bool,
     /// The hand-over a proxy started by exporting it with `freeze`
     /// (`arrivals::Handover`): while it lasts, what it sends other than its
     /// acknowledgements is not acted on, and every export answers with the
@@ -613,6 +615,7 @@ impl Guest {
             dead: false,
             death_time: 0,
             placed: false,
+            chunks_done: false,
             handover: None,
             expected: j.expected,
             held: false,

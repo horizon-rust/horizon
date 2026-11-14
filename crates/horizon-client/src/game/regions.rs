@@ -779,6 +779,14 @@ impl Game<'_> {
         self.tick_experience();
         self.tick_moving_pistons()?;
         self.tick_block_entities()?;
+        // Its players' chunks and block changes, from its own world, before it goes back.
+        if let Some(mut host) = self.lan.take() {
+            if !host.hub.guests.is_empty() {
+                host.hub.region_chunks(&self.world);
+                host.hub.region_changes(&mut self.world);
+            }
+            self.lan = Some(host);
+        }
         Ok(())
     }
 }

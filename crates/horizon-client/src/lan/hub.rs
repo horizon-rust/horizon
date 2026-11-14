@@ -2839,15 +2839,44 @@ impl Hub {
     /// keep their order. The far ring's chunks the level doesn't hold go as
     /// the save's readers made them.
     fn update_chunks(&mut self, ctx: &TickCtx) {
-        let world = &*ctx.world;
+        self.update_chunks_in(&*ctx.world, ctx.streaming);
+    }
+
+    /// A region's players' chunks on its own thread, after its tick: a region owns every chunk its players see,
+    /// so nothing else reads them meanwhile. The server's hub skips these players once (`Guest::chunks_done`).
+    pub fn region_chunks(&mut self, world: &World) {
+        if self.far.is_some() || self.guests.is_empty() {
+            return;
+        }
+        self.update_chunks_in(world, None);
+        let dimension = self.config.dimension.clone();
+        for g in &mut self.guests {
+            g.chunks_done = g.placed && g.dimension == dimension;
+        }
+    }
+
+    /// A region's block and light changes to its own players, after [`Self::region_chunks`]: its logs are drained
+    /// here, so the server's hub sends only what changes after the regions are back.
+    pub fn region_changes(&mut self, world: &mut World) {
+        if self.far.is_some() || self.guests.is_empty() || world.block_log.is_none() || world.light_log.is_none() {
+            return;
+        }
+        self.broadcast_light_changes(world);
+        self.broadcast_block_changes(world);
+    }
+
+    fn update_chunks_in(&mut self, world: &World, streaming: Option<&crate::streaming::Streaming>) {
         if let Some(far) = self.far.as_mut() {
             far.poll();
         }
         let mut batches = Vec::new();
         for i in 0..self.guests.len() {
+            if std::mem::take(&mut self.guests[i].chunks_done) {
+                continue;
+            }
             if self.watches(&self.guests[i]) {
                 self.update_view(i);
-                if let Some(batch) = self.next_batch(i, world, ctx.streaming) {
+                if let Some(batch) = self.next_batch(i, world, streaming) {
                     batches.push((i, batch));
                 }
             }
@@ -2886,7 +2915,7 @@ impl Hub {
             .collect();
         self.encoder.warm(&columns.chunks);
         let mut encoded = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
-            ctx.streaming.and_then(|s| s.proto_sections(x, z))
+            streaming.and_then(|s| s.proto_sections(x, z))
         });
         let uses = &mut columns.uses;
         let chunks = &columns.chunks;
