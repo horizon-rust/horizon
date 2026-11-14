@@ -715,10 +715,10 @@ pub fn mob_to_nbt(
         map.remove(&"CustomNameVisible".into());
     }
     // A styled name from the save stays unless the name changed.
-    if custom_name(&tag) != m.custom_name
-        && let Some(name) = &m.custom_name
+    if m.custom_name_changed(tag.get("CustomName"))
+        && let Some(name) = m.custom_name_tag()
     {
-        put(&mut tag, "CustomName", Tag::String(name.as_str().into()));
+        put(&mut tag, "CustomName", name);
     }
     let Tag::Compound(map) = &mut tag else {
         return tag;
@@ -1816,7 +1816,7 @@ fn put_sulfur_attributes(map: &mut Compound, m: &Mob) {
 }
 /// `Brain.Packed`: the memories finalizeSpawn set, over the saved ones.
 /// `CustomName`: a text component saved as a string or a `{text: ..}` compound.
-fn custom_name(tag: &Tag) -> Option<String> {
+pub(crate) fn custom_name(tag: &Tag) -> Option<String> {
     match tag.get("CustomName")? {
         Tag::String(s) => Some(s.to_string_lossy()),
         t @ Tag::Compound(_) => match t.get("text") {

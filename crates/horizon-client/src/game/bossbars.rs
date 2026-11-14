@@ -446,7 +446,9 @@ impl Game<'_> {
                 if out.iter().any(|(uuid, _)| *uuid == ints) {
                     continue;
                 }
-                out.push((ints, Text::literal(g.name.clone())));
+                // `Player::getDisplayName`: the team's formatting, the
+                // `/tell` click, the entity hover and the name for shift-click.
+                out.push((ints, self.player_text(&g.name, g.uuid)));
             }
         }
         out
@@ -774,6 +776,10 @@ struct Offer {
     fog: bool,
     scope: Scope,
 }
+
+#[cfg(test)]
+#[path = "bossbar_names_tests.rs"]
+mod bossbar_names_tests;
 
 #[cfg(test)]
 mod listing_tests {

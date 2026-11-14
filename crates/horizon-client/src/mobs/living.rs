@@ -730,6 +730,52 @@ impl Mob {
     pub fn height(&self) -> f32 {
         self.dims().1 as f32
     }
+    /// `EntityAttachment.NAME_TAG` of the current pose, before
+    /// `SubmitNodeCollector.submitNameTag` lifts it 0.5: the box height
+    /// (`EntityAttachment.Fallback.AT_HEIGHT`), unless the type attaches the
+    /// tag elsewhere, scaled like the box (`EntityDimensions.scale`).
+    pub fn name_tag_height(&self) -> f64 {
+        if self.kind.species == super::Species::Sniffer {
+            // `EntityTypes.SNIFFER`: `.nameTagOffset(2.05F)` over a 1.75 box.
+            // `Sniffer.DIGGING_DIMENSIONS` is built without the attachment, so
+            // a digging sniffer falls back to its 1.75 - 0.4 box.
+            let height = if super::sniffer::digging(self) {
+                1.75_f32 - 0.4
+            } else {
+                2.05_f32
+            };
+            // `getAgeScale()` (a baby sniffer is `Baby::Scale(0.5)`), then
+            // `getScale()`; `EntityAttachments.scale` multiplies the point in
+            // `Vec3`'s doubles, so these are double products.
+            let age = match super::species::def(self.kind.species).baby {
+                super::species::Baby::Scale(s, _) if self.is_baby() => s as f32,
+                _ => 1.0,
+            };
+            f64::from(height) * f64::from(age) * f64::from(self.model_scale())
+        } else {
+            f64::from(self.height())
+        }
+    }
+    /// `Entity.saveWithoutId`'s `CustomName`: the whole component as
+    /// `ComponentSerialization.CODEC` writes it (a name tag's `custom_name`
+    /// keeps its colour), else the plain text. `None` without a name.
+    pub fn custom_name_tag(&self) -> Option<horizon_world::nbt::Tag> {
+        let name = self.custom_name.as_ref()?;
+        Some(match &self.custom_name_text {
+            Some(text) => crate::scoreboard::component_tag(&text.component()),
+            None => horizon_world::nbt::Tag::String(name.as_str().into()),
+        })
+    }
+    /// Whether the save's `CustomName` is not this mob's name, style included:
+    /// a rename to the same text with another colour still changes it.
+    pub fn custom_name_changed(&self, saved: Option<&horizon_world::nbt::Tag>) -> bool {
+        match (&self.custom_name_text, saved) {
+            (Some(current), Some(saved)) => crate::entity_nbt::name_text(saved) != *current,
+            (Some(_), None) => true,
+            // A plain name with no component (a mod's) still compares as text.
+            (None, _) => saved.and_then(crate::entity_nbt::custom_name) != self.custom_name,
+        }
+    }
     /// `AgeableMob.isBaby`: `canBeABaby() && getAge() < 0`. The age alone is
     /// not enough — a frog, a parrot, a zombie nautilus, a camel husk, a slime,
     /// a magma cube, a piglin brute, a tadpole, or anything that is not an
@@ -1596,7 +1642,17 @@ impl Mob {
         }
     }
     /// LivingEntity.travel.
-    pub fn travel(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
+    pub fn travel(&mut self, w: &MobWorld, mut input: Vec3, events: &mut Vec<MobEvent>) {
+        // Camel.travel: on the ground, a camel that sits or changes pose keeps
+        // the vertical part of its motion and drops the horizontal input.
+        if super::camel::is_camel(self.species())
+            && self.on_ground
+            && super::camel::refuse_to_move(self)
+        {
+            let vertical = Vec3::new(0.0, 1.0, 0.0);
+            self.velocity = self.velocity.multiply(vertical);
+            input = input.multiply(vertical);
+        }
         if super::ai::custom_travel(self, w, input, events) {
             return;
         }
@@ -2313,6 +2369,9 @@ impl RestitutionWorld for MobRestitution<'_> {
 #[cfg(test)]
 #[path = "living_climbable_tests.rs"]
 mod climbable_tests;
+#[cfg(test)]
+#[path = "name_tag_nbt_tests.rs"]
+mod name_tag_nbt_tests;
 #[cfg(test)]
 #[path = "living_tests.rs"]
 mod tests;

@@ -1805,8 +1805,7 @@ impl Game<'_> {
                     c.at = pos;
                 }
             }
-            // Wall-mounted entities do not move.
-            Target::Frame(_) | Target::Painting(_) => {}
+            Target::Frame(_) | Target::Painting(_) => self.teleport_hanging(t, v),
             // The commands leave a natural knot out (`without_knots`).
             Target::Knot(_) => {}
         }
@@ -1840,7 +1839,7 @@ impl Game<'_> {
         rotation: Option<[f32; 2]>,
         turn_riders: bool,
     ) -> R<bool> {
-        match self.teleport_vehicle_across(t, level, pos, rotation, turn_riders) {
+        match self.teleport_any_across(t, level, pos, rotation, turn_riders) {
             Ok(true) => return Ok(true),
             Ok(false) => {}
             Err(error) => {
@@ -3101,8 +3100,8 @@ impl Game<'_> {
             to_dim.unwrap_or(here),
         )
     }
-    /// `BlockPosArgument.getLoadedBlockPos` in the level a dimension argument
-    /// names, or, without one, the command's own (as `block_pos_arg` checks it).
+    /// `BlockPosArgument.getLoadedBlockPos` (`Level.isInWorldBounds`) in the
+    /// level a dimension argument names, or, without one, the command's own.
     fn clone_loaded(
         &mut self,
         dim: Option<Dim>,
@@ -3122,7 +3121,7 @@ impl Game<'_> {
         if !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
             return Err(err("argument.pos.unloaded", &[]));
         }
-        if p[1] < self.world.bottom_y() || p[1] >= self.world.top_y() {
+        if p[1] < self.world.shape.min_y || p[1] >= self.world.shape.max_y() {
             return Err(err("argument.pos.outofworld", &[]));
         }
         Ok(())
@@ -3175,12 +3174,8 @@ impl Game<'_> {
         if area > i64::from(limit) {
             return Err(err("commands.clone.toobig", &[&limit, &area]));
         }
-        self.clone_enter(to_dim)?;
-        for p in [dest, dmax] {
-            if !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
-                return Err(err("argument.pos.unloaded", &[]));
-            }
-        }
+        // CloneCommands.clone: every column of both boxes must be loaded, in each level.
+        self.clone_boxes_loaded([(from_dim, a, b), (to_dim, dest, dmax)])?;
         // CloneCommands.clone: the destination level being a Debug world fails it.
         if self.world_debug {
             return Err(err("commands.clone.failed", &[]));
@@ -3231,7 +3226,8 @@ impl Game<'_> {
         let mut count = 0;
         for (_, to, s, entity, name) in copies {
             self.place_state(to, s, strict, false)?;
-            if Some(s) != barrier {
+            // CloneCommands.clone counts a block only when Level.setBlock returned true.
+            if self.clone_writable(to) && Some(s) != barrier {
                 count += 1;
             }
             if let Some(e) = entity {
@@ -4395,6 +4391,9 @@ fn difficulty_names(from: u8, to: u8) -> (&'static str, &'static str) {
         DIFFICULTIES[usize::from(to) & 3],
     )
 }
+
+#[cfg(test)]
+mod clone_writes_tests;
 
 #[cfg(test)]
 mod air_filter_tests;

@@ -4249,7 +4249,7 @@ impl Game<'_> {
         }
     }
 
-    fn tick_projectiles(&mut self) -> Result<()> {
+    pub(super) fn tick_projectiles(&mut self) -> Result<()> {
         if self.creatures.projectiles.is_empty() {
             self.flush_lan_explosions();
             return self.flush_wind_bursts();
@@ -4498,8 +4498,8 @@ impl Game<'_> {
                     deflections.push(id);
                     continue;
                 }
-                // AbstractWindCharge.tick: out of the world's top it bursts.
-                if wind && keep && p.position.y > 350.0 {
+                // AbstractWindCharge.tick: above the world's top it bursts.
+                if wind && keep && super::wind::above_the_top(self.world.shape, p.position.y) {
                     hits.push((
                         p.clone(),
                         Hit::Block {

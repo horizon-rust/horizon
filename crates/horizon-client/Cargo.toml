@@ -142,9 +142,12 @@ windows-mimalloc = []
 # Opt-in Windows heap experiment; see docs/windows-allocators.md.
 windows-segment-heap = []
 
+# The binaries hold no tests (the library does): `cargo test` builds no empty test harness for them, each of which
+# linked the whole crate again. They still build for integration tests (CARGO_BIN_EXE_*) and clippy --all-targets.
 [[bin]]
 name = "horizon-client"
 path = "src/main.rs"
+test = false
 
 [[test]]
 name = "it"
