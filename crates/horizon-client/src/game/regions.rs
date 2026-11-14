@@ -41,6 +41,9 @@ pub(super) struct Regions {
     /// `owned` as a flat table over the sections' bounds, when that is small enough: every split of the level asks
     /// for each chunk's and entity's region (tens of thousands a tick), one array read each.
     grid: Option<Grid>,
+    /// While one resident region is split out again alone: the only region that owns anything (`usize::MAX`:
+    /// all of them). Read by the server's thread only.
+    only: std::sync::atomic::AtomicUsize,
 }
 
 /// The owned sections' regions in one array over their bounding box (`u16::MAX`: no region).
@@ -214,16 +217,27 @@ impl Regions {
             count,
             firsts,
             grid,
+            only: std::sync::atomic::AtomicUsize::new(usize::MAX),
         }
+    }
+
+    /// From now on only region `k` (or all of them, `None`) owns chunks: a split of the level then moves out
+    /// that region's part alone.
+    fn restrict(&self, k: Option<usize>) {
+        self.only.store(k.unwrap_or(usize::MAX), Ordering::Relaxed);
     }
 
     /// The region that owns chunk `(x, z)`.
     #[inline]
     pub(super) fn of_chunk(&self, (x, z): (i32, i32)) -> Option<usize> {
         let (sx, sz) = (x >> SECTION_SHIFT, z >> SECTION_SHIFT);
-        match &self.grid {
+        let r = match &self.grid {
             Some(g) => g.get(sx, sz),
             None => self.owned.get(&(sx, sz)).copied(),
+        };
+        match self.only.load(Ordering::Relaxed) {
+            usize::MAX => r,
+            k => r.filter(|&r| r == k),
         }
     }
 
@@ -273,8 +287,22 @@ pub(super) struct ResidentSet {
     lent: Arc<horizon_client::fast_hash::FxHashSet<(i32, i32)>>,
     /// The layout they were lent in: what their players' views must stay inside.
     layout: Arc<Regions>,
-    /// Ticks since they were lent.
+    /// Ticks since they were all lent: the set comes home whole and is split anew every few periods.
     age: u32,
+}
+
+impl ResidentSet {
+    /// The chunks of the regions that are out on their threads, for the streamer.
+    fn rebuild_lent(&mut self) {
+        self.lent = Arc::new(
+            self.chunks
+                .iter()
+                .zip(&self.games)
+                .filter(|(_, s)| !s.landed)
+                .flat_map(|(c, _)| c.iter().map(|c| (c.x, c.z)))
+                .collect(),
+        );
+    }
 }
 
 /// One resident region: its game when it is home, or the channel its thread sends it back on while it ticks.
@@ -291,6 +319,15 @@ struct Slot {
     /// How long its last tick took (ms) and how many chunks it held then.
     took: f32,
     chunks: usize,
+    /// Ticks since this region was lent: it comes home alone at `resident_period`, each at its own phase.
+    age: u32,
+    /// Its part of the level and its players are home, ticking with the server's thread this tick; it is lent
+    /// again at the start of the next.
+    landed: bool,
+    /// Lent again: its game takes the tick's settings, as one just lent.
+    fresh: bool,
+    /// The connections of its players.
+    conns: Vec<u32>,
 }
 
 impl Slot {
@@ -303,6 +340,10 @@ impl Slot {
             told: None,
             took: 0.0,
             chunks: 0,
+            age: 0,
+            landed: false,
+            fresh: false,
+            conns: Vec::new(),
         }
     }
     /// Takes the game in if its thread finished (waiting until `until`, or for good when None); false while it
@@ -369,6 +410,15 @@ fn resident_period() -> u32 {
             .unwrap_or(20)
             .max(1)
     })
+}
+
+/// Ticks of `resident_period` between the resident set coming home whole to be split anew.
+const RESIDENT_REFRESH: u32 = 10;
+
+/// Which resident regions have to come home: all of them, or those named (with the reason).
+enum Land {
+    All(&'static str),
+    Slots(Vec<(usize, &'static str)>),
 }
 
 /// Whether region game `w` has something for the server's thread, so its region must come back: commands, menus
@@ -825,6 +875,7 @@ impl Game<'_> {
             .lend_trackers(regions.count, |chunk| regions.of_chunk(chunk))
             .into_iter();
         let split = self.split_level(&regions);
+        let regions_count = regions.count;
         let mut set = ResidentSet {
             games: Vec::with_capacity(regions.count),
             chunks: Vec::with_capacity(regions.count),
@@ -851,7 +902,12 @@ impl Game<'_> {
                 shell.hub.set_tracker(tracker);
             }
             w.lan = Some(shell);
-            set.games.push(Slot::new(w));
+            let mut slot = Slot::new(w);
+            slot.conns = conns;
+            slot.fresh = true;
+            // Each region comes home at its own tick of the period.
+            slot.age = (set.games.len() as u32 * resident_period()) / regions_count as u32;
+            set.games.push(slot);
             set.chunks.push(chunks);
         }
         set.lent = Arc::new(set.chunks.iter().flatten().map(|c| (c.x, c.z)).collect());
@@ -867,13 +923,38 @@ impl Game<'_> {
     /// One tick of the resident regions `set`, on threads of their own; `None` once they are back (the tick ran
     /// by landing them, or one of them failed).
     fn resident_tick(&mut self, mut set: ResidentSet, first: bool) -> Result<Option<ResidentSet>> {
-        if !first && let Some(why) = self.residents_must_land(&set) {
-            self.regions.prof.landed_because(why);
-            self.regions.resplit = matches!(why, "age" | "left section");
-            let landing = std::time::Instant::now();
-            horizon_client::spans::time("regions_land", || self.land_resident_set(set));
-            self.regions.prof.add(Step::Land, landing);
-            return Ok(None);
+        if !first {
+            // The regions that came home alone last tick are lent again.
+            let relending = std::time::Instant::now();
+            let mut relent = false;
+            for k in 0..set.games.len() {
+                if set.games[k].landed {
+                    self.relend_slot(&mut set, k);
+                    relent = true;
+                }
+            }
+            if relent {
+                self.regions.prof.add(Step::Split, relending);
+            }
+            match self.residents_must_land(&set) {
+                Some(Land::All(why)) => {
+                    self.regions.prof.landed_because(why);
+                    self.regions.resplit = matches!(why, "age" | "left section");
+                    let landing = std::time::Instant::now();
+                    horizon_client::spans::time("regions_land", || self.land_resident_set(set));
+                    self.regions.prof.add(Step::Land, landing);
+                    return Ok(None);
+                }
+                Some(Land::Slots(list)) => {
+                    let landing = std::time::Instant::now();
+                    for (k, why) in list {
+                        self.regions.prof.landed_because(why);
+                        self.land_slot(&mut set, k);
+                    }
+                    self.regions.prof.add(Step::Land, landing);
+                }
+                None => {}
+            }
         }
         self.streaming.lent = Some(Arc::clone(&set.lent));
         let pool = Arc::clone(
@@ -912,11 +993,14 @@ impl Game<'_> {
                 }
                 Ok(true) => {}
             }
+            if slot.landed {
+                continue;
+            }
             let Some(mut w) = slot.game.take() else {
                 continue;
             };
             let copying = std::time::Instant::now();
-            if first {
+            if first || std::mem::take(&mut slot.fresh) {
                 w.copy_tick_settings_from(self);
             } else {
                 w.copy_clock_from(self);
@@ -952,6 +1036,9 @@ impl Game<'_> {
             }
         }
         set.age += 1;
+        for slot in set.games.iter_mut().filter(|s| !s.landed) {
+            slot.age += 1;
+        }
         let waiting = std::time::Instant::now();
         // Waited for until the deadline: what runs past it carries on by itself.
         let deadline = started + region_deadline();
@@ -986,6 +1073,7 @@ impl Game<'_> {
             host.hub.away_places = set
                 .games
                 .iter()
+                .filter(|s| !s.landed)
                 .flat_map(|s| s.places.iter().copied())
                 .collect();
         }
@@ -998,43 +1086,165 @@ impl Game<'_> {
         Ok(Some(set))
     }
 
-    /// Whether the resident regions have to come back before the next tick.
-    fn residents_must_land(&self, set: &ResidentSet) -> Option<&'static str> {
+    /// Whether resident regions have to come back before the next tick: all of them, or only some.
+    fn residents_must_land(&self, set: &ResidentSet) -> Option<Land> {
         let Some(host) = self.lan.as_ref() else {
-            return Some("no host");
+            return Some(Land::All("no host"));
         };
-        if set.age >= resident_period() {
-            return Some("age");
+        // The whole set is split anew now and then: the layout follows the players and the ticking chunks.
+        if set.age >= resident_period() * RESIDENT_REFRESH {
+            return Some(Land::All("age"));
         }
-        if host.hub.away_wants_server() {
-            return Some("packet");
+        let slot_of = |conn: u32| set.games.iter().position(|s| s.conns.contains(&conn));
+        let mut slots: Vec<(usize, &'static str)> = Vec::new();
+        let mut add = |k: usize, why: &'static str| {
+            if !slots.iter().any(|s| s.0 == k) {
+                slots.push((k, why));
+            }
+        };
+        match host.hub.away_server_conns() {
+            None => return Some(Land::All("packet")),
+            Some(conns) => {
+                for c in conns {
+                    match slot_of(c) {
+                        Some(k) => add(k, "packet"),
+                        None => return Some(Land::All("packet")),
+                    }
+                }
+            }
         }
-        if host.hub.guests.iter().any(|g| host.hub.here(g)) {
-            return Some("guest here");
+        // A player who is in the server's hands and belongs to no region.
+        if host
+            .hub
+            .guests
+            .iter()
+            .any(|g| host.hub.here(g) && slot_of(g.conn).is_none())
+        {
+            return Some(Land::All("guest here"));
         }
         if !self.level_teleports.is_empty() {
-            return Some("teleport");
+            return Some(Land::All("teleport"));
         }
         let reach = host.hub.config.view_distance.clamp(2, 32) + 1;
-        set.games
-            .iter()
-            .enumerate()
-            .filter_map(|(k, s)| Some((k, s.game.as_ref()?)))
-            .find_map(|(k, w)| {
-                if wants_land(w) {
-                    return Some("region wants");
-                }
-                let left = w.lan.as_ref().is_none_or(|h| {
-                    h.hub.guests.iter().any(|g| {
-                        let (cx, cz) = g.chunk();
-                        ((cx - reach) >> SECTION_SHIFT..=(cx + reach) >> SECTION_SHIFT).any(|sx| {
-                            ((cz - reach) >> SECTION_SHIFT..=(cz + reach) >> SECTION_SHIFT)
-                                .any(|sz| set.layout.owned.get(&(sx, sz)) != Some(&k))
-                        })
+        for (k, s) in set.games.iter().enumerate() {
+            if s.landed {
+                continue;
+            }
+            let Some(w) = s.game.as_ref() else {
+                continue;
+            };
+            let left = w.lan.as_ref().is_none_or(|h| {
+                h.hub.guests.iter().any(|g| {
+                    let (cx, cz) = g.chunk();
+                    ((cx - reach) >> SECTION_SHIFT..=(cx + reach) >> SECTION_SHIFT).any(|sx| {
+                        ((cz - reach) >> SECTION_SHIFT..=(cz + reach) >> SECTION_SHIFT)
+                            .any(|sz| set.layout.owned.get(&(sx, sz)) != Some(&k))
                     })
-                });
-                left.then_some("left section")
-            })
+                })
+            });
+            if left {
+                return Some(Land::All("left section"));
+            }
+            if wants_land(w) {
+                add(k, "region wants");
+            } else if s.age >= resident_period() {
+                add(k, "region age");
+            }
+        }
+        (!slots.is_empty()).then_some(Land::Slots(slots))
+    }
+
+    /// Region `k` alone back in the server's level: it ticks there with the server's thread this tick, and is
+    /// lent again at the start of the next ([`Game::relend_slot`]). The other regions stay out.
+    fn land_slot(&mut self, set: &mut ResidentSet, k: usize) {
+        let slot = &mut set.games[k];
+        let _ = slot.home(None);
+        let Some(mut w) = slot.game.take() else {
+            return;
+        };
+        let mut host = self.lan.take();
+        self.take_region_back(&mut w, &set.chunks[k]);
+        if let (Some(host), Some(shell)) = (host.as_mut(), w.lan.as_mut()) {
+            host.hub.park_tracker(&mut shell.hub);
+            host.take_region_back(shell);
+        }
+        if let Some(host) = host.as_mut() {
+            host.hub.release_away_conns(&slot.conns);
+            host.hub.restore_guest_order();
+        }
+        slot.game = Some(w);
+        slot.landed = true;
+        self.lan = host;
+        set.rebuild_lent();
+        self.streaming.lent = Some(Arc::clone(&set.lent));
+    }
+
+    /// Region `k`, landed alone, split out of the level again in the layout the set has: its chunks (the ones
+    /// loaded since too), its entities and its players, moved back into its game.
+    fn relend_slot(&mut self, set: &mut ResidentSet, k: usize) {
+        let dim = self.dim;
+        let Some(mut w) = set.games[k].game.take() else {
+            return;
+        };
+        let Some(mut host) = self.lan.take() else {
+            set.games[k].game = Some(w);
+            return;
+        };
+        let pool = Arc::clone(
+            self.regions
+                .entity_pool
+                .get_or_insert_with(|| Arc::new(AtomicU32::new(self.next_entity + 1))),
+        );
+        let layout = Arc::clone(&set.layout);
+        layout.restrict(Some(k));
+        let in_region: HashMap<u32, usize> = host
+            .hub
+            .guests
+            .iter()
+            .filter(|g| host.hub.here(g))
+            .filter_map(|g| Some((g.conn, layout.of_chunk(g.chunk())?)))
+            .collect();
+        let guests = host
+            .hub
+            .split_guests(layout.count, |conn| in_region.get(&conn).copied())
+            .into_iter()
+            .nth(k)
+            .unwrap_or_default();
+        let tracker = host
+            .hub
+            .lend_trackers(layout.count, |chunk| layout.of_chunk(chunk))
+            .into_iter()
+            .nth(k);
+        let split = self.split_level(&layout);
+        layout.restrict(None);
+        let part = split
+            .parts
+            .into_iter()
+            .nth(k)
+            .expect("a part for the region");
+        let chunks = split.chunks.into_iter().nth(k).unwrap_or_default();
+        let mob_ids: Vec<u32> = part.mobs.iter().map(|m| m.id).collect();
+        self.lend_region(&mut w, part);
+        w.copy_world_settings_from(self);
+        w.refill_entity_ids(&pool);
+        let conns: Vec<u32> = guests.iter().map(|g| g.conn).collect();
+        host.hub.away.extend(conns.iter().copied());
+        let mut shell = w.lan.take().unwrap_or_else(|| host.region_shell());
+        host.lend_region(&mut shell, &conns, &mob_ids, dim, guests);
+        if let Some(tracker) = tracker {
+            shell.hub.set_tracker(tracker);
+        }
+        w.lan = Some(shell);
+        self.lan = Some(host);
+        let slot = &mut set.games[k];
+        slot.game = Some(w);
+        slot.landed = false;
+        slot.fresh = true;
+        slot.conns = conns;
+        slot.age = 0;
+        set.chunks[k] = chunks;
+        set.rebuild_lent();
+        self.streaming.lent = Some(Arc::clone(&set.lent));
     }
 
     /// The resident regions of the level in place back: their parts of the level and their players.
@@ -1049,6 +1259,11 @@ impl Game<'_> {
             let Some(mut w) = slot.game.take() else {
                 continue;
             };
+            if slot.landed {
+                // Home already, alone.
+                back.push(w);
+                continue;
+            }
             self.take_region_back(&mut w, &chunks);
             if let (Some(host), Some(shell)) = (host.as_mut(), w.lan.as_mut()) {
                 host.hub.park_tracker(&mut shell.hub);

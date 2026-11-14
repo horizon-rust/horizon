@@ -2930,6 +2930,36 @@ impl Hub {
         }
     }
 
+    /// The connections whose held events the server's thread has to see, or None when one belongs to no
+    /// connection (a duplicate login).
+    pub fn away_server_conns(&self) -> Option<Vec<u32>> {
+        let mut out = Vec::new();
+        for e in &self.away_events {
+            match e {
+                NetEvent::Packet(_, p, _) if region_local(p) => {}
+                NetEvent::Packet(conn, ..) | NetEvent::Left(conn, _) => {
+                    if !out.contains(conn) {
+                        out.push(*conn);
+                    }
+                }
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+
+    /// Some of the players are back: what waited for them is for the next poll, the others stay away.
+    pub fn release_away_conns(&mut self, conns: &[u32]) {
+        for c in conns {
+            self.away.remove(c);
+        }
+        let (mine, kept): (Vec<NetEvent>, Vec<NetEvent>) = std::mem::take(&mut self.away_events)
+            .into_iter()
+            .partition(|e| matches!(e, NetEvent::Packet(c, ..) | NetEvent::Left(c, _) if conns.contains(c)));
+        self.away_events = kept;
+        self.replay.extend(mine);
+    }
+
     /// The players are back: what waited for them is for the next poll.
     pub fn release_away(&mut self) {
         self.away.clear();
