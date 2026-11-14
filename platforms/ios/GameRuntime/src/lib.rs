@@ -1,10 +1,10 @@
-mod diagnostics;
-
 //! In-process link adapter for the UNMODIFIED original Horizon game.
 //!
 //! The iOS host can link this library today. Starting the engine is withheld
 //! until its winit event loop and Metal surface can be owned by the iOS host.
 //! Do not run Horizon's desktop-style entry function on a UIKit callback.
+
+mod diagnostics;
 
 #[global_allocator]
 static ALLOCATOR: horizon_game::Allocator = horizon_game::ALLOCATOR;
