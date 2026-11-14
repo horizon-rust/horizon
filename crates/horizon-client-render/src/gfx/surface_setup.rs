@@ -38,6 +38,7 @@ pub(super) fn set_up_surface(
         .ok_or("surface has no supported configuration")?;
     config.format = surface_format(&caps.formats, config.format);
     config.view_formats = vec![config.format.remove_srgb_suffix()];
+    config.desired_maximum_frame_latency = 2;
     // Screenshots copy the presented frame back from the swapchain, frame
     // generation's present thread copies its frames in.
     if caps.usages.contains(wgpu::TextureUsages::COPY_SRC) {

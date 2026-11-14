@@ -11885,8 +11885,9 @@ impl Renderer {
         } else if let Some((real, generated)) = fg_frames {
             self.frame_gen.present(real, generated, fg_made);
         }
-        if self.surface.is_none() {
-            // No swapchain paces offscreen frames: keep two on the GPU at most.
+        if self.surface.is_none() || cfg!(target_os = "macos") {
+            // Keep at most two frames on the GPU: offscreen frames have no swapchain,
+            // and on macOS Metal command buffers queue ahead without backpressure (#16346, #16350).
             self.in_flight.push_back(submission);
             if !self.paced_elsewhere {
                 self.wait_in_flight();

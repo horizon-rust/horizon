@@ -13,8 +13,17 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 /// loop spinning indefinitely. Offscreen frames are driven by the loop itself.
 pub(super) fn redraw_flow(frame_drawn: &mut bool, offscreen: bool, now: Instant) -> ControlFlow {
     let drew_frame = std::mem::take(frame_drawn);
-    if offscreen || drew_frame {
+    if offscreen {
         ControlFlow::Poll
+    } else if drew_frame {
+        #[cfg(target_os = "macos")]
+        {
+            ControlFlow::Wait
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            ControlFlow::Poll
+        }
     } else {
         ControlFlow::WaitUntil(now + Duration::from_millis(16))
     }
@@ -44,13 +53,18 @@ mod tests {
     fn missing_redraw_waits_and_a_new_frame_resumes_polling() {
         let now = Instant::now();
         let mut frame_drawn = true;
-        assert_eq!(redraw_flow(&mut frame_drawn, false, now), ControlFlow::Poll);
+        let expected = if cfg!(target_os = "macos") {
+            ControlFlow::Wait
+        } else {
+            ControlFlow::Poll
+        };
+        assert_eq!(redraw_flow(&mut frame_drawn, false, now), expected);
         assert_eq!(
             redraw_flow(&mut frame_drawn, false, now),
             ControlFlow::WaitUntil(now + Duration::from_millis(16))
         );
         frame_drawn = true;
-        assert_eq!(redraw_flow(&mut frame_drawn, false, now), ControlFlow::Poll);
+        assert_eq!(redraw_flow(&mut frame_drawn, false, now), expected);
     }
 
     #[test]
