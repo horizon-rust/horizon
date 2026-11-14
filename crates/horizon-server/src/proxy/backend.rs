@@ -37,6 +37,8 @@ pub struct Identity<'a> {
     pub address: IpAddr,
     pub uuid: u128,
     pub name: &'a str,
+    /// The handshake intent the client used (login or transfer): the game checks it itself.
+    pub intent: i32,
     pub properties: &'a [login::Property],
 }
 
@@ -60,7 +62,7 @@ pub fn login(game: SocketAddr, secret: &[u8], who: &Identity) -> Result<Backend,
     c.reader
         .set_read_timeout(Some(LOGIN_TIMEOUT))
         .map_err(down)?;
-    c.send(&intention(game, handshake::LOGIN)).map_err(down)?;
+    c.send(&intention(game, who.intent)).map_err(down)?;
     c.send(
         &login::Serverbound::Hello(login::ServerHello {
             name: who.name.to_owned(),
@@ -195,6 +197,7 @@ mod tests {
             address: "203.0.113.9".parse().unwrap(),
             uuid: 0x069a79f444e94726a5befca90e38aaf5,
             name: "Steve",
+            intent: handshake::LOGIN,
             properties: &[login::Property {
                 name: "textures".into(),
                 value: "e30=".into(),

@@ -3,7 +3,7 @@
 pub use horizon_platform::protocol::{
     Error, PROTOCOL_VERSION,
     buf::{Reader, Writer, write_varint},
-    connection::{ConnReader, ConnWriter, Connection},
+    connection::{Closer, ConnReader, ConnWriter, Connection},
     crypto::{offline_uuid, random_bytes, server_hash},
     ids,
     packets::{Empty, handshake, login, status},

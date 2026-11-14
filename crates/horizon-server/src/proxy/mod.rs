@@ -58,18 +58,13 @@ pub struct Proxy {
 }
 
 /// What the game is told so it listens where only the proxy goes: `server.properties` keys.
-pub fn game_properties(game_port: u16, compression_off: bool) -> Vec<(String, String)> {
-    let mut out = vec![
+pub fn game_properties(game_port: u16) -> Vec<(String, String)> {
+    vec![
         ("server-ip".to_owned(), "127.0.0.1".to_owned()),
         ("server-port".to_owned(), game_port.to_string()),
         // The proxy has signed the player in: the game trusts what it forwards (online-mode=false).
         ("online-mode".to_owned(), "false".to_owned()),
-    ];
-    if compression_off {
-        // Loopback: the proxy compresses for its clients, the game need not for the proxy.
-        out.push(("network-compression-threshold".to_owned(), "-1".to_owned()));
-    }
-    out
+    ]
 }
 
 /// Starts listening on the public address. `dir` is the server folder; `log` receives (level, line).
@@ -144,10 +139,9 @@ fn secret(dir: &Path) -> Result<Vec<u8>, String> {
                 .map_err(|e| format!("no random numbers for the proxy's secret: {e}"))?;
             let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
             if let Some(parent) = own.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("{}: {e}", parent.display()))?;
+                private_dir(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
             }
-            std::fs::write(&own, &hex).map_err(|e| format!("{}: {e}", own.display()))?;
+            write_private(&own, hex.as_bytes()).map_err(|e| format!("{}: {e}", own.display()))?;
             hex.into_bytes()
         }
     };
@@ -157,10 +151,44 @@ fn secret(dir: &Path) -> Result<Vec<u8>, String> {
                 "[proxy] is on but {SECRET_FILE} holds another secret (a Velocity's?): remove the file, or turn [proxy] off"
             ));
         }
-        Ok(_) => {}
-        Err(_) => std::fs::write(&file, &secret).map_err(|e| format!("{}: {e}", file.display()))?,
+        Ok(_) => {
+            // A file an earlier start left with looser permissions.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+                let _ = std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+        Err(_) => write_private(&file, &secret).map_err(|e| format!("{}: {e}", file.display()))?,
     }
     Ok(secret)
+}
+
+/// The folder the proxy keeps its own secret in: readable by its owner only (0700 on Unix).
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Writes a secret so only its owner can read it (0600 on Unix, from the first byte: the file is created
+/// with that mode, and a file already there is tightened).
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(0o600);
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    options.open(path)?.write_all(bytes)
 }
 
 /// With `[proxy]` off again, the file the proxy put there goes, or the game would refuse everyone who joins
@@ -195,6 +223,8 @@ fn serve(stream: TcpStream, inner: &Arc<Inner>) -> Result<(), String> {
     c.reader
         .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
         .map_err(|e| e.to_string())?;
+    // The timeout above is per read: this one ends the whole handshake and login.
+    let deadline = Deadline::start(&c, HANDSHAKE_TIMEOUT);
     let e = |e: wire::Error| e.to_string();
     let (id, payload) = c.recv().map_err(e)?;
     let hello =
@@ -215,13 +245,57 @@ fn serve(stream: TcpStream, inner: &Arc<Inner>) -> Result<(), String> {
                 );
                 return Ok(());
             }
-            serve_login(c, inner, peer.ip())
+            serve_login(c, inner, peer.ip(), hello.intent, deadline)
         }
         other => Err(format!("unknown handshake intent {other}")),
     }
 }
 
-fn serve_login(mut c: Connection, inner: &Arc<Inner>, peer: IpAddr) -> Result<(), String> {
+/// Closes a connection that is still in its handshake or login when the time is up; stops when dropped.
+struct Deadline {
+    done: Arc<AtomicBool>,
+    watcher: thread::Thread,
+}
+
+impl Deadline {
+    fn start(c: &Connection, limit: Duration) -> Option<Deadline> {
+        let closer = c.reader.closer().ok()?;
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = done.clone();
+        let watcher = thread::Builder::new()
+            .name("Proxy deadline".into())
+            .spawn(move || {
+                let end = std::time::Instant::now() + limit;
+                while !flag.load(Ordering::SeqCst) {
+                    let Some(left) = end.checked_duration_since(std::time::Instant::now()) else {
+                        closer.close();
+                        return;
+                    };
+                    thread::park_timeout(left);
+                }
+            })
+            .ok()?;
+        Some(Deadline {
+            done,
+            watcher: watcher.thread().clone(),
+        })
+    }
+}
+
+impl Drop for Deadline {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::SeqCst);
+        self.watcher.unpark();
+    }
+}
+
+fn serve_login(
+    mut c: Connection,
+    inner: &Arc<Inner>,
+    peer: IpAddr,
+    intent: i32,
+    deadline: Option<Deadline>,
+) -> Result<(), String> {
     let e = |e: wire::Error| e.to_string();
     let (id, payload) = c.recv().map_err(e)?;
     let name = match wire::login::Serverbound::decode(id, &payload).map_err(e)? {
@@ -233,7 +307,9 @@ fn serve_login(mut c: Connection, inner: &Arc<Inner>, peer: IpAddr) -> Result<()
     }
     match auth::profile(&mut c, inner.keys.as_ref(), &name)? {
         Ok(who) => {
-            session::run(inner, c, who, peer);
+            // Logged in: the play that follows has its own silence timeout.
+            drop(deadline);
+            session::run(inner, c, who, peer, intent);
             Ok(())
         }
         Err(reason_json) => {
@@ -249,10 +325,16 @@ fn serve_login(mut c: Connection, inner: &Arc<Inner>, peer: IpAddr) -> Result<()
 /// The server list: the game's own answer, or one that says it is restarting.
 fn serve_status(c: &mut Connection, inner: &Arc<Inner>, protocol: i32) -> Result<(), String> {
     let e = |e: wire::Error| e.to_string();
+    // Like vanilla: one status request, then pings.
+    let mut answered = false;
     loop {
         let (id, payload) = c.recv().map_err(e)?;
         match status::Serverbound::decode(id, &payload).map_err(e)? {
+            status::Serverbound::StatusRequest(_) if answered => {
+                return Err("a second status request".into());
+            }
             status::Serverbound::StatusRequest(_) => {
+                answered = true;
                 let json = inner
                     .up
                     .load(Ordering::SeqCst)
@@ -297,7 +379,7 @@ mod tests {
 
     #[test]
     fn the_game_listens_only_for_the_proxy_and_trusts_what_it_forwards() {
-        let p = game_properties(25599, true);
+        let p = game_properties(25599);
         let get = |k: &str| p.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
         assert_eq!(get("server-ip"), Some("127.0.0.1"));
         assert_eq!(get("server-port"), Some("25599"));
@@ -315,6 +397,15 @@ mod tests {
         let first = secret(&dir).unwrap();
         assert_eq!(secret(&dir).unwrap(), first, "kept across starts");
         assert_eq!(std::fs::read(dir.join(SECRET_FILE)).unwrap(), first);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode =
+                |p: std::path::PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(dir.join(SECRET_FILE)), 0o600);
+            assert_eq!(mode(dir.join(OWN_SECRET)), 0o600);
+            assert_eq!(mode(dir.join(".horizon")), 0o700);
+        }
         remove_own_secret(&dir);
         assert!(!dir.join(SECRET_FILE).exists());
         let _ = std::fs::remove_dir_all(&dir);

@@ -56,7 +56,11 @@ impl Replay {
         match channel.as_str() {
             BRAND => self.brand = Some(data.to_vec()),
             REGISTER => {
-                self.channels.extend(split_channels(data));
+                for c in split_channels(data) {
+                    if self.channels.len() < MAX_CHANNELS || self.channels.contains(&c) {
+                        self.channels.insert(c);
+                    }
+                }
             }
             UNREGISTER => {
                 for c in split_channels(data) {
@@ -98,6 +102,9 @@ impl Replay {
             .collect()
     }
 }
+
+/// The most plugin channels kept for a client: a client may register as many as it likes.
+const MAX_CHANNELS: usize = 128;
 
 fn split_channels(data: &[u8]) -> impl Iterator<Item = String> + '_ {
     data.split(|b| *b == 0)
@@ -160,5 +167,17 @@ mod tests {
         replay.note(Phase::Config, 14, &[1]);
         replay.note(Phase::Play, 0, &[1]);
         assert_eq!(replay, Replay::default());
+    }
+
+    #[test]
+    fn a_client_cannot_make_the_kept_channels_grow_without_end() {
+        let mut replay = Replay::default();
+        let names: Vec<String> = (0..MAX_CHANNELS + 50).map(|i| format!("a:c{i}")).collect();
+        replay.note(
+            Phase::Config,
+            2,
+            &payload(REGISTER, names.join("\0").as_bytes()),
+        );
+        assert_eq!(replay.channels.len(), MAX_CHANNELS);
     }
 }

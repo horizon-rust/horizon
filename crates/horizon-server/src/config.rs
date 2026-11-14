@@ -666,7 +666,7 @@ impl Config {
         );
         // Behind the proxy the game listens where only it goes (`game_port` is set once the proxy runs).
         if self.proxy.enabled && self.proxy.game_port != 0 {
-            for (key, value) in crate::proxy::game_properties(self.proxy.game_port, true) {
+            for (key, value) in crate::proxy::game_properties(self.proxy.game_port) {
                 match out.iter_mut().find(|(k, _)| *k == key) {
                     Some(slot) => slot.1 = value,
                     None => out.push((key, value)),

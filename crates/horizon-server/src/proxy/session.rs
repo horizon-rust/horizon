@@ -6,7 +6,7 @@ use super::{
     auth::Profile,
     backend::{self, Backend, Identity},
     replay::{Phase, Replay, body},
-    wire::{ConnReader, ConnWriter, Connection, ids, login},
+    wire::{Closer, ConnReader, ConnWriter, Connection, ids, login},
 };
 use std::{
     net::IpAddr,
@@ -19,11 +19,12 @@ use std::{
 const SILENCE: Duration = Duration::from_secs(30);
 
 /// Takes a client whose name is verified through the rest of its login and its whole play.
-pub fn run(inner: &Arc<Inner>, mut client: Connection, who: Profile, peer: IpAddr) {
+pub fn run(inner: &Arc<Inner>, mut client: Connection, who: Profile, peer: IpAddr, intent: i32) {
     let identity = Identity {
         address: peer,
         uuid: who.uuid,
         name: &who.name,
+        intent,
         properties: &who.properties,
     };
     let game = match backend::login(inner.game, &inner.secret, &identity) {
@@ -90,9 +91,14 @@ pub fn run(inner: &Arc<Inner>, mut client: Connection, who: Profile, peer: IpAdd
     );
     let (client_reader, client_writer) = client.split();
     let _ = client_reader.set_read_timeout(Some(SILENCE));
+    let (Ok(client_closer), Ok(game_closer)) = (client_reader.closer(), game_reader.closer())
+    else {
+        return;
+    };
     let both = Arc::new(Pair {
         client: Mutex::new(client_writer),
         game: Mutex::new(game_writer),
+        closers: [client_closer, game_closer],
     });
     let down = {
         let both = both.clone();
@@ -117,12 +123,15 @@ fn refuse(client: &mut Connection, reason_json: String) {
 struct Pair {
     client: Mutex<ConnWriter>,
     game: Mutex<ConnWriter>,
+    /// Shut the sockets without the writers' locks: a thread blocked sending to a client that stopped reading
+    /// holds its lock, and closing has to be what frees it.
+    closers: [Closer; 2],
 }
 
 impl Pair {
     fn close(&self) {
-        for w in [&self.client, &self.game] {
-            w.lock().unwrap_or_else(|e| e.into_inner()).shutdown();
+        for c in &self.closers {
+            c.close();
         }
     }
 }
