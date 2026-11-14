@@ -634,7 +634,7 @@
   "Show fewer": "Mostrar menos",
   "← Newer": "← Mais recentes",
   "Edit instance": "Editar instância",
-  "No worlds to put in.": "Nenhum mundo para colocar.",
+  "No worlds to put in.": "Nenhum mundo para adicionar.",
   "On this computer": "Neste computador",
   "{name} is a Java modpack: importing it on the Modpacks page.": "{name} é um modpack Java: importando-o na página Modpacks.",
   "Upload this log to mclo.gs, a paste service for Minecraft logs? Anyone with the link can read it, until it is deleted or unread for 90 days. Your home folder, user name and account names are taken out first.": "Enviar este log ao mclo.gs, um serviço de colagem para logs do Minecraft? Qualquer pessoa com o link pode lê-lo, até ele ser excluído ou ficar 90 dias sem ser lido. Sua pasta pessoal, nome de usuário e nomes de conta são removidos antes.",
@@ -692,7 +692,7 @@
   "Online now ({count})": "Online agora ({count})",
   "Nobody is playing right now.": "Ninguém está jogando no momento.",
   "The server is stopped.": "O servidor está parado.",
-  "A player's name": "Nome de um jogador",
+  "A player's name": "Nome do jogador",
   "Let in": "Permitir",
   "Operator: can run every command": "Operador: pode executar qualquer comando",
   "Operator (not on the list: can join anyway)": "Operador (fora da lista: pode entrar mesmo assim)",
@@ -928,7 +928,7 @@
   "Sign in with a Minecraft account first.": "Primeiro entre com uma conta do Minecraft.",
   "Mojang's session server is not answering. Try again later.": "O servidor de sessões da Mojang não está respondendo. Tente novamente mais tarde.",
   "Head": "Cabeça",
-  "Back": "Costas",
+  "Back": "Voltar",
   "Nothing": "Nada",
   "Reset view": "Redefinir visualização",
   "Drag to turn, scroll to zoom.": "Arraste para girar, role para aproximar.",
@@ -1237,6 +1237,6 @@
   "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} não compilaram no Horizon que você joga: compilando no que foram feitos",
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Na última compilação, no Horizon {commit} por {mods}, não no {horizon}",
   "In the last build, on {horizon}": "Na última compilação, no {horizon}",
-  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Duplicate native mod {id}.": "Mod nativo duplicado {id}.",
+  "Native and content mod ids differ.": "Os IDs dos mods nativos e de conteúdo são diferentes."
 }
