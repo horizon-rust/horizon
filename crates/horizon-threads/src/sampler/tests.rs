@@ -105,14 +105,52 @@ fn cpu(records: &[Record]) -> Vec<&Record> {
     records.iter().filter(|r| r.kind == Kind::Cpu).collect()
 }
 
+/// The old 1 kHz coverage floor at the measured CPU-timer delivery rate, not the requested rate.
+fn coverage(stats: &Stats, at_1khz: usize) -> usize {
+    (at_1khz as f64 * stats.cpu_hz.expect("measured CPU signal interval") / 1000.0) as usize
+}
+
+#[test]
+fn cpu_rate_uses_cpu_time_and_counts_signals_even_when_the_ring_is_full() {
+    let (ready, wait) = mpsc::channel();
+    let (go, start) = mpsc::channel::<()>();
+    let worker = thread::spawn(move || {
+        assert!(sampled_thread("t-rate"));
+        ready.send(()).unwrap();
+        start.recv().unwrap();
+        on_deep_stack(|| {
+            spin_known(150);
+            thread::sleep(Duration::from_millis(150));
+            spin_known(150);
+        });
+    });
+    wait.recv().unwrap();
+    let session = start_session(
+        Config {
+            hz: 100,
+            ring_samples: 1,
+            wall: true,
+            ..COPY_1K
+        },
+        "t-rate",
+    );
+    go.send(()).unwrap();
+    worker.join().unwrap();
+    let stats = session.stop(|_, _| {});
+    // 100 Hz is below the CPU-timer ceiling of both the 250 Hz and 1 kHz kernels.
+    // Sleeping and wall samples must not dilute or inflate the rate, nor must lost records.
+    assert!((75.0..=125.0).contains(&stats.cpu_hz.unwrap()), "{stats:?}");
+    assert!(stats.dropped > stats.samples, "{stats:?}");
+}
+
 fn busy_function_is_in_its_threads_samples(name: &'static str, config: Config) {
     let (records, stats, ()) = sampled(name, config, || spin_known(200));
     let samples = cpu(&records);
     let found = samples.iter().filter(|r| in_spin_known(r)).count();
     assert!(
-        (140..=260).contains(&samples.len()),
-        "{} samples for 200 ms of CPU at 1 kHz",
-        samples.len()
+        (coverage(&stats, 140)..=coverage(&stats, 260)).contains(&samples.len()),
+        "{} samples for 200 ms of CPU: {stats:?}",
+        samples.len(),
     );
     assert!(
         found * 10 >= samples.len() * 8,
@@ -133,12 +171,16 @@ fn a_busy_function_is_found_by_unwinding_a_stack_copy() {
 }
 
 fn deep_recursion_unwinds(name: &'static str, config: Config) {
-    let (records, ..) = sampled(name, config, || {
+    let (records, stats, ()) = sampled(name, config, || {
         recurse(40, 150);
     });
     let samples = cpu(&records);
     let deep = samples.iter().filter(|r| recurse_frames(r) >= 35).count();
-    assert!(samples.len() > 80, "{} samples", samples.len());
+    assert!(
+        samples.len() > coverage(&stats, 80),
+        "{} samples: {stats:?}",
+        samples.len()
+    );
     assert!(
         deep * 10 >= samples.len() * 8,
         "{deep} of {} samples hold at least 35 of the 41 recurse frames",
@@ -179,15 +221,15 @@ fn an_allocating_thread_survives_ten_seconds_of_signals() {
         "{bad} corrupted blocks in {loops} allocations"
     );
     assert!(
-        stats.samples > 5000,
-        "only {} samples in 10 s of CPU at 1 kHz",
+        stats.samples > coverage(&stats, 5000) as u64,
+        "only {} samples in 10 s of CPU: {stats:?}",
         stats.samples
     );
 }
 
 #[test]
 fn context_shares_follow_the_work() {
-    let (records, ..) = sampled("t-context", HZ_1K, || {
+    let (records, stats, ()) = sampled("t-context", HZ_1K, || {
         for _ in 0..8 {
             set_entity_type(1);
             spin_known(30);
@@ -196,7 +238,11 @@ fn context_shares_follow_the_work() {
         }
     });
     let samples = cpu(&records);
-    assert!(samples.len() > 200, "{} samples", samples.len());
+    assert!(
+        samples.len() > coverage(&stats, 200),
+        "{} samples: {stats:?}",
+        samples.len()
+    );
     let share =
         |t| samples.iter().filter(|r| r.ctx.entity_type == t).count() as f64 / samples.len() as f64;
     assert!(
@@ -209,7 +255,7 @@ fn context_shares_follow_the_work() {
 
 #[test]
 fn only_the_slow_ticks_samples_are_kept() {
-    let (records, ..) = sampled("t-ticks", HZ_1K, || {
+    let (records, stats, ()) = sampled("t-ticks", HZ_1K, || {
         for tick in 1..=6u64 {
             set_tick(tick);
             let started = cpu_ns();
@@ -219,11 +265,11 @@ fn only_the_slow_ticks_samples_are_kept() {
     });
     let kept: Vec<_> = slow_tick_samples(&records, 50_000_000).collect();
     assert!(
-        cpu(&records).len() > kept.len() + 5,
+        cpu(&records).len() > kept.len() + coverage(&stats, 5),
         "the fast ticks sampled too"
     );
     assert!(
-        kept.len() > 50 && kept.iter().all(|r| r.ctx.tick == 4),
+        kept.len() > coverage(&stats, 50) && kept.iter().all(|r| r.ctx.tick == 4),
         "kept {} samples",
         kept.len()
     );
@@ -243,17 +289,31 @@ fn only_the_slow_ticks_samples_are_kept() {
 
 #[test]
 fn a_full_ring_drops_and_counts() {
-    let (records, stats, ()) = sampled("t-full", at_1khz(Unwind::StackCopy, 4), || spin_known(100));
+    let (ready, wait) = mpsc::channel();
+    let (go, start) = mpsc::channel::<()>();
+    let worker = thread::spawn(move || {
+        assert!(sampled_thread("t-full"));
+        ready.send(()).unwrap();
+        start.recv().unwrap();
+        on_deep_stack(|| spin_known(100));
+    });
+    wait.recv().unwrap();
+    let session = start_session(at_1khz(Unwind::StackCopy, 4), "t-full");
+    go.send(()).unwrap();
+    worker.join().unwrap();
+    // No drain during the work: even a low-rate CPU timer must fill this ring.
+    let mut records = Vec::new();
+    let stats = session.stop(|_, r| records.push(*r));
     assert_eq!(
         records.len() as u64,
         stats.samples,
         "every sample written is drained"
     );
-    assert!(stats.dropped > 20, "{stats:?}");
+    assert!(stats.dropped > coverage(&stats, 20) as u64, "{stats:?}");
     let attempts = stats.samples + stats.dropped;
     assert!(
-        (60..=140).contains(&attempts),
-        "{attempts} signals for 100 ms of CPU at 1 kHz"
+        (coverage(&stats, 60)..=coverage(&stats, 140)).contains(&(attempts as usize)),
+        "{attempts} signals for 100 ms of CPU: {stats:?}"
     );
 }
 
@@ -278,10 +338,10 @@ fn a_session_that_needs_a_larger_ring_than_the_threads_first_gets_one() {
         session.stop(|_, _| {})
     };
     let small = run(at_1khz(Unwind::StackCopy, 4));
-    assert!(small.dropped > 20, "{small:?}");
+    assert!(small.dropped > coverage(&small, 20) as u64, "{small:?}");
     let large = run(at_1khz(Unwind::StackCopy, 512));
     assert_eq!(large.dropped, 0, "{large:?}");
-    assert!(large.samples > 60, "{large:?}");
+    assert!(large.samples > coverage(&large, 60) as u64, "{large:?}");
     drop(go);
     worker.join().unwrap();
 }

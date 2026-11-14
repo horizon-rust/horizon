@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use horizon_perf_format::v1::{
-    Kind as CaptureKind, SampleProfile, Side, Start, Stop, StringEntry, Unit,
+    Kind as CaptureKind, Options, SampleProfile, Side, Start, Stop, StringEntry, Unit,
 };
 use horizon_perf_format::{CaptureWriter, Field};
 use horizon_threads::profile::{self, Aggregate, Config, Profile};
@@ -355,6 +355,10 @@ fn profiled(name: &'static str, body: fn()) -> Profile {
     session.stop().expect("stop profiling")
 }
 
+fn coverage(profile: &Profile, at_1khz: u64) -> u64 {
+    (at_1khz as f64 * profile.stats.cpu_hz.expect("measured CPU signal interval") / 1000.0) as u64
+}
+
 fn entity_units() {
     let (a, b) = (work::entity_id("test:a"), work::entity_id("test:b"));
     for unit in 0..4 {
@@ -369,12 +373,17 @@ fn entity_units() {
 
 #[test]
 fn three_units_of_a_and_one_of_b_split_the_samples_three_to_one() {
-    let c = convert(&profiled("perf-capture-entities", entity_units));
+    let profile = profiled("perf-capture-entities", entity_units);
+    let c = convert(&profile);
     let by = c.by_entity(false);
     let total = (by["test:a"] + by["test:b"]) as f64;
     let (a, b) = (by["test:a"] as f64 / total, by["test:b"] as f64 / total);
     assert!((a - 0.75).abs() < 0.1 && (b - 0.25).abs() < 0.1, "{by:?}");
-    assert!(total > 100.0, "{total} samples");
+    assert!(
+        total > coverage(&profile, 100) as f64,
+        "{total} samples: {:?}",
+        profile.stats
+    );
     assert_eq!(c.samples.threads[0].units, 4);
 }
 
@@ -393,7 +402,8 @@ fn ticks_with_one_slow() {
 
 #[test]
 fn only_the_slow_ticks_function_is_in_the_slow_weights() {
-    let c = convert(&profiled("perf-capture-slow", ticks_with_one_slow));
+    let profile = profiled("perf-capture-slow", ticks_with_one_slow);
+    let c = convert(&profile);
     let w = c.samples.weights.as_ref().unwrap();
     let (mut slow, mut fast) = (0, 0);
     for i in 0..w.node.len() {
@@ -409,7 +419,10 @@ fn only_the_slow_ticks_function_is_in_the_slow_weights() {
             assert!(!names.contains(&"spin_slow"), "{names:?}");
         }
     }
-    assert!(slow > 60 && fast > 20, "{slow} slow, {fast} other");
+    assert!(
+        slow > coverage(&profile, 60) && fast > coverage(&profile, 20),
+        "{slow} slow, {fast} other"
+    );
     assert_eq!(
         (c.samples.threads[0].units, c.samples.threads[0].slow_units),
         (6, 1)
@@ -496,15 +509,21 @@ fn a_converted_profile_written_to_a_file_reads_back_through_the_queries() {
     agg.finish();
     let config = Config {
         sampler: sampler::Config {
-            hz: 100,
+            hz: 1000,
             ..sampler::Config::default()
         },
         ..Config::default()
     };
-    let c = convert(&profile_of(agg, config));
+    let mut profile = profile_of(agg, config);
+    profile.stats.cpu_hz = Some(250.0);
+    let c = convert(&profile);
     let mut fields = vec![Field::Start(Start {
         side: Side::Server as i32,
         kind: CaptureKind::Dedicated as i32,
+        options: Some(Options {
+            hz: 1000,
+            ..Default::default()
+        }),
         ..Default::default()
     })];
     fields.extend(c.strings.into_iter().map(Field::String));
@@ -512,6 +531,7 @@ fn a_converted_profile_written_to_a_file_reads_back_through_the_queries() {
     fields.push(Field::Stop(Stop {
         side: Side::Server as i32,
         t: 10.0,
+        overhead: Some(overhead(&profile, None)),
         ..Default::default()
     }));
     let dir = std::env::temp_dir().join(format!("horizon-render-perf-{}", std::process::id()));
@@ -523,13 +543,13 @@ fn a_converted_profile_written_to_a_file_reads_back_through_the_queries() {
     }
     writer.finish().unwrap();
 
-    // 10 ms samples: alpha has 5 over the tick thread's 2 ticks.
+    // Nominal 1 ms weights stay unchanged: alpha has 5 over the tick thread's 2 ticks.
     let hot = ask(&file, &["hot"]);
     let alpha = hot.rows().iter().find_map(|r| match r {
         horizon_perf::query::Row::Hot(h) if h.full.ends_with("alpha") => Some(h),
         _ => None,
     });
-    assert_eq!(alpha.map(|h| (h.self_ms, h.samples)), Some((25.0, 5)));
+    assert_eq!(alpha.map(|h| (h.self_ms, h.samples)), Some((2.5, 5)));
     let worker = ask(&file, &["split", "t:worker", "--by", "thread"]);
     let sel = worker.selection.as_ref().unwrap();
     assert_eq!(
@@ -544,7 +564,19 @@ fn a_converted_profile_written_to_a_file_reads_back_through_the_queries() {
             other => panic!("{other:?}"),
         })
         .collect();
-    assert_eq!(values, [(Some("t:worker".to_owned()), 30.0)]);
+    assert_eq!(values, [(Some("t:worker".to_owned()), 3.0)]);
+    let meta = ask(&file, &["meta"]);
+    let hz = meta.rows().iter().find_map(|r| match r {
+        horizon_perf::query::Row::Meta(m) => m.stop.as_ref()?.overhead.as_ref()?.effective_cpu_hz,
+        _ => None,
+    });
+    assert_eq!(hz, Some(250.0));
+    let capture = horizon_perf::read_capture(&std::fs::read(&file).unwrap()).unwrap();
+    let summary = horizon_perf::summarize(&capture, "real.hzperf", &Default::default()).unwrap();
+    assert!(
+        summary.contains("sampling CPU 250 Hz achieved (1000 Hz requested)"),
+        "{summary}"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

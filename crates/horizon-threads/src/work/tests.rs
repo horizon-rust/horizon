@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::*;
-use crate::sampler::{self, Config, Kind, Record};
+use crate::sampler::{self, Config, Kind, Record, Stats};
 
 fn cpu_ns() -> u64 {
     let mut t = libc::timespec {
@@ -27,7 +27,7 @@ fn spin(cpu_ms: u64) {
 }
 
 /// Runs `body` on a thread sampled at 1 kHz under `name`, returning its records.
-fn sampled(name: &'static str, body: fn()) -> Vec<Record> {
+fn sampled(name: &'static str, body: fn()) -> (Vec<Record>, Stats) {
     let (ready, wait) = mpsc::channel();
     let (go, start) = mpsc::channel::<()>();
     let worker = thread::spawn(move || {
@@ -49,13 +49,17 @@ fn sampled(name: &'static str, body: fn()) -> Vec<Record> {
         session.drain(|_, r| records.push(*r));
     }
     worker.join().unwrap();
-    session.stop(|_, r| records.push(*r));
-    records
+    let stats = session.stop(|_, r| records.push(*r));
+    (records, stats)
+}
+
+fn coverage(stats: &Stats, at_1khz: usize) -> usize {
+    (at_1khz as f64 * stats.cpu_hz.expect("measured CPU signal interval") / 1000.0) as usize
 }
 
 #[test]
 fn entity_samples_split_by_the_work_done_under_each_type() {
-    let records = sampled("p-entity", || {
+    let (records, stats) = sampled("p-entity", || {
         let (a, b) = (entity_id("p-test:a"), entity_id("p-test:b"));
         for _ in 0..8 {
             set_entity(a);
@@ -66,7 +70,11 @@ fn entity_samples_split_by_the_work_done_under_each_type() {
         clear_work();
     });
     let samples: Vec<_> = records.iter().filter(|r| r.kind == Kind::Cpu).collect();
-    assert!(samples.len() > 200, "{} samples", samples.len());
+    assert!(
+        samples.len() > coverage(&stats, 200),
+        "{} samples: {stats:?}",
+        samples.len()
+    );
     let share = |n: &str| {
         let hits = samples
             .iter()
@@ -84,7 +92,7 @@ fn entity_samples_split_by_the_work_done_under_each_type() {
 
 #[test]
 fn spans_nest_and_restore_the_outer_one() {
-    let records = sampled("p-span", || {
+    let (records, stats) = sampled("p-span", || {
         let outer = enter_span("p-test-outer");
         spin(20);
         let inner = enter_span("p-test-inner");
@@ -102,7 +110,11 @@ fn spans_nest_and_restore_the_outer_one() {
             .count();
         hits as f64 / samples.len() as f64
     };
-    assert!(samples.len() > 50, "{} samples", samples.len());
+    assert!(
+        samples.len() > coverage(&stats, 50),
+        "{} samples: {stats:?}",
+        samples.len()
+    );
     assert!(
         (share(Some("p-test-outer")) - 0.5).abs() < 0.15,
         "{}",
@@ -129,7 +141,7 @@ fn a_reused_address_names_the_new_text() {
 
 #[test]
 fn ticks_count_up_and_their_markers_carry_the_number() {
-    let records = sampled("p-tick", || {
+    let (records, _) = sampled("p-tick", || {
         for _ in 0..3 {
             tick_start();
             spin(5);

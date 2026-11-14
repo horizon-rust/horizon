@@ -61,6 +61,10 @@ fn config(wall: bool) -> Config {
     }
 }
 
+fn coverage(profile: &Profile, at_1khz: u64) -> u64 {
+    (at_1khz as f64 * profile.stats.cpu_hz.expect("measured CPU signal interval") / 1000.0) as u64
+}
+
 /// Runs `body` on a thread opted in as `name`, profiled for exactly its duration.
 fn profiled(name: &'static str, config: Config, body: fn()) -> (Profile, Status) {
     let (ready, wait) = mpsc::channel();
@@ -237,7 +241,11 @@ fn a_session_keeps_the_slow_tick_apart_and_reports_status_while_running() {
         .filter(|(k, _)| k.slow && k.state == State::Cpu)
         .collect();
     let slow_n: u64 = slow.iter().map(|(_, n)| **n).sum();
-    assert!(slow_n > 60, "{slow_n} slow samples");
+    assert!(
+        slow_n > coverage(&profile, 60),
+        "{slow_n} slow samples: {:?}",
+        profile.stats
+    );
     assert!(
         slow.iter().all(|(k, _)| path_has(agg, k, spin_slow)),
         "a slow sample outside spin_slow"
@@ -248,13 +256,13 @@ fn a_session_keeps_the_slow_tick_apart_and_reports_status_while_running() {
         .filter(|(k, _)| !k.slow && k.state == State::Cpu)
         .collect();
     assert!(fast.iter().all(|(k, _)| !path_has(agg, k, spin_slow)));
-    assert!(fast.iter().map(|(_, n)| **n).sum::<u64>() > 20);
+    assert!(fast.iter().map(|(_, n)| **n).sum::<u64>() > coverage(&profile, 20));
     assert_eq!((agg.ticks[&0].count, agg.ticks[&0].slow), (6, 1));
     assert!(
         mid.cpu_samples > 0,
         "the writer drained during the session: {mid:?}"
     );
-    assert!(profile.writer_cpu_ns > 0 && profile.stats.samples > 100);
+    assert!(profile.writer_cpu_ns > 0 && profile.stats.samples > coverage(&profile, 100));
 }
 
 fn sleeps() {
@@ -299,7 +307,10 @@ fn a_wall_session_also_records_cpu_samples_without_mixing_them() {
         agg.total(State::Running, false),
         agg.total(State::Waiting, false),
     );
-    assert!(cpu > 100 && running > 100, "cpu {cpu} running {running}");
+    assert!(
+        cpu > coverage(&profile, 100) && running > 100,
+        "cpu {cpu} running {running}"
+    );
     assert!(
         waiting * 5 <= running,
         "{waiting} waiting vs {running} running"
