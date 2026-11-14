@@ -143,16 +143,13 @@ pub(super) fn is_arrow(p: &horizon_client::projectiles::Projectile) -> bool {
     )
 }
 /// The projectiles besides arrows that a portal sends on: the thrown items
-/// and fireballs a chunk saves. A pearl has its own rules (it keeps its owner's
-/// dimension) and a wind charge is not saved, so both stay.
+/// and fireballs a chunk saves. Wind charges are not saved, so they stay.
 pub(super) fn is_portal_projectile(p: &horizon_client::projectiles::Projectile) -> bool {
     use horizon_client::projectiles::ProjectileKind;
     !is_arrow(p)
         && !matches!(
             p.kind,
-            ProjectileKind::EnderPearl
-                | ProjectileKind::WindCharge
-                | ProjectileKind::BreezeWindCharge
+            ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
         )
         && horizon_client::entity_nbt::saved_with_chunk(p)
 }
@@ -1733,6 +1730,17 @@ mod tests {
             c.remove(&"end".into());
         }
         assert!(!arrival_from_tag(&old).unwrap().plan.end);
+    }
+
+    #[test]
+    fn ender_pearls_are_portal_projectiles() {
+        use horizon_client::projectiles::{Projectile, ProjectileKind};
+
+        let pearl = Projectile::new(ProjectileKind::EnderPearl, Vec3::ZERO, None);
+        assert!(is_portal_projectile(&pearl));
+
+        let wind_charge = Projectile::new(ProjectileKind::WindCharge, Vec3::ZERO, None);
+        assert!(!is_portal_projectile(&wind_charge));
     }
 }
 
