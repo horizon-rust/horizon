@@ -71,3 +71,27 @@ GPU-cleared frame, and registers a **non-owning** UIView pointer through
 the pointer when dismissed. This proves the SwiftUI -> Rust ABI and native
 drawable creation can be exercised; it does NOT pass a wgpu surface to Horizon,
 does NOT start Horizon's event loop, and is not game rendering.
+
+## Player-owned resource ZIP extraction (no bundled assets)
+
+Nova can import a player's prepared Horizon resources ZIP from Files.app,
+then "Extract and verify game files" **locally**, using the shared Rust
+`platforms/ios/AssetImporter` component (with no network calls). The ZIP may
+contain the files at its root or inside one wrapper folder such as `26.3/`.
+
+The installer rejects ZIP traversal paths, symlinks, duplicate names,
+oversized entries and excessive expansion. It streams decompression into a
+private temporary folder, checks `horizon-resources.json` as JSON and
+requires `facts.json`, `registries.json`, and nonempty `assets/minecraft/`.
+On validation success it replaces resources transactionally; failure preserves
+the previous working copy. The prepared files live in
+`Application Support/Nova/Resources` (excluded from iCloud backup).
+Nova's temporary cached ZIP copy is deleted after successful preparation,
+without touching the user's original selected ZIP.
+
+**This is structural validation only**, not compatibility or runtime testing.
+Neither an existing ZIP nor installed files enable the Play button. Horizon's
+original winit/Metal lifecycle must still be connected.
+
+**No game assets or downloaded ZIPs are committed or distributed.** Both IPA
+build workflows check the final archive file listing to reject bundled assets.

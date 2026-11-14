@@ -230,3 +230,21 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
 - Before adding game resources, inspect user-supplied ZIP entry names and
   prepared resource manifest/version; do not assume a random old ZIP is
   compatible. Avoid redistributing copyrighted third-party game assets.
+
+2026-11-14: PRIVATE OFFLINE ZIP INSTALLER
+- User requires NO Minecraft assets distributed within Nova IPA, repository,
+  GitHub Actions artifacts or releases. Assets are selected by the player via
+  Files.app; NEVER commit or download prepared assets.
+- Added platforms/ios/AssetImporter, used by BOTH RustBridge and GameRuntime.
+  An offline, bounded ZIP extractor supports flat or 1-wrapper resource roots.
+  It rejects unsafe paths, symlinks, duplicate entry names, expansion bombs;
+  validates the manifest and essential resources; installs transactionally.
+- Nova UI now offers "Extract and verify game files", importing the user's ZIP
+  to a temporary cache, extracting to Application Support/Nova/Resources
+  (excluded from iCloud backups), and deleting the private copy afterwards.
+  Original ZIP outside the app remains untouched. This is only structural
+  validation, not game compatibility.
+- Both iOS workflows run tests for ZIP traversal and bad imports and assert
+  that no prepared Minecraft assets were packaged in either unsigned IPA.
+- Next: iOS lifecycle adapter for Horizon's original winit event loop; connect
+  the validated private resource path to the game's options and Metal surface.

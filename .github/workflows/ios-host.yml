@@ -23,6 +23,8 @@ jobs:
         run: brew install xcodegen
       - name: Install Rust iOS device target
         run: rustup target add aarch64-apple-ios
+      - name: Test offline resource importer and archive safety
+        run: cargo test --manifest-path platforms/ios/AssetImporter/Cargo.toml
       - name: Test standalone Rust bridge on host
         run: cargo test --manifest-path platforms/ios/RustBridge/Cargo.toml
       - name: Compile Rust static library for iOS
@@ -56,6 +58,10 @@ jobs:
           cd Build/package
           zip -qry Nova-host-unsigned.ipa Payload
           unzip -t Nova-host-unsigned.ipa
+          if unzip -Z1 Nova-host-unsigned.ipa | grep -Ei '(assets/minecraft/|horizon-resources\.json|GameFiles\.zip)'; then
+            echo "::error::Game assets must never be bundled in Nova"
+            exit 1
+          fi
       - name: Upload unsigned host IPA
         uses: actions/upload-artifact@v4
         with:

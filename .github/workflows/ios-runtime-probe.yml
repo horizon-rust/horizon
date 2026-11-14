@@ -104,6 +104,8 @@ jobs:
             --target aarch64-apple-ios -i wayland-backend \
             > ios-wayland-tree.log 2>&1 || true
           tail -n 130 ios-wayland-tree.log
+      - name: Test offline resource importer
+        run: cargo test --manifest-path platforms/ios/AssetImporter/Cargo.toml
       - name: Cross-check the original Horizon game for iOS
         id: crosscheck
         continue-on-error: true
@@ -165,6 +167,10 @@ jobs:
           cd Build/package
           zip -qry Nova-game-linked-unsigned.ipa Payload
           unzip -t Nova-game-linked-unsigned.ipa
+          if unzip -Z1 Nova-game-linked-unsigned.ipa | grep -Ei '(assets/minecraft/|horizon-resources\.json|GameFiles\.zip)'; then
+            echo "::error::Game assets must never be bundled in Nova"
+            exit 1
+          fi
       - name: Upload integrated unsigned IPA
         if: steps.ipa.outcome == 'success'
         uses: actions/upload-artifact@v4
