@@ -16,9 +16,11 @@ pub(super) struct DisplayWatch {
 }
 
 impl DisplayReading {
-    /// What wgpu reads from the OS for `surface`'s display; nothing without one.
+    /// What wgpu reads from the OS for `surface`'s display; without one, `hdr::offscreen_display`.
     pub(super) fn read(surface: Option<&wgpu::Surface>, adapter: &wgpu::Adapter) -> Self {
-        surface.map_or_else(Self::default, |s| Self::os(&s.display_hdr_info(adapter)))
+        surface.map_or_else(hdr::offscreen_display, |s| {
+            Self::os(&s.display_hdr_info(adapter))
+        })
     }
     pub(super) fn os(info: &wgpu::DisplayHdrInfo) -> Self {
         #[cfg(target_os = "macos")]

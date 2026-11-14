@@ -522,6 +522,7 @@ mod block_drops_pops {
                 f64::from(pos[1]) + 1.0,
                 f64::from(pos[2]) + 0.5,
             ],
+            inside: false,
         }
     }
 

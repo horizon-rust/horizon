@@ -334,6 +334,7 @@ mod visbuffer;
 mod voxels;
 mod wgsl_prefix;
 pub mod wind;
+mod world_handover;
 mod world_post;
 mod xr;
 pub use xr::{XrLook, XrPointer};
@@ -7056,32 +7057,6 @@ impl Renderer {
         if let Some(hdr) = &mut self.hdr {
             hdr.look = on;
         }
-    }
-    /// Whether this renderer's frame is the one a renderer made now would draw in
-    /// (`requested_frame`). Under `HORIZON_HDR_FRAME=float` the game makes the renderer again
-    /// when it isn't (docs/design/hdr-linear-light.md, "When it changes").
-    pub fn frame_follows(
-        &self,
-        settings: &crate::graphics::Graphics,
-        request: output::FrameRequest,
-    ) -> bool {
-        self.requested_frame(settings, request) == self.output.frame
-    }
-    /// The frame a renderer made now would draw in (`output::resolve_frame`) for `settings`
-    /// and the pack's `request`, with what this renderer's destination offers and its display
-    /// reports.
-    pub fn requested_frame(
-        &self,
-        settings: &crate::graphics::Graphics,
-        request: output::FrameRequest,
-    ) -> output::FrameConfiguration {
-        output::resolve_frame(
-            settings,
-            linear_light_request(self.tonemap.is_some(), request),
-            self.caps_for(settings),
-            output_apply::graced(self.auto_off_since, self.reading, &self.output),
-            self.config.format,
-        )
     }
     /// Measures which pixels of each block sprite may shine (`hdr_stats`), at the current
     /// masks. Only with HDR output on: without it the frame's alpha is never read.

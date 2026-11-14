@@ -5,7 +5,7 @@ pub(super) mod compute;
 mod data;
 mod display_names;
 mod target_position;
-pub(super) use data::place_summoned;
+pub(super) use data::{place_summoned, strip_finalize_tree};
 mod effects;
 pub(super) mod execute;
 pub(super) mod extra;
@@ -1314,7 +1314,7 @@ impl Game<'_> {
         })
     }
     /// `ItemStack.getDisplayName`: the hover name (custom name in italics,
-    /// a written book's title, a potion's effect name, else the item's
+    /// a written book's title, a potion's effect name, a lodestone compass, else the item's
     /// translated name) in brackets, in the rarity colour and showing the
     /// stack on hover unless it is empty.
     pub(super) fn stack_display_name(&self, s: &ItemStack) -> Text {
@@ -1326,6 +1326,12 @@ impl Game<'_> {
         } else if let Some(key) = horizon_client::brewing::contents_name_key(s) {
             // A potion's or tipped arrow's own name, over its `item_name`.
             Text::translate(&key, &[])
+        } else if item == "minecraft:compass"
+            && s.data()
+                .is_some_and(|d| d.other("minecraft:lodestone_tracker").is_some())
+        {
+            // `CompassItem.getName`: a lodestone tracker names it, over `item_name`.
+            Text::translate("item.minecraft.lodestone_compass", &[])
         } else if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
             // `ItemStack.getItemName`: the `item_name` component wins over the
             // item's own name (`Item.getName`), so a datapack's or a server's
@@ -1387,18 +1393,6 @@ impl Game<'_> {
         wrapped
             .with_color(color)
             .with_component_fields(vec![("hover_event".into(), shown)])
-    }
-    pub(super) fn item_rarity(&self, item: &str) -> String {
-        static RARITY: std::sync::OnceLock<std::collections::HashMap<String, String>> =
-            std::sync::OnceLock::new();
-        let map = RARITY.get_or_init(|| {
-            horizon_world::item_defaults::read(&self.options.resources)
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|(k, c)| c["minecraft:rarity"].as_str().map(|r| (k, r.to_owned())))
-                .collect()
-        });
-        map.get(item).cloned().unwrap_or_else(|| "common".into())
     }
     fn cmd_give(&mut self, ctx: &Context) -> R<i32> {
         let Some(Arg::Item(ItemInput { id, components, .. })) = ctx.get("item").cloned() else {
@@ -2433,9 +2427,7 @@ impl Game<'_> {
                 Some(target) => self.target_name(target),
                 // Spawned as a kind no command target stands for (primed
                 // TNT, falling blocks, projectiles): its type's name.
-                None if self.spawned_mark() != before => {
-                    Text::translate(&entity_name_key(&kind), &[])
-                }
+                None if self.spawned_mark() != before => data::summon_type_name(&kind),
                 None => return Err(err("commands.summon.failed", &[])),
             };
             self.feedback(Text::translate("commands.summon.success", &[name]));
@@ -2451,15 +2443,11 @@ impl Game<'_> {
             name = self.target_name(Target::Mob(id));
         } else {
             match short.as_str() {
-                "item" => {
-                    // An item entity needs an item; vanilla spawns an empty one that despawns.
-                    return Err(err("commands.summon.failed", &[]));
-                }
                 "experience_orb" => {
-                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck like any orb spawn.
-                    let at = self.unstuck_orb(pos);
+                    // `EntityType`'s factory, `new ExperienceOrb(EntityType, Level)`,
+                    // which only `snapTo`s: the position is kept, even in a block.
                     self.next_entity += 1;
-                    let at = Vec3::new(at[0], at[1], at[2]);
+                    let at = Vec3::new(pos[0], pos[1], pos[2]);
                     let orb = horizon_client::entities::ExperienceOrb::new(
                         self.next_entity,
                         at,
@@ -2531,9 +2519,7 @@ impl Game<'_> {
                         Some(target) => self.target_name(target),
                         // Spawned as a kind no command target stands for
                         // (primed TNT, falling blocks, projectiles).
-                        None if self.spawned_mark() != before => {
-                            Text::translate(&entity_name_key(&kind), &[])
-                        }
+                        None if self.spawned_mark() != before => data::summon_type_name(&kind),
                         None => return Err(err("commands.summon.failed", &[])),
                     };
                 }
@@ -4545,6 +4531,10 @@ mod difficulty_tests {
         assert_eq!(difficulty_names(7, 4), ("hard", "peaceful"));
     }
 }
+
+#[cfg(test)]
+#[path = "summon_item_orb_tests.rs"]
+mod summon_item_orb_tests;
 
 #[cfg(test)]
 mod summon_tests {

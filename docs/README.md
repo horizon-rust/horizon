@@ -81,6 +81,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [HUD kit](ui-kit.md): the pieces Horizon's own HUD overlays share: `Room`, which keeps the controller notice and splitscreen's join strip below the boss bars, `Plate`, the box behind their text, and controller glyphs asked for by what the button does, with the Nintendo letter rule.
 - Splitscreen plumbing (#3541): the renderer hands its window surface to a compositor that places each view (`cargo run --profile fast -p horizon-client-render --example compositor [-- --smoke]`), and `Audio::share(owner)` gives each view its own sound engine on one output, playing a world sound once from the nearest camera (`cargo test -p horizon-client-render --lib audio::tests`).
 - [Linear light for HDR and shader packs](design/hdr-linear-light.md): the proposed shader API 0.2 colour contract and frame format for HDR output.
+- [The shader API 0.2 frame](design/shader-api-frame.md): proposed: where a 0.2 pack's stages, post chain and tone curve run, who owns anti-aliasing and coverage, and room for clouds, mods, LabPBR and ray tracing.
 - [Live mod reloading](design/mod-hotload.md): loading, enabling and updating mods from inside the game without a restart.
 - [Mod registry v2](design/registry-v2.md): project kinds, metadata, installation locations and the registry rollout.
 

@@ -185,6 +185,7 @@ mod golems;
 mod growth;
 mod hand;
 mod headless;
+mod hit;
 mod hud_editor;
 mod hud_room;
 mod ime;
@@ -512,6 +513,7 @@ mod zombie_reinforcements;
 mod zombie_villagers;
 use event_loop::EventLoopCtl;
 use hand::interact_location;
+pub(crate) use hit::Hit;
 use horizon_client::random_source;
 // `Action` here is the title screen's buttons (`title::Action`).
 pub use advancements::AdvancementDisplay;
@@ -732,22 +734,6 @@ struct Mining {
     /// The latest destroy-speed query, reused for server crack feedback.
     per_tick: f32,
     ticks: u32,
-}
-#[derive(Clone, Copy)]
-pub(crate) struct Hit {
-    pub(crate) pos: [i32; 3],
-    pub(crate) face: [i32; 3],
-    pub(crate) point: [f64; 3],
-}
-impl Hit {
-    /// The block the clicked face leads to (`pos.relative(direction)`).
-    fn beside(&self) -> [i32; 3] {
-        [
-            self.pos[0] + self.face[0],
-            self.pos[1] + self.face[1],
-            self.pos[2] + self.face[2],
-        ]
-    }
 }
 /// What a falling block's tick did (`FallingBlockEntity.tick`).
 enum FallStep {
@@ -4070,7 +4056,7 @@ impl Game<'_> {
                 .iter()
                 .filter(|g| h.hub.here(g))
                 .filter(|g| !g.fake) // fake players hold small forced tickets below
-                .map(|g| (g.chunk(), g.spectator()))
+                .map(|g| (g.ticket_chunk(), g.spectator()))
                 .collect()
         });
         if let Some(p) = &self.player {
@@ -7684,6 +7670,7 @@ impl Game<'_> {
                             pos: b,
                             face,
                             point: p,
+                            inside: false,
                         });
                     }
                     let above = self.world.block(b[0], b[1] + 1, b[2]);
@@ -7695,6 +7682,7 @@ impl Game<'_> {
                             pos: b,
                             face,
                             point,
+                            inside: false,
                         });
                     }
                 } else if !first && !self.res.facts().is_air(state) && f.fluid == Fluid::None {
@@ -12427,6 +12415,7 @@ fn outline_stop(
         pos,
         face,
         point: std::array::from_fn(|i| origin[i] + dir[i] * t),
+        inside: false,
     })
 }
 /// `VoxelShape.clip` of a fluid source's shape for a ray that starts in the

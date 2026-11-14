@@ -119,6 +119,8 @@ including examples. The dependency scope includes optional, platform, build and 
 library, binary, integration and doc tests without building unrelated example executables. Shared Cargo
 configuration and toolchain changes select the whole workspace; CI also keeps its workspace-wide checks.
 
+For a quick check while you work, `python3 tools/check_changed.py` runs rustfmt, clippy and tests for only the crates your branch changed and the crates that depend on them (`--dry-run` lists the commands).
+
 ### Translations
 
 Most of Horizon's translations were written by machine and stay marked unreviewed until someone who speaks the
