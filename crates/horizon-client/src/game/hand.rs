@@ -745,14 +745,20 @@ impl Game<'_> {
             _ => name.ends_with("shulker_box"),
         }
     }
+    /// The player's `attack_speed` attribute, also under the `generic.` name
+    /// an older server's registry gives it.
+    fn attack_speed_attribute(&self) -> Option<f64> {
+        let attributes = &self.player.as_ref()?.attributes;
+        let key = attributes
+            .key("minecraft:attack_speed")
+            .or_else(|| attributes.key("minecraft:generic.attack_speed"))?;
+        attributes.computed_value(Some(&key)).ok()
+    }
     /// `Attributes.ATTACK_SPEED` with the main-hand item's modifier and the
     /// Haste and Mining Fatigue modifiers (`ADD_MULTIPLIED_TOTAL`), clamped to
     /// the attribute's range.
     pub(super) fn main_hand_attack_speed(&self) -> f64 {
-        if let Some(player) = &self.player
-            && let Ok(speed) = player
-                .attributes
-                .computed_value_of("minecraft:attack_speed")
+        if let Some(speed) = self.attack_speed_attribute()
             && (self.remote.is_some()
                 || !self.applied_modifiers.is_empty()
                 || !self.potions.applied.is_empty())
@@ -760,14 +766,7 @@ impl Game<'_> {
             return speed.clamp(0.0, 1024.0);
         }
         let base = self
-            .player
-            .as_ref()
-            .and_then(|player| {
-                player
-                    .attributes
-                    .computed_value_of("minecraft:attack_speed")
-                    .ok()
-            })
+            .attack_speed_attribute()
             .unwrap_or(horizon_client::attack_strength::BASE_ATTACK_SPEED);
         let value = base
             + self
