@@ -7947,12 +7947,14 @@ impl Game<'_> {
             r.use_target = None;
         }
         let sneaking = self.remote_shift_down();
-        // A boat, minecart, item frame, armor stand or painting nearer than
-        // any mob: the server uses it (AbstractBoat.interact boards it).
-        if let Some(hit) = self.remote_object_hit(false)
-            && self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d)
-            && self.before_block(hit.distance)
-        {
+        // The crosshair's entity, of any kind, as for an attack.
+        let Some(pick) = self.crosshair_entity(false) else {
+            return false;
+        };
+        // A boat, minecart, item frame, armor stand or painting: the server uses it
+        // (AbstractBoat.interact boards it).
+        if pick.kind == super::remote_vehicles::PickKind::Object {
+            let hit = pick.object_hit();
             // Interaction.interact answers SUCCESS when it responds and
             // CONSUME otherwise: both end the click (nothing behind the box
             // is used), but only SUCCESS swings; the packet carries the hand.
@@ -8046,16 +8048,9 @@ impl Game<'_> {
             }
             return true;
         }
-        if let Some((i, distance, location)) = self.mob_hit()
-            && self.before_block(distance)
-        {
-            let id = self.mobs[i].id as i32;
-            self.send(S::Interact(play::Interact {
-                id,
-                hand: hand_id(hand),
-                location,
-                secondary: sneaking,
-            }));
+        if let super::remote_vehicles::PickKind::Mob(i) = pick.kind {
+            let id = pick.id;
+            self.send_interact(&pick, hand_id(hand), sneaking);
             // Player.interactOn: another player passes, and so does a mob
             // the held item means nothing to: the item is used instead.
             let player = self
@@ -8071,7 +8066,10 @@ impl Game<'_> {
                 }
                 return true;
             }
+            return false;
         }
+        // Any other pickable entity: `Entity.interact` passes, so the item is used after it.
+        self.send_interact(&pick, hand_id(hand), sneaking);
         false
     }
 
@@ -9386,28 +9384,21 @@ impl Game<'_> {
             return self.remote_spear_attack(kinetic);
         }
         let mut instant = false;
-        // A ghast's fireball or a wind charge nearer than any mob: the
-        // server turns it (game/deflect.rs).
-        if let Some((i, distance)) = self.redirectable_hit()
-            && self.mob_hit().is_none_or(|(_, d, _)| distance <= d)
-            && self.before_block(distance)
-            && self.creatures.projectiles[i].id != 0
+        // The crosshair's entity, of any kind (`Minecraft.hitResult`): the nearest one
+        // vanilla picks, before the block aimed at.
+        let pick = self.crosshair_entity(true);
+        if let Some(p) = pick
+            && !matches!(p.kind, super::remote_vehicles::PickKind::Mob(_))
         {
-            self.send(S::Attack(play::Attack {
-                id: self.creatures.projectiles[i].id as i32,
-            }));
+            // A ghast's fireball or a wind charge the server turns (game/deflect.rs);
+            // VehicleEntity.hurtServer, ItemFrame and ArmorStand hurtServer, a painting
+            // broken, an EndCrystal hurtServer, a falling block or TNT: the server decides.
+            self.send(S::Attack(play::Attack { id: p.id }));
             self.reset_attack_strength();
-        } else if let Some(hit) = self.remote_object_hit(true)
-            && self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d)
-            && self.before_block(hit.distance)
+        } else if let Some(p) = pick
+            && let super::remote_vehicles::PickKind::Mob(i) = p.kind
         {
-            // VehicleEntity.hurtServer, ItemFrame and ArmorStand hurtServer,
-            // a painting broken or an EndCrystal hurtServer: the server decides.
-            self.send(S::Attack(play::Attack { id: hit.id }));
-            self.reset_attack_strength();
-        } else if let Some((i, distance, _)) = self.mob_hit()
-            && self.before_block(distance)
-        {
+            let distance = p.distance;
             // Minecraft.startAttack: an item's attack_range must hold the hit.
             if self.held_range_allows(distance) {
                 self.send(S::Attack(play::Attack {
@@ -9422,9 +9413,7 @@ impl Game<'_> {
                 self.remote_player_attack(i);
                 self.reset_attack_strength();
             }
-        } else if !self.entity_targeted()
-            && let Some(hit) = self.pick()
-        {
+        } else if let Some(hit) = self.pick() {
             self.remote_mining(true);
             instant = self
                 .res
