@@ -3687,7 +3687,7 @@ impl Game<'_> {
         self.lan = Some(host);
         self.chat_capture = Some(Vec::new());
         let level = std::mem::replace(&mut self.ui.registries.permission, c.permission);
-        let ok = if self.perform_native_command(c.conn, c.permission, &c.command) {
+        let mut ok = if self.perform_native_command(c.conn, c.permission, &c.command) {
             true
         } else if c.quiet {
             self.run_command_quietly(&c.command)
@@ -3698,10 +3698,9 @@ impl Game<'_> {
         let mut lines = self.chat_capture.take().unwrap_or_default();
         let mut host = self.lan.take().expect("a command puts the hub back");
         self.leave_guest(&mut host, swap);
-        if std::mem::take(&mut self.save_after_guest_turn) {
-            self.lan = Some(host);
-            lines.push(self.save_all_reply());
-            host = self.lan.take().expect("saving puts the hub back");
+        if let Some(deferred) = std::mem::take(&mut self.save_after_guest_turn) {
+            let (back, saved) = self.finish_deferred_save_all(host, deferred, &mut lines);
+            (host, ok) = (back, ok && saved);
         }
         host.hub.sync_all_effects();
         if !c.integrated {
