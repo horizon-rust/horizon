@@ -79,7 +79,7 @@ pub fn main() -> horizon_client::Result<()> {
         output.push_str(f[0]);
         for _ in 0..2 {
             if item.health > 0 {
-                item.environment_tick(&world, &facts, assets.registry, &items);
+                item.environment_tick(&world, &facts, assets.registry, &items, false);
             }
             output.push_str(&format!(
                 "\t{},{},{}",

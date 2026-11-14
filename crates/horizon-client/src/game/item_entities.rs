@@ -183,11 +183,17 @@ impl Game<'_> {
                 cells.remove(i, item.position);
                 continue;
             }
+            // Entity.applyEffectsFromBlocks asks `isInRain` after the block
+            // contacts, which may have ignited the item this tick, so the
+            // question is asked every tick (it answers at once while it does
+            // not rain).
+            let in_rain = self.in_rain(item.position, item.bounds().max_position().y);
             let environment = item.environment_tick(
                 &self.world,
                 self.res.facts(),
                 self.pack.assets.registry,
                 world_items!(self),
+                in_rain,
             );
             if environment.should_play_lava_hurt_sound(item.ticks) {
                 let pitch = 2.0 + self.world.random.next_float() * 0.4;
@@ -195,6 +201,19 @@ impl Game<'_> {
                     "minecraft:entity.generic.burn",
                     Some([item.position.x, item.position.y, item.position.z]),
                     0.4,
+                    pitch,
+                );
+            }
+            // Entity.playEntityOnFireExtinguishedSound: water or rain put the
+            // burning item out; a server plays the hiss at it, with the two
+            // pitch draws of the item's own random.
+            if environment.extinguished && merging {
+                let pitch = 1.6 + (item.random.next_float() - item.random.next_float()) * 0.4;
+                let at = [item.position.x, item.position.y, item.position.z];
+                self.audio.play(
+                    "minecraft:entity.generic.extinguish_fire",
+                    Some(at),
+                    0.7,
                     pitch,
                 );
             }
@@ -697,6 +716,46 @@ impl Game<'_> {
         self.add_item_entity_drawn(stack, position, Some(velocity), true, 0, 0);
     }
 
+    /// `ItemEntity.makeFakeItem`: `setNeverPickUp` and `age = 5999`, so the item
+    /// can't be picked up and is gone on its next tick. `/give` spawns one when
+    /// the whole stack fitted, from `Player.createItemStackToDrop`'s motion.
+    fn spawn_item_fake(&mut self, stack: ItemStack, position: [f64; 3], velocity: [f64; 3]) {
+        self.add_item_entity_drawn(stack, position, Some(velocity), true, 32767, 5999);
+    }
+
+    /// `GiveCommand` when the whole stack fitted: one item flashes out of the
+    /// player's head (`createItemStackToDrop(stack, false, false)` then
+    /// `makeFakeItem`), and the pickup sound plays at the player, its pitch
+    /// from two draws of the player's random.
+    pub(super) fn give_flash(
+        &mut self,
+        item: &str,
+        damage: u32,
+        extra: Option<Box<horizon_client::item_data::StackData>>,
+        at: [f64; 3],
+    ) {
+        let eye = self.eye_position().unwrap_or([
+            at[0],
+            at[1] + self.target_eye_height(super::commands::Target::Player),
+            at[2],
+        ]);
+        let r = &mut self.world.random;
+        let velocity = horizon_client::entities::drop_motion(r, self.yaw, self.pitch, false);
+        let stack = ItemStack {
+            item: item.into(),
+            count: 1,
+            damage,
+            extra,
+        };
+        // `new ItemEntity(level, getX(), getEyeY() - 0.3F, getZ(), stack)`.
+        let y = eye[1] - f64::from(0.3f32);
+        self.spawn_item_fake(stack, [eye[0], y, eye[2]], velocity);
+        let r = &mut self.world.random;
+        let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
+        self.audio
+            .play("minecraft:entity.item.pickup", Some(at), 0.2, pitch);
+    }
+
     pub(super) fn add_item_entity(
         &mut self,
         stack: ItemStack,
@@ -1065,6 +1124,12 @@ mod escape_tests {
     }
 }
 
+#[cfg(test)]
+#[path = "give_fake_item_tests.rs"]
+mod give_fake_item_tests;
+#[cfg(test)]
+#[path = "item_rain_fire_tests.rs"]
+mod item_rain_fire_tests;
 #[cfg(test)]
 #[path = "item_void_tests.rs"]
 mod item_void_tests;
