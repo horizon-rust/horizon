@@ -55,6 +55,9 @@ file = "sky.wgsl"
 clouds = true              # optional: false when the pack draws its own clouds
 sun = true                 # optional: false when the pack draws its own sun (the moon stays)
 stars = true               # optional: false when the pack draws its own stars
+sun_path_rotation = 0.0    # optional: the sun's and moon's path tilted by this many degrees (-90 to 90), as
+                           # `sunPathRotation`: sun_direction, moon_direction, light_direction, the shadow
+                           # camera and Minecraft's sun, moon and stars turn with it
 
 [material]
 file = "material.wgsl"
@@ -246,6 +249,9 @@ draws them itself (the material stage covers terrain only). The first-person han
 
 ## Changelog
 
+- 2026-11-11: API 0.1 (addition): `[sky] sun_path_rotation`, degrees from -90 to 90 (0 when absent): the tilt of
+  the sun's and moon's path, as `shaders/` packs' `sunPathRotation`. It turns `sun_direction`, `moon_direction`,
+  `light_direction`, the shadow camera and the sun, moon and stars Minecraft draws over the pack's sky.
 - 2026-11-10: API 0.2 (additions, experimental): the `[entity]` stage, `fn entity(input: EntityInput) -> Surface`,
   for entities, block entities, items and particles, with the material stage's shadow maps and coloured lights. The
   reference gives vanilla's own as the stage's function. `horizon-shader check` takes it; the game refuses a pack

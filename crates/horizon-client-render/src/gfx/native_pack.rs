@@ -1,7 +1,12 @@
 //! One of Horizon's own shader packs while it runs (docs/shaders.md): the frame its stages
 //! read, its sky, material and post stages, and the timer of their passes.
 
+use std::borrow::Cow;
+
+use glam::Mat4;
 use horizon_shader_api::{Report, StageKind};
+
+use crate::mesher::Vertex;
 
 use super::displace::Displacement;
 use super::native_material::{DisplacedShape, NativeMaterial, TerrainShape};
@@ -19,6 +24,8 @@ pub struct NativePack {
     pub vanilla_clouds: bool,
     pub vanilla_sun: bool,
     pub vanilla_stars: bool,
+    /// `[sky] sun_path_rotation`, degrees: also turns the sun, moon and stars Minecraft draws.
+    pub sun_path_rotation: f32,
     pub weather: Option<wgpu::RenderPipeline>,
     /// The draw of the shadow map the stages read, if the pack asks for one.
     pub shadow: Option<NativeShadow>,
@@ -131,6 +138,12 @@ impl NativePack {
             terrain.pbr,
             (api, terrain.linear && api == horizon_shader_api::Api::V0_2),
         );
+        let sun_path_rotation = report
+            .sky
+            .as_ref()
+            .and_then(|s| s.sun_path_rotation)
+            .unwrap_or(0.0);
+        frame.set_sun_path_rotation(sun_path_rotation);
         // `[displacement]`, unless its option is off; nothing to displace without heights.
         let displacement = report
             .manifest
@@ -280,6 +293,7 @@ impl NativePack {
             vanilla_clouds,
             vanilla_sun,
             vanilla_stars,
+            sun_path_rotation,
             weather,
             shadow,
             displacement,
@@ -297,10 +311,63 @@ impl NativePack {
     }
 }
 
+/// The turn a native pack's `[sky] sun_path_rotation` gives the stars, sun and moon the renderer
+/// draws (none under the End sky), as `PackSky::prepare` gives them for `shaders/` packs.
+pub(super) fn sky_turn(pack: Option<&NativePack>, end_sky: bool) -> Mat4 {
+    let tilt = pack
+        .filter(|_| !end_sky)
+        .map_or(0.0, |p| p.sun_path_rotation);
+    super::pack_uniforms::tilt_matrix(tilt)
+}
+
+/// The bytes of the frame's first `count` sun and moon vertices, turned by [`sky_turn`].
+pub(super) fn celestial_bytes<'a>(
+    pack: Option<&NativePack>,
+    frame: &super::Frame<'a>,
+    count: usize,
+) -> Cow<'a, [u8]> {
+    turned(sky_turn(pack, frame.end_sky), &frame.celestial[..count])
+}
+
+fn turned(turn: Mat4, bodies: &[Vertex]) -> Cow<'_, [u8]> {
+    if turn == Mat4::IDENTITY {
+        return Cow::Borrowed(bytemuck::cast_slice(bodies));
+    }
+    let bodies: Vec<Vertex> = bodies
+        .iter()
+        .map(|v| Vertex {
+            pos: turn.transform_vector3(v.pos.into()).into(),
+            ..*v
+        })
+        .collect();
+    Cow::Owned(bytemuck::cast_slice(&bodies).to_vec())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{NativePack, TerrainShape, chosen_shadow};
+    use super::{NativePack, TerrainShape, chosen_shadow, sky_turn, turned};
     use horizon_shader_api::manifest::{OptionKind, PackOption, Shadow};
+
+    /// Without a pack the sky is not turned and the sun and moon go up as they are; a turn
+    /// moves each vertex and keeps the rest of it.
+    #[test]
+    fn the_sun_and_moon_turn_only_with_a_tilt() {
+        use crate::mesher::Vertex;
+        use std::borrow::Cow;
+        assert_eq!(sky_turn(None, false), glam::Mat4::IDENTITY);
+        let mut sun = <Vertex as bytemuck::Zeroable>::zeroed();
+        sun.pos = [0.0, 1.0, 0.0];
+        sun.color = 7;
+        let bodies = [sun];
+        assert!(matches!(
+            turned(glam::Mat4::IDENTITY, &bodies),
+            Cow::Borrowed(_)
+        ));
+        let tilted = turned(super::super::pack_uniforms::tilt_matrix(90.0), &bodies);
+        let moved: Vec<Vertex> = bytemuck::pod_collect_to_vec(&tilted);
+        assert!((moved[0].pos[1]).abs() < 1e-6 && (moved[0].pos[2].abs() - 1.0).abs() < 1e-6);
+        assert_eq!(moved[0].color, 7);
+    }
 
     /// A device with OpenGL's minimum 16 sampled textures per stage refuses a pack whose
     /// sky adds the terrain's 10 to the frame's 9: that is the pack's error to report, not
