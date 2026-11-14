@@ -3,6 +3,7 @@
 //! (DialogCommand), `/posteffect` (PostEffectCommand), `/kick`,
 //! `/fetchprofile`, `/publish`, `/unpublish`, `/debug`, `/jfr` and
 //! `/version`, with vanilla's feedback and failures.
+use super::super::lan::publish_message;
 use super::{Arg, Context, Game, R, Target, err};
 use horizon_client::actions::Action;
 use horizon_client::{
@@ -1030,16 +1031,7 @@ impl Game<'_> {
         if !started {
             return Err(err("commands.publish.failed", &[]));
         }
-        let port_text = port.to_string();
-        let link = Text::literal(port_text.clone()).with_style(&Style {
-            color: Some(text::GREEN),
-            hover: Some(Box::new(Text::translate("chat.copy.click", &[]))),
-            ..Style::default()
-        });
-        self.feedback(Text::translate(
-            "commands.publish.started.lan",
-            &[Text::translate("chat.square_brackets", &[link])],
-        ));
+        self.feedback(publish_message::publish_started(port));
         Ok(port)
     }
     pub(super) fn cmd_unpublish(&mut self) -> R<i32> {

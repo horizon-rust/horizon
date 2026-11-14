@@ -214,15 +214,17 @@ impl Text {
     pub fn colored(s: impl Into<String>, color: u32) -> Self {
         Self::styled(s, Style::color(color))
     }
-    /// ComponentUtils.copyOnClickText: a green, bracketed clipboard link.
+    /// ComponentUtils.copyOnClickText: a green, bracketed clipboard link, whose
+    /// value a Shift-click also types into the chat box (`withInsertion`).
     pub fn copyable(s: impl Into<String>) -> Self {
         let s = s.into();
         Self::literal("[")
             .append(Self::styled(
                 s.clone(),
                 Style {
-                    click: Some(ClickEvent::CopyToClipboard(s)),
+                    click: Some(ClickEvent::CopyToClipboard(s.clone())),
                     hover: Some(Box::new(Self::translate("chat.copy.click", &[]))),
+                    insertion: Some(s),
                     ..Style::color(GREEN)
                 },
             ))
@@ -837,6 +839,29 @@ mod tests {
         }
         assert_eq!(long.spans.len(), 20_000);
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+    #[test]
+    fn copy_on_click_text_carries_the_value_as_its_insertion() {
+        // ComponentUtils.copyOnClickText: the same text is the click event, the hover
+        // and the style's insertion, which ChatScreen.handleComponentClicked types into
+        // the chat box on a Shift-click.
+        let link = Text::copyable("-9223372036854775808");
+        assert_eq!(link.plain(), "[-9223372036854775808]");
+        assert_eq!(
+            link.spans[1].style.insertion.as_deref(),
+            Some("-9223372036854775808")
+        );
+        assert_eq!(
+            link.spans[1].style.click,
+            Some(ClickEvent::CopyToClipboard("-9223372036854775808".into()))
+        );
+        // The brackets wrap the link without taking its style.
+        assert_eq!(link.spans[0].style.insertion, None);
+        assert_eq!(link.spans[2].style.insertion, None);
+        assert_eq!(
+            link.component()["extra"][0]["insertion"],
+            json!("-9223372036854775808")
+        );
     }
     #[test]
     fn click_events_serialize_and_inherit_as_one_style_field() {

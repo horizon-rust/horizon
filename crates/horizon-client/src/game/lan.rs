@@ -5,6 +5,7 @@
 mod event_timings;
 mod level_event_targets;
 mod mob_states;
+pub(super) mod publish_message;
 
 use super::{Game, shield::OFFHAND_SLOT};
 use event_timings::EventTimings;
@@ -1373,10 +1374,7 @@ impl Game<'_> {
         } else {
             return Err("no world of this game to open".into());
         };
-        self.system_message(Text::translate(
-            "menu.multiplayerOptions.publish.started.lan",
-            &[Text::literal(port.to_string())],
-        ));
+        self.system_message(publish_message::lan_started(i32::from(port)));
         Ok(())
     }
     /// Start the network side and the play-state hub: for the LAN (with the
