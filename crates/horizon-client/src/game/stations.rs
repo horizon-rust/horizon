@@ -5,6 +5,7 @@
 //! `BrewingStandScreen`); item rules live in `horizon_client::stations`.
 
 mod anvil;
+mod input;
 #[path = "smithing_icons.rs"]
 mod smithing_icons;
 use smithing_icons::smithing_slot_icons;
@@ -630,16 +631,7 @@ impl Game<'_> {
     }
     /// The anvil name the menu works with (`AnvilScreen.onNameChanged`).
     pub(super) fn anvil_item_name(&self, s: &Station) -> String {
-        match &s.inputs[0] {
-            Some(input)
-                if input.custom_name().is_none()
-                    && s.name == self.pack.names.display_item(&input.item) =>
-            {
-                String::new()
-            }
-            Some(_) => s.name.clone(),
-            None => String::new(),
-        }
+        s.anvil_item_name(&self.pack.names)
     }
     /// NeoForge's `AnvilUpdateEvent` (`CommonHooks.onAnvilUpdate`) about
     /// `result`, vanilla's for `left`, `right` and the rename box's
@@ -1159,22 +1151,6 @@ impl Game<'_> {
         };
         self.menu_click(Some(slot), i32::from(right), input);
         true
-    }
-    /// Recompute after slot changes; the anvil box follows its input item.
-    fn station_after_input(&mut self) {
-        let Some(s) = self.station.as_mut() else {
-            return;
-        };
-        if s.kind == Kind::Anvil && s.inputs[0] != s.anvil_last {
-            // AnvilScreen.slotChanged: the box follows its input item.
-            s.anvil_last = s.inputs[0].clone();
-            let name = s.inputs[0]
-                .as_ref()
-                .map(|i| stations::hover_name(&self.pack.names, i))
-                .unwrap_or_default();
-            anvil::input_changed(s, name);
-        }
-        self.station_changed();
     }
     /// `StonecutterScreen.mouseClicked` on its recipe grid: `clickMenuButton`
     /// with the cell's index (an empty cell's too), and the select sound when

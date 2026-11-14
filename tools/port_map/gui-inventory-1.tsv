@@ -52,8 +52,10 @@ AbstractSignEditScreen.preeditUpdated	inline	crates/horizon-client/src/game/ime.
 AbstractSignEditScreen.extractRenderState	port	crates/horizon-client/src/game/sign_edit.rs::Game::draw_sign_editor	
 AbstractSignEditScreen.extractSign	inline	crates/horizon-client/src/game/sign_edit.rs::Game::draw_sign_editor	sign sprite and text scale
 AbstractSignEditScreen.extractSignText	inline	crates/horizon-client/src/game/sign_edit.rs::Game::draw_sign_editor	cursor at the end of a line is a bar; vanilla draws an underscore there; no bidirectional shaping
-AnvilScreen.subInit	port	crates/horizon-client/src/game/stations/anvil.rs::rename_box	50 character unbordered rename box
+AnvilScreen.subInit	port	crates/horizon-client/src/game/stations/anvil.rs::rename_box	50 character unbordered rename box, read-only until the input slot has an item
 AnvilScreen.resize	skip:ui		re-init on window resize
+AnvilScreen.slotChanged	port	crates/horizon-client/src/game/stations/input.rs::Game::station_after_input	the box follows the input's name and runs the responder: a changed name goes to the server (Game::remote_anvil_rename)
+AnvilScreen.onNameChanged	port	crates/horizon-client/src/game/remote_stations.rs::Game::remote_anvil_rename	the box's text, blank when it is the input's own name; the menu takes it and a changed name sends RenameItem
 AnvilScreen.extractBackground	inline	crates/horizon-client/src/game/stations.rs::Game::draw_station	text field sprite, disabled without an input
 AnvilScreen.extractErrorIcon	inline	crates/horizon-client/src/game/stations.rs::Game::draw_station	error sprite when there is input and no result
 BeaconScreen.addBeaconButton	skip:ui		widget list bookkeeping; buttons() lists the power buttons

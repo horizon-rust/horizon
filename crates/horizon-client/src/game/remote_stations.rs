@@ -142,12 +142,13 @@ impl Game<'_> {
             return;
         };
         let name = self.anvil_item_name(s);
-        if s.anvil_sent.as_deref() == Some(&name) {
+        let Some(name) = self
+            .station
+            .as_mut()
+            .and_then(|s| s.take_anvil_rename(name))
+        else {
             return;
-        }
-        if let Some(s) = self.station.as_mut() {
-            s.anvil_sent = Some(name.clone());
-        }
+        };
         self.send(S::RenameItem(play::RenameItem { name }));
     }
 

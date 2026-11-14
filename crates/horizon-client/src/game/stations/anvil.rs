@@ -1,6 +1,7 @@
 //! `AnvilScreen`'s rename box: the 50-character `EditBox`, read-only while
 //! the input slot is empty (`AnvilScreen.slotChanged`).
-use super::Station;
+use super::{Kind, Station};
+use horizon_client::{creative::Names, stations::hover_name};
 
 /// `AnvilScreen`: `name.setMaxLength(50)`.
 pub(super) const NAME_CHARS: usize = 50;
@@ -20,6 +21,56 @@ pub(super) fn rename_box() -> horizon_client::ui::EditBox {
     edit.focused = true;
     edit.editable = false;
     edit
+}
+
+impl Station {
+    /// The anvil name the menu works with (`AnvilScreen.onNameChanged`).
+    pub(in crate::game) fn anvil_item_name(&self, names: &Names) -> String {
+        match &self.inputs[0] {
+            Some(input)
+                if input.custom_name().is_none()
+                    && self.name == names.display_item(&input.item) =>
+            {
+                String::new()
+            }
+            Some(_) => self.name.clone(),
+            None => String::new(),
+        }
+    }
+
+    /// `AnvilScreen.onNameChanged`: a name the anvil menu takes goes to the
+    /// server only if it differs from the one last sent. `name` is blank when
+    /// the box shows the input item's own name.
+    pub(in crate::game) fn take_anvil_rename(&mut self, name: String) -> Option<String> {
+        if self.anvil_sent.as_deref() == Some(name.as_str()) {
+            return None;
+        }
+        self.anvil_sent = Some(name.clone());
+        Some(name)
+    }
+}
+
+impl Station {
+    /// `AnvilScreen.slotChanged` as the game runs it: the box follows the input
+    /// item, then `onNameChanged` normalises the text for the menu. `None` when
+    /// this is not an anvil, the input slot is empty, or the normalised name
+    /// is the one already sent (the menu's `itemName`).
+    pub(in crate::game) fn after_input(&mut self, names: &Names) -> Option<String> {
+        if self.kind != Kind::Anvil {
+            return None;
+        }
+        if self.inputs[0] != self.anvil_last {
+            self.anvil_last = self.inputs[0].clone();
+            let name = self.inputs[0]
+                .as_ref()
+                .map(|i| hover_name(names, i))
+                .unwrap_or_default();
+            input_changed(self, name);
+        }
+        self.inputs[0].as_ref()?;
+        let name = self.anvil_item_name(names);
+        self.take_anvil_rename(name)
+    }
 }
 
 /// `AnvilScreen.slotChanged`: the box shows the input's name, and only an
