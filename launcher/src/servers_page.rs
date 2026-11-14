@@ -223,7 +223,7 @@ pub(super) struct Servers {
     loaded: bool,
     pub(super) open: Option<PathBuf>,
     tab: Tab,
-    statuses: HashMap<PathBuf, Status>,
+    pub(super) statuses: HashMap<PathBuf, Status>,
     /// Each listed server's game mode from its `server.toml`, read once while it is listed.
     modes: HashMap<PathBuf, Option<String>>,
     polling: bool,
@@ -494,7 +494,7 @@ impl Launcher {
     }
 
     /// Reads the open server's settings, backups and service state again.
-    fn load_details(&self) {
+    pub(super) fn load_details(&self) {
         let Some(dir) = self.servers.open.clone() else {
             return;
         };
@@ -547,7 +547,7 @@ impl Launcher {
             && (self.servers.tab == Tab::Overview || self.theme.glass);
         let mut changed = self.internet_tick(overview);
         while let Ok(event) = self.servers.rx.try_recv() {
-            changed |= self.servers_event(event);
+            changed |= self.servers_event_and_ports(event);
         }
         if self.page != Page::Servers || self.servers.polling || !self.servers.loaded {
             return changed;
@@ -601,7 +601,7 @@ impl Launcher {
         changed
     }
 
-    fn servers_event(&mut self, event: Event) -> bool {
+    pub(super) fn servers_event(&mut self, event: Event) -> bool {
         let s = &mut self.servers;
         match event {
             Event::Polled { dir, status, logs } => {
@@ -1968,7 +1968,7 @@ impl Launcher {
                     .child(row),
             );
         }
-        tab.child(self.internet_panel(port as u16, cx))
+        tab.child(self.router_and_internet_panel(port as u16, cx))
             .child(self.server_console(status.running(), cx))
     }
 

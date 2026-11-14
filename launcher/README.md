@@ -104,6 +104,20 @@ The opening, then Play ([clip](docs/opening.webm)):
   access controls, one click changes them so friends you share with reach only the server's
   port (Remove the limit undoes it); custom access controls are never rewritten, the page gives
   the rule to add instead. Horizon never turns on Funnel.
+  **Open the router port by itself** (on Overview, off by default) asks the router to forward a
+  running server's port to this computer, with the same code Play with Friends uses (PCP, then
+  NAT-PMP, then UPnP; `crates/horizon-friends/src/portmap.rs`). The address it forwards to is that
+  of this computer's connection to the internet, so behind a VPN that carries all traffic it can
+  be the VPN's. The port is opened once the Servers page has read the server's settings and seen
+  it running, renewed while the server runs, asked for again a minute after a failure, and
+  removed when the server stops, the switch goes off or the launcher closes normally. That
+  includes closing to update: the server keeps running through the update, and its port is opened
+  again when the new launcher's Servers page sees it. Only the launcher window does this, so a
+  server run from the command line, or in the background while the launcher is closed, has no
+  mapping. After a crash the router's lease (an hour) ends the mapping, except on a router that
+  only gives permanent UPnP leases. The page says which method opened it and at which address and
+  port, or why the router did not; what the router answered is not proof that friends can join.
+  It is `router_port` in `settings.json`.
 - **Instances**: separate game folders, each with its own worlds, options and packs. The game's
   folder stays the first one, "Horizon", exactly where it was; imported and registry modpacks are
   instances too, in their own folders as before; new ones go to `instances/<name>/` in the game's

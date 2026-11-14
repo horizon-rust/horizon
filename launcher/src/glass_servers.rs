@@ -682,7 +682,7 @@ impl Launcher {
                 ))
                 .mt(px(4.)),
             );
-        let internet = self.glass_internet(port, cx);
+        let internet = self.glass_router_and_internet(port, cx);
         let mut card = glass::plate(radius::PANEL)
             .flex()
             .flex_col()
@@ -877,7 +877,7 @@ impl Launcher {
 
     /// A switch with its name and note: a `SettingRow` in the glass look, the switch first in
     /// the other.
-    pub(super) fn toggle_row(&self, name: &str, about: String, toggle: Stateful<Div>) -> Div {
+    pub(crate) fn toggle_row(&self, name: &str, about: String, toggle: Stateful<Div>) -> Div {
         let t = self.theme;
         if t.glass {
             return glass_setting_row(name, about, None, toggle.into_any_element());

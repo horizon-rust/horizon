@@ -7,6 +7,9 @@ use super::*;
 use horizon_launcher::tailscale::{self, Api, Invite, Reach, State};
 use serde_json::Value;
 
+mod router_panel;
+pub(super) use router_panel::{quit, stop_on_quit};
+
 /// How often Tailscale's state is read while the panel shows.
 const POLL: Duration = Duration::from_secs(10);
 /// How often the invitations and access controls are read again while the panel shows, so an
