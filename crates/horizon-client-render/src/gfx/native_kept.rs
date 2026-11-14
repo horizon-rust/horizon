@@ -73,8 +73,17 @@ pub(super) fn refusal(
         return Some("the device runs no compute shaders".into());
     }
     let kept = &manifest.kept;
-    let largest = limits.max_storage_buffer_binding_size;
+    let largest = (limits.max_storage_buffer_binding_size).min(limits.max_buffer_size);
+    let side = limits.max_texture_dimension_2d;
     for r in &kept.resources {
+        if let Shape::Fixed { size: [w, h], .. } = r.shape
+            && w.max(h) > side
+        {
+            return Some(format!(
+                "{}: {w}×{h} texels, the device takes {side}",
+                r.name
+            ));
+        }
         if let Shape::Buffer { bytes, .. } = r.shape
             && bytes > largest
         {
@@ -129,7 +138,7 @@ pub(super) fn refusal(
                 limits.max_compute_invocations_per_workgroup
             ));
         }
-        let shared_bytes = workgroup_bytes(&stage.module);
+        let shared_bytes = workgroup_bytes(stage);
         if shared_bytes > limits.max_compute_workgroup_storage_size {
             return why(format!(
                 "{shared_bytes} bytes of var<workgroup>, the device takes {}",
@@ -149,14 +158,16 @@ pub(super) fn refusal(
     None
 }
 
-/// The bytes of a module's `var<workgroup>`s.
-fn workgroup_bytes(module: &naga::Module) -> u32 {
+/// The bytes of the `var<workgroup>`s a compute stage's entry point (its only one) uses, itself
+/// or through what it calls, as the validator found: not those the module declares for others.
+fn workgroup_bytes(stage: &CheckedStage) -> u32 {
+    let (module, uses) = (&stage.module, stage.info.get_entry_point(0));
     let mut layouter = naga::proc::Layouter::default();
     if layouter.update(module.to_ctx()).is_err() {
         return u32::MAX;
     }
     (module.global_variables.iter())
-        .filter(|(_, g)| g.space == naga::AddressSpace::WorkGroup)
+        .filter(|(h, g)| g.space == naga::AddressSpace::WorkGroup && !uses[*h].is_empty())
         .map(|(_, g)| layouter[g.ty].size)
         .sum()
 }

@@ -39,8 +39,9 @@ fn every_shape() -> Kept {
     }
 }
 
-const BUFFERS: &str =
-    "[[resource]]\nname = \"cells\"\nbuffer = 1024\nelement = \"u32\"\nkeep = \"view\"\n";
+const BUFFERS: &str = "[[resource]]\nname = \"cells\"\nbuffer = 1024\nelement = \"u32\"\n\
+                       keep = \"view\"\n[[resource]]\nname = \"wide\"\nformat = \"r32float\"\n\
+                       size = [4096, 1]\nkeep = \"view\"\n";
 const SUM: &str = "var<workgroup> sums: array<f32, 4096>;\n\
                    fn compute(input: ComputeInput) {\n    \
                    sums[input.local] = 1.0;\n    workgroupBarrier();\n    \
@@ -101,6 +102,13 @@ fn a_device_short_of_what_the_passes_need_refuses_the_pack_with_the_reason() {
         ),
         (
             wgpu::Limits {
+                max_texture_dimension_2d: 2048,
+                ..fits.clone()
+            },
+            "wide: 4096×1 texels, the device takes 2048",
+        ),
+        (
+            wgpu::Limits {
                 max_storage_buffers_per_shader_stage: 0,
                 ..fits
             },
@@ -110,6 +118,29 @@ fn a_device_short_of_what_the_passes_need_refuses_the_pack_with_the_reason() {
     for (limits, why) in cases {
         assert_eq!(refused(&pack, limits).as_deref(), Some(why));
     }
+}
+
+/// Two passes share a file of two 16 KiB arrays and each uses one: each needs 16 KiB, which a
+/// 16 KiB device (the default) has.
+#[test]
+fn a_pass_needs_only_the_workgroup_memory_it_uses() {
+    let manifest = "[[post]]\nfile = \"a.wgsl\"\nfiles = [\"w.wgsl\"]\ncompute = true\n\
+                dispatch = [64, 1, 1]\nworkgroup = [64, 1, 1]\n\
+                [[post]]\nfile = \"b.wgsl\"\nfiles = [\"w.wgsl\"]\ncompute = true\n\
+                dispatch = [64, 1, 1]\nworkgroup = [64, 1, 1]\n\
+                [[post]]\nfile = \"last.wgsl\"\n";
+    let w = "var<workgroup> a: array<f32, 4096>;\nvar<workgroup> b: array<f32, 4096>;\n";
+    let uses = |v| format!("fn compute(input: ComputeInput) {{ {v}[input.local] = 1.0; }}\n");
+    let last = "fn post(input: PostInput) -> vec4<f32> { return input.color; }\n";
+    let (a, b) = (uses("a"), uses("b"));
+    let files = [
+        ("w.wgsl", w),
+        ("a.wgsl", &a),
+        ("b.wgsl", &b),
+        ("last.wgsl", last),
+    ];
+    let pack = report(manifest, &files);
+    assert_eq!(refused(&pack, wgpu::Limits::default()), None);
 }
 
 /// Each pass counts its own kept bindings, in its own stage: four storage buffers of a draw
