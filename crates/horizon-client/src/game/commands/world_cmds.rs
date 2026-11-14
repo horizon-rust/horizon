@@ -13,6 +13,10 @@ use horizon_protocol::packets::play::{self, Clientbound as C};
 use horizon_world::attribute_map::ValueKind;
 use horizon_world::nbt::Tag;
 
+#[cfg(test)]
+#[path = "playsound_command_tests.rs"]
+mod playsound_command_tests;
+
 /// Queue bookkeeping for synchronous command damage, preserving prior requests
 /// and unrelated events. The existing game policy handles each extracted request.
 fn take_new_reinforcements(events: &mut Vec<MobEvent>, queued: usize) -> Vec<(u32, Who)> {
@@ -630,7 +634,13 @@ impl Game<'_> {
         let targets = if ctx.get("targets").is_some() {
             self.entities(ctx, "targets", true)?
         } else {
-            vec![Target::Player]
+            // PlaySoundCommand.getCallingPlayerAsCollection(source.getPlayer()):
+            // the console, a command block or another entity names no player,
+            // and the command then fails.
+            self.source_entity()
+                .filter(|t| t.is_player())
+                .into_iter()
+                .collect()
         };
         let pos = self
             .position_arg(ctx, "pos")
@@ -682,7 +692,15 @@ impl Game<'_> {
                         host.hub.send_to(conn, &packet);
                     }
                 }
-                None => self.audio.play_on(source, &sound, Some(at), v, pitch),
+                None => {
+                    // PlaySoundCommand sends one packet per target and never a
+                    // level sound: this client's own player plays it from the
+                    // same seed, and it is not captured for the guests.
+                    let capture = self.audio.capture.take();
+                    self.audio
+                        .play_seeded(&sound, Some(at), v, pitch, seed, Some(source));
+                    self.audio.capture = capture;
+                }
             }
             tracker.mark(&holder(self.target_name(t)));
         }

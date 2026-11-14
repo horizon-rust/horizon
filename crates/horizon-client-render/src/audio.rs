@@ -556,8 +556,6 @@ pub struct Audio {
     pub master: f32,
     /// Seeds of positional plays (the client level random's `nextLong`).
     random: LegacyRandom,
-    /// A `SoundSource` index the next sound plays on (`/playsound`).
-    source_override: Option<usize>,
     /// Positional sounds played since the last drain, kept while the world
     /// is open to the network so guests hear them too.
     pub capture: Option<Vec<CapturedSound>>,
@@ -1563,7 +1561,6 @@ impl Audio {
             listener_pitch: 0.0,
             master: 1.0,
             random: crate::random_source::create(),
-            source_override: None,
             capture: None,
             heard: Default::default(),
             stopped: Default::default(),
@@ -1732,7 +1729,6 @@ impl Audio {
             listener_pitch: 0.0,
             master: self.master,
             random: crate::random_source::create(),
-            source_override: None,
             capture: None,
             heard: Default::default(),
             stopped: Default::default(),
@@ -1999,7 +1995,7 @@ impl Audio {
     /// the listener without attenuation (`None`).
     pub fn play(&mut self, event: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) {
         let seed = self.random.next_long();
-        self.play_seeded(event, at, volume, pitch, seed);
+        self.play_seeded(event, at, volume, pitch, seed, None);
     }
     /// `ClientLevel.playLocalSound` with `distanceDelay`: a sound more than 10
     /// blocks from the camera starts `sqrt(distance) / 40` seconds later.
@@ -2034,9 +2030,7 @@ impl Audio {
                 position: at,
                 volume,
                 pitch,
-                source: self.source_override.unwrap_or_else(|| {
-                    crate::settings::sound_source(&crate::sound_events::normalize(event))
-                }),
+                source: crate::settings::sound_source(&crate::sound_events::normalize(event)),
                 entity: None,
                 except_entity: None,
             });
@@ -2044,9 +2038,7 @@ impl Audio {
         *self.heard.entry(event.to_owned()).or_default() += 1;
         self.sync_volumes();
         let event = crate::sound_events::normalize(event);
-        let source = self
-            .source_override
-            .unwrap_or_else(|| crate::settings::sound_source(&event));
+        let source = crate::settings::sound_source(&event);
         let instance =
             SoundInstance::at(&event, source, volume, pitch, LegacyRandom::new(seed), at);
         let id = self.engine.add(instance, false);
@@ -2146,7 +2138,7 @@ impl Audio {
             entity.update(state);
         }
     }
-    /// `play` with the seed a sound packet carries.
+    /// `play` with a sound packet's seed, on a `SoundSource` index (`playSeededSound`).
     pub fn play_seeded(
         &mut self,
         event: &str,
@@ -2154,6 +2146,7 @@ impl Audio {
         volume: f32,
         pitch: f32,
         seed: i64,
+        source: Option<usize>,
     ) {
         if let (Some(capture), Some(at)) = (self.capture.as_mut(), at) {
             capture.push(CapturedSound {
@@ -2161,7 +2154,7 @@ impl Audio {
                 position: at,
                 volume,
                 pitch,
-                source: self.source_override.unwrap_or_else(|| {
+                source: source.unwrap_or_else(|| {
                     crate::settings::sound_source(&crate::sound_events::normalize(event))
                 }),
                 entity: None,
@@ -2173,9 +2166,7 @@ impl Audio {
         }
         self.sync_volumes();
         let event = crate::sound_events::normalize(event);
-        let source = self
-            .source_override
-            .unwrap_or_else(|| crate::settings::sound_source(&event));
+        let source = source.unwrap_or_else(|| crate::settings::sound_source(&event));
         let random = LegacyRandom::new(seed);
         let instance = match at {
             Some(at) => SoundInstance::at(&event, source, volume, pitch, random, at),
@@ -2203,9 +2194,8 @@ impl Audio {
         volume: f32,
         pitch: f32,
     ) {
-        self.source_override = Some(source);
-        self.play(event, at, volume, pitch);
-        self.source_override = None;
+        let seed = self.random.next_long();
+        self.play_seeded(event, at, volume, pitch, seed, Some(source));
     }
     /// `SimpleSoundInstance.forJukeboxSong` at a jukebox; the handle stays
     /// until `release`.

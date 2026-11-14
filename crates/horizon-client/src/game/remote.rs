@@ -3430,17 +3430,13 @@ impl Game<'_> {
                         f64::from(p.y) / 8.0,
                         f64::from(p.z) / 8.0,
                     ];
-                    // ClientPacketListener.handleSoundEvent plays with packet.getSource().
-                    match usize::try_from(p.source)
+                    // ClientPacketListener.handleSoundEvent plays with packet.getSource() and
+                    // packet.getSeed() (ClientLevel.playSeededSound).
+                    let source = usize::try_from(p.source)
                         .ok()
-                        .filter(|s| *s < horizon_client::settings::SOUND_SOURCES.len())
-                    {
-                        Some(source) => {
-                            self.audio
-                                .play_on(source, &name, Some(at), p.volume, p.pitch)
-                        }
-                        None => self.audio.play(&name, Some(at), p.volume, p.pitch),
-                    }
+                        .filter(|s| *s < horizon_client::settings::SOUND_SOURCES.len());
+                    self.audio
+                        .play_seeded(&name, Some(at), p.volume, p.pitch, p.seed, source);
                 }
             }
             C::SoundEntity(p) => {
