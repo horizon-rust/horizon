@@ -126,8 +126,7 @@ pub struct HudAtlas {
 }
 /// Atlas rows reserved for glyphs rasterized at run time.
 pub const GLYPH_ROWS: u32 = 512;
-/// The largest atlas side: the 2D texture limit of the GPUs Horizon runs on
-/// (Apple silicon, RADV and Intel allow 16384; NVIDIA 32768).
+/// The largest atlas side (16384 on most GPUs); a GPU that allows less gets less (`atlas_fit`).
 pub const MAX_ATLAS_SIZE: u32 = 16384;
 /// 128x128 atlas slots for map textures. A lobby paints its signs as walls of
 /// framed maps, so the pool holds a wall; too few slots re-upload every map
@@ -371,7 +370,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 /// A packed atlas image: sprite name, size and RGBA pixels.
-type PackedImage = (String, u32, u32, Vec<u8>);
+pub(crate) type PackedImage = (String, u32, u32, Vec<u8>);
 /// A frame of an animated strip at `x, y`, nearest-resampled to the longer
 /// side of the frame: array layers are square, as `Sprites::load` keeps them
 /// for the world's sprite arrays.
@@ -1069,7 +1068,7 @@ impl HudAtlas {
     /// much unused is tried again with each image in the first shelf with
     /// room: a pack of thousands of mixed sizes (server packs with custom
     /// items) fits where the shelves' ragged ends would not.
-    fn layout(images: &[PackedImage], max: u32) -> Result<(u32, Vec<(u32, u32)>, u32)> {
+    pub(crate) fn layout(images: &[PackedImage], max: u32) -> Result<(u32, Vec<(u32, u32)>, u32)> {
         let mut width = 4096.min(max);
         loop {
             let wide_enough = images.iter().all(|i| i.1 < width);
@@ -1426,6 +1425,7 @@ impl HudAtlas {
                 .collect();
             images.push((MISSING_SPRITE.into(), 16, 16, missing));
         }
+        let atlas_limit = crate::atlas_fit::fit(&mut images, &mut gui_sizes, &flags, &cit_names)?;
         // Blurred sprites are sampled linearly in the atlas (screen.wgsl): a
         // border wrapped from their own edges keeps the filter off their
         // neighbours, as repeat addressing of their own texture would.
@@ -1442,21 +1442,19 @@ impl HudAtlas {
             images.push(("horizon/recipes/settings".to_owned(), width, height, rgba));
         }
         images.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
-        let (width, placements, glyph_region) =
-            Self::layout_leaving_out(&mut images, &mut animated, &cit_names, MAX_ATLAS_SIZE)
-                .or_else(|error| -> Result<_> {
-                    let models = reducible_model_sprites(root, &images, &bordered);
-                    let layout = Self::layout_reducing_models(
-                        &mut images,
-                        &mut gui_sizes,
-                        &models,
-                        MAX_ATLAS_SIZE,
-                    )?;
-                    log::warn!(
-                        "reduced HUD model texture resolution to keep the resource pack: {error}"
-                    );
-                    Ok(layout)
-                })?;
+        let (width, placements, glyph_region) = Self::layout_leaving_out(
+            &mut images,
+            &mut animated,
+            &cit_names,
+            atlas_limit,
+        )
+        .or_else(|error| -> Result<_> {
+            let models = reducible_model_sprites(root, &images, &bordered);
+            let layout =
+                Self::layout_reducing_models(&mut images, &mut gui_sizes, &models, atlas_limit)?;
+            log::warn!("reduced HUD model texture resolution to keep the resource pack: {error}");
+            Ok(layout)
+        })?;
         // A multiple of 1024 rather than a power of two: the default resources
         // need 4096x5120 (8192 rows before), Faithful 32x 4096x12288 (16384).
         let height = (glyph_region + GLYPH_ROWS).next_multiple_of(1024);
@@ -1549,7 +1547,7 @@ impl HudAtlas {
                     })
                 })
                 .collect();
-            crate::paged_maps::build((width, height), &mapped, MAX_ATLAS_SIZE)
+            crate::paged_maps::build((width, height), &mapped, atlas_limit)
         };
         let white = sprites["horizon/white"];
         let glint = Self::glint_texture(root, defaults, "enchanted_glint_item");

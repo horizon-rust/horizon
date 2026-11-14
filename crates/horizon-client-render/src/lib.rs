@@ -4,6 +4,7 @@
 pub mod android_gamepad;
 pub mod android_runtime;
 pub mod assets;
+mod atlas_fit;
 pub mod atlas_sources;
 pub mod audio;
 pub mod auth;
