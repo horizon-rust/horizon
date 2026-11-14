@@ -88,7 +88,7 @@ impl Game<'_> {
             return;
         }
         let mut scratch = std::mem::take(&mut self.spawn_scratch);
-        self.spawning_chunks(&self.level_players(), &mut scratch);
+        self.spawning_chunks(&self.spawning_players(), &mut scratch);
         let levels = self.tickets.levels();
         scratch
             .candidates
