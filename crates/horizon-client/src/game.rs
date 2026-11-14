@@ -446,6 +446,7 @@ mod spill;
 mod splash_water;
 mod split;
 mod startup_menu;
+mod state_digest;
 mod station_control;
 mod stations;
 mod stats;

@@ -609,6 +609,10 @@ impl BlockEntities {
     pub fn ticking_len(&self) -> usize {
         self.live.len()
     }
+    /// The ticker list as it stands, without promoting pending slots.
+    pub fn ticker_slots(&self) -> Arc<Vec<(Pos, u32)>> {
+        Arc::clone(&self.tickers)
+    }
     /// Whether a slot from `tickers` still ticks.
     pub fn is_live(&self, (pos, slot): (Pos, u32)) -> bool {
         self.live.get(&pos) == Some(&slot) && self.map.contains_key(&pos)
