@@ -147,7 +147,9 @@ it (edited on every push, never repeated): talk to its author in the thread befo
 - **Small.** One change per pull request, under about 500 lines of code where you can; split bigger work into
   pieces that each make sense alone. Small pull requests get reviewed and merged the same day. Bigger than that:
   [large pull requests](#large-pull-requests). What counts: lines added plus lines removed, outside Markdown (`.md`)
-  files and test files (any `tests/` or `test/` folder, and `test_*.py`). Tests written inside a source file do count.
+  files and test files (any `tests/` or `test/` folder, and `test_*.py`). Tests inside a source file
+  (`#[cfg(test)]` modules) don't count, and neither do lines moved unchanged (same text, whitespace ignored, runs of
+  3 or more lines).
   pr_ready counts it the same way and warns when a pull request is over.
 - **Fill in the template**: what and why, the vanilla reference, the pr_ready block, screenshots for anything you
   can see.
