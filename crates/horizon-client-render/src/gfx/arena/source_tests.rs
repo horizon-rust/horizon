@@ -56,6 +56,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         first.1,
         4,
         &[source],
+        false,
     );
     let second = arena.alloc(&device, &mut encoder, GRAIN).unwrap();
     assert_eq!(second, (first.0, GRAIN), "grew the first page");
@@ -73,6 +74,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         reused.1,
         4,
         &[],
+        false,
     );
     uploads.finish(&encoder);
     queue.submit([encoder.finish()]);
@@ -81,7 +83,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
             &device,
             &queue,
             arena.sources(third.0).unwrap(),
-            third.1 / 4 * 8,
+            third.1 * 8,
             8
         ),
         bytemuck::bytes_of(&source)
@@ -91,7 +93,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
             &device,
             &queue,
             arena.sources(first.0).unwrap(),
-            first.1 / 4 * 8,
+            first.1 * 8,
             8
         ),
         [0; 8]
@@ -130,6 +132,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         at.1,
         4,
         &[source],
+        false,
     );
     assert!(
         arena.sources(at.0).is_none(),
@@ -141,5 +144,102 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
     assert_eq!(
         read(&device, &queue, arena.buffer(at.0), at.1 * 24, 96),
         bytemuck::cast_slice::<_, u8>(&geometry)
+    );
+}
+
+#[test]
+#[ignore = "offscreen GPU control; run explicitly with an available adapter"]
+fn terrain_source_arena_packed_and_wide_mesh_in_same_page() {
+    let instance = crate::gfx::test_gpu::instance();
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
+        .expect("GPU control requires an adapter");
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let mut arena = Arena::new(&device, 24, GRAIN, true);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let mut uploads = super::super::upload::Uploads::new(&device);
+
+    let packed_at = arena.alloc(&device, &mut encoder, 2).unwrap();
+    let wide_at = arena.alloc(&device, &mut encoder, 8).unwrap();
+    assert_eq!(
+        packed_at.0, wide_at.0,
+        "both meshes reside in the same arena page"
+    );
+
+    let packed_sources = [
+        TerrainSource::new(10, [1, 2, 3], 5, false),
+        TerrainSource::new(20, [4, 5, 6], 8, false),
+    ];
+    let wide_sources = [
+        TerrainSource::new(30, [7, 8, 9], 12, false),
+        TerrainSource::new(40, [10, 11, 12], 15, true),
+    ];
+
+    arena.write_sources(
+        &device,
+        &mut encoder,
+        &mut uploads,
+        packed_at.0,
+        packed_at.1,
+        2,
+        &packed_sources,
+        true,
+    );
+
+    arena.write_sources(
+        &device,
+        &mut encoder,
+        &mut uploads,
+        wide_at.0,
+        wide_at.1,
+        8,
+        &wide_sources,
+        false,
+    );
+
+    uploads.finish(&encoder);
+    queue.submit([encoder.finish()]);
+
+    let sources_buffer = arena.sources(packed_at.0).cloned().unwrap();
+
+    assert_eq!(
+        read(&device, &queue, &sources_buffer, packed_at.1 * 8, 16),
+        bytemuck::cast_slice::<_, u8>(&packed_sources),
+        "packed mesh records match at its slot range"
+    );
+
+    let mut expected_wide = Vec::with_capacity(8);
+    for &s in &wide_sources {
+        expected_wide.extend([s; 4]);
+    }
+    assert_eq!(
+        read(&device, &queue, &sources_buffer, wide_at.1 * 8, 64),
+        bytemuck::cast_slice::<_, u8>(&expected_wide),
+        "wide mesh records repeated across all 4 vertices of each quad"
+    );
+
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let mut uploads = super::super::upload::Uploads::new(&device);
+    arena.write_sources(
+        &device,
+        &mut encoder,
+        &mut uploads,
+        wide_at.0,
+        wide_at.1,
+        8,
+        &[],
+        false,
+    );
+    uploads.finish(&encoder);
+    queue.submit([encoder.finish()]);
+
+    assert_eq!(
+        read(&device, &queue, &sources_buffer, packed_at.1 * 8, 16),
+        bytemuck::cast_slice::<_, u8>(&packed_sources),
+        "packed mesh sources preserved after wide mesh cleared"
+    );
+    assert_eq!(
+        read(&device, &queue, &sources_buffer, wide_at.1 * 8, 64),
+        vec![0u8; 64],
+        "wide mesh slots cleared"
     );
 }
