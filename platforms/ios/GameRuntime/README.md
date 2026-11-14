@@ -16,3 +16,14 @@ iOS Rust target check and uploads a compiler log. Compiler errors are kept
 visible without blocking the separate, already-working iOS host build. Once
 platform compilation passes, switch to `cargo build` and link into the host;
 then validate iOS window ownership, Metal, resources and gameplay on device.
+
+## Combined native app link (current milestone)
+
+The iOS runtime library now exports the same host ABI as the standalone Rust
+scaffold. The original Horizon entry is kept reachable by the linker, but is
+NOT called: `horizon_ios_game_is_ready()` is intentionally false.
+The compile-probe workflow additionally builds a native iOS SwiftUI app linked
+against the actual game static library and attempts an unsigned IPA package.
+This is not proof that Horizon starts or renders on iOS. A future change must
+integrate Horizon's event loop, Metal surface, lifecycle and input without
+editing gameplay. The original, lightweight host CI still links the stub.

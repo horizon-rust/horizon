@@ -37,9 +37,10 @@ targets:
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
           - $(PROJECT_DIR)/Build/rust
+        HORIZON_IOS_RUST_LIB: horizon_ios_bridge
         OTHER_LDFLAGS:
           - $(inherited)
-          - -lhorizon_ios_bridge
+          - -l$(HORIZON_IOS_RUST_LIB)
         CODE_SIGN_STYLE: Manual
         ENABLE_USER_SCRIPT_SANDBOXING: NO
 schemes:

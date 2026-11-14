@@ -122,6 +122,65 @@ jobs:
           cargo build --manifest-path platforms/ios/GameRuntime/Cargo.toml \
             --release --target aarch64-apple-ios 2>&1 | tee ios-runtime-link.log
           test -s platforms/ios/GameRuntime/target/aarch64-apple-ios/release/libhorizon_ios_game_runtime.a
+      - name: Install XcodeGen
+        if: steps.linkprobe.outcome == 'success'
+        run: brew install xcodegen
+      - name: Stage the compiled original game for the iOS host
+        if: steps.linkprobe.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p platforms/ios/Build/rust
+          cp platforms/ios/GameRuntime/target/aarch64-apple-ios/release/libhorizon_ios_game_runtime.a \
+             platforms/ios/Build/rust/libhorizon_ios_game_runtime.a
+          ls -lh platforms/ios/Build/rust/libhorizon_ios_game_runtime.a
+      - name: Generate native iOS app project
+        if: steps.linkprobe.outcome == 'success'
+        working-directory: platforms/ios
+        run: xcodegen generate --spec project.yml
+      - name: Link real Horizon game into iOS app
+        id: app_link
+        if: steps.linkprobe.outcome == 'success'
+        continue-on-error: true
+        working-directory: platforms/ios
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild -project HorizonIOS.xcodeproj -scheme HorizonIOS \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath Build/Derived CODE_SIGNING_ALLOWED=NO \
+            HORIZON_IOS_RUST_LIB=horizon_ios_game_runtime build \
+            2>&1 | tee ios-app-link.log
+          test -d Build/Derived/Build/Products/Release-iphoneos/HorizonIOS.app
+      - name: Package unsigned integrated iOS app
+        id: ipa
+        if: steps.app_link.outcome == 'success'
+        working-directory: platforms/ios
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p Build/package/Payload
+          ditto Build/Derived/Build/Products/Release-iphoneos/HorizonIOS.app \
+            Build/package/Payload/HorizonIOS.app
+          cd Build/package
+          zip -qry HorizonIOS-game-linked-unsigned.ipa Payload
+          unzip -t HorizonIOS-game-linked-unsigned.ipa
+      - name: Upload integrated unsigned IPA
+        if: steps.ipa.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: HorizonIOS-game-linked-unsigned
+          path: platforms/ios/Build/package/HorizonIOS-game-linked-unsigned.ipa
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload Xcode linker diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HorizonIOS-app-link-diagnostics
+          path: platforms/ios/ios-app-link.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Publish diagnostic log and result
         if: always()
         shell: bash
@@ -129,6 +188,8 @@ jobs:
           echo "### Original Horizon iOS compilation" >> "$GITHUB_STEP_SUMMARY"
           echo "Cargo check: ${{ steps.crosscheck.outcome }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Static library build: ${{ steps.linkprobe.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Xcode app native link: ${{ steps.app_link.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "IPA packaging: ${{ steps.ipa.outcome }}" >> "$GITHUB_STEP_SUMMARY"
           echo "This is a compilation probe, not an in-game launch or device test." >> "$GITHUB_STEP_SUMMARY"
           if [[ "${{ steps.crosscheck.outcome }}" != success ]]; then
             echo "::warning::Original Horizon game does not yet cross-compile for iOS. See diagnostic log."
@@ -150,3 +211,5 @@ jobs:
         run: |
           test "${{ steps.crosscheck.outcome }}" = success
           test "${{ steps.linkprobe.outcome }}" = success
+          test "${{ steps.app_link.outcome }}" = success
+          test "${{ steps.ipa.outcome }}" = success
