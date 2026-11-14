@@ -43,7 +43,7 @@ use horizon_client::{
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, traverse_blocks, trig::Mth},
     position::BlockPos,
-    random::{LevelRandom, RandomSource},
+    random::RandomSource,
 };
 use std::sync::Arc;
 
@@ -1225,7 +1225,7 @@ impl Game<'_> {
             let start = mob_group::Start {
                 events,
                 // The level random, lent to the mobs and taken back after their ticks.
-                random: (*self.world.random).clone(),
+                random: self.world.random.clone(),
                 guests,
                 player: base.player.take(),
                 bindings,
@@ -1323,7 +1323,7 @@ impl Game<'_> {
             guest_events,
             ..
         } = group;
-        self.world.random = LevelRandom::for_level(level_random);
+        self.world.random = level_random;
         if let Some(host) = self.lan.as_mut()
             && !guests.is_empty()
         {
