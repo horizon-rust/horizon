@@ -63,6 +63,7 @@ impl Game<'_> {
     pub(super) fn tp_place_player(&mut self, v: Vec3, relatives: i32) {
         if let Some(p) = self.player.as_mut() {
             p.position = v;
+            p.teleported = true;
             keep_motion(&mut p.velocity, relatives);
             p.fall_distance = 0.0;
             p.ground.on_ground = false;
