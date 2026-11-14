@@ -37,7 +37,6 @@ pub struct Ticks {
     /// (`PistonMovingBlockEntity.tick`'s `moveCollidedEntities` call). The
     /// caller moves entities by these; `Ticks` has no entities of its own.
     pub piston_pushes: Vec<(BlockPos, super::pistons::MovingPiston, f32)>,
-    pub(crate) next_block_entity_id: u64,
     /// `ServerLevel.blockEvents`, run by `Behaviours::run_block_events`.
     /// Changed only through [`Ticks::queue_block_event`], [`Ticks::pop_block_event`]
     /// and [`Ticks::retain_block_events`], which keep `block_event_keys` in step.
@@ -79,7 +78,6 @@ impl Ticks {
             moving_pistons: Vec::new(),
             moving_piston_ids: FxHashMap::default(),
             piston_pushes: Vec::new(),
-            next_block_entity_id: 0,
             block_events: Default::default(),
             block_event_keys: Default::default(),
             handling_tick: false,
@@ -108,8 +106,7 @@ impl Ticks {
         mut piston: super::pistons::MovingPiston,
     ) {
         self.take_moving_piston(pos);
-        self.next_block_entity_id += 1;
-        piston.id = self.next_block_entity_id;
+        piston.id = horizon_core::ticker_seq::next();
         self.moving_pistons.push((pos, piston));
         self.moving_piston_ids.insert(pos, piston.id);
     }

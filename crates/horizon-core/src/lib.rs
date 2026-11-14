@@ -19,6 +19,7 @@ pub mod prepared_files;
 pub mod random;
 pub mod storage;
 pub mod text;
+pub mod ticker_seq;
 pub mod ticks;
 
 pub mod release;

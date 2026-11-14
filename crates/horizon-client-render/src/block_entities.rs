@@ -51,6 +51,9 @@ pub struct BlockEntities {
     tickers: Arc<Vec<(Pos, u32)>>,
     /// `LevelChunk.tickersInLevel`: the live slot of each ticking position.
     live: FxHashMap<Pos, u32>,
+    /// When each live slot joined the list ([`horizon_core::ticker_seq`]),
+    /// to order it against the moving pistons, which tick from their own.
+    joined: FxHashMap<Pos, u64>,
     /// Positions that may need a slot, in the order vanilla would have made
     /// it (`pendingBlockEntityTickers`), each with a token; decided at the
     /// next promotion from the block state then.
@@ -253,6 +256,7 @@ impl BlockEntities {
     fn cancel(&mut self, pos: &Pos) {
         self.asleep.remove(pos);
         self.freed |= self.live.remove(pos).is_some();
+        self.joined.remove(pos);
         self.pending.remove(pos);
     }
 
@@ -482,8 +486,9 @@ impl BlockEntities {
     /// Removes the block entities `keep` refuses, and their slots
     /// (`clearAllBlockEntities` of unloaded chunks).
     pub fn retain(&mut self, mut keep: impl FnMut(&Pos, &mut BlockEntity) -> bool) {
-        let (live, pending, freed, attachments) = (
+        let (live, joined, pending, freed, attachments) = (
             &mut self.live,
+            &mut self.joined,
             &mut self.pending,
             &mut self.freed,
             &mut self.attachments,
@@ -496,6 +501,7 @@ impl BlockEntities {
             if !kept {
                 attachments.remove(p);
                 *freed |= live.remove(p).is_some();
+                joined.remove(p);
                 pending.remove(p);
                 forget_mod(mods, *p);
                 boxes.remove(p);
@@ -513,6 +519,7 @@ impl BlockEntities {
         self.asleep.clear();
         self.tickers = Arc::default();
         self.live.clear();
+        self.joined.clear();
         self.added.clear();
         self.pending.clear();
         self.out.clear();
@@ -583,6 +590,7 @@ impl BlockEntities {
             }
             let slot = self.next();
             self.live.insert(pos, slot);
+            self.joined.insert(pos, horizon_core::ticker_seq::next());
             Arc::make_mut(&mut self.tickers).push((pos, slot));
         }
         for pos in std::mem::take(&mut self.replaced) {
@@ -594,11 +602,12 @@ impl BlockEntities {
             return Arc::clone(&self.tickers);
         }
         self.out.clear();
-        let (live, map) = (&mut self.live, &self.map);
+        let (live, joined, map) = (&mut self.live, &mut self.joined, &self.map);
         Arc::make_mut(&mut self.tickers).retain(|(p, slot)| {
             let mine = live.get(p) == Some(slot);
             if mine && !map.contains_key(p) {
                 live.remove(p);
+                joined.remove(p);
             }
             mine && map.contains_key(p)
         });
@@ -608,6 +617,11 @@ impl BlockEntities {
     /// the last [`Self::tickers`]: what a diagnostics mod counts.
     pub fn ticking_len(&self) -> usize {
         self.live.len()
+    }
+    /// When the live slot at `pos` joined the list, as a
+    /// [`horizon_core::ticker_seq`] number (a moving piston's `id` is one).
+    pub fn joined(&self, pos: &Pos) -> Option<u64> {
+        self.joined.get(pos).copied()
     }
     /// Whether a slot from `tickers` still ticks.
     pub fn is_live(&self, (pos, slot): (Pos, u32)) -> bool {

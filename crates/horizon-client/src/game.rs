@@ -5757,12 +5757,7 @@ impl Game<'_> {
         // before the entity passes (TNT a piston or repeater primed), its first
         // tick in the late pass above (#10063).
         self.ordered.announced = horizon_client::join_seq::JoinSeq::upcoming();
-        if running {
-            horizon_client::spans::time("tick_moving_pistons", || self.tick_moving_pistons())?;
-            horizon_client::spans::time("tick_block_entities", || self.tick_block_entities())?;
-            horizon_client::spans::time("tick_sculk_entities", || self.tick_sculk_entities());
-            horizon_client::spans::time("tick_sculk_blocks", || self.tick_sculk_blocks())?;
-        }
+        self.tick_level_block_entities(running)?;
         if running {
             // ClientLevel.tickBlockEntities (not while paused or frozen):
             // chest lids, books, shulker boxes, bells, conduits, heads.

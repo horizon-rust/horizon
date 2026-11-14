@@ -51,6 +51,15 @@ struct PistonIndex {
     drawn: horizon_client::fast_hash::FxHashMap<[i32; 3], usize>,
 }
 
+/// What the tick's piston pushes keep from one piston to the next: how far
+/// they have moved each entity on each axis (`Entity.pistonDeltas`), and the
+/// vehicles a cactus pricked on the way, hurt once the pushes end.
+#[derive(Default)]
+pub(super) struct PistonDeltas {
+    moves: std::collections::HashMap<Target, PistonMovement>,
+    pricked: Vec<u32>,
+}
+
 /// `Entity.getStepHeight` of each body, read before the push.
 struct StepHeights {
     player: f32,
@@ -78,8 +87,21 @@ impl Game<'_> {
     /// ticks) takes each piston's new progress right after its own push: a
     /// TNT duper's TNT stops at the block that has not moved yet (#11399).
     pub(super) fn push_piston_entities(&mut self, pushes: Vec<Push>) {
-        let mut accumulators = std::collections::HashMap::new();
-        let mut pricked = Vec::new();
+        let mut deltas = PistonDeltas::default();
+        self.push_piston_entities_in(pushes, &mut deltas);
+        self.end_piston_pushes(deltas);
+    }
+
+    /// [`Self::push_piston_entities`] for a part of the tick's pistons: the
+    /// limit on how far one tick's pistons move an entity
+    /// (`Entity.limitPistonMovement`) and the vehicles a cactus pricked carry
+    /// over in `deltas` between the parts; [`Self::end_piston_pushes`] ends
+    /// the tick's pushes.
+    pub(super) fn push_piston_entities_in(&mut self, pushes: Vec<Push>, deltas: &mut PistonDeltas) {
+        let PistonDeltas {
+            moves: accumulators,
+            pricked,
+        } = deltas;
         // Where each moving piston first sits in both lists, so a clock of a
         // thousand pistons doesn't scan them a thousand times a tick.
         let mut index = PistonIndex::default();
@@ -93,10 +115,15 @@ impl Game<'_> {
         let targets = self.piston_push_targets(&pushes, &steps);
         for push in pushes {
             let pos = push.0;
-            self.push_for_piston(push, &targets, &steps, &mut accumulators, &mut pricked);
+            self.push_for_piston(push, &targets, &steps, accumulators, pricked);
             self.advance_piston_collision(pos, &index);
         }
-        self.hurt_cactus_pricked_vehicles(pricked);
+    }
+
+    /// After the tick's last pushes: the vehicles a cactus pricked on the way
+    /// are hurt.
+    pub(super) fn end_piston_pushes(&mut self, deltas: PistonDeltas) {
+        self.hurt_cactus_pricked_vehicles(deltas.pricked);
     }
 
     /// `moveEntityByPiston`'s `applyEffectsFromBlocks` for a boat or a

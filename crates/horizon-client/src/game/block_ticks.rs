@@ -341,13 +341,64 @@ impl Game<'_> {
     }
 
     /// `ServerLevel.tick`: moving block entities push after entity travel.
+    /// The geysers' pushes run between them in the order their tickers
+    /// joined `Level.blockEntityTickers` (a moving piston's id is that
+    /// number), each after the pushes of the pistons before it.
     pub(super) fn tick_moving_pistons(&mut self) -> Result<()> {
-        self.with_level(|b, level, ticks| b.tick_block_entities(level, ticks));
-        let pushes = std::mem::take(&mut self.block_ticks.piston_pushes);
-        self.push_piston_entities(pushes);
+        let geysers = self.geyser_launchers();
+        if geysers.is_empty() {
+            self.with_level(|b, level, ticks| b.tick_block_entities(level, ticks));
+            let pushes = std::mem::take(&mut self.block_ticks.piston_pushes);
+            self.push_piston_entities(pushes);
+        } else {
+            self.tick_moving_pistons_with_geysers(geysers);
+        }
         self.process_level_events()?;
         self.sync_moving_pistons();
         Ok(())
+    }
+
+    /// [`Self::tick_moving_pistons`] with geysers among the tickers: the
+    /// pistons that joined before each geyser tick and push, then it pushes.
+    /// Pistons that start moving during the pass wait for the next tick.
+    fn tick_moving_pistons_with_geysers(
+        &mut self,
+        geysers: Vec<((horizon_client::block_entities::Pos, u32), u64)>,
+    ) {
+        let pistons: Vec<(BlockPos, u64)> = self
+            .block_ticks
+            .moving_pistons
+            .iter()
+            .map(|(p, m)| (*p, m.id))
+            .collect();
+        let mut deltas = super::piston_push::PistonDeltas::default();
+        let mut next = 0;
+        for (slot, joined) in geysers {
+            let end = next + pistons[next..].partition_point(|(_, id)| *id < joined);
+            self.tick_piston_run(&pistons[next..end], &mut deltas);
+            next = end;
+            self.launch_geyser(slot);
+        }
+        self.tick_piston_run(&pistons[next..], &mut deltas);
+        self.end_piston_pushes(deltas);
+    }
+
+    /// The moving pistons in `run`, in order, then the pushes they asked for.
+    fn tick_piston_run(
+        &mut self,
+        run: &[(BlockPos, u64)],
+        deltas: &mut super::piston_push::PistonDeltas,
+    ) {
+        if run.is_empty() {
+            return;
+        }
+        self.with_level(|b, level, ticks| {
+            for &(pos, id) in run {
+                b.tick_moving_piston(level, ticks, pos, id);
+            }
+        });
+        let pushes = std::mem::take(&mut self.block_ticks.piston_pushes);
+        self.push_piston_entities_in(pushes, deltas);
     }
 
     /// `ServerLevel.tick`'s scheduled block then fluid ticks, one at a time:
