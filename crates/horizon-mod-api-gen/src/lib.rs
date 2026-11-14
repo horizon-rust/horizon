@@ -1684,15 +1684,10 @@ mod tests {
             lf(&std::fs::read_to_string(root.join(super::RENDER_HOOKS)).unwrap()),
             lf(&std::fs::read_to_string(real.join(super::RENDER_HOOKS)).unwrap()),
         );
-        assert_eq!(
-            super::sources(&root, super::FillMode::Require)
-                .unwrap()
-                .hooks,
-            super::sources(&real, super::FillMode::Require)
-                .unwrap()
-                .hooks,
-        );
-        super::sources(&root, super::FillMode::Require).unwrap();
+        // Parsing the sources is the slow part, so each tree is parsed once.
+        let filled = super::sources(&root, super::FillMode::Require).unwrap();
+        let shipped_sources = super::sources(&real, super::FillMode::Require).unwrap();
+        assert_eq!(filled.hooks, shipped_sources.hooks);
         std::fs::remove_dir_all(root).unwrap();
     }
 

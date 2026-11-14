@@ -12,6 +12,7 @@
 use super::entity::{Entity as _, entity_lists_of, for_each_entity, with_entity};
 use super::{Dim, Game, Result, Screen, level_flags};
 use horizon_client::fast_hash::FxHashMap;
+use horizon_client::mobs::{Species, spawn_rules};
 use horizon_client::nether_portal::{ENTITY_DELAY, PortalState};
 use horizon_client::world::PendingEntity;
 use horizon_core::{
@@ -30,6 +31,10 @@ use horizon_world::{
 use std::collections::HashMap;
 
 mod respawn_attributes;
+
+#[cfg(test)]
+#[path = "portal_spawn_tests.rs"]
+mod portal_spawn_tests;
 
 /// `Player.getDimensionChangingDelay`.
 pub(super) const PLAYER_DELAY: i32 = 10;
@@ -424,48 +429,25 @@ impl Game<'_> {
     }
     /// The nether portal blocks of the chunks within `radius` of `center`
     /// (the points of interest `PortalForcer` searches): loaded chunks as
-    /// they are, the others as saved; chunks never generated have none.
+    /// they are, the others as saved (each read once until it is saved again);
+    /// chunks never generated have none.
     fn portal_blocks(&self, center: BlockPos, radius: i32) -> Vec<BlockPos> {
         let b = self.res.behaviours();
+        let is_portal = |state| b.portal_axis(state).is_some();
         let chunk_radius = radius.div_euclid(16) + 1;
         let (cx, cz) = (center.x >> 4, center.z >> 4);
         let mut out = Vec::new();
         for z in cz - chunk_radius..=cz + chunk_radius {
             for x in cx - chunk_radius..=cx + chunk_radius {
-                let saved;
-                let chunk = match self.world.chunks.get(&(x, z)) {
-                    Some(c) => &**c,
-                    None => {
-                        match self
-                            .save
-                            .load(x, z, self.pack.assets.registry, world_biomes!(self))
-                        {
-                            Some(c) => {
-                                saved = c;
-                                &saved
-                            }
-                            None => continue,
-                        }
-                    }
-                };
-                for (s, section) in chunk.sections.iter().enumerate() {
-                    if !section.blocks.maybe_has(|v| {
-                        b.portal_axis(horizon_world::registry::BlockStateId(v))
-                            .is_some()
-                    }) {
-                        continue;
-                    }
-                    let base = self.world.bottom_y() + 16 * s as i32;
-                    for y in base..base + 16 {
-                        for lz in 0..16 {
-                            for lx in 0..16 {
-                                let (wx, wz) = (x * 16 + lx, z * 16 + lz);
-                                if b.portal_axis(chunk.block(wx, y, wz)).is_some() {
-                                    out.push(BlockPos::new(wx, y, wz));
-                                }
-                            }
-                        }
-                    }
+                match self.world.chunks.get(&(x, z)) {
+                    Some(c) => out.extend(c.blocks_where(is_portal)),
+                    None => out.extend_from_slice(&self.save.saved_portal_blocks(
+                        x,
+                        z,
+                        self.pack.assets.registry,
+                        world_biomes!(self),
+                        is_portal,
+                    )),
                 }
             }
         }
@@ -622,27 +604,23 @@ impl Game<'_> {
         )
     }
     /// `LocalPlayer.handlePortalTransitionEffect`: whether the confusion
-    /// effect grows this tick. Entering a portal closes screens other than
-    /// the chat and death screens and plays `block.portal.trigger` when the
-    /// effect starts from nothing.
+    /// effect grows this tick. Entering a portal closes the screen only when
+    /// it does not allow it (`Screen.isAllowedInPortal`), and plays
+    /// `block.portal.trigger` when the effect starts from nothing.
     pub(super) fn client_portal_effect(&mut self) -> bool {
         let inside = std::mem::take(&mut self.portals.client_inside);
         self.portals.client_was_inside = inside;
         if !inside {
             return false;
         }
-        match self.screen {
-            Screen::Playing | Screen::Chat | Screen::Dead => {}
-            Screen::Inventory | Screen::Creative => {
+        // No screen at all (`screen() == null`) is nothing to close.
+        if self.screen != Screen::Playing && !self.screen.allowed_in_portal() {
+            if matches!(self.screen, Screen::Creative | Screen::Inventory) {
                 self.close_container();
                 self.carried = None;
-                self.screen = Screen::Playing;
-                self.capture(true);
             }
-            _ => {
-                self.screen = Screen::Playing;
-                self.capture(true);
-            }
+            self.screen = Screen::Playing;
+            self.capture(true);
         }
         if self.screen_fx.portal == 0.0 {
             let pitch = self.world.random.next_float() * 0.4 + 0.8;
@@ -837,6 +815,49 @@ impl Game<'_> {
                 process: None,
             },
         );
+    }
+    /// The rest of `NetherPortalBlock.randomTick` after a won roll: with a
+    /// player close enough for spawning, a zombified piglin spawns on the block
+    /// under the portal column when it is a valid spawn, plays its ambient
+    /// sound (`EntityType.spawn`) and waits out a portal cooldown.
+    pub(super) fn portal_spawn(&mut self, pos: [i32; 3]) {
+        // ChunkMap.anyPlayerCloseEnoughForSpawning: a non-spectator within 128
+        // blocks of the chunk centre.
+        let centre = [
+            f64::from((pos[0] >> 4) * 16 + 8),
+            f64::from((pos[2] >> 4) * 16 + 8),
+        ];
+        let close = self.level_players().iter().any(|p| {
+            let (dx, dz) = (p.position.x - centre[0], p.position.z - centre[1]);
+            !p.spectator && dx * dx + dz * dz < 16384.0
+        });
+        if !close {
+            return;
+        }
+        let facts = self.res.facts();
+        let mut y = pos[1];
+        while &*facts.get(self.world.block(pos[0], y, pos[2])).name == "minecraft:nether_portal" {
+            y -= 1;
+        }
+        // `BlockState.isValidSpawn(level, pos, ZOMBIFIED_PIGLIN)`: the same
+        // per-state table the natural spawns read, so glowstone's 15 light and
+        // bedrock's `isValidSpawn(never)` both refuse it.
+        let w = self.mob_world_base(&[]);
+        if !spawn_rules::is_valid_spawn(Species::ZombifiedPiglin, &w, pos[0], y, pos[2]) {
+            return;
+        }
+        let at = [
+            f64::from(pos[0]) + 0.5,
+            f64::from(y + 1),
+            f64::from(pos[2]) + 0.5,
+        ];
+        if let Some(id) = self.spawn_mob("minecraft:zombified_piglin", at, false) {
+            // `EntityType.spawn` calls `Mob.playAmbientSound` once the mob is in
+            // the level, before the cooldown below.
+            let _ = self.mob_ambient(id);
+            // setPortalCooldown: the new piglin does not travel at once.
+            self.set_portal_cooldown(id);
+        }
     }
     /// `canUsePortal(false)` of a mob: what the mob itself decides
     /// (`mobs::mob_can_use_portal`), riding nothing, not asleep, and not
@@ -1233,6 +1254,27 @@ impl Game<'_> {
             self.detach_entity(id);
             self.portals.arrivals.push(Arrival::new(plan, tag, false));
             self.portals.dirty = true;
+        } else if let Some(i) = self.armor_stands.iter().position(|a| a.id == id) {
+            let a = &self.armor_stands[i];
+            // Its `getDimensions`: the box the exit is placed by, and
+            // `LivingEntity.getRelativePortalPosition` resets the forward offset.
+            let Some((width, height)) = a.portal_size() else {
+                return;
+            };
+            let plan = self.entity_plan(entry, a.position, width, height, true);
+            if !self.may_enter(plan.dim) {
+                return;
+            }
+            let uuid = self.uuid_for(id);
+            let tag = horizon_client::entity_nbt::armor_stand_to_nbt(
+                &self.armor_stands[i],
+                uuid,
+                self.persist_raw(id),
+            );
+            self.armor_stands.remove(i);
+            self.detach_entity(id);
+            self.portals.arrivals.push(Arrival::new(plan, tag, false));
+            self.portals.dirty = true;
         } else if let Some(i) = self
             .creatures
             .projectiles
@@ -1320,8 +1362,8 @@ impl Game<'_> {
             return;
         }
         let waiting = std::mem::take(&mut self.world.loaded_entities);
-        self.resolve_arrivals();
-        self.spawn_loaded_entities();
+        horizon_client::spans::time("resolve_arrivals", || self.resolve_arrivals());
+        horizon_client::spans::time("spawn_arrivals", || self.spawn_loaded_entities());
         self.world.loaded_entities.extend(waiting);
     }
     /// Entities waiting for the loaded dimension whose exit area is loaded:
@@ -1360,7 +1402,9 @@ impl Game<'_> {
                     end_portal_rotation(into_end, [yaw, pitch], self.level.world_spawn_angle);
                 (at, motion, turn)
             } else {
-                let Some(exit) = self.nether_exit_portal(&plan) else {
+                let exit =
+                    horizon_client::spans::time("exit_portal", || self.nether_exit_portal(&plan));
+                let Some(exit) = exit else {
                     continue;
                 };
                 let (at, rotation) = self.arrival(&plan, exit);
@@ -1760,3 +1804,7 @@ mod tests {
 #[cfg(test)]
 #[path = "portal_cooldown_tests.rs"]
 mod cooldown_tests;
+
+#[cfg(test)]
+#[path = "nether_portal_stand_tests.rs"]
+mod stand_tests;
