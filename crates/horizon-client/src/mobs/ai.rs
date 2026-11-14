@@ -1340,6 +1340,8 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
             touches_lava(m, w),
         )
     };
+    // LavaCauldronBlock.entityInside: LAVA_IGNITE and lavaHurt, as in lava.
+    let lava = lava || crate::entities::lava_cauldron_contacts(w.world, w.registry, m.bounds()) > 0;
     block_contact_damage(m, fire, lava, w, events);
     // What a hurt outside the mob's own tick left (a scripted or a mob's
     // hit) teleports before the rest of the tick, as it did inside it.
@@ -1381,8 +1383,6 @@ fn freeze_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         hurt(m, w, events, 1.0, Damage::of(DamageKind::Freeze));
     }
 }
-/// Whether the mob's box (shrunk by `1.0E-5`, as in `Entity.checkInsideBlocks`)
-/// touches powder snow.
 /// Whether the mob's box (shrunk by `1.0E-5`) touches a lava block: the
 /// LAVA_IGNITE contact read where a teleport landed, whose own fluid check
 /// (`Enderman.canRandomlyTeleportTo`, a shulker's empty spot) keeps lava
@@ -4988,6 +4988,21 @@ mod burn_and_rose_tests {
             }
             assert_eq!(m.health, start - 8.0, "second hit on tick 11");
             assert_eq!(m.fire_ticks, 300);
+        });
+    }
+
+    /// `LavaCauldronBlock.entityInside` ignites and hurts a mob standing in a
+    /// lava cauldron as lava does (#13100: a chicken farm's cauldron).
+    #[test]
+    fn a_lava_cauldron_burns_the_mob_inside_it() {
+        let build = build_with("minecraft:lava_cauldron");
+        crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let mut m = golem(types);
+            let mut events = Vec::new();
+            let start = m.health;
+            base_tick(&mut m, w, &mut events);
+            assert_eq!(m.health, start - 4.0, "one lava hit");
+            assert_eq!(m.fire_ticks, 300, "ignited to the full time");
         });
     }
 }
