@@ -311,7 +311,6 @@ impl Game<'_> {
             play.stats.custom("leave_game", 1);
         }
     }
-
     /// `PlayerList.removeAll`: every player who joined leaves with the world.
     pub(super) fn award_leave_game_to_all(&mut self, host: &mut LanHost) {
         let players: Vec<(u32, u128, String)> = host
@@ -1259,7 +1258,6 @@ impl Game<'_> {
                 [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
             })
     }
-
     /// MinecraftServer.setRespawnData: every placed player hears a changed world spawn.
     pub(super) fn lan_broadcast_world_spawn(&self) {
         if let Some(host) = &self.lan {
@@ -1272,7 +1270,6 @@ impl Game<'_> {
             }
         }
     }
-
     /// `horizon-ctl lan ...`.
     pub(super) fn lan_control(&mut self, words: &[&str]) -> Result<Option<serde_json::Value>> {
         use serde_json::json;
@@ -2568,7 +2565,6 @@ impl Game<'_> {
         self.flush_attachment_sync(&mut host);
         self.lan = Some(host);
     }
-
     /// Deliver start/stop callbacks before sounds and attachment snapshots.
     /// A callback can spawn another entity, whose pairing is part of the same
     /// operation, as a nested ChunkMap.addEntity would be in vanilla.
@@ -2587,7 +2583,6 @@ impl Game<'_> {
                 .expect("the hub is back after the tracking events");
         }
     }
-
     /// Pair late arrivals before a sound flush as well as at the end of the
     /// tick. The counter prevents taking or draining an entity's state twice.
     pub(super) fn lan_pair_joined(&mut self, host: &mut LanHost) {
@@ -2742,12 +2737,14 @@ impl Game<'_> {
             }
             let entities = states.as_slice();
             self.lan_prepare_captured_sounds(&mut host, entities);
-            // An entity that left the level since the last tick (a snowball
-            // that hit) is dropped by the tracker below: its event goes out
-            // first, as `Level.broadcastEntityEvent` precedes the discard.
+            // Break events precede equipment updates; events of removed entities
+            // precede their discard, as in Level.broadcastEntityEvent.
             let (gone, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.lan_entity_events)
                 .into_iter()
-                .partition(|(id, ..)| !entities.iter().any(|e| e.id == *id));
+                .partition(|(id, event, _)| {
+                    horizon_client::mobs::item_break::equipment_break_slot(*event).is_some()
+                        || !entities.iter().any(|e| e.id == *id)
+                });
             self.lan_entity_events = later;
             for (id, event, at) in gone {
                 host.hub.entity_event(id, event, at);
@@ -4598,7 +4595,7 @@ mod mob_pickup_sync_tests {
 }
 
 #[cfg(test)]
-mod mob_swing_sync_tests {
+pub(super) mod mob_swing_sync_tests {
     use super::*;
     use horizon_client::{
         first_person::SwingAnimation,
@@ -4607,14 +4604,17 @@ mod mob_swing_sync_tests {
     use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
     /// A server with one placed guest beside the mobs.
-    fn guest_at(game: &mut Game<'_>, at: [f64; 3]) -> mpsc::Receiver<Out> {
+    pub(in crate::game) fn guest_at(game: &mut Game<'_>, at: [f64; 3]) -> mpsc::Receiver<Out> {
         game.lan_host(
             LanSettings {
                 port: 0,
                 guest_commands: true,
                 force_game_mode: false,
             },
-            NetConfig::loopback(0, String::new(), 2),
+            NetConfig {
+                listen: false,
+                ..NetConfig::loopback(0, String::new(), 2)
+            },
             HubConfig {
                 default_game_mode: 0,
                 guest_commands: true,

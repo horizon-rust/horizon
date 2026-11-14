@@ -80,3 +80,47 @@ fn thorns_wear_a_wolfs_body_piece_and_a_break_sends_its_event() {
         "no raw break sound: the clients play it from the event"
     );
 }
+
+#[test]
+#[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
+fn wolf_break_event_reaches_clients_before_the_empty_body_slot() {
+    use horizon_client::lan::Out;
+    use horizon_protocol::{buf::Reader, packets::play::Clientbound};
+
+    let mut game = game_with_armoured_wolf();
+    let rx = super::super::lan::mob_swing_sync_tests::guest_at(&mut game, AT);
+    game.lan.as_mut().unwrap().hub.guests[0]
+        .sent_chunks
+        .insert((0, 0));
+    game.tick_lan(true);
+    rx.try_iter().for_each(drop);
+    let wolf = &mut game.mobs[0];
+    wolf.extra.body_damage = 63;
+    assert!(game.mob_hits_mob(WOLF, 1.0, Damage::of(DamageKind::MobAttack)));
+    drain(&mut game);
+    game.tick_lan(true);
+    let packets: Vec<_> = rx
+        .try_iter()
+        .flat_map(|out| match out {
+            Out::Packet(body) => vec![body],
+            Out::Packets(bodies) => bodies,
+            Out::Disconnect(_) => panic!("unexpected disconnect"),
+        })
+        .filter_map(|body| {
+            let mut r = Reader::new(&body);
+            let id = r.varint().ok()?;
+            Clientbound::decode(id, r.rest()).ok()
+        })
+        .collect();
+    let event = packets
+        .iter()
+        .position(
+            |p| matches!(p, Clientbound::EntityEvent(e) if e.id == WOLF as i32 && e.event == 65),
+        )
+        .expect("body break event");
+    let empty = packets.iter().position(|p| matches!(p, Clientbound::SetEquipment(e) if e.id == WOLF as i32 && e.slots.iter().any(|(slot, stack)| *slot == 6 && stack.is_none()))).expect("empty body slot");
+    assert!(
+        event < empty,
+        "the client needs the old stack for sound and crumbs: {packets:?}"
+    );
+}
