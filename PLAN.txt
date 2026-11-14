@@ -191,3 +191,22 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
 - Linker also warned about C/assembly objects built for iOS 18.5 while the
   app targets iOS 16.0. Audit and align deployment targets before shipping.
 - Linking successfully is not evidence of gameplay startup or Metal rendering.
+
+2026-11-14: NOVA APP NAME AND OLD GAME ZIP
+- Display name and app executable in the iOS Xcode project are now "Nova";
+  Xcode target/scheme remains HorizonIOS for incremental CI compatibility.
+- Nova can import a ZIP using iOS Files picker and safely store the unexpanded
+  archive at Documents/Nova/Imports/GameFiles.zip. This is staging ONLY:
+  opening or extracting ZIP content and matching the prepared resource manifest
+  are not implemented. No resources are silently inserted into the app binary.
+- Horizon's original launch_options defaults prepared resources to the sibling
+  "resources" directory when horizon-resources.json exists; otherwise uses
+  a default path. The actual game reads assets/minecraft files from resources.
+- On iOS we eventually must resolve the game home and validated prepared
+  resources folder in the app container, and supply them to the original
+  upstream client. The ZIP must be inspected for structure and version first.
+- Original gameplay event loop is in game/loading_screen.rs and
+  game/resource_loader.rs: EventLoop::new()?.run_app(&mut app). SwiftUI already
+  owns UIApplication, so blindly invoking horizon_game::main() from Play is
+  not a safe solution. Implement a genuine iOS lifecycle/event-loop adapter
+  before enabling Play or claiming game menu rendering.

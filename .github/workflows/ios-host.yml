@@ -45,21 +45,21 @@ jobs:
           xcodebuild -project HorizonIOS.xcodeproj -scheme HorizonIOS \
             -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath Build/Derived CODE_SIGNING_ALLOWED=NO build
-          test -d Build/Derived/Build/Products/Release-iphoneos/HorizonIOS.app
+          test -d Build/Derived/Build/Products/Release-iphoneos/Nova.app
       - name: Package unsigned host IPA
         working-directory: platforms/ios
         run: |
           set -euo pipefail
           mkdir -p Build/package/Payload
-          ditto Build/Derived/Build/Products/Release-iphoneos/HorizonIOS.app \
-            Build/package/Payload/HorizonIOS.app
+          ditto Build/Derived/Build/Products/Release-iphoneos/Nova.app \
+            Build/package/Payload/Nova.app
           cd Build/package
-          zip -qry HorizonIOS-host-unsigned.ipa Payload
-          unzip -t HorizonIOS-host-unsigned.ipa
+          zip -qry Nova-host-unsigned.ipa Payload
+          unzip -t Nova-host-unsigned.ipa
       - name: Upload unsigned host IPA
         uses: actions/upload-artifact@v4
         with:
-          name: HorizonIOS-host-unsigned
-          path: platforms/ios/Build/package/HorizonIOS-host-unsigned.ipa
+          name: Nova-host-unsigned
+          path: platforms/ios/Build/package/Nova-host-unsigned.ipa
           if-no-files-found: error
           retention-days: 7

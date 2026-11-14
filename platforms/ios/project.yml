@@ -18,7 +18,7 @@ targets:
     info:
       path: Resources/Info.plist
       properties:
-        CFBundleDisplayName: Horizon iOS
+        CFBundleDisplayName: Nova
         LSRequiresIPhoneOS: true
         UIApplicationSupportsDocumentBrowser: false
         UIRequiredDeviceCapabilities:
@@ -31,8 +31,8 @@ targets:
           - UIInterfaceOrientationLandscapeRight
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.horizonios.host
-        PRODUCT_NAME: HorizonIOS
+        PRODUCT_BUNDLE_IDENTIFIER: dev.horizonios.nova
+        PRODUCT_NAME: Nova
         SWIFT_OBJC_BRIDGING_HEADER: RustBridge/include/HorizonBridge.h
         LIBRARY_SEARCH_PATHS:
           - $(inherited)

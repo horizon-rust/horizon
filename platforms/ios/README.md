@@ -1,4 +1,4 @@
-# Horizon iOS host (scaffold)
+# Nova — Horizon iOS host (scaffold)
 
 This directory is an additive iOS/iPadOS host for the ORIGINAL Horizon game.
 It does not port the desktop launcher and does not modify gameplay crates.
@@ -50,3 +50,15 @@ identity and provisioning appropriate to the target device.
    in-process gameplay startup has been tested.
 
 See root PLAN.txt for architectural constraints and upstream update policy.
+
+## Game archive import
+
+Nova can copy an existing ZIP file from Files.app into its sandbox at
+`Documents/Nova/Imports/GameFiles.zip` without trying to run, extract, or
+interpret its contents. The importer checks only the ZIP header; it does NOT
+prove that the archive contains valid prepared Horizon assets. The original
+game expects a prepared resource root containing `horizon-resources.json`
+and resources under `assets/minecraft/`, and the current desktop entry
+creates its own winit event loop. Do NOT enable Play simply because a ZIP
+was imported. Examine the ZIP version and directory structure first. Do not
+commit user-supplied Minecraft assets to this public repository.
