@@ -199,6 +199,7 @@ impl Game<'_> {
     }
 
     pub(super) fn save_for_exit(&mut self) -> Result<()> {
+        self.land_residents();
         if self.native_window() && !self.native_client_stopped {
             self.native_client_stopped = true;
             self.native_client_stopping();
@@ -242,6 +243,7 @@ impl Game<'_> {
         Ok(())
     }
     pub(super) fn close_world(&mut self) -> Result<()> {
+        self.land_residents();
         // Pause-menu and death-screen exits use the normal world-close action.
         // A standalone replay owns a synthetic remote session, so it must go
         // through replay cleanup instead of being treated like a server.

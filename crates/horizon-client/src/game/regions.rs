@@ -254,6 +254,49 @@ pub(super) struct RegionState {
     /// Region games being made on threads of their own (making one reads files and builds a whole game: a stall
     /// of seconds on the server's thread), taken in once made.
     factory: Vec<std::sync::mpsc::Receiver<std::result::Result<Box<Game<'static>>, String>>>,
+    /// Each level's resident regions: their games keep their parts of the level and their players.
+    pub resident: std::collections::HashMap<Dim, ResidentSet>,
+}
+
+/// A level's regions that stay on their threads between ticks.
+pub(super) struct ResidentSet {
+    games: Vec<Box<Game<'static>>>,
+    /// Each region's chunks when it was lent.
+    chunks: Vec<Vec<ChunkPos>>,
+    /// The layout they were lent in: what their players' views must stay inside.
+    layout: Arc<Regions>,
+    /// Ticks since they were lent.
+    age: u32,
+}
+
+/// Ticks between the resident regions' returns (`HORIZON_RESIDENT_TICKS`, 20 by default).
+fn resident_period() -> u32 {
+    static N: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("HORIZON_RESIDENT_TICKS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(20)
+            .max(1)
+    })
+}
+
+/// Whether region game `w` has something for the server's thread, so its region must come back: commands, menus
+/// of native mods, a player dead or leaving.
+fn wants_land(w: &Game<'_>) -> bool {
+    if !w.level_teleports.is_empty() {
+        return true;
+    }
+    let Some(h) = w.lan.as_ref() else {
+        return true;
+    };
+    !h.commands.is_empty()
+        || !h.quiet.is_empty()
+        || !h.hub.native_menu_events.is_empty()
+        || h.hub
+            .guests
+            .iter()
+            .any(|g| g.dead || g.health <= 0.0 || !g.left_reason.is_empty())
 }
 
 impl Game<'_> {
@@ -354,12 +397,17 @@ impl Game<'_> {
     /// What can change from tick to tick that a region reads but never writes: the rules, the difficulty, the
     /// clock, the border, the ticket levels.
     pub(super) fn copy_tick_settings_from(&mut self, from: &Game<'_>) {
+        self.copy_clock_from(from);
+        self.tickets = from.tickets.clone();
+    }
+
+    /// [`Self::copy_tick_settings_from`] but the ticket levels, which a resident region keeps for its own players.
+    pub(super) fn copy_clock_from(&mut self, from: &Game<'_>) {
         self.ui.rules = from.ui.rules.clone();
         self.ui.difficulty = from.ui.difficulty;
         self.clock = from.clock.clone();
         self.ticks = from.ticks;
         self.border = from.border.clone();
-        self.tickets = from.tickets.clone();
         self.level.difficulty_locked = from.level.difficulty_locked;
     }
 
@@ -567,18 +615,28 @@ fn region_threads_on() -> bool {
 }
 
 impl Game<'_> {
-    /// The world phases of this tick by regions, on threads of their own: the level split into regions' parts,
-    /// each ticked in a region game of its own with its players, then everything landed back in place. Returns
-    /// whether it did (`false`: fewer than two regions, nothing was changed and the serial phases run). The
-    /// network turn and everything no region owns (portals, sculk, the mods' flushes, the players' own ticks)
-    /// still run on this thread afterwards.
+    /// The world phases of this tick by regions, on threads of their own. With players in two or more separate
+    /// areas of the level, it is split into regions: each region's chunks, entities and players move into a
+    /// region game that keeps them (a resident region) and ticks them on a thread of its own, its players' packets
+    /// and network turn included. They come back every `resident_period` ticks, or when something needs the
+    /// server's thread (a chat line or command, a join or leave, a death, a player leaving its region).
+    /// Returns `false`: what no region owns, and the whole level in a tick the regions are back, ticks in the
+    /// serial phases on this thread.
     pub(super) fn tick_world_regions(&mut self) -> Result<bool> {
-        if !region_threads_on() || self.regions.worker {
+        if !region_threads_on() || self.regions.worker || self.dim != Dim::Overworld {
+            return Ok(false);
+        }
+        let dim = self.dim;
+        if let Some(set) = self.regions.resident.remove(&dim) {
+            if let Some(set) = self.resident_tick(set, false)? {
+                self.regions.resident.insert(dim, set);
+            }
             return Ok(false);
         }
         let Some(host) = self.lan.as_ref() else {
             return Ok(false);
         };
+        let view = host.hub.config.view_distance.clamp(2, 32);
         let players: Vec<(i32, i32)> = host
             .hub
             .guests
@@ -601,11 +659,10 @@ impl Game<'_> {
             .keys()
             .copied()
             .filter(|&(x, z)| levels.block_ticking(x, z));
-        let regions = Regions::new(ticking, &players, 0);
+        let regions = Regions::new(ticking, &players, view);
         if regions.count < 2 {
             return Ok(false);
         }
-        let dim = self.dim;
         static LAST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         if LAST.swap(regions.count, Ordering::Relaxed) != regions.count {
             log::info!(
@@ -628,6 +685,7 @@ impl Game<'_> {
         }
         let mut games = self.regions.idle.remove(&dim).unwrap_or_default();
         let extra: Vec<Box<Game<'static>>> = games.split_off(regions.count);
+        self.regions.idle.insert(dim, extra);
         let pool = Arc::clone(
             self.regions
                 .entity_pool
@@ -656,7 +714,6 @@ impl Game<'_> {
                     .collect()
             })
             .unwrap_or_default();
-        let t0 = std::time::Instant::now();
         let mut host = self.lan.take().expect("checked above");
         let mut split_guests = host
             .hub
@@ -666,8 +723,12 @@ impl Game<'_> {
             .lend_trackers(regions.count, |chunk| regions.of_chunk(chunk))
             .into_iter();
         let split = self.split_level(&regions);
-        let mut flights: Vec<(Box<Game<'static>>, Vec<ChunkPos>, Vec<u32>)> =
-            Vec::with_capacity(regions.count);
+        let mut set = ResidentSet {
+            games: Vec::with_capacity(regions.count),
+            chunks: Vec::with_capacity(regions.count),
+            layout: Arc::new(regions),
+            age: 0,
+        };
         for ((part, mut w), (chunks, guests)) in split.parts.into_iter().zip(games).zip(
             split
                 .chunks
@@ -679,90 +740,168 @@ impl Game<'_> {
             w.copy_tick_settings_from(self);
             w.refill_entity_ids(&pool);
             let conns: Vec<u32> = guests.iter().map(|g| g.conn).collect();
+            host.hub.away.extend(conns.iter().copied());
             let mut shell = w.lan.take().unwrap_or_else(|| host.region_shell());
             host.lend_region(&mut shell, &conns, &mob_ids, dim, guests);
             if let Some(tracker) = trackers.next() {
                 shell.hub.set_tracker(tracker);
             }
             w.lan = Some(shell);
-            flights.push((w, chunks, conns));
+            set.games.push(w);
+            set.chunks.push(chunks);
         }
-        let t_lend = t0.elapsed();
+        self.lan = Some(host);
+        if let Some(set) = self.resident_tick(set, true)? {
+            self.regions.resident.insert(dim, set);
+        }
+        Ok(false)
+    }
+
+    /// One tick of the resident regions `set`, on threads of their own; `None` once they are back (the tick ran
+    /// by landing them, or one of them failed).
+    fn resident_tick(&mut self, mut set: ResidentSet, first: bool) -> Result<Option<ResidentSet>> {
+        if !first && self.residents_must_land(&set) {
+            self.land_resident_set(set);
+            return Ok(None);
+        }
+        let Some(mut host) = self.lan.take() else {
+            self.land_resident_set(set);
+            return Ok(None);
+        };
+        let pool = Arc::clone(
+            self.regions
+                .entity_pool
+                .get_or_insert_with(|| Arc::new(AtomicU32::new(self.next_entity + 1))),
+        );
+        for w in &mut set.games {
+            if first {
+                w.copy_tick_settings_from(self);
+            } else {
+                w.copy_clock_from(self);
+            }
+            w.refill_entity_ids(&pool);
+            w.world.game_time = self.world.game_time;
+            w.world.day_time = self.world.day_time;
+            w.world.weather = self.world.weather;
+            if let Some(shell) = w.lan.as_mut() {
+                shell.hub.copy_region_settings(&host.hub);
+                host.hub.give_away(&mut shell.hub);
+            }
+        }
+        self.lan = Some(host);
+        set.age += 1;
         // The regions tick at once: a thread for each group of them, as many as there are cores.
         let lanes = horizon_threads::worker_count()
             .clamp(1, 16)
-            .min(flights.len());
-        let mut results: Vec<Result<()>> = Vec::new();
+            .min(set.games.len());
+        let per = set.games.len().div_ceil(lanes);
+        let outcomes: Vec<Vec<std::result::Result<(), String>>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = set
+                .games
+                .chunks_mut(per)
+                .map(|group| {
+                    scope.spawn(move || {
+                        group
+                            .iter_mut()
+                            .map(|w| {
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    w.tick_region_phases().map_err(|e| e.to_string())
+                                }))
+                                .unwrap_or_else(|_| Err("a region thread panicked".to_owned()))
+                            })
+                            .collect()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap_or_default())
+                .collect()
+        });
+        let failed = outcomes.into_iter().flatten().find_map(|r| r.err());
+        // Where its players stand: the areas the server keeps loaded for them.
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.away_places = set
+                .games
+                .iter()
+                .filter_map(|w| w.lan.as_ref())
+                .flat_map(|h| h.hub.guests.iter().map(|g| g.chunk()))
+                .collect();
+        }
+        if let Some(e) = failed {
+            self.land_resident_set(set);
+            return Err(e.into());
+        }
+        Ok(Some(set))
+    }
+
+    /// Whether the resident regions have to come back before the next tick.
+    fn residents_must_land(&self, set: &ResidentSet) -> bool {
+        let Some(host) = self.lan.as_ref() else {
+            return true;
+        };
+        if set.age >= resident_period()
+            || host.hub.away_wants_server()
+            || host.hub.guests.iter().any(|g| host.hub.here(g))
+            || !self.level_teleports.is_empty()
         {
-            let per = flights.len().div_ceil(lanes);
-            let outcomes: Vec<Vec<std::result::Result<(), String>>> = std::thread::scope(|scope| {
-                let handles: Vec<_> = flights
-                    .chunks_mut(per)
-                    .map(|group| {
-                        scope.spawn(move || {
-                            group
-                                .iter_mut()
-                                .map(|(w, _, _)| {
-                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                        w.tick_region_phases().map_err(|e| e.to_string())
-                                    }))
-                                    .unwrap_or_else(|_| Err("a region thread panicked".to_owned()))
-                                })
-                                .collect()
+            return true;
+        }
+        let reach = host.hub.config.view_distance.clamp(2, 32) + 1;
+        set.games.iter().enumerate().any(|(k, w)| {
+            wants_land(w)
+                || w.lan.as_ref().is_none_or(|h| {
+                    h.hub.guests.iter().any(|g| {
+                        let (cx, cz) = g.chunk();
+                        ((cx - reach) >> SECTION_SHIFT..=(cx + reach) >> SECTION_SHIFT).any(|sx| {
+                            ((cz - reach) >> SECTION_SHIFT..=(cz + reach) >> SECTION_SHIFT)
+                                .any(|sz| set.layout.owned.get(&(sx, sz)) != Some(&k))
                         })
                     })
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|h| h.join().unwrap_or_default())
-                    .collect()
-            });
-            for outcome in outcomes.into_iter().flatten() {
-                results.push(outcome.map_err(Into::into));
-            }
-        }
-        let t_run = t0.elapsed();
-        // Landed in region order.
-        let mut back = Vec::with_capacity(flights.len());
-        for (mut w, chunks, _) in flights {
+                })
+        })
+    }
+
+    /// The resident regions of the level in place back: their parts of the level and their players.
+    fn land_resident_set(&mut self, set: ResidentSet) {
+        let dim = self.dim;
+        let mut host = self.lan.take();
+        let mut back = Vec::with_capacity(set.games.len());
+        for (mut w, chunks) in set.games.into_iter().zip(set.chunks) {
             self.take_region_back(&mut w, &chunks);
-            if let Some(shell) = w.lan.as_mut() {
+            if let (Some(host), Some(shell)) = (host.as_mut(), w.lan.as_mut()) {
                 host.hub.park_tracker(&mut shell.hub);
                 host.take_region_back(shell);
             }
             back.push(w);
         }
-        host.hub.restore_guest_order();
-        self.lan = Some(host);
-        back.extend(extra);
-        self.regions.idle.insert(dim, back);
-        {
-            use std::sync::atomic::AtomicU64;
-            static N: AtomicU64 = AtomicU64::new(0);
-            static SUM: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
-            let t_land = t0.elapsed();
-            let us = |d: std::time::Duration| d.as_micros() as u64;
-            SUM[0].fetch_add(us(t_lend), Ordering::Relaxed);
-            SUM[1].fetch_add(us(t_run) - us(t_lend), Ordering::Relaxed);
-            SUM[2].fetch_add(us(t_land) - us(t_run), Ordering::Relaxed);
-            let n = N.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % 200 == 0 {
-                let avg = |i: usize| SUM[i].swap(0, Ordering::Relaxed) as f64 / 200_000.0;
-                log::info!(
-                    "regions: split+lend {:.1} ms, run {:.1} ms, land {:.1} ms (avg of 200 ticks, {} regions)",
-                    avg(0),
-                    avg(1),
-                    avg(2),
-                    regions.count
-                );
-            }
+        if let Some(host) = host.as_mut() {
+            host.hub.release_away();
+            host.hub.away_places.clear();
+            host.hub.restore_guest_order();
         }
-        results.into_iter().collect::<Result<Vec<()>>>()?;
-        Ok(true)
+        self.lan = host;
+        self.regions.idle.entry(dim).or_default().extend(back);
+    }
+
+    /// Every resident region of the level in place back (before a save or a stop).
+    pub(super) fn land_residents(&mut self) {
+        if let Some(set) = self.regions.resident.remove(&self.dim) {
+            self.land_resident_set(set);
+        }
     }
 
     /// One region game's phases of the tick: the level's entities and blocks in its chunks, around its players.
     pub(super) fn tick_region_phases(&mut self) -> Result<()> {
+        self.level_pass = super::levels::Pass {
+            first: false,
+            last: false,
+            running: Some(true),
+            packets_drained: false,
+        };
+        self.update_chunk_tickets();
+        // Its players' packets first, before its block ticks, as vanilla.
+        self.tick_lan_packets();
         self.begin_ordered_ticks();
         self.tick_blocks()?;
         self.tick_paintings();
@@ -787,17 +926,8 @@ impl Game<'_> {
         self.tick_experience();
         self.tick_moving_pistons()?;
         self.tick_block_entities()?;
-        // Its players' chunks and block changes, from its own world, before it goes back.
-        if let Some(mut host) = self.lan.take() {
-            if !host.hub.guests.is_empty() {
-                host.hub.region_chunks(&self.world);
-                host.hub.region_changes(&mut self.world);
-                self.lan = Some(host);
-                self.region_track();
-                return Ok(());
-            }
-            self.lan = Some(host);
-        }
+        // Its players' turn: their own ticks, entities, chunks and block changes, from its own world.
+        self.tick_lan(false);
         Ok(())
     }
 }

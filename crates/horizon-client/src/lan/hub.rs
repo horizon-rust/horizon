@@ -463,6 +463,8 @@ pub struct Hub {
     /// The players whose region keeps them on its thread between ticks: their packets and leaves wait in
     /// `away_events` for it (a resident region, `regions.rs`).
     pub away: std::collections::HashSet<u32>,
+    /// Where those players stand: the chunks the server keeps loaded for them.
+    pub away_places: Vec<(i32, i32)>,
     away_events: Vec<NetEvent>,
     /// Network events a landing gave back: the next poll handles them first.
     replay: Vec<NetEvent>,
@@ -878,6 +880,7 @@ impl Hub {
             item_ids: Default::default(),
             entity_types: Default::default(),
             away: Default::default(),
+            away_places: Vec::new(),
             away_events: Vec::new(),
             replay: Vec::new(),
             entities: Default::default(),
@@ -1108,6 +1111,7 @@ impl Hub {
             .iter()
             .filter(|g| self.watches(g) && loads(g) && !g.fake)
             .map(Guest::chunk)
+            .chain(self.away_places.iter().copied())
             .collect()
     }
     /// The areas fake players keep loaded: the chunk under each and its radius, their own view
