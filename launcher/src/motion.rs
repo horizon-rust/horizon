@@ -1,7 +1,8 @@
 //! The launcher's motion, as the website's launcher plays it (horizon-site's `launcher.css` and
 //! Tailwind's defaults): hovers ease over the design's quick curve (150 ms,
 //! `cubic-bezier(0.4, 0, 0.2, 1)`); toasts and a new page arrive as `hzl-pop` does (a fade and a
-//! 6 px rise over 200 ms); a switch's knob slides for 200 ms. Under reduced motion
+//! 6 px rise over 200 ms); a switch's knob slides for 200 ms; a mouse wheel's notch glides over
+//! `move` ([`GLIDE`], [`crate::glide`]). Under reduced motion
 //! ([`crate::sky::motion`]) nothing moves: everything is drawn where it ends. Menus open at once:
 //! an animation inside a `deferred` menu kept its first frame (invisible) under GPUI Fast.
 use gpui::{px, Animation, AnimationExt, AnyElement, Div, ElementId, IntoElement, Styled};
@@ -24,6 +25,10 @@ const SLIDE: tokens::Motion = tokens::Motion {
     ms: 200,
     curve: tokens::QUICK.curve,
 };
+
+/// A mouse wheel's notch: `move`, the design's ease-out with a long tail (240 ms), so most of the
+/// notch is there within a few frames.
+pub const GLIDE: tokens::Motion = tokens::MOVE;
 
 /// Whether the player's system asks for reduced motion (or `HORIZON_LAUNCHER_MOTION=off`).
 pub fn still() -> bool {

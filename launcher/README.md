@@ -275,6 +275,8 @@ page `servers.json` (the list), `servers/<name>/` (the servers created there) an
 
 Long pages, dialogs, the server console and data previews have a visible scrollbar when
 their content overflows. Drag the thumb or click the track to navigate without a mouse wheel.
+A mouse wheel's notch glides over 240 ms instead of jumping (`src/glide.rs`); trackpads scroll as
+they are. Performance mode and reduced motion (`HORIZON_LAUNCHER_MOTION=off`) turn the glide off.
 
 Pages and Home's landscape fill the window as it resizes. The title bar is transparent over the
 launcher on every platform: Windows keeps native dragging, resizing, Snap, minimize,
