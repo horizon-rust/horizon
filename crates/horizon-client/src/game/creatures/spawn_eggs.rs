@@ -44,13 +44,15 @@ impl Game<'_> {
             horizon_client::mobs::finalize::spawn_egg_offspring(child, species, variant, color);
             // `offspring.applyComponentsFromItemStack(spawnEggStack)`.
             horizon_client::entity_nbt::apply_item_components(child, &stack);
+        }
+        self.apply_spawn_egg_custom_data(id, &stack);
+        if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::mobs::finalize::zombie_egg_pick_up_loot(
                 child,
                 special,
                 &mut parent_random,
             );
         }
-        self.apply_spawn_egg_custom_data(id, &stack);
         if let Some(parent) = self.mobs.iter_mut().find(|m| m.id == parent_id) {
             parent.random = parent_random;
         }
