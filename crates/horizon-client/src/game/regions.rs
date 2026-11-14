@@ -9,9 +9,12 @@
 //! This module only decides which region owns what. It is pure data: no game state, no threads.
 // Nothing calls it until the region threads come in the next commits.
 #![allow(dead_code)]
-use super::{Dim, Game, Resources};
+use super::{Dim, Game, Mob, Resources};
 use horizon_client::Result;
+use horizon_client::join_seq::JoinList;
 use horizon_core::fast_hash::FxHashMap;
+use horizon_core::position::ChunkPos;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -250,6 +253,413 @@ impl Game<'_> {
             self.next_entity = start;
             self.regions.entity_id_end = start + ID_BLOCK;
         }
+    }
+}
+
+impl Game<'_> {
+    /// Region `part` of the level in place, moved into region game `w`: its chunks with their block entities,
+    /// block and fluid ticks and random-tick caches, every entity that stands in it, and what is kept by block or
+    /// by entity in it.
+    pub(super) fn lend_region(&mut self, w: &mut Game<'_>, mut part: RegionPart) {
+        w.world = part.world;
+        w.block_ticks = part.ticks;
+        w.random_tick_sections = part.sections;
+        w.rand_sequences = part.sequences;
+        w.mobs = part.mobs.into();
+        w.creaking.lend_scanned(part.scanned);
+        w.dropped = part.dropped.into();
+        w.orbs = part.orbs.into();
+        w.creatures.projectiles = part.projectiles.into();
+        w.falling = part.falling.into();
+        w.paintings = part.paintings;
+        w.item_frames = part.item_frames;
+        w.armor_stands = part.armor_stands.into();
+        w.cushions = part.cushions;
+        w.others = part.others;
+        w.boats = part.boats.into();
+        w.carts = part.carts.into();
+        w.bolts = part.bolts;
+        w.crystals = part.crystals;
+        w.breath_clouds = part.breath_clouds;
+        w.tridents = part.tridents.into();
+        w.rockets = part.rockets.into();
+        w.ominous_spawners = part.ominous_spawners;
+        w.tnts = part.tnts.into();
+        w.hoppers = part.hoppers;
+        w.jukebox_sounds = part.jukebox_sounds;
+        w.lid_openers = part.lid_openers;
+        w.knot_ids = part.knot_ids;
+        w.lectern_pulses = part.lectern_pulses;
+        let a = &mut w.be_anims;
+        a.chests = std::mem::take(&mut part.anims.chests);
+        a.books = std::mem::take(&mut part.anims.books);
+        a.shulkers = std::mem::take(&mut part.anims.shulkers);
+        a.bells = std::mem::take(&mut part.anims.bells);
+        a.conduits = std::mem::take(&mut part.anims.conduits);
+        a.skulls = std::mem::take(&mut part.anims.skulls);
+        a.pots = std::mem::take(&mut part.anims.pots);
+        a.gateway_servers = std::mem::take(&mut part.anims.gateway_servers);
+        a.conduit_servers = std::mem::take(&mut part.anims.conduit_servers);
+        // The ids of the region's entities: what is remembered of each goes with them.
+        let mut ids: Vec<u32> = w.mobs.iter().map(|m| m.id).collect();
+        ids.extend(w.dropped.iter().map(|d| d.id));
+        ids.extend(w.boats.iter().map(|b| b.id));
+        ids.extend(w.carts.iter().map(|c| c.id));
+        ids.extend(w.armor_stands.iter().map(|s| s.id));
+        ids.extend(w.orbs.iter().map(|o| o.id as u32));
+        ids.extend(w.creatures.projectiles.iter().map(|p| p.id as u32));
+        ids.extend(w.falling.iter().map(|f| f.id as u32));
+        ids.extend(w.tnts.iter().map(|t| t.id as u32));
+        ids.extend(w.tridents.iter().map(|t| t.id as u32));
+        ids.extend(w.rockets.iter().map(|r| r.id as u32));
+        ids.extend(w.crystals.iter().map(|c| c.id as u32));
+        ids.extend(w.bolts.iter().map(|b| b.id as u32));
+        ids.extend(w.ominous_spawners.iter().map(|o| o.id as u32));
+        ids.extend(w.breath_clouds.iter().map(|b| b.id as u32));
+        ids.extend(w.paintings.iter().map(|p| p.id as u32));
+        ids.extend(w.item_frames.iter().map(|f| f.id as u32));
+        ids.extend(w.cushions.iter().map(|c| c.id as u32));
+        ids.extend(w.others.iter().map(|o| o.id as u32));
+        for id in ids {
+            if let Some(u) = self.persist.uuids.remove(&id) {
+                w.persist.uuids.insert(id, u);
+                if let Some(attached) = self.entity_attachments.remove(&u) {
+                    w.entity_attachments.insert(u, attached);
+                }
+            }
+            if let Some(t) = self.persist.raw.remove(&id) {
+                w.persist.raw.insert(id, t);
+            }
+            if let Some(slots) = self.persist.passenger_slots.remove(&id) {
+                w.persist.passenger_slots.insert(id, slots);
+            }
+            if self.died.remove(&id) {
+                w.died.insert(id);
+            }
+            if let Some(v) = self.love_cause.remove(&id) {
+                w.love_cause.insert(id, v);
+            }
+            if let Some(v) = self.last_hurt_by_player.remove(&id) {
+                w.last_hurt_by_player.insert(id, v);
+            }
+        }
+        w.world.game_time = self.world.game_time;
+        w.world.day_time = self.world.day_time;
+        w.world.weather = self.world.weather;
+        w.world.health_rules = self.world.health_rules.clone();
+        w.world.watched = self.world.watched.clone();
+    }
+
+    /// Region game `w`'s part of the level back in place (after the level's own data, in region order), with
+    /// what its tick left for the server: level events, spills, sounds and particles for the network.
+    pub(super) fn take_region_back(
+        &mut self,
+        w: &mut Game<'_>,
+        chunks: &[ChunkPos],
+    ) -> horizon_client::random_sequences::RandomSequences {
+        let stand_in = self.world.stand_in();
+        self.world
+            .take_back(std::mem::replace(&mut w.world, stand_in));
+        self.block_ticks
+            .take_back(std::mem::take(&mut w.block_ticks), chunks);
+        self.random_tick_sections
+            .take_back(std::mem::take(&mut w.random_tick_sections));
+        self.mobs.extend(drain(&mut w.mobs));
+        self.creaking.take_scanned_back(&mut w.creaking);
+        self.dropped.extend(drain(&mut w.dropped));
+        self.orbs.extend(drain(&mut w.orbs));
+        self.creatures
+            .projectiles
+            .extend(drain(&mut w.creatures.projectiles));
+        self.falling.extend(drain(&mut w.falling));
+        self.paintings.append(&mut w.paintings);
+        self.item_frames.append(&mut w.item_frames);
+        self.armor_stands.extend(drain(&mut w.armor_stands));
+        self.cushions.append(&mut w.cushions);
+        self.others.append(&mut w.others);
+        self.boats.extend(drain(&mut w.boats));
+        self.carts.extend(drain(&mut w.carts));
+        self.bolts.append(&mut w.bolts);
+        self.crystals.append(&mut w.crystals);
+        self.breath_clouds.append(&mut w.breath_clouds);
+        self.tridents.extend(drain(&mut w.tridents));
+        self.rockets.extend(drain(&mut w.rockets));
+        self.ominous_spawners.append(&mut w.ominous_spawners);
+        self.tnts.extend(drain(&mut w.tnts));
+        self.hoppers.extend(w.hoppers.drain());
+        self.jukebox_sounds.extend(w.jukebox_sounds.drain());
+        self.lid_openers.extend(w.lid_openers.drain());
+        self.knot_ids.extend(w.knot_ids.drain());
+        self.lectern_pulses.append(&mut w.lectern_pulses);
+        let (a, b) = (&mut self.be_anims, &mut w.be_anims);
+        a.chests.extend(b.chests.drain());
+        a.books.extend(b.books.drain());
+        a.shulkers.extend(b.shulkers.drain());
+        a.bells.extend(b.bells.drain());
+        a.conduits.extend(b.conduits.drain());
+        a.skulls.extend(b.skulls.drain());
+        a.pots.extend(b.pots.drain());
+        a.gateway_servers.extend(b.gateway_servers.drain());
+        a.conduit_servers.extend(b.conduit_servers.drain());
+        self.persist.uuids.extend(w.persist.uuids.drain());
+        self.persist.raw.extend(w.persist.raw.drain());
+        self.persist
+            .passenger_slots
+            .extend(w.persist.passenger_slots.drain());
+        self.entity_attachments.extend(w.entity_attachments.drain());
+        self.died.extend(w.died.drain());
+        self.love_cause.extend(w.love_cause.drain());
+        self.last_hurt_by_player
+            .extend(w.last_hurt_by_player.drain());
+        // What the region's tick left for the server's game, after the server's own.
+        self.level_events.append(&mut w.level_events);
+        self.pending.absorb(std::mem::take(&mut w.pending));
+        self.spill.absorb(std::mem::take(&mut w.spill));
+        self.creatures
+            .lan_sounds
+            .append(&mut w.creatures.lan_sounds);
+        self.creatures
+            .lan_particles
+            .append(&mut w.creatures.lan_particles);
+        self.lan_events.append(&mut w.lan_events);
+        self.lan_block_events.append(&mut w.lan_block_events);
+        self.lan_entity_events.append(&mut w.lan_entity_events);
+        self.lan_critical_hits.append(&mut w.lan_critical_hits);
+        self.lan_cushion_breaks.append(&mut w.lan_cushion_breaks);
+        self.lan_songs.append(&mut w.lan_songs);
+        self.lan_kinetic_hits.append(&mut w.lan_kinetic_hits);
+        self.lan_global_events.append(&mut w.lan_global_events);
+        std::mem::take(&mut w.rand_sequences)
+    }
+}
+
+/// `v`'s items whose place a region owns, moved into that region's list; the rest stay.
+fn split<T>(v: &mut Vec<T>, regions: &Regions, at: impl Fn(&T) -> (f64, f64)) -> Vec<Vec<T>> {
+    let places: Vec<Option<usize>> = v
+        .iter()
+        .map(|item| {
+            let (x, z) = at(item);
+            regions.of_block(x, z)
+        })
+        .collect();
+    let mut sizes = vec![0usize; regions.count];
+    for r in places.iter().flatten() {
+        sizes[*r] += 1;
+    }
+    let mut out: Vec<Vec<T>> = sizes.iter().map(|&n| Vec::with_capacity(n)).collect();
+    let mut kept = Vec::new();
+    for (item, place) in v.drain(..).zip(places) {
+        match place {
+            Some(r) => out[r].push(item),
+            None => kept.push(item),
+        }
+    }
+    *v = kept;
+    out
+}
+
+/// A list of entities as a plain vector, the list left empty.
+fn drain<T>(list: &mut JoinList<T>) -> Vec<T> {
+    std::mem::take(list).into()
+}
+
+/// A map's entries whose block a region owns, moved into that region's map.
+fn split_map<K: std::hash::Hash + Eq + Copy, V>(
+    m: &mut HashMap<K, V>,
+    regions: &Regions,
+    at: impl Fn(&K) -> (i32, i32),
+) -> Vec<HashMap<K, V>> {
+    let mut out: Vec<HashMap<K, V>> = (0..regions.count).map(|_| HashMap::new()).collect();
+    for (k, v) in m.extract_if(|k, _| regions.of_chunk(at(k)).is_some()) {
+        let r = regions.of_chunk(at(&k)).expect("filtered");
+        out[r].insert(k, v);
+    }
+    out
+}
+
+fn fx_split<K: std::hash::Hash + Eq + Copy, V>(
+    m: &mut FxHashMap<K, V>,
+    regions: &Regions,
+    at: impl Fn(&K) -> (i32, i32),
+) -> Vec<FxHashMap<K, V>> {
+    let mut out: Vec<FxHashMap<K, V>> = (0..regions.count).map(|_| Default::default()).collect();
+    for (k, v) in m.extract_if(|k, _| regions.of_chunk(at(k)).is_some()) {
+        let r = regions.of_chunk(at(&k)).expect("filtered");
+        out[r].insert(k, v);
+    }
+    out
+}
+
+fn block_chunk(p: (i32, i32, i32)) -> (i32, i32) {
+    (p.0 >> 4, p.2 >> 4)
+}
+fn array_chunk(p: &[i32; 3]) -> (i32, i32) {
+    (p[0] >> 4, p[2] >> 4)
+}
+
+/// One region's part of a level, split out of the server's game ([`Game::split_level`]).
+pub(super) struct RegionPart {
+    /// The chunks of the part already scanned for creaking hearts.
+    scanned: horizon_client::fast_hash::FxHashSet<(i32, i32)>,
+    world: horizon_client::world::World,
+    ticks: horizon_world::level::Ticks,
+    sections: horizon_client::random_tick_sections::RandomTickSections,
+    sequences: horizon_client::random_sequences::RandomSequences,
+    mobs: Vec<Mob>,
+    dropped: Vec<super::ItemEntity>,
+    orbs: Vec<super::ExperienceOrb>,
+    projectiles: Vec<horizon_client::projectiles::Projectile>,
+    falling: Vec<super::FallingBlock>,
+    paintings: Vec<horizon_client::entities::Painting>,
+    item_frames: Vec<horizon_client::entities::ItemFrame>,
+    armor_stands: Vec<horizon_client::entities::ArmorStand>,
+    cushions: Vec<horizon_client::entities::Cushion>,
+    others: Vec<super::commands::OtherEntity>,
+    boats: Vec<super::boats::Boat>,
+    carts: Vec<super::minecarts::Minecart>,
+    bolts: Vec<super::lightning::Bolt>,
+    crystals: Vec<super::dragon::Crystal>,
+    breath_clouds: Vec<super::dragon::Breath>,
+    tridents: Vec<super::trident::ThrownTrident>,
+    rockets: Vec<super::fireworks::Rocket>,
+    ominous_spawners: Vec<super::ominous_item_spawner::OminousItemSpawner>,
+    tnts: Vec<super::tnt::PrimedTnt>,
+    hoppers: HashMap<(i32, i32, i32), super::machines::HopperState>,
+    jukebox_sounds: HashMap<(i32, i32, i32), u64>,
+    lid_openers: HashMap<(i32, i32, i32), i32>,
+    knot_ids: HashMap<[i32; 3], u32>,
+    lectern_pulses: Vec<((i32, i32, i32), i32)>,
+    anims: horizon_client::block_entity_anim::BlockEntityAnims,
+}
+
+/// A level split into its regions' parts, and the chunks each region holds (for the block ticks' return).
+pub(super) struct LevelSplit {
+    pub parts: Vec<RegionPart>,
+    pub chunks: Vec<Vec<ChunkPos>>,
+}
+
+impl Game<'_> {
+    /// The level in place split into `regions`' parts: each region's chunks, block entities, ticks and
+    /// entities moved out of this game's level; what no region owns stays.
+    pub(super) fn split_level(&mut self, regions: &Regions) -> LevelSplit {
+        let n = regions.count;
+        let of_chunk = |key: (i32, i32)| regions.of_chunk(key);
+        let mut chunks: Vec<Vec<ChunkPos>> = vec![Vec::new(); n];
+        for &(x, z) in self.world.chunks.keys() {
+            if let Some(r) = of_chunk((x, z)) {
+                chunks[r].push(ChunkPos::new(x, z));
+            }
+        }
+        let seeds: Vec<i64> = (0..n)
+            .map(|_| horizon_core::random::RandomSource::next_long(&mut self.world.random))
+            .collect();
+        let tick_seeds: Vec<i32> = seeds.iter().map(|s| *s as i32).collect();
+        let worlds = self.world.lend(n, of_chunk, &seeds);
+        let ticks = self.block_ticks.lend(&chunks, &tick_seeds);
+        let sections = self.random_tick_sections.lend(n, of_chunk);
+        let mut sequences = self.rand_sequences.split(n + 1);
+        // The level's own sequences stay with the level (the first of the split).
+        self.rand_sequences = sequences.remove(0);
+        let v3 = |p: &horizon_core::geometry::Vec3| (p.x, p.z);
+        let a3 = |p: &[f64; 3]| (p[0], p[2]);
+        let b3 = |p: &[i32; 3]| (f64::from(p[0]), f64::from(p[2]));
+        let mut mobs = split(&mut drain(&mut self.mobs), regions, |m| v3(&m.position));
+        let mut dropped = split(&mut drain(&mut self.dropped), regions, |d| v3(&d.position));
+        let mut orbs = split(&mut drain(&mut self.orbs), regions, |o| v3(&o.position));
+        let mut projectiles = split(&mut drain(&mut self.creatures.projectiles), regions, |p| {
+            v3(&p.position)
+        });
+        let mut falling = split(&mut drain(&mut self.falling), regions, |f| v3(&f.position));
+        let mut paintings = split(&mut self.paintings, regions, |p| b3(&p.pos));
+        let mut item_frames = split(&mut self.item_frames, regions, |f| b3(&f.pos));
+        let mut armor_stands = split(&mut drain(&mut self.armor_stands), regions, |s| {
+            v3(&s.position)
+        });
+        let mut cushions = split(&mut self.cushions, regions, |c| v3(&c.position));
+        let mut others = split(&mut self.others, regions, |o| v3(&o.position));
+        let mut boats = split(&mut drain(&mut self.boats), regions, |b| v3(&b.position));
+        let mut carts = split(&mut drain(&mut self.carts), regions, |c| v3(&c.position));
+        let mut bolts = split(&mut self.bolts, regions, |b| a3(&b.at));
+        let mut crystals = split(&mut self.crystals, regions, |c| v3(&c.position));
+        let mut breath_clouds = split(&mut self.breath_clouds, regions, |b| a3(&b.at));
+        let mut tridents = split(&mut drain(&mut self.tridents), regions, |t| v3(&t.position));
+        let mut rockets = split(&mut drain(&mut self.rockets), regions, |r| v3(&r.position));
+        let mut ominous_spawners = split(&mut self.ominous_spawners, regions, |o| a3(&o.position));
+        let mut tnts = split(&mut drain(&mut self.tnts), regions, |t| v3(&t.position));
+        let mut hoppers = split_map(&mut self.hoppers, regions, |p| block_chunk(*p));
+        let mut jukebox_sounds = split_map(&mut self.jukebox_sounds, regions, |p| block_chunk(*p));
+        let mut lid_openers = split_map(&mut self.lid_openers, regions, |p| block_chunk(*p));
+        let mut knot_ids = split_map(&mut self.knot_ids, regions, array_chunk);
+        let mut scanned = self.creaking.split_scanned(n, |key| regions.of_chunk(key));
+        let mut lectern_pulses: Vec<Vec<((i32, i32, i32), i32)>> =
+            (0..n).map(|_| Vec::new()).collect();
+        self.lectern_pulses
+            .retain(|&(p, t)| match regions.of_chunk(block_chunk(p)) {
+                Some(r) => {
+                    lectern_pulses[r].push((p, t));
+                    false
+                }
+                None => true,
+            });
+        let a = &mut self.be_anims;
+        let mut chests = fx_split(&mut a.chests, regions, array_chunk);
+        let mut books = fx_split(&mut a.books, regions, array_chunk);
+        let mut shulkers = fx_split(&mut a.shulkers, regions, array_chunk);
+        let mut bells = fx_split(&mut a.bells, regions, array_chunk);
+        let mut conduits = fx_split(&mut a.conduits, regions, array_chunk);
+        let mut skulls = fx_split(&mut a.skulls, regions, array_chunk);
+        let mut pots = fx_split(&mut a.pots, regions, array_chunk);
+        let mut gateway_servers = fx_split(&mut a.gateway_servers, regions, array_chunk);
+        let mut conduit_servers = fx_split(&mut a.conduit_servers, regions, array_chunk);
+        let mut parts = Vec::with_capacity(n);
+        for (r, ((world, ticks), sections)) in
+            worlds.into_iter().zip(ticks).zip(sections).enumerate()
+        {
+            parts.push(RegionPart {
+                world,
+                ticks,
+                sections,
+                sequences: sequences.remove(0),
+                mobs: std::mem::take(&mut mobs[r]),
+                dropped: std::mem::take(&mut dropped[r]),
+                orbs: std::mem::take(&mut orbs[r]),
+                projectiles: std::mem::take(&mut projectiles[r]),
+                falling: std::mem::take(&mut falling[r]),
+                paintings: std::mem::take(&mut paintings[r]),
+                item_frames: std::mem::take(&mut item_frames[r]),
+                armor_stands: std::mem::take(&mut armor_stands[r]),
+                cushions: std::mem::take(&mut cushions[r]),
+                others: std::mem::take(&mut others[r]),
+                boats: std::mem::take(&mut boats[r]),
+                carts: std::mem::take(&mut carts[r]),
+                bolts: std::mem::take(&mut bolts[r]),
+                crystals: std::mem::take(&mut crystals[r]),
+                breath_clouds: std::mem::take(&mut breath_clouds[r]),
+                tridents: std::mem::take(&mut tridents[r]),
+                rockets: std::mem::take(&mut rockets[r]),
+                ominous_spawners: std::mem::take(&mut ominous_spawners[r]),
+                tnts: std::mem::take(&mut tnts[r]),
+                hoppers: std::mem::take(&mut hoppers[r]),
+                jukebox_sounds: std::mem::take(&mut jukebox_sounds[r]),
+                lid_openers: std::mem::take(&mut lid_openers[r]),
+                knot_ids: std::mem::take(&mut knot_ids[r]),
+                lectern_pulses: std::mem::take(&mut lectern_pulses[r]),
+                scanned: std::mem::take(&mut scanned[r]),
+                anims: horizon_client::block_entity_anim::BlockEntityAnims {
+                    chests: std::mem::take(&mut chests[r]),
+                    books: std::mem::take(&mut books[r]),
+                    shulkers: std::mem::take(&mut shulkers[r]),
+                    bells: std::mem::take(&mut bells[r]),
+                    conduits: std::mem::take(&mut conduits[r]),
+                    skulls: std::mem::take(&mut skulls[r]),
+                    pots: std::mem::take(&mut pots[r]),
+                    gateway_servers: std::mem::take(&mut gateway_servers[r]),
+                    conduit_servers: std::mem::take(&mut conduit_servers[r]),
+                    ..Default::default()
+                },
+            });
+        }
+        LevelSplit { parts, chunks }
     }
 }
 
