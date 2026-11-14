@@ -29,9 +29,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_save_roundtrip_parity import Vanilla  # noqa: E402
 from test_world_reopen_parity import game_env  # noqa: E402
+import lab  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-RESOURCES = ROOT / '.local' / 'horizon-client' / '26.3'
+RESOURCES = lab.RESOURCES
 RUN = ROOT / '.local' / 'spawn-loot'
 CHEST = (2, -60, 1)
 LOOT = '{LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}'
