@@ -604,7 +604,7 @@ impl Game<'_> {
         // A vanilla server sends a gliding entity's motion every update
         // (`ServerEntity.sendChanges`), but Horizon's LAN and dedicated
         // servers send a player's only when it needs a sync, so this copy's
-        // stays zero: then the holder's step this tick stands in for it.
+        // stays zero (#16260): then the holder's step this tick stands in.
         r.velocity = if m.velocity == Vec3::ZERO {
             Vec3::new(
                 m.position.x - m.previous.x,
