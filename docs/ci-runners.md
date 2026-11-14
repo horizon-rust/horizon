@@ -30,6 +30,11 @@ from a `ACTIONS_RUNNER_HOOK_JOB_STARTED` hook in the NixOS configuration.
 - **Release builds**: Linux on `ubuntu-22.04` (players' binaries must link against its older glibc; our Linux
   machines have newer ones), Windows on `windows-latest` (no Windows machine). macOS builds already run on the Mac
   mini.
+- **Native Clippy**: `checks` lints `horizon-client --no-default-features`, `horizon-threads`, `horizon-perf-format`,
+  `horizon-perf-share` and `horizon-server` on `windows-latest` and `macos-latest`, with all targets and warnings denied.
+  These two jobs start only after Linux `verify` passes, skip documentation-only pull requests and run no tests or
+  release builds. Main and manual runs also lint; main saves the per-OS Rust caches that pull requests read. Hosted
+  runners keep untrusted builds away from the Mac mini's game files and signing setup; their tokens are read-only.
 - **Main's pushes and eight of ten pull requests' `verify` and `launcher`** (number ending in 2–9): `checks` runs
   ~100 times an hour (2026-11-03: 21 pushes to main and 76 pull request runs an hour), each with `verify` (10–18
   minutes of work on GitHub, 11–13 on a desktop runner with a cold build folder) and `launcher` (1–11). Three

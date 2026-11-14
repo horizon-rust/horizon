@@ -7,6 +7,7 @@
   partner's server, and a checks runner keeps what a fork's job left behind.
 """
 import re
+import shlex
 import unittest
 from pathlib import Path
 
@@ -132,6 +133,30 @@ class OwnRunnerTests(unittest.TestCase):
         self.assertIn("ACTIONS_RUNNER_HOOK_JOB_STARTED=$shared/job-started.sh", script)
         self.assertIn('.pull_request.head.repo.full_name // "unknown"', script)
         self.assertIn('if [ "$head" != "${GITHUB_REPOSITORY:-}" ]', script)
+
+
+class NativeClippyTests(unittest.TestCase):
+    def test_native_lint_coverage_and_host_isolation(self):
+        # The workflow is a machine-consumed contract: both platforms must check every requested crate.
+        workflow = dict(jobs((WORKFLOWS / "ci.yml").read_text()))
+        native = workflow["native-clippy"]
+        self.assertIn("rust: ${{ steps.rust.outputs.required }}", workflow["verify"])
+        self.assertIn("needs: verify", native)
+        self.assertIn("if: needs.verify.outputs.rust != 'false'", native)
+        self.assertEqual(runs_on(native), "${{ matrix.os }}")
+        hosts = re.search(r"os: \[([^\]]+)\]", native).group(1).split(", ")
+        self.assertEqual(set(hosts), {"windows-latest", "macos-latest"})
+        self.assertIn("contents: read", native)
+        self.assertIn("persist-credentials: false", native)
+        self.assertNotRegex(native, r":\s*write|secrets\.|self-hosted")
+        lint = re.search(r"^        run: >-\n((?:          .+\n)+)", native, re.M).group(1)
+        command = shlex.split(lint)
+        packages = {command[i + 1] for i, arg in enumerate(command) if arg == "-p"}
+        self.assertEqual(packages, {"horizon-client", "horizon-threads", "horizon-perf-format",
+                                    "horizon-perf-share", "horizon-server"})
+        for flag in ("--all-targets", "--locked", "--no-default-features"):
+            self.assertIn(flag, command)
+        self.assertEqual(command[-3:], ["--", "-D", "warnings"])
 
 
 if __name__ == "__main__":

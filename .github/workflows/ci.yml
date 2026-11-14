@@ -2,6 +2,8 @@ name: checks
 # verify: every pull request and every push to main, on GitHub's runners (the repository is public). It is the
 # check main requires, so it never has a condition: a skipped job counts as passed, and every run of this workflow
 # must report a real verify (a pull request that changes no Rust finishes it in seconds instead).
+# native-clippy: Windows and macOS lint the server build and OS-specific crates after verify passes; documentation-only
+# pull requests skip it. Disposable hosted runners keep forks away from the Mac mini's release and parity data.
 # parity: the vanilla harnesses a pull request's changes can affect, on the Mac mini's runner, which holds the
 # maintainer's own Minecraft files (Horizon never downloads the game); .github/workflows/parity.yml. Only for a pull
 # request that changes a harness, oracle, probe or the runner: the rest are checked on main by parity-main. A fork's pull
@@ -26,8 +28,8 @@ env:
   HORIZON_TELEMETRY_URL: "off"
 
 jobs:
-  # One job, not one per check: each job takes a runner from the organisation's shared pool, and with every pull request
-  # and every merge to main starting this workflow, three jobs a run left the pool's queue tens of minutes deep.
+  # Linux checks in one job, not one per check: each job takes a runner from the organisation's shared pool, and with
+  # every pull request and every merge to main starting this workflow, three jobs a run left the pool's queue tens of minutes deep.
   #
   # Where (docs/ci-runners.md): our checks runners (label horizon-checks: the desktop's) take this repository's own
   # pull requests whose number ends in 0 or 1, about what their three runners can do; GitHub's runners take the others,
@@ -44,6 +46,8 @@ jobs:
       endsWith(format('{0}', github.event.pull_request.number), '1'))) &&
       fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-24.04' }}
     timeout-minutes: 45
+    outputs:
+      rust: ${{ steps.rust.outputs.required }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -132,6 +136,40 @@ jobs:
           # recompiling the workspace with a different dependency graph.
           cargo +stable test --locked --workspace --lib --bins --tests mod_content::tests:: -- --ignored
           cargo +stable test --locked --workspace --doc
+  # Only after Linux passes, so a broken or documentation-only pull request takes no native runner. Main and manual
+  # runs have no rust-step output and still lint. Native SDKs avoid cross-build setup; no tests or release builds here.
+  native-clippy:
+    name: native clippy (${{ matrix.os }})
+    needs: verify
+    if: needs.verify.outputs.rust != 'false'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: native-clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Lint the server build and platform-specific crates
+        run: >-
+          cargo +stable clippy --all-targets --locked --no-default-features
+          -p horizon-client -p horizon-threads -p horizon-perf-format
+          -p horizon-perf-share -p horizon-server -- -D warnings
   # The launcher is its own workspace (launcher/Cargo.toml), so verify's cargo runs never build it. A pull request that
   # changes it or a crate it builds is checked here, and so is every push to main: two pull requests can each pass
   # alone and break it together (#2059 and the registry ratings did, 2026-10-26).
