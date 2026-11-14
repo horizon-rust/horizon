@@ -163,6 +163,7 @@ mod frame_geometry;
 mod frames;
 #[cfg(feature = "friends")]
 mod friends;
+mod health;
 mod held_error;
 mod held_items;
 #[cfg(test)]

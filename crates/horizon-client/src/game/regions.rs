@@ -272,13 +272,17 @@ pub(super) struct ResidentSet {
 /// One resident region: its game when it is home, or the channel its thread sends it back on while it ticks.
 struct Slot {
     game: Option<Box<Game<'static>>>,
-    running:
-        Option<std::sync::mpsc::Receiver<(Box<Game<'static>>, std::result::Result<(), String>)>>,
+    running: Option<
+        std::sync::mpsc::Receiver<(Box<Game<'static>>, std::result::Result<(), String>, f32)>,
+    >,
     /// Where its players stood when it was last home: the areas the server keeps loaded for them.
     places: Vec<(i32, i32)>,
     /// When its tick started, and when the watchdog last told of it.
     since: std::time::Instant,
     told: Option<std::time::Instant>,
+    /// How long its last tick took (ms) and how many chunks it held then.
+    took: f32,
+    chunks: usize,
 }
 
 impl Slot {
@@ -289,6 +293,8 @@ impl Slot {
             places: Vec::new(),
             since: std::time::Instant::now(),
             told: None,
+            took: 0.0,
+            chunks: 0,
         }
     }
     /// Takes the game in if its thread finished (waiting until `until`, or for good when None); false while it
@@ -312,8 +318,10 @@ impl Slot {
             }
         };
         match got {
-            Ok((game, result)) => {
+            Ok((game, result, took)) => {
                 self.running = None;
+                self.took = took;
+                self.chunks = game.world.chunks.len();
                 self.places = game
                     .lan
                     .as_ref()
@@ -897,11 +905,12 @@ impl Game<'_> {
             let spawned = std::thread::Builder::new()
                 .name(format!("Region {k}"))
                 .spawn(move || {
+                    let began = std::time::Instant::now();
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         w.tick_region_phases().map_err(|e| e.to_string())
                     }))
                     .unwrap_or_else(|_| Err("a region thread panicked".to_owned()));
-                    let _ = tx.send((w, result));
+                    let _ = tx.send((w, result, began.elapsed().as_secs_f32() * 1000.0));
                 });
             if spawned.is_err() {
                 slot.running = None;
@@ -918,6 +927,24 @@ impl Game<'_> {
                 failed.get_or_insert(e);
             }
         }
+        super::health::record_regions(
+            self.dim.id(),
+            set.games
+                .iter()
+                .map(|s| super::health::RegionStat {
+                    level: self.dim.id().to_owned(),
+                    at: s.places.first().map_or((0, 0), |c| (c.0 << 4, c.1 << 4)),
+                    chunks: s.chunks,
+                    players: s.places.len(),
+                    ms: if s.running.is_some() {
+                        s.since.elapsed().as_secs_f32() * 1000.0
+                    } else {
+                        s.took
+                    },
+                    late: s.running.is_some(),
+                })
+                .collect(),
+        );
         // Where its players stand: the areas the server keeps loaded for them.
         if let Some(host) = self.lan.as_mut() {
             host.hub.away_places = set
