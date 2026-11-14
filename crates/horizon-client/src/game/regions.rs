@@ -37,6 +37,65 @@ pub(super) struct Regions {
     pub count: usize,
     /// Each region's first section (its smallest): what names a region from one tick to the next.
     pub firsts: Vec<(i32, i32)>,
+    /// `owned` as a flat table over the sections' bounds, when that is small enough: every split of the level asks
+    /// for each chunk's and entity's region (tens of thousands a tick), one array read each.
+    grid: Option<Grid>,
+}
+
+/// The owned sections' regions in one array over their bounding box (`u16::MAX`: no region).
+struct Grid {
+    x0: i32,
+    z0: i32,
+    w: i32,
+    h: i32,
+    cells: Vec<u16>,
+}
+
+impl Grid {
+    /// Sections in the table at most (4 M cells, 8 MB): players spread wider than that keep the map.
+    const MAX_CELLS: i64 = 1 << 22;
+    fn of(owned: &FxHashMap<(i32, i32), usize>) -> Option<Self> {
+        if owned.is_empty() {
+            return None;
+        }
+        let (mut x0, mut z0, mut x1, mut z1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for &(x, z) in owned.keys() {
+            x0 = x0.min(x);
+            z0 = z0.min(z);
+            x1 = x1.max(x);
+            z1 = z1.max(z);
+        }
+        let (w, h) = (
+            i64::from(x1) - i64::from(x0) + 1,
+            i64::from(z1) - i64::from(z0) + 1,
+        );
+        if w * h > Self::MAX_CELLS || owned.values().any(|&r| r >= usize::from(u16::MAX)) {
+            return None;
+        }
+        let (w, h) = (w as i32, h as i32);
+        let mut cells = vec![u16::MAX; (w * h) as usize];
+        for (&(x, z), &r) in owned {
+            cells[((z - z0) * w + (x - x0)) as usize] = r as u16;
+        }
+        Some(Self {
+            x0,
+            z0,
+            w,
+            h,
+            cells,
+        })
+    }
+    #[inline]
+    fn get(&self, x: i32, z: i32) -> Option<usize> {
+        let (dx, dz) = (x.wrapping_sub(self.x0), z.wrapping_sub(self.z0));
+        if dx < 0 || dz < 0 || dx >= self.w || dz >= self.h {
+            return None;
+        }
+        match self.cells[(dz * self.w + dx) as usize] {
+            u16::MAX => None,
+            r => Some(usize::from(r)),
+        }
+    }
 }
 
 const TICKING: u8 = 1;
@@ -148,18 +207,23 @@ impl Regions {
         for (&key, &r) in &region {
             owned.insert(key, r);
         }
+        let grid = Grid::of(&owned);
         Self {
             owned,
             count,
             firsts,
+            grid,
         }
     }
 
     /// The region that owns chunk `(x, z)`.
+    #[inline]
     pub(super) fn of_chunk(&self, (x, z): (i32, i32)) -> Option<usize> {
-        self.owned
-            .get(&(x >> SECTION_SHIFT, z >> SECTION_SHIFT))
-            .copied()
+        let (sx, sz) = (x >> SECTION_SHIFT, z >> SECTION_SHIFT);
+        match &self.grid {
+            Some(g) => g.get(sx, sz),
+            None => self.owned.get(&(sx, sz)).copied(),
+        }
     }
 
     /// The region that owns the block column at `x, z`.
