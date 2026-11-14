@@ -319,8 +319,8 @@ fn displacement_is_checked_with_its_signature() {
     );
 }
 
-/// A 0.2 pack of a post pass and a tonemap stage, with `extra` appended to the manifest.
-fn pack_0_2(
+/// A pack of a post pass and a tonemap stage, with `extra` appended to the manifest.
+fn post_pack(
     post: &str,
     tonemap: &str,
     extra: &str,
@@ -344,23 +344,23 @@ const TONEMAP: &str =
     "fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color / frame.headroom; }\n";
 
 #[test]
-fn a_0_2_pack_is_checked_against_its_own_line() {
-    let report = pack_0_2(POST, TONEMAP, "[frame]\nblend = \"linear\"\n").unwrap();
+fn the_tonemap_stage_is_checked() {
+    let report = post_pack(POST, TONEMAP, "[frame]\nblend = \"linear\"\n").unwrap();
     let kinds: Vec<_> = report.stages.iter().map(|s| s.kind).collect();
     assert_eq!(kinds, [StageKind::Post, StageKind::Tonemap]);
     // A wide-gamut pack passes the check (the game refuses it for now), and reads its space.
     let wide = "fn tonemap(input: TonemapInput) -> vec3<f32> {\n    \
                 return vec3<f32>(dot(input.color, frame.luminance)) * f32(frame.primaries);\n}\n";
     let frame = "[frame]\nblend = \"linear\"\nprimaries = \"bt2020\"\n";
-    let report = pack_0_2(POST, wide, frame).unwrap();
+    let report = post_pack(POST, wide, frame).unwrap();
     assert_eq!(
         report.manifest.primaries,
         horizon_shader_api::Primaries::Bt2020
     );
-    // The 0.2 prelude's display fields and colour boundary are there to use.
+    // The prelude's display fields and colour boundary are there to use.
     let source = &report.stages[1].source;
     assert!(source.contains("    black_level: f32,\n") && source.contains("fn horizon_decode("));
-    let wrong = pack_0_2(
+    let wrong = post_pack(
         POST,
         "fn tonemap(input: TonemapInput) -> vec4<f32> { return vec4<f32>(input.color, 1.0); }\n",
         "",
@@ -372,7 +372,7 @@ fn a_0_2_pack_is_checked_against_its_own_line() {
         )),
         "{wrong:#?}"
     );
-    let named = pack_0_2(
+    let named = post_pack(
         POST,
         &format!("fn horizon_decode_mine(c: vec3<f32>) -> vec3<f32> {{ return c; }}\n{TONEMAP}"),
         "",
@@ -386,8 +386,8 @@ fn a_0_2_pack_is_checked_against_its_own_line() {
     );
 }
 
-/// A 0.2 pack of a material, a post pass and a tonemap stage.
-fn pack_0_2_with_material(
+/// A pack of a material, a post pass and a tonemap stage.
+fn post_pack_with_material(
     material: &str,
     post: &str,
     tonemap: &str,
@@ -419,11 +419,11 @@ fn refused(problems: &[Problem], name: &str) -> Vec<(String, usize)> {
 }
 
 #[test]
-fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
+fn a_pack_constructs_no_struct_horizon_hands_it() {
     let post = "fn post(input: PostInput) -> vec4<f32> {\n    \
                 let moved = PostInput(input.uv * 0.5, input.pixel, input.color, input.depth);\n    \
                 return moved.color;\n}\n";
-    let p = pack_0_2(post, TONEMAP, "").expect_err("should fail");
+    let p = post_pack(post, TONEMAP, "").expect_err("should fail");
     assert_eq!(
         refused(&p, "PostInput"),
         [("post.wgsl".into(), 2)],
@@ -434,7 +434,7 @@ fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
     let tonemap = "fn darker(c: vec3<f32>) -> TonemapInput {\n    \
                    return TonemapInput(vec2<f32>(0.0), vec2<f32>(0.0), c * 0.5);\n}\n\
                    fn tonemap(input: TonemapInput) -> vec3<f32> { return darker(input.color).color; }\n";
-    let p = pack_0_2(POST, tonemap, "").expect_err("should fail");
+    let p = post_pack(POST, tonemap, "").expect_err("should fail");
     assert_eq!(
         refused(&p, "TonemapInput"),
         [("tonemap.wgsl".into(), 2)],
@@ -450,16 +450,16 @@ fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
          fn tonemap(input: TonemapInput) -> vec3<f32> {{ return input.color * still.headroom; }}\n",
         fields.join(", ")
     );
-    let p = pack_0_2(POST, &tonemap, "").expect_err("should fail");
+    let p = post_pack(POST, &tonemap, "").expect_err("should fail");
     assert_eq!(refused(&p, "Frame"), [("tonemap.wgsl".into(), 1)], "{p:#?}");
 
     let material = "fn material(input: MaterialInput) -> Surface {\n    \
                     let again = MaterialInput(input.albedo, input.tint, input.light, input.lightmap, \
                     input.position, input.uv, input.translucent, input.tags, input.material, input.screen, \
                     input.face, input.fluid, input.emission, input.normal, input.tangent, input.colored_light, \
-                    input.displaced);\n    \
+                    input.displaced, input.emission_threshold, input.shading);\n    \
                     return Surface(again.albedo);\n}\n";
-    let p = pack_0_2_with_material(material, POST, TONEMAP).expect_err("should fail");
+    let p = post_pack_with_material(material, POST, TONEMAP).expect_err("should fail");
     assert_eq!(
         refused(&p, "MaterialInput"),
         [("material.wgsl".into(), 2)],
@@ -470,7 +470,7 @@ fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
     let post = "fn post(input: PostInput) -> vec4<f32> {\n    \
                 let s = SurfaceData(true, vec3<f32>(0.0, 1.0, 0.0), 0.5, 0.0);\n    \
                 return input.color * s.smoothness * surface_at(vec2<i32>(input.pixel)).smoothness;\n}\n";
-    let p = pack_0_2(post, TONEMAP, "").expect_err("should fail");
+    let p = post_pack(post, TONEMAP, "").expect_err("should fail");
     assert_eq!(
         refused(&p, "SurfaceData"),
         [("post.wgsl".into(), 2)],
@@ -479,7 +479,7 @@ fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
 }
 
 #[test]
-fn a_0_2_pack_reads_horizon_s_structs_passes_them_along_and_builds_its_surface() {
+fn a_pack_reads_horizon_s_structs_passes_them_along_and_builds_its_surface() {
     // A name that merely contains a struct's, a comment and a field read are no construction.
     let post = "// PostInput(input.uv) would be refused\n\
                 struct MyPostInput { color: vec4<f32> }\n\
@@ -487,18 +487,51 @@ fn a_0_2_pack_reads_horizon_s_structs_passes_them_along_and_builds_its_surface()
                 fn post(input: PostInput) -> vec4<f32> { return graded(input).color; }\n";
     let tonemap = "fn curve(input: TonemapInput) -> vec3<f32> { return input.color / (input.color + 1.0); }\n\
                    fn tonemap(input: TonemapInput) -> vec3<f32> { return curve(input); }\n";
-    pack_0_2_with_material(MATERIAL, post, tonemap).unwrap();
+    post_pack_with_material(MATERIAL, post, tonemap).unwrap();
     // The tonemap prelude has no `SurfaceData`: one of the pack's own is the pack's to build.
     let tonemap = "struct SurfaceData { gain: f32 }\n\
                    fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color * SurfaceData(0.5).gain; }\n";
-    pack_0_2_with_material(MATERIAL, POST, tonemap).unwrap();
+    post_pack_with_material(MATERIAL, POST, tonemap).unwrap();
     // Nor is an alias of the pack's own by that name.
     let tonemap = "alias SurfaceData = vec3<f32>;\n\
                    fn tonemap(input: TonemapInput) -> vec3<f32> { return SurfaceData(input.color.r, 0.0, 0.0); }\n";
-    pack_0_2_with_material(MATERIAL, POST, tonemap).unwrap();
+    post_pack_with_material(MATERIAL, POST, tonemap).unwrap();
 }
 
-/// A 0.2 pack of the entity stage alone.
+/// What a pack that lets light sources shine reads: which texels of a block's sprite are the
+/// part that shines, vanilla's shading of the rest, the kind of light of what is no block, and
+/// the light colour at full light.
+#[test]
+fn a_pack_reads_what_shines() {
+    let material = "fn material(input: MaterialInput) -> Surface {\n    \
+                    let top = max(input.albedo.r, max(input.albedo.g, input.albedo.b));\n    \
+                    let shines = input.emission > 0.0 && top >= input.emission_threshold;\n    \
+                    let light = select(input.shading, frame.full_light, shines);\n    \
+                    return Surface(input.albedo * vec4<f32>(light, 1.0));\n}\n";
+    let tonemap =
+        "fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color * frame.full_light; }\n";
+    post_pack_with_material(material, POST, tonemap).unwrap();
+    let entity = "fn entity(input: EntityInput) -> Surface {\n    \
+                  let light = mix(input.lightmap, frame.full_light, min(input.light_source, 1.0));\n    \
+                  return Surface(input.albedo * vec4<f32>(light, 1.0));\n}\n";
+    entity_pack(entity).unwrap();
+}
+
+/// The entity stage's fixture, which the frame identity test draws with
+/// (tools/test_frame_identity_parity.py).
+#[test]
+fn the_entity_fixture_passes() {
+    let pack = Pack::read(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/samples/entity-stage"
+    )))
+    .unwrap();
+    let report = check(&pack).unwrap();
+    let kinds: Vec<_> = report.stages.iter().map(|s| s.kind).collect();
+    assert_eq!(kinds, [StageKind::Sky, StageKind::Entity]);
+}
+
+/// A pack of the entity stage alone.
 fn entity_pack(entity: &str) -> Result<horizon_shader_api::Report, Vec<Problem>> {
     let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
                     [entity]\nfile = \"entity.wgsl\"\nname = \"Mobs\"\n";
@@ -577,7 +610,7 @@ fn the_entity_stage_is_checked_like_the_material_s() {
     let built = "fn entity(input: EntityInput) -> Surface {\n    \
                  let again = EntityInput(input.albedo, input.tint, input.overlay, input.lightmap, input.shade, \
                  input.position, input.emission, input.normal, input.kind, input.colored_light, \
-                 input.translucent, input.light, input.uv, input.screen);\n    \
+                 input.translucent, input.light, input.uv, input.screen, input.light_source);\n    \
                  return Surface(again.albedo);\n}\n";
     let p = entity_pack(built).expect_err("should fail");
     assert_eq!(
@@ -585,26 +618,4 @@ fn the_entity_stage_is_checked_like_the_material_s() {
         [("entity.wgsl".into(), 2)],
         "{p:#?}"
     );
-}
-
-#[test]
-fn a_0_1_pack_may_still_construct_its_inputs() {
-    let mut files = sample().files;
-    files.insert(
-        GRADE.into(),
-        b"override saturation: f32 = 1.1;\noverride tonemap: u32 = 1u;\n\
-          fn post(input: PostInput) -> vec4<f32> { return PostInput(input.uv, input.pixel, input.color, input.depth).color; }\n"
-            .to_vec(),
-    );
-    check(&Pack::from_files(files).unwrap()).unwrap();
-}
-
-#[test]
-fn a_0_1_pack_doesn_t_see_0_2_s_names() {
-    let p = one(
-        GRADE,
-        "override saturation: f32 = 1.1;\noverride tonemap: u32 = 1u;\nfn post(input: PostInput) -> vec4<f32> { return input.color * frame.headroom; }\n",
-        "headroom",
-    );
-    assert_eq!(p.file, GRADE, "{p}");
 }

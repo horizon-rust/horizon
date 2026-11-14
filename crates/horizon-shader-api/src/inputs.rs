@@ -1,7 +1,7 @@
 //! What a pack's WGSL reads: the frame uniform every stage sees, which the
 //! renderer fills and uploads as the Rust struct below, and the stage input
 //! and output structs. The WGSL of each is generated from these definitions
-//! (`Struct::wgsl`), and so is the reference (docs/api/shaders-reference.md).
+//! (`Struct::wgsl`), and so is the reference (docs/api/shaders-reference-0.2.md).
 
 /// One field of a WGSL struct, for the prelude and the reference.
 #[derive(Debug)]
@@ -223,25 +223,13 @@ uniform! {
         /// The weights that give a colour's luminance in those primaries, `dot(c, frame.luminance)`:
         /// (0.2126, 0.7152, 0.0722) for BT.709, (0.2627, 0.6780, 0.0593) for BT.2020.
         luminance: [f32; 3],
+        @pad full_light_gap: u32,
+        /// Vanilla's light colour at full light (block and sky light 15) this frame: white
+        /// unless something dims all light, the Darkness effect or a wither's bar. The most a
+        /// `lightmap` holds, so a pack that lets a light source shine whatever light falls on
+        /// it scales its shading up to this, and the light source dims with the rest of the world.
+        full_light: [f32; 3],
         @pad padding: u32,
-    }
-}
-
-impl Frame {
-    /// The fields 0.1's prelude declares: the struct up to `shadow_center_texel`, a prefix of
-    /// the buffer the renderer uploads.
-    pub const FIELDS_0_1: usize = 49;
-
-    /// `Frame` as the line's prelude declares it.
-    pub fn line(api: crate::Api) -> Struct {
-        let fields = match api {
-            crate::Api::V0_1 => &Self::WGSL.fields[..Self::FIELDS_0_1],
-            crate::Api::V0_2 => Self::WGSL.fields,
-        };
-        Struct {
-            fields,
-            ..Self::WGSL
-        }
     }
 }
 
@@ -285,6 +273,8 @@ pub const MATERIAL_INPUT: Struct = Struct {
         tangent: "vec4<f32>" = "The surface's tangent: xyz the unit direction in world axes along which `uv.x` grows, w the sign (1 or -1) that makes `cross(normal, tangent.xyz) * tangent.w` the direction `uv.y` grows along (down the texture). With `normal` it turns a normal map's normals into world axes.",
         colored_light: "vec3<f32>" = "The frame's coloured lights at this point (`[[particle_lights]]`, held and dropped items in their `[[lights]]` colour while dynamic lights are on, and mods' visual lights), 0..1, to light the surface with as the pack likes; 0 where none reaches.",
         displaced: "f32" = "How much of the relief `[displacement]` gave this point as geometry, 0..1: 1 near the camera, where the surface already lies where `displacement` put it (`position` is that point; a parallax effect would count its depth twice), easing to 0 at `[displacement] distance`; always 0 without `[displacement]`.",
+        emission_threshold: "f32" = "Which texels of a light source's sprite are the part that shines (a torch's flame, not its handle): those whose brightness is at least this, 0..1, where a texel's brightness is the mean of its luminance and its brightest channel, `0.5 * (dot(albedo.rgb, frame.luminance) + max(albedo.r, max(albedo.g, albedo.b)))`. Horizon measures it from the sprite itself, about a third of the way from its darkest to its brightest texel, so a resource pack's light sources shine where they are bright in their own drawing. 0 where the whole sprite shines (lava, fire, a froglight), and where `emission` is 0.",
+        shading: "vec3<f32>" = "Vanilla's shading of this point: the vertex colour under the light colour, multiplied at each corner of the face as vanilla does and then smoothed over it, so `albedo.rgb * shading` is vanilla's colour. `tint.rgb * lightmap` multiplies the two after each was smoothed, which comes out a few steps of 255 apart where a face's ambient occlusion and its light both change, as in a corner beside a torch. It holds no coloured light (`colored_light`).",
     },
 };
 
@@ -294,11 +284,11 @@ pub const SURFACE: Struct = Struct {
     doc: "What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; \
           Horizon then applies the alpha test (cutout and translucent) and fog.",
     fields: fields! {
-        color: "vec4<f32>" = "The lit colour, 0..1, with its alpha.",
+        color: "vec4<f32>" = "The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than white); alpha its coverage.",
     },
 };
 
-/// The entity stage's input (0.2): one point of a surface that is no block terrain.
+/// The entity stage's input: one point of a surface that is no block terrain.
 pub const ENTITY_INPUT: Struct = Struct {
     name: "EntityInput",
     doc: "One point of the surface of an entity, a block entity, an item or a particle, for `fn entity(input: EntityInput) -> Surface`.",
@@ -311,12 +301,13 @@ pub const ENTITY_INPUT: Struct = Struct {
         position: "vec3<f32>" = "The point, camera-relative, in blocks.",
         emission: "f32" = "1 on a layer vanilla draws at full brightness (spider and enderman eyes, the warden's glow), else 0. There `lightmap` is full light; `shade` stays vanilla's, which shades the warden's glow and not the eyes.",
         normal: "vec3<f32>" = "The surface's geometric normal, a unit vector in world axes, facing the camera, from the position's screen derivatives (as `MaterialInput.normal`, without its snap to the axes).",
-        kind: "u32" = "What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, signs, banners, beds), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle.",
+        kind: "u32" = "What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, banners, bells, shulker boxes), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle.",
         colored_light: "vec3<f32>" = "As `MaterialInput.colored_light`: the frame's coloured lights at this point, 0..1; 0 where none reaches.",
         translucent: "bool" = "Drawn with blending.",
         light: "vec2<f32>" = "Block and sky light, 0..1.",
         uv: "vec2<f32>" = "The texture coordinate.",
         screen: "vec2<f32>" = "Where the point is on the screen, 0..1 from the top left (as `MaterialInput.screen`).",
+        light_source: "f32" = "How strongly the thing itself shines, by its kind of light, on `MaterialInput.emission`'s scale and past it: a magma cube or a glow squid 7/15, a glow item frame 14/15, glowing eyes, a blaze, an End crystal or a conduit 1 (as glowstone), an experience orb 2 (brighter than any block); 0 for what gives no light. Not `emission`, which says the light that falls on the layer is full.",
     },
 };
 
@@ -372,7 +363,7 @@ pub const WEATHER_INPUT: Struct = Struct {
     },
 };
 
-/// The tonemap stage's input (0.2): one pixel of the window.
+/// The tonemap stage's input: one pixel of the window.
 pub const TONEMAP_INPUT: Struct = Struct {
     name: "TonemapInput",
     doc: "One pixel of an output (the window), for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the output `frame` describes: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Horizon clamps it there).",
@@ -390,19 +381,15 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 56);
+        assert_eq!(wgsl.fields.len(), 57);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        // 0.1's 49 fields, then 0.2's seven: `luminance` is a `vec3`, on the next 16 bytes.
+        // `luminance` and `full_light`, the last two, are `vec3`s, each on the next 16 bytes.
         assert_eq!(
             std::mem::size_of::<Frame>(),
-            6 * 64 + 15 * 16 + 8 * 16 + 3 * 16
+            6 * 64 + 15 * 16 + 8 * 16 + 4 * 16
         );
-        assert_eq!(Frame::OFFSETS[55], std::mem::size_of::<Frame>() - 16);
-        assert_eq!(Frame::OFFSETS[Frame::FIELDS_0_1], 6 * 64 + 15 * 16 + 8 * 16);
-        assert_eq!(
-            Frame::line(crate::Api::V0_1).fields.len(),
-            Frame::FIELDS_0_1
-        );
+        assert_eq!(Frame::OFFSETS[55], std::mem::size_of::<Frame>() - 32);
+        assert_eq!(Frame::OFFSETS[56], std::mem::size_of::<Frame>() - 16);
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")

@@ -253,10 +253,7 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
         ));
     }
     problems.extend(api_rules(&module, kind, &own));
-    // 0.1's structs won't grow: it is retired when 0.2 is on by default.
-    if pack.manifest.api == crate::Api::V0_2 {
-        problems.extend(constructions(&module, &own));
-    }
+    problems.extend(constructions(&module, &own));
     problems.extend(options(&module, &pack.manifest.options, file));
     if !problems.is_empty() {
         return Err(problems);
@@ -485,7 +482,7 @@ fn api_rules(module: &naga::Module, kind: StageKind, own: &Composed) -> Vec<Prob
     problems
 }
 
-/// 0.2: the pack's files construct none of the structs Horizon hands a stage (`Frame`, the
+/// The pack's files construct none of the structs Horizon hands a stage (`Frame`, the
 /// stage inputs and the post helpers' `SurfaceData`). They may gain fields, which would break a
 /// positional `PostInput(...)`; reading them and passing them along stay as they are. `Surface`,
 /// which `material` returns, is built.

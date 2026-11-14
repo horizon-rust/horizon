@@ -3,8 +3,8 @@
 Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test reference`
 rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).
 
-**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, the game draws them only
-with `HORIZON_HDR_FRAME=float` set, the registry doesn't list them, and anything here may change in any release.
+**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, the game draws them and
+the registry lists them, and anything here may change in any release.
 The design: [hdr-linear-light.md](../design/hdr-linear-light.md).
 
 ## Colour
@@ -15,13 +15,13 @@ outside sRGB, with `[frame] primaries` (below). Horizon decodes vanilla's values
 the piecewise sRGB curve), replacing negatives and NaN with 0 first, and encodes a stage's result the same way where
 the frame stores gamma (`[frame] blend`, below).
 
-- **Linear:** `MaterialInput` `albedo`, `tint`, `lightmap` and `colored_light`; `VertexInput.tint`; `SkyInput.color`;
-  `WeatherInput.color`; `Frame` `sky_color` and `fog_color`; `block_texture`, `block_texture_level` and
-  `block_light_color`; every colour texture a stage samples (`scene_color`, `previous`, `history`, the pack's targets,
-  `opaque_color`, `reflection`, `shadow_color`).
-- **Data, as in 0.1:** depth, normals, `light` levels, `emission`, every channel of the LabPBR maps, and the pack's
-  `[[textures]]`.
-- **`[[lights]]` and `[[particle_lights]]` colours** are written as in 0.1, in vanilla's gamma, and Horizon decodes
+- **Linear:** `MaterialInput` `albedo`, `tint`, `lightmap`, `colored_light` and `shading`; `VertexInput.tint`; `SkyInput.color`;
+  `WeatherInput.color`; `Frame` `sky_color`, `fog_color` and `full_light`; `block_texture`, `block_texture_level`
+  and `block_light_color`; every colour texture a stage samples (`scene_color`, `previous`, `history`, the pack's
+  targets, `opaque_color`, `reflection`, `shadow_color`).
+- **Data:** depth, normals, `light` levels, `emission`, `emission_threshold`, `light_source`, every channel of the
+  LabPBR maps, and the pack's `[[textures]]`.
+- **`[[lights]]` and `[[particle_lights]]` colours** are written in vanilla's gamma, and Horizon decodes
   them: `block_light_color` and `colored_light` are linear. `block_light_colors` holds them as written; read it through
   `block_light_color`.
 - **Alpha is coverage only**, never light: brightness is in rgb alone. A post pass's alpha is ignored.
@@ -159,6 +159,8 @@ One point of a block's surface, for `fn material(input: MaterialInput) -> Surfac
 | `tangent` | `vec4<f32>` | The surface's tangent: xyz the unit direction in world axes along which `uv.x` grows, w the sign (1 or -1) that makes `cross(normal, tangent.xyz) * tangent.w` the direction `uv.y` grows along (down the texture). With `normal` it turns a normal map's normals into world axes. |
 | `colored_light` | `vec3<f32>` | The frame's coloured lights at this point (`[[particle_lights]]`, held and dropped items in their `[[lights]]` colour while dynamic lights are on, and mods' visual lights), 0..1, to light the surface with as the pack likes; 0 where none reaches. |
 | `displaced` | `f32` | How much of the relief `[displacement]` gave this point as geometry, 0..1: 1 near the camera, where the surface already lies where `displacement` put it (`position` is that point; a parallax effect would count its depth twice), easing to 0 at `[displacement] distance`; always 0 without `[displacement]`. |
+| `emission_threshold` | `f32` | Which texels of a light source's sprite are the part that shines (a torch's flame, not its handle): those whose brightness is at least this, 0..1, where a texel's brightness is the mean of its luminance and its brightest channel, `0.5 * (dot(albedo.rgb, frame.luminance) + max(albedo.r, max(albedo.g, albedo.b)))`. Horizon measures it from the sprite itself, about a third of the way from its darkest to its brightest texel, so a resource pack's light sources shine where they are bright in their own drawing. 0 where the whole sprite shines (lava, fire, a froglight), and where `emission` is 0. |
+| `shading` | `vec3<f32>` | Vanilla's shading of this point: the vertex colour under the light colour, multiplied at each corner of the face as vanilla does and then smoothed over it, so `albedo.rgb * shading` is vanilla's colour. `tint.rgb * lightmap` multiplies the two after each was smoothed, which comes out a few steps of 255 apart where a face's ambient occlusion and its light both change, as in a corner beside a torch. It holds no coloured light (`colored_light`). |
 
 ### `Surface`
 
@@ -339,19 +341,33 @@ One point of the surface of an entity, a block entity, an item or a particle, fo
 | `position` | `vec3<f32>` | The point, camera-relative, in blocks. |
 | `emission` | `f32` | 1 on a layer vanilla draws at full brightness (spider and enderman eyes, the warden's glow), else 0. There `lightmap` is full light; `shade` stays vanilla's, which shades the warden's glow and not the eyes. |
 | `normal` | `vec3<f32>` | The surface's geometric normal, a unit vector in world axes, facing the camera, from the position's screen derivatives (as `MaterialInput.normal`, without its snap to the axes). |
-| `kind` | `u32` | What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, signs, banners, beds), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle. |
+| `kind` | `u32` | What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, banners, bells, shulker boxes), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle. |
 | `colored_light` | `vec3<f32>` | As `MaterialInput.colored_light`: the frame's coloured lights at this point, 0..1; 0 where none reaches. |
 | `translucent` | `bool` | Drawn with blending. |
 | `light` | `vec2<f32>` | Block and sky light, 0..1. |
 | `uv` | `vec2<f32>` | The texture coordinate. |
 | `screen` | `vec2<f32>` | Where the point is on the screen, 0..1 from the top left (as `MaterialInput.screen`). |
+| `light_source` | `f32` | How strongly the thing itself shines, by its kind of light, on `MaterialInput.emission`'s scale and past it: a magma cube or a glow squid 7/15, a glow item frame 14/15, glowing eyes, a blaze, an End crystal or a conduit 1 (as glowstone), an experience orb 2 (brighter than any block); 0 for what gives no light. Not `emission`, which says the light that falls on the layer is full. |
 
 `entity` lights what is no block terrain: `input.kind` says which. It returns the same `Surface` as `material` (rgb
 linear light, 0 or more and unbounded; alpha its coverage), so a pack writes its lighting once and calls it from both
 stages. Around it Horizon keeps vanilla's order: the alpha test on the returned alpha, then the enchantment glint
-added on top, then fog. `horizon-shader check` takes the stage; **the game doesn't draw it yet** and refuses a pack
-that has it. A pack without `[entity]` is drawn as before, and sees none of this stage's names. Until the game draws
-the stage its prelude may still gain names; from then on the rule for new names holds for it too.
+added on top, then fog. A pack without `[entity]` is drawn as before, and sees none of this stage's names; the rule
+for new names holds for the stage as for the others.
+
+**What the game draws through the stage so far: entities and block entities** (`kind` 0 and 1). Until a later
+release brings them in, Horizon lights the rest itself, exactly as without the stage: dropped and framed items and
+what a block or a display entity shows of one (`kind` 2), what flies as its item (a snowball, a potion, a fireball,
+an eye of ender), firework rockets, particles (`kind` 4), the fire on a burning entity, a guardian's beam, a lead's
+rope, name tags and text, and the first-person hand. Some draws stay Horizon's for good: beacon beams, the beams of
+End crystals, End portals and gateways, breaking cracks, energy swirls, lightning and other additive glows.
+
+An item an entity holds or wears as its model (a sword in a hand, a block on a head) reaches the stage with the
+entity, unless its texture has see-through pixels (stained glass, ice, a slime block): that one is drawn with the
+translucent items, and stays Horizon's until items draw through the stage. A block drawn as an entity (a falling
+block, primed TNT, a block display) or as a block entity (a block a piston moves) reaches the stage too. These have
+vanilla's shade already in `tint`, and `shade` 1: their vertices carry the two as one colour so far. A sign's board
+and a bed are block terrain, the material stage's.
 
 Vanilla's own, the picture a pack without the stage gets:
 
@@ -454,6 +470,7 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `black_level` | `f32` | 768 | The display's black in nits (HDR's Black Level); 0 in SDR. |
 | `primaries` | `u32` | 772 | The primaries of this pack's colours (`[frame] primaries`): 0 BT.709, 1 BT.2020. |
 | `luminance` | `vec3<f32>` | 784 | The weights that give a colour's luminance in those primaries, `dot(c, frame.luminance)`: (0.2126, 0.7152, 0.0722) for BT.709, (0.2627, 0.6780, 0.0593) for BT.2020. |
+| `full_light` | `vec3<f32>` | 800 | Vanilla's light colour at full light (block and sky light 15) this frame: white unless something dims all light, the Darkness effect or a wither's bar. The most a `lightmap` holds, so a pack that lets a light source shine whatever light falls on it scales its shading up to this, and the light source dims with the rest of the world. |
 
 ## Anti-aliasing
 
