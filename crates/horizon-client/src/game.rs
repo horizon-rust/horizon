@@ -396,6 +396,7 @@ mod quick_actions;
 mod raids;
 mod random_textures;
 mod recipe_book;
+mod region_profile;
 mod regions;
 mod remote;
 mod remote_camera;
@@ -5636,11 +5637,15 @@ impl Game<'_> {
         horizon_client::spans::time("postprocess_chunks", || self.postprocess_chunks())?;
         let mut sent = None;
         let mut regional = false;
+        let mut after_regions = Instant::now();
         if running {
+            let started = Instant::now();
             horizon_client::spans::time("tick_lan_packets", || self.tick_lan_packets());
+            self.regions.prof.add(region_profile::Step::Net, started);
             // With the parallel tick on, the level's blocks and entities tick by regions on threads of
             // their own (`regions.rs`); what no region owns still ticks below.
             regional = horizon_client::spans::time("tick_regions", || self.tick_world_regions())?;
+            after_regions = Instant::now();
             if !regional {
                 sent = horizon_client::spans::time("tick_blocks", || self.tick_blocks())?;
             }
@@ -5781,7 +5786,12 @@ impl Game<'_> {
         if let (Some(sent), Some(log)) = (sent, self.world.block_log.as_mut()) {
             self.world.block_log_held = log.split_off(sent.min(log.len()));
         }
+        let before_lan = self
+            .regions
+            .prof
+            .add(region_profile::Step::Leftover, after_regions);
         horizon_client::spans::time("tick_lan", || self.tick_lan(false));
+        let after_lan = self.regions.prof.add(region_profile::Step::Lan, before_lan);
         let held = std::mem::take(&mut self.world.block_log_held);
         if let Some(log) = self.world.block_log.as_mut() {
             log.extend(held);
@@ -5855,6 +5865,7 @@ impl Game<'_> {
         if running {
             horizon_client::spans::time("lan_note_joined", || self.lan_note_joined());
         }
+        self.regions.prof.add(region_profile::Step::Late, after_lan);
         Ok(())
     }
     /// The title remains the no-level sentinel while debug options covers it.

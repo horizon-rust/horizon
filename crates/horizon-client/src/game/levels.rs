@@ -610,6 +610,9 @@ impl Game<'_> {
         // `ServerTickEvent.Pre`. A paused pass and a held server tick nothing.
         let running = (!paused && !self.agent.hold_server).then(|| self.clock.world_runs());
         let server = self.serving.is_some() || self.options.dedicated.is_some();
+        if server && running.is_some() {
+            self.regions.prof.begin();
+        }
         // A config edited while the server is paused (empty) still reloads.
         // The parts outside every level get spans of their own, so that a slow
         // tick's line and `horizon-report` say when a mod's tick hook took it.
@@ -737,6 +740,7 @@ impl Game<'_> {
         if server {
             self.diagnostics_packets_tick();
         }
+        self.regions.prof.end();
         Ok(())
     }
 

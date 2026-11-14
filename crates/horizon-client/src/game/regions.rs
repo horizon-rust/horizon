@@ -9,6 +9,7 @@
 //! This module only decides which region owns what. It is pure data: no game state, no threads.
 // Nothing calls it until the region threads come in the next commits.
 #![allow(dead_code)]
+use super::region_profile::Step;
 use super::{Dim, Game, Mob, Resources};
 use horizon_client::Result;
 use horizon_client::join_seq::JoinList;
@@ -256,6 +257,8 @@ pub(super) struct RegionState {
     factory: Vec<std::sync::mpsc::Receiver<std::result::Result<Box<Game<'static>>, String>>>,
     /// Each level's resident regions: their games keep their parts of the level and their players.
     pub resident: std::collections::HashMap<Dim, ResidentSet>,
+    /// Where the server thread's tick time goes while regions are resident.
+    pub(super) prof: super::region_profile::TickProfile,
 }
 
 /// A level's regions that stay on their threads between ticks.
@@ -713,7 +716,9 @@ impl Game<'_> {
             return Ok(false);
         }
         let dim = self.dim;
+        let entered = std::time::Instant::now();
         if let Some(set) = self.regions.resident.remove(&dim) {
+            self.regions.prof.note_resident();
             if let Some(set) = self.resident_tick(set, false)? {
                 self.regions.resident.insert(dim, set);
             }
@@ -838,6 +843,8 @@ impl Game<'_> {
             set.chunks.push(chunks);
         }
         self.lan = Some(host);
+        self.regions.prof.note_resident();
+        self.regions.prof.add(Step::Split, entered);
         if let Some(set) = self.resident_tick(set, true)? {
             self.regions.resident.insert(dim, set);
         }
@@ -848,9 +855,12 @@ impl Game<'_> {
     /// by landing them, or one of them failed).
     fn resident_tick(&mut self, mut set: ResidentSet, first: bool) -> Result<Option<ResidentSet>> {
         if !first && self.residents_must_land(&set) {
-            self.land_resident_set(set);
+            let landing = std::time::Instant::now();
+            horizon_client::spans::time("regions_land", || self.land_resident_set(set));
+            self.regions.prof.add(Step::Land, landing);
             return Ok(None);
         }
+        let launching = std::time::Instant::now();
         let pool = Arc::clone(
             self.regions
                 .entity_pool
@@ -925,13 +935,17 @@ impl Game<'_> {
             }
         }
         set.age += 1;
+        let waiting = self.regions.prof.add(Step::Launch, launching);
         // Waited for until the deadline: what runs past it carries on by itself.
         let deadline = started + region_deadline();
-        for k in launched {
-            if let Err(e) = set.games[k].home(Some(deadline)) {
-                failed.get_or_insert(e);
+        horizon_client::spans::time("regions_wait", || {
+            for k in launched {
+                if let Err(e) = set.games[k].home(Some(deadline)) {
+                    failed.get_or_insert(e);
+                }
             }
-        }
+        });
+        self.regions.prof.add(Step::Wait, waiting);
         super::health::record_regions(
             self.dim.id(),
             set.games
@@ -959,7 +973,9 @@ impl Game<'_> {
                 .collect();
         }
         if let Some(e) = failed {
+            let landing = std::time::Instant::now();
             self.land_resident_set(set);
+            self.regions.prof.add(Step::Land, landing);
             return Err(e.into());
         }
         Ok(Some(set))
