@@ -1,47 +1,62 @@
-//! `ItemEntity.hurtServer`'s hit for the damage the environment tick applies:
+//! `ItemEntity.hurtServer`'s hit for the damage an item's own tick deals it:
 //! the health off, the contents of an item destroyed by it spilled, and the
-//! `entity_damage` game event every hit posts (`ItemEntity.java:300-306`).
-use super::ItemEntity;
+//! `entity_damage` game event every accepted hit posts before that.
+use super::{BlockFacts, Fluid, ItemEntity, World};
 use crate::items::ItemStack;
 
-/// What the hits of one environment tick spilled, and the `entity_damage`
-/// events they post.
+/// What a run of hits spilled, and how many `entity_damage` events they post.
 #[derive(Default)]
 pub struct ItemHits {
     pub spilled: Vec<ItemStack>,
-    /// The block effects' hits, posted at the item's own position: they are
-    /// applied after its move (`Entity.applyEffectsFromBlocks`).
     pub events: u32,
-    /// `Entity.baseTick`'s burning, posted where the tick started from: it
-    /// runs before `Entity.move`.
-    pub burning_events: u32,
 }
 
 impl ItemHits {
     /// One `hurtServer`: `amount` off the item's health, and the stacks it
-    /// leaves when that empties it (`ItemStack.onDestroyed`). A hit that
-    /// destroyed the item ends the tick's hits: `Entity.checkInsideBlocks`
-    /// stops at `!Entity.isAlive()` and `InsideBlockEffectApplier.applyAndClear`
-    /// skips the effects still queued.
-    fn strike(&mut self, item: &mut ItemEntity, amount: i32) -> bool {
+    /// leaves when that empties it (`ItemStack.onDestroyed`). A destroyed item
+    /// takes no more hits: `Entity.checkInsideBlocks` stops at
+    /// `!Entity.isAlive()` and `InsideBlockEffectApplier.applyAndClear` skips
+    /// the effects still queued.
+    pub fn hit(&mut self, item: &mut ItemEntity, amount: i32) {
         if item.health <= 0 {
-            return false;
+            return;
         }
         self.spilled.extend(item.hurt(amount).unwrap_or_default());
-        true
+        self.events += 1;
     }
+}
 
-    /// A hit of the block pass, at the item's position.
-    pub fn hit(&mut self, item: &mut ItemEntity, amount: i32) {
-        if self.strike(item, amount) {
-            self.events += 1;
+impl ItemEntity {
+    /// `Entity.baseTick`'s fire: a fire-immune item is put out, and a burning
+    /// one is hurt every 20 ticks unless `isInLava`, which is the fluid it
+    /// started the tick in (`in_lava`): it runs before `ItemEntity.tick`'s
+    /// move, so its `entity_damage` is posted where the tick started.
+    pub fn burning_tick(&mut self, in_lava: bool, items: &crate::items::Items) -> ItemHits {
+        let mut hits = ItemHits::default();
+        if items.resists_fire(&self.stack, "minecraft:in_fire") {
+            self.fire_ticks = 0;
         }
+        if self.fire_ticks > 0 {
+            if self.fire_ticks % 20 == 0
+                && !in_lava
+                && !items.resists_fire(&self.stack, "minecraft:on_fire")
+            {
+                hits.hit(self, 1);
+            }
+            self.fire_ticks -= 1;
+        }
+        hits
     }
-
-    /// `Entity.baseTick`'s burning hit, at the position the tick started from.
-    pub fn burning(&mut self, item: &mut ItemEntity, amount: i32) {
-        if self.strike(item, amount) {
-            self.burning_events += 1;
-        }
+    /// Whether the item's feet are in lava, for [`Self::burning_tick`].
+    pub fn in_lava(&self, world: &World, facts: &BlockFacts) -> bool {
+        self.fluid_at_feet(world, facts) == Fluid::Lava
+    }
+    pub(super) fn fluid_at_feet(&self, world: &World, facts: &BlockFacts) -> Fluid {
+        let at = world.block(
+            self.position.x.floor() as i32,
+            (self.position.y + 0.1).floor() as i32,
+            self.position.z.floor() as i32,
+        );
+        facts.get(at).fluid
     }
 }

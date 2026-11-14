@@ -29,6 +29,13 @@ impl Game<'_> {
         horizon_threads::work::clear_work();
         self.native_tick_post_batch(round);
     }
+    /// The `entity_damage` of an item's own hits, which name no entity (fire,
+    /// lava, a cactus). Only the server hurts items.
+    fn post_item_hits(&mut self, server: bool, hits: u32, at: Vec3) {
+        for _ in 0..if server { hits } else { 0 } {
+            self.item_damage_event(at, None);
+        }
+    }
     /// An item that joined during this tick's entity pass: it first ticks on
     /// the next one.
     pub(super) fn joined_during_entity_pass(&self, id: u32) -> bool {
@@ -79,6 +86,10 @@ impl Game<'_> {
             {
                 continue;
             }
+            // `Entity.baseTick` reads the fluid the item starts the tick in,
+            // before `ItemEntity.tick` moves it.
+            let (start, start_in_lava) =
+                (item.position, item.in_lava(&self.world, self.res.facts()));
             let mut at_turn = |item: &mut ItemEntity| {
                 // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
                 // where the item can reach this tick.
@@ -113,6 +124,15 @@ impl Game<'_> {
             for splash in entered {
                 self.apply_item_splash(splash);
             }
+            // `Entity.baseTick`'s burning, heard where the tick started.
+            let burning = item.burning_tick(start_in_lava, world_items!(self));
+            self.post_item_hits(merging, burning.events, start);
+            if item.health <= 0 {
+                removed[i] = true;
+                cells.remove(i, item.previous);
+                destroyed.extend(burning.spilled.into_iter().map(|s| (s, start)));
+                continue;
+            }
             if discarded {
                 removed[i] = true;
                 cells.remove(i, item.previous);
@@ -139,6 +159,35 @@ impl Game<'_> {
                     self.collision,
                     item.bounds(),
                 ));
+            }
+            // `Entity.applyEffectsFromBlocks` after the move, before the merge
+            // and the lifetime check; an item below the world was discarded
+            // by `Entity.checkBelowWorld` and takes none.
+            if start.y >= void {
+                let environment = item.environment_tick(
+                    &self.world,
+                    self.res.facts(),
+                    self.pack.assets.registry,
+                    world_items!(self),
+                );
+                let at = item.position;
+                self.post_item_hits(merging, environment.damage_events, at);
+                if environment.should_play_lava_hurt_sound(item.ticks) {
+                    // `Entity.lavaHurt` pitches the burn from `this.random`, the item's own.
+                    let pitch = 2.0 + item.random.next_float() * 0.4;
+                    self.audio.play(
+                        "minecraft:entity.generic.burn",
+                        Some([at.x, at.y, at.z]),
+                        0.4,
+                        pitch,
+                    );
+                }
+                if !environment.alive {
+                    removed[i] = true;
+                    cells.remove(i, at);
+                    destroyed.extend(environment.spilled.into_iter().map(|s| (s, at)));
+                    continue;
+                }
             }
             // ItemEntity.tick: merge every 2 ticks while moving between
             // blocks, every 40 otherwise, before the lifetime check.
@@ -182,45 +231,6 @@ impl Game<'_> {
                 removed[i] = true;
                 cells.remove(i, item.position);
                 continue;
-            }
-            let environment = item.environment_tick(
-                &self.world,
-                self.res.facts(),
-                self.pack.assets.registry,
-                world_items!(self),
-            );
-            // `ItemEntity.hurtServer` posts `entity_damage` at the item's own
-            // position for every hit it takes, before the hit that destroys it
-            // spills its contents (`ItemEntity.java:302`); `Entity.baseTick`'s
-            // burning, which runs before the move, posts where the tick started.
-            if environment.damage_events > 0 || environment.burning_events > 0 {
-                self.sculk_prepare();
-                let context = self.who_context(None, None);
-                let start = [item.previous.x, item.previous.y, item.previous.z];
-                for _ in 0..environment.burning_events {
-                    self.post_game_event("minecraft:entity_damage", start, context);
-                }
-                let at = [item.position.x, item.position.y, item.position.z];
-                for _ in 0..environment.damage_events {
-                    self.post_game_event("minecraft:entity_damage", at, context);
-                }
-            }
-            if environment.should_play_lava_hurt_sound(item.ticks) {
-                // `Entity.lavaHurt` pitches the burn from `this.random`, the item's own.
-                let pitch = 2.0 + item.random.next_float() * 0.4;
-                self.audio.play(
-                    "minecraft:entity.generic.burn",
-                    Some([item.position.x, item.position.y, item.position.z]),
-                    0.4,
-                    pitch,
-                );
-            }
-            if !environment.alive {
-                removed[i] = true;
-                cells.remove(i, item.position);
-                for stack in environment.spilled {
-                    destroyed.push((stack, item.position));
-                }
             }
         }
         for pos in bubble_tops {

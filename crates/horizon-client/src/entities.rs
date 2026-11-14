@@ -83,6 +83,7 @@ fn slime_at(world: &World, facts: &BlockFacts, position: BlockPos) -> bool {
 
 mod fluids;
 mod item_damage;
+pub use item_damage::ItemHits;
 mod item_fall;
 mod item_no_physics;
 pub mod nameplate;
@@ -342,11 +343,8 @@ pub struct ItemEnvironmentTick {
     pub alive: bool,
     pub lava_hurt: bool,
     /// The `entity_damage` events its block hits post at its own position
-    /// (`ItemEntity.java:302`).
+    /// (`ItemEntity.hurtServer`).
     pub damage_events: u32,
-    /// The `entity_damage` of `Entity.baseTick`'s burning, posted where the
-    /// tick started from: it runs before `Entity.move`.
-    pub burning_events: u32,
     /// `ItemStack.onDestroyed` of the damage that emptied the health: the
     /// stacks the destroyed item left, which `ItemUtils.onContainerDestroyed`
     /// adds to the level where it lay.
@@ -483,6 +481,9 @@ impl ItemEntity {
             ),
         )
     }
+    /// `Entity.applyEffectsFromBlocks` after the move: water puts the item
+    /// out, then lava, fire and cactus hurt it. Each hit posts `entity_damage`
+    /// at the item's position, and the hit that destroys it ends the pass.
     pub fn environment_tick(
         &mut self,
         world: &World,
@@ -490,25 +491,11 @@ impl ItemEntity {
         registry: &horizon_world::registry::BlockRegistry,
         items: &crate::items::Items,
     ) -> ItemEnvironmentTick {
-        let at = world.block(
-            self.position.x.floor() as i32,
-            (self.position.y + 0.1).floor() as i32,
-            self.position.z.floor() as i32,
-        );
-        let fluid = facts.get(at).fluid;
+        let fluid = self.fluid_at_feet(world, facts);
         let fire_immune = items.resists_fire(&self.stack, "minecraft:in_fire");
-        let mut hits = item_damage::ItemHits::default();
+        let mut hits = ItemHits::default();
         if fluid == Fluid::Water || fire_immune {
             self.fire_ticks = 0;
-        }
-        if self.fire_ticks > 0 {
-            if self.fire_ticks % 20 == 0
-                && fluid != Fluid::Lava
-                && !items.resists_fire(&self.stack, "minecraft:on_fire")
-            {
-                hits.burning(self, 1);
-            }
-            self.fire_ticks -= 1;
         }
         let mut lava_hurt = false;
         // LavaCauldronBlock.entityInside applies LAVA_IGNITE and then lavaHurt.
@@ -549,7 +536,6 @@ impl ItemEntity {
             lava_hurt,
             spilled: hits.spilled,
             damage_events: hits.events,
-            burning_events: hits.burning_events,
         }
     }
     /// `ItemEntity.hurtServer`'s health: `amount` off the health, and an item

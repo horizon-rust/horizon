@@ -115,3 +115,35 @@ fn a_burning_item_that_dies_in_a_cactus_is_heard_once_where_its_tick_started() {
         vec![("minecraft:entity_damage", [start.x, start.y, start.z], None)]
     );
 }
+
+/// `ItemEntity.tick` applies its block effects right after the move, before
+/// the merge and the lifetime check discard it: an item in its last tick of
+/// life still takes the cactus's hit, and the hit is heard.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn an_item_expiring_in_a_cactus_is_hurt_before_it_despawns() {
+    let mut game = server_game();
+    game.player = Some(PlayerMotion::new(game.motion, Vec3::new(8.5, 70.0, 8.5)).unwrap());
+    game.update_chunk_tickets();
+    let cactus = game
+        .pack
+        .assets
+        .registry
+        .default_state("minecraft:cactus")
+        .unwrap();
+    game.world.set(10, 70, 8, cactus).unwrap();
+    game.spawn_item(
+        ItemStack::new("minecraft:stone", 1),
+        [10.5, 70.0, 8.5],
+        [0.0, 0.0, 0.0],
+        0,
+    );
+    game.dropped[0].age = 5999;
+    game.ticked_entities_through = u32::MAX;
+    capture();
+    game.tick_items();
+    assert!(game.dropped.is_empty(), "age 6000 discards it");
+    let events = take_events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].0, "minecraft:entity_damage");
+}
