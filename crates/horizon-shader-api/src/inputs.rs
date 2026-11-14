@@ -1,7 +1,7 @@
 //! What a pack's WGSL reads: the frame uniform every stage sees, which the
 //! renderer fills and uploads as the Rust struct below, and the stage input
 //! and output structs. The WGSL of each is generated from these definitions
-//! (`Struct::wgsl`), and so is the reference (docs/api/shaders-reference.md).
+//! (`Struct::wgsl`), and so is the reference (docs/api/shaders-reference-0.2.md).
 
 /// One field of a WGSL struct, for the prelude and the reference.
 #[derive(Debug)]
@@ -227,24 +227,6 @@ uniform! {
     }
 }
 
-impl Frame {
-    /// The fields 0.1's prelude declares: the struct up to `shadow_center_texel`, a prefix of
-    /// the buffer the renderer uploads.
-    pub const FIELDS_0_1: usize = 49;
-
-    /// `Frame` as the line's prelude declares it.
-    pub fn line(api: crate::Api) -> Struct {
-        let fields = match api {
-            crate::Api::V0_1 => &Self::WGSL.fields[..Self::FIELDS_0_1],
-            crate::Api::V0_2 => Self::WGSL.fields,
-        };
-        Struct {
-            fields,
-            ..Self::WGSL
-        }
-    }
-}
-
 macro_rules! fields {
     ($($name:ident: $ty:literal = $doc:literal,)*) => {
         &[$(Field { name: stringify!($name), ty: $ty, doc: $doc }),*]
@@ -294,11 +276,11 @@ pub const SURFACE: Struct = Struct {
     doc: "What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; \
           Horizon then applies the alpha test (cutout and translucent) and fog.",
     fields: fields! {
-        color: "vec4<f32>" = "The lit colour, 0..1, with its alpha.",
+        color: "vec4<f32>" = "The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than white); alpha its coverage.",
     },
 };
 
-/// The entity stage's input (0.2): one point of a surface that is no block terrain.
+/// The entity stage's input: one point of a surface that is no block terrain.
 pub const ENTITY_INPUT: Struct = Struct {
     name: "EntityInput",
     doc: "One point of the surface of an entity, a block entity, an item or a particle, for `fn entity(input: EntityInput) -> Surface`.",
@@ -372,7 +354,7 @@ pub const WEATHER_INPUT: Struct = Struct {
     },
 };
 
-/// The tonemap stage's input (0.2): one pixel of the window.
+/// The tonemap stage's input: one pixel of the window.
 pub const TONEMAP_INPUT: Struct = Struct {
     name: "TonemapInput",
     doc: "One pixel of an output (the window), for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the output `frame` describes: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Horizon clamps it there).",
@@ -392,17 +374,12 @@ mod tests {
         let wgsl = Frame::WGSL;
         assert_eq!(wgsl.fields.len(), 56);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        // 0.1's 49 fields, then 0.2's seven: `luminance` is a `vec3`, on the next 16 bytes.
+        // `luminance`, the last, is a `vec3`, on the next 16 bytes.
         assert_eq!(
             std::mem::size_of::<Frame>(),
             6 * 64 + 15 * 16 + 8 * 16 + 3 * 16
         );
         assert_eq!(Frame::OFFSETS[55], std::mem::size_of::<Frame>() - 16);
-        assert_eq!(Frame::OFFSETS[Frame::FIELDS_0_1], 6 * 64 + 15 * 16 + 8 * 16);
-        assert_eq!(
-            Frame::line(crate::Api::V0_1).fields.len(),
-            Frame::FIELDS_0_1
-        );
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")

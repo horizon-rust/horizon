@@ -12,19 +12,17 @@ Sessions, each a fresh game and world (seed 7) per build:
 
 - vanilla: HDR off and no shader pack: day over water, night with light sources, stained glass, the Nether, and the
   HUD over light: chat over the sun, chat and the crosshair over lava, the pause menu over it.
-- golden_hour: the Golden Hour example pack (shader API 0.1) in SDR, the same scenes.
-- golden_hour_hdr: Golden Hour with offscreen HDR output on (HORIZON_HDR_OUTPUT=pq): each screenshot and its -hdr.png.
-- hdr_toggle: vanilla started with HDR on (the 16-bit frame), shot, HDR turned off from its settings page, shot.
-- golden_hour_0_2, golden_hour_0_2_hdr: the Golden Hour 0.2 pack (shader API 0.2) on HORIZON_HDR_FRAME=float, in SDR
-  and with HDR on.
-- oit, hdr_oit: Improved Transparency with HDR off, and with HDR on the 16-bit frame.
-- visbuffer, hdr_visbuffer: the visibility buffer (HORIZON_VISBUFFER=1) with HDR off, and with HDR on the 16-bit frame.
-- float_hdr, float_oit, float_visbuffer: the float frame (HORIZON_HDR_FRAME=float) with HDR on, drawn forward, with
-  Improved Transparency and with the visibility buffer, the last on a 300-nit display with the HUD at half brightness.
-- float_unlit: the float frame with HDR on and HDR Lighting off, on that display.
+- golden_hour: the Golden Hour example pack in SDR, the same scenes.
+- golden_hour_hdr: Golden Hour with offscreen HDR output on (HORIZON_HDR_OUTPUT=pq), on the float frame: each
+  screenshot and its -hdr.png.
+- hdr_toggle: vanilla started with HDR on (the float frame), shot, HDR turned off from its settings page, shot.
+- oit, visbuffer: Improved Transparency, and the visibility buffer (HORIZON_VISBUFFER=1), with HDR off.
+- float_hdr, float_oit, float_visbuffer: HDR on, which draws the float frame: forward, with Improved Transparency
+  and with the visibility buffer, the last on a 300-nit display with the HUD at half brightness.
+- float_unlit: HDR on and the Vanilla look, on that display.
 
-The float frame's HDR shots are also held to their SDR ones in each build (hdr_gates, Tests 3 and 4): with HDR
-Lighting off the picture is HDR off's, and with it on the SDR screenshot is the HDR shot through its shoulder, white
+The float frame's HDR shots are also held to their SDR ones in each build (hdr_gates, Tests 3 and 4): with the
+Vanilla look the picture is HDR off's, and with Horizon's the SDR screenshot is the HDR shot clipped at white, white
 HUD shows at UI Brightness and nothing passes the peak.
 
 Both builds draw on the same adapter: Mesa's lavapipe where its Vulkan driver is installed (Linux), else the machine's
@@ -401,30 +399,22 @@ SESSIONS = {
     'golden_hour_hdr': ('hdr:true\n', {'HORIZON_SHADER_PACK': 'golden_hour', 'HORIZON_HDR_OUTPUT': 'pq'},
                         ['day_water', 'night_lights'], False),
     'hdr_toggle': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], True),
-    'golden_hour_0_2': ('', {'HORIZON_SHADER_PACK': 'golden_hour_0_2', 'HORIZON_HDR_FRAME': 'float'},
-                        ['day_water', 'night_lights'], False),
-    'golden_hour_0_2_hdr': ('hdr:true\n', {'HORIZON_SHADER_PACK': 'golden_hour_0_2',
-                        'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
     'oit': ('', {}, ['day_water', 'night_lights'], False),
-    'hdr_oit': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq'},
-                        ['day_water', 'night_lights'], False),
     # 🤖 Agent: The visibility buffer draws only frames drawn flat, which frames without a pack are by default only on
     # Metal and some Intel drivers.
     'visbuffer': ('', {'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'}, ['day_water', 'night_lights'], False),
-    'hdr_visbuffer': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'},
-                      ['day_water', 'night_lights'], False),
-    'float_hdr': ('hdr:true\n', {'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, WORLD + list(HUD), False),
-    'float_oit': ('hdr:true\n', {'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, WORLD, False),
+    'float_hdr': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq'}, WORLD + list(HUD), False),
+    'float_oit': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq'}, WORLD, False),
     # 🤖 Agent: On a display with little headroom (300 nits), the HUD at half brightness: the tone curve and the HUD's
     # composite have the least room there (hdr_gates). An older file's 50% of a 200-nit paper white: it reads as 100
     # nits, so builds from before UI Brightness was in nits draw the same.
-    'float_visbuffer': ('hdr:true\nhdrPeak:300\nhdrPaperWhite:200\nhdrUiBrightness:50\n', {'HORIZON_HDR_FRAME': 'float',
-                        'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'},
+    'float_visbuffer': ('hdr:true\nhdrPeak:300\nhdrPaperWhite:200\nhdrUiBrightness:50\n',
+                        {'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'},
                         WORLD + list(HUD), False),
-    # 🤖 Agent: HDR Lighting off, at that headroom too, where the tone curve's knee is at white: the picture is SDR's
-    # (hdr_gates).
-    'float_unlit': ('hdr:true\nhdrLighting:false\nhdrPeak:300\n', {'HORIZON_HDR_FRAME': 'float',
-                    'HORIZON_HDR_OUTPUT': 'pq'}, WORLD + list(HUD) + ['sun'], False),
+    # 🤖 Agent: The Vanilla look, at that headroom too, where the tone curve's knee is at white: the picture is SDR's
+    # (hdr_gates). hdrLighting:false is the same look to a base from before hdrLook, which then draws the same.
+    'float_unlit': ('hdr:true\nhdrLighting:false\nhdrLook:vanilla\nhdrPeak:300\n', {'HORIZON_HDR_OUTPUT': 'pq'},
+                    WORLD + list(HUD) + ['sun'], False),
 }
 # 🤖 Agent: Auto paper white and peak are 203 and 1000 offscreen; written out so a change of Auto doesn't move the
 # pictures. TAA and frame generation build on earlier frames, which HORIZON_STILL doesn't cover: off, as by default.
@@ -449,7 +439,7 @@ def run_session(name, label, bin_dir, out, env_base, args):
     started = time.monotonic()
     try:
         game.launch()
-        if name in ('oit', 'hdr_oit', 'float_oit'):
+        if name in ('oit', 'float_oit'):
             # 🤖 Agent: Old unversioned options run through the graphics-mode migration, which resets this switch.
             game.ctl('options-set', 'improvedTransparency', 'true')
             option = game.ctl('options-get', 'improvedTransparency')
@@ -505,7 +495,7 @@ def session_checks(shots, sessions):
         if 'HORIZON_VISBUFFER' in extra and not built:
             problems.append(f'{name}: the visibility buffer didn\'t run')
         # 🤖 Agent: Improved Transparency needs blendable float targets; without them the option changes nothing.
-        if name in ('oit', 'hdr_oit', 'float_oit') and without in sessions and all(
+        if name in ('oit', 'float_oit') and without in sessions and all(
                 compare(shots / f'{without}.{s}{x}', shots / f'{name}.{s}{x}', None) is None
                 for s in scenes for x in ('.png', '-hdr.png') if (shots / f'{name}.{s}{x}').exists()):
             problems.append(f'{name}: the same as without Improved Transparency: it didn\'t run')
@@ -556,15 +546,10 @@ def hud_boxes(width, height):
             (x - 92 * scale, height - 24 * scale, x + 92 * scale, height))
 
 
-def unshoulder(light):
-    """The light the SDR screenshot's shoulder (hdr.wgsl screenshot_world) maps to `light`: k + (1 - k)(t - k) /
-    (t + 1 - 2k) on the brightest channel t, k = 0.6, the channels scaled together. It never reaches white."""
-    top = max(light)
-    if top <= 0.6:
-        return light
-    if top >= 1:
-        return [float('inf')] * 3
-    return [c * (0.36 - 0.2 * top) / (1 - top) / top for c in light]
+def unclipped(light):
+    """The most light the SDR screenshot (hdr.wgsl screenshot_world) shows as `light`: itself below white, and
+    anything from white up, which it scales down to white by its brightest channel."""
+    return light if max(light) < 1 else [float('inf')] * 3
 
 
 def shows(sdr, paper, cap=float('inf'), mapped=lambda light: light):
@@ -601,16 +586,22 @@ def setting(name, key, default=None):
     return int(graphics.rsplit(f'{key}:', 1)[1].split()[0]) if f'{key}:' in graphics else default
 
 
+# 🤖 Agent: The white pixels each HUD scene shows at the HUD's white at least: its text is 3776 or more of them at
+# the shots' size.
+HUD_WHITE = 200
+
+
 def hdr_gates(shots, sessions):
-    """With HDR Lighting off (float_unlit), the picture is SDR's: its SDR screenshot is HDR off's within a step of
+    """With the Vanilla look (float_unlit), the picture is SDR's: its SDR screenshot is HDR off's within a step of
     rounding (two in at most 1 pixel in 10 000, where the float frame blends several times), and its HDR shot is
     that screenshot's picture. Where the sun's light passes white (above_white of the sun shot, in sun and hud_sun)
     and HDR off clips it too, the screenshot clips it and the HDR shot keeps it, so there the HDR shot is only never darker; and the later
     blends over that light come out brighter than vanilla's over its clipped sky (Why gamma storage), so there the
     screenshot isn't held to HDR off.
-    With HDR Lighting on, the SDR screenshot is the HDR shot through its shoulder (in the world scenes, outside the
-    HUD), white HUD shows at UI Brightness times paper white, nothing passes the peak, and the night's lights pass
-    paper white."""
+    With Horizon's look, the SDR screenshot is the HDR shot clipped at white (in the world scenes, outside the
+    HUD), nothing passes the peak, and the night's lights pass paper white. White in the screenshot under the HUD is
+    the HUD's white at UI Brightness times paper white, the world's light from paper white up, or one over the other,
+    which lies between them; each HUD scene shows HUD_WHITE pixels of it at the HUD's white itself."""
     problems = []
 
     def each(name, scene, test, what):
@@ -627,11 +618,11 @@ def hdr_gates(shots, sessions):
 
     for name in sessions:
         graphics, extra = GRAPHICS + SESSIONS[name][0], SESSIONS[name][1]
-        # 🤖 Agent: Without a pack: a 0.2 pack's [tonemap] maps its own picture for each output.
-        if 'HORIZON_HDR_FRAME' not in extra or 'HORIZON_SHADER_PACK' in extra or 'hdr:true' not in graphics:
+        # 🤖 Agent: Without a pack: a pack's [tonemap] maps its own picture for each output.
+        if 'HORIZON_SHADER_PACK' in extra or 'hdr:true' not in graphics:
             continue
         paper, peak, ui = setting(name, 'hdrPaperWhite'), setting(name, 'hdrPeak'), setting(name, 'hdrUiBrightness', 100)
-        lighting = 'hdrLighting:false' not in graphics
+        lighting = 'hdrLook:vanilla' not in graphics
         for scene in SESSIONS[name][2]:
             if not (shots / f'{name}.{scene}-hdr.png').exists():
                 continue
@@ -663,20 +654,26 @@ def hdr_gates(shots, sessions):
                     return all(lo <= c and ((x, y) in hot or c <= hi) for c, lo, hi in zip(h, low, high))
                 each(name, scene, test, 'the HDR shot isn\'t its SDR screenshot\'s picture')
                 continue
-            top, white = 1023 * pq(peak) + 1, 1023 * pq(paper * ui / 100)
+            top, white, world = 1023 * pq(peak) + 1, 1023 * pq(paper * ui / 100), 1023 * pq(paper)
 
             def test(s, h, x, y, boxes):
-                if max(h) > top or (s == (255, 255, 255) and any(abs(c - white) > 1 for c in h)):
+                if max(h) > top:
                     return False
                 if scene in HUD or any(x0 <= x < x1 and y0 <= y < y1 for x0, y0, x1, y1 in boxes):
-                    return True
+                    # 🤖 Agent: White is the HUD's white, the world's light from white up, or one over the other.
+                    return s != (255, 255, 255) or min(h) >= min(white, world) - 1
                 if s not in ranges:
-                    ranges[s] = shows(s, paper, peak / paper, unshoulder)
+                    ranges[s] = shows(s, paper, peak / paper, unclipped)
                 return all(lo <= c <= hi for c, lo, hi in zip(h, *ranges[s]))
-            sdr, hdr = each(name, scene, test, 'the SDR screenshot isn\'t the HDR shot through its shoulder, white '
-                            'HUD isn\'t at UI Brightness, or the HDR shot passes the peak')
-            if scene in HUD and (255, 255, 255) not in sdr:
-                problems.append(f'{name}.{scene}: no white HUD to check')
+            sdr, hdr = each(name, scene, test, 'the SDR screenshot isn\'t the HDR shot clipped at white, white '
+                            'under the HUD is dimmer than the HUD\'s and the world\'s, or the HDR shot passes the peak')
+            if scene in HUD:
+                # 🤖 Agent: The rule above can't tell the HUD's white from light behind it, so the HUD's opaque white
+                # (its text) is counted where it must be.
+                found = sum(s == (255, 255, 255) and all(abs(c - white) <= 1 for c in h) for s, h in zip(sdr, hdr))
+                if found < HUD_WHITE:
+                    problems.append(f'{name}.{scene}: white HUD isn\'t at UI Brightness: {found} white pixels '
+                                    f'there, of at least {HUD_WHITE}')
             if scene == 'night_lights' and max(map(max, hdr)) <= 1023 * pq(paper) + 1:
                 problems.append(f'{name}.{scene}: no light passes paper white in the HDR shot')
     return problems
