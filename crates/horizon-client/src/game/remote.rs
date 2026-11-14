@@ -6258,6 +6258,7 @@ impl Game<'_> {
         let Some(player) = self.player.as_mut() else {
             return Ok(());
         };
+        let was_flying = player.flying; // before the tick, and a rider's toggle in `remote_ride`
         let (cx, cz) = (
             (player.position.x.floor() as i32) >> 4,
             (player.position.z.floor() as i32) >> 4,
@@ -6362,7 +6363,6 @@ impl Game<'_> {
             [player.velocity.x, player.velocity.y, player.velocity.z],
             [player.position.x, player.position.y, player.position.z],
         );
-        let was_flying = player.flying;
         self.sync_player_body();
         // LivingEntity.tickDeath: the local player counts its deathTime once
         // per client tick while dead (the camera's death roll and zoom).

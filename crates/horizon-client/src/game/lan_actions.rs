@@ -2062,11 +2062,9 @@ impl Game<'_> {
         }
         if let Some(g) = host.hub.guest_mut(conn) {
             g.flying = !flying;
-            g.send(&C::PlayerAbilities(play::PlayerAbilities {
-                flags: g.ability_flags(),
-                flying_speed: 0.05,
-                walking_speed: 0.1,
-            }));
+            // `ServerPlayer.onUpdateAbilities`: the live abilities, flying speed included.
+            let abilities = g.abilities();
+            g.send(&abilities);
         }
     }
 
@@ -3017,6 +3015,7 @@ impl Game<'_> {
                         .then(|| g.entity_pick_result(p.id))
                         .flatten()
                 });
+                self.guest_pick_avatar_profile(host, conn, p.id, p.include_data);
             }
             _ => {}
         }
