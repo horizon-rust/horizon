@@ -1,9 +1,10 @@
 //! One of Horizon's own shader packs while it runs (docs/shaders.md): the frame its stages
-//! read, its sky, material and post stages, and the timer of their passes.
+//! read, its sky, material, entity and post stages, and the timer of their passes.
 
 use horizon_shader_api::{Report, StageKind};
 
 use super::displace::Displacement;
+use super::native_entity::NativeEntity;
 use super::native_material::{DisplacedShape, NativeMaterial, TerrainShape};
 use super::native_post::{NativeFrame, NativePost};
 use super::native_shadow::{NativeShadow, ShadowGrid};
@@ -14,7 +15,9 @@ pub struct NativePack {
     pub frame: NativeFrame,
     pub sky: Option<NativeSky>,
     pub material: Option<NativeMaterial>,
-    pub post: Option<NativePost>,
+    pub entity: Option<NativeEntity>,
+    /// The post chain (none without `[[post]]`), the decode before it and the tonemap after.
+    pub post: NativePost,
     /// With a sky stage, what of Minecraft's sky still draws over it (`[sky]`).
     pub vanilla_clouds: bool,
     pub vanilla_sun: bool,
@@ -122,14 +125,13 @@ impl NativePack {
         let settings = chosen
             .as_ref()
             .map(|settings| super::native_shadow::fitted(device, settings));
-        let api = report.manifest.api;
         let mut frame = NativeFrame::new(
             device,
             settings.as_ref(),
             textures,
             lights,
             terrain.pbr,
-            (api, terrain.linear && api == horizon_shader_api::Api::V0_2),
+            terrain.linear,
         );
         // `[displacement]`, unless its option is off; nothing to displace without heights.
         let displacement = report
@@ -251,31 +253,37 @@ impl NativePack {
                 )
             })
             .transpose()?;
-        // A 0.2 pack always has one: its decode and tonemap run without a chain too.
-        let tonemap = others.iter().find(|s| s.kind == StageKind::Tonemap);
-        let post = (!post.is_empty() || api == horizon_shader_api::Api::V0_2)
-            .then(|| {
-                let manifest = &report.manifest;
-                NativePost::new(device, post, manifest, constants, format, &frame, tonemap)
+        let entity = others
+            .iter()
+            .find(|s| s.kind == StageKind::Entity)
+            .map(|stage| {
+                let groups = [terrain.entities, terrain.retained_entities];
+                NativeEntity::new(device, format, groups, &frame, stage, constants)
             })
             .transpose()?;
+        // The decode and the tonemap run without a chain too.
+        let tonemap = others.iter().find(|s| s.kind == StageKind::Tonemap);
+        let manifest = &report.manifest;
+        let post = NativePost::new(device, post, manifest, constants, format, &frame, tonemap)?;
         let mut labels: Vec<String> = sky.iter().map(|s| s.label.clone()).collect();
         labels.extend(
             others
                 .iter()
-                .filter(|s| material.is_some() && s.kind == StageKind::Material)
+                .filter(|s| match s.kind {
+                    StageKind::Material => material.is_some(),
+                    kind => kind == StageKind::Entity,
+                })
                 .map(|s| s.label.clone()),
         );
         labels.extend(weather_label);
-        if let Some(post) = &post {
-            labels.extend(post.labels().into_iter().map(str::to_owned));
-        }
+        labels.extend(post.labels().into_iter().map(str::to_owned));
         let pack = Self {
             particle_lights: report.manifest.particle_lights.clone(),
             light_colors: report.manifest.lights.clone(),
             frame,
             sky,
             material,
+            entity,
             post,
             vanilla_clouds,
             vanilla_sun,
@@ -286,14 +294,6 @@ impl NativePack {
             timing: None,
         };
         Ok((pack, labels))
-    }
-
-    /// Whether the pack draws anything the game runs today.
-    pub fn draws(&self) -> bool {
-        self.sky.is_some()
-            || self.material.is_some()
-            || self.weather.is_some()
-            || self.post.is_some()
     }
 }
 
@@ -365,10 +365,11 @@ mod tests {
             sprite_tags: &[],
             sprite_materials: &[],
             entities: &empty,
+            retained_entities: &empty,
             weather_groups: [&empty, &empty],
             pbr: None,
         };
-        let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.1\"\n\
+        let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\n\
             [sky]\nfile = \"sky.wgsl\"\n";
         let files = [
             (MANIFEST, manifest),
