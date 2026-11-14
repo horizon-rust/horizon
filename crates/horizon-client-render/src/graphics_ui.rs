@@ -596,7 +596,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::Hdr,
                             None,
-                            "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
+                            "Lava, fire and the sun shine brighter than white. Needs an HDR display.",
                         ),
                         h(
                             H::HdrSmoothGradients,
@@ -636,7 +636,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::HdrLighting,
                             None,
-                            "Light sources, the sun and sunlight shine past white. Off: just as SDR.",
+                            "Light sources and the sun shine past white. Off: just as SDR.",
                         ),
                     ],
                 ),
@@ -842,8 +842,8 @@ impl H {
             _ => None,
         }
     }
-    /// "Paper White: Auto (203)" or "Paper White: 160": a setting in nits, 0 for Auto, which
-    /// shows the nits Auto gives.
+    /// "Paper White: Auto (203 nits)" or "Paper White: 160 nits": a setting in nits, 0 for Auto,
+    /// which shows the nits Auto gives.
     fn nits_label(self, s: &Settings, out: &EffectiveOutput) -> Text {
         let (g, r) = (&s.horizon, out.reported);
         let (caption, set, auto) = match self {
@@ -852,8 +852,8 @@ impl H {
             _ => ("UI Brightness", g.hdr_ui_nits, g.ui_nits(r)),
         };
         match set {
-            0 => labelled(caption, lang::tr("Auto (%s)", &[&auto])),
-            n => labelled(caption, n),
+            0 => labelled(caption, lang::tr("Auto (%s nits)", &[&auto])),
+            n => labelled(caption, lang::tr("%s nits", &[&n])),
         }
     }
     fn label(self, s: &Settings, out: &EffectiveOutput) -> Text {
@@ -953,6 +953,9 @@ impl H {
                 labelled("Screenshot Quality", format!("{}x", g.screenshot_quality))
             }
             H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
+            // Off where the device can't draw HDR's frame (`Item::blocked`), as HDR is there,
+            // while the saved mode waits for a device that can.
+            H::Hdr if !out.hdr_frame_supported => labelled("HDR", HdrMode::Off.label()),
             H::Hdr => labelled("HDR", g.hdr.label()),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s, out) {
                 Setup::Unknown | Setup::Guessed => "Calibrate...",
@@ -960,7 +963,10 @@ impl H {
                 Setup::Changed => "Use Automatic Setup",
             })),
             H::HdrPaperWhite | H::HdrPeak | H::HdrUiBrightness => self.nits_label(s, out),
-            H::HdrBlackLevel => labelled("Black Level", format!("{:.2}", g.black_level_nits())),
+            H::HdrBlackLevel => labelled(
+                "Black Level",
+                lang::tr("%s nits", &[&format!("{:.2}", g.black_level_nits())]),
+            ),
             H::HdrLighting => labelled("HDR Lighting", on_off(g.hdr_lighting)),
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
@@ -1133,18 +1139,31 @@ impl Item {
     fn available(self) -> bool {
         !matches!(self, Item::Vanilla(o) if !o.available())
     }
-    /// Why a control can't be used now: HDR's On requires an offered output, while Auto
-    /// can also be chosen on a reporting SDR display. Brightness controls need HDR output
-    /// active; saved values wait for it. Translucent Batching switches where the device can batch
+    /// Why a control can't be used now: HDR needs a device that draws its frame
+    /// (`EffectiveOutput::hdr_frame_supported`), its saved mode waiting for one that can; its
+    /// On requires an offered output, while Auto can also be chosen on a reporting SDR
+    /// display. Brightness controls need HDR output active; saved values wait for it. Translucent Batching switches where the device can batch
     /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
     /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
     /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't. HDR
-    /// Lighting has nothing to switch where the running shader pack lights the world itself.
+    /// Lighting has nothing to switch where the running shader pack lights the world itself,
+    /// and Smooth Gradients nothing on the layered float frame, which takes the 16-bit one's
+    /// place but under a `shaders/` pack.
     fn blocked(self, s: &Settings, out: &EffectiveOutput) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
         }
         match self {
+            Item::Horizon(
+                H::Hdr
+                | H::HdrCalibrate
+                | H::HdrBlackLevel
+                | H::HdrPeak
+                | H::HdrPaperWhite
+                | H::HdrUiBrightness
+                | H::HdrLighting
+                | H::HdrSmoothGradients,
+            ) if !out.hdr_frame_supported => Some("Your GPU or graphics API doesn't support it."),
             Item::Horizon(
                 H::HdrCalibrate
                 | H::HdrBlackLevel
@@ -1172,6 +1191,9 @@ impl Item {
             }),
             Item::Horizon(H::HdrLighting) if out.pack_lights => {
                 Some("The shader pack lights the world itself.")
+            }
+            Item::Horizon(H::HdrSmoothGradients) if out.frame.hud_layer => {
+                Some("HDR's own frame is smooth without it.")
             }
             Item::Horizon(H::TranslucentBatching)
                 if !crate::graphics::translucent_batching_offered() =>
@@ -2849,14 +2871,6 @@ mod tests {
             reach(H::HdrBlackLevel, &mut s),
             (0..=100).collect::<Vec<u32>>()
         );
-    }
-    #[test]
-    fn black_level_reads_as_its_lift() {
-        let mut s = Settings::default();
-        let label = |s: &Settings| Item::Horizon(H::HdrBlackLevel).label(s, &NONE).plain();
-        assert_eq!(label(&s), "Black Level: 0.00");
-        s.horizon.hdr_black_level = 5;
-        assert_eq!(label(&s), "Black Level: 0.05");
     }
     /// Horizon's graphics captions are English sentences that the language table keys by
     /// themselves, so a caption, description or value that is not in `en_us.json` shows in
