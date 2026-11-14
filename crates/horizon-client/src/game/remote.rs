@@ -8034,6 +8034,18 @@ impl Game<'_> {
     /// MultiPlayerGameMode.useItemOn for `hand`: whether the click ends there
     /// (the block reacts, or a block item is placed).
     fn remote_use_item_on(&mut self, hand: Hand) -> bool {
+        self.remote_use_item_on_with(hand, |game, hit, stack| {
+            let mut cancel = false;
+            game.native_block_use_prediction(hit.pos, hit.face, hand, stack, &mut cancel);
+            cancel
+        })
+    }
+
+    fn remote_use_item_on_with(
+        &mut self,
+        hand: Hand,
+        skip_prediction: impl FnOnce(&Self, &super::Hit, Option<&ItemStack>) -> bool,
+    ) -> bool {
         let held = self.with_hand(hand, |g| g.held().cloned());
         let held_block = held
             .as_ref()
@@ -8051,6 +8063,13 @@ impl Game<'_> {
                     && (self.stack_in(self.selected).is_some() || self.offhand.is_some()))
                 && self.shelf_hit(&hit).is_some();
             let spectator = self.spectator();
+            if !spectator && skip_prediction(self, &hit, held.as_ref()) {
+                self.send_block_use(&hit, hand);
+                if let Some(r) = self.remote.as_mut() {
+                    r.use_target = Some(hit.pos);
+                }
+                return true;
+            }
             let (result, changes) = if hand == Hand::Main && !spectator {
                 self.remote_block_reacts(&hit, held.as_ref())
             } else {
@@ -8120,21 +8139,7 @@ impl Game<'_> {
                 && held
                     .as_ref()
                     .is_some_and(|s| self.armor_stand_spawn(&hit, s).is_some());
-            let seq = self.next_sequence();
-            let cursor = [
-                (hit.point[0] - f64::from(hit.pos[0])) as f32,
-                (hit.point[1] - f64::from(hit.pos[1])) as f32,
-                (hit.point[2] - f64::from(hit.pos[2])) as f32,
-            ];
-            self.send(S::UseItemOn(play::UseItemOn {
-                hand: hand_id(hand),
-                pos: hit.pos,
-                face: i32::from(face_direction(hit.face)),
-                cursor,
-                inside: hit.face == [0; 3],
-                world_border: false,
-                sequence: seq,
-            }));
+            let seq = self.send_block_use(&hit, hand);
             // MultiPlayerGameMode.performUseItemOn: a spectator's use predicts
             // nothing and ends the click (CONSUME, no swing); the server opens
             // the block's menu.
@@ -8320,6 +8325,25 @@ impl Game<'_> {
             return reacts;
         }
         false
+    }
+
+    fn send_block_use(&mut self, hit: &super::Hit, hand: Hand) -> i32 {
+        let seq = self.next_sequence();
+        let cursor = [
+            (hit.point[0] - f64::from(hit.pos[0])) as f32,
+            (hit.point[1] - f64::from(hit.pos[1])) as f32,
+            (hit.point[2] - f64::from(hit.pos[2])) as f32,
+        ];
+        self.send(S::UseItemOn(play::UseItemOn {
+            hand: hand_id(hand),
+            pos: hit.pos,
+            face: i32::from(face_direction(hit.face)),
+            cursor,
+            inside: hit.face == [0; 3],
+            world_border: false,
+            sequence: seq,
+        }));
+        seq
     }
 
     /// `BoneMealItem.useOn` on this client's level (a copy: nothing grows
@@ -13350,5 +13374,86 @@ mod tests {
 
         let done = game.remote_use_block(Hand::Main);
         assert!(done, "flint and steel useOn must end the click");
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn block_use_veto_leaves_the_held_stack_and_adjacent_block_alone() {
+        use super::*;
+        use crate::game::{
+            Audio, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+        };
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let (client, _server) = horizon_protocol::connection::Pipe::pair();
+        game.connect_local(client, "BlockUseTest").unwrap();
+        game.remote.as_mut().unwrap().entity_id = 7;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 2.5)).unwrap());
+        game.set_mode_id(0);
+        game.world = World::new(game.res.facts().air, 1);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let registry = game.pack.assets.registry;
+        let gold = registry.default_state("minecraft:gold_block").unwrap();
+        let cobblestone = registry.default_state("minecraft:cobblestone").unwrap();
+        let air = game.res.facts().air;
+        game.world.set(0, 63, 0, gold).unwrap();
+        game.inventory[game.selected] = Some(ItemStack::new("minecraft:cobblestone", 2));
+        game.forced_hit = Some(crate::game::Hit {
+            pos: [0, 63, 0],
+            face: [0, 1, 0],
+            point: [0.5, 64.0, 0.5],
+        });
+
+        let sequence = game.remote.as_ref().unwrap().sequence;
+        assert!(game.remote_use_item_on_with(Hand::Main, |_, hit, stack| {
+            assert_eq!(hit.pos, [0, 63, 0]);
+            assert_eq!(&*stack.unwrap().item, "minecraft:cobblestone");
+            true
+        }));
+        let remote = game.remote.as_ref().unwrap();
+        assert_eq!(remote.sequence, sequence + 1);
+        assert_eq!(remote.use_target, Some([0, 63, 0]));
+        assert_eq!(game.world.block(0, 64, 0), air);
+        assert_eq!(game.held().unwrap().count, 2);
+        assert!(game.remote.as_ref().unwrap().predictions.is_empty());
+
+        assert!(game.remote_use_item_on(Hand::Main));
+        assert_eq!(game.world.block(0, 64, 0), cobblestone);
+        assert_eq!(game.held().unwrap().count, 1);
+        assert!(
+            game.remote
+                .as_ref()
+                .unwrap()
+                .predictions
+                .contains_key(&[0, 64, 0])
+        );
     }
 }

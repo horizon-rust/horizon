@@ -1,0 +1,13 @@
+{
+  "hooks": [
+    {
+      "name": "block_use_prediction",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_block_use_prediction",
+      "side": "client",
+      "cancellable": true,
+      "mod_api": { "contract": "cancel", "out": "cancel" }
+    }
+  ],
+  "rust_summary": "a client veto for predicted block uses (`native_block_use_prediction`) which still sends the normal use packet.",
+  "doc_summary": "`block_use_prediction`, a client-side hook before local prediction. A mod that handles a block's right-click on the server can cancel this hook on the client to skip local block and item prediction, including placement, and end the click before the other hand. The hook receives the clicked position, face, hand and optional held stack. Server behavior stays authoritative."
+}
