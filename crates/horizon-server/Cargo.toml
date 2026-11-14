@@ -10,7 +10,7 @@ description = "Host a Horizon server: server.toml, the CLI and the supervisor th
 # The engine, through the platform's public API (docs/layers.md): server.properties and the user lists, the
 # version `server/status` reports, and region files for [prune_chunks] (prune.rs), read and rewritten as vanilla's
 # RegionFile does.
-horizon-platform = { path = "../horizon-platform", features = ["server-files", "world"] }
+horizon-platform = { path = "../horizon-platform", features = ["server-files", "world", "protocol"] }
 # `horizon-server mcp`: the Model Context Protocol, shared with horizon-ctl and the launcher.
 horizon-mcp = { path = "../horizon-mcp" }
 # server.toml's [anticheat], which the game reads: checked here before every start.

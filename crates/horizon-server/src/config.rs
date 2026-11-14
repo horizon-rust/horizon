@@ -188,6 +188,27 @@ pub struct Config {
     /// `[entities]` (docs/server.md): mob settings passed to the game; written only when it isn't the default.
     #[serde(default, skip_serializing_if = "Entities::is_default")]
     pub entities: Entities,
+    /// `[proxy]` (docs/hosting.md): the supervisor owns the public port and the game listens behind it;
+    /// written only when it isn't the default.
+    #[serde(default, skip_serializing_if = "Proxy::is_default")]
+    pub proxy: Proxy,
+}
+
+/// `[proxy]`: the supervisor listens on `server.port` and signs players in itself (proxy/mod.rs), and the
+/// game listens on 127.0.0.1 behind it, with Velocity forwarding. Off by default. Read when horizon-server
+/// starts: turning it on or off needs a restart of horizon-server, not only of the game.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Proxy {
+    pub enabled: bool,
+    /// The port the game listens on, on 127.0.0.1; 0 takes a free one at every start of horizon-server.
+    pub game_port: u16,
+}
+
+impl Proxy {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// `[entities]`: `villager_lobotomize = true` skips the brain of villagers that cannot move (stuck in a cell,
@@ -613,6 +634,9 @@ impl Config {
         self.chat_filter.check()?;
         self.prune_chunks.check()?;
         self.entities.check()?;
+        if self.proxy.enabled && self.proxy.game_port == self.server.port {
+            return Err("proxy.game_port is server.port: the game listens behind the proxy, on its own port".into());
+        }
         if self.server.port == 0 {
             return Err("server.port must be a port number from 1 to 65535".into());
         }
@@ -640,6 +664,15 @@ impl Config {
                 .iter()
                 .map(|(k, v)| (k.clone(), property_text(v))),
         );
+        // Behind the proxy the game listens where only it goes (`game_port` is set once the proxy runs).
+        if self.proxy.enabled && self.proxy.game_port != 0 {
+            for (key, value) in crate::proxy::game_properties(self.proxy.game_port) {
+                match out.iter_mut().find(|(k, _)| *k == key) {
+                    Some(slot) => slot.1 = value,
+                    None => out.push((key, value)),
+                }
+            }
+        }
         out
     }
 
@@ -751,6 +784,7 @@ pub fn render(config: &Config) -> String {
         "prune_chunks",
         "combat",
         "entities",
+        "proxy",
     ] {
         if let Some(settings) = table.get(section) {
             let mut only = toml::Table::new();
@@ -1237,5 +1271,33 @@ mod tests {
         assert!(!back.server.whitelist);
         assert_eq!(back.properties["spawn-protection"], toml::Value::Integer(4));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_proxy_is_off_by_default_and_moves_the_game_behind_it_when_on() {
+        let config = Config::default();
+        assert!(!config.proxy.enabled);
+        let key = |c: &Config, k: &str| c.vanilla().into_iter().find(|(key, _)| key == k);
+        // Off, the game keeps the owner's port and online mode.
+        assert_eq!(key(&config, "server-port").unwrap().1, "25565");
+        assert_eq!(key(&config, "online-mode").unwrap().1, "true");
+
+        let on = Config::parse("[proxy]\nenabled = true\ngame_port = 25999\n").unwrap();
+        assert!(on.proxy.enabled);
+        assert_eq!(key(&on, "server-port").unwrap().1, "25999");
+        assert_eq!(key(&on, "server-ip").unwrap().1, "127.0.0.1");
+        // The proxy signs players in: the game trusts what it forwards.
+        assert_eq!(key(&on, "online-mode").unwrap().1, "false");
+        // The owner's own port is where the proxy listens, and the file keeps it.
+        assert_eq!(on.server.port, 25565);
+        assert!(render(&on).contains("[proxy]"));
+        assert!(!render(&config).contains("[proxy]"));
+    }
+
+    #[test]
+    fn the_games_port_behind_the_proxy_is_not_the_public_one() {
+        let err = Config::parse("[proxy]\nenabled = true\ngame_port = 25565\n").unwrap_err();
+        assert!(err.contains("proxy.game_port"), "{err}");
+        assert!(Config::parse("[proxy]\nunknown = 1\n").is_err());
     }
 }
