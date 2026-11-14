@@ -358,10 +358,10 @@ pub struct Menu {
     /// A crafting grid's result taken (`ResultSlot.onTake`): the recipe and
     /// the stack taken, for the caller (`native_item_crafted`).
     pub item_crafted: Vec<(String, ItemStack)>,
-    /// `ItemStack.onCraftedBy` counts from merchant result callbacks, without a recipe id.
+    /// `ItemStack.onCraftedBy` counts from result slots, without a recipe id.
     pub crafted_counts: Vec<(Arc<str>, i32)>,
-    /// `MerchantResultSlot.removeCount`, reset by checkTakeAchievements.
-    merchant_remove_count: i32,
+    /// `ResultSlot`/`MerchantResultSlot.removeCount`, reset on take.
+    remove_count: i32,
     /// Potions taken from a brewing stand's bottle slots
     /// (`PotionSlot.onTake`), for the caller.
     pub brewed: Vec<ItemStack>,
@@ -844,7 +844,7 @@ impl Menu {
             crafted: Vec::new(),
             item_crafted: Vec::new(),
             crafted_counts: Vec::new(),
-            merchant_remove_count: 0,
+            remove_count: 0,
             brewed: Vec::new(),
             equipped: Vec::new(),
             merchant: None,
@@ -1696,9 +1696,9 @@ impl Menu {
     /// `Slot.remove`: the container's `removeItem`.
     fn remove(&mut self, env: &Env, s: usize, amount: u32) -> Option<ItemStack> {
         let slot = self.slots[s];
-        if slot.role == Role::MerchantResult {
+        if matches!(slot.role, Role::MerchantResult | Role::CraftResult) {
             let count = amount.min(self.slot(s).map_or(0, |stack| stack.count));
-            self.merchant_remove_count = self.merchant_remove_count.wrapping_add(count as i32);
+            self.remove_count = self.remove_count.wrapping_add(count as i32);
         }
         // ResultContainer.removeItem takes the whole stack; the loom's result
         // is a SimpleContainer slot and splits.
@@ -1935,6 +1935,7 @@ impl Menu {
         }
         // ResultSlot.checkTakeAchievements -> Item.onCraftedBy mutates the
         // actual taken stack, before the inputs are consumed.
+        self.take_crafted_count(taken);
         if taken.count > 0 {
             Self::map_crafted(env.maps, taken);
         }
@@ -2605,9 +2606,7 @@ impl Menu {
                         return None;
                     }
                     // Slot.onQuickCraft uses the original copy and the moved count.
-                    self.merchant_remove_count = self
-                        .merchant_remove_count
-                        .wrapping_add((clicked.count - stack.count) as i32);
+                    self.add_remove_count(clicked.count - stack.count);
                     self.merchant_check_take_achievements(&clicked);
                     if let Some(m) = self.merchant.as_mut() {
                         m.events.push(crate::merchant::Event::TradeSound);
@@ -3067,6 +3066,7 @@ impl Menu {
                 if self.may_pickup(env, target) {
                     self.containers[PLAYER][inv_slot] = Some(taken.clone());
                     self.set_by_player(env, target, None);
+                    self.on_swap_craft(target, taken.count);
                     self.on_take(env, target, &mut taken);
                     if self.slots[target].role == Role::CraftResult {
                         self.containers[PLAYER][inv_slot] = Some(taken);
@@ -3302,7 +3302,7 @@ impl Menu {
             stack.item.clone()
         };
         self.crafted_counts
-            .push((item, std::mem::take(&mut self.merchant_remove_count)));
+            .push((item, std::mem::take(&mut self.remove_count)));
     }
 
     /// `MerchantResultSlot.onTake`: the payment is taken and the merchant
@@ -3627,7 +3627,7 @@ pub(crate) mod tests {
                 }
             }
             assert_eq!(menu.crafted_counts, expected);
-            assert_eq!(menu.merchant_remove_count, 0);
+            assert_eq!(menu.remove_count, 0);
             assert_eq!(menu.merchant.as_ref().unwrap().offers[0].uses, 2);
             assert!(menu.slot(0).is_none());
             assert!(menu.slot(2).is_none());
@@ -4199,7 +4199,7 @@ pub(crate) mod tests {
             }
         });
     }
-
+    mod crafting_take_tests;
     mod mod_grid_tests;
 
     /// Extra sources (`native_recipe_sources`) count as more inventory: the
