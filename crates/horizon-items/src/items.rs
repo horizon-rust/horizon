@@ -13,6 +13,8 @@ use std::{
     sync::Arc,
 };
 
+mod loot_conditions;
+
 fn tool_number(value: &horizon_world::nbt::Tag) -> Option<f32> {
     horizon_world::datafix::dynamic::as_number(value).map(|n| n.float_value())
 }
@@ -389,6 +391,9 @@ pub struct Items {
     /// place, first occurrence kept), the order `TagSlotDisplay` resolves.
     pub item_tag_order: HashMap<String, Vec<String>>,
     loot: Arc<horizon_world::loot::LootTables>,
+    /// `Registries.PREDICATE`: what a table's string condition names, which a
+    /// pack replaces or adds to (`LootItemCondition.CODEC`).
+    predicates: Arc<HashMap<String, Value>>,
     /// The `jukebox_song` registry.
     pub songs: HashMap<String, Song>,
     /// The `instrument` registry (goat horns).
@@ -1059,6 +1064,7 @@ impl Items {
         // (content mods' tables, docs/modpacks.md), with the packs' over the
         // game's own: one map with the loot data of the same root and packs.
         let loot = horizon_world::loot::shared_tables(root, overlay)?;
+        let predicates = horizon_world::loot::load_predicates(root, overlay)?;
         let registry_order = registry_order(root, &order);
         set_villager_food(&items);
         Ok(Self {
@@ -1070,6 +1076,7 @@ impl Items {
             item_tags: load_tags(root, "item", overlay)?,
             item_tag_order: load_tag_lists(root, "item", overlay)?,
             loot,
+            predicates: Arc::new(predicates),
             songs: load_songs(root),
             instruments: load_instruments(root),
             enchantments: Arc::new(crate::enchant::Enchantments::load_with_defaults(
@@ -1124,6 +1131,7 @@ impl Items {
             item_tags: load_tags(root, "item", overlay)?,
             item_tag_order: load_tag_lists(root, "item", overlay)?,
             loot: Default::default(),
+            predicates: Default::default(),
             songs: HashMap::new(),
             instruments: HashMap::new(),
             enchantments: Arc::new(crate::enchant::Enchantments::load_with(root, overlay)),
@@ -1144,6 +1152,7 @@ impl Items {
                 .collect(),
             item_tags,
             loot: Default::default(),
+            predicates: Default::default(),
             songs: HashMap::new(),
             instruments: HashMap::new(),
             enchantments: Arc::new(crate::enchant::Enchantments::default()),
@@ -1347,8 +1356,8 @@ impl Items {
         }
         self.get(&stack.item)?.weapon_damage
     }
-    /// `ItemAttributeModifiers` from the stack's component, else the item's
-    /// prototype: (attribute, id, amount, operation, slot group).
+    /// `ItemAttributeModifiers` from the stack's component (`Identifier`s, so a bare
+    /// name is `minecraft:`'s), else the item's: (attribute, id, amount, op, group).
     pub fn attribute_modifiers(
         &self,
         stack: &ItemStack,
@@ -1371,8 +1380,8 @@ impl Items {
                         _ => None,
                     };
                     Some((
-                        string("type")?,
-                        string("id")?,
+                        horizon_world::datafix::dynamic::namespaced(&string("type")?),
+                        horizon_world::datafix::dynamic::namespaced(&string("id")?),
                         horizon_world::datafix::dynamic::as_number(entry.get("amount")?)?
                             .double_value(),
                         string("operation").unwrap_or_else(|| "add_value".into()),
@@ -2049,7 +2058,8 @@ impl LootContext<'_> {
         let (kind, c) = match c {
             Value::Null => return true,
             Value::Array(list) => return list.iter().all(|c| self.condition(c, random)),
-            Value::String(s) => (s.as_str(), &Value::Null),
+            // A string names a `Registries.PREDICATE` id (`LootItemCondition.CODEC`).
+            Value::String(id) => return self.named_condition(id, random),
             Value::Object(o) => (o.get("type").and_then(Value::as_str).unwrap_or(""), c),
             _ => return false,
         };
@@ -2058,8 +2068,6 @@ impl LootContext<'_> {
             "minecraft:survives_explosion" => self
                 .explosion_radius
                 .is_none_or(|r| random.next_float() <= 1.0 / r),
-            "minecraft:tool/can_silk_touch" => self.enchantment_level("minecraft:silk_touch") > 0,
-            "minecraft:tool/can_shear" => self.held.is_some_and(|h| &*h.item == "minecraft:shears"),
             "minecraft:inverted" => !self.condition(&c["term"], random),
             "minecraft:any_of" => c["terms"]
                 .as_array()
@@ -2170,18 +2178,6 @@ impl LootContext<'_> {
             }
             _ => false,
         }
-    }
-    fn conditions<R: RandomSource>(&self, o: &Value, random: &mut R) -> bool {
-        if let Some(c) = o.get("condition")
-            && !self.condition(c, random)
-        {
-            return false;
-        }
-        o.get("conditions")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .all(|c| self.condition(c, random))
     }
     /// Expand entries; returns whether an entry succeeded (for alternatives).
     /// The last candidate field distinguishes emitted items from empty/deferred
@@ -2378,7 +2374,8 @@ impl LootContext<'_> {
                     } else {
                         0
                     };
-                    stack.count = (base + n).max(0) as u32;
+                    let total = base.saturating_add(n).max(0);
+                    stack.count = total as u32;
                 }
                 // SetItemDamageFunction.run: check damageability before the
                 // float provider, so ineligible stacks do not draw randomness.
@@ -2423,7 +2420,8 @@ impl LootContext<'_> {
                         }
                         "minecraft:uniform_bonus_count" => {
                             let multiplier = params["bonusMultiplier"].as_i64().unwrap_or(1) as i32;
-                            count + random.next_int_bound(multiplier * level + 1).unwrap_or(0)
+                            let bound = multiplier.saturating_mul(level).saturating_add(1).max(1);
+                            count.saturating_add(random.next_int_bound(bound).unwrap_or(0))
                         }
                         "minecraft:binomial_with_bonus_count" => {
                             let (extra, p) = (
@@ -2447,7 +2445,10 @@ impl LootContext<'_> {
                     let level = self.enchantment_level(f["enchantment"].as_str().unwrap_or(""));
                     if level > 0 && self.killed_by_player && self.block.is_empty() {
                         let add = level as f32 * Self::number(&f["count"], random);
-                        stack.count = (stack.count as i32 + add.round() as i32).max(0) as u32;
+                        let total = (stack.count as i32)
+                            .saturating_add(add.round() as i32)
+                            .max(0);
+                        stack.count = total as u32;
                         if let Some(limit) = f["limit"].as_i64().filter(|l| *l > 0) {
                             stack.count = stack.count.min(limit as u32);
                         }
@@ -2499,7 +2500,7 @@ impl LootContext<'_> {
                     let cost = Self::int_number(&f["levels"], random);
                     let e = &self.items.enchantments;
                     let pool = Self::enchant_pool(e, &f["options"]);
-                    let chosen = e.select(self.items, random, &stack.item, cost, &pool);
+                    let chosen = e.select_of(self.items, random, stack, cost, &pool);
                     // EnchantmentHelper.enchantItem: a book becomes one
                     // enchanted book (the fresh stack's count).
                     if &*stack.item == "minecraft:book" {

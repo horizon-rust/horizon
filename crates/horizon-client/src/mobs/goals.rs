@@ -2155,8 +2155,8 @@ impl Goal for Breed {
         if tamable && !m.extra.tame {
             return false;
         }
-        // AbstractHorse.canMate is false and Mule keeps it: mules never breed.
-        if species == Species::Mule {
+        // Mule keeps AbstractHorse.canMate; CamelHusk.canMate and canFallInLove are false.
+        if matches!(species, Species::Mule | Species::CamelHusk) {
             return false;
         }
         // TurtleBreedGoal.canUse: not while carrying an egg.
@@ -2390,13 +2390,10 @@ impl Goal for FollowMob {
         let area = m
             .bounds()
             .inflate(Vec3::new(self.area, self.area, self.area));
-        let found = cx
-            .w
-            .others_near(area)
-            .find(|s| {
-                s.species != species && s.bounds.intersects(area) && !s.has_effect("invisibility")
-            })
-            .map(|s| s.id);
+        let found =
+            cx.w.others_near(area)
+                .find(|s| s.species != species && s.bounds.intersects(area) && !s.invisible)
+                .map(|s| s.id);
         self.following = found;
         found.is_some()
     }

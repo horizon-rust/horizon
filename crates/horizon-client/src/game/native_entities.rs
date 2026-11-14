@@ -7,7 +7,7 @@
 //! `dimension` (`minecraft:overworld`) as `native_set_block` does.
 use super::{
     Game,
-    commands::{Target, place_summoned},
+    commands::{Target, place_summoned, strip_finalize_tree},
 };
 use horizon_core::geometry::Vec3;
 use horizon_world::nbt::{Compound, Tag};
@@ -209,7 +209,7 @@ impl Game<'_> {
     /// client's copy of the world, for a position outside
     /// `/summon`'s bounds, a chunk that isn't loaded, a kind Horizon can't
     /// load, or one a mod kept out (`native_entity_join_level`). API
-    /// 59. Since API @API:npc_any_level@, `dimension` may be any level the
+    /// 59. Since API 535, `dimension` may be any level the
     /// server has loaded, which is put in place for the summon (`execute in
     /// <dimension> run summon`); a level not loaded is refused.
     pub(super) fn native_summon(
@@ -235,9 +235,13 @@ impl Game<'_> {
         }
         let mut tag = nbt;
         tag.insert("id".into(), Tag::String(kind.into()));
+        // As `/summon <kind> <pos> <nbt>` takes it: with an NBT argument vanilla
+        // does not finalize the mob (`SummonCommand.createEntity`), so a
+        // `horizon:finalize` in it is not the caller's to set.
+        let mut tag = Tag::Compound(tag);
+        strip_finalize_tree(&mut tag);
         // As `/summon` does: every entity of the stack, passengers included,
         // stands at `pos`.
-        let mut tag = Tag::Compound(tag);
         place_summoned(&mut tag, pos);
         let from = self.mobs.len();
         let first = self.next_entity + 1;
@@ -272,7 +276,7 @@ impl Game<'_> {
     /// passenger in `nbt` is held by an entity of the level
     /// (`ServerLevel.tryAddFreshEntityWithPassengers`: `/summon` fails with
     /// "duplicate UUIDs"); nothing is spawned then. API
-    /// @API:summon_with_uuid@.
+    /// 633.
     pub(super) fn native_summon_with_uuid(
         &mut self,
         dimension: &str,
@@ -379,7 +383,7 @@ impl Game<'_> {
     /// Removes entity `id`, one Horizon keeps without simulating, as `/kill`
     /// does (it drops nothing and isn't saved). False for no such entity or
     /// another dimension. Mobs go with `native_remove_mob`. API
-    /// 59. Since API @API:remove_projectiles@ it also takes projectiles
+    /// 59. Since API 543 it also takes projectiles
     /// (arrows, tridents, snowballs, eggs, pearls, fireballs, wind charges,
     /// llama spit, shulker bullets, firework rockets) as `/kill` does, and a
     /// server player's fishing bobber (`Entity.discard`; the player in place's,
@@ -413,7 +417,7 @@ impl Game<'_> {
     /// hooks (`native_living_incoming_damage` and its versions) hear it. Whether it was hurt:
     /// false for an invulnerable, dead or creative target, another dimension, an entity that
     /// isn't living, an attacker that isn't there, or an amount that isn't a finite number.
-    /// API @API:hurt_entity@.
+    /// API 524.
     pub(super) fn native_hurt_entity(
         &mut self,
         dimension: &str,
