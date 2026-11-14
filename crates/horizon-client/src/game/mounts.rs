@@ -137,6 +137,17 @@ fn seat_of(m: &horizon_client::mobs::Mob, attachment: [f64; 3]) -> Vec3 {
     )
 }
 
+/// `PlayerRideableJumping.getJumpCooldown`: only the camel's and the
+/// nautilus' dash have one; `AbstractHorse` leaves it at 0.
+fn jump_cooldown(m: &horizon_client::mobs::Mob) -> i32 {
+    match m.species() {
+        Species::Camel | Species::CamelHusk | Species::Nautilus | Species::ZombieNautilus => {
+            m.extra.anim_ticks
+        }
+        _ => 0,
+    }
+}
+
 impl Game<'_> {
     pub(super) fn mount_index(&self) -> Option<usize> {
         let id = self.riding?;
@@ -945,9 +956,14 @@ impl Game<'_> {
         self.mount_index()
             .is_some_and(|i| self.mobs[i].extra.saddled && Self::jumps(self.mobs[i].species()))
     }
-    /// `willPrioritizeJumpInfo`: charging a jump or recharging.
+    /// `willPrioritizeJumpInfo`: charging a jump, recharging, or a mount whose
+    /// own `getJumpCooldown` (the camel's and the nautilus' dash) still runs.
     pub(super) fn mount_jumping(&self) -> bool {
-        self.mount.jump_scale > 0.0 || self.mount.jump_ticks < 0
+        self.mount.jump_scale > 0.0
+            || self.mount.jump_ticks < 0
+            || self
+                .mount_index()
+                .is_some_and(|i| jump_cooldown(&self.mobs[i]) > 0)
     }
     /// `Hud.extractVehicleHealth` (a native mod's `minecraft:vehicle_health`
     /// layer, only while riding a mount). Returns the mount's heart count
@@ -973,11 +989,7 @@ impl Game<'_> {
         let m = &self.mobs[i];
         // JumpableVehicleBar: `getJumpCooldown`, which only the camel's and
         // the nautilus' dash have; a horse always shows the progress.
-        let cooldown = i32::from(
-            self.mount.jump_ticks < 0
-                && (matches!(m.species(), Species::Camel | Species::CamelHusk)
-                    || horizon_client::mobs::nautilus::is_nautilus(m.species())),
-        );
+        let cooldown = jump_cooldown(m);
         let draws = horizon_client::hud_overlays::jump_bar(w, h, cooldown, self.mount.jump_scale);
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);
     }
@@ -1790,7 +1802,7 @@ mod tests {
 
     /// A whole, tamed mount of `kind` standing at `at` with `seed` for its own
     /// random, alone in `game`.
-    fn mount(game: &mut Game<'_>, kind: &str, id: u32, at: [f64; 3], seed: i64) {
+    pub(super) fn mount(game: &mut Game<'_>, kind: &str, id: u32, at: [f64; 3], seed: i64) {
         let kind = game.res.mob_types().get(kind).unwrap().clone();
         let mut m = horizon_client::mobs::Mob::new(id, kind, Vec3::new(at[0], at[1], at[2]), 0.0);
         m.extra.tame = true;
@@ -2124,3 +2136,7 @@ mod ride_dismount_tests;
 #[cfg(test)]
 #[path = "ride_seat_tests.rs"]
 mod ride_seat_tests;
+
+#[cfg(test)]
+#[path = "nautilus_jump_bar_tests.rs"]
+mod nautilus_jump_bar_tests;

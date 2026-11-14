@@ -5,8 +5,8 @@
 use super::Game;
 use horizon_client::mobs::render::{PROFESSIONS, VILLAGER_TYPES};
 use horizon_client::mobs::{
-    Mob, Species, Who, armadillo, bat, bee, camel, creaking, equine, finalize, illusioner, panda,
-    phantom, raider, sniffer, species::can_be_a_baby, sync, tame, zombie_villager,
+    Mob, Species, Who, armadillo, bat, bee, camel, creaking, equine, finalize, illusioner,
+    nautilus, panda, phantom, raider, sniffer, species::can_be_a_baby, sync, tame, zombie_villager,
 };
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_protocol::entity_data::{Particle, ParticleData, Value};
@@ -221,6 +221,11 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             }
             (Species::Camel | Species::CamelHusk, 20, Value::Long(tick)) => {
                 camel::set_synced_pose_tick(m, *tick);
+            }
+            // AbstractNautilus.DASH (after TamableAnimal's flags and owner):
+            // a dash starts the 40-tick clock the jump bar greys out.
+            (Species::Nautilus | Species::ZombieNautilus, 20, Value::Bool(dashing)) => {
+                nautilus::set_dashing(m, *dashing);
             }
             // Vex.DATA_FLAGS_ID: charging in bit 0.
             (Species::Vex, 16, Value::Byte(flags)) => m.extra.flag = flags & 1 != 0,
@@ -1566,3 +1571,7 @@ mod tests {
 #[cfg(test)]
 #[path = "pet_pose_meta_tests.rs"]
 mod pet_pose_meta_tests;
+
+#[cfg(test)]
+#[path = "nautilus_dash_sync_tests.rs"]
+mod nautilus_dash_sync_tests;

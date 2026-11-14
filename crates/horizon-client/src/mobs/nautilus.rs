@@ -19,7 +19,8 @@ use std::collections::HashMap;
 // `variant` the zombie's variant (0 temperate, 1 warm), `anim_ticks` the
 // dash cooldown and `flag2` dashing, `counter` the attack target cooldown,
 // `counter2` the charge cooldown, `anger` the ticks left of `ANGRY_AT`
-// (at `ai.last_hurt_by`), `ints[1]` the rider's breath effect given,
+// (at `angry_at`), `ints[1]` the rider's breath effect given, `ints[2..4]`
+// the attacker of a hit `setAngerTarget` still has to test (`after_hurt`),
 // `scratch[1]` a dash whose sound is still to play.
 const DASH_COOLDOWN: i32 = 40;
 const TIME_BETWEEN_ATTACKS: i32 = 80;
@@ -336,8 +337,12 @@ pub fn ai_step(
     if m.extra.counter2 > 0 {
         m.extra.counter2 -= 1;
     }
+    set_anger_target(m, w);
     if m.extra.anger > 0 {
         m.extra.anger -= 1;
+        if m.extra.anger == 0 {
+            m.extra.angry_at = None;
+        }
     }
     if m.ai.target.is_none() && m.alive() && !m.no_ai {
         m.ai.target = find_target(m, w, level_random);
@@ -386,9 +391,12 @@ fn bubbles(m: &mut Mob, events: &mut Vec<MobEvent>) {
         velocity,
     });
 }
-/// `AbstractNautilus.tick` on a client of a server: the bubbles of a nautilus
-/// in the water, from the motion the server sent.
+/// `AbstractNautilus.tick` on a client of a server: the dash clock and the
+/// bubbles of a nautilus in the water, from the motion the server sent.
 pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
+    if m.extra.anim_ticks > 0 {
+        m.extra.anim_ticks -= 1;
+    }
     if m.fluids.in_water {
         bubbles(m, events);
     }
@@ -398,9 +406,44 @@ fn in_water_at(w: &MobWorld, p: Vec3) -> bool {
 }
 /// `AbstractNautilus.isAggravated`: the brain holds an `ANGRY_AT` or an
 /// `ATTACK_TARGET` memory. Horizon keeps those as the anger timer (whose
-/// target is `last_hurt_by`) and the current attack target.
+/// target is `angry_at`) and the current attack target.
 pub fn aggravated(m: &Mob) -> bool {
     m.extra.anger > 0 || m.ai.target.is_some()
+}
+/// `Sensor.isEntityAttackableIgnoringLineOfSight`: combat conditions within
+/// the follow range, without the line-of-sight test and without a selector
+/// (the world border is only `NautilusAi.ATTACK_TARGET_CONDITIONS`').
+fn attackable_ignoring_sight(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
+    combat_target(m, w, who, Some(m.attrs.follow_range), false)
+}
+/// `TargetingConditions.forCombat().test` with an optional `range` and line
+/// of sight: alive and seen by anyone, `canBeSeenAsEnemy`, `canAttack` and
+/// not allied, within `max(range * visibility, 2)` (no visibility scaling for
+/// the current `ATTACK_TARGET`, `Sensor`'s `IGNORE_INVISIBILITY` variant).
+fn combat_target(m: &mut Mob, w: &MobWorld, who: Who, range: Option<f64>, sight: bool) -> bool {
+    let Some(t) = w.target_info(who) else {
+        return false;
+    };
+    if !t.alive || !t.can_be_seen_as_enemy || m.spares_target(w, who) {
+        return false;
+    }
+    match who {
+        Who::Player => {
+            let Some(p) = &w.player else { return false };
+            if p.creative || p.spectator || p.allies.contains(&m.id) {
+                return false;
+            }
+            match range {
+                Some(r) => m.player_in_range(w, r, sight, m.ai.target != Some(Who::Player)),
+                None => !sight || m.sees(w, who),
+            }
+        }
+        Who::Mob(_) => {
+            // A mob's visibility is 1 here (Horizon tracks no mob's invisibility).
+            let far = range.is_some_and(|r| m.distance_sqr(t.position) > r.max(2.0) * r.max(2.0));
+            !far && (!sight || m.sees(w, who))
+        }
+    }
 }
 /// `NautilusAi.findNearestValidAttackTarget`: whoever it is angry at, else
 /// now and then (a coin flip every 2400 to 3600 ticks) the nearest pufferfish.
@@ -412,12 +455,13 @@ fn find_target(
     if m.extra.in_love > 0 || !m.fluids.in_water || m.is_baby() || m.extra.tame {
         return None;
     }
+    // `ANGRY_AT` filtered, not erased: a target out of range or out of the
+    // water now is chased again once it is back, while the 400 ticks last.
     if m.extra.anger > 0
-        && let Some(who) = m.ai.last_hurt_by
-        && let Some(t) = w.target_info(who)
-        && t.alive
-        && !(t.is_player && t.creative)
-        && in_water_at(w, t.position)
+        && let Some(who) = m.extra.angry_at
+        && w.target_info(who)
+            .is_some_and(|t| in_water_at(w, t.position))
+        && attackable_ignoring_sight(m, w, who)
     {
         return Some(who);
     }
@@ -446,11 +490,54 @@ fn find_target(
         .map(|(_, id)| Who::Mob(id))
         .find(|&who| m.sees(w, who))
 }
-/// `hurtServer`: `NautilusAi.setAngerTarget` for 400 ticks.
+/// `AbstractNautilus.hurtServer`: a hit with a living source entity (any
+/// damage type) goes to `NautilusAi.setAngerTarget`, which needs the world:
+/// kept for the next brain tick, as the warden keeps its hits.
 pub fn after_hurt(m: &mut Mob, source: &super::Damage) {
-    if source.attacker.is_some() {
+    let Some(who) = source.attacker else { return };
+    m.extra.ints[2..4].copy_from_slice(&match who {
+        Who::Player => [1, 0],
+        Who::Mob(id) => [2, id as i32],
+    });
+}
+/// `NautilusAi.setAngerTarget` for the hit `after_hurt` kept: `ANGRY_AT` for
+/// 400 ticks, only at a target `Sensor.isEntityAttackableIgnoringLineOfSight`
+/// accepts; any other hit leaves the anger as it was.
+fn set_anger_target(m: &mut Mob, w: &MobWorld) {
+    let who = match m.extra.ints[2] {
+        1 => Who::Player,
+        2 => Who::Mob(m.extra.ints[3] as u32),
+        _ => return,
+    };
+    m.extra.ints[2..4].copy_from_slice(&[0, 0]);
+    if attackable_ignoring_sight(m, w, who) {
+        m.extra.angry_at = Some(who);
         m.extra.anger = ANGER_DURATION + 1;
     }
+}
+/// `AbstractNautilus.onSyncedDataUpdated(DASH)`: a dash that starts while the
+/// clock is idle runs for 40 ticks, and DASH is the flag the model reads.
+pub fn set_dashing(m: &mut Mob, dashing: bool) {
+    if m.age > 0 && m.extra.anim_ticks == 0 {
+        m.extra.anim_ticks = DASH_COOLDOWN;
+    }
+    m.extra.flag2 = dashing;
+}
+/// `NautilusAi.ATTACK_TARGET_CONDITIONS` (`ChargeAttack.chargeTargeting`):
+/// combat conditions with no range, in sight, and a selector that wants the
+/// target's whole box in the world border (`WorldBorder.isWithinBounds(AABB)`).
+fn charge_target(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
+    let Some(t) = w.target_info(who) else {
+        return false;
+    };
+    let (lo, hi, edge) = (t.bounds.min_position(), t.bounds.max_position(), 1.0e-5f32);
+    if w.border.is_some_and(|b| {
+        !b.is_within_bounds(lo.x, lo.z, 0.0)
+            || !b.is_within_bounds(hi.x - f64::from(edge), hi.z - f64::from(edge), 0.0)
+    }) {
+        return false;
+    }
+    combat_target(m, w, who, None, true)
 }
 /// `ChargeAttack(80, ..., speed, 2, 12, 11, dash)`: rush straight at the
 /// target and ram it once.
@@ -540,7 +627,30 @@ impl Goal for Charge {
         };
         m.turn_to([t.position.x, t.eye_y, t.position.z], 360.0, 360.0);
         m.velocity = self.velocity;
-        if !m.bounds().intersects(t.bounds) {
+        // `level.getEntities(..., body.getBoundingBox(), chargeTargeting, ..., 1)`:
+        // the first entity in the nautilus' own box, not the remembered target.
+        let mut hit = None;
+        for s in cx.w.others_near(m.bounds()) {
+            if !s.bounds.intersects(m.bounds()) {
+                continue;
+            }
+            let who = Who::Mob(s.id);
+            if charge_target(m, cx.w, who) {
+                hit = Some((who, s.vehicle == Some(m.id)));
+                break;
+            }
+        }
+        if hit.is_none()
+            && let Some(p) = &cx.w.player
+            && p.bounds.intersects(m.bounds())
+            && charge_target(m, cx.w, Who::Player)
+        {
+            hit = Some((Who::Player, m.rider.is_some()));
+        }
+        let Some((who, passenger)) = hit else {
+            return;
+        };
+        if passenger {
             return;
         }
         // dealDamageToTarget and dealKnockBack (causeExtraKnockback along its facing).
@@ -870,7 +980,7 @@ mod hostile_target_tests {
     use std::sync::Arc;
 
     /// A pool from x -8 to 8, with a stone wall at x = 3 when `wall`.
-    fn pool(
+    pub(super) fn pool(
         wall: bool,
     ) -> impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry) {
         move |world, registry| {
@@ -943,6 +1053,10 @@ mod hostile_target_tests {
         assert!(beyond.iter().all(Option::is_none), "{beyond:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "nautilus_target_tests.rs"]
+mod target_tests;
 
 #[cfg(test)]
 mod cooldown_memory_tests {

@@ -788,7 +788,7 @@ impl Mob {
     }
     /// `scale` is `TargetingConditions.testInvisible`: scale the range by
     /// the player's visibility.
-    fn player_in_range(
+    pub(super) fn player_in_range(
         &mut self,
         w: &MobWorld,
         range: f64,
