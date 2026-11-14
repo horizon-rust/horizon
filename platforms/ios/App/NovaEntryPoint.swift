@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Darwin
 
 /// Exactly ONE system lifecycle per process. SwiftUI initializes UIKit for
 /// Nova's launcher, OR winit initializes UIKit for the original Horizon game.
@@ -23,6 +24,12 @@ enum NovaEntryPoint {
                 let gameHome = try NovaGameFiles.gameDirectory()
                 // The iOS game entry owns UIApplicationMain and does not return
                 // during normal operation. Do NOT invoke on a background thread.
+                if let diagnosticFile = NovaDiagnostics.logURL() {
+                    setenv("NOVA_DIAGNOSTIC_LOG", diagnosticFile.path, 1)
+                    NovaDiagnostics.record("boot.runtime-diagnostics-enabled")
+                } else {
+                    NovaDiagnostics.record("boot.runtime-diagnostics-unavailable")
+                }
                 NovaDiagnostics.record("boot.calling-original-game")
                 let code = resources.path.withCString { resourcePath in
                     gameHome.path.withCString { homePath in

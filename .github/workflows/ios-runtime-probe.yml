@@ -115,6 +115,124 @@ jobs:
           path.write_text(source.replace(old, new, 1))
           PY
           git diff -- crates/horizon-client/src/game/launch_options.rs
+      - name: Add iOS-only engine startup and rendering diagnostics
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def patch(path, old, new):
+              source = path.read_text()
+              assert source.count(old) == 1, f"{path}: upstream code changed for {old[:70]!r}"
+              path.write_text(source.replace(old, new, 1))
+
+          entry = Path("crates/horizon-client/src/entry.rs")
+          patch(entry, "use crate::{crash, game, logging};",
+              '''use crate::{crash, game, logging};
+
+          fn nova_entry_trace(stage: &str) {
+              use std::io::Write as _;
+              if let Some(path) = std::env::var_os("NOVA_DIAGNOSTIC_LOG") {
+                  if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+                      let _ = writeln!(f, "[engine-entry] {stage}");
+                  }
+              }
+          }''')
+          patch(entry, "pub fn main_with(mods: crate::mod_api::Mods) {",
+                '''pub fn main_with(mods: crate::mod_api::Mods) {
+              nova_entry_trace("main_with.begin");''')
+          patch(entry, "    if let Err(error) = game::run_with() {",
+                '''    nova_entry_trace("game.run_with.begin");
+              if let Err(error) = game::run_with() {
+                  nova_entry_trace(&format!("game.run_with.error: {error}"));''')
+
+          loading = Path("crates/horizon-client/src/game/loading_screen.rs")
+          patch(loading, "pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {",
+              '''pub(super) fn nova_diag(stage: &str) {
+              use std::io::Write as _;
+              if let Some(path) = std::env::var_os("NOVA_DIAGNOSTIC_LOG") {
+                  if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+                      let _ = writeln!(f, "[engine] {stage}");
+                  }
+              }
+          }
+
+          pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {''')
+          patch(loading, '''    pub(super) fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                  if self.window.is_some()''',
+              '''    pub(super) fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                  nova_diag("winit.resumed");
+                  if self.window.is_some()''')
+          patch(loading, "        let window = match event_loop.create_window(",
+                '''        nova_diag("window.create.begin");
+                  let window = match event_loop.create_window(''')
+          patch(loading, '''            Err(e) => {
+                          self.error = Some(e.into());''',
+              '''            Err(e) => {
+                          nova_diag(&format!("window.create.failed: {e}"));
+                          self.error = Some(e.into());''')
+          patch(loading, "        horizon_client::window::settle_created_fullscreen(&window, fullscreen);",
+                '''        nova_diag("window.create.succeeded");
+                  horizon_client::window::settle_created_fullscreen(&window, fullscreen);''')
+          patch(loading, '''        match loading_renderer(
+                      window.clone(),''',
+                '''        nova_diag("renderer.boot.begin");
+                  match loading_renderer(
+                      window.clone(),''')
+          patch(loading, "            Ok(r) => self.renderer = Some(r),",
+                '''            Ok(r) => {
+                          nova_diag("renderer.boot.succeeded");
+                          self.renderer = Some(r)
+                      },''')
+          patch(loading, '''                self.error = Some(e);
+                          event_loop.exit();''',
+                '''                nova_diag(&format!("renderer.boot.failed: {e}"));
+                          self.error = Some(e);
+                          event_loop.exit();''')
+          patch(loading, '''    pub(super) fn set_ui(&mut self, gui: UiResources, root: PathBuf) {
+                  log::info!(''',
+                '''    pub(super) fn set_ui(&mut self, gui: UiResources, root: PathBuf) {
+                  nova_diag("resources.menu-received");
+                  log::info!(''')
+          patch(loading, '''            Err(e) => self.error = Some(e),
+                  }
+                  // The title frame's wait starts''',
+                '''            Err(e) => {
+                          nova_diag(&format!("renderer.menu.failed: {e}"));
+                          self.error = Some(e)
+                      },
+                  }
+                  // The title frame's wait starts''')
+          patch(loading, '''        if !self.shown {
+                  self.shown = true;''',
+                '''        if !self.shown {
+                  nova_diag("renderer.first-frame-attempted");
+                  self.shown = true;''')
+          patch(loading, '''                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
+                          self.title_drawn = true;''',
+                '''                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
+                          if !self.title_drawn { nova_diag("renderer.title.frame-presented"); }
+                          self.title_drawn = true;''')
+
+          loader = Path("crates/horizon-client/src/game/resource_loader.rs")
+          patch(loader, '''    let progress = Progress::new();
+                  let (receiver, loader) =''',
+                '''    loading_screen::nova_diag("resources.loading.begin");
+                  let progress = Progress::new();
+                  let (receiver, loader) =''')
+          patch(loader, '''    let mut app = App::Loading(Box::new(loading));
+                  let result = EventLoop::new()?.run_app(&mut app);''',
+                '''    let mut app = App::Loading(Box::new(loading));
+                  loading_screen::nova_diag("winit.event-loop.begin");
+                  let event_loop = EventLoop::new()?;
+                  loading_screen::nova_diag("winit.event-loop.created");
+                  let result = event_loop.run_app(&mut app);
+                  loading_screen::nova_diag("winit.run-app.returned");''')
+          PY
+          git diff --stat -- crates/horizon-client/src/entry.rs \
+            crates/horizon-client/src/game/loading_screen.rs \
+            crates/horizon-client/src/game/resource_loader.rs
+
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
         run: |
