@@ -40,6 +40,23 @@ fn the_example_pack_s_0_2_port_passes() {
 }
 
 #[test]
+fn the_traced_examples_pass_without_the_scene_and_with_it() {
+    for (pack, label) in [
+        ("traced_shadows", "Sun shadows"),
+        ("traced_water", "Reflecting water"),
+    ] {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("packs")
+            .join(pack);
+        let report = check(&Pack::read(&dir).unwrap()).unwrap();
+        assert!(report.manifest.ray_tracing.is_some());
+        let labels: Vec<_> = report.stages.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(labels, [label]);
+        assert!(report.stages[0].scene.is_some(), "{pack}");
+    }
+}
+
+#[test]
 fn the_tool_checks_a_0_2_pack() {
     let dir = scratch("api-0-2");
     let files = [

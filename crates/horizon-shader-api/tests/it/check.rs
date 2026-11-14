@@ -608,3 +608,301 @@ fn a_0_1_pack_doesn_t_see_0_2_s_names() {
     );
     assert_eq!(p.file, GRADE, "{p}");
 }
+
+/// A 0.2 pack with `[ray_tracing]` whose post pass is `post`.
+fn traced(post: &str) -> Result<horizon_shader_api::Report, Vec<Problem>> {
+    pack_0_2(post, TONEMAP, "[ray_tracing]\n")
+}
+
+/// Every name `[ray_tracing]` brings, used.
+const SHADOWED: &str = "fn post(input: PostInput) -> vec4<f32> {
+    let p = view_position(input.uv, input.depth);
+    let hit = trace(p, frame.sun_direction, frame.ray_distance);
+    let open = f32(frame.has_ray_tracing) * f32(!trace_any(p, frame.sun_direction, 64.0));
+    let lit = hit.albedo.rgb * hit.tint.rgb * hit.light.y * max(dot(hit.normal, frame.sun_direction), 0.0);
+    // The hit's own light, and its normal map turned into world axes.
+    let n = hit_normal_map(hit).xy * 2.0 - 1.0;
+    let bent = hit.tangent.xyz * n.x + cross(hit.normal, hit.tangent.xyz) * hit.tangent.w * n.y;
+    let rough = select(0.5, 1.0 - hit_specular_map(hit).r, block_pbr_maps());
+    let own = hit.albedo.rgb * hit.emission * f32(hit.fluid + u32(hit.translucent)) * rough + bent;
+    return vec4<f32>(lit * open + own + hit.position * hit.uv.x * hit.distance, f32(hit.material + hit.tags));
+}
+";
+
+fn ray_queries(module: &naga::Module) -> bool {
+    module.types.iter().any(|(_, t)| {
+        matches!(
+            t.inner,
+            naga::TypeInner::RayQuery { .. } | naga::TypeInner::AccelerationStructure { .. }
+        )
+    })
+}
+
+fn valid(module: &naga::Module, capabilities: naga::valid::Capabilities) -> bool {
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities)
+        .validate(module)
+        .is_ok()
+}
+
+#[test]
+fn a_traced_post_stage_is_checked_without_the_scene_and_with_it() {
+    let report = traced(SHADOWED).unwrap();
+    let post = &report.stages[0];
+    // What every device takes: no ray query in it.
+    assert!(!ray_queries(&post.module));
+    let plain = naga::valid::Capabilities::default();
+    assert!(valid(&post.module, plain));
+    // What a device that traces takes, and only it.
+    let scene = post.scene.as_ref().expect("the stage against the scene");
+    assert!(ray_queries(scene));
+    assert!(valid(scene, plain | naga::valid::Capabilities::RAY_QUERY));
+    assert!(!valid(scene, plain));
+    assert!(report.stages[1].scene.is_none(), "the tonemap stage");
+    // The budgets count the scene's sprite reads.
+    let untraced = pack_0_2(POST, TONEMAP, "").unwrap();
+    assert!(untraced.stages[0].scene.is_none());
+    let reads = traced(POST).unwrap().stages[0].texture_reads;
+    assert!(reads > untraced.stages[0].texture_reads, "{reads}");
+    // A pack that didn't ask has none of the names.
+    let problems = pack_0_2(SHADOWED, TONEMAP, "").unwrap_err();
+    assert_eq!(
+        (problems[0].file.as_str(), problems[0].line),
+        ("post.wgsl", 3)
+    );
+}
+
+#[test]
+fn a_traced_pack_names_no_ray_query_of_its_own() {
+    let own = "// A ray_query in a comment is no use of one.
+fn post(input: PostInput) -> vec4<f32> {
+    var q: ray_query;
+    rayQueryInitialize(&q, horizon_ray_scene, RayDesc(0u, 0xffu, 0.0, 1.0, input.color.rgb, input.color.rgb));
+    return input.color;
+}
+";
+    let problems = traced(own).unwrap_err();
+    let found: Vec<_> = problems
+        .iter()
+        .map(|p| {
+            assert!(p.message.contains("traces rays with `trace`"), "{p}");
+            let name = p.message.split('`').nth(1).unwrap();
+            (p.file.as_str(), p.line, p.column, name)
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("post.wgsl", 3, 12, "ray_query"),
+            ("post.wgsl", 4, 5, "rayQueryInitialize"),
+            ("post.wgsl", 4, 47, "RayDesc"),
+        ]
+    );
+    // Block comments nest: the outer one ends at its own `*/`, and what follows it counts.
+    let nested = format!("/* outer /* inner */ ray_query é */\n{POST}");
+    traced(&nested).unwrap();
+    let after = format!("/* outer /* inner */ */ alias Q = ray_query;\n{POST}");
+    let problems = traced(&after).unwrap_err();
+    assert!(
+        problems[0]
+            .to_string()
+            .starts_with("post.wgsl:1:35: `ray_query`"),
+        "{}",
+        problems[0]
+    );
+    let enabled = format!("enable wgpu_ray_query;\n{POST}");
+    let problems = traced(&enabled).unwrap_err();
+    assert!(
+        problems[0]
+            .to_string()
+            .starts_with("post.wgsl:1:8: `wgpu_ray_query`")
+    );
+    // The tonemap stage's files are the pack's too.
+    let tonemap = "alias Scene = acceleration_structure;\n\
+                   fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color; }\n";
+    let problems = pack_0_2(POST, tonemap, "[ray_tracing]\n").unwrap_err();
+    assert!(
+        problems[0]
+            .to_string()
+            .starts_with("tonemap.wgsl:1:15: `acceleration_structure`")
+    );
+    // `RayHit` may gain fields, like the stage inputs: a pack can't make up the sprite a hit's
+    // maps are read from either.
+    let built = "fn post(input: PostInput) -> vec4<f32> {
+    let hit = RayHit(1.0, vec3<f32>(0.0), vec3<f32>(0.0), vec2<f32>(0.0), input.color, input.color,
+        vec2<f32>(0.0), 0u, 0u, 0.0, 0u, false, vec4<f32>(0.0), 7u);
+    return hit_normal_map(hit);
+}
+";
+    let problems = traced(built).unwrap_err();
+    assert_eq!(refused(&problems, "RayHit"), [("post.wgsl".to_owned(), 2)]);
+}
+
+#[test]
+fn a_traced_pack_s_own_hit_helper_is_refused_as_its_own_trace_is() {
+    for name in ["trace_any", "hit_normal_map", "block_pbr_maps"] {
+        let own = format!(
+            "fn {name}(c: vec4<f32>) -> vec4<f32> {{ return c; }}
+             fn post(input: PostInput) -> vec4<f32> {{ return {name}(input.color); }}
+"
+        );
+        let problems: Vec<String> = traced(&own)
+            .unwrap_err()
+            .iter()
+            .map(Problem::to_string)
+            .collect();
+        let redefined = format!("redefinition of `{name}`");
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.starts_with("post.wgsl:1:") && p.contains(&redefined)),
+            "{problems:#?}"
+        );
+        // Without the key the name is the pack's.
+        pack_0_2(&own, TONEMAP, "").unwrap();
+    }
+    // In a material stage that traces, as its `trace` is; one that doesn't keeps the name.
+    let own = "fn hit_specular_map(c: vec4<f32>) -> vec4<f32> { return c; }
+";
+    let quiet = format!("{own}{MATERIAL}");
+    traced_material(&quiet, "", &[]).unwrap();
+    let tracing = format!("{own}{REFLECTING}");
+    let problems = traced_material(&tracing, "", &[]).unwrap_err();
+    assert!(
+        problems[0]
+            .to_string()
+            .contains("redefinition of `hit_specular_map`"),
+        "{problems:#?}"
+    );
+}
+
+/// A 0.2 pack with `[ray_tracing]` and the material stage `material` (no post pass), its
+/// manifest's other `keys` and `files` added.
+fn traced_material(
+    material: &str,
+    keys: &str,
+    files: &[(&str, &str)],
+) -> Result<horizon_shader_api::Report, Vec<Problem>> {
+    let manifest = format!(
+        "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
+         [material]\nfile = \"material.wgsl\"\n[ray_tracing]\n{keys}"
+    );
+    let files = [(MANIFEST, manifest.as_str()), ("material.wgsl", material)]
+        .into_iter()
+        .chain(files.iter().copied())
+        .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+        .collect();
+    check(&Pack::from_files(files).unwrap())
+}
+
+/// Water that mirrors what a ray off it hits.
+const REFLECTING: &str = "fn material(input: MaterialInput) -> Surface {
+    let lit = input.albedo * input.tint * vec4<f32>(input.lightmap, 1.0);
+    if !input.translucent {
+        return Surface(lit);
+    }
+    let hit = trace(input.position, reflect(normalize(input.position), input.normal), 64.0);
+    let shadowed = trace_any(input.position, frame.sun_direction, 64.0);
+    // What it hits shines by its own light, dimmed by how rough its specular map says it is.
+    let rough = 1.0 - hit_specular_map(hit).r * hit_normal_map(hit).b;
+    let glow = hit.albedo.rgb * hit.emission * rough * f32(hit.fluid + 1u) + hit.tangent.xyz * 0.0;
+    let seen = select(frame.sky_color.rgb, hit.albedo.rgb * hit.tint.rgb + glow, hit.distance >= 0.0);
+    return Surface(vec4<f32>(mix(lit.rgb, seen, 0.5) * select(1.0, 0.5, shadowed), lit.a));
+}
+";
+
+#[test]
+fn a_traced_material_stage_is_checked_without_the_scene_and_with_it() {
+    let report = traced_material(REFLECTING, "", &[]).unwrap();
+    let material = &report.stages[0];
+    assert!(!ray_queries(&material.module));
+    let plain = naga::valid::Capabilities::default();
+    assert!(valid(&material.module, plain));
+    let scene = material
+        .scene
+        .as_ref()
+        .expect("the stage against the scene");
+    assert!(ray_queries(scene));
+    assert!(valid(scene, plain | naga::valid::Capabilities::RAY_QUERY));
+    assert!(!valid(scene, plain));
+    // The renderer builds its terrain from the source, the directive first.
+    let source = material.scene_source.as_deref().unwrap();
+    assert!(source.starts_with("enable wgpu_ray_query;\n"));
+    assert!(!material.source.contains("enable wgpu_ray_query"));
+}
+
+#[test]
+fn a_material_stage_that_doesn_t_trace_is_built_as_before() {
+    let quiet = "// Not traced: trace and trace_any only in /* nested /* comments */ trace */.\n\
+                 fn material(input: MaterialInput) -> Surface { return Surface(input.albedo); }\n";
+    let report = traced_material(quiet, "", &[]).unwrap();
+    assert!(report.stages[0].scene.is_none() && report.stages[0].scene_source.is_none());
+    // Its composition before `trace` reached the material stage, from the same pack with a
+    // post pass (which `[ray_tracing]` needed then).
+    let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
+                    [material]\nfile = \"material.wgsl\"\n[[post]]\nfile = \"post.wgsl\"\n\
+                    [tonemap]\nfile = \"tonemap.wgsl\"\n[ray_tracing]\n";
+    let files = [
+        (MANIFEST, manifest),
+        ("material.wgsl", quiet),
+        ("post.wgsl", POST),
+        ("tonemap.wgsl", TONEMAP),
+    ]
+    .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+    .into();
+    let pack = Pack::from_files(files).unwrap();
+    let composed = horizon_shader_api::compose(&pack, StageKind::Material, "material.wgsl");
+    assert_eq!(
+        horizon_shader_api::package::sha256_hex(composed.text.as_bytes()),
+        "074077b43e296353e4caeabcbb7680da839b4a7f4d83bfe0384462c7596eab1b"
+    );
+    // Without the key `trace` is the pack's own name, in the material stage too.
+    let own = "fn trace(c: vec4<f32>) -> vec4<f32> { return c; }\n\
+               fn material(input: MaterialInput) -> Surface { return Surface(trace(input.albedo)); }\n";
+    let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
+                    [material]\nfile = \"material.wgsl\"\n";
+    let files = [(MANIFEST, manifest), ("material.wgsl", own)]
+        .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+        .into();
+    check(&Pack::from_files(files).unwrap()).unwrap();
+}
+
+#[test]
+fn a_ray_from_a_vertex_shader_is_refused() {
+    let reached = |problems: &[Problem], name: &str| {
+        let needle = format!("`{name}` reaches `trace` or `trace_any`: it runs in a vertex shader");
+        problems
+            .iter()
+            .filter(|p| p.message.contains(&needle))
+            .map(|p| (p.file.clone(), p.line))
+            .collect::<Vec<_>>()
+    };
+    // `displacement`, through a helper of its own.
+    let displaced = format!(
+        "{MATERIAL}fn deep(p: vec3<f32>) -> bool {{ return trace_any(p, vec3<f32>(0.0, 1.0, 0.0), 8.0); }}\n\
+         fn displacement(input: DisplacementInput) -> f32 {{ return select(0.0, 0.1, deep(input.position)); }}\n"
+    );
+    let problems = traced_material(&displaced, "[displacement]\n", &[]).unwrap_err();
+    assert_eq!(
+        reached(&problems, "displacement"),
+        [("material.wgsl".to_owned(), 3)],
+        "{problems:#?}"
+    );
+    // The vertex stage's `vertex`, which the material's module holds.
+    let vertex = "fn vertex(input: VertexInput) -> vec3<f32> {\n    \
+                  let hit = trace(input.position, vec3<f32>(0.0, 1.0, 0.0), 8.0);\n    \
+                  return input.position + hit.normal;\n}\n";
+    let keys = "[vertex]\nfile = \"vertex.wgsl\"\n";
+    let problems = traced_material(MATERIAL, keys, &[("vertex.wgsl", vertex)]).unwrap_err();
+    assert_eq!(
+        reached(&problems, "vertex"),
+        [("vertex.wgsl".to_owned(), 1)],
+        "{problems:#?}"
+    );
+    // The material's own rays beside both are its to trace.
+    let both = format!(
+        "{REFLECTING}fn displacement(input: DisplacementInput) -> f32 {{ return input.height; }}\n"
+    );
+    let plain = "fn vertex(input: VertexInput) -> vec3<f32> { return input.position; }\n";
+    let keys = format!("{keys}[displacement]\n");
+    traced_material(&both, &keys, &[("vertex.wgsl", plain)]).unwrap();
+}

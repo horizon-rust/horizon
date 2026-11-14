@@ -1,10 +1,13 @@
 //! docs/api/shaders-reference.md (0.1) and shaders-reference-0.2.md, generated from the stages
 //! and inputs this crate defines (`tests/reference.rs` fails when a file drifts).
 use crate::check::{MAX_EXPRESSIONS, MAX_TEXTURE_READS};
-use crate::inputs::{DISPLACEMENT_INPUT, Frame, SURFACE, Struct};
+use crate::inputs::{DISPLACEMENT_INPUT, Frame, RAY_HIT, SURFACE, Struct};
 use crate::manifest::{Api, MAX_GPU_MS, MAX_OPTIONS, MAX_POST_PASSES};
 use crate::package::{MAX_TOTAL, MAX_WGSL};
-use crate::stages::{GROUP, StageKind};
+use crate::stages::{
+    GROUP, PBR_NORMALS_BINDING, PBR_SPECULAR_BINDING, RAY_SCENE_BINDING, RAY_SPRITE_ARRAYS,
+    RAY_SPRITES_BINDING, StageKind,
+};
 
 fn table(s: &Struct, offsets: Option<&[usize]>) -> String {
     let mut out = format!("### `{}`\n\n{}\n\n", s.name, one_line(s.doc));
@@ -53,8 +56,8 @@ the frame stores gamma (`[frame] blend`, below).
 
 - **Linear:** `MaterialInput` `albedo`, `tint`, `lightmap` and `colored_light`; `VertexInput.tint`; `SkyInput.color`;
   `WeatherInput.color`; `Frame` `sky_color` and `fog_color`; `block_texture`, `block_texture_level` and
-  `block_light_color`; every colour texture a stage samples (`scene_color`, `previous`, `history`, the pack's targets,
-  `opaque_color`, `reflection`, `shadow_color`).
+  `block_light_color`; `RayHit` `albedo` and `tint`; every colour texture a stage samples (`scene_color`, `previous`,
+  `history`, the pack's targets, `opaque_color`, `reflection`, `shadow_color`).
 - **Data, as in 0.1:** depth, normals, `light` levels, `emission`, every channel of the LabPBR maps, and the pack's
   `[[textures]]`.
 - **`[[lights]]` and `[[particle_lights]]` colours** are written as in 0.1, in vanilla's gamma, and Horizon decodes
@@ -65,9 +68,10 @@ the frame stores gamma (`[frame] blend`, below).
 ## Room to grow
 
 `Frame`, the stage inputs (`SkyInput`, `VertexInput`, `MaterialInput`, `DisplacementInput`, `WeatherInput`,
-`PostInput`, `TonemapInput`, `EntityInput`) and `surface_at`'s `SurfaceData` may gain fields in later releases. Read
-their fields and pass them along, but don't construct them: `horizon-shader check` refuses `PostInput(...)` and the
-like. `Surface` is yours to construct and keeps its one field; later material outputs come as helpers.
+`PostInput`, `TonemapInput`, `EntityInput`), `surface_at`'s `SurfaceData` and `trace`'s `RayHit` may gain fields in later
+releases. Read their fields and pass them along, but don't construct them: `horizon-shader check` refuses
+`PostInput(...)` and the like. `Surface` is yours to construct and keeps its one field; later material outputs come as
+helpers.
 
 **New names reach a stage only if the pack asked for them.** A later release puts a new name before your files (a
 helper, a struct, a resource, a constant) only under a manifest key the pack sets, or in a stage added later, whose
@@ -104,6 +108,47 @@ space the pack's colours are in, and `frame.luminance` holds that space's lumina
 `dot(color, frame.luminance)` and it is right in either. `\"bt2020\"` passes the check; the game doesn't serve it yet.
 
 ";
+
+/// 0.2's `[ray_tracing]`, at the end of the post stage.
+fn ray_tracing() -> String {
+    let mut out = String::from(
+        "### Ray tracing\n\n\
+         With `[ray_tracing]` in the manifest (it has no keys, and needs a `[[post]]` pass or a `[material]` stage) the post\n\
+         stage's prelude also has `RayHit`, `trace`, `trace_any` and the helpers below, so does the material stage's where\n\
+         its files name `trace` or `trace_any`, and the `Frame` of every stage of the pack has `has_ray_tracing` and\n\
+         `ray_distance`. A pack without the key has none of them, and a material stage that names neither function is built\n\
+         as without it.\n\n\
+         - `fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayHit`: the nearest surface from\n  \
+         `origin` (camera-relative, in blocks, as `view_position` gives it) along the unit vector `direction`, within\n  \
+         `max_distance` blocks.\n\
+         - `fn trace_any(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> bool`: whether any surface is in\n  \
+         the way: a shadow ray, which stops at the first it finds and reads nothing of it.\n\
+         - `fn hit_normal_map(hit: RayHit) -> vec4<f32>`, `fn hit_specular_map(hit: RayHit) -> vec4<f32>`: the resource\n  \
+         packs' LabPBR maps at the hit, its sprite's texel at `hit.uv` at full size, as `block_normal_map_level(uv, 0.0)`\n  \
+         and `block_specular_map_level(uv, 0.0)` read a drawn surface's; their defaults without maps, and on a miss.\n\
+         - In the post stage, `fn block_pbr_maps() -> bool`: whether the resource packs ship LabPBR maps, as the material\n  \
+         stage's.\n\n\
+         A ray starts at `origin` itself, so move a point off its own surface before tracing from it. It passes through\n\
+         the clear texels of a cut-out texture (leaves, plants), as terrain's alpha test does: a texel stops it from alpha\n\
+         0.5 up. The scene is Horizon's: the solid terrain around the camera, out to `frame.ray_distance` at least. While\n\
+         the game doesn't trace (`frame.has_ray_tracing` is 0) the pack is built and runs all the same, and every ray\n\
+         misses. Your files name no ray query of their own (`ray_query`, `acceleration_structure`, `RayDesc`,\n\
+         `RayIntersection`, a `rayQuery` function, `enable wgpu_ray_query`): the check refuses them, and an `output`\n\
+         named as one of these functions.\n\n\
+         In the material stage only `material` traces: `displacement` and the vertex stage's `vertex`, whose files share\n\
+         its module, run in vertex shaders, and the check refuses a pack where either reaches `trace` or `trace_any`.\n\
+         `material` runs for every terrain fragment drawn, so a ray costs more there than in a post pass: keep its rays for\n\
+         translucent surfaces (`input.translucent`), which leave no surface for a post pass to light.\n\n",
+    );
+    out += &table(&RAY_HIT, None);
+    out += &format!(
+        "Bindings {RAY_SCENE_BINDING} to {} of group {GROUP} hold the scene while the game traces, and in a post pass bindings\n\
+         {PBR_NORMALS_BINDING} and {PBR_SPECULAR_BINDING} the LabPBR maps (the material stage has them there already). They are Horizon's, as their\n\
+         `horizon_` names say, and change with the renderer.\n\n",
+        RAY_SPRITES_BINDING + RAY_SPRITE_ARRAYS - 1
+    );
+    out
+}
 
 /// The entity stage's notes, after its input: what it returns, and vanilla's own.
 const ENTITY_NOTES: &str = "\
@@ -247,10 +292,14 @@ pub fn markdown(api: Api) -> String {
                     world's size (1, 0.5 or 0.25), instead of the next pass's `previous`; the prelude of every pass declares\n\
                     `var <name>: texture_2d<f32>` (group 3 from binding 32), which holds last frame's until written again (a\n\
                     pass reads a blank one in place of the target it writes).\n\n";
+            if api == Api::V0_2 {
+                out += &ray_tracing();
+            }
         }
     }
     out += "## The frame\n\n";
-    let frame = Frame::line(api);
+    // Every field of the line: 0.2's with the two only a `[ray_tracing]` pack declares.
+    let frame = Frame::declared(api, true);
     out += &table(&frame, Some(&Frame::OFFSETS[..frame.fields.len()]));
     out += "## Anti-aliasing\n\n\
             While a pack's `[[post]]` chain draws the frame, the player's anti-aliasing settings do not run: `taa`, `fxaa`\n\
