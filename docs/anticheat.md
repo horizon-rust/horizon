@@ -32,8 +32,9 @@ ban_after = 0              # the kick (counting this check's earlier ones) that 
 | `ground` | yes: 10, 15, 30, and `ban_after = 2`. On the official server's first two hours (67 players, log only), every player not flying or walking on water peaked at level 7; those who were, at 113 to 3749 | |
 | `prediction` | no, logs only | 5, 15, 60 |
 
-It lives in the server for now, in its own crate (`horizon-anticheat`) plus one file of the hub
-(`lan/anticheat.rs`), because the native mod API ([native-mods.md](native-mods.md)) has no hooks yet for a
+It is a platform feature ([layers.md](layers.md)): the crate `horizon-anticheat` holds the rules and, with its
+`hub` feature, the checks on the server (`src/hub.rs`), which fill the engine's hook (`lan/watch.rs`: the hub
+tells it what players send; without it the hub calls nothing). It isn't a native mod yet, because the native mod API ([native-mods.md](native-mods.md)) has no hooks yet for a
 player's moves (the position, the on-ground claim, cancelling a move) or for packet timing. It moves into a
 native mod once those hooks exist.
 
@@ -93,9 +94,10 @@ ones in this version.
 
 ## Writing a check
 
-- The rules are in `crates/horizon-anticheat` (no game state: unit-test them there); the hub runs them
-  where it handles the packet (`crates/horizon-client/src/lan/`) and calls `Hub::flag`, which carries out
-  setback, alert and kick (`lan/anticheat.rs`).
+- The rules are in `crates/horizon-anticheat` (no game state: unit-test them there); the hub calls its hook
+  (`Watch`, `crates/horizon-client/src/lan/watch.rs`) where it handles the packet, and the checks
+  (`horizon-anticheat/src/hub.rs`) call `Anticheat::flag`, which carries out setback, alert and kick. A check
+  that needs another event adds a method to `Watch`, called from the hub.
 - A check is one entry in the `checks!` table of `horizon-anticheat/src/lib.rs`: its name in
   `server.toml`, its default thresholds and its own settings.
 - Predict what vanilla allows (effects, ice, elytra, riptide, vehicles, knockback, levitation, slime,
