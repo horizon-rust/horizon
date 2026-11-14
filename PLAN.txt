@@ -273,3 +273,14 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
 - Compile and native link do not prove running on real hardware. Need an
   installable signed build and actual iPhone/iPad test to prove menu rendering,
   Metal surface, file paths, audio, touch controls and app lifecycle.
+
+2026-11-14: EXPORTABLE STARTUP LOGS FOR BLACK SCREEN DIAGNOSIS
+- NovaDiagnostics.swift stores private append-only startup breadcrumbs in
+  Application Support/Nova/Diagnostics/nova-diagnostics.log. Swift cold start,
+  resource import, and boot selection record stages; Rust GameRuntime does
+  too when NOVA_DIAGNOSTIC_LOG is provided from the app's entry point.
+- UI has View Logs and Export Logs via iOS share sheet; no uploads or secrets.
+- CI runner's upstream-only iOS patch instruments winit loop, renderer boot,
+  window creation and first frame for diagnosis. Upstream gameplay unchanged.
+- One-shot startup flag cleared before winit starts so re-opening app after
+  killing black screen returns to launcher, where logs can be exported.

@@ -125,3 +125,26 @@ may still fail. This is NOT a playable or device-verified build. The regular
 Nova launcher still works, but there is no hot-switch back to it during a
 winit-owned session. A later version should support a clean single-lifecycle
 launcher-to-game handoff without relaunching.
+
+## Exportable black-screen diagnostics
+
+The launcher now offers **View Logs** and **Export Logs**. Diagnostics persist
+in the app's private `Application Support/Nova/Diagnostics/nova-diagnostics.log`
+across crashes and cold launches, and are excluded from iCloud backup. The log
+is capped to about 2 MB with a previous-log rollover when Swift next writes.
+Only choosing Export Logs opens the system share sheet; there is no telemetry
+upload. Don't share logs publicly without checking their contents.
+
+The cold-start Swift entry records which branch was chosen; the full Rust
+bridge writes stages before it enters the original Horizon startup. The
+GitHub Actions runner injects small **iOS-only, diagnostic-only** temporary
+breadcrumbs into the existing Horizon loading/window code to record winit
+lifecycle creation, window creation, renderer init and the first frame.
+No original Horizon gameplay sources are modified in git.
+
+To capture a black screen, start an experiment, fully close and reopen Nova
+to run it, then force-close Nova and reopen normally. The one-shot startup
+flag is cleared before the game entry, so the launcher returns on the next
+cold start. Open View Logs or use Export Logs to share the log. A log with
+no renderer success is evidence of an early startup problem, not proof of a
+Metal failure.

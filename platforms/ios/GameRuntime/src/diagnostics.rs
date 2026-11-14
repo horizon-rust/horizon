@@ -1,0 +1,15 @@
+//! Minimal synchronous breadcrumbs for startup failures on real iOS devices.
+//! Deliberately avoids log sinks, panic hooks, stdout and networking.
+use std::{fs::OpenOptions, io::Write, time::{SystemTime, UNIX_EPOCH}};
+
+pub(crate) fn trace(stage: &str) {
+    let Some(path) = std::env::var_os("NOVA_DIAGNOSTIC_LOG") else { return };
+    if let Ok(mut file) = OpenOptions::new().append(true).open(path) {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let _ = writeln!(file, "{stamp} [rust] {stage}");
+        let _ = file.flush();
+    }
+}

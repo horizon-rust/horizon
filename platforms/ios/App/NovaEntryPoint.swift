@@ -11,27 +11,36 @@ enum NovaEntryPoint {
     static func main() {
         let defaults = UserDefaults.standard
         let shouldStartHorizon = defaults.bool(forKey: nextLaunchKey)
+        NovaDiagnostics.record("process.started; boot-request=\(shouldStartHorizon); bridge=\(horizon_ios_host_api_version())")
         // Clear before entering Rust: a crash must not cause a boot loop.
         defaults.removeObject(forKey: nextLaunchKey)
 
         if shouldStartHorizon && horizon_ios_host_api_version() >= 2
             && NovaGameFiles.resourcesPresent() {
+            NovaDiagnostics.record("boot.preflight.passed; preparing private resource and game paths")
             do {
                 let resources = try NovaGameFiles.resourceDirectory()
                 let gameHome = try NovaGameFiles.gameDirectory()
                 // The iOS game entry owns UIApplicationMain and does not return
                 // during normal operation. Do NOT invoke on a background thread.
+                NovaDiagnostics.record("boot.calling-original-game")
                 let code = resources.path.withCString { resourcePath in
                     gameHome.path.withCString { homePath in
                         horizon_ios_start_original_game(resourcePath, homePath)
                     }
                 }
+                NovaDiagnostics.record("boot.original-game-returned code=\(code)")
                 NSLog("Nova: Horizon returned code %d; opening launcher", code)
             } catch {
+                NovaDiagnostics.record("boot.preflight.error: \(error.localizedDescription)")
                 NSLog("Nova: unable to prepare game boot: %@", error.localizedDescription)
             }
         }
 
+        if shouldStartHorizon && !(horizon_ios_host_api_version() >= 2 && NovaGameFiles.resourcesPresent()) {
+            NovaDiagnostics.record("boot.skipped: missing integrated game runtime or verified resources")
+        }
+        NovaDiagnostics.record("launcher.opening")
         // The launcher remains the default, including after a failed game boot.
         HorizonIOSApp.main()
     }

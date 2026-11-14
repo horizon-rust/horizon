@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 struct LauncherView: View {
     @State private var showArchivePicker = false
     @State private var showMetalDiagnostic = false
+    @State private var showDiagnostics = false
+    @State private var displayedDiagnostics = ""
     @State private var archiveName: String? = NovaGameFiles.stagedArchiveName()
     @State private var archiveMessage: String?
     @State private var importInProgress = false
@@ -40,6 +42,7 @@ struct LauncherView: View {
                     Button("Try Horizon (next launch)") {
                         // A second UIApplicationMain inside SwiftUI is illegal.
                         // Save a one-shot request and show explicit restart steps.
+                        NovaDiagnostics.record("launcher.game-boot-armed")
                         UserDefaults.standard.set(true, forKey: "nova.launchHorizonOnce")
                         nextBootMessage = "Close Nova completely using the app switcher, then reopen it to test the original Horizon game. The launcher will open again on the following launch."
                     }
@@ -59,6 +62,19 @@ struct LauncherView: View {
                              : "Prepare your game files to enable the experimental Horizon startup test. The full game build is required.")
                             .foregroundStyle(.white.opacity(0.75))
                             .multilineTextAlignment(.center)
+                    }
+
+                    Button("View Logs") {
+                        displayedDiagnostics = NovaDiagnostics.tail()
+                        showDiagnostics = true
+                    }
+                    .buttonStyle(.bordered)
+
+                    if let logURL = NovaDiagnostics.logURL() {
+                        ShareLink(item: logURL, preview: SharePreview("Nova diagnostics")) {
+                            Label("Export Logs", systemImage: "square.and.arrow.up")
+                        }
+                        .buttonStyle(.bordered)
                     }
 
                     Button("Test Metal display") {
@@ -90,6 +106,7 @@ struct LauncherView: View {
                     .disabled(importInProgress || prepareInProgress)
 
                     Button(prepareInProgress ? "Preparing resources…" : "Extract and verify game files") {
+                        NovaDiagnostics.record("resources.extraction.started")
                         prepareInProgress = true
                         archiveMessage = "Extracting your local ZIP. Keep Nova open."
                         DispatchQueue.global(qos: .userInitiated).async {
@@ -100,8 +117,10 @@ struct LauncherView: View {
                                 archiveName = NovaGameFiles.stagedArchiveName()
                                 switch result {
                                 case .success:
+                                    NovaDiagnostics.record("resources.extraction.succeeded")
                                     archiveMessage = "Game files prepared locally. Horizon startup integration is still in development."
                                 case .failure(let error):
+                                    NovaDiagnostics.record("resources.extraction.failed")
                                     archiveMessage = "Preparation failed: \(error.localizedDescription)"
                                 }
                             }
@@ -135,6 +154,25 @@ struct LauncherView: View {
                 .frame(maxWidth: .infinity)
             }
         }
+        .sheet(isPresented: $showDiagnostics) {
+            VStack(spacing: 12) {
+                Text("Nova startup diagnostics")
+                    .font(.headline)
+                Text("Records the launcher, game startup, window creation and rendering stages. Export only if you're comfortable sharing the log.")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                ScrollView {
+                    Text(displayedDiagnostics)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(12)
+                }
+                Button("Close") { showDiagnostics = false }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding()
+        }
         .sheet(isPresented: $showMetalDiagnostic) {
             VStack(spacing: 12) {
                 Text("Nova Metal surface test")
@@ -164,9 +202,11 @@ struct LauncherView: View {
                         importInProgress = false
                         switch result {
                         case .success(let name):
+                            NovaDiagnostics.record("resources.archive-imported")
                             archiveName = name
                             archiveMessage = "ZIP imported locally. Tap Extract and verify game files."
                         case .failure(let error):
+                            NovaDiagnostics.record("resources.archive-import-failed")
                             archiveMessage = "Could not import ZIP: \(error.localizedDescription)"
                         }
                     }

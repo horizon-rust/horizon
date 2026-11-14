@@ -1,3 +1,5 @@
+mod diagnostics;
+
 //! In-process link adapter for the UNMODIFIED original Horizon game.
 //!
 //! The iOS host can link this library today. Starting the engine is withheld
@@ -92,17 +94,23 @@ pub extern "C" fn horizon_ios_start_original_game(
         Some(PathBuf::from(text))
     }
 
+    diagnostics::trace("rust.start.entry");
     let (Some(resources), Some(home)) = (parse(resources), parse(home)) else {
+        diagnostics::trace("rust.start.invalid-paths");
         return -2;
     };
     if !resources.join("horizon-resources.json").is_file()
         || !resources.join("assets/minecraft").is_dir() {
+        diagnostics::trace("rust.start.missing-resources");
         return -3;
     }
+    diagnostics::trace("rust.start.resources-present");
     if std::fs::create_dir_all(&home).is_err()
         || env::set_current_dir(&home).is_err() {
+        diagnostics::trace("rust.start.game-home-unavailable");
         return -4;
     }
+    diagnostics::trace("rust.start.game-home-ready");
 
     // SAFETY: the process is in its single-threaded startup stage: before the
     // game's workers, SwiftUI or the winit UIApplication delegate are created.
@@ -112,6 +120,8 @@ pub extern "C" fn horizon_ios_start_original_game(
     }
     // Continue with the ORIGINAL official Horizon startup and its winit loop.
     // This function normally never returns on iOS.
+    diagnostics::trace("rust.start.horizon-official-entry");
     horizon_ios_original_game_entry();
+    diagnostics::trace("rust.start.horizon-returned");
     0
 }
