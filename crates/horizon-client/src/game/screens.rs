@@ -123,7 +123,8 @@ impl Screen {
 /// (`PauseScreen.getCustomAdditions`), followed by the guest profile settings.
 fn pause_grid(w: f32, h: f32, extra_rows: u8) -> (f32, f32) {
     let (grid_w, grid_h) = (212.0, 166.0 + 24.0 * f32::from(extra_rows));
-    (((w - grid_w) * 0.5).floor(), ((h - grid_h) * 0.25).floor())
+    let y0 = ((h - grid_h) * 0.25).max(0.0).floor();
+    (((w - grid_w) * 0.5).floor(), y0)
 }
 
 /// PauseScreen buttons: (x, y, width, label key, action id, active).
@@ -347,11 +348,14 @@ impl Game<'_> {
         let title = Text::translate("menu.game", &[]);
         widgets::begin_screen(|| ScreenInfo::new("pause", title.plain()));
         let tw = atlas.font.width_text(&title);
+        let extra_rows = self.pause_rows().len() as u8;
+        let (_, y0) = pause_grid(w, h, extra_rows);
+        let title_y = (y0 + 22.0).min(40.0).max(4.0);
         batch.text_styled(
             atlas,
             &title,
             ((w - tw) / 2.0).floor(),
-            40.0,
+            title_y,
             u32::MAX,
             true,
         );
@@ -1219,5 +1223,12 @@ mod tests {
         );
         assert_eq!(at(227.0, 86.0), None);
         assert_eq!(at(215.0, 84.0), None);
+    }
+
+    #[test]
+    fn pause_grid_y0_is_clamped_to_non_negative() {
+        // Even for viewports smaller than grid height, y0 stays non-negative.
+        let (_, y0) = super::pause_grid(320.0, 150.0, 0);
+        assert!(y0 >= 0.0);
     }
 }
