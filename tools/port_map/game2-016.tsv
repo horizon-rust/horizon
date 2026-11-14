@@ -140,7 +140,7 @@ BeaconBlockEntity.createMenu	port	crates/horizon-client/src/game/beacon.rs::Game
 BeaconBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	beacon name and lock from item components
 BeaconBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	beacon name and lock to item components
 BeehiveBlockEntity.setChanged	port	crates/horizon-client/src/game/beehives.rs::Game::tick_beehive	fire check runs every tick here instead of on each setChanged; releases with EMERGENCY.
-BeehiveBlockEntity.releaseAllOccupants	port	crates/horizon-client/src/beehive.rs::Beehive::release_all	
+BeehiveBlockEntity.releaseAllOccupants	port	crates/horizon-client/src/beehive.rs::Beehive::release_all	richer: each occupant `release`d posts `minecraft:block_change` from the bee (vanilla `releaseOccupant`)
 BeehiveBlockEntity.loadAdditional	port	crates/horizon-client/src/beehive.rs::Beehive::from_nbt	
 BeehiveBlockEntity.saveAdditional	port	crates/horizon-client/src/beehive.rs::Beehive::to_nbt	
 BeehiveBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	bees from item components

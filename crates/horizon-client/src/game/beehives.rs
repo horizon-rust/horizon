@@ -80,6 +80,15 @@ impl HiveHost for GameHive<'_, '_> {
     fn set_changed(&mut self, at: [i32; 3]) {
         self.game.world.modified.insert((at[0] >> 4, at[2] >> 4));
     }
+    fn game_event(&mut self, at: [i32; 3], bee: u32) {
+        let state = self.game.world.block(at[0], at[1], at[2]);
+        self.game.post_block_game_event(
+            "minecraft:block_change",
+            at,
+            Some(Who::Mob(bee)),
+            Some(state),
+        );
+    }
 }
 
 impl Game<'_> {
@@ -502,7 +511,7 @@ mod changed_tests {
     use horizon_client::{
         beehive::{Beehive, Occupant},
         containers::BlockEntity,
-        mobs::Mob,
+        mobs::{Mob, Who},
     };
     use horizon_core::geometry::Vec3;
     use horizon_world::nbt::Tag;
@@ -579,5 +588,42 @@ mod changed_tests {
             game.world.modified.contains(&(0, 0)),
             "a stored bee left the chunk unmarked"
         );
+    }
+    /// `releaseOccupant`: the bee leaving is a block change at the hive,
+    /// posted from the bee.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_released_bee_posts_block_change() {
+        let mut game = server_game();
+        let key = (8, 64, 8);
+        hive_at(
+            &mut game,
+            key,
+            Beehive {
+                bees: vec![Occupant {
+                    entity_data: Tag::compound([("id", Tag::String("minecraft:bee".into()))]),
+                    ticks_in_hive: 601,
+                    min_ticks_in_hive: 600,
+                }],
+                flower: None,
+            },
+        );
+        game.world.day_time = 1_000;
+        super::super::sculk::TEST_POSTED_EVENTS.with(|e| *e.borrow_mut() = Some(Vec::new()));
+
+        game.tick_beehive(key);
+
+        let bee = game.mobs.first().expect("the bee reached the level").id;
+        super::super::sculk::TEST_POSTED_EVENTS.with(|e| {
+            assert!(
+                e.borrow().as_ref().unwrap().contains(&(
+                    "minecraft:block_change",
+                    [8.5, 64.5, 8.5],
+                    Some(Who::Mob(bee))
+                )),
+                "{:?}",
+                e.borrow()
+            );
+        });
     }
 }
