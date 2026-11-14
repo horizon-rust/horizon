@@ -91,6 +91,8 @@ fn nits_setting(nits: u32) -> u32 {
 /// Simple-level presets. `Custom` leaves every option as the player set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Preset {
+    /// Every saving on, over the lowest settings (`preset::table`).
+    FullPerformance,
     Performance,
     Balanced,
     Quality,
@@ -99,7 +101,8 @@ pub enum Preset {
     Custom,
 }
 impl Preset {
-    pub const ALL: [Preset; 5] = [
+    pub const ALL: [Preset; 6] = [
+        Preset::FullPerformance,
         Preset::Performance,
         Preset::Balanced,
         Preset::Quality,
@@ -108,6 +111,7 @@ impl Preset {
     ];
     pub fn name(self) -> &'static str {
         match self {
+            Preset::FullPerformance => "full_performance",
             Preset::Performance => "performance",
             Preset::Balanced => "balanced",
             Preset::Quality => "quality",
@@ -117,6 +121,7 @@ impl Preset {
     }
     pub fn label(self) -> &'static str {
         match self {
+            Preset::FullPerformance => "Full Performance",
             Preset::Performance => "Performance",
             Preset::Balanced => "Balanced",
             Preset::Quality => "Quality",
@@ -587,6 +592,45 @@ pub fn translucent_batching_offered() -> bool {
     TRANSLUCENT_BATCHING_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Parallel Tick's setting, for the worlds this game runs itself (single player, open to LAN):
+/// whether the server tick's phases that give the same result in any order share their work
+/// among helper threads (`parallel`). Auto shares it only while the tick is heavy and sharing
+/// makes it faster; a quiet world stays on one thread and starts no helper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ParallelTickMode {
+    #[default]
+    Off = 0,
+    Auto = 1,
+    On = 2,
+}
+impl ParallelTickMode {
+    pub const ALL: [ParallelTickMode; 3] = [
+        ParallelTickMode::Off,
+        ParallelTickMode::Auto,
+        ParallelTickMode::On,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Auto => "auto",
+            Self::On => "on",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Auto => "Auto",
+            Self::On => "On",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|m| m.name() == s)
+            .unwrap_or_default()
+    }
+}
+
 /// GPU Culling's setting: off, on where it is offered, or Auto, which has it on only where the
 /// CPU limits the frame and it makes the frame faster (`autotune::GpuCullingAuto`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -837,9 +881,9 @@ pub struct Graphics {
     pub cave_culling: bool,
     /// Near solid terrain culled, and its draws listed, on the GPU (`gfx::gpu_culling`), where it
     /// is offered (`gpu_culling_offer`). Off by default (GPU Culling, Performance graphics); it
-    /// applies at once, and no preset sets it. Every save writes it, so a default turned on later
-    /// needs a new key, as `batchTranslucent` did. Auto turns it on only where the CPU limits the
-    /// frame and it makes the frame faster (`autotune`).
+    /// applies at once, and every preset sets it to Auto. Every save writes it, so a default
+    /// turned on later needs a new key, as `batchTranslucent` did. Auto turns it on only where
+    /// the CPU limits the frame and it makes the frame faster (`autotune`).
     pub gpu_culling: GpuCullingMode,
     /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
     pub entity_culling: EntityCullingMode,
@@ -897,6 +941,9 @@ pub struct Graphics {
     pub pacing: Pacing,
     /// Chunk worker threads; 0 uses every core but one. Applies at the next start.
     pub workers: u32,
+    /// Parallel Tick (Performance graphics, beside Worker Threads): applies from the next tick,
+    /// and no preset sets it.
+    pub parallel_tick: ParallelTickMode,
     pub overlay: Overlay,
     /// World resolution as a percentage of the window's (50..=200).
     pub resolution_scale: u32,
@@ -1072,6 +1119,7 @@ impl Default for Graphics {
             present_mode: PresentMode::Auto,
             pacing: Pacing::Efficient,
             workers: 0,
+            parallel_tick: ParallelTickMode::Off,
             overlay: Overlay::Off,
             resolution_scale: 100,
             dynamic_resolution: false,
@@ -1215,6 +1263,7 @@ impl Graphics {
                 "particleCulling" => g.particle_culling = ParticleCullingMode::parse(value),
                 "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
                 "opaqueIce" => g.opaque_ice = flag(g.opaque_ice),
+                "parallelTick" => g.parallel_tick = ParallelTickMode::parse(value),
                 "blockEntityCache" => {
                     let enabled = flag(false);
                     g.cache_shulker_boxes = enabled;
@@ -1337,7 +1386,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\ncloudDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nrtRays:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nhorizonCulling:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nrtAmbientLight:{}\ngodRays:{}\ngodRaysQuality:{}\n",
+            "preset:{}\nlodDistance:{}\ncloudDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nrtRays:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nhorizonCulling:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nrtAmbientLight:{}\ngodRays:{}\ngodRaysQuality:{}\nparallelTick:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.cloud_distance,
@@ -1415,6 +1464,7 @@ impl Graphics {
             self.rt_ambient_light,
             self.god_rays,
             self.god_rays_quality,
+            self.parallel_tick.name(),
         );
         if let Some(driver) = &self.hdr_failed_start {
             text += &format!("hdrFailedStart:{driver}\n");
@@ -1493,54 +1543,9 @@ impl Graphics {
     }
 }
 
-/// A preset's values for vanilla's options and Horizon's own.
-pub fn apply_preset(preset: Preset, s: &mut crate::settings::Settings) {
-    let (rd, sim, clouds, particles, shadows, blend, mipmaps, entity, leaves, weather_r) =
-        match preset {
-            Preset::Performance => (8, 6, "false", 2, false, 0, 0, 0.5, false, 3),
-            Preset::Balanced => (12, 8, "fast", 1, true, 1, 2, 0.75, true, 5),
-            Preset::Quality => (16, 12, "true", 0, true, 2, 4, 1.0, true, 10),
-            Preset::Ultra => (24, 12, "true", 0, true, 3, 4, 1.5, true, 10),
-            Preset::Custom => return,
-        };
-    s.render_distance = rd;
-    s.simulation_distance = sim;
-    s.clouds = clouds.into();
-    s.particles = particles;
-    s.entity_shadows = shadows;
-    s.biome_blend = blend;
-    s.mipmap_levels = mipmaps;
-    s.entity_distance = entity;
-    s.cutout_leaves = leaves;
-    s.weather_radius = weather_r;
-    s.graphics_preset = "custom".into();
-    let g = &mut s.horizon;
-    g.preset = preset;
-    g.cave_culling = true;
-    g.animated_textures = true;
-    g.chunk_updates = 0;
-    g.upload_budget_kib = 0;
-    g.sky = true;
-    g.fog = true;
-    g.weather = true;
-    // The ray tracing by preset, as Remix's low to ultra: linear light always; the traced shadows
-    // and ambient occlusion from Balanced; the full RT lighting (GI, reflections, volumetrics)
-    // from Quality; the packs' materials (normal and parallax maps) at Ultra.
-    let rank = match preset {
-        Preset::Performance => 0,
-        Preset::Balanced => 1,
-        Preset::Quality => 2,
-        Preset::Ultra | Preset::Custom => 3,
-    };
-    g.linear_light = true;
-    g.ray_traced_shadows = rank >= 1;
-    g.ray_traced_ao = rank >= 1;
-    g.rt_lighting = rank >= 2;
-    // One ray for 2x2 pixels below Quality (the trace and the denoiser a quarter), the screen's
-    // own choice above.
-    g.rt_rays = if rank <= 1 { 2 } else { 0 };
-    g.parallax = rank >= 3;
-}
+#[path = "graphics_preset.rs"]
+mod preset;
+pub use preset::apply_preset;
 
 #[cfg(test)]
 mod tests {
@@ -1778,6 +1783,7 @@ mod tests {
             present_mode: PresentMode::Mailbox,
             pacing: Pacing::Precise,
             workers: 6,
+            parallel_tick: ParallelTickMode::Auto,
             overlay: Overlay::Graph,
             resolution_scale: 75,
             dynamic_resolution: false,

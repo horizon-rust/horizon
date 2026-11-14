@@ -11,6 +11,7 @@ pub mod bake;
 pub mod cache;
 mod horizon;
 pub use horizon::{EARTH_RADIUS, HORIZON_MAX_CHUNKS, horizon_chunks};
+mod detail;
 mod kept;
 mod mesh;
 pub mod packed;
@@ -2372,13 +2373,6 @@ impl Lod {
         if self.shared.mesh_held.swap(held, Ordering::Release) && !held {
             self.shared.mesh_wake.notify_all();
         }
-    }
-    /// Reduced far detail (`graphics::FarDetail::Reduced`): the next update
-    /// replans when it changes, and tiles sampled from then on approximate
-    /// wide cells (`GeneratorWorker::lod_grid`).
-    pub fn set_reduced_detail(&mut self, reduced: bool) {
-        self.reduced_detail = reduced;
-        self.shared.approximate.store(reduced, Ordering::Relaxed);
     }
     fn held(&self) -> bool {
         self.small && self.near_loading
@@ -4868,8 +4862,13 @@ mod tests {
     /// block wide in Full): until then nothing is drawn there. And before
     /// every far column is drawn, by its tile or a coarse stand-in: until
     /// then the far terrain ends short of the horizon. Checks that no coarse
-    /// tile is ever drawn at the seam.
-    fn jobs_until_fine_seam(camera: [i32; 2], reduced: bool) -> ([(usize, i32); 2], usize) {
+    /// tile is ever drawn at the seam. With `stop_at_fine` it returns as soon
+    /// as the seam is drawn finely, and the second pair repeats the first.
+    fn jobs_until_fine_seam(
+        camera: [i32; 2],
+        reduced: bool,
+        stop_at_fine: bool,
+    ) -> ([(usize, i32); 2], usize) {
         let (detail, distance) = (12, 128);
         let center = (camera[0].div_euclid(16), camera[1].div_euclid(16));
         let mut covered = FxHashSet::default();
@@ -4892,9 +4891,13 @@ mod tests {
                 .find(|key| plan.nodes.contains(key) && !plan.split.contains(key))
         };
         let mut seam = Vec::new();
-        for z in (camera[1] - 256..camera[1] + 256).step_by(2) {
-            for x in (camera[0] - 256..camera[0] + 256).step_by(2) {
-                let chunk = (x.div_euclid(16), z.div_euclid(16));
+        // One point per chunk: tiles are whole chunks, so every point in a chunk
+        // gets the same answer. The chunk range keeps a partial edge chunk.
+        let chunks = |c: i32| (c - 256).div_euclid(16)..=(c + 255).div_euclid(16);
+        for chunk_z in chunks(camera[1]) {
+            for chunk_x in chunks(camera[0]) {
+                let (x, z) = (chunk_x * 16, chunk_z * 16);
+                let chunk = (chunk_x, chunk_z);
                 let near = (-2..=2)
                     .any(|dz| (-2..=2).any(|dx| covered.contains(&(chunk.0 + dx, chunk.1 + dz))));
                 if !covered.contains(&chunk) && near {
@@ -4943,6 +4946,9 @@ mod tests {
             }
             if fine.is_none() && seam.iter().all(|&(x, z, leaf)| drawn(x, z, leaf.level)) {
                 fine = Some((jobs, cost));
+                if stop_at_fine {
+                    return ([(jobs, cost); 2], leaves);
+                }
             }
             if reached.is_none() && horizon.iter().all(|&(x, z)| drawn(x, z, MAX_LEVEL)) {
                 reached = Some((jobs, cost));
@@ -4974,7 +4980,7 @@ mod tests {
         // other job took 54000 to 119000 for the seam in view alone.
         for camera in [[8, 8], [40, -9], [-300, 517]] {
             for reduced in [false, true] {
-                let ([(jobs, cost), _], _) = jobs_until_fine_seam(camera, reduced);
+                let ([(jobs, cost), _], _) = jobs_until_fine_seam(camera, reduced, true);
                 assert!(jobs < 320, "{jobs} jobs");
                 assert!(cost < 9000, "{cost} lattice points");
             }
@@ -4989,7 +4995,7 @@ mod tests {
         // Reduced), about a tenth more work in all.
         for camera in [[8, 8], [40, -9], [-300, 517]] {
             for reduced in [false, true] {
-                let ([_, (jobs, cost)], leaves) = jobs_until_fine_seam(camera, reduced);
+                let ([_, (jobs, cost)], leaves) = jobs_until_fine_seam(camera, reduced, false);
                 assert!(jobs < 1000 && jobs < leaves, "{jobs} jobs of {leaves}");
                 assert!(cost < 100_000, "{cost} lattice points");
             }
@@ -6140,5 +6146,35 @@ mod tests {
         lod.finish_observed((1, 1), ReducedColumns::new(columns));
         assert!(lod.stale.contains(&key));
         assert_eq!(queued(&mut lod), [key]);
+    }
+
+    #[test]
+    fn changing_far_detail_samples_tiles_again() {
+        for level in [0, 1, 2, 3, 5] {
+            let mut lod = Lod::scheduler_for_test();
+            let key = TileKey { x: 0, z: 0, level };
+            lod.plan.nodes.insert(key);
+            lod.active.insert(key);
+            lod.ready.insert(key, Arc::new(samples(70)));
+            assert!(
+                queued(&mut lod).is_empty(),
+                "level {level}: sampled tile is not asked again"
+            );
+            lod.set_reduced_detail(true);
+            assert!(
+                lod.ready.contains_key(&key),
+                "level {level}: old samples stay"
+            );
+            assert_eq!(queued(&mut lod), [key], "level {level}: not sampled again");
+            lod.finish_sample(key, samples(70));
+            lod.set_reduced_detail(true);
+            assert!(queued(&mut lod).is_empty(), "level {level}: same value");
+            lod.set_reduced_detail(false);
+            assert_eq!(
+                queued(&mut lod),
+                [key],
+                "level {level}: not sampled again on the way back"
+            );
+        }
     }
 }

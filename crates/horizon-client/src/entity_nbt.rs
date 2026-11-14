@@ -715,10 +715,10 @@ pub fn mob_to_nbt(
         map.remove(&"CustomNameVisible".into());
     }
     // A styled name from the save stays unless the name changed.
-    if custom_name(&tag) != m.custom_name
-        && let Some(name) = &m.custom_name
+    if m.custom_name_changed(tag.get("CustomName"))
+        && let Some(name) = m.custom_name_tag()
     {
-        put(&mut tag, "CustomName", Tag::String(name.as_str().into()));
+        put(&mut tag, "CustomName", name);
     }
     let Tag::Compound(map) = &mut tag else {
         return tag;
@@ -961,11 +961,11 @@ pub fn mob_to_nbt(
             }
         }
         "minecraft:piglin" | "minecraft:piglin_brute" | "minecraft:hoglin" => {
-            // Only Piglin.addAdditionalSaveData writes CannotHunt, always.
             if id == "minecraft:piglin_brute" {
                 map.remove(&"CannotHunt".into());
             } else if id == "minecraft:piglin" {
-                map.entry("CannotHunt".into()).or_insert(Tag::Byte(0));
+                let hunt = m.extra.piglin.cannot_hunt as i8;
+                map.insert("CannotHunt".into(), Tag::Byte(hunt));
             }
             map.insert(
                 "IsImmuneToZombification".into(),
@@ -1428,11 +1428,7 @@ pub fn mob_to_nbt(
                 string(crate::mobs::copper_golem::WEATHER[m.extra.variant.min(3) as usize]),
             );
         }
-        // Ghast.addAdditionalSaveData; Horizon's ghast fires power 1 whatever
-        // is saved, so a loaded value is kept as is.
-        "minecraft:ghast" => {
-            map.entry("ExplosionPower".into()).or_insert(Tag::Byte(1));
-        }
+        "minecraft:ghast" => crate::mobs::nether::to_nbt(m, map),
         _ => {}
     }
     if m.species() == S::Frog {
@@ -1820,7 +1816,7 @@ fn put_sulfur_attributes(map: &mut Compound, m: &Mob) {
 }
 /// `Brain.Packed`: the memories finalizeSpawn set, over the saved ones.
 /// `CustomName`: a text component saved as a string or a `{text: ..}` compound.
-fn custom_name(tag: &Tag) -> Option<String> {
+pub(crate) fn custom_name(tag: &Tag) -> Option<String> {
     match tag.get("CustomName")? {
         Tag::String(s) => Some(s.to_string_lossy()),
         t @ Tag::Compound(_) => match t.get("text") {
@@ -2184,6 +2180,9 @@ pub fn mob_from_nbt_with_random(
         m.max_swell = number(tag.get("Fuse")).unwrap_or(30) as i16 as i32;
         // `getByteOr("ExplosionRadius", 3)`: any numeric tag, as a byte.
         m.extra.explosion_radius = number(tag.get("ExplosionRadius")).unwrap_or(3) as i8;
+    }
+    if m.species() == crate::mobs::Species::Ghast {
+        crate::mobs::nether::from_nbt(&mut m, tag);
     }
     // InventoryCarrier.readInventoryFromTag, using the existing occupied-stack model.
     let carrier_slots = match m.species() {
@@ -3051,8 +3050,8 @@ pub fn arrow_to_nbt(
         put(&mut tag, key, value);
     }
     if let Tag::Compound(map) = &mut tag {
-        map.entry("SoundEvent".into())
-            .or_insert_with(|| string("minecraft:entity.arrow.hit"));
+        let sound = a.saved_sound_event(map.get(&"SoundEvent".into()));
+        map.insert("SoundEvent".into(), sound);
         // Projectile: LeftOwner only when set; Owner as the UUID.
         map.remove(&"LeftOwner".into());
         map.remove(&"inBlockState".into());
@@ -3142,7 +3141,7 @@ pub fn arrow_from_nbt(
         a.spectral_duration = number(tag.get("Duration")).unwrap_or(200) as i32;
     }
     a.pickup_item = item;
-    a.fired_from_weapon = tag.get("weapon").and_then(item_from_nbt);
+    a.load_weapon_and_sound(tag, item_from_nbt);
     p.stuck = a.in_ground;
     Some((p, tag.get("inBlockState").cloned()))
 }
