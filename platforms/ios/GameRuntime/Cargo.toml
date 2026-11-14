@@ -1,0 +1,23 @@
+# Isolated iOS link probe for the ORIGINAL upstream Horizon game.
+# This crate is deliberately separate from the standalone SwiftUI host bridge.
+[package]
+name = "horizon-ios-game-runtime"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "horizon_ios_game_runtime"
+crate-type = ["staticlib"]
+
+[dependencies]
+horizon-official = { path = "../../../crates/horizon-official" }
+horizon-game = { path = "../../../crates/horizon-game" }
+
+[workspace]
+
+# Match the upstream workspace's patched renderer and memory dependencies.
+[patch.crates-io]
+wgpu-hal = { path = "../../../third_party/wgpu-hal" }
+naga = { path = "../../../third_party/naga" }
+libmimalloc-sys = { path = "../../../third_party/libmimalloc-sys" }

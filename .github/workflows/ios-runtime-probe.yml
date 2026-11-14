@@ -1,0 +1,59 @@
+name: iOS upstream game compile probe
+
+on:
+  push:
+    branches: [test]
+    paths:
+      - 'platforms/ios/GameRuntime/**'
+      - '.github/workflows/ios-runtime-probe.yml'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-game-ios-compile:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          xcodebuild -version
+      - name: Cross-check the original Horizon game for iOS
+        id: crosscheck
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check --manifest-path platforms/ios/GameRuntime/Cargo.toml \
+            --target aarch64-apple-ios 2>&1 | tee ios-runtime-check.log
+      - name: Publish diagnostic log and result
+        if: always()
+        shell: bash
+        run: |
+          echo "### Original Horizon iOS compilation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Result: ${{ steps.crosscheck.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "This is a compilation probe, not an in-game launch or device test." >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.crosscheck.outcome }}" != success ]]; then
+            echo "::warning::Original Horizon game does not yet cross-compile for iOS. See diagnostic log."
+          fi
+      - name: Upload iOS compilation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-original-ios-compile-log
+          path: ios-runtime-check.log
+          if-no-files-found: warn
+          retention-days: 14
