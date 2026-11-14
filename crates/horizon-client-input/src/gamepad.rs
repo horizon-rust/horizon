@@ -1623,11 +1623,13 @@ impl Rumble {
     pub fn pulse(self) -> Option<Pulse> {
         match self {
             Rumble::Hurt(amount) if amount > 0.0 => Some(Pulse {
-                strong: (0.2 + 0.06 * amount).min(0.8),
-                weak: 0.3,
-                // A hit is felt everywhere the pad can buzz, the trigger motors included.
+                // A hit is felt everywhere the pad can buzz: both handles and both trigger
+                // motors together. The handles are the loud half, or a trigger at 70% would
+                // drown out the 20–30% the handles used to get.
+                strong: (0.55 + 0.05 * amount).min(0.8),
+                weak: (0.45 + 0.05 * amount).min(0.75),
                 triggers: [0.7, 0.7],
-                millis: (150.0 + 20.0 * amount).min(400.0) as u32,
+                millis: (200.0 + 20.0 * amount).min(450.0) as u32,
             }),
             Rumble::Hurt(_) => None,
             // Attack is the right trigger by default, but both thumbs are on the pad: the broken
@@ -1681,8 +1683,10 @@ impl Rumble {
             | Rumble::RadialWrap
             | Rumble::RadialNothing => vec![p],
             Rumble::Hurt(_) => {
-                let tail = p.millis.saturating_sub(50) / 2;
-                vec![step(1.0, 50), step(0.55, tail), step(0.25, tail)]
+                // The hit holds at full strength long enough to feel in all four motors, then
+                // dies away.
+                let tail = p.millis.saturating_sub(120) / 2;
+                vec![step(1.0, 120), step(0.7, tail), step(0.4, tail)]
             }
             Rumble::Explosion { .. } => vec![
                 step(1.0, 80),
@@ -2708,10 +2712,12 @@ bind_key.hotbar.2:north
         .unwrap();
         assert!(blast.triggers[0] > 0.0 && blast.triggers[1] > 0.0);
         assert!(Rumble::Totem.pulse().unwrap().triggers[0] > 0.0);
-        // A hit is felt in all four motors.
+        // A hit is felt in all four motors, the handles strongly enough not to be masked by
+        // the trigger motors, and it holds before fading.
         let hurt = Rumble::Hurt(4.0).pulse().unwrap();
-        assert!(hurt.strong > 0.0 && hurt.weak > 0.0);
+        assert!(hurt.strong >= 0.6 && hurt.weak >= 0.5);
         assert_eq!(hurt.triggers, [0.7, 0.7]);
+        assert!(Rumble::Hurt(4.0).shape()[0].millis >= 120);
         // The radial ticks are the handles' alone.
         assert_eq!(Rumble::RadialSlot.pulse().unwrap().triggers, [0.0, 0.0]);
         // The shaped steps keep them and fade as the handles do.

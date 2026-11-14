@@ -1006,4 +1006,12 @@ mod xbox_output_tests {
         assert_eq!([off[0].0.left_trigger, off[0].0.right_trigger], [0, 0]);
         assert!(off[0].0.weak > 0);
     }
+
+    #[test]
+    fn a_hit_drives_all_four_motors_hard() {
+        let motors = xbox_steps(Rumble::Hurt(4.0), true)[0].0;
+        assert!(motors.strong >= 153, "the heavy handle: {}", motors.strong);
+        assert!(motors.weak >= 128, "the light handle: {}", motors.weak);
+        assert_eq!([motors.left_trigger, motors.right_trigger], [179, 179]);
+    }
 }
