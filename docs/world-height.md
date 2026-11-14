@@ -10,7 +10,7 @@ against vanilla's 24.
 ## The model
 
 **`chunk::LevelShape`** is one level's shape: `min_y`, `height`, `logical_height`, `sky_light`, checked as the
-dimension type codec checks them (`LevelShape::new`). **`LevelShapes`** holds a world's three.
+dimension type codec checks them (`LevelShape::new`). **`LevelShapes`** holds a world's levels in level order, each with its dimension type's id and shape.
 
 - **Where it comes from.** A local world's shapes are its dimension types, its enabled data packs' over
   vanilla's, through the level stems that name them (`worldgen::overrides::WorldgenOverrides::level_height`,

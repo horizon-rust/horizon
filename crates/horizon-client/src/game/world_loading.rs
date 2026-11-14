@@ -670,6 +670,7 @@ pub(super) fn level_shapes(
     biomes: &horizon_client::biome::Biomes,
 ) -> horizon_client::chunk::LevelShapes {
     use horizon_client::chunk::{LevelShape, LevelShapes};
+    use horizon_core::LevelKey;
     let packs = horizon_client::datapack::discover(world_root);
     let enabled_features = horizon_client::save::Level::read(world_root)
         .map(|l| l.enabled_features)
@@ -679,7 +680,7 @@ pub(super) fn level_shapes(
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
         .collect();
-    let mut shapes = LevelShapes::VANILLA;
+    let mut shapes = LevelShapes::vanilla();
     if enabled.is_empty() {
         horizon_world::level::set_sea_levels(Vec::new());
         return shapes;
@@ -687,27 +688,14 @@ pub(super) fn level_shapes(
     // What the packs leave out is logged when the generator reads them.
     let (overrides, _) =
         horizon_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b));
+    let keys: Vec<LevelKey> = shapes.keys().collect();
     // The sea levels of the noise settings the packs replace, for this world only.
     horizon_world::level::set_sea_levels(
-        [
-            "minecraft:overworld",
-            "minecraft:the_nether",
-            "minecraft:the_end",
-        ]
-        .into_iter()
-        .filter_map(|level| {
-            Some((
-                horizon_core::LevelKey::builtin_or_overworld(level),
-                overrides.level_sea_level(level)?,
-            ))
-        })
-        .collect(),
+        keys.iter()
+            .filter_map(|&key| Some((key, overrides.level_sea_level(key.id())?)))
+            .collect(),
     );
-    for level in [
-        "minecraft:overworld",
-        "minecraft:the_nether",
-        "minecraft:the_end",
-    ] {
+    for level in keys.into_iter().map(LevelKey::id) {
         let shape = overrides.level_height(level).and_then(|h| {
             LevelShape::new(
                 h.min_y,
@@ -719,7 +707,7 @@ pub(super) fn level_shapes(
             .ok()
         });
         match shape {
-            Some(shape) => *shapes.get_mut(level) = shape,
+            Some(shape) => shapes.set_shape(level, shape),
             None => log::warn!(
                 "Horizon: data pack worldgen: the dimension type of {level} is not one the \
                  game accepts; the level keeps the vanilla build height"

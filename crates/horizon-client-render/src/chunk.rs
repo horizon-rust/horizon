@@ -1,7 +1,10 @@
 //! Resident client chunk storage. Sections are reference-counted so worker
 //! threads can mesh and light immutable snapshots while the game thread edits
 //! (copy-on-write through `Arc::make_mut`).
-use horizon_core::paletted::{PalettedContainer, Strategy};
+use horizon_core::{
+    LevelKey,
+    paletted::{PalettedContainer, Strategy},
+};
 use horizon_world::nbt::{Compound, Tag};
 use horizon_world::registry::BlockStateId;
 use std::sync::atomic::{AtomicI16, AtomicU64, Ordering};
@@ -94,40 +97,69 @@ impl LevelShape {
     }
 }
 
-/// The shapes of a world's three levels, from its dimension types.
+/// A level's dimension type and the shape that type gives it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LevelEntry {
+    pub dimension_type: &'static str,
+    pub shape: LevelShape,
+}
+
+/// The shapes of a world's levels, in level order, from their dimension types.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LevelShapes {
-    pub overworld: LevelShape,
-    pub nether: LevelShape,
-    pub end: LevelShape,
+    levels: Vec<(LevelKey, LevelEntry)>,
 }
 impl LevelShapes {
-    pub const VANILLA: Self = Self {
-        overworld: LevelShape::OVERWORLD,
-        nether: LevelShape::NETHER,
-        end: LevelShape::END,
-    };
-    /// The shape of the level `id` (`minecraft:overworld`,
-    /// `minecraft:the_nether`, `minecraft:the_end`); others get the
-    /// Overworld's.
-    pub fn get(&self, id: &str) -> LevelShape {
-        match id {
-            "minecraft:the_nether" => self.nether,
-            "minecraft:the_end" => self.end,
-            _ => self.overworld,
+    /// The Overworld, the Nether and the End, each with its own vanilla type.
+    pub fn vanilla() -> Self {
+        let entry = |key: LevelKey, shape| {
+            (
+                key,
+                LevelEntry {
+                    dimension_type: key.id(),
+                    shape,
+                },
+            )
+        };
+        Self {
+            levels: vec![
+                entry(LevelKey::OVERWORLD, LevelShape::OVERWORLD),
+                entry(LevelKey::NETHER, LevelShape::NETHER),
+                entry(LevelKey::END, LevelShape::END),
+            ],
         }
     }
-    pub fn get_mut(&mut self, id: &str) -> &mut LevelShape {
-        match id {
-            "minecraft:the_nether" => &mut self.nether,
-            "minecraft:the_end" => &mut self.end,
-            _ => &mut self.overworld,
+    fn entry(&self, id: &str) -> &LevelEntry {
+        let find = |id: &str| self.levels.iter().find(|(k, _)| k.id() == id);
+        let (_, entry) = find(id)
+            .or_else(|| find(LevelKey::OVERWORLD.id()))
+            .expect("the Overworld is always a level");
+        entry
+    }
+    /// The shape of the level `id`; an unknown one gets the Overworld's.
+    pub fn get(&self, id: &str) -> LevelShape {
+        self.entry(id).shape
+    }
+    pub fn shape(&self, key: LevelKey) -> LevelShape {
+        self.get(key.id())
+    }
+    /// The registry id of the level `id`'s dimension type; an unknown level gets the Overworld's.
+    pub fn dimension_type(&self, id: &str) -> &'static str {
+        self.entry(id).dimension_type
+    }
+    /// Replace the shape of the level `id`; an unknown level is left alone.
+    pub fn set_shape(&mut self, id: &str, shape: LevelShape) {
+        if let Some((_, entry)) = self.levels.iter_mut().find(|(k, _)| k.id() == id) {
+            entry.shape = shape;
         }
+    }
+    pub fn keys(&self) -> impl Iterator<Item = LevelKey> + '_ {
+        self.levels.iter().map(|(key, _)| *key)
     }
 }
 impl Default for LevelShapes {
     fn default() -> Self {
-        Self::VANILLA
+        Self::vanilla()
     }
 }
 
@@ -1008,6 +1040,31 @@ pub struct ChunkExtras {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn level_shapes_hold_the_three_levels_with_their_own_types() {
+        let mut shapes = LevelShapes::vanilla();
+        assert_eq!(
+            shapes.keys().collect::<Vec<_>>(),
+            [LevelKey::OVERWORLD, LevelKey::NETHER, LevelKey::END]
+        );
+        assert_eq!(shapes.get("minecraft:the_nether"), LevelShape::NETHER);
+        assert_eq!(
+            shapes.dimension_type("minecraft:the_end"),
+            "minecraft:the_end"
+        );
+        assert_eq!(shapes.get("example:sky"), LevelShape::OVERWORLD);
+        assert_eq!(shapes.dimension_type("example:sky"), "minecraft:overworld");
+        let taller = LevelShape::new(-64, 2096, 2096, true, true).unwrap();
+        shapes.set_shape("example:sky", taller);
+        assert_eq!(
+            shapes,
+            LevelShapes::vanilla(),
+            "an unknown level is left alone"
+        );
+        shapes.set_shape("minecraft:the_end", taller);
+        assert_eq!(shapes.shape(LevelKey::END), taller);
+        assert_eq!(shapes.shape(LevelKey::OVERWORLD), LevelShape::OVERWORLD);
+    }
     #[test]
     fn extreme_y_queries_are_air_and_writes_leave_the_column_unchanged() {
         for layout in [ColumnLayout::VANILLA, ColumnLayout::new(0, 256).unwrap()] {

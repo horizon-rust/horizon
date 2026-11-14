@@ -14,6 +14,7 @@ use horizon_client::{
     },
 };
 use horizon_core::{
+    LevelKey,
     geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape},
     position::BlockPos,
     random::RandomSource,
@@ -86,7 +87,7 @@ impl Game<'_> {
             binding: self.collision,
             // The spawn searches are the overworld's (PlayerSpawnFinder); a
             // ceiling starts them at the generator's spawn height.
-            has_ceiling: self.level_shapes.overworld.has_ceiling,
+            has_ceiling: self.level_shapes.shape(LevelKey::OVERWORLD).has_ceiling,
             spawn_height: self.spawn_origin.map_or(64, |(_, height)| height),
         }
     }
@@ -98,7 +99,7 @@ impl Game<'_> {
                     &s,
                     self.pack.assets.registry,
                     world_biomes!(self),
-                    self.level_shapes.overworld,
+                    self.level_shapes.shape(LevelKey::OVERWORLD),
                 )
             })
         {

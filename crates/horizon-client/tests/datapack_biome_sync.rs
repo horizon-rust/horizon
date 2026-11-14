@@ -61,7 +61,7 @@ fn a_pack_biome_is_sent_with_its_data_and_read_back_by_a_client() {
     assert!(world.list.iter().all(|b| names.contains(&b.name.as_str())));
 
     // A client that knows the vanilla pack still gets the pack biome's data.
-    let sent = sync.registry_packets(true, &LevelShapes::VANILLA);
+    let sent = sync.registry_packets(true, &LevelShapes::vanilla());
     let biomes = sent.iter().find(|r| r.registry == BIOME_REGISTRY).unwrap();
     assert!(biomes.entries[0].data.is_none(), "a known one is not sent");
     assert!(biomes.entries[2].data.is_some(), "the pack's biome is sent");

@@ -3870,7 +3870,7 @@ mod tests {
             Arc::ptr_eq(&opened, &later),
             "a late helper or disabled pack cannot replace a frozen world"
         );
-        let packet = later.registry_packets(true, &horizon_client::chunk::LevelShapes::VANILLA);
+        let packet = later.registry_packets(true, &horizon_client::chunk::LevelShapes::vanilla());
         let packet = packet
             .iter()
             .find(|p| p.registry == "minecraft:damage_type")
@@ -3976,7 +3976,7 @@ mod tests {
             "unrelated registries stay lazy"
         );
         let fall = wire.id("minecraft:damage_type", "minecraft:fall").unwrap();
-        let packets = wire.registry_packets(false, &horizon_client::chunk::LevelShapes::VANILLA);
+        let packets = wire.registry_packets(false, &horizon_client::chunk::LevelShapes::vanilla());
         let packet = packets
             .iter()
             .find(|p| p.registry == "minecraft:damage_type")

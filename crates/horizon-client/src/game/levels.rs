@@ -137,15 +137,30 @@ pub(super) struct TickTiming {
 }
 
 /// The levels not in place, by dimension.
-#[derive(Default)]
 pub(super) struct Levels {
     parked: HashMap<Dim, Parked>,
+    /// Every level the server holds, in `MinecraftServer.levels` order (`WorldDimensions.keysInOrder`).
+    order: Vec<Dim>,
     /// The levels whose open the mods heard (`native_level_load`), each to
     /// be told closed once.
     heard_open: Vec<Dim>,
 }
 
+impl Default for Levels {
+    fn default() -> Self {
+        Self {
+            parked: HashMap::new(),
+            order: vec![Dim::Overworld, Dim::Nether, Dim::End],
+            heard_open: Vec::new(),
+        }
+    }
+}
+
 impl Levels {
+    pub(super) fn order(&self) -> &[Dim] {
+        &self.order
+    }
+
     /// Clear every parked level and dimensions recorded as heard open.
     pub(super) fn clear(&mut self) {
         self.parked.clear();
@@ -326,7 +341,7 @@ impl Game<'_> {
             return Ok(());
         }
         let back = self.dim;
-        for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
+        for dim in self.levels.order().to_vec() {
             if dim == back || self.levels.parked.contains_key(&dim) {
                 continue;
             }
@@ -355,7 +370,7 @@ impl Game<'_> {
         let deadline = Instant::now() + Duration::from_secs(600);
         self.wait_for_ticket_chunks(deadline);
         let back = self.dim;
-        for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
+        for dim in self.levels.order().to_vec() {
             if dim != back && self.levels.parked.contains_key(&dim) {
                 self.enter_level(None, dim)?;
                 self.wait_for_ticket_chunks(deadline);
@@ -848,9 +863,7 @@ impl Game<'_> {
 
     /// The level whose id is exactly `id` (`MinecraftServer.getLevel` of a `ResourceKey`).
     pub(super) fn known_level(&self, id: &str) -> Option<Dim> {
-        [Dim::Overworld, Dim::Nether, Dim::End]
-            .into_iter()
-            .find(|d| d.id() == id)
+        self.levels.order().iter().copied().find(|d| d.id() == id)
     }
 
     /// The levels this server tick runs, in `MinecraftServer.levels` order
@@ -861,8 +874,11 @@ impl Game<'_> {
             .lan
             .as_ref()
             .map_or(&[][..], |h| h.hub.guests.as_slice());
-        let mut dims: Vec<Dim> = [Dim::Overworld, Dim::Nether, Dim::End]
-            .into_iter()
+        let mut dims: Vec<Dim> = self
+            .levels
+            .order()
+            .iter()
+            .copied()
             .filter(|d| {
                 // `/forceload`ed chunks, or a native mod's tickets.
                 let held = |s: &Streaming| !s.forced.is_empty() || !s.mod_forced.is_empty();
@@ -994,7 +1010,7 @@ impl Game<'_> {
     /// (`MinecraftServer.stopServer`'s `level.close()` loop), in vanilla's
     /// order of its levels: the Overworld, the Nether, the End.
     pub(super) fn native_levels_closing(&mut self) {
-        for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
+        for dim in self.levels.order().to_vec() {
             self.native_level_closed(dim);
         }
     }

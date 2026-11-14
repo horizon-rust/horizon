@@ -41,7 +41,7 @@ impl Game<'_> {
         chunk: [i32; 2],
         hold: bool,
     ) -> bool {
-        let Some(dim) = native_dim(dimension) else {
+        let Some(dim) = self.known_level(dimension) else {
             return false;
         };
         self.native_chunk_ticket(dim, owner, chunk, hold)
@@ -73,7 +73,7 @@ impl Game<'_> {
         dimension: &str,
         chunk: [i32; 2],
     ) -> NativeChunkLoad {
-        let asked = native_dim(dimension).is_some_and(|dim| {
+        let asked = self.known_level(dimension).is_some_and(|dim| {
             self.mod_chunk_tickets
                 .get(&dim)
                 .and_then(|level| level.get(&(chunk[0], chunk[1])))
@@ -93,7 +93,10 @@ impl Game<'_> {
     /// nothing, and a level not open stays closed. False off a server. API
     /// 626.
     pub(super) fn native_chunk_is_loaded(&self, dimension: &str, chunk: [i32; 2]) -> bool {
-        let Some(dim) = native_dim(dimension).filter(|_| self.native_authoritative()) else {
+        let Some(dim) = self
+            .known_level(dimension)
+            .filter(|_| self.native_authoritative())
+        else {
             return false;
         };
         let world = if dim == self.dim {
@@ -188,15 +191,5 @@ impl Game<'_> {
             .collect();
         held.sort_unstable();
         held
-    }
-}
-
-/// The level a dimension id names, for the three Horizon has.
-fn native_dim(dimension: &str) -> Option<Dim> {
-    match dimension {
-        "minecraft:overworld" => Some(Dim::Overworld),
-        "minecraft:the_nether" => Some(Dim::Nether),
-        "minecraft:the_end" => Some(Dim::End),
-        _ => None,
     }
 }

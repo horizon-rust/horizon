@@ -940,11 +940,8 @@ impl Game<'_> {
     fn loaded_dims(&self) -> Vec<Dim> {
         let mut dims = vec![self.dim];
         dims.extend(self.levels.parked_dims());
-        dims.sort_by_key(|d| match d {
-            Dim::Overworld => 0,
-            Dim::Nether => 1,
-            Dim::End => 2,
-        });
+        let order = self.levels.order();
+        dims.sort_by_key(|d| order.iter().position(|o| o == d));
         dims
     }
     /// `Level.getEntity`: the entity of the level in place with a network
@@ -3166,13 +3163,10 @@ impl Game<'_> {
         let Some(Arg::Resource(id)) = ctx.get(name) else {
             return Ok(None);
         };
-        if !matches!(
-            id.as_str(),
-            "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end"
-        ) {
-            return Err(err("argument.dimension.invalid", &[id]));
+        match self.known_level(id) {
+            Some(dim) => Ok(Some(dim)),
+            None => Err(err("argument.dimension.invalid", &[id])),
         }
-        Ok(Some(Dim::from_id(id)))
     }
     /// Put `dim`'s level in place for the clone, or fail it when it cannot be.
     fn clone_enter(&mut self, dim: Dim) -> R<()> {

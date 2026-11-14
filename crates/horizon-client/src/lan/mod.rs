@@ -343,7 +343,7 @@ impl NetConfig {
             accept_older_clients: false,
             older_clients_play: false,
             lod_distance: crate::lod_net::DEFAULT_DISTANCE,
-            levels: crate::chunk::LevelShapes::VANILLA,
+            levels: crate::chunk::LevelShapes::vanilla(),
             owner_profile: None,
             singleplayer_profile: None,
         }
