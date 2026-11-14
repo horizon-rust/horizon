@@ -343,9 +343,33 @@ impl ThrownTrident {
             self.shake = 7;
             return;
         }
+        let from = self.position;
         self.position = to;
-        // A trident's water inertia (0.99) equals the air drag.
-        self.velocity = self.velocity.scale(0.99);
+        // applyEffectsFromBlocks' honey (HoneyBlock.entityInside) along the
+        // move: the cells the final box (deflated by 1e-5F) swept through.
+        let eps = f64::from(1.0e-5_f32);
+        let bounds = Aabb::new(
+            Vec3::new(to.x - HALF, to.y, to.z - HALF),
+            Vec3::new(to.x + HALF, to.y + 2.0 * HALF, to.z + HALF),
+        )
+        .deflate(Vec3::new(eps, eps, eps));
+        for p in horizon_client::projectiles::swept_cells(from, to, bounds) {
+            let cell = [p.x, p.y, p.z];
+            if w.honey(cell)
+                && let Some(v) = horizon_client::projectiles::honey_slide(
+                    self.velocity,
+                    to,
+                    self.on_ground,
+                    2.0 * HALF,
+                    cell,
+                )
+            {
+                self.velocity = v;
+            }
+        }
+        // A trident's water inertia (0.99) equals the air drag, a float in
+        // vanilla, as the server's tick has it.
+        self.velocity = self.velocity.scale(f64::from(0.99f32));
         if !self.no_physics && !self.no_gravity {
             self.velocity.y -= 0.05;
         }
@@ -808,9 +832,24 @@ impl Game<'_> {
         let extinguished = {
             let rain = self.arrow_rain();
             // Block-contact hooks are already delivered by the game's inside pass.
+            let scene = self.arrow_scene(&rain);
+            let (fire_ticks, facts) = (t.fire_ticks, scene.facts);
+            // HoneyBlock.entityInside, at the end of the move; a trident keeps
+            // no fall to reset.
             let (ticks, extinguished) =
-                self.arrow_scene(&rain)
-                    .apply_block_effects(from, to, t.fire_ticks, |_, _, _| {});
+                scene.apply_block_effects(from, to, fire_ticks, |state, p, _| {
+                    if &*facts.get(state).name == "minecraft:honey_block"
+                        && let Some(v) = horizon_client::projectiles::honey_slide(
+                            t.velocity,
+                            to,
+                            t.on_ground,
+                            0.5,
+                            [p.x, p.y, p.z],
+                        )
+                    {
+                        t.velocity = v;
+                    }
+                });
             t.fire_ticks = ticks;
             extinguished
         };
@@ -1567,6 +1606,55 @@ mod tests {
         let (velocity, yaw) = breeze_deflect(Vec3::new(4.0, -2.0, 1.0), 10.0, 0.25);
         assert_eq!(velocity, Vec3::new(-2.0, 1.0, -0.5));
         assert_eq!(yaw, 185.0);
+    }
+
+    /// A column of honey blocks at x 5, z 10, y 200..=209.
+    struct Honey;
+    impl ProjectileWorld for Honey {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+        fn honey(&self, p: [i32; 3]) -> bool {
+            p[0] == 5 && p[2] == 10 && (200..=209).contains(&p[1])
+        }
+    }
+
+    /// A client's trident beside honey slides as the server's does
+    /// (`AbstractArrow.tick`'s `applyEffectsFromBlocks`, before its drag and
+    /// gravity): the values the official 26.3 server gives after one tick
+    /// (`projectile honey slide` harness group, 0.72 east of the centre).
+    #[test]
+    fn a_remote_trident_beside_honey_slides_down_it() {
+        let mut trident = ThrownTrident::remote(1, Vec3::new(6.22, 209.0, 10.5), 0.0, 0.0);
+        trident.velocity = Vec3::new(0.05, -0.6, 0.0);
+        trident.remote_tick(&Honey, None);
+        assert_eq!(
+            trident.velocity,
+            Vec3::new(0.004650115179577094, -0.1761260036697388, 0.0)
+        );
+        let mut far = ThrownTrident::remote(1, Vec3::new(6.4, 209.0, 10.5), 0.0, 0.0);
+        far.velocity = Vec3::new(0.0, -0.6, 0.0);
+        far.remote_tick(&Honey, None);
+        assert_eq!(
+            far.velocity,
+            Vec3::new(0.0, -0.6 * f64::from(0.99f32) - 0.05, 0.0)
+        );
+        // A diagonal move whose enclosing box holds the honey column but whose
+        // swept box never touches it (review on #14674): no slide.
+        let mut diagonal = ThrownTrident::remote(1, Vec3::new(5.5, 209.5, 6.5), 0.0, 0.0);
+        diagonal.velocity = Vec3::new(4.0, -0.5, 4.0);
+        diagonal.remote_tick(&Honey, None);
+        let drag = f64::from(0.99f32);
+        assert_eq!(
+            diagonal.velocity,
+            Vec3::new(4.0 * drag, -0.5 * drag - 0.05, 4.0 * drag)
+        );
     }
 
     #[test]

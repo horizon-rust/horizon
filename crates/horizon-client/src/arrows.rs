@@ -1172,6 +1172,10 @@ impl Ticker<'_, '_, '_, '_> {
                 if name == "minecraft:bubble_column" && precise {
                     self.bubble_column(state, p);
                 }
+                // HoneyBlock.entityInside: the slide resets the fall.
+                if name == "minecraft:honey_block" && self.p.honey_slide([p.x, p.y, p.z]) {
+                    self.st.fall_distance = 0.0;
+                }
             });
         self.st.fire_ticks = fire_ticks;
         if extinguished {

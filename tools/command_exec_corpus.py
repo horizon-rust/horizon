@@ -1189,6 +1189,56 @@ def minecart_numeric_fields():
                        '/tick unfreeze', '/forceload remove 0 0 15 15')
 
 
+def projectile_honey_slide():
+    """#14469: a projectile beside a honey block slides down it. `Entity.applyEffectsFromBlocks` runs
+    `HoneyBlock.entityInside` for every honey block the move's box went through: off the ground, below
+    its top (y + 0.9375), falling faster than -0.08 by `getOldDeltaY` and outside its inset collision shape
+    (`isSlidingDown`), `doSlideMovement` sets the motion to `getNewDeltaY(-0.05)`, scaling the horizontal by
+    `-0.05 / getOldDeltaY` when that is below -0.13, and resets the fall. Its sound and entity event are for
+    living entities, minecarts, TNT and boats only. Snowballs and ender pearls (`ThrowableProjectile`), a
+    small fireball and a dragon fireball (`AbstractHurtingProjectile`), an arrow and a trident
+    (`AbstractArrow`) and a slow
+    snowball that does not slide; frozen, then read tick by tick.
+    """
+    x0, y0, z0 = 5440, 200, 5440
+    # Entities tick once every chunk within 2 columns is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + dx, (z0 >> 4) + dz] for dx in range(-2, 3) for dz in range(-2, 3)]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    # (name, entity, NBT); each beside its own honey column, 0.6 east of its centre (0.72 for the arrows,
+    # 0.5 wide, 0.96 for the dragon fireball, 1 wide): inside the block's cell, outside its shape
+    # (0.4375 + half the width).
+    cases = [('snowball', 'snowball', 'Motion:[0d,-0.5d,0d],fall_distance:5d'),
+             ('sideways', 'snowball', 'Motion:[0.1d,-0.6d,0.05d]'),
+             ('pearl', 'ender_pearl', 'Motion:[0d,-0.4d,0d],fall_distance:3d'),
+             ('fireball', 'small_fireball', 'Motion:[0d,-0.5d,0d],acceleration_power:0d'),
+             ('slow', 'snowball', 'Motion:[0d,0d,0d]'),
+             ('arrow', 'arrow', 'Motion:[0d,-0.5d,0d],fall_distance:4d,pickup:0b'),
+             ('trident', 'trident', 'Motion:[0.05d,-0.6d,0d],pickup:0b'),
+             ('dragon', 'dragon_fireball', 'Motion:[0d,-0.5d,0d],acceleration_power:0d')]
+    for n, (name, entity, nbt) in enumerate(cases, 1):
+        z = z0 + 1 + (n - 1) * 2  # all in the forced chunk
+        ops.append(cmd(f'/fill {x0 + 2} {y0} {z} {x0 + 2} {y0 + 9} {z} honey_block', expect_result=10))
+        east = {'arrow': 3.22, 'trident': 3.22, 'dragon_fireball': 3.46}.get(entity, 3.1)
+        ops.append(cmd(f'/summon {entity} {x0 + east} {y0 + 9} {z}.5 {{UUID:[I;21000,0,{n},1],{nbt}}}',
+                       expect_result=1))
+
+    def reads():
+        for n, _ in enumerate(cases, 1):
+            for key in ('Motion', 'Pos', 'fall_distance'):
+                ops.append(cmd(f'/data get entity 00005208-0000-0000-0000-{n:04x}00000001 {key}'))
+
+    reads()
+    for _ in range(6):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        reads()
+    return ops + setup('/tick unfreeze',
+                       f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 12} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def tnt_minecart_explosion_power():
     """MinecartTNT reads explosion_power / explosion_speed_factor with getFloatOr (4 and 1), clamped
     to 0..128, and writes each only when it is not the default. explode() blows with
@@ -8495,6 +8545,7 @@ def groups():
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
         ('ravager saved movement speed', ravager_saved_movement_speed()),
+        ('projectile honey slide', projectile_honey_slide()),
         # Last: it leaves the player in other food than it found.
         (player_food.GROUP, player_food.cases(cmd, setup)),
     ]

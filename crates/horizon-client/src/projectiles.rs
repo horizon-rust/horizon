@@ -70,6 +70,49 @@ pub fn thrown_by_item(item: &str) -> Option<&'static ThrownType> {
     thrown_types().iter().find(|t| t.item == item)
 }
 
+/// The blocks `Entity.checkInsideBlocks` visits for a move from `from` to `to`
+/// (`BlockGetter.forEachBlockIntersectedBetween`): the cells the deflated
+/// final box `deflated` swept through, each once, in the sweep's order. A
+/// sweep that used all 16 steps checks the end position once more.
+pub fn swept_cells(from: Vec3, to: Vec3, deflated: Aabb) -> Vec<BlockPos> {
+    let mut cells: Vec<BlockPos> = Vec::new();
+    let mut used = 0;
+    let _ = horizon_core::geometry::sweep_intersected_blocks(
+        from,
+        to,
+        deflated,
+        1_000_000,
+        |p, step| {
+            if step >= 16 {
+                return false;
+            }
+            used = step;
+            if !cells.contains(&p) {
+                cells.push(p);
+            }
+            true
+        },
+    );
+    if used + 1 >= 16 {
+        let _ = horizon_core::geometry::sweep_intersected_blocks(
+            to,
+            to,
+            deflated,
+            1_000_000,
+            |p, step| {
+                if step >= 1 {
+                    return false;
+                }
+                if !cells.contains(&p) {
+                    cells.push(p);
+                }
+                true
+            },
+        );
+    }
+    cells
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProjectileKind {
     /// Arrow with its base damage, critical flag and tipped/stray/bogged effect.
@@ -374,6 +417,46 @@ pub trait ProjectileWorld {
     fn stuck_speed(&self, _p: [i32; 3]) -> Option<Vec3> {
         None
     }
+    /// The block at `p` is a honey block (`HoneyBlock.entityInside`).
+    fn honey(&self, _p: [i32; 3]) -> bool {
+        false
+    }
+}
+/// `HoneyBlock.isSlidingDown` then `doSlideMovement` for the honey block at
+/// `pos` and an entity `width` wide (a float in vanilla) moving at `velocity`:
+/// off the ground, below the block's top, falling faster than -0.08 by
+/// `getOldDeltaY` (the motion as before an `Entity` gravity step, whatever the
+/// entity's own gravity) and outside its inset shape, it slides at
+/// `getNewDeltaY(-0.05)`, its horizontal scaled by `-0.05 / getOldDeltaY`
+/// below -0.13. The new motion, or None; the caller resets the fall. The
+/// slide's sound and entity event 53 are not a projectile's
+/// (`doesEntityDoHoneyBlockSlideEffects`).
+pub fn honey_slide(
+    velocity: Vec3,
+    position: Vec3,
+    on_ground: bool,
+    width: f64,
+    pos: [i32; 3],
+) -> Option<Vec3> {
+    let old_delta_y = |dy: f64| dy / f64::from(0.98_f32) + 0.08;
+    let new_delta_y = |dy: f64| (dy - 0.08) * f64::from(0.98_f32);
+    let [x, y, z] = pos.map(f64::from);
+    if on_ground || position.y > y + 0.9375 - 1.0e-7 || old_delta_y(velocity.y) >= -0.08 {
+        return None;
+    }
+    let dx = (x + 0.5 - position.x).abs();
+    let dz = (z + 0.5 - position.z).abs();
+    let overlap = 0.4375 + f64::from(width as f32 / 2.0);
+    if dx + 1.0e-7 <= overlap && dz + 1.0e-7 <= overlap {
+        return None;
+    }
+    let old = old_delta_y(velocity.y);
+    Some(if old < -0.13 {
+        let factor = -0.05 / old;
+        Vec3::new(velocity.x * factor, new_delta_y(-0.05), velocity.z * factor)
+    } else {
+        Vec3::new(velocity.x, new_delta_y(-0.05), velocity.z)
+    })
 }
 /// `CollisionGetter.clipIncludingBorder` over a block clip's result: a ray
 /// from inside the world border whose hit (or end, on a miss) lies outside it
@@ -1321,6 +1404,8 @@ impl Projectile {
                 self.kind,
                 ProjectileKind::SmallFireball
                     | ProjectileKind::LargeFireball { .. }
+                    // DragonFireball keeps AbstractHurtingProjectile.tick.
+                    | ProjectileKind::DragonFireball
                     | ProjectileKind::WitherSkull { .. }
                     | ProjectileKind::WindCharge
                     | ProjectileKind::BreezeWindCharge
@@ -1349,6 +1434,14 @@ impl Projectile {
             }
         }
     }
+    /// [`honey_slide`] for this projectile; true when it slid, and the caller
+    /// resets its fall (an arrow keeps its own).
+    pub fn honey_slide(&mut self, pos: [i32; 3]) -> bool {
+        let width = self.kind.size();
+        honey_slide(self.velocity, self.position, self.on_ground, width, pos)
+            .map(|v| self.velocity = v)
+            .is_some()
+    }
     /// `Projectile.onAboveBubbleColumn` / `onInsideBubbleColumn`: unlike
     /// `Entity`'s, a projectile's pushes are not clamped.
     fn bubble_column_push(&mut self, drag: bool, surface: bool, at: [i32; 3]) {
@@ -1367,60 +1460,33 @@ impl Projectile {
             (false, false) => 0.06,
         };
     }
-    /// `applyEffectsFromBlocks`' bubble columns (`Entity.checkInsideBlocks`):
-    /// the blocks the box swept through from `from`, each once, pushing when
-    /// the move was long or the final box (deflated by 1e-5F) is inside it.
+    /// `applyEffectsFromBlocks`' bubble columns and honey blocks
+    /// (`Entity.checkInsideBlocks`): the blocks the box swept through from
+    /// `from`, each once. A bubble column pushes when the move was long or the
+    /// final box (deflated by 1e-5F) is inside it; honey doesn't read that.
     pub fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
-        self.bubble_columns_since(from, |p| w.bubble_column(p));
+        self.bubble_columns_since(from, |p| w.bubble_column(p), |p| w.honey(p));
     }
     /// [`bubble_columns_along`](Self::bubble_columns_along) with the bubble
-    /// columns read by `column`, for a move made by something else: a
-    /// piston's push applies the block effects too (`moveEntityByPiston`'s
-    /// `applyEffectsFromBlocks`).
+    /// columns read by `column` and the honey blocks by `honey`, for a move
+    /// made by something else: a piston's push applies the block effects too
+    /// (`moveEntityByPiston`'s `applyEffectsFromBlocks`).
     pub fn bubble_columns_since(
         &mut self,
         from: Vec3,
         column: impl Fn([i32; 3]) -> Option<(bool, bool)>,
+        honey: impl Fn([i32; 3]) -> bool,
     ) {
         let to = self.position;
         let eps = f64::from(1.0e-5_f32);
         let deflated = self.bounds().deflate(Vec3::new(eps, eps, eps));
         let far = from.distance_squared(to) > 0.999_990_000_000_252_6f64 * 0.999_990_000_000_252_6;
-        let mut cells = Vec::new();
-        let mut used = 0;
-        let _ = horizon_core::geometry::sweep_intersected_blocks(
-            from,
-            to,
-            deflated,
-            1_000_000,
-            |p, step| {
-                if step >= 16 {
-                    return false;
+        // Each block once, in the sweep's order.
+        for p in swept_cells(from, to, deflated) {
+            if honey([p.x, p.y, p.z]) {
+                if self.honey_slide([p.x, p.y, p.z]) {
+                    self.fall_distance = 0.0;
                 }
-                used = step;
-                cells.push(p);
-                true
-            },
-        );
-        // A sweep that used all 16 steps checks the end position once more.
-        if used + 1 >= 16 {
-            let _ = horizon_core::geometry::sweep_intersected_blocks(
-                to,
-                to,
-                deflated,
-                1_000_000,
-                |p, step| {
-                    if step >= 1 {
-                        return false;
-                    }
-                    cells.push(p);
-                    true
-                },
-            );
-        }
-        // Each block once, in the sweep's order: a handful of cells, no set.
-        for (i, &p) in cells.iter().enumerate() {
-            if cells[..i].contains(&p) {
                 continue;
             }
             let Some((drag, surface)) = column([p.x, p.y, p.z]) else {
@@ -1824,6 +1890,60 @@ mod tests {
         fn bubble_column(&self, _: [i32; 3]) -> Option<(bool, bool)> {
             Some((self.drag, self.surface))
         }
+    }
+    /// A column of honey blocks at x 5, z 10, y 200..=209.
+    struct Honey;
+    impl ProjectileWorld for Honey {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+        fn honey(&self, p: [i32; 3]) -> bool {
+            p[0] == 5 && p[2] == 10 && (200..=209).contains(&p[1])
+        }
+    }
+    /// `HoneyBlock.entityInside` from `applyEffectsFromBlocks`: a snowball
+    /// falling beside honey, 0.6 east of its centre (outside the inset shape,
+    /// inside the cell), slides at `getNewDeltaY(-0.05)`, its horizontal
+    /// scaled by `-0.05 / getOldDeltaY`, and its fall resets. A slow one, and
+    /// one beyond the block's cell, keep their motion. Expected values from
+    /// the official 26.3 server (`projectile honey slide` harness group).
+    #[test]
+    fn a_snowball_beside_honey_slides_down_it() {
+        let snowball = |x: f64, velocity: Vec3| {
+            let mut p = Projectile::new(ProjectileKind::Snowball, Vec3::new(x, 209.0, 10.5), None);
+            p.velocity = velocity;
+            p.fall_distance = 5.0;
+            p.tick_through(&Honey);
+            (p.velocity, p.fall_distance)
+        };
+        assert_eq!(
+            snowball(6.1, Vec3::new(0.0, -0.5, 0.0)),
+            (Vec3::new(0.0, -0.12740000247955321, 0.0), 0.0)
+        );
+        assert_eq!(
+            snowball(6.1, Vec3::new(0.1, -0.6, 0.05)).0,
+            Vec3::new(
+                0.008896020724866017,
+                -0.12740000247955321,
+                0.004448010362433009
+            )
+        );
+        let air = f64::from(0.99_f32);
+        assert_eq!(
+            snowball(6.1, Vec3::ZERO).0,
+            Vec3::new(0.0, -0.03 * air, 0.0)
+        );
+        // Its box (0.25 wide) no longer reaches the honey's cell.
+        assert_eq!(
+            snowball(6.2, Vec3::new(0.0, -0.5, 0.0)).0,
+            Vec3::new(0.0, (-0.5 - 0.03) * air, 0.0)
+        );
     }
     /// A pearl resting in the water of a column, past its first tick.
     fn resting_pearl() -> Projectile {

@@ -74,6 +74,9 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
             &self.w.facts.get(self.w.world.block(p[0], p[1], p[2])).name,
         )
     }
+    fn honey(&self, p: [i32; 3]) -> bool {
+        &*self.w.facts.get(self.w.world.block(p[0], p[1], p[2])).name == "minecraft:honey_block"
+    }
     fn bubble_column(&self, p: [i32; 3]) -> Option<(bool, bool)> {
         horizon_client::motion::bubble_column_at(
             self.w.world,
