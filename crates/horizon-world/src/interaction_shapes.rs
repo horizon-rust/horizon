@@ -57,3 +57,32 @@ where
     }
     Some(hit)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_core::{
+        geometry::{Aabb, Direction, Vec3},
+        position::BlockPos,
+    };
+
+    #[test]
+    fn a_ray_starting_inside_a_sapling_shape_hits_inside_opposite_look() {
+        let sapling = Aabb::new(Vec3::new(0.125, 0.0, 0.125), Vec3::new(0.875, 0.75, 0.875));
+        let start = Vec3::new(0.5, 200.07625, 0.5);
+        let look = crate::view_direction::view_vector(40.0, -180.0);
+        let end = start.add_vector(look.scale(4.5));
+        let block = BlockPos::new(0, 200, 0);
+        let hit = clip_with_interaction_override(
+            [sapling].into_iter(),
+            [].into_iter(),
+            start,
+            end,
+            block,
+        )
+        .expect("hit inside sapling outline");
+        assert!(hit.inside);
+        assert_eq!(hit.direction, Direction::South);
+        assert_eq!(hit.block, block);
+    }
+}

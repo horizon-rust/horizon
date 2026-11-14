@@ -32,109 +32,25 @@ impl Game<'_> {
                 (boundary - origin[i]) / dir[i]
             };
         }
-        // `VoxelShape.clip`'s inside test: the start nudged along the ray, and
-        // the sweep that gives the face of a hit there.
-        let start = Vec3::new(origin[0], origin[1], origin[2]);
-        let sweep = Vec3::new(
-            origin[0] + dir[0] * reach,
-            origin[1] + dir[1] * reach,
-            origin[2] + dir[2] * reach,
-        )
-        .subtract(start);
-        let nudged = start.add_vector(sweep.scale(0.001));
         let mut face = [0; 3];
         let mut t = 0.0;
         while t <= reach {
             let state = self.world.block(pos[0], pos[1], pos[2]);
             let f = self.res.facts().get(state);
-            if self.collision.cached_shapes().has_context_shapes(state) {
-                if let Some(hit) = self.clip_declared_outline(state, pos, origin, dir, reach) {
-                    return Some(hit);
-                }
-            } else if !self.res.facts().is_air(state)
-                && (f.fluid == Fluid::None
-                    || f.waterlogged
-                    || &*f.name == "minecraft:kelp"
-                    || f.render_shape == horizon_client::blocks::RenderShape::Model)
-                && !matches!(
-                    &*f.name,
-                    "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
-                )
-            {
-                // The nearest entry into one of the outline's boxes (slab method).
-                let boxes = self.outline_boxes(pos);
-                // `VoxelShape.clip`: a ray that starts inside the outline hits
-                // it there, facing the way the look comes from.
-                if let Some(hit) = inside_hit(nudged, sweep, &boxes, pos) {
-                    return Some(hit);
-                }
-                let mut best: Option<(f64, [i32; 3])> = None;
-                for b in boxes {
-                    let (mut t0, mut t1, mut axis_in, mut sign) = (0.0f64, f64::INFINITY, None, 0);
-                    let mut miss = false;
-                    for a in 0..3 {
-                        if dir[a] == 0.0 {
-                            miss |= origin[a] < b[a] || origin[a] > b[a + 3];
-                            continue;
-                        }
-                        let (lo, hi) =
-                            ((b[a] - origin[a]) / dir[a], (b[a + 3] - origin[a]) / dir[a]);
-                        let (near, far) = if lo < hi { (lo, hi) } else { (hi, lo) };
-                        if near > t0 {
-                            t0 = near;
-                            axis_in = Some(a);
-                            sign = if dir[a] > 0.0 { -1 } else { 1 };
-                        }
-                        t1 = t1.min(far);
-                    }
-                    if miss || t0 > t1 || t0 > reach {
-                        continue;
-                    }
-                    let mut normal = face;
-                    if let Some(a) = axis_in {
-                        normal = [0; 3];
-                        normal[a] = sign;
-                    }
-                    if best.is_none_or(|(bt, _)| t0 < bt) {
-                        best = Some((t0, normal));
-                    }
-                }
-                if let Some((t, mut face)) = best {
-                    // `BlockGetter.clipWithInteractionOverride`: the hit stays at the
-                    // outline's point, with the face of the interaction shape when
-                    // the ray enters that first.
-                    let name = &*f.name;
-                    let facing = self
-                        .pack
-                        .assets
-                        .registry
-                        .state(state)
-                        .and_then(|s| s.properties.get("facing"))
-                        .map(String::as_str);
-                    let inside = interaction_shapes::boxes(name, facing);
-                    if !inside.is_empty() {
-                        let at = pos.map(f64::from);
-                        let world: Vec<[f64; 6]> = inside
-                            .iter()
-                            .map(|b| std::array::from_fn(|i| at[i % 3] + b[i]))
-                            .collect();
-                        if let Some((ti, normal)) =
-                            interaction_shapes::entry(origin, dir, &world, reach, face)
-                            && ti < t
-                        {
-                            face = normal;
-                        }
-                    }
-                    return Some(Hit {
-                        pos,
-                        face,
-                        point: [
-                            origin[0] + dir[0] * t,
-                            origin[1] + dir[1] * t,
-                            origin[2] + dir[2] * t,
-                        ],
-                        inside: false,
-                    });
+            let has_outline = self.collision.cached_shapes().has_context_shapes(state)
+                || (!self.res.facts().is_air(state)
+                    && (f.fluid == Fluid::None
+                        || f.waterlogged
+                        || &*f.name == "minecraft:kelp"
+                        || f.render_shape == horizon_client::blocks::RenderShape::Model)
+                    && !matches!(
+                        &*f.name,
+                        "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
+                    ));
+            if has_outline {
+                let hit = self.clip_declared_outline(state, pos, origin, dir, reach);
+                if hit.is_some() {
+                    return hit;
                 }
             }
             if fluids
@@ -170,18 +86,4 @@ impl Game<'_> {
         }
         None
     }
-}
-
-/// `VoxelShape.clip`'s inside case: the start point nudged along the ray lies in
-/// one of the outline's boxes, so the hit is there, facing the look.
-fn inside_hit(nudged: Vec3, sweep: Vec3, boxes: &[[f64; 6]], pos: [i32; 3]) -> Option<Hit> {
-    let inside = boxes.iter().any(|b| {
-        Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])).contains(nudged)
-    });
-    inside.then(|| Hit {
-        pos,
-        face: Direction::approximate_nearest(sweep).opposite().normal(),
-        point: nudged.components(),
-        inside: true,
-    })
 }
