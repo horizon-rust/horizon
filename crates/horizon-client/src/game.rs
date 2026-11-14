@@ -135,6 +135,8 @@ mod dragon;
 mod dynamic_lights;
 mod enchant_effects;
 mod end;
+#[cfg(test)]
+mod ender_pearl_ticket_tests;
 mod enderman;
 #[cfg(test)]
 mod enderman_hurt_teleport_tests;
@@ -4101,85 +4103,6 @@ impl Game<'_> {
             p,
             [0.0; 3],
         );
-    }
-    /// `DistanceManager`'s tickets of the level in place, from every player in
-    /// it (the local player, LAN guests, a server's players; a spectator the
-    /// rule skips holds none), its forced chunks and its portal tickets. A game
-    /// with neither a server nor a player (the headless fixtures) ticks
-    /// everywhere.
-    fn update_chunk_tickets(&mut self) {
-        let rule = self.ui.rules.bool("spectators_generate_chunks");
-        let mut players: Vec<((i32, i32), bool)> = self.lan.as_ref().map_or_else(Vec::new, |h| {
-            h.hub
-                .guests
-                .iter()
-                .filter(|g| h.hub.here(g))
-                .filter(|g| !g.fake) // fake players hold small forced tickets below
-                .map(|g| (g.chunk(), g.spectator()))
-                .collect()
-        });
-        if let Some(p) = &self.player {
-            players.push((
-                (
-                    (p.position.x.floor() as i32) >> 4,
-                    (p.position.z.floor() as i32) >> 4,
-                ),
-                self.spectator(),
-            ));
-        }
-        // A spectator the rule skips is still a player: a game that has one
-        // must not take the headless fixtures' tick-everywhere case below.
-        let any_player = !players.is_empty();
-        let sources = (!self.options.execution_role.is_client() || any_player).then(|| {
-            horizon_client::ticket_levels::Sources {
-                players: players
-                    .into_iter()
-                    .filter(|&(_, spectator)| game_mode::loads_chunks(rule, spectator))
-                    .map(|(chunk, _)| chunk)
-                    .collect(),
-                // A native mod's ticket holds its chunk as `/forceload` does
-                // (NeoForge's `TicketController` uses the same `FORCED` level).
-                forced: self
-                    .streaming
-                    .forced
-                    .iter()
-                    .chain(
-                        self.streaming
-                            .mod_forced
-                            .iter()
-                            .filter(|c| !self.streaming.forced.contains(c)),
-                    )
-                    .copied()
-                    .collect(),
-                // Filled from the `PORTAL` tickets by `update`.
-                portal: Vec::new(),
-                // EnderDragonFight.tick: while a player watches the fight, the
-                // arena holds a `DRAGON` ticket of radius 9 at (0, 0), so its
-                // island ticks out to 7 chunks whatever the watcher's
-                // simulation distance. The fight lives where the type has one.
-                dragon: (self.dimension_type().has_ender_dragon_fight
-                    && self.fight.arena_watched())
-                .then_some((0, 0)),
-                view_distance: self.settings.render_distance.clamp(2, 32),
-                simulation_distance: self.settings.simulation_distance.max(2),
-            }
-        });
-        // A fake player holds a forced chunk's 3x3 ticket, not a whole view distance.
-        let sources = sources.map(|mut s| {
-            if let Some(h) = self.lan.as_ref() {
-                s.forced.extend(
-                    h.hub
-                        .guests
-                        .iter()
-                        .filter(|g| {
-                            g.fake && h.hub.here(g) && game_mode::loads_chunks(rule, g.spectator())
-                        })
-                        .map(|g| g.chunk()),
-                );
-            }
-            s
-        });
-        self.tickets.update(sources);
     }
     /// `ServerLevel.startTickingChunk`: a loaded chunk's saved ticks are
     /// scheduled from the game time at which it becomes a ticking chunk
