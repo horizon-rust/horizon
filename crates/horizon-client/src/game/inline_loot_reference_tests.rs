@@ -81,7 +81,11 @@ fn game() -> Game<'static> {
     )
     .unwrap();
     game.world_root = dir;
-    game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+    game.world_tables = game
+        .build_world_tables(false, &[])
+        .unwrap()
+        .0
+        .map(std::sync::Arc::new);
     // The packs' tables for this test's thread only (#14266).
     let _ = horizon_client::structure_blocks::load_thread_loot_data(
         &game.options.resources,

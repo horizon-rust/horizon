@@ -76,7 +76,11 @@ fn with_stick_table(game: &mut Game<'_>, name: &str) {
     )
     .unwrap();
     game.world_root = dir;
-    game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+    game.world_tables = game
+        .build_world_tables(false, &[])
+        .unwrap()
+        .0
+        .map(std::sync::Arc::new);
     // World open warms the loot data with the world's packs (game.rs); the
     // break's roll reads that copy, here this test's own, so the stick reaches
     // no other test's stand (#14266).
