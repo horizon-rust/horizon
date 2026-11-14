@@ -11124,9 +11124,7 @@ impl Game<'_> {
     /// from the chunks the server sent. None where that chunk isn't loaded.
     /// API 561.
     pub(super) fn native_biome(&self, pos: [i32; 3]) -> Option<String> {
-        let at = BlockPos::new(pos[0], pos[1], pos[2]);
-        let [x, y, z] = self.streaming.biome_zoom.quart_at_block(at);
-        self.biome_name_at_block([x << 2, y << 2, z << 2])
+        self.biome_name_at_block(pos)
     }
     /// The most recently extracted world frame's camera, if one exists.
     /// During GUI rendering this is the current frame, including bob/spin and FOV.
