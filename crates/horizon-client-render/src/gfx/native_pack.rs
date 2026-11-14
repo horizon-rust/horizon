@@ -192,6 +192,7 @@ impl NativePack {
             .is_some_and(|s| s.reads("reflection"))
             && option_on(constants, option);
         let fog = report.material_fog;
+        let coverage = report.manifest.coverage;
         let keeps = |key: fn(&horizon_shader_api::Stage) -> Option<bool>| {
             report.sky.as_ref().and_then(key).unwrap_or(true)
         };
@@ -246,6 +247,7 @@ impl NativePack {
                     stage,
                     constants,
                     fog,
+                    coverage,
                     has_vertex,
                     displaced.as_ref(),
                 )
