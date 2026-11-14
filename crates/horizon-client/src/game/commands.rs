@@ -11,6 +11,7 @@ pub(super) mod execute;
 pub(super) mod extra;
 mod item_count;
 pub(in crate::game) mod items;
+mod message;
 mod misc;
 mod place;
 mod players;
@@ -4275,7 +4276,7 @@ impl Game<'_> {
             Some(Arg::Str(s)) => s.clone(),
             _ => String::new(),
         };
-        let message = self.expand_selectors(&raw);
+        let (message, _) = self.expand_selectors(&raw);
         // CommandSourceStack.getDisplayName: the executing entity's name.
         let name = match self.command_source {
             Some(source) => match source.entity {
@@ -4372,37 +4373,9 @@ impl Game<'_> {
         );
         Ok(1)
     }
-    /// MessageArgument: `@p`-style selectors in a message become names.
-    pub(super) fn expand_selectors(&mut self, raw: &str) -> Text {
-        let mut out = Text::empty();
-        let mut rest = raw;
-        while let Some(at) = rest.find('@') {
-            out.push(&rest[..at]);
-            let mut reader = Reader::new(&rest[at..]);
-            match (horizon_client::command::ArgType::Entity {
-                single: false,
-                players: false,
-            })
-            .parse(&mut reader, &self.ui.registries)
-            {
-                Ok(Arg::Entity(s)) if reader.cursor > 1 => {
-                    let found = self.select(&s);
-                    for (i, t) in found.iter().enumerate() {
-                        if i > 0 {
-                            out.push(", ");
-                        }
-                        out.push(self.target_name(*t));
-                    }
-                    rest = &rest[at + reader.cursor..];
-                }
-                _ => {
-                    out.push("@");
-                    rest = &rest[at + 1..];
-                }
-            }
-        }
-        out.push(rest);
-        out
+    /// MessageArgument: `@p`-style selectors in a message become names, and whether any.
+    pub(super) fn expand_selectors(&mut self, raw: &str) -> (Text, bool) {
+        message::expand_selectors(self, raw)
     }
 }
 

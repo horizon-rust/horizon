@@ -3652,10 +3652,10 @@ impl Game<'_> {
         });
     }
 
-    /// The guests' queued commands, run with the hub in `self.lan` so that
-    /// they reach the other players too (`/give Bob`, `/tp Bob`, `/kick`).
+    /// The guests' queued commands and message commands, run with the hub in `self.lan`.
     pub(super) fn run_guest_commands(&mut self) {
         loop {
+            self.send_guest_chats();
             let Some(host) = self.lan.as_mut() else {
                 return;
             };

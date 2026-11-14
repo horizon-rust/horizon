@@ -2385,7 +2385,7 @@ impl Game<'_> {
                 }
                 HostEvent::Packet(conn, packet) => {
                     self.lan_guest_packet(&mut host, conn, *packet);
-                    if !host.commands.is_empty() {
+                    if !host.commands.is_empty() || host.hub.has_pending_chats() {
                         self.lan = Some(host);
                         self.run_guest_commands();
                         host = self.lan.take().expect("the hub is back after the commands");

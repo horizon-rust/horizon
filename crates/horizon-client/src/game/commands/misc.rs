@@ -328,7 +328,7 @@ impl Game<'_> {
             Some(Arg::Str(m)) => m.clone(),
             _ => String::new(),
         };
-        let message = self.expand_selectors(&raw);
+        let (message, _) = self.expand_selectors(&raw);
         let hover = text::Style {
             hover: Some(Box::new(Text::translate("chat.type.team.hover", &[]))),
             click: Some(text::ClickEvent::SuggestCommand("/teammsg ".into())),

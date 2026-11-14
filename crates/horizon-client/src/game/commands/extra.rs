@@ -815,7 +815,7 @@ impl Game<'_> {
             _ => None,
         };
         let reason = match &reason_raw {
-            Some(raw) => self.expand_selectors(raw),
+            Some(raw) => self.expand_selectors(raw).0,
             None => Text::translate("multiplayer.disconnect.kicked", &[]),
         };
         let tag = match &reason_raw {

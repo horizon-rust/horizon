@@ -98,6 +98,9 @@ pub struct Guest {
     pub chain: horizon_protocol::secure_chat::Chain,
     pub last_seen: horizon_protocol::secure_chat::LastSeenValidator,
     pub signatures: horizon_protocol::secure_chat::SignatureCache,
+    /// The message command (`/say`, `/me`, `/msg`) this player's packet left
+    /// for the hub to send (`super::hub::chat::PendingChat`).
+    pub chat: Option<super::hub::chat::PendingChat>,
     /// The hub tick the player was placed on: chunks go out from the tick
     /// after next, behind the first doTick's packets, as vanilla's do.
     pub placed_at: u64,
@@ -480,6 +483,7 @@ impl Guest {
             chain: Default::default(),
             last_seen: Default::default(),
             signatures: Default::default(),
+            chat: None,
             placed_at: 0,
             center_sent: None,
             left_reason: String::new(),
