@@ -5,7 +5,7 @@
 //! forcing the game mode. Its difficulty lock asks first (PopupScreen), and
 //! Restrictions opens RestrictionsScreen.
 //! Parity reference: https://mcsrc.dev/2/26.3/net/minecraft/client/gui/screens/WorldOptionsScreen
-use super::{Game, Screen, integrated::ServerOptions, lan::LanSettings};
+use super::{Game, Screen, integrated::ServerOptions, lan::LanSettings, owner_link::OwnerRequest};
 use horizon_client::{
     font::Font,
     game_rules_screen::{Exit, RulesScreen},
@@ -55,7 +55,7 @@ enum View {
     GameRules,
 }
 #[derive(Clone, Copy, PartialEq)]
-struct Snapshot {
+pub(super) struct Snapshot {
     default_mode: i32,
     personal_mode: i32,
     cheats: bool,
@@ -619,7 +619,7 @@ impl Game<'_> {
         port.max_length = 5;
         // The world is the server thread's when there is one.
         let state = match &self.integrated {
-            Some(server) => match server.call(|g| g.server_options()) {
+            Some(server) => match server.ask(OwnerRequest::ServerOptions) {
                 Some(state) => state,
                 None => return,
             },
@@ -1625,7 +1625,7 @@ impl Game<'_> {
         }
     }
 
-    fn apply_world_options(&mut self, before: &Snapshot, wanted: &Snapshot) {
+    pub(super) fn apply_world_options(&mut self, before: &Snapshot, wanted: &Snapshot) {
         if self.external_server() {
             if self.ui.registries.permission >= 2 {
                 if wanted.difficulty != before.difficulty {
@@ -1643,7 +1643,11 @@ impl Game<'_> {
             // The server applies them; the window tells what came of
             // Open to LAN (ShareToLanScreen's messages).
             let (b, w) = (*before, *wanted);
-            server.call(move |g| g.apply_world_options(&b, &w));
+            server.ask(|done| OwnerRequest::ApplyWorldOptions {
+                before: b,
+                wanted: w,
+                done,
+            });
             if w.lan != b.lan || (w.lan && w.port != b.port) {
                 let message = match (w.lan, self.lan_port()) {
                     (true, Some(port)) => Text::translate(

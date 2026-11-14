@@ -17,6 +17,7 @@
 //! ```
 use super::event_loop::EventLoopCtl;
 use super::input_trace::{InputOrigin, TraceEvent, TraceKind};
+use super::owner_link::OwnerRequest;
 use super::{Game, Screen};
 use horizon_client::{Result, gamepad::Button, keybinds, text::Text, title::world_management};
 use horizon_core::geometry::Vec3;
@@ -588,10 +589,10 @@ impl Game<'_> {
                 let (saved_tx, saved) = mpsc::channel();
                 let (copied, copied_rx) = mpsc::channel::<()>();
                 // A server that has stopped drops the task, and `saved_tx` with it.
-                server.post(move |game| {
+                server.tell(OwnerRequest::Closure(Box::new(move |game| {
                     let _ = saved_tx.send(game.save_game().map_err(|e| e.to_string()));
                     let _ = copied_rx.recv();
-                });
+                })));
                 match saved.recv() {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {

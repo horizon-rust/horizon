@@ -1,7 +1,7 @@
 //! The frame's world update (`update_world`): what arrived from the server, the chunks that
 //! streamed in and the meshes handed to the renderer, the columns that unload (their entities
 //! and block entities saved out first); and far terrain (`prepare_lod`, `clear_lod`).
-use super::*;
+use super::{owner_link::OwnerRequest, *};
 
 impl Game<'_> {
     pub(super) fn clear_lod(&mut self) {
@@ -49,7 +49,9 @@ impl Game<'_> {
         self.lod_level = None;
         let dim = self.dim;
         let source = match (&self.integrated, self.server_far_terrain(), &self.remote) {
-            (Some(server), ..) => server.call(move |game| game.lod_source_in(dim)).flatten(),
+            (Some(server), ..) => server
+                .ask(|reply| OwnerRequest::LodSource(dim, reply))
+                .flatten(),
             (None, Some(offer), Some(remote)) => {
                 let states = self.res.facts().states.len() as u32;
                 let biomes = self.res.biomes().index.clone();
