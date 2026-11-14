@@ -2,7 +2,9 @@
 //! gateway travel, the obsidian arrival platform, the exit portal and the End
 //! sky. The dragon fight itself lives in game/dragon.rs: the podium is
 //! inactive until the dragon dies.
+use super::entity::{Entity as _, entity_lists_of, for_each_entity};
 use super::{Dim, Game};
+use horizon_client::join_seq::{JoinSeq, Joined as _};
 use horizon_client::{
     Result,
     containers::BlockEntity,
@@ -1445,10 +1447,10 @@ impl Game<'_> {
 
     // ---- End gateway travel for the entities ----
 
-    /// `EndGatewayBlock.entityInside` for the items, mobs and thrown ender
-    /// pearls in the End: the gateway blocks their box swept through. A
-    /// gateway that is cooling down (`TheEndGatewayBlockEntity.triggerCooldown`)
-    /// takes nobody in. `entityInside` comes from the entity's own tick
+    /// `EndGatewayBlock.entityInside` for the entities in the End: the
+    /// gateway blocks their box swept through. A gateway that is cooling
+    /// down (`TheEndGatewayBlockEntity.triggerCooldown`) takes nobody in.
+    /// `entityInside` comes from the entity's own tick
     /// (`applyEffectsFromBlocks`), and `ServerLevel.tick` ticks only the
     /// entities in entity-ticking chunks: one past the simulation distance
     /// enters none (and costs nothing here, however many lie there).
@@ -1461,72 +1463,52 @@ impl Game<'_> {
         };
         let ticking = self.entity_ticking_area();
         let ticks = |at: Vec3| ticking(at.x.floor() as i32, at.z.floor() as i32);
-        let items: Vec<(u32, Vec3, f32, f32)> = self
-            .dropped
-            .iter()
-            .filter(|e| ticks(e.position))
-            .map(|e| (e.id, e.position, 0.25, 0.25))
-            .collect();
-        let mobs: Vec<(u32, Vec3, f32, f32)> = self
-            .mobs
-            .iter()
-            .filter(|m| ticks(m.position) && self.mob_can_use_portal(m))
-            .map(|m| (m.id, m.position, m.width(), m.height()))
-            .chain(
-                self.boats
-                    .iter()
-                    .filter(|b| ticks(b.position) && self.vehicle_can_use_portal(b.id))
-                    .map(|b| {
-                        (
-                            b.id,
-                            b.position,
-                            super::boats::WIDTH as f32,
-                            super::boats::HEIGHT as f32,
-                        )
-                    }),
-            )
-            .chain(
-                self.carts
-                    .iter()
-                    .filter(|c| ticks(c.position) && self.vehicle_can_use_portal(c.id))
-                    .map(|c| {
-                        (
-                            c.id,
-                            c.position,
-                            super::minecarts::WIDTH as f32,
-                            super::minecarts::HEIGHT as f32,
-                        )
-                    }),
-            )
-            .collect();
-        let mut inside: Vec<(u32, BlockPos)> = Vec::new();
-        for (id, to, width, height) in items.into_iter().chain(mobs) {
-            let from = self.portals.before.get(&id).copied().unwrap_or(to);
-            let found = horizon_client::end_gateway::swept_gateway(from, to, width, height, |p| {
-                is_gateway(self, p)
-            });
-            if let Some(pos) = found {
-                inside.push((id, pos));
+        let mut inside: Vec<(JoinSeq, u32, BlockPos)> = Vec::new();
+        // `Entity.canUsePortal(false)` of every kind that sweeps a portal,
+        // arrows and the other projectiles, orbs, TNT and falling blocks
+        // included. An ender pearl has its own pass below.
+        for_each_entity!(entity_lists_of!(self), entity => {
+            let Some((width, height)) = entity.gateway_size() else {
+                continue;
+            };
+            let (id, to) = (entity.id(), entity.position());
+            if !ticks(to) || !entity.portal_sweeps() || !entity.can_use_portal(self) {
+                continue;
             }
-        }
+            let from = entity
+                .portal_from()
+                .unwrap_or_else(|| self.portals.before.get(&id).copied().unwrap_or(to));
+            if let Some(pos) = horizon_client::end_gateway::swept_gateway(
+                from,
+                to,
+                width,
+                height,
+                |p| is_gateway(self, p),
+            ) {
+                inside.push((entity.join_seq(), id, pos));
+            }
+        });
         // A pearl's move this tick, from where it started it.
-        let pearls: Vec<(u32, Option<Who>, Option<u32>, BlockPos)> = self
+        let pearls: Vec<(JoinSeq, u32, Option<Who>, Option<u32>, BlockPos)> = self
             .creatures
             .projectiles
             .iter()
             .filter(|p| ticks(p.position))
             .filter_map(|p| {
                 let pos = horizon_client::end_gateway::pearl_gateway(p, |b| is_gateway(self, b))?;
-                Some((p.id, p.owner, p.guest, pos))
+                Some((p.join_seq(), p.id, p.owner, p.guest, pos))
             })
             .collect();
-        for (id, owner, guest, pos) in pearls {
+        for (join, id, owner, guest, pos) in pearls {
             if owner == Some(Who::Player) {
                 self.pearl_owner_in_gateway(guest, pos);
             }
-            inside.push((id, pos));
+            inside.push((join, id, pos));
         }
-        for (id, pos) in inside {
+        // ServerLevel ticks its entities in the order they joined: the first
+        // one in a gateway takes it, whatever its kind.
+        inside.sort_by_key(|&(join, ..)| join);
+        for (_, id, pos) in inside {
             // One entity at a time: the gateway cools down for 40 ticks.
             if !self.gateway_enter([pos.x, pos.y, pos.z]) {
                 continue;
@@ -1542,7 +1524,8 @@ impl Game<'_> {
                 .or_default()
                 .enter_with_delay(pos, delay);
         }
-        // ThrowableProjectile applies the gateway's block effect before Entity.tick.
+        // The kinds that apply the gateway's block effect before handlePortal
+        // (projectiles, falling blocks) go through in this same tick.
         self.handle_end_gateway_portals_phase(true);
     }
 
@@ -1577,35 +1560,27 @@ impl Game<'_> {
         // distance waits in its gateway, its state kept as it is.
         let ticking = self.entity_ticking_area();
         let ticks = |at: Vec3| ticking(at.x.floor() as i32, at.z.floor() as i32);
-        let ids: Vec<(u32, bool, bool)> = self
-            .dropped
-            .iter()
-            .map(|e| (e.id, true, ticks(e.position)))
-            .chain(
-                self.mobs
-                    .iter()
-                    .map(|m| (m.id, self.mob_can_use_portal(m), ticks(m.position))),
-            )
-            .chain(
-                self.boats
-                    .iter()
-                    .map(|b| (b.id, self.vehicle_can_use_portal(b.id), ticks(b.position))),
-            )
-            .chain(
-                self.carts
-                    .iter()
-                    .map(|c| (c.id, self.vehicle_can_use_portal(c.id), ticks(c.position))),
-            )
-            .chain(
-                self.creatures
-                    .projectiles
-                    .iter()
-                    .filter(|p| matches!(p.kind, ProjectileKind::EnderPearl))
-                    .map(|p| (p.id, true, ticks(p.position))),
-            )
-            .collect();
-        let mut present: std::collections::HashSet<u32> =
-            ids.iter().map(|(id, _, _)| *id).collect();
+        // (id, canUsePortal, ticking, handled after its move this tick)
+        let mut ids: Vec<(u32, bool, bool, bool)> = Vec::new();
+        for_each_entity!(entity_lists_of!(self), entity => {
+            if entity.gateway_size().is_some() {
+                ids.push((
+                    entity.id(),
+                    entity.can_use_portal(self),
+                    ticks(entity.position()),
+                    entity.portal_after_move(),
+                ));
+            }
+        });
+        // A pearl is not in the walk (its gateway pass is its own).
+        ids.extend(
+            self.creatures
+                .projectiles
+                .iter()
+                .filter(|p| matches!(p.kind, ProjectileKind::EnderPearl))
+                .map(|p| (p.id, true, ticks(p.position), true)),
+        );
+        let mut present: std::collections::HashSet<u32> = ids.iter().map(|(id, ..)| *id).collect();
         // A pearl waiting for its exit keeps its portal cooldown.
         present.extend(self.end.arrivals.iter().map(|a| match &a.traveller {
             Arriving::Pearl(p) => p.id,
@@ -1613,21 +1588,16 @@ impl Game<'_> {
         }));
         self.end.gateways.retain(|id, _| present.contains(id));
         let mut leaving: Vec<(u32, BlockPos)> = Vec::new();
-        for (id, allowed, ticking) in ids {
-            if !ticking {
+        for (id, allowed, ticking, moved_first) in ids {
+            // AbstractArrow, ThrowableProjectile, AbstractHurtingProjectile and
+            // FallingBlockEntity apply block effects before handlePortal: they
+            // go through in the tick they enter, the other kinds on their next.
+            if !ticking || moved_first != after_move {
                 continue;
             }
             // Only an entity in a gateway has a state: skip the others before
-            // the per-id lookups below, which walk the entity lists.
+            // the per-id lookup below, which walks the entity lists.
             if !self.end.gateways.contains_key(&id) {
-                continue;
-            }
-            let is_pearl = self
-                .creatures
-                .projectiles
-                .iter()
-                .any(|p| p.id == id && matches!(p.kind, ProjectileKind::EnderPearl));
-            if is_pearl != after_move {
                 continue;
             }
             let delay = self.entity_portal_delay(id);
@@ -1650,15 +1620,14 @@ impl Game<'_> {
     /// `Entity.teleportToPortalDestination` for an entity that goes through an
     /// End gateway: an ordinary same-level entity stays live while the exit loads.
     fn send_through_gateway(&mut self, id: u32, gateway: BlockPos) {
-        if matches!(
-            self.level_entity(id as i32),
-            Some(
-                super::commands::Target::Item(_)
-                    | super::commands::Target::Mob(_)
-                    | super::commands::Target::Boat(_)
-                    | super::commands::Target::Cart(_)
-            )
-        ) {
+        // Every ordinary kind stays live while the exit loads; only a thrown
+        // ender pearl has the transition that clears its motion and rotation.
+        let pearl = self
+            .creatures
+            .projectiles
+            .iter()
+            .any(|p| p.id == id && matches!(p.kind, ProjectileKind::EnderPearl));
+        if !pearl && self.level_entity(id as i32).is_some() {
             let (job, target) = self.gateway_job([gateway.x, gateway.y, gateway.z]);
             let arrival = GatewayArrival {
                 traveller: Arriving::Live(id),
@@ -1823,6 +1792,10 @@ fn eye_quad(
 #[cfg(test)]
 #[path = "end_gateway_ticking_tests.rs"]
 mod ticking_tests;
+
+#[cfg(test)]
+#[path = "end_gateway_entities_tests.rs"]
+mod gateway_entity_tests;
 
 #[cfg(test)]
 mod tests {
