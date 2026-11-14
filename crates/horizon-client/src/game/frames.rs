@@ -698,7 +698,7 @@ impl Game<'_> {
                     );
                 }
             }
-            // HDR output: a glow frame shines softly (entity.wgsl fs_hdr_mark); the item in it
+            // HDR output: a glow frame shines softly (entity.wgsl hdr_entity_mark); the item in it
             // is only lit, as vanilla draws it.
             if f.glow {
                 for v in &mut out[frame_start..] {
@@ -706,6 +706,8 @@ impl Game<'_> {
                 }
             }
             self.finish_entity_occlusion(culling, f, out, entity_start);
+            // The frame; what it shows is an item or a map, Horizon's to light.
+            self.lit_entity(entity_start..out.len());
             let cull_contents = culling.checks_vertices();
             if let Some(stack) = &f.item {
                 let mut canceled = false;

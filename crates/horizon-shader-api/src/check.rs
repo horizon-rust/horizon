@@ -253,10 +253,7 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
         ));
     }
     problems.extend(api_rules(&module, kind, &own));
-    // 0.1's structs won't grow: it is retired when 0.2 is on by default.
-    if pack.manifest.api == crate::Api::V0_2 {
-        problems.extend(constructions(&module, &own));
-    }
+    problems.extend(constructions(&module, &own));
     problems.extend(options(&module, &pack.manifest.options, file));
     if !problems.is_empty() {
         return Err(problems);
@@ -277,6 +274,29 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
         })?;
     let (expressions, texture_reads) = cost(&module);
     let mut problems = Vec::new();
+    let engine = match kind {
+        StageKind::Material => Some((pack.manifest.material_coverage, "the texture")),
+        StageKind::Entity => Some((
+            pack.manifest.entity_coverage,
+            "the texture and the layer's opacity",
+        )),
+        _ => None,
+    }
+    .and_then(|(coverage, test)| (coverage == crate::Coverage::Engine).then_some(test));
+    if let Some(test) = engine
+        && let Some(at) = reachable_discard(&module, kind.function())
+    {
+        let function = kind.function();
+        problems.push(located(
+            &composed,
+            at.to_range().map(|r| r.start),
+            format!(
+                "`discard` reachable from `{function}`: under `[{function}] coverage = \"engine\"` \
+                 (the default) Horizon's alpha test on {test} decides what is drawn; a pack that \
+                 cuts its own holes sets `coverage = \"pack\"`"
+            ),
+        ));
+    }
     if expressions > MAX_EXPRESSIONS {
         problems.push(problem(
             file,
@@ -485,7 +505,7 @@ fn api_rules(module: &naga::Module, kind: StageKind, own: &Composed) -> Vec<Prob
     problems
 }
 
-/// 0.2: the pack's files construct none of the structs Horizon hands a stage (`Frame`, the
+/// The pack's files construct none of the structs Horizon hands a stage (`Frame`, the
 /// stage inputs and the post helpers' `SurfaceData`). They may gain fields, which would break a
 /// positional `PostInput(...)`; reading them and passing them along stay as they are. `Surface`,
 /// which `material` returns, is built.
@@ -527,6 +547,53 @@ fn constructions(module: &naga::Module, own: &Composed) -> Vec<Problem> {
         }
     }
     problems
+}
+
+/// Where a `discard` is that the function `name` can reach: in its own body, its nested blocks,
+/// or a function it calls, however deep.
+fn reachable_discard(module: &naga::Module, name: &str) -> Option<naga::Span> {
+    fn walk(
+        block: &naga::Block,
+        calls: &mut Vec<naga::Handle<naga::Function>>,
+    ) -> Option<naga::Span> {
+        for (statement, span) in block.span_iter() {
+            let found = match statement {
+                naga::Statement::Kill => return Some(*span),
+                naga::Statement::Block(b) => walk(b, calls),
+                naga::Statement::If { accept, reject, .. } => {
+                    walk(accept, calls).or_else(|| walk(reject, calls))
+                }
+                naga::Statement::Switch { cases, .. } => {
+                    cases.iter().find_map(|c| walk(&c.body, calls))
+                }
+                naga::Statement::Loop {
+                    body, continuing, ..
+                } => walk(body, calls).or_else(|| walk(continuing, calls)),
+                naga::Statement::Call { function, .. } => {
+                    calls.push(*function);
+                    None
+                }
+                _ => None,
+            };
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+    let (start, _) = module
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.as_deref() == Some(name))?;
+    let (mut calls, mut seen) = (vec![start], HashSet::new());
+    while let Some(f) = calls.pop() {
+        if seen.insert(f)
+            && let Some(span) = walk(&module.functions[f].body, &mut calls)
+        {
+            return Some(span);
+        }
+    }
+    None
 }
 
 /// Each `override` is an option of its type, or has a default of its own.

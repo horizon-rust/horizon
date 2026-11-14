@@ -3,8 +3,8 @@
 Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test reference`
 rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).
 
-**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, the game draws them only
-with `HORIZON_HDR_FRAME=float` set, the registry doesn't list them, and anything here may change in any release.
+**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, the game draws them and
+the registry lists them, and anything here may change in any release.
 The design: [hdr-linear-light.md](../design/hdr-linear-light.md).
 
 ## Colour
@@ -19,9 +19,9 @@ the frame stores gamma (`[frame] blend`, below).
   `WeatherInput.color`; `Frame` `sky_color` and `fog_color`; `block_texture`, `block_texture_level` and
   `block_light_color`; every colour texture a stage samples (`scene_color`, `previous`, `history`, the pack's targets,
   `opaque_color`, `reflection`, `shadow_color`).
-- **Data, as in 0.1:** depth, normals, `light` levels, `emission`, every channel of the LabPBR maps, and the pack's
+- **Data:** depth, normals, `light` levels, `emission`, every channel of the LabPBR maps, and the pack's
   `[[textures]]`.
-- **`[[lights]]` and `[[particle_lights]]` colours** are written as in 0.1, in vanilla's gamma, and Horizon decodes
+- **`[[lights]]` and `[[particle_lights]]` colours** are written in vanilla's gamma, and Horizon decodes
   them: `block_light_color` and `colored_light` are linear. `block_light_colors` holds them as written; read it through
   `block_light_color`.
 - **Alpha is coverage only**, never light: brightness is in rgb alone. A post pass's alpha is ignored.
@@ -66,6 +66,28 @@ returns is in BT.2020 primaries instead (D65 white, 1.0 still vanilla's white at
 It needs `blend = "linear"`, since a change of primaries is only right in linear light. `frame.primaries` says which
 space the pack's colours are in, and `frame.luminance` holds that space's luminance weights: compute luminance as
 `dot(color, frame.luminance)` and it is right in either. `"bt2020"` passes the check; the game doesn't serve it yet.
+
+## `[material] coverage`
+
+Which points of terrain are drawn is the engine's unless the pack says otherwise. Under `coverage = "engine"` (the
+default) solid and cutout terrain keep Horizon's alpha test on the texture's own alpha (cut below 0.5, except the
+leaves Horizon draws opaque), and the alpha `material` returns is ignored there; translucent terrain is cut where the
+texture's alpha is below 0.01, and the returned alpha is its opacity, so water and glass still set how see-through
+they are. `material`, and every function it calls, may not `discard`: the check refuses it. A pack that cuts its own
+holes sets `coverage = "pack"`: the returned alpha then drives the alpha test (below 0.5 on solid and cutout
+terrain, below 0.01 on translucent) and the stage may `discard`. Normal and parallax shading that keeps the
+silhouette needs no `"pack"`, and neither do `[vertex]` and `[displacement]`, which move geometry, not coverage.
+The stage writes no depth of its own either way.
+
+## `[entity] coverage`
+
+The same rule for what the entity stage draws, without translucent terrain's exception. Under `coverage = "engine"`
+(the default) Horizon keeps its own coverage of each entity: the texture's alpha times the layer's opacity (the
+vertex alpha: a mob's translucent layer, a fading warden) is cut below 0.1 and is the alpha the layer blends by;
+dissolve masks, back-face culling and the rest of Horizon's cuts stay Horizon's. The alpha `entity` returns is
+ignored, and `entity`, and every function it calls, may not `discard`: the check refuses it. A pack that cuts or
+fades entities itself sets `coverage = "pack"`: the returned alpha is then cut below 0.1 and blends, and the stage
+may `discard`. Horizon's own cuts run under either.
 
 A stage is a function your WGSL defines, with the signature below; Horizon puts the prelude (these structs, the
 resources and helpers) before your files and calls the function from its own pass. Your files declare no
@@ -162,11 +184,11 @@ One point of a block's surface, for `fn material(input: MaterialInput) -> Surfac
 
 ### `Surface`
 
-What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; Horizon then applies the alpha test (cutout and translucent) and fog.
+What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; Horizon then applies the alpha test (cutout and translucent; on the texture's alpha unless `[material] coverage = "pack"`) and fog.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `color` | `vec4<f32>` | The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than white); alpha its coverage. |
+| `color` | `vec4<f32>` | The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than white); alpha translucent terrain's opacity, and what the alpha test reads under `[material] coverage = "pack"`. |
 
 Under `[displacement]` the stage also defines `fn displacement(input: DisplacementInput) -> f32`, called for each corner of the grid the faces near the camera are cut into; the corner moves along the face's normal by the depth it gives at the point's height less the depth at the texture's mean height, pinned at the face's edges and easing out over the last quarter of the distance.
 
@@ -339,7 +361,7 @@ One point of the surface of an entity, a block entity, an item or a particle, fo
 | `position` | `vec3<f32>` | The point, camera-relative, in blocks. |
 | `emission` | `f32` | 1 on a layer vanilla draws at full brightness (spider and enderman eyes, the warden's glow), else 0. There `lightmap` is full light; `shade` stays vanilla's, which shades the warden's glow and not the eyes. |
 | `normal` | `vec3<f32>` | The surface's geometric normal, a unit vector in world axes, facing the camera, from the position's screen derivatives (as `MaterialInput.normal`, without its snap to the axes). |
-| `kind` | `u32` | What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, signs, banners, beds), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle. |
+| `kind` | `u32` | What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, banners, bells, shulker boxes), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle. |
 | `colored_light` | `vec3<f32>` | As `MaterialInput.colored_light`: the frame's coloured lights at this point, 0..1; 0 where none reaches. |
 | `translucent` | `bool` | Drawn with blending. |
 | `light` | `vec2<f32>` | Block and sky light, 0..1. |
@@ -347,11 +369,25 @@ One point of the surface of an entity, a block entity, an item or a particle, fo
 | `screen` | `vec2<f32>` | Where the point is on the screen, 0..1 from the top left (as `MaterialInput.screen`). |
 
 `entity` lights what is no block terrain: `input.kind` says which. It returns the same `Surface` as `material` (rgb
-linear light, 0 or more and unbounded; alpha its coverage), so a pack writes its lighting once and calls it from both
-stages. Around it Horizon keeps vanilla's order: the alpha test on the returned alpha, then the enchantment glint
-added on top, then fog. `horizon-shader check` takes the stage; **the game doesn't draw it yet** and refuses a pack
-that has it. A pack without `[entity]` is drawn as before, and sees none of this stage's names. Until the game draws
-the stage its prelude may still gain names; from then on the rule for new names holds for it too.
+linear light, 0 or more and unbounded; its alpha read only under `[entity] coverage = "pack"`), so a pack writes
+its lighting once and calls it from both stages. Around it Horizon keeps vanilla's order: the alpha test (on the
+texture and the layer's opacity, or under `"pack"` on the returned alpha), then the enchantment glint added on top,
+then fog. A pack without `[entity]` is drawn as before, and sees none of this stage's names; the rule
+for new names holds for the stage as for the others.
+
+**What the game draws through the stage so far: entities and block entities** (`kind` 0 and 1). Until a later
+release brings them in, Horizon lights the rest itself, exactly as without the stage: dropped and framed items and
+what a block or a display entity shows of one (`kind` 2), what flies as its item (a snowball, a potion, a fireball,
+an eye of ender), firework rockets, particles (`kind` 4), the fire on a burning entity, a guardian's beam, a lead's
+rope, name tags and text, and the first-person hand. Some draws stay Horizon's for good: beacon beams, the beams of
+End crystals, End portals and gateways, breaking cracks, energy swirls, lightning and other additive glows.
+
+An item an entity holds or wears as its model (a sword in a hand, a block on a head) reaches the stage with the
+entity, unless its texture has see-through pixels (stained glass, ice, a slime block): that one is drawn with the
+translucent items, and stays Horizon's until items draw through the stage. A block drawn as an entity (a falling
+block, primed TNT, a block display) or as a block entity (a block a piston moves) reaches the stage too. These have
+vanilla's shade already in `tint`, and `shade` 1: their vertices carry the two as one colour so far. A sign's board
+and a bed are block terrain, the material stage's.
 
 Vanilla's own, the picture a pack without the stage gets:
 
