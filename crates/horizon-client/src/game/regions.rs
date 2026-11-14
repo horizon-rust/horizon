@@ -269,6 +269,8 @@ pub(super) struct ResidentSet {
     games: Vec<Slot>,
     /// Each region's chunks when it was lent.
     chunks: Vec<Vec<ChunkPos>>,
+    /// All of `chunks`, for the streamer: lent columns are loaded, only not in the server's world.
+    lent: Arc<horizon_client::fast_hash::FxHashSet<(i32, i32)>>,
     /// The layout they were lent in: what their players' views must stay inside.
     layout: Arc<Regions>,
     /// Ticks since they were lent.
@@ -826,6 +828,7 @@ impl Game<'_> {
         let mut set = ResidentSet {
             games: Vec::with_capacity(regions.count),
             chunks: Vec::with_capacity(regions.count),
+            lent: Default::default(),
             layout: Arc::new(regions),
             age: 0,
         };
@@ -851,6 +854,7 @@ impl Game<'_> {
             set.games.push(Slot::new(w));
             set.chunks.push(chunks);
         }
+        set.lent = Arc::new(set.chunks.iter().flatten().map(|c| (c.x, c.z)).collect());
         self.lan = Some(host);
         self.regions.prof.note_resident();
         self.regions.prof.add(Step::Split, entered);
@@ -871,6 +875,7 @@ impl Game<'_> {
             self.regions.prof.add(Step::Land, landing);
             return Ok(None);
         }
+        self.streaming.lent = Some(Arc::clone(&set.lent));
         let pool = Arc::clone(
             self.regions
                 .entity_pool
@@ -1035,6 +1040,7 @@ impl Game<'_> {
     /// The resident regions of the level in place back: their parts of the level and their players.
     fn land_resident_set(&mut self, set: ResidentSet) {
         let dim = self.dim;
+        self.streaming.lent = None;
         let mut host = self.lan.take();
         let mut back = Vec::with_capacity(set.games.len());
         for (mut slot, chunks) in set.games.into_iter().zip(set.chunks) {

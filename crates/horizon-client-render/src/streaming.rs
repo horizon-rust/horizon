@@ -519,6 +519,9 @@ pub struct Streaming {
     pub mod_forced: HashSet<(i32, i32)>,
     /// No work is scheduled while paused (title screen).
     pub paused: bool,
+    /// The columns lent to resident regions (their chunks are not in the world meanwhile, but are loaded): never
+    /// scheduled for generation, never dropped from `decorated`.
+    pub lent: Option<std::sync::Arc<FxHashSet<(i32, i32)>>>,
     /// Finished meshes the renderer has not taken yet (the game's pending
     /// uploads): they count against the meshing room as the jobs do.
     pub upload_backlog: usize,
@@ -672,6 +675,7 @@ struct GenerationInputs<'a> {
     finishing: &'a FxHashSet<(i32, i32)>,
     decorates: bool,
     remote: bool,
+    lent: Option<&'a FxHashSet<(i32, i32)>>,
 }
 impl GenerationScan {
     /// None means the scan was skipped; Some preserves the original candidate
@@ -691,6 +695,7 @@ impl GenerationScan {
         }
         let missing = |&(_, x, z): &(i64, i32, i32)| {
             !input.world.chunks.contains_key(&(x, z))
+                && !input.lent.is_some_and(|l| l.contains(&(x, z)))
                 && !input.generating.contains(&(x, z))
                 && !input.protos.contains_key(&(x, z))
                 && !input.finishing.contains(&(x, z))
@@ -740,6 +745,7 @@ impl GenerationScan {
                 for x in x0..=x1 {
                     if !input.ranges.requested(x, z, input.decorates)
                         || input.world.chunks.contains_key(&(x, z))
+                        || input.lent.is_some_and(|l| l.contains(&(x, z)))
                         || input.generating.contains(&(x, z))
                         || input.protos.contains_key(&(x, z))
                         || input.finishing.contains(&(x, z))
@@ -762,6 +768,7 @@ impl GenerationScan {
                     for dx in -reach..=reach {
                         let (x, z) = (fx + dx, fz + dz);
                         if input.world.chunks.contains_key(&(x, z))
+                            || input.lent.is_some_and(|l| l.contains(&(x, z)))
                             || input.generating.contains(&(x, z))
                             || input.protos.contains_key(&(x, z))
                             || input.finishing.contains(&(x, z))
@@ -1131,6 +1138,7 @@ impl Streaming {
             forced: HashSet::new(),
             mod_forced: HashSet::new(),
             paused: false,
+            lent: None,
             upload_backlog: 0,
             sky_light: true,
             nether_shading: false,
@@ -1801,8 +1809,12 @@ impl Streaming {
         }
         hz_laps.lap("st_sweep");
         let (protos, finishing) = (&self.protos, &self.finishing);
+        let lent = self.lent.as_deref();
         self.decorated.retain(|k| {
-            protos.contains_key(k) || finishing.contains(k) || world.chunks.contains_key(k)
+            protos.contains_key(k)
+                || finishing.contains(k)
+                || world.chunks.contains_key(k)
+                || lent.is_some_and(|l| l.contains(k))
         });
         // Finalize chunks whose neighbourhood is decorated.
         let finalize_candidates: Vec<(i32, i32)> = self.protos.keys().copied().collect();
@@ -2142,6 +2154,7 @@ impl Streaming {
             finishing: &self.finishing,
             decorates: self.decorates,
             remote: self.remote,
+            lent: self.lent.as_deref(),
         };
         if let Some(wanted) = self.generation_scan.candidates(input, workers * 3) {
             for (_, x, z) in wanted {
@@ -3706,6 +3719,7 @@ mod tests {
                 finishing: &self.finishing,
                 decorates: self.decorates,
                 remote: self.remote,
+                lent: None,
             }
         }
         fn fill(&mut self) {
