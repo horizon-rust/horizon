@@ -79,6 +79,7 @@ impl BossBar {
         let style = Style {
             color: Some(color_rgb(&self.color)),
             hover: Some(Box::new(Text::literal(self.id.clone()))),
+            insertion: Some(self.id.clone()),
             ..Style::default()
         };
         // ComponentUtils.wrapInSquareBrackets(name).withStyle(...): the
@@ -214,5 +215,31 @@ mod tests {
         assert_eq!(color_rgb("purple"), text::named_color("dark_blue").unwrap());
         b.remove("test:x");
         assert!(b.bars.is_empty());
+    }
+
+    /// `CustomBossEvent.getDisplayName`: `withInsertion(customId)`, so a
+    /// shift-click of the bracketed name types the bar's id.
+    #[test]
+    fn the_shown_name_inserts_the_bar_id_on_shift_click() {
+        let mut b = BossBars::default();
+        b.add("demo:bar", literal("Demo"));
+        let shown = b.get("demo:bar").unwrap().display_name();
+        let styles: Vec<_> = shown.chars().map(|(_, style)| style).collect();
+        assert!(!styles.is_empty());
+        assert!(
+            styles
+                .iter()
+                .all(|s| s.insertion.as_deref() == Some("demo:bar")),
+            "{:?}",
+            shown.component()
+        );
+        // The hover still names the id, as it did.
+        assert_eq!(
+            styles[0].hover.as_deref().map(Text::plain),
+            Some("demo:bar".into())
+        );
+        // The component a vanilla client receives carries it at the root.
+        let component = shown.component();
+        assert_eq!(component["insertion"], "demo:bar", "{component}");
     }
 }
