@@ -66,16 +66,16 @@ jobs:
           old_mac = '#[cfg(target_os = "macos")]'
           assert source.count(old_mac) == 1
           source = source.replace(old_mac, '#[cfg(any(target_os = "macos", target_os = "ios"))]')
-          stub = '''
-// iOS is Metal-only here. Vulkan HDR metadata does not apply.
-#[cfg(target_os = "ios")]
-pub fn open_vulkan_device(
-    _adapter: &wgpu::Adapter,
-    _desc: &wgpu::DeviceDescriptor<'_>,
-) -> Option<Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError>> {
-    None
-}
-'''
+          stub = (
+              "\n// iOS is Metal-only here. Vulkan HDR metadata does not apply.\n"
+              "#[cfg(target_os = \"ios\")]\n"
+              "pub fn open_vulkan_device(\n"
+              "    _adapter: &wgpu::Adapter,\n"
+              "    _desc: &wgpu::DeviceDescriptor<'_>,\n"
+              ") -> Option<Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError>> {\n"
+              "    None\n"
+              "}\n"
+          )
           anchor = '/// wgpu\'s opt-in to its'
           assert source.count(anchor) == 1
           source = source.replace(anchor, stub + '\\n' + anchor)
