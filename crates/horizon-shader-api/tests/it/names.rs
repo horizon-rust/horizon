@@ -9,7 +9,7 @@
 //! manifest key (and compose the pack here without it), or add its line to the list in a pull
 //! request that says why no pack can hold the name. A stage added later starts its own list:
 //! no pack had it, so its names collide with nothing.
-use horizon_shader_api::{Api, MANIFEST, Pack, Problem, check, compose};
+use horizon_shader_api::{Api, MANIFEST, Pack, Problem, StageKind, check, compose, compose_scene};
 use std::collections::BTreeSet;
 
 const STAGES: &str = "[sky]\nfile = \"sky.wgsl\"\n[material]\nfile = \"material.wgsl\"\n\
@@ -51,8 +51,14 @@ const FILES: [(&str, &str); 7] = [
 
 /// A 0.2 pack with every stage and no other key, `replaced` standing in for one of its files.
 fn pack(replaced: Option<(&str, &str)>) -> Pack {
-    let manifest =
-        format!("schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n{STAGES}");
+    pack_with("", replaced)
+}
+
+/// `pack` with `keys` added to its manifest.
+fn pack_with(keys: &str, replaced: Option<(&str, &str)>) -> Pack {
+    let manifest = format!(
+        "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n{STAGES}{keys}"
+    );
     let mut files: std::collections::BTreeMap<String, Vec<u8>> = FILES
         .iter()
         .map(|(name, text)| ((*name).to_owned(), text.as_bytes().to_vec()))
@@ -108,9 +114,14 @@ fn declared_reads_aliases_across_lines() {
     );
 }
 
-/// What naga finds in the same text, to hold `declared` to: it must miss nothing naga sees.
+/// What naga finds in the same text, to hold `declared` to: it must miss nothing naga sees. The
+/// material prelude's LabPBR functions call into the renderer (a traced post prelude has its own).
 fn parsed(wgsl: &str) -> BTreeSet<String> {
-    let text = format!("{wgsl}{}", horizon_shader_api::stages::PBR_STUB);
+    let pbr = match wgsl.contains("fn horizon_block_pbr(") {
+        true => "",
+        false => horizon_shader_api::stages::PBR_STUB,
+    };
+    let text = format!("{wgsl}{pbr}");
     let m = naga::front::wgsl::parse_str(&text).unwrap();
     let types = m.types.iter().filter_map(|(_, t)| t.name.clone());
     let functions = m.functions.iter().filter_map(|(_, f)| f.name.clone());
@@ -124,39 +135,53 @@ fn parsed(wgsl: &str) -> BTreeSet<String> {
     all.chain(overrides).collect()
 }
 
+/// The names the prelude of `composed` declares that a pack could hold: those starting with
+/// `horizon_` are Horizon's by the API's rules.
+fn prelude_names(composed: &horizon_shader_api::Composed, kind: StageKind) -> BTreeSet<String> {
+    let (part, range) = &composed.parts[0];
+    assert_eq!(part, "<prelude>");
+    let prelude = &composed.text[range.clone()];
+    let have: BTreeSet<String> = declared(prelude)
+        .into_iter()
+        .filter(|n| !n.starts_with("horizon_"))
+        .collect();
+    let seen = parsed(prelude);
+    // naga's own types of a ray query, which the scene's prelude uses and declares nowhere:
+    // the check refuses them in the files of a pack with `[ray_tracing]`.
+    let naga_s = ["RayDesc", "RayIntersection"];
+    let missed: Vec<_> = seen
+        .iter()
+        .filter(|n| !n.starts_with("horizon_") && !have.contains(*n))
+        .filter(|n| !naga_s.contains(&n.as_str()))
+        .collect();
+    assert!(missed.is_empty(), "{kind:?}: `declared` misses {missed:?}");
+    have
+}
+
+/// `tests/names-0.2/<stage>.txt`, and where it is.
+fn listed_names(kind: StageKind) -> (BTreeSet<String>, String) {
+    let path = format!(
+        "{}/tests/names-0.2/{}.txt",
+        env!("CARGO_MANIFEST_DIR"),
+        kind.name()
+    );
+    let list = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let listed = list
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_owned)
+        .collect();
+    (listed, path)
+}
+
 #[test]
 fn a_0_2_prelude_declares_only_the_names_on_its_list() {
     let pack = pack(None);
     for &kind in Api::V0_2.stages() {
         let file = format!("{}.wgsl", kind.name());
-        let composed = compose(&pack, kind, &file);
-        let (part, range) = &composed.parts[0];
-        assert_eq!(part, "<prelude>");
-        let prelude = &composed.text[range.clone()];
-        // Names starting with `horizon_` are Horizon's by the API's rules: a pack can't hold one.
-        let have: BTreeSet<String> = declared(prelude)
-            .into_iter()
-            .filter(|n| !n.starts_with("horizon_"))
-            .collect();
-        let seen = parsed(prelude);
-        let missed: Vec<_> = seen
-            .iter()
-            .filter(|n| !n.starts_with("horizon_") && !have.contains(*n))
-            .collect();
-        assert!(missed.is_empty(), "{kind:?}: `declared` misses {missed:?}");
-
-        let path = format!(
-            "{}/tests/names-0.2/{}.txt",
-            env!("CARGO_MANIFEST_DIR"),
-            kind.name()
-        );
-        let list = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
-        let listed: BTreeSet<String> = list
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .map(str::to_owned)
-            .collect();
+        let have = prelude_names(&compose(&pack, kind, &file), kind);
+        let (listed, path) = listed_names(kind);
         let new: Vec<_> = have.difference(&listed).collect();
         assert!(
             new.is_empty(),
@@ -171,6 +196,66 @@ fn a_0_2_prelude_declares_only_the_names_on_its_list() {
             "the {} stage's 0.2 prelude no longer declares {gone:?}, which packs may use: {path}",
             kind.name()
         );
+    }
+}
+
+/// The compute stage (`[[post]] compute = true`) came after the others and starts a list of its
+/// own.
+#[test]
+fn a_compute_prelude_declares_only_the_names_on_its_list() {
+    let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
+                    [[post]]\nfile = \"compute.wgsl\"\ncompute = true\n\
+                    dispatch = \"pixels\"\nworkgroup = [8, 8, 1]\n[[post]]\nfile = \"post.wgsl\"\n";
+    let compute = "fn compute(input: ComputeInput) {}\n";
+    let files = [(MANIFEST, manifest), ("compute.wgsl", compute), FILES[4]];
+    let pack = Pack::from_files(
+        (files.iter())
+            .map(|(n, t)| ((*n).to_owned(), t.as_bytes().to_vec()))
+            .collect(),
+    )
+    .unwrap();
+    check(&pack).unwrap();
+    let kind = StageKind::Compute;
+    let have = prelude_names(&compose(&pack, kind, "compute.wgsl"), kind);
+    assert_eq!(have, listed_names(kind).0);
+}
+
+/// The rule at work: `[ray_tracing]` brings its names to the post stage of the pack that set it
+/// and to its material stage where that calls `trace` or `trace_any` (which has `block_pbr_maps`
+/// already), the same whether the renderer has the scene or not.
+#[test]
+fn ray_tracing_brings_its_names_to_the_stages_of_the_pack_that_trace() {
+    let material = "fn material(input: MaterialInput) -> Surface {\n    \
+                    return Surface(input.albedo * f32(trace_any(input.position, input.normal, 8.0)));\n}\n";
+    for (replaced, traces) in [(None, false), (Some(("material.wgsl", material)), true)] {
+        let pack = pack_with("[ray_tracing]\n", replaced);
+        for &kind in Api::V0_2.stages() {
+            let file = format!("{}.wgsl", kind.name());
+            let (mut want, _) = listed_names(kind);
+            if kind == StageKind::Post || kind == StageKind::Material && traces {
+                let rays = [
+                    "RayHit",
+                    "trace",
+                    "trace_any",
+                    "trace_layers",
+                    "trace_any_layers",
+                    "RAY_SOLID",
+                    "RAY_TRANSLUCENT",
+                    "hit_normal_map",
+                    "hit_specular_map",
+                ];
+                want.extend(rays.map(str::to_owned));
+            }
+            if kind == StageKind::Post {
+                want.insert("block_pbr_maps".to_owned());
+            }
+            for composed in [
+                compose(&pack, kind, &file),
+                compose_scene(&pack, kind, &file),
+            ] {
+                assert_eq!(prelude_names(&composed, kind), want, "{kind:?}");
+            }
+        }
     }
 }
 
