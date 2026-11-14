@@ -78,7 +78,7 @@ jobs:
           )
           anchor = '/// wgpu\'s opt-in to its'
           assert source.count(anchor) == 1
-          source = source.replace(anchor, stub + '\\n' + anchor)
+          source = source.replace(anchor, stub + chr(10) + anchor)
           path.write_text(source)
           PY
           git diff -- crates/horizon-hdr/src/lib.rs
