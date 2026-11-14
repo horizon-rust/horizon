@@ -112,8 +112,8 @@ fn a_ridden_jump_reads_the_blocks_under_it_and_jump_boost() {
             m
         };
         let dash = f64::from(22.2222_f32) * 0.1;
-        // 1.4285F * amount * jumpMomentum is a float product in vanilla.
-        let lift = |jump_power: f32| f64::from(1.4285_f32 * jump_power);
+        // Vanilla widens jumpMomentum to double before multiplying it.
+        let lift = |jump_power: f32| f64::from(1.4285_f32) * f64::from(jump_power);
         let on_stone = camel(stone, None);
         assert!(
             close(on_stone.velocity.z, dash) && on_stone.velocity.x == 0.0,
@@ -121,7 +121,7 @@ fn a_ridden_jump_reads_the_blocks_under_it_and_jump_boost() {
             on_stone.velocity
         );
         assert!(
-            close(on_stone.velocity.y, lift(0.42_f32)),
+            on_stone.velocity.y == lift(0.42_f32),
             "the dash's lift: {}",
             on_stone.velocity.y
         );
@@ -209,6 +209,19 @@ fn a_loaded_horses_jump_strength_reaches_its_launch() {
             "the launch: {}",
             m.velocity.y
         );
+        let zero = horizon_world::nbt::parse_snbt(
+            r#"{id:"minecraft:horse",Pos:[0.5d,1d,0.5d],attributes:[{id:"minecraft:jump_strength",base:0d}]}"#,
+        )
+        .unwrap()
+        .0;
+        let mut m = crate::entity_nbt::mob_from_nbt(&zero, &kinds, 8, None).expect("a horse");
+        m.on_ground = true;
+        m.rider = Some(Rider {
+            jump: 1.0,
+            ..Default::default()
+        });
+        ridden_step(&mut m, Some(w));
+        assert_eq!(m.velocity.y, 0.0, "a saved zero base stays zero");
     });
     let _ = ran;
 }

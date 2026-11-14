@@ -454,8 +454,8 @@ pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>, w: Option<&Mob
     // 1.4285F * amount * getJumpPower(): the camel's own jump strength, the
     // block's jump factor and Jump Boost, not a hard-coded 0.42.
     let jump_power = m.jump_power_with_factor(1.0, jump_factor);
-    // 1.4285F * amount * jumpMomentum stays a float product in vanilla.
-    m.velocity.y += f64::from(1.4285_f32 * amount * jump_power);
+    // Vanilla widens jumpMomentum to double before the final multiplication.
+    m.velocity.y += f64::from(1.4285_f32 * amount) * f64::from(jump_power);
     m.extra.anim_ticks = DASH_COOLDOWN;
     m.extra.flag2 = true;
     crate::motion::native_living_jump(m.id, &m.kind.id);

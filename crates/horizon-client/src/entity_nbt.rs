@@ -2264,17 +2264,19 @@ pub fn mob_from_nbt_with_random(
             .and_then(|e| e.get("head"))
             .and_then(|b| text(b.get("id")))
             .map(Into::into);
+        let mut loaded_jump_strength = false;
         if let Some(Tag::List(attrs)) = tag.get("attributes") {
             for a in attrs {
                 let (Some(id), Some(v)) = (text(a.get("id")), float(a.get("base"))) else {
                     continue;
                 };
-                if id == "minecraft:jump_strength" && v > 0.0 {
+                if id == "minecraft:jump_strength" {
                     crate::mobs::equine::set_jump_strength(&mut m, v);
+                    loaded_jump_strength = true;
                 }
             }
         }
-        if m.extra.vector[0] <= 0.0 {
+        if !loaded_jump_strength && m.extra.vector[0] <= 0.0 {
             m.extra.vector[0] = if crate::mobs::equine::is_chested(m.species()) {
                 0.5
             } else {
