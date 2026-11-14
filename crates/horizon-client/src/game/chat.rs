@@ -2688,8 +2688,14 @@ mod enchantment_snapshot_tests {
             assert_eq!(reg.ids("minecraft:item"), item_ids);
             assert_eq!(reg.effects, effects);
         }
-        game.world_tables.as_mut().unwrap().stations.enchantments = base.clone();
-        game.world_tables.as_mut().unwrap().items.enchantments = base;
+        std::sync::Arc::get_mut(game.world_tables.as_mut().unwrap())
+            .unwrap()
+            .stations
+            .enchantments = base.clone();
+        std::sync::Arc::get_mut(game.world_tables.as_mut().unwrap())
+            .unwrap()
+            .items
+            .enchantments = base;
         assert!(game.enchantments().get("h024:audit").is_none());
         game.sync_function_registries();
         assert!(
