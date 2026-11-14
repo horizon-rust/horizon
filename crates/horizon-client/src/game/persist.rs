@@ -1076,8 +1076,8 @@ impl Game<'_> {
         };
         tags.retain(|tag| matches!(tag, Tag::String(_)));
         tags.truncate(1024);
-        let mut seen = HashSet::new();
-        tags.retain(|tag| seen.insert(tag.clone()));
+        // `entityTags` is a HashSet: deduplicated, and saved in its order.
+        tags = horizon_client::fastutil_order::hash_set_order(tags, Tag::string_hash);
         if !tags.is_empty() {
             raw.insert("Tags".into(), Tag::List(tags));
         }
@@ -2538,6 +2538,23 @@ fn join_saved_team(board: &mut Scoreboard, name: &str, tag: &Tag) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Entity.entityTags` is a HashSet: a loaded mob's tags are kept once,
+    /// in the set's iteration order, which `/data get entity` and saves show
+    /// (#15158, mob_command_damage_vibration).
+    #[test]
+    fn loaded_tags_take_the_hash_set_order() {
+        let s = |v: &str| Tag::String(v.into());
+        let mut tag = Tag::compound([(
+            "Tags",
+            Tag::List(vec![s("h113_actor"), s("h113_stationary"), s("h113_actor")]),
+        )]);
+        Game::normalize_loaded_mob_tags(&mut tag);
+        assert_eq!(
+            tag.get("Tags"),
+            Some(&Tag::List(vec![s("h113_stationary"), s("h113_actor")]))
+        );
+    }
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]

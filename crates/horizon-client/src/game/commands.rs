@@ -1634,11 +1634,11 @@ impl Game<'_> {
                 }
             }
             Target::Mob(id) => {
-                // Entity.teleport: stopRiding() before the entity is placed,
-                // which a command's transition always does (a command's
-                // transition is never asPassenger). A rider moved without this
-                // is seated again by the next sync, so nothing moves.
+                // Entity.teleport: stopRiding() before the entity is placed (a
+                // command's transition is never asPassenger; a rider moved without
+                // it is seated again by the next sync), and no distance is walked.
                 self.dismount_mob(id);
+                self.sculk_mob_teleported(id, v);
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     m.position = v;
                     m.previous = v;

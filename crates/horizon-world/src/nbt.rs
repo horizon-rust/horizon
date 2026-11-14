@@ -31,6 +31,18 @@ impl JavaString {
         String::from_utf16_lossy(&self.0)
     }
 }
+impl Tag {
+    /// `String.hashCode` of a string tag (its UTF-16 units); 0 for any other.
+    pub fn string_hash(&self) -> i32 {
+        match self {
+            Self::String(s) => {
+                s.0.iter()
+                    .fold(0i32, |h, &c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
+            }
+            _ => 0,
+        }
+    }
+}
 
 pub type Compound = BTreeMap<JavaString, Tag>;
 

@@ -8344,10 +8344,11 @@ mod conversion_tag_tests {
         .enumerate()
         {
             let uuid = [10374, 1, 0, number as i32];
-            let tags = Tag::List(vec![
-                Tag::String("subject".into()),
-                Tag::String(from.into()),
-            ]);
+            // `Entity.tags` is a HashSet: they come back in its order.
+            let order = horizon_client::fastutil_order::hash_set_order(["subject", from], |s| {
+                horizon_client::fastutil_order::java_hash(s)
+            });
+            let tags = Tag::List(order.iter().map(|&t| Tag::String(t.into())).collect());
             let raw = Tag::compound([
                 (
                     "id",
@@ -8368,7 +8369,7 @@ mod conversion_tag_tests {
                 ("horizon:old_entity_only", Tag::Byte(1)),
             ]);
             let old_id = game.load_mob(raw, None).unwrap();
-            assert_eq!(game.tags_of(Target::Mob(old_id)), ["subject", from]);
+            assert_eq!(game.tags_of(Target::Mob(old_id)), order);
             let source = game.mobs.iter().find(|m| m.id == old_id).unwrap().clone();
             let new_id = game
                 .convert_to(
@@ -8380,7 +8381,7 @@ mod conversion_tag_tests {
             assert_ne!(old_id, new_id);
             assert_eq!(
                 game.tags_of(Target::Mob(new_id)),
-                ["subject", from],
+                order,
                 "converted ID must keep tags"
             );
             let index = game.mobs.iter().position(|m| m.id == new_id).unwrap();
@@ -8394,7 +8395,7 @@ mod conversion_tag_tests {
             assert!(saved.get("horizon:old_entity_only").is_none());
             game.mobs.remove(index);
             let reloaded = game.load_mob(saved, None).unwrap();
-            assert_eq!(game.tags_of(Target::Mob(reloaded)), ["subject", from]);
+            assert_eq!(game.tags_of(Target::Mob(reloaded)), order);
         }
     }
 }

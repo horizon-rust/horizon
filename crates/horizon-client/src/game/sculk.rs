@@ -644,6 +644,15 @@ impl Game<'_> {
         }
     }
 
+    /// `Entity.teleport` moves a mob without `Entity.move`: no distance is
+    /// walked, so its next step counts from where it landed (#15158,
+    /// mob_command_damage_vibration: a `/tp` posted a STEP).
+    pub(super) fn sculk_mob_teleported(&mut self, id: u32, at: Vec3) {
+        if let Some(steps) = self.sculk.steps.get_mut(&Who::Mob(id)) {
+            steps.last = [at.x, at.y, at.z];
+        }
+    }
+
     /// `LivingEntity.onEquipItem`'s game event for a mob: EQUIP when the new
     /// stack is equippable in that slot, UNEQUIP when the slot is emptied.
     pub(super) fn mob_equip_event(&mut self, id: u32, at: [f64; 3], equip: bool) {

@@ -261,6 +261,7 @@ impl Game<'_> {
         m.previous = to;
         m.fall_distance = 0.0;
         m.needs_sync = true;
+        self.sculk_mob_teleported(id, to);
         true
     }
     /// Adds `velocity` to mob `id`'s: false for no such mob, another dimension
