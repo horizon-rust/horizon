@@ -252,6 +252,9 @@ impl Regions {
 const ID_BLOCK: u32 = 1 << 20;
 const ID_REFILL: u32 = 1 << 15;
 
+/// The most block changes one region lights in its tick; the rest wait for the next.
+const REGION_RELIGHT_PER_TICK: usize = 1024;
+
 /// What a game keeps for ticking by regions: whether it is a region's game, its handle on the resources that
 /// outlives the server's borrow, the end of its block of entity ids, and the games made for regions and kept.
 #[derive(Default)]
@@ -1009,6 +1012,7 @@ impl Game<'_> {
                 w.copy_clock_from(self);
             }
             w.refill_entity_ids(&pool);
+            w.streaming.sky_light = self.streaming.sky_light;
             w.world.game_time = self.world.game_time;
             w.world.day_time = self.world.day_time;
             w.world.weather = self.world.weather;
@@ -1362,7 +1366,11 @@ impl Game<'_> {
         self.tick_sculk_blocks()?;
         // Sleep: the night is skipped by the server, which sums what the regions report; a skipped night wakes
         // this region's players too.
-        if self.lan.as_mut().is_some_and(|h| std::mem::take(&mut h.hub.wake_request)) {
+        if self
+            .lan
+            .as_mut()
+            .is_some_and(|h| std::mem::take(&mut h.hub.wake_request))
+        {
             self.wake_guests();
         }
         if let Some(h) = self.lan.as_mut() {
@@ -1372,6 +1380,11 @@ impl Game<'_> {
         if let Some(h) = self.lan.as_mut() {
             h.hub.away_sleep = counts;
         }
+        // The light its block changes made, here and not on the server thread: coalesced, and a bounded
+        // amount per tick, the rest carried to the next tick.
+        let sky_light = self.streaming.sky_light;
+        self.streaming
+            .relight_region_edits(&mut self.world, sky_light, REGION_RELIGHT_PER_TICK);
         Ok(())
     }
 }

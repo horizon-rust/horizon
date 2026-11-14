@@ -2204,6 +2204,61 @@ impl Streaming {
             }
         }
     }
+    /// A resident region's block edits, lit inside its own tick instead of on the server thread when the
+    /// region comes home: the edits coalesced per block (the first old state, the last new one), those whose
+    /// column and eight neighbours are all in the region's world lit in place, at most `cap` blocks of them;
+    /// the rest (at the region's edge, or past the cap) stay in `world.light_edits` for the next tick or for
+    /// the server when the region lands. Returns the blocks lit.
+    pub fn relight_region_edits(
+        &mut self,
+        world: &mut World,
+        sky_light: bool,
+        cap: usize,
+    ) -> usize {
+        if world.light_edits.is_empty() {
+            return 0;
+        }
+        let edits = std::mem::take(&mut world.light_edits);
+        let mut merged: FxHashMap<(i32, i32, i32), (usize, u32, u32)> = FxHashMap::default();
+        for (n, (p, old, new)) in edits.into_iter().enumerate() {
+            merged
+                .entry(p)
+                .and_modify(|e| e.2 = new)
+                .or_insert((n, old, new));
+        }
+        let mut merged: Vec<_> = merged.into_iter().collect();
+        merged.sort_unstable_by_key(|(_, (n, _, _))| *n);
+        let mut positions = Vec::new();
+        for (p, (_, old, new)) in merged {
+            let own = (-1..=1).all(|dz| {
+                (-1..=1).all(|dx| {
+                    world
+                        .chunks
+                        .contains_key(&((p.0 >> 4) + dx, (p.2 >> 4) + dz))
+                })
+            });
+            if !own || positions.len() >= cap {
+                world.light_edits.push((p, old, new));
+            } else if self.light_tables.differs(old, new) {
+                positions.push(p);
+            }
+        }
+        if positions.is_empty() {
+            return 0;
+        }
+        let mut changed = LightChanges::default();
+        crate::light::relight(
+            &mut world.chunks,
+            &self.light_tables,
+            sky_light,
+            &positions,
+            false,
+            &mut changed,
+        );
+        Self::mark_light_changes(world, &changed);
+        Self::relight_beside_unlit(world, &changed);
+        positions.len()
+    }
     /// Hands a big batch of edits (a `/fill` arriving block by block) to the
     /// workers: the columns they touch and their neighbours get full light
     /// jobs, as `World::edit_runs` does, instead of relighting every changed
