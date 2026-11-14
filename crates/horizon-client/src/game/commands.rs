@@ -2325,25 +2325,20 @@ impl Game<'_> {
                 self.ui.death_cause = Some("death.attack.genericKill".into());
             }
             Target::Mob(id) => {
-                let mut killed = None;
-                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                    // LivingEntity.kill: a generic_kill hit of Float.MAX_VALUE,
-                    // which its death message tells.
-                    let alive = m.alive();
-                    if alive {
-                        m.record_damage(
-                            horizon_client::mobs::Damage::of(
-                                horizon_client::mobs::DamageKind::GenericKill,
-                            ),
-                            f32::MAX,
-                        );
-                    }
-                    m.health = 0.0;
-                    if m.death_time == 0 {
-                        m.death_time = 1;
-                    }
-                    killed = alive.then(|| m.clone());
+                // LivingEntity.kill: `hurtServer` with a generic_kill hit of Float.MAX_VALUE, as
+                // /damage hurts (hurt time, death message); the type bypasses invulnerability and
+                // totems and deals no knockback. The death ticks start on the next tick.
+                let alive = self.mobs.iter().any(|m| m.id == id && m.alive());
+                if alive {
+                    let kill = horizon_client::mobs::DamageKind::GenericKill;
+                    self.command_damage_mob(id, f32::MAX, horizon_client::mobs::Damage::of(kill));
                 }
+                let killed = self
+                    .mobs
+                    .iter()
+                    .find(|m| m.id == id && !m.alive())
+                    .filter(|_| alive)
+                    .cloned();
                 // The hit runs LivingEntity.die before the command returns:
                 // its ENTITY_DIE, loot and experience come now, not in the
                 // next tick's deaths, which skip it (as a frog's bite does).

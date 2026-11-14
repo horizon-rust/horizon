@@ -467,7 +467,7 @@ impl Game<'_> {
     /// `DamageCommand.damage`: retain the accepted hit's player context and run
     /// `Zombie.hurtServer`'s reinforcement requests before the command returns.
     /// Health-changing hits also raise their damage vibration before return.
-    fn command_damage_mob(&mut self, id: u32, amount: f32, damage: Damage) -> bool {
+    pub(super) fn command_damage_mob(&mut self, id: u32, amount: f32, damage: Damage) -> bool {
         let player_uuid = (damage.attacker == Some(Who::Player))
             .then(|| self.owner_damage_uuid())
             .flatten();
