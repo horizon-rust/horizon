@@ -18,12 +18,16 @@ ruzstd = "0.9"
 getrandom = "0.3"
 # Sending, for the launcher (and the game's "I'm playing" ping); the ingest server builds without it.
 ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
+log = { version = "0.4", optional = true }
 
 [features]
 default = ["upload", "live"]
 upload = ["dep:ureq"]
 # The "I'm playing" ping and reading the live count (`live`), for the game and the launcher.
 live = ["dep:ureq"]
+# The game's part (`game`): the play session's summary, crash and benchmark reports, kept through the
+# platform's hooks. The official executable turns it on.
+game = ["dep:log"]
 
 [[test]]
 name = "consent_gating"

@@ -53,7 +53,7 @@ pub(super) struct StartupMenu {
     pub reload_packs: bool,
     /// Browse mods' worker (`mod_browser`).
     mod_jobs: super::mod_browser::Jobs,
-    pub perf: horizon_client::telemetry::Session,
+    pub perf: horizon_client::play_session::Session,
 }
 
 impl StartupMenu {

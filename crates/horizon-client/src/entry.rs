@@ -23,16 +23,14 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         horizon_client::options_ui::HORIZON_EXTRAS
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
-    horizon_client::telemetry::mark_start();
-    // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
-    crash::on_report(horizon_client::telemetry::keep_crash);
+    // The process's start, for the startup trace and the start's milestones.
+    horizon_client::spans::startup::init(std::time::Instant::now());
     // Crates above the engine registered their hooks before this (horizon-official's `main`),
     // then the Horizon parts still in this crate; none registers after this point.
     game::player_hooks::register();
     horizon_hooks::engine::seal();
     // The text crates ship (`horizon_hooks::lang`), loaded with the game's own languages.
     horizon_client::lang::install_crate_files(horizon_hooks::lang::engine::all());
-    horizon_client::spans::startup::init(std::time::Instant::now());
     let args: Vec<String> = std::env::args().skip(1).collect();
     let game_args = args.iter().take_while(|a| *a != "--dedicated");
     let help = game_args
