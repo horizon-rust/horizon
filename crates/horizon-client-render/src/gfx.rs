@@ -10149,7 +10149,7 @@ impl Renderer {
         // One of Horizon's own packs: the mirror its material reads, and its copies of the world
         // before translucent terrain and its surface target, the size of this frame's targets.
         if let Some(native) = &mut self.native {
-            native.take_world(native_pack::WorldTargets {
+            native.prepare_world_targets(native_pack::WorldTargets {
                 device: &self.device,
                 encoder: &mut encoder,
                 reflection,

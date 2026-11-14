@@ -326,7 +326,7 @@ impl NativePack {
 
     /// Binds the water mirror the renderer drew this frame, and outside the title screen
     /// fits the material stage's copies of the world and the surface target to its targets.
-    pub fn take_world(&mut self, world: WorldTargets<'_>) {
+    pub fn prepare_world_targets(&mut self, world: WorldTargets<'_>) {
         let WorldTargets {
             device,
             encoder,
@@ -369,7 +369,7 @@ pub struct FrameStart<'a> {
     pub sky_visible: bool,
 }
 
-/// What the renderer hands the pack after the water mirror (`NativePack::take_world`).
+/// What the renderer hands the pack after the water mirror (`NativePack::prepare_world_targets`).
 pub struct WorldTargets<'a> {
     pub device: &'a wgpu::Device,
     pub encoder: &'a mut wgpu::CommandEncoder,
