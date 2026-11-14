@@ -31,6 +31,20 @@ jobs:
           rustc --version
           cargo --version
           xcodebuild -version
+      - name: Apply minimal iOS-only allocator pointer compatibility patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("crates/horizon-threads/src/allocator_stats.rs")
+          old = "std::ffi::CStr::from_ptr(raw)"
+          new = "std::ffi::CStr::from_ptr(raw.cast())"
+          source = path.read_text()
+          assert source.count(old) == 1, "Upstream allocator changed; review patch before applying"
+          path.write_text(source.replace(old, new, 1))
+          PY
+          # All modifications stay in the ephemeral runner checkout.
+          git diff -- crates/horizon-threads/src/allocator_stats.rs
       - name: Cross-check the original Horizon game for iOS
         id: crosscheck
         continue-on-error: true
