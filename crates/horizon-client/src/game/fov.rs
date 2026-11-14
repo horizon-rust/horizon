@@ -273,6 +273,10 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
+#[path = "camera_tick_order_tests.rs"]
+mod camera_tick_order_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{camera_effects_enabled, studio_draws_hand, valid_fov_modifier};
     #[test]

@@ -6237,17 +6237,17 @@ impl Game<'_> {
         if self.use_delay > 0 {
             self.use_delay -= 1;
         }
-        // Minecraft.handleKeybinds precedes entity ticking and sendChanges.
-        // Window callbacks only queue clicks, so an interaction cannot leak
-        // between CLIENT_TICK_END and a later pong.
+        // Minecraft.handleKeybinds precedes entity ticking and sendChanges. Window callbacks only
+        // queue clicks, so an interaction cannot leak between CLIENT_TICK_END and a later pong.
         self.remote_handle_input();
-        // Player.tick's ItemCooldowns.tick, in ClientLevel.tickEntities after
-        // handleKeybinds: this path replaces `tick_world`'s for a server's
-        // client (multiplayer and the default single player), so the entries
-        // advance here or the slot stays shaded until the server says the
-        // entry ended. `onCooldownEnded` is the plain ItemCooldowns' no-op on
-        // a client. Ticking it after the keybinds keeps a held use from
-        // trying again a tick before the server's entry ends.
+        // GameRenderer.tick, before ClientLevel.tickEntities: Camera.tick eases the eye height and
+        // field of view toward the player as its last tick left it (#16178).
+        self.tick_fov();
+        // Player.tick's ItemCooldowns.tick, in ClientLevel.tickEntities after handleKeybinds: this
+        // path replaces `tick_world`'s for a server's client (multiplayer and the default single
+        // player), so the entries advance here or the slot stays shaded until the server says the
+        // entry ended. `onCooldownEnded` is the plain ItemCooldowns' no-op on a client. After the
+        // keybinds, a held use doesn't try again a tick before the server's entry ends.
         self.cooldowns.tick();
         // Inventory.tick's ItemStack.inventoryTick: the pop time runs down.
         if !hold {
