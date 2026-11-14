@@ -16,8 +16,10 @@ pub(super) enum Step {
     Net,
     /// Working out the regions, and splitting the level into them (the tick after a landing).
     Split,
-    /// Starting the region threads: clocks and ids copied in, packets handed over.
-    Launch,
+    /// Starting the region threads, first part: clocks, settings and packets copied or handed to each region.
+    Copy,
+    /// Starting the region threads, second part: the threads started.
+    Spawn,
     /// Waiting for the regions, up to the deadline.
     Wait,
     /// The regions coming home: the level and the players put back.
@@ -29,9 +31,10 @@ pub(super) enum Step {
     /// The world tick's later phases: sculk, sleep, the End, particles, bossbars.
     Late,
 }
-const STEPS: usize = 11;
+const STEPS: usize = 12;
 const NAMES: [&str; STEPS] = [
-    "prelude", "stream", "pre", "net", "split", "launch", "wait", "land", "leftover", "lan", "late",
+    "prelude", "stream", "pre", "net", "split", "copy", "spawn", "wait", "land", "leftover", "lan",
+    "late",
 ];
 const WINDOW: u32 = 200;
 
@@ -131,7 +134,11 @@ impl TickProfile {
             "regions: wait {:.1} ms, global {global:.1} ms, landing {:.1} ms (avg), landing ticks {} (avg {landing_avg:.1} ms, {landing_max:.1} ms max); \
              tick avg {:.1} p50 {:.1} p95 {:.1} p99 {:.1} max {:.1} ms; per tick: {}, other {:.1}; {lands} landings, {splits} splits, landed for: {}",
             sum[Step::Wait as usize] / n,
-            (sum[Step::Land as usize] + sum[Step::Split as usize] + sum[Step::Launch as usize]) / n,
+            (sum[Step::Land as usize]
+                + sum[Step::Split as usize]
+                + sum[Step::Copy as usize]
+                + sum[Step::Spawn as usize])
+                / n,
             landing.len(),
             tick_total / n,
             at(0.5),

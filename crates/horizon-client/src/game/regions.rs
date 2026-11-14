@@ -863,7 +863,6 @@ impl Game<'_> {
             self.regions.prof.add(Step::Land, landing);
             return Ok(None);
         }
-        let launching = std::time::Instant::now();
         let pool = Arc::clone(
             self.regions
                 .entity_pool
@@ -903,6 +902,7 @@ impl Game<'_> {
             let Some(mut w) = slot.game.take() else {
                 continue;
             };
+            let copying = std::time::Instant::now();
             if first {
                 w.copy_tick_settings_from(self);
             } else {
@@ -916,6 +916,8 @@ impl Game<'_> {
                 shell.hub.copy_region_settings(&host.hub);
                 host.hub.give_away(&mut shell.hub);
             }
+            self.regions.prof.add(Step::Copy, copying);
+            let spawning = std::time::Instant::now();
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
             slot.running = Some(rx);
             slot.since = started;
@@ -930,6 +932,7 @@ impl Game<'_> {
                     .unwrap_or_else(|_| Err("a region thread panicked".to_owned()));
                     let _ = tx.send((w, result, began.elapsed().as_secs_f32() * 1000.0));
                 });
+            self.regions.prof.add(Step::Spawn, spawning);
             if spawned.is_err() {
                 slot.running = None;
                 failed.get_or_insert("a region thread could not start".to_owned());
@@ -938,7 +941,7 @@ impl Game<'_> {
             }
         }
         set.age += 1;
-        let waiting = self.regions.prof.add(Step::Launch, launching);
+        let waiting = std::time::Instant::now();
         // Waited for until the deadline: what runs past it carries on by itself.
         let deadline = started + region_deadline();
         horizon_client::spans::time("regions_wait", || {
