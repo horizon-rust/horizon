@@ -1934,7 +1934,7 @@ mod tests {
         use horizon_hooks::control::{Command, Commands, Kind, Param};
         // No crate: the engine's groups only, and no command to add.
         assert_eq!(hello_with(std::iter::empty())["commands"], json!([]));
-        let kind = Param {
+        const KIND: Param = Param {
             name: "kind",
             kind: Kind::Enum(&["green", "black"]),
             required: true,
@@ -1950,7 +1950,7 @@ mod tests {
                 summary: "brew a pot",
                 details: "",
                 examples: &["horizon-ctl tea green"],
-                params: &[kind],
+                params: &[KIND],
                 mcp: true,
                 open_world: true,
             }],
