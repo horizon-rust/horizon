@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Igraj s prijateljima",
+  "horizon.friends.hint": "Prijatelji lijepe kod nakon gumba Prijatelji na naslovnom zaslonu, u izravnom povezivanju ili na stranici za igranje pokretača.",
+  "horizon.friends.copied": "Kopirano",
+  "horizon.friends.copy_code": "Kopiraj kod",
+  "horizon.friends.stop_sharing": "Zaustavi dijeljenje",
+  "horizon.friends.none_yet": "Ovdje još nema prijatelja.",
+  "horizon.friends.here_now": "Ovdje sada: %s",
+  "horizon.friends.share_intro": "Podijelite ovaj svijet iza pozivnog koda: otvara se za LAN, a prijatelji na internetu pridružuju se s kodom. Nijedan naš poslužitelj nije uključen.",
+  "horizon.friends.start_sharing": "Započni dijeljenje",
+  "horizon.friends.troubleshooting": "Rješavanje problema...",
+  "horizon.friends.stopped": "Zaustavljeno dijeljenje pozivnog koda.",
+  "horizon.friends.short_code_changed": "Netko je stalno pokušavao unijeti pogrešan kratki kod, pa se on promijenio.",
+  "horizon.friends.wrong_code": "Netko je pokušao unijeti pogrešan kod.",
+  "horizon.friends.relay_stopped": "Previše pogrešnih kratkih kodova, pa je prijenos isključen dok ponovno ne podijelite. Prijatelji se još mogu pridružiti s punim kodom.",
+  "horizon.friends.code_ready": "Vaš pozivni kod je spreman: Izbornik igre, Igraj s prijateljima. Kopirajte ga i pošaljite svojim prijateljima.",
+  "horizon.friends.share_failed": "Nije moguće dijeliti svijet: %s",
+  "horizon.friends.finding_route": "Pronalaženje načina na koji vas prijatelji mogu dosegnuti…",
+  "horizon.multiplayer.join": "Pridruži se",
+  "horizon.multiplayer.join_friend": "Pridruži se prijatelju",
+  "horizon.multiplayer.invite_code": "Pozivni kod",
+  "horizon.multiplayer.relay": "Prijenos (neobavezno)"
+}

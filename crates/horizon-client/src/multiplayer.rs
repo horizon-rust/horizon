@@ -8,6 +8,8 @@ use crate::text::{DARK_GRAY, GRAY, Text, format_translation};
 use crate::title::confirm_top;
 use horizon_protocol::servers::{self, ServerEntry};
 pub use page::Form;
+#[cfg(test)]
+pub use page::stand_in_title_page;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -18,8 +20,8 @@ use std::{
 const SERVER_NAME: crate::clipboard::FieldId = ("server.name", 0);
 const SERVER_ADDRESS: crate::clipboard::FieldId = ("server.address", 0);
 const SERVER_DIRECT: crate::clipboard::FieldId = ("server.direct", 0);
-const FRIEND_CODE: crate::clipboard::FieldId = ("friend.code", 0);
-const FRIEND_RELAY: crate::clipboard::FieldId = ("friend.relay", 0);
+/// A server address's field takes 128 characters (`ManageServerScreen`).
+const MAX_LENGTH: usize = 128;
 
 /// The result of pinging one address.
 #[derive(Clone, Debug)]
@@ -129,16 +131,6 @@ pub enum Screen {
         name: String,
         lines: std::cell::Cell<usize>,
     },
-    /// Join a friend's world with its invite code (Horizon's own, behind the
-    /// title screen's Friends button).
-    Friend {
-        /// The title and server list both open this page; cancellation returns to its parent.
-        from_title: bool,
-        code: String,
-        /// The relay for short codes (optional; saved on Join).
-        relay: String,
-        focus: u8,
-    },
     /// A page a crate registered at the title screen's Friends icon, as a form.
     Page(Form),
     Disconnected {
@@ -152,16 +144,13 @@ pub enum Screen {
 mod page;
 
 /// What the title screen's Friends icon opens: the page a crate registered there
-/// (`Place::Title`), else Join a Friend when an invite code can be joined. None: it is inactive.
+/// (`Place::Title`; horizon-friends' Join a Friend). None: it is inactive.
 pub fn title_entry() -> Option<Screen> {
-    match page::title_page() {
-        Some(page) => Some(Screen::Page(Form::open(page))),
-        None => crate::net::joins_friends().then(|| Screen::friend(true)),
-    }
+    page::title_page().map(|page| Screen::Page(Form::open(page)))
 }
 /// Whether the title screen's Friends icon opens something ([`title_entry`]).
 pub fn has_title_entry() -> bool {
-    page::title_page().is_some() || crate::net::joins_friends()
+    page::title_page().is_some()
 }
 
 /// What a click asks the title screen to do.
@@ -193,7 +182,6 @@ impl Screen {
             Self::Edit { index: Some(_), .. } => "edit_server",
             Self::Direct { .. } => "direct_connect",
             Self::ConfirmDelete { .. } => "server_delete",
-            Self::Friend { .. } => "friends_join",
             Self::Page(form) => form.id(),
             Self::Disconnected { .. } => "disconnected",
         }
@@ -771,24 +759,6 @@ impl Screen {
                 ),
             ],
             Self::Page(form) => form.buttons(w, h),
-            Self::Friend { code, .. } => vec![
-                b(
-                    half(w) - 100.0,
-                    quarter(h) + 96.0 + 18.0,
-                    200.0,
-                    &crate::lang::get_or("horizon.multiplayer.join", "Join"),
-                    crate::net::is_invite(code, false),
-                    56,
-                ),
-                b(
-                    half(w) - 100.0,
-                    quarter(h) + 120.0 + 18.0,
-                    200.0,
-                    &crate::lang::get_or("gui.cancel", "Cancel"),
-                    true,
-                    57,
-                ),
-            ],
             Self::Disconnected { retry, lines, .. } => {
                 let btn = disconnected_layout(h, lines.get(), retry.is_some()).buttons;
                 let mut v = vec![b(
@@ -892,10 +862,6 @@ impl Screen {
                 )
             }
             Self::Page(form) => form.narration(),
-            Self::Friend { .. } => ScreenInfo::new(
-                "multiplayer/friend",
-                get("horizon.multiplayer.join_friend", "Join a Friend"),
-            ),
             // DisconnectedScreen: its title and the reason.
             Self::Disconnected { reason, .. } => ScreenInfo::new(
                 "multiplayer/disconnected",
@@ -973,7 +939,7 @@ impl Screen {
         hide_address: bool,
     ) {
         let (w, h) = (batch.width, batch.height);
-        let max = self.max_length();
+        let max = MAX_LENGTH;
         crate::widgets::begin_screen(|| self.narration());
         crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
         // GuiGraphicsExtractor.centeredText at width / 2: x - width(text) / 2.
@@ -1347,40 +1313,6 @@ impl Screen {
                 }
             }
             Self::Page(form) => form.draw(atlas, batch, caret, focused_at),
-            Self::Friend {
-                code, relay, focus, ..
-            } => {
-                centered(
-                    batch,
-                    &crate::lang::get_or("horizon.multiplayer.join_friend", "Join a Friend"),
-                    20.0,
-                    u32::MAX,
-                );
-                Self::field(
-                    atlas,
-                    batch,
-                    caret,
-                    focused_at,
-                    &crate::lang::get_or("horizon.multiplayer.invite_code", "Invite Code"),
-                    code,
-                    FRIEND_CODE,
-                    max,
-                    (53.0, 64.0),
-                    *focus == 0,
-                );
-                Self::field(
-                    atlas,
-                    batch,
-                    caret,
-                    focused_at,
-                    &crate::lang::get_or("horizon.multiplayer.relay", "Relay (optional)"),
-                    relay,
-                    FRIEND_RELAY,
-                    max,
-                    (94.0, 105.0),
-                    *focus == 1,
-                );
-            }
             Self::Disconnected {
                 reason,
                 retry,
@@ -1484,7 +1416,6 @@ impl Screen {
                     address: String::new(),
                 }
             }
-            (Self::List { .. }, Some(47)) => *self = Self::friend(false),
             (Self::List { .. }, Some(42)) => {
                 *self = Self::Edit {
                     index: None,
@@ -1681,16 +1612,7 @@ impl Screen {
                 *self = Self::list(saves);
             }
             (
-                Self::Friend {
-                    from_title: true, ..
-                },
-                Some(57),
-            ) => return Outcome::Back,
-            (
-                Self::Edit { .. }
-                | Self::Direct { .. }
-                | Self::Friend { .. }
-                | Self::Disconnected { .. },
+                Self::Edit { .. } | Self::Direct { .. } | Self::Disconnected { .. },
                 Some(51 | 53 | 54 | 57),
             ) => *self = Self::list(saves),
             (Self::Disconnected { retry, .. }, Some(55)) => *retry = None,
@@ -1702,26 +1624,8 @@ impl Screen {
                     lan: false,
                 };
             }
-            (Self::Friend { code, relay, .. }, Some(56)) => {
-                if crate::net::is_invite(code, false) {
-                    crate::net::save_friends_relay(relay.trim());
-                    let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
-                    return Outcome::Connect {
-                        address: format!("{}{code}", crate::net::FRIEND),
-                        lan: false,
-                    };
-                }
-            }
-            (Self::Edit { .. } | Self::Friend { .. }, None) => {
-                let boxes = if matches!(self, Self::Edit { .. }) {
-                    [66.0, 106.0]
-                } else {
-                    [64.0, 105.0]
-                };
-                let (Self::Edit { focus, .. } | Self::Friend { focus, .. }) = self else {
-                    unreachable!()
-                };
-                for (i, fy) in [(0u8, boxes[0]), (1, boxes[1])] {
+            (Self::Edit { focus, .. }, None) => {
+                for (i, fy) in [(0u8, 66.0), (1, 106.0)] {
                     if y >= fy && y < fy + 20.0 && (half(w) - 100.0..half(w) + 100.0).contains(&x) {
                         *focus = i;
                     }
@@ -1850,16 +1754,13 @@ impl Screen {
         }
     }
     /// The focused box, in GUI pixels: name at 66, address at 106
-    /// (`ManageServerScreen`), direct address at 116, friend fields at 64 and 105.
+    /// (`ManageServerScreen`), direct address at 116.
     pub fn focused_box(&self, (w, _h): (f32, f32)) -> Option<[f32; 4]> {
         let y = match self {
             Self::Edit { focus: 0, .. } => 66.0,
             Self::Edit { focus: 1, .. } => 106.0,
             Self::Edit { .. } => return None,
             Self::Direct { .. } => 116.0,
-            Self::Friend { focus: 0, .. } => 64.0,
-            Self::Friend { focus: 1, .. } => 105.0,
-            Self::Friend { .. } => return None,
             Self::Page(form) => return form.focused_box(),
             _ => return None,
         };
@@ -1879,31 +1780,12 @@ impl Screen {
                 _ => None,
             },
             Self::Direct { address } => Some(address),
-            Self::Friend {
-                code, relay, focus, ..
-            } => match *focus {
-                0 => Some(code),
-                1 => Some(relay),
-                _ => None,
-            },
             _ => None,
         }
     }
     /// Whether a press off the buttons may land on one of its text fields.
     pub fn has_fields(&self) -> bool {
-        matches!(
-            self,
-            Self::Edit { .. } | Self::Friend { .. } | Self::Page(_)
-        )
-    }
-    /// Join a friend, with the relay the player set before.
-    pub fn friend(from_title: bool) -> Self {
-        Self::Friend {
-            from_title,
-            code: String::new(),
-            relay: crate::net::friends_relay_setting().unwrap_or_default(),
-            focus: 0,
-        }
+        matches!(self, Self::Edit { .. } | Self::Page(_))
     }
     /// Auto-reconnect's attempt, once its countdown is over.
     pub fn due_retry(&mut self) -> Option<crate::reconnect::Retry> {
@@ -1962,30 +1844,19 @@ impl Screen {
             Self::Edit { focus: 0, .. } => SERVER_NAME,
             Self::Edit { .. } => SERVER_ADDRESS,
             Self::Direct { .. } => SERVER_DIRECT,
-            Self::Friend { focus: 0, .. } => FRIEND_CODE,
-            Self::Friend { .. } => FRIEND_RELAY,
             _ => return None,
         };
-        let max = self.max_length();
-        self.focused_field().map(|f| (id, f, max))
-    }
-    /// Invite codes with IPv6 and a relay run past a server address's 128.
-    fn max_length(&self) -> usize {
-        if matches!(self, Self::Friend { .. }) {
-            256
-        } else {
-            128
-        }
+        self.focused_field().map(|f| (id, f, MAX_LENGTH))
     }
     /// Tab (`reverse`: Shift+Tab) through the focus order of `ManageServerScreen`
-    /// and the friend screen: the text fields, then the enabled `buttons`, then
+    /// and of a form: the text fields, then the enabled `buttons`, then
     /// round to the first field. `button` is the focused button, if any; a field
     /// has the focus (`focus` below 2) only while no button does.
     pub fn tab_dir(&mut self, reverse: bool, buttons: &[u8], button: &mut Option<u8>) {
         if let Self::Page(form) = self {
             return form.tab_dir(reverse, buttons, button);
         }
-        let (Self::Edit { focus, .. } | Self::Friend { focus, .. }) = self else {
+        let Self::Edit { focus, .. } = self else {
             return;
         };
         let stops = 2 + buttons.len();
@@ -2010,11 +1881,7 @@ impl Screen {
     /// Escape: back to the list, or out of it (true).
     pub fn escape(&mut self, saves: &Path) -> bool {
         match self {
-            Self::List { .. }
-            | Self::Page(_)
-            | Self::Friend {
-                from_title: true, ..
-            } => true,
+            Self::List { .. } | Self::Page(_) => true,
             // ConfirmScreen.keyPressed: Escape answers no.
             Self::ConfirmDelete { list, .. } => {
                 let list = std::mem::replace(
@@ -2317,13 +2184,6 @@ mod tests {
         };
         assert_eq!(at(&direct, 427.0, 334.0), [(113.0, 191.0), (113.0, 215.0)]);
         assert_eq!(at(&direct, 320.0, 240.0), [(60.0, 168.0), (60.0, 192.0)]);
-        let friend = Screen::Friend {
-            from_title: false,
-            code: String::new(),
-            relay: String::new(),
-            focus: 0,
-        };
-        assert_eq!(at(&friend, 427.0, 253.0), [(113.0, 177.0), (113.0, 201.0)]);
         let lost = Screen::Disconnected {
             reason: String::new(),
             retry: None,

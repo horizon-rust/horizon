@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Dostlarla oynayın",
+  "horizon.friends.hint": "Dostlar kodu başlıq ekranının Dostlar düyməsindən sonra, Birbaşa Bağlantıda və ya başlatma qurğusunun Play səhifəsində yerləşdirin.",
+  "horizon.friends.copied": "Kopyalandı",
+  "horizon.friends.copy_code": "Kodu kopyalayın",
+  "horizon.friends.stop_sharing": "Paylaşmağı dayandırın",
+  "horizon.friends.none_yet": "Burada hələ dost yoxdur.",
+  "horizon.friends.here_now": "İndi burada: %s",
+  "horizon.friends.share_intro": "Bu dünyanı dəvət kodunun arxasında paylaşın: o, LAN-a açılır və internetdəki dostlar kodla qoşulur. Heç bir serverimiz iştirak etmir.",
+  "horizon.friends.start_sharing": "Paylaşmağa başlayın",
+  "horizon.friends.troubleshooting": "Problem həll olunur...",
+  "horizon.friends.stopped": "Dəvət kodunu paylaşmağı dayandırdı.",
+  "horizon.friends.short_code_changed": "Kimsə səhv qısa kodu sınamağa davam etdi, ona görə də dəyişdi.",
+  "horizon.friends.wrong_code": "Kimsə səhv kodu sınadı.",
+  "horizon.friends.relay_stopped": "Çox sayda yanlış qısa kod daxil edildi, ona görə yenidən paylaşana qədər rele söndürülüb. Dostlar hələ də tam kodla qoşula bilər.",
+  "horizon.friends.code_ready": "Dəvət kodunuz hazırdır: Oyun Menyu, Dostlarla Oyna. Kopyalayın və dostlarınıza göndərin.",
+  "horizon.friends.share_failed": "Dünyanı paylaşmaq mümkün olmadı: %s",
+  "horizon.friends.finding_route": "Dostların sizinlə necə əlaqə saxlaya biləcəyi tapılır...",
+  "horizon.multiplayer.join": "Qoşulun",
+  "horizon.multiplayer.join_friend": "Dosta Qoşulun",
+  "horizon.multiplayer.invite_code": "Dəvət Kodu",
+  "horizon.multiplayer.relay": "Rele (isteğe bağlı)"
+}

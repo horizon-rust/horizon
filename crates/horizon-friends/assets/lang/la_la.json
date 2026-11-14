@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Ludere cum amicis",
+  "horizon.friends.hint": "Amici crustulum codicem post titulum screen scriptorum amici conjunctionem, in Direct Connection, vel in pagina Launculi Play.",
+  "horizon.friends.copied": "Exscriptum",
+  "horizon.friends.copy_code": "Exemplar Code",
+  "horizon.friends.stop_sharing": "Socius subsisto",
+  "horizon.friends.none_yet": "Nondum hic amici.",
+  "horizon.friends.here_now": "Hic nunc: %s",
+  "horizon.friends.share_intro": "Share hunc mundum post codicem invitare: aperit LAN, et amicos in interrete cum codice coniunge. Nullus cultor noster involvitur.",
+  "horizon.friends.start_sharing": "Satus Socius",
+  "horizon.friends.troubleshooting": "Fermentum...",
+  "horizon.friends.stopped": "Constitit invitare codicem communicantes.",
+  "horizon.friends.short_code_changed": "Perperam aliquis brevem codicem tentabat, sic mutavit.",
+  "horizon.friends.wrong_code": "Conatus codice aliquis iniuriam.",
+  "horizon.friends.relay_stopped": "Nimis multi codices breves falsi: relay exstinctum donec iterum communices. Amici tamen codice pleno iungere possunt.",
+  "horizon.friends.code_ready": "Codicem tuum invitare paratum est: Ludus Menu, lude cum amicis. Effingo eam et mitte amicis tuis.",
+  "horizon.friends.share_failed": "Non potuit communicare mundum:%s",
+  "horizon.friends.finding_route": "Invenire quomodo amici ad vos pervenire possunt…",
+  "horizon.multiplayer.join": "Iunge",
+  "horizon.multiplayer.join_friend": "Iungere amico",
+  "horizon.multiplayer.invite_code": "invitare Code",
+  "horizon.multiplayer.relay": "Nullam (libitum)"
+}

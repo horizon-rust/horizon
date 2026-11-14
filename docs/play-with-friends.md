@@ -26,7 +26,7 @@ that finds the port takes the session.
 ## How it works
 
 **Hosting.** The pause menu's Friends button (vanilla's icon, beside Player Reporting) opens **Play
-with Friends** (`game/friends/screen.rs`); its **Start Sharing** opens the world to LAN if it isn't (Open to
+with Friends** (horizon-friends' page at `Place::PauseFriends`, `src/game/share.rs`, drawn by the engine's `game/page_screen.rs`); its **Start Sharing** opens the world to LAN if it isn't (Open to
 LAN's defaults), then the host's game, on its own:
 
 1. listens on its **direct port**, TCP 25580 by default (the same port every time, so a port forwarded
@@ -53,11 +53,17 @@ router that opened the port, or with a forwarded port, that's it: no server took
 (`horizon_hooks::tunnel`, `horizon_platform::hooks::tunnel` for the Horizon layer): the resolver a hook offers
 reads codes and opens the tunnel, which the join (`net.rs`) then reaches on a loopback port like any server.
 horizon-friends' `game` side offers it, and the official executable (`horizon-official`) registers it;
-horizon-client's own executable has none, so there a `friend:` address is refused and the title screen's
-Friends icon, which opens Join a Friend, is inactive (`net::joins_friends`). Hosting needs no hook: the
-host end connects to the world's LAN port over loopback, so tunnelled guests are LAN guests. It still lives in
-horizon-client (`game/friends.rs`, `game/friends/screen.rs`, the `friends` feature, which comes with
-`horizon-extras`) until the pause menu and `horizon-ctl` offer entries to crates above the engine.
+horizon-client's own executable has none, so there a `friend:` address is refused. Join a Friend is
+horizon-friends' page at the title screen's Friends icon (`pages::Place::Title`, `game/join.rs`): its Join asks
+the game to connect to the code's `friend:` address (`pages::connect`), and it keeps the relay in `horizon.txt`;
+without it the icon is inactive. Hosting needs no hook: the
+host end connects to the world's LAN port over loopback, so tunnelled guests are LAN guests. Hosting sees the
+game only through `horizon_hooks`: `Hooks::share` each client tick with a `share::ShareView` (open the world to
+LAN, its players, chat, the clipboard, a link), `Hooks::lan_closed`, its page (`pages::Place::PauseFriends`, what
+the pause menu's Friends icon opens; a press runs on the next tick) and `tr`. It keeps what it shares in its own
+statics, and answers `horizon-ctl friends` through `Hooks::control`. Its text (`horizon.friends.*`) is in
+`crates/horizon-friends/assets/lang/`, registered with the game's languages (`horizon_platform::lang`). Both sides are horizon-friends' `game`
+feature, which only the official executable registers: horizon-client's own executable shares nothing (#14167).
 
 **Codes.** Crockford base32 (`0-9 A-Z` without `I L O U`; input ignores case, spaces and dashes and reads
 `O` as `0`, `I`/`L` as `1`) in groups of five, with a 16-bit checksum so a typo is caught before

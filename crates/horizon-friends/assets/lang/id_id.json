@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Bermain dengan Teman",
+  "horizon.friends.hint": "Teman menempelkan kode setelah mengeklik tombol Teman di layar judul, melalui Koneksi Langsung (Direct Connection), atau di halaman Main peluncur.",
+  "horizon.friends.copied": "Disalin",
+  "horizon.friends.copy_code": "Salin Kode",
+  "horizon.friends.stop_sharing": "Berhenti Berbagi",
+  "horizon.friends.none_yet": "Belum ada teman di sini.",
+  "horizon.friends.here_now": "Di sini sekarang: %s",
+  "horizon.friends.share_intro": "Bagikan dunia ini di balik kode undangan: dunia akan terbuka untuk LAN, dan teman di internet dapat bergabung menggunakan kode tersebut. Tidak ada server kami yang dilibatkan.",
+  "horizon.friends.start_sharing": "Mulai Berbagi",
+  "horizon.friends.troubleshooting": "Pemecahan Masalah...",
+  "horizon.friends.stopped": "Berhenti berbagi kode undangan.",
+  "horizon.friends.short_code_changed": "Seseorang terus mencoba kode pendek yang salah, sehingga kode telah diubah.",
+  "horizon.friends.wrong_code": "Seseorang mencoba memasukkan kode yang salah.",
+  "horizon.friends.relay_stopped": "Terlalu banyak kode pendek yang salah, sehingga relay nonaktif hingga Anda berbagi lagi. Teman tetap dapat bergabung dengan kode lengkap.",
+  "horizon.friends.code_ready": "Kode undangan Anda sudah siap: Menu Game -> Bermain dengan Teman. Salin dan kirimkan ke teman-teman Anda.",
+  "horizon.friends.share_failed": "Tidak dapat membagikan dunia: %s",
+  "horizon.friends.finding_route": "Mencari cara agar teman dapat menjangkau Anda…",
+  "horizon.multiplayer.join": "Gabung",
+  "horizon.multiplayer.join_friend": "Gabung dengan Teman",
+  "horizon.multiplayer.invite_code": "Kode Undangan",
+  "horizon.multiplayer.relay": "Relay (opsional)"
+}

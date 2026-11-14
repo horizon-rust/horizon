@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "دوستوں کے ساتھ کھیلیں",
+  "horizon.friends.hint": "دوست ٹائٹل سکرین کے فرینڈز بٹن کے بعد، ڈائریکٹ کنکشن میں، یا لانچر کے پلے پیج پر کوڈ پیسٹ کرتے ہیں۔",
+  "horizon.friends.copied": "کاپی ہو گیا",
+  "horizon.friends.copy_code": "کوڈ کاپی کریں",
+  "horizon.friends.stop_sharing": "شیئر کرنا بند کریں",
+  "horizon.friends.none_yet": "یہاں ابھی کوئی دوست نہیں ہے۔",
+  "horizon.friends.here_now": "یہاں موجود ہیں: %s",
+  "horizon.friends.share_intro": "اس دنیا کو دعوت نامہ کوڈ کے پیچھے شیئر کریں: یہ LAN کے لیے کھلتا ہے، اور انٹرنیٹ پر دوست کوڈ کے ساتھ شامل ہوتے ہیں۔ اس میں ہمارا کوئی سرور شامل نہیں ہے۔",
+  "horizon.friends.start_sharing": "شیئر کرنا شروع کریں",
+  "horizon.friends.troubleshooting": "خرابی کا سراغ لگانا...",
+  "horizon.friends.stopped": "دعوت نامہ کوڈ شیئر کرنا بند کر دیا۔",
+  "horizon.friends.short_code_changed": "کسی نے بار بار غلط شارٹ کوڈ آزمایا، اس لیے یہ بدل گیا۔",
+  "horizon.friends.wrong_code": "کسی نے غلط کوڈ آزمایا۔",
+  "horizon.friends.relay_stopped": "بہت زیادہ غلط شارٹ کوڈز، اس لیے دوبارہ شیئر کرنے تک رلے بند ہے۔ دوست اب بھی مکمل کوڈ سے شامل ہو سکتے ہیں۔",
+  "horizon.friends.code_ready": "آپ کا دعوت نامہ کوڈ تیار ہے: گیم مینو، پلے ود فرینڈز۔ اسے کاپی کریں اور اپنے دوستوں کو بھیجیں۔",
+  "horizon.friends.share_failed": "دنیا شیئر نہیں کی جا سکی: %s",
+  "horizon.friends.finding_route": "تلاش کر رہے ہیں کہ دوست آپ تک کیسے پہنچ سکتے ہیں…",
+  "horizon.multiplayer.join": "شامل ہوں",
+  "horizon.multiplayer.join_friend": "کسی دوست کے ساتھ جڑیں",
+  "horizon.multiplayer.invite_code": "دعوت نامہ کوڈ",
+  "horizon.multiplayer.relay": "رلے (اختیاری)"
+}

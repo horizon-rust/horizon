@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Найзуудтайгаа тогло",
+  "horizon.friends.hint": "Найзууд кодыг гарчгийн дэлгэцийн \"Найзууд\" товчны ард, \"Шууд холболт\" хэсэгт эсвэл эхлүүлэгчийн Play хуудсанд оруулна.",
+  "horizon.friends.copied": "Хуулсан",
+  "horizon.friends.copy_code": "Код хуулах",
+  "horizon.friends.stop_sharing": "Хуваалцахаа зогсоо",
+  "horizon.friends.none_yet": "Одоохондоо энд найз алга.",
+  "horizon.friends.here_now": "Одоо энд: %s",
+  "horizon.friends.share_intro": "Урилгын кодын ард энэ ертөнцийг хуваалцаарай: энэ нь LAN-д нээгдэж, интернетэд байгаа найзууд кодоор нэгдэнэ. Манай сервер оролцдоггүй.",
+  "horizon.friends.start_sharing": "Хуваалцаж эхлэх",
+  "horizon.friends.troubleshooting": "Алдааг олж засварлаж байна...",
+  "horizon.friends.stopped": "Урилгын кодыг хуваалцахаа больсон.",
+  "horizon.friends.short_code_changed": "Хэн нэгэн буруу богино код оролдсоор байгаад өөрчлөгдсөн.",
+  "horizon.friends.wrong_code": "Хэн нэгэн буруу код оролдсон байна.",
+  "horizon.friends.relay_stopped": "Хэт олон буруу богино код оруулсан тул дахин хуваалцах хүртэл реле унтарсан. Найзууд бүтэн кодоор орж болно.",
+  "horizon.friends.code_ready": "Таны урилгын код бэлэн боллоо: Тоглоомын цэс, Найзуудтайгаа тогло. Үүнийг хуулж аваад найзууддаа илгээнэ үү.",
+  "horizon.friends.share_failed": "Дэлхийг хуваалцаж чадсангүй: %s",
+  "horizon.friends.finding_route": "Найзууд тантай хэрхэн холбогдож болохыг хайж байна...",
+  "horizon.multiplayer.join": "Нэгдэх",
+  "horizon.multiplayer.join_friend": "Найзтайгаа нэгдээрэй",
+  "horizon.multiplayer.invite_code": "Урилгын код",
+  "horizon.multiplayer.relay": "Реле (заавал биш)"
+}

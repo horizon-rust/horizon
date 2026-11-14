@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Ilgħab mal-Ħbieb",
+  "horizon.friends.hint": "Ħbieb waħħal il-kodiċi wara l-buttuna Ħbieb tal-iskrin tat-titlu, f'Konnessjoni Diretta, jew fuq il-paġna Play tal-lanċjar.",
+  "horizon.friends.copied": "Ikkopjati",
+  "horizon.friends.copy_code": "Kopja tal-Kodiċi",
+  "horizon.friends.stop_sharing": "Waqqaf il-Qsim",
+  "horizon.friends.none_yet": "Għadu m'hemmx ħbieb hawn.",
+  "horizon.friends.here_now": "Hawnhekk issa: %s",
+  "horizon.friends.share_intro": "Aqsam din id-dinja wara kodiċi tal-istedina: tiftaħ għal LAN, u ħbieb fuq l-internet jingħaqdu mal-kodiċi. L-ebda server tagħna mhu involut.",
+  "horizon.friends.start_sharing": "Ibda taqsam",
+  "horizon.friends.troubleshooting": "Issolvi l-problemi...",
+  "horizon.friends.stopped": "Waqaf taqsam il-kodiċi tal-istedina.",
+  "horizon.friends.short_code_changed": "Xi ħadd baqa' jipprova kodiċi qasir ħażin, għalhekk inbidel.",
+  "horizon.friends.wrong_code": "Xi ħadd ipprova kodiċi ħażin.",
+  "horizon.friends.relay_stopped": "Wisq kodiċi qosra ħżiena, għalhekk ir-relay huwa mitfi sakemm terġa' taqsam. Il-ħbieb xorta jistgħu jingħaqdu bil-kodiċi sħiħ.",
+  "horizon.friends.code_ready": "Il-kodiċi tal-istedina tiegħek lest: Menu tal-Logħba, Ilgħab mal-Ħbieb. Ikkopjaha u ibgħatha lill-ħbieb tiegħek.",
+  "horizon.friends.share_failed": "Ma setgħetx naqsam id-dinja: %s",
+  "horizon.friends.finding_route": "Issib kif il-ħbieb jistgħu jilħquk...",
+  "horizon.multiplayer.join": "Ingħaqad",
+  "horizon.multiplayer.join_friend": "Ingħaqad ma' Ħabib",
+  "horizon.multiplayer.invite_code": "Stieden Kodiċi",
+  "horizon.multiplayer.relay": "Relay (mhux obbligatorju)"
+}

@@ -9,13 +9,14 @@
 #![forbid(unsafe_code)]
 
 use horizon_platform::hooks::{self, Hooks};
-use horizon_platform::{pages, settings};
+use horizon_platform::{lang, pages, settings};
 
 /// Every Horizon part in the game, in the order its hooks run.
 const PARTS: [&dyn Hooks; 5] = [
     // The anonymous "I'm playing" ping.
     &horizon_heartbeat::HOOKS,
-    // Play with Friends: `friend:` addresses join through its tunnel.
+    // Play with Friends: `friend:` addresses join through its tunnel, and the open world is
+    // shared behind an invite code.
     &horizon_friends::game::HOOKS,
     // The official server in the player's server list.
     &horizon_official_servers::HOOKS,
@@ -26,15 +27,24 @@ const PARTS: [&dyn Hooks; 5] = [
 ];
 /// Their settings, in the player's settings files.
 const STORES: [&dyn settings::Store; 1] = [&horizon_discord::SETTING];
-/// Their rows and pages in the options screens.
-const PAGES: [&dyn pages::Page; 1] = [&horizon_discord::SECTION];
+/// The lang files with their text (their `assets/lang`).
+const LANG: [&lang::Files; 1] = [horizon_friends::game::LANG];
+/// Their rows and pages in the options screens and menus.
+const PAGES: [&dyn pages::Page; 3] = [
+    &horizon_discord::SECTION,
+    // Play with Friends, what the pause menu's Friends icon opens.
+    &horizon_friends::game::PAGE,
+    // Join a Friend, what the title screen's Friends icon opens.
+    &horizon_friends::game::JOIN,
+];
 
 /// Registers Horizon's in-game parts with the game. The executable calls it before it runs the
 /// game, and so does the launcher's generated executable for native mods.
 pub fn register() {
     let late = PARTS.into_iter().map(hooks::register);
     let late = late.chain(STORES.into_iter().map(settings::register));
-    for result in late.chain(PAGES.into_iter().map(pages::register)) {
+    let late = late.chain(PAGES.into_iter().map(pages::register));
+    for result in late.chain(LANG.into_iter().map(lang::register)) {
         if let Err(e) = result {
             // The executable registered after starting the game: a bug, not a player's problem.
             log::warn!("Horizon: an in-game part did not register: {e}");

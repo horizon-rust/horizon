@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Spilaðu með vinum",
+  "horizon.friends.hint": "Vinir líma kóðann aftan við Vinahnapp titilskjásins, í beinni tengingu eða á Play síðu ræsiforritsins.",
+  "horizon.friends.copied": "Afritað",
+  "horizon.friends.copy_code": "Afritaðu kóða",
+  "horizon.friends.stop_sharing": "Hættu að deila",
+  "horizon.friends.none_yet": "Engir vinir hér ennþá.",
+  "horizon.friends.here_now": "Hér núna: %s",
+  "horizon.friends.share_intro": "Deildu þessum heimi á bak við boðskóða: hann opnast fyrir staðarnet og vinir á internetinu tengjast með kóðanum. Enginn þjónn okkar kemur við sögu.",
+  "horizon.friends.start_sharing": "Byrjaðu að deila",
+  "horizon.friends.troubleshooting": "Úrræðaleit...",
+  "horizon.friends.stopped": "Hætti að deila boðskóðanum.",
+  "horizon.friends.short_code_changed": "Einhver hélt áfram að reyna rangan stuttkóða, svo hann breyttist.",
+  "horizon.friends.wrong_code": "Einhver reyndi rangan kóða.",
+  "horizon.friends.relay_stopped": "Of margir rangir stuttkóðar, svo gengið er slökkt þar til þú deilir aftur. Vinir geta samt tengst með fullum kóða.",
+  "horizon.friends.code_ready": "Boðskóðinn þinn er tilbúinn: Leikjavalmynd, Spilaðu með vinum. Afritaðu það og sendu það til vina þinna.",
+  "horizon.friends.share_failed": "Gat ekki deilt heiminum: %s",
+  "horizon.friends.finding_route": "Að finna hvernig vinir geta náð í þig...",
+  "horizon.multiplayer.join": "Vertu með",
+  "horizon.multiplayer.join_friend": "Vertu með í vini",
+  "horizon.multiplayer.invite_code": "Boðskóði",
+  "horizon.multiplayer.relay": "Relay (valfrjálst)"
+}

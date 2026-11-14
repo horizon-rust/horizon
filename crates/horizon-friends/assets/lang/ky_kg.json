@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Достор менен ойно",
+  "horizon.friends.hint": "Достор кодду аталыш экранындагы \"Достор\" баскычынан кийин, Түз байланышта же ишке киргизгичтин Play бетине чапташат.",
+  "horizon.friends.copied": "Көчүрүлгөн",
+  "horizon.friends.copy_code": "Кодду көчүрүү",
+  "horizon.friends.stop_sharing": "Бөлүшүүнү токтотуу",
+  "horizon.friends.none_yet": "Бул жерде азырынча достор жок.",
+  "horizon.friends.here_now": "Бул жерде: %s",
+  "horizon.friends.share_intro": "Чакыруу кодунун артында бул дүйнөнү бөлүшүңүз: ал LANга ачылат жана интернеттеги достор код менен кошулат. Биздин эч кандай сервер катышпайт.",
+  "horizon.friends.start_sharing": "Бөлүшүүнү баштоо",
+  "horizon.friends.troubleshooting": "Көйгөйлөр аныкталууда...",
+  "horizon.friends.stopped": "Чакыруу кодун бөлүшүүнү токтотту.",
+  "horizon.friends.short_code_changed": "Кимдир бирөө туура эмес кыска кодду аракет кыла бергендиктен, ал өзгөрдү.",
+  "horizon.friends.wrong_code": "Кимдир бирөө туура эмес кодду аракет кылды.",
+  "horizon.friends.relay_stopped": "Туура эмес кыска коддор өтө көп болгондуктан, кайра бөлүшпөйүнчө реле өчүк. Достар толук код менен кошула алышат.",
+  "horizon.friends.code_ready": "Чакыруу коду даяр: Оюн менюсу, Достор менен ойноо. Аны көчүрүп, досторуңузга жөнөтүңүз.",
+  "horizon.friends.share_failed": "Дүйнөнү бөлүшө алган жок: %s",
+  "horizon.friends.finding_route": "Достор сиз менен кантип байланыша аларын издөө…",
+  "horizon.multiplayer.join": "Кошулуу",
+  "horizon.multiplayer.join_friend": "Доско кошулуңуз",
+  "horizon.multiplayer.invite_code": "Чакыруу коду",
+  "horizon.multiplayer.relay": "Реле (милдеттүү эмес)"
+}

@@ -38,13 +38,7 @@ pub trait Resolver: Send + Sync {
     /// What tells one shared world from another, without any secret: native mods key a server's
     /// data by it.
     fn public_part(&self, code: &str) -> String;
-    /// The relay the environment names, used when the player set none (`friendsRelay`).
-    fn relay_from_env(&self) -> Option<String>;
-    /// Reach the host from `code`, directly or through `relay`, and open the tunnel's local end.
-    fn open(
-        &self,
-        code: &str,
-        relay: Option<String>,
-        progress: &mut dyn FnMut(Progress),
-    ) -> Result<Opened, String>;
+    /// Reach the host from `code`, directly or through a relay (the resolver's own setting), and
+    /// open the tunnel's local end.
+    fn open(&self, code: &str, progress: &mut dyn FnMut(Progress)) -> Result<Opened, String>;
 }

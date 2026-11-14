@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Hrajte s přáteli",
+  "horizon.friends.hint": "Přátelé vloží kód za tlačítko Přátelé na titulní obrazovce, do Přímého připojení nebo na stránku Play spouštěče.",
+  "horizon.friends.copied": "Zkopírováno",
+  "horizon.friends.copy_code": "Kopírovat kód",
+  "horizon.friends.stop_sharing": "Přestat sdílet",
+  "horizon.friends.none_yet": "Zatím tu nejsou žádní přátelé.",
+  "horizon.friends.here_now": "Tady teď: %s",
+  "horizon.friends.share_intro": "Sdílejte tento svět pomocí zvacího kódu: otevře se na LAN a přátelé na internetu se připojí pomocí kódu. Není zapojen žádný náš server.",
+  "horizon.friends.start_sharing": "Začněte sdílet",
+  "horizon.friends.troubleshooting": "Odstraňování problémů...",
+  "horizon.friends.stopped": "Sdílení kódu pozvánky bylo zastaveno.",
+  "horizon.friends.short_code_changed": "Někdo neustále zkoušel špatný krátký kód, takže se to změnilo.",
+  "horizon.friends.wrong_code": "Někdo zkusil špatný kód.",
+  "horizon.friends.relay_stopped": "Příliš mnoho špatných krátkých kódů, takže relé je vypnuté, dokud nebudete sdílet znovu. Přátelé se stále mohou připojit s plným kódem.",
+  "horizon.friends.code_ready": "Váš zvací kód je připraven: Herní menu, Hrajte s přáteli. Zkopírujte jej a pošlete svým přátelům.",
+  "horizon.friends.share_failed": "Nepodařilo se sdílet svět: %s",
+  "horizon.friends.finding_route": "Zjištění, jak vás mohou přátelé kontaktovat…",
+  "horizon.multiplayer.join": "Připojte se",
+  "horizon.multiplayer.join_friend": "Přidejte se k příteli",
+  "horizon.multiplayer.invite_code": "Kód pozvánky",
+  "horizon.multiplayer.relay": "relé (volitelné)"
+}

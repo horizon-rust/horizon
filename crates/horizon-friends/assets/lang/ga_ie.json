@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Seinn le Cairde",
+  "horizon.friends.hint": "Greamaigh Cairde an cód tar éis cnaipe Cairde an scáileáin teidil, i Ceangal Díreach, nó ar leathanach Súgartha an Tosaitheora.",
+  "horizon.friends.copied": "Cóipeáladh",
+  "horizon.friends.copy_code": "Cóipeáil Cód",
+  "horizon.friends.stop_sharing": "Stop Roinnt",
+  "horizon.friends.none_yet": "Níl aon chairde anseo fós.",
+  "horizon.friends.here_now": "Anseo anois: %s",
+  "horizon.friends.share_intro": "Roinn an domhan seo taobh thiar de chód cuirí: osclaíonn sé go LAN, agus glacann cairde ar an idirlíon leis an gcód. Níl aon fhreastalaí dár gcuid i gceist.",
+  "horizon.friends.start_sharing": "Tosaigh ag Roinnt",
+  "horizon.friends.troubleshooting": "Fabhtcheartú...",
+  "horizon.friends.stopped": "Stopadh an cód cuirí a roinnt.",
+  "horizon.friends.short_code_changed": "Lean duine éigin ag iarraidh cód gearr mícheart, mar sin d'athraigh sé.",
+  "horizon.friends.wrong_code": "Bhain duine éigin triail as cód mícheart.",
+  "horizon.friends.relay_stopped": "An iomarca cóid ghearra míchearta, mar sin tá an sealaíocht as go dtí go roinnfidh tú arís. Is féidir le cairde teacht isteach fós leis an gcód iomlán.",
+  "horizon.friends.code_ready": "Tá do chód cuireadh réidh: Roghchlár Cluiche, Spraoi le Cairde. Cóipeáil é agus seol chuig do chairde é.",
+  "horizon.friends.share_failed": "Níorbh fhéidir an domhan a roinnt: %s",
+  "horizon.friends.finding_route": "Ag fáil amach conas is féidir le cairde dul i dteagmháil leat…",
+  "horizon.multiplayer.join": "Bígí",
+  "horizon.multiplayer.join_friend": "Bígí le Cara",
+  "horizon.multiplayer.invite_code": "Cód Cuireadh",
+  "horizon.multiplayer.relay": "Sealaíocht (roghnach)"
+}

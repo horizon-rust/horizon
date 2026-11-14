@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Достармен ойнау",
+  "horizon.friends.hint": "Достар кодты тақырып экранындағы \"Достар\" түймесінен кейін, \"Тікелей қосылым\" бөліміне немесе іске қосу құралының \"Ойнату\" бетіне қояды.",
+  "horizon.friends.copied": "Көшірілген",
+  "horizon.friends.copy_code": "Кодты көшіру",
+  "horizon.friends.stop_sharing": "Бөлісуді тоқтату",
+  "horizon.friends.none_yet": "Бұл жерде әлі достар жоқ.",
+  "horizon.friends.here_now": "Мұнда қазір: %s",
+  "horizon.friends.share_intro": "Шақыру кодының артында осы әлемді бөлісіңіз: ол LAN желісіне ашылады және интернеттегі достар кодпен қосылады. Біздің серверіміз қатыспайды.",
+  "horizon.friends.start_sharing": "Бөлісуді бастау",
+  "horizon.friends.troubleshooting": "Ақаулықтарды жою...",
+  "horizon.friends.stopped": "Шақыру кодын бөлісуді тоқтатты.",
+  "horizon.friends.short_code_changed": "Біреу қате қысқа кодты қолданып көрді, сондықтан ол өзгерді.",
+  "horizon.friends.wrong_code": "Біреу қате кодты қолданып көрді.",
+  "horizon.friends.relay_stopped": "Қате қысқа кодтар тым көп болды, сондықтан сіз қайта бөліскенше реле өшірулі. Достар толық кодпен әлі де қосыла алады.",
+  "horizon.friends.code_ready": "Шақыру коды дайын: Ойын мәзірі, Достармен ойнау. Оны көшіріп, достарыңызға жіберіңіз.",
+  "horizon.friends.share_failed": "Әлемді бөлісу мүмкін болмады: %s",
+  "horizon.friends.finding_route": "Достар сізге қалай хабарласа алатынын анықтау...",
+  "horizon.multiplayer.join": "Қосылыңыз",
+  "horizon.multiplayer.join_friend": "Досқа қосылу",
+  "horizon.multiplayer.invite_code": "Шақыру коды",
+  "horizon.multiplayer.relay": "Эстафета (міндетті емес)"
+}

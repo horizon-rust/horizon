@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "שחקו עם חברים",
+  "horizon.friends.hint": "חברים מדביקים את הקוד אחרי כפתור החברים של מסך הכותרת, בחיבור ישיר או בדף ההפעלה של המשגר.",
+  "horizon.friends.copied": "הועתק",
+  "horizon.friends.copy_code": "העתק קוד",
+  "horizon.friends.stop_sharing": "תפסיק לשתף",
+  "horizon.friends.none_yet": "אין כאן חברים עדיין.",
+  "horizon.friends.here_now": "כאן עכשיו: %s",
+  "horizon.friends.share_intro": "שתף את העולם הזה מאחורי קוד הזמנה: הוא נפתח ל-LAN, וחברים באינטרנט מצטרפים עם הקוד. אף שרת שלנו לא מעורב.",
+  "horizon.friends.start_sharing": "התחל לשתף",
+  "horizon.friends.troubleshooting": "פתרון בעיות...",
+  "horizon.friends.stopped": "הפסיק לשתף את קוד ההזמנה.",
+  "horizon.friends.short_code_changed": "מישהו כל הזמן ניסה קוד קצר שגוי, אז זה השתנה.",
+  "horizon.friends.wrong_code": "מישהו ניסה קוד שגוי.",
+  "horizon.friends.relay_stopped": "יותר מדי קודים קצרים שגויים, ולכן הממסר כבוי עד שתשתף שוב. חברים עדיין יכולים להצטרף עם הקוד המלא.",
+  "horizon.friends.code_ready": "קוד ההזמנה שלך מוכן: תפריט משחק, שחק עם חברים. העתק אותו ושלח אותו לחברים שלך.",
+  "horizon.friends.share_failed": "לא יכולתי לשתף את העולם: %s",
+  "horizon.friends.finding_route": "מוצא כיצד חברים יכולים להגיע אליך...",
+  "horizon.multiplayer.join": "הצטרף",
+  "horizon.multiplayer.join_friend": "הצטרף לחבר",
+  "horizon.multiplayer.invite_code": "קוד הזמנה",
+  "horizon.multiplayer.relay": "ממסר (אופציונלי)"
+}

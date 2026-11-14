@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Makipaglaro sa Kaibigan",
+  "horizon.friends.hint": "I-paste ng mga kaibigan ang code pagkatapos ng button na Friends ng screen ng pamagat, sa Direktang Koneksyon, o sa Play page ng launcher.",
+  "horizon.friends.copied": "Kinopya",
+  "horizon.friends.copy_code": "Kopyahin ang Code",
+  "horizon.friends.stop_sharing": "Itigil ang Pagbabahagi",
+  "horizon.friends.none_yet": "Wala pang kaibigan dito.",
+  "horizon.friends.here_now": "Narito ngayon: %s",
+  "horizon.friends.share_intro": "Ibahagi ang mundong ito sa likod ng code ng imbitasyon: bumubukas ito sa LAN, at sumali ang mga kaibigan sa internet gamit ang code. Walang kasamang server namin.",
+  "horizon.friends.start_sharing": "Simulan ang Pagbabahagi",
+  "horizon.friends.troubleshooting": "Pag-troubleshoot...",
+  "horizon.friends.stopped": "Huminto sa pagbabahagi ng code ng imbitasyon.",
+  "horizon.friends.short_code_changed": "May sumubok ng maling maikling code, kaya nagbago ito.",
+  "horizon.friends.wrong_code": "May sumubok ng maling code.",
+  "horizon.friends.relay_stopped": "Napakaraming maling short code, kaya naka-off ang relay hanggang magbahagi ka muli. Nakakasali pa rin ang mga kaibigan gamit ang buong code.",
+  "horizon.friends.code_ready": "Handa na ang iyong code ng imbitasyon: Game Menu, Play with Friends. Kopyahin ito at ipadala sa iyong mga kaibigan.",
+  "horizon.friends.share_failed": "Hindi maibahagi ang mundo: %s",
+  "horizon.friends.finding_route": "Hinahanap kung paano ka maaabot ng mga kaibigan...",
+  "horizon.multiplayer.join": "Sumali",
+  "horizon.multiplayer.join_friend": "Sumali sa isang Kaibigan",
+  "horizon.multiplayer.invite_code": "Code ng Imbitasyon",
+  "horizon.multiplayer.relay": "Relay (opsyonal)"
+}

@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Играјте се са пријатељима",
+  "horizon.friends.hint": "Пријатељи налепе код иза дугмета Пријатељи на насловном екрану, у Директну везу или на Плаи страницу покретача.",
+  "horizon.friends.copied": "Копирано",
+  "horizon.friends.copy_code": "Копирај код",
+  "horizon.friends.stop_sharing": "Заустави дељење",
+  "horizon.friends.none_yet": "Овде још нема пријатеља.",
+  "horizon.friends.here_now": "Ево сада: %s",
+  "horizon.friends.share_intro": "Поделите овај свет иза позивног кода: отвара се на ЛАН, а пријатељи на интернету се придружују коду. Ниједан наш сервер није укључен.",
+  "horizon.friends.start_sharing": "Почните да делите",
+  "horizon.friends.troubleshooting": "Решавање проблема...",
+  "horizon.friends.stopped": "Заустављено је дељење кода позива.",
+  "horizon.friends.short_code_changed": "Неко је наставио да покушава погрешан кратки код, па се то променило.",
+  "horizon.friends.wrong_code": "Неко је пробао погрешан код.",
+  "horizon.friends.relay_stopped": "Превише погрешних кратких кодова, па је релеј искључен док поново не поделите. Пријатељи и даље могу да се придруже пуним кодом.",
+  "horizon.friends.code_ready": "Ваш позивни код је спреман: Мени игре, Играјте се са пријатељима. Копирајте га и пошаљите својим пријатељима.",
+  "horizon.friends.share_failed": "Не могу да поделим свет: %s",
+  "horizon.friends.finding_route": "Проналажење начина на који пријатељи могу да вас контактирају…",
+  "horizon.multiplayer.join": "Придружите се",
+  "horizon.multiplayer.join_friend": "Придружите се пријатељу",
+  "horizon.multiplayer.invite_code": "Инвите Цоде",
+  "horizon.multiplayer.relay": "Релеј (опционо)"
+}

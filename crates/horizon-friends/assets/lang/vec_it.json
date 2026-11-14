@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Zuga coi amighi",
+  "horizon.friends.hint": "I amighi i incoła el còdexe dopo el boton Amighi deła schermata del titoło, in conesion direta o neła pajina de riprodusion del lansador.",
+  "horizon.friends.copied": "Copià",
+  "horizon.friends.copy_code": "Copia Codice",
+  "horizon.friends.stop_sharing": "Smetti de condividere",
+  "horizon.friends.none_yet": "No ghe xe gnancora amighi qua.",
+  "horizon.friends.here_now": "Eco qua: %s",
+  "horizon.friends.share_intro": "Condividi sto mondo dietro un codice de invito: el se apre a LAN, e i amici su internet i se unisse col codice. Nisun server nostro xe coinvolto.",
+  "horizon.friends.start_sharing": "Scominsia a condividere",
+  "horizon.friends.troubleshooting": "Risołusion dei problemi...",
+  "horizon.friends.stopped": "Smesso de condividere el codice de invito.",
+  "horizon.friends.short_code_changed": "Qualchedun el ga continuà a sercar un codice curto sbalià, cussì el xe canbià.",
+  "horizon.friends.wrong_code": "Qualchedun ga provà un codice sbalià.",
+  "horizon.friends.relay_stopped": "Troscia codici curti sbaliài, quindi el relè el resta spento fin che no te condividi da novo. I amighi i pol oncora entrar col codice conpleto.",
+  "horizon.friends.code_ready": "El vostro codice de invito xe pronto: Menu del gioco, Gioco coi amici. Copiatelo e mandatelo ai tuoi amici.",
+  "horizon.friends.share_failed": "No se podeva condividere el mondo: %s",
+  "horizon.friends.finding_route": "Trovando come che i amighi i pol rivar a ti…",
+  "horizon.multiplayer.join": "Entra",
+  "horizon.multiplayer.join_friend": "Entra a un amigo",
+  "horizon.multiplayer.invite_code": "Codice de invito",
+  "horizon.multiplayer.relay": "Relè (opsionałe)"
+}

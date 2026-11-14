@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Speel mit vrun",
+  "horizon.friends.hint": "Vrun plak de code nao de Vriend knop op ‘t titelsjerm, in Directe Verbinding of op de Afspeelpagina vaan de launcher.",
+  "horizon.friends.copied": "Gekopieerd",
+  "horizon.friends.copy_code": "Kopiecode",
+  "horizon.friends.stop_sharing": "Stop mit deile",
+  "horizon.friends.none_yet": "Heej nog gein vrun.",
+  "horizon.friends.here_now": "Hei noe: %s",
+  "horizon.friends.share_intro": "Deil deze wereld achter ‘n oetnodigingscode: ‘t geit open veur LAN, en vrun op ‘t internet gaon mit de code. Gein server vaan ós is betrokke.",
+  "horizon.friends.start_sharing": "Begin mit deile",
+  "horizon.friends.troubleshooting": "Probleemoplossinge...",
+  "horizon.friends.stopped": "Is gestop mit ‘t deile vaan de oetnodigingscode.",
+  "horizon.friends.short_code_changed": "Iemes bleef ‘n verkierde korte code probere, dus ‘t veranderde.",
+  "horizon.friends.wrong_code": "Iemes heet ‘n verkeerde code geprobeerd.",
+  "horizon.friends.relay_stopped": "Te väöl verkierde korte codes, dus de relais steit oet totdat se weer deils. Vrun kinne nog ummer mit de volledige code binnekómme.",
+  "horizon.friends.code_ready": "Uw oetnodigingscode is klaor: Spelmenu, Speel mit vrun. Kopieer ‘t en sjik ‘t nao dien vrun.",
+  "horizon.friends.share_failed": "Kon de wereld neet deile: %s",
+  "horizon.friends.finding_route": "Zoe wie vrun dich kinne bereike…",
+  "horizon.multiplayer.join": "Sluit aan",
+  "horizon.multiplayer.join_friend": "Doe dich aan bij un vrund",
+  "horizon.multiplayer.invite_code": "Uitnodigingscode",
+  "horizon.multiplayer.relay": "Relais (optioneel)"
+}

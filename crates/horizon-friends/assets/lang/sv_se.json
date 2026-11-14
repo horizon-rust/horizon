@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Spela med vänner",
+  "horizon.friends.hint": "Vänner klistrar in koden efter titelskärmens Vänner-knapp, i direktanslutning eller på startprogrammets spelsida.",
+  "horizon.friends.copied": "Kopierade",
+  "horizon.friends.copy_code": "Kopiera kod",
+  "horizon.friends.stop_sharing": "Sluta dela",
+  "horizon.friends.none_yet": "Inga vänner här än.",
+  "horizon.friends.here_now": "Här nu: %s",
+  "horizon.friends.share_intro": "Dela denna värld bakom en inbjudningskod: den öppnas till LAN och vänner på internet går med med koden. Ingen av vår server är inblandad.",
+  "horizon.friends.start_sharing": "Börja dela",
+  "horizon.friends.troubleshooting": "Felsökning...",
+  "horizon.friends.stopped": "Slutade dela inbjudningskoden.",
+  "horizon.friends.short_code_changed": "Någon fortsatte att försöka med en felaktig kortkod, så det ändrades.",
+  "horizon.friends.wrong_code": "Någon försökte med fel kod.",
+  "horizon.friends.relay_stopped": "För många felaktiga kortkoder, så reläet är avstängt tills du delar igen. Vänner kan fortfarande gå med med den fullständiga koden.",
+  "horizon.friends.code_ready": "Din inbjudningskod är klar: Spelmeny, Spela med vänner. Kopiera den och skicka den till dina vänner.",
+  "horizon.friends.share_failed": "Kunde inte dela världen: %s",
+  "horizon.friends.finding_route": "Hitta hur vänner kan nå dig...",
+  "horizon.multiplayer.join": "Gå med",
+  "horizon.multiplayer.join_friend": "Gå med i en vän",
+  "horizon.multiplayer.invite_code": "Inbjudningskod",
+  "horizon.multiplayer.relay": "Relä (valfritt)"
+}

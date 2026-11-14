@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Pelaa ystävien kanssa",
+  "horizon.friends.hint": "Ystävät liittävät koodin otsikkonäytön Ystävät-painikkeen perään, Suoraan yhteyteen tai käynnistysohjelman Play-sivulle.",
+  "horizon.friends.copied": "Kopioitu",
+  "horizon.friends.copy_code": "Kopioi koodi",
+  "horizon.friends.stop_sharing": "Lopeta jakaminen",
+  "horizon.friends.none_yet": "Täällä ei ole vielä ystäviä.",
+  "horizon.friends.here_now": "Täällä nyt: %s",
+  "horizon.friends.share_intro": "Jaa tämä maailma kutsukoodin takana: se avautuu lähiverkkoon, ja ystävät Internetissä liittyvät koodin avulla. Yksikään palvelin ei ole mukana.",
+  "horizon.friends.start_sharing": "Aloita jakaminen",
+  "horizon.friends.troubleshooting": "Vianmääritys...",
+  "horizon.friends.stopped": "Kutsukoodin jakaminen lopetettiin.",
+  "horizon.friends.short_code_changed": "Joku yritti jatkuvasti käyttää väärää lyhytkoodia, joten se muuttui.",
+  "horizon.friends.wrong_code": "Joku yritti väärää koodia.",
+  "horizon.friends.relay_stopped": "Liian monta väärää lyhytkoodia, joten rele on pois päältä, kunnes jaat uudelleen. Ystävät voivat yhä liittyä täydellä koodilla.",
+  "horizon.friends.code_ready": "Kutsukoodisi on valmis: Pelivalikko, Pelaa ystävien kanssa. Kopioi se ja lähetä se ystävillesi.",
+  "horizon.friends.share_failed": "Ei voinut jakaa maailmaa: %s",
+  "horizon.friends.finding_route": "Selvitetään, kuinka ystävät voivat tavoittaa sinut…",
+  "horizon.multiplayer.join": "Liity",
+  "horizon.multiplayer.join_friend": "Liity ystäväksi",
+  "horizon.multiplayer.invite_code": "Kutsukoodi",
+  "horizon.multiplayer.relay": "Rele (valinnainen)"
+}

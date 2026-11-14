@@ -174,6 +174,9 @@ class PrReadyTests(unittest.TestCase):
         self.assertEqual(pr_ready.mod_features(["horizon-client"]), "")
         self.assertEqual(pr_ready.mod_features(["horizon-mods"]),
                          " --features horizon-mods/index")
+        # Play with Friends in the game is horizon-friends' `game` side, which only horizon-official turns on.
+        self.assertEqual(pr_ready.mod_features(["horizon-friends", "horizon-mods"]),
+                         " --features horizon-mods/index,horizon-friends/game")
         self.assertEqual(pr_ready.mod_features(None), MODS)
 
     def test_mod_api_data_inputs_build_and_test_the_consuming_crates(self):

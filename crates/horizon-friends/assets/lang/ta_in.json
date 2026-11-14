@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "நண்பர்களுடன் விளையாடுங்கள்",
+  "horizon.friends.hint": "தலைப்புத் திரையின் நண்பர்கள் பொத்தானுக்குப் பிறகு, நேரடி இணைப்பில் அல்லது துவக்கியின் ப்ளே பக்கத்தில் நண்பர்கள் குறியீட்டை ஒட்டுவார்கள்.",
+  "horizon.friends.copied": "நகலெடுக்கப்பட்டது",
+  "horizon.friends.copy_code": "நகல் குறியீடு",
+  "horizon.friends.stop_sharing": "பகிர்வதை நிறுத்து",
+  "horizon.friends.none_yet": "இதுவரை இங்கு நண்பர்கள் இல்லை.",
+  "horizon.friends.here_now": "இங்கே இப்போது: %s",
+  "horizon.friends.share_intro": "அழைப்புக் குறியீட்டின் பின்னால் இந்த உலகத்தைப் பகிரவும்: இது LAN க்கு திறக்கும், மேலும் இணையத்தில் உள்ள நண்பர்கள் குறியீட்டுடன் இணைவார்கள். எங்களின் எந்த சர்வரும் இதில் ஈடுபடவில்லை.",
+  "horizon.friends.start_sharing": "பகிரத் தொடங்கு",
+  "horizon.friends.troubleshooting": "சரிசெய்தல்...",
+  "horizon.friends.stopped": "அழைப்புக் குறியீட்டைப் பகிர்வது நிறுத்தப்பட்டது.",
+  "horizon.friends.short_code_changed": "யாரோ ஒரு தவறான சுருக்கக் குறியீட்டை தொடர்ந்து முயற்சித்ததால், அது மாறிவிட்டது.",
+  "horizon.friends.wrong_code": "யாரோ தவறான குறியீட்டை முயற்சித்துள்ளனர்.",
+  "horizon.friends.relay_stopped": "பல தவறான சுருக்கக் குறியீடுகள், எனவே மீண்டும் பகிரும் வரை ரிலே ஆஃப். நண்பர்கள் இன்னும் முழுக் குறியீட்டுடன் சேரலாம்.",
+  "horizon.friends.code_ready": "உங்கள் அழைப்புக் குறியீடு தயாராக உள்ளது: கேம் மெனு, நண்பர்களுடன் விளையாடுங்கள். அதை நகலெடுத்து உங்கள் நண்பர்களுக்கு அனுப்புங்கள்.",
+  "horizon.friends.share_failed": "உலகைப் பகிர முடியவில்லை: %s",
+  "horizon.friends.finding_route": "நண்பர்கள் உங்களை எவ்வாறு அணுகலாம் என்பதைக் கண்டறிதல்…",
+  "horizon.multiplayer.join": "சேருங்கள்",
+  "horizon.multiplayer.join_friend": "ஒரு நண்பருடன் சேருங்கள்",
+  "horizon.multiplayer.invite_code": "அழைப்பு குறியீடு",
+  "horizon.multiplayer.relay": "ரிலே (விரும்பினால்)"
+}

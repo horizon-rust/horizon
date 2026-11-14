@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Luaj me miqtë",
+  "horizon.friends.hint": "Miqtë ngjisin kodin pas butonit Friends të ekranit të titullit, në Lidhje direkte ose në faqen Play të lëshuesit.",
+  "horizon.friends.copied": "E kopjuar",
+  "horizon.friends.copy_code": "Kopjo kodin",
+  "horizon.friends.stop_sharing": "Ndalo ndarjen",
+  "horizon.friends.none_yet": "Nuk ka ende miq këtu.",
+  "horizon.friends.here_now": "Këtu tani: %s",
+  "horizon.friends.share_intro": "Ndani këtë botë pas një kodi ftese: ai hapet në LAN dhe miqtë në internet bashkohen me kodin. Asnjë server i yni nuk është i përfshirë.",
+  "horizon.friends.start_sharing": "Filloni të ndani",
+  "horizon.friends.troubleshooting": "Zgjidhja e problemeve...",
+  "horizon.friends.stopped": "Ndaloi ndarjen e kodit të ftesës.",
+  "horizon.friends.short_code_changed": "Dikush vazhdoi të provonte një kod të shkurtër të gabuar, kështu që ai ndryshoi.",
+  "horizon.friends.wrong_code": "Dikush provoi një kod të gabuar.",
+  "horizon.friends.relay_stopped": "Shumë kode të shkurtra të gabuara, prandaj releja është e fikur derisa të ndash përsëri. Miqtë mund të bashkohen ende me kodin e plotë.",
+  "horizon.friends.code_ready": "Kodi juaj i ftesës është gati: Menyja e lojës, Luaj me miqtë. Kopjojeni dhe dërgojuni miqve tuaj.",
+  "horizon.friends.share_failed": "Nuk mund ta ndaja botën: %s",
+  "horizon.friends.finding_route": "Duke gjetur se si miqtë mund t'ju kontaktojnë…",
+  "horizon.multiplayer.join": "Bashkohu",
+  "horizon.multiplayer.join_friend": "Bashkohu me një mik",
+  "horizon.multiplayer.invite_code": "Kodi i Ftesës",
+  "horizon.multiplayer.relay": "Rele (opsionale)"
+}

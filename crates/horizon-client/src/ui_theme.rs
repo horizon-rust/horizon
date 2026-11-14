@@ -2,8 +2,7 @@
 //! control sizes and fonts from `menu_style`, given at startup (in the official
 //! game `crates/horizon-theme`, `docs/design-system.md`). Every menu is vanilla's (`ui`); what is left
 //! here draws Horizon's own overlays that vanilla has no screen for: the
-//! on-screen keyboard a controller types with (`osk`), plus the
-//! `horizon.txt` preferences.
+//! on-screen keyboard a controller types with (`osk`).
 //!
 //! Build a [`Ui`] over the frame's `HudBatch` with [`Ui::new`], lay out in dp
 //! (the launcher's logical pixels) and give every interactive widget a stable
@@ -11,33 +10,7 @@
 //! function draws and hit-tests, so they never disagree.
 use crate::hud::{HudAtlas, HudBatch, Rect};
 use ab_glyph::{Font as _, FontRef, PxScale, ScaleFont as _};
-use std::{cell::RefCell, collections::HashMap, path::Path};
-
-/// A Horizon-only preference from `horizon.txt` beside `options.txt`
-/// (`key:value` lines), so vanilla's options file stays exactly as vanilla
-/// writes it.
-pub fn preference(dir: &Path, key: &str) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join("horizon.txt")).ok()?;
-    text.lines().find_map(|l| {
-        let (k, v) = l.split_once(':')?;
-        (k.trim() == key).then(|| v.trim().to_owned())
-    })
-}
-/// Set (or with None remove) one preference, keeping the others.
-pub(crate) fn set_preference(dir: &Path, key: &str, value: Option<&str>) {
-    let text = std::fs::read_to_string(dir.join("horizon.txt")).unwrap_or_default();
-    let mut lines: Vec<String> = text
-        .lines()
-        .filter(|l| l.split_once(':').is_none_or(|(k, _)| k.trim() != key))
-        .map(str::to_owned)
-        .collect();
-    if let Some(v) = value {
-        lines.push(format!("{key}:{v}"));
-    }
-    let mut out = lines.join("\n");
-    out.push('\n');
-    let _ = std::fs::write(dir.join("horizon.txt"), out);
-}
+use std::{cell::RefCell, collections::HashMap};
 
 /// The overlays' palette (`menu_style`) in the HUD's colour encoding, plus the
 /// translucent plates the overlays draw over the game.
@@ -784,7 +757,8 @@ mod tests {
 
     #[test]
     fn atlas_reload_regenerates_text_and_corners_at_the_same_address() {
-        let atlas = HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
+        let atlas =
+            HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap();
         reset_atlas();
         let draw = |cache: &mut Cache| {
             let glyph = cache
