@@ -6,6 +6,12 @@ use std::time::Instant;
 /// The steps of a server tick, in the order they run.
 #[derive(Clone, Copy)]
 pub(super) enum Step {
+    /// The server tick's start: the window player's update, before the world tick.
+    Prelude,
+    /// The level entered and its streaming and world update run, before the world tick.
+    Stream,
+    /// The world tick's start: tickets, effects, postprocess, before the network.
+    Pre,
     /// The network: the hub's packets read at the start of the world tick.
     Net,
     /// Working out the regions, and splitting the level into them (the tick after a landing).
@@ -23,9 +29,9 @@ pub(super) enum Step {
     /// The world tick's later phases: sculk, sleep, the End, particles, bossbars.
     Late,
 }
-const STEPS: usize = 8;
+const STEPS: usize = 11;
 const NAMES: [&str; STEPS] = [
-    "net", "split", "launch", "wait", "land", "leftover", "lan", "late",
+    "prelude", "stream", "pre", "net", "split", "launch", "wait", "land", "leftover", "lan", "late",
 ];
 const WINDOW: u32 = 200;
 
@@ -39,6 +45,11 @@ pub(super) struct TickProfile {
     totals: Vec<(f32, bool)>,
     /// Whether regions were resident at any point of the window.
     resident: bool,
+    /// Why regions came home, by reason, this window.
+    reasons: Vec<(&'static str, u32)>,
+    /// Ticks this window that landed regions, and ticks that split the level.
+    lands: u32,
+    splits: u32,
     started: Option<Instant>,
 }
 
@@ -54,6 +65,14 @@ impl TickProfile {
         self.started = Some(Instant::now());
     }
 
+    /// Notes why regions come home this tick.
+    pub fn landed_because(&mut self, why: &'static str) {
+        match self.reasons.iter_mut().find(|r| r.0 == why) {
+            Some(r) => r.1 += 1,
+            None => self.reasons.push((why, 1)),
+        }
+    }
+
     /// Notes that regions are resident this tick.
     pub fn note_resident(&mut self) {
         self.resident = true;
@@ -65,8 +84,11 @@ impl TickProfile {
             return;
         };
         let total = started.elapsed().as_secs_f32() * 1000.0;
-        let landing = self.cur[Step::Split as usize] > 0.0 && self.cur[Step::Launch as usize] > 0.0
-            || self.cur[Step::Land as usize] > 0.0;
+        let lands = self.cur[Step::Land as usize] > 0.0;
+        let splits = self.cur[Step::Split as usize] > 0.0;
+        self.lands += u32::from(lands);
+        self.splits += u32::from(splits);
+        let landing = lands || splits;
         for (s, c) in self.sum.iter_mut().zip(self.cur.iter_mut()) {
             *s += *c;
             *c = 0.0;
@@ -83,6 +105,9 @@ impl TickProfile {
         let totals = std::mem::take(&mut self.totals);
         let resident = std::mem::take(&mut self.resident);
         let sum = std::mem::take(&mut self.sum);
+        let reasons = std::mem::take(&mut self.reasons);
+        let (lands, splits) = (self.lands, self.splits);
+        (self.lands, self.splits) = (0, 0);
         self.ticks = 0;
         if !resident {
             return;
@@ -104,7 +129,7 @@ impl TickProfile {
             (sum[Step::Leftover as usize] + sum[Step::Lan as usize] + sum[Step::Late as usize]) / n;
         log::info!(
             "regions: wait {:.1} ms, global {global:.1} ms, landing {:.1} ms (avg), landing ticks {} (avg {landing_avg:.1} ms, {landing_max:.1} ms max); \
-             tick avg {:.1} p50 {:.1} p95 {:.1} p99 {:.1} max {:.1} ms; per tick: {}, other {:.1}",
+             tick avg {:.1} p50 {:.1} p95 {:.1} p99 {:.1} max {:.1} ms; per tick: {}, other {:.1}; {lands} landings, {splits} splits, landed for: {}",
             sum[Step::Wait as usize] / n,
             (sum[Step::Land as usize] + sum[Step::Split as usize] + sum[Step::Launch as usize]) / n,
             landing.len(),
@@ -115,6 +140,11 @@ impl TickProfile {
             sorted[sorted.len() - 1],
             steps.join(", "),
             (tick_total - measured) / n,
+            reasons
+                .iter()
+                .map(|(why, n)| format!("{why} {n}"))
+                .collect::<Vec<_>>()
+                .join(", "),
         );
     }
 }

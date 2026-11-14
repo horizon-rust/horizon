@@ -854,7 +854,8 @@ impl Game<'_> {
     /// One tick of the resident regions `set`, on threads of their own; `None` once they are back (the tick ran
     /// by landing them, or one of them failed).
     fn resident_tick(&mut self, mut set: ResidentSet, first: bool) -> Result<Option<ResidentSet>> {
-        if !first && self.residents_must_land(&set) {
+        if !first && let Some(why) = self.residents_must_land(&set) {
+            self.regions.prof.landed_because(why);
             let landing = std::time::Instant::now();
             horizon_client::spans::time("regions_land", || self.land_resident_set(set));
             self.regions.prof.add(Step::Land, landing);
@@ -982,35 +983,41 @@ impl Game<'_> {
     }
 
     /// Whether the resident regions have to come back before the next tick.
-    fn residents_must_land(&self, set: &ResidentSet) -> bool {
+    fn residents_must_land(&self, set: &ResidentSet) -> Option<&'static str> {
         let Some(host) = self.lan.as_ref() else {
-            return true;
+            return Some("no host");
         };
-        if set.age >= resident_period()
-            || host.hub.away_wants_server()
-            || host.hub.guests.iter().any(|g| host.hub.here(g))
-            || !self.level_teleports.is_empty()
-        {
-            return true;
+        if set.age >= resident_period() {
+            return Some("age");
+        }
+        if host.hub.away_wants_server() {
+            return Some("packet");
+        }
+        if host.hub.guests.iter().any(|g| host.hub.here(g)) {
+            return Some("guest here");
+        }
+        if !self.level_teleports.is_empty() {
+            return Some("teleport");
         }
         let reach = host.hub.config.view_distance.clamp(2, 32) + 1;
         set.games
             .iter()
             .enumerate()
             .filter_map(|(k, s)| Some((k, s.game.as_ref()?)))
-            .any(|(k, w)| {
-                wants_land(w)
-                    || w.lan.as_ref().is_none_or(|h| {
-                        h.hub.guests.iter().any(|g| {
-                            let (cx, cz) = g.chunk();
-                            ((cx - reach) >> SECTION_SHIFT..=(cx + reach) >> SECTION_SHIFT).any(
-                                |sx| {
-                                    ((cz - reach) >> SECTION_SHIFT..=(cz + reach) >> SECTION_SHIFT)
-                                        .any(|sz| set.layout.owned.get(&(sx, sz)) != Some(&k))
-                                },
-                            )
+            .find_map(|(k, w)| {
+                if wants_land(w) {
+                    return Some("region wants");
+                }
+                let left = w.lan.as_ref().is_none_or(|h| {
+                    h.hub.guests.iter().any(|g| {
+                        let (cx, cz) = g.chunk();
+                        ((cx - reach) >> SECTION_SHIFT..=(cx + reach) >> SECTION_SHIFT).any(|sx| {
+                            ((cz - reach) >> SECTION_SHIFT..=(cz + reach) >> SECTION_SHIFT)
+                                .any(|sz| set.layout.owned.get(&(sx, sz)) != Some(&k))
                         })
                     })
+                });
+                left.then_some("left section")
             })
     }
 

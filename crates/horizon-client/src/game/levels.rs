@@ -647,6 +647,7 @@ impl Game<'_> {
             });
             // The level's own share of the pass, outside its world tick: a slow tick's line names
             // each of them, and `level_tick` holds the world tick itself (#15349).
+            let entering = Instant::now();
             if let Err(e) =
                 horizon_client::spans::time("enter_level", || self.enter_level(None, dim))
             {
@@ -667,6 +668,9 @@ impl Game<'_> {
                 self.update_dedicated_streaming();
             });
             horizon_client::spans::time("update_world", || self.update_world());
+            self.regions
+                .prof
+                .add(super::region_profile::Step::Stream, entering);
             let tick_span = horizon_client::spans::guard("level_tick");
             result = horizon_client::block_contact::in_level(
                 (self.serving.is_some() || self.options.dedicated.is_some()).then_some(dim.id()),
