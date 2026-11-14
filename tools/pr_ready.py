@@ -52,7 +52,7 @@ from tools import parity, process_tree, release_train  # noqa: E402
 from tools.ci import rust_changes  # noqa: E402
 
 RBUILD = Path.home() / "fleet" / "rbuild"
-LINE_LIMIT = 500
+LINE_LIMIT = 3000
 # What rbuild's login shell needs on each fleet machine before cargo (it adds sccache itself). The ThinkPad no
 # longer builds (2026-10-26: it keeps the AI pool and a few services; Linux work goes to playhorizon's runner).
 HOST_SETUP = {

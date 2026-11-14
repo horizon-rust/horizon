@@ -360,9 +360,9 @@ class PrReadyTests(unittest.TestCase):
                                                   "docs/native-client.md"}, 120), [])
         self.assertEqual(pr_ready.scope_warnings({"crates/horizon-theme/src/lib.rs", "launcher/src/theme.rs"}, 10), [])
         warnings = pr_ready.scope_warnings({"crates/horizon-client/src/game.rs", "launcher/src/main.rs",
-                                            ".github/workflows/ci.yml"}, 900)
+                                            ".github/workflows/ci.yml"}, 3200)
         self.assertEqual(len(warnings), 2)
-        self.assertIn("900 lines of code: over 500", warnings[0])
+        self.assertIn("3200 lines of code: over 3000", warnings[0])
         self.assertEqual(warnings[1], "mixes CI, game, launcher")
 
     def test_documentation_and_tests_are_not_counted_in_the_size(self):
