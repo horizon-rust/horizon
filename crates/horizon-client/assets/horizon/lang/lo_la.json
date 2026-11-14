@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "ອັນໃດທີ່ສ້າງຂຶ້ນໃໝ່ລໍຖ້າກອບ: ບໍ່ມີ, ໃກ້ຄຽງ ຫຼືຂອງເຈົ້າ.",
   "Animates water, lava, fire and other moving textures.": "Animates ນ້ໍາ, lava, ໄຟແລະໂຄງສ້າງເຄື່ອນຍ້າຍອື່ນໆ.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "ໂລກ pixels ຕໍ່ pixels ຈໍ. ຕ່ຳກວ່າ 100% ແມ່ນໄວຂຶ້ນຢູ່ໃນ GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "ລຽບແຄມປວກ. FXAA: ອ່ອນກວ່າ. TAA: ກ້ຽງທີ່ສຸດ, ສິ່ງທີ່ເຄື່ອນຍ້າຍອາດຈະຕິດຕາມ.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "ເຮັດໃຫ້ໂລກນ້ອຍລົງ ແລະສ້າງມັນຄືນໃໝ່ດ້ວຍ TAA. ໄວກວ່າ, ອ່ອນກວ່າ.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "ເຮັດໃຫ້ຮູບທີ່ເພີ່ມຂະໜາດຄົມຊັດ. ສູງກວ່າ: ຂອບຄົມກວ່າ, ສະເທືອນຫຼາຍກວ່າ.",
   "How frames reach the screen while VSync is off.": "ເຟຣມໄປຮອດໜ້າຈໍແນວໃດໃນຂະນະທີ່ VSync ປິດຢູ່.",

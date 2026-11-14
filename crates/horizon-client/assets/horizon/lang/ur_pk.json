@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "کون سے چنک ری بلڈز فریم کا انتظار کرتے ہیں: کوئی نہیں، قریبی یا آپ کے۔",
   "Animates water, lava, fire and other moving textures.": "پانی، لاوا، آگ اور دیگر متحرک ٹیکسچرز کو اینیمیٹ کرتا ہے۔",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "سکرین پکسل کے لحاظ سے دنیا کے پکسلز۔ 100% سے نیچے GPU پر تیز ہوتا ہے۔",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "کٹی پھٹی کناروں کو ہموار کرتا ہے۔ FXAA: نرم۔ TAA: سب سے ہموار, حرکت کرنے والی چیزوں کے پیچھے نشان ہو سکتے ہیں۔",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "دنیا کو چھوٹا رینڈر کرتا ہے اور TAA کے ساتھ دوبارہ بناتا ہے۔ تیز، نرم۔",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "اپ سکیل شدہ تصویر کو تیز کرتا ہے۔ زیادہ: صاف کنارے، زیادہ چمک۔",
   "How frames reach the screen while VSync is off.": "VSync آف ہونے پر فریم سکرین تک کیسے پہنچتے ہیں۔",

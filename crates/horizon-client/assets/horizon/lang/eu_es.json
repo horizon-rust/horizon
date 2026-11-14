@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Zein zati berreraikitzen den markoaren zain: bat ere ez, gertukoa edo zurea.",
   "Animates water, lava, fire and other moving textures.": "Ura, laba, sua eta beste ehundura mugikor batzuk animatzen ditu.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Munduko pixelak pantailako pixel bakoitzeko. % 100etik behera azkarragoa da GPUan.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Ertz bitxiak leuntzen ditu. FXAA: bigunagoa. TAA: leunena, mugitzen diren gauzak atzetik joan daitezke.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Mundua txikiagotzen du eta TAArekin berreraikitzen du. Azkarrago, leunagoa.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Handitutako irudia zorrozten du. Handiagoa: ertz zorrotzagoak, dirdira gehiago.",
   "How frames reach the screen while VSync is off.": "Nola iristen diren fotogramak pantailara VSync itzalita dagoen bitartean.",

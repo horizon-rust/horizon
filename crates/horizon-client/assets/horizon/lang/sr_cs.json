@@ -182,7 +182,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Koji deo rekonstruiše čeka na okvir: nijedan, u blizini ili tvoj.",
   "Animates water, lava, fire and other moving textures.": "Animira vodu, lavu, vatru i druge pokretne teksture.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Svetski pikseli po pikselu ekrana. Ispod 100% je brži na GPU-u.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Zaglađuje nazubljene ivice. FKSAA: mekši. TAA: najglađe, pokretne stvari mogu da zaostaju.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Čini svet manjim i ponovo ga gradi pomoću TAA. Brže, mekše.",
   "How frames reach the screen while VSync is off.": "Kako okviri stižu do ekrana dok je VSinc isključen.",
   "Efficient sleeps until the next frame; Precise spins, like vanilla.": "Efikasno spava do sledećeg kadra; Precizno okretanje, poput vanile.",

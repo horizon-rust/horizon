@@ -197,6 +197,16 @@ struct HorizonMaterialSolid {
     // Its four floats' bits (`SURFACE_FORMAT` is an integer format).
     @location(1) surface: vec4<u32>,
 }
+struct HorizonMaterialMsaa {
+    @location(0) color: vec4<f32>,
+    @location(1) surface: vec4<u32>,
+    @builtin(sample_mask) coverage: u32,
+}
+var<private> horizon_material_coverage: u32;
+@fragment fn horizon_material_fs_msaa(in: HorizonMaterialOut) -> HorizonMaterialMsaa {
+    let solid = horizon_material_solid(in, true);
+    return HorizonMaterialMsaa(solid.color, solid.surface, horizon_material_coverage);
+}
 // What `fs_solid` leaves in the frame's alpha for HDR output, from the sprite before the pack's
 // material: the pack decides the colour, Horizon still knows which pixels are light sources.
 fn horizon_material_mark(in: HorizonMaterialOut, texel: vec4<f32>) -> f32 {
@@ -220,13 +230,15 @@ fn horizon_material_mark(in: HorizonMaterialOut, texel: vec4<f32>) -> f32 {
     if length(in.base) < horizon_displace_distance - 0.05 && horizon_displaced_layer(in.layer) {
         discard;
     }
-    return horizon_material_solid(in);
+    return horizon_material_solid(in, false);
 }
-fn horizon_material_solid(in: HorizonMaterialOut) -> HorizonMaterialSolid {
+fn horizon_material_solid(in: HorizonMaterialOut, multisampled: bool) -> HorizonMaterialSolid {
     let color = horizon_material_faded(in, horizon_material_color(in, false));
     let texel = horizon_terrain_sprite(in.uv, in.layer & 0x7fffu);
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
-    if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
+    if multisampled {
+        horizon_material_coverage = horizon_terrain_cutout_coverage(color.a, (in.layer & 0x8000u) != 0u);
+    } else if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
     if horizon_surface.w == 0.0 {
         set_surface(horizon_material_face_normal, 0.0, 0.0);
     }
@@ -261,7 +273,7 @@ const DISPLACED_ENTRIES: &str = "
     if length(in.base) >= horizon_displace_distance + 0.05 {
         discard;
     }
-    return horizon_material_solid(in);
+    return horizon_material_solid(in, false);
 }
 ";
 
@@ -285,6 +297,9 @@ pub struct TerrainShape<'a> {
     /// The world target's colour format, and whether it holds linear light (`linear_blend`).
     pub format: wgpu::TextureFormat,
     pub linear: bool,
+    /// The renderer was made with 4x MSAA on (`msaa::Msaa::built`): the pack's solid terrain
+    /// gets four-sample pipelines too.
+    pub msaa: bool,
     /// The pack's tags of each tagged sprite layer, as `(layer, bits)`
     /// (`Manifest::sprite_tags`).
     pub sprite_tags: &'a [(u32, u32)],
@@ -306,6 +321,9 @@ pub struct NativeMaterial {
     pub solid: wgpu::RenderPipeline,
     pub translucent: wgpu::RenderPipeline,
     pub flat: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+    /// `solid` and the flat solid pipeline at four samples, for 4x MSAA; none with
+    /// `[displacement]`, which keeps its single-sample path.
+    pub msaa: Option<(wgpu::RenderPipeline, Option<wgpu::RenderPipeline>)>,
     /// `[displacement]`'s grid of the solid terrain near the camera (gfx/displace.rs).
     pub displaced: Option<wgpu::RenderPipeline>,
     /// The stage calls `set_surface`: its solid pipelines also write the surface target.
@@ -484,7 +502,8 @@ impl NativeMaterial {
                         vertex: &str,
                         buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
                         fragment: &str,
-                        blend: Option<wgpu::BlendState>| {
+                        blend: Option<wgpu::BlendState>,
+                        samples: u32| {
             let options = wgpu::PipelineCompilationOptions {
                 constants: &constants,
                 ..Default::default()
@@ -521,7 +540,7 @@ impl NativeMaterial {
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
-                multisample: Default::default(),
+                multisample: super::msaa::state(samples),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
                     entry_point: Some(fragment),
@@ -545,6 +564,7 @@ impl NativeMaterial {
             &buffers,
             "horizon_material_fs_solid",
             None,
+            1,
         );
         let translucent = pipeline(
             &instanced,
@@ -552,22 +572,57 @@ impl NativeMaterial {
             &buffers,
             "horizon_material_fs_translucent",
             blend,
+            1,
         );
         let flat = shape.flat.map(|group| {
             let layout = layout(Some(group));
             let buffers = [Some(vertices.clone())];
             let vs = "horizon_material_vs_flat";
             (
-                pipeline(&layout, vs, &buffers, "horizon_material_fs_solid", None),
+                pipeline(&layout, vs, &buffers, "horizon_material_fs_solid", None, 1),
                 pipeline(
                     &layout,
                     vs,
                     &buffers,
                     "horizon_material_fs_translucent",
                     blend,
+                    1,
                 ),
             )
         });
+        // A driver that refuses them costs the pack 4x MSAA, not its load.
+        let msaa_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let msaa = (shape.msaa && displaced.is_none()).then(|| {
+            let solid = pipeline(
+                &instanced,
+                "horizon_material_vs",
+                &buffers,
+                "horizon_material_fs_msaa",
+                None,
+                super::msaa::SAMPLES,
+            );
+            let flat = shape.flat.map(|group| {
+                pipeline(
+                    &layout(Some(group)),
+                    "horizon_material_vs_flat",
+                    &[Some(vertices.clone())],
+                    "horizon_material_fs_msaa",
+                    None,
+                    super::msaa::SAMPLES,
+                )
+            });
+            (solid, flat)
+        });
+        let msaa = match pollster::block_on(msaa_scope.pop()) {
+            Some(e) => {
+                log::warn!(
+                    "{}: no 4x MSAA pipelines, it draws single-sampled ({e})",
+                    stage.file
+                );
+                None
+            }
+            None => msaa,
+        };
         // The grid's corners come from its group 1, not from vertex buffers.
         let displaced = displaced.map(|d| {
             pipeline(
@@ -576,6 +631,7 @@ impl NativeMaterial {
                 &[],
                 "horizon_material_fs_displaced",
                 None,
+                1,
             )
         });
         if let Some(e) = pollster::block_on(scope.pop()) {
@@ -585,6 +641,7 @@ impl NativeMaterial {
             solid,
             translucent,
             flat,
+            msaa,
             displaced,
             writes_surface,
         })

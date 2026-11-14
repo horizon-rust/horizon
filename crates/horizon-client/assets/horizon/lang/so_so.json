@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Qaybtee dib u dhiska sugi jirku: midna, u dhow ama kaaga.",
   "Animates water, lava, fire and other moving textures.": "Wuxuu nooleeyaa biyaha, lafaha, dabka iyo qaababka kale ee dhaqdhaqaaqa.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "pixels aduunka shaashaba. Hooska 100% ayaa ku dheereeya GPU-ga.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Silica cidhifyada jeexan. FXAA: ka jilicsan. TAA: waxyaalaha ugu fudud, dhaqaaqa ayaa laga yaabaa inay raad raacaan.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Waxay ka dhigtaa adduunka mid yar oo dib ugu dhistaa TAA. Dhaqso badan, jilicsan",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Waxay af-legeysaa sawirka kor loo qaaday. Sare: geesaha cad, dhalaal badan.",
   "How frames reach the screen while VSync is off.": "Sida fayrasyadu u gaaraan shaashadda marka VSync uu maqan yahay.",

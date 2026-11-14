@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Који део реконструише чека на оквир: ниједан, у близини или твој.",
   "Animates water, lava, fire and other moving textures.": "Анимира воду, лаву, ватру и друге покретне текстуре.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Светски пиксели по пикселу екрана. Испод 100% је бржи на ГПУ-у.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Заглађује назубљене ивице. ФКСАА: мекши. ТАА: најглађе, покретне ствари могу да заостају.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Чини свет мањим и поново га гради помоћу ТАА. Брже, мекше.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Изоштрава увећану слику. Више: оштрије ивице, више светлуцања.",
   "How frames reach the screen while VSync is off.": "Како оквири стижу до екрана док је ВСинц искључен.",

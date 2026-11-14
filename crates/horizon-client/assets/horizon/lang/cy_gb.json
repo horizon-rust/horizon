@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Pa dalp ailadeiladu aros am y ffrâm: dim, gerllaw neu eich un chi.",
   "Animates water, lava, fire and other moving textures.": "Yn animeiddio dŵr, lafa, tân a gweadau symudol eraill.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Picsel y byd fesul picsel sgrin. Mae llai na 100% yn gyflymach ar y GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Llyfn ymylon miniog. FXAA: meddalach. TAA: mae'n bosibl y bydd pethau llyfn, symudol yn dilyn.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Yn gwneud y byd yn llai ac yn ei ailadeiladu gyda TAA. Cyflymach, meddalach.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Yn miniogi'r darlun a uwch-raddiwyd. Uwch: ymylon cliriach, mwy o ddisgleirdeb symudol.",
   "How frames reach the screen while VSync is off.": "Sut mae fframiau'n cyrraedd y sgrin tra bod VSync i ffwrdd.",

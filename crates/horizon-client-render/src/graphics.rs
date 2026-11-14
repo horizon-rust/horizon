@@ -880,6 +880,8 @@ pub struct Graphics {
     pub fxaa: bool,
     /// TAA over the world (FXAA is off while it is on).
     pub taa: bool,
+    /// 4x MSAA on opaque and cutout terrain (FXAA and TAA are off while it is on).
+    pub msaa4x: bool,
     /// TAA upscaling; anything but `Native` comes with `taa` on.
     pub upscaling: Upscaling,
     /// How much the upscaled picture is sharpened, 0..=100 (percent of the most).
@@ -977,6 +979,7 @@ impl Default for Graphics {
             target_fps: 60,
             fxaa: false,
             taa: false,
+            msaa4x: false,
             upscaling: Upscaling::Native,
             upscaling_sharpness: 85,
             screenshot_quality: 1,
@@ -1141,6 +1144,7 @@ impl Graphics {
                 "targetFps" => g.target_fps = number(g.target_fps).clamp(30, 240),
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
+                "msaa4x" => g.msaa4x = flag(g.msaa4x),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
                 "upscalingSharpness" => {
                     g.upscaling_sharpness = number(g.upscaling_sharpness).min(100)
@@ -1189,6 +1193,11 @@ impl Graphics {
             }
             _ => 0,
         });
+        // 4x MSAA replaces FXAA and TAA, and TAA's upscaling with it: a file naming them too
+        // (edited by hand) keeps it, as the Anti-aliasing button would.
+        if g.msaa4x {
+            (g.fxaa, g.taa, g.upscaling) = (false, false, Upscaling::Native);
+        }
         g
     }
     pub fn serialize(&self) -> String {
@@ -1256,6 +1265,7 @@ impl Graphics {
         if let Some(driver) = &self.hdr_failed_start {
             text += &format!("hdrFailedStart:{driver}\n");
         }
+        text += &format!("msaa4x:{}\n", bool_text(self.msaa4x));
         text += &self.blue_map.serialize();
         text
     }
@@ -1575,6 +1585,7 @@ mod tests {
             target_fps: 60,
             fxaa: true,
             taa: true,
+            msaa4x: false,
             upscaling: Upscaling::Balanced,
             upscaling_sharpness: 40,
             screenshot_quality: 4,
@@ -1596,6 +1607,12 @@ mod tests {
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
+        // 4x MSAA replaces FXAA, TAA and its upscaling, in a file that names them too.
+        let msaa = Graphics::parse(&Graphics { msaa4x: true, ..g }.serialize());
+        assert_eq!(
+            (msaa.msaa4x, msaa.fxaa, msaa.taa, msaa.upscaling),
+            (true, false, false, Upscaling::Native)
+        );
         // A legacy marker's hold, which names no driver, round-trips too; none writes no line.
         for failed in [Some(String::new()), None] {
             let graphics = Graphics {

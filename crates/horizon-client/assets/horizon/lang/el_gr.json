@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Ποιο κομμάτι ανακατασκευάζεται περιμένει το πλαίσιο: κανένα, κοντά ή δικό σας.",
   "Animates water, lava, fire and other moving textures.": "Ζωντανεύει νερό, λάβα, φωτιά και άλλες κινούμενες υφές.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Παγκόσμια εικονοστοιχεία ανά εικονοστοιχείο οθόνης. Κάτω από το 100% είναι πιο γρήγορο στη GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Λειαίνει τις οδοντωτές άκρες. FXAA: πιο μαλακό. ΤΑΑ: τα πιο ομαλά, κινούμενα πράγματα μπορεί να ακολουθούν.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Καθιστά τον κόσμο μικρότερο και τον ξαναχτίζει με ΤΑΑ. Πιο γρήγορα, πιο μαλακά.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Κάνει πιο ευκρινή την αναβαθμισμένη εικόνα. Υψηλότερο: πιο καθαρές άκρες, περισσότερο τρεμόπαιγμα.",
   "How frames reach the screen while VSync is off.": "Πώς τα καρέ φτάνουν στην οθόνη ενώ το VSync είναι απενεργοποιημένο.",

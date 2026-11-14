@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Quae FRUSTUM aedificat exspectant artus: prope nulla, vel tua.",
   "Animates water, lava, fire and other moving textures.": "Aqua, lava, ignis et alia textuum mobilium animat.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Orbis elementa per velum pixel. Infra 100% celerius est in GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Marginibus teretibus serratis. FXAA: mollior. TAA: lenissima, mo- res trahens.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Mundum reddit minorem et aedificat cum TAA. Velocius, mollior.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Imaginem upscalatam acuit. Altius: margines acutiores, plus fulgoris.",
   "How frames reach the screen while VSync is off.": "Quomodo tabulae ad tentorium perveniunt dum VSync absistit.",

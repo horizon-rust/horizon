@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Aling chunk ang muling itatayo ang naghihintay para sa frame: wala, malapit o sa iyo.",
   "Animates water, lava, fire and other moving textures.": "Binibigyang-buhay ang tubig, lava, apoy at iba pang gumagalaw na texture.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "World pixels bawat screen pixel. Ang mas mababa sa 100% ay mas mabilis sa GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Makinis ang tulis-tulis na mga gilid. FXAA: mas malambot. TAA: Ang pinakamakinis, gumagalaw na mga bagay ay maaaring masunod.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Ginagawang mas maliit ang mundo at muling itinatayo ito gamit ang TAA. Mas mabilis, mas malambot.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Pinatatalas ang naka-upscale na larawan. Mas mataas: mas matalas na gilid, mas maraming shimmer.",
   "How frames reach the screen while VSync is off.": "Paano naaabot ng mga frame ang screen habang naka-off ang VSync.",

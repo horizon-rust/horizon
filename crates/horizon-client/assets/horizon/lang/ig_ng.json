@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Kedu nchikota nke na-ewughachi echere etiti: ọ nweghị, dị nso ma ọ bụ nke gị.",
   "Animates water, lava, fire and other moving textures.": "Na-eme ka mmiri, lava, ọkụ na textures ndị ọzọ na-akpụ akpụ.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Pixel ụwa kwa pixel ihuenyo. N'okpuru 100% dị ngwa ngwa na GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Na-eme ka akụkụ ndị gbagọrọ agbagọ. FXAA: dị nro. TAA: ihe kacha dị nro, ihe na-akpụ akpụ nwere ike ịzọ ya.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Na-eme ka ụwa dị ntakịrị ma jiri TAA wughachi ya. Ọsọ ọsọ, dị nro.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Na-eme ka foto ebulitere dị nkọ. Elu karịa: ọnụ dị nkọ karịa, iju karịa.",
   "How frames reach the screen while VSync is off.": "Kedu ka okpokolo agba si enweta ihuenyo mgbe VSync gbanyụrụ.",

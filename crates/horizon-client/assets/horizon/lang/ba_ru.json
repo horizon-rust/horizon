@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Ниндәй өлөшө яңынан төҙөй көтә рамка: бер ниндәй ҙә, яҡында йәки һеҙҙең.",
   "Animates water, lava, fire and other moving textures.": "Һыу, лава, ут һәм башҡа хәрәкәт итеүсе текстураларҙы йәнләндерә.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Донъя пикселдәре экран пикселе. 100% түбән тиҙерәк GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Тешле ситтәрен тигеҙләй. ФХАА: йомшағыраҡ. ТАА: иң шыма, хәрәкәт итеүсе әйберҙәр эҙҙәре булыуы мөмкин.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Донъяны бәләкәйерәк итә һәм уны ТАА менән яңынан төҙөй. Тиҙерәк, йомшағыраҡ.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Масштабланған һүрәтте үткерләндерә. Юғарыраҡ: ситтәр асығыраҡ, ялтырау күберәк.",
   "How frames reach the screen while VSync is off.": "Нисек кадрҙар экранға етә, ә VSync өҙөлгән.",

@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "ʻO ka puʻupuʻu e kūkulu hou e kali no ke kiʻi: ʻaʻohe, kokoke a i ʻole kāu.",
   "Animates water, lava, fire and other moving textures.": "Hoʻoulu i ka wai, ka pele, ke ahi a me nā mea ʻoniʻoni ʻē aʻe.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Nā pika honua no kēlā me kēia kiʻi pika. Ma lalo o 100% ʻoi aku ka wikiwiki ma ka GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Hoʻomaʻamaʻa i nā ʻaoʻao ʻeke. FXAA: palupalu. TAA: ʻoi aku ka maʻalahi a me ka neʻe ʻana o nā mea.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Hoʻolilo i ka honua i mea liʻiliʻi a kūkulu hou me TAA. ʻOi aku ka wikiwiki, ʻoi aku ka palupalu.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Hoʻoi i ke kiʻi i hoʻonui ʻia. Kiʻekiʻe: ʻoi aʻe nā ʻaoʻao, ʻoi aku ka ʻālohilohi.",
   "How frames reach the screen while VSync is off.": "Pehea e hiki ai nā kiʻi i ka pale ke pio ʻo VSync.",

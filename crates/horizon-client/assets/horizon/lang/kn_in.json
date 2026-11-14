@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "ಯಾವ ಚಂಕ್ ಮರುನಿರ್ಮಾಣ ಮಾಡುತ್ತದೆ ಫ್ರೇಮ್‌ಗಾಗಿ ಕಾಯಿರಿ: ಯಾವುದೂ ಇಲ್ಲ, ಹತ್ತಿರದ ಅಥವಾ ನಿಮ್ಮದು.",
   "Animates water, lava, fire and other moving textures.": "ನೀರು, ಲಾವಾ, ಬೆಂಕಿ ಮತ್ತು ಇತರ ಚಲಿಸುವ ಟೆಕಶ್ಚರ್ಗಳನ್ನು ಅನಿಮೇಟ್ ಮಾಡುತ್ತದೆ.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "ಪ್ರತಿ ಸ್ಕ್ರೀನ್ ಪಿಕ್ಸೆಲ್‌ಗೆ ವಿಶ್ವ ಪಿಕ್ಸೆಲ್‌ಗಳು. GPU ನಲ್ಲಿ 100% ಕ್ಕಿಂತ ಕಡಿಮೆ ವೇಗವಾಗಿದೆ.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "ಮೊನಚಾದ ಅಂಚುಗಳನ್ನು ಸುಗಮಗೊಳಿಸುತ್ತದೆ. FXAA: ಮೃದುವಾದ. TAA: ನಯವಾದ, ಚಲಿಸುವ ವಸ್ತುಗಳು ಜಾಡು ಹಿಡಿಯಬಹುದು.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "ಜಗತ್ತನ್ನು ಚಿಕ್ಕದಾಗಿಸುತ್ತದೆ ಮತ್ತು TAA ಯೊಂದಿಗೆ ಅದನ್ನು ಮರುನಿರ್ಮಾಣ ಮಾಡುತ್ತದೆ. ವೇಗವಾಗಿ, ಮೃದುವಾಗಿ.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "ಅಪ್‌ಸ್ಕೇಲ್ ಮಾಡಿದ ಚಿತ್ರವನ್ನು ತೀಕ್ಷ್ಣಗೊಳಿಸುತ್ತದೆ. ಹೆಚ್ಚು: ಸ್ಪಷ್ಟ ಅಂಚುಗಳು, ಹೆಚ್ಚು ಮಿನುಗುವಿಕೆ.",
   "How frames reach the screen while VSync is off.": "VSync ಆಫ್ ಆಗಿರುವಾಗ ಫ್ರೇಮ್‌ಗಳು ಹೇಗೆ ಪರದೆಯನ್ನು ತಲುಪುತ್ತವೆ.",

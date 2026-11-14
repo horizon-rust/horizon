@@ -56,10 +56,22 @@ impl Game<'_> {
     /// pick (unless refused) call for another frame than the renderer's, it is made again before
     /// this frame draws. Without the switch a frame stays until the next start, as before.
     pub(super) fn follow_frame(&mut self) {
-        if !native_shaders::linear_frame_switch()
-            || self.options.paced_by_split
-            || self.options.split_guest
+        if self.options.paced_by_split || self.options.split_guest {
+            return;
+        }
+        // 4x MSAA's pipelines come with a renderer made while it is on: switched on in one made
+        // without them, the renderer is made again once.
+        if self
+            .renderer
+            .as_mut()
+            .is_some_and(Renderer::take_msaa_rebuild)
         {
+            if let Err(e) = self.rebuild_renderer() {
+                log::warn!("Horizon: the renderer for 4x MSAA could not be made: {e}");
+            }
+            return;
+        }
+        if !native_shaders::linear_frame_switch() {
             return;
         }
         let picked = shader_packs::picked_pack(&self.settings);

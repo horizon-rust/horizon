@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Mitkä palaset odottavat kehystä: ei yhtään, lähellä vai sinun.",
   "Animates water, lava, fire and other moving textures.": "Animoi vettä, laavaa, tulta ja muita liikkuvia tekstuureja.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Maailman pikseleitä näytön pikseliä kohti. Alle 100 % on nopeampi GPU:ssa.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Tasoittaa rosoiset reunat. FXAA: pehmeämpi. TAA: Tasaisimmat, liikkuvat asiat voivat seurata.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Pienentää maailmaa ja rakentaa sen uudelleen TAA:lla. Nopeampi, pehmeämpi.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Terävöittää skaalattua kuvaa. Korkeampi: terävämmät reunat, enemmän värettä.",
   "How frames reach the screen while VSync is off.": "Kuinka kehykset saavuttavat näytön, kun VSync on pois päältä.",

@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Liema biċċa tibni mill-ġdid stenna l-qafas: xejn, fil-qrib jew tiegħek.",
   "Animates water, lava, fire and other moving textures.": "Janima l-ilma, il-lava, in-nar u nisġa oħra li jiċċaqalqu.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Pixels tad-dinja għal kull pixel tal-iskrin. Taħt 100% huwa aktar mgħaġġel fuq il-GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Jillixxa truf imqaxxra. FXAA: aktar artab. TAA: l-aktar bla xkiel, l-affarijiet li jiċċaqilqu jistgħu jimxu.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Jagħmel id-dinja iżgħar u jibniha mill-ġdid bit-TAA. Aktar mgħaġġel, aktar artab.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Iċċekken ix-xbieha upscaled. Ogħla: truf aktar ċari, aktar shimmer.",
   "How frames reach the screen while VSync is off.": "Kif il-frejms jilħqu l-iskrin waqt li VSync ikun mitfi.",

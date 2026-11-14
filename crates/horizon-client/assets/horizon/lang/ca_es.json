@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Quin tros reconstrueix esperar el marc: cap, a prop o teu.",
   "Animates water, lava, fire and other moving textures.": "Anima l'aigua, la lava, el foc i altres textures en moviment.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Píxels mundials per píxel de pantalla. Per sota del 100% és més ràpid a la GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Allisa les vores dentades. FXAA: més suau. TAA: més suau, les coses en moviment poden seguir.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Redueix el món i el reconstrueix amb TAA. Més ràpid, més suau.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Fa més nítida la imatge ampliada. Més alt: vores més nítides, més tremolor.",
   "How frames reach the screen while VSync is off.": "Com arriben els fotogrames a la pantalla mentre VSync està desactivat.",

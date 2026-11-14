@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Ktorý kus prestavby čaká na rám: žiadny, v blízkosti alebo váš.",
   "Animates water, lava, fire and other moving textures.": "Animuje vodu, lávu, oheň a iné pohyblivé textúry.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Svetové pixely na pixel obrazovky. Pod 100 % je rýchlejšie na GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Vyhladzuje zubaté okraje. FXAA: mäkšie. TAA: najhladšie, pohyblivé veci sa môžu ťahať.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Zmenšuje svet a prestavuje ho pomocou TAA. Rýchlejšie, mäkšie.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Zostruje zväčšený obraz. Vyššie: ostrejšie okraje, viac lesku.",
   "How frames reach the screen while VSync is off.": "Ako sa snímky dostanú na obrazovku, keď je VSync vypnutá.",

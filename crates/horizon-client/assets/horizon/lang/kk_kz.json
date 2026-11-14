@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Қай бөлікті қайта құру жақтауды күтеді: ешқайсысы, жақын немесе сіздікі.",
   "Animates water, lava, fire and other moving textures.": "Суды, лаваны, отты және басқа қозғалатын текстураларды жандандырады.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Экран пикселіндегі әлемдік пикселдер. 100% төмен GPU жылдамырақ.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Кесілген жиектерді тегістейді. FXAA: жұмсақ. TAA: ең тегіс, қозғалатын заттар ізі түсуі мүмкін.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Әлемді кішірейтеді және оны TAA көмегімен қалпына келтіреді. Жылдамырақ, жұмсақ.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Көбейтілген кескінді өткірлендіреді. Жоғарырақ: жиектер анық, жылтырау көбірек.",
   "How frames reach the screen while VSync is off.": "VSync өшірулі кезде кадрлар экранға қалай жетеді.",

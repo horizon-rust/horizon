@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Hvilken chunk-genopbygning venter på rammen: ingen, i nærheden eller din.",
   "Animates water, lava, fire and other moving textures.": "Animerer vand, lava, ild og andre bevægelige teksturer.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Verdenspixel pr. skærmpixel. Under 100% er hurtigere på GPU'en.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Udglatter takkede kanter. FXAA: blødere. TAA: de glatteste ting i bevægelse kan spore.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Gør verden mindre og genopbygger den med TAA. Hurtigere, blødere.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Gør det opskalerede billede skarpere. Højere: skarpere kanter, mere flimmer.",
   "How frames reach the screen while VSync is off.": "Hvordan rammer når skærmen, mens VSync er slukket.",

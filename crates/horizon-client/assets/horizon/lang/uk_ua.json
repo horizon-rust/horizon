@@ -250,7 +250,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Які перебудови чанків чекають на кадр: жодні, найближчі чи ваші.",
   "Animates water, lava, fire and other moving textures.": "Анімує воду, лаву, вогонь та інші рухомі текстури.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Пікселі світу на піксель екрана. Нижче 100% — швидше для GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Згладжує краї. FXAA: м’якше. TAA: найгладше, можливі шлейфи.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Менший рендер, відновлення через TAA. Швидше, м’якше.",
   "How frames reach the screen while VSync is off.": "Як кадри потрапляють на екран, коли VSync вимкнено.",
   "Efficient sleeps until the next frame; Precise spins, like vanilla.": "«Економний» спить до наступного кадру; «Точний» чекає активно.",

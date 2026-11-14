@@ -1149,6 +1149,7 @@ mod tests {
             super::super::SolidPipeline {
                 plain: pipeline(layout, label, "", "", None, None, true),
                 hdr: None,
+                msaa: None,
             }
         };
         let mut flat = flat::Flat::new(

@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "რომელი ნაწილის აღმშენებლობა ელოდება ჩარჩოს: არცერთი, ახლომახლო ან თქვენი.",
   "Animates water, lava, fire and other moving textures.": "აცოცხლებს წყალს, ლავას, ცეცხლს და სხვა მოძრავ ტექსტურებს.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "მსოფლიო პიქსელები ეკრანის პიქსელზე. 100%-ზე ქვემოთ უფრო სწრაფია GPU-ზე.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "არბილებს დაკბილულ კიდეებს. FXAA: უფრო რბილი. TAA: ყველაზე გლუვი, მოძრავი ნივთები შეიძლება გაიაროს.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "ამცირებს სამყაროს და აღადგენს მას TAA-ით. უფრო სწრაფი, რბილი.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "ამკვეთრებს გაზრდილ სურათს. მაღალი: უფრო მკაფიო კიდეები, მეტი ციმციმი.",
   "How frames reach the screen while VSync is off.": "როგორ აღწევს ჩარჩოები ეკრანზე, როდესაც VSync გამორთულია.",

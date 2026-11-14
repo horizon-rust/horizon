@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Makkár oassi ođđasishuksejuvvo vuordit rámma: ii oktage, lahka dahje du.",
   "Animates water, lava, fire and other moving textures.": "Ealáskahttá čázi, lávva, buolli ja eará lihkadan struktuvrraid.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Máilmmipikselat juohke čájáhuspikselas. Vuollel 100% lea jođáneappot GPU:s.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Čuohpaha čáhppes ivnniid. FXAA: njuovžilabbot. TAA: njuovžileamos, lihkadan áššit sáhttet čuožžilit.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Dahká máilmmi unnit ja hukse dan ođđasit TAA:in. Jođáneappot, njuovžilabbot.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Čielggada ovddiduvvon gova. Alit: čielgaset ravggit, eanet čuovgahallan.",
   "How frames reach the screen while VSync is off.": "Mo rámmat jukset čájáhusa dan botta go VSync lea heaittihuvvon.",

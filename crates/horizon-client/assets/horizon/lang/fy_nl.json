@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Hokker chunk rebuilds wachtsje op it frame: gjin, tichtby of dyn.",
   "Animates water, lava, fire and other moving textures.": "Animearret wetter, lava, fjoer en oare bewegende tekstueren.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "World piksels per skerm piksel. Under 100% is flugger op 'e GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Smakket skerpe rânen. FXAA: sêfter. TAA: soepelste, bewegende dingen kinne trailje.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Makket de wrâld lytser en bout it opnij mei TAA. Sneller, sêfter.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Meitsje it opskale byld skerper. Heger: skerpere rânen, mear shimmer.",
   "How frames reach the screen while VSync is off.": "Hoe frames it skerm berikke wylst VSync út is.",

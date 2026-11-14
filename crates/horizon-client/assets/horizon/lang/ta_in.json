@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "எந்த துண்டின் மறுகட்டமைப்பு சட்டத்திற்காக காத்திருக்கிறது: எதுவுமில்லை, அருகில் அல்லது உங்களுடையது.",
   "Animates water, lava, fire and other moving textures.": "நீர், எரிமலை, நெருப்பு மற்றும் பிற நகரும் அமைப்புகளை உயிரூட்டுகிறது.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "ஒரு திரை பிக்சலுக்கு உலக பிக்சல்கள். GPU இல் 100%க்குக் கீழே வேகமானது.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "துண்டிக்கப்பட்ட விளிம்புகளை மென்மையாக்குகிறது. FXAA: மென்மையானது. TAA: மென்மையான, நகரும் விஷயங்கள் தடமறியலாம்.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "உலகத்தை சிறியதாக்கி TAA மூலம் மீண்டும் உருவாக்குகிறது. வேகமான, மென்மையான.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "அப்ஸ்கேல் செய்யப்பட்ட படத்தைக் கூர்மையாக்குகிறது. அதிகம்: கூர்மையான விளிம்புகள், அதிக பளபளப்பு.",
   "How frames reach the screen while VSync is off.": "VSync முடக்கத்தில் இருக்கும்போது ஃப்ரேம்கள் திரையை எவ்வாறு அடைகின்றன.",

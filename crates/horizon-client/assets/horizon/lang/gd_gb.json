@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Dè am pìos a bhios ag ath-thogail a’ feitheamh ris an fhrèam: gin, faisg air làimh no leatsa.",
   "Animates water, lava, fire and other moving textures.": "A’ beothachadh uisge, làbha, teine agus inneach gluasadach eile.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "T-saoghail piogsailean piogsail airson sgrion. Tha nas ìsle na 100% nas luaithe air an GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Smooths garbh oirean. FXAA: nas buige. TAA: faodaidh rudan gluasadach a bhith a’ leantainn.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "A’ toirt an t-saoghail nas lugha agus ga ath-thogail le TAA. Nas luaithe, nas buige.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "A' geurachadh an dealbh àrdaichte. Nas àirde: oirean nas gèire, barrachd deàlradh.",
   "How frames reach the screen while VSync is off.": "Mar a ruigeas frèamaichean an sgrion fhad ‘s a tha VSync dheth.",

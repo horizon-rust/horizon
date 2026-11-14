@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Kuris gabalas atstato laukia kadro: nėra, šalia ar jūsų.",
   "Animates water, lava, fire and other moving textures.": "Animuoja vandenį, lavą, ugnį ir kitas judančias tekstūras.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Pasaulio pikselių vienam ekrano taškui. Žemiau 100 % yra greitesnis GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Išlygina dantytus kraštus. FXAA: minkštesnis. TAA: sklandžiausi, judantys daiktai gali sekti.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Padaro pasaulį mažesnį ir atkuria jį su TAA. Greičiau, švelniau.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Padidina padidinto vaizdo ryškumą. Aukščiau: ryškesni kraštai, daugiau mirgėjimo.",
   "How frames reach the screen while VSync is off.": "Kaip kadrai pasiekia ekraną, kai VSync išjungtas.",

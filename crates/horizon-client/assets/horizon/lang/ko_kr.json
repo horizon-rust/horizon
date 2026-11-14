@@ -338,7 +338,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "어떤 청크 재구성이 프레임을 기다릴지 설정합니다: 없음, 주변 또는 내 청크.",
   "Animates water, lava, fire and other moving textures.": "물, 용암, 불 및 기타 움직이는 텍스처를 애니메이션화합니다.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "화면 픽셀당 월드 픽셀 수입니다. 100% 미만으로 설정하면 GPU에서 더 빨라집니다.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "거친 모서리를 부드럽게 합니다. FXAA: 부드러움. TAA: 가장 부드러움, 움직이는 물체에 잔상이 남을 수 있음.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "월드를 작게 렌더링한 후 TAA로 재구성합니다. 더 빠르고 부드러움.",
   "How frames reach the screen while VSync is off.": "수직 동기화가 꺼져있을 때 프레임이 화면에 도달하는 방식입니다.",
   "Efficient sleeps until the next frame; Precise spins, like vanilla.": "효율적 모드는 다음 프레임까지 대기(sleep)하고, 정밀 모드는 바닐라처럼 회전(spin)합니다.",

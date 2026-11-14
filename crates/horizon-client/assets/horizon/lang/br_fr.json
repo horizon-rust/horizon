@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Peseurt rann a adsevel a c'hortoz ar framm : hini ebet, e-kichen pe ho hini.",
   "Animates water, lava, fire and other moving textures.": "Bevaat a ra an dour, al lava, an tan hag an danvezioù fiñvus all.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Pikseloù bed dre piksel skramm. Buanoc'h eo dindan 100% war ar GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Eeunaat a ra ar c'hornioù ruz. FXAA: dousoc'h. TAA: an traoù eeunañ, o fiñval a c'hell heuliañ.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Bihanaat a ra ar bed hag adsevel anezhañ gant TAA. Buanoc'h, dousoc'h.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Lemmaat a ra ar skeudenn gresket. Uheloc'h : bordoù lemmoc'h, muioc'h a sked.",
   "How frames reach the screen while VSync is off.": "Penaos e tistro ar frammoù war ar skramm pa vez diweredekaet VSync.",

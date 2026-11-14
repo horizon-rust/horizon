@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Đoạn nào được xây dựng lại chờ khung: không có, ở gần hoặc của bạn.",
   "Animates water, lava, fire and other moving textures.": "Hoạt hình nước, dung nham, lửa và các kết cấu chuyển động khác.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Pixel thế giới trên mỗi pixel màn hình. Dưới 100% là nhanh hơn trên GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Làm mịn các cạnh lởm chởm. FXAA: nhẹ nhàng hơn. TAA: êm ái nhất, mọi thứ chuyển động có thể bị kéo theo.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Làm cho thế giới nhỏ hơn và xây dựng lại nó bằng TAA. Nhanh hơn, nhẹ nhàng hơn.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Làm sắc nét hình ảnh đã nâng cấp. Cao hơn: cạnh rõ hơn, nhấp nháy nhiều hơn.",
   "How frames reach the screen while VSync is off.": "Cách các khung hình tiếp cận màn hình khi VSync tắt.",

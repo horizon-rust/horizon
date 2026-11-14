@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "איזה נתח בונים מחדש מחכים לפריים: אף אחד, בקרבת מקום או שלך.",
   "Animates water, lava, fire and other moving textures.": "מחייה מים, לבה, אש ומרקמים נעים אחרים.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "פיקסלים בעולם לכל פיקסל מסך. מתחת ל-100% מהיר יותר ב-GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "מחליק קצוות משוננים. FXAA: רך יותר. TAA: הדברים הנעים והחלקים ביותר עשויים להיגרר.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "הופך את העולם לקטן יותר ובונה אותו מחדש עם TAA. מהר יותר, רך יותר.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "מחדד את התמונה המוגדלת. גבוה יותר: קצוות חדים יותר, יותר נצנוץ.",
   "How frames reach the screen while VSync is off.": "איך מסגרות מגיעות למסך בזמן ש-VSync כבוי.",

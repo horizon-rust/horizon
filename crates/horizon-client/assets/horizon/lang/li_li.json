@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Welke stuk herbouwt wacht op ‘t frame: gein, in de buurt of dien.",
   "Animates water, lava, fire and other moving textures.": "Animeert water, lava, vuur en aandere bewegende texture.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Wereldpixels per sjermpixel. Minder 100% is sneller op de GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Maak gekarfde rande glad. FXAA: zachter. TAA: vloeiendste, bewegende dinger kinne achterloupe.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Maak de wereld kleiner en verbouwt ‘m mit TAA. Sneller, zachter.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Maak ‘t opgesjkaold beeld sjerper. Hoeger: sjerpere rande, mie glans.",
   "How frames reach the screen while VSync is off.": "Wie frames ‘t sjerm bereike onderwieles dat VSync oet is.",

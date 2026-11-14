@@ -444,7 +444,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "哪些区块重建要等这一帧完成：无、附近的，或你身边的。",
   "Animates water, lava, fire and other moving textures.": "让水、熔岩、火等动态纹理动起来。",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "每个屏幕像素对应的画面像素。低于 100% 时 GPU 更省力。",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "平滑锯齿边缘。FXAA 更柔和；TAA 最平滑，但移动物体可能拖影。",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "以更小的尺寸渲染世界再用 TAA 重建。更快，但更模糊。",
   "How frames reach the screen while VSync is off.": "关闭垂直同步时帧画面如何送到屏幕。",
   "Efficient sleeps until the next frame; Precise spins, like vanilla.": "“高效”会休眠到下一帧；“精确”持续空转，与原版相同。",

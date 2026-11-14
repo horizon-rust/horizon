@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Melyik darab újjáépítése várja a keretet: nincs, a közelben vagy a tiéd.",
   "Animates water, lava, fire and other moving textures.": "Vizet, lávát, tüzet és más mozgó textúrákat animál.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Világképpontok képernyőpixelenként. 100% alatt gyorsabb a GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Kisimítja a szaggatott széleket. FXAA: lágyabb. TAA: a legsimább, mozgó dolgok nyomába eredhetnek.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Kisebbé teszi a világot, és TAA-val újjáépíti. Gyorsabb, lágyabb.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Élesíti a felskálázott képet. Magasabb: élesebb élek, több csillogás.",
   "How frames reach the screen while VSync is off.": "Hogyan érik el a keretek a képernyőt, amikor a VSync ki van kapcsolva.",

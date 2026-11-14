@@ -152,6 +152,8 @@ pub struct EffectiveOutput {
     /// The running shader pack lights the world itself: Horizon lifts none of it, so HDR
     /// Lighting has nothing to switch (`with_pack`).
     pub(crate) pack_lights: bool,
+    /// The renderer can draw 4x terrain MSAA (`Renderer::output`).
+    pub(crate) msaa: bool,
 }
 impl Default for EffectiveOutput {
     fn default() -> Self {
@@ -176,6 +178,7 @@ impl EffectiveOutput {
         nits: [203.0, 1000.0, 0.0],
         ui_brightness: 1.0,
         pack_lights: false,
+        msaa: false,
     };
     /// This output under the running shader pack: a `shaders/` one (`shaders`), or one of
     /// Horizon's own of API `native`. Under a 0.1 pack on the 8- or 16-bit frame the last pass
@@ -299,6 +302,7 @@ pub(crate) fn resolve_output(
         ui_brightness: settings.ui_nits(reading.luminance) as f32
             / settings.paper_white_nits(reading.luminance) as f32,
         pack_lights: false,
+        msaa: false,
     }
 }
 

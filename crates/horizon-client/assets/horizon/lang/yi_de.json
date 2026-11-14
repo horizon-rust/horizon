@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "וואָס טשאַנג ריבילדז וואַרטן פֿאַר די ראַם: גאָרניט, נירביי אָדער דייַן.",
   "Animates water, lava, fire and other moving textures.": "אַנימייץ וואַסער, לאַוואַ, פייַער און אנדערע מאָווינג טעקסטשערז.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "וועלט בילדצעלן פּער פאַרשטעלן פּיקסעל. אונטער 100% איז פאַסטער אויף די גפּו.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "סמאָוץ דזשאַגד עדזשאַז. FXAA: סאַפטער. טאַאַ: סמודאַסט, מאָווינג טינגז קען שטעג.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "רענדערז די וועלט קלענערער און ריבילדז עס מיט TAA. פאַסטער, סאַפטער.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "שאַרפֿט דאָס אויפֿגעסקיילטע בילד. העכער: שאַרפֿער ברעגן, מער שימער.",
   "How frames reach the screen while VSync is off.": "ווי ראָמען דערגרייכן דעם עקראַן בשעת VSync איז אַוועק.",

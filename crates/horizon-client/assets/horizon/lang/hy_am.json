@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Որ հատվածը վերակառուցվում է, սպասում է շրջանակին. ոչ մեկը, մոտակա կամ ձերը:",
   "Animates water, lava, fire and other moving textures.": "Շարժում է ջուրը, լավան, կրակը և այլ շարժվող հյուսվածքները:",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Աշխարհի պիքսելները մեկ էկրանի պիքսելում: 100%-ից ցածր ավելի արագ է GPU-ի վրա:",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Հարթեցնում է ատամնավոր եզրերը։ FXAA: ավելի մեղմ: TAA. ամենասահուն, շարժվող իրերը կարող են հետևել:",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Փոքրացնում է աշխարհը և վերակառուցում այն TAA-ով: Ավելի արագ, ավելի մեղմ:",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Սրում է մեծացված պատկերը։ Բարձր՝ ավելի հստակ եզրեր, ավելի շատ շողշողում։",
   "How frames reach the screen while VSync is off.": "Ինչպես են կադրերը հասնում էկրանին, երբ VSync-ն անջատված է:",

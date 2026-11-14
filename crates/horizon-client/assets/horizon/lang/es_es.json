@@ -335,7 +335,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "Qué reconstrucciones de chunks esperan al fotograma: ninguna, cercanas o la tuya.",
   "Animates water, lava, fire and other moving textures.": "Anima el agua, la lava, el fuego y otras texturas en movimiento.",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "Píxeles del mundo por píxel de pantalla. Por debajo del 100 % es más rápido en la GPU.",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "Suaviza los bordes dentados. FXAA: más suave. TAA: el más suave, lo que se mueve puede dejar estela.",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "Renderiza el mundo más pequeño y lo reconstruye con TAA. Más rápido y más suave.",
   "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.": "Aumenta la nitidez de la imagen reescalada. Más alto: bordes más nítidos y más parpadeo.",
   "How frames reach the screen while VSync is off.": "Cómo llegan los fotogramas a la pantalla con VSync desactivado.",

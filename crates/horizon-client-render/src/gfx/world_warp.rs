@@ -399,6 +399,7 @@ impl WorldWarps {
         let solid = SolidPipeline {
             plain: solid(&plain),
             hdr: kit.hdr_output.then(|| solid(&lit)),
+            msaa: None,
         };
         let translucent = terrain_pipeline(
             "Warped terrain translucent",

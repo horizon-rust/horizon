@@ -362,6 +362,7 @@ mod tests {
             sprites: [1.0, 2048.0],
             format: wgpu::TextureFormat::Rgba8Unorm,
             linear: false,
+            msaa: false,
             sprite_tags: &[],
             sprite_materials: &[],
             entities: &empty,

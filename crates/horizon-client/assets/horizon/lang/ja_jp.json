@@ -338,7 +338,6 @@
   "Which chunk rebuilds wait for the frame: none, nearby or yours.": "どのチャンクの再構築がフレームを待機するか: なし、近くのチャンク、または自分のチャンク。",
   "Animates water, lava, fire and other moving textures.": "水、溶岩、火、その他の動くテクスチャをアニメーション化します。",
   "World pixels per screen pixel. Below 100% is faster on the GPU.": "画面ピクセルごとのワールド ピクセル。 100% 未満の場合、GPU での速度が速くなります。",
-  "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.": "ギザギザのエッジを滑らかにします。 FXAA: 柔らかめ。 TAA: 最もスムーズですが、動いているものは尾を引く可能性があります。",
   "Renders the world smaller and rebuilds it with TAA. Faster, softer.": "世界を小さくレンダリングし、TAA で再構築します。より速く、よりソフトに。",
   "How frames reach the screen while VSync is off.": "VSync がオフのときにフレームが画面に到達する方法。",
   "Efficient sleeps until the next frame; Precise spins, like vanilla.": "次のフレームまで効率的にスリープします。バニラのような正確なスピン。",
