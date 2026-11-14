@@ -687,8 +687,25 @@ pub struct Lan {
     listener_stop: Arc<AtomicBool>,
     /// The multicast announcement (LanServerPinger); absent when the socket failed.
     _pinger: Option<discovery::Pinger>,
+    /// A handle for a region's hub ([`Lan::detached`]): it closes nothing when dropped.
+    detached: bool,
 }
 impl Lan {
+    /// A handle on this server's connections for a region's hub on another thread: the same players' connections
+    /// and shared state, no listener and no events of its own (the server's hub reads the network); dropping it
+    /// closes nothing.
+    pub fn detached(&self) -> Self {
+        let (_, events) = channel();
+        Self {
+            shared: self.shared.clone(),
+            events,
+            port: self.port,
+            listener: None,
+            listener_stop: Arc::new(AtomicBool::new(false)),
+            _pinger: None,
+            detached: true,
+        }
+    }
     /// Listen on `port` (0 picks a free one).
     pub fn start(
         sync: Arc<data::SyncData>,
@@ -732,6 +749,7 @@ impl Lan {
             listener: None,
             listener_stop: Arc::new(AtomicBool::new(false)),
             _pinger: None,
+            detached: false,
         };
         if listen {
             lan.listen(port, announce)?;
@@ -824,6 +842,9 @@ impl Lan {
         self.events.try_iter().collect()
     }
     pub fn stop(&mut self) {
+        if self.detached {
+            return;
+        }
         self.shared.stop.store(true, Ordering::Relaxed);
         self.stop_listening();
     }

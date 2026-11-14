@@ -712,6 +712,81 @@ impl Default for LevelSync {
 }
 
 impl Hub {
+    /// A hub for one region's players on a region thread, made once per region game and given the players for each
+    /// tick ([`Hub::lend_guests`]). It shares this hub's connections and registries; the server's hub still reads
+    /// the network and sends the chunks and entities.
+    pub fn region_shell(&self) -> Hub {
+        let mut hub = Hub::new(
+            self.lan.detached(),
+            self.sync.clone(),
+            self.encoder.detached(),
+            self.config.clone(),
+        );
+        hub.copy_region_settings(self);
+        hub
+    }
+
+    /// What a region's hub reads of the server's each tick: the rules and settings the game set on it.
+    pub fn copy_region_settings(&mut self, from: &Hub) {
+        self.ticks = from.ticks;
+        self.movement_checks = from.movement_checks;
+        self.immediate_respawn = from.immediate_respawn;
+        self.reduced_debug_info = from.reduced_debug_info;
+        self.limited_crafting = from.limited_crafting;
+        self.singleplayer_owner = from.singleplayer_owner;
+        self.flat_world = from.flat_world;
+        self.debug_world = from.debug_world;
+        self.teams = from.teams.clone();
+        self.nicknames = from.nicknames.clone();
+        self.ops = from.ops.clone();
+        self.entity_range_percent = from.entity_range_percent;
+        self.spawn_protection = from.spawn_protection;
+        self.admin_feedback_to_ops = from.admin_feedback_to_ops;
+        self.weather = from.weather;
+        self.ticking = from.ticking;
+        self.stepping = from.stepping;
+        self.last_clock = from.last_clock;
+        self.last_rate = from.last_rate;
+        self.mods_loaded = from.mods_loaded;
+    }
+
+    /// Every region's guests split off at once (`region_of` a connection's region), each guest moved once.
+    pub fn split_guests(
+        &mut self,
+        regions: usize,
+        region_of: impl Fn(u32) -> Option<usize>,
+    ) -> Vec<Vec<Guest>> {
+        let mut out: Vec<Vec<Guest>> = (0..regions).map(|_| Vec::new()).collect();
+        let mut kept = Vec::with_capacity(self.guests.len());
+        for g in std::mem::take(&mut self.guests) {
+            match region_of(g.conn) {
+                Some(r) if r < regions => out[r].push(g),
+                _ => kept.push(g),
+            }
+        }
+        self.guests = kept;
+        out
+    }
+
+    /// The guests in connection order again after regions gave theirs back ([`Hub::take_guests_back`] only
+    /// appends).
+    pub fn restore_guest_order(&mut self) {
+        self.guests.sort_by_key(|g| g.conn);
+    }
+
+    /// A region hub's guests back, with what its tick left for this hub.
+    pub fn take_guests_back(&mut self, region: &mut Hub) {
+        self.guests.append(&mut region.guests);
+        self.native_menu_events.append(&mut region.native_menu_events);
+        self.native_menu_returns.append(&mut region.native_menu_returns);
+        self.native_tracking.append(&mut region.native_tracking);
+        self.attachment_snapshots.append(&mut region.attachment_snapshots);
+        self.native_advancement_grants.append(&mut region.native_advancement_grants);
+        for (k, v) in region.item_ids.drain() {
+            self.item_ids.entry(k).or_insert(v);
+        }
+    }
+
     pub fn new(lan: Lan, sync: Arc<SyncData>, encoder: ChunkEncoder, config: HubConfig) -> Self {
         let chat_type = sync
             .id("minecraft:chat_type", "minecraft:chat")
