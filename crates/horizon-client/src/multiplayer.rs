@@ -143,8 +143,8 @@ pub enum Screen {
     Page(Form),
     Disconnected {
         reason: String,
-        /// Auto-reconnect's next attempt, until it is cancelled.
-        retry: Option<crate::reconnect::Retry>,
+        /// The next attempt a hook planned (`last_server`), until it is cancelled.
+        retry: Option<horizon_hooks::Reconnect>,
         /// Wrapped reason lines, set by the last draw; the buttons sit below them.
         lines: std::cell::Cell<usize>,
     },
@@ -1906,7 +1906,7 @@ impl Screen {
         }
     }
     /// Auto-reconnect's attempt, once its countdown is over.
-    pub fn due_retry(&mut self) -> Option<crate::reconnect::Retry> {
+    pub fn due_retry(&mut self) -> Option<horizon_hooks::Reconnect> {
         let Self::Disconnected { retry, .. } = self else {
             return None;
         };

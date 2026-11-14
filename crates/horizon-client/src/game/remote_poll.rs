@@ -119,7 +119,7 @@ impl Game<'_> {
                     uuid,
                 } => {
                     self.set_registries(registries);
-                    self.extras_joined();
+                    self.last_server.joined();
                     // handleLogin: the level loading screen replaces any dialog.
                     self.close_dialogs();
                     if let Some(r) = self.remote.as_mut() {
@@ -261,9 +261,9 @@ impl Game<'_> {
                         self.connect_server_with_cookies(&address, &name, Some(cookies))?;
                         return Ok(());
                     }
-                    let retry = self.reconnect_after(&reason, key.as_deref(), from_server);
+                    let plan = self.last_server.ended(&reason, key.as_deref(), from_server);
                     self.leave_server(Some(reason))?;
-                    self.offer_reconnect(retry);
+                    horizon_client::last_server::offer(self.title.as_mut(), plan);
                     return Ok(());
                 }
                 Event::Packet(packet) => match *packet {

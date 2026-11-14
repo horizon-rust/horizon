@@ -2,7 +2,17 @@
 //! connection may be retried, and when. Only lost connections and the
 //! server's own shutdown or restart are retried, never kicks, bans or
 //! refusals; attempts back off and stop after a few.
+//!
+//! It runs on the engine's connection hooks ([`HOOKS`], `horizon_hooks`): the engine
+//! reports a connection's start, join, leave and end, and shows and runs the attempt
+//! this plans. Nothing else in the engine reads it, so it leaves for a Horizon crate
+//! as a file move once its setting can leave too (docs/layers.md, plan M5).
+use horizon_hooks::{Ended, Hooks, Server, seat};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// A planned attempt.
+pub use horizon_hooks::Reconnect as Retry;
 
 /// Seconds before each attempt; there are no more after the last.
 pub const DELAYS: [u64; 5] = [5, 10, 20, 40, 60];
@@ -111,43 +121,7 @@ pub struct Tracker {
     attempts: usize,
     joined: Option<Instant>,
 }
-/// A planned attempt.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Retry {
-    pub address: String,
-    pub name: String,
-    pub lan: bool,
-    pub at: Instant,
-    /// 1-based, of `DELAYS.len()`.
-    pub attempt: usize,
-}
-impl Retry {
-    /// Whole seconds left, rounded up.
-    pub fn seconds_left(&self, now: Instant) -> u64 {
-        let left = self.at.saturating_duration_since(now);
-        left.as_secs() + u64::from(left.subsec_nanos() > 0)
-    }
-    pub fn due(&self, now: Instant) -> bool {
-        now >= self.at
-    }
-    pub fn text(&self, now: Instant) -> String {
-        format!(
-            "Reconnecting in {} s (attempt {} of {})",
-            self.seconds_left(now),
-            self.attempt,
-            DELAYS.len()
-        )
-    }
-}
 impl Tracker {
-    /// The server connected to last (splitscreen players join the same one).
-    pub fn address(&self) -> Option<&str> {
-        self.address.as_deref()
-    }
-    /// That server was found on the local network.
-    pub fn lan(&self) -> bool {
-        self.lan
-    }
     /// A connection to `address` as `name` starts: a new address starts
     /// counting anew.
     pub fn connecting(&mut self, address: &str, name: &str, lan: bool) {
@@ -196,6 +170,65 @@ impl Tracker {
             lan: self.lan,
             at: now + delay,
             attempt: self.attempts,
+            attempts: DELAYS.len(),
+        })
+    }
+}
+
+/// Auto-reconnect on the engine's connection hooks: registered at startup with the other
+/// extras (`entry.rs`); it plans nothing while its setting is off. Splitscreen players share
+/// the hooks, so each seat (`horizon_hooks::seat`) has its own tracker and setting, as each
+/// player's game had before.
+pub static HOOKS: AutoReconnect = AutoReconnect {
+    seats: Mutex::new(Vec::new()),
+};
+
+pub struct AutoReconnect {
+    seats: Mutex<Vec<Seat>>,
+}
+
+#[derive(Default)]
+struct Seat {
+    tracker: Tracker,
+    enabled: bool,
+}
+
+impl AutoReconnect {
+    /// The `autoReconnect` setting of the player whose turn it is.
+    pub fn set_enabled(&self, on: bool) {
+        self.with(|s| s.enabled = on);
+    }
+    fn with<T>(&self, f: impl FnOnce(&mut Seat) -> T) -> T {
+        let mut seats = self.seats.lock().unwrap_or_else(|e| e.into_inner());
+        let i = seat();
+        if seats.len() <= i {
+            seats.resize_with(i + 1, Seat::default);
+        }
+        f(&mut seats[i])
+    }
+}
+
+impl Hooks for AutoReconnect {
+    fn connecting(&self, server: &Server<'_>) {
+        self.with(|s| {
+            s.tracker
+                .connecting(server.address, server.name, server.lan)
+        });
+    }
+    fn joined(&self) {
+        self.with(|s| s.tracker.joined(Instant::now()));
+    }
+    fn left(&self) {
+        self.with(|s| s.tracker.reset());
+    }
+    fn ended(&self, end: &Ended<'_>) -> Option<Retry> {
+        self.with(|s| {
+            if !s.enabled {
+                s.tracker.reset();
+                return None;
+            }
+            s.tracker
+                .ended(end.reason, end.key, end.from_server, Instant::now())
         })
     }
 }
@@ -459,6 +492,33 @@ mod tests {
     }
 
     #[test]
+    fn each_splitscreen_seat_keeps_its_own_attempts_and_setting() {
+        use horizon_hooks::engine::set_seat;
+        let hooks = AutoReconnect {
+            seats: Mutex::new(Vec::new()),
+        };
+        let lost = Ended::new("Timed out", Some("disconnect.timeout"), false);
+        for (seat, on) in [(0, false), (1, true)] {
+            set_seat(seat);
+            hooks.set_enabled(on);
+            hooks.connecting(&Server::new("example.org", "Player", false));
+        }
+        // P2 has it on: an attempt in 5 s. P1 has it off: none, and P2's state stays.
+        set_seat(1);
+        assert_eq!(hooks.ended(&lost).map(|r| r.attempt), Some(1));
+        set_seat(0);
+        assert_eq!(hooks.ended(&lost), None);
+        set_seat(1);
+        hooks.connecting(&Server::new("example.org", "Player", false));
+        assert_eq!(hooks.ended(&lost).map(|r| r.attempt), Some(2));
+        // P2 leaving on purpose starts it over.
+        hooks.left();
+        hooks.connecting(&Server::new("example.org", "Player", false));
+        assert_eq!(hooks.ended(&lost).map(|r| r.attempt), Some(1));
+        set_seat(0);
+    }
+
+    #[test]
     fn the_countdown_rounds_up() {
         let now = Instant::now();
         let r = Retry {
@@ -467,6 +527,7 @@ mod tests {
             lan: false,
             at: now + Duration::from_millis(4200),
             attempt: 2,
+            attempts: DELAYS.len(),
         };
         assert_eq!(r.seconds_left(now), 5);
         assert_eq!(r.text(now), "Reconnecting in 5 s (attempt 2 of 5)");

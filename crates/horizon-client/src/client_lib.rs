@@ -88,6 +88,7 @@ pub mod item_tooltip;
 pub mod join_seq;
 pub mod lan;
 pub mod landing;
+pub mod last_server;
 pub mod legacy_combat;
 pub mod living_death;
 pub mod locator_bar;

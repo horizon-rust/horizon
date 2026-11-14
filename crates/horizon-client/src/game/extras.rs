@@ -17,7 +17,6 @@ use horizon_client::{
     extras_hud::{self, Corners},
     hud::{HudBatch, MINIMAP_SPRITE},
     minimap::{self, Layer, Minimap, View},
-    reconnect::Tracker,
 };
 use std::time::Duration;
 use winit::event::MouseButton;
@@ -31,8 +30,6 @@ pub(super) struct ExtrasState {
     minimap: Minimap,
     /// The dimension the minimap's tiles belong to.
     minimap_dim: Option<Dim>,
-    /// Auto-reconnect's attempts at the current server.
-    reconnect: Tracker,
 }
 /// CPU time the minimap's tiles may take per frame.
 const MINIMAP_BUDGET: Duration = Duration::from_micros(300);
@@ -64,6 +61,7 @@ impl Game<'_> {
         if !playing {
             self.extras.mouse = [false; 2];
         }
+        self.sync_reconnect_setting();
         self.update_minimap();
         // For mods (`render.frame-stats`, `native_frame_rate`).
         let now = self.extras_now();
