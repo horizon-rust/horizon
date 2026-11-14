@@ -158,6 +158,10 @@ pub(super) struct Minecart {
     pub loot: Option<horizon_client::save::RolledLoot>,
     /// `Entity.firstTick`: not ticked yet (saved as `HasTicked`).
     pub first_tick: bool,
+    /// Where the cart stood right after the move of this tick (the old
+    /// behavior's `AbstractMinecart.move` runs `applyEffectsFromBlocks` there);
+    /// taken by the fire pass.
+    pub fire_move_at: Option<Vec3>,
     /// `Entity.isInWater` (`wasTouchingWater`): `AbstractMinecart.tick`
     /// updates it after the move (`updateFluidInteraction`), so the move
     /// goes by where the cart was a tick before, and a new cart's first
@@ -196,6 +200,7 @@ pub(super) const HEIGHT: f64 = 0.7_f32 as f64;
 /// `MinecartTNT.handleEntityEvent` answers by calling `primeFuse`.
 pub(super) const TNT_PRIME_EVENT: i8 = 70;
 mod display;
+mod fire;
 use display::{cart_render_bounds, display_offset, shown_unless_air};
 pub(super) use display::{default_display_offset, forget_unreadable_display};
 /// `AbstractMinecart.push(entity)` for a non-cart `entity` at `feet`:
@@ -385,6 +390,7 @@ impl Minecart {
             enabled: true,
             loot: None,
             first_tick: true,
+            fire_move_at: None,
             in_water: false,
             command: horizon_client::command_block::CommandBlock::default(),
             tick_count: 0,
@@ -798,6 +804,8 @@ impl Game<'_> {
         // 🤖 Agent: `AbstractMinecart.move` runs applyEffectsFromBlocks at
         // once, the cart still at the rail's top height (below it is lowered).
         let here = c.position;
+        // Where the fire pass applies the move's block effects.
+        c.fire_move_at = Some(here);
         self.cart_inside_blocks(c, slot, here, here);
         let at = |e: [i32; 3], c: &Minecart| {
             c.position.x.floor() as i32 - pos[0] == e[0]
@@ -1395,6 +1403,7 @@ impl Game<'_> {
             }
         } else {
             self.come_off_track(c);
+            c.fire_move_at = Some(c.position);
         }
         c.first_tick = false;
         // The old behavior derives yaw once per tick; the experiment has
@@ -1989,6 +1998,7 @@ impl Game<'_> {
                 hint = i + 1;
                 let p = self.carts[i].position;
                 if ticking(p.x.floor() as i32, p.z.floor() as i32) {
+                    self.cart_fire_tick(id, i);
                     self.cart_lava_tick(id, i);
                 }
             }
@@ -3968,6 +3978,63 @@ mod container_drop_tests {
             // The two piles and the hull item.
             assert_eq!(game.dropped.len(), 3, "boat: {boat}");
         }
+    }
+
+    /// `BaseFireBlock.entityInside`: a cart in a fire block takes `inFire`
+    /// damage every tick (1 damage is 10 on the cart's counter, which decays
+    /// by 1 a tick) and breaks past 40.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_cart_in_fire_takes_fire_damage_and_breaks() {
+        let mut game = server_game();
+        let fire = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:fire")
+            .unwrap();
+        game.world.set(8, 64, 8, fire).unwrap();
+        game.carts.push(Minecart::new(
+            1,
+            CartKind::Rideable,
+            Vec3::new(8.5, 64.0, 8.5),
+        ));
+        game.cart_fire_tick(1, 0);
+        assert_eq!(game.carts[0].damage, 10.0);
+        for _ in 0..3 {
+            game.cart_fire_tick(1, 0);
+        }
+        assert_eq!(game.carts[0].damage, 40.0);
+        game.cart_fire_tick(1, 0);
+        assert!(game.carts.is_empty());
+    }
+
+    /// `AbstractMinecart.move` and `OldMinecartBehavior.tick` apply block
+    /// effects at the position the cart has then: a cart that started in fire
+    /// and ended clear of it is hurt only by the application right after its
+    /// move (once), and one that never touched fire is not hurt at all.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_cart_is_hurt_by_fire_at_the_positions_the_effects_apply_at() {
+        let mut game = server_game();
+        let fire = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:fire")
+            .unwrap();
+        game.world.set(8, 64, 8, fire).unwrap();
+        // Started overlapping the fire, ended a block away: no hurt.
+        let mut cart = Minecart::new(1, CartKind::Rideable, Vec3::new(10.5, 64.0, 8.5));
+        cart.previous = Vec3::new(8.9, 64.0, 8.5);
+        game.carts.push(cart);
+        game.cart_fire_tick(1, 0);
+        assert_eq!(game.carts[0].damage, 0.0);
+        // In the fire only right after the move: one application hurts.
+        game.carts[0].fire_move_at = Some(Vec3::new(8.5, 64.0, 8.5));
+        game.cart_fire_tick(1, 0);
+        assert_eq!(game.carts[0].damage, 10.0);
+        assert!(game.carts[0].fire_move_at.is_none());
     }
 }
 
