@@ -89,7 +89,7 @@ impl Game<'_> {
     /// drag (`QUICK_CRAFT`) and not a click: a server that has the hand empty
     /// (the stack it was to come from just burned as fuel) ignores a drag, but
     /// a click would pick up what's in `slot`.
-    fn tweak_put(&mut self, slot: usize, right: bool) -> bool {
+    pub(in crate::game) fn tweak_put(&mut self, slot: usize, right: bool) -> bool {
         let kind = i32::from(right) << 2;
         let ops = [
             (None, kind, Input::QuickCraft),
@@ -247,7 +247,7 @@ impl Game<'_> {
         result
     }
     /// `slot` takes one more of `stack`, by the open menu's rules.
-    fn tweak_takes_one(&mut self, slot: usize, stack: &ItemStack) -> bool {
+    pub(in crate::game) fn tweak_takes_one(&mut self, slot: usize, stack: &ItemStack) -> bool {
         let mut takes = false;
         self.menu_session(|menu, env, to_menu| {
             takes = to_menu(slot).is_some_and(|i| menu.takes_one(env, i, stack));
@@ -257,7 +257,7 @@ impl Game<'_> {
     }
     /// Where vanilla's quick move would put `slot`'s items, tried on a copy
     /// of the menu that's dropped (`Some(false)` keeps nothing).
-    fn tweak_landing(&mut self, slot: usize) -> Vec<usize> {
+    pub(in crate::game) fn tweak_landing(&mut self, slot: usize) -> Vec<usize> {
         let slots = self.slots();
         let mut landing = Vec::new();
         self.menu_session(|menu, env, to_menu| {
