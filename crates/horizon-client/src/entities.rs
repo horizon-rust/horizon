@@ -82,6 +82,7 @@ fn slime_at(world: &World, facts: &BlockFacts, position: BlockPos) -> bool {
 }
 
 mod fluids;
+mod item_damage;
 mod item_fall;
 mod item_no_physics;
 pub mod nameplate;
@@ -340,6 +341,8 @@ impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for Ite
 pub struct ItemEnvironmentTick {
     pub alive: bool,
     pub lava_hurt: bool,
+    /// The `entity_damage` events its hits post (`ItemEntity.java:302`).
+    pub damage_events: u32,
     /// `ItemStack.onDestroyed` of the damage that emptied the health: the
     /// stacks the destroyed item left, which `ItemUtils.onContainerDestroyed`
     /// adds to the level where it lay.
@@ -490,7 +493,7 @@ impl ItemEntity {
         );
         let fluid = facts.get(at).fluid;
         let fire_immune = items.resists_fire(&self.stack, "minecraft:in_fire");
-        let mut spilled = Vec::new();
+        let mut hits = item_damage::ItemHits::default();
         if fluid == Fluid::Water || fire_immune {
             self.fire_ticks = 0;
         }
@@ -499,7 +502,7 @@ impl ItemEntity {
                 && fluid != Fluid::Lava
                 && !items.resists_fire(&self.stack, "minecraft:on_fire")
             {
-                spilled.extend(self.hurt(1).unwrap_or_default());
+                hits.hit(self, 1);
             }
             self.fire_ticks -= 1;
         }
@@ -512,14 +515,13 @@ impl ItemEntity {
             if contacts > 0 {
                 self.fire_ticks = self.fire_ticks.max(300);
             }
-            // StepBasedCollector coalesces ignition, but keeps each block's
-            // runAfter(lavaHurt) callback. Stop once an item is destroyed.
+            // StepBasedCollector coalesces ignition but keeps each lavaHurt.
             for _ in 0..contacts {
                 if self.health <= 0 {
                     break;
                 }
                 if !items.resists_fire(&self.stack, "minecraft:lava") {
-                    spilled.extend(self.hurt(4).unwrap_or_default());
+                    hits.hit(self, 4);
                     lava_hurt = true;
                 }
             }
@@ -528,22 +530,21 @@ impl ItemEntity {
         if fire_damage > 0.0 && !fire_immune {
             self.fire_ticks = self.fire_ticks.max(160);
             if !items.resists_fire(&self.stack, "minecraft:in_fire") {
-                spilled.extend(self.hurt(fire_damage as i32).unwrap_or_default());
+                hits.hit(self, fire_damage as i32);
             }
         }
-        // CactusBlock.entityInside: `entity.hurt(cactus, 1.0)`. An item has no
-        // hurt cooldown, so it loses 1 health every tick it touches a cactus
-        // (5 health: gone in 5 ticks). Fire resistance does not help;
-        // `ItemStack.canBeHurtBy` only skips it for a damage_resistant stack.
+        // CactusBlock.entityInside: `entity.hurt(cactus, 1.0)`, a point a tick
+        // (an item has no hurt cooldown), unless `canBeHurtBy` skips it.
         if crate::motion::environment::cactus_contact(world, registry, self.bounds())
             && !items.resists_cactus(&self.stack)
         {
-            spilled.extend(self.hurt(1).unwrap_or_default());
+            hits.hit(self, 1);
         }
         ItemEnvironmentTick {
             alive: self.health > 0,
             lava_hurt,
-            spilled,
+            spilled: hits.spilled,
+            damage_events: hits.events,
         }
     }
     /// `ItemEntity.hurtServer`'s health: `amount` off the health, and an item

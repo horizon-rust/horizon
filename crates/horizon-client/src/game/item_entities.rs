@@ -189,6 +189,16 @@ impl Game<'_> {
                 self.pack.assets.registry,
                 world_items!(self),
             );
+            // `ItemEntity.hurtServer` posts `entity_damage` at the item's own
+            // position for every hit it takes, before the hit that destroys it
+            // spills its contents (`ItemEntity.java:302`).
+            if environment.damage_events > 0 {
+                let at = [item.position.x, item.position.y, item.position.z];
+                let context = self.who_context(None, None);
+                for _ in 0..environment.damage_events {
+                    self.post_game_event("minecraft:entity_damage", at, context);
+                }
+            }
             if environment.should_play_lava_hurt_sound(item.ticks) {
                 // `Entity.lavaHurt` pitches the burn from `this.random`, the item's own.
                 let pitch = 2.0 + item.random.next_float() * 0.4;
@@ -1087,6 +1097,9 @@ mod escape_tests {
     }
 }
 
+#[cfg(test)]
+#[path = "item_cactus_damage_tests.rs"]
+mod item_cactus_damage_tests;
 #[cfg(test)]
 #[path = "item_void_tests.rs"]
 mod item_void_tests;
