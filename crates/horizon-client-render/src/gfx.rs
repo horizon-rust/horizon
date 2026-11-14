@@ -2018,6 +2018,15 @@ fn backends_name(backends: wgpu::Backends) -> &'static str {
         _ => "graphics",
     }
 }
+fn backend_name(backend: wgpu::Backend) -> &'static str {
+    match backend {
+        wgpu::Backend::Vulkan => "Vulkan",
+        wgpu::Backend::Metal => "Metal",
+        wgpu::Backend::Dx12 => "DirectX 12",
+        wgpu::Backend::Gl => "OpenGL",
+        _ => "graphics",
+    }
+}
 /// Whether an adapter renders on the CPU (WARP, llvmpipe).
 fn is_software(kind: wgpu::DeviceType) -> bool {
     kind == wgpu::DeviceType::Cpu
@@ -2179,6 +2188,37 @@ async fn open_device(
     ) {
         match open_device_with(window, offscreen, &order, layers, allow_cpu).await {
             Ok(opened) => {
+                let user_picked_backend = api != GraphicsApi::Auto
+                    || wgpu_backend
+                    || std::env::var_os("HORIZON_GRAPHICS_API").is_some();
+                if is_software(opened.adapter.get_info().device_type)
+                    && !user_picked_backend
+                    && opened.adapter.get_info().backend != wgpu::Backend::Gl
+                {
+                    let cpu_name = opened.adapter.get_info().name.clone();
+                    let b_name = backend_name(opened.adapter.get_info().backend);
+                    log::warn!(
+                        "Horizon renderer: chosen {b_name} adapter is CPU software ({cpu_name}); trying OpenGL on a real GPU first"
+                    );
+                    match open_device_with(window, offscreen, &[wgpu::Backends::GL], layers, false).await {
+                        Ok(gl_opened) if !is_software(gl_opened.adapter.get_info().device_type) => {
+                            let gl_name = gl_opened.adapter.get_info().name.clone();
+                            log::warn!(
+                                "Horizon renderer: falling back from CPU {b_name} adapter ({cpu_name}) to OpenGL on the GPU ({gl_name})"
+                            );
+                            crate::crash::set_detail(
+                                "graphics fallback",
+                                format!("OpenGL GPU ({gl_name}) instead of CPU {b_name} ({cpu_name})"),
+                            );
+                            return Ok(gl_opened);
+                        }
+                        Ok(_) | Err(_) => {
+                            log::warn!(
+                                "Horizon renderer: OpenGL has no real GPU adapter either; using CPU adapter ({cpu_name})"
+                            );
+                        }
+                    }
+                }
                 if let Some(first) = &first {
                     log::warn!(
                         "Horizon renderer: the chosen graphics API gave no GPU ({first}); {}",
@@ -2187,6 +2227,16 @@ async fn open_device(
                         } else {
                             "using the GPU through another one"
                         }
+                    );
+                }
+                if is_software(opened.adapter.get_info().device_type) {
+                    crate::crash::set_detail(
+                        "graphics fallback",
+                        format!(
+                            "{} ({:?}, software CPU)",
+                            opened.adapter.get_info().name,
+                            opened.adapter.get_info().backend
+                        ),
                     );
                 }
                 return Ok(opened);
@@ -13223,11 +13273,15 @@ mod tests {
     }
     #[test]
     fn software_adapters_are_last_resort() {
-        use super::is_software;
+        use super::{backend_name, is_software};
         assert!(is_software(wgpu::DeviceType::Cpu));
         assert!(!is_software(wgpu::DeviceType::DiscreteGpu));
         assert!(!is_software(wgpu::DeviceType::IntegratedGpu));
         assert!(!is_software(wgpu::DeviceType::VirtualGpu));
+        assert_eq!(backend_name(wgpu::Backend::Vulkan), "Vulkan");
+        assert_eq!(backend_name(wgpu::Backend::Gl), "OpenGL");
+        assert_eq!(backend_name(wgpu::Backend::Dx12), "DirectX 12");
+        assert_eq!(backend_name(wgpu::Backend::Metal), "Metal");
     }
     #[test]
     fn auto_uses_directx_12_first_on_windows_arm64() {
