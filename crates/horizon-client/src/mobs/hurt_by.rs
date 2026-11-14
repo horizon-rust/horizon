@@ -1,7 +1,7 @@
 //! The mob that last hurt a mob (`LivingEntity.lastHurtByMob`): its record in
 //! `Ai`, its end in `baseTick`, and what a hit or a stop being angry does to it.
 use super::ai::Ai;
-use super::{Mob, MobWorld, Who};
+use super::{Damage, Mob, MobWorld, Species, Who};
 
 // `LivingEntity.lastHurtByMob` is a lazy `EntityReference`: a record read back
 // from `last_hurt_by_mob` stays the bare UUID (`Ai::last_hurt_by_ref`) until the
@@ -21,6 +21,21 @@ impl Ai {
         self.last_hurt_by_ref = None;
         self.last_hurt_by_time = tick;
     }
+}
+/// The species' hooks that run before `LivingEntity.hurtServer`'s guards:
+/// `Guardian.hurtServer`'s spikes answer its attacker even for a blow the
+/// guardian then refuses. Answers whether `Enderman.hurtServer`'s teleport
+/// applies, which `super.hurtServer` then runs after.
+pub(super) fn before_hurt(m: &mut Mob, source: &Damage) -> bool {
+    if matches!(m.species(), Species::Guardian | Species::ElderGuardian) {
+        super::guardian::hurt_server(m, source);
+    }
+    // Enderman.hurtServer: past `isInvulnerableTo`, the teleport draw follows
+    // `super.hurtServer` whatever it answered (a hurt cooldown, a dead
+    // enderman), its hurt sound's pitch included.
+    m.species() == Species::Enderman
+        && !m.removed
+        && !(m.is_invulnerable() && !source.kind.bypasses_invulnerability())
 }
 /// `LivingEntity.baseTick`'s hurt timers: `hurtTime` and `invulnerableTime`
 /// count down, and the mob that hurt it is forgotten once it is not alive or

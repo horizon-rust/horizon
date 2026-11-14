@@ -588,6 +588,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             let test = pos.offset(dx, dy, dz);
             if b.is_air(self.state(test))
                 && !b.is_air(self.below_state(test))
+                && self.level.within_world_border(test)
                 && self.is_inside_build_height(test.y)
             {
                 // BlockUtil.packDifferenceInPosition(pos, test, 16, 8, 16)

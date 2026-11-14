@@ -7,7 +7,7 @@ use super::Game;
 use horizon_client::{
     enchant::EffectContext,
     items::ItemStack,
-    mobs::{Damage, Mob, Species},
+    mobs::{Damage, Mob, MobEvent, Species},
     particles::{ParticleOptions, ParticleType},
 };
 use horizon_core::{
@@ -269,6 +269,20 @@ impl Game<'_> {
             None => self.mobs[index].damage_with(amount, source, Some(&mut breach)),
         };
         self.mobs[index].attacker_aim = None;
+        // `Guardian.hurtServer`'s spikes answer the attacker inside the hurt,
+        // before `super.hurtServer` returns: those hits land here, where
+        // `Who::Player` is the player whose blow this is. Left in the outbox,
+        // the end-of-tick sweep would deal them with no player in place (a
+        // serving thread's players are all guests).
+        let raised = std::mem::take(&mut self.mobs[index].outbox);
+        let (hits, rest): (Vec<_>, Vec<_>) = raised.into_iter().partition(|e| {
+            matches!(
+                e,
+                MobEvent::DamagePlayer { .. } | MobEvent::DamageMob { .. }
+            )
+        });
+        self.mobs[index].outbox = rest;
+        let _ = self.handle_mob_events(hits);
         // LivingEntity.actuallyHurt: Stats.DAMAGE_DEALT_ABSORBED for the attacking player,
         // awarded here, during that player's own attack (a server's guest has its own
         // statistics only inside `as_guest`).

@@ -80,6 +80,9 @@ pub(crate) struct TestLevel {
     pub occupants: Vec<u128>,
     /// Occupants a mod's physical-trigger hook cancels.
     pub spared: HashSet<u128>,
+    /// `Level.getWorldBorder`, for `within_world_border`: centred on the
+    /// origin at vanilla's default size unless a test moves it.
+    pub border: horizon_core::geometry::border::BorderGeometry,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -107,10 +110,20 @@ impl TestLevel {
             opened: HashSet::new(),
             occupants: Vec::new(),
             spared: HashSet::new(),
+            border: horizon_core::geometry::border::BorderGeometry::new(
+                [0.0, 0.0],
+                5.999_996_8e7,
+                29_999_984,
+            )
+            .unwrap(),
         }
     }
 }
 impl LevelAccess for TestLevel {
+    fn within_world_border(&self, pos: BlockPos) -> bool {
+        self.border
+            .is_within_bounds(f64::from(pos.x), f64::from(pos.z), 0.0)
+    }
     fn count_entities_at(
         &self,
         _pos: BlockPos,
@@ -4083,6 +4096,7 @@ fn fresh_chunk_block_events_do_not_wait_for_ticking_readiness() {
 }
 
 mod barrel;
+mod interact;
 mod pistons;
 mod redstone;
 mod trigger_tests;
