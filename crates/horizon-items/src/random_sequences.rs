@@ -41,6 +41,34 @@ impl RandomSequences {
             .entry(id.to_owned())
             .or_insert_with(|| create(id, world_seed, salt, w, i))
     }
+    /// `n` copies for `n` regions' ticks on threads of their own. The first is these sequences as they stand (its
+    /// draws carry on in [`RandomSequences::join`]); every other region's draws are its own (each sequence and
+    /// the salt mixed with the region's number), so two regions never roll the same loot in one tick.
+    pub fn split(&self, n: usize) -> Vec<Self> {
+        (0..n)
+            .map(|r| {
+                let mut copy = self.clone();
+                if r > 0 {
+                    let k = (r as u64).wrapping_mul(GOLDEN_RATIO);
+                    copy.salt ^= k as i32;
+                    for random in copy.sequences.values_mut() {
+                        let (lo, hi) = random.state_words();
+                        *random = XoroshiroRandom::from_state(
+                            mix_stafford13(lo ^ k),
+                            mix_stafford13(hi.wrapping_add(k)),
+                        );
+                    }
+                }
+                copy
+            })
+            .collect()
+    }
+    /// The first region's sequences from [`RandomSequences::split`] become these.
+    pub fn join(&mut self, mut regions: Vec<Self>) {
+        if !regions.is_empty() {
+            self.sequences = regions.swap_remove(0).sequences;
+        }
+    }
     /// Lends sequence `id` out (created if missing); `give_back` returns it.
     pub fn lend(&mut self, id: &str, world_seed: i64) -> XoroshiroRandom {
         self.get(id, world_seed);
@@ -135,6 +163,36 @@ impl RandomSequences {
 mod tests {
     use super::*;
     use horizon_core::random::RandomSource;
+
+    /// The first region carries on the sequences' own draws; the others draw differently from each other.
+    #[test]
+    fn regions_draw_apart_and_the_first_carries_on() {
+        let mut sequences = RandomSequences::default();
+        sequences.get("minecraft:x", 42);
+        let mut own = sequences.clone();
+        let expected = own
+            .get("minecraft:x", 42)
+            .next_int_bound(1_000_000)
+            .unwrap();
+        let mut parts = sequences.split(3);
+        let draws: Vec<i32> = parts
+            .iter_mut()
+            .map(|p| p.get("minecraft:x", 42).next_int_bound(1_000_000).unwrap())
+            .collect();
+        assert_eq!(draws[0], expected);
+        assert_ne!(draws[1], draws[0]);
+        assert_ne!(draws[2], draws[1]);
+        sequences.join(parts);
+        let next = sequences
+            .get("minecraft:x", 42)
+            .next_int_bound(1_000_000)
+            .unwrap();
+        let again = own
+            .get("minecraft:x", 42)
+            .next_int_bound(1_000_000)
+            .unwrap();
+        assert_eq!(next, again);
+    }
 
     #[test]
     fn sequences_are_deterministic_and_resettable() {

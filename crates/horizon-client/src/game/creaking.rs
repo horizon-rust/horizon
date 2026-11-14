@@ -419,6 +419,34 @@ pub(super) struct CreakingState {
 }
 
 impl CreakingState {
+    /// The chunks scanned for hearts that region `r` of `regions` owns, moved out for its game.
+    pub(super) fn split_scanned(
+        &mut self,
+        regions: usize,
+        region_of: impl Fn((i32, i32)) -> Option<usize>,
+    ) -> Vec<horizon_client::fast_hash::FxHashSet<(i32, i32)>> {
+        let mut out: Vec<horizon_client::fast_hash::FxHashSet<(i32, i32)>> =
+            (0..regions).map(|_| Default::default()).collect();
+        self.scanned.retain(|&k| match region_of(k) {
+            Some(r) if r < regions => {
+                out[r].insert(k);
+                false
+            }
+            _ => true,
+        });
+        out
+    }
+    /// A region's scanned chunks, for its game's tick.
+    pub(super) fn lend_scanned(
+        &mut self,
+        scanned: horizon_client::fast_hash::FxHashSet<(i32, i32)>,
+    ) {
+        self.scanned = scanned;
+    }
+    /// A region game's scanned chunks back.
+    pub(super) fn take_scanned_back(&mut self, region: &mut Self) {
+        self.scanned.extend(region.scanned.drain());
+    }
     /// Exchange the chunks scanned for creaking hearts with another level's
     /// (game/levels.rs).
     pub(super) fn swap_level(&mut self, other: &mut Self) {
