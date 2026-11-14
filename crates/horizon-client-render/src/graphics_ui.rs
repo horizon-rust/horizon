@@ -76,6 +76,7 @@ pub enum H {
     BlueMapRadius,
     CaveCulling,
     GpuCulling,
+    VisibilityBuffer,
     EntityCulling,
     EntityCullingPrecheck,
     ParticleCulling,
@@ -453,6 +454,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::GpuCulling,
                             Saves,
                             "Culls nearby terrain on the GPU: less CPU at high render distance, more GPU.",
+                        ),
+                        h(
+                            H::VisibilityBuffer,
+                            Saves,
+                            "Shades each terrain pixel once, however many faces overlap it.",
                         ),
                         h(
                             H::EntityCulling,
@@ -894,6 +900,11 @@ impl H {
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
             H::OpaqueIce => labelled("Opaque Ice", on_off(g.opaque_ice)),
             H::ParallelTick => labelled("Parallel Tick", g.parallel_tick.label()),
+            // Greyed out and Off where the device doesn't take it, as Translucent Batching is.
+            H::VisibilityBuffer => labelled(
+                "Visibility Buffer",
+                on_off(g.visibility_buffer && crate::graphics::visibility_buffer_offered()),
+            ),
             H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
             H::CacheSigns => labelled("Signs", on_off(g.cache_signs)),
             H::CacheDecoratedPots => labelled("Decorated Pots", on_off(g.cache_decorated_pots)),
@@ -1051,6 +1062,7 @@ impl H {
             H::ParallelTick => {
                 g.parallel_tick = step(&ParallelTickMode::ALL, g.parallel_tick, back)
             }
+            H::VisibilityBuffer => g.visibility_buffer = !g.visibility_buffer,
             H::CacheShulkerBoxes => g.cache_shulker_boxes = !g.cache_shulker_boxes,
             H::CacheSigns => g.cache_signs = !g.cache_signs,
             H::CacheDecoratedPots => g.cache_decorated_pots = !g.cache_decorated_pots,
@@ -1137,6 +1149,7 @@ impl Item {
     /// can also be chosen on a reporting SDR display. Brightness controls need HDR output
     /// active; saved values wait for it. Translucent Batching switches where the device can batch
     /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
+    /// and so does Visibility Buffer where the device takes it,
     /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
     /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't. HDR
     /// Lighting has nothing to switch where the running shader pack lights the world itself.
@@ -1178,6 +1191,9 @@ impl Item {
             {
                 Some("Your GPU or graphics API doesn't support it.")
             }
+            Item::Horizon(H::VisibilityBuffer) if !crate::graphics::visibility_buffer_offered() => {
+                Some("Your GPU or graphics API doesn't support it.")
+            }
             Item::Horizon(H::EntityCullingPrecheck)
                 if s.horizon.entity_culling != EntityCullingMode::Asynchronous =>
             {
@@ -1204,6 +1220,9 @@ impl Item {
             Item::Horizon(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Horizon(H::CaveCulling) => g.cave_culling,
             Item::Horizon(H::OpaqueIce) => g.opaque_ice,
+            Item::Horizon(H::VisibilityBuffer) => {
+                g.visibility_buffer && crate::graphics::visibility_buffer_offered()
+            }
             Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
             Item::Horizon(H::CacheSigns) => g.cache_signs,
             Item::Horizon(H::CacheDecoratedPots) => g.cache_decorated_pots,
@@ -1307,6 +1326,7 @@ impl Item {
                         | H::GraphicsApi
                         | H::TranslucentBatching
                         | H::HdrSmoothGradients
+                        | H::VisibilityBuffer
                 )
                 | Item::Vanilla(
                     Opt::GuiScale
@@ -1463,6 +1483,7 @@ impl Screen for GraphicsScreen {
         let offers = (
             self.output,
             g::translucent_batching_offered(),
+            g::visibility_buffer_offered(),
             g::gpu_culling_offer(),
             g::reduced_far_detail_suggested(),
         );

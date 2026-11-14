@@ -693,6 +693,8 @@
   "Every leaf face. Vanilla's fancy leaves.": "Every leaf face. Vanilla's fancy leaves.",
   "Parallel Tick": "Parallel Tick",
   "Shares your world's tick among threads. Auto: only while that is faster.": "Shares your world's tick among threads. Auto: only while that is faster.",
+  "Visibility Buffer": "Visibility Buffer",
+  "Shades each terrain pixel once, however many faces overlap it.": "Shades each terrain pixel once, however many faces overlap it.",
   "Opaque Ice": "Opaque Ice",
   "Draws ice in the solid pass, without its see-through texture.": "Draws ice in the solid pass, without its see-through texture.",
   "Distant Plant Dither": "Distant Plant Dither",

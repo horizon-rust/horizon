@@ -187,6 +187,10 @@ pub(super) struct WorldWarps {
 }
 
 impl WorldWarps {
+    /// The renderer's layouts and formats, for the other pipelines made after it starts.
+    pub fn kit(&self) -> &Kit {
+        &self.kit
+    }
     pub fn new(kit: Kit) -> Self {
         Self {
             kit,

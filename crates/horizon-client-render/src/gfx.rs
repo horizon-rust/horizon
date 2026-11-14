@@ -1109,9 +1109,10 @@ pub struct Renderer {
     ray_scene: Option<surface_setup::ray_query::ray_scene::RayScene>,
     /// The compact layout is allowed (`HORIZON_PACKED_QUADS`, `set_packed_layout`).
     packed_on: bool,
-    /// The visibility buffer for flat frames' solid terrain (`visbuffer`,
-    /// `HORIZON_VISBUFFER=1`).
+    /// The visibility buffer for flat frames' solid terrain, while it is on, and whether this
+    /// device takes it (`visbuffer`: `set_visibility_buffer`, `offer`).
     visbuf: Option<visbuffer::Visbuffer>,
+    visbuf_offered: bool,
     /// `flat` draws this frame's sections (off: the per-section draws).
     flat_on: bool,
     /// Occlusion culling of solid section draws, where the GPU's instance
@@ -4695,21 +4696,7 @@ impl Renderer {
             sprite_constants,
             hdr_output: hdr_output.is_some(),
         });
-        let visbuf = flat
-            .as_ref()
-            .filter(|_| visbuffer::wanted(&device))
-            .map(|f| {
-                log::info!(
-                    "Horizon: solid terrain through a visibility buffer (HORIZON_VISBUFFER)"
-                );
-                visbuffer::Visbuffer::new(
-                    &device,
-                    &bindings,
-                    f,
-                    (frame_format, linear_light),
-                    &sprite_constants,
-                )
-            });
+        let visbuf_offered = visbuffer::offer(&device, &adapter.get_info(), flat.as_ref());
         let multi_draw = device
             .features()
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
@@ -4868,7 +4855,8 @@ impl Renderer {
             gpu_checks: 0,
             cull,
             flat,
-            visbuf,
+            visbuf: None,
+            visbuf_offered,
             sky,
             sky_base,
             sunrise_pipeline,

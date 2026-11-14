@@ -630,6 +630,18 @@ impl ParallelTickMode {
     }
 }
 
+static VISIBILITY_BUFFER_OFFERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Whether the device takes the visibility buffer (`Graphics::visibility_buffer`): set when
+/// the renderer starts (`gfx::visbuffer::offer`). Where it doesn't, the settings grey its
+/// switch out, and the saved value waits for one that does.
+pub fn offer_visibility_buffer(on: bool) {
+    VISIBILITY_BUFFER_OFFERED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn visibility_buffer_offered() -> bool {
+    VISIBILITY_BUFFER_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// GPU Culling's setting: off, on where it is offered, or Auto, which has it on only where the
 /// CPU limits the frame and it makes the frame faster (`autotune::GpuCullingAuto`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -821,6 +833,11 @@ pub struct Graphics {
     /// turned on later needs a new key, as `batchTranslucent` did. Auto turns it on only where
     /// the CPU limits the frame and it makes the frame faster (`autotune`).
     pub gpu_culling: GpuCullingMode,
+    /// Solid terrain through a visibility buffer (`gfx::visbuffer`), where the device takes it
+    /// (`visibility_buffer_offered`): every pixel is shaded once, however many faces lie over
+    /// it. Off by default (Visibility Buffer, Performance graphics); it applies at once, and
+    /// no preset sets it.
+    pub visibility_buffer: bool,
     /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
     pub entity_culling: EntityCullingMode,
     /// Minimum entity population for coarse AABB culling; zero disables it.
@@ -946,6 +963,7 @@ impl Default for Graphics {
             blue_map: crate::bluemap::Settings::default(),
             cave_culling: true,
             gpu_culling: GpuCullingMode::Off,
+            visibility_buffer: false,
             entity_culling: EntityCullingMode::Off,
             entity_culling_precheck: 64,
             particle_culling: ParticleCullingMode::Off,
@@ -1094,6 +1112,7 @@ impl Graphics {
                 "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
                 "opaqueIce" => g.opaque_ice = flag(g.opaque_ice),
                 "parallelTick" => g.parallel_tick = ParallelTickMode::parse(value),
+                "visibilityBuffer" => g.visibility_buffer = flag(g.visibility_buffer),
                 "blockEntityCache" => {
                     let enabled = flag(false);
                     g.cache_shulker_boxes = enabled;
@@ -1193,7 +1212,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nparallelTick:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nparallelTick:{}\nvisibilityBuffer:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1252,6 +1271,7 @@ impl Graphics {
             bool_text(self.hdr_smooth_gradients),
             self.gpu_culling.key(),
             self.parallel_tick.name(),
+            bool_text(self.visibility_buffer),
         );
         if let Some(driver) = &self.hdr_failed_start {
             text += &format!("hdrFailedStart:{driver}\n");
@@ -1545,6 +1565,7 @@ mod tests {
             },
             cave_culling: false,
             gpu_culling: GpuCullingMode::On,
+            visibility_buffer: true,
             entity_culling: EntityCullingMode::Synchronous,
             entity_culling_precheck: 128,
             particle_culling: ParticleCullingMode::Asynchronous,
