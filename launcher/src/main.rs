@@ -32,6 +32,7 @@ mod glass_shot_blur;
 mod glass_toast;
 mod glass_ui;
 mod glass_versions;
+mod glide;
 mod home;
 mod home_tabs;
 mod import_page;
@@ -5264,6 +5265,8 @@ impl Render for Launcher {
         let performance = self.settings.performance();
         // Performance mode's plates are solid: no glass, no blur, nothing sampled from the scene.
         glass::set_plain(performance);
+        // A frame per wheel notch's step is what Performance mode saves: notches jump there.
+        glide::set_on(!performance);
         self.scene
             .update(cx, |scene, cx| scene.set_performance(performance, cx));
         let blur = if performance { 0. } else { blur };
@@ -5399,6 +5402,8 @@ impl Render for Launcher {
             .font_family(theme::FONT)
             .text_color(t.ink)
             .overflow_hidden()
+            // First, so it takes a wheel notch before any scroll area does.
+            .child(glide::wheel())
             .child(
                 div()
                     .relative()
