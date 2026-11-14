@@ -184,7 +184,10 @@ impl Game<'_> {
             Some("west") => 90.0,
             _ => 0.0,
         };
-        if let Some(id) = self.spawn_mob_raw("minecraft:happy_ghast", at, true)
+        // `spawnGhastling` calls `EntityType.create` and `addFreshEntity`
+        // without `setPersistenceRequired` (unlike `FrogspawnBlock`), so the
+        // ghastling is an ordinary mob: only its NBT can make it persistent.
+        if let Some(id) = self.spawn_mob_raw("minecraft:happy_ghast", at, false)
             && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
         {
             // DriedGhastBlock.spawnGhastling sets the baby age before
@@ -211,6 +214,10 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "ghastling_persistence_tests.rs"]
+mod ghastling_persistence_tests;
 
 #[cfg(test)]
 mod item_collision_tests {
