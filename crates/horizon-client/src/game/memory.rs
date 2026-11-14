@@ -245,6 +245,8 @@ struct Gpu {
     allocated_mb: f64,
     reserved_mb: f64,
     by_label_mb: Vec<(String, f64)>,
+    /// Blocks of device memory, largest first: size, bytes used, largest allocations.
+    blocks: Vec<(f64, f64, Vec<String>)>,
 }
 
 #[derive(Serialize)]
@@ -571,17 +573,24 @@ impl Game<'_> {
             let [arenas, vertices] = r.section_vertex_bytes();
             let cpu = r.cpu_census();
             let cpu_bytes: usize = cpu.iter().map(|(_, v)| *v).sum();
-            let gpu = r
-                .gpu_memory_by_label()
-                .map(|(allocated, reserved, labels)| Gpu {
-                    allocated_mb: mb(allocated),
-                    reserved_mb: mb(reserved),
-                    by_label_mb: labels
+            let gpu = r.gpu_memory_by_label().map(|m| {
+                let mut blocks: Vec<_> = m.blocks.iter().collect();
+                blocks.sort_by_key(|b| std::cmp::Reverse(b.size));
+                Gpu {
+                    allocated_mb: mb(m.allocated),
+                    reserved_mb: mb(m.reserved),
+                    by_label_mb: m
+                        .labels
                         .iter()
                         .take(40)
                         .map(|(label, bytes)| (label.to_string(), mb(*bytes)))
                         .collect(),
-                });
+                    blocks: blocks
+                        .iter()
+                        .map(|b| (mb(b.size), mb(b.used), b.names.clone()))
+                        .collect(),
+                }
+            });
             let renderer = Renderer {
                 section_arenas_mb: mb(arenas),
                 section_vertices_mb: mb(vertices),
