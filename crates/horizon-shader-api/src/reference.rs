@@ -1,8 +1,8 @@
-//! docs/api/shaders-reference.md (0.1) and shaders-reference-0.2.md, generated from the stages
-//! and inputs this crate defines (`tests/reference.rs` fails when a file drifts).
+//! docs/api/shaders-reference-0.2.md, generated from the stages and inputs this crate defines
+//! (`tests/reference.rs` fails when the file drifts).
 use crate::check::{MAX_EXPRESSIONS, MAX_TEXTURE_READS};
 use crate::inputs::{DISPLACEMENT_INPUT, Frame, SURFACE, Struct};
-use crate::manifest::{Api, MAX_GPU_MS, MAX_OPTIONS, MAX_POST_PASSES};
+use crate::manifest::{API, MAX_GPU_MS, MAX_OPTIONS, MAX_POST_PASSES};
 use crate::package::{MAX_TOTAL, MAX_WGSL};
 use crate::stages::{GROUP, StageKind};
 
@@ -29,18 +29,13 @@ fn one_line(doc: &str) -> String {
     doc.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Where the line's reference lives, from the repository's root.
-pub fn path(api: Api) -> &'static str {
-    match api {
-        Api::V0_1 => "docs/api/shaders-reference.md",
-        Api::V0_2 => "docs/api/shaders-reference-0.2.md",
-    }
-}
+/// Where the reference lives, from the repository's root.
+pub const PATH: &str = "docs/api/shaders-reference-0.2.md";
 
-/// 0.2's rules, after the introduction.
-const RULES_0_2: &str = "\
-**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, the game draws them only
-with `HORIZON_HDR_FRAME=float` set, the registry doesn't list them, and anything here may change in any release.
+/// The line's rules, after the introduction.
+const RULES: &str = "\
+**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, the game draws them and
+the registry lists them, and anything here may change in any release.
 The design: [hdr-linear-light.md](../design/hdr-linear-light.md).
 
 ## Colour
@@ -55,9 +50,9 @@ the frame stores gamma (`[frame] blend`, below).
   `WeatherInput.color`; `Frame` `sky_color` and `fog_color`; `block_texture`, `block_texture_level` and
   `block_light_color`; every colour texture a stage samples (`scene_color`, `previous`, `history`, the pack's targets,
   `opaque_color`, `reflection`, `shadow_color`).
-- **Data, as in 0.1:** depth, normals, `light` levels, `emission`, every channel of the LabPBR maps, and the pack's
+- **Data:** depth, normals, `light` levels, `emission`, every channel of the LabPBR maps, and the pack's
   `[[textures]]`.
-- **`[[lights]]` and `[[particle_lights]]` colours** are written as in 0.1, in vanilla's gamma, and Horizon decodes
+- **`[[lights]]` and `[[particle_lights]]` colours** are written in vanilla's gamma, and Horizon decodes
   them: `block_light_color` and `colored_light` are linear. `block_light_colors` holds them as written; read it through
   `block_light_color`.
 - **Alpha is coverage only**, never light: brightness is in rgb alone. A post pass's alpha is ignored.
@@ -133,22 +128,20 @@ adds it to the light colour, and the expression above leaves it out.
 
 ";
 
-/// The line's reference.
-pub fn markdown(api: Api) -> String {
+/// The reference.
+pub fn markdown() -> String {
     let mut out = format!(
-        "# Shader API reference ({api})\n\n\
+        "# Shader API reference ({API})\n\n\
          Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test reference`\n\
          rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).\n\n"
     );
-    if api == Api::V0_2 {
-        out += RULES_0_2;
-    }
+    out += RULES;
     out += "A stage is a function your WGSL defines, with the signature below; Horizon puts the prelude (these structs, the\n\
             resources and helpers) before your files and calls the function from its own pass. Your files declare no\n\
             bindings and no entry points, and no names starting with `horizon_`.\n\n\
             ## Stages\n\n\
             | Stage | In `horizon-shaders.toml` | Your function |\n| --- | --- | --- |\n";
-    for &kind in api.stages() {
+    for kind in StageKind::ALL {
         let key = match kind {
             StageKind::Post => "[[post]]",
             StageKind::Sky => "[sky]",
@@ -161,23 +154,14 @@ pub fn markdown(api: Api) -> String {
         out += &format!("| {} | `{key}` | `{}` |\n", kind.name(), kind.signature());
     }
     out += "\n";
-    for &kind in api.stages() {
+    for kind in StageKind::ALL {
         out += &format!("## {}\n\n`{}`\n\n", kind.name(), kind.signature());
         out += &table(kind.input(), None);
         if kind == StageKind::Entity {
             out += ENTITY_NOTES;
         }
         if kind == StageKind::Material {
-            let surface = table(&SURFACE, None);
-            // 0.2's lit colour is linear light and may pass white; 0.1's reference keeps its text.
-            out += &match api {
-                Api::V0_1 => surface,
-                Api::V0_2 => surface.replace(
-                    "The lit colour, 0..1, with its alpha.",
-                    "The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than \
-                     white); alpha its coverage.",
-                ),
-            };
+            out += &table(&SURFACE, None);
             out += "Under `[displacement]` the stage also defines \
                     `fn displacement(input: DisplacementInput) -> f32`, called for each corner of the grid the \
                     faces near the camera are cut into; the corner moves along the face's normal by the depth it \
@@ -250,8 +234,7 @@ pub fn markdown(api: Api) -> String {
         }
     }
     out += "## The frame\n\n";
-    let frame = Frame::line(api);
-    out += &table(&frame, Some(&Frame::OFFSETS[..frame.fields.len()]));
+    out += &table(&Frame::WGSL, Some(Frame::OFFSETS));
     out += "## Anti-aliasing\n\n\
             While a pack's `[[post]]` chain draws the frame, the player's anti-aliasing settings do not run: `taa`, `fxaa`\n\
             and `upscaling` in `horizon-graphics.txt` have no effect, and the frame's projection is never jittered, because the\n\
