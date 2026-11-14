@@ -123,6 +123,33 @@ class CheckLayersTests(unittest.TestCase):
             f"mod-api: listed as portable in {check_layers.CONFIG_PATH}, but not an engine crate there",
         ])
 
+    def test_a_pending_crate_may_use_only_the_crates_its_entry_lists(self):
+        config = dict(CONFIG, portable={"crates": ["core"], "pending": {"game": ["mod-api"]}, "forbidden": ["wgpu"]})
+        listed = package("game", "core", "mod-api")
+        self.assertEqual(check_layers.portable(config, [listed]), [])
+        unlisted = package("game", "core", "mod-api", "cosmetics")
+        wgpu = {"name": "wgpu", "kind": None, "path": None}
+        problems = check_layers.portable(config, [dict(unlisted, dependencies=unlisted["dependencies"] + [wgpu])])
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("game -> cosmetics: a portable crate depends only on the other portable crates", problems[0])
+        self.assertIn("game -> wgpu: a portable crate takes no window, GPU", problems[1])
+
+    def test_a_crate_is_pending_or_portable_never_both(self):
+        config = dict(CONFIG, portable={"crates": ["core", "game"], "pending": {"game": []}, "forbidden": []})
+        self.assertEqual(check_layers.portable(config, []), [
+            f"game: in both portable.crates and portable.pending of {check_layers.CONFIG_PATH}",
+        ])
+
+    def test_pending_entries_only_shrink(self):
+        def config(*deps):
+            return dict(CONFIG, portable={"crates": ["core"], "pending": {"game": list(deps)}, "forbidden": []})
+        base = config("mod-api")
+        self.assertEqual(check_layers.portable(config("mod-api"), [], base), [])
+        self.assertEqual(check_layers.portable(config(), [], base), [])
+        problems = check_layers.portable(config("mod-api", "cosmetics"), [], base)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("game -> cosmetics: added to portable.pending", problems[0])
+
     def test_registry_dependencies_are_not_edges(self):
         pkg = {"name": "game", "dependencies": [{"name": "cosmetics", "kind": None, "path": None}]}
         self.assertEqual(check_layers.edges([pkg]), {"game": set()})

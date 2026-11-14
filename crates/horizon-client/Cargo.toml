@@ -13,6 +13,8 @@ autotests = false
 [dependencies]
 horizon-cosmetics = { path = "../horizon-cosmetics" }
 horizon-client-lib = { path = "../horizon-client-lib", default-features = false }
+horizon-gameplay = { path = "../horizon-gameplay" }
+horizon-client-gameplay = { path = "../horizon-client-gameplay" }
 horizon-assets = { path = "../horizon-assets" }
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }

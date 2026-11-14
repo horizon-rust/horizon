@@ -1514,6 +1514,7 @@ dependencies = [
  "horizon-bench",
  "horizon-chat-filter",
  "horizon-client-core",
+ "horizon-client-gameplay",
  "horizon-client-input",
  "horizon-client-lib",
  "horizon-client-render",
@@ -1522,6 +1523,7 @@ dependencies = [
  "horizon-cosmetics",
  "horizon-dualsense",
  "horizon-friends",
+ "horizon-gameplay",
  "horizon-hdr",
  "horizon-hooks",
  "horizon-items",
@@ -1568,6 +1570,13 @@ version = "0.1.0"
 dependencies = [
  "horizon-world",
  "serde_json",
+]
+
+[[package]]
+name = "horizon-client-gameplay"
+version = "0.1.0"
+dependencies = [
+ "horizon-client-lib",
 ]
 
 [[package]]
@@ -1770,6 +1779,13 @@ dependencies = [
  "horizon-client",
  "horizon-mods",
  "horizon-threads",
+]
+
+[[package]]
+name = "horizon-gameplay"
+version = "0.1.0"
+dependencies = [
+ "horizon-client-lib",
 ]
 
 [[package]]
