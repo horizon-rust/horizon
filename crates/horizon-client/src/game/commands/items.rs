@@ -1142,10 +1142,20 @@ impl Game<'_> {
     /// `ItemStack.getMaxStackSize`: the max_stack_size component, else the
     /// item's.
     pub(in crate::game) fn stack_max_size(&self, s: &ItemStack) -> u32 {
-        if let Some(Tag::Int(n)) = s.data().and_then(|d| d.other("minecraft:max_stack_size")) {
+        self.stack_max_size_of(&s.item, s.data())
+    }
+    /// `ItemStack.getMaxStackSize` for an item and the components on it,
+    /// without a stack to read them from (`ItemInput.createItemStack(1)`,
+    /// the prototype `/give` limits and splits by).
+    pub(in crate::game) fn stack_max_size_of(
+        &self,
+        item: &str,
+        data: Option<&horizon_client::item_data::StackData>,
+    ) -> u32 {
+        if let Some(Tag::Int(n)) = data.and_then(|d| d.other("minecraft:max_stack_size")) {
             return (*n).clamp(1, 99) as u32;
         }
-        self.items().get(&s.item).map_or(64, |i| i.max_stack)
+        self.items().get(item).map_or(64, |i| i.max_stack)
     }
     /// `ResourceOrIdArgument.getItemModifier`: an inline modifier (SNBT) or
     /// a registered one.

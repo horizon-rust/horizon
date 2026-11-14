@@ -1,6 +1,9 @@
 //! Command execution (the `execute` side of each vanilla command class):
 //! entity selectors resolved against the game, vanilla feedback and errors.
 mod admin;
+mod clear;
+#[cfg(test)]
+mod clear_give_enchant_tests;
 pub(super) mod compute;
 mod data;
 mod display_names;
@@ -1414,7 +1417,7 @@ impl Game<'_> {
         };
         let count = Self::int(ctx, "count").unwrap_or(1);
         let targets = self.entities(ctx, "targets", true)?;
-        let max_stack = self.items().get(&id).map_or(64, |i| i.max_stack) as i32;
+        let max_stack = self.stack_max_size_of(&id, extra.as_deref()) as i32;
         // A native mod's item can stack far past vanilla's 99: saturate rather
         // than overflow on a size near i32::MAX.
         let limit = max_stack.saturating_mul(100);
@@ -3921,9 +3924,7 @@ impl Game<'_> {
         let mut removed = 0i32;
         let mut found = Vec::new();
         for &t in &targets {
-            let n = self
-                .for_player(t, |g| g.clear_matching(&predicate, max))
-                .unwrap_or(0);
+            let n = self.clear_player(t, &predicate, max, counting);
             removed += n;
             if n != 0 {
                 found.push(t);
@@ -3949,57 +3950,6 @@ impl Game<'_> {
             &[Text::literal(removed.to_string()), who],
         ));
         Ok(removed)
-    }
-    /// Inventory.clearOrCountMatchingItems for the player in place: `max`
-    /// of the matching items go (all when negative, none and only counted
-    /// when 0). Returns how many matched.
-    fn clear_matching(&mut self, predicate: &ItemInput, max: i32) -> i32 {
-        let counting = max == 0;
-        // Inventory slots 0..40: main, armor feet to head, off hand;
-        // then clearOrCountMatchingItems visits the crafting grid and carried stack.
-        let mut removed = 0i32;
-        let mut budget = if max < 0 { i32::MAX } else { max };
-        let all = |g: &Self| -> Vec<Option<ItemStack>> {
-            let mut v: Vec<Option<ItemStack>> = g.inventory.clone();
-            v.extend(g.armor.iter().rev().cloned());
-            v.push(g.offhand.clone());
-            v.extend(g.craft_grid.iter().cloned());
-            v.push(g.carried.clone());
-            v
-        };
-        let matching: Vec<bool> = all(self)
-            .iter()
-            .map(|s| s.as_ref().is_some_and(|s| self.stack_matches(predicate, s)))
-            .collect();
-        let mut slots: Vec<&mut Option<ItemStack>> = Vec::new();
-        slots.extend(self.inventory.iter_mut());
-        slots.extend(self.armor.iter_mut().rev());
-        slots.push(&mut self.offhand);
-        slots.extend(self.craft_grid.iter_mut());
-        slots.push(&mut self.carried);
-        for (slot, matches) in slots.into_iter().zip(matching) {
-            if !matches {
-                continue;
-            }
-            let Some(stack) = slot.as_mut() else { continue };
-            let take = if counting {
-                stack.count as i32
-            } else {
-                (stack.count as i32).min(budget)
-            };
-            removed += take;
-            if !counting {
-                budget -= take;
-                stack.count -= take as u32;
-                if stack.count == 0 {
-                    *slot = None;
-                }
-                if budget == 0 {
-                    break;
-                }
-            }
-        }
-        removed
     }
     /// `PoiTypes`: the point of interest type of a block state.
     fn poi_type(&self, state: horizon_world::registry::BlockStateId) -> Option<&'static str> {

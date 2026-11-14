@@ -214,8 +214,8 @@ impl Game<'_> {
         self.feedback(message);
         Ok(tracker.total)
     }
-    /// `EnchantCommand.enchant` (mobs hold bare item ids, so only the player's
-    /// main hand item can carry the enchantment).
+    /// `EnchantCommand.enchant`: the main hand item of any living entity
+    /// (a mob's main hand, or the player's selected slot).
     pub(super) fn cmd_enchant(&mut self, ctx: &Context) -> R<i32> {
         let Some(Arg::Resource(id)) = ctx.get("enchantment").cloned() else {
             return Ok(0);
@@ -269,22 +269,49 @@ impl Game<'_> {
                     }
                 }
                 Target::Mob(mob) => {
-                    let held = self
-                        .mobs
-                        .iter()
-                        .find(|m| m.id == mob)
-                        .and_then(|m| m.extra.main_hand.clone());
-                    if single {
-                        return Err(match held {
-                            None => err(
+                    let Some(index) = self.mobs.iter().position(|m| m.id == mob) else {
+                        continue;
+                    };
+                    // `LivingEntity.getMainHandItem`: the mob's main hand stack,
+                    // the slot's enchantments included when only the item id
+                    // and those were kept (a loot-table sword).
+                    let Some(stack) = crate::mobs::finalize::item_stack(
+                        &self.mobs[index],
+                        crate::mobs::finalize::MAINHAND,
+                    ) else {
+                        if single {
+                            return Err(err(
                                 "commands.enchant.failed.itemless",
                                 &[&self.target_name(t).plain()],
-                            ),
-                            Some(item) => err(
-                                "commands.enchant.failed.incompatible",
-                                &[&self.pack.names.item(&item)],
-                            ),
-                        });
+                            ));
+                        }
+                        continue;
+                    };
+                    let e = &self.stations().enchantments;
+                    let compatible = e.can_enchant(self.items(), &id, &stack.item)
+                        && stack
+                            .crafting_enchantments()
+                            .iter()
+                            .all(|(other, _)| e.compatible(other, &id));
+                    if compatible {
+                        let mut stack = stack;
+                        stack.enchant(&id, level.max(0) as u32);
+                        // `setItemSlot`: the stack, and the enchantments the
+                        // mob's combat reads from its slot.
+                        crate::mobs::finalize::set_item_stack(
+                            &mut self.mobs[index],
+                            crate::mobs::finalize::MAINHAND,
+                            stack,
+                        );
+                        tracker.track(t, true);
+                    } else if single {
+                        // getHoverName().getString(): the custom or item name, no brackets.
+                        return Err(err(
+                            "commands.enchant.failed.incompatible",
+                            &[&stack
+                                .custom_name()
+                                .unwrap_or_else(|| self.pack.names.item(&stack.item).to_string())],
+                        ));
                     }
                 }
                 _ if single => {

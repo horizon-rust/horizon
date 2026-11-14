@@ -126,11 +126,8 @@ impl Game<'_> {
             tutorial::Step::FindTree | tutorial::Step::PunchTree | tutorial::Step::CraftPlanks
         )
         .then(|| stack.clone());
-        let max = self
-            .res
-            .items()
-            .get(&stack.item)
-            .map_or(64, |i| i.max_stack);
+        // `Inventory.add` stacks by `ItemStack.getMaxStackSize`.
+        let max = self.stack_max_size(&stack);
         let before = stack.count;
         let left = inventory_add(
             &mut self.inventory,
