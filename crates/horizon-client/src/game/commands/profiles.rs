@@ -26,11 +26,18 @@ impl Game<'_> {
         }
     }
 
-    /// StopCommand: the server loop (game/dedicated.rs) ends after this tick.
-    pub(super) fn cmd_stop(&mut self) -> R<i32> {
+    /// StopCommand: the server loop (game/dedicated.rs) ends after this tick. `restart` (Horizon's `/restart`,
+    /// registered only on a server `horizon-server` runs) also has the supervisor start the game again.
+    pub(super) fn cmd_stop(&mut self, restart: bool) -> R<i32> {
         let lists = self.dedicated_lists()?;
-        self.feedback(Text::translate("commands.stop.stopping", &[]));
-        lists.lock().unwrap().stop = true;
+        let reply = if restart {
+            let supervised = super::super::dedicated::supervised();
+            super::super::dedicated::request_restart(supervised, &mut lists.lock().unwrap().stop)
+        } else {
+            lists.lock().unwrap().stop = true;
+            Text::translate("commands.stop.stopping", &[])
+        };
+        self.feedback(reply);
         Ok(1)
     }
 

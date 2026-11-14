@@ -323,6 +323,10 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     }
     horizon_hooks::engine::shutdown();
     logging::flush();
+    // `/restart`: the world is saved; the supervisor reads this code as "start the game again".
+    if game::exit_code::restart_requested() {
+        std::process::exit(game::exit_code::RESTART);
+    }
 }
 
 /// The JVM raises its open-file limit to the hard limit as it starts

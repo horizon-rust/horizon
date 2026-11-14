@@ -14,6 +14,12 @@ use std::{
 /// The game's program names, most specific first: the server build (the game without sound or
 /// controllers, so it needs neither ALSA nor udev on Linux; `horizon-server-linux-x86_64.tar.gz` holds it),
 /// else the full game.
+/// The exit code of a game that saved and stopped on `/restart`: start it again. The game's
+/// `exit_code::RESTART` (crates/horizon-client/src/game/launch_api.rs) is the same number.
+pub const RESTART_EXIT_CODE: i32 = 75;
+/// What the game's environment carries to say this supervisor starts it again: only then does it
+/// register `/restart`. The game's `SUPERVISED_ENV` is the same name.
+const SUPERVISED_ENV: &str = "HORIZON_SUPERVISED";
 const PROGRAMS: [&str; 2] = ["horizon-engine", "horizon-client"];
 
 fn exe(name: &str) -> String {
@@ -282,6 +288,7 @@ fn command(
         .args(["--dedicated", "--nogui"])
         .current_dir(&dir)
         .env("HORIZON_NO_AUDIO", "1")
+        .env(SUPERVISED_ENV, "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
