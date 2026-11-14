@@ -198,6 +198,36 @@ impl ChunkMap {
     pub fn get_mut(&mut self, key: &Key) -> Option<&mut Arc<Chunk>> {
         self.columns.get_mut(key)
     }
+    /// The chunks `region_of` assigns to a region, moved out into one map each (`regions` of them), for the
+    /// regions' ticks on threads of their own. Not a membership change: nothing is recorded here, `near` keeps
+    /// counting them, and [`ChunkMap::take_back`] puts them back as they were. To a region every chunk not lent
+    /// to it is not loaded.
+    pub fn lend(
+        &mut self,
+        regions: usize,
+        region_of: impl Fn(Key) -> Option<usize>,
+    ) -> Vec<ChunkMap> {
+        let mut out: Vec<ChunkMap> = (0..regions).map(|_| ChunkMap::default()).collect();
+        for (key, chunk) in self.columns.extract_if(|key, _| region_of(*key).is_some()) {
+            let r = region_of(key).expect("extracted for its region");
+            if self.fresh.remove(&key) {
+                out[r].fresh.insert(key);
+            }
+            for z in key.1 - 1..=key.1 + 1 {
+                for x in key.0 - 1..=key.0 + 1 {
+                    *out[r].near.entry((x, z)).or_insert(0) += 1;
+                }
+            }
+            out[r].columns.insert(key, chunk);
+        }
+        out
+    }
+    /// The chunks [`ChunkMap::lend`] lent, back (a region's tick never loads or drops a chunk).
+    pub fn take_back(&mut self, lent: ChunkMap) {
+        self.fresh.extend(lent.fresh);
+        self.columns.reserve(lent.columns.len());
+        self.columns.extend(lent.columns);
+    }
     pub fn values_mut(&mut self) -> ValuesMut<'_, Key, Arc<Chunk>> {
         self.columns.values_mut()
     }
@@ -230,6 +260,26 @@ impl crate::light::LightWorld for ChunkMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lent_chunks_leave_and_come_back_without_a_membership_change() {
+        let mut map = ChunkMap::default();
+        for x in 0..4 {
+            map.insert((x, 0), Arc::new(Chunk::empty(0, 0)));
+        }
+        let revision = map.membership_revision();
+        let parts = map.lend(2, |(x, _)| Some((x / 2) as usize));
+        assert_eq!(map.len(), 0);
+        assert_eq!(parts[0].len(), 2);
+        assert_eq!(parts[1].len(), 2);
+        // A region sees only what it was lent: its edge chunk is not surrounded by the other region's.
+        assert!(!parts[0].surrounded((0, 0)));
+        for part in parts {
+            map.take_back(part);
+        }
+        assert_eq!(map.len(), 4);
+        assert_eq!(map.membership_revision(), revision);
+    }
+
     #[test]
     fn membership_tokens_track_keys_and_map_replacement_only() {
         let mut map = ChunkMap::default();
