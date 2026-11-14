@@ -17,7 +17,7 @@ from integration_env import suite_lock
 if __name__ == '__main__':
     # The official executable: joining a friend is Play with Friends' hook, which horizon-client's
     # own executable doesn't register (docs/layers.md, "How a Horizon crate plugs in").
-    subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-official', '-p', 'horizon-client-lib',
+    subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-official', '-p', 'horizon-ctl',
                     '-p', 'horizon-relay', '--bin', 'horizon-official', '--bin', 'horizon-ctl',
                     '--bin', 'horizon-relay'], cwd=lab.ROOT, check=True)
     metadata = json.loads(subprocess.check_output(

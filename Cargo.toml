@@ -13,6 +13,8 @@ members = [
     "crates/horizon-client-core",
     "crates/horizon-client-input",
     "crates/horizon-client-render",
+    # horizon-ctl and its MCP server (platform).
+    "crates/horizon-ctl",
     "crates/horizon-cosmetics",
     "crates/horizon-command",
     "crates/horizon-items",
