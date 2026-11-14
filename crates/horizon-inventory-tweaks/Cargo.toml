@@ -1,0 +1,21 @@
+[package]
+name = "horizon-inventory-tweaks"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Mouse Tweaks-style controls and sorting on container screens (docs/extras.md)"
+
+[dependencies]
+horizon-platform = { path = "../horizon-platform" }
+
+[dev-dependencies]
+# The splitscreen seat a test plays as.
+horizon-hooks = { path = "../horizon-hooks" }
+# The engine's menu, which the sort plan's clicks are replayed on (with the game's data only).
+horizon-client-lib = { path = "../horizon-client-lib", default-features = false }
+horizon-core = { path = "../horizon-core" }
+horizon-world = { path = "../horizon-world" }
+
+[lints]
+workspace = true

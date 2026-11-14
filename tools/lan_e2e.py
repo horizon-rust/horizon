@@ -7362,14 +7362,14 @@ def check_raid_captain_fields(host, guest, out):
             game('command', command='gamemode survival')
 
 
-def run(ctl, out, resources, checks):
+def run(ctl, out, resources, checks, game=None):
     host, guest = Game('host', ctl, resources), Game('guest', ctl, resources)
     # A headless run (HORIZON_E2E_HEADLESS, or a Linux without vscreen) has no focused window to draw
     # in: the games render offscreen and never pause on the focus loss, or the world would stand still
     # (a host paused before its world loads waits at "Connecting to the server..." for ever).
     headless = bool(os.environ.get('HORIZON_E2E_HEADLESS')) or (
         sys.platform.startswith('linux') and not shutil.which('vscreen'))
-    launch = ['launch']
+    launch = ['launch'] + (['--game', game] if game else [])
     if headless or sys.platform == 'darwin':
         launch.append('--offscreen')
     if headless:
@@ -7434,7 +7434,7 @@ def run(ctl, out, resources, checks):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--bin-dir', help='prebuilt horizon-client and horizon-ctl (default: build with the fast profile)')
+    parser.add_argument('--bin-dir', help='prebuilt horizon-official (or horizon-client) and horizon-ctl (default: build with the fast profile)')
     parser.add_argument('--check', action='append', choices=CHECKS, help='run only these checks (repeatable)')
     parser.add_argument('--out', default=str(ROOT / '.local/lan-e2e'), help='screenshots and game logs go here')
     # The host's world always runs on its server thread; the flag stays for existing callers.
@@ -7443,8 +7443,8 @@ def main():
     if args.bin_dir:
         bins = Path(args.bin_dir).resolve()
     else:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '-p', 'horizon-client-lib',
-                        '--bin', 'horizon-client', '--bin', 'horizon-ctl'],
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-official', '-p', 'horizon-client-lib',
+                        '--bin', 'horizon-official', '--bin', 'horizon-ctl'],
                        cwd=ROOT, check=True)
         meta = json.loads(subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT,
                                          capture_output=True, text=True, check=True).stdout)
@@ -7460,7 +7460,10 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     # Recipes is an opt-in native mod; this check requires a game built with it.
     checks = args.check or [name for name in CHECKS if name != 'recipes-hmod']
-    results = run(bins / 'horizon-ctl', out, resources, checks)
+    # The official executable: the game with Horizon's own parts (Mouse Tweaks, sorting,
+    # auto-reconnect...), as players get it. A prebuilt folder may hold it under its shipped name.
+    official = next((b for b in (bins / 'horizon-official', bins / 'horizon-official.exe') if b.is_file()), None)
+    results = run(bins / 'horizon-ctl', out, resources, checks, official)
     (out / 'results.json').write_text(json.dumps({'checks': results}, indent=2) + '\n')
     print(json.dumps(results, indent=1))
     sys.exit(0 if results and all(r['pass'] for r in results.values()) else 1)

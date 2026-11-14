@@ -97,7 +97,7 @@ impl OptionsUi {
     /// The binding the screen waits on: a controller button's, else a key's.
     pub(super) fn waiting(&self) -> Option<shell::Capture> {
         let pad = self.selected_pad_action.map(shell::Capture::Pad);
-        pad.or(self.selected_key.map(shell::Capture::Key))
+        pad.or_else(|| self.waiting_key())
     }
     /// What a shell screen's outputs do to these options.
     pub(super) fn shell_events(
@@ -109,10 +109,7 @@ impl OptionsUi {
         for output in outputs {
             match output {
                 shell::Output::Event(event) => events.push(event),
-                shell::Output::Bind(shell::Capture::Key(name)) => self.selected_key = Some(name),
-                shell::Output::Bind(shell::Capture::Pad(action)) => {
-                    self.selected_pad_action = Some(action)
-                }
+                shell::Output::Bind(capture) => self.wait_for(capture),
                 shell::Output::Push(page) => {
                     if page == Page::HdrCalibration {
                         self.calibration =

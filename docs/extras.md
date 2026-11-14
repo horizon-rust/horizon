@@ -16,8 +16,8 @@ again restores vanilla's behaviour completely.
 | Minimap colours, tiles and image (for the Minimap native mod) | `crates/horizon-client-render/src/minimap.rs` |
 | Reconnect policy and backoff | `crates/horizon-client/src/reconnect.rs`; its game glue (connect, join, leave, the countdown) in `game/extras/reconnect.rs` |
 | Game glue (input hooks, per-frame update) | `crates/horizon-client/src/game/extras.rs`; each extra's own glue in a child module, `game/extras/` |
-| Mouse Tweaks-style controls, sort buttons | `crates/horizon-client/src/game/extras/mouse_tweaks.rs`, `game/extras/sorting.rs` |
-| Sort order and its clicks | `crates/horizon-client/src/inv_sort.rs` (pure, unit tested) |
+| Mouse Tweaks-style controls, sort buttons, their settings and rows | crate `horizon-inventory-tweaks` (Horizon layer), registered by `horizon-official`: the engine's container screen hooks (`horizon_hooks::containers`; the engine's side is `game/inventory_input/containers.rs`), a settings store for `mouseTweaks`, `mouseTweaksWheel`, `sort` and `sortKey` and an Extras section (`tweaks.rs`, `sort.rs`) |
+| Sort order and its clicks | `crates/horizon-inventory-tweaks/src/plan.rs` (pure, unit tested; its clicks replayed on the engine's menu) |
 | The music page's rows, and the pools it filters | `options_ui.rs` (`Page::Music`), `crates/horizon-client/src/music.rs` (`track_groups`, `MusicManager::set_off`), `sound_events.rs` (`sound_except`) |
 | Cosmetics (show mine, show others'), off with their flag | `extras.rs`, `crates/horizon-client/src/game/cosmetics.rs` ([cosmetics.md](cosmetics.md)) |
 | The settings page | `extras_ui.rs` (`Page::Extras`, on `settings_shell.rs`): **Options → Horizon Settings... → Extras...**; fullbright, dynamic lights and hiding block-break particles change the picture, so they are on the graphics screen's Quality page instead (`graphics_ui.rs`, **Options → Video Settings...**) |
@@ -179,7 +179,7 @@ and the container screen tests are unchanged).
 - Partial stacks of one item merge, then the stacks go in creative tab order
   (the search tab's), then by name; full stacks before the partial one,
   empty slots last. It needs an empty hand.
-- Done with ordinary left clicks planned by `inv_sort::plan`, so a vanilla
+- Done with ordinary left clicks planned by `plan::plan` (`horizon-inventory-tweaks`), so a vanilla
   server accepts it; a unit test replays the planned clicks through the menu
   engine on random chests.
 

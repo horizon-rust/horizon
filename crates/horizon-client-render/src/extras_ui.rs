@@ -119,7 +119,8 @@ fn add_sections(groups: &mut Vec<Group<ExtraRow>>) {
                 } => Row::new(id, lang::get(label), Value::Press),
                 added::Row::Key { label, key } => {
                     let key = crate::keybinds::display_name(&key).plain();
-                    Row::new(id, lang::get(label), Value::Read(key))
+                    let binding = Binding::page(page, r, key);
+                    Row::new(id, lang::get(label), Value::Binding(binding))
                 }
                 // A row kind newer than this engine.
                 _ => continue,
@@ -127,6 +128,11 @@ fn add_sections(groups: &mut Vec<Group<ExtraRow>>) {
             let row = match section.tooltip(r) {
                 Some(about) => row.about(label_text(about)),
                 None => row,
+            };
+            let row = if section.live(r) {
+                row
+            } else {
+                row.live(false)
             };
             group_named(groups, name).rows.push(row);
         }
@@ -294,63 +300,63 @@ mod tests {
     #[test]
     fn a_setting_of_a_switch_that_is_off_is_greyed_and_takes_no_press() {
         let mut s = Settings::default();
-        let live = |s: &Settings| {
-            let wheel = ExtraRow::Item(Item::MouseTweaksWheel);
-            rows_of(s).iter().find(|r| r.id == wheel).unwrap().live
-        };
-        s.extras.mouse_tweaks = false;
+        let row = ExtraRow::Item(Item::ChatIndicator);
+        let live = |s: &Settings| rows_of(s).iter().find(|r| r.id == row).unwrap().live;
+        s.extras.chat_animation = false;
         assert!(!live(&s));
         let mut shell = Shell::<ExtrasScreen>::default();
-        let row = ExtraRow::Item(Item::MouseTweaksWheel);
         let at = shell.point_at(&s, SIZE, row);
-        let before = s.extras.mouse_tweaks_wheel;
+        let before = s.extras.chat_indicator;
         assert!(
             shell
                 .click(&mut s, at, SIZE, false, false, false)
                 .is_empty()
         );
-        assert_eq!(s.extras.mouse_tweaks_wheel, before);
-        s.extras.mouse_tweaks = true;
+        assert_eq!(s.extras.chat_indicator, before);
+        s.extras.chat_animation = true;
         assert!(live(&s));
         assert!(
             !shell
                 .click(&mut s, at, SIZE, false, false, false)
                 .is_empty()
         );
-        assert_ne!(s.extras.mouse_tweaks_wheel, before);
+        assert_ne!(s.extras.chat_indicator, before);
     }
 
-    /// The sort key binds instead of cycling; the wheel leaves it be.
+    /// A section's key row binds instead of stepping, greyed while its section says so; the
+    /// wheel leaves it be.
     #[test]
-    fn the_key_row_waits_for_a_key() {
+    fn a_sections_key_row_waits_for_a_key() {
         use crate::settings_shell::Capture;
+        let section = with_section();
         let mut s = Settings::default();
-        s.extras.sort = true;
         let mut shell = Shell::<ExtrasScreen>::default();
-        let row = ExtraRow::Item(Item::SortKey);
-        let key = s.extras.sort_key.clone();
+        let row = ExtraRow::Added(1, 5);
+        let live = |s: &Settings| rows_of(s).iter().find(|r| r.id == row).unwrap().live;
+        assert!(!live(&s), "its switch is off");
+        *section.on.lock().unwrap() = true;
+        assert!(live(&s));
         let at = shell.point_at(&s, SIZE, row);
         assert_eq!(
             shell.click(&mut s, at, SIZE, false, false, false),
             vec![
                 Output::Event(Event::ButtonClick),
-                Output::Bind(Capture::Key(extras::SORT_KEY))
+                Output::Bind(Capture::Page(1, 5))
             ]
         );
-        ExtrasScreen.wheel_step(&mut s, row, true);
-        assert_eq!(s.extras.sort_key, key);
+        assert_eq!(ExtrasScreen.wheel_step(&mut s, row, true), None);
     }
 
     #[test]
     fn the_wheel_flips_a_switch_and_leaves_the_mod_to_scroll() {
         let mut s = Settings::default();
         let mut screen = ExtrasScreen;
-        let row = ExtraRow::Item(Item::Sort);
+        let row = ExtraRow::Item(Item::OwnNameTag);
         assert_eq!(
             screen.wheel_step(&mut s, row, true),
             Some(vec![Output::Event(Event::Changed)])
         );
-        assert!(s.extras.sort);
+        assert!(s.extras.own_name_tag);
         assert_eq!(screen.wheel_step(&mut s, ExtraRow::Zoom(0), true), None);
     }
 
@@ -361,13 +367,13 @@ mod tests {
         use winit::keyboard::KeyCode as K;
         let mut s = Settings::default();
         let mut shell = Shell::<ExtrasScreen>::default();
-        let at = shell.point_at(&s, SIZE, ExtraRow::Item(Item::Sort));
+        let at = shell.point_at(&s, SIZE, ExtraRow::Item(Item::OwnNameTag));
         assert!(
             !shell
                 .click(&mut s, at, SIZE, false, false, false)
                 .is_empty()
         );
-        assert!(s.extras.sort && !shell.changed());
+        assert!(s.extras.own_name_tag && !shell.changed());
         let cols = Columns::of(SIZE.0, SIZE.1).with_note_lines(NOTE_LINES);
         let [x, y, ..] = cols.button(1);
         assert!(
@@ -375,7 +381,7 @@ mod tests {
                 .click(&mut s, (x + 2.0, y + 2.0), SIZE, false, false, false)
                 .is_empty()
         );
-        assert!(s.extras.sort);
+        assert!(s.extras.own_name_tag);
         let reached = (0..100).any(|_| {
             shell.key(&mut s, K::Tab, None, false, SIZE);
             shell.focused() == Some(Target::Undo)
@@ -417,7 +423,7 @@ mod tests {
     }
 
     /// A section with a switch in the page's Multiplayer group, then a heading of its own with a
-    /// number that steps either way, a note and a volume.
+    /// number that steps either way, a note, a volume and a key, live while the switch is on.
     struct Section {
         on: std::sync::Mutex<bool>,
         step: std::sync::Mutex<i32>,
@@ -449,6 +455,13 @@ mod tests {
                 value: *self.volume.lock().unwrap(),
                 text: Label::Value(String::new()),
             });
+            rows.push(added::Row::Key {
+                label: "test.section.key",
+                key: "key.keyboard.r".into(),
+            });
+        }
+        fn live(&self, row: usize) -> bool {
+            row != 5 || *self.on.lock().unwrap()
         }
         fn act(&self, row: usize, act: Act) {
             match (row, act) {
@@ -515,6 +528,7 @@ mod tests {
             ExtraRow::Added(1, 2),
             ExtraRow::Added(1, 3),
             ExtraRow::Added(1, 4),
+            ExtraRow::Added(1, 5),
         ];
         assert_eq!(ids("test.section.heading"), own);
         let all = rows_of(&s);

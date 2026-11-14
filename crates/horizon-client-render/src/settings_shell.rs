@@ -1096,6 +1096,8 @@ pub(crate) enum Capture {
     /// A controller button for a gameplay action (`OptionsUi::selected_pad_action`): the game binds
     /// the next button pressed, Start cancels, and the keyboard's Escape unbinds, as on Key Binds.
     Pad(&'static str),
+    /// A key for row `.1` of the registered page `.0` (`horizon_hooks::pages`), as `Key`.
+    Page(usize, usize),
 }
 
 /// What a binding row is bound to now.
@@ -1144,6 +1146,13 @@ impl Binding {
             shown: Shown::Key(shown),
             shared: Vec::new(),
             reset: Reset::None,
+        }
+    }
+    /// A registered page's key row ([`Capture::Page`]), as [`Binding::key`].
+    pub(crate) fn page(page: usize, row: usize, shown: String) -> Self {
+        Self {
+            capture: Capture::Page(page, row),
+            ..Self::key("", shown)
         }
     }
     /// What it reads as, for the narrator and the widget tree: a pad's shared button in brackets,

@@ -80,7 +80,6 @@ pub mod gossip;
 pub mod health;
 pub mod hotbar;
 pub mod hunger;
-pub mod inv_sort;
 pub mod item_activation;
 pub mod item_render;
 pub mod item_sync;

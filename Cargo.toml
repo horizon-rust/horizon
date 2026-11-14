@@ -36,6 +36,7 @@ members = [
     "crates/horizon-heartbeat",
     "crates/horizon-discord",
     "crates/horizon-official-servers",
+    "crates/horizon-inventory-tweaks",
     "crates/horizon-bench",
     "crates/horizon-perf-format",
     "crates/horizon-perf",
