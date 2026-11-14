@@ -10,6 +10,7 @@
 
 use horizon_shader_api::{check::CheckedStage, stages::GROUP};
 
+use super::native_post::trace::{TerrainTrace, Traced};
 use super::native_post::{NativeFrame, present_constants};
 use super::wgsl_prefix::{TERRAIN, prefixed, section};
 
@@ -123,30 +124,6 @@ fn horizon_material_out(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f
     let origin = horizon_terrain_slot_origins[horizon_terrain_block_slots[vertex >> 8u]];
     return horizon_material_vertex(position, horizon_terrain_terrain_uv(uv, origin.w), layer,
         color, light, origin);
-}
-// The prelude's `block_normal_map` and `block_specular_map`: the resource packs' LabPBR maps
-// in the pack's frame group (3), one array each, a blank 1x1 without them.
-@group(3) @binding(12) var horizon_pbr_normals: texture_2d_array<f32>;
-@group(3) @binding(13) var horizon_pbr_specular: texture_2d_array<f32>;
-fn horizon_block_pbr_present() -> bool {
-    return textureDimensions(horizon_pbr_normals).x > 1u;
-}
-fn horizon_block_pbr_size() -> vec2<f32> {
-    return vec2<f32>(textureDimensions(horizon_pbr_normals).xy);
-}
-fn horizon_block_pbr(uv: vec2<f32>, layer: u32, lod: f32, map: u32) -> vec4<f32> {
-    if !horizon_block_pbr_present() || layer >= textureNumLayers(horizon_pbr_normals) {
-        return select(vec4<f32>(0.5, 0.5, 1.0, 1.0), vec4<f32>(0.0), map == 1u);
-    }
-    let s = horizon_terrain_sprite_sampler;
-    // The maps may be smaller than the colour: the same footprint is fewer of their texels.
-    let scale = f32(textureDimensions(horizon_terrain_sprites).x)
-        / f32(textureDimensions(horizon_pbr_normals).x);
-    let l = max(lod - log2(scale), 0.0);
-    if map == 0u {
-        return textureSampleLevel(horizon_pbr_normals, s, uv, i32(layer), l);
-    }
-    return textureSampleLevel(horizon_pbr_specular, s, uv, i32(layer), l);
 }
 // The prelude's `block_texture`: a sprite of the terrain's arrays at a mip level.
 fn horizon_block_size() -> vec2<f32> {
@@ -282,6 +259,9 @@ pub struct TerrainShape<'a> {
     pub flat: Option<&'a wgpu::BindGroupLayout>,
     /// terrain.wgsl's `SPRITE_ARRAYS` and `SPRITE_SPLIT`.
     pub sprites: [f64; 2],
+    /// terrain.wgsl's sprite arrays, the unused ones a stand-in: what a `[ray_tracing]` pack's
+    /// `trace` reads a hit's texture from.
+    pub sprite_views: &'a [wgpu::TextureView],
     /// The world target's colour format, and whether it holds linear light (`linear_blend`).
     pub format: wgpu::TextureFormat,
     pub linear: bool,
@@ -302,14 +282,55 @@ pub struct TerrainShape<'a> {
 
 /// The pack's terrain pipelines: solid (with the cutout test) and translucent, for the
 /// renderer's instanced draws and, where they run, its flat ones.
-pub struct NativeMaterial {
+pub struct MaterialPipelines {
     pub solid: wgpu::RenderPipeline,
     pub translucent: wgpu::RenderPipeline,
     pub flat: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
     /// `[displacement]`'s grid of the solid terrain near the camera (gfx/displace.rs).
     pub displaced: Option<wgpu::RenderPipeline>,
+}
+
+/// A pack's material stage: its terrain pipelines, and for a stage that calls `trace` or
+/// `trace_any`, where the device takes the scene, the same against the scene.
+pub struct NativeMaterial {
+    /// Built with a `trace` that misses: every device, every frame without the scene.
+    pub pipelines: MaterialPipelines,
+    pub(super) scene: Option<TerrainTrace>,
     /// The stage calls `set_surface`: its solid pipelines also write the surface target.
     pub writes_surface: bool,
+}
+
+/// terrain.wgsl's group 0 (`TerrainShape::globals`): its globals, the sprite arrays and their
+/// sampler, the lightmap and its sampler, the emission thresholds.
+pub(super) fn terrain_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+    let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty,
+        count: None,
+    };
+    let texture = |view_dimension| wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        view_dimension,
+        multisampled: false,
+    };
+    let sampler = wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering);
+    let sprite_array = texture(wgpu::TextureViewDimension::D2Array);
+    let globals = wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Uniform,
+        has_dynamic_offset: false,
+        min_binding_size: None,
+    };
+    let mut entries = vec![
+        entry(0, globals),
+        entry(1, sprite_array),
+        entry(2, sampler),
+        entry(3, texture(wgpu::TextureViewDimension::D2)),
+        entry(4, sampler),
+    ];
+    entries.extend((5..=11).map(|binding| entry(binding, sprite_array)));
+    entries.push(entry(12, texture(wgpu::TextureViewDimension::D2)));
+    entries
 }
 
 /// terrain.wgsl's terrain section (its globals, bindings, sampling, lighting and fog), with
@@ -377,8 +398,11 @@ fn shader_source(
     (vertex, displaced): (bool, bool),
     (api, linear): (horizon_shader_api::Api, bool),
 ) -> String {
+    // The LabPBR maps in the frame's group, read by the prelude's `block_normal_map` and its
+    // kin, and by a tracing stage's `hit_normal_map`.
+    let pbr = horizon_shader_api::stages::PBR_MAPS_TERRAIN;
     format!(
-        "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{}{}{}{ENTRIES}{}{}",
+        "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{}{}{}{ENTRIES}{pbr}{}{}",
         vanilla_terrain(),
         super::native_post::line_helpers(api, linear),
         if vertex {
@@ -397,18 +421,18 @@ fn shader_source(
     )
 }
 
-/// The material's naga module, its errors in the stage's file.
+/// The material's naga module from the stage's `source` (`CheckedStage::source` or
+/// `scene_source`), its errors in the stage's `file`.
 fn module(
-    stage: &CheckedStage,
+    (source, file): (&str, &str),
     tags: &[(u32, u32)],
     materials: &[(u32, u32)],
     vertex: bool,
     displaced: bool,
     line: (horizon_shader_api::Api, bool),
 ) -> Result<naga::Module, String> {
-    let text = shader_source(&stage.source, tags, materials, (vertex, displaced), line);
-    naga::front::wgsl::parse_str(&text)
-        .map_err(|e| format!("{}: {}", stage.file, e.emit_to_string(&text)))
+    let text = shader_source(source, tags, materials, (vertex, displaced), line);
+    naga::front::wgsl::parse_str(&text).map_err(|e| format!("{file}: {}", e.emit_to_string(&text)))
 }
 
 impl NativeMaterial {
@@ -424,13 +448,64 @@ impl NativeMaterial {
         displaced: Option<&DisplacedShape<'_>>,
     ) -> Result<Self, String> {
         let writes_surface = horizon_shader_api::stages::calls_set_surface(&stage.source);
+        let line = (frame.api, frame.linear);
+        let build = |source: &str, group: &wgpu::BindGroupLayout| {
+            let flags = (fog, vertex, writes_surface);
+            let terrain = (shape, displaced, constants);
+            Self::pipelines(device, terrain, (stage, source), group, flags, line)
+        };
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let built = build(&stage.source, &frame.layout);
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            return Err(format!("{}: {e}", stage.file));
+        }
+        let pipelines = built?;
+        let scene = stage.scene_source.as_deref().and_then(|source| {
+            TerrainTrace::new(device, frame, shape, |group| build(source, group))
+        });
+        Ok(Self {
+            pipelines,
+            scene,
+            writes_surface,
+        })
+    }
+
+    /// This frame's `frame.ray_distance` when the terrain traces `scene`.
+    pub(super) fn trace(&self, queue: &wgpu::Queue, scene: Option<&Traced<'_>>) -> Option<f32> {
+        self.scene.as_ref()?.trace(queue, scene)
+    }
+
+    /// The pipelines and group 3 the terrain draws with this frame: against the scene where
+    /// it traces, else the ones whose `trace` misses with the frame's own `group`.
+    pub(super) fn drawn<'a>(
+        &'a self,
+        group: &'a wgpu::BindGroup,
+    ) -> (&'a MaterialPipelines, &'a wgpu::BindGroup) {
+        let traced = self.scene.as_ref().and_then(TerrainTrace::drawn);
+        traced.unwrap_or((&self.pipelines, group))
+    }
+
+    /// One set of a material stage's terrain pipelines, from its `source`, with `frame_group` as
+    /// their group 3; `(fog, vertex, writes_surface)` as `NativeMaterial::new` has them.
+    fn pipelines(
+        device: &wgpu::Device,
+        (shape, displaced, constants): (
+            &TerrainShape<'_>,
+            Option<&DisplacedShape<'_>>,
+            &[(String, f64)],
+        ),
+        (stage, source): (&CheckedStage, &str),
+        frame_group: &wgpu::BindGroupLayout,
+        (fog, vertex, writes_surface): (bool, bool, bool),
+        line: (horizon_shader_api::Api, bool),
+    ) -> Result<MaterialPipelines, String> {
         let module = module(
-            stage,
+            (source, &stage.file),
             shape.sprite_tags,
             shape.sprite_materials,
             vertex,
             displaced.is_some(),
-            (frame.api, frame.linear),
+            line,
         )?;
         let mut constants = present_constants(&module, constants);
         let sprite_names = [
@@ -440,7 +515,7 @@ impl NativeMaterial {
         constants.extend(sprite_names.into_iter().zip(shape.sprites));
         constants.push(("horizon_material_fog", f64::from(u8::from(fog))));
         let [(_, write_light), (_, linear)] =
-            super::linear_blend::frame_constants(shape.format, frame.linear);
+            super::linear_blend::frame_constants(shape.format, line.1);
         constants.push(("horizon_terrain_HDR_WRITE_LIGHT", write_light));
         constants.push(("horizon_terrain_FRAME_LINEAR", linear));
         constants.push((
@@ -451,7 +526,6 @@ impl NativeMaterial {
             constants.push(("horizon_displace_cells", f64::from(d.cells)));
             constants.push(("horizon_displace_steps", f64::from(u8::from(d.steps))));
         }
-        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(&stage.label),
             source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
@@ -461,7 +535,7 @@ impl NativeMaterial {
                 Default::default();
             groups[0] = Some(shape.globals);
             groups[1] = flat;
-            groups[GROUP as usize] = Some(&frame.layout);
+            groups[GROUP as usize] = Some(frame_group);
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Native shader pack terrain"),
                 bind_group_layouts: &groups,
@@ -578,15 +652,11 @@ impl NativeMaterial {
                 None,
             )
         });
-        if let Some(e) = pollster::block_on(scope.pop()) {
-            return Err(format!("{}: {e}", stage.file));
-        }
-        Ok(Self {
+        Ok(MaterialPipelines {
             solid,
             translucent,
             flat,
             displaced,
-            writes_surface,
         })
     }
 }
@@ -695,7 +765,15 @@ mod tests {
         let tags = [(7, 1), (3, 1), (9, 2)];
         let materials = [(5, 1000)];
         assert!(layer_table("t", &tags).contains("case 3u, 7u: { return 1u; }"));
-        let module = module(&stage, &tags, &materials, false, false, (Api::V0_1, false)).unwrap();
+        let module = module(
+            (&stage.source, &stage.file),
+            &tags,
+            &materials,
+            false,
+            false,
+            (Api::V0_1, false),
+        )
+        .unwrap();
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -750,14 +828,79 @@ mod tests {
         .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
         .into();
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
-        let stage = report.stages.iter().find(|s| s.kind == StageKind::Material);
-        let module = module(stage.unwrap(), &[], &[], true, false, (Api::V0_2, false)).unwrap();
+        let stage = report
+            .stages
+            .iter()
+            .find(|s| s.kind == StageKind::Material)
+            .unwrap();
+        let source = (stage.source.as_str(), stage.file.as_str());
+        let module = module(source, &[], &[], true, false, (Api::V0_2, false)).unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
         )
         .validate(&module)
         .unwrap();
+    }
+
+    /// A material stage that traces, with a vertex stage and `[displacement]`: its terrain built
+    /// against the scene validates, and only its fragment entries read the scene, which the
+    /// renderer binds for the fragment stage alone.
+    #[test]
+    fn a_traced_terrain_reads_the_scene_in_its_fragments_only() {
+        use horizon_shader_api::stages::RAY_SCENE_BINDING;
+        let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\n\
+            [material]\nfile = \"material.wgsl\"\n[vertex]\nfile = \"vertex.wgsl\"\n\
+            [displacement]\n[ray_tracing]\n";
+        let material = "fn material(input: MaterialInput) -> Surface {\n    \
+                let hit = trace(input.position, input.normal, 16.0);\n    \
+                let maps = hit_normal_map(hit) * hit_specular_map(hit).r * hit.emission;\n    \
+                return Surface(input.albedo * f32(hit.distance < 0.0) + maps * hit.tangent);\n}\n\
+            fn displacement(input: DisplacementInput) -> f32 { return 0.0; }\n";
+        let vertex = "fn vertex(input: VertexInput) -> vec3<f32> { return input.position; }\n";
+        let files = [
+            (MANIFEST, manifest),
+            ("material.wgsl", material),
+            ("vertex.wgsl", vertex),
+        ]
+        .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+        .into();
+        let report = check(&Pack::from_files(files).unwrap()).unwrap();
+        let stage = report
+            .stages
+            .iter()
+            .find(|s| s.kind == StageKind::Material)
+            .unwrap();
+        let source = (stage.scene_source.as_deref().unwrap(), stage.file.as_str());
+        let module = module(source, &[], &[], true, true, (Api::V0_2, false)).unwrap();
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+        let scene: Vec<_> = (module.global_variables.iter())
+            .filter(|(_, g)| {
+                (g.binding.as_ref())
+                    .is_some_and(|b| b.group == GROUP && b.binding >= RAY_SCENE_BINDING)
+            })
+            .map(|(handle, _)| handle)
+            .collect();
+        assert_eq!(scene.len(), 12);
+        for (i, entry) in module.entry_points.iter().enumerate() {
+            let reads = scene
+                .iter()
+                .any(|&g| !info.get_entry_point(i)[g].is_empty());
+            // The material's fragment entries; no vertex entry, and none of terrain.wgsl's own,
+            // copied with its section, which don't call `material`.
+            let material = entry.name.starts_with("horizon_material_fs");
+            assert_eq!(reads, material, "{}", entry.name);
+        }
+        let fragments = module
+            .entry_points
+            .iter()
+            .filter(|e| e.name.starts_with("horizon_material_fs"));
+        assert_eq!(fragments.count(), 3);
     }
 
     #[test]
@@ -774,7 +917,15 @@ mod tests {
         let mut report = check(&Pack::from_files(files).unwrap()).unwrap();
         let stage = report.stages.remove(0);
         let materials = [(5, 1000)];
-        let module = module(&stage, &[], &materials, false, true, (Api::V0_1, false)).unwrap();
+        let module = module(
+            (&stage.source, &stage.file),
+            &[],
+            &materials,
+            false,
+            true,
+            (Api::V0_1, false),
+        )
+        .unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),

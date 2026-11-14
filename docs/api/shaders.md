@@ -90,7 +90,7 @@ min = 0.0
 max = 2.0
 step = 0.05
 
-[[materials]]              # 1024 at most: MaterialInput.material, the first entry that matches
+[[materials]]              # 1024 at most: MaterialInput.material (and RayHit.material), the first entry that matches
 id = 10                    # 1 to 65535; 0 is a sprite no entry names
 sprites = ["block/*_leaves"]   # sprite names, any number of * each
 blocks = ["oak_log", "grass_block:snowy=true"]   # optional: the sprites these blocks' models draw with, where no entry's sprites name them
@@ -123,7 +123,7 @@ particles = ["firefly"]    # names, `firefly` or `minecraft:firefly`; the first 
 color = [0.8, 0.9, 0.4]    # each channel 0 to 1; the particle's alpha is its intensity
 reach = 4.0                # blocks, 0.25 to 16; the 16 nearest lights shine, read by MaterialInput.colored_light
 
-[[tags]]                   # 32 at most: bit i of MaterialInput.tags is the i-th tag
+[[tags]]                   # 32 at most: bit i of MaterialInput.tags (and RayHit.tags) is the i-th tag
 id = "glass"
 sprites = ["block/glass", "block/*_stained_glass"]   # sprite names, at most one * each
 
@@ -209,10 +209,14 @@ file = "entity.wgsl"
 [frame]
 blend = "gamma"            # optional: gamma (default) or linear
 primaries = "bt709"        # optional: bt709 (default) or bt2020, which needs blend = "linear"
+
+[ray_tracing]              # optional, needs [[post]] or [material], no keys: the post stage gets `trace` and `trace_any`, the material stage where it calls them
 ```
 
-0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]`, `[entity]` or
-`[frame]` is refused. The example's port is `crates/horizon-shader-api/packs/golden_hour_0_2`, a test pack of the SDK.
+0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]`, `[entity]`,
+`[frame]` or `[ray_tracing]` is refused. The example's port is `crates/horizon-shader-api/packs/golden_hour_0_2`, a
+test pack of the SDK, and `packs/traced_shadows` and `packs/traced_water` beside it are the smallest packs that trace
+rays, from a post pass and from the material stage ([the guide](../shaders.md#ray-tracing)).
 
 ## Testing a pack frame by frame
 
@@ -246,6 +250,41 @@ draws them itself (the material stage covers terrain only). The first-person han
 
 ## Changelog
 
+- 2026-11-13: API 0.2 (additions, experimental, not run yet): kept resources (#16011 item 4). `[[resource]]`
+  declares a buffer (`buffer` bytes of an `element`: `u32`, `atomic<u32>`, `f32`, `vec4<u32>` or `vec4<f32>`) or a
+  texture (`format`: `rgba16float`, `r32float` or `rgba32float`; a fixed `size` or a `scale` of the render size) a
+  pack keeps between frames, `keep = "view"` or `"world"`, the latter fixed in size and with `[kept] reach`. A
+  `[[post]] output` may name a kept texture; an option may say what it `resets`. `horizon-shader check` takes them,
+  with their names, counts and memory checked (at most 8 resources, 32 MiB of buffers, 1 MiB of fixed textures, and
+  R-relative textures two each of the 4 post targets); the game refuses a pack that declares one until a later
+  Horizon runs them. Compute passes and the WGSL that reads the resources come next.
+- 2026-11-13: API 0.2 (additions, experimental): under `[ray_tracing]` the scene holds translucent terrain (water,
+  stained glass, ice) in a second layer. Where `trace` is, the prelude gets
+  `fn trace_layers(origin, direction, max_distance, layers) -> RayHit`, `fn trace_any_layers(...) -> bool` and the
+  constants `RAY_SOLID` and `RAY_TRANSLUCENT` to name the layers with; `trace` and `trace_any` keep reading solid
+  terrain alone, so a picture made with them doesn't change. A hit in the translucent layer has `translucent` true
+  and `fluid` 1 on water; a ray stops there at any texel but a clear one (alpha below 0.01), as the translucent pass
+  draws. The check refuses a pack's own function, constant or post `output` by the four names there, and a
+  `displacement` or `vertex` that reaches the new functions, as `trace`'s. Packs without `[ray_tracing]` are built
+  from the same WGSL as before, a test holds.
+- 2026-11-13: API 0.2 (additions, experimental): under `[ray_tracing]` `RayHit` gains `emission`, `fluid`,
+  `translucent` (false for every hit: the scene holds no translucent terrain yet) and `tangent`, as `MaterialInput` has
+  them, and `horizon_sprite`, Horizon's own. Where `trace` is, the prelude gets `hit_normal_map(hit)` and
+  `hit_specular_map(hit)`, the resource packs' LabPBR maps at a hit, and a traced post stage gets `block_pbr_maps()`;
+  the check refuses a pack's own function or post `output` by those names there, as `trace`'s. Packs without
+  `[ray_tracing]` are built from the same WGSL as before, a test holds.
+- 2026-11-13: API 0.2 (additions, experimental): under `[ray_tracing]` the material stage gets `RayHit`, `trace` and
+  `trace_any` too, the post stage's own, where its files name either function; a material stage that names neither is
+  built from the same WGSL as before, a test holds. `[ray_tracing]` needs a `[[post]]` pass or a `[material]` stage.
+  `horizon-shader check` builds such a material stage both ways and refuses a pack whose `displacement` or `vertex`
+  (both run in vertex shaders) reaches `trace` or `trace_any`.
+- 2026-11-12: API 0.2 (additions, experimental): `[ray_tracing]`: the post stage of a pack that sets it gets
+  `fn trace(origin, direction, max_distance) -> RayHit` and `fn trace_any(...) -> bool`, which read the terrain around
+  the camera where the game traces rays (`HORIZON_RAY_TRACING=1` on a GPU with ray queries) and miss where it doesn't,
+  and its `Frame` gets `has_ray_tracing` and `ray_distance`, in what was a gap before `luminance`. `horizon-shader
+  check` builds such a post stage both ways and refuses a pack that names a ray query itself. `[[tags]]` and
+  `[[materials]]` need no `[material]` stage in such a pack: `RayHit.tags` and `RayHit.material` read them. A pack
+  without the key is built from the same WGSL as before, a test holds; API 0.1 is unchanged.
 - 2026-11-10: API 0.2 (additions, experimental): the `[entity]` stage, `fn entity(input: EntityInput) -> Surface`,
   for entities, block entities, items and particles, with the material stage's shadow maps and coloured lights. The
   reference gives vanilla's own as the stage's function. `horizon-shader check` takes it; the game refuses a pack
