@@ -35,6 +35,17 @@ enum NovaGameFiles {
         return folder.appendingPathComponent("Resources", isDirectory: true)
     }
 
+    /// Game saves/config/logs stay separate from prepared resource files.
+    static func gameDirectory() throws -> URL {
+        let support = try manager.url(for: .applicationSupportDirectory,
+                                      in: .userDomainMask,
+                                      appropriateFor: nil,
+                                      create: true)
+        let home = support.appendingPathComponent("Nova/Game", isDirectory: true)
+        try manager.createDirectory(at: home, withIntermediateDirectories: true)
+        return home
+    }
+
     static func stagedArchiveName() -> String? {
         guard let archive = try? storedArchiveURL() else { return nil }
         return archive.lastPathComponent

@@ -64,3 +64,54 @@ pub extern "C" fn horizon_ios_has_metal_view() -> bool {
 
 #[path = "../../AssetImporter/src/ffi_adapter.rs"]
 mod nova_asset_ffi;
+
+/// This MUST be called once, from the main thread, before UIKit has started.
+/// The original Horizon client's winit event loop owns UIApplicationMain.
+/// Returns an error only if required private directories are unavailable or
+/// if the game exits its application loop unexpectedly.
+///
+/// This integration route is an on-device experiment until native startup,
+/// lifecycle events, audio, and Metal are verified.
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_start_original_game(
+    resources: *const std::ffi::c_char,
+    home: *const std::ffi::c_char,
+) -> i32 {
+    use std::{env, ffi::CStr, path::PathBuf};
+
+    fn parse(ptr: *const std::ffi::c_char) -> Option<PathBuf> {
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: Nova's Swift bridge sends a valid NUL-terminated C string
+        // alive for the complete duration of this call.
+        let text = unsafe { CStr::from_ptr(ptr) }.to_str().ok()?;
+        if text.is_empty() {
+            return None;
+        }
+        Some(PathBuf::from(text))
+    }
+
+    let (Some(resources), Some(home)) = (parse(resources), parse(home)) else {
+        return -2;
+    };
+    if !resources.join("horizon-resources.json").is_file()
+        || !resources.join("assets/minecraft").is_dir() {
+        return -3;
+    }
+    if std::fs::create_dir_all(&home).is_err()
+        || env::set_current_dir(&home).is_err() {
+        return -4;
+    }
+
+    // SAFETY: the process is in its single-threaded startup stage: before the
+    // game's workers, SwiftUI or the winit UIApplication delegate are created.
+    unsafe {
+        env::set_var("NOVA_IOS_RESOURCES", &resources);
+        env::set_var("HORIZON_HOME", &home);
+    }
+    // Continue with the ORIGINAL official Horizon startup and its winit loop.
+    // This function normally never returns on iOS.
+    horizon_ios_original_game_entry();
+    0
+}

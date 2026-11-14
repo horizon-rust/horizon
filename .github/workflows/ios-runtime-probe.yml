@@ -97,6 +97,24 @@ jobs:
 
 
 
+      - name: Apply iOS-only private resources root override
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("crates/horizon-client/src/game/launch_options.rs")
+          source = path.read_text()
+          old = '            resources: if sibling.join("horizon-resources.json").exists() {'
+          new = '''            resources: if cfg!(target_os = "ios") {
+                std::env::var_os("NOVA_IOS_RESOURCES")
+                    .map(PathBuf::from)
+                    .filter(|root| root.join("horizon-resources.json").is_file())
+                    .ok_or("Nova: prepared resources not found in the app container")?
+            } else if sibling.join("horizon-resources.json").exists() {'''
+          assert source.count(old) == 1, "Upstream resource path parser changed"
+          path.write_text(source.replace(old, new, 1))
+          PY
+          git diff -- crates/horizon-client/src/game/launch_options.rs
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
         run: |

@@ -254,3 +254,22 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
 - The stub-host workflow uploads artifact nova-host; the original-game-linked
   integration workflow uploads artifact nova. This distinguishes the two
   outputs while keeping the IPA filename identical. Main remains unchanged.
+
+2026-11-14: SINGLE-UIAPPLICATION COLD-START ENGINE EXPERIMENT
+- NovaEntryPoint.swift is now the sole @main entry (HorizonIOSApp is no
+  longer @main). On ordinary launch it calls HorizonIOSApp.main() and retains
+  SwiftUI resource import and Metal diagnostic UI. If a one-shot UserDefaults
+  key was set by "Try Horizon (next launch)" and private resources exist,
+  it instead calls horizon_ios_start_original_game from the main thread.
+- Full-game Rust integration chooses game root in Application Support/Nova/Game
+  and prepared assets in Application Support/Nova/Resources. Only the runner
+  checkout of Horizon's launch_options.rs changes to read NOVA_IOS_RESOURCES.
+- Rust startup calls the ORIGINAL horizon_official::register() and
+  horizon_game::main(), which owns the winit UIApplicationMain event loop.
+- The marker clears before starting, avoiding crash/relaunch loops.
+- IMPORTANT: iOS has one UIApplicationMain per process. Winit run_app may
+  not be called from a SwiftUI button; hence current experiment requires
+  closing and reopening Nova between importing and starting the game.
+- Compile and native link do not prove running on real hardware. Need an
+  installable signed build and actual iPhone/iPad test to prove menu rendering,
+  Metal surface, file paths, audio, touch controls and app lifecycle.

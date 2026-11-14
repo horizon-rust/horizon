@@ -13,7 +13,13 @@ struct LauncherView: View {
     @State private var prepareInProgress = false
     @State private var resourcesInstalled = NovaGameFiles.resourcesPresent()
 
-    private let gameAvailable = horizon_ios_game_is_ready()
+    @State private var nextBootMessage: String?
+
+    // This does NOT mean Horizon's rendering has been tested on-device.
+    // It only enables a one-shot cold-start experiment for integrated builds.
+    private var canTestHorizonBoot: Bool {
+        resourcesInstalled && horizon_ios_host_api_version() >= 2
+    }
 
     var body: some View {
         ZStack {
@@ -31,21 +37,26 @@ struct LauncherView: View {
                         .font(.headline)
                         .foregroundStyle(.white.opacity(0.75))
 
-                    Button("Play") {
-                        // Guarded even if the UI state somehow gets out of sync.
-                        guard horizon_ios_game_is_ready() else { return }
-                        _ = horizon_ios_launch_game()
+                    Button("Try Horizon (next launch)") {
+                        // A second UIApplicationMain inside SwiftUI is illegal.
+                        // Save a one-shot request and show explicit restart steps.
+                        UserDefaults.standard.set(true, forKey: "nova.launchHorizonOnce")
+                        nextBootMessage = "Close Nova completely using the app switcher, then reopen it to test the original Horizon game. The launcher will open again on the following launch."
                     }
                     .font(.headline)
                     .frame(minWidth: 180, minHeight: 48)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!gameAvailable)
-                    .accessibilityHint(gameAvailable
-                        ? "Launch the original Horizon game"
-                        : "The iOS game event loop is not integrated yet")
+                    .disabled(!canTestHorizonBoot)
+                    .accessibilityHint("Start Horizon's winit lifecycle on the next app launch, after closing Nova")
 
-                    if !gameAvailable {
-                        Text("Nova host and original Horizon library are linked. Game startup and Metal window integration are still in development.")
+                    if let nextBootMessage {
+                        Text(nextBootMessage)
+                            .foregroundStyle(.orange)
+                            .multilineTextAlignment(.center)
+                    } else {
+                        Text(canTestHorizonBoot
+                             ? "Resources installed. The experimental game entry runs on the next cold launch, not inside the existing SwiftUI lifecycle."
+                             : "Prepare your game files to enable the experimental Horizon startup test. The full game build is required.")
                             .foregroundStyle(.white.opacity(0.75))
                             .multilineTextAlignment(.center)
                     }

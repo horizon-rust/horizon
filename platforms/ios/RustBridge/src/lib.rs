@@ -57,3 +57,12 @@ mod metal_tests {
 
 #[path = "../../AssetImporter/src/ffi_adapter.rs"]
 mod nova_asset_ffi;
+
+/// Lightweight launcher builds cannot start the game; return control to SwiftUI.
+#[no_mangle]
+pub extern "C" fn horizon_ios_start_original_game(
+    _resources: *const std::ffi::c_char,
+    _home: *const std::ffi::c_char,
+) -> i32 {
+    -1
+}

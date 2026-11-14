@@ -95,3 +95,33 @@ original winit/Metal lifecycle must still be connected.
 
 **No game assets or downloaded ZIPs are committed or distributed.** Both IPA
 build workflows check the final archive file listing to reject bundled assets.
+
+## Single-lifecycle iOS game startup experiment
+
+The integrated game-linked Nova app now has a **cold-start experiment**, not
+a normal in-app Play transition. Because winit 0.30 on iOS runs
+`UIApplicationMain`, it cannot start after SwiftUI has already initialized
+UIKit. Nova has a single entrypoint (`NovaEntryPoint`) which chooses ONE:
+
+1. Normal SwiftUI Nova launcher; prepare the player's own game assets locally.
+2. If the user explicitly tapped "Try Horizon (next launch)" and then fully
+   terminates and reopens Nova, run the ORIGINAL official Horizon client from
+   the process main thread. That process is owned by winit, not SwiftUI.
+
+The one-shot boot marker is cleared BEFORE the game starts, so a startup crash
+doesn't leave Nova in an endless game-boot loop. Launcher-only builds ignore
+this mode. Game-linked builds use a private resources path from
+`Application Support/Nova/Resources` and game home from
+`Application Support/Nova/Game`.
+
+Only the CI checkout of `crates/horizon-client/src/game/launch_options.rs`
+is patched to allow the iOS resource root to be provided through the private
+`NOVA_IOS_RESOURCES` environment variable. No upstream gameplay source is
+committed or permanently changed.
+
+**Status:** Startup compiles only until device verification. Winit lifecycle,
+Metal menu rendering, iOS audio, sandbox filesystem, backgrounding and input
+may still fail. This is NOT a playable or device-verified build. The regular
+Nova launcher still works, but there is no hot-switch back to it during a
+winit-owned session. A later version should support a clean single-lifecycle
+launcher-to-game handoff without relaunching.
