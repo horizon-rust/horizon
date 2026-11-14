@@ -488,6 +488,8 @@ pub struct Post {
     pub sky: Option<PostProgram>,
     /// What draws the sun and moon, between the sunset and the stars.
     pub sky_textured: Option<PostProgram>,
+    /// Independent requests for the sky disc, stars, sun and moon geometry.
+    pub sky_visibility: crate::SkyVisibility,
     /// What draws entities, after terrain.
     pub entities: Option<PostProgram>,
     /// What draws block entities, after terrain.
@@ -736,6 +738,7 @@ pub fn load_post(
         water_undrawn: false,
         sky: None,
         sky_textured: None,
+        sky_visibility: crate::SkyVisibility::parse(properties),
         entities: None,
         block: None,
         block_translucent: None,

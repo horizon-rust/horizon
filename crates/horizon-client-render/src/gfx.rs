@@ -9824,6 +9824,14 @@ impl Renderer {
                 .as_ref()
                 .and_then(|p| p.1.as_ref())
                 .is_some_and(|p| p.has_sky());
+        let pack_sky_visibility = self
+            .pack_post
+            .as_ref()
+            .filter(|_| pack_post)
+            .and_then(|p| p.1.as_ref())
+            .map_or_else(horizon_shaders::SkyVisibility::default, |p| {
+                p.sky_visibility()
+            });
         let pack_draws_celestial = pack_post
             && self
                 .pack_post
@@ -10364,14 +10372,16 @@ impl Renderer {
                     {
                         Some((sky, native)) => sky.draw(&mut pass, native),
                         None => {
-                            match self.core_sky.as_ref().filter(|c| c.draws_disc()) {
-                                Some(core) => {
-                                    core.draw_disc(&mut pass);
-                                    pass.set_bind_group(0, &self.group, &[]);
-                                }
-                                None => {
-                                    pass.set_pipeline(&self.sky_base);
-                                    pass.draw(0..3, 0..1);
+                            if pack_sky_visibility.sky {
+                                match self.core_sky.as_ref().filter(|c| c.draws_disc()) {
+                                    Some(core) => {
+                                        core.draw_disc(&mut pass);
+                                        pass.set_bind_group(0, &self.group, &[]);
+                                    }
+                                    None => {
+                                        pass.set_pipeline(&self.sky_base);
+                                        pass.draw(0..3, 0..1);
+                                    }
                                 }
                             }
                             if frame.sky.sunrise_color[3] > 0.001 {
@@ -10413,9 +10423,15 @@ impl Renderer {
                                 .native
                                 .as_ref()
                                 .is_some_and(|n| n.sky.is_some() && !n.vanilla_sun);
-                        let first = if own_sun { 6 } else { 0 };
                         pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
-                        pass.draw_indexed(first..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
+                        for range in pack_sky::celestial_ranges(
+                            celestial_vertices as u32,
+                            frame.end_sky,
+                            own_sun,
+                            pack_sky_visibility,
+                        ) {
+                            pass.draw_indexed(range, 0, 0..1);
+                        }
                     }
                     pass.set_bind_group(0, &self.group, &[]);
                 }
@@ -10423,7 +10439,12 @@ impl Renderer {
                     .native
                     .as_ref()
                     .is_some_and(|n| n.sky.is_some() && !n.vanilla_stars);
-                if !frame.title && frame.stars.is_some() && !pack_draws_sky && !own_stars {
+                if !frame.title
+                    && frame.stars.is_some()
+                    && !pack_draws_sky
+                    && !own_stars
+                    && pack_sky_visibility.stars
+                {
                     match self.core_sky.as_ref().filter(|c| c.draws_stars()) {
                         Some(core) => core.draw_stars(&mut pass),
                         None => self.stars.draw(&mut pass),

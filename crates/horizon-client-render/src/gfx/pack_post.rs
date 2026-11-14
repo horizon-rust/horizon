@@ -644,6 +644,7 @@ pub struct PackPost {
     /// program: vanilla's stays hidden even when the program writes nothing.
     hides_sky: bool,
     hides_celestial: bool,
+    sky_visibility: horizon_shaders::SkyVisibility,
     /// `colortex0ClearColor`, when the pack sets it.
     sky_clear: Option<[f32; 4]>,
     /// What draws rain and snow (the same program, each with its kind's sprite as `texture`),
@@ -3291,6 +3292,7 @@ impl PackPost {
             hides_clouds,
             hides_sky,
             hides_celestial,
+            sky_visibility: post.sky_visibility,
             sky_clear,
             weather,
             weather_draw: None,
@@ -3976,9 +3978,12 @@ impl PackPost {
         let Some(mut sky) = self.sky.take() else {
             return;
         };
-        let parts = sky
-            .geometry
-            .prepare(queue, frame, self.uniforms.shadow.sun_path_rotation);
+        let parts = sky.geometry.prepare(
+            queue,
+            frame,
+            self.uniforms.shadow.sun_path_rotation,
+            self.sky_visibility,
+        );
         let mut groups = [None, None];
         for (i, pass) in [&mut sky.basic, &mut sky.textured].into_iter().enumerate() {
             if let Some(pass) = pass {
@@ -4730,6 +4735,10 @@ impl PackPost {
     /// Whether the pack has a sky program, drawing or not: vanilla's sky is then not drawn.
     pub fn has_sky(&self) -> bool {
         self.hides_sky
+    }
+
+    pub fn sky_visibility(&self) -> horizon_shaders::SkyVisibility {
+        self.sky_visibility
     }
 
     /// Whether the pack has the sun and moon's program, drawing or not.
@@ -6490,6 +6499,10 @@ mod mipmap_box_tests;
 
 #[cfg(test)]
 mod colortex_mip_blend_tests;
+
+#[cfg(test)]
+#[path = "pack_sky_visibility_tests.rs"]
+mod sky_visibility_tests;
 
 #[cfg(test)]
 mod material_route_tests;
