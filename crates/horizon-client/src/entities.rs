@@ -341,8 +341,12 @@ impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for Ite
 pub struct ItemEnvironmentTick {
     pub alive: bool,
     pub lava_hurt: bool,
-    /// The `entity_damage` events its hits post (`ItemEntity.java:302`).
+    /// The `entity_damage` events its block hits post at its own position
+    /// (`ItemEntity.java:302`).
     pub damage_events: u32,
+    /// The `entity_damage` of `Entity.baseTick`'s burning, posted where the
+    /// tick started from: it runs before `Entity.move`.
+    pub burning_events: u32,
     /// `ItemStack.onDestroyed` of the damage that emptied the health: the
     /// stacks the destroyed item left, which `ItemUtils.onContainerDestroyed`
     /// adds to the level where it lay.
@@ -502,7 +506,7 @@ impl ItemEntity {
                 && fluid != Fluid::Lava
                 && !items.resists_fire(&self.stack, "minecraft:on_fire")
             {
-                hits.hit(self, 1);
+                hits.burning(self, 1);
             }
             self.fire_ticks -= 1;
         }
@@ -545,6 +549,7 @@ impl ItemEntity {
             lava_hurt,
             spilled: hits.spilled,
             damage_events: hits.events,
+            burning_events: hits.burning_events,
         }
     }
     /// `ItemEntity.hurtServer`'s health: `amount` off the health, and an item

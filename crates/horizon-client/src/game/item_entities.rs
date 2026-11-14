@@ -191,10 +191,16 @@ impl Game<'_> {
             );
             // `ItemEntity.hurtServer` posts `entity_damage` at the item's own
             // position for every hit it takes, before the hit that destroys it
-            // spills its contents (`ItemEntity.java:302`).
-            if environment.damage_events > 0 {
-                let at = [item.position.x, item.position.y, item.position.z];
+            // spills its contents (`ItemEntity.java:302`); `Entity.baseTick`'s
+            // burning, which runs before the move, posts where the tick started.
+            if environment.damage_events > 0 || environment.burning_events > 0 {
+                self.sculk_prepare();
                 let context = self.who_context(None, None);
+                let start = [item.previous.x, item.previous.y, item.previous.z];
+                for _ in 0..environment.burning_events {
+                    self.post_game_event("minecraft:entity_damage", start, context);
+                }
+                let at = [item.position.x, item.position.y, item.position.z];
                 for _ in 0..environment.damage_events {
                     self.post_game_event("minecraft:entity_damage", at, context);
                 }
