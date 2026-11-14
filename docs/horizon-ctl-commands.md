@@ -3,6 +3,8 @@
 
 Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launcher's `horizon-launcher mcp` offers the same tools as `game_<tool>`, all but `launch`) and its arguments. Positional arguments come first, in order; `--flags` after them. `horizon-ctl help --game` lists the game's own commands, test hooks included. Design rules and the full inventory: [agent-control.md](agent-control.md).
 
+Commands of the crates above the engine are not in this table: the running game describes them in `hello` (`commands`), and `horizon-ctl help`, `horizon-ctl COMMAND --help` and the MCP tool list add them while a game that has the crate answers. The official build's `friends host|stop|status` (Play with Friends, MCP tool `friends`, network) is one; a game without that crate answers `unknown command`.
+
 ## Session
 
 | Command | MCP tool | What it does | Arguments |
@@ -115,7 +117,6 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `disconnect` | `disconnect` | Leave the server, back to the server list | none |
 | `servers` | `servers` | The Multiplayer screen's server list: name and address | none |
 | `lan open [PORT] [commands] [force] \| lan close \| lan status` | `lan` (network) | Open the world to LAN (Open to LAN), stop, or see the guests | `action` (open, close, status, required): what to do<br>`port` (integer): port for open<br>`commands` (boolean): allow cheats<br>`force` (boolean): force the game mode |
-| `friends host\|stop\|status` | `friends` (network) | Play with Friends: share the open world behind an invite code, stop, or see who joined | `action` (host, stop, status, required): what to do |
 
 ## World and cheats
 
@@ -200,3 +201,4 @@ The reply fields of the commands described so far (more follow, a group at a tim
 | `protocol` | string | the control protocol, MAJOR.MINOR.PATCH (docs/api/stability.md) |
 | `release` | string | the game's version (MCP serverInfo carries the same string) |
 | `features` | array | the command groups the game answers, each a string |
+| `commands` | array | the commands of the crates above the engine that this game has, each an object: name, usage, summary, details, examples, params (name, type, values, required, flag, help), mcp, open_world |

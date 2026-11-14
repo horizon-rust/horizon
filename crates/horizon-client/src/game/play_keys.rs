@@ -80,7 +80,7 @@ impl Game<'_> {
                         self.death_confirm_answer(false)?;
                     }
                 }
-                Screen::Stats | Screen::Friends => self.screen = Screen::Paused,
+                Screen::Stats | Screen::AddedPage => self.screen = Screen::Paused,
                 Screen::Social => self.close_social(),
                 Screen::ServerLinks => self.screen = Screen::Paused,
                 // ConfirmScreen.keyPressed: Escape answers no; both return to

@@ -35,6 +35,9 @@ pub enum Group {
     Multiplayer,
     World,
     Scripting,
+    /// A command of a crate above the engine, described by the running game's `hello`
+    /// (`from_hello`): not in the table, so not in `ALL`.
+    Crate,
 }
 impl Group {
     pub const ALL: [Group; 8] = [
@@ -57,6 +60,7 @@ impl Group {
             Group::Multiplayer => "Multiplayer, LAN and friends",
             Group::World => "World and cheats",
             Group::Scripting => "Scripting and benchmarks",
+            Group::Crate => "From the running game (its crates' commands)",
         }
     }
 }
@@ -90,6 +94,11 @@ const HELLO_REPLY: &[Field] = &[
         "features",
         "array",
         "the command groups the game answers, each a string",
+    ),
+    f(
+        "commands",
+        "array",
+        "the commands of the crates above the engine that this game has, each an object: name, usage, summary, details, examples, params (name, type, values, required, flag, help), mcp, open_world",
     ),
 ];
 
@@ -193,6 +202,9 @@ pub struct Cmd {
     pub local: bool,
     /// The reply's fields; empty until the command's reply is described (`REPLY_GROUP`).
     pub reply: &'static [Field],
+    /// Reaches other players or the network, said by the game for a crate's command
+    /// (`from_hello`); the table's own are listed in `OPEN_WORLD`.
+    pub open_world: bool,
 }
 
 const fn p(name: &'static str, ty: Ty, help: &'static str) -> Param {
@@ -283,7 +295,13 @@ const CONFIRM: Param = Param {
 /// MCP tools that delete or overwrite the player's things (`destructiveHint`).
 pub const DESTRUCTIVE: &[&str] = &["world-delete", "fill", "setblock"];
 /// MCP tools that reach other players or the network (`openWorldHint`): only when the player asks.
-pub const OPEN_WORLD: &[&str] = &["connect", "lan", "friends", "chat", "command"];
+pub const OPEN_WORLD: &[&str] = &["connect", "lan", "chat", "command"];
+
+/// Whether a command reaches other players or the network: the table's list, or what the game
+/// said of a crate's command.
+pub fn open_world(c: &Cmd) -> bool {
+    c.open_world || OPEN_WORLD.contains(&c.name)
+}
 
 macro_rules! cmd {
     ($name:expr, $group:ident, $usage:expr, $summary:expr, $details:expr, [$($ex:expr),* $(,)?], $params:expr, mcp: $mcp:expr, local: $local:expr, reply: $reply:expr) => {
@@ -305,6 +323,7 @@ macro_rules! cmd {
             mcp: $mcp,
             local: $local,
             reply: &[],
+            open_world: false,
         }
     };
     (@wire) => { None };
@@ -344,7 +363,7 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("status", Session, "status", "game, renderer and streaming state (the scripting socket's original summary)",
         "Also what F3 shows: the overlay flags, the renderer, chunk streaming and memory.", ["horizon-ctl status"], &[], mcp: true, local: false, reply: STATUS_REPLY),
     cmd!("hello", Session, "hello", "the control protocol's version, the game's release and the command groups it serves",
-        "Replies protocol (MAJOR.MINOR.PATCH of the control protocol, docs/api/stability.md), release (the game's version, the string MCP serverInfo carries too) and features (the command groups the game answers, so a script can test for one before calling it).",
+        "Replies protocol (MAJOR.MINOR.PATCH of the control protocol, docs/api/stability.md), release (the game's version, the string MCP serverInfo carries too), features (the command groups the game answers, so a script can test for one before calling it) and commands (the commands of the crates above the engine that this game has, which horizon-ctl adds to its help and its MCP tools).",
         ["horizon-ctl hello"], &[], mcp: true, local: false, reply: HELLO_REPLY),
     cmd!("memory", Session, "memory", "what holds the game's memory: resident set, allocator, client and server columns by part, renderer, GPU memory by resource",
         "Columns count blocks, biomes, light, heightmaps and records, each shared section once; server_columns are the single-player server thread's own levels. GPU memory by label needs Vulkan or DirectX 12. What the census doesn't reach is the resident set less its parts. A build with the alloc-census feature adds heap_by_tag_mb: the live heap by startup step, timed span, chunk job and thread.", ["horizon-ctl memory"], &[], mcp: true, local: false),
@@ -552,9 +571,6 @@ pub const COMMANDS: &[Cmd] = &[
         "PORT 0 or none picks one; commands lets guests use cheats; force forces the game mode. Only when the player asks.",
         ["horizon-ctl lan open", "horizon-ctl lan status", "horizon-ctl lan close"],
         &[p("action", Ty::Enum(&["open", "close", "status"]), "what to do"), opt("port", Ty::Int, "port for open"), opt("commands", Ty::Bool, "allow cheats"), opt("force", Ty::Bool, "force the game mode")], mcp: true, local: false),
-    cmd!("friends", Multiplayer, "friends host|stop|status", "Play with Friends: share the open world behind an invite code, stop, or see who joined",
-        "status gives the code: share it only when the player asks. Friends join with connect friend:CODE.",
-        ["horizon-ctl friends host", "horizon-ctl friends status"], &[p("action", Ty::Enum(&["host", "stop", "status"]), "what to do")], mcp: true, local: false),
     // World
     cmd!("give", World, "give ITEM [COUNT]", "add items to the inventory", "", ["horizon-ctl give oak_log 16"],
         &[p("item", Ty::Str, "item id"), opt("count", Ty::Int, "how many (default 1)")], mcp: true, local: false),
@@ -636,6 +652,109 @@ pub const COMMANDS: &[Cmd] = &[
 
 pub fn find(name: &str) -> Option<&'static Cmd> {
     COMMANDS.iter().find(|c| c.name == name)
+}
+
+/// The commands a game's `hello` describes (`commands`): those of the crates above the engine
+/// that this game has, such as Play with Friends' `friends` in the official build. A game that
+/// sends none (an older one, or one without such a crate) gives none. An entry that is not a
+/// usable command (no name, a name the table already has, a parameter of an unknown type) is
+/// left out: the game still answers it by name, without help or an MCP tool.
+///
+/// The table's commands are `&'static`, so these are leaked to match: a few short strings per
+/// game, and `Session` asks again only when the game's `hello` changes.
+pub fn from_hello(hello: &Value) -> Vec<&'static Cmd> {
+    let text = |v: &Value, key: &str| -> Option<&'static str> {
+        v.get(key)
+            .and_then(Value::as_str)
+            .map(|s| &*Box::leak(s.to_owned().into_boxed_str()))
+    };
+    let texts = |v: &Value, key: &str| -> Option<&'static [&'static str]> {
+        let list: Option<Vec<&'static str>> = match v.get(key) {
+            None => Some(Vec::new()),
+            Some(list) => list
+                .as_array()?
+                .iter()
+                .map(|s| {
+                    s.as_str()
+                        .map(|s| &*Box::leak(s.to_owned().into_boxed_str()))
+                })
+                .collect(),
+        };
+        list.map(|list| &*Box::leak(list.into_boxed_slice()))
+    };
+    let on = |v: &Value, key: &str| v.get(key).and_then(Value::as_bool).unwrap_or(false);
+    let param = |v: &Value| -> Option<Param> {
+        let ty = match v.get("type").and_then(Value::as_str)? {
+            "int" => Ty::Int,
+            "num" => Ty::Num,
+            "str" => Ty::Str,
+            "bool" => Ty::Bool,
+            "rest" => Ty::Rest,
+            "enum" => Ty::Enum(texts(v, "values").filter(|values| !values.is_empty())?),
+            _ => return None,
+        };
+        Some(Param {
+            name: text(v, "name").filter(|name| !name.is_empty())?,
+            ty,
+            required: on(v, "required"),
+            flag: on(v, "flag"),
+            help: text(v, "help").unwrap_or(""),
+        })
+    };
+    let command = |v: &Value| -> Option<&'static Cmd> {
+        let name = text(v, "name")?;
+        let word = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        // `help` and `mcp` are horizon-ctl's own words, taken before any command.
+        if !word || find(name).is_some() || matches!(name, "help" | "mcp") {
+            return None;
+        }
+        let params: Vec<Param> = match v.get("params") {
+            None => Vec::new(),
+            Some(list) => list.as_array()?.iter().map(param).collect::<Option<_>>()?,
+        };
+        Some(Box::leak(Box::new(Cmd {
+            name,
+            wire: None,
+            group: Group::Crate,
+            usage: text(v, "usage").unwrap_or(name),
+            summary: text(v, "summary").unwrap_or(""),
+            details: text(v, "details").unwrap_or(""),
+            examples: texts(v, "examples")?,
+            params: Box::leak(params.into_boxed_slice()),
+            mcp: on(v, "mcp"),
+            local: false,
+            reply: &[],
+            open_world: on(v, "open_world"),
+        })))
+    };
+    let mut found: Vec<&'static Cmd> = Vec::new();
+    for entry in hello
+        .get("commands")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice)
+    {
+        if let Some(cmd) = command(entry)
+            && !found.iter().any(|c| c.name == cmd.name)
+        {
+            found.push(cmd);
+        }
+    }
+    found
+}
+
+/// The part of `horizon-ctl help` that lists a running game's crate commands; empty with none.
+pub fn crate_overview(crates: &[&Cmd]) -> String {
+    if crates.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("\n{}:\n", Group::Crate.title());
+    for c in crates {
+        out.push_str(&format!("  {:<16} {}\n", c.name, c.summary));
+    }
+    out
 }
 
 /// `horizon-ctl help`.
@@ -730,7 +849,12 @@ pub fn markdown() -> String {
          `horizon-launcher mcp` offers the same tools as `game_<tool>`, all but `launch`) and its \
          arguments. Positional arguments come first, in order; `--flags` after them. \
          `horizon-ctl help --game` lists the game's own commands, test hooks included. \
-         Design rules and the full inventory: [agent-control.md](agent-control.md).\n",
+         Design rules and the full inventory: [agent-control.md](agent-control.md).\n\n\
+         Commands of the crates above the engine are not in this table: the running game describes \
+         them in `hello` (`commands`), and `horizon-ctl help`, `horizon-ctl COMMAND --help` and the \
+         MCP tool list add them while a game that has the crate answers. The official build's \
+         `friends host|stop|status` (Play with Friends, MCP tool `friends`, network) is one; a game \
+         without that crate answers `unknown command`.\n",
     );
     for group in Group::ALL {
         out.push_str(&format!(
@@ -742,7 +866,7 @@ pub fn markdown() -> String {
                 let mut t = format!("`{}`", tool_name(c));
                 if DESTRUCTIVE.contains(&c.name) {
                     t.push_str(" (destructive)");
-                } else if OPEN_WORLD.contains(&c.name) {
+                } else if open_world(c) {
                     t.push_str(" (network)");
                 }
                 t
@@ -1088,6 +1212,54 @@ mod tests {
             reply_schema(find("status").unwrap()).unwrap()["properties"]["player"]["type"],
             json!(["object", "null"])
         );
+    }
+
+    #[test]
+    fn a_crate_command_from_hello_becomes_a_command() {
+        let hello = json!({ "commands": [{
+            "name": "tea", "usage": "tea brew KIND [--cups N]", "summary": "brew a pot",
+            "examples": ["horizon-ctl tea brew green"],
+            "params": [
+                { "name": "action", "type": "enum", "values": ["brew"], "required": true, "help": "what to do" },
+                { "name": "kind", "type": "str", "required": true },
+                { "name": "cups", "type": "int", "flag": true },
+            ],
+            "mcp": true, "open_world": true,
+        }] });
+        let crates = from_hello(&hello);
+        assert_eq!(crates.len(), 1);
+        let tea = crates[0];
+        assert_eq!((tea.name, tea.group), ("tea", Group::Crate));
+        assert!(tea.mcp && !tea.local && open_world(tea));
+        assert_eq!(
+            line_for(
+                tea,
+                &json!({ "action": "brew", "kind": "green", "cups": 2 })
+            )
+            .unwrap(),
+            ["tea", "brew", "green", "--cups", "2"]
+        );
+        assert!(line_for(tea, &json!({ "action": "drink", "kind": "green" })).is_err());
+        assert_eq!(schema(tea)["required"], json!(["action", "kind"]));
+        assert!(detail(tea).contains("usage: horizon-ctl tea brew KIND [--cups N]"));
+        assert!(crate_overview(&crates).contains("tea              brew a pot"));
+    }
+
+    #[test]
+    fn a_hello_without_usable_crate_commands_adds_none() {
+        // A game older than `commands`, and one with no crate above the engine (no `friends`).
+        assert!(from_hello(&json!({ "protocol": "0.1.0", "features": [] })).is_empty());
+        assert_eq!(crate_overview(&from_hello(&json!({ "commands": [] }))), "");
+        assert!(find("friends").is_none());
+        // Entries that are not commands are left out; a name counts once.
+        let odd = json!({ "commands": [
+            { "summary": "no name" }, { "name": "status" }, { "name": "help" }, { "name": "two words" },
+            { "name": "bad-type", "params": [{ "name": "x", "type": "colour" }] },
+            { "name": "no-values", "params": [{ "name": "x", "type": "enum" }] },
+            { "name": "fine" }, { "name": "fine", "summary": "again" },
+        ] });
+        let names: Vec<_> = from_hello(&odd).iter().map(|c| c.name).collect();
+        assert_eq!(names, ["fine"]);
     }
 
     #[test]

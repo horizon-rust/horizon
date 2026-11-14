@@ -14,20 +14,67 @@ use winit::{event::MouseButton, keyboard::KeyCode};
 
 /// The control protocol's version (`docs/api/stability.md`): before 1.0 an
 /// addition makes the next patch and a breaking change the next line.
-const PROTOCOL: &str = "0.1.0";
+const PROTOCOL: &str = "0.1.1";
 
 /// The command groups the game serves, as `help` chains them: what `hello` reports as its features.
 const FEATURES: &[&str] = &[
-    "game", "station", "blocks", "lan", "friends", "render", "sculk", "agent", "ui", "options",
-    "events", "saves", "pad", "studio",
+    "game", "station", "blocks", "lan", "render", "sculk", "agent", "ui", "options", "events",
+    "saves", "pad", "studio",
 ];
 
-/// `hello`: the protocol the socket speaks, the game's release and the command groups it serves.
+/// `hello`: the protocol the socket speaks, the game's release, the command groups it serves
+/// (the engine's, then those of the crates that answer commands, `Hooks::control_commands`) and
+/// those crates' commands, described so `horizon-ctl` can offer them (its help, its MCP tools).
 fn hello() -> Value {
+    hello_with(horizon_hooks::engine::control_commands())
+}
+
+/// [`hello`] for these crates' commands.
+fn hello_with(crates: impl Iterator<Item = horizon_hooks::control::Commands>) -> Value {
+    let mut features: Vec<&str> = FEATURES.to_vec();
+    let mut commands = Vec::new();
+    for group in crates {
+        features.push(group.group);
+        commands.extend(group.commands.iter().map(crate_command));
+    }
     json!({
         "protocol": PROTOCOL,
         "release": horizon_core::release::VERSION,
-        "features": FEATURES,
+        "features": features,
+        "commands": commands,
+    })
+}
+
+/// One crate command as `hello` sends it: plain data, read by `horizon-ctl`
+/// (`commands::from_hello`).
+fn crate_command(command: &horizon_hooks::control::Command) -> Value {
+    use horizon_hooks::control::Kind;
+    let params: Vec<Value> = command
+        .params
+        .iter()
+        .map(|p| {
+            let mut param = json!({
+                "name": p.name,
+                "type": p.kind.name(),
+                "required": p.required,
+                "flag": p.flag,
+                "help": p.help,
+            });
+            if let Kind::Enum(values) = p.kind {
+                param["values"] = json!(values);
+            }
+            param
+        })
+        .collect();
+    json!({
+        "name": command.name,
+        "usage": command.usage,
+        "summary": command.summary,
+        "details": command.details,
+        "examples": command.examples,
+        "params": params,
+        "mcp": command.mcp,
+        "open_world": command.open_world,
     })
 }
 
@@ -439,7 +486,7 @@ impl Game<'_> {
         if let Some(value) = self.lan_control(&words)? {
             return Ok(Some(value));
         }
-        if let Some(value) = self.friends_control(&words)? {
+        if let Some(value) = self.hooks_control(&words)? {
             return Ok(Some(value));
         }
         if let Some(value) = self.studio_control(&words)? {
@@ -456,7 +503,7 @@ impl Game<'_> {
                 .chain(super::station_control::HELP)
                 .chain(super::blockctl::HELP)
                 .chain(super::lan::HELP)
-                .chain(super::friends::HELP)
+                .chain(horizon_hooks::engine::control_commands().flat_map(|group| group.help))
                 .chain(super::render_control::HELP)
                 .chain(super::sculk::HELP)
                 .chain(super::agent::HELP)
@@ -1447,7 +1494,7 @@ impl Game<'_> {
             Screen::Stats => "stats",
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world-options",
-            Screen::Friends => "friends",
+            Screen::AddedPage => "friends",
             Screen::Social => "social",
             Screen::ServerLinks => "server-links",
             Screen::ConfirmLink => "confirm-link",
@@ -1880,6 +1927,44 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), features.len(), "a group is named twice");
+    }
+
+    #[test]
+    fn hello_describes_the_commands_of_the_crates_that_answer_some() {
+        use horizon_hooks::control::{Command, Commands, Kind, Param};
+        // No crate: the engine's groups only, and no command to add.
+        assert_eq!(hello_with(std::iter::empty())["commands"], json!([]));
+        const KIND: Param = Param {
+            name: "kind",
+            kind: Kind::Enum(&["green", "black"]),
+            required: true,
+            flag: false,
+            help: "which leaves",
+        };
+        let tea = Commands {
+            group: "tea",
+            help: &[],
+            commands: &[Command {
+                name: "tea",
+                usage: "tea KIND",
+                summary: "brew a pot",
+                details: "",
+                examples: &["horizon-ctl tea green"],
+                params: &[KIND],
+                mcp: true,
+                open_world: true,
+            }],
+        };
+        let reply = hello_with(std::iter::once(tea));
+        assert_eq!(
+            reply["features"].as_array().unwrap().last(),
+            Some(&json!("tea"))
+        );
+        let param = json!({ "name": "kind", "type": "enum", "values": ["green", "black"], "required": true, "flag": false, "help": "which leaves" });
+        assert_eq!(
+            reply["commands"],
+            json!([{ "name": "tea", "usage": "tea KIND", "summary": "brew a pot", "details": "", "examples": ["horizon-ctl tea green"], "params": [param], "mcp": true, "open_world": true }])
+        );
     }
 
     #[test]
