@@ -59,7 +59,6 @@ use std::{
     time::{Duration, Instant},
 };
 use winit::{event::MouseButton, keyboard::KeyCode};
-
 #[path = "remote_abilities.rs"]
 mod abilities;
 #[path = "remote_poll.rs"]
@@ -1107,6 +1106,7 @@ impl Game<'_> {
             level: 0,
             progress: 0.0,
             total: 0,
+            score: 0,
         };
         // The connected client never opens a server world (single player also
         // joins here), so load the registries its argument parsers and local
@@ -1293,7 +1293,6 @@ impl Game<'_> {
         self.stats = Default::default();
         Ok(())
     }
-
     /// Prepare a client session and remote state to receive packets from a studio replay.
     pub(super) fn init_remote_for_replay(&mut self) -> Result<()> {
         self.reset_tutorial();
@@ -1354,12 +1353,12 @@ impl Game<'_> {
         self.carried = None;
         self.using = None;
         self.end_mod_use();
-
         self.set_mode_id(0);
         self.experience = Experience {
             level: 0,
             progress: 0.0,
             total: 0,
+            score: 0,
         };
         self.ui.registries = Default::default();
         self.build_registries();
@@ -1376,7 +1375,6 @@ impl Game<'_> {
         self.apply_settings();
         self.clear_waypoints();
         self.boss_overlay.reset();
-
         let chat_tree = self.chat_tree_for(None);
         let services_keys = Arc::new(std::sync::Mutex::new(ServicesKeys::Ready(Vec::new())));
 
@@ -3357,7 +3355,8 @@ impl Game<'_> {
                 if p.keep & 2 == 0 {
                     self.riding = None;
                     // KEEP_ENTITY_DATA copies the old player's synched data
-                    // (its shared flags) to the new one; without it they reset.
+                    // (its shared flags, its score) to the new one; without it they reset.
+                    self.experience.score = 0;
                     if let Some(r) = self.remote.as_mut() {
                         r.own_invisible = false;
                         r.own_on_fire = false;
@@ -3958,6 +3957,7 @@ impl Game<'_> {
                                     let _ = pl.internal_set_absorption(*amount);
                                 }
                             }
+                            (18, Value::Int(score)) => self.experience.score = *score,
                             // LivingEntity.DATA_LIVING_ENTITY_FLAGS: the server
                             // starts or stops this player's use, as an axe that
                             // disables the raised shield does (Player.disableShield's
@@ -4559,6 +4559,7 @@ impl Game<'_> {
                     level: p.level,
                     progress: p.progress,
                     total: p.total,
+                    score: self.experience.score,
                 }
             }
             // ClientPacketListener.handleSetTime: the game time, then
@@ -5407,7 +5408,6 @@ impl Game<'_> {
             self.gui.atlas.object_skins_revision,
         ));
     }
-
     pub(super) fn remote_tab_players(
         &mut self,
     ) -> Option<(Vec<horizon_client::tab_list::TabPlayer>, bool, Vec<u128>)> {
