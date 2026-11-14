@@ -7,6 +7,8 @@
 //! never meet and a region's ticks find the chunks next to theirs.
 //!
 //! This module only decides which region owns what. It is pure data: no game state, no threads.
+// Nothing calls it until the region threads come in the next commits.
+#![allow(dead_code)]
 use horizon_core::fast_hash::FxHashMap;
 
 /// Chunks per side of a region section, as a shift: 2^2 = 4.
@@ -33,7 +35,11 @@ impl Regions {
     ///
     /// Only regions with a player in them are kept when there are players: a region without one gets no thread, its
     /// chunks tick with the rest no region owns.
-    pub(super) fn new(ticking: impl IntoIterator<Item = (i32, i32)>, players: &[(i32, i32)], view: i32) -> Self {
+    pub(super) fn new(
+        ticking: impl IntoIterator<Item = (i32, i32)>,
+        players: &[(i32, i32)],
+        view: i32,
+    ) -> Self {
         let mut kind: FxHashMap<(i32, i32), u8> = FxHashMap::default();
         for (x, z) in ticking {
             kind.insert((x >> SECTION_SHIFT, z >> SECTION_SHIFT), TICKING);
@@ -68,12 +74,18 @@ impl Regions {
                 for dx in -reach..=reach {
                     for dz in -reach..=reach {
                         let next = (x + dx, z + dz);
-                        let Some(&theirs) = kind.get(&next) else { continue };
+                        let Some(&theirs) = kind.get(&next) else {
+                            continue;
+                        };
                         if region.contains_key(&next) {
                             continue;
                         }
                         let apart = dx.abs().max(dz.abs());
-                        let joins = if mine == TICKING && theirs == TICKING { apart <= MERGE_RADIUS } else { apart <= 1 };
+                        let joins = if mine == TICKING && theirs == TICKING {
+                            apart <= MERGE_RADIUS
+                        } else {
+                            apart <= 1
+                        };
                         if joins {
                             region.insert(next, count);
                             stack.push(next);
@@ -101,7 +113,12 @@ impl Regions {
                 for r in region.values_mut() {
                     *r = renumber[*r];
                 }
-                firsts = firsts.into_iter().enumerate().filter(|(r, _)| has_player[*r]).map(|(_, f)| f).collect();
+                firsts = firsts
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(r, _)| has_player[*r])
+                    .map(|(_, f)| f)
+                    .collect();
                 count = kept;
             }
         }
@@ -118,12 +135,18 @@ impl Regions {
         for (&key, &r) in &region {
             owned.insert(key, r);
         }
-        Self { owned, count, firsts }
+        Self {
+            owned,
+            count,
+            firsts,
+        }
     }
 
     /// The region that owns chunk `(x, z)`.
     pub(super) fn of_chunk(&self, (x, z): (i32, i32)) -> Option<usize> {
-        self.owned.get(&(x >> SECTION_SHIFT, z >> SECTION_SHIFT)).copied()
+        self.owned
+            .get(&(x >> SECTION_SHIFT, z >> SECTION_SHIFT))
+            .copied()
     }
 
     /// The region that owns the block column at `x, z`.

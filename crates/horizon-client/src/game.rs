@@ -394,8 +394,6 @@ mod quick_actions;
 mod raids;
 mod random_textures;
 mod recipe_book;
-#[allow(dead_code)] // the region threads that use it come in the next commits
-mod regions;
 mod remote;
 mod remote_camera;
 mod remote_chat;
