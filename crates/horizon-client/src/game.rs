@@ -923,9 +923,10 @@ fn point_box(feet: [f64; 3], width: f64, height: f64) -> Aabb {
     )
 }
 impl GameLevel<'_> {
-    /// `LilyPadBlock.entityInside`: the boxes of the boats that can break a pad.
-    fn boat_trigger_boxes(&self) -> impl Iterator<Item = Aabb> + '_ {
-        self.entities.boats.iter().map(boats::Boat::bounds)
+    /// `LilyPadBlock.entityInside`: the boxes of the boats that can break a pad,
+    /// each with its position (`Entity.chunkPosition` gates the tick).
+    fn boat_trigger_boxes(&self) -> impl Iterator<Item = (Vec3, Aabb)> + '_ {
+        self.entities.boats.iter().map(|b| (b.position, b.bounds()))
     }
     /// How many entities in `area` press plates and tripwires, or with
     /// `LIVING` only the living ones; a constant so a list of other kinds
@@ -7698,7 +7699,6 @@ impl Game<'_> {
                     && f.fluid_level == 8
                     && !f.fluid_falling
                     && !f.waterlogged
-                    && f.render_shape != horizon_client::blocks::RenderShape::Model
                 {
                     if !first {
                         return Some(Hit {

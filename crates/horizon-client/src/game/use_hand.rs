@@ -802,3 +802,6 @@ mod adventure_use_on_tests;
 #[cfg(test)]
 #[path = "jigsaw_place_tests.rs"]
 mod jigsaw_place_tests;
+#[cfg(test)]
+#[path = "lily_pad_tests.rs"]
+mod lily_pad_tests;
