@@ -240,6 +240,7 @@ impl Game<'_> {
         self.ui.rules = from.ui.rules.clone();
         self.ui.difficulty = from.ui.difficulty;
         self.clock = from.clock.clone();
+        self.ticks = from.ticks;
         self.border = from.border.clone();
         self.tickets = from.tickets.clone();
         self.level.difficulty_locked = from.level.difficulty_locked;
@@ -430,6 +431,198 @@ impl Game<'_> {
         self.lan_kinetic_hits.append(&mut w.lan_kinetic_hits);
         self.lan_global_events.append(&mut w.lan_global_events);
         std::mem::take(&mut w.rand_sequences)
+    }
+}
+
+/// Whether the level's world phases run by regions on threads of their own (`HORIZON_REGION_THREADS=0` turns it
+/// off): only with the parallel tick on, on a server with players in the level.
+fn region_threads_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_REGION_THREADS").is_ok_and(|v| v.trim() != "0"))
+        && horizon_client::parallel::parallel_tick() > 0
+}
+
+impl Game<'_> {
+    /// The world phases of this tick by regions, on threads of their own: the level split into regions' parts,
+    /// each ticked in a region game of its own with its players, then everything landed back in place. Returns
+    /// whether it did (`false`: fewer than two regions, nothing was changed and the serial phases run). The
+    /// network turn and everything no region owns (portals, sculk, the mods' flushes, the players' own ticks)
+    /// still run on this thread afterwards.
+    pub(super) fn tick_world_regions(&mut self) -> Result<bool> {
+        if !region_threads_on() || self.regions.worker {
+            return Ok(false);
+        }
+        let Some(host) = self.lan.as_ref() else {
+            return Ok(false);
+        };
+        let players: Vec<(i32, i32)> = host
+            .hub
+            .guests
+            .iter()
+            .filter(|g| host.hub.here(g))
+            .map(|g| {
+                (
+                    (g.position[0].floor() as i32) >> 4,
+                    (g.position[2].floor() as i32) >> 4,
+                )
+            })
+            .collect();
+        if players.len() < 2 {
+            return Ok(false);
+        }
+        let levels = self.tickets.levels();
+        let ticking = self
+            .world
+            .chunks
+            .keys()
+            .copied()
+            .filter(|&(x, z)| levels.block_ticking(x, z));
+        let regions = Regions::new(ticking, &players, 0);
+        if regions.count < 2 {
+            return Ok(false);
+        }
+        let dim = self.dim;
+        // Games for the regions: made on demand, kept for the next ticks.
+        let mut games = self.regions.idle.remove(&dim).unwrap_or_default();
+        while games.len() < regions.count {
+            match self.region_worker() {
+                Ok(w) => games.push(Box::new(w)),
+                Err(e) => {
+                    log::warn!("a region game could not be made: {e}");
+                    self.regions.idle.insert(dim, games);
+                    return Ok(false);
+                }
+            }
+        }
+        let extra: Vec<Box<Game<'static>>> = games.split_off(regions.count);
+        let pool = Arc::clone(
+            self.regions
+                .entity_pool
+                .get_or_insert_with(|| Arc::new(AtomicU32::new(self.next_entity + 1))),
+        );
+        if self.regions.entity_id_end == 0 {
+            self.regions.entity_id_end = self.next_entity;
+        }
+        self.refill_entity_ids(&pool);
+        // Each region's players, by connection, split off once.
+        let region_of_conn: HashMap<u32, usize> = self
+            .lan
+            .as_ref()
+            .map(|h| {
+                h.hub
+                    .guests
+                    .iter()
+                    .filter(|g| h.hub.here(g))
+                    .filter_map(|g| {
+                        let chunk = (
+                            (g.position[0].floor() as i32) >> 4,
+                            (g.position[2].floor() as i32) >> 4,
+                        );
+                        Some((g.conn, regions.of_chunk(chunk)?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut host = self.lan.take().expect("checked above");
+        let mut split_guests = host
+            .hub
+            .split_guests(regions.count, |conn| region_of_conn.get(&conn).copied());
+        let split = self.split_level(&regions);
+        let mut flights: Vec<(Box<Game<'static>>, Vec<ChunkPos>, Vec<u32>)> =
+            Vec::with_capacity(regions.count);
+        for ((part, mut w), (chunks, guests)) in split.parts.into_iter().zip(games).zip(
+            split
+                .chunks
+                .into_iter()
+                .zip(split_guests.iter_mut().map(std::mem::take)),
+        ) {
+            let mob_ids: Vec<u32> = part.mobs.iter().map(|m| m.id).collect();
+            self.lend_region(&mut w, part);
+            w.copy_tick_settings_from(self);
+            w.refill_entity_ids(&pool);
+            let conns: Vec<u32> = guests.iter().map(|g| g.conn).collect();
+            let mut shell = w.lan.take().unwrap_or_else(|| host.region_shell());
+            host.lend_region(&mut shell, &conns, &mob_ids, dim, guests);
+            w.lan = Some(shell);
+            flights.push((w, chunks, conns));
+        }
+        // The regions tick at once: a thread for each group of them, as many as there are cores.
+        let lanes = horizon_threads::worker_count()
+            .clamp(1, 16)
+            .min(flights.len());
+        let mut results: Vec<Result<()>> = Vec::new();
+        {
+            let per = flights.len().div_ceil(lanes);
+            let outcomes: Vec<Vec<std::result::Result<(), String>>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = flights
+                    .chunks_mut(per)
+                    .map(|group| {
+                        scope.spawn(move || {
+                            group
+                                .iter_mut()
+                                .map(|(w, _, _)| {
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        w.tick_region_phases().map_err(|e| e.to_string())
+                                    }))
+                                    .unwrap_or_else(|_| Err("a region thread panicked".to_owned()))
+                                })
+                                .collect()
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or_default())
+                    .collect()
+            });
+            for outcome in outcomes.into_iter().flatten() {
+                results.push(outcome.map_err(Into::into));
+            }
+        }
+        // Landed in region order.
+        let mut back = Vec::with_capacity(flights.len());
+        for (mut w, chunks, _) in flights {
+            self.take_region_back(&mut w, &chunks);
+            if let Some(shell) = w.lan.as_mut() {
+                host.take_region_back(shell);
+            }
+            back.push(w);
+        }
+        host.hub.restore_guest_order();
+        self.lan = Some(host);
+        back.extend(extra);
+        self.regions.idle.insert(dim, back);
+        results.into_iter().collect::<Result<Vec<()>>>()?;
+        Ok(true)
+    }
+
+    /// One region game's phases of the tick: the level's entities and blocks in its chunks, around its players.
+    pub(super) fn tick_region_phases(&mut self) -> Result<()> {
+        self.begin_ordered_ticks();
+        self.tick_blocks()?;
+        self.tick_paintings();
+        self.tick_item_frames();
+        self.tick_armor_stands()?;
+        self.tick_cushions();
+        self.tick_boats();
+        self.tick_carts();
+        self.tick_thunder();
+        self.tick_lecterns();
+        self.tick_bolts();
+        self.tick_fishing();
+        self.tick_tridents();
+        self.tick_rockets();
+        self.tick_ominous_item_spawners();
+        self.tick_items();
+        self.hoppers_catch_items();
+        self.touch_arrows();
+        self.tick_mobs()?;
+        self.recheck_golem_openers();
+        self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, false)?;
+        self.tick_experience();
+        self.tick_moving_pistons()?;
+        self.tick_block_entities()?;
+        Ok(())
     }
 }
 
