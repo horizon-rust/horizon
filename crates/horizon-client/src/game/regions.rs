@@ -9,7 +9,14 @@
 //! This module only decides which region owns what. It is pure data: no game state, no threads.
 // Nothing calls it until the region threads come in the next commits.
 #![allow(dead_code)]
+use super::Game;
 use horizon_core::fast_hash::FxHashMap;
+
+/// A region's game moves to a thread of its own: `Game` has to be `Send` (checked when this compiles).
+const _: fn() = || {
+    fn send<T: Send>() {}
+    send::<Game<'static>>();
+};
 
 /// Chunks per side of a region section, as a shift: 2^2 = 4.
 pub(super) const SECTION_SHIFT: i32 = 2;

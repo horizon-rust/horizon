@@ -163,6 +163,7 @@ mod frame_geometry;
 mod frames;
 #[cfg(feature = "friends")]
 mod friends;
+mod held_error;
 mod held_items;
 #[cfg(test)]
 mod setblock_order_tests;
@@ -2389,7 +2390,7 @@ struct Game<'a> {
     texture_ticks: u64,
     health_hud: hud_layout::HealthHud,
     /// What ends the game with an error; kept as it is, so main can tell a debug crash.
-    error: Option<Box<dyn std::error::Error>>,
+    error: Option<held_error::HeldError>,
     message: Option<(String, Instant)>,
     save: Arc<SaveDir>,
     level: Level,
@@ -10039,7 +10040,7 @@ impl Game<'_> {
                 }
                 WindowEvent::RedrawRequested => {
                     if let Err(error) = self.render_closing_save() {
-                        self.error = Some(error);
+                        self.error = Some(error.into());
                         self.exit_on_error(event_loop);
                     }
                 }
@@ -11308,7 +11309,7 @@ impl Game<'_> {
         // open, after the key's own effects (`KeyboardHandler.charTyped`).
         self.screen_chars_typed(typed.as_deref());
         if let Err(e) = result {
-            self.error = Some(e);
+            self.error = Some(e.into());
             self.exit_on_error(event_loop);
         }
     }

@@ -731,7 +731,7 @@ impl Game<'_> {
                     if p.fire_ticks == 0
                         && let Err(error) = p.ignite_for_ticks(160)
                     {
-                        g.error = Some(error);
+                        g.error = Some(error.into());
                     }
                 }
                 g.hurt_player_by("minecraft:lightning_bolt", 5.0);

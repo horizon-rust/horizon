@@ -7,7 +7,6 @@ use crate::{
     section_mask::SectionMask,
 };
 use horizon_world::{level::RandomTickMask, registry::BlockStateId};
-use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
 /// A value snapshot, in ascending section order, with no per-chunk allocation.
@@ -56,10 +55,10 @@ struct Cached {
     read: Vec<Weak<Section>>,
     sections: Sections,
     /// Each ticking section's [`RandomTickMask`], built at its first draw
-    /// and dropped when the section is read again. `Rc`, not `Arc`: the
+    /// and dropped when the section is read again. `Arc` (it moves between threads with its level): the
     /// tick thread hands one out per ticking section per tick, and an atomic
     /// count on a mask out of cache stalled the whole random tick loop.
-    masks: Vec<Option<Rc<RandomTickMask>>>,
+    masks: Vec<Option<Arc<RandomTickMask>>>,
 }
 /// Vanilla keeps a count of randomly ticking blocks and fluids per section,
 /// updated by every `setBlockState`, and ticks the sections where it is above
@@ -106,14 +105,14 @@ impl RandomTickSections {
         facts: &BlockFacts,
         mut candidate: impl FnMut(u32) -> bool,
         from_y: i32,
-    ) -> Option<(i32, Rc<RandomTickMask>)> {
+    ) -> Option<(i32, Arc<RandomTickMask>)> {
         let cached = Self::refresh(&mut self.chunks, key, chunk, &mut |id| {
             facts.get(BlockStateId(id)).random_ticks
         });
         let y = cached.sections.from(from_y)?;
         let index = ((y - cached.sections.base) >> 4) as usize;
         let mask = cached.masks[index].get_or_insert_with(|| {
-            Rc::new(Self::candidate_mask(&chunk.sections[index], &mut candidate))
+            Arc::new(Self::candidate_mask(&chunk.sections[index], &mut candidate))
         });
         Some((y, mask.clone()))
     }
@@ -151,7 +150,7 @@ impl RandomTickSections {
         });
         for ((key, i, _), mask) in todo.into_iter().zip(masks) {
             if let Some(cached) = self.chunks.get_mut(&key) {
-                cached.masks[i] = Some(Rc::new(mask));
+                cached.masks[i] = Some(Arc::new(mask));
             }
         }
     }

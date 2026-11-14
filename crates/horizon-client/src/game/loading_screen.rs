@@ -26,7 +26,7 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
         // narrator::start ran for it too (options.txt's narrator setting).
         narrator::stop();
         write_report(&game)?;
-        return game.error.take().map_or(Ok(()), Err);
+        return game.error.take().map_or(Ok(()), |e| Err(e.into()));
     }
     let mut split = split::Split::new(game);
     let result = EventLoop::new()?.run_app(&mut split);
@@ -36,7 +36,7 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     result?;
     write_report(&game)?;
     if let Some(e) = game.error.take() {
-        return Err(e);
+        return Err(e.into());
     }
     Ok(())
 }

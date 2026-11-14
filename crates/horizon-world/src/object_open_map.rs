@@ -1,9 +1,30 @@
 //! Default fastutil object map with live indexed entries and native traversal.
 use crate::object_open_set::{CursorError, ObjectKey};
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
+use std::sync::{
+    Arc, Mutex, MutexGuard,
+    atomic::{AtomicI32, Ordering::Relaxed},
 };
+/// The table the map and its entry iterators share. A mutex, not a `RefCell`, so a map can move to another
+/// thread with the entity that owns it (a region's thread); it is never locked from two threads at once.
+struct Shared<T>(Arc<Mutex<T>>);
+impl<T> Shared<T> {
+    fn new(t: T) -> Self {
+        Self(Arc::new(Mutex::new(t)))
+    }
+    fn borrow(&self) -> MutexGuard<'_, T> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    fn borrow_mut(&self) -> MutexGuard<'_, T> {
+        self.borrow()
+    }
+}
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
 #[derive(Clone)]
 struct Table<K, V> {
     keys: Vec<Option<K>>,
@@ -20,7 +41,7 @@ impl<K, V> Table<K, V> {
 /// An entry retains its array index, not a copy of its key/value. Clones share
 /// invalidation when its entry iterator removes that entry.
 #[derive(Clone)]
-pub struct Entry(Rc<Cell<i32>>);
+pub struct Entry(Arc<AtomicI32>);
 pub struct Cursor<K> {
     position: i32,
     last: i32,
@@ -40,7 +61,7 @@ pub enum TraversalError<E> {
     Callback(E),
 }
 pub struct ObjectOpenMap<K, V> {
-    table: Rc<RefCell<Table<K, V>>>,
+    table: Shared<Table<K, V>>,
     size: i32,
     null: bool,
 }
@@ -48,7 +69,7 @@ pub struct ObjectOpenMap<K, V> {
 impl<K: Clone, V: Clone> Clone for ObjectOpenMap<K, V> {
     fn clone(&self) -> Self {
         Self {
-            table: Rc::new(RefCell::new(self.table.borrow().clone())),
+            table: Shared::new(self.table.borrow().clone()),
             size: self.size,
             null: self.null,
         }
@@ -57,7 +78,7 @@ impl<K: Clone, V: Clone> Clone for ObjectOpenMap<K, V> {
 impl<K, V> Default for ObjectOpenMap<K, V> {
     fn default() -> Self {
         Self {
-            table: Rc::new(RefCell::new(Table::new(32))),
+            table: Shared::new(Table::new(32)),
             size: 0,
             null: false,
         }
@@ -91,7 +112,8 @@ impl<K: ObjectKey + Clone, V: Clone> ObjectOpenMap<K, V> {
     }
     pub fn contains_key(&self, key: Option<&K>) -> bool {
         key.map_or(self.null, |k| {
-            self.table.borrow().keys[self.find(k)].is_some()
+            let p = self.find(k);
+            self.table.borrow().keys[p].is_some()
         })
     }
     pub fn get(&self, key: Option<&K>) -> Option<V> {
@@ -159,7 +181,7 @@ impl<K: ObjectKey + Clone, V: Clone> ObjectOpenMap<K, V> {
         }
         table.values[n] = old.values[old_n].clone();
         drop(old);
-        self.table = Rc::new(RefCell::new(table));
+        self.table = Shared::new(table);
     }
     fn shift(
         &mut self,
@@ -289,7 +311,7 @@ impl<K: ObjectKey + Clone, V: Clone> ObjectOpenMap<K, V> {
                 }
             }
         };
-        let entry = Entry(Rc::new(Cell::new(index)));
+        let entry = Entry(Arc::new(AtomicI32::new(index)));
         c.entry = Some(entry.clone());
         Ok(entry)
     }
@@ -297,7 +319,7 @@ impl<K: ObjectKey + Clone, V: Clone> ObjectOpenMap<K, V> {
         self.table
             .borrow()
             .keys
-            .get(e.0.get() as usize)
+            .get(e.0.load(Relaxed) as usize)
             .cloned()
             .ok_or(CursorError::IndexOutOfBounds)
     }
@@ -305,7 +327,7 @@ impl<K: ObjectKey + Clone, V: Clone> ObjectOpenMap<K, V> {
         self.table
             .borrow()
             .values
-            .get(e.0.get() as usize)
+            .get(e.0.load(Relaxed) as usize)
             .cloned()
             .ok_or(CursorError::IndexOutOfBounds)
     }
@@ -318,7 +340,7 @@ impl<K: ObjectKey + Clone, V: Clone> ObjectOpenMap<K, V> {
             self.table
                 .borrow_mut()
                 .values
-                .get_mut(e.0.get() as usize)
+                .get_mut(e.0.load(Relaxed) as usize)
                 .ok_or(CursorError::IndexOutOfBounds)?,
             value,
         ))
@@ -346,14 +368,14 @@ impl<K: ObjectKey + Clone, V: Clone> ObjectOpenMap<K, V> {
             self.remove(key.as_ref());
             c.last = -1;
             if let Some(e) = &c.entry {
-                e.0.set(-1);
+                e.0.store(-1, Relaxed);
             }
             return Ok(());
         }
         self.size = self.size.wrapping_sub(1);
         c.last = -1;
         if let Some(e) = &c.entry {
-            e.0.set(-1);
+            e.0.store(-1, Relaxed);
         }
         Ok(())
     }
@@ -362,7 +384,8 @@ impl<K: ObjectKey + Clone, V: Clone> ObjectOpenMap<K, V> {
         mut action: impl FnMut(&mut Self, Option<K>, Option<V>) -> Result<(), E>,
     ) -> Result<(), TraversalError<E>> {
         if self.null {
-            let value = self.table.borrow().values[self.n()].clone();
+            let n = self.n();
+            let value = self.table.borrow().values[n].clone();
             action(self, None, value).map_err(TraversalError::Callback)?;
         }
         // Keys are captured after the null callback. Values remain live even if
