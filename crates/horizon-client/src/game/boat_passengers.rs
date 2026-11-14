@@ -266,12 +266,37 @@ impl Game<'_> {
         let b = &self.boats[i];
         self.boat_passengers(b.id) < b.max_passengers() && !b.under_water()
     }
+    /// `getPassengers()` of boat `i` on a server's client: the server's last
+    /// `SetPassengers` list, less the entities this client doesn't know or
+    /// was told are gone (`handleSetEntityPassengersPacket` seats only the
+    /// ones it has, and a removed entity stops riding). Empty where this game
+    /// seats its riders itself.
+    fn listed_boat_passengers(&self, i: usize) -> Vec<u32> {
+        let Some(r) = self.remote.as_ref() else {
+            return Vec::new();
+        };
+        let me = r.entity_id as u32;
+        (self.boats[i].listed_passengers.iter())
+            .copied()
+            .filter(|&p| p == me || r.tracked(p as i32).is_some())
+            .collect()
+    }
     /// Where the player in boat `i` sits: in the middle alone, in front of a
     /// mob.
     pub(super) fn player_boat_seat(&self, i: usize) -> Vec3 {
         let b = &self.boats[i];
-        let count = self.boat_players(b.id).max(1) + self.boat_mobs(b.id).len();
-        b.seat(0, count, false, PLAYER_RIDING_OFFSET, false)
+        // A server's client sits where the server's passenger list puts it:
+        // the second player sits behind the one steering.
+        let me = self.remote.as_ref().map(|r| r.entity_id as u32);
+        let listed = self.listed_boat_passengers(i);
+        let (index, count) = match me.and_then(|me| listed.iter().position(|&p| p == me)) {
+            Some(index) => (index, listed.len()),
+            None => (
+                0,
+                self.boat_players(b.id).max(1) + self.boat_mobs(b.id).len(),
+            ),
+        };
+        b.seat(index, count, false, PLAYER_RIDING_OFFSET, false)
     }
     /// `getRootVehicle` of mob `j`: the mob or boat at the bottom of what it
     /// rides, None when it rides nothing.
@@ -553,8 +578,13 @@ impl Game<'_> {
                 continue;
             }
             let players = self.boat_players(id);
-            let count = players + mobs.len();
+            // A server's client counts and seats the server's passenger list.
+            let listed = self.listed_boat_passengers(i);
             let b = &self.boats[i];
+            let count = match listed.len() {
+                0 => players + mobs.len(),
+                n => n,
+            };
             let full = count == b.max_passengers();
             let delta = b.delta_rotation;
             let boat_box = b.bounds();
@@ -571,7 +601,10 @@ impl Game<'_> {
                     // Another player's too, on a server's client.
                     // AbstractBoat's box is 1.375 wide.
                     let offset = riders::vehicle_attachment(m, 1.375);
-                    let index = players + n;
+                    let index = listed
+                        .iter()
+                        .position(|&p| p == m.id)
+                        .unwrap_or(players + n);
                     // calculatePassengerBodyYRot.
                     let turn = match (animal && full, m.id.is_multiple_of(2)) {
                         (false, _) => 0.0,
@@ -651,6 +684,108 @@ mod tests {
         assert!((v.x - f64::from(0.05_f32)).abs() < 1e-12 && v.z == 0.0);
         // Almost on the same spot: no push.
         assert!(push_impulse(Vec3::ZERO, Vec3::new(0.005, 0.0, 0.0)).is_none());
+    }
+
+    /// #14812: on a server's client both players sit where the server's
+    /// `SetPassengers` list seats them (`AbstractBoat.getPassengerAttachmentPoint`:
+    /// the first at z 0.2, the second at z -0.6, turned by the boat's yaw), so the
+    /// second player sits behind the one steering, and they change places when
+    /// the list does.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_servers_client_seats_its_boat_players_in_the_servers_order() {
+        use crate::game::{
+            Audio, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+        };
+        use horizon_client::{motion::PlayerMotion, sprint::Keys};
+        use horizon_protocol::packets::play::{self, Clientbound as C};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let (client, _server) = horizon_protocol::connection::Pipe::pair();
+        game.connect_local(client, "BoatSeats").unwrap();
+        game.remote.as_mut().unwrap().entity_id = 7;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(5.0, 64.0, 5.0)).unwrap());
+        let builtin = game.remote.as_ref().unwrap().builtin.clone();
+        let kind = |name: &str| {
+            builtin
+                .get("minecraft:entity_type")
+                .unwrap()
+                .id(name)
+                .unwrap()
+        };
+        // A boat facing west (yaw 90, packed 64) and the player steering it.
+        for (id, uuid, name) in [(30, 30, "minecraft:oak_boat"), (41, 41, "minecraft:player")] {
+            game.handle_packet(C::AddEntity(play::AddEntity {
+                id,
+                uuid,
+                kind: kind(name),
+                position: [0.0, 64.0, 0.0],
+                velocity: [0.0; 3],
+                pitch: 0,
+                yaw: 64,
+                head_yaw: 64,
+                data: 0,
+            }))
+            .unwrap();
+        }
+        // Vec3(0, y, z).yRot(-90°): x = -z.
+        let xs = |game: &mut Game<'_>, passengers: Vec<i32>| {
+            game.handle_packet(C::SetPassengers(play::SetPassengers {
+                vehicle: 30,
+                passengers,
+            }))
+            .unwrap();
+            assert!(game.remote_ride(Keys::default(), 0).unwrap());
+            game.position_riders();
+            let me = game.player.as_ref().unwrap().position.x;
+            let other = game.mobs.iter().find(|m| m.id == 41).unwrap().position.x;
+            (me, other)
+        };
+        let close = |(a, b): (f64, f64), (x, y): (f64, f64)| {
+            assert!(
+                (a - x).abs() < 1e-5 && (b - y).abs() < 1e-5,
+                "seats ({a}, {b}), expected ({x}, {y})"
+            );
+        };
+        close(xs(&mut game, vec![41, 7]), (0.6, -0.2));
+        close(xs(&mut game, vec![7, 41]), (-0.2, 0.6));
+        // The other player leaves the level with no new list (Entity.setRemoved
+        // stops its ride): alone, this one sits in the middle (z 0).
+        game.handle_packet(C::SetPassengers(play::SetPassengers {
+            vehicle: 30,
+            passengers: vec![41, 7],
+        }))
+        .unwrap();
+        game.handle_packet(C::RemoveEntities(play::RemoveEntities { ids: vec![41] }))
+            .unwrap();
+        assert!(game.remote_ride(Keys::default(), 0).unwrap());
+        let me = game.player.as_ref().unwrap().position.x;
+        assert!(me.abs() < 1e-5, "alone at x {me}, expected 0");
     }
 
     #[test]
