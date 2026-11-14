@@ -292,10 +292,8 @@ impl Game<'_> {
         owner: Option<Who>,
         guest: Option<u32>,
     ) -> (Option<Target>, bool) {
-        (
-            Self::projectile_cause(owner, guest),
-            owner == Some(Who::Player) && self.creative,
-        )
+        let causing = Self::projectile_cause(owner, guest);
+        (causing, self.causing_abilities(causing).0)
     }
     /// `Entity.igniteForSeconds`: `seconds * 20` ticks of fire, scaled by the
     /// target's burning-time attribute.
