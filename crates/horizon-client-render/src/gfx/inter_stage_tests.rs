@@ -149,7 +149,7 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
             vec!["terrain.wgsl", "visbuffer.wgsl"],
             super::terrain_shader() + include_str!("../visbuffer.wgsl"),
         ),
-        // Ray tracing's unpacking of compact sections (gfx/ray_scene.rs's `Unpacker`).
+        // Ray tracing's unpacking of sections into its store (gfx/ray_scene.rs's `Unpacker`).
         (
             "ray tracing unpack",
             vec!["terrain.wgsl", "rt_unpack.wgsl"],
@@ -174,6 +174,12 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
             "world primitives",
             vec!["world_primitives.wgsl"],
             super::world_primitives::shader(),
+        ),
+        // A native pack's entity stage (gfx/native_entity.rs), around vanilla's own.
+        (
+            "native pack entities",
+            vec!["entity.wgsl", "static_entity.wgsl"],
+            super::native_entity::tests::shader(super::native_entity::tests::VANILLA),
         ),
         (
             "improved transparency world border",

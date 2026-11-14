@@ -184,11 +184,56 @@ class HdrGateTests(unittest.TestCase):
         for nits, signal in ((0, 0.0), (100, 0.5081), (203, 0.5807), (1000, 0.7518), (10000, 1.0)):
             self.assertAlmostEqual(identity.pq(nits), signal, places=4)
 
-    def test_unshoulder_inverts_the_screenshot_shoulder(self):
-        # 🤖 Agent: hdr.rs sdr_screenshots_roll_off_the_world_and_keep_the_hud_as_drawn's checkpoints, light to shot.
-        for light, shot in ((0.5, 0.5), (1.0, 0.8), (2.0, 0.9111111), (4.0, 0.9578947), (8.0, 0.9794872)):
-            for got, want in zip(identity.unshoulder([shot, shot / 2, 0.0]), (light, light / 2, 0.0)):
-                self.assertAlmostEqual(got, want, places=4)
+    def test_unclipped_is_the_light_below_white_and_unbounded_from_it(self):
+        # 🤖 Agent: hdr.rs sdr_screenshots_keep_the_world_up_to_white_and_the_hud_as_drawn: below white the shot is
+        # the light, and at white it may be any light from white up.
+        for shot in ([0.5, 0.25, 0.0], [0.999, 0.999, 0.999]):
+            self.assertEqual(identity.unclipped(shot), shot)
+        for shot in ([1.0, 0.5, 0.0], [1.002, 1.0, 0.9]):
+            self.assertEqual(identity.unclipped(shot), [float('inf')] * 3)
+
+    def test_white_in_a_lit_screenshot_is_the_huds_white_or_the_worlds_light_from_white_up(self):
+        # 🤖 Agent: float_visbuffer: paper white 200, peak 300, the HUD at half of paper white. A 64x64 shot's corner
+        # is the world, and its middle is under the crosshair.
+        def problems(world, hud):
+            codes = {(0, 0): identity.hdr10([world] * 3, 200), (32, 32): identity.hdr10([hud] * 3, 200)}
+            sdr = [b''.join(b'\xff' * 3 if (x, y) in codes else bytes(3) for x in range(64)) for y in range(64)]
+            hdr = [b''.join(b''.join((round(c) << 6).to_bytes(2, 'big') for c in codes.get((x, y), (0, 0, 0)))
+                            for x in range(64)) for y in range(64)]
+            encode(self.dir / 'float_visbuffer.day_water.png', 64, 64, 8, sdr, 0)
+            encode(self.dir / 'float_visbuffer.day_water-hdr.png', 64, 64, 16, hdr, 0)
+            return identity.hdr_gates(self.dir, ['float_visbuffer'])
+        # 🤖 Agent: The world's white and its light above it both shoot as white; so does the HUD's white, and light
+        # behind it.
+        for world, hud in ((1.0, 0.5), (1.5, 0.5), (1.5, 1.5), (1.0, 0.7)):
+            self.assertEqual(problems(world, hud), [], (world, hud))
+        # 🤖 Agent: Not light below white in the world, nor white under the HUD below both.
+        for world, hud in ((0.5, 0.5), (0.9, 0.5), (1.0, 0.3)):
+            self.assertIn('1 pixels', '\n'.join(problems(world, hud)), (world, hud))
+
+    def test_a_hud_scenes_white_is_at_ui_brightness_and_blends_with_the_world_lie_between(self):
+        # 🤖 Agent: float_visbuffer again: the HUD's white is 100 nits, half of paper white. A 64x64 HUD scene with
+        # a block of opaque white HUD `count` pixels large at `hud` of paper white, and one more white pixel at `one`.
+        def problems(hud, one, count=identity.HUD_WHITE):
+            def light(x, y):
+                return one if (x, y) == (63, 63) else hud if y * 64 + x < count else None
+            sdr = [b''.join(bytes(3) if light(x, y) is None else b'\xff' * 3 for x in range(64)) for y in range(64)]
+            hdr = [b''.join(b''.join((round(c) << 6).to_bytes(2, 'big') for c in (
+                (0, 0, 0) if light(x, y) is None else identity.hdr10([light(x, y)] * 3, 200)))
+                for x in range(64)) for y in range(64)]
+            encode(self.dir / 'float_visbuffer.hud_lava.png', 64, 64, 8, sdr, 0)
+            encode(self.dir / 'float_visbuffer.hud_lava-hdr.png', 64, 64, 16, hdr, 0)
+            return identity.hdr_gates(self.dir, ['float_visbuffer'])
+        # 🤖 Agent: The HUD's white, with translucent white HUD over a white world (between the two), and white HUD
+        # over light above white.
+        for one in (0.5, 0.75, 1.0, 1.4):
+            self.assertEqual(problems(0.5, one), [], one)
+        # 🤖 Agent: Opaque white HUD at paper white, not at UI Brightness: every pixel passes for light behind the
+        # HUD, so the count catches it. So it does a HUD too dim, and too little HUD.
+        self.assertEqual(problems(1.0, 0.75), ['float_visbuffer.hud_lava: white HUD isn\'t at UI Brightness: 0 white '
+                                               f'pixels there, of at least {identity.HUD_WHITE}'])
+        self.assertIn('white HUD isn\'t at UI Brightness: 0 white', '\n'.join(problems(0.4, 0.75)))
+        self.assertIn(f'{identity.HUD_WHITE - 1} white pixels', '\n'.join(problems(0.5, 0.75, identity.HUD_WHITE - 1)))
 
     def unlit(self, sdr, hdr):
         """Every float_unlit scene shot as `sdr` with its HDR shot `hdr`, and HDR off's as `self.vanilla`."""
