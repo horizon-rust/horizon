@@ -4,6 +4,7 @@
 //! Horizon Settings > PvP & HUD. Every option is off by default, so the game looks like
 //! vanilla until the player changes one, and none of them shows anything vanilla doesn't
 //! already tell the player.
+use horizon_hooks::look::Look;
 
 /// Colours the PvP options pick from. `Inverted` is vanilla's crosshair blend: the colour
 /// under it, inverted.
@@ -263,15 +264,6 @@ impl ViewWeather {
         Self::ALL.into_iter().find(|c| c.name() == s)
     }
 }
-/// The day time this player sees with `fixed` set: the same day (the moon's phase follows the
-/// world's), at that time.
-pub fn view_day_time(world: i64, fixed: Option<ViewTime>) -> i64 {
-    match fixed {
-        Some(t) => world.div_euclid(24000) * 24000 + t.day_time(),
-        None => world,
-    }
-}
-
 /// The crosshair's look. Its defaults draw vanilla's: a 15-pixel cross, one pixel thick,
 /// inverting what is under it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -528,24 +520,36 @@ impl Hit {
     }
 }
 
-/// What the renderer reads of these options each frame (`FrameInputs::pvp`); the default is
-/// vanilla's look.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Frame {
-    /// The block outline's stroke ([`Outline::stroke`]).
-    pub outline: Option<(u32, f32)>,
-    /// The hurt overlay texel ([`Hit::texel`]), 0 for vanilla's.
-    pub hurt_texel: u32,
-    /// The glint's colour ([`Tweaks::glint_texel`]), 0 for vanilla's.
-    pub glint: u32,
-}
 impl Pvp {
-    pub fn frame(&self) -> Frame {
-        Frame {
-            outline: self.outline.stroke(),
-            hurt_texel: self.hit.texel(),
-            glint: self.tweaks.glint_texel(),
-        }
+    /// What the engine reads of these options (`horizon_hooks::look`): all it draws differently.
+    /// Sets PvP & HUD's fields of `look`, the others' stay.
+    pub fn apply(&self, look: &mut Look) {
+        let (c, t) = (self.combat, self.tweaks);
+        look.legacy_pose = c.legacy;
+        look.hide_attack_indicator = c.legacy && !c.indicator;
+        look.mute_attack_sounds = c.legacy && c.sounds;
+        look.hide_attack_particles = c.legacy;
+        look.frame.outline = self.outline.stroke();
+        look.frame.hurt_texel = self.hit.texel();
+        look.frame.glint = t.glint_texel();
+        look.shield_size = t.shield_size;
+        look.totem_scale = f32::from(t.totem_size) / 100.0;
+        look.fire_lower = f32::from(t.fire_lower) / 100.0;
+        look.clear_lava = t.clear_lava;
+        look.clear_water = t.clear_water;
+        look.chat.timestamps = self.chat.timestamps;
+        look.chat.compact = self.chat.compact;
+        look.chat.copy = self.chat.copy;
+        look.chat.search = self.chat.search;
+        look.hide_effect_icons = self.hud.effects;
+        look.time_of_day = t.time.map(ViewTime::day_time);
+        look.weather = t.weather.map(ViewWeather::levels);
+    }
+    /// [`Pvp::apply`] on vanilla's look.
+    pub fn look(&self) -> Look {
+        let mut look = Look::default();
+        self.apply(&mut look);
+        look
     }
 }
 
@@ -741,15 +745,6 @@ pub struct ChatOptions {
     /// Ctrl+F in the chat searches the chat's messages.
     pub search: bool,
 }
-impl ChatOptions {
-    /// What `chat::Chat` lays its lines out with.
-    pub fn qol(&self) -> crate::chat::ChatQol {
-        crate::chat::ChatQol {
-            timestamps: self.timestamps,
-            compact: self.compact,
-        }
-    }
-}
 
 /// Combat feel (`docs/pvp.md`): how fights look. Legacy draws them as 1.8.9 did; what the
 /// game sends to a server never changes, so a vanilla server and its anticheat see 26.3.
@@ -765,21 +760,6 @@ pub struct Combat {
     /// cooldown, no sweep, 1.8 weapon damage, effects, enchantments and critical hits
     /// (`horizon_client::legacy_combat`). Never used as a client of a server.
     pub rules: bool,
-}
-impl Combat {
-    /// Whether this client leaves out sound `name` a server sent: under Legacy with its
-    /// sounds, the `entity.player.attack.*` family (strong, weak, crit, sweep, knockback,
-    /// nodamage), which 1.9 brought with the attack cooldown.
-    pub fn mutes_sound(&self, name: &str) -> bool {
-        let name = name.strip_prefix("minecraft:").unwrap_or(name);
-        self.legacy && self.sounds && name.starts_with("entity.player.attack.")
-    }
-    /// Whether this client leaves out particles of `ty` a server sent: under Legacy, the
-    /// sweep and the damage hearts, which 1.9 brought (1.8.9's hits show crits only).
-    pub fn hides_particle(&self, ty: crate::particles::ParticleType) -> bool {
-        use crate::particles::ParticleType as T;
-        self.legacy && matches!(ty, T::SweepAttack | T::DamageIndicator)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1708,18 +1688,6 @@ mod tests {
     }
 
     #[test]
-    fn a_fixed_time_keeps_the_worlds_day() {
-        // Day 9 at 5000: the moon's phase (the day number) stays, the time of day is the chosen.
-        let world = 9 * 24000 + 5000;
-        assert_eq!(view_day_time(world, None), world);
-        assert_eq!(
-            view_day_time(world, Some(ViewTime::Midnight)),
-            9 * 24000 + 18000
-        );
-        assert_eq!(view_day_time(-100, Some(ViewTime::Noon)), -24000 + 6000);
-    }
-
-    #[test]
     fn the_glint_colour_reaches_the_shaders_as_rgb_bytes() {
         let mut t = Tweaks::default();
         assert_eq!(t.glint_texel(), 0, "vanilla's glint");
@@ -1805,31 +1773,33 @@ mod tests {
         }
     }
 
+    /// Legacy leaves out what 1.9 added to a hit: its sounds only with the sounds option, the
+    /// sweep and hearts always; the indicator stays when kept. Modern changes nothing.
     #[test]
-    fn legacy_leaves_out_what_1_9_added_to_a_hit() {
-        use crate::particles::ParticleType as T;
-        let modern = Combat::default();
-        let legacy = Combat {
-            legacy: true,
-            ..Combat::default()
-        };
-        let sounds = Combat {
-            sounds: true,
-            ..legacy
-        };
-        for name in [
-            "minecraft:entity.player.attack.strong",
-            "entity.player.attack.sweep",
-            "minecraft:entity.player.attack.nodamage",
-        ] {
-            assert!(sounds.mutes_sound(name), "{name}");
-            assert!(!legacy.mutes_sound(name), "only with the sounds option");
-            assert!(!modern.mutes_sound(name));
-        }
-        // 1.8.9 had the hurt sound: it stays.
-        assert!(!sounds.mutes_sound("minecraft:entity.player.hurt"));
-        assert!(legacy.hides_particle(T::SweepAttack) && legacy.hides_particle(T::DamageIndicator));
-        assert!(!legacy.hides_particle(T::Crit) && !legacy.hides_particle(T::EnchantedHit));
-        assert!(!modern.hides_particle(T::SweepAttack));
+    fn combat_feel_reaches_the_look() {
+        let mut pvp = Pvp::default();
+        assert_eq!(pvp.look(), Look::default(), "vanilla's look");
+        let strong = "minecraft:entity.player.attack.strong";
+        pvp.combat.legacy = true;
+        let look = pvp.look();
+        assert!(look.legacy_pose && look.hide_attack_particles && look.hide_attack_indicator);
+        assert!(!look.mutes_sound(strong), "only with the sounds option");
+        pvp.combat.sounds = true;
+        pvp.combat.indicator = true;
+        let look = pvp.look();
+        assert!(look.mutes_sound(strong) && !look.hide_attack_indicator);
+    }
+
+    #[test]
+    fn view_time_weather_and_sizes_reach_the_look() {
+        let mut pvp = Pvp::default();
+        pvp.tweaks.time = Some(ViewTime::Midnight);
+        pvp.tweaks.weather = Some(ViewWeather::Thunder);
+        pvp.tweaks.totem_size = 50;
+        pvp.tweaks.fire_lower = 40;
+        let look = pvp.look();
+        assert_eq!(look.day_time(9 * 24000 + 5000), 9 * 24000 + 18000);
+        assert_eq!(look.weather, Some((1.0, 1.0)));
+        assert_eq!((look.totem_scale, look.fire_lower), (0.5, 0.4));
     }
 }

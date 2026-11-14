@@ -239,6 +239,7 @@ mod llamas;
 mod loading_screen;
 mod loading_window;
 mod locator_bar;
+mod look;
 mod loom;
 mod mace;
 mod machines;
@@ -2818,9 +2819,8 @@ struct Game<'a> {
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>, bool)>,
     /// Recent frame times for the performance overlay.
     frame_graph: horizon_client::perf_overlay::FrameGraph,
-    /// Horizon's extras (minimap, auto-reconnect; mods' counters): `game/extras.rs`.
+    /// Horizon's extras (mods' minimap and counters; PvP & HUD's): `game/extras.rs`.
     extras: extras::ExtrasState,
-    /// The PvP & HUD options' state (`game/extras/pvp.rs`).
     pvp: extras::pvp::PvpState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
     mods: mods::ModsState,
@@ -5845,7 +5845,7 @@ impl Game<'_> {
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         self.input_hud_begin();
         let mut batch = HudBatch::new(size);
-        batch.glint_colour = self.pvp_glint_texel();
+        batch.glint_colour = self.glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
         batch.game_time = ((self.world.game_time.rem_euclid(24000)) as f32
             + self.clock.fraction() as f32)
@@ -5957,7 +5957,7 @@ impl Game<'_> {
             // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
             // extractVehicleHealth and the experience bar, laid out by hud_layout.
             // Combat feel Legacy hides the attack indicator unless the player keeps it.
-            let indicator = if self.pvp_hides_attack_indicator() {
+            let indicator = if self.attack_indicator_hidden() {
                 0
             } else {
                 self.settings.attack_indicator
@@ -6022,7 +6022,7 @@ impl Game<'_> {
             });
             self.gui_layer("minecraft:effects", &mut batch, |g, batch| {
                 // The PvP & HUD effects widget takes the icons' place.
-                if !g.pvp_effects_shown() {
+                if !g.effect_icons_hidden() {
                     g.draw_effect_icons(batch);
                 }
             });
@@ -9656,7 +9656,7 @@ impl Game<'_> {
             outline,
             outline_after_terrain,
             outline_high_contrast: self.settings.file.bool("highContrastBlockOutline"),
-            pvp: self.pvp_render_frame(),
+            look: self.look_frame(),
             debug_lines: &debug_lines,
             debug_lines_on_top: &debug_lines_on_top,
             debug_crosshair: &debug_crosshair,

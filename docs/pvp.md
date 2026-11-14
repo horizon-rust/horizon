@@ -22,6 +22,7 @@ Each feature is built from what it visibly does, never from another client's or 
 | Settings, parsing, the page's rows | `crates/horizon-client-render/src/pvp.rs` (stored in `horizon-extras.txt`, see [extras.md](extras.md)) |
 | The page | `options_ui.rs` (`Page::Pvp`), the rows of `pvp::rows()` drawn like the Extras page |
 | Game glue | `crates/horizon-client/src/game/extras/pvp.rs` |
+| What the engine draws differently | `horizon_hooks::look` (`Look`, PvP & HUD's fields set each frame from the options by `Pvp::apply`); the engine reads it only in `game/look.rs` |
 
 ## Crosshair (`crosshair`, default off)
 
@@ -136,7 +137,7 @@ There is no "no hurt camera" option: vanilla's Accessibility → Damage Tilt alr
 
 The time of day (morning, noon, sunset, midnight) and the weather (clear, rain, thunder) this player sees. Only
 the frame changes: the sky's colours, sun, moon and stars, the sky's light in the lightmap, the rain and its
-fog (`Game::view_day_time`, `Game::view_weather` in `game/extras/pvp.rs`). The world's `day_time` and weather, and all
+fog (`Game::view_day_time`, `Game::view_weather` in `game/look.rs`). The world's `day_time` and weather, and all
 that plays by them (mobs, crops, beds, riptide, rain sounds), stay the server's, and nothing is sent to it.
 The moon keeps the world's phase. Only a client of a server draws it (single player's window is one), in the
 Overworld.
