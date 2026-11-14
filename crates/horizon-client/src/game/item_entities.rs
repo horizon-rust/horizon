@@ -286,7 +286,7 @@ impl Game<'_> {
                         // `ClientPacketListener.handleTakeItemEntity` pitches the
                         // pickup from the listener's own random, not the level's.
                         let mut r = random_source::create();
-                        let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
+                        let pitch = (r.next_float() - r.next_float()) * 1.4 + 2.0;
                         self.audio
                             .play("minecraft:entity.item.pickup", Some(feet), 0.2, pitch);
                         continue;
@@ -309,7 +309,7 @@ impl Game<'_> {
                             // handleTakeItemEntity: the random pitch of a full pickup,
                             // from the listener's own random as above.
                             let mut r = random_source::create();
-                            let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
+                            let pitch = (r.next_float() - r.next_float()) * 1.4 + 2.0;
                             self.audio
                                 .play("minecraft:entity.item.pickup", Some(feet), 0.2, pitch);
                         }
