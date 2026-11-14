@@ -254,6 +254,7 @@ above. Native upscaling
 blends the gamma-stored frame as it is; a tone-weighted resolve is for passes that accumulate linear light (a 0.2
 pack's post chain, or the frame under linear storage), where bright pixels would otherwise sparkle. Frame generation stays off with HDR output, as today.
 The rules such a pass keeps now are in [hdr-passes.md](../hdr-passes.md).
+Where a 0.2 pack's stages, post chain and `[tonemap]` sit around them is in [shader-api-frame.md](shader-api-frame.md) (proposed).
 
 ## Tests
 
