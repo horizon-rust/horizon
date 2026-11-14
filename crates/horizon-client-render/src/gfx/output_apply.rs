@@ -7,7 +7,7 @@
 //! moment's loss of the display's report ([`auto_grace`]).
 use super::{DisplayReading, DisplayWatch, Renderer, hdr, output};
 use crate::graphics::HdrMode;
-use output::{EffectiveOutput, OutputCapabilities};
+use output::{EffectiveOutput, FrameRequest, OutputCapabilities};
 use std::time::{Duration, Instant};
 
 /// What an output's resources are made for: the encoding presented and the frame.
@@ -148,7 +148,7 @@ fn grace_over(since: Option<Instant>, now: Instant) -> bool {
 
 /// What the display reports as the output takes it: during Auto's grace (`since`), HDR at the
 /// luminance `applied` was resolved with; `raw` otherwise.
-pub(super) fn graced(
+fn graced(
     since: Option<Instant>,
     raw: DisplayReading,
     applied: &EffectiveOutput,
@@ -385,6 +385,34 @@ impl Renderer {
         }
     }
 
+    /// Whether this renderer's frame is the one a renderer made now would draw in
+    /// (`requested_frame`). Under `HORIZON_HDR_FRAME=float` the game makes the renderer again
+    /// when it isn't (docs/design/hdr-linear-light.md, "When it changes"), and the new one
+    /// takes this one's world (`take_world`).
+    pub fn frame_follows(
+        &self,
+        settings: &crate::graphics::Graphics,
+        request: FrameRequest,
+    ) -> bool {
+        self.requested_frame(settings, request) == self.output.frame
+    }
+    /// The frame a renderer made now would draw in (`output::resolve_frame`) for `settings`
+    /// and the pack's `request`, with what this renderer's destination offers and its display
+    /// reports.
+    pub fn requested_frame(
+        &self,
+        settings: &crate::graphics::Graphics,
+        request: FrameRequest,
+    ) -> output::FrameConfiguration {
+        output::resolve_frame(
+            settings,
+            request,
+            self.caps_for(settings),
+            graced(self.auto_off_since, self.reading, &self.output),
+            self.config.format,
+        )
+    }
+
     /// The swapchain's configuration: `config` (what every pipeline draws in), or
     /// HDR10 or scRGB while HDR output is on.
     pub(super) fn surface_config(&self) -> wgpu::SurfaceConfiguration {
@@ -434,7 +462,6 @@ mod tests {
     use super::*;
     use crate::graphics::{Graphics, HdrMode, Reported};
     use hdr::Output::{Pq, ScRgb};
-    use output::FrameRequest;
     use output::tests::{snapshot, window};
 
     /// A swapchain that records what it was asked to present, and fails `fails`.
@@ -664,6 +691,9 @@ mod tests {
         /// What the system reports when it is read, and when (ms) it was.
         report: DisplayReading,
         reads: Vec<u64>,
+        /// The game follows the frame (`HORIZON_HDR_FRAME=float`): the frames it made the
+        /// renderer again for. `None`: the renderer keeps the frame it was made with.
+        made: Option<Vec<output::FrameConfiguration>>,
     }
     impl Auto {
         /// `polled`: the system is read every `DISPLAY_POLL` from 0, else it sends events
@@ -692,6 +722,7 @@ mod tests {
                 swapchain: Swapchain::default(),
                 report: reading,
                 reads: Vec::new(),
+                made: None,
             }
         }
         /// A frame at `ms`.
@@ -771,11 +802,23 @@ mod tests {
                 reading,
                 wgpu::TextureFormat::Bgra8UnormSrgb,
             );
-            assert_eq!(
-                frame == self.applied.frame,
-                self.applied.hdr_on(),
-                "{ms} ms"
-            );
+            let Some(made) = &mut self.made else {
+                assert_eq!(
+                    frame == self.applied.frame,
+                    self.applied.hdr_on(),
+                    "{ms} ms"
+                );
+                return;
+            };
+            if frame != self.applied.frame {
+                // The game's `follow_frame`: a renderer for that frame, which presents SDR
+                // until the settings are applied to it, with a watch and a timer of its own.
+                made.push(frame);
+                let new = output::resolve_output(&self.settings, self.caps, reading, frame, false);
+                let next = candidate(&self.settings, self.caps, self.reading, &new);
+                self.since = None;
+                self.applied = commit(&mut self.swapchain, &new, next, self.caps, &mut None);
+            }
         }
         fn presented(&self) -> Vec<Option<hdr::Output>> {
             self.swapchain.asked.iter().map(|a| a.0).collect()
@@ -804,6 +847,38 @@ mod tests {
             assert!(auto.presented().is_empty(), "{lost:?}");
             assert_eq!(auto.applied.frame, before.frame);
         }
+    }
+
+    /// Auto on, off and on again where the frame follows HDR: the system's HDR turns off
+    /// (Win+Alt+B, the window on another display) and comes back. HDR turns off once the loss
+    /// has held, and the renderer is made for the 8-bit frame; back, it is made for the
+    /// layered one, and the output is the one it started with: encoding, frame, nits and UI
+    /// brightness.
+    #[test]
+    fn auto_on_off_on_ends_on_the_output_it_started_with() {
+        let mut auto = Auto::new(true);
+        auto.made = Some(Vec::new());
+        let (before, reported) = (auto.applied, auto.report);
+        auto.frames(0, 1990);
+        assert_eq!(auto.applied, before);
+        auto.reports(Some(false), Some(Pq));
+        auto.frames(2000, 2490);
+        assert_eq!(auto.applied, before, "the loss has not held yet");
+        auto.frames(2500, 3990);
+        let off = auto.applied;
+        assert_eq!((off.encoding, off.system_hdr), (None, Some(false)));
+        assert_eq!(
+            (off.frame.format, off.frame.hud_layer),
+            (wgpu::TextureFormat::Bgra8Unorm, false)
+        );
+        assert_eq!(auto.made.as_deref(), Some(&[off.frame][..]));
+        auto.report = reported;
+        auto.frames(4000, 5990);
+        assert_eq!(auto.applied, before);
+        assert_eq!(auto.made.as_deref(), Some(&[off.frame, before.frame][..]));
+        // Off once; on again on the 8-bit frame as the display says so, then on the frame
+        // made for it.
+        assert_eq!(auto.presented(), [None, Some(Pq), Some(Pq)]);
     }
 
     /// A loss held through 600 ms turns HDR off once, at 500 ms, and on an event-driven

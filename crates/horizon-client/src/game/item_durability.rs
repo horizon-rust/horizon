@@ -14,6 +14,7 @@ impl Game<'_> {
         blocking: Option<horizon_client::health::Blocking>,
         living_cause: bool,
         causing: i32,
+        armor_weapon: Option<horizon_client::health::ArmorWeapon>,
     ) -> horizon_client::Result<(horizon_client::health::BlockOutcome, f32)> {
         let mut hit = self
             .player
@@ -27,6 +28,7 @@ impl Game<'_> {
                 blocking,
                 living_cause,
                 causing,
+                armor_weapon,
             )?;
         if let Some(damage) = hit.helmet_damage()
             && self.armor[0]
@@ -71,7 +73,10 @@ impl Game<'_> {
         let marked_before = std::mem::take(&mut p.health.sync_velocity);
         p.velocity = before.add_vector(push);
         let canceled = source
-            .and_then(|id| self.hurt_player_equipment(id, amount, None, false, 0).ok())
+            .and_then(|id| {
+                self.hurt_player_equipment(id, amount, None, false, 0, None)
+                    .ok()
+            })
             .is_some_and(|(o, _)| o.canceled);
         if let Some(p) = self.player.as_mut() {
             if !p.health.sync_velocity {
@@ -147,7 +152,7 @@ impl Game<'_> {
             // ItemStack.isDamageableItem: component removal and
             // unbreakable are checked before enchantment RNG or hooks.
             if stack.count == 0
-                || !info.equip_damage_on_hurt
+                || !horizon_client::item_sync::damage_on_hurt(&stack, info.equip_damage_on_hurt)
                 || component("minecraft:unbreakable").is_some()
                 || component("!minecraft:max_damage").is_some()
                 || component("!minecraft:damage").is_some()
@@ -242,10 +247,8 @@ impl Game<'_> {
         {
             stack.damage += amount;
             if stack.damage >= max {
-                let broken = stack.item.clone();
                 let gone = stack.clone();
                 *cell = None;
-                self.award_stat("broken", &broken, 1);
                 // LivingEntity.onEquippedItemBroken: the sound and the crumbs.
                 self.player_equipment_broke(break_slot, &gone);
             }

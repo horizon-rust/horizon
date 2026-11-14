@@ -3,6 +3,19 @@
 use super::*;
 
 impl Game<'_> {
+    /// `Level.playSound(player, ...)`: a guest's client already predicted the
+    /// fire-starter sound, so play it locally on the server and forward it to
+    /// the other guests without leaving it in the broadcast capture.
+    pub(super) fn play_block_use_sound(&mut self, sound: &str, at: [f64; 3], pitch: f32) {
+        if self.lan_acting.is_some() {
+            self.audio.play_unshared(sound, Some(at), 1.0, pitch);
+            self.guest_block_sounds
+                .push((sound.to_owned(), at, 1.0, pitch));
+        } else {
+            self.audio.play(sound, Some(at), 1.0, pitch);
+        }
+    }
+
     /// One hand's turn in `startUseItem`: `useItemOn` the block aimed at,
     /// then `useItem`. Whether the click ends here (it acted or failed).
     pub(super) fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
@@ -127,6 +140,10 @@ impl Game<'_> {
                     self.with_level(|b, _, _| b.cake_candle_state(cake, item.as_deref()).is_some());
                 let pots_flower = self
                     .with_level(|b, _, _| b.potted_flower_state(cake, item.as_deref()).is_some());
+                // Read before the use runs: a sign's click commands execute in
+                // `process_level_events` and may change or remove the sign, but
+                // vanilla keeps the click consumed (`executedClickCommand`).
+                let sign_consumes = self.sign_consumes_click(hit.pos);
                 let (result, branch) = self.with_level(|b, level, ticks| {
                     b.use_item_on_branch(
                         level,
@@ -178,7 +195,15 @@ impl Game<'_> {
                         _ => {}
                     }
                 }
-                if result.consumes_action() {
+                // SignBlock.useWithoutItem answers PASS for a sign that is
+                // not waxed, has no click action to run and that nobody may
+                // build on: ServerPlayerGameMode.useItemOn goes on to
+                // ItemStack.useOn, so an adventure-mode `can_place_on` stack
+                // still places against the sign.
+                let sign_passes = branch == horizon_world::level::UseBranch::WithoutItem
+                    && self.res.facts().get(cake).sign_form().is_some()
+                    && !sign_consumes;
+                if result.consumes_action() && !sign_passes {
                     // ServerPlayerGameMode.useItemOn: ITEM_USED_ON_BLOCK with
                     // the stack before the use, or DEFAULT_BLOCK_USE.
                     match branch {
@@ -238,8 +263,11 @@ impl Game<'_> {
             return Ok(true);
         }
         // ItemStack.useOn: after the block's own useItemOn/useWithoutItem
-        // passed. DebugStickItem.useOn cycles the selected property.
-        if let Some(hit) = block_hit
+        // passed, and only where the player may use an item on that block.
+        // DebugStickItem.useOn cycles the selected property.
+        let may_use_on = block_hit.is_some_and(|hit| self.may_use_on(hit.pos));
+        if may_use_on
+            && let Some(hit) = block_hit
             && let Some(success) = self.debug_stick_use_on(hit.pos)?
         {
             // `Minecraft.startUseItem`: the stick's client-side `useOn` is
@@ -261,13 +289,14 @@ impl Game<'_> {
         // TntBlock.useItemOn is the block's own: a sneak with something in hand skips it, and
         // the flint and steel or fire charge lights a fire on the TNT instead.
         if block_hit.is_some()
-            && (self.use_bone_meal(&stack)?
+            && ((may_use_on && self.use_bone_meal(&stack)?)
                 || (!(sneaking && hands_full) && self.ignite_tnt(&stack)?))
         {
             return Ok(true);
         }
         // ShearsItem.useOn: shears crop a growing plant's head to its top age.
-        if let Some(hit) = block_hit
+        if may_use_on
+            && let Some(hit) = block_hit
             && self.shears_crop(hit.pos, &stack)?
         {
             return Ok(true);
@@ -291,7 +320,8 @@ impl Game<'_> {
             UseResult::Pass => {}
         }
         // PotionItem.useOn comes before PotionItem.use's drink.
-        if let Some(hit) = block_hit
+        if may_use_on
+            && let Some(hit) = block_hit
             && self.use_water_bottle_on_block(hit.pos, hit.face, &stack)?
         {
             return Ok(true);
@@ -378,7 +408,7 @@ impl Game<'_> {
         // ItemStack.useOn passes in adventure mode unless the item's
         // can_place_on matches the clicked block; Item.use then runs as usual.
         if let Some(hit) = block_hit
-            && (self.may_build() || self.can_place_on_in_adventure(hit.pos))
+            && self.may_use_on(hit.pos)
             && (self.launch_firework(hit, &stack)
                 || self.place_minecart(hit, &stack)
                 || self.place_painting(hit, &stack)
@@ -416,7 +446,7 @@ impl Game<'_> {
         if info.block.is_none() {
             return Ok(false);
         }
-        if !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
+        if !self.may_use_on(hit.pos) {
             // ItemStack.useOn passes in adventure mode; useItem eats.
             return Ok(!on_block && self.start_eating(&info));
         }
@@ -433,7 +463,7 @@ impl Game<'_> {
             clicked_pos: BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
             face,
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
-            inside: false,
+            inside: hit.inside,
             yaw: self.yaw,
             pitch: self.pitch,
             sneaking: self.keys.held(Mapping::Sneak),
@@ -461,6 +491,8 @@ impl Game<'_> {
             return Ok(true);
         };
         let target = [pos.x, pos.y, pos.z];
+        let game_master = self.can_use_game_master_blocks();
+        let state = self.lectern_placed(target, state, &stack, game_master)?;
         let state = self.apply_item_block_state(target, state, &stack)?;
         let key = (target[0], target[1], target[2]);
         if !self.world.block_entities.stateful_entity(state.0)
@@ -469,7 +501,6 @@ impl Game<'_> {
             self.world.block_entities.insert(key, entity);
         }
         if self.world.block_entities.get(&key).is_some() {
-            let game_master = self.can_use_game_master_blocks();
             self.apply_placed_item(target, &stack, game_master);
             // Block.setPlacedBy.
             match self.world.block_entities.get(&key) {
@@ -581,7 +612,9 @@ impl Game<'_> {
             }
         }
     }
-    /// BowItem.releaseUsing: power from charge time, arrows at power * 3.
+    /// BowItem.releaseUsing: power from charge time, arrows at power * 3, as
+    /// many as the weapon's `projectile_count` says, fanned by its
+    /// `projectile_spread`.
     pub(super) fn release_bow(&mut self, stack: &ItemStack, ticks: u32) {
         let ammo = self.get_projectile(stack);
         let mut charge = i32::try_from(ticks).unwrap_or(i32::MAX);
@@ -608,43 +641,73 @@ impl Game<'_> {
             critical: power >= 1.0,
             effect,
         };
-        let mut arrow = horizon_client::projectiles::Projectile::new(
-            kind,
-            p,
-            Some(horizon_client::mobs::Who::Player),
-        );
-        // ProjectileWeaponItem.useAmmo: creative and Infinity draw without
-        // using the ammo, so the arrow is CREATIVE_ONLY; else setOwner(player)
-        // lets it be picked up.
-        if let Some(a) = arrow.arrow.as_mut() {
-            a.set_item(&horizon_client::arrows::drawn_ammo(
-                &ammo,
-                self.creative || infinity,
-            ));
-            a.set_owner(Some(horizon_client::mobs::Who::Player));
-            a.fired_from_weapon = weapon;
-        }
-        // Flame: the arrow is spawned burning (EnchantmentHelper.onProjectileSpawned).
-        self.ignite_spawned_arrow(stack, &mut arrow);
+        // ProjectileWeaponItem.draw and shoot: the weapon's enchantments decide
+        // how many arrows leave and how far apart they fan (Multishot: two more
+        // arrows, ten degrees of spread).
+        let (count, spread) = self.bow_volley(stack);
         let (velocity, on_ground) = self.player.as_ref().map_or((Vec3::ZERO, true), |pl| {
             (self.known_player_movement(), pl.ground.on_ground)
         });
-        arrow.shoot_from_rotation(
-            self.pitch,
-            self.yaw,
-            0.0,
-            power * 3.0,
-            1.0,
-            velocity,
-            on_ground,
-        );
-        self.add_projectile(arrow);
-        let (player, name, projectile) = (
-            horizon_client::lan::playerdata::ints_uuid(self.acting_player_uuid()),
-            self.acting_player_name().to_owned(),
-            self.next_entity,
-        );
-        self.native_entity_shoot_bow(player, &name, projectile, power * 3.0);
+        // ProjectileWeaponItem.shoot: an odd count is centred on the view, the
+        // arrows alternate either side of it, `direction` flipping per arrow.
+        // A count of 0 draws nothing and vanilla skips `shoot` altogether.
+        let step = if count <= 1 {
+            0.0
+        } else {
+            2.0 * spread / (count - 1) as f32
+        };
+        let offset = (count.saturating_sub(1) % 2) as f32 * step / 2.0;
+        let mut direction = 1.0f32;
+        for index in 0..count {
+            let angle = offset + direction * index.div_ceil(2) as f32 * step;
+            direction = -direction;
+            let mut arrow = horizon_client::projectiles::Projectile::new(
+                kind.clone(),
+                p,
+                Some(horizon_client::mobs::Who::Player),
+            );
+            // AbstractArrow's constructor asks the weapon for its piercing count.
+            let pierce = self.bow_pierce(stack, &ammo);
+            // ProjectileWeaponItem.useAmmo: creative and Infinity draw without
+            // using the ammo, so the arrow is CREATIVE_ONLY, and only the first
+            // of a volley is the player's to take; else setOwner(player) lets
+            // it be picked up.
+            if let Some(a) = arrow.arrow.as_mut() {
+                a.set_item(&horizon_client::arrows::drawn_ammo(
+                    &ammo,
+                    self.creative || infinity || index > 0,
+                ));
+                a.set_owner(Some(horizon_client::mobs::Who::Player));
+                a.fired_from_weapon = weapon.clone();
+                a.pierce = pierce;
+            }
+            // Flame: the arrow is spawned burning (EnchantmentHelper.onProjectileSpawned).
+            self.ignite_spawned_arrow(stack, &mut arrow);
+            // BowItem.shootProjectile: shootFromRotation(power * 3, inaccuracy 1).
+            arrow.shoot_from_rotation(
+                self.pitch,
+                self.yaw + angle,
+                0.0,
+                power * 3.0,
+                1.0,
+                velocity,
+                on_ground,
+            );
+            self.add_projectile(arrow);
+            let (player, name, projectile) = (
+                horizon_client::lan::playerdata::ints_uuid(self.acting_player_uuid()),
+                self.acting_player_name().to_owned(),
+                self.next_entity,
+            );
+            self.native_entity_shoot_bow(player, &name, projectile, power * 3.0);
+            // ProjectileWeaponItem.shoot: one point of wear per arrow, and a
+            // bow that breaks mid-volley shoots no more.
+            let held = self.held().is_some();
+            self.damage_held(1);
+            if held && self.held().is_none() {
+                break;
+            }
+        }
         // ArrowState posts projectile_shoot on the arrow's first tick.
         let pitch = 1.0 / (self.world.random.next_float() * 0.4 + 1.2) + power * 0.5;
         // BowItem.releaseUsing: `playSound(null, getX(), getY(), getZ(), ...)`, at
@@ -656,7 +719,10 @@ impl Game<'_> {
         self.audio
             .play("minecraft:entity.arrow.shoot", Some(feet), 1.0, pitch);
         self.award_stat("used", "minecraft:bow", 1);
-        if !self.creative
+        // useAmmo takes one arrow for the first drawn projectile and none for
+        // the rest, and none at all when the weapon draws none.
+        if count > 0
+            && !self.creative
             && !infinity
             && let Some(i) = arrow_slot
         {
@@ -668,10 +734,68 @@ impl Game<'_> {
                 }
             }
         }
-        self.damage_held(1);
+    }
+    /// `EnchantmentHelper.processProjectileCount` and `processProjectileSpread`
+    /// for `weapon`: the arrows a shot draws (1, plus Multishot's 2) and the
+    /// spread they fan over (0, plus Multishot's 10 degrees).
+    fn bow_volley(&mut self, weapon: &ItemStack) -> (usize, f32) {
+        let ctx = horizon_client::enchant::EffectContext {
+            this: Some("minecraft:player"),
+            items: Some(world_items!(self)),
+            ..Default::default()
+        };
+        let enchantments = &world_stations!(self).enchantments;
+        let count = enchantments.modify_value(
+            Some(weapon),
+            "minecraft:projectile_count",
+            &ctx,
+            &mut self.world.random,
+            1.0,
+        );
+        let spread = enchantments.modify_value(
+            Some(weapon),
+            "minecraft:projectile_spread",
+            &ctx,
+            &mut self.world.random,
+            0.0,
+        );
+        (count.floor().max(0.0) as usize, spread.max(0.0))
+    }
+    /// `EnchantmentHelper.getPiercingCount` for `ammo`: the weapon's
+    /// `projectile_piercing` (Piercing, one entity per level).
+    fn bow_pierce(&mut self, weapon: &ItemStack, ammo: &ItemStack) -> u8 {
+        let ctx = horizon_client::enchant::EffectContext {
+            tool: Some(&ammo.item),
+            items: Some(world_items!(self)),
+            ..Default::default()
+        };
+        let pierce = world_stations!(self).enchantments.modify_value(
+            Some(weapon),
+            "minecraft:projectile_piercing",
+            &ctx,
+            &mut self.world.random,
+            0.0,
+        );
+        pierce.floor().clamp(0.0, 127.0) as u8
     }
 }
 
 #[cfg(test)]
+#[path = "sign_use_tests.rs"]
+mod sign_use_tests;
+
+#[cfg(test)]
+#[path = "bow_enchantment_tests.rs"]
+mod bow_enchantment_tests;
+
+#[cfg(test)]
 #[path = "sign_chain_tests.rs"]
 mod sign_chain_tests;
+
+#[cfg(test)]
+#[path = "scaffolding_inside_tests.rs"]
+mod scaffolding_inside_tests;
+
+#[cfg(test)]
+#[path = "adventure_use_on_tests.rs"]
+mod adventure_use_on_tests;

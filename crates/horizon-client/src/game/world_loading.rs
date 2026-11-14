@@ -157,11 +157,7 @@ impl WorldRequest {
         horizon_client::save::migrate_legacy(&save_root)?;
         let session_lock = horizon_client::save::SessionLock::acquire(&save_root)?;
         // RandomSequences: the world's data/minecraft/random_sequences.dat.
-        let rand_sequences =
-            horizon_client::save::read_dat(&save_root.join("data/minecraft/random_sequences.dat"))
-                .and_then(|t| t.get("data").cloned())
-                .map(|d| horizon_client::random_sequences::RandomSequences::from_nbt(&d))
-                .unwrap_or_default();
+        let rand_sequences = super::trading::read_random_sequences(&save_root);
         let existing = Level::read(&save_root);
         let created = existing.is_none();
         let level = existing.unwrap_or_else(|| Level {
@@ -681,11 +677,28 @@ pub(super) fn level_shapes(
         .collect();
     let mut shapes = LevelShapes::VANILLA;
     if enabled.is_empty() {
+        horizon_world::level::set_sea_levels(Vec::new());
         return shapes;
     }
     // What the packs leave out is logged when the generator reads them.
     let (overrides, _) =
         horizon_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b));
+    // The sea levels of the noise settings the packs replace, for this world only.
+    horizon_world::level::set_sea_levels(
+        [
+            "minecraft:overworld",
+            "minecraft:the_nether",
+            "minecraft:the_end",
+        ]
+        .into_iter()
+        .filter_map(|level| {
+            Some((
+                horizon_core::LevelKey::builtin_or_overworld(level),
+                overrides.level_sea_level(level)?,
+            ))
+        })
+        .collect(),
+    );
     for level in [
         "minecraft:overworld",
         "minecraft:the_nether",
@@ -804,6 +817,17 @@ pub(super) fn make_streaming(
             }
         }
     });
+    // The level's sea level is its generator's (`ChunkGenerator.getSeaLevel`); a superflat
+    // generator's is -63 (`FlatLevelSource.getSeaLevel`).
+    let register_sea_level = |sea_level: i32| {
+        horizon_world::level::register_sea_level(
+            horizon_core::LevelKey::builtin_or_overworld(dim.id()),
+            sea_level,
+        );
+    };
+    if flat.is_some() || flat_vanilla.is_some() {
+        register_sea_level(-63);
+    }
     let mut streaming = if let Some(inner) = debug {
         Streaming::new(
             Arc::new(Persistent {
@@ -888,6 +912,7 @@ pub(super) fn make_streaming(
                 }
             })?;
         inner.add_mod_signs(res.facts());
+        register_sea_level(inner.sea_level());
         let inner = Arc::new(inner);
         // The first mob a fresh chunk generates needs the mob data: read it now,
         // off the server's tick (#13857). The End's chunks generate none.

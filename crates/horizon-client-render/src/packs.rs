@@ -468,17 +468,20 @@ fn read_meta(source: &Source) -> Option<serde_json::Value> {
 /// file with a comment after the closing brace. Gson reads past a UTF-8 byte order mark;
 /// serde_json rejects it.
 pub(crate) fn parse_meta(bytes: &[u8]) -> Option<serde_json::Value> {
-    first_json(bytes)
+    first_json(bytes).ok()
 }
-
-/// Reads the first JSON value from resource metadata, matching Gson's
-/// `JsonReader` (which ignores a trailing signature or comment). Resource
-/// packs commonly append such text to texture metadata as well as pack.mcmeta.
-pub(crate) fn first_json(bytes: &[u8]) -> Option<serde_json::Value> {
-    serde_json::Deserializer::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes))
+/// The first JSON value of a `.mcmeta` file, as `ResourceMetadata.fromJsonStream` reads it:
+/// Gson's `TypeAdapter.read` stops after the value, so text after it (packs leave `//` notes
+/// there) is never read, and a UTF-8 byte order mark is skipped.
+pub(crate) fn first_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> serde_json::Result<T> {
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    match serde_json::Deserializer::from_slice(bytes)
         .into_iter()
-        .next()?
-        .ok()
+        .next()
+    {
+        Some(value) => value,
+        None => Err(serde::de::Error::custom("empty metadata")),
+    }
 }
 /// A pack's Polytone config entries (`assets/<namespace>/polytone/config_entries/<name>.json`,
 /// in the pack's base, not its overlays) at their default values.
@@ -653,13 +656,31 @@ pub fn discover(resources: &Path, packs_dir: &Path) -> Vec<Pack> {
 /// The packs (folders and zips) in `dir`, by name, as `FolderRepositorySource`
 /// finds them; their compatibility is against `format`.
 pub fn folder(dir: &Path, format: (i64, i64)) -> Vec<Pack> {
+    folder_with(dir, format, &DirectoryValidator::game())
+}
+/// [`folder`] under an explicit `allowed_symlinks.txt` validator.
+pub(crate) fn folder_with(
+    dir: &Path,
+    format: (i64, i64),
+    validator: &DirectoryValidator,
+) -> Vec<Pack> {
     let mut user: Vec<Pack> = fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|e| {
-            let path = e.path();
             let name = e.file_name().to_string_lossy().into_owned();
+            let path = match detected_pack_path(&e.path(), validator) {
+                Ok(Some(path)) => path,
+                Ok(None) => return None,
+                Err(err) => {
+                    log::warn!(
+                        "Failed to read properties of '{}', ignoring: {err}",
+                        e.path().display()
+                    );
+                    return None;
+                }
+            };
             let source = if path.is_dir() {
                 Source::Dir(path)
             } else if path
@@ -675,6 +696,158 @@ pub fn folder(dir: &Path, format: (i64, i64)) -> Vec<Pack> {
         .collect();
     user.sort_by(|a, b| a.id.cmp(&b.id));
     user
+}
+
+/// `LevelStorageSource.ALLOWED_SYMLINKS_CONFIG_NAME`: the game folder's list of
+/// symbolic link targets the game accepts.
+pub const ALLOWED_SYMLINKS_CONFIG_NAME: &str = "allowed_symlinks.txt";
+
+/// `DirectoryValidator` over vanilla's `PathAllowList`: which symbolic link
+/// targets the game accepts. With no entry, no link is, so a link planted in a
+/// pack folder cannot point the game at the rest of the disk.
+#[derive(Default)]
+pub struct DirectoryValidator {
+    /// `EntryType.PREFIX`: a target whose text starts with the entry matches.
+    prefixes: Vec<String>,
+}
+impl DirectoryValidator {
+    /// `LevelStorageSource.parseValidator`: the entries of `config`, none when
+    /// it is missing, unreadable or unparseable. `[glob]` and `[regex]` entries
+    /// are skipped with a warning: Horizon has no Java path matcher to compile
+    /// them with, so a skipped entry allows less than vanilla's, never more,
+    /// except that vanilla denies every link when an entry fails to compile.
+    pub fn parse(config: &Path) -> Self {
+        let Ok(text) = fs::read_to_string(config) else {
+            return Self::default();
+        };
+        let mut prefixes = Vec::new();
+        for line in text.lines() {
+            // `ConfigEntry.parse`: blank lines and comments, untrimmed otherwise.
+            if line.trim().is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some(rest) = line.strip_prefix('[') else {
+                prefixes.push(line.to_owned());
+                continue;
+            };
+            let Some((kind, pattern)) = rest.split_once(']') else {
+                // `ConfigEntry.parse` throws on an unterminated type, and
+                // `parseValidator` then keeps no entry at all.
+                log::error!(
+                    "Horizon: {}: unterminated type in {line:?}",
+                    config.display()
+                );
+                return Self::default();
+            };
+            match kind {
+                "prefix" => prefixes.push(pattern.to_owned()),
+                "glob" | "regex" => log::warn!(
+                    "Horizon: {}: {kind} entry {pattern:?} is not supported and allows nothing",
+                    config.display()
+                ),
+                _ => {
+                    // An unsupported type throws in `parse`, as an unterminated
+                    // one does: the whole file then allows no link.
+                    log::error!(
+                        "Horizon: {}: unsupported type in {line:?}",
+                        config.display()
+                    );
+                    return Self::default();
+                }
+            }
+        }
+        Self { prefixes }
+    }
+    /// The game folder's list, as `Minecraft` reads it from
+    /// `gameDirPath.resolve("allowed_symlinks.txt")`; the game folder is the
+    /// working directory, as for `options.txt`.
+    pub fn game() -> Self {
+        Self::parse(
+            &std::env::current_dir()
+                .unwrap_or_default()
+                .join(ALLOWED_SYMLINKS_CONFIG_NAME),
+        )
+    }
+    /// `PathAllowList.matches`, on the target as written, not resolved.
+    fn allows(&self, target: &Path) -> bool {
+        target
+            .to_str()
+            .is_some_and(|t| self.prefixes.iter().any(|p| t.starts_with(p.as_str())))
+    }
+}
+/// `DirectoryValidator.validateKnownDirectory`: every link under `dir`, never
+/// following one, added to `issues` with its target unless the validator
+/// allows the target.
+fn forbidden_links(
+    dir: &Path,
+    validator: &DirectoryValidator,
+    issues: &mut Vec<(PathBuf, PathBuf)>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            let target = fs::read_link(&path)?;
+            if !validator.allows(&target) {
+                issues.push((path, target));
+            }
+        } else if kind.is_dir() {
+            forbidden_links(&path, validator, issues)?;
+        }
+    }
+    Ok(())
+}
+/// `FolderRepositorySource.discoverPacks`'s warning for a refused entry: the
+/// entry, as vanilla names it, and every forbidden link in it.
+fn refused(entry: &Path, issues: &[(PathBuf, PathBuf)]) {
+    let list: Vec<String> = issues
+        .iter()
+        .map(|(link, target)| format!("{}->{}", link.display(), target.display()))
+        .collect();
+    log::warn!(
+        "Ignoring potential pack entry: Failed to validate '{}'. Found forbidden symlinks: {}",
+        entry.display(),
+        list.join(", ")
+    );
+}
+/// `PackDetector.detectPackResources`: the path a pack entry names, once the
+/// validator accepts the entry and every link inside it; `None` when it is
+/// missing or not a pack, `Err` when it cannot be read. A link is followed one
+/// level, to its target as written rather than resolved, as vanilla does.
+pub(crate) fn detected_pack_path(
+    path: &Path,
+    validator: &DirectoryValidator,
+) -> io::Result<Option<PathBuf>> {
+    let mut kind = match fs::symlink_metadata(path) {
+        Ok(meta) => meta.file_type(),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None), // `NoSuchFileException`
+        Err(err) => return Err(err),
+    };
+    let mut target = path.to_path_buf();
+    if kind.is_symlink() {
+        let link = fs::read_link(path)?;
+        if !validator.allows(&link) {
+            refused(path, &[(path.to_path_buf(), link)]);
+            return Ok(None);
+        }
+        target = link;
+        // One level only: the attributes read on the target do not follow a
+        // second link, and such an entry is neither a directory nor a file.
+        kind = fs::symlink_metadata(&target)?.file_type();
+        if kind.is_symlink() {
+            return Ok(None);
+        }
+    }
+    if kind.is_dir() {
+        let mut issues = Vec::new();
+        forbidden_links(&target, validator, &mut issues)?;
+        if !issues.is_empty() {
+            refused(path, &issues);
+            return Ok(None);
+        }
+    }
+    Ok(Some(target))
 }
 /// A file a pack provides: its path (folder packs) and its name inside the pack.
 type Provided = (Option<PathBuf>, String);
@@ -827,13 +1000,6 @@ fn build_overlay_uncached(
     }
     // Vanilla sits below every pack, so filters hide its files too.
     let filters: Vec<&Filter> = packs.iter().flat_map(|p| &p.filter).collect();
-    let touched_dirs: BTreeSet<String> = files
-        .keys()
-        .flat_map(|f| {
-            let parts: Vec<&str> = f.split('/').collect();
-            (1..parts.len()).map(move |n| parts[..n].join("/"))
-        })
-        .collect();
     let zips: Vec<Option<Zip>> = packs
         .iter()
         .map(|p| {
@@ -882,6 +1048,21 @@ fn build_overlay_uncached(
             merged.insert(name.clone(), bytes);
         }
     }
+    add_sprite_renames(
+        vanilla,
+        &merged,
+        &filters,
+        &mut files,
+        &mut hidden,
+        dependencies,
+    );
+    let touched_dirs: BTreeSet<String> = files
+        .keys()
+        .flat_map(|f| {
+            let parts: Vec<&str> = f.split('/').collect();
+            (1..parts.len()).map(move |n| parts[..n].join("/"))
+        })
+        .collect();
     /// A zip entry to write: its pack, its name in the zip and where it goes.
     type Extract<'a> = (usize, &'a str, PathBuf);
     #[allow(clippy::too_many_arguments)]
@@ -1031,6 +1212,123 @@ fn build_overlay_uncached(
         let _ = fs::remove_dir_all(out);
     }
     extracted
+}
+/// `SingleFile` with a `sprite`: the atlas holds the resource's pixels, and the resource's
+/// `.mcmeta`, under the sprite's id. Every other sprite of the blocks and items atlases is its
+/// texture's own id, and the loaders read a model's sprite from `textures/<sprite>.png`, so the
+/// overlay gives a renamed sprite that file. ItemsAdder and Nexo packs name their models'
+/// textures only through these renames (#14485).
+///
+/// A sprite gets its resource's file only when the whole source list, in order, ends on the
+/// rename (`SpriteSourceList.list`: a later source of the same id replaces it), when the other
+/// atlas, which reads the same file, lists it from that resource too or not at all, and when it
+/// has no texture of its own. A texture that is there may be read as itself (another source's
+/// resource, an unstitched or paletted sprite's input), so no alias ever replaces one; such a
+/// sprite draws its own texture, as before aliases.
+fn add_sprite_renames(
+    vanilla: &Path,
+    merged: &BTreeMap<String, Vec<u8>>,
+    filters: &[&Filter],
+    files: &mut BTreeMap<String, (usize, Provided)>,
+    hidden: &mut BTreeSet<String>,
+    dependencies: &mut cache::Dependencies,
+) {
+    use crate::atlas_sources::{
+        SpriteOrigin, SpriteSource, decode, list, list_textures, texture_path,
+    };
+    let png = |id: &str| {
+        texture_path(Path::new(""), id, "textures")
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    let atlases: Vec<_> = ["blocks", "items"]
+        .into_iter()
+        .filter_map(|atlas| merged.get(&format!("assets/minecraft/atlases/{atlas}.json")))
+        .filter_map(|bytes| decode(std::str::from_utf8(bytes).ok()?))
+        .collect();
+    let renamed = |source: &SpriteSource| matches!(source, SpriteSource::Single { resource, sprite: Some(sprite) } if sprite != resource);
+    if !atlases.iter().flatten().any(renamed) {
+        return;
+    }
+    // The textures a source can list: the packs' and vanilla's the packs leave visible.
+    let mut textures: Vec<String> = list_textures(vanilla)
+        .into_iter()
+        .filter(|id| {
+            let name = png(id);
+            !hidden.contains(&name) && !filters.iter().any(|f| f.blocks(&name))
+        })
+        .chain(files.keys().filter_map(|name| {
+            let (namespace, rest) = name.strip_prefix("assets/")?.split_once('/')?;
+            let path = rest.strip_prefix("textures/")?.strip_suffix(".png")?;
+            Some(format!("{namespace}:{path}"))
+        }))
+        .collect();
+    textures.sort();
+    textures.dedup();
+    // Each sprite's resource, `None` where an atlas lists it any other way.
+    let mut renames: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for sources in &atlases {
+        for (sprite, origin) in list(sources, &textures) {
+            let from = match origin {
+                SpriteOrigin::File(resource) if resource != sprite => Some(resource),
+                _ => None,
+            };
+            renames
+                .entry(sprite)
+                .and_modify(|seen| {
+                    if *seen != from {
+                        *seen = None;
+                    }
+                })
+                .or_insert(from);
+        }
+    }
+    let renames = renames
+        .into_iter()
+        .filter(|(sprite, _)| textures.binary_search(sprite).is_err())
+        .filter_map(|(sprite, resource)| Some((png(&resource?), png(&sprite))));
+    // Each resource is the file the packs give, never another rename's sprite.
+    let mut found = Vec::new();
+    for (from, to) in renames {
+        // `texture_path` names an id that would leave the root as a file that is never there.
+        if !stays_inside(&from) || !stays_inside(&to) {
+            continue;
+        }
+        let from_meta = format!("{from}.mcmeta");
+        // A pack's texture with its own `.mcmeta`, or vanilla's below every pack.
+        let (file, meta) = match files.get(&from) {
+            Some(file) => (file.clone(), files.get(&from_meta).cloned()),
+            None => {
+                let (path, meta_path) = (vanilla.join(&from), vanilla.join(&from_meta));
+                dependencies.file(&path);
+                dependencies.file(&meta_path);
+                if !path.is_file() || filters.iter().any(|f| f.blocks(&from)) {
+                    continue;
+                }
+                // `createStackMetadataFinder`: a pack's filter hides vanilla's `.mcmeta` too.
+                let meta = files.get(&from_meta).cloned().or_else(|| {
+                    (meta_path.is_file() && !filters.iter().any(|f| f.blocks(&from_meta)))
+                        .then(|| (0, (Some(meta_path), from_meta.clone())))
+                });
+                ((0, (Some(path), from.clone())), meta)
+            }
+        };
+        found.push((to, file, meta));
+    }
+    for (to, file, meta) in found {
+        let to_meta = format!("{to}.mcmeta");
+        files.insert(to, file);
+        match meta {
+            Some(meta) => {
+                hidden.remove(&to_meta);
+                files.insert(to_meta, meta);
+            }
+            None => {
+                files.remove(&to_meta);
+                hidden.insert(to_meta);
+            }
+        }
+    }
 }
 /// The most the zip packs in `packs` may unpack to in one overlay: 16 times their size on disk
 /// (real packs are mostly PNGs and JSON, a few times smaller zipped at most), at least 64 MiB
@@ -1402,6 +1700,90 @@ impl SelectionModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `FolderRepositorySource.discoverPacks` + `PackDetector.detectPackResources`:
+    /// an entry that is a link, or holds one, is not a pack the game lists.
+    #[cfg(unix)]
+    #[test]
+    fn pack_discovery_refuses_symlinks() {
+        use std::os::unix::fs::symlink;
+        let base = std::env::temp_dir().join(format!("horizon-pack-links-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let meta = br#"{"pack":{"description":"d","pack_format":97}}"#;
+        let pack = |dir: &Path| {
+            fs::create_dir_all(dir.join("assets/deep")).unwrap();
+            fs::write(dir.join("pack.mcmeta"), meta).unwrap();
+        };
+        // A linked pack's target, a file a pack may hold a link to, and a link
+        // whose own target is a link.
+        pack(&base.join("outside/pack"));
+        fs::create_dir_all(base.join("outside")).unwrap();
+        fs::write(base.join("outside/file.txt"), "f").unwrap();
+        symlink(base.join("outside/pack"), base.join("outside/alias")).unwrap();
+        let packs = base.join("packs");
+        for name in ["clean", "nested", "broken"] {
+            pack(&packs.join(name));
+        }
+        symlink(
+            base.join("outside/file.txt"),
+            packs.join("nested/assets/deep/link"),
+        )
+        .unwrap();
+        symlink(base.join("missing"), packs.join("broken/link")).unwrap();
+        symlink(base.join("outside/pack"), packs.join("linked")).unwrap();
+        symlink(base.join("outside/alias"), packs.join("chained")).unwrap();
+        let ids = |validator: &DirectoryValidator| {
+            let mut ids: Vec<String> = folder_with(&packs, RESOURCE_FORMAT, validator)
+                .into_iter()
+                .map(|p| p.id)
+                .collect();
+            ids.extend(
+                crate::datapack::discover_folder_with(&packs, validator)
+                    .into_iter()
+                    .map(|p| p.id),
+            );
+            ids
+        };
+        // Vanilla's default validator, with no `allowed_symlinks.txt`: no link.
+        assert_eq!(
+            ids(&DirectoryValidator::default()),
+            ["file/clean", "file/clean"]
+        );
+        // An entry naming the linked pack's target lets that link, and only it,
+        // through: the pack holding a link to a file, the broken link and the
+        // link to a link stay out. A `[glob]` entry Horizon cannot compile
+        // allows nothing.
+        let allow = base.join(ALLOWED_SYMLINKS_CONFIG_NAME);
+        fs::write(
+            &allow,
+            format!(
+                "# packs shared between game folders\n[glob]**/outside/**\n[prefix]{}\n[prefix]{}\n",
+                base.join("outside/pack").display(),
+                base.join("outside/alias").display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&DirectoryValidator::parse(&allow)),
+            ["file/clean", "file/linked", "file/clean", "file/linked"]
+        );
+        // An unsupported entry type throws in `ConfigEntry.parse`, so the whole
+        // file allows no link.
+        fs::write(
+            &allow,
+            format!(
+                "[bogus]{}\n[prefix]{}\n",
+                base.join("outside/pack").display(),
+                base.join("outside/pack").display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&DirectoryValidator::parse(&allow)),
+            ["file/clean", "file/clean"]
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
 
     /// `DownloadedPackSource.DOWNLOADED_PACK_SELECTION`: the pack is selected,
     /// fixed at the top, cannot be removed, and stays out of options.txt.
@@ -1906,6 +2288,94 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
     #[test]
+    fn a_renamed_atlas_sprite_reads_its_resource() {
+        let base =
+            std::env::temp_dir().join(format!("horizon-sprite-rename-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let write = |path: PathBuf, bytes: &[u8]| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        };
+        let vanilla = base.join("vanilla");
+        let textures = vanilla.join("assets/minecraft/textures");
+        let animation = b"{\"animation\":{}}";
+        write(textures.join("block/sea_lantern.png"), b"lantern");
+        write(textures.join("block/sea_lantern.png.mcmeta"), animation);
+        write(textures.join("item/stick.png"), b"vanilla stick");
+        write(textures.join("item/stick.png.mcmeta"), animation);
+        let meta = br#"{"pack":{"description":"d","pack_format":97}}"#;
+        let pack = base.join("packs/IA");
+        write(pack.join("pack.mcmeta"), meta);
+        write(pack.join("assets/iageneric/textures/item/box.png"), b"box");
+        // An ItemsAdder pack's items atlas: its models name only the `ia:` sprites.
+        write(
+            pack.join("assets/minecraft/atlases/items.json"),
+            br#"{"sources":[
+                {"type":"single","resource":"iageneric:item/box","sprite":"ia:0"},
+                {"type":"single","resource":"minecraft:block/sea_lantern","sprite":"ia:1199"},
+                {"type":"single","resource":"iageneric:item/box","sprite":"minecraft:item/stick"},
+                {"type":"single","resource":"minecraft:item/stick","sprite":"ia:3"},
+                {"type":"single","resource":"iageneric:item/gone","sprite":"ia:2"},
+                {"type":"single","resource":"iageneric:item/box","sprite":"ia:../../../escape"},
+                {"type":"single","resource":"iageneric:item/box","sprite":"ia:7"},
+                {"type":"single","resource":"iageneric:item/box","sprite":"ia:8"},
+                {"type":"single","resource":"iageneric:item/box","sprite":"ia:9"}
+            ]}"#,
+        );
+        // A pack above it: later sources of three of those sprites, a blocks atlas that
+        // disagrees about another, and a filter hiding vanilla's animation of the stick.
+        let higher = base.join("packs/Top");
+        write(
+            higher.join("pack.mcmeta"),
+            br#"{"pack":{"description":"d","pack_format":97},
+                "filter":{"block":[{"path":"textures/item/stick\\.png\\.mcmeta"}]}}"#,
+        );
+        write(
+            higher.join("assets/minecraft/atlases/items.json"),
+            br#"{"sources":[
+                {"type":"single","resource":"minecraft:block/sea_lantern","sprite":"ia:8"},
+                {"type":"filter","pattern":{"namespace":"ia","path":"7"}}
+            ]}"#,
+        );
+        write(
+            higher.join("assets/minecraft/atlases/blocks.json"),
+            br#"{"sources":[
+                {"type":"single","resource":"minecraft:block/sea_lantern","sprite":"ia:9"}
+            ]}"#,
+        );
+        let packs = discover(&vanilla, &base.join("packs"));
+        let out = base.join("overlay");
+        build_overlay(&vanilla, &packs, &out).unwrap();
+        let read = |rel: &str| fs::read(out.join(rel)).ok();
+        let texture = |id: &str| read(&format!("assets/ia/textures/{id}.png"));
+        assert_eq!(texture("0").as_deref(), Some(&b"box"[..]));
+        assert_eq!(read("assets/ia/textures/0.png.mcmeta"), None);
+        // A vanilla resource comes with its animation.
+        assert_eq!(texture("1199").as_deref(), Some(&b"lantern"[..]));
+        assert_eq!(
+            read("assets/ia/textures/1199.png.mcmeta").as_deref(),
+            Some(&animation[..])
+        );
+        // A texture that is there stays itself: other sources may read it (here as `ia:3`'s
+        // resource; an unstitched or paletted sprite's input alike).
+        assert_eq!(
+            read("assets/minecraft/textures/item/stick.png").as_deref(),
+            Some(&b"vanilla stick"[..])
+        );
+        // ...with its `.mcmeta` only where no filter hides it.
+        assert_eq!(texture("3").as_deref(), Some(&b"vanilla stick"[..]));
+        assert_eq!(read("assets/ia/textures/3.png.mcmeta"), None);
+        // A missing resource adds nothing, and no rename leaves the overlay.
+        assert_eq!(texture("2"), None);
+        assert!(!out.join("escape.png").exists());
+        // The last source of a sprite wins: a filter drops it, a later rename replaces it.
+        assert_eq!(texture("7"), None);
+        assert_eq!(texture("8").as_deref(), Some(&b"lantern"[..]));
+        // The two atlases read one file, and disagree about `ia:9`: it gets neither.
+        assert_eq!(texture("9"), None);
+        let _ = fs::remove_dir_all(base);
+    }
+    #[test]
     fn every_file_of_a_big_stack_comes_from_its_top_pack() {
         use std::io::Write as _;
         let base = std::env::temp_dir().join(format!("horizon-pack-stack-{}", std::process::id()));
@@ -2002,15 +2472,14 @@ mod tests {
             zip.finish().unwrap();
             fs::metadata(&path).unwrap().len()
         };
-        // Four 24 MiB files of zeros: well under the per-file limit, 96 MiB in all from a zip of
+        // Three 22 MiB files of zeros: well under the per-file limit, 66 MiB in all from a zip of
         // a few hundred KiB, past the 64 MiB a small pack may unpack to.
         let size = pack(
             "bomb.zip",
             &[
-                ("assets/minecraft/textures/block/a.png", 24),
-                ("assets/minecraft/textures/block/b.png", 24),
-                ("assets/minecraft/textures/block/c.png", 24),
-                ("assets/minecraft/textures/block/d.png", 24),
+                ("assets/minecraft/textures/block/a.png", 22),
+                ("assets/minecraft/textures/block/b.png", 22),
+                ("assets/minecraft/textures/block/c.png", 22),
             ],
         );
         assert!(size < 1 << 20, "the bomb is small: {size} bytes");
@@ -2023,22 +2492,16 @@ mod tests {
             !out.exists(),
             "what was unpacked before the budget ran out stays"
         );
-        // The same files within the budget unpack whole.
+        // A file within the budget unpacks whole.
         fs::remove_file(base.join("packs/bomb.zip")).unwrap();
-        pack(
-            "fine.zip",
-            &[
-                ("assets/minecraft/textures/block/a.png", 24),
-                ("assets/minecraft/textures/block/b.png", 24),
-            ],
-        );
+        pack("fine.zip", &[("assets/minecraft/textures/block/a.png", 8)]);
         let packs = discover(&vanilla, &base.join("packs"));
         build_overlay(&vanilla, &packs, &out).unwrap();
         assert_eq!(
-            fs::metadata(out.join("assets/minecraft/textures/block/b.png"))
+            fs::metadata(out.join("assets/minecraft/textures/block/a.png"))
                 .unwrap()
                 .len(),
-            24 << 20
+            8 << 20
         );
         let _ = fs::remove_dir_all(&base);
     }
