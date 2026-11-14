@@ -471,6 +471,9 @@ impl Game<'_> {
             };
             return Some(at + glam::DVec3::Y * height);
         }
+        if let Some((at, _)) = self.falling_passenger_position(vehicle) {
+            return Some(glam::DVec3::new(at.x, at.y, at.z));
+        }
         // Any other tracked entity sits on its feet; an area effect cloud is
         // 0.5 tall, and ModelEngine parks a model's pivot half a block below
         // its feet for exactly that.

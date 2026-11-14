@@ -3,6 +3,51 @@
 use super::*;
 
 impl Game<'_> {
+    /// A passenger's position on a loaded falling-block vehicle. Falling
+    /// blocks have no extra riding offset; armor stands expose their normal
+    /// entity height as the point for their own passengers.
+    pub(super) fn falling_passenger_position(&self, vehicle: u32) -> Option<(Vec3, Vec3)> {
+        if let Some(falling) = self.falling.iter().find(|f| f.id == vehicle) {
+            return Some((falling.position, falling.previous));
+        }
+        let stand = self.armor_stands.iter().find(|a| a.id == vehicle)?;
+        let height = if stand.marker {
+            0.0
+        } else if stand.small {
+            0.9875
+        } else {
+            1.975
+        };
+        let offset = Vec3::new(0.0, height, 0.0);
+        Some((
+            stand.position.add_vector(offset),
+            stand.previous.add_vector(offset),
+        ))
+    }
+
+    /// Move armor-stand passengers after their falling-block vehicle moved.
+    /// The stand keeps its old position for interpolation, matching the
+    /// passenger tick that follows a vehicle's move in vanilla.
+    fn sync_falling_passengers_at(&mut self, vehicle: u32, position: Vec3, previous: Vec3) {
+        for stand in self
+            .armor_stands
+            .iter_mut()
+            .filter(|stand| stand.vehicle == Some(vehicle))
+        {
+            stand.previous = previous;
+            stand.position = position;
+            stand.velocity = Vec3::ZERO;
+            stand.on_ground = false;
+        }
+    }
+
+    fn sync_falling_passengers(&mut self, vehicle: u32) {
+        let Some(falling) = self.falling.iter().find(|f| f.id == vehicle) else {
+            return;
+        };
+        self.sync_falling_passengers_at(vehicle, falling.position, falling.previous);
+    }
+
     /// Cache only model-dependent work, never an entity's seed, light or pose.
     pub(super) fn falling_model_vertices(
         &self,
@@ -97,6 +142,24 @@ impl Game<'_> {
         let entity_drops = self.ui.rules.bool("entity_drops");
         let join = self.falling[i].join;
         let mut f = self.falling[i].clone();
+        if let Some(vehicle) = self.persist.falling_vehicles.get(&f.id).copied() {
+            if let Some((position, previous)) = self.falling_passenger_position(vehicle) {
+                f.previous = previous;
+                f.position = position;
+                f.velocity = Vec3::ZERO;
+                f.fall_distance = 0.0;
+                f.on_ground = false;
+                let id = f.id;
+                if let Some(j) = self.falling.get_mut(i).filter(|e| e.join == join) {
+                    *j = f;
+                }
+                self.sync_falling_passengers(id);
+                return Ok(());
+            }
+            // The vehicle landed or was discarded. The next tick is the
+            // falling block's own tick, just as a vanilla passenger dismounts.
+            self.persist.falling_vehicles.remove(&f.id);
+        }
         let mut step = self.fall_step(&mut f, entity_drops, entities)?;
         // FallingBlockEntity.tick: a block that comes down where a piston is
         // moving a block neither lands nor breaks (whatever its cancelDrop).
@@ -117,9 +180,12 @@ impl Game<'_> {
         if matches!(step, FallStep::Falling) {
             if let Some(j) = slot {
                 self.falling[j] = f;
+                self.sync_falling_passengers(self.falling[j].id);
             }
             return Ok(());
         }
+        self.sync_falling_passengers_at(f.id, f.position, f.previous);
+        self.persist.falling_vehicles.remove(&f.id);
         if let Some(j) = slot {
             self.falling.remove(j);
         }

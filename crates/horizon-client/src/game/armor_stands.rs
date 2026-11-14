@@ -898,6 +898,28 @@ impl Game<'_> {
         let mut obstacles: Option<horizon_client::entities::ObstacleGrid> = None;
         let mut nearby = Vec::new();
         for i in 0..self.armor_stands.len() {
+            let vehicle = self.armor_stands[i].vehicle;
+            let vehicle_is_falling =
+                vehicle.is_some_and(|id| self.falling.iter().any(|f| f.id == id));
+            if vehicle.is_some() && !vehicle_is_falling && self.armor_stands[i].health <= 0.0 {
+                // A disposable passenger is removed as soon as its falling
+                // vehicle has landed, so its own falling-block passenger can
+                // start the next step in the same entity tick.
+                dead.push(i);
+                continue;
+            }
+            if vehicle_is_falling {
+                // A summoned armor stand can be a disposable passenger of a
+                // falling block. Its Health:0 is kept alive until the vehicle
+                // lands and dismounts it; vanilla ticks it as a passenger,
+                // rather than removing it before the contraption lands.
+                let a = &mut self.armor_stands[i];
+                a.previous = a.position;
+                a.previous_yaw = a.yaw;
+                a.first_tick = false;
+                a.velocity = Vec3::ZERO;
+                continue;
+            }
             let at = self.armor_stands[i].position;
             if !ticking(at.x.floor() as i32, at.z.floor() as i32) {
                 self.armor_stands[i].previous = at;

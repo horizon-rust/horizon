@@ -4,8 +4,11 @@
 #[cfg(test)]
 mod anger_tests;
 mod display;
+#[cfg(test)]
+mod falling_passenger_tests;
 mod hurt_by_refs;
 
+use super::commands::Target;
 use super::{FallingBlock, Game};
 use horizon_client::world::EntityLoadReason;
 use horizon_client::{
@@ -80,6 +83,8 @@ pub struct EntityMemory {
     pub(super) raw: HashMap<u32, Tag>,
     /// Passengers that ride a vehicle, in load order: live entity IDs or unspawned tags.
     pub(super) passenger_slots: HashMap<u32, Vec<PassengerSlot>>,
+    /// Non-mob passenger links restored for falling-block summon contraptions.
+    pub(super) falling_vehicles: HashMap<u32, u32>,
     /// Entities of types Horizon does not simulate, kept per chunk and
     /// written back unchanged.
     unknown: HashMap<(i32, i32), Vec<Tag>>,
@@ -789,6 +794,12 @@ impl Game<'_> {
 
     /// A saved falling block.
     pub(super) fn load_falling(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
+        let mut tag = tag;
+        let passengers = if let Tag::Compound(c) = &mut tag {
+            c.remove(&"Passengers".into())
+        } else {
+            None
+        };
         if let Some((state, position, velocity, age, fall_distance)) =
             entity_nbt::falling_block_from_nbt(&tag)
             && let Some(state) =
@@ -826,6 +837,53 @@ impl Game<'_> {
                 ),
                 saved: Some(Box::new((uuid, tag.clone()))),
             });
+            if let Some(passengers) = passengers {
+                self.spawn_falling_non_mob_passengers(passengers, self.next_entity);
+            }
+        }
+    }
+
+    /// `EntityType.loadEntityRecursive` also loads non-mob passengers. Most
+    /// of Horizon's vehicle support is intentionally mob-specific, but
+    /// falling-block contraptions commonly use armor stands and nested
+    /// falling blocks as a command chain. Keep those entries mounted so the
+    /// blocks land one after another, as they do in vanilla.
+    fn spawn_falling_non_mob_passengers(&mut self, passengers: Tag, vehicle: u32) {
+        let Tag::List(list) = passengers else { return };
+        for mut passenger in list {
+            let nested = if let Tag::Compound(c) = &mut passenger {
+                c.remove(&"Passengers".into())
+            } else {
+                None
+            };
+            let kind = entity_nbt::kind(&passenger).unwrap_or_default();
+            if self.res.mob_types().contains_key(&kind) {
+                continue;
+            }
+            let Some(target) = self.spawn_entity_from_nbt(passenger) else {
+                continue;
+            };
+            match target {
+                Target::Falling(id) => {
+                    self.persist.falling_vehicles.insert(id, vehicle);
+                    if let Some(nested) = nested {
+                        self.spawn_falling_non_mob_passengers(nested, id);
+                    }
+                }
+                Target::Stand(id) => {
+                    if let Some(stand) = self.armor_stands.iter_mut().find(|a| a.id == id) {
+                        stand.vehicle = Some(vehicle);
+                    }
+                    if let Some(nested) = nested {
+                        self.spawn_falling_non_mob_passengers(nested, id);
+                    }
+                }
+                _ => {
+                    if let Some(nested) = nested {
+                        self.spawn_falling_non_mob_passengers(nested, vehicle);
+                    }
+                }
+            }
         }
     }
 
