@@ -1,10 +1,10 @@
 //! What a pack's WGSL reads: the frame uniform every stage sees, which the
 //! renderer fills and uploads as the Rust struct below, and the stage input
 //! and output structs. The WGSL of each is generated from these definitions
-//! (`Struct::wgsl`), and so is the reference (docs/api/shaders-reference.md).
+//! (`Struct::wgsl`), and so is the reference (docs/api/shaders-reference-0.2.md).
 
 /// One field of a WGSL struct, for the prelude and the reference.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Field {
     pub name: &'static str,
     pub ty: &'static str,
@@ -219,7 +219,13 @@ uniform! {
         black_level: f32,
         /// The primaries of this pack's colours (`[frame] primaries`): 0 BT.709, 1 BT.2020.
         primaries: u32,
-        @pad luminance_gap: [u32; 2],
+        /// 1 while `trace` and `trace_any` read this frame's scene, else 0 (a GPU without ray
+        /// queries, ray tracing off, no world): every ray then misses. Only a pack with
+        /// `[ray_tracing]` has this field.
+        has_ray_tracing: u32,
+        /// How far from the camera along x and along z, in blocks, the scene is sure to reach;
+        /// 0 while `has_ray_tracing` is 0. Only a pack with `[ray_tracing]` has this field.
+        ray_distance: f32,
         /// The weights that give a colour's luminance in those primaries, `dot(c, frame.luminance)`:
         /// (0.2126, 0.7152, 0.0722) for BT.709, (0.2627, 0.6780, 0.0593) for BT.2020.
         luminance: [f32; 3],
@@ -228,15 +234,31 @@ uniform! {
 }
 
 impl Frame {
-    /// The fields 0.1's prelude declares: the struct up to `shadow_center_texel`, a prefix of
-    /// the buffer the renderer uploads.
-    pub const FIELDS_0_1: usize = 49;
+    /// Where `has_ray_tracing` and `ray_distance` are among the fields: in what was a gap of
+    /// the layout before `luminance`, so no other field moves with or without them.
+    pub const RAY_FIELDS: std::ops::Range<usize> = 55..57;
 
-    /// `Frame` as the line's prelude declares it.
-    pub fn line(api: crate::Api) -> Struct {
-        let fields = match api {
-            crate::Api::V0_1 => &Self::WGSL.fields[..Self::FIELDS_0_1],
-            crate::Api::V0_2 => Self::WGSL.fields,
+    /// The fields without `RAY_FIELDS`: what a 0.2 pack without `[ray_tracing]` declares.
+    const UNTRACED: [Field; 56] = {
+        let all = Self::WGSL.fields;
+        let mut out = [all[0]; 56];
+        let (mut from, mut to) = (0, 0);
+        while from < all.len() {
+            if from < Self::RAY_FIELDS.start || from >= Self::RAY_FIELDS.end {
+                out[to] = all[from];
+                to += 1;
+            }
+            from += 1;
+        }
+        out
+    };
+
+    /// `Frame` as the prelude declares it, for a pack that asks for the scene (`[ray_tracing]`)
+    /// or not.
+    pub fn declared(ray_tracing: bool) -> Struct {
+        let fields: &'static [Field] = match ray_tracing {
+            false => &Self::UNTRACED,
+            true => Self::WGSL.fields,
         };
         Struct {
             fields,
@@ -294,11 +316,11 @@ pub const SURFACE: Struct = Struct {
     doc: "What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; \
           Horizon then applies the alpha test (cutout and translucent) and fog.",
     fields: fields! {
-        color: "vec4<f32>" = "The lit colour, 0..1, with its alpha.",
+        color: "vec4<f32>" = "The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than white); alpha its coverage.",
     },
 };
 
-/// The entity stage's input (0.2): one point of a surface that is no block terrain.
+/// The entity stage's input: one point of a surface that is no block terrain.
 pub const ENTITY_INPUT: Struct = Struct {
     name: "EntityInput",
     doc: "One point of the surface of an entity, a block entity, an item or a particle, for `fn entity(input: EntityInput) -> Surface`.",
@@ -311,7 +333,7 @@ pub const ENTITY_INPUT: Struct = Struct {
         position: "vec3<f32>" = "The point, camera-relative, in blocks.",
         emission: "f32" = "1 on a layer vanilla draws at full brightness (spider and enderman eyes, the warden's glow), else 0. There `lightmap` is full light; `shade` stays vanilla's, which shades the warden's glow and not the eyes.",
         normal: "vec3<f32>" = "The surface's geometric normal, a unit vector in world axes, facing the camera, from the position's screen derivatives (as `MaterialInput.normal`, without its snap to the axes).",
-        kind: "u32" = "What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, signs, banners, beds), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle.",
+        kind: "u32" = "What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, banners, bells, shulker boxes), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle.",
         colored_light: "vec3<f32>" = "As `MaterialInput.colored_light`: the frame's coloured lights at this point, 0..1; 0 where none reaches.",
         translucent: "bool" = "Drawn with blending.",
         light: "vec2<f32>" = "Block and sky light, 0..1.",
@@ -372,7 +394,55 @@ pub const WEATHER_INPUT: Struct = Struct {
     },
 };
 
-/// The tonemap stage's input (0.2): one pixel of the window.
+/// What `trace` and `trace_layers` return (`[ray_tracing]`): the nearest surface along a ray.
+pub const RAY_HIT: Struct = Struct {
+    name: "RayHit",
+    doc: "The nearest surface along a ray, from `trace` or `trace_layers`. Its `albedo`, `tint`, `light`, `uv`, `material`, `tags`, `emission`, `fluid`, `translucent` and `tangent` are what `MaterialInput` gives the material stage for the same point, so one function can shade both. On a miss `distance` is negative and every other field is 0 (`translucent` false).",
+    fields: fields! {
+        distance: "f32" = "How far along the ray the surface is, in blocks; negative on a miss.",
+        position: "vec3<f32>" = "The point, camera-relative, in blocks (as `view_position`).",
+        normal: "vec3<f32>" = "The face's normal, a unit vector in world axes, turned toward the ray's origin.",
+        uv: "vec2<f32>" = "The texture coordinate inside the block's sprite (as `MaterialInput.uv`).",
+        albedo: "vec4<f32>" = "The block texture's colour at the point, at full size (mip level 0), linear light; alpha the texture's.",
+        tint: "vec4<f32>" = "The vertex colour: biome tint, face shade and ambient occlusion, linear light; alpha 1.",
+        light: "vec2<f32>" = "Block and sky light, 0..1, smoothed over the face.",
+        material: "u32" = "The `[[materials]]` id of the surface's sprite (0 when no entry names it).",
+        tags: "u32" = "The pack's sprite tags the surface's sprite has: bit i for the manifest's i-th `[[tags]]`.",
+        emission: "f32" = "How strongly the block itself shines, 0..1, by its kind of light: a redstone torch or a candle 7/15, a torch or lava 14/15, glowstone 1; 0 for most blocks (as `MaterialInput.emission`).",
+        fluid: "u32" = "0 not a fluid, 1 water, 2 lava (as `MaterialInput.fluid`). Water is in the `RAY_TRANSLUCENT` layer, lava in `RAY_SOLID`.",
+        translucent: "bool" = "A surface of the translucent pass (water, stained glass, ice), as `MaterialInput.translucent`: a hit in the `RAY_TRANSLUCENT` layer, so false for every hit of `trace`.",
+        entity: "bool" = "Only in a pack whose files name `RAY_ENTITY`: a hit in that layer, an entity's surface. Its `albedo` is the entity texture's texel and `tint`, `light` and `uv` are its vertices' (the colour vanilla multiplies in, alpha included; the atlas position); `material`, `tags`, `emission` and `fluid` are 0, `hit_normal_map` and `hit_specular_map` give their defaults.",
+        tangent: "vec4<f32>" = "The surface's tangent, as `MaterialInput.tangent`: xyz the unit direction in world axes along which `uv.x` grows, w the sign (1 or -1) that makes `cross(normal, tangent.xyz) * tangent.w` the direction `uv.y` grows along (down the texture). It follows `normal`, which faces the ray's origin. With `normal` it turns `hit_normal_map`'s normals into world axes.",
+        horizon_sprite: "u32" = "Horizon's own: where the hit's sprite is kept, for `hit_normal_map` and `hit_specular_map`. Not for packs to read; it changes with the renderer.",
+    },
+};
+
+/// Where `RayHit.entity` is: a pack that doesn't name `RAY_ENTITY` has `RayHit` without it.
+const RAY_HIT_ENTITY: usize = 12;
+
+/// `RAY_HIT` without `entity`.
+const RAY_HIT_PLAIN: [Field; 14] = {
+    let all = RAY_HIT.fields;
+    let mut out = [all[0]; 14];
+    let mut i = 0;
+    while i < out.len() {
+        out[i] = all[i + (i >= RAY_HIT_ENTITY) as usize];
+        i += 1;
+    }
+    out
+};
+
+/// `RayHit` as the prelude declares it, for a pack whose files name `RAY_ENTITY` (`entities`)
+/// or not.
+pub fn ray_hit(entities: bool) -> Struct {
+    let fields: &'static [Field] = match entities {
+        false => &RAY_HIT_PLAIN,
+        true => RAY_HIT.fields,
+    };
+    Struct { fields, ..RAY_HIT }
+}
+
+/// The tonemap stage's input: one pixel of the window.
 pub const TONEMAP_INPUT: Struct = Struct {
     name: "TonemapInput",
     doc: "One pixel of an output (the window), for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the output `frame` describes: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Horizon clamps it there).",
@@ -390,19 +460,24 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 56);
+        assert_eq!(wgsl.fields.len(), 58);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        // 0.1's 49 fields, then 0.2's seven: `luminance` is a `vec3`, on the next 16 bytes.
+        // `luminance`, the last, is a `vec3`, on the next 16 bytes.
         assert_eq!(
             std::mem::size_of::<Frame>(),
             6 * 64 + 15 * 16 + 8 * 16 + 3 * 16
         );
-        assert_eq!(Frame::OFFSETS[55], std::mem::size_of::<Frame>() - 16);
-        assert_eq!(Frame::OFFSETS[Frame::FIELDS_0_1], 6 * 64 + 15 * 16 + 8 * 16);
+        assert_eq!(Frame::OFFSETS[57], std::mem::size_of::<Frame>() - 16);
+        // The scene's two fields are only a `[ray_tracing]` pack's.
+        let names = |s: Struct| s.fields.iter().map(|f| f.name).collect::<Vec<_>>();
+        let traced = names(Frame::declared(true));
         assert_eq!(
-            Frame::line(crate::Api::V0_1).fields.len(),
-            Frame::FIELDS_0_1
+            traced[Frame::RAY_FIELDS],
+            ["has_ray_tracing", "ray_distance"]
         );
+        let untraced = names(Frame::declared(false));
+        assert_eq!(untraced.len(), 56);
+        assert!(!untraced.iter().any(|n| n.contains("ray")));
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")

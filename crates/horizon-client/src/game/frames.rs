@@ -610,10 +610,10 @@ impl Game<'_> {
                     }
                 }
             }
-            if !self.entity_in_view(camera, (lo + hi) / 2.0, range, lo, hi) {
+            let Some(sight) = self.entity_sight(camera, (lo + hi) / 2.0, range, lo, hi) else {
                 continue;
-            }
-            let culling = self.entity_cull_decision(f, 1.0);
+            };
+            let culling = self.sighted_decision(sight, || self.entity_cull_decision(f, 1.0));
             if culling.hides_entity() {
                 continue;
             }
@@ -698,14 +698,19 @@ impl Game<'_> {
                     );
                 }
             }
-            // HDR output: a glow frame shines softly (entity.wgsl fs_hdr_mark); the item in it
+            // HDR output: a glow frame shines softly (entity.wgsl hdr_entity_mark); the item in it
             // is only lit, as vanilla draws it.
             if f.glow {
                 for v in &mut out[frame_start..] {
                     v.layer |= u32::from(horizon_client::mesher::INCANDESCENT) << 16;
                 }
             }
-            self.finish_entity_occlusion(culling, f, out, entity_start);
+            self.finish_lit_entity(culling, f, out, entity_start);
+            // The frame; what it shows is an item or a map, Horizon's to light: not the layer's.
+            self.lit_entity(entity_start..out.len());
+            if culling.rays_only() {
+                continue;
+            }
             let cull_contents = culling.checks_vertices();
             if let Some(stack) = &f.item {
                 let mut canceled = false;
