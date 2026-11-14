@@ -6,11 +6,7 @@ use super::{
     Game,
     stations::{INPUT, Kind, RESULT, Station},
 };
-use horizon_client::mobs::{
-    Species,
-    render::{PROFESSIONS, VILLAGER_TYPES},
-    villager,
-};
+use horizon_client::mobs::{Species, render::VILLAGER_TYPES, villager};
 use horizon_client::{
     hud::HudBatch,
     items::ItemStack,
@@ -209,9 +205,9 @@ impl Game<'_> {
                 }
                 v
             } else {
-                let profession = PROFESSIONS[m.extra.variant2 as usize % PROFESSIONS.len()];
+                let profession = horizon_client::mobs::villager_professions::id(m.extra.variant2);
                 let level = i32::from(m.extra.variant3.max(1));
-                let set = merchant::Trades::set_for(profession, level);
+                let set = merchant::Trades::set_for(&profession, level);
                 if self.stations().trades.sets.contains_key(&set) {
                     self.offers_from_set(&set, &variant, origin)
                 } else {
@@ -266,9 +262,9 @@ impl Game<'_> {
         }
         let villager = species == Species::Villager;
         let profession = if villager {
-            PROFESSIONS[m.extra.variant2 as usize % PROFESSIONS.len()]
+            horizon_client::mobs::villager_professions::id(m.extra.variant2)
         } else {
-            "wandering_trader"
+            "minecraft:wandering_trader".to_owned()
         };
         let level = if villager {
             i32::from(m.extra.variant3.max(1)).min(5)
@@ -278,7 +274,7 @@ impl Game<'_> {
         let mut session = merchant::Session::new(trade.offers, villager);
         session.xp = trade.xp;
         session.level = level;
-        session.profession = format!("minecraft:{profession}");
+        session.profession = profession;
         session.variant = format!(
             "minecraft:{}",
             VILLAGER_TYPES[m.extra.variant as usize % VILLAGER_TYPES.len()]
@@ -338,7 +334,11 @@ impl Game<'_> {
     }
     /// Opens a merchant menu without a mob (horizon-ctl `trade`).
     pub(super) fn open_merchant(&mut self, profession: &str, variant: &str, level: i32) {
-        let profession = format!("minecraft:{}", profession.trim_start_matches("minecraft:"));
+        let profession = horizon_client::mobs::villager_professions::resolve(profession)
+            .map(horizon_client::mobs::villager_professions::id)
+            .unwrap_or_else(|| {
+                format!("minecraft:{}", profession.trim_start_matches("minecraft:"))
+            });
         let variant = format!("minecraft:{}", variant.trim_start_matches("minecraft:"));
         let level = level.clamp(1, 5);
         let origin = self

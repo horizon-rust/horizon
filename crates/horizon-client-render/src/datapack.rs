@@ -683,8 +683,17 @@ fn content_id(file: &str) -> Option<String> {
     let (ns, rest) = rest.split_once('/')?;
     let (kind, rest) = rest.split_once('/')?;
     let kind = match kind {
-        "recipe" | "recipe_filter" | "loot_table" | "advancement" | "trade_set"
-        | "villager_trade" | "dialog" | "damage_type" | "data_maps" | "enchantment" => kind,
+        "recipe"
+        | "recipe_filter"
+        | "loot_table"
+        | "advancement"
+        | "trade_set"
+        | "villager_trade"
+        | "villager_profession"
+        | "dialog"
+        | "damage_type"
+        | "data_maps"
+        | "enchantment" => kind,
         // A tag id is `{ns}:{path-under-tags}` (`tags/worldgen/biome/
         // test:sub/mytag`), the whole path after the namespace, so nested
         // registries keep their directory (`TagLoader`'s id shape).

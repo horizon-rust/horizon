@@ -962,16 +962,19 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 white,
                 false,
             );
-            let prof = PROFESSIONS[m.extra.variant2 as usize % PROFESSIONS.len()];
-            if !m.is_baby() && prof != "none" {
+            // A data pack's profession may wear a vanilla texture and hat
+            // (`villager_professions`); the renderer's layer paths name
+            // `minecraft:` textures, so this is the look it draws.
+            let look = super::villager_professions::look(m.extra.variant2);
+            if !m.is_baby() && look != "none" {
                 push(
                     &mut v,
                     model.clone(),
-                    interned(format_args!("{folder}/profession/{prof}")),
+                    interned(format_args!("{folder}/profession/{look}")),
                     white,
                     false,
                 );
-                if prof != "nitwit" {
+                if look != "nitwit" {
                     // `LEVEL_LOCATIONS` clamps the level to 1..=5.
                     let level = ["stone", "iron", "gold", "emerald", "diamond"]
                         [(m.extra.variant3.max(1) as usize - 1).min(4)];
@@ -2170,11 +2173,11 @@ fn render_visible(
                 .split_once("/type/")
                 .or_else(|| layer.texture.split_once("/baby/"))
         {
-            let profession = PROFESSIONS[m.extra.variant2 as usize % PROFESSIONS.len()];
+            let look = super::villager_professions::look(m.extra.variant2);
             data.villager_hats
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .apply(folder, variant, profession, &mut layer_poses);
+                .apply(folder, variant, look, &mut layer_poses);
         }
         let light = if layer.full_bright {
             FULL_BRIGHT

@@ -7,7 +7,7 @@ use super::apply;
 use horizon_client::mobs::{Mob, MobTypes, tame};
 use horizon_core::geometry::Vec3;
 use horizon_protocol::entity_data::Value;
-use horizon_protocol::registry::Builtin;
+use horizon_protocol::registry::{Builtin, Dynamic};
 
 fn root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -89,7 +89,13 @@ fn a_cat_on_a_chest_sits_for_the_other_players_too() {
 
     for (sent, sits) in [(ordered, false), (on_chest, true)] {
         let mut client = cat().unwrap();
-        apply(&mut client, &sent, &Builtin::default(), 99);
+        apply(
+            &mut client,
+            &sent,
+            &Builtin::default(),
+            &Dynamic::default(),
+            99,
+        );
         assert!(client.extra.tame, "the tame flag reached the client");
         assert_eq!(
             tame::cat_sitting(&client),

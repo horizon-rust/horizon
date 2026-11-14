@@ -110,6 +110,7 @@ pub mod vex;
 pub mod villager;
 pub mod villager_brain;
 pub mod villager_hats;
+pub mod villager_professions;
 pub mod warden;
 pub mod warden_brain;
 pub mod witch;
@@ -2469,10 +2470,8 @@ impl Mob {
         }
         // Villager.getTypeName returns its registered profession's name.
         if self.species() == Species::Villager {
-            let professions = &render::PROFESSIONS;
-            let profession = professions[self.extra.variant2 as usize % professions.len()];
             return crate::text::Text::translate(
-                &format!("entity.minecraft.villager.{profession}"),
+                &crate::mobs::villager_professions::translation_key(self.extra.variant2),
                 &[],
             );
         }

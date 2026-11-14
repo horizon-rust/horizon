@@ -49,6 +49,8 @@ pub const SYNCHRONIZED: &[&str] = &[
     "minecraft:decorated_pot_pattern",
     "minecraft:block_transformer",
     "minecraft:worldgen/block_state_provider",
+    // Horizon's own: every villager profession id, vanilla and content.
+    "horizon:villager_profession",
 ];
 pub const BIOME_REGISTRY: &str = "minecraft:worldgen/biome";
 /// The table a client plays a server with: `known` and the biomes of the
@@ -93,6 +95,25 @@ struct Entries {
     /// The entry comes from a world's data pack, which no client knows, so
     /// its data is always sent.
     from_pack: Vec<bool>,
+}
+
+/// `horizon:villager_profession`: vanilla's fixed first fifteen, then the
+/// content's in id order. Vanilla's ids are built in, so only the content
+/// entries carry data; neither kind has any NBT of its own.
+fn villager_profession_entries(custom: impl IntoIterator<Item = String>) -> Entries {
+    let vanilla = crate::mobs::render::PROFESSIONS.len();
+    let mut names: Vec<String> = crate::mobs::render::PROFESSIONS
+        .iter()
+        .map(|name| format!("minecraft:{name}"))
+        .collect();
+    names.extend(custom);
+    Entries {
+        data: vec![Tag::compound(Vec::<(&str, Tag)>::new()); names.len()],
+        // A vanilla id is rebuilt from the core pack a client already knows;
+        // a content id is Horizon's own, so its (empty) data is always sent.
+        from_pack: (0..names.len()).map(|i| i >= vanilla).collect(),
+        names,
+    }
 }
 
 /// The damage registry already bound for gameplay at world entry. Keeping
@@ -226,6 +247,21 @@ pub fn component_nbt(v: &Value) -> Tag {
 }
 
 impl SyncData {
+    /// The network id a server sends for a villager profession: a vanilla
+    /// index uses the built-in table, a content index the synchronized
+    /// registry. A retained custom index the registry no longer carries
+    /// becomes `none`, so the entity data still encodes.
+    pub fn villager_profession_id(&self, index: u8) -> Option<i32> {
+        use crate::mobs::villager_professions as vp;
+        let builtin = |name: &str| self.id("minecraft:villager_profession", name);
+        if index < vp::FIRST {
+            return builtin(&format!("minecraft:{}", vp::name(index)));
+        }
+        self.id(vp::SYNC_REGISTRY, &vp::id(index))
+            .or_else(|| self.id(vp::SYNC_REGISTRY, "minecraft:none"))
+            .or_else(|| builtin("minecraft:none"))
+    }
+
     /// No registries, tags or recipes: enough for tests of the login phase.
     pub fn empty() -> Self {
         Self {
@@ -332,6 +368,20 @@ impl SyncData {
             ..Default::default()
         };
         for key in SYNCHRONIZED {
+            if *key == crate::mobs::villager_professions::SYNC_REGISTRY {
+                let entries =
+                    villager_profession_entries(crate::mobs::villager_professions::entries());
+                dynamic.registries.insert(
+                    (*key).into(),
+                    entries
+                        .names
+                        .iter()
+                        .map(|name| (name.clone(), None))
+                        .collect(),
+                );
+                registries.push(((*key).into(), entries));
+                continue;
+            }
             if let Some(kept) = kept.filter(|_| *key != BIOME_REGISTRY || biomes.is_none()) {
                 if let Some((_, entries)) = kept.registries.iter().find(|(name, _)| name == key) {
                     dynamic
@@ -555,7 +605,21 @@ impl SyncData {
     }
 
     /// The id of a name in a built-in or synchronized registry.
+    /// The id a name has in a synchronized registry only (not the built-in
+    /// table), for a registry Horizon adds itself.
+    pub fn dynamic_id(&self, registry: &str, name: &str) -> Option<i32> {
+        self.dynamic
+            .registries
+            .get(registry)?
+            .iter()
+            .position(|(n, _)| n == name)
+            .map(|i| i as i32)
+    }
+
     pub fn id(&self, registry: &str, name: &str) -> Option<i32> {
+        if registry == crate::mobs::villager_professions::SYNC_REGISTRY {
+            return self.dynamic_id(registry, name);
+        }
         if registry == "minecraft:data_component_type"
             && self.dynamic.custom_components
             && let Some(id) = horizon_protocol::item::custom::id(name)
@@ -1133,6 +1197,63 @@ mod tests {
             1,
             "one entry per registry"
         );
+    }
+
+    /// The profession registry keeps vanilla's registry order first, so its
+    /// wire ids match the built-in table, and appends content by id. A client
+    /// that knows the core pack gets no data for the vanilla ids.
+    #[test]
+    fn villager_professions_keep_vanilla_first_and_mark_only_content_as_pack() {
+        // Without content the registry is vanilla's own table, so a world
+        // loaded with no packs or mods still reports no pack entries.
+        let mut vanilla_only = SyncData::empty();
+        vanilla_only.registries.push((
+            "horizon:villager_profession".to_owned(),
+            villager_profession_entries([]),
+        ));
+        assert!(!vanilla_only.has_pack_entries());
+
+        let entries = villager_profession_entries([
+            "example:beekeeper".to_owned(),
+            "example:zookeeper".to_owned(),
+        ]);
+        assert_eq!(
+            &entries.names[..15],
+            &[
+                "minecraft:none",
+                "minecraft:armorer",
+                "minecraft:butcher",
+                "minecraft:cartographer",
+                "minecraft:cleric",
+                "minecraft:farmer",
+                "minecraft:fisherman",
+                "minecraft:fletcher",
+                "minecraft:leatherworker",
+                "minecraft:librarian",
+                "minecraft:mason",
+                "minecraft:nitwit",
+                "minecraft:shepherd",
+                "minecraft:toolsmith",
+                "minecraft:weaponsmith",
+            ]
+        );
+        assert_eq!(
+            &entries.names[15..],
+            &["example:beekeeper", "example:zookeeper"]
+        );
+        assert_eq!(entries.from_pack, [vec![false; 15], vec![true; 2]].concat());
+        let mut sync = SyncData::empty();
+        sync.registries
+            .push(("horizon:villager_profession".to_owned(), entries));
+        let data = |known_pack| -> Vec<bool> {
+            sync.registry_packets(known_pack, &LevelShapes::VANILLA)[0]
+                .entries
+                .iter()
+                .map(|e| e.data.is_some())
+                .collect()
+        };
+        assert_eq!(data(true), [vec![false; 15], vec![true; 2]].concat());
+        assert_eq!(data(false), vec![true; 17]);
     }
 
     /// RegistrySynchronization.packRegistry: a client that knows the core

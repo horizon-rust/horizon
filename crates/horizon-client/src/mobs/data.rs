@@ -60,14 +60,44 @@ pub struct MobData {
     pub biome_tags: HashMap<String, std::collections::HashSet<String>>,
     /// Entity type tags (`data/*/tags/entity_type`).
     pub entity_tags: HashMap<String, std::collections::HashSet<String>>,
-    /// The villager POI type of every block state (`PoiTypes.forState`),
-    /// worked out the first time a villager looks for one.
-    pub pois: std::sync::OnceLock<Vec<Option<super::villager_brain::Poi>>>,
+    /// The villager POI type of every block state (`PoiTypes.forState`), with
+    /// the profession registry generation it was built for.
+    pub pois: std::sync::RwLock<Option<(u32, Vec<Option<super::villager_brain::Poi>>)>>,
     /// [`MobData::placement`] of each species' entity type (by `Species as
     /// usize`), worked out the first time a spawn asks.
     pub species_placements: std::sync::OnceLock<Vec<Placement>>,
 }
 impl MobData {
+    /// `PoiTypes.forState` over every state, rebuilt when the profession
+    /// registry generation changes.
+    pub fn poi_of_state(
+        &self,
+        len: usize,
+        state: u32,
+        mut state_poi: impl FnMut(u32) -> Option<super::villager_brain::Poi>,
+    ) -> Option<super::villager_brain::Poi> {
+        let version = super::villager_professions::version();
+        {
+            let cache = self
+                .pois
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((cached, table)) = cache.as_ref()
+                && *cached == version
+            {
+                return table.get(state as usize).copied().flatten();
+            }
+        }
+        let table: Vec<Option<super::villager_brain::Poi>> =
+            (0..len).map(|i| state_poi(i as u32)).collect();
+        let poi = table.get(state as usize).copied().flatten();
+        *self
+            .pois
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((version, table));
+        poi
+    }
+
     pub fn load(root: &Path, facts: &BlockFacts) -> Self {
         let parsed: Option<Value> = fs::read(root.join("mob-data.json"))
             .ok()

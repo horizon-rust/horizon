@@ -19,8 +19,15 @@ use std::f32::consts::PI;
 pub const NONE: u8 = 0;
 pub const NITWIT: u8 = 11;
 
+/// The profession name at an index (`VillagerData.profession`).
+pub fn profession_name(index: u8) -> &'static str {
+    super::villager_professions::name(index)
+}
 /// `PoiTypes`: the job site block of each profession.
 pub fn job_site_profession(block: &str) -> Option<u8> {
+    if let Some(index) = super::villager_professions::job_site(block) {
+        return Some(index);
+    }
     Some(match block.trim_start_matches("minecraft:") {
         "blast_furnace" => 1,
         "smoker" => 2,
@@ -349,7 +356,10 @@ pub fn set_profession(m: &mut Mob, profession: u8) {
 }
 /// `VillagerProfession.workSound`.
 pub fn work_sound(profession: u8) -> Option<&'static str> {
-    Some(match super::render::PROFESSIONS[profession as usize % 15] {
+    if let Some(sound) = super::villager_professions::work_sound(profession) {
+        return Some(sound);
+    }
+    Some(match profession_name(profession) {
         "armorer" => "entity.villager.work_armorer",
         "butcher" => "entity.villager.work_butcher",
         "cartographer" => "entity.villager.work_cartographer",
@@ -397,7 +407,10 @@ pub fn gift_table(m: &Mob) -> String {
     if m.is_baby() {
         return "minecraft:gameplay/hero_of_the_village/baby_gift".into();
     }
-    let profession = super::render::PROFESSIONS[m.extra.variant2 as usize % 15];
+    if let Some(table) = super::villager_professions::gift_table(m.extra.variant2) {
+        return table.to_owned();
+    }
+    let profession = profession_name(m.extra.variant2);
     let name = match profession {
         "none" | "nitwit" => "unemployed",
         other => other,
@@ -430,14 +443,14 @@ pub fn farmer_items() -> &'static [&'static str] {
 }
 /// A villager's `requestedItems` by profession.
 pub fn requested_items(m: &Mob) -> &'static [&'static str] {
-    if super::render::PROFESSIONS[m.extra.variant2 as usize % 15] == "farmer" {
+    if profession_name(m.extra.variant2) == "farmer" {
         farmer_items()
     } else {
         &[]
     }
 }
 pub fn is_farmer(m: &Mob) -> bool {
-    super::render::PROFESSIONS[m.extra.variant2 as usize % 15] == "farmer"
+    profession_name(m.extra.variant2) == "farmer"
 }
 /// `SimpleContainer(8)`: stacks the villager carries.
 const INVENTORY_SLOTS: usize = 8;
