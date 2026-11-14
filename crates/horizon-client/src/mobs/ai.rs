@@ -1313,7 +1313,6 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
             hurt(m, w, events, 1.0, Damage::of(DamageKind::InWall));
         }
         air::tick_air(m, w, events);
-        freeze_tick(m, w, events);
     }
     if m.species() == Species::Illusioner {
         super::illusioner::tick(m, events);
