@@ -437,7 +437,7 @@ impl Game<'_> {
             T::Effect | T::InstantEffect => {
                 Some(ParticleData::ColorPower(rgb_int(rgb(c)), options.scale))
             }
-            T::EntityEffect | T::TintedLeaves => Some(ParticleData::Color(
+            T::EntityEffect | T::TintedLeaves | T::Flash => Some(ParticleData::Color(
                 (((c[3].clamp(0.0, 1.0) * 255.0).round() as i32) << 24) | rgb_int(rgb(c)),
             )),
             T::DragonBreath | T::SculkCharge => Some(ParticleData::Scalar(options.scale)),
@@ -1135,5 +1135,29 @@ mod tests {
             particle.data,
             Some(ParticleData::Vibration { source, ticks: 7 })
         );
+    }
+
+    /// `flash` is a `ColorParticleOption` like `entity_effect`: its codec writes one ARGB int, and without it the
+    /// client read the color out of the packet's next bytes and left with "found 6 bytes extra".
+    #[test]
+    fn a_flash_particle_carries_its_argb_color() {
+        let mut names = vec!["minecraft:empty".to_string(); 52];
+        names.push("minecraft:flash".to_string());
+        let (hub, _near, _far) = test_hub("FlashTest", names);
+        for (rgba, argb, bytes) in [
+            ([1.0, 1.0, 1.0, 1.0], -1, [52, 0xff, 0xff, 0xff, 0xff]),
+            (
+                [1.0, 0.0, 0.0, 0.0],
+                0x00ff_0000,
+                [52, 0x00, 0xff, 0x00, 0x00],
+            ),
+        ] {
+            let options = ParticleOptions::colored(ParticleType::Flash, rgba);
+            let particle = Game::hub_particle(&hub, &options, None).expect("a flash particle");
+            assert_eq!(particle.data, Some(ParticleData::Color(argb)));
+            let mut w = horizon_protocol::buf::Writer::new();
+            particle.write(&mut w);
+            assert_eq!(w.data, bytes);
+        }
     }
 }

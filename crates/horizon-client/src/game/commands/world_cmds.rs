@@ -30,6 +30,39 @@ fn take_new_reinforcements(events: &mut Vec<MobEvent>, queued: usize) -> Vec<(u3
     requests
 }
 
+/// A numeric SNBT tag as a float.
+fn snbt_number(t: &Tag) -> Option<f32> {
+    Some(match t {
+        Tag::Byte(v) => f32::from(*v),
+        Tag::Short(v) => f32::from(*v),
+        Tag::Int(v) => *v as f32,
+        Tag::Long(v) => *v as f32,
+        Tag::Float(v) => f32::from_bits(*v),
+        Tag::Double(v) => f64::from_bits(*v) as f32,
+        _ => return None,
+    })
+}
+
+/// `ExtraCodecs.ARGB_COLOR_CODEC` as `[r, g, b, a]`: an ARGB int, or a list of four floats
+/// (`ARGB.colorFromFloat` takes alpha, red, green, blue; the list is red, green, blue, alpha).
+/// Anything else is white.
+fn argb_color(tag: Option<&Tag>) -> [f32; 4] {
+    match tag {
+        Some(Tag::Int(v)) => {
+            let c = |shift: i32| ((v >> shift) & 255) as f32 / 255.0;
+            [c(16), c(8), c(0), c(24)]
+        }
+        Some(Tag::List(l)) if l.len() == 4 => {
+            let mut out = [1.0; 4];
+            for (o, t) in out.iter_mut().zip(l.iter()) {
+                *o = snbt_number(t).unwrap_or(1.0);
+            }
+            out
+        }
+        _ => [1.0; 4],
+    }
+}
+
 fn num(n: impl std::fmt::Display) -> Text {
     Text::literal(n.to_string())
 }
@@ -769,17 +802,7 @@ impl Game<'_> {
             _ => None,
         };
         let field = |key: &str| opts.as_ref().and_then(|c| c.get(&key.into()).cloned());
-        let number = |t: &Tag| -> Option<f32> {
-            Some(match t {
-                Tag::Byte(v) => f32::from(*v),
-                Tag::Short(v) => f32::from(*v),
-                Tag::Int(v) => *v as f32,
-                Tag::Long(v) => *v as f32,
-                Tag::Float(v) => f32::from_bits(*v),
-                Tag::Double(v) => f64::from_bits(*v) as f32,
-                _ => return None,
-            })
-        };
+        let number = snbt_number;
         let string = |t: &Tag| match t {
             Tag::String(s) => Some(s.to_string_lossy()),
             _ => None,
@@ -801,6 +824,10 @@ impl Game<'_> {
         // The block state of a block particle, for its packet.
         let mut block_state = None;
         let options = match ty {
+            // ColorParticleOption: one ARGB colour, which the packet carries.
+            ParticleType::EntityEffect | ParticleType::TintedLeaves | ParticleType::Flash => {
+                ParticleOptions::colored(ty, argb_color(field("color").as_ref()))
+            }
             ParticleType::Dust => ParticleOptions::dust(
                 rgb,
                 field("scale")
@@ -2301,7 +2328,21 @@ mod allay_owner_damage_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{look_at, playsound_placement, take_new_reinforcements};
+
+    /// `particle minecraft:flash{color:[1.0,1.0,1.0,1.0]}`: ARGB_COLOR_CODEC takes an int or four floats.
+    #[test]
+    fn a_particle_color_is_an_argb_int_or_four_floats() {
+        use horizon_world::nbt::Tag;
+        let f = |v: f32| Tag::Float(v.to_bits());
+        let list = Tag::List(vec![f(1.0), f(0.0), f(0.0), f(0.5)]);
+        assert_eq!(argb_color(Some(&list)), [1.0, 0.0, 0.0, 0.5]);
+        assert_eq!(
+            argb_color(Some(&Tag::Int(0x80ff_0000_u32 as i32))),
+            [1.0, 0.0, 0.0, 128.0 / 255.0]
+        );
+        assert_eq!(argb_color(None), [1.0; 4]);
+    }
+    use super::{argb_color, look_at, playsound_placement, take_new_reinforcements};
     use horizon_client::mobs::{MobEvent, Who};
 
     #[test]
