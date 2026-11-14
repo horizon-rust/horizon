@@ -276,6 +276,9 @@ struct Slot {
         Option<std::sync::mpsc::Receiver<(Box<Game<'static>>, std::result::Result<(), String>)>>,
     /// Where its players stood when it was last home: the areas the server keeps loaded for them.
     places: Vec<(i32, i32)>,
+    /// When its tick started, and when the watchdog last told of it.
+    since: std::time::Instant,
+    told: Option<std::time::Instant>,
 }
 
 impl Slot {
@@ -284,6 +287,8 @@ impl Slot {
             game: Some(game),
             running: None,
             places: Vec::new(),
+            since: std::time::Instant::now(),
+            told: None,
         }
     }
     /// Takes the game in if its thread finished (waiting until `until`, or for good when None); false while it
@@ -848,7 +853,25 @@ impl Game<'_> {
                     failed.get_or_insert(e);
                     continue;
                 }
-                Ok(false) => continue,
+                Ok(false) => {
+                    // The region watchdog: a region tick past 5 s is told of every 5 s.
+                    if slot.since.elapsed() >= std::time::Duration::from_secs(5)
+                        && slot
+                            .told
+                            .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(5))
+                    {
+                        slot.told = Some(started);
+                        let at = slot.places.first().copied().unwrap_or_default();
+                        log::warn!(
+                            "region {k} near chunk {},{} has ticked for {:.1} s ({} players)",
+                            at.0,
+                            at.1,
+                            slot.since.elapsed().as_secs_f32(),
+                            slot.places.len()
+                        );
+                    }
+                    continue;
+                }
                 Ok(true) => {}
             }
             let Some(mut w) = slot.game.take() else {
@@ -869,6 +892,8 @@ impl Game<'_> {
             }
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
             slot.running = Some(rx);
+            slot.since = started;
+            slot.told = None;
             let spawned = std::thread::Builder::new()
                 .name(format!("Region {k}"))
                 .spawn(move || {
