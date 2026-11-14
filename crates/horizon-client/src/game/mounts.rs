@@ -74,9 +74,9 @@ impl MountState {
 ///
 /// `AbstractHorse.isFood` is the `#minecraft:horse_food` tag, `ZombieHorse`
 /// overrides it with `#minecraft:zombie_horse_food` (a red mushroom and
-/// nothing else), and the horse food tag carries no red mushrooms; a skeleton
-/// horse inherits the horse food tag but only a tamed one gets that far
-/// (`SkeletonHorse.mobInteract` passes for an untamed one).
+/// nothing else), and the horse food tag carries no red mushrooms. A skeleton
+/// horse inherits the horse food tag, but nothing asks it: `SkeletonHorse`
+/// adds no food branch to `AbstractHorse.mobInteract`'s, which has none.
 fn eating(species: Species, item: &str) -> Option<(f32, i32, u8, bool)> {
     let camel = species == Species::Camel;
     // CamelHusk.isFood: rabbit's feet (and it never falls in love).
@@ -365,16 +365,19 @@ impl Game<'_> {
             self.open_mount_menu(index);
             return true;
         }
-        if self.feed_mount(index, item) {
+        // `AbstractHorse.mobInteract` has no food branch and `SkeletonHorse`
+        // adds none: wheat mounts a tamed skeleton horse instead of feeding it.
+        if species != Species::SkeletonHorse && self.feed_mount(index, item) {
             return true;
         }
         let m = &mut self.mobs[index];
-        if m.is_baby() {
-            return false;
-        }
+        // `AbstractHorse.mobInteract` seats, saddles and arms no baby, but
+        // `AbstractChestedHorse.mobInteract` chests one: its branch has no baby
+        // test, so the flag is only read below the chest arm.
+        let baby = m.is_baby();
         let at = m.center();
         let tamed = m.extra.tame;
-        let sound = if item == "minecraft:saddle" && tamed && !m.extra.saddled {
+        let sound = if item == "minecraft:saddle" && tamed && !m.extra.saddled && !baby {
             m.set_saddle(held);
             // Camel.getSaddleSound (the equip sound of a camel's saddle).
             Some(match species {
@@ -383,9 +386,10 @@ impl Game<'_> {
                 _ => "minecraft:entity.horse.saddle",
             })
         } else if item.ends_with("_horse_armor")
-            && species == Species::Horse
+            && super::mount_menu::can_wear_horse_armor(species)
             && tamed
             && m.extra.body.is_none()
+            && !baby
         {
             m.extra.body = Some(item.into());
             Some("minecraft:entity.horse.armor")
@@ -415,6 +419,9 @@ impl Game<'_> {
                 .modified
                 .insert((at[0].floor() as i32 >> 4, at[2].floor() as i32 >> 4));
             return true;
+        }
+        if baby {
+            return false;
         }
         // doPlayerRide
         let id = self.mobs[index].id;
@@ -1798,6 +1805,110 @@ mod tests {
         );
         assert_eq!(shown.events, vec![("minecraft:eat", at, Some(Who::Mob(4)))]);
         assert_eq!(game.mobs[0].extra.age, -23800, "camel cactus ages 10 s");
+    }
+
+    /// Clicks `item` on mob 0 and collects every sound it played and every
+    /// game event it posted.
+    #[allow(clippy::type_complexity)]
+    fn click(
+        game: &mut Game<'_>,
+        item: &str,
+    ) -> (
+        bool,
+        Vec<(String, [f64; 3], f32, f32)>,
+        Vec<(&'static str, [f64; 3], Option<Who>)>,
+    ) {
+        game.inventory[game.selected] = Some(ItemStack::new(item, 2));
+        game.audio.capture = Some(Vec::new());
+        crate::game::sculk::TEST_POSTED_EVENTS
+            .with(|events| *events.borrow_mut() = Some(Vec::new()));
+        let used = game.interact_mount(0, item);
+        let sounds = game
+            .audio
+            .capture
+            .take()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.event, s.position, s.volume, s.pitch))
+            .collect();
+        let events = crate::game::sculk::TEST_POSTED_EVENTS
+            .with(|events| events.borrow_mut().take().unwrap_or_default());
+        (used, sounds, events)
+    }
+
+    /// `AbstractHorse.mobInteract` arms a tamed zombie horse
+    /// (`#minecraft:can_wear_horse_armor` holds it) instead of seating the
+    /// rider, `AbstractChestedHorse.mobInteract` chests a foal (its own branch
+    /// has no baby test), and `SkeletonHorse.mobInteract` has no food branch,
+    /// so wheat mounts a hurt one instead of healing it.
+    #[test]
+    fn a_zombie_horse_arms_a_foal_is_chested_and_a_skeleton_horse_is_mounted() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        // Iron horse armour on a tamed zombie horse: worn, and the player stays
+        // on the ground.
+        mount(&mut game, "minecraft:zombie_horse", 1, [1.5, 64.0, -2.5], 5);
+        let (used, sounds, events) = click(&mut game, "minecraft:iron_horse_armor");
+        assert!(used, "the armour click is taken");
+        assert_eq!(
+            game.mobs[0].extra.body.as_deref(),
+            Some("minecraft:iron_horse_armor")
+        );
+        assert_eq!(game.riding, None, "armour does not seat the player");
+        assert_eq!(
+            events,
+            vec![("minecraft:equip", [1.5, 64.0, -2.5], Some(Who::Mob(1)))]
+        );
+        assert_eq!(sounds.len(), 1, "{sounds:?}");
+        assert_eq!(sounds[0].0, "minecraft:entity.horse.armor");
+        assert_eq!(
+            game.inventory[game.selected].as_ref().map(|s| s.count),
+            Some(1),
+            "the armour is consumed"
+        );
+
+        // A chest on a tamed foal: donkeys and mules take one while still young.
+        mount(&mut game, "minecraft:donkey", 2, [0.5, 64.0, 0.5], 9);
+        game.mobs[0].extra.age = -24000;
+        let (used, sounds, events) = click(&mut game, "minecraft:chest");
+        assert!(used, "a foal takes the chest");
+        assert!(game.mobs[0].extra.chested);
+        assert_eq!(game.riding, None);
+        assert!(events.is_empty(), "chesting posts no event: {events:?}");
+        assert_eq!(sounds.len(), 1, "{sounds:?}");
+        assert_eq!(sounds[0].0, "minecraft:entity.donkey.chest");
+        assert_eq!(
+            game.inventory[game.selected].as_ref().map(|s| s.count),
+            Some(1),
+            "the chest is consumed"
+        );
+
+        // Wheat on a hurt tamed skeleton horse: no food branch, so it is
+        // mounted instead of healed, with its mouth shut and its own random
+        // untouched.
+        mount(
+            &mut game,
+            "minecraft:skeleton_horse",
+            3,
+            [2.5, 64.0, 2.5],
+            13,
+        );
+        let hurt = game.mobs[0].attrs.max_health - 5.0;
+        game.mobs[0].health = hurt;
+        let (used, sounds, events) = click(&mut game, "minecraft:wheat");
+        assert!(used, "wheat mounts a skeleton horse");
+        assert_eq!(game.riding, Some(3), "the click seats the player");
+        assert_eq!(game.mobs[0].health, hurt, "wheat heals nothing");
+        assert!(sounds.is_empty(), "no eating sound: {sounds:?}");
+        assert!(events.is_empty(), "no eat event: {events:?}");
+        assert_eq!(game.mobs[0].anim.v[2], 0.0, "the mouth stays shut");
+        assert_eq!(equine::temper(&game.mobs[0]), 0, "no temper from wheat");
+        assert_eq!(
+            game.mobs[0].random.clone().next_float(),
+            horizon_core::random::LegacyRandom::new(13).next_float(),
+            "the mount's own random drew nothing"
+        );
     }
 
     #[test]
