@@ -350,6 +350,10 @@ impl Game<'_> {
     ) {
         for pkt in packets {
             match horizon_protocol::packets::play::Clientbound::decode(pkt.id, &pkt.payload) {
+                // The recorded player's tab entry is for a replay that owns its session; in a live
+                // one it would list them a second time.
+                Ok(horizon_protocol::packets::play::Clientbound::PlayerInfoUpdate(_))
+                    if !self.replay.standalone => {}
                 Ok(packet) => {
                     let _ = self.handle_packet(packet);
                 }
@@ -592,6 +596,8 @@ impl Game<'_> {
         );
         match horizon_client::studio::StudioRecorder::start(path.clone(), meta) {
             Ok(recorder) => {
+                // Their own tab entry (the skin) stays in the recording; everyone else's stays out.
+                let recorder = recorder.with_own_player(r.profile);
                 r.session.start_recording(recorder, |recorder| {
                     self.dump_world_snapshot_to_recorder(recorder);
                 });
@@ -733,6 +739,51 @@ impl Game<'_> {
         }
         closed
     }
+    /// What the client holds of the session outside the world's chunks, for the recording's
+    /// snapshot ([`horizon_client::studio::snapshot`]).
+    fn session_snapshot_state(
+        &self,
+        r: &super::remote::Remote,
+    ) -> horizon_client::studio::snapshot::SessionState {
+        use horizon_client::studio::snapshot::{Clock, SessionState};
+        let held = |slot: i32, stack: &Option<horizon_client::items::ItemStack>| {
+            self.to_network(stack).map(|stack| (slot, stack))
+        };
+        let inventory = self
+            .inventory
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, stack)| held(slot as i32, stack))
+            // Inventory slots 36 to 39 are feet to head; `armor` is head first.
+            .chain(
+                self.armor
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, stack)| held(39 - i as i32, stack)),
+            )
+            .chain(held(40, &self.offhand))
+            .collect();
+        SessionState {
+            game_time: self.world.game_time,
+            day_time: self.world.day_time,
+            clock: r.clock.map(|id| Clock {
+                id,
+                rate: r.clock_rate,
+                partial_tick: r.clock_partial,
+            }),
+            rain_level: self.world.weather.rain_level.1,
+            thunder_level: self.world.weather.thunder_level.1,
+            health: r.health,
+            experience: (
+                self.experience.progress,
+                self.experience.level,
+                self.experience.total,
+            ),
+            selected_slot: self.selected,
+            inventory,
+        }
+    }
+
     /// Dump current player pose, dimension login, center chunk, and resident loaded chunks
     /// into the recording stream at timestamp 0ms so replays accurately reconstruct the world.
     pub(super) fn dump_world_snapshot_to_recorder(
@@ -814,6 +865,15 @@ impl Game<'_> {
         );
         record_cb(player_pos);
 
+        // 2b. The time, weather, inventory and vitals the server sent long before this recording.
+        for packet in horizon_client::studio::snapshot::packets(&self.session_snapshot_state(r)) {
+            record_cb(packet);
+        }
+        // 2c. The recording player's own tab entry, so the replay shows their skin.
+        if let Some(entry) = self.recorder_tab_entry() {
+            record_cb(entry);
+        }
+
         // 3. Encode resident loaded chunks into LevelChunkWithLight packets
         let biome_names: Vec<String> = world_biomes!(self)
             .list
@@ -848,8 +908,17 @@ impl Game<'_> {
             );
             count += 1;
         }
+
+        // 4. The entities already in view: after the chunks they stand in. They go through the
+        // privacy filter, as the server's own would (`AddEntity` gets a fresh UUID; a later
+        // packet still matches it by entity id).
+        let entities = r.entity_mirror.packets();
+        for packet in &entities {
+            recorder.record_filtered_at(0, packet);
+        }
         log::info!(
-            "Studio Recorder: Dumped initial world snapshot ({count} chunks) at timestamp 0ms"
+            "Studio Recorder: Dumped initial world snapshot ({count} chunks, {} entities) at timestamp 0ms",
+            r.entity_mirror.len()
         );
     }
 }

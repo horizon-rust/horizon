@@ -660,7 +660,10 @@ pub(super) struct Remote {
     /// Item entities waiting for their item data: where they are and their
     /// motion.
     pending_items: HashMap<i32, ([f64; 3], Vec3)>,
-    health: (f32, i32, f32),
+    /// The entities in view as the server's packets last said them, for a recording that starts
+    /// mid-session (`studio::entity_mirror`).
+    pub(super) entity_mirror: horizon_client::studio::entity_mirror::EntityMirror,
+    pub(super) health: (f32, i32, f32),
     /// `LocalPlayer.flashOnSetHealth`: set by the first health the server
     /// sends; from then on a drop starts the hurt animation.
     flash_on_set_health: bool,
@@ -743,7 +746,7 @@ pub(super) struct Remote {
     /// `Player.DATA_SHOULDER_PARROT_LEFT` and `_RIGHT` of the own player.
     pub(super) own_shoulders: [Option<i32>; 2],
     /// The local player's profile UUID (always in the level).
-    profile: u128,
+    pub(super) profile: u128,
     /// The local player's profile name: its score holder and team member.
     pub(super) profile_name: String,
     /// `MultiPlayerGameMode.destroyBlockPos`, `.destroyProgress` and the face last sent: the block
@@ -780,12 +783,12 @@ pub(super) struct Remote {
     /// slot updates (`creative_sync_stacks`).
     synced: Vec<Option<ItemStack>>,
     decode_errors: u32,
-    clock: Option<i32>,
+    pub(super) clock: Option<i32>,
     /// `ClientClockManager.ClientClockInstance`'s rate and partial tick for
     /// the level's clock (its total is `world.day_time`), and
     /// `lastTickGameTime`.
-    clock_rate: f32,
-    clock_partial: f32,
+    pub(super) clock_rate: f32,
+    pub(super) clock_partial: f32,
     clock_game_time: i64,
     /// `ClientChunkCache.Storage`'s view centre (ClientboundSetChunkCacheCenterPacket).
     chunk_center: (i32, i32),
@@ -1220,6 +1223,7 @@ impl Game<'_> {
             first_passenger: false,
             passenger_index: 0,
             pending_items: HashMap::new(),
+            entity_mirror: Default::default(),
             health: (20.0, 20, 5.0),
             flash_on_set_health: false,
             game_mode: 0,
@@ -1450,6 +1454,7 @@ impl Game<'_> {
             first_passenger: false,
             passenger_index: 0,
             pending_items: HashMap::new(),
+            entity_mirror: Default::default(),
             health: (20.0, 20, 5.0),
             flash_on_set_health: false,
             game_mode: 0,
@@ -1486,7 +1491,7 @@ impl Game<'_> {
             own_arrows: 0,
             own_stingers: 0,
             own_shoulders: [None; 2],
-            profile: 0,
+            profile: horizon_client::studio::recorder::RECORDER_UUID,
             profile_name: String::new(),
             destroying: None,
             destroying_item: String::new(),
@@ -1763,7 +1768,7 @@ impl Game<'_> {
     /// A stack to the server (`SetCreativeModeSlot`): the same component
     /// patch a Horizon server sends its clients, with the registries' ids, so
     /// the server's echo doesn't hand back a bare item.
-    fn to_network(&self, s: &Option<ItemStack>) -> Option<Stack> {
+    pub(super) fn to_network(&self, s: &Option<ItemStack>) -> Option<Stack> {
         let r = self.remote.as_ref()?;
         // A stack as the server sent it, only its count changed: its own
         // components go back, as a vanilla client keeps them.
@@ -2376,6 +2381,7 @@ impl Game<'_> {
             self.pickups.clear();
             if let Some(r) = self.remote.as_mut() {
                 r.entities.clear();
+                r.entity_mirror.clear();
                 r.passenger_vehicles.clear();
                 r.lerps.clear();
                 r.cart_lerps.clear();
@@ -3248,6 +3254,9 @@ impl Game<'_> {
 
     pub(super) fn handle_packet(&mut self, packet: C) -> Result<()> {
         self.native_client_packet(&packet);
+        if let Some(r) = self.remote.as_mut() {
+            r.entity_mirror.apply(&packet);
+        }
         match packet {
             // ClientCommonPacketListenerImpl.handlePing runs on the game
             // thread, after all preceding packets (especially teleports).
@@ -5476,6 +5485,36 @@ impl Game<'_> {
                     .set_object_skin(format!("name:{}", name.to_ascii_lowercase()), skin);
             }
         }
+    }
+    /// The local player's tab list entry as a recording keeps it (their name, game mode and
+    /// skin under the recorder id), for the snapshot a recording starts with. `None` while the
+    /// session has no name for them.
+    pub(super) fn recorder_tab_entry(&self) -> Option<play::Clientbound> {
+        let r = self.remote.as_ref()?;
+        let name = r
+            .tab_players
+            .get(&r.profile)
+            .map(|t| t.name.as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&r.profile_name);
+        if name.is_empty() {
+            return None;
+        }
+        // The server's textures for them, else the account's own (single player sends none).
+        let account = match &r.own_profile {
+            OwnProfile::Done(Some(t)) => Some(t),
+            _ => None,
+        };
+        let textures = r
+            .skin_textures
+            .get(&r.profile)
+            .filter(|t| t.skin.is_some())
+            .or(account);
+        Some(horizon_client::studio::recorder::recorder_entry(
+            name,
+            r.game_mode,
+            textures,
+        ))
     }
     fn poll_own_profile(&mut self) {
         let auth = self.auth();
