@@ -60,6 +60,7 @@
     "horizon-official": "horizon",
     "horizon-official-servers": "horizon",
     "horizon-perf-share": "horizon",
+    "horizon-reconnect": "horizon",
     "horizon-relay": "horizon",
     "horizon-release-sign": "horizon",
     "horizon-server": "horizon",

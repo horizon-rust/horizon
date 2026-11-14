@@ -4,11 +4,10 @@
 //! Each hook does nothing while its extra is off and no mod uses it.
 //!
 //! Each Horizon extra's game glue is a child module here, so it leaves the engine in one move
-//! (docs/layers.md, plan M5): `reconnect` (auto-reconnect), `pvp` (the PvP & HUD options),
-//! `mouse_tweaks` and `sorting` (the inventory extras).
+//! (docs/layers.md, plan M5): `pvp` (the PvP & HUD options), `mouse_tweaks` and `sorting` (the
+//! inventory extras). Auto-reconnect left already (`horizon-reconnect`).
 pub(in crate::game) mod mouse_tweaks;
 pub(in crate::game) mod pvp;
-mod reconnect;
 mod sorting;
 
 use super::{Dim, Game, Screen, native_hooks::NativeMinimap};
@@ -17,7 +16,6 @@ use horizon_client::{
     extras_hud::{self, Corners},
     hud::{HudBatch, MINIMAP_SPRITE},
     minimap::{self, Layer, Minimap, View},
-    reconnect::Tracker,
 };
 use std::time::Duration;
 use winit::event::MouseButton;
@@ -31,8 +29,6 @@ pub(super) struct ExtrasState {
     minimap: Minimap,
     /// The dimension the minimap's tiles belong to.
     minimap_dim: Option<Dim>,
-    /// Auto-reconnect's attempts at the current server.
-    reconnect: Tracker,
 }
 /// CPU time the minimap's tiles may take per frame.
 const MINIMAP_BUDGET: Duration = Duration::from_micros(300);

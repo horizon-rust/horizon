@@ -29,6 +29,7 @@ pub mod tunnel;
 use registry::Registry;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 /// What a crate above the engine hears from the game. Every method has an empty default:
 /// implement only those you need. Hooks run on the game's thread (the render thread) unless a
@@ -109,6 +110,94 @@ pub trait Hooks: Sync {
     /// before that screen's window opens.
     fn get_the_game(&self) -> Option<GetTheGame> {
         None
+    }
+
+    /// This window starts connecting to a multiplayer server (the server list, a direct
+    /// connection, a Realm, a LAN world). Not single player's own server.
+    fn connecting(&self, _server: &Server<'_>) {}
+
+    /// The server let the player in.
+    fn joined(&self) {}
+
+    /// The player left the server on purpose: nothing to retry.
+    fn left(&self) {}
+
+    /// The connection ended without the player leaving it (lost, closed, kicked, refused). A hook
+    /// may plan another attempt: the engine shows its countdown on the Disconnected screen, with
+    /// Cancel, and connects again when it is due. Every hook hears the end; the first plan wins.
+    fn ended(&self, _end: &Ended<'_>) -> Option<Reconnect> {
+        None
+    }
+}
+
+/// What [`Hooks::connecting`] gets.
+#[non_exhaustive]
+pub struct Server<'a> {
+    /// As the player gave it (`host[:port]`).
+    pub address: &'a str,
+    /// The player name the connection uses.
+    pub name: &'a str,
+    /// Found on the local network.
+    pub lan: bool,
+}
+
+impl<'a> Server<'a> {
+    pub fn new(address: &'a str, name: &'a str, lan: bool) -> Self {
+        Self { address, name, lan }
+    }
+}
+
+/// What [`Hooks::ended`] gets.
+#[non_exhaustive]
+pub struct Ended<'a> {
+    /// The reason shown on the Disconnected screen.
+    pub reason: &'a str,
+    /// Its translation key, when it has one (`disconnect.timeout`, `multiplayer.disconnect.kicked`).
+    pub key: Option<&'a str>,
+    /// The server sent it (a disconnect packet), rather than the connection failing.
+    pub from_server: bool,
+}
+
+impl<'a> Ended<'a> {
+    pub fn new(reason: &'a str, key: Option<&'a str>, from_server: bool) -> Self {
+        Self {
+            reason,
+            key,
+            from_server,
+        }
+    }
+}
+
+/// Another attempt at a server, planned by [`Hooks::ended`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reconnect {
+    pub address: String,
+    pub name: String,
+    pub lan: bool,
+    /// When to connect.
+    pub at: Instant,
+    /// This attempt, 1-based, of `attempts`.
+    pub attempt: usize,
+    pub attempts: usize,
+}
+
+impl Reconnect {
+    /// Whole seconds left, rounded up.
+    pub fn seconds_left(&self, now: Instant) -> u64 {
+        let left = self.at.saturating_duration_since(now);
+        left.as_secs() + u64::from(left.subsec_nanos() > 0)
+    }
+    pub fn due(&self, now: Instant) -> bool {
+        now >= self.at
+    }
+    /// The Disconnected screen's countdown line.
+    pub fn text(&self, now: Instant) -> String {
+        format!(
+            "Reconnecting in {} s (attempt {} of {})",
+            self.seconds_left(now),
+            self.attempt,
+            self.attempts
+        )
     }
 }
 
@@ -372,6 +461,39 @@ pub mod engine {
     pub fn get_the_game() -> Option<GetTheGame> {
         all().iter().find_map(|hooks| hooks.get_the_game())
     }
+
+    /// [`Hooks::connecting`].
+    pub fn connecting(server: &Server<'_>) {
+        for hooks in all() {
+            hooks.connecting(server);
+        }
+    }
+
+    /// [`Hooks::joined`].
+    pub fn joined() {
+        for hooks in all() {
+            hooks.joined();
+        }
+    }
+
+    /// [`Hooks::left`].
+    pub fn left() {
+        for hooks in all() {
+            hooks.left();
+        }
+    }
+
+    /// [`Hooks::ended`]: every hook hears it, and the first plan is the one kept.
+    pub fn ended(end: &Ended<'_>) -> Option<Reconnect> {
+        let mut plan = None;
+        for hooks in all() {
+            let mine = hooks.ended(end);
+            if plan.is_none() {
+                plan = mine;
+            }
+        }
+        plan
+    }
 }
 
 #[cfg(test)]
@@ -396,6 +518,10 @@ mod tests {
         }
         fn activity(&self, now: Activity) {
             self.0.lock().unwrap().push(format!("{now:?}"));
+        }
+        fn ended(&self, end: &Ended<'_>) -> Option<Reconnect> {
+            self.0.lock().unwrap().push(format!("ended {}", end.reason));
+            None
         }
         fn get_the_game(&self) -> Option<GetTheGame> {
             Some(GetTheGame {
@@ -574,12 +700,31 @@ mod tests {
     struct Silent;
     impl Hooks for Silent {}
 
+    /// Plans an attempt numbered by its field.
+    struct Planner(usize);
+    impl Hooks for Planner {
+        fn ended(&self, end: &Ended<'_>) -> Option<Reconnect> {
+            Some(Reconnect {
+                address: end.reason.to_owned(),
+                name: String::new(),
+                lan: false,
+                at: Instant::now(),
+                attempt: self.0,
+                attempts: 5,
+            })
+        }
+    }
+    static FIRST: Planner = Planner(1);
+    static SECOND: Planner = Planner(2);
+
     static RECORDER: Recorder = Recorder(StdMutex::new(Vec::new()));
 
     #[test]
     fn registered_hooks_hear_the_game_and_late_ones_are_refused() {
         register(&RECORDER).unwrap();
         register(&Silent).unwrap();
+        register(&FIRST).unwrap();
+        register(&SECOND).unwrap();
         engine::started(&Started::new("0.2.31", std::path::Path::new("game")));
         // Changes only: the same state every frame is said once.
         for open in [false, true, true, true, false, false] {
@@ -593,6 +738,9 @@ mod tests {
         for now in [Activity::Menus, Activity::Menus, world, world] {
             engine::activity(now);
         }
+        // Every hook hears the end; the first plan registered is the one kept.
+        let plan = engine::ended(&Ended::new("lost", None, false)).unwrap();
+        assert_eq!((plan.address.as_str(), plan.attempt), ("lost", 1));
         engine::shutdown();
         assert!(engine::any());
         assert_eq!(
@@ -640,6 +788,7 @@ mod tests {
                 "published false",
                 "Menus",
                 "World { play: Singleplayer, dimension: Nether, mode: Creative }",
+                "ended lost",
                 "frame 4"
             ]
         );

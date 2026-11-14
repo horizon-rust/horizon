@@ -125,7 +125,7 @@ pub enum Event {
     Disconnected {
         reason: String,
         /// The reason's translation key, when it had one
-        /// (`reconnect::allowed` classifies by it).
+        /// (`horizon_reconnect::allowed` classifies by it).
         key: Option<String>,
         from_server: bool,
     },
@@ -613,7 +613,7 @@ fn tr(lang: &Language, key: &str) -> String {
 
 /// Why a connection ended: the shown text and, when the reason was a
 /// translatable component or a known Horizon error, its translation key —
-/// the auto-reconnect classifies by key (`reconnect::allowed`), the
+/// the auto-reconnect classifies by key (`horizon_reconnect::allowed`), the
 /// English keyword scan of the text is the fallback for plain reasons.
 #[derive(Clone)]
 pub struct Reason {
@@ -863,7 +863,7 @@ fn run(
                             // The session service's refusal: the wrapped
                             // `disconnect.loginFailedInfo` text is shown, and
                             // the inner key (the reason's own) classifies
-                            // (`reconnect::allowed`).
+                            // (`horizon_reconnect::allowed`).
                             crate::auth::join_server(account, &hash).map_err(|err| {
                                 let (reason, key) = match err.reason() {
                                     Ok(key) => (tr(lang, key), Some(key.to_owned())),
