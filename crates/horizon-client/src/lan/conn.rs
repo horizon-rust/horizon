@@ -1246,6 +1246,7 @@ fn login_and_configure(
         c.send(&login::Clientbound::Compression(login::Compression { threshold }).encode())
             .map_err(e)?;
         c.set_compression(threshold);
+        REMOTE_THRESHOLD.store(threshold, Ordering::Relaxed);
     }
     c.send(
         &login::Clientbound::LoginFinished(login::LoginFinished {
@@ -2064,6 +2065,22 @@ impl SharedFrames {
             }
         }
         Ok(contents)
+    }
+}
+
+/// The compression threshold of the last remote (compressed) connection, or -1 when none
+/// has logged in: what [`precompress`] compresses for.
+static REMOTE_THRESHOLD: AtomicI32 = AtomicI32::new(-1);
+
+/// Compress `body` into the shared frames now, on the calling (worker) thread, when a remote
+/// connection has logged in, so the connections' writer threads find it done instead of each
+/// compressing its chunk columns one after another.
+pub(super) fn precompress(body: &[u8]) {
+    let Ok(t) = usize::try_from(REMOTE_THRESHOLD.load(Ordering::Relaxed)) else {
+        return;
+    };
+    if body.len() >= t.max(SHARED_FRAME_MIN) {
+        let _ = SharedFrames::get().contents(body, t);
     }
 }
 

@@ -436,7 +436,13 @@ impl Bodies {
             let Some(column) = self.columns.get(i) else {
                 return;
             };
-            self.done[i].get_or_init(|| std::sync::Mutex::new(column.write()));
+            self.done[i].get_or_init(|| {
+                let body = column.write();
+                // Compression is the other big cost of a column: do it here, on every core,
+                // not on each connection's writer thread.
+                super::conn::precompress(&body);
+                std::sync::Mutex::new(body)
+            });
         }
     }
 }
