@@ -2191,12 +2191,10 @@ fn pipeline(
     // of the version it started from when it recorded it; else, outside `on_base`, the commit it
     // compiled, so a rebuild stays on the Horizon it plays.
     let base_revision = || match &built_on {
-        Some(about) => match &about.base_horizon {
-            Some(r) => Ok(r.clone()),
-            None if !on_base && !about.off_its_nightly() => Ok(about.horizon.clone()),
-            None => revision_of(origin),
-        },
-        None => revision_of(base),
+        Some(about) if about.base_horizon.is_none() && !on_base && !about.off_its_nightly() => {
+            Ok(about.horizon.clone())
+        }
+        _ => base_commit(base, built_on.as_ref()),
     };
     let date = |r: &str| committed(backend::REPO, r);
     let (pinned, mut pinned_by) = pinned_revision(&pins, on_base, base_revision, date)?;
@@ -2555,10 +2553,11 @@ fn isolated(
 /// whose game files the build reuses: a native build's own revision when it is one, [`base_for`]),
 /// and points `instance` at the build, the default one included. A mod made for another commit
 /// that doesn't build there moves the build to the revision the mods pin, once (else the first
-/// build stays). Returns the build's version; a build already made is used again. Mods pinning
-/// different revisions build on the newest one, with the newest horizon-mixins they name, only
-/// when the player agreed to try (`anyway`): else the error starts with [`MISMATCH`] and says
-/// which. With `on_base`, the player's Rebuild on Horizon, nothing moves off `base`'s commit.
+/// build stays); when every mod pins one newer commit, it starts there ([`pinned_ahead`]). Returns
+/// the build's version; a build already made is used again. Mods pinning different revisions
+/// build on the newest one, with the newest horizon-mixins they name, only when the player agreed
+/// to try (`anyway`): else the error starts with [`MISMATCH`] and says which. With `on_base`, the
+/// player's Rebuild on Horizon, nothing moves off `base`'s commit.
 pub fn build(
     base: &str,
     folder: &Path,
@@ -2593,9 +2592,29 @@ pub fn build(
         let point = |version: &str| {
             instances::edit(&instance.id, |meta| meta.version = Some(version.to_owned()))
         };
+        let found = bundles(folder)?;
+        let built_on = about(base);
+        let origin = built_on.as_ref().map_or(base, |a| a.base.as_str());
+        let ahead = !on_base
+            && !built_on.as_ref().is_some_and(|a| a.on_base)
+            && pinned_ahead(
+                &found,
+                || base_commit(base, built_on.as_ref()),
+                |r| committed(backend::REPO, r),
+            )
+            .is_some();
+        // On the pin, a build that fails outright falls back to `base`'s commit, as a failed move
+        // keeps the build there.
+        let tried = match ahead {
+            true => run(origin, false).or_else(|(error, _)| {
+                log_warning(&error);
+                run(base, true)
+            }),
+            false => run(base, true),
+        };
         // The first build may fail outright when the mods made elsewhere are all it had (every
         // mod left out) or the ones left could not build without them: those mods still move it.
-        let (first, left) = match run(base, true) {
+        let (first, left) = match tried {
             Ok(built) => {
                 point(&built.version)?;
                 let left = built.left_out.clone();
@@ -2603,9 +2622,10 @@ pub fn build(
             }
             Err((error, left)) => (Err(error), left),
         };
-        let theirs = match on_base {
+        // A start on the pin already tried theirs.
+        let theirs = match on_base || ahead {
             true => Vec::new(),
-            false => made_elsewhere(&bundles(folder)?, &left),
+            false => made_elsewhere(&found, &left),
         };
         let mut built = match first {
             Err(error) if theirs.is_empty() => return Err(error),
@@ -2613,8 +2633,7 @@ pub fn build(
         };
         if !theirs.is_empty() {
             progress(Step::OnTheirHorizon(theirs));
-            let origin = about(base).map_or_else(|| base.to_owned(), |a| a.base);
-            match (run(&origin, false), &built) {
+            match (run(origin, false), &built) {
                 (Ok(moved), _) => {
                     point(&moved.version)?;
                     built = Ok(moved);
@@ -2635,6 +2654,39 @@ pub fn build(
         }
         Ok(built.version)
     })
+}
+
+/// The commit every mod in `bundles` pins, when it is newer than the one a build on the picked
+/// version compiles (`base`): a build there could only leave them out and move to the pin,
+/// compiling twice (#15688). None while a mod is free, names hook points or pins another commit,
+/// and for an older pin: the picked Nightly comes first, or an old pin would hold every build back.
+fn pinned_ahead(
+    bundles: &[Bundle],
+    base: impl FnOnce() -> Result<String, String>,
+    date: impl Fn(&str) -> Result<String, String>,
+) -> Option<String> {
+    let (first, rest) = bundles.split_first()?;
+    let pin = first.horizon.as_ref().filter(|_| first.hooks.is_none())?;
+    if rest
+        .iter()
+        .any(|b| b.hooks.is_some() || b.horizon.as_ref() != Some(pin))
+    {
+        return None;
+    }
+    let base = base().ok()?;
+    (*pin != base && date(pin).ok()? > date(&base).ok()?).then(|| pin.clone())
+}
+
+/// The commit a build on `base`'s own Horizon compiles (`pipeline`'s with `on_base`): the one a
+/// native build recorded for the version it started from, else that version's.
+fn base_commit(base: &str, built_on: Option<&About>) -> Result<String, String> {
+    match built_on {
+        Some(a) => a
+            .base_horizon
+            .clone()
+            .map_or_else(|| revision_of(&a.base), Ok),
+        None => revision_of(base),
+    }
 }
 
 /// The mods in `bundles` a build left out (`left_out`) for not building on its commit though they

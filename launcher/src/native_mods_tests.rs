@@ -737,6 +737,56 @@ fn only_a_pinned_mod_left_out_for_its_version_moves_the_build() {
     assert!(made_elsewhere(&mods, &clash).is_empty());
 }
 
+/// #15688: every mod pinned a commit newer than the instance's Nightly, so the client build
+/// compiled on the Nightly, left out the mod that needed the new commit and only then moved,
+/// compiling twice. It now starts on the pin, but only when every mod pins that one newer commit.
+#[test]
+fn a_build_starts_on_the_pin_every_mod_shares_when_it_is_newer() {
+    let bundle = |id: &str, horizon: Option<&str>, hooks: Option<u32>| Bundle {
+        id: id.into(),
+        version: "1".into(),
+        dir: PathBuf::new(),
+        horizon: horizon.map(str::to_owned),
+        mixins: None,
+        hooks,
+        injections: Vec::new(),
+        api: None,
+        mixins_content: false,
+    };
+    // B is the newer commit.
+    let date = |r: &str| -> Result<String, String> {
+        Ok(if r == B {
+            "2026-11-12T09:00:00Z"
+        } else {
+            "2026-11-08T09:00:00Z"
+        }
+        .into())
+    };
+    let picked = |r: &'static str| move || -> Result<String, String> { Ok(r.into()) };
+    let on_b = [bundle("a", Some(B), None), bundle("b", Some(B), None)];
+    assert_eq!(pinned_ahead(&on_b, picked(A), date), Some(B.to_owned()));
+    assert_eq!(
+        pinned_ahead(&on_b, picked(B), date),
+        None,
+        "the picked version's own commit"
+    );
+    assert_eq!(
+        pinned_ahead(&[bundle("a", Some(A), None)], picked(B), date),
+        None,
+        "an older pin: the picked Nightly first"
+    );
+    for other in [
+        bundle("free", None, None),
+        bundle("hooks", Some(B), Some(1)),
+        bundle("older", Some(A), None),
+    ] {
+        let mods = [bundle("a", Some(B), None), other];
+        assert_eq!(pinned_ahead(&mods, picked(A), date), None, "{}", mods[1].id);
+    }
+    let offline = || -> Result<String, String> { Err("offline".into()) };
+    assert_eq!(pinned_ahead(&on_b, offline, date), None);
+}
+
 #[test]
 fn mods_made_for_different_revisions_build_on_the_newest() {
     let pinned = |id: &str, horizon: Option<&str>, mixins: Option<&str>| Bundle {
