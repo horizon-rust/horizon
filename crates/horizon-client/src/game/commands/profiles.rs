@@ -34,32 +34,73 @@ impl Game<'_> {
         Ok(1)
     }
 
-    /// SaveAllCommand. Every save waits for the chunks to be written, so
-    /// `flush` changes nothing.
+    /// SaveAllCommand.saveAll: `commands.save.saving` to the source, then
+    /// `commands.save.success` to it and the other operators, or the
+    /// `ERROR_FAILED` it throws (result 0) when the save did not go through.
+    /// `flush` changes nothing: every save waits for the chunks to be written.
     pub(super) fn cmd_save_all(&mut self) -> R<i32> {
         self.dedicated_lists()?;
         self.feedback(Text::translate("commands.save.saving", &[]));
         if self.lan_acting.is_some() {
             // The acting guest's record holds the game's state until their
-            // turn ends: saving now would write it to their file.
-            // shortcut: the other operators aren't told of a guest's save, add it if anyone asks.
-            self.save_after_guest_turn = true;
+            // turn ends: saving now would write it to their file. The save
+            // and its feedback run then, still as them.
+            let silent = self.command_source.is_some_and(|s| s.silent);
+            self.save_after_guest_turn = Some((self.admin_who(), silent));
             return Ok(1);
         }
-        let reply = self.save_all_reply();
-        self.feedback(reply);
-        Ok(1)
-    }
-
-    /// Save everything; `commands.save.success`, or `commands.save.failed` in red.
-    pub(in crate::game) fn save_all_reply(&mut self) -> Text {
         match self.save_game() {
-            Ok(()) => Text::translate("commands.save.success", &[]),
+            Ok(()) => {
+                self.feedback(Text::translate("commands.save.success", &[]));
+                Ok(1)
+            }
             Err(e) => {
                 log::error!("Horizon: /save-all: {e}");
-                Text::translate("commands.save.failed", &[]).with_color(horizon_client::text::RED)
+                Err(err("commands.save.failed", &[]))
             }
         }
+    }
+
+    /// `cmd_save_all` for a guest, once their turn ended and their own state
+    /// is back in their record (`run_guest_command`): the success line to them
+    /// and to the other operators, or the `ERROR_FAILED` only to them. Returns
+    /// the command's result.
+    pub(in crate::game) fn finish_deferred_save_all(
+        &mut self,
+        host: super::super::lan::LanHost,
+        (who, silent): (Text, bool),
+        lines: &mut Vec<Text>,
+    ) -> (super::super::lan::LanHost, bool) {
+        self.lan = Some(host);
+        let ok = match self.save_game() {
+            Ok(()) => {
+                let line = Text::translate("commands.save.success", &[]);
+                // sendSuccess(line, true): a silent source sends nothing; else
+                // the source hears it when it takes success feedback
+                // (`send_command_feedback`), the operators always, and a
+                // dedicated server's console logs it (`log_admin_commands`).
+                if !silent {
+                    if self.accepts_success() {
+                        lines.push(line.clone());
+                    }
+                    // The guest's source is a player's, not the server's.
+                    self.broadcast_to_admins_as(who, true, line);
+                }
+                true
+            }
+            Err(e) => {
+                log::error!("Horizon: /save-all: {e}");
+                // sendFailure: the source alone, always (`acceptsFailure`).
+                if !silent {
+                    lines.push(
+                        Text::translate("commands.save.failed", &[])
+                            .with_color(horizon_client::text::RED),
+                    );
+                }
+                false
+            }
+        };
+        (self.lan.take().expect("saving puts the hub back"), ok)
     }
 
     /// SaveOffCommand and SaveOnCommand.
@@ -589,3 +630,7 @@ mod tests {
         assert!(off.component().get("with").is_none(), "{off:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "save_all_command_tests.rs"]
+mod save_all_command_tests;

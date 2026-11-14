@@ -3049,9 +3049,9 @@ struct Game<'a> {
     native_commands_refresh: bool,
     /// Other players in the current guest turn, while its hub is borrowed out.
     lan_building_boxes: building_players::BuildingPlayers,
-    /// A guest's `/save-all`: saved once their turn ends (`run_guest_command`),
-    /// when their own state is back in their record.
-    save_after_guest_turn: bool,
+    /// A guest's `/save-all`: its admin line's display name and its source's
+    /// silence, saved once their turn ends, their state back in their record.
+    save_after_guest_turn: Option<(horizon_client::text::Text, bool)>,
     player_attachments: horizon_world::attachments::Attachments,
     /// The joined guests' attachments, by UUID: here rather than in their
     /// records, so a hook in one guest's turn (when the hub is out of
@@ -11880,7 +11880,7 @@ impl<'a> Game<'a> {
             lan_acting: None,
             native_commands_refresh: false,
             lan_building_boxes: Default::default(),
-            save_after_guest_turn: false,
+            save_after_guest_turn: None,
             player_attachments: Default::default(),
             guest_attachments: HashMap::new(),
             lan_break_pos: None,
