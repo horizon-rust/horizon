@@ -81,23 +81,23 @@ impl Control {
         Self::Shield,
     ];
 
-    /// The name the layout editor shows.
+    /// The translation key of the name the layout editor shows.
     pub fn name(self) -> &'static str {
         match self {
-            Self::Move => "Movement",
-            Self::Sprint => "Sprint",
-            Self::Jump => "Jump / fly up",
-            Self::Sneak => "Sneak / fly down",
-            Self::Attack => "Attack / mine",
-            Self::Use => "Use / place",
-            Self::Chat => "Chat",
-            Self::Pause => "Pause",
-            Self::Settings => "Touch settings",
-            Self::Inventory => "Inventory",
-            Self::Debug => "Debug overlay (F3)",
-            Self::Perspective => "Camera perspective (F5)",
-            Self::Offhand => "Swap hands",
-            Self::Shield => "Raise shield",
+            Self::Move => "horizon.touch.control.move",
+            Self::Sprint => "horizon.touch.control.sprint",
+            Self::Jump => "horizon.touch.control.jump",
+            Self::Sneak => "horizon.touch.control.sneak",
+            Self::Attack => "horizon.touch.control.attack",
+            Self::Use => "horizon.touch.control.use",
+            Self::Chat => "horizon.touch.control.chat",
+            Self::Pause => "horizon.touch.control.pause",
+            Self::Settings => "horizon.touch.control.settings",
+            Self::Inventory => "horizon.touch.control.inventory",
+            Self::Debug => "horizon.touch.control.debug",
+            Self::Perspective => "horizon.touch.control.perspective",
+            Self::Offhand => "horizon.touch.control.offhand",
+            Self::Shield => "horizon.touch.control.shield",
         }
     }
 }
@@ -195,6 +195,8 @@ pub struct Settings {
     pub button_scale: f32,
     /// The touch marker's diameter in GUI pixels (16-64).
     pub circle_size: f32,
+    /// Buttons the player added (at most 32).
+    pub custom_buttons: Vec<super::CustomButton>,
 }
 
 impl Default for Settings {
@@ -242,6 +244,7 @@ impl Default for Settings {
             dynamic_area_y: 1.0,
             button_scale: 1.0,
             circle_size: 32.0,
+            custom_buttons: Vec::new(),
         }
     }
 }
@@ -275,6 +278,12 @@ impl Settings {
             }
         }
         for p in self.layouts.iter_mut().flatten() {
+            p.sanitize();
+        }
+        self.custom_buttons.truncate(32);
+        self.custom_buttons
+            .retain(|b| super::CustomButton::valid_token(&b.key));
+        for p in self.custom_buttons.iter_mut().flat_map(|b| &mut b.layouts) {
             p.sanitize();
         }
         for v in [
