@@ -1,7 +1,7 @@
 //! The wither (`WitherBoss`): eleven seconds of invulnerable charging that
 //! end in a blast, then flying after its target while three heads fire
-//! skulls, breaking blocks around it when hurt, immune to arrows and a
-//! player's wind charges below half health.
+//! skulls, breaking blocks around it when hurt, immune to arrows (tridents
+//! too) and a player's wind charges below half health.
 use super::{
     DamageKind, Mob, MobEvent, MobWorld, Species, Who,
     anim::{Poses, State},
@@ -494,7 +494,7 @@ pub fn accepts(m: &mut Mob, kind: DamageKind, attacker: Option<Who>, others_unde
     if m.extra.counter > 0 && !kind.bypasses_invulnerability() {
         return false;
     }
-    if powered(m) && kind == DamageKind::Arrow {
+    if powered(m) && matches!(kind, DamageKind::Arrow | DamageKind::Trident) {
         return false;
     }
     if others_undead || matches!(attacker, Some(Who::Mob(id)) if id == m.id) {
@@ -649,10 +649,13 @@ mod tests {
         let mut m = mob(Species::Wither, 150.0);
         assert!(m.damage(1.0, Damage::of(DamageKind::Thrown)));
         assert!(m.health < 150.0);
-        // ...and arrows stay refused by the damage filter.
-        let mut m = mob(Species::Wither, 150.0);
-        assert!(!m.damage(1.0, Damage::of(DamageKind::Arrow)));
-        assert_eq!(m.health, 150.0);
+        // ...and arrows stay refused by the damage filter, a thrown trident
+        // too (`AbstractArrow`).
+        for kind in [DamageKind::Arrow, DamageKind::Trident] {
+            let mut m = mob(Species::Wither, 150.0);
+            assert!(!m.damage(1.0, Damage::of(kind)), "{kind:?}");
+            assert_eq!(m.health, 150.0);
+        }
     }
     /// A spawning wither rolled the three particles of `aiStep`'s
     /// `getInvulnerableTicks() > 0` block and dropped them on the floor: the

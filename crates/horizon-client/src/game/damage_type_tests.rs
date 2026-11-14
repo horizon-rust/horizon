@@ -19,6 +19,28 @@ fn named_damage_keeps_its_registry_id_with_or_without_an_attacker() {
     }
 }
 
+/// `/damage <target> <amount> <type>`: the source's type is the one asked
+/// for, so `DamageSource.getMsgId` gives the type's own message key.
+#[test]
+fn the_damage_command_keeps_the_types_registry_id() {
+    for ty in [
+        "minecraft:arrow",
+        "minecraft:trident",
+        "minecraft:magic",
+        "minecraft:dragon_breath",
+    ] {
+        assert_eq!(
+            source_damage_type(Damage {
+                kind: Game::damage_kind(ty),
+                attacker: None,
+                from: None,
+                attacker_species: None,
+            }),
+            ty
+        );
+    }
+}
+
 /// `DamageSources.explosion`: a blast with a causing entity is
 /// `player_explosion` whoever caused it, so an exploding creeper's too.
 #[test]

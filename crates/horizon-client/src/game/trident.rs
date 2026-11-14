@@ -1076,7 +1076,7 @@ impl Game<'_> {
                             let hurt = m.damage_projectile(
                                 damage,
                                 Damage {
-                                    kind: DamageKind::Arrow,
+                                    kind: DamageKind::Trident,
                                     attacker: Some(Who::Player),
                                     from,
                                     attacker_species: None,

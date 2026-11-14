@@ -1649,13 +1649,7 @@ impl Game<'_> {
                 .map(|o| self.mob_entity(o)),
             None => None,
         };
-        let projectile = match d.kind {
-            DamageKind::Arrow => Some("minecraft:arrow"),
-            DamageKind::Fireball => Some("minecraft:fireball"),
-            DamageKind::WitherSkull => Some("minecraft:wither_skull"),
-            DamageKind::Fireworks => Some("minecraft:firework_rocket"),
-            _ => None,
-        };
+        let projectile = projectile_entity(d.kind);
         let direct = match projectile {
             Some(kind) => Some(horizon_client::advancements::EntityView {
                 kind: kind.into(),
@@ -1734,7 +1728,7 @@ impl Game<'_> {
         consumed: bool,
         pos: [f64; 3],
     ) {
-        use horizon_client::mobs::{DamageKind, Who, drops};
+        use horizon_client::mobs::{Who, drops};
         use horizon_world::loot::{LootDamage, LootEntity};
         let Some(loot) = horizon_client::structure_blocks::loot_data(
             &self.options.resources,
@@ -1763,24 +1757,12 @@ impl Game<'_> {
                     }),
                 None => None,
             };
-            let direct = match d.kind {
-                DamageKind::Arrow => Some(LootEntity {
-                    kind: "minecraft:arrow".into(),
+            let direct = match projectile_entity(d.kind) {
+                Some(kind) => Some(LootEntity {
+                    kind: kind.into(),
                     ..LootEntity::default()
                 }),
-                DamageKind::Fireball => Some(LootEntity {
-                    kind: "minecraft:fireball".into(),
-                    ..LootEntity::default()
-                }),
-                DamageKind::WitherSkull => Some(LootEntity {
-                    kind: "minecraft:wither_skull".into(),
-                    ..LootEntity::default()
-                }),
-                DamageKind::Fireworks => Some(LootEntity {
-                    kind: "minecraft:firework_rocket".into(),
-                    ..LootEntity::default()
-                }),
-                _ => source.clone(),
+                None => source.clone(),
             };
             LootDamage {
                 kind: source_damage_type(d).into(),
@@ -5089,7 +5071,7 @@ impl Game<'_> {
                     id,
                     amount,
                     by_player,
-                    horizon_client::mobs::DamageKind::Arrow,
+                    projectile_kind(&p.kind),
                     Some(&p.kind),
                 ) {
                     super::dragon::Hurt::Landed { .. } => EntityHit::Hurt,
@@ -5185,13 +5167,7 @@ impl Game<'_> {
         let atp = [at.x, at.y, at.z];
         // Projectile.onHit: the landing is heard.
         self.projectile_event("minecraft:projectile_land", p.owner, atp);
-        let source_kind = match p.kind {
-            ProjectileKind::Arrow { .. } | ProjectileKind::Trident => DamageKind::Arrow,
-            ProjectileKind::SmallFireball | ProjectileKind::LargeFireball { .. } => {
-                DamageKind::Fireball
-            }
-            _ => DamageKind::Thrown,
-        };
+        let source_kind = projectile_kind(&p.kind);
         let attacker_species = match p.owner {
             Some(Who::Mob(id)) => self.mobs.iter().find(|m| m.id == id).map(|m| m.species()),
             _ => None,
@@ -7365,6 +7341,29 @@ fn bucketable(species: Species) -> Option<(&'static str, &'static str)> {
 pub(super) fn source_damage_type(d: Damage) -> &'static str {
     damage_type(d.kind, d.attacker.is_some())
 }
+/// The damage kind of a projectile's hit (`AbstractArrow.onHitEntity`,
+/// `ThrownTrident.onHitEntity`): a trident keeps its own type, not the arrow's.
+pub(super) fn projectile_kind(kind: &ProjectileKind) -> horizon_client::mobs::DamageKind {
+    use horizon_client::mobs::DamageKind as K;
+    match kind {
+        ProjectileKind::Arrow { .. } => K::Arrow,
+        ProjectileKind::Trident => K::Trident,
+        ProjectileKind::SmallFireball | ProjectileKind::LargeFireball { .. } => K::Fireball,
+        _ => K::Thrown,
+    }
+}
+/// The direct entity's id of a projectile hit (`DamageSource.getDirectEntity`).
+pub(super) fn projectile_entity(kind: horizon_client::mobs::DamageKind) -> Option<&'static str> {
+    use horizon_client::mobs::DamageKind as K;
+    match kind {
+        K::Arrow => Some("minecraft:arrow"),
+        K::Trident => Some("minecraft:trident"),
+        K::Fireball => Some("minecraft:fireball"),
+        K::WitherSkull => Some("minecraft:wither_skull"),
+        K::Fireworks => Some("minecraft:firework_rocket"),
+        _ => None,
+    }
+}
 /// The damage type id of a Horizon damage kind. `caused`: the source has a
 /// causing entity (only a blast asks).
 pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) -> &'static str {
@@ -7377,6 +7376,7 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) 
         K::MobAttack => "minecraft:mob_attack",
         K::MobAttackNoAggro => "minecraft:mob_attack_no_aggro",
         K::Arrow => "minecraft:arrow",
+        K::Trident => "minecraft:trident",
         K::Thrown => "minecraft:thrown",
         K::Fireball => "minecraft:fireball",
         K::Explosion if caused => "minecraft:player_explosion",

@@ -658,6 +658,20 @@ mod burning_arrow_tests {
         m
     }
 
+    /// `#sulfur_cube_with_block_immune_to` holds `trident` as well as `arrow`:
+    /// a cube with a block is only knocked about by it.
+    #[test]
+    fn a_trident_only_knocks_a_cube_with_a_block() {
+        let mut m = cube(Some("minecraft:tnt"));
+        let health = m.health;
+        assert!(!accepts_damage(
+            &mut m,
+            &Damage::of(DamageKind::Trident),
+            4.0
+        ));
+        assert_eq!(m.health, health);
+    }
+
     #[test]
     fn a_burning_arrow_lights_the_long_fuse() {
         let mut m = cube(Some("minecraft:tnt"));
@@ -957,6 +971,7 @@ pub fn immune_to(source: &Damage) -> bool {
             | DamageKind::MobAttack
             | DamageKind::MobAttackNoAggro
             | DamageKind::Arrow
+            | DamageKind::Trident
             | DamageKind::Thrown
             | DamageKind::Explosion
             | DamageKind::Fireworks

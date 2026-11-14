@@ -1,7 +1,7 @@
 //! Shulkers (`Shulker`): fixed to a block face, peeking out of their shell,
 //! firing homing bullets at players within 20 blocks, teleporting when
-//! their face is lost or when badly hurt, and shrugging off arrows while
-//! closed.
+//! their face is lost or when badly hurt, and shrugging off arrows (tridents
+//! too) while closed.
 use super::{
     Damage, DamageKind, Mob, MobEvent, MobWorld, Species, Who,
     anim::{Poses, State},
@@ -641,7 +641,7 @@ pub fn render_offset(m: &Mob, alpha: f32) -> glam::DVec3 {
 }
 /// `Shulker.hurtServer` before the damage: arrows bounce off a closed shell.
 pub fn accepts(m: &Mob, source: &Damage) -> bool {
-    !(m.extra.counter == 0 && source.kind == DamageKind::Arrow)
+    !(m.extra.counter == 0 && matches!(source.kind, DamageKind::Arrow | DamageKind::Trident))
 }
 /// `Shulker.hurtServer` after the damage: below half health, a one in four
 /// chance to teleport away.
@@ -1034,22 +1034,25 @@ mod tests {
     }
 
     /// `Shulker.hurtServer` returns false for an `AbstractArrow` while
-    /// `isClosed` (raw peek 0). An open shell takes the same arrow.
+    /// `isClosed` (raw peek 0). A thrown trident is one. An open shell takes
+    /// the same arrow.
     #[test]
     fn a_closed_shell_refuses_an_arrow() {
-        let source = Damage::of(DamageKind::Arrow);
-        let mut closed = shulker();
-        closed.extra.counter = 0;
-        let health = closed.health;
-        assert!(
-            !closed.damage_projectile(2.0, source, None, [0.0, 1.0]),
-            "a closed shell rejects the arrow"
-        );
-        assert_eq!(closed.health, health);
-        let mut open = shulker();
-        open.extra.counter = 30;
-        assert!(open.damage_projectile(2.0, source, None, [0.0, 1.0]));
-        assert!(open.health < health);
+        for kind in [DamageKind::Arrow, DamageKind::Trident] {
+            let source = Damage::of(kind);
+            let mut closed = shulker();
+            closed.extra.counter = 0;
+            let health = closed.health;
+            assert!(
+                !closed.damage_projectile(2.0, source, None, [0.0, 1.0]),
+                "a closed shell rejects {kind:?}"
+            );
+            assert_eq!(closed.health, health);
+            let mut open = shulker();
+            open.extra.counter = 30;
+            assert!(open.damage_projectile(2.0, source, None, [0.0, 1.0]));
+            assert!(open.health < health);
+        }
     }
 
     #[test]

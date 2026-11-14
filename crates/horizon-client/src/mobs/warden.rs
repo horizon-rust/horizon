@@ -506,6 +506,7 @@ pub fn hurt(m: &mut Mob, source: &Damage) {
     let direct = !matches!(
         source.kind,
         DamageKind::Arrow
+            | DamageKind::Trident
             | DamageKind::Thrown
             | DamageKind::Fireball
             | DamageKind::WitherSkull
@@ -1125,6 +1126,17 @@ mod tests {
         };
         assert_eq!(sounds(false), 1);
         assert_eq!(sounds(true), 0);
+    }
+
+    /// `Warden.hurtServer`'s `source.isDirect()`: a thrown trident's causing
+    /// entity (its owner) is not its direct one, so the hit is not direct.
+    #[test]
+    fn a_trident_hit_is_not_direct() {
+        let mut m = Mob::new(1, crate::mobs::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
+        register(&mut m);
+        hurt(&mut m, &Damage::of(DamageKind::Trident));
+        let st = m.extra.warden.as_ref().expect("a warden's state");
+        assert_eq!(st.hurt_by, [(None, false)]);
     }
 
     #[test]

@@ -563,6 +563,9 @@ pub enum DamageKind {
     /// `mob_attack_no_aggro`: a goat's ram, the one type in `#no_anger`.
     MobAttackNoAggro,
     Arrow,
+    /// `trident`: a thrown trident's hit (`DamageSources.trident`), which keeps
+    /// its own `death.attack.trident` ("impaled by").
+    Trident,
     Thrown,
     Fireball,
     Explosion,
@@ -672,12 +675,7 @@ pub struct Damage {
 }
 impl Damage {
     pub fn fall() -> Self {
-        Self {
-            kind: DamageKind::Fall,
-            attacker: None,
-            from: None,
-            attacker_species: None,
-        }
+        Self::of(DamageKind::Fall)
     }
     pub fn of(kind: DamageKind) -> Self {
         Self {
@@ -857,6 +855,7 @@ impl Damage {
         matches!(
             self.kind,
             DamageKind::Arrow
+                | DamageKind::Trident
                 | DamageKind::Thrown
                 | DamageKind::Fireball
                 | DamageKind::WindCharge

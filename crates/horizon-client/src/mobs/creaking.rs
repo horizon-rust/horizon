@@ -122,6 +122,7 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage) -> bool {
             | DamageKind::MobAttack
             | DamageKind::MobAttackNoAggro
             | DamageKind::Arrow
+            | DamageKind::Trident
             | DamageKind::Thrown
             | DamageKind::Fireball
             | DamageKind::WitherSkull
@@ -521,6 +522,19 @@ mod tests {
             hurt_sounds(&m),
             ["entity.hostile.hurt"],
             "an unbound creaking is hurt like a monster"
+        );
+    }
+
+    /// `Creaking.hurtServer`: a `Projectile`'s direct entity gets through the
+    /// heart's guard, and a thrown trident is one.
+    #[test]
+    fn a_trident_starts_a_heart_bound_creaking_invulnerability_animation() {
+        let mut m = creaking();
+        m.extra.home = Some([0, 64, 0]);
+        assert!(!accepts_damage(&mut m, &Damage::of(DamageKind::Trident)));
+        assert!(
+            m.extra.ints[INVULNERABLE] > 0,
+            "the hit starts the invulnerability animation"
         );
     }
 

@@ -133,7 +133,8 @@ impl Game<'_> {
             "mob_attack" => DamageKind::MobAttack,
             "mob_attack_no_aggro" => DamageKind::MobAttackNoAggro,
             "arrow" => DamageKind::Arrow,
-            "thrown" | "trident" | "mob_projectile" => DamageKind::Thrown,
+            "trident" => DamageKind::Trident,
+            "thrown" | "mob_projectile" => DamageKind::Thrown,
             "fireball" | "unattributed_fireball" => DamageKind::Fireball,
             "wither_skull" => DamageKind::WitherSkull,
             "explosion" | "player_explosion" | "bad_respawn_point" => DamageKind::Explosion,
@@ -145,7 +146,13 @@ impl Game<'_> {
             "lava" => DamageKind::Lava,
             "drown" => DamageKind::Drown,
             "dry_out" => DamageKind::DryOut,
-            "magic" | "indirect_magic" | "dragon_breath" => DamageKind::Magic,
+            "magic" | "indirect_magic" => DamageKind::Magic,
+            // `DRAGON_BREATH` is not `Magic`: its id keeps `dragonBreath`.
+            "dragon_breath" => DamageKind::Named(horizon_client::mobs::NamedDamage::new(
+                "minecraft:dragon_breath",
+                horizon_client::mobs::NamedDamage::BYPASSES_ARMOR
+                    | horizon_client::mobs::NamedDamage::PANIC_CAUSES,
+            )),
             "sting" => DamageKind::Sting,
             "cactus" => DamageKind::Cactus,
             "sweet_berry_bush" => DamageKind::SweetBerryBush,
