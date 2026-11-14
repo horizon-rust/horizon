@@ -1360,7 +1360,7 @@ fn login_and_configure(
             || horizon_protocol::item::custom::entries().next().is_some())
     {
         let text = if shared.config.horizon_clients_only {
-            super::HORIZON_CLIENTS_ONLY_REASON
+            shared.config.horizon_clients_only_reason
         } else {
             crate::content_identity::MISMATCH
         };

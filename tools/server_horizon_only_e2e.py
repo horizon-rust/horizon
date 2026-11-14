@@ -5,14 +5,17 @@
 
 - off (the default): a client that sends no brand joins, as on vanilla.
 - on (`horizon-clients-only=true`): a client with no brand, or with vanilla's "vanilla", is disconnected during
-  configuration with "This server is for the Horizon client: playhorizon.dev", and the console says why; a
-  client whose `minecraft:brand` is "horizon" joins. (Any client can send that brand: the gate keeps out
-  players who didn't install Horizon, not cheaters.)
+  configuration, and the console says why; a client whose `minecraft:brand` is "horizon" joins. (Any client
+  can send that brand: the gate keeps out players who didn't install Horizon, not cheaters.) The reason
+  follows the executable: horizon-client, the plain game, says "This server only accepts its own game client"
+  and never names playhorizon.dev; the official one (`--official`, horizon-official) says "This server is for
+  the Horizon client: playhorizon.dev".
 
 horizon-bots stand in for the clients (`--brand`). Each server runs in a fresh folder with fresh HORIZON_HOME
 and XDG folders (lab.game_env), on a free port. Build first:
     cargo build --profile fast -p horizon-client --bin horizon-client
     cargo build --profile fast -p horizon-bots
+    cargo build --profile fast -p horizon-official     # for --official
 """
 import argparse
 import json
@@ -28,7 +31,12 @@ import lab  # noqa: E402
 from server_bench import DONE, Server  # noqa: E402
 
 EXE = '.exe' if os.name == 'nt' else ''
-REASON = 'This server is for the Horizon client: playhorizon.dev'
+# What a turned-away client reads, by the executable that serves: the engine's own text, and Horizon's
+# (horizon-official registers the hook that gives it).
+REASONS = {
+    'horizon-client': 'This server only accepts its own game client',
+    'horizon-official': 'This server is for the Horizon client: playhorizon.dev',
+}
 PROPERTIES = {
     'online-mode': 'false',
     'white-list': 'false',
@@ -54,13 +62,13 @@ def bot(bins, port, out, name, *extra):
     return json.loads(report.read_text())['per_bot'][0]
 
 
-def server(bins, folder, out, name, extra):
+def server(bins, folder, out, name, extra, program='horizon-client'):
     folder.mkdir(parents=True)
     port = lab.free_port()
     props = dict(PROPERTIES, **extra, **{'server-port': str(port)})
     (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
     (folder / 'eula.txt').write_text('eula=true\n')
-    command = [bins / f'horizon-client{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
+    command = [bins / f'{program}{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     s = Server(command, folder, out / f'{name}.log')
     s.wait_for(DONE, 300)
     return s, port
@@ -70,8 +78,9 @@ def joined(entry):
     return entry['joined_after_ms'] > 0 and not entry['error']
 
 
-def check(bins, scratch, out):
-    s, port = server(bins, scratch / 'off', out, 'off', {})
+def check(bins, scratch, out, program='horizon-client'):
+    reason = REASONS[program]
+    s, port = server(bins, scratch / 'off', out, 'off', {}, program)
     try:
         plain = bot(bins, port, out, 'Plain')
     finally:
@@ -79,7 +88,7 @@ def check(bins, scratch, out):
     if not joined(plain):
         raise Failed(f'off: a client without a brand was refused: {plain["error"]}')
     print('off: a client without a brand joins')
-    s, port = server(bins, scratch / 'on', out, 'on', {'horizon-clients-only': 'true'})
+    s, port = server(bins, scratch / 'on', out, 'on', {'horizon-clients-only': 'true'}, program)
     try:
         results = {name: bot(bins, port, out, name, *extra) for name, extra in
                    [('None', ()), ('Vanilla', ('--brand', 'vanilla')), ('Horizon', ('--brand', 'horizon'))]}
@@ -88,8 +97,11 @@ def check(bins, scratch, out):
         s.stop()
     for name in ('None', 'Vanilla'):
         entry = results[name]
-        if joined(entry) or REASON not in (entry['error'] or ''):
+        error = entry['error'] or ''
+        if joined(entry) or reason not in error:
             raise Failed(f'on: {name} was not turned away with the reason: {entry["error"]}')
+        if program == 'horizon-client' and 'playhorizon' in error:
+            raise Failed(f'on: the plain game named the website to {name}: {error}')
         if not any(f'Disconnecting {name}0' in l and 'horizon-clients-only' in l for l in lines):
             raise Failed(f'on: the console did not say why {name}0 was turned away')
     if not joined(results['Horizon']):
@@ -100,6 +112,8 @@ def check(bins, scratch, out):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--bin-dir', default=str(lab.ROOT / 'target/fast'))
+    parser.add_argument('--official', action='store_true',
+                        help="serve with horizon-official and expect Horizon's reason")
     parser.add_argument('--out', default=str(lab.LOCAL / 'server-horizon-only-e2e'))
     args = parser.parse_args()
     bins, out = Path(args.bin_dir).resolve(), Path(args.out)
@@ -108,7 +122,7 @@ def main():
     os.environ.update(lab.game_env())
     with tempfile.TemporaryDirectory(prefix='server-horizon-only-e2e-') as scratch:
         try:
-            check(bins, Path(scratch), out)
+            check(bins, Path(scratch), out, 'horizon-official' if args.official else 'horizon-client')
         except (Failed, RuntimeError) as e:
             sys.exit(f'server_horizon_only_e2e failed (logs in {out}): {e}')
 

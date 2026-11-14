@@ -346,8 +346,8 @@ To generate the world around spawn ahead of the players, Horizon has its own `pr
 ([pregeneration](pregeneration.md)).
 To let only the Horizon client join, set `horizon-clients-only = true` under `[properties]` (off by default).
 Other clients are turned away while they connect with "This server is for the Horizon client:
-playhorizon.dev", and the console says which client it was. The check reads the brand a client names itself
-by (`minecraft:brand`), which any client can fake: it keeps out players who didn't install Horizon, not
+playhorizon.dev" (a build without Horizon's parts says "This server only accepts its own game client"),
+and the console says which client it was. The check reads the brand a client names itself by (`minecraft:brand`), which any client can fake: it keeps out players who didn't install Horizon, not
 cheaters. The server's own checks (reach, movement) are what protect it.
 
 Horizon clients can get their far terrain (Video Settings → LOD Distance) from the server: set

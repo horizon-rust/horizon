@@ -103,6 +103,14 @@ pub trait Hooks: Sync {
     /// changes, not every frame. Splitscreen: the first player's only.
     fn activity(&self, _now: Activity) {}
 
+    /// What a server that only lets this game's own client in (`horizon-clients-only`) tells a
+    /// client it turns away. The first hook that answers is used; with none, the engine's own
+    /// text, which names no address. Asked once, on the game's thread, when a server builds its
+    /// configuration.
+    fn clients_only_reason(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Where a game started without its prepared files (run by hand, not from a launcher) sends
     /// the player for them: the screen's text and its button. The first hook that answers is
     /// used; with none, the screen says how to prepare the files and opens no page. Asked once,
@@ -358,6 +366,11 @@ pub mod engine {
         }
     }
 
+    /// [`Hooks::clients_only_reason`]: the first registered hook's text.
+    pub fn clients_only_reason() -> Option<&'static str> {
+        all().iter().find_map(|hooks| hooks.clients_only_reason())
+    }
+
     /// [`Hooks::captures`]: the first registered hook's.
     pub fn captures() -> Option<&'static dyn perf::Captures> {
         all().iter().find_map(|hooks| hooks.captures())
@@ -443,6 +456,9 @@ mod tests {
             let alpha = draw.motion().head_yaw / 90.0;
             let spark = players::Particle::new([[0.0; 3]; 4], [[0.0; 2]; 4], alpha);
             draw.particles([0.0; 4], &[spark], players::Light::Full);
+        }
+        fn clients_only_reason(&self) -> Option<&'static str> {
+            Some("Recorder's clients only")
         }
         fn tick(&self, models: &mut dyn players::PlayerModels) {
             let mut ids = Vec::new();
@@ -595,6 +611,10 @@ mod tests {
         }
         engine::shutdown();
         assert!(engine::any());
+        assert_eq!(
+            engine::clients_only_reason(),
+            Some("Recorder's clients only")
+        );
         assert_eq!(
             engine::get_the_game().map(|g| g.address),
             Some("https://example.org")

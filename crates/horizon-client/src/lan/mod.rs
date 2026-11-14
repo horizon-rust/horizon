@@ -210,9 +210,16 @@ pub struct NetLog {
 
 /// The server.properties key that lets only the Horizon client join (off unless "true").
 pub const HORIZON_CLIENTS_ONLY: &str = "horizon-clients-only";
-/// What another client is told.
-pub const HORIZON_CLIENTS_ONLY_REASON: &str =
-    "This server is for the Horizon client: playhorizon.dev";
+/// What another client is told when no crate above the engine gives its own text
+/// (`horizon_hooks::Hooks::clients_only_reason`): the engine names no address.
+pub const HORIZON_CLIENTS_ONLY_REASON: &str = "This server only accepts its own game client";
+
+/// What a `horizon-clients-only` server tells another client: the registered hook's text, or
+/// [`HORIZON_CLIENTS_ONLY_REASON`]. For where a server builds its [`NetConfig`], on the game's
+/// thread; the login threads read the config's copy.
+pub fn clients_only_reason() -> &'static str {
+    horizon_hooks::engine::clients_only_reason().unwrap_or(HORIZON_CLIENTS_ONLY_REASON)
+}
 /// The server.properties key (server.toml's `server.accept_older_clients`) that lets 26.2 clients join
 /// (off unless "true").
 pub const ACCEPT_OLDER_CLIENTS: &str = "horizon-accept-older-clients";
@@ -283,6 +290,8 @@ pub struct NetConfig {
     /// client whose `minecraft:brand` isn't Horizon's is turned away during
     /// configuration. A brand can be spoofed: a gate, not security.
     pub horizon_clients_only: bool,
+    /// What `horizon_clients_only` tells the client it turns away ([`clients_only_reason`]).
+    pub horizon_clients_only_reason: &'static str,
     /// `horizon-accept-older-clients` (off): a client of 26.2 joins too, its packets renumbered
     /// (horizon_protocol::adapter::ClientSession). Off, it is turned away as vanilla turns it away.
     pub accept_older_clients: bool,
@@ -340,6 +349,7 @@ impl NetConfig {
             code_of_conducts: Vec::new(),
             server_links: Vec::new(),
             horizon_clients_only: false,
+            horizon_clients_only_reason: HORIZON_CLIENTS_ONLY_REASON,
             accept_older_clients: false,
             older_clients_play: false,
             lod_distance: crate::lod_net::DEFAULT_DISTANCE,
@@ -1073,6 +1083,15 @@ pub(super) fn test_loopback() -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// This test process registers no hook: the engine's own text, which names no address.
+    #[test]
+    fn a_clients_only_server_without_a_hook_names_no_address() {
+        let reason = super::clients_only_reason();
+        assert_eq!(reason, "This server only accepts its own game client");
+        let config = super::NetConfig::lan(0, String::new(), 1);
+        assert_eq!(config.horizon_clients_only_reason, reason);
+    }
+
     #[test]
     fn channel_messages_register_and_unregister_each_name_once() {
         let mut channels = Vec::new();

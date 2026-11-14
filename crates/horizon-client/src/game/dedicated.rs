@@ -1291,6 +1291,7 @@ impl Game<'_> {
                 .raw
                 .get(horizon_client::lan::HORIZON_CLIENTS_ONLY)
                 .is_some_and(|v| v.trim().eq_ignore_ascii_case("true")),
+            horizon_clients_only_reason: horizon_client::lan::clients_only_reason(),
             accept_older_clients: props
                 .raw
                 .get(horizon_client::lan::ACCEPT_OLDER_CLIENTS)
