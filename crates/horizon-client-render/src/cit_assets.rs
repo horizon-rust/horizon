@@ -5,8 +5,8 @@
 //! `horizon_cit:minecraft/optifine/cit/swords/flame`). A file already under `textures/` (or
 //! `models/`) keeps its vanilla id, so it is not packed twice.
 
+use crate::cit::{Kind, Rule};
 use horizon_assets::model::{CuboidModel, TextureSlot};
-use horizon_optifine::cit::{Kind, Rule};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
@@ -55,7 +55,7 @@ pub fn model_id(resource: &str) -> Option<String> {
 /// and for one that would leave the resource root (a pack model may write any id).
 pub fn resource(id: &str, ext: &str) -> Option<String> {
     let rest = id.strip_prefix(NAMESPACE)?.strip_prefix(':')?;
-    horizon_optifine::paths::valid(rest).then(|| format!("assets/{rest}.{ext}"))
+    stays_in_root(rest).then(|| format!("assets/{rest}.{ext}"))
 }
 
 /// Sprite ids the rules whose kind passes `keep` draw: their `texture` and `texture.<name>`
@@ -102,7 +102,14 @@ fn relative(file: &str, value: &str, ext: &str) -> Option<String> {
         .and_then(|r| r.strip_suffix('.'))
         .unwrap_or(rest);
     let path = format!("{dir}/{rest}.{ext}");
-    horizon_optifine::paths::valid(&path).then_some(path)
+    stays_in_root(&path).then_some(path)
+}
+
+/// Whether a resource path stays in the root: no `.`, `..` or empty segment, and no `\` (a
+/// separator on Windows, where `..\..` would climb).
+fn stays_in_root(path: &str) -> bool {
+    path.split('/')
+        .all(|segment| !matches!(segment, "" | "." | "..") && !segment.contains('\\'))
 }
 
 /// The id a relative value of the model at `file` names, as `CuboidModel::from_json` read it
@@ -294,11 +301,11 @@ mod tests {
             "base.json",
             r#"{"parent":"item/handheld","textures":{"layer2":"./glow.png"}}"#,
         );
-        let props =
-            horizon_optifine::Properties::parse_equals_first("items=stick\nmodel=./swords/flame");
-        let rule = Rule::parse("assets/minecraft/optifine/cit/a.properties", &props, |p| {
-            root.join(p).is_file()
-        })
+        let rule = crate::pack_formats::cit::parse_rule_in(
+            &root,
+            "assets/minecraft/optifine/cit/a.properties",
+            "items=stick\nmodel=./swords/flame",
+        )
         .unwrap();
         let models = load_models(&root, &[rule]);
         let _ = fs::remove_dir_all(&root);

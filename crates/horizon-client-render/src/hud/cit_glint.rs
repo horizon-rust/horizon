@@ -1,12 +1,12 @@
-//! OptiFine CIT enchantment glints on GUI items (`type=enchantment`, see `crate::cit_glint` for
+//! Custom item texture enchantment glints on GUI items (`Kind::Enchantment`, see `crate::cit_glint` for
 //! which layers a stack draws): every rule's texture in one texture array, each layer an extra
 //! pass over the item's quads with its rule's blend. A layer's vertices carry its texture slot
 //! (red) and its intensity (alpha) in their colour; its scrolled UV is worked out on the CPU, as
 //! vanilla's glint's is. Without enchantment rules nothing here is made.
 
 use super::HudVertex;
+use crate::cit::{Blend, Factor, Kind, Rule};
 use crate::gfx::hud_coverage::Pipeline;
-use horizon_optifine::cit::{Blend, Factor, Kind, Rule};
 use std::path::Path;
 
 /// Slots the shader's table holds; rules past it draw no layer (and match no stack).
@@ -438,13 +438,11 @@ impl CitGlintPass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_optifine::Properties;
-    use horizon_optifine::cit::parse_blend;
+    use crate::pack_formats::cit::{parse_blend, parse_rule};
 
     fn rule(name: &str, text: &str) -> Rule {
         let path = format!("assets/minecraft/optifine/cit/{name}.properties");
-        let text = format!("texture=glint\n{text}");
-        Rule::parse(&path, &Properties::parse_equals_first(&text), |_| true).unwrap()
+        parse_rule(&path, &format!("texture=glint\n{text}")).unwrap()
     }
 
     #[test]

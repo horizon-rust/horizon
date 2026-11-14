@@ -273,6 +273,10 @@ fn sheet(
 }
 
 impl FusionTextures {
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
     /// The connecting textures under `root`: the tiles of those `fusion:connecting` models
     /// draw are inserted into `sprites` (before it finishes), and each face in `catalog` that
     /// shows one gets its rule.

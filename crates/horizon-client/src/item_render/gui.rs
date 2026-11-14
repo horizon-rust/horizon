@@ -692,23 +692,22 @@ mod tests {
 
     #[test]
     fn cit_layers_draw_once_over_the_whole_item() {
-        use crate::cit_glint::Global;
+        use crate::cit_glint::GlintLayer;
         use crate::hud::Blend;
         use crate::hud::cit_glint::Slot;
-        use horizon_optifine::Properties;
         let rule = |name: &str, text: &str| {
             let path = format!("assets/minecraft/optifine/cit/{name}.properties");
             let text = format!("type=enchantment\ntexture=glint\n{text}");
-            Rule::parse(&path, &Properties::parse_equals_first(&text), |_| true).unwrap()
+            crate::pack_formats::cit::parse_rule(&path, &text).unwrap()
         };
         let rules = [
             rule("shown", ""),
             rule("fire", "layer=1\nenchantments=fire_aspect"),
         ];
-        // Shared by level, and the stack has no Fire Aspect: that layer is at intensity 0.
-        let global = Global::parse(&Properties::parse_equals_first("method=average"));
-        let glint = StackGlint::new(&rules, &[0, 1], &[("minecraft:sharpness", 3)], &global);
-        assert_eq!(glint.layers.len(), 2);
+        // The second layer at intensity 0 (shared by level, and the stack has none of its
+        // enchantment).
+        let layers = vec![GlintLayer::new(0, 1.0, 1.0), GlintLayer::new(1, 0.0, 1.0)];
+        let glint = StackGlint::from_parts(layers, false, None);
         let slot = |blend| Slot {
             rgba: [1.0; 4],
             blur: false,

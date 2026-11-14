@@ -4,6 +4,7 @@
 //! own types. The platform installs its formats at startup ([`install`]); with none installed,
 //! packs load as vanilla reads them.
 
+use std::any::Any;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
@@ -18,6 +19,36 @@ pub trait PackFormats: Send + Sync {
     /// The name ending of the overlay's emissive textures (`stone_e.png` beside `stone.png`),
     /// if its format has them.
     fn emissive_suffix(&self, _root: &Path) -> Option<String> {
+        None
+    }
+
+    /// Reads connected rules before models insert textures, so named sprites can keep their own
+    /// layers. The returned state is opaque to the engine and passed to `connected_textures`.
+    fn prepare_connected_textures(
+        &self,
+        _root: &Path,
+        _sprites: &mut crate::sprites::Sprites,
+    ) -> Option<Box<dyn Any + Send + Sync>> {
+        None
+    }
+
+    /// The overlay's connected textures: their tiles go into `sprites` (before it finishes), and
+    /// baked faces they draw on may get a rule (`crate::models::BakedFace::fusion`).
+    /// `native_mods` loads native mods' own sprites: call it after the tiles that go before them.
+    fn connected_textures(
+        &self,
+        _root: &Path,
+        _prepared: Option<Box<dyn Any + Send + Sync>>,
+        _registry: &horizon_world::registry::BlockRegistry,
+        _sprites: &mut crate::sprites::Sprites,
+        _models: &mut crate::models::StateModels,
+        _native_mods: &mut dyn FnMut(&mut crate::sprites::Sprites),
+    ) -> Option<crate::connected::Connected> {
+        None
+    }
+
+    /// The overlay's custom item texture rules and their matcher.
+    fn item_textures(&self, _root: &Path) -> Option<crate::cit::CitRules> {
         None
     }
 

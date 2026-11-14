@@ -100,8 +100,7 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
         pbr_normals: vec![],
         pbr_specular: vec![],
         pbr_size: 1,
-        connected: Default::default(),
-        fusion: Default::default(),
+        connected: None,
         generation: 1,
     };
     let assets = Assets {
