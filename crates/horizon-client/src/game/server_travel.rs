@@ -1300,6 +1300,307 @@ mod tests {
         assert!(take_vehicle(&mut mobs, 9, at, 0.0, Vec3::ZERO).is_none());
         assert!(mobs.is_empty());
     }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn paused_server_pass_does_not_finish_a_portal_arrival() {
+        use crate::game::native_machines::tests::server_game;
+        use horizon_client::{
+            chunk::Chunk,
+            lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
+        };
+        use horizon_protocol::packets::configuration::ClientInformation;
+        use std::sync::{atomic::AtomicI32, mpsc};
+
+        let mut game = server_game();
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                game.streaming
+                    .insert_remote(&mut game.world, Chunk::empty(cx, cz));
+                assert!(game.streaming.is_lit(cx, cz));
+            }
+        }
+        game.lan_host(
+            super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                listen: false,
+                announce: false,
+                ..NetConfig::loopback(0, String::new(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: true,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+
+        let (tx, _rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 7,
+                uuid: 77,
+                name: "PortalGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:7".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            7,
+            [8.5, 65.0, 8.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.loading = false;
+        guest.health = 20.0;
+        game.lan.as_mut().unwrap().hub.guests.push(guest);
+
+        let portal = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:nether_portal")
+            .unwrap();
+        for x in 8..=9 {
+            for y in 64..=66 {
+                game.world.set(x, y, 8, portal).unwrap();
+            }
+        }
+
+        // Prepare a loaded Nether exit, then return to the Overworld so the
+        // player's actual portal process starts from the source blocks above.
+        let mut host = game.lan.take().unwrap();
+        game.enter_level(Some(&mut host), Dim::Nether).unwrap();
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                game.streaming
+                    .insert_remote(&mut game.world, Chunk::empty(cx, cz));
+                assert!(game.streaming.is_lit(cx, cz));
+            }
+        }
+        for x in 1..=2 {
+            for y in 64..=66 {
+                game.world.set(x, y, 1, portal).unwrap();
+            }
+        }
+        game.enter_level(Some(&mut host), Dim::Overworld).unwrap();
+        game.lan = Some(host);
+
+        // Count real portal ticks before opening the pause screen.
+        game.screen = crate::game::Screen::Playing;
+        for _ in 0..20 {
+            game.tick_lan(false);
+        }
+        assert_eq!(
+            game.lan.as_ref().unwrap().play[&7]
+                .portal
+                .process
+                .as_ref()
+                .unwrap()
+                .time,
+            20,
+            "the player has spent 20 ticks in the portal"
+        );
+
+        // A command teleport queued from tickPaused's connection pass still
+        // runs while natural portal simulation is frozen. Use a second guest
+        // so this command does not disturb the portal countdown under test.
+        let (tx, _rx) = mpsc::channel();
+        let mut command_guest = Guest::new(
+            Joined {
+                conn: 8,
+                uuid: 78,
+                name: "CommandGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:8".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            8,
+            [8.5, 65.0, 8.5],
+            2,
+        );
+        command_guest.dimension = "minecraft:overworld".into();
+        command_guest.placed = true;
+        command_guest.loaded = true;
+        command_guest.loading = false;
+        command_guest.health = 20.0;
+        game.lan.as_mut().unwrap().hub.guests.push(command_guest);
+
+        // The integrated client's pause decision is made without the server
+        // thread's LAN host attached to this test Game. The host is restored
+        // before the following server passes, as it is a separate thread in
+        // production.
+        let host = game.lan.take().unwrap();
+        game.key_pressed(
+            winit::keyboard::KeyCode::Escape,
+            winit::keyboard::KeyCode::Escape,
+        )
+        .unwrap();
+        let paused = game.pauses_game();
+        assert!(paused, "Escape pauses an unpublished single-player world");
+        game.pause = paused;
+        game.lan = Some(host);
+
+        game.level_teleports.push(LevelTeleport {
+            conn: 8,
+            dim: Dim::Nether,
+            at: [0.5, 65.0, 0.5],
+            rotation: None,
+            vehicle: None,
+            cause: None,
+        });
+        // The queued command teleport runs during a paused connection pass;
+        // natural portal progress remains frozen for the whole 100 passes.
+        game.tick_lan(game.pause);
+        assert!(
+            game.level_teleports.is_empty(),
+            "the queued /tp was applied"
+        );
+        assert!(
+            game.on_server_trip(8),
+            "the command player awaits level load"
+        );
+        assert_eq!(
+            game.lan.as_ref().unwrap().hub.guests[1].dimension,
+            "minecraft:the_nether"
+        );
+
+        // The command's Trip now has a loaded destination. Tick that level
+        // while paused: without the travel gate, this pass consumes the Trip.
+        let mut host = game.lan.take().unwrap();
+        game.enter_level(Some(&mut host), Dim::Nether).unwrap();
+        game.lan = Some(host);
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                assert!(
+                    game.streaming.is_lit(cx, cz),
+                    "destination arrival requires loaded chunk ({cx}, {cz})"
+                );
+            }
+        }
+        let trip = game
+            .server_trips
+            .iter()
+            .find(|trip| trip.conn == 8)
+            .expect("the command teleport awaits its destination level");
+        assert_eq!(trip.dim, Dim::Nether);
+        assert_eq!(trip.target, Vec3::new(0.5, 65.0, 0.5));
+        game.tick_lan(game.pause);
+        assert!(
+            game.on_server_trip(8),
+            "a paused level pass leaves the loaded command Trip pending"
+        );
+
+        let mut host = game.lan.take().unwrap();
+        game.enter_level(Some(&mut host), Dim::Overworld).unwrap();
+        game.lan = Some(host);
+        for _ in 2..100 {
+            game.tick_lan(game.pause);
+        }
+        assert_eq!(
+            game.lan.as_ref().unwrap().play[&7]
+                .portal
+                .process
+                .as_ref()
+                .unwrap()
+                .time,
+            20,
+            "paused connection-service passes do not advance the portal timer"
+        );
+        assert!(
+            !game.on_server_trip(7),
+            "the trip has not started while paused"
+        );
+        assert_eq!(
+            game.lan.as_ref().unwrap().hub.guests[0].position,
+            [8.5, 65.0, 8.5]
+        );
+
+        // Escape resumes the world; the portal needs the remaining 61 ticks
+        // (the 81st call observes the vanilla 80-tick threshold).
+        let host = game.lan.take().unwrap();
+        game.key_pressed(
+            winit::keyboard::KeyCode::Escape,
+            winit::keyboard::KeyCode::Escape,
+        )
+        .unwrap();
+        game.pause = game.pauses_game();
+        assert!(!game.pause, "Escape resumes the unpublished world");
+        game.lan = Some(host);
+        for _ in 0..60 {
+            game.tick_lan(game.pause);
+        }
+        assert!(!game.on_server_trip(7), "the threshold has not elapsed yet");
+        game.tick_lan(game.pause);
+        assert!(
+            game.on_server_trip(7),
+            "the portal trip starts after the remaining unpaused ticks"
+        );
+
+        // The destination level now ticks the pending arrival and resolves
+        // the exit portal before sending the final teleport.
+        let mut host = game.lan.take().unwrap();
+        game.enter_level(Some(&mut host), Dim::Nether).unwrap();
+        game.lan = Some(host);
+        game.tick_lan(false);
+        assert!(
+            !game.on_server_trip(7),
+            "the portal arrival completed for its player"
+        );
+        assert!(
+            !game.on_server_trip(8),
+            "the command Trip completes when its destination level resumes"
+        );
+        assert_eq!(game.dim, Dim::Nether);
+        let guest = &game.lan.as_ref().unwrap().hub.guests[0];
+        assert_eq!(guest.dimension, "minecraft:the_nether");
+        assert_eq!(guest.position, [1.5, 65.0, 1.5]);
+        assert!(guest.awaiting_teleport.is_some());
+        let command_guest = &game.lan.as_ref().unwrap().hub.guests[1];
+        assert_eq!(command_guest.dimension, "minecraft:the_nether");
+        assert_eq!(command_guest.position, [0.5, 65.0, 0.5]);
+
+        // Once the integrated world is published, Escape opens the menu but
+        // does not pause the server.
+        game.screen = crate::game::Screen::Playing;
+        game.key_pressed(
+            winit::keyboard::KeyCode::Escape,
+            winit::keyboard::KeyCode::Escape,
+        )
+        .unwrap();
+        let paused = game.pauses_game();
+        assert!(!paused, "Escape does not pause a world open to LAN");
+        let game_time = game.world.game_time;
+        game.tick_server(paused).unwrap();
+        assert!(
+            game.world.game_time > game_time,
+            "the published world keeps ticking"
+        );
+    }
 }
 
 #[cfg(test)]

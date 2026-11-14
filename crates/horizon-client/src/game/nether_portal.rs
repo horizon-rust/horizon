@@ -99,7 +99,7 @@ pub(super) struct Portals {
     /// `LocalPlayer.portalProcess.isInsidePortalThisTick`.
     client_inside: bool,
     /// Whether the last tick's `handlePortalTransitionEffect` found the
-    /// player inside a nether portal: it closes any screen opened meanwhile.
+    /// player inside a nether portal: it closes non-pausing screens opened meanwhile.
     client_was_inside: bool,
     /// Items and mobs, by entity id.
     pub(super) entities: HashMap<u32, PortalState>,
@@ -599,9 +599,9 @@ impl Game<'_> {
         )
     }
     /// `LocalPlayer.handlePortalTransitionEffect`: whether the confusion
-    /// effect grows this tick. Entering a portal closes screens other than
-    /// the chat and death screens and plays `block.portal.trigger` when the
-    /// effect starts from nothing.
+    /// effect grows this tick. Entering a portal leaves pausing screens,
+    /// chat and death screens open and plays `block.portal.trigger` when
+    /// the effect starts from nothing.
     pub(super) fn client_portal_effect(&mut self) -> bool {
         let inside = std::mem::take(&mut self.portals.client_inside);
         self.portals.client_was_inside = inside;
@@ -610,6 +610,7 @@ impl Game<'_> {
         }
         match self.screen {
             Screen::Playing | Screen::Chat | Screen::Dead => {}
+            screen if screen.is_pause_screen() => {}
             Screen::Inventory | Screen::Creative => {
                 self.close_container();
                 self.carried = None;
