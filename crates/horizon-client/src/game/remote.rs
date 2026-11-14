@@ -1356,11 +1356,7 @@ impl Game<'_> {
         self.end_mod_use();
 
         self.set_mode_id(0);
-        self.experience = Experience {
-            level: 0,
-            progress: 0.0,
-            total: 0,
-        };
+        self.experience = Experience::default();
         self.ui.registries = Default::default();
         self.build_registries();
         self.ui.registries.permission = 0;
@@ -1390,10 +1386,13 @@ impl Game<'_> {
             mod_net: false,
             attachments: HashMap::new(),
             far_terrain: None,
-            builtin,
+            builtin: builtin.clone(),
             status: "Playing Studio Replay".into(),
             lang,
-            registries: Arc::new(Dynamic::default()),
+            registries: Arc::new(super::replay::replay_dynamic_registries(
+                &self.ui.registries.clocks,
+                &builtin,
+            )),
             tables: Default::default(),
             joined: false,
             reconfiguring: None,
@@ -4576,17 +4575,18 @@ impl Game<'_> {
                         r.and_then(|r| r.registries.registries.get("minecraft:world_clock"));
                     let tracked = r.and_then(|r| r.clock);
                     let wanted = r
-                        .and_then(|r| r.dimension.default_clock.clone())
-                        .or_else(|| r.map(|r| r.dimension.name.clone()))
-                        .unwrap_or_else(|| "minecraft:overworld".into());
+                        .and_then(|r| r.dimension.default_clock.as_deref())
+                        .or_else(|| r.map(|r| r.dimension.name.as_str()))
+                        .unwrap_or("minecraft:overworld");
                     let name = |id: i32| {
                         names
                             .and_then(|n| n.get(id as usize))
                             .map(|(n, _)| n.as_str())
+                            .or_else(|| (id == 0).then_some("minecraft:overworld"))
                     };
                     p.clocks
                         .iter()
-                        .find(|c| name(c.clock) == Some(wanted.as_str()))
+                        .find(|c| name(c.clock) == Some(wanted))
                         .or_else(|| tracked.and_then(|id| p.clocks.iter().find(|c| c.clock == id)))
                         .cloned()
                 };
