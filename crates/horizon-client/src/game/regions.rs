@@ -438,7 +438,7 @@ impl Game<'_> {
 /// off): only with the parallel tick on, on a server with players in the level.
 fn region_threads_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("HORIZON_REGION_THREADS").is_ok_and(|v| v.trim() != "0"))
+    *ON.get_or_init(|| std::env::var("HORIZON_REGION_THREADS").map_or(true, |v| v.trim() != "0"))
         && horizon_client::parallel::parallel_tick() > 0
 }
 
