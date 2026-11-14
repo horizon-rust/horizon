@@ -36,7 +36,7 @@ struct Globals {
     // w: apply the no-pack HDR gain; HDR_WRITE_LIGHT independently keeps float alpha as coverage.
     hdr_light: vec4<f32>,
     hdr_settings: vec4<f32>,
-    hdr_shares: vec4<f32>,
+    hdr_gains: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
@@ -155,7 +155,8 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     var back = c;
     // Normal w: 0 keeps the baked colour, +-127 shades by the normal, and a small positive 1
     // keeps the baked colour but culls back faces (entitySolid models such as the decorated pot).
-    // -126/127 shades like -127 and also culls (entityCutoutCull models such as the bat).
+    // -126/127 shades like -127 and also culls (entityCutoutCull models such as the bat, and the
+    // entitySolid decorated pot).
     out.cull = select(0u, 1u, (normal.w > 0.0 && normal.w < 0.5) || (normal.w < 0.0 && normal.w > -0.996));
     if abs(normal.w) >= 0.5 {
         c = vec4(c.rgb * entity_light(normal.xyz, globals.time.y != 0.0), c.a);
@@ -291,12 +292,17 @@ fn entity_written_color(in: Out, color: vec4<f32>) -> vec4<f32> {
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 && in.overlay != 11u && in.overlay != 12u {
         var mark = hdr_entity_mark(in);
         if in.overlay == 4u { mark = hdr_scene_alpha(globals.hdr_light.y); }
-        return vec4(hdr_written(color.rgb, mark, globals.hdr_settings, globals.hdr_shares), color.a);
+        return vec4(hdr_written(color.rgb, mark, globals.hdr_settings, globals.hdr_gains), color.a);
     }
-    return color;
+    if FRAME_LINEAR && (in.overlay == 11u || in.overlay == 12u) {
+        // The cracks scale what is under them by twice their colour (CRUMBLING_BLEND). Vanilla's
+        // product is in gamma, so under light it is (2c)^2.2: they give half of that.
+        return vec4(pow(2.0 * max(color.rgb, vec3(0.0)), vec3(2.2)) * 0.5, color.a);
+    }
+    return frame_stored(color);
 }
 @fragment fn fs_entity_unmarked(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return entity_color(in, front);
+    return frame_stored(entity_color(in, front));
 }
 fn entity_color(in: Out, front: bool) -> vec4<f32> {
     var uv = in.uv;
@@ -354,7 +360,7 @@ fn entity_color(in: Out, front: bool) -> vec4<f32> {
 // rendertype_entity_shadow.fsh: the shadow texture times the vertex colour,
 // then fog, with no alpha cutout, so a faint shadow in dim light still draws.
 @fragment fn fs_entity_shadow(in: Out) -> @location(0) vec4<f32> {
-    return shadow_color(in);
+    return frame_stored(shadow_color(in));
 }
 fn shadow_color(in: Out) -> vec4<f32> {
     var color = textureSample(atlas, atlas_sampler, in.uv) * in.color;
@@ -445,9 +451,9 @@ fn celestial_color(in: Out) -> vec4<f32> {
 @fragment fn fs_celestial(in: Out) -> @location(0) vec4<f32> {
     let color = celestial_color(in);
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        return vec4(hdr_written(color.rgb, hdr_entity_mark(in), globals.hdr_settings, globals.hdr_shares), color.a);
+        return vec4(hdr_written(color.rgb, hdr_entity_mark(in), globals.hdr_settings, globals.hdr_gains), color.a);
     }
-    return color;
+    return frame_stored(color);
 }
 
 // The sky's celestial pass (sun, moon, the End sky): fs_celestial's light,
@@ -456,6 +462,9 @@ fn celestial_color(in: Out) -> vec4<f32> {
 // tier, so the sun's and moon's discs shine; the dark rest of their quads and
 // the dim End sky stay unmarked.
 @fragment fn fs_sky_celestial(in: Out) -> @location(0) vec4<f32> {
+    return sky_celestial(in);
+}
+fn sky_celestial(in: Out) -> vec4<f32> {
     let color = celestial_color(in);
     let added = color.rgb * color.a;
     // The sun at the brightest tier, the moon at its own (in.tier); geometry that sets
@@ -466,11 +475,40 @@ fn celestial_color(in: Out) -> vec4<f32> {
     // or it would come out darker than the sky around it.
     let full = y >= globals.hdr_windows[1][clamp(tier, 1u, 4u) - 1u];
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        return vec4(hdr_written(added, select(1.0, hdr_mark(tier, y), full), globals.hdr_settings, globals.hdr_shares), color.a);
+        return vec4(hdr_written(added, select(1.0, hdr_mark(tier, y), full), globals.hdr_settings, globals.hdr_gains), color.a);
     }
-    if HDR_WRITE_LIGHT { return vec4(added, color.a); }
+    // Premultiplied after the decode: the light the texel adds, at its coverage.
+    if HDR_WRITE_LIGHT { return vec4(frame_stored(color).rgb * color.a, color.a); }
     if !full { return vec4(added, 0.0); }
     return vec4(added, 1.0 - hdr_mark(tier, y));
+}
+
+// The sun in Horizon's lifted world (gfx/celestial.rs): its disc shows vanilla's colour, the sky
+// plus the sun clipped at white channel by channel, with white at the scene's peak S. The sky
+// under it is vanilla's times one gain (sky_finished's lift), so in the frame's encoding that
+// is min(S * sun + S / sky gain * frame, S): this pass blends src + frame * alpha, then
+// fs_sky_sun_clip takes the min. Added in the frame's gamma instead, sky and sun pass S and the
+// tone curve's hold flattens the disc in the sky's hue. w is the very bright tier's lift by the
+// texel's brightness (hdr_mark's): from 0 (sun.png's faint halo, the moon) to 1 both passes go
+// smoothly from fs_sky_celestial's add to the clipped disc.
+fn sun_weight(in: Out, added: vec3<f32>) -> f32 {
+    let w = smoothstep(globals.hdr_windows[0][3], globals.hdr_windows[1][3], brightness(added));
+    return select(0.0, w, in.tier == 4u);
+}
+@fragment fn fs_sky_sun(in: Out) -> @location(0) vec4<f32> {
+    let color = celestial_color(in);
+    let added = color.rgb * color.a;
+    let w = sun_weight(in, added);
+    let peak = globals.hdr_settings.x;
+    let sun = hdr_written(added, 0.0, globals.hdr_settings, vec4(peak));
+    let sky_gain = hdr_written(vec3(1.0), 1.0 - 0.24 * globals.hdr_light.y, globals.hdr_settings, globals.hdr_gains).r;
+    return vec4(mix(sky_celestial(in).rgb, sun, w), mix(1.0, pow(peak, 1.0 / 2.2) / sky_gain, w));
+}
+// The clip at S in the frame's encoding where w is 1, none (half float's largest) where it is 0.
+@fragment fn fs_sky_sun_clip(in: Out) -> @location(0) vec4<f32> {
+    let color = celestial_color(in);
+    let peak = pow(globals.hdr_settings.x, 1.0 / 2.2);
+    return vec4(vec3(peak / max(sun_weight(in, color.rgb * color.a), peak / 65504.0)), 1.0);
 }
 
 // RenderPipelines.ENERGY_SWIRL (entity.fsh with EMISSIVE and NO_OVERLAY): the sprite, scrolled by
@@ -491,7 +529,7 @@ fn energy_swirl_fog(in: Out) -> f32 {
 }
 @fragment fn fs_energy_swirl(in: Out) -> @location(0) vec4<f32> {
     let color = energy_swirl_base(in);
-    return vec4(mix(color.rgb, globals.fog_color.rgb, energy_swirl_fog(in)), color.a);
+    return frame_stored(vec4(mix(color.rgb, globals.fog_color.rgb, energy_swirl_fog(in)), color.a));
 }
 
 // RenderPipelines.WATER_MASK: depth only (the pipeline masks the colour off).
@@ -620,7 +658,7 @@ struct WeatherTime { values: vec4<f32> }
     return out;
 }
 @fragment fn fs_weather(in: Out) -> @location(0) vec4<f32> {
-    return weather_color(in);
+    return frame_stored(weather_color(in));
 }
 fn weather_color(in: Out) -> vec4<f32> {
     // Repeat within this sprite, never across the atlas. The atlas uses nearest

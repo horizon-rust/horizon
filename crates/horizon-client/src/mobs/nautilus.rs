@@ -7,7 +7,7 @@ use super::{
     Mob, MobEvent, MobWorld, Species, Who,
     anim::{Poses, State},
     control::{LookKind, MoveKind, Operation},
-    goals::{Breed, Cx, Goal, LOOK, LookAtPlayer, MOVE, Panic, Stroll, Tempt, goal_clone},
+    goals::{Breed, Cx, Goal, LOOK, MOVE, Panic, Stroll, Tempt, goal_clone},
     keyframes::Animation,
     nav::NavKind,
 };
@@ -57,7 +57,6 @@ pub fn register(m: &mut Mob) {
         g.add(1, t);
         g.add(2, Charge::new(0.5));
         g.add(3, Stroll::swimming(1.0, 1));
-        g.add(3, LookAtPlayer::new(6.0));
     } else {
         g.add(0, Panic::new(1.6));
         g.add(1, Breed::new(0.4));
@@ -66,7 +65,6 @@ pub fn register(m: &mut Mob) {
         g.add(2, t);
         g.add(3, Charge::new(0.6));
         g.add(4, Stroll::swimming(1.0, 1));
-        g.add(4, LookAtPlayer::new(6.0));
     }
 }
 /// `finalizeSpawn`: `NautilusAi.initMemories` (2400 to 3600 ticks before it
@@ -577,6 +575,7 @@ impl Goal for Charge {
                 x: f64::from(horizon_core::geometry::trig::sin(yaw)),
                 z: -f64::from(horizon_core::geometry::trig::cos(yaw)),
                 source: super::Damage::mob(m.id, from),
+                apply_blocking: None,
             });
             m.velocity = Vec3::new(m.velocity.x * 0.6, m.velocity.y, m.velocity.z * 0.6);
         }
@@ -676,7 +675,7 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     use horizon_world::nbt::Tag;
     m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
     m.extra.tame = m.extra.owner.is_some();
-    m.extra.sitting = crate::entity_nbt::flag(tag, "Sitting");
+    crate::mobs::tame::restore_sitting(m, crate::entity_nbt::flag(tag, "Sitting"));
     if let Some(Tag::String(v)) = tag.get("variant") {
         let v = v.to_string().unwrap_or_default();
         m.extra.variant = u8::from(v.trim_start_matches("minecraft:") == "warm");
@@ -743,6 +742,26 @@ mod tests {
                     assert_eq!(saved.get("Sitting"), Some(&Tag::Byte(i8::from(!expected))));
                 }
             }
+        }
+    }
+
+    /// `NautilusAi` and `ZombieNautilusAi` have no `LookAtPlayerGoal`: the
+    /// idle activity's walk from a look target never runs (no sensor writes
+    /// `LOOK_TARGET`), so a nautilus never turns to stare at a player.
+    #[test]
+    fn neither_brain_looks_at_a_player() {
+        for (id, species) in [
+            ("minecraft:nautilus", Species::Nautilus),
+            ("minecraft:zombie_nautilus", Species::ZombieNautilus),
+        ] {
+            let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+            kind.id = id.into();
+            kind.species = species;
+            let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
+            register(&mut m);
+            // The stroll is there, so the list is the brain's own.
+            assert!(m.ai.goals.has("RandomSwimming"), "{id} strolls");
+            assert!(!m.ai.goals.has("LookAtPlayer"), "{id} looks at players");
         }
     }
 

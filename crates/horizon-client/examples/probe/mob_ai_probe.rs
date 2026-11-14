@@ -237,7 +237,7 @@ fn goal_name(m: &Mob, name: &str) -> String {
         "RestrictSun" => "RestrictSunGoal",
         "FleeSun" => "FleeSunGoal",
         // `Cat.CatAvoidEntityGoal`, `Fox.FoxAvoidEntityGoal`... name their subclass.
-        "AvoidEntity" if m.species() == Species::Cat => "CatAvoidEntityGoal",
+        "AvoidEntity" | "CatAvoid" if m.species() == Species::Cat => "CatAvoidEntityGoal",
         "AvoidEntity" => "AvoidEntityGoal",
         "BowAttack" => "RangedBowAttackGoal",
         "Swell" => "SwellGoal",
@@ -364,7 +364,7 @@ fn summon_golem(
     let Some(mut golem) = golem else {
         return;
     };
-    golem.random = LegacyRandom::new(spawn_seed(index));
+    golem.random.set_seed(spawn_seed(index));
     born.push(golem);
     for j in near {
         villager_brain::golem_detected(&mut mobs[j], w.game_time);
@@ -438,7 +438,7 @@ fn villager_events(
                 child.extra.age = -24000;
                 child.extra.bed = Some(bed);
                 let seed = spawn_seed(index);
-                child.random = LegacyRandom::new(seed);
+                child.random.set_seed(seed);
                 horizon_client::mobs::villager_brain::init(&mut child, w.game_time, day_time, seed);
                 born.push(child);
             }
@@ -494,7 +494,7 @@ impl HeartHost for Host<'_> {
         let seed = 1000 + *self.created;
         *self.created += 1;
         let mut m = Mob::new(200_000 + seed as u32, kind, at, 0.0);
-        m.random = LegacyRandom::new(seed);
+        m.random.set_seed(seed);
         horizon_client::mobs::monster_brain::init(&mut m, seed);
         m
     }
@@ -541,7 +541,7 @@ impl HiveHost for ProbeHive<'_, '_> {
         if m.species() != Species::Bee {
             return None;
         }
-        m.random = LegacyRandom::new(spawn_seed(index));
+        m.random.set_seed(spawn_seed(index));
         horizon_client::mobs::bee::draw_cooldowns(&mut m);
         Some(m)
     }
@@ -608,7 +608,11 @@ fn player_damage(e: &MobEvent) -> f32 {
     match e {
         MobEvent::AttackPlayer(amount, _)
         | MobEvent::CubeHurtPlayer { amount, .. }
-        | MobEvent::StingPlayer { amount, .. }
+        | MobEvent::Sting {
+            target: Who::Player,
+            amount,
+            ..
+        }
         | MobEvent::AttackPlayerWithEffect { amount, .. }
         | MobEvent::DamagePlayer { amount, .. }
         | MobEvent::IronGolemHit {
@@ -632,7 +636,11 @@ fn player_hurt(player: Option<&PlayerView>, e: &MobEvent) -> bool {
     match e {
         MobEvent::AttackPlayer(amount, _)
         | MobEvent::CubeHurtPlayer { amount, .. }
-        | MobEvent::StingPlayer { amount, .. }
+        | MobEvent::Sting {
+            target: Who::Player,
+            amount,
+            ..
+        }
         | MobEvent::AttackPlayerWithEffect { amount, .. }
         | MobEvent::DamagePlayer { amount, .. }
         | MobEvent::IronGolemHit {
@@ -1086,7 +1094,7 @@ pub fn main() -> horizon_client::Result<()> {
                     other => villager_flag(&mut m, other),
                 }
             }
-            m.random = LegacyRandom::new(spec.seed);
+            m.random.set_seed(spec.seed);
             if matches!(
                 m.species(),
                 Species::Cod | Species::Salmon | Species::TropicalFish
@@ -1208,6 +1216,7 @@ pub fn main() -> horizon_client::Result<()> {
                     dragon: None,
                     leash_boats: &[],
                     who_lookup: None,
+                    foreign: None,
                     others_grid: $grid,
                     others_index: None,
                     others_villagers: None,
@@ -1439,6 +1448,36 @@ pub fn main() -> horizon_client::Result<()> {
                         let n = raised.len();
                         events.splice(k + 1..k + 1, raised);
                         k += n;
+                    }
+                    k += 1;
+                }
+                // `Bee.doHurtTarget`: the game applies the stinger, the poison
+                // and the sound only when the sting landed (the scenario's
+                // player is hurtable every tick); a refused one gives the bee
+                // its stinger and its anger back.
+                let mut k = from;
+                while k < events.len() {
+                    let attacker = match &events[k] {
+                        MobEvent::Sting {
+                            target: Who::Player,
+                            source,
+                            ..
+                        } => match source.attacker {
+                            Some(Who::Mob(id)) => Some(id),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(id) = attacker
+                        && let Some(b) = mobs.iter_mut().find(|m| m.id == id)
+                    {
+                        if !player_hurt(player.as_ref(), &events[k]) {
+                            horizon_client::mobs::bee::sting_refused(b);
+                        } else if horizon_client::mobs::bee::sting_landed(b) {
+                            let at = [b.position.x, b.position.y, b.position.z];
+                            events.insert(k + 1, MobEvent::Sound("entity.bee.sting", at, 1.0, 1.0));
+                            k += 1;
+                        }
                     }
                     k += 1;
                 }

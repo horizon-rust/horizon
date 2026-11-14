@@ -29,8 +29,32 @@ pub enum Stage {
 }
 
 /// What the device must support: max blending on 32-bit float targets.
+///
+/// `FLOAT32_BLENDABLE` is a Vulkan/WebGPU feature. wgpu's Metal adapter reports
+/// it, but Metal's physical format features refuse blending on `Rgba32Float`.
+/// Our device requests `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`, so
+/// `create_render_pipeline` validates blend state against those physical
+/// features and rejects OIT's depth-bounds pipeline at world load. Ask the
+/// format, not just the feature bit.
 pub fn features(adapter: &wgpu::Adapter) -> wgpu::Features {
-    adapter.features() & wgpu::Features::FLOAT32_BLENDABLE
+    features_for(
+        adapter.features(),
+        adapter.get_texture_format_features(BOUNDS_FORMAT).flags,
+    )
+}
+
+/// The feature bit alone is not enough: the depth-bounds target must actually
+/// be blendable on this adapter. Kept separate so the decision is testable
+/// without a GPU.
+fn features_for(
+    adapter_features: wgpu::Features,
+    bounds_flags: wgpu::TextureFormatFeatureFlags,
+) -> wgpu::Features {
+    if bounds_flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE) {
+        adapter_features & wgpu::Features::FLOAT32_BLENDABLE
+    } else {
+        wgpu::Features::empty()
+    }
 }
 
 pub fn supported(device: &wgpu::Device) -> bool {
@@ -696,13 +720,16 @@ impl Oit {
             ),
         ] {
             {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some(label),
                     timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes(label)),
                     color_attachments: &first,
                     depth_stencil_attachment: read_only(terrain_depth),
                     ..Default::default()
                 });
+                let pixels = super::pixel_count(terrain_depth);
+                let mut pass =
+                    super::pack_timing::counted(timing.as_deref_mut(), pass, pixels, label);
                 pass.set_bind_group(GROUP, group, &[]);
                 draw(&mut pass, stage);
             }
@@ -910,6 +937,34 @@ impl Oit {
 mod tests {
     use super::*;
 
+    /// Metal reports `FLOAT32_BLENDABLE` but its physical `Rgba32Float`
+    /// features are not `BLENDABLE`. Requesting the feature there made OIT
+    /// build an invalid depth-bounds pipeline at world load
+    /// (`crash-2026-11-12_22.06.31-client.txt`).
+    #[test]
+    fn a_reported_feature_does_not_enable_oit_without_blendable_bounds() {
+        let reported = wgpu::Features::FLOAT32_BLENDABLE;
+        assert_eq!(
+            features_for(reported, wgpu::TextureFormatFeatureFlags::empty()),
+            wgpu::Features::empty()
+        );
+        assert_eq!(
+            features_for(reported, wgpu::TextureFormatFeatureFlags::BLENDABLE),
+            wgpu::Features::FLOAT32_BLENDABLE
+        );
+    }
+
+    #[test]
+    fn blendable_bounds_without_the_feature_request_nothing() {
+        assert_eq!(
+            features_for(
+                wgpu::Features::empty(),
+                wgpu::TextureFormatFeatureFlags::BLENDABLE
+            ),
+            wgpu::Features::empty()
+        );
+    }
+
     fn validate(source: &str, entries: &[&str]) {
         let module = naga::front::wgsl::parse_str(source).unwrap();
         naga::valid::Validator::new(
@@ -972,7 +1027,7 @@ mod tests {
         );
         let border = stages("border");
         validate(
-            &(include_str!("../border.wgsl").to_owned()
+            &(super::super::border_shader()
                 + include_str!("../oit.wgsl")
                 + include_str!("../oit_border.wgsl")),
             &border.iter().map(String::as_str).collect::<Vec<_>>(),

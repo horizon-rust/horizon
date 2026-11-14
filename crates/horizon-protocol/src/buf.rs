@@ -151,7 +151,7 @@ impl<'a> Reader<'a> {
     /// String (UTF-16 units: a character outside the BMP counts twice).
     pub fn string(&mut self, max: usize) -> Result<String> {
         let len = self.count(max.saturating_mul(3))?;
-        let s = packet_utf8(self.bytes(len)?);
+        let s = java_utf8(self.bytes(len)?);
         if s.encode_utf16().count() > max {
             return Err(Error::new(format!("string longer than {max} chars")));
         }
@@ -188,10 +188,11 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Java's UTF-8 replacement decoder, as used by Utf8String.read. Most malformed
+/// Java's UTF-8 replacement decoder, as used by Utf8String.read and by a reader
+/// opened on a UTF-8 file (Guava's `Files.newReader`). Most malformed
 /// sequences have Rust's maximal-subpart grouping, but Java consumes an encoded
 /// surrogate (including its truncated two-byte prefix) as one replacement.
-fn packet_utf8(mut bytes: &[u8]) -> String {
+pub fn java_utf8(mut bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len());
     loop {
         match std::str::from_utf8(bytes) {
@@ -426,6 +427,22 @@ impl<const N: usize> Codec<Vec<u8>> for BytesN<N> {
 pub struct Rest;
 impl Codec<Vec<u8>> for Rest {
     fn read(r: &mut Reader) -> Result<Vec<u8>> {
+        Ok(r.rest().to_vec())
+    }
+    fn write(v: &Vec<u8>, w: &mut Writer) {
+        w.bytes(v)
+    }
+}
+/// Everything left in the packet, at most N bytes: vanilla's unknown login query payloads
+/// (`readableBytes()` outside `0..=N` throws "Payload may not be larger than N bytes").
+pub struct RestN<const N: usize>;
+impl<const N: usize> Codec<Vec<u8>> for RestN<N> {
+    fn read(r: &mut Reader) -> Result<Vec<u8>> {
+        if r.remaining() > N {
+            return Err(Error::new(format!(
+                "Payload may not be larger than {N} bytes"
+            )));
+        }
         Ok(r.rest().to_vec())
     }
     fn write(v: &Vec<u8>, w: &mut Writer) {

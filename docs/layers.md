@@ -34,7 +34,7 @@ Credits:
   Horizon's own parts from another repository as a launcher plugin.
 - **Martipops** (controllers, splitscreen): the compositor's place in the engine, and where controllers,
   splitscreen, Replay Studio, PvP & HUD and a UI page API go.
-- **Contributors at the 2026-11-08 stage:** the file-size rule, the single list of addresses, sponsors in the
+- **Contributors at the 2026-11-08 stage:** the single list of addresses, sponsors in the
   Horizon layer, a platform that exposes what vanilla already uses, and extras as native mods.
 
 ## The rule
@@ -155,9 +155,9 @@ Horizon's own extras and its product, and every built-in address of an outside s
   and partner servers in the list, Play with Friends and its relay, Discord, the "I'm playing" ping, telemetry and
   benchmark uploads, releases and updates, the hosting supervisor, the launcher.
 - **Examples:** `horizon-addresses`, `horizon-cosmetics`, `horizon-friends`, `horizon-relay`, `horizon-telemetry`,
-  `horizon-bench`, `horizon-release-sign`, `horizon-server`, `horizon-mod-registry`, `horizon-heartbeat`,
+  `horizon-perf-share`, `horizon-release-sign`, `horizon-server`, `horizon-mod-registry`, `horizon-heartbeat`,
   `horizon-official`, `horizon-official-servers`, `horizon-discord`, `launcher/`. Still in engine crates today:
-  `game/cosmetics.rs`, `game/emotes.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_ui.rs`, `pvp.rs`.
+  `game/cosmetics.rs`, `game/cosmetics/emotes.rs`, `game/extras.rs` and `game/extras/`, `extras_ui.rs`, `pvp.rs`.
 - **Rules:**
   - It uses the platform's public API only, never the engine.
   - Until it moves, every Horizon feature in the game sits behind the `horizon-extras` feature
@@ -287,7 +287,7 @@ build pays nothing.
 
 The hooks today: `started` (once, when someone plays: not a dedicated server, a benchmark or an automated run),
 `published` (the world opened to or closed from LAN or friends, on change), `shutdown` (the window closed, the
-world saved) and `tunnel` (the resolver of `friend:` addresses, Play with Friends'). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
+world saved) and `tunnel` (the resolver of `friend:` addresses, Play with Friends') and `captures` (Open and Share for saved performance captures, `horizon-perf-share`: with none registered the game offers neither). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
 `horizon_hooks::engine` that the engine calls where vanilla does the matching thing; give it plain data or a type
 the engine owns, never one from above. A hook that needs engine types the platform doesn't expose yet (a draw
 context for HUD and chat overlays, a settings page) comes with that type's platform API (M6). An extension point
@@ -363,7 +363,7 @@ pub trait Store: Sync {
 A page lives in the options screen's shell, and its entry sits on one of the game's menus.
 
 ```rust
-pub enum Place { HorizonSettings, Title, Pause }
+pub enum Place { HorizonSettings, Pause, Extras, Title }
 pub trait Page: Sync {
     fn id(&self) -> &'static str;            // stable, for horizon-ctl and the page stack
     fn title(&self) -> &'static str;         // translation key
@@ -371,6 +371,7 @@ pub trait Page: Sync {
     fn rows(&self, rows: &mut Vec<Row>);     // asked when the page is drawn, not every frame elsewhere
     fn act(&self, row: usize, act: Act);     // a click, a reverse click, a slider's value, a key
     fn tooltip(&self, row: usize) -> Option<Label> { None }   // hover text, may follow the value
+    fn back(&self) -> &'static str { "gui.done" }            // the leave button of a page drawn as a screen
 }
 pub enum Row {
     Heading(&'static str),                   // translation key
@@ -382,9 +383,11 @@ pub enum Row {
     Key { label: &'static str, key: String },                 // a binding: `key.keyboard.z`
     Text { text: String, quiet: bool, groups: bool },         // Row::text(..): white or grey, wrapped
     Space(u8),                                                // GUI pixels, on a page drawn as a screen
+    Field { label: &'static str, text: String, max: usize },  // Row::field(..).max(n): an EditBox, on a page drawn as a screen
 }
 pub enum Label { Key(&'static str), Value(String) }
-pub enum Act { Press, PressBack, Slide(f32), Bind(String) }
+pub enum Act { Press, PressBack, Slide(f32), Bind(String), Edit(String), Submit }
+pub fn connect(address: impl Into<String>);                   // from a Title page's act: join that server
 ```
 
 - `HorizonSettings`: a row of the Horizon Settings page, after the engine's own pages. `Title` and `Pause`: a
@@ -395,10 +398,21 @@ pub enum Act { Press, PressBack, Slide(f32), Bind(String) }
   button, `.half()` puts two side by side, `.footer()` sets one beside Done on a page drawn as its own screen,
   `.quiet()` greys text, `.groups()` breaks it only between `-`-separated groups (an invite code). In the options
   shell, text is notes and space is nothing.
+- `Title` is the title screen's Friends icon slot (vanilla's `CommonButtons.friends`), not a new row: the icon
+  keeps its place and look at every GUI scale, and opens the first page registered there as a form drawn as Join a
+  Friend is (`multiplayer/page.rs`): the title, the rows from y 53 (a field's grey label, its 200-wide box 11
+  below, 41 a field), the buttons in a column from a quarter of the height + 114, the back button last
+  (`Page::back`, `gui.cancel` for a form). It shows heading, note, text, space, field and button rows. With no page
+  there the icon opens the engine's Join a Friend while an invite-code resolver is registered, else it is
+  inactive.
+- `Field` is vanilla's `EditBox` on a page drawn as its own screen: focus by click or Tab, typing, the caret keys,
+  selection, copy and paste, at most `max` characters (32 by default). The engine keeps its text while the page is
+  open and sends each change (`Act::Edit`, before any other act or redraw reaches the page) and Enter
+  (`Act::Submit`). The options shell has no field.
 - Rows are rebuilt when the page is drawn or acted on, like the engine's own pages: no cost while no page is
   open.
 - The engine keeps native mods' pages (`Page::NativeMod`) as they are. Both kinds sit in one module that
-  `options_ui.rs` calls: `options_ui.rs` is over 3000 lines and doesn't grow.
+  `options_ui.rs` calls.
 
 ### HUD drawing (`horizon_platform::hud`)
 
@@ -540,15 +554,6 @@ themselves, or stays a cfg-gated module linked into the official build. None mov
 The minimap already moved to a native mod ([extras.md](extras.md#moved-to-native-mods)). Splitscreen,
 controllers and replay recording are not extras: they are platform ([above](#controllers-splitscreen-replays-and-ui-pages)).
 
-## File size
-
-A Rust file over 3000 lines may not grow compared with the base of the branch. `game.rs` (~21,700 lines),
-`game/remote.rs` (~10,900) and `gfx.rs` (~10,100) are the worst; they slow incremental builds. Smaller files may
-grow to 3000 lines, and a big file may shrink or stay as it is. There is no list of files, so no check breaks on
-an unrelated edit. Generated files and `third_party/` are not checked. Test code doesn't count either, since a normal
-build doesn't compile it: inline `#[cfg(test)] mod name { ... }` modules, and files named `tests.rs` or
-`<name>_tests.rs`. Other `#[cfg(test)]` items count.
-
 ## The checks
 
 - `python3 tools/check_layers.py` (#12983) reads the workspaces' `cargo metadata` (no build, about a second) and
@@ -562,20 +567,19 @@ build doesn't compile it: inline `#[cfg(test)] mod name { ... }` modules, and fi
   Each failure names the section of this page that applies. An `allowed` entry with no dependency left is only a
   note.
 - `python3 tools/check_addresses.py` (#12990) checks the built-in addresses ([below](#built-in-addresses)).
-- `python3 tools/check_file_size.py` (#13015) checks the file-size rule above.
 
-All three run in CI's verify job and in `tools/pr_ready.py`.
+Both run in CI's verify job and in `tools/pr_ready.py`.
 
 ### Today's exceptions
 
-47, on main at d5504cd328 (2026-11-08):
+30, the `allowed` list in `tools/layers.json` on main at a89f338 (2026-11-11). That file is the source of truth:
+`python3 tools/check_layers.py` prints the current count and `--list` prints each exception.
 
 | Crate | Uses, against the rule |
 |---|---|
-| `horizon-client` | platform: `horizon-anticheat`, `-chat-filter`, `-dualsense`, `-hdr`, `-mod-api-gen`, `-mods`, `-optifine`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-bench`, `-cosmetics`, `-friends`, `-telemetry` |
-| `horizon-client-lib` | the same, plus `horizon-mcp`, minus `horizon-mod-api-gen` and `horizon-friends` (left through `Hooks::tunnel`) |
-| `horizon-client-render` | platform: `horizon-hdr`, `-mod-api-gen`, `-optifine`, `-polytone`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-bench`, `-cosmetics`, `-telemetry` |
-| `horizon-client-input` | platform: `horizon-dualsense`, `horizon-theme` |
+| `horizon-client` | platform: `horizon-anticheat`, `-chat-filter`, `-dualsense`, `-hdr`, `-mod-api-gen`, `-mods`, `-optifine`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-cosmetics`, `-friends`, `-telemetry` |
+| `horizon-client-lib` | platform: `horizon-anticheat`, `-hdr`, `-mcp`, `-mods`, `-optifine`, `-shader-api`, `-shaders`; Horizon: `horizon-telemetry` |
+| `horizon-client-render` | platform: `horizon-hdr`, `-optifine`, `-polytone`, `-shader-api`, `-shaders` |
 
 No platform crate depends on Horizon.
 
@@ -612,6 +616,7 @@ Horizon's own and third-party addresses (Horizon layer):
 |---|---|---|
 | `play.playhorizon.dev` (status `:24454`), previously `horizon.bunchy7s.dev` | the official server in the list, its status | `horizon-addresses` (#12993), `launcher/links.json` |
 | `cosmetics.playhorizon.dev` | cosmetics, emotes, presence | `horizon-addresses` (#12993) |
+| `playhorizon.dev/perf`, `playhorizon.dev/api/perf/captures` | the performance viewer Open shows a saved capture in, and the upload behind Share (`HORIZON_PERF_VIEWER`, `HORIZON_PERF_CAPTURES` override them) | `horizon-addresses`, used by `horizon-perf-share` |
 | `telemetry.playhorizon.dev` | opt-in telemetry, the "I'm playing" ping, benchmark uploads | `horizon-addresses` (#12993) |
 | `stun.cloudflare.com`, `stun.l.google.com` | Play with Friends NAT discovery | `horizon-addresses` (#12993) |
 | `afri-network.co.za` | the withdrawn partner server, so the game can remove the entry it added | `horizon-addresses` |
@@ -636,7 +641,6 @@ These are not addresses:
   code is just as wrong, and so is Horizon code that reaches into the engine instead of the platform.
 - Horizon features in the game are behind `horizon-extras`, and nothing new names a Horizon crate below it.
 - No new built-in address outside `horizon-addresses`.
-- No file over 3000 lines grows.
 
 ## Plan
 

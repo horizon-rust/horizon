@@ -2,7 +2,7 @@ ServerData.write	port	crates/horizon-protocol/src/servers.rs::ServerEntry::to_ta
 ServerData.read	port	crates/horizon-protocol/src/servers.rs::ServerEntry::from_tag	acceptedCodeOfConduct is read as its int hash (0 when absent or not an int), with the name, ip, icon and acceptTextures
 ServerData.copyNameIconFrom	inline	crates/horizon-client/src/multiplayer.rs::Screen::click	the Edit save writes name, ip and pack setting and keeps the icon
 ServerData.copyFrom	inline	crates/horizon-client/src/multiplayer.rs::Screen::click	Edit opens the form pre-filled from the entry (name, ip, pack setting)
-ServerData.validateIcon	port	crates/horizon-client/src/multiplayer.rs::icon_pixels	gap: minor: only 64x64 PNGs are kept; vanilla keeps any PNG up to 1024x1024 in servers.dat
+ServerData.validateIcon	port	crates/horizon-client/src/multiplayer.rs::valid_icon	keeps any PNG up to 1024x1024 in servers.dat; FaviconTexture.upload's 64x64 is icon_pixels, used for drawing only
 ServerList.get	inline	crates/horizon-client/src/multiplayer.rs::remember_direct_join	Direct Connect looks the address up among shown and hidden entries before adding a hidden one
 ServerList.unhide	inline	crates/horizon-client/src/multiplayer.rs::Screen::click	Add Server brings back the hidden entry for that address with the new name and icon, keeping its other settings
 ServerList.remove	port	crates/horizon-client/src/multiplayer.rs::Screen::click	Delete confirm removes the selected row and saves
@@ -20,9 +20,10 @@ SessionSearchTrees.updateCreativeTags	inline	crates/horizon-client/src/creative.
 SessionSearchTrees.updateCreativeTooltips	inline	crates/horizon-client/src/creative.rs::Creative::search_results	name search uses exported English lines or lazily rebuilt translated tooltip lines
 ChatAbilities.selectVisibleMessages	port	crates/horizon-client-render/src/chat.rs::ChatAbilities::shows	source filter: client lines always, player and server lines per the abilities
 ChatAbilities.Builder.build	inline	crates/horizon-client-render/src/chat.rs::ChatAbilities::new	restrictions come from the Chat option alone; new() maps the visibility to them
-ChatListener.tick	port	crates/horizon-client/src/game/remote.rs::tick_chat_queue	the queue runs down with the ticks and pauses with the game
-ChatListener.setMessageDelay	port	crates/horizon-client/src/game/remote.rs::chat_delay_ms	Chat Delay in milliseconds, as Java truncates it, read when a chat line arrives
-ChatListener.flushQueue	port	crates/horizon-client/src/game/remote.rs::Game::flush_chat_queue	each message through accept_chat, so it counts as processed
+ChatListener.tick	port	crates/horizon-client/src/game/remote_chat_queue.rs::Game::tick_chat_queue	the queue runs down with the ticks and pauses with the game
+ChatListener.setMessageDelay	port	crates/horizon-client/src/game/remote_chat_queue.rs::Game::chat_delay_ms	Chat Delay in milliseconds, as Java truncates it, read when a chat line arrives
+ChatListener.flushQueue	port	crates/horizon-client/src/game/remote_chat_queue.rs::Game::flush_chat_queue	each message through accept_chat, so it counts as processed
+ChatListener.acceptNextDelayedMessage	port	crates/horizon-client/src/game/remote_chat_queue.rs::Game::accept_next_delayed_message	the chat.queue row's click shows one held message, without moving the delay timer
 ChatListener.removeFromDelayedMessageQueue	inline	crates/horizon-client/src/game/remote.rs::Game::handle_delete_chat	
 ChatListener.handleMessage	port	crates/horizon-client/src/game/remote.rs::handle_player_chat	a line with a delay goes into remote.chat_queue instead of the chat
 ChatListener.handlePlayerChatMessage	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	gap: player: no Only Show Secure Chat filter, no server filter-mask text, no block or friend-only hiding of chat lines

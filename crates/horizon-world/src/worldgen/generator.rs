@@ -5047,11 +5047,14 @@ mod tests {
                         "igloo",
                         "ruined_portal",
                         "mansion",
+                        "monument",
+                        "mineshaft",
+                        "stronghold",
                     ][..],
                 ),
                 (
                     "minecraft:the_nether",
-                    &["bastion_remnant", "nether_fossil"][..],
+                    &["bastion_remnant", "nether_fossil", "fortress"][..],
                 ),
                 ("minecraft:the_end", &["end_city"][..]),
             ] {
@@ -5077,15 +5080,36 @@ mod tests {
                     } else {
                         ChunkPos::new(i as i32 * 3, 0)
                     };
-                    originals.push(
+                    // A monument needs open ocean around it, which this small area may not
+                    // have: search a cell per spacing step. `structure_start` generates the
+                    // structure wherever its own checks pass, not only in the set's chunk.
+                    let search: Vec<ChunkPos> = if name == "minecraft:monument" {
+                        (0..1024)
+                            .map(|i| {
+                                ChunkPos::new(
+                                    pos.x + (i % 32 - 16) * 32,
+                                    pos.z + (i / 32 - 16) * 32,
+                                )
+                            })
+                            .collect()
+                    } else {
                         std::iter::once(pos)
                             .chain((1..64).map(|i| ChunkPos::new(pos.x + i % 8, pos.z + i / 8)))
+                            .collect()
+                    };
+                    originals.push(
+                        search
+                            .into_iter()
                             .find_map(|pos| worker.structure_start(&name, pos))
                             .unwrap_or_else(|| panic!("{seed} {name}")),
                     );
                 }
                 let mut saved = HashMap::<(i32, i32), Compound>::new();
                 worker.forget_structure_starts();
+                // A fortress start's first piece is built through the `BridgeCrossing`
+                // constructor, so vanilla saves it as `nebcr`, which the registry reads
+                // back as a plain bridge crossing: only the kind's name differs.
+                let kinds = |s: String| s.replace("kind: Start,", "kind: BridgeCrossing,");
                 for original in &mut originals {
                     // Locating a generated start can increment its count. A nonzero value also
                     // proves that loading did not silently fall back to seed-identical generation.
@@ -5100,7 +5124,12 @@ mod tests {
                                     | "minecraft:wmp"
                                     | "minecraft:nefos"
                                     | "minecraft:ecp"
+                                    | "minecraft:omb"
                             )
+                            // The mineshaft, fortress and stronghold pieces read their own tags.
+                            || ["minecraft:ms", "minecraft:ne", "minecraft:sh"]
+                                .iter()
+                                .any(|prefix| p.type_name().starts_with(prefix))
                     }) {
                         Arc::get_mut(original)
                             .expect("uncached placement start")
@@ -5126,8 +5155,8 @@ mod tests {
                         original.name
                     );
                     assert_eq!(
-                        format!("{loaded:?}"),
-                        format!("{original:?}"),
+                        kinds(format!("{loaded:?}")),
+                        kinds(format!("{original:?}")),
                         "{seed} {}: every runtime field",
                         original.name
                     );

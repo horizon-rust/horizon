@@ -47,6 +47,8 @@ pub(crate) struct TestLevel {
     pub day_time: i64,
     pub events: Vec<LevelEvent>,
     pub block_light: HashMap<BlockPos, i32>,
+    /// `getBrightness(SKY, pos)` everywhere; `None` is 15, full daylight.
+    pub sky_light: Option<i32>,
     /// `Level.isClientSide`.
     pub client_side: bool,
     pub tick_ready: bool,
@@ -78,6 +80,9 @@ pub(crate) struct TestLevel {
     pub occupants: Vec<u128>,
     /// Occupants a mod's physical-trigger hook cancels.
     pub spared: HashSet<u128>,
+    /// `Level.getWorldBorder`, for `within_world_border`: centred on the
+    /// origin at vanilla's default size unless a test moves it.
+    pub border: horizon_core::geometry::border::BorderGeometry,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -92,6 +97,7 @@ impl TestLevel {
             day_time: 0,
             events: Vec::new(),
             block_light: HashMap::new(),
+            sky_light: None,
             client_side: false,
             tick_ready: true,
             block_events_ready: true,
@@ -104,10 +110,20 @@ impl TestLevel {
             opened: HashSet::new(),
             occupants: Vec::new(),
             spared: HashSet::new(),
+            border: horizon_core::geometry::border::BorderGeometry::new(
+                [0.0, 0.0],
+                5.999_996_8e7,
+                29_999_984,
+            )
+            .unwrap(),
         }
     }
 }
 impl LevelAccess for TestLevel {
+    fn within_world_border(&self, pos: BlockPos) -> bool {
+        self.border
+            .is_within_bounds(f64::from(pos.x), f64::from(pos.z), 0.0)
+    }
     fn count_entities_at(
         &self,
         _pos: BlockPos,
@@ -191,6 +207,9 @@ impl LevelAccess for TestLevel {
     }
     fn block_light(&self, pos: BlockPos) -> i32 {
         self.block_light.get(&pos).copied().unwrap_or(0)
+    }
+    fn sky_light(&self, _pos: BlockPos) -> i32 {
+        self.sky_light.unwrap_or(15)
     }
     fn emit(&mut self, event: LevelEvent) {
         self.events.push(event);
@@ -464,6 +483,27 @@ fn a_level_can_keep_a_lever_as_it_is() {
     let pulled = level.block_state(pos);
     assert!(b.table.bool(pulled, b.props.powered));
     assert_eq!(level.seen.borrow().len(), 2);
+}
+
+/// `LevelReader.getMaxLocalRawBrightness`: 15 outside the +-30,000,000 gate,
+/// where no chunk is there to answer, and the raw brightness inside it. With
+/// the sky light at 0 the two answers differ, so the gate is what is measured.
+#[test]
+fn max_local_raw_brightness_is_full_outside_the_gate() {
+    let Some(f) = fixture() else {
+        return;
+    };
+    let b = &f.behaviours;
+    let mut level = TestLevel::new(b);
+    level.sky_light = Some(0);
+    let mut ticks = Ticks::new(0);
+    let sim = b.sim(&mut level, &mut ticks);
+    let at = |x: i32, z: i32| sim.max_local_raw_brightness(BlockPos::new(x, 64, z));
+    // `x >= -30000000 && z >= -30000000 && x < 30000000 && z < 30000000`.
+    assert_eq!((at(-30_000_000, 0), at(29_999_999, 0)), (0, 0));
+    assert_eq!((at(-30_000_001, 0), at(30_000_000, 0)), (15, 15));
+    assert_eq!((at(0, -30_000_000), at(0, 29_999_999)), (0, 0));
+    assert_eq!((at(0, -30_000_001), at(0, 30_000_000)), (15, 15));
 }
 
 #[test]
@@ -1386,6 +1426,7 @@ impl World<'_> {
             may_build: true,
             can_eat: true,
             game_master: false,
+            respawn_point: None,
         };
         let hit = horizon_core::geometry::Vec3::new(
             f64::from(pos.x) + 0.5,
@@ -1410,6 +1451,7 @@ impl World<'_> {
             may_build: true,
             can_eat: false,
             game_master: false,
+            respawn_point: None,
         };
         let hit = horizon_core::geometry::Vec3::new(
             f64::from(pos.x) + 0.5,
@@ -1446,6 +1488,7 @@ impl World<'_> {
             may_build: true,
             can_eat: true,
             game_master: false,
+            respawn_point: None,
         };
         let hit = horizon_core::geometry::Vec3::new(
             f64::from(pos.x) + 0.5,
@@ -1500,31 +1543,6 @@ fn use_on_a_block_says_which_branch_answered() {
         w.use_branch(pos, Some("minecraft:bone_meal")),
         (InteractionResult::Pass, UseBranch::ItemOn)
     );
-}
-
-#[test]
-fn glowstone_charges_a_respawn_anchor_up_to_four() {
-    // RespawnAnchorBlock.useItemOn: glowstone on an anchor below 4 charges
-    // charges it and the click ends (SUCCESS), so no glowstone is placed (#3034).
-    let mut w = world!();
-    let pos = BlockPos::new(0, 1, 0);
-    let empty = w.id("respawn_anchor", &[("charges", "0")]);
-    w.put(pos, empty);
-    for charges in 1..=4 {
-        assert_eq!(
-            w.use_item(pos, "minecraft:glowstone"),
-            InteractionResult::Success
-        );
-        assert_eq!(w.prop(pos, "charges"), charges.to_string());
-    }
-    // A full anchor can't be charged: TRY_WITH_EMPTY_HAND, then useWithoutItem
-    // (the respawn point), which leaves the charges alone.
-    w.use_item(pos, "minecraft:glowstone");
-    assert_eq!(w.prop(pos, "charges"), "4");
-    // Anything else on an empty anchor passes, so the item is used instead.
-    w.put(pos, empty);
-    assert_eq!(w.use_item(pos, "minecraft:stone"), InteractionResult::Pass);
-    assert_eq!(w.prop(pos, "charges"), "0");
 }
 
 #[test]
@@ -2138,6 +2156,43 @@ fn dripstone_fills_cauldrons() {
         w.tick();
     }
     assert_eq!(w.name(BlockPos::new(0, 5, 0)), "water_cauldron[level=1]");
+}
+
+/// `PointedDripstoneBlock.canGrow`: the fluid two blocks above the tip must be
+/// water AND a source (`FluidState.is(Fluids.WATER)` and `isSource`), so
+/// flowing and falling water, which are other fluids of the family, grow nothing.
+#[test]
+fn a_dripstone_tip_grows_only_under_a_water_source() {
+    let mut w = world!();
+    let block = w.id("dripstone_block", &[]);
+    let tip = w.id(
+        "pointed_dripstone",
+        &[("vertical_direction", "down"), ("thickness", "tip")],
+    );
+    let stone = w.id("stone", &[]);
+    let top = BlockPos::new(0, 9, 0);
+    // Whether any pointed dripstone stands in the column besides the first tip.
+    let grown = |w: &World| {
+        (0..9).any(|y| {
+            w.name(BlockPos::new(0, y, 0))
+                .starts_with("pointed_dripstone")
+        })
+    };
+    for (level, expect) in [("0", true), ("1", false), ("8", false)] {
+        w.put(BlockPos::new(0, 11, 0), w.id("water", &[("level", level)]));
+        w.put(BlockPos::new(0, 10, 0), block);
+        w.put(top, tip);
+        w.put(BlockPos::new(0, 2, 0), stone);
+        for y in 0..9 {
+            if y != 2 {
+                w.put(BlockPos::new(0, y, 0), w.id("air", &[]));
+            }
+        }
+        for _ in 0..4000 {
+            w.b().random_tick(&mut w.level, &mut w.ticks, top);
+        }
+        assert_eq!(grown(&w), expect, "water level {level}");
+    }
 }
 
 #[test]
@@ -4056,8 +4111,11 @@ fn fresh_chunk_block_events_do_not_wait_for_ticking_readiness() {
 }
 
 mod barrel;
+mod interact;
 mod pistons;
+mod portals;
 mod redstone;
+mod respawn_anchor;
 mod trigger_tests;
 
 /// `ShulkerBoxBlockEntity.doNeighborUpdates`: the neighbours' shape updates

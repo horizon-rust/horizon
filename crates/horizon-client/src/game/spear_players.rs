@@ -161,8 +161,8 @@ impl Game<'_> {
         let disable_blocking = if self.using.is_some() {
             0.0
         } else {
-            self.attack_item_info()
-                .map_or(0.0, |i| i.disable_blocking_seconds)
+            self.held()
+                .map_or(0.0, |stack| self.items().weapon_disable_blocking(stack))
         };
         Some(PlayerStab {
             victim,
@@ -285,7 +285,7 @@ impl Game<'_> {
             (landed, thorns)
         };
         let (landed, thorns) = self.guest_struck_by(host, s.victim, land)?;
-        self.pvp_aftermath(host, victim, Some(attacker), landed.hurt, thorns);
+        self.pvp_aftermath(host, victim, Some(attacker), thorns);
         Some(landed)
     }
 

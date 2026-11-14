@@ -48,7 +48,7 @@ fn with_game(test: impl FnOnce(&mut Game<'_>)) {
     game.player = Some(
         horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap(),
     );
-    game.world.random = LegacyRandom::new(114);
+    game.world.random = horizon_core::random::LevelRandom::for_level(LegacyRandom::new(114));
     test(&mut game);
 }
 
@@ -230,6 +230,7 @@ fn launching_from_a_block_and_while_gliding_use_the_rocket_up() {
             pos: [2, 199, 2],
             face: [0, 1, 0],
             point: [2.5, 200.0, 2.5],
+            inside: false,
         };
         for used in 1..=5 {
             game.inventory[game.selected] = Some(stack.clone());

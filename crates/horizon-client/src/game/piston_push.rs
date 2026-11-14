@@ -12,6 +12,7 @@
 use super::{
     Game,
     entity::{Entity, EntityHandle, with_entity, with_entity_mut},
+    minecarts::CartHit,
 };
 use horizon_client::collisions::{
     EntityCollisions, SceneCollisions, no_collision_empty, with_piston_noclip,
@@ -142,7 +143,7 @@ impl Game<'_> {
             if let Some(i) = self.boats.iter().position(|b| b.id == id) {
                 self.hurt_boat(i, 1.0, false);
             } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-                self.hurt_cart(i, 1.0, false, false);
+                self.hurt_cart(i, 1.0, false, false, CartHit::default());
             }
         }
     }
@@ -214,9 +215,15 @@ impl Game<'_> {
             self.creatures.projectiles[i].stuck_speed = stuck;
         }
         // The bubble columns it went through push it too
-        // (`Projectile.onInsideBubbleColumn` / `onAboveBubbleColumn`), the
-        // projectiles whose own tick applies them.
-        if self.creatures.projectiles[i].applies_block_effects() {
+        // (`Projectile.onInsideBubbleColumn` / `onAboveBubbleColumn`): every
+        // projectile, arrows and llama spit included, whatever its own tick
+        // applies. A stuck arrow isn't pushed (`AbstractArrow`'s overrides
+        // return when `isInGround`), as in its own tick.
+        let stuck_arrow = self.creatures.projectiles[i]
+            .arrow
+            .as_ref()
+            .is_some_and(|a| a.in_ground);
+        if !stuck_arrow {
             let (world, registry, facts, collision) = (
                 &self.world,
                 self.pack.assets.registry,
@@ -236,8 +243,12 @@ impl Game<'_> {
                 .map(|c| (c.drag, c.surface))
             });
             let tops = std::mem::take(&mut p.bubble_surfaces);
-            for [x, y, z] in tops {
-                self.bubble_column_particles(BlockPos::new(x, y, z));
+            // `sendBubbleColumnParticles` is the server's: a server's client,
+            // which pushes too, leaves them to the packets.
+            if self.remote.is_none() {
+                for [x, y, z] in tops {
+                    self.bubble_column_particles(BlockPos::new(x, y, z));
+                }
             }
         }
     }
@@ -1421,7 +1432,7 @@ mod h255_mob_piston_ground_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
     use horizon_client::{chunk::Chunk, motion::PlayerMotion};
-    use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+    use horizon_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
     use std::sync::Arc;
     fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         with_role_game(
@@ -1488,10 +1499,11 @@ mod h255_mob_piston_ground_tests {
                     .unwrap();
             }
         }
+        game.load_ticking_neighbourhood(0, 0);
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
         game.creative = true;
         assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
-        game.world.random = LegacyRandom::new(255);
+        game.world.random.set_seed(255);
         game.update_chunk_tickets();
         assert!(crate::game::ticking_chunk(&game.world, 0, 0));
         assert!(game.tickets.levels().block_ticking(0, 0));

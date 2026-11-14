@@ -2121,7 +2121,7 @@ fn download_for_owner(
         account::store(),
         &mut accounts,
     );
-    if let Err(e) = accounts.save() {
+    if let Err(e) = accounts.save_renewed() {
         log(format!("Horizon: the accounts are not saved: {e}"));
     }
     download_for(pins, dir, pass, !accounts.accounts.is_empty(), fetch, log)
@@ -3833,7 +3833,7 @@ fn remove_abandoned_stages(work: &Path, now: std::time::SystemTime, alive: impl 
 
 /// Whether process `pid` is running. One this user may not look at counts as running.
 #[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
+pub(crate) fn process_alive(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };
@@ -3845,7 +3845,7 @@ fn process_alive(pid: u32) -> bool {
 
 /// Whether process `pid` is running. One this user may not look at counts as running.
 #[cfg(windows)]
-fn process_alive(pid: u32) -> bool {
+pub(crate) fn process_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_ACCESS_DENIED, STILL_ACTIVE,
     };

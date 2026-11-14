@@ -16,7 +16,10 @@ use horizon_client::{
     raid::{self, Action, BarName, RaidLevel, RaidPlayer, RaiderInfo, RaiderType, Raids, Spawn},
     random_source,
 };
-use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_core::{
+    geometry::Vec3,
+    random::{LegacyRandom, LevelRandom, RandomSource},
+};
 use horizon_world::nbt::Tag;
 use std::collections::{HashMap, HashSet};
 
@@ -116,14 +119,18 @@ impl RaidLevel for Lvl<'_, '_> {
             || w.block_name(x, y - 1, z) == "minecraft:snow"
                 && g.res.facts().is_air(g.world.block(x, y, z))
     }
-    fn player(&self) -> Option<RaidPlayer> {
-        // The first player in the level: a server has no player of its own.
-        let p = self.game.level_players().into_iter().next()?;
-        Some(RaidPlayer {
-            position: [p.position.x, p.position.y, p.position.z],
-            block: block_of(p.position),
-            alive: p.alive,
-        })
+    fn players(&self) -> Vec<RaidPlayer> {
+        // The players of the level in place: a server has none of its own.
+        self.game
+            .level_players()
+            .into_iter()
+            .map(|p| RaidPlayer {
+                uuid: p.uuid,
+                position: [p.position.x, p.position.y, p.position.z],
+                block: block_of(p.position),
+                alive: p.alive,
+            })
+            .collect()
     }
 }
 
@@ -1185,18 +1192,25 @@ impl Game<'_> {
         self.particles_around_mob(id, "splash", horizon_client::particles::Burst::VILLAGER);
     }
 
-    /// The raid bar a living player at `at` is in (`Raid.getPlayers`): red,
-    /// notched in tens. The name is the translate component the client draws.
-    pub(super) fn raid_boss_at(&self, at: [f64; 3], alive: bool) -> Option<(i32, Tag, f32)> {
-        if !alive || self.dim != Dim::Overworld {
-            return None;
+    /// The raid bars a player `uuid` is in (`Raid.getPlayers`): red, notched
+    /// in tens. The set is the one `updatePlayers` cached on the last 20-tick
+    /// beat, so a viewer joins or leaves it up to 19 ticks late, alive or not
+    /// (`validPlayer`'s `isAlive` is only read on a beat). The name is the
+    /// translate component the client draws.
+    pub(super) fn raid_bars_at(&self, uuid: u128) -> Vec<(i32, Tag, f32)> {
+        if self.dim != Dim::Overworld {
+            return Vec::new();
         }
-        let block = block_of(Vec3::new(at[0], at[1], at[2]));
-        let (id, raid) = self.raiding.raids.nearby(block)?;
-        if !raid.bar.visible || raid.is_stopped() {
-            return None;
-        }
-        Some((id, raid_name_tag(raid.bar.name), raid.bar.progress))
+        self.raiding
+            .raids
+            .ids()
+            .into_iter()
+            .filter_map(|id| self.raiding.raids.get(id).map(|raid| (id, raid)))
+            .filter(|(_, raid)| {
+                raid.bar.players.contains(&uuid) && raid.bar.visible && !raid.is_stopped()
+            })
+            .map(|(id, raid)| (id, raid_name_tag(raid.bar.name), raid.bar.progress))
+            .collect()
     }
     /// A firework a villager launches to celebrate (`CelebrateVillagersSurvivedRaid`).
     pub(super) fn villager_firework(&mut self, at: [f64; 3], color: usize, flight: u8) {
@@ -1286,7 +1300,7 @@ impl Game<'_> {
         let enemies = self.ui.rules.bool("spawn_mobs") && self.ui.rules.bool("spawn_monsters");
         let mut random = std::mem::replace(
             &mut self.world.random,
-            horizon_core::random::LegacyRandom::new(0),
+            LevelRandom::for_level(LegacyRandom::new(0)),
         );
         let mut members: Vec<Member> = Vec::new();
         let mut spawner = std::mem::take(&mut self.raiding.patrol);
@@ -1296,15 +1310,14 @@ impl Game<'_> {
                 centers: self.village_centers(),
                 can_spawn: &biome_ok,
             };
-            let mut spawn =
-                |l: &PatrolCx, m: Member, _: &mut horizon_core::random::LegacyRandom| {
-                    // EntityType.create makes no monsters in peaceful.
-                    if l.level.game.difficulty_id() == 0 {
-                        return false;
-                    }
-                    members.push(m);
-                    true
-                };
+            let mut spawn = |l: &PatrolCx, m: Member, _: &mut horizon_core::random::LevelRandom| {
+                // EntityType.create makes no monsters in peaceful.
+                if l.level.game.difficulty_id() == 0 {
+                    return false;
+                }
+                members.push(m);
+                true
+            };
             spawner.tick(&level, enemies, &mut random, &mut spawn);
         }
         self.raiding.patrol = spawner;
@@ -1434,7 +1447,7 @@ impl Game<'_> {
     ) -> Option<[f64; 3]> {
         let mut random = std::mem::replace(
             &mut self.world.random,
-            horizon_core::random::LegacyRandom::new(0),
+            LevelRandom::for_level(LegacyRandom::new(0)),
         );
         let mut found = None;
         for _ in 0..10 {
@@ -1635,6 +1648,10 @@ impl Game<'_> {
 #[cfg(test)]
 #[path = "raids/tests/bed_loss.rs"]
 mod bed_loss_tests;
+
+#[cfg(test)]
+#[path = "raids/tests/bar_players.rs"]
+mod bar_players_tests;
 
 #[cfg(test)]
 mod entity_ticking_tests {

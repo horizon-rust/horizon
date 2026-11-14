@@ -39,12 +39,13 @@ fn vanilla_sky() -> String {
     prefixed(&text, PREFIX)
 }
 
-/// The sky shader for the pack's sky stage `source`.
-fn shader_source(source: &str, api: horizon_shader_api::Api) -> String {
+/// The sky shader for the pack's sky stage `source`, of the line `api`, onto a frame that holds
+/// linear light when `linear`.
+fn shader_source(source: &str, (api, linear): (horizon_shader_api::Api, bool)) -> String {
     format!(
         "{source}\n// Horizon's sky (terrain.wgsl)\n{}{}{PACK_ENTRY}",
         vanilla_sky(),
-        super::native_post::line_helpers(api)
+        super::native_post::line_helpers(api, linear)
     )
 }
 
@@ -102,7 +103,7 @@ fn build(
     frame: &NativeFrame,
     stage: &CheckedStage,
 ) -> Result<(naga::Module, wgpu::PipelineLayout), String> {
-    let text = shader_source(&stage.source, frame.api);
+    let text = shader_source(&stage.source, (frame.api, frame.linear));
     let module = naga::front::wgsl::parse_str(&text)
         .map_err(|e| format!("{}: {}", stage.file, e.emit_to_string(&text)))?;
     let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
@@ -131,7 +132,7 @@ impl NativeSky {
         let present = present_constants(&module, constants);
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(&stage.label),
+            label: Some(&super::dx12_compiler::module_label(&stage.label)),
             source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
         });
         let pipeline = pipeline(
@@ -198,7 +199,7 @@ mod tests {
         // A pack may use the renderer's names for its own things.
         let own = "override gain: f32;\nconst PI: f32 = 3.0;\nfn view_ray() -> f32 { return PI; }\n\
             fn sky(input: SkyInput) -> vec4<f32> { return input.color * gain * view_ray(); }\n";
-        let text = shader_source(&stage(own).source, horizon_shader_api::Api::V0_1);
+        let text = shader_source(&stage(own).source, (horizon_shader_api::Api::V0_1, false));
         let module = naga::front::wgsl::parse_str(&text).unwrap_or_else(|e| {
             panic!("{}", e.emit_to_string(&text));
         });
@@ -208,6 +209,85 @@ mod tests {
         )
         .validate(&module)
         .unwrap();
+    }
+
+    /// The terrain's group 0, the globals a sky reads.
+    fn globals_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        })
+    }
+
+    fn frame(device: &wgpu::Device) -> NativeFrame {
+        NativeFrame::new(
+            device,
+            None,
+            Vec::new(),
+            Default::default(),
+            None,
+            (horizon_shader_api::Api::V0_1, false),
+        )
+    }
+
+    /// A pack names its stages, and the module's label comes from that name: one with a
+    /// colon, or one starting like a command-line option, still compiles on Vulkan and on
+    /// DirectX 12 with both its compilers (#16258). DXC needs `dxcompiler.dll` beside the
+    /// test or on `PATH`; a device this machine lacks is skipped.
+    #[test]
+    fn a_stage_s_name_does_not_stop_it_compiling() {
+        for (backends, compiler, name) in [
+            (wgpu::Backends::VULKAN, Default::default(), "Vulkan"),
+            (
+                wgpu::Backends::DX12,
+                wgpu::Dx12Compiler::Fxc,
+                "DirectX 12, FXC",
+            ),
+            (
+                wgpu::Backends::DX12,
+                wgpu::Dx12Compiler::default_dynamic_dxc(),
+                "DirectX 12, DXC",
+            ),
+        ] {
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            desc.backends = backends;
+            desc.backend_options.dx12.shader_compiler = compiler;
+            let instance = wgpu::Instance::new(desc);
+            let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default()))
+            else {
+                eprintln!("{name}: skipped");
+                continue;
+            };
+            let (device, _) =
+                pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+            let (globals, frame) = (globals_layout(&device), frame(&device));
+            for (i, label) in ["Sky: dusk", "-dusk", "/E"].into_iter().enumerate() {
+                // A shader of its own each: a device compiles the same shader only once.
+                let mut stage = stage(&format!(
+                    "fn sky(input: SkyInput) -> vec4<f32> {{ return input.color * {i}.0; }}\n"
+                ));
+                stage.label = label.to_owned();
+                let format = wgpu::TextureFormat::Rgba8Unorm;
+                let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+                let sky = NativeSky::new(&device, &globals, &frame, &stage, &[], format);
+                let internal = pollster::block_on(internal.pop());
+                assert!(
+                    sky.is_ok() && internal.is_none(),
+                    "{name}, {label:?}: {internal:?}"
+                );
+                assert_eq!(sky.unwrap().label, label);
+            }
+            eprintln!("{name}: compiled");
+        }
     }
 
     /// Vanilla's sky and two packs over the same globals: one that returns its input draws
@@ -221,19 +301,7 @@ mod tests {
         let (device, queue) =
             pollster::block_on(adapter.request_device(&Default::default())).unwrap();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let globals_layout = globals_layout(&device);
         let mut globals: super::super::Globals = bytemuck::Zeroable::zeroed();
         globals.inverse_view = glam::Mat4::IDENTITY.to_cols_array_2d();
         globals.misc = [0.0, 0.0, 1.0, 1.0];
@@ -255,14 +323,7 @@ mod tests {
                 resource: globals_buffer.as_entire_binding(),
             }],
         });
-        let frame = NativeFrame::new(
-            &device,
-            None,
-            Vec::new(),
-            Default::default(),
-            None,
-            horizon_shader_api::Api::V0_1,
-        );
+        let frame = frame(&device);
         queue.write_buffer(
             &frame.buffer,
             0,

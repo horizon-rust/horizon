@@ -55,7 +55,7 @@ fn pair(g: &mut Game<'_>, slot: usize) -> Damage {
         m.health = 100.0;
         g.mobs.push(m);
     }
-    g.mobs[0].random = LegacyRandom::new(1);
+    g.mobs[0].random.set_seed(1);
     f::set_item_stack(&mut g.mobs[0], f::MAINHAND, thorny()); // Retaliation must not recurse.
     f::set_item_stack(&mut g.mobs[1], slot, thorny());
     Damage::mob(41, [10.5, 64.0, 0.5])
@@ -240,5 +240,42 @@ fn dragon_takes_player_thorns_through_its_body() {
         g.dragon_hurts_player("minecraft:indirect_magic", 1.0);
         assert_eq!(g.dragon.as_ref().unwrap().health, before);
         assert_eq!(g.armor[1].as_ref().unwrap().damage, 5);
+    });
+}
+
+/// `Guardian.hurtServer`: a still guardian's spikes are 2 of
+/// `minecraft:thorns` on the player whose blow it was, dealt inside that hurt
+/// (before any tick runs) — not at the end of the tick, where the outbox
+/// sweep has no player in place: a serving thread's players are all guests.
+#[test]
+#[ignore = "requires HORIZON_TEST_RESOURCES and fresh Horizon homes"]
+fn a_still_guardian_spikes_the_player_who_hit_it() {
+    with_game(|g| {
+        g.mobs.clear();
+        let kind = g.res.mob_types().get("minecraft:guardian").unwrap().clone();
+        let mut guardian = Mob::new(41, kind, Vec3::new(10.5, 64.0, 0.5), 0.0);
+        guardian.health = 30.0;
+        g.mobs.push(guardian);
+        g.player.as_mut().unwrap().health.advance_clock();
+        let before = g.player.as_ref().unwrap().health.health();
+        assert!(
+            g.hurt_by_player(0, 2.0, Damage::player([10.5, 64.0, 0.5])),
+            "the blow lands on the guardian"
+        );
+        g.player.as_mut().unwrap().health.advance_clock();
+        assert_eq!(
+            g.player.as_ref().unwrap().health.health(),
+            before - 2.0,
+            "the spikes hurt the player who hit it, in the hurt itself"
+        );
+        // Dealt once: the sweep at the end of the tick finds nothing left.
+        assert!(
+            !g.mobs[0]
+                .outbox
+                .iter()
+                .any(|e| matches!(e, MobEvent::DamagePlayer { .. })),
+            "{:?}",
+            g.mobs[0].outbox
+        );
     });
 }

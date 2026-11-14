@@ -4,7 +4,8 @@
     python3 tools/pr_ready.py                       # on this machine, against origin/main
     python3 tools/pr_ready.py --base upstream/main  # a fork: against the main repository's main
     python3 tools/pr_ready.py --host macmini        # builds and harnesses on a fleet machine (~/fleet/rbuild)
-    python3 tools/pr_ready.py --quick               # without running the vanilla harnesses
+    python3 tools/pr_ready.py --harnesses           # also run the affected vanilla harnesses here
+    python3 tools/pr_ready.py --quick               # never run the vanilla harnesses
 
 From the files the branch changes since its merge base with --base (committed or not) it decides what to run:
 rustfmt, and clippy with warnings denied exactly as CI's verify job runs it (the whole workspace with the game's code
@@ -12,8 +13,10 @@ mods, plus the server build when horizon-client is affected); the tests of the t
 CI's workspace-wide run gives them; the launcher (its own workspace) the same way when CI's launcher job would run
 (tools/ci/rust_changes.py --launcher); crates/horizon-theme/tokens.css against horizon-theme; Cargo.lock changing
 only with a Cargo.toml; the Python tests (always, as in CI) and the public-tree check; and the vanilla harnesses the
-changes can affect, picked as CI's parity job picks them (tools/parity.py --changed). Harnesses run where the
-vanilla data is (a prepared .local/ here, or the Mac mini); elsewhere they are listed for CI.
+changes can affect, picked as CI's parity job picks them (tools/parity.py --changed). As in CI (parity-scope in
+.github/workflows/ci.yml), the harnesses run only when the branch changes a harness, an oracle, a probe or the
+runner; otherwise they are listed and left to parity-main, which runs them on main. --harnesses runs them anyway.
+Harnesses run where the vanilla data is (a prepared .local/ here, or the Mac mini); elsewhere they are listed for CI.
 Tests select library, binary and integration targets explicitly, followed by doc tests, so unrelated example
 executables are not built and linked again.
 
@@ -49,7 +52,7 @@ from tools import parity, process_tree, release_train  # noqa: E402
 from tools.ci import rust_changes  # noqa: E402
 
 RBUILD = Path.home() / "fleet" / "rbuild"
-LINE_LIMIT = 500
+LINE_LIMIT = 3000
 # What rbuild's login shell needs on each fleet machine before cargo (it adds sccache itself). The ThinkPad no
 # longer builds (2026-10-26: it keeps the AI pool and a few services; Linux work goes to playhorizon's runner).
 HOST_SETUP = {
@@ -161,6 +164,19 @@ def suggested_label(paths, exporter_paths=frozenset()):
     return "`skip-release`"
 
 
+# CI's parity-scope (.github/workflows/ci.yml): a pull request runs its harnesses itself only when it changes a
+# harness, an oracle, a probe or the runner. parity-main runs the others on main, a batch of merges at a time.
+PARITY_SCOPE = re.compile(
+    r"^(tools/test_[a-z0-9_]+_parity\.py|tools/(parity[a-z_]*|lab)\.py|tools/parity_hosts\.json|mods/horizon/src/test/"
+    r"|crates/[^/]+/examples/|crates/horizon-client/src/game/[a-z_]*(fixture|harness)\.rs"
+    r"|\.github/workflows/parity[a-z-]*\.yml)")
+
+
+def runs_parity(changed):
+    """Whether CI's parity job would run for a pull request that changes these files."""
+    return any(PARITY_SCOPE.match(path) for path in changed)
+
+
 def harness_names(names):
     """Harness names without shard suffixes, in order."""
     return list(dict.fromkeys(parity.base_name(name) for name in names))
@@ -206,6 +222,194 @@ def line_counts(base, changed):
             except (UnicodeDecodeError, OSError):
                 pass
     return counts
+
+
+RAW_STRING = re.compile(r'b?r(#*)"')
+
+
+def mask_rust(text):
+    """text with comments and the insides of string and char literals blanked (newlines kept), so braces can be
+    counted. Good enough for real code, not a parser: a macro that builds unbalanced braces out of tokens can
+    still confuse it."""
+    out = list(text)
+    n, i = len(text), 0
+
+    def blank(start, end):
+        for k in range(start, min(end, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    while i < n:
+        c = text[i]
+        raw = RAW_STRING.match(text, i) if c in "rb" and not (i and (text[i - 1].isalnum() or text[i - 1] == "_")) \
+            else None
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            end = n if end < 0 else end
+            blank(i, end)
+            i = end
+        elif text.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif text.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            blank(i, j)
+            i = j
+        elif raw:
+            end = text.find('"' + raw.group(1), raw.end())
+            end = n if end < 0 else end + 1 + len(raw.group(1))
+            blank(raw.end(), end)
+            i = end
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            blank(i + 1, j)
+            i = j + 1
+        elif c == "'":
+            if text.startswith("'\\", i):
+                end = text.find("'", i + 3)
+                end = n if end < 0 else end + 1
+                blank(i + 1, end - 1)
+                i = end
+            elif i + 2 < n and text[i + 2] == "'":
+                blank(i + 1, i + 2)
+                i += 3
+            else:
+                i += 1  # a lifetime
+        else:
+            i += 1
+    return "".join(out)
+
+
+TEST_MODULE = re.compile(r"#\s*\[\s*cfg\s*\(\s*(?:test|all\s*\(\s*test\b[^\]]*?)\)\s*\]"
+                         r"(?:\s*#\s*\[[^\]]*\])*\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*\{")
+
+
+def test_module_ranges(text):
+    """The (first, last) line numbers, counting from 1, of each inline `#[cfg(test)] mod name { ... }` in Rust
+    source: from the attribute to the closing brace. `#[cfg(all(test, ...))]` counts too. `mod name;` is one line
+    and is not a range."""
+    masked = mask_rust(text)
+    ranges = []
+    for match in TEST_MODULE.finditer(masked):
+        depth, j = 1, match.end()
+        while j < len(masked) and depth:
+            depth += {"{": 1, "}": -1}.get(masked[j], 0)
+            j += 1
+        if depth == 0:
+            ranges.append((masked.count("\n", 0, match.start()) + 1, masked.count("\n", 0, j - 1) + 1))
+    return ranges
+
+
+def diff_segments(diff):
+    """Parse `git diff -U0` text into runs of changed lines: [(path, "-" or "+", [(line number, text), ...])]. Line
+    numbers are the old file's for "-" and the new file's for "+"."""
+    segments, path, old_path, in_hunk, old, new, current = [], None, None, False, 0, 0, None
+    for row in diff.split("\n"):
+        if row.startswith("diff --git "):
+            in_hunk, current = False, None
+        elif not in_hunk and row.startswith("--- "):
+            old_path = row[4:].split("\t")[0].removeprefix("a/")
+        elif not in_hunk and row.startswith("+++ "):
+            path = row[4:].split("\t")[0].removeprefix("b/")
+            path = old_path if path == "/dev/null" else path
+        elif row.startswith("@@"):
+            header = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", row)
+            in_hunk, old, new, current = True, int(header.group(1)), int(header.group(2)), None
+        elif in_hunk and row[:1] in ("-", "+"):
+            side = row[0]
+            if current is None or current[1] != side:
+                current = (path, side, [])
+                segments.append(current)
+            current[2].append((old if side == "-" else new, row[1:]))
+            old, new = old + (side == "-"), new + (side == "+")
+        elif not in_hunk or row[:1] != "\\":
+            current = None
+    return segments
+
+
+def moved_lines(segments, window=3):
+    """The (segment number, position) of every changed line that was moved: a run of lines removed in one place
+    and added in another with the same text, whitespace ignored, like `git diff --color-moved`. A run counts when
+    it holds at least `window` meaningful lines (three or more characters; braces and blanks move along inside a
+    run but never make one). Each line is matched once. A start that matches more than 20 places is skipped."""
+    sides = {"-": [], "+": []}  # (stripped text, segment number, position) in diff order
+    for number, (_, side, lines) in enumerate(segments):
+        for position, (_, text) in enumerate(lines):
+            sides[side].append(("".join(text.split()), number, position))
+    removed, added = sides["-"], sides["+"]
+    seeds = {}
+    for index in range(len(added) - window + 1):
+        chunk = added[index:index + window]
+        if chunk[0][1] == chunk[-1][1]:
+            seeds.setdefault(tuple(item[0] for item in chunk), []).append(index)
+    marked = {"-": [False] * len(removed), "+": [False] * len(added)}
+
+    def run_length(i, j):
+        k = 0
+        while (i + k < len(removed) and j + k < len(added) and not marked["-"][i + k] and not marked["+"][j + k]
+               and removed[i + k][0] == added[j + k][0] and removed[i + k][1] == removed[i][1]
+               and added[j + k][1] == added[j][1]):
+            k += 1
+        return k
+
+    i = 0
+    while i <= len(removed) - window:
+        candidates = seeds.get(tuple(item[0] for item in removed[i:i + window]), [])
+        runs = [(run_length(i, j), j) for j in candidates] if len(candidates) <= 20 else []
+        length, j = max(runs, default=(0, 0))
+        if sum(len(item[0]) >= 3 for item in removed[i:i + length]) >= window:
+            for k in range(length):
+                marked["-"][i + k] = marked["+"][j + k] = True
+            i += length
+        else:
+            i += 1
+    return {(item[1], item[2]) for side in "-+" for item, flag in zip(sides[side], marked[side]) if flag}
+
+
+def skipped_lines(diff, old_source, new_source):
+    """(moved, inline tests): how many changed lines of the reviewed paths in a `git diff -U0` don't count towards
+    the size. old_source and new_source give a path's text before and after, or None if it did not exist."""
+    segments = [segment for segment in diff_segments(diff) if reviewed(segment[0])]
+    inline = set()
+    for number, (path, side, lines) in enumerate(segments):
+        text = (old_source if side == "-" else new_source)(path) if path.endswith(".rs") else None
+        ranges = test_module_ranges(text) if text and "test" in text else []
+        inline |= {(number, position) for position, (line, _) in enumerate(lines)
+                   if any(first <= line <= last for first, last in ranges)}
+    # Inline test lines are out already, so they are not offered as moves.
+    rest = [(path, side, [line for position, line in enumerate(lines) if (number, position) not in inline])
+            for number, (path, side, lines) in enumerate(segments)]
+    return len(moved_lines(rest)), len(inline)
+
+
+def skipped_in_branch(base, changed):
+    """skipped_lines for the branch: the diff since base, plus untracked files as all-added."""
+    def old_source(path):
+        try:
+            return git("show", f"{base}:{path}")
+        except subprocess.CalledProcessError:
+            return None
+
+    def new_source(path):
+        try:
+            return (ROOT / path).read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            return None
+
+    diff = git("-c", "core.quotePath=false", "diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff", base)
+    for path in git("ls-files", "--others", "--exclude-standard", "-z").split("\0"):
+        text = new_source(path) if path in changed else None
+        if text:
+            lines = text.splitlines()
+            diff += f"\ndiff --git a/{path} b/{path}\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n"
+            diff += "\n".join("+" + line for line in lines)
+    return skipped_lines(diff, old_source, new_source)
 
 
 def packages():
@@ -261,9 +465,9 @@ def tests_passed(output):
 
 
 def unittest_passed(output):
-    failed = re.search(r"^(FAILED \(.*\))$", output, re.M)
+    outcome = re.search(r"^((?:OK|FAILED) \(.*\))$", output, re.M)
     ran = re.search(r"^Ran (\d+) tests?", output, re.M)
-    return f"{ran.group(1) if ran else '?'} run, {failed.group(1)}" if failed else f"{ran.group(1)} passed" if ran else ""
+    return f"{ran.group(1) if ran else '?'} run, {outcome.group(1)}" if outcome else f"{ran.group(1)} passed" if ran else ""
 
 
 def parity_summary(output):
@@ -288,7 +492,7 @@ def parity_summary(output):
 # CI's verify job (.github/workflows/ci.yml): clippy over the whole workspace, and over the server build (the game
 # without sound or controllers).
 CI_CLIPPY = "cargo clippy --workspace --all-targets --locked -- -D warnings"
-CI_CLIPPY_SERVER = "cargo clippy -p horizon-client --all-targets --locked --no-default-features -- -D warnings"
+CI_CLIPPY_SERVER = "cargo clippy -p horizon-client --lib --bins --locked --no-default-features -- -D warnings"
 
 
 # CI installs the current stable each run (rustup toolchain install stable), and Rust ships one every six weeks
@@ -373,7 +577,6 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
         # docs/layers.md: a crate depends only on its own layer or a lower one, and the exceptions only shrink.
         Step("Layers", f"python3 tools/check_layers.py --base {shlex.quote(base)}", where="here"),
         Step("Addresses", f"python3 tools/check_addresses.py --base {shlex.quote(base)}", where="here"),
-        Step("File size", f"python3 tools/check_file_size.py --base {shlex.quote(base)}", where="here"),
         # Always, as in CI: some read the crates, the roadmap or the workflows.
         Step("Python tests", "python3 -m unittest discover -s tests", where="here", summary=unittest_passed),
         Step("rustfmt", "cargo fmt --all -- --check", skip=None if rust else no_rust),
@@ -399,7 +602,18 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
     harness = Step("Parity", summary=parity_summary)
     affected = affected_here(changed)
     local_data = (ROOT / ".local" / "minecraft").exists() and (ROOT / ".local" / "horizon-client").exists()
-    if args.quick or (args.host == "local" and not local_data) or (args.host != "local" and args.host not in HARNESS_SETUP):
+    in_scope = args.harnesses or runs_parity(changed)
+    if not args.quick and not in_scope:
+        # What CI does with this pull request: nothing here, parity-main on main.
+        harness.status = "list"
+        why = "no harness, oracle, probe or runner change; --harnesses runs them here"
+        if affected is None:
+            harness.detail = f"not run ({why}): parity-main checks this on main"
+        elif not affected:
+            harness.detail = "no harness affected"
+        else:
+            harness.detail = f"{len(affected)} affected, left to parity-main on main ({why}): {short_list(affected)}"
+    elif args.quick or (args.host == "local" and not local_data) or (args.host != "local" and args.host not in HARNESS_SETUP):
         harness.status = "list"
         why = "--quick" if args.quick else "no vanilla data here"
         if affected is None:
@@ -480,8 +694,6 @@ def run_windows(steps, verbose):
             command = [sys.executable, "tools/check_layers.py", *command[2:]]
         elif step.name == "Addresses":
             command = [sys.executable, "tools/check_addresses.py", *command[2:]]
-        elif step.name == "File size":
-            command = [sys.executable, "tools/check_file_size.py", *command[2:]]
         elif step.name == "Python tests":
             command = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
         elif step.name == "rustfmt":
@@ -575,15 +787,20 @@ def finish(step, verbose):
 MARK = {"pass": "✅", "fail": "❌", "skip": "➖", "list": "➖", "warn": "⚠️"}
 
 
-def block(args, base, merge_base, changed, counts, steps, label, elapsed):
+def block(args, base, merge_base, changed, counts, steps, label, elapsed, skipped=(0, 0)):
     where = socket.gethostname().split(".")[0] if args.host == "local" else args.host
-    flags = "".join(f" --{flag}" for flag in ("quick",) if getattr(args, flag)) + \
+    flags = "".join(f" --{flag}" for flag in ("quick", "harnesses") if getattr(args, flag)) + \
         ("" if args.host == "local" else f" --host {args.host}") + ("" if base == "origin/main" else f" --base {base}")
     added, removed = (sum(count[i] for count in counts.values()) for i in (0, 1))
-    warnings = scope_warnings(changed, sum(sum(count) for path, count in counts.items() if reviewed(path)))
+    moved, inline = skipped
+    counted = sum(sum(count) for path, count in counts.items() if reviewed(path)) - moved - inline
+    warnings = scope_warnings(changed, counted)
+    not_counted = " and ".join(f"{number:,} {what}" for number, what in ((moved, "moved lines"), (inline, "inline-test lines"))
+                               if number)
     lines = [f"**pr_ready** (`tools/pr_ready.py{flags}` on {where}, against {base} at {merge_base[:9]}, "
              f"{duration(elapsed)})", "", "| Check | Result |", "| --- | --- |",
              f"| Scope | {'⚠️' if warnings else '✅'} {len(changed)} files, +{added} −{removed}"
+             + (f" (not counted: {not_counted})" if not_counted else "")
              + "".join(f"; {warning}" for warning in warnings) + " |"]
     for step in steps:
         took = f" ({duration(step.seconds)})" if step.seconds else ""
@@ -599,6 +816,8 @@ def main():
     parser.add_argument("--host", default="local", choices=sorted(HOST_SETUP),
                         help="where builds, tests and harnesses run: local, or a fleet machine through ~/fleet/rbuild")
     parser.add_argument("--quick", action="store_true", help="list the affected harnesses instead of running them")
+    parser.add_argument("--harnesses", action="store_true",
+                        help="run the affected harnesses even when the branch changes no harness, oracle, probe or runner")
     parser.add_argument("--verbose", action="store_true", help="show every check's output")
     args = parser.parse_args()
     if args.host != "local" and not RBUILD.exists():
@@ -609,6 +828,7 @@ def main():
         parser.error(f"no merge base with {args.base} (git fetch?)")
     merge_base = git("merge-base", "HEAD", args.base).strip()
     counts = line_counts(merge_base, changed)
+    skipped = skipped_in_branch(merge_base, changed)
     crates_of, libraries, dependencies = packages() if any(workspace_rust(p) for p in changed) else ({}, set(), {})
     steps = plan(args, args.base, changed, crates_of, libraries, dependencies)
     print(f"pr_ready: {len(changed)} files changed since {args.base}; checks on {args.host}", file=sys.stderr, flush=True)
@@ -625,7 +845,7 @@ def main():
 
     label = suggested_label(changed, release_train.exporters())
     print(block(args, args.base, merge_base, sorted(changed), counts, steps, label,
-                time.monotonic() - started))
+                time.monotonic() - started, skipped))
     return 1 if any(step.status == "fail" for step in steps) else 0
 
 

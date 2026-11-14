@@ -1,7 +1,8 @@
 """Which jobs may run on our own runners (docs/ci-runners.md).
 
 - horizon-light (playhorizon's and other small runners, which refuse a fork's pull request): main's own scripts only.
-- horizon-checks (isolated runners that take any pull request, forks included): no secret and no token that writes.
+- horizon-checks (isolated runners; forks' pull requests run on GitHub's, but a fork's own copy of a workflow could
+  still name them): no secret and no token that writes.
 - Neither takes a job that holds a secret or whose token can push, publish or start workflows: playhorizon is a
   partner's server, and a checks runner keeps what a fork's job left behind.
 """
@@ -105,15 +106,31 @@ class OwnRunnerTests(unittest.TestCase):
                 self.assertNotRegex(head, r":\s*write", where)
 
     def test_checks_split_between_both_pools(self):
-        ci = (WORKFLOWS / "ci.yml").read_text()
-        verify = dict(jobs(ci))["verify"]
-        value = runs_on(verify)
+        ci = dict(jobs((WORKFLOWS / "ci.yml").read_text()))
+        value = runs_on(ci["launcher"])
         # A pull request by the last digit of its number unless SELF_HOSTED_CI=all; main's pushes keep GitHub's cache.
-        self.assertIn("github.event_name == 'pull_request' && (", value)
+        self.assertIn("github.event_name == 'pull_request' && ", value)
         self.assertIn("vars.SELF_HOSTED_CI == 'all'", value)
         self.assertIn("endsWith(format('{0}', github.event.pull_request.number), '0')", value)
-        self.assertNotIn(FORK_GUARD, value)
-        self.assertEqual(value, runs_on(dict(jobs(ci))["launcher"]))
+        # verify's parts go where the launcher goes; verify itself only waits for them.
+        for part in ("verify-tree", "verify-lint", "verify-test"):
+            with self.subTest(part=part):
+                self.assertEqual(runs_on(ci[part]), value)
+        self.assertIn("needs: [verify-tree, verify-lint, verify-test]", ci["verify"])
+        # Never skipped: GitHub counts a skipped required check as passed.
+        self.assertIn("if: always()", ci["verify"])
+
+    def test_forks_never_wait_for_our_checks_runners(self):
+        # A fork's run sees no repository variable, so SELF_HOSTED_CI can't send it elsewhere when the desktop is off:
+        # every job that may pick horizon-checks on a pull request picks it only for this repository's own branches.
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            text = path.read_text()
+            if "pull_request:" not in text:
+                continue
+            for name, block in jobs(text):
+                value = runs_on(block)
+                if "horizon-checks" in value:
+                    self.assertIn(FORK_GUARD, value, f"{path.name} {name}")
 
     def test_the_light_runners_refuse_forks_themselves(self):
         script = (ROOT / "tools/ci/checks-runners.sh").read_text()

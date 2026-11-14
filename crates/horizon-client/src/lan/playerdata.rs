@@ -230,8 +230,7 @@ pub fn face_world_spawn(guest: &mut Guest, known: bool, [yaw, pitch]: [f32; 2]) 
 /// Give a guest the player state read into `level`.
 pub fn apply(guest: &mut Guest, level: &Level) {
     if let Some(p) = level.position {
-        guest.position = p;
-        guest.previous_position = p;
+        guest.place(p);
     }
     guest.yaw = level.rotation[0];
     guest.pitch = level.rotation[1];
@@ -284,7 +283,8 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     // Entity.load: a component of Motion over 10 blocks a tick reads as 0.
     let motion = level.motion.map(|v| if v.abs() > 10.0 { 0.0 } else { v });
     guest.loaded_body = Some(SavedBody {
-        fire_ticks: short("Fire", -20),
+        // Entity.load: `getShortOr("Fire", 0)` narrows; Air and TicksFrozen are ints.
+        fire_ticks: i32::from(short("Fire", -20) as i16),
         air: short("Air", 300),
         fall_distance: level.fall_distance,
         velocity: motion,
@@ -1208,6 +1208,21 @@ mod tests {
             back.loaded_body.expect("a body").velocity,
             [0.25, -0.0784, 0.0]
         );
+    }
+
+    /// `Entity.load` reads a player's `Fire` with `getShortOr` too: an int
+    /// 40000 in the player file is -25536, not half an hour of burning.
+    #[test]
+    fn a_players_saved_fire_is_narrowed_to_a_short() {
+        for (saved, expected) in [(Tag::Int(40000), -25536), (Tag::Short(60), 60)] {
+            let level = Level {
+                player_extra: Some(Tag::compound([("Fire", saved)])),
+                ..Level::default()
+            };
+            let mut g = guest();
+            apply(&mut g, &level);
+            assert_eq!(g.loaded_body.expect("a body").fire_ticks, expected);
+        }
     }
 
     #[test]

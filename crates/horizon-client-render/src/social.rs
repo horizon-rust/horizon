@@ -12,14 +12,18 @@
 //! or an empty answer keeps the cached lists, `Retry-After` sets the poll interval, and
 //! `getFriendData` waits out a ten-second cooldown between reads. The presence statuses
 //! are `PresenceHandler.getPresenceStatus`'s, supplied by the client each tick.
+mod list_updates;
 mod model;
+mod service;
 
-use model::presence_of;
+use list_updates::{Handler, spawn_updater};
+pub use list_updates::{State, set_foreground};
 pub use model::{
     Friend, FriendData, Presence, PresenceStatus, ResultCode, parse_friends, parse_presence,
 };
 
-use crate::auth::{self, AuthSession};
+use service::{Service, post_presence, send_json, session, url};
+
 use serde_json::{Value, json};
 use std::{
     sync::{
@@ -29,36 +33,6 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-
-/// `RemoteFriendListUpdateHandler.State`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum State {
-    Loading,
-    UpgradeNeeded,
-    ConnectionIssue,
-    UserMayLackActiveProfile,
-    Unauthorized,
-    TemporaryUnavailable,
-    GenericError,
-    Success,
-}
-impl State {
-    /// `RemoteFriendListUpdateHandler.mapResultCodeToState`.
-    fn of(code: ResultCode) -> Self {
-        match code {
-            ResultCode::Success => Self::Success,
-            ResultCode::UpgradeNeeded => Self::UpgradeNeeded,
-            ResultCode::ConnectionIssue => Self::ConnectionIssue,
-            ResultCode::UnknownProfile => Self::UserMayLackActiveProfile,
-            ResultCode::Unauthorized => Self::Unauthorized,
-            ResultCode::TemporaryUnavailable
-            | ResultCode::Forbidden
-            | ResultCode::ServiceNotAvailable
-            | ResultCode::TooManyRequests => Self::TemporaryUnavailable,
-            ResultCode::Error | ResultCode::GenericError => Self::GenericError,
-        }
-    }
-}
 
 /// `Options.sharePresence` (`PresenceSharing`): how much of the player the service sees.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,68 +50,6 @@ impl SharePresence {
             0 => Self::None,
             1 => Self::Limited,
             _ => Self::All,
-        }
-    }
-}
-
-/// `MinecraftServicesFriendsService`: the HTTP client and its caches.
-#[derive(Default)]
-struct Service {
-    friends_etag: Option<String>,
-    presence_etag: Option<String>,
-    friends_cache: FriendData,
-    presence_cache: Vec<Presence>,
-    /// `getFriendsPollInterval`/`getPresencePollInterval`: the service's `Retry-After`.
-    friends_poll: Option<Duration>,
-    presence_poll: Option<Duration>,
-    /// `requestCooldown`: ten seconds between `getFriendData` requests.
-    cooldown: Option<Instant>,
-    /// `requestPending`: one list request at a time.
-    pending: bool,
-}
-
-impl Service {
-    /// `canMakeRequest`.
-    fn can_make_request(&self) -> bool {
-        self.cooldown.is_none_or(|at| Instant::now() > at)
-    }
-}
-
-/// `RemoteFriendListUpdateHandler`.
-struct Handler {
-    enabled: bool,
-    state: State,
-    latest: FriendData,
-    /// `lastUpdateNanos`: a read at that moment is due; `None` reads at once.
-    last_update: Option<Instant>,
-    /// A forced read (`forceUpdate`) is due, whatever the interval.
-    forced: bool,
-    /// `getUpdateIntervalNanos`'s foreground: the friends overlay is open.
-    foreground: bool,
-}
-
-impl Default for Handler {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            state: State::Loading,
-            latest: FriendData::default(),
-            last_update: None,
-            forced: false,
-            foreground: false,
-        }
-    }
-}
-
-impl Handler {
-    /// `getUpdateIntervalNanos`: the service's interval (a minute when it named none),
-    /// five times as long in the background.
-    fn interval(&self, service: &Service) -> Duration {
-        let foreground = service.friends_poll.unwrap_or(Duration::from_secs(60));
-        if self.foreground {
-            foreground
-        } else {
-            foreground * 5
         }
     }
 }
@@ -268,11 +180,6 @@ pub fn friend_list_state() -> State {
 /// `PresenceHandler.getLatestPresence`.
 pub fn latest_presence() -> Vec<Presence> {
     lock().presence.latest.clone()
-}
-
-/// `RemoteFriendListUpdateHandler`'s foreground interval: the friends overlay is open.
-pub fn set_foreground(open: bool) {
-    lock().handler.foreground = open;
 }
 
 /// `Options.sharePresence`: what presence the handler posts.
@@ -424,154 +331,6 @@ fn friend_action(body: Value) -> ResultCode {
     code
 }
 
-/// `RemoteFriendListUpdateHandler.start`'s worker: one read per interval while the list
-/// is enabled, the first one as soon as it starts.
-fn spawn_updater() {
-    static STARTED: AtomicBool = AtomicBool::new(false);
-    if STARTED.swap(true, Ordering::Relaxed) {
-        return;
-    }
-    let _ = thread::Builder::new()
-        .name("Friends List".into())
-        .spawn(|| {
-            loop {
-                thread::sleep(Duration::from_secs(1));
-                let due = {
-                    let inner = lock();
-                    if !inner.handler.enabled {
-                        continue;
-                    }
-                    inner.handler.forced
-                        || inner
-                            .handler
-                            .last_update
-                            .is_none_or(|at| at.elapsed() >= inner.handler.interval(&inner.service))
-                };
-                if due {
-                    update_friend_data();
-                }
-            }
-        });
-}
-
-/// `RemoteFriendListUpdateHandler.runUpdateFriendDataInternal`.
-fn update_friend_data() {
-    let etag = {
-        let mut inner = lock();
-        if inner.service.pending {
-            // Another read is in flight; its answer is the cache's.
-            return;
-        }
-        if !inner.service.can_make_request() {
-            inner.handler.forced = false;
-            inner.handler.state = State::Success;
-            inner.handler.latest = inner.service.friends_cache.clone();
-            inner.handler.last_update = Some(Instant::now());
-            return;
-        }
-        inner.service.pending = true;
-        inner.service.cooldown = Some(Instant::now() + Duration::from_secs(10));
-        inner.service.friends_etag.clone()
-    };
-    log::debug!("Performing Friends List update");
-    let result = match session() {
-        Some(session) => fetch_friends(&session, etag.as_deref()),
-        None => Err(Failure {
-            code: ResultCode::Unauthorized,
-        }),
-    };
-    let mut inner = lock();
-    inner.service.pending = false;
-    inner.handler.forced = false;
-    inner.handler.last_update = Some(Instant::now());
-    match result {
-        Ok(answer) => {
-            if let Some(retry) = answer.retry_after {
-                inner.service.friends_poll = Some(retry);
-            }
-            if let Some(etag) = answer.etag {
-                inner.service.friends_etag = Some(etag);
-            }
-            if answer.status != 304 && !answer.body.is_empty() {
-                match parse_friends(&answer.body) {
-                    Some(data) => inner.service.friends_cache = data,
-                    None => {
-                        // authlib's parse failure is an ERROR result: the handler keeps
-                        // the cached lists and shows the generic error.
-                        inner.handler.latest = inner.service.friends_cache.clone();
-                        inner.handler.state = State::GenericError;
-                        return;
-                    }
-                }
-            }
-            inner.handler.latest = inner.service.friends_cache.clone();
-            inner.handler.state = State::Success;
-        }
-        Err(failure) => {
-            inner.handler.latest = inner.service.friends_cache.clone();
-            inner.handler.state = State::of(failure.code);
-            log::warn!(
-                "Friends List update failed with result code: {:?}",
-                failure.code
-            );
-        }
-    }
-}
-
-/// `MinecraftServicesFriendsService.presence`: post one status, cache the answer.
-/// `None` means the answer said nothing new (304, an empty body or a failure); the
-/// handler keeps its last presence then.
-fn post_presence(status: PresenceStatus) -> Option<Vec<Presence>> {
-    let session = session()?;
-    let url = url("updatePresence")?;
-    let body = json!({"status": status.wire()}).to_string();
-    let etag = lock().service.presence_etag.clone();
-    let answer = send_json(&session, "POST", &url, &body, etag.as_deref()).ok()?;
-    let mut inner = lock();
-    if let Some(retry) = answer.retry_after {
-        inner.service.presence_poll = Some(retry);
-    }
-    if let Some(etag) = answer.etag {
-        inner.service.presence_etag = Some(etag);
-    }
-    if answer.status == 304 || answer.body.is_empty() {
-        return None;
-    }
-    // `PresenceResponse`: a missing `presence` field is an empty list, replacing the
-    // cached one; malformed JSON keeps the cache, as authlib's exception path does.
-    if let Ok(value) = serde_json::from_str::<Value>(&answer.body) {
-        let presence = presence_of(&value);
-        inner.service.presence_cache = presence.clone();
-        return Some(presence);
-    }
-    None
-}
-
-/// `MinecraftServicesFriendsService.getFriendData`'s request.
-fn fetch_friends(session: &AuthSession, etag: Option<&str>) -> Result<Answer, Failure> {
-    let url = url("getFriends").ok_or(Failure {
-        code: ResultCode::ServiceNotAvailable,
-    })?;
-    send_json(session, "GET", &url, "", etag)
-}
-
-/// One HTTP answer: its status, cache headers and body.
-struct Answer {
-    status: u16,
-    etag: Option<String>,
-    retry_after: Option<Duration>,
-    body: String,
-}
-
-struct Failure {
-    code: ResultCode,
-}
-
-/// The discovery document's `player` service endpoint.
-fn session() -> Option<Arc<AuthSession>> {
-    auth::current().filter(|s| !s.expired())
-}
-
 fn uuid(id: u128) -> String {
     let hex = format!("{id:032x}");
     format!(
@@ -584,113 +343,9 @@ fn uuid(id: u128) -> String {
     )
 }
 
-fn url(name: &str) -> Option<String> {
-    let doc = auth::discovery().ok()?;
-    auth::endpoint(&doc, "player", name)
-}
-
-/// authlib's `MinecraftClient`: the bearer token, `If-None-Match` when a cache has an
-/// `ETag`, and `Retry-After` back to the caller.
-fn send_json(
-    session: &AuthSession,
-    method: &str,
-    url: &str,
-    body: &str,
-    etag: Option<&str>,
-) -> Result<Answer, Failure> {
-    let bearer = format!("Bearer {}", session.access_token());
-    let agent = auth::agent();
-    let mut request = match method {
-        "GET" => agent.get(url),
-        "POST" => agent.post(url),
-        "PUT" => agent.put(url),
-        _ => {
-            return Err(Failure {
-                code: ResultCode::Error,
-            });
-        }
-    };
-    request = request.set("Authorization", &bearer);
-    if let Some(etag) = etag {
-        request = request.set("If-None-Match", etag);
-    }
-    let response = if method == "GET" {
-        request.call()
-    } else {
-        request
-            .set("Content-Type", "application/json; charset=utf-8")
-            .send_string(body)
-    }
-    .map_err(http_error)?;
-    let status = response.status();
-    let etag = response.header("ETag").map(str::to_owned);
-    let retry_after = response.header("Retry-After").and_then(parse_retry_after);
-    if status == 304 {
-        return Ok(Answer {
-            status,
-            etag,
-            retry_after,
-            body: String::new(),
-        });
-    }
-    let body = response.into_string().map_err(|_| Failure {
-        code: ResultCode::Error,
-    })?;
-    Ok(Answer {
-        status,
-        etag,
-        retry_after,
-        body,
-    })
-}
-
-/// authlib's `MinecraftClient.parseRetryAfter`: whole seconds above zero.
-fn parse_retry_after(value: &str) -> Option<Duration> {
-    value
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-}
-
-/// `MinecraftServicesFriendsService.handleHttpError`.
-fn http_error(error: ureq::Error) -> Failure {
-    let code = match error {
-        ureq::Error::Status(status, _) => match status {
-            429 => ResultCode::TooManyRequests,
-            500.. => ResultCode::ServiceNotAvailable,
-            403 => ResultCode::Forbidden,
-            400 => ResultCode::UnknownProfile,
-            401 => ResultCode::Unauthorized,
-            _ => ResultCode::Error,
-        },
-        ureq::Error::Transport(_) => ResultCode::ConnectionIssue,
-    };
-    Failure { code }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn result_codes_map_to_the_handlers_states() {
-        assert_eq!(State::of(ResultCode::Success), State::Success);
-        assert_eq!(
-            State::of(ResultCode::TooManyRequests),
-            State::TemporaryUnavailable
-        );
-        assert_eq!(
-            State::of(ResultCode::UnknownProfile),
-            State::UserMayLackActiveProfile
-        );
-        assert_eq!(State::of(ResultCode::UpgradeNeeded), State::UpgradeNeeded);
-        assert_eq!(
-            State::of(ResultCode::ConnectionIssue),
-            State::ConnectionIssue
-        );
-    }
 
     #[test]
     fn the_share_presence_option_maps_to_its_levels() {
@@ -698,13 +353,5 @@ mod tests {
         assert_eq!(SharePresence::of(1), SharePresence::Limited);
         assert_eq!(SharePresence::of(2), SharePresence::All);
         assert_eq!(SharePresence::of(9), SharePresence::All);
-    }
-
-    #[test]
-    fn retry_after_reads_whole_positive_seconds() {
-        assert_eq!(parse_retry_after("30"), Some(Duration::from_secs(30)));
-        assert_eq!(parse_retry_after(" 5 "), Some(Duration::from_secs(5)));
-        assert_eq!(parse_retry_after("0"), None);
-        assert_eq!(parse_retry_after("later"), None);
     }
 }
