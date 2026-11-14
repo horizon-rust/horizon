@@ -297,6 +297,11 @@ files name one of the four trace functions, and the `Frame` of every stage of th
 `ray_distance`. A pack without the key has none of them, and a material stage that names no trace function is
 built as without it.
 
+The game traces for the pack picked when it starts: only then, and only for a pack with `[ray_tracing]`, does it
+ask the GPU for hardware ray queries, where the GPU and graphics API have them. In a game started without them a
+pack picked while it runs traces from the next start, and the shader pack screen says so. `HORIZON_RAY_TRACING=1`
+asks for ray queries and keeps the scene with any pack or none; any other value of it turns ray tracing off.
+
 - `fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayHit`: the nearest solid surface
   from `origin` (camera-relative, in blocks, as `view_position` gives it) along the unit vector `direction`, within
   `max_distance` blocks.
