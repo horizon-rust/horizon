@@ -2,17 +2,19 @@
 
 Horizon has its own shader packs: WGSL written against stages of Horizon's renderer, checked before they run. This page
 is the guide for pack authors. The design and the pack format are in [api/shaders.md](api/shaders.md); every stage's
-signature, input, resource and limit is in the generated [api/shaders-reference.md](api/shaders-reference.md).
+signature, input, resource and limit is in the generated
+[api/shaders-reference-0.2.md](api/shaders-reference-0.2.md).
 
 Shader packs in the Iris/OptiFine format are a separate feature with its own loader; this page is only about
 Horizon's own format.
 
 | Part | Where | State |
 |---|---|---|
-| Format, stages, check | `crates/horizon-shader-api` | API 0.1, experimental |
+| Format, stages, check | `crates/horizon-shader-api` | API 0.2, experimental |
 | Authoring tool | `horizon-shader` (same crate) | `new`, `check`, `pack` |
 | Templates | `crates/horizon-shader-api/templates/` | post, sky, material |
 | Example pack | `crates/horizon-shader-api/packs/golden_hour` | a warm sky and two post passes |
+| Horizon's HDR look as a pack | `crates/horizon-shader-api/packs/horizon_hdr` | material, entity and tonemap stages over the look file the renderer itself starts with |
 | In the game: every stage | Options > Video Settings > Shaders > Shader Packs | sky, material, post passes, hot reload |
 | The registry and the launcher | `shader` kind ([api/mod-index.md](api/mod-index.md)); the Mods page's Shader packs tab | checked, then installed into `shaderpacks/` |
 
@@ -28,17 +30,17 @@ horizon-shader pack my_pack                         # check, then write my_pack-
 `check` prints each stage with its cost, and the pack's SHA-256:
 
 ```
-golden_hour 1.0.0 (shader API 0.1): ok
-  sky       Warm horizon                     99 expressions, 0 texture reads
-  post      Glow                            192 expressions, 3 texture reads
-  post      Colour grade                    201 expressions, 2 texture reads
-  sha256 b5e0d98c...
+golden_hour 2.0.0 (shader API 0.2): ok
+  sky       Warm horizon                    131 expressions, 0 texture reads
+  post      Glow                            346 expressions, 5 texture reads
+  post      Colour grade                    367 expressions, 4 texture reads
+  sha256 0b990082...
 ```
 
 or every problem, at its file, line and column:
 
 ```
-my_pack 0.1.0 (shader API 0.1): FAILED
+my_pack 0.1.0 (shader API 0.2): FAILED
   post.wgsl:9:1: expected `;`, found "}"
 ```
 
@@ -52,7 +54,8 @@ it on Options > Video Settings > Shaders > Shader Packs..., which lists Horizon'
 name>` runs a pack whatever the page says, for development. The game checks the pack first, and refuses one that
 fails, with its problems in the chat. While it runs, the game looks at the pack twice a second: save a file
 and the pack is checked and rebuilt in place ("Shader pack ... reloaded"); if the new version fails, the chat says
-where and the last good version keeps drawing. All three stages run.
+where. A stage that fails keeps the last good version drawing; a manifest that is refused (another API line, a
+mistake in it, something the game doesn't draw yet) turns the pack off until it is fixed. All three stages run.
 
 A picked pack's options are pages of the same screen, under the pack's name in its page list: its screens, with the
 names the pack gives them, its profiles, and Reset. The main screen and those it links to are in the list (when
@@ -92,7 +95,7 @@ schema = 1
 id = "my_pack"
 name = "My Pack"
 version = "0.1.0"
-api = "0.1"
+api = "0.2"
 
 [[post]]
 file = "post.wgsl"
@@ -118,12 +121,18 @@ by Horizon: a pack changes how things look, not how they are drawn.
 | --- | --- | --- |
 | `[sky]` | `fn sky(input: SkyInput) -> vec4<f32>` | the sky's colour along each view ray, opaque (alpha is ignored), drawn where vanilla draws its sky dome (the Overworld's sky; not the Nether's or the End's); the sun, moon, stars and clouds are drawn over it |
 | `[material]` | `fn material(input: MaterialInput) -> Surface` | the lit colour of each point of a block's surface, before the alpha test and fog: every terrain section and distant tile, solid, cutout and translucent (not entities, block entities or particles) |
+| `[entity]` | `fn entity(input: EntityInput) -> Surface` | the lit colour of each point of an entity or a block entity (mobs, players, armour, chests, banners), before the alpha test, the enchantment glint and fog; `input.kind` says which. Items and particles keep Horizon's lighting for now |
 | `[weather]` | `fn weather(input: WeatherInput) -> vec4<f32>` | the colour of each point of a rain or snow streak, blended over the world with its alpha; Horizon's light and fog aren't applied, so the pack applies its own |
-| `[[post]]` | `fn post(input: PostInput) -> vec4<f32>` | a full-screen pass over the world's picture (up to 8, in order), under the hand and HUD. Return `input.color.a` as your alpha: HDR output reads it to find light sources |
+| `[[post]]` | `fn post(input: PostInput) -> vec4<f32>` | a full-screen pass over the world's picture (up to 8, in order), under the hand and HUD; its alpha is ignored |
+| `[tonemap]` | `fn tonemap(input: TonemapInput) -> vec3<f32>` | the post chain's picture for the display, from 0 to `frame.headroom`; without it Horizon's curve runs |
 
 A pack has at least one stage; a stage it leaves out keeps vanilla's look. Each input says what vanilla would draw
 (`input.color` in the sky and post stages; `albedo * tint * vec4(lightmap, 1.0)` for a material), so a pack can start
 from vanilla and change only what it means to.
+
+Every colour a stage reads or returns is linear light: 1.0 is vanilla's white, and more is brighter, on SDR and HDR
+displays alike. Horizon decodes vanilla's gamma values on the way in and encodes what the frame stores, so a constant
+written for display values is decoded first (`pow(c, vec3(2.2))`), and luminance is `dot(c, frame.luminance)`.
 
 Every stage can read `frame`: the camera's matrices and position, the sun and moon directions, the time of day,
 vanilla's sky and fog colours, rain and thunder, fog distances, the light at the camera, effects and the dimension.
@@ -279,5 +288,5 @@ without the pack.
 
 ## Next
 
-An overlay showing what each pass draws (F3 already shows what each costs), and stages for entities, block entities
-and particles (the material stage covers terrain only).
+An overlay showing what each pass draws (F3 already shows what each costs), and items, particles and the
+first-person hand through a pack (the entity stage lights entities and block entities so far).
