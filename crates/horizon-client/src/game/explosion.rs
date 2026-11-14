@@ -162,6 +162,9 @@ pub(super) fn blast_spares_decorations(
     source_in_water || (!mob_griefing && (interaction == BlockInteraction::Keep || by_mob))
 }
 
+/// An entity box, low and high corners.
+pub(super) type Bounds = ([f64; 3], [f64; 3]);
+
 /// How far the blast's `center` is from `p`.
 fn blast_distance(center: [f64; 3], p: [f64; 3]) -> f64 {
     ((p[0] - center[0]).powi(2) + (p[1] - center[1]).powi(2) + (p[2] - center[2]).powi(2)).sqrt()
@@ -852,8 +855,7 @@ impl Game<'_> {
         // `gone` counts how far.
         let blast = Blast {
             vehicles_ignore: self.combat.explicit_explosion_cause.is_none()
-                && self.combat.blast_owner.is_none()
-                && self.blast_attacker().is_some()
+                && self.blast_by_mob()
                 && !self.ui.rules.bool("mob_griefing"),
             items_ignore: items_ignore_explosion(self.ui.rules.bool("mob_griefing"), interaction),
             spared: exploding.filter(|_| self.combat.explosion_source_named),
@@ -1063,7 +1065,7 @@ impl Game<'_> {
     }
     fn blast_damage_caused_by_mob(&self) -> bool {
         self.combat.explicit_explosion_cause.as_ref().map_or_else(
-            || self.blast_attacker().is_some(),
+            || self.blast_by_mob(),
             |cause| cause.as_ref().is_some_and(|c| c.species.is_some()),
         )
     }
@@ -1072,8 +1074,9 @@ impl Game<'_> {
     /// cause, including a TNT igniter or the player who broke an end crystal.
     pub(super) fn explosion_kill_credit(&self) -> Option<super::commands::Target> {
         use super::commands::Target;
-        // A primed TNT's owner (a player) names the blast before any mob does.
-        if self.combat.blast_owner.is_some() {
+        // A primed TNT's owner (a player) names the blast before any mob does;
+        // a mob owner is the `blast_attacker` below.
+        if self.combat.blast_owner_player {
             return Some(
                 self.combat
                     .blast_guest
@@ -1085,6 +1088,12 @@ impl Game<'_> {
         }
         self.crystal_blast_player()
     }
+    /// `source.getEntity() instanceof Mob` for the blast going off now: a
+    /// causing mob, a mob-owned TNT's included, not a player whose primed
+    /// TNT this is (`blast_attacker` names that player first).
+    fn blast_by_mob(&self) -> bool {
+        !self.combat.blast_owner_player && self.blast_attacker().is_some()
+    }
     /// Decoration hurt checks use the damage source's cause (`instanceof Mob`),
     /// unlike vehicles, which use the explosion's indirect source.
     pub(super) fn blast_spares_decorations(&self, interaction: BlockInteraction) -> bool {
@@ -1095,6 +1104,28 @@ impl Game<'_> {
             by_mob,
             self.combat.explosion_in_water,
         )
+    }
+    /// Whether only `hurtServer` spares frames, paintings and cushions from the
+    /// blast going off now (a mob caused it), not `ignoreExplosion`: its push
+    /// (`pushFromExplosion`, `BlockAttachedEntity.push`) still kills one it
+    /// reaches with a knockback above 0, crediting no one.
+    pub(super) fn blast_only_pushes_hanging(&self, interaction: BlockInteraction) -> bool {
+        let griefing = self.ui.rules.bool("mob_griefing");
+        let in_water = self.combat.explosion_in_water;
+        self.blast_spares_decorations(interaction)
+            && !blast_spares_decorations(griefing, interaction, false, in_water)
+    }
+    /// `ServerExplosion.hurtEntities`'s knockback on an entity at `at` with box
+    /// `lo..hi`: within the blast (`dist` below 1) and seen (`getSeenPercent`
+    /// above 0).
+    pub(super) fn blast_pushes(
+        &self,
+        center: [f64; 3],
+        diameter: f64,
+        at: [f64; 3],
+        b: Bounds,
+    ) -> bool {
+        blast_distance(center, at) / diameter < 1.0 && self.seen_percent(center, b.0, b.1) > 0.0
     }
     /// `Entity.isInWater` for an entity box: `updateFluidInteraction` over the box.
     pub(super) fn bounds_in_water(&self, bounds: horizon_core::geometry::Aabb) -> bool {
@@ -1123,8 +1154,10 @@ impl Game<'_> {
             by_mob,
             false,
         );
-        if !self.blast_spares_decorations(interaction) {
-            self.explosion_breaks_hanging(center, diameter);
+        if !self.blast_spares_decorations(interaction)
+            || self.blast_only_pushes_hanging(interaction)
+        {
+            self.explosion_breaks_hanging(center, diameter, interaction);
         }
         if spares_stands {
             return;
@@ -1142,26 +1175,47 @@ impl Game<'_> {
             }
         }
     }
-    /// Paintings and cushions in reach (`BlockAttachedEntity.hurtServer`).
-    fn explosion_breaks_hanging(&mut self, center: [f64; 3], diameter: f64) {
+    /// Paintings and cushions in reach (`BlockAttachedEntity.hurtServer`), or
+    /// pushed off (`blast_only_pushes_hanging`).
+    fn explosion_breaks_hanging(
+        &mut self,
+        center: [f64; 3],
+        diameter: f64,
+        interaction: BlockInteraction,
+    ) {
+        let pushed = self.blast_only_pushes_hanging(interaction);
+        let credit = if pushed {
+            None
+        } else {
+            self.explosion_kill_credit()
+        };
         let mut i = 0;
         while i < self.paintings.len() {
             // HangingEntity.recalculateBoundingBox: a painting stands at the
             // centre of its box.
             let (lo, hi) = self.paintings[i].bounds();
             let at = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
+            let hit = if pushed {
+                self.blast_pushes(center, diameter, at, (lo, hi))
+            } else {
+                blast_reaches(center, diameter, at)
+            };
             // A painting a mod keeps stays at `i`.
-            if !(blast_reaches(center, diameter, at)
-                && self.break_painting_by(i, false, self.explosion_kill_credit()))
-            {
+            if !(hit && self.break_painting_by(i, false, credit)) {
                 i += 1;
             }
         }
         let mut i = 0;
         while i < self.cushions.len() {
+            // A cushion stands at the bottom of its box (`Cushion.recalculateBoundingBox`).
             let p = self.cushions[i].position;
-            if blast_reaches(center, diameter, [p.x, p.y, p.z]) {
-                self.break_cushion_by(i, false, self.explosion_kill_credit());
+            let hit = if pushed {
+                self.blast_pushes(center, diameter, [p.x, p.y, p.z], self.cushions[i].bounds())
+            } else {
+                blast_reaches(center, diameter, [p.x, p.y, p.z])
+            };
+            if hit {
+                self.break_cushion_by(i, false, credit);
             } else {
                 i += 1;
             }

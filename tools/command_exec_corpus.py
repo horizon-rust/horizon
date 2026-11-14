@@ -3880,6 +3880,51 @@ def item_lifetime_counters():
     return ops + setup('/forceload remove 0 0')
 
 
+def explosion_player_decorations():
+    """#11330: with `mob_griefing` off, `BlockAttachedEntity.hurtServer` and `ArmorStand.hurtServer` refuse a
+    blast whose causing entity is a mob, but a player's primed TNT (its `owner`) is no mob: it still breaks an
+    item frame and an armor stand, as an ownerless TNT does. A TNT whose `owner` is a zombie's UUID is a mob's
+    blast (`getIndirectSourceEntity` is that zombie): `hurtServer` refuses it, so the armor stand and a minecart
+    (`VehicleEntity.ignoreExplosion`) stay, but its push (`BlockAttachedEntity.push`) still kills the frame, a
+    painting and a cushion."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 448, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd('/gamerule mob_griefing false', False), cmd('/tick freeze', False)]
+    near = f'x={x0},y={y0 - 4},z={z0},dx=16,dy=16,dz=16'
+    for owner in (None, '@p', 'zombie'):
+        ops += [cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} bedrock', False),
+                cmd(f'/fill {x0 + 6} {y0} {z0 + 7} {x0 + 10} {y0 + 2} {z0 + 7} bedrock', False),
+                cmd(f'/summon item_frame {x0 + 8}.5 {y0 + 1}.5 {z0 + 8}.03125 {{Facing:3b,Tags:["blast_deco"]}}',
+                    expect_result=1),
+                cmd(f'/summon armor_stand {x0 + 9}.5 {y0} {z0 + 9}.5 {{NoGravity:1b,Tags:["blast_deco"]}}',
+                    expect_result=1),
+                cmd(f'/summon minecart {x0 + 8}.5 {y0} {z0 + 12}.5 {{Tags:["blast_deco"]}}', expect_result=1),
+                cmd(f'/summon painting {x0 + 6}.5 {y0 + 1}.5 {z0 + 8}.03125 {{block_pos:[I;{x0 + 6},{y0 + 1},{z0 + 8}],'
+                    'facing:0b,variant:"minecraft:kebab",Tags:["blast_deco"]}', expect_result=1),
+                cmd(f'/summon cushion {x0 + 10}.5 {y0} {z0 + 9}.5 {{Tags:["blast_deco"]}}', expect_result=1),
+                cmd(f'/summon tnt {x0 + 8}.5 {y0} {z0 + 10}.5 {{fuse:1,Tags:["deco_tnt"]}}', expect_result=1)]
+        if owner == 'zombie':
+            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 '
+                           f'{{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["deco_owner"]}}',
+                           expect_result=1))
+            owner = f'@e[type=zombie,tag=deco_owner,{near},limit=1]'
+        if owner:
+            ops.append(cmd(f'/data modify entity @e[type=tnt,tag=deco_tnt,limit=1] owner set from entity {owner} UUID'))
+        ops += [cmd(f'/execute if entity @e[tag=blast_deco,{near}]'),
+                cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}, cmd('/tick freeze', False),
+                cmd(f'/execute if entity @e[type=item_frame,tag=blast_deco,{near}]'),
+                cmd(f'/execute if entity @e[type=armor_stand,tag=blast_deco,{near}]'),
+                cmd(f'/execute if entity @e[type=minecart,tag=blast_deco,{near}]'),
+                cmd(f'/execute if entity @e[type=painting,tag=blast_deco,{near}]'),
+                cmd(f'/execute if entity @e[type=cushion,tag=blast_deco,{near}]'),
+                cmd(f'/kill @e[type=!player,{near}]', False), cmd(f'/kill @e[type=item,{near}]', False)]
+    return ops + setup('/gamerule mob_griefing true', '/tick unfreeze',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
 def armor_stand_climbing():
     ops = setup('/gamerule random_tick_speed 0', '/forceload add 0 0 31 31',
                 '/fill 0 198 0 31 199 31 stone',
@@ -8358,6 +8403,7 @@ def groups():
         ('animal signed InLove', animal_signed_in_love()),
         ('mob fire resistance damage', mob_fire_resistance_damage()),
         ('armor stand climbing', armor_stand_climbing()),
+        ('explosion player decorations', explosion_player_decorations()),
         ('painting saved ground', painting_saved_ground()),
         ('mob armor damage', mob_armor_damage()),
         ('mob max health bounds', mob_max_health_bounds()),
