@@ -610,6 +610,9 @@ impl Game<'_> {
         // `ServerTickEvent.Pre`. A paused pass and a held server tick nothing.
         let running = (!paused && !self.agent.hold_server).then(|| self.clock.world_runs());
         let server = self.serving.is_some() || self.options.dedicated.is_some();
+        if server && running.is_some() {
+            self.regions.prof.begin();
+        }
         // A config edited while the server is paused (empty) still reloads.
         // The parts outside every level get spans of their own, so that a slow
         // tick's line and `horizon-report` say when a mod's tick hook took it.
@@ -644,6 +647,7 @@ impl Game<'_> {
             });
             // The level's own share of the pass, outside its world tick: a slow tick's line names
             // each of them, and `level_tick` holds the world tick itself (#15349).
+            let entering = Instant::now();
             if let Err(e) =
                 horizon_client::spans::time("enter_level", || self.enter_level(None, dim))
             {
@@ -664,6 +668,9 @@ impl Game<'_> {
                 self.update_dedicated_streaming();
             });
             horizon_client::spans::time("update_world", || self.update_world());
+            self.regions
+                .prof
+                .add(super::region_profile::Step::Stream, entering);
             let tick_span = horizon_client::spans::guard("level_tick");
             result = horizon_client::block_contact::in_level(
                 (self.serving.is_some() || self.options.dedicated.is_some()).then_some(dim.id()),
@@ -737,6 +744,7 @@ impl Game<'_> {
         if server {
             self.diagnostics_packets_tick();
         }
+        self.regions.prof.end();
         Ok(())
     }
 

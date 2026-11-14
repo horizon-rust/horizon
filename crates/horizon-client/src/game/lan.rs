@@ -281,6 +281,89 @@ pub(super) struct LanHost {
     pub(super) idle_states: super::lan_idle::IdleStates,
 }
 
+impl LanHost {
+    /// A host for one region's players on a region thread, made once per region game; each tick it is lent the
+    /// region's players ([`LanHost::lend_region`]).
+    pub(super) fn region_shell(&self) -> LanHost {
+        LanHost {
+            hub: self.hub.region_shell(),
+            players_told_left: false,
+            settings: self.settings,
+            play: HashMap::new(),
+            broken: Vec::new(),
+            mob_state: HashMap::new(),
+            poses: HashMap::new(),
+            mob_players: Default::default(),
+            owner: None,
+            waypoints: Default::default(),
+            waypoint_dead: Default::default(),
+            border_sent: None,
+            commands: Vec::new(),
+            quiet: Default::default(),
+            far: None,
+            native_commands: self.native_commands.clone(),
+            native_usages: Vec::new(),
+            sleep_ignored: Default::default(),
+            states: Default::default(),
+            states_next_entity: None,
+            idle_states: Default::default(),
+        }
+    }
+
+    /// The players on `conns` (with their turns' state) and what is kept for the mobs `mobs` (the guest each sees,
+    /// its hurt and swing state), lent to region host `r` for its tick; `guests` are the ones the hub split off for
+    /// every region at once.
+    pub(super) fn lend_region(
+        &mut self,
+        r: &mut LanHost,
+        conns: &[u32],
+        mobs: &[u32],
+        dim: super::Dim,
+        guests: Vec<horizon_client::lan::guest::Guest>,
+    ) {
+        r.hub.copy_region_settings(&self.hub);
+        r.native_commands = self.native_commands.clone();
+        r.sleep_ignored = self.sleep_ignored.clone();
+        r.hub.guests = guests;
+        for conn in conns {
+            if let Some(p) = self.play.remove(conn) {
+                r.play.insert(*conn, p);
+            }
+            if let Some(p) = self.poses.remove(conn) {
+                r.poses.insert(*conn, p);
+            }
+        }
+        let entity_ids: Vec<u32> = r.hub.guests.iter().map(|g| g.entity_id as u32).collect();
+        let states = self.mob_state.entry(dim).or_default();
+        let region_states = r.mob_state.entry(dim).or_default();
+        for id in mobs.iter().chain(&entity_ids) {
+            if let Some(c) = self.mob_players.remove(id) {
+                r.mob_players.insert(*id, c);
+            }
+            if let Some(s) = states.remove(id) {
+                region_states.insert(*id, s);
+            }
+        }
+    }
+
+    /// Region host `r`'s players back, with what their region's tick left for the server's host.
+    pub(super) fn take_region_back(&mut self, r: &mut LanHost) {
+        self.hub.take_guests_back(&mut r.hub);
+        self.play.extend(r.play.drain());
+        self.poses.extend(r.poses.drain());
+        self.mob_players.extend(r.mob_players.drain());
+        for (dim, states) in r.mob_state.iter_mut() {
+            self.mob_state
+                .entry(*dim)
+                .or_default()
+                .extend(states.drain());
+        }
+        self.broken.append(&mut r.broken);
+        self.commands.append(&mut r.commands);
+        self.quiet.extend(r.quiet.drain(..));
+    }
+}
+
 impl Game<'_> {
     /// `PlayerList.remove`: `player.awardStat(Stats.LEAVE_GAME)` before the
     /// player is saved, heard by native mods first. Once per guest, however
@@ -2437,7 +2520,7 @@ impl Game<'_> {
                 tick_steps: self.clock.step_state(),
                 collision: Some(self.collision),
                 border: &self.border,
-                streaming: Some(&self.streaming),
+                streaming: (!self.regions.worker).then_some(&self.streaming),
             };
             host.hub.movement_checks = (
                 self.ui.rules.bool("player_movement_check"),
@@ -2771,7 +2854,7 @@ impl Game<'_> {
                     tick_steps: self.clock.step_state(),
                     collision: Some(self.collision),
                     border: &self.border,
-                    streaming: Some(&self.streaming),
+                    streaming: (!self.regions.worker).then_some(&self.streaming),
                 };
                 host.hub.movement_checks = (
                     self.ui.rules.bool("player_movement_check"),
@@ -3025,7 +3108,7 @@ impl Game<'_> {
             tick_steps: self.clock.step_state(),
             collision: Some(self.collision),
             border: &self.border,
-            streaming: Some(&self.streaming),
+            streaming: (!self.regions.worker).then_some(&self.streaming),
         };
         host.hub.place_new_player(conn, &mut ctx);
         if elsewhere && let Err(e) = self.enter_level(Some(host), back) {

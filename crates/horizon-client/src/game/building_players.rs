@@ -2,8 +2,7 @@
 //! game body. Identity keeps borrowed ancestor bodies distinct from hub copies.
 use super::Dim;
 use horizon_core::geometry::Aabb;
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy)]
 pub(super) struct BuildingPlayer {
@@ -16,10 +15,28 @@ pub(super) struct BuildingPlayer {
 /// The hub's bodies, shared by the turns of one tick instead of built for each
 /// turn. A body is refreshed in place when its guest's turn (or anything that
 /// changes it) ends, so every holder sees it where it is now.
-pub(super) type HubBodies = Rc<Vec<Cell<BuildingPlayer>>>;
+pub(super) type HubBodies = Arc<Vec<Body>>;
+
+/// One body, readable and replaceable from whichever thread holds the hub's list.
+pub(super) struct Body(Mutex<BuildingPlayer>);
+
+impl Body {
+    pub(super) fn get(&self) -> BuildingPlayer {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    pub(super) fn set(&self, player: BuildingPlayer) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = player;
+    }
+}
 
 pub(super) fn shared(players: impl IntoIterator<Item = BuildingPlayer>) -> HubBodies {
-    Rc::new(players.into_iter().map(Cell::new).collect())
+    Arc::new(players.into_iter().map(|p| Body(Mutex::new(p))).collect())
 }
 
 /// The players' boxes a guest's turn sees: the borrowed ancestor bodies, and
@@ -70,7 +87,7 @@ impl BuildingPlayers {
     pub(super) fn boxes(&self, dimension: Dim) -> Vec<([f64; 3], [f64; 3])> {
         // Hub conns are unique, so only the ancestors can already hold one.
         let hub =
-            self.hub.iter().map(Cell::get).filter(|p| {
+            self.hub.iter().map(Body::get).filter(|p| {
                 p.conn != self.actor && !self.ancestors.iter().any(|a| a.conn == p.conn)
             });
         self.ancestors

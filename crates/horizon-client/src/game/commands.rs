@@ -1112,6 +1112,8 @@ impl Game<'_> {
             "advancement" => self.cmd_advancement(ctx),
             "gamerule" => self.cmd_gamerule(ctx),
             "difficulty" => self.cmd_difficulty(ctx),
+            "tps" => self.cmd_tps(),
+            "mspt" => self.cmd_mspt(),
             "seed" => {
                 let seed = self.level.seed.to_string();
                 let value = Text::copyable(seed);

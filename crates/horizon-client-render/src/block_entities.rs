@@ -70,7 +70,7 @@ pub struct BlockEntities {
     /// (`updateBlockEntityTicker`: rebind, or remove without a ticker).
     replaced: FxHashSet<Pos>,
     /// `Ticking` by block state id; empty until the game builds it.
-    states: Vec<Ticking>,
+    states: Arc<[Ticking]>,
     /// The containers of mod blocks' block entities, by block state id;
     /// built with `states`.
     mod_containers: FxHashMap<u32, Arc<ModContainer>>,
@@ -96,6 +96,8 @@ pub struct BlockEntities {
     /// set), so the level's tick checks those alone instead of every sign.
     sign_editors: FxHashSet<Pos>,
     asleep: FxHashSet<Pos>,
+    /// A region's lent set records the slots it makes (true) and frees (false), for [`BlockEntities::take_back`].
+    journal: Option<Vec<(Pos, bool)>>,
 }
 
 /// A structure or test instance block: the block entities whose box the frame may draw.
@@ -196,7 +198,7 @@ impl BlockEntities {
         !self.states.is_empty()
     }
     pub fn set_states(&mut self, states: Vec<Ticking>) {
-        self.states = states;
+        self.states = states.into();
     }
     pub fn ticking(&self, state: u32) -> Ticking {
         self.states.get(state as usize).copied().unwrap_or_default()
@@ -245,15 +247,162 @@ impl BlockEntities {
     }
     /// A ticker may be made for `pos` now (`updateBlockEntityTicker`).
     fn add(&mut self, pos: Pos) {
+        if let Some(journal) = self.journal.as_mut() {
+            journal.push((pos, true));
+        }
         let token = self.next();
         self.pending.insert(pos, token);
         self.added.push((pos, token));
     }
     /// `removeBlockEntityTicker`: no slot, made or pending.
     fn cancel(&mut self, pos: &Pos) {
+        if let Some(journal) = self.journal.as_mut() {
+            journal.push((*pos, false));
+        }
         self.asleep.remove(pos);
         self.freed |= self.live.remove(pos).is_some();
         self.pending.remove(pos);
+    }
+
+    /// The block entities each region's chunks hold, moved out into one set each (`regions` of them) with
+    /// everything kept by their position, and copies of their slots, for the regions' ticks on threads of their
+    /// own. A region's set keeps a journal of the slots it makes and frees; [`BlockEntities::take_back`] replays
+    /// it here, so the tick list stays this set's.
+    pub fn lend(
+        &mut self,
+        regions: usize,
+        region_of: impl Fn(Pos) -> Option<usize>,
+    ) -> Vec<BlockEntities> {
+        let mut out: Vec<BlockEntities> = (0..regions)
+            .map(|_| BlockEntities {
+                states: self.states.clone(),
+                stateful_entities: self.stateful_entities.clone(),
+                mod_containers: self.mod_containers.clone(),
+                mod_fluids: self.mod_fluids.clone(),
+                mod_energy: self.mod_energy.clone(),
+                next_slot: self.next_slot,
+                journal: Some(Vec::new()),
+                ..Default::default()
+            })
+            .collect();
+        // Each region's share of the ticking list, in the list's order: without it a region's ticks would find
+        // nothing to tick.
+        let mut tickers: Vec<Vec<(Pos, u32)>> = (0..regions).map(|_| Vec::new()).collect();
+        for &(pos, slot) in self.tickers.iter() {
+            if let Some(r) = region_of(pos).filter(|&r| r < regions) {
+                tickers[r].push((pos, slot));
+            }
+        }
+        for (r, list) in tickers.into_iter().enumerate() {
+            out[r].tickers = Arc::new(list);
+        }
+        // Each region's map at its size from the start: a block entity is about a kilobyte, and a map that grew
+        // as they came moved every one of them again each time.
+        let mut sizes = vec![0usize; regions];
+        for pos in self.map.keys() {
+            if let Some(r) = region_of(*pos).filter(|&r| r < regions) {
+                sizes[r] += 1;
+            }
+        }
+        for (r, n) in sizes.into_iter().enumerate() {
+            out[r].map.reserve(n);
+        }
+        for (pos, entity) in self.map.extract_if(|pos, _| region_of(*pos).is_some()) {
+            let r = region_of(pos).expect("extracted for its region");
+            if let Some(&slot) = self.live.get(&pos) {
+                out[r].live.insert(pos, slot);
+            }
+            if let Some(&token) = self.pending.get(&pos) {
+                out[r].pending.insert(pos, token);
+            }
+            if let Some(attached) = self.attachments.remove(&pos) {
+                out[r].attachments.insert(pos, attached);
+            }
+            out[r].map.insert(pos, entity);
+        }
+        for pos in self
+            .asleep
+            .extract_if(|p| region_of(*p).is_some())
+            .collect::<Vec<_>>()
+        {
+            if let Some(r) = region_of(pos) {
+                out[r].asleep.insert(pos);
+            }
+        }
+        for pos in self
+            .replaced
+            .extract_if(|p| region_of(*p).is_some())
+            .collect::<Vec<_>>()
+        {
+            if let Some(r) = region_of(pos) {
+                out[r].replaced.insert(pos);
+            }
+        }
+        for pos in self
+            .boxes
+            .extract_if(|p| region_of(*p).is_some())
+            .collect::<Vec<_>>()
+        {
+            if let Some(r) = region_of(pos) {
+                out[r].boxes.insert(pos);
+            }
+        }
+        for pos in self
+            .sign_editors
+            .extract_if(|p| region_of(*p).is_some())
+            .collect::<Vec<_>>()
+        {
+            if let Some(r) = region_of(pos) {
+                out[r].sign_editors.insert(pos);
+            }
+        }
+        for (chunk, set) in self.mods.iter_mut() {
+            for pos in set
+                .extract_if(|p| region_of(*p).is_some())
+                .collect::<Vec<_>>()
+            {
+                if let Some(r) = region_of(pos) {
+                    out[r].mods.entry(*chunk).or_default().insert(pos);
+                }
+            }
+        }
+        self.mods.retain(|_, set| !set.is_empty());
+        out
+    }
+
+    /// A region's set from [`BlockEntities::lend`] back: its block entities and what is kept by their position,
+    /// and the slots its ticks made and freed, in the order they did.
+    pub fn take_back(&mut self, region: BlockEntities) {
+        let BlockEntities {
+            map,
+            attachments,
+            out,
+            replaced,
+            asleep,
+            boxes,
+            sign_editors,
+            mods,
+            journal,
+            ..
+        } = region;
+        self.map.reserve(map.len());
+        self.map.extend(map);
+        self.attachments.extend(attachments);
+        self.out.extend(out);
+        self.replaced.extend(replaced);
+        self.asleep.extend(asleep);
+        self.boxes.extend(boxes);
+        self.sign_editors.extend(sign_editors);
+        for (chunk, set) in mods {
+            self.mods.entry(chunk).or_default().extend(set);
+        }
+        for (pos, made) in journal.unwrap_or_default() {
+            if made {
+                self.add(pos);
+            } else {
+                self.cancel(&pos);
+            }
+        }
     }
 
     /// Attachment map for a live block entity.
@@ -637,6 +786,33 @@ mod tests {
             .iter()
             .map(|(p, _)| *p)
             .collect()
+    }
+
+    /// A region's block entities go out with their slots and come back with the slots its tick made and freed.
+    #[test]
+    fn lent_block_entities_come_back_with_their_slot_changes() {
+        let mut b = level();
+        let states: HashMap<Pos, u32> = [((1, 64, 1), 1), ((17, 64, 1), 1)].into_iter().collect();
+        for pos in states.keys() {
+            b.insert(*pos, hopper());
+        }
+        assert_eq!(order(&mut b, &states).len(), 2);
+        // Two regions: chunk 0 and chunk 1.
+        let mut parts = b.lend(2, |p| Some((p.0 >> 4) as usize));
+        assert!(b.is_empty());
+        assert_eq!(parts[0].len(), 1);
+        assert_eq!(order(&mut parts[1], &states), vec![(17, 64, 1)]);
+        // Region 0's tick removes its block entity and region 1's places another.
+        parts[0].remove(&(1, 64, 1));
+        parts[1].insert((18, 64, 2), hopper());
+        for part in parts {
+            b.take_back(part);
+        }
+        let now: HashMap<Pos, u32> = [((17, 64, 1), 1), ((18, 64, 2), 1)].into_iter().collect();
+        let mut got = order(&mut b, &now);
+        got.sort();
+        assert_eq!(got, vec![(17, 64, 1), (18, 64, 2)]);
+        assert_eq!(b.len(), 2);
     }
 
     /// Unloading a chunk removes its block entities and leaves the others'

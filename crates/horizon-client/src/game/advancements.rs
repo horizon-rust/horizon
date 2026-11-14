@@ -3119,7 +3119,7 @@ mod structure_tag_tests {
         std::fs::write(dir.join("datapacks.json"), settings.to_string()).unwrap();
         game.world_root = dir.clone();
         let (tables, _) = game.build_world_tables(false, &[]).unwrap();
-        game.world_tables = tables;
+        game.world_tables = tables.map(std::sync::Arc::new);
         assert!(game.world_tables.is_some());
         assert!(holds(&game, "#mypack:village", "minecraft:igloo"));
         assert!(holds(&game, "#mypack:village", "minecraft:village_plains"));

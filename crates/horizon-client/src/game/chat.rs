@@ -2714,7 +2714,11 @@ mod enchantment_snapshot_tests {
         )
         .unwrap();
         game.world_root = dir;
-        game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+        game.world_tables = game
+            .build_world_tables(false, &[])
+            .unwrap()
+            .0
+            .map(std::sync::Arc::new);
         assert!(
             game.world_tables.is_some(),
             "the real active table container must be available"
@@ -2727,8 +2731,14 @@ mod enchantment_snapshot_tests {
             "weight":1,"max_level":1,"min_cost":{"base":1,"per_level_above_first":0},
             "max_cost":{"base":1,"per_level_above_first":0},"anvil_cost":1,"slots":["mainhand"],"effects":{}});
         let synced = std::sync::Arc::new(base.with_entries([("h024:audit", &definition)]).unwrap());
-        game.world_tables.as_mut().unwrap().stations.enchantments = synced.clone();
-        game.world_tables.as_mut().unwrap().items.enchantments = synced;
+        std::sync::Arc::get_mut(game.world_tables.as_mut().unwrap())
+            .unwrap()
+            .stations
+            .enchantments = synced.clone();
+        std::sync::Arc::get_mut(game.world_tables.as_mut().unwrap())
+            .unwrap()
+            .items
+            .enchantments = synced;
         assert!(
             game.enchantments().get("h024:audit").is_some(),
             "actual authority adopts the definition first"
@@ -2769,8 +2779,14 @@ mod enchantment_snapshot_tests {
             assert_eq!(reg.ids("minecraft:item"), item_ids);
             assert_eq!(reg.effects, effects);
         }
-        game.world_tables.as_mut().unwrap().stations.enchantments = base.clone();
-        game.world_tables.as_mut().unwrap().items.enchantments = base;
+        std::sync::Arc::get_mut(game.world_tables.as_mut().unwrap())
+            .unwrap()
+            .stations
+            .enchantments = base.clone();
+        std::sync::Arc::get_mut(game.world_tables.as_mut().unwrap())
+            .unwrap()
+            .items
+            .enchantments = base;
         assert!(game.enchantments().get("h024:audit").is_none());
         game.sync_function_registries();
         assert!(
@@ -2846,7 +2862,9 @@ mod damage_type_registry_tests {
         )
         .unwrap();
         game.world_root = dir;
-        (game.world_tables, game.health_resources) = game.build_world_tables(false, &[]).unwrap();
+        let (tables, health) = game.build_world_tables(false, &[]).unwrap();
+        game.world_tables = tables.map(std::sync::Arc::new);
+        game.health_resources = health;
         game.level.allow_commands = Some(true);
         game.build_registries();
 

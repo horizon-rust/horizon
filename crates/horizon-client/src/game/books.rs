@@ -1821,7 +1821,11 @@ mod lectern_books_tag_tests {
         )
         .unwrap();
         game.world_root = dir;
-        game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+        game.world_tables = game
+            .build_world_tables(false, &[])
+            .unwrap()
+            .0
+            .map(std::sync::Arc::new);
 
         let state = game
             .pack

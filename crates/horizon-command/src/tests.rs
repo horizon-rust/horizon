@@ -899,6 +899,8 @@ fn only_a_dedicated_server_has_the_dedicated_commands() {
         "setidletimeout",
         "stop",
         "transfer",
+        "tps",
+        "mspt",
         "whitelist",
     ];
     for dev in [false, true] {

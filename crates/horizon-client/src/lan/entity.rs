@@ -960,6 +960,8 @@ pub struct Entities {
     /// vanilla's waits for the next tick.
     pub synced: Vec<(i32, i32)>,
     states: slab::ServerEntities,
+    /// The states a region's tracker gave back, until the server's pass takes them in ([`Entities::unpark`]).
+    parked: Vec<(i32, ServerEntity)>,
     /// The level tick, stamped on every entity still in the level.
     tick: u32,
     /// This tick's entities as the range checks read them, the chunks they
@@ -1088,6 +1090,40 @@ impl Entities {
     }
     pub fn is_empty(&self) -> bool {
         self.states.len() == 0
+    }
+
+    /// One tracker for each of `regions`, holding the states of the entities last seen in its chunks
+    /// (`region_of` a chunk's region); what no region owns stays.
+    pub fn lend(&mut self, regions: usize, region_of: impl Fn((i32, i32)) -> Option<usize>) -> Vec<Entities> {
+        let mut out: Vec<Entities> = (0..regions)
+            .map(|_| Entities { range_percent: self.range_percent, tick: self.tick, ..Default::default() })
+            .collect();
+        let chunk = |s: &ServerEntity| (s.section[0], s.section[2]);
+        for (id, s) in std::mem::take(&mut self.parked) {
+            match region_of(chunk(&s)) {
+                Some(r) => out[r].states.set(id, s),
+                None => self.states.set(id, s),
+            }
+        }
+        for (id, s) in self.states.extract_if(|s| region_of(chunk(s)).is_some()) {
+            if let Some(r) = region_of(chunk(&s)) {
+                out[r].states.set(id, s);
+            }
+        }
+        out
+    }
+
+    /// A region's tracker back: its states parked, its pass count kept.
+    pub fn park(&mut self, mut region: Entities) {
+        self.tick = self.tick.max(region.tick);
+        self.parked.extend(region.states.extract_if(|_| true));
+    }
+
+    /// The parked states among this tracker's own again: they are the newer.
+    pub fn unpark(&mut self) {
+        for (id, s) in std::mem::take(&mut self.parked) {
+            self.states.set(id, s);
+        }
     }
 
     /// How many passes the level's tracking has run.

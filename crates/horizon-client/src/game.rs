@@ -42,7 +42,7 @@ macro_rules! world_biomes {
 }
 
 /// The world's packs' content files, as a field-level borrow (see the macros).
-fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOverlay<'_> {
+fn pack_files(world_tables: &Option<Arc<WorldTables>>) -> horizon_world::loot::PackOverlay<'_> {
     match world_tables {
         Some(t) => horizon_world::loot::PackOverlay { files: &t.files },
         None => horizon_world::loot::PackOverlay::NONE,
@@ -163,6 +163,8 @@ mod frame_geometry;
 mod frames;
 #[cfg(feature = "friends")]
 mod friends;
+mod health;
+mod held_error;
 mod held_items;
 #[cfg(test)]
 mod setblock_order_tests;
@@ -394,6 +396,9 @@ mod quick_actions;
 mod raids;
 mod random_textures;
 mod recipe_book;
+mod region_pool;
+mod region_profile;
+mod regions;
 mod remote;
 mod remote_camera;
 mod remote_chat;
@@ -2123,6 +2128,8 @@ struct TickScratch {
 }
 
 struct Game<'a> {
+    /// What ticking by regions keeps (`regions.rs`).
+    regions: regions::RegionState,
     /// Shared with an integrated server; `collision` and `motion` borrow from it.
     res: Arc<Resources>,
     rest_loader: Option<WorldRestLoader>,
@@ -2388,7 +2395,7 @@ struct Game<'a> {
     texture_ticks: u64,
     health_hud: hud_layout::HealthHud,
     /// What ends the game with an error; kept as it is, so main can tell a debug crash.
-    error: Option<Box<dyn std::error::Error>>,
+    error: Option<held_error::HeldError>,
     message: Option<(String, Instant)>,
     save: Arc<SaveDir>,
     level: Level,
@@ -2602,7 +2609,7 @@ struct Game<'a> {
     owner_migration: Option<(u128, u128)>,
     /// The world's data packs' content tables, when it has packs (`None`
     /// keeps `Resources.rest`'s own in use).
-    world_tables: Option<WorldTables>,
+    world_tables: Option<Arc<WorldTables>>,
     /// The world is superflat (`ServerLevel.isFlat`, for every dimension).
     world_flat: bool,
     /// The world is the Debug preset (`Level.isDebug`, for every dimension): its blocks
@@ -5515,6 +5522,7 @@ impl Game<'_> {
         if self.agent.hold_server {
             return Ok(());
         }
+        let began = Instant::now();
         // `Player.entityInteractionRange`/`blockInteractionRange` for the tick's
         // picks: the attribute carries creative's and a server's modifiers.
         self.entity_reach = self.interaction_range("minecraft:entity_interaction_range", 3.0, 5.0);
@@ -5601,11 +5609,13 @@ impl Game<'_> {
         span("tick_command_extras", || self.tick_command_extras());
         span("mods_tick", || self.native_tick());
         span("mods_tick", || self.tell_native_now());
+        self.regions.prof.add(region_profile::Step::Prelude, began);
         self.tick_world(running)
     }
     /// What the tick runs after the local player's own update: effects, the
     /// world's entities and blocks, and the network hub.
     fn tick_world(&mut self, running: bool) -> Result<()> {
+        let began = Instant::now();
         // Entities added since the last tick join the level before it ticks.
         span("mods_joins_flush", || self.native_joins_flush(false, 0));
         span("share_spawn_conditions", || self.share_spawn_conditions());
@@ -5630,9 +5640,19 @@ impl Game<'_> {
         horizon_client::spans::time("tick_local_hand", || self.tick_local_hand())?;
         horizon_client::spans::time("postprocess_chunks", || self.postprocess_chunks())?;
         let mut sent = None;
+        let mut regional = false;
+        let mut after_regions = Instant::now();
         if running {
+            let started = self.regions.prof.add(region_profile::Step::Pre, began);
             horizon_client::spans::time("tick_lan_packets", || self.tick_lan_packets());
-            sent = horizon_client::spans::time("tick_blocks", || self.tick_blocks())?;
+            self.regions.prof.add(region_profile::Step::Net, started);
+            // With the parallel tick on, the level's blocks and entities tick by regions on threads of
+            // their own (`regions.rs`); what no region owns still ticks below.
+            regional = horizon_client::spans::time("tick_regions", || self.tick_world_regions())?;
+            after_regions = Instant::now();
+            if !regional {
+                sent = horizon_client::spans::time("tick_blocks", || self.tick_blocks())?;
+            }
             // What the blocks spawned (a dispensed minecart, a lit TNT, a
             // placed boat) joins before the entities tick.
             span("mods_joins_flush", || self.native_joins_flush(false, 0));
@@ -5650,38 +5670,64 @@ impl Game<'_> {
         }
         self.begin_ordered_ticks();
         if running {
-            horizon_client::spans::time("tick_paintings", || self.tick_paintings());
-            horizon_client::spans::time("tick_item_frames", || self.tick_item_frames());
+            if !regional {
+                horizon_client::spans::time("tick_paintings", || self.tick_paintings());
+            }
+            if !regional {
+                horizon_client::spans::time("tick_item_frames", || self.tick_item_frames());
+            }
             self.tick_explicit_knots();
             self.tick_summoned_eyes();
             self.ordered_before(ordered_tick::Batch::ArmorStands)?;
-            horizon_client::spans::time("tick_armor_stands", || self.tick_armor_stands())?;
-            horizon_client::spans::time("tick_cushions", || self.tick_cushions());
+            if !regional {
+                horizon_client::spans::time("tick_armor_stands", || self.tick_armor_stands())?;
+            }
+            if !regional {
+                horizon_client::spans::time("tick_cushions", || self.tick_cushions());
+            }
             // ServerLevel.tick: the arrivals of this server tick are in the level
             // (`addDuringTeleport`), and each vehicle handles its portal as its
             // own tick opens.
             span("portal_arrivals", || self.land_portal_arrivals());
             span("vehicle_portals", || self.handle_vehicle_portals());
             self.ordered_before(ordered_tick::Batch::Boats)?;
-            horizon_client::spans::time("tick_boats", || self.tick_boats());
+            if !regional {
+                horizon_client::spans::time("tick_boats", || self.tick_boats());
+            }
             self.ordered_before(ordered_tick::Batch::Carts)?;
-            horizon_client::spans::time("tick_carts", || self.tick_carts());
+            if !regional {
+                horizon_client::spans::time("tick_carts", || self.tick_carts());
+            }
             self.tick_vehicle_watch();
             let from = self.lan_synced_from();
-            horizon_client::spans::time("tick_thunder", || self.tick_thunder());
+            if !regional {
+                horizon_client::spans::time("tick_thunder", || self.tick_thunder());
+            }
             self.lan_synced_since(from);
-            horizon_client::spans::time("tick_lecterns", || self.tick_lecterns());
+            if !regional {
+                horizon_client::spans::time("tick_lecterns", || self.tick_lecterns());
+            }
             horizon_client::spans::time("tick_maps", || self.tick_maps());
             self.tick_equipment_compasses();
-            horizon_client::spans::time("tick_bolts", || self.tick_bolts());
-            horizon_client::spans::time("tick_fishing", || self.tick_fishing());
+            if !regional {
+                horizon_client::spans::time("tick_bolts", || self.tick_bolts());
+            }
+            if !regional {
+                horizon_client::spans::time("tick_fishing", || self.tick_fishing());
+            }
             self.ordered_before(ordered_tick::Batch::Tridents)?;
-            horizon_client::spans::time("tick_tridents", || self.tick_tridents());
+            if !regional {
+                horizon_client::spans::time("tick_tridents", || self.tick_tridents());
+            }
             self.ordered_before(ordered_tick::Batch::Rockets)?;
-            horizon_client::spans::time("tick_rockets", || self.tick_rockets());
-            horizon_client::spans::time("tick_ominous_item_spawners", || {
-                self.tick_ominous_item_spawners()
-            });
+            if !regional {
+                horizon_client::spans::time("tick_rockets", || self.tick_rockets());
+            }
+            if !regional {
+                horizon_client::spans::time("tick_ominous_item_spawners", || {
+                    self.tick_ominous_item_spawners()
+                });
+            }
         }
         if running {
             horizon_client::spans::time("entity_portals", || {
@@ -5689,28 +5735,42 @@ impl Game<'_> {
                 self.handle_end_gateway_portals();
             });
             self.ordered_before(ordered_tick::Batch::Items)?;
-            horizon_client::spans::time("tick_items", || self.tick_items());
-            if self.remote.is_none() {
+            if !regional {
+                horizon_client::spans::time("tick_items", || self.tick_items());
+            }
+            if self.remote.is_none() && !regional {
                 span("hoppers_catch_items", || self.hoppers_catch_items());
             }
             // Merged, burnt, despawned or picked up.
             span("mods_leaves_flush", || self.native_leaves_flush());
             span("mods_joins_flush", || self.native_joins_flush(false, 0));
-            horizon_client::spans::time("touch_arrows", || self.touch_arrows());
+            if !regional {
+                horizon_client::spans::time("touch_arrows", || self.touch_arrows());
+            }
         }
         horizon_client::spans::time("spawn_loaded_entities", || self.spawn_loaded_entities());
         // The ride the player's file names, once the vehicle is in the world.
         self.restore_root_vehicle();
         if running {
             self.ordered_before(ordered_tick::Batch::Mobs)?;
-            horizon_client::spans::time("tick_mobs", || self.tick_mobs())?;
+            if !regional {
+                horizon_client::spans::time("tick_mobs", || self.tick_mobs())?;
+            }
             // Dead, despawned or gone into a hive.
             span("mods_leaves_flush", || self.native_leaves_flush());
-            horizon_client::spans::time("recheck_golem_openers", || self.recheck_golem_openers());
+            if !regional {
+                horizon_client::spans::time("recheck_golem_openers", || {
+                    self.recheck_golem_openers()
+                });
+            }
             span("mod_viewers", || self.tick_mod_container_viewers());
             // Orbs, primed TNT and falling blocks still to tick, in join order.
-            self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, false)?;
-            horizon_client::spans::time("tick_experience", || self.tick_experience());
+            if !regional {
+                self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, false)?;
+            }
+            if !regional {
+                horizon_client::spans::time("tick_experience", || self.tick_experience());
+            }
             // Merged, despawned or picked up.
             span("mods_leaves_flush", || self.native_leaves_flush());
             horizon_client::spans::time("entity_portals", || {
@@ -5730,7 +5790,12 @@ impl Game<'_> {
         if let (Some(sent), Some(log)) = (sent, self.world.block_log.as_mut()) {
             self.world.block_log_held = log.split_off(sent.min(log.len()));
         }
+        let before_lan = self
+            .regions
+            .prof
+            .add(region_profile::Step::Leftover, after_regions);
         horizon_client::spans::time("tick_lan", || self.tick_lan(false));
+        let after_lan = self.regions.prof.add(region_profile::Step::Lan, before_lan);
         let held = std::mem::take(&mut self.world.block_log_held);
         if let Some(log) = self.world.block_log.as_mut() {
             log.extend(held);
@@ -5758,8 +5823,12 @@ impl Game<'_> {
         // tick in the late pass above (#10063).
         self.ordered.announced = horizon_client::join_seq::JoinSeq::upcoming();
         if running {
-            horizon_client::spans::time("tick_moving_pistons", || self.tick_moving_pistons())?;
-            horizon_client::spans::time("tick_block_entities", || self.tick_block_entities())?;
+            if !regional {
+                horizon_client::spans::time("tick_moving_pistons", || self.tick_moving_pistons())?;
+            }
+            if !regional {
+                horizon_client::spans::time("tick_block_entities", || self.tick_block_entities())?;
+            }
             horizon_client::spans::time("tick_sculk_entities", || self.tick_sculk_entities());
             horizon_client::spans::time("tick_sculk_blocks", || self.tick_sculk_blocks())?;
         }
@@ -5800,6 +5869,7 @@ impl Game<'_> {
         if running {
             horizon_client::spans::time("lan_note_joined", || self.lan_note_joined());
         }
+        self.regions.prof.add(region_profile::Step::Late, after_lan);
         Ok(())
     }
     /// The title remains the no-level sentinel while debug options covers it.
@@ -7424,8 +7494,9 @@ impl Game<'_> {
         self.share_spawn_conditions();
         self.score = Default::default();
         self.fns = Default::default();
-        (self.world_tables, self.health_resources) =
-            self.build_world_tables(false, &level.enabled_features)?;
+        let (tables, health) = self.build_world_tables(false, &level.enabled_features)?;
+        self.world_tables = tables.map(Arc::new);
+        self.health_resources = health;
         self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
         // Native tag reads use the lock to tell that the tag tables are ready.
         self.session_lock = Some(session_lock);
@@ -10034,7 +10105,7 @@ impl Game<'_> {
                 }
                 WindowEvent::RedrawRequested => {
                     if let Err(error) = self.render_closing_save() {
-                        self.error = Some(error);
+                        self.error = Some(error.into());
                         self.exit_on_error(event_loop);
                     }
                 }
@@ -11303,7 +11374,7 @@ impl Game<'_> {
         // open, after the key's own effects (`KeyboardHandler.charTyped`).
         self.screen_chars_typed(typed.as_deref());
         if let Err(e) = result {
-            self.error = Some(e);
+            self.error = Some(e.into());
             self.exit_on_error(event_loop);
         }
     }
@@ -11551,6 +11622,7 @@ impl<'a> Game<'a> {
             guardian_look_scratch: Vec::new(),
             dropped: Default::default(),
             next_entity: 0,
+            regions: Default::default(),
             ticked_entities_through: u32::MAX,
             contact_drops: 0..0,
             particles,

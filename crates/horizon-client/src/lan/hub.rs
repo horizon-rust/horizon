@@ -302,6 +302,42 @@ fn take_tracking(
     }
 }
 
+/// Whether a player's packet stays inside the player's region, so its region thread handles it. What reaches
+/// other players or the whole server (chat, commands, respawning, settings, mod messages) is the server's.
+pub(crate) fn region_local(p: &S) -> bool {
+    matches!(
+        p,
+        S::AcceptTeleportation(_)
+            | S::PlayerAbilities(_)
+            | S::MovePlayerPos(_)
+            | S::MovePlayerPosRot(_)
+            | S::MovePlayerRot(_)
+            | S::MovePlayerStatus(_)
+            | S::PlayerLoaded(_)
+            | S::ChunkBatchReceived(_)
+            | S::Pong(_)
+            | S::KeepAlive(_)
+            | S::ClientTickEnd(_)
+            | S::PlayerInput(_)
+            | S::PlayerCommand(_)
+            | S::PlayerAction(_)
+            | S::Punch(_)
+            | S::Attack(_)
+            | S::Interact(_)
+            | S::UseItemOn(_)
+            | S::UseItem(_)
+            | S::SetCarriedItem(_)
+            | S::MoveVehicle(_)
+            | S::PaddleBoat(_)
+            | S::SetCreativeModeSlot(_)
+            | S::ContainerClick(_)
+            | S::ContainerClose(_)
+            | S::ContainerButtonClick(_)
+            | S::PickItemFromBlock(_)
+            | S::PickItemFromEntity(_)
+    )
+}
+
 pub struct Hub {
     /// Clicks on and closings of native mods' menus, for the game.
     pub native_menu_events: Vec<super::menu::NativeMenuEvent>,
@@ -424,6 +460,14 @@ pub struct Hub {
     clock_ids: Vec<i32>,
     item_ids: std::collections::HashMap<Arc<str>, i32>,
     entity_types: std::collections::HashMap<String, i32>,
+    /// The players whose region keeps them on its thread between ticks: their packets and leaves wait in
+    /// `away_events` for it (a resident region, `regions.rs`).
+    pub away: std::collections::HashSet<u32>,
+    /// Where those players stand: the chunks the server keeps loaded for them.
+    pub away_places: Vec<(i32, i32)>,
+    away_events: Vec<NetEvent>,
+    /// Network events a landing gave back: the next poll handles them first.
+    replay: Vec<NetEvent>,
     /// Each level's tracked entities, by dimension.
     entities: std::collections::HashMap<String, Entities>,
     /// Each level's entities that joined it after its tracking pass, as they
@@ -712,6 +756,81 @@ impl Default for LevelSync {
 }
 
 impl Hub {
+    /// A hub for one region's players on a region thread, made once per region game and given the players for each
+    /// tick ([`Hub::lend_guests`]). It shares this hub's connections and registries; the server's hub still reads
+    /// the network and sends the chunks and entities.
+    pub fn region_shell(&self) -> Hub {
+        let mut hub = Hub::new(
+            self.lan.detached(),
+            self.sync.clone(),
+            self.encoder.detached(),
+            self.config.clone(),
+        );
+        hub.copy_region_settings(self);
+        hub
+    }
+
+    /// What a region's hub reads of the server's each tick: the rules and settings the game set on it.
+    pub fn copy_region_settings(&mut self, from: &Hub) {
+        self.ticks = from.ticks;
+        self.movement_checks = from.movement_checks;
+        self.immediate_respawn = from.immediate_respawn;
+        self.reduced_debug_info = from.reduced_debug_info;
+        self.limited_crafting = from.limited_crafting;
+        self.singleplayer_owner = from.singleplayer_owner;
+        self.flat_world = from.flat_world;
+        self.debug_world = from.debug_world;
+        self.teams = from.teams.clone();
+        self.nicknames = from.nicknames.clone();
+        self.ops = from.ops.clone();
+        self.entity_range_percent = from.entity_range_percent;
+        self.spawn_protection = from.spawn_protection;
+        self.admin_feedback_to_ops = from.admin_feedback_to_ops;
+        self.weather = from.weather;
+        self.ticking = from.ticking;
+        self.stepping = from.stepping;
+        self.last_clock = from.last_clock;
+        self.last_rate = from.last_rate;
+        self.mods_loaded = from.mods_loaded;
+    }
+
+    /// Every region's guests split off at once (`region_of` a connection's region), each guest moved once.
+    pub fn split_guests(
+        &mut self,
+        regions: usize,
+        region_of: impl Fn(u32) -> Option<usize>,
+    ) -> Vec<Vec<Guest>> {
+        let mut out: Vec<Vec<Guest>> = (0..regions).map(|_| Vec::new()).collect();
+        let mut kept = Vec::with_capacity(self.guests.len());
+        for g in std::mem::take(&mut self.guests) {
+            match region_of(g.conn) {
+                Some(r) if r < regions => out[r].push(g),
+                _ => kept.push(g),
+            }
+        }
+        self.guests = kept;
+        out
+    }
+
+    /// The guests in connection order again after regions gave theirs back ([`Hub::take_guests_back`] only
+    /// appends).
+    pub fn restore_guest_order(&mut self) {
+        self.guests.sort_by_key(|g| g.conn);
+    }
+
+    /// A region hub's guests back, with what its tick left for this hub.
+    pub fn take_guests_back(&mut self, region: &mut Hub) {
+        self.guests.append(&mut region.guests);
+        self.native_menu_events.append(&mut region.native_menu_events);
+        self.native_menu_returns.append(&mut region.native_menu_returns);
+        self.native_tracking.append(&mut region.native_tracking);
+        self.attachment_snapshots.append(&mut region.attachment_snapshots);
+        self.native_advancement_grants.append(&mut region.native_advancement_grants);
+        for (k, v) in region.item_ids.drain() {
+            self.item_ids.entry(k).or_insert(v);
+        }
+    }
+
     pub fn new(lan: Lan, sync: Arc<SyncData>, encoder: ChunkEncoder, config: HubConfig) -> Self {
         let chat_type = sync
             .id("minecraft:chat_type", "minecraft:chat")
@@ -760,6 +879,10 @@ impl Hub {
             clock_ids,
             item_ids: Default::default(),
             entity_types: Default::default(),
+            away: Default::default(),
+            away_places: Vec::new(),
+            away_events: Vec::new(),
+            replay: Vec::new(),
             entities: Default::default(),
             joined: Default::default(),
             fresh_joined: Default::default(),
@@ -988,6 +1111,7 @@ impl Hub {
             .iter()
             .filter(|g| self.watches(g) && loads(g) && !g.fake)
             .map(Guest::chunk)
+            .chain(self.away_places.iter().copied())
             .collect()
     }
     /// The areas fake players keep loaded: the chunk under each and its radius, their own view
@@ -2344,7 +2468,18 @@ impl Hub {
         self.anticheat_tick(ctx.tick_rate);
         let mut events = std::mem::take(&mut self.pending_kicks);
         self.expire_arrivals(&mut events);
-        for event in self.lan.poll() {
+        let mut polled = std::mem::take(&mut self.replay);
+        polled.extend(self.lan.poll());
+        for event in polled {
+            let for_away = match &event {
+                NetEvent::Packet(conn, ..) | NetEvent::Left(conn, _) => self.away.contains(conn),
+                NetEvent::Duplicate(_) => !self.away.is_empty(),
+                NetEvent::Joined(_) => false,
+            };
+            if for_away {
+                self.away_events.push(event);
+                continue;
+            }
             match event {
                 NetEvent::Joined(j) => {
                     let conn = self.admit(*j, ctx);
@@ -2764,7 +2899,44 @@ impl Hub {
     /// keep their order. The far ring's chunks the level doesn't hold go as
     /// the save's readers made them.
     fn update_chunks(&mut self, ctx: &TickCtx) {
-        let world = &*ctx.world;
+        self.update_chunks_in(&*ctx.world, ctx.streaming);
+    }
+
+    /// Whether something an away player's connection sent has to be seen by the server's thread: a leave, a
+    /// duplicate login, or a packet that reaches past its region.
+    pub fn away_wants_server(&self) -> bool {
+        self.away_events.iter().any(|e| !matches!(e, NetEvent::Packet(_, p, _) if region_local(p)))
+    }
+
+    /// The packets held for `region`'s players put in their inboxes, in order, for its tick to handle.
+    pub fn give_away(&mut self, region: &mut Hub) {
+        if self.away_events.is_empty() {
+            return;
+        }
+        let mine: crate::fast_hash::FxHashSet<u32> = region.guests.iter().map(|g| g.conn).collect();
+        let (given, kept): (Vec<NetEvent>, Vec<NetEvent>) = std::mem::take(&mut self.away_events)
+            .into_iter()
+            .partition(|e| matches!(e, NetEvent::Packet(conn, ..) if mine.contains(conn)));
+        self.away_events = kept;
+        for event in given {
+            if let NetEvent::Packet(conn, packet, bytes) = event
+                && let Some(g) = region.guest_mut(conn)
+                && g.left_reason.is_empty()
+            {
+                g.sender.undrained.taken(bytes);
+                g.inbox.push_back((*packet, bytes));
+                g.inbox_bytes += bytes;
+            }
+        }
+    }
+
+    /// The players are back: what waited for them is for the next poll.
+    pub fn release_away(&mut self) {
+        self.away.clear();
+        self.replay.append(&mut self.away_events);
+    }
+
+    fn update_chunks_in(&mut self, world: &World, streaming: Option<&crate::streaming::Streaming>) {
         if let Some(far) = self.far.as_mut() {
             far.poll();
         }
@@ -2772,7 +2944,7 @@ impl Hub {
         for i in 0..self.guests.len() {
             if self.watches(&self.guests[i]) {
                 self.update_view(i);
-                if let Some(batch) = self.next_batch(i, world, ctx.streaming) {
+                if let Some(batch) = self.next_batch(i, world, streaming) {
                     batches.push((i, batch));
                 }
             }
@@ -2811,7 +2983,7 @@ impl Hub {
             .collect();
         self.encoder.warm(&columns.chunks);
         let mut encoded = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
-            ctx.streaming.and_then(|s| s.proto_sections(x, z))
+            streaming.and_then(|s| s.proto_sections(x, z))
         });
         let uses = &mut columns.uses;
         let chunks = &columns.chunks;
@@ -3363,7 +3535,27 @@ impl Hub {
     }
 
     /// All entities as one client sees them: the world's and the other players.
+    /// The level's entity states for the region trackers, by the chunk each was last seen in.
+    pub fn lend_trackers(&mut self, regions: usize, region_of: impl Fn((i32, i32)) -> Option<usize>) -> Vec<Entities> {
+        self.entities.entry(self.config.dimension.clone()).or_default().lend(regions, region_of)
+    }
+
+    /// A region tracker for this (region) hub's level.
+    pub fn set_tracker(&mut self, tracker: Entities) {
+        self.entities.insert(self.config.dimension.clone(), tracker);
+    }
+
+    /// A region hub's tracker back in this (the server's) hub's, parked.
+    pub fn park_tracker(&mut self, region: &mut Hub) {
+        if let Some(t) = region.entities.remove(&region.config.dimension) {
+            self.entities.entry(self.config.dimension.clone()).or_default().park(t);
+        }
+    }
+
     fn track_entities(&mut self, ctx: &mut TickCtx) {
+        if let Some(level) = self.entities.get_mut(&self.config.dimension) {
+            level.unpark();
+        }
         let mut all: Vec<EntityState> = Vec::with_capacity(ctx.entities.len() + self.guests.len());
         let placed: Vec<usize> = (0..self.guests.len())
             .filter(|&i| self.here(&self.guests[i]))

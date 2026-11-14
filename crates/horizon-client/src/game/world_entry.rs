@@ -318,7 +318,7 @@ impl Game<'_> {
         }
         match self.build_world_tables(true, &self.level.enabled_features) {
             Ok((tables, health)) => {
-                self.world_tables = tables;
+                self.world_tables = tables.map(Arc::new);
                 self.health_resources = health;
             }
             Err(e) => {

@@ -1649,7 +1649,11 @@ mod loot_mine_location_tests {
             r#"{"enabled":["vanilla","file/h079"],"disabled":[]}"#,
         )
         .unwrap();
-        game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+        game.world_tables = game
+            .build_world_tables(false, &[])
+            .unwrap()
+            .0
+            .map(std::sync::Arc::new);
         assert!(game.world_tables.is_some());
         game.ensure_datapacks();
         assert!(game.run_command("scoreboard objectives add h079 dummy"));

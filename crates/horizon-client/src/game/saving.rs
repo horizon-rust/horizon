@@ -288,6 +288,7 @@ impl Game<'_> {
 
     /// Save the level in place: its changed chunks, its entities and its raids.
     pub(super) fn save_level(&mut self, wait: bool) -> Result<()> {
+        self.land_residents();
         self.save_border();
         self.save.save_attachments(&self.world.attachments)?;
         self.save

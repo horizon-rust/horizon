@@ -19,7 +19,7 @@ use crate::{
     text::Text,
     ui,
 };
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// The screen's parts in GUI pixels. Down the left: the mark, the search
 /// field, the page list, and Undo and Done at the foot. On the right: the
@@ -1589,7 +1589,7 @@ pub(crate) struct Shell<S: Screen> {
     picked: Option<S::Page>,
     waiting: Option<Capture>,
     /// The rows as last built, and what for.
-    built: Option<(Built<S::Page, S::Row>, Rc<View<S::Page, S::Row>>)>,
+    built: Option<(Built<S::Page, S::Row>, Arc<View<S::Page, S::Row>>)>,
     /// The settings as the screen found them, for Undo (`Screen::undoes`), and whether it
     /// changed them since.
     before: Option<Box<Settings>>,
@@ -1649,7 +1649,7 @@ impl<S: Screen> Shell<S> {
     }
     /// The screen's rows now, built again only when what they were built for changed
     /// ([`Built`]). The scroll is kept within them.
-    fn view(&mut self, s: &Settings, size: (f32, f32)) -> Rc<View<S::Page, S::Row>> {
+    fn view(&mut self, s: &Settings, size: (f32, f32)) -> Arc<View<S::Page, S::Row>> {
         let query = self.query();
         let searching = !query.is_empty();
         let focused = match self.focus {
@@ -1667,7 +1667,7 @@ impl<S: Screen> Shell<S> {
         let view = match &self.built {
             Some((built, view)) if *built == key => view.clone(),
             _ => {
-                let view = Rc::new(self.build(s, size));
+                let view = Arc::new(self.build(s, size));
                 self.built = Some((key, view.clone()));
                 view
             }

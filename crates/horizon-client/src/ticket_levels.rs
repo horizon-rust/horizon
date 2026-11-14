@@ -247,7 +247,7 @@ pub struct PortalTicket {
 
 /// The levels, rebuilt only when their sources change (a player crossing
 /// into another chunk, a distance or a forced chunk changing).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ChunkTickets {
     sources: Option<Sources>,
     levels: Levels,

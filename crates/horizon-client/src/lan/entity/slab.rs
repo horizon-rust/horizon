@@ -139,6 +139,30 @@ impl ServerEntities {
             .collect()
     }
 
+    /// Takes out the entities `take` says to, with their ids.
+    pub(super) fn extract_if(&mut self, mut take: impl FnMut(&ServerEntity) -> bool) -> Vec<(i32, ServerEntity)> {
+        let mut out = Vec::new();
+        for (slot, entry) in self.slots.iter_mut().enumerate() {
+            if entry.as_ref().is_some_and(|(_, s)| take(s)) {
+                let (id, s) = entry.take().expect("checked");
+                self.by_id.remove(&id);
+                self.free.push(slot as u32);
+                out.push((id, s));
+            }
+        }
+        out
+    }
+
+    /// The entity `id`'s state is `s`: added, or in place of the one tracked.
+    pub(super) fn set(&mut self, id: i32, s: ServerEntity) {
+        match self.by_id.get(&id) {
+            Some(&slot) => *self.at_mut(slot) = s,
+            None => {
+                self.insert(id, s);
+            }
+        }
+    }
+
     /// Keeps only the entities `keep` says to.
     pub(super) fn retain(&mut self, mut keep: impl FnMut(&ServerEntity) -> bool) {
         for (slot, entry) in self.slots.iter_mut().enumerate() {

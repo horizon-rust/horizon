@@ -270,6 +270,28 @@ impl Spill {
             && self.removed.is_empty()
             && self.used.is_empty()
     }
+    /// A region's spill after this one's: its runs of `spawns` move on by what this one holds.
+    pub(super) fn absorb(&mut self, other: Spill) {
+        let base = self.spawns.len();
+        self.used.extend(other.used.into_iter().map(|mut u| {
+            u.start += base;
+            u.end += base;
+            u
+        }));
+        self.spawns.extend(other.spawns);
+        self.orbs.extend(other.orbs);
+        self.removed.extend(other.removed);
+    }
+}
+impl Pending {
+    /// What a region's ticks recorded, with this one's.
+    pub(super) fn absorb(&mut self, other: Pending) {
+        self.shulker.extend(other.shulker);
+        self.banner.extend(other.banner);
+        self.names.extend(other.names);
+        self.pot.extend(other.pot);
+        self.copied.extend(other.copied);
+    }
 }
 
 /// Lets `say` change each use's run of `spawns`, newest first so the earlier

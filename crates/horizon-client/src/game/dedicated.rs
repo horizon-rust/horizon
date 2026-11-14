@@ -1574,6 +1574,7 @@ impl Game<'_> {
             }
             // MinecraftServer.tickServer records each tick's time, for /tick query (and the status).
             self.clock.record(tick_start.elapsed());
+            super::health::record_tick(tick_start.elapsed());
             state.perf.tick(
                 state.perf_epoch.elapsed().as_secs_f64(),
                 tick_start.elapsed().as_secs_f32() * 1000.0,
