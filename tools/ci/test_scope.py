@@ -44,6 +44,8 @@ READERS = {
     "horizon-client-core": ["crates/horizon-client/assets/horizon/lang"],
     "horizon-client-render": [
         "crates/horizon-client/assets/horizon/lang", "crates/horizon-client/assets/horizon/textures/gui",
+        # wind.rs's test checks the sun pass's any-hit shader sways as the terrain does.
+        "crates/horizon-rtx/shaders",
     ],
     "horizon-mod-api-gen": MOD_API_GEN,
     "horizon-mod-api-gen-tests": MOD_API_GEN,
