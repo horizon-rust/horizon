@@ -1471,10 +1471,9 @@ impl Game<'_> {
                             item.target = uuid;
                         }
                     } else {
-                        let r = &mut g.world.random;
-                        let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
-                        g.audio
-                            .play("minecraft:entity.item.pickup", Some(p), 0.2, pitch);
+                        // ItemEntity.makeFakeItem: the item only flashes out of
+                        // the player's head, and the pickup sound plays.
+                        g.give_flash(id.as_str(), damage, extra.clone(), p);
                     }
                 }
                 // containerMenu.broadcastChanges: InventoryChangeTrigger

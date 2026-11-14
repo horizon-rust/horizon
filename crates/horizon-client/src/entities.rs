@@ -83,6 +83,7 @@ fn slime_at(world: &World, facts: &BlockFacts, position: BlockPos) -> bool {
 
 mod fluids;
 mod item_fall;
+mod item_fire;
 mod item_no_physics;
 pub mod nameplate;
 mod obstacles;
@@ -340,6 +341,9 @@ impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for Ite
 pub struct ItemEnvironmentTick {
     pub alive: bool,
     pub lava_hurt: bool,
+    /// `Entity.applyEffectsFromBlocks` put the burning item out: water or rain
+    /// cleared its fire after it had burned, so the hiss plays.
+    pub extinguished: bool,
     /// `ItemStack.onDestroyed` of the damage that emptied the health: the
     /// stacks the destroyed item left, which `ItemUtils.onContainerDestroyed`
     /// adds to the level where it lay.
@@ -476,12 +480,15 @@ impl ItemEntity {
             ),
         )
     }
+    /// `ItemEntity.tick`'s block contacts; `in_rain` is `Entity.isInRain`, which
+    /// `Entity.applyEffectsFromBlocks` also puts a burning item out with.
     pub fn environment_tick(
         &mut self,
         world: &World,
         facts: &BlockFacts,
         registry: &horizon_world::registry::BlockRegistry,
         items: &crate::items::Items,
+        in_rain: bool,
     ) -> ItemEnvironmentTick {
         let at = world.block(
             self.position.x.floor() as i32,
@@ -490,19 +497,9 @@ impl ItemEntity {
         );
         let fluid = facts.get(at).fluid;
         let fire_immune = items.resists_fire(&self.stack, "minecraft:in_fire");
-        let mut spilled = Vec::new();
-        if fluid == Fluid::Water || fire_immune {
-            self.fire_ticks = 0;
-        }
-        if self.fire_ticks > 0 {
-            if self.fire_ticks % 20 == 0
-                && fluid != Fluid::Lava
-                && !items.resists_fire(&self.stack, "minecraft:on_fire")
-            {
-                spilled.extend(self.hurt(1).unwrap_or_default());
-            }
-            self.fire_ticks -= 1;
-        }
+        let (mut spilled, was_on_fire) = self.base_tick_fire(fluid, fire_immune, items);
+        // `Entity.applyEffectsFromBlocks` runs only while the item is there.
+        let blocks_apply = self.health > 0;
         let mut lava_hurt = false;
         // LavaCauldronBlock.entityInside applies LAVA_IGNITE and then lavaHurt.
         // A cauldron is not a lava fluid, and removed items get no block effects.
@@ -540,9 +537,12 @@ impl ItemEntity {
         {
             spilled.extend(self.hurt(1).unwrap_or_default());
         }
+        let extinguished =
+            blocks_apply && self.extinguish_if_wet(fluid == Fluid::Water, in_rain, was_on_fire);
         ItemEnvironmentTick {
             alive: self.health > 0,
             lava_hurt,
+            extinguished,
             spilled,
         }
     }
@@ -2781,7 +2781,7 @@ mod fire_environment_tests {
         };
         let mut wood = make("minecraft:oak_planks");
         let mut metal = make("minecraft:netherite_ingot");
-        let first = wood.environment_tick(&world, &facts, assets.registry, &items);
+        let first = wood.environment_tick(&world, &facts, assets.registry, &items, false);
         assert!(first.alive && first.lava_hurt);
         assert!(
             !first.should_play_lava_hurt_sound(1),
@@ -2792,7 +2792,7 @@ mod fire_environment_tests {
             wood.fire_ticks > 0,
             "lava contact must ignite dropped items"
         );
-        let last = wood.environment_tick(&world, &facts, assets.registry, &items);
+        let last = wood.environment_tick(&world, &facts, assets.registry, &items, false);
         assert!(
             !last.alive && last.lava_hurt,
             "lethal lava damage still emits burn sound"
@@ -2802,7 +2802,7 @@ mod fire_environment_tests {
             "the lethal hit must always play the sound"
         );
         for _ in 0..40 {
-            let result = metal.environment_tick(&world, &facts, assets.registry, &items);
+            let result = metal.environment_tick(&world, &facts, assets.registry, &items, false);
             assert!(result.alive && !result.lava_hurt);
             assert!(!result.should_play_lava_hurt_sound(10));
         }
@@ -2817,7 +2817,7 @@ mod fire_environment_tests {
             )
             .unwrap();
         let mut burning = make("minecraft:oak_planks");
-        let result = burning.environment_tick(&world, &facts, assets.registry, &items);
+        let result = burning.environment_tick(&world, &facts, assets.registry, &items, false);
         assert!(result.alive && !result.lava_hurt);
         assert!(burning.fire_ticks > 0);
         world
@@ -2832,7 +2832,7 @@ mod fire_environment_tests {
             )
             .unwrap();
         let mut soul = make("minecraft:oak_planks");
-        soul.environment_tick(&world, &facts, assets.registry, &items);
+        soul.environment_tick(&world, &facts, assets.registry, &items, false);
         assert_eq!(soul.health, 3);
         let mut stand = ArmorStand::new(2, at, 0.0);
         world
@@ -2887,9 +2887,9 @@ mod destroyed_bundle_environment_tests {
         ];
         let mut bundle = ItemEntity::new(1, stack, at, Vec3::ZERO, 0.0);
         // 5 health against 4 a tick: the first tick leaves 1 and nothing out.
-        let first = bundle.environment_tick(&world, &facts, assets.registry, &items);
+        let first = bundle.environment_tick(&world, &facts, assets.registry, &items, false);
         assert!(first.alive && first.spilled.is_empty());
-        let second = bundle.environment_tick(&world, &facts, assets.registry, &items);
+        let second = bundle.environment_tick(&world, &facts, assets.registry, &items, false);
         assert!(!second.alive);
         assert_eq!(
             second
