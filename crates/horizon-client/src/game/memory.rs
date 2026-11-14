@@ -697,7 +697,7 @@ mod tests {
     fn a_servers_report_names_its_entities_and_players_and_leaves_the_rest_unattributed() {
         use crate::game::test_pos_guest_tests::{GUEST, game};
         use horizon_client::mobs::Mob;
-        let mut game = game();
+        let (mut game, _rx) = game();
         game.options.dedicated = Some(Vec::new());
         for (id, kind) in [(1, "cow"), (2, "cow"), (3, "pig")] {
             let kind = game
