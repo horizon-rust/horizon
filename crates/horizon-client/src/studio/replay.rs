@@ -66,6 +66,12 @@ impl ReplayDriver {
         self.reader.total_packets()
     }
 
+    /// The configuration-phase packets (registries and tags) the recording started with; empty
+    /// for recordings made before they were kept.
+    pub fn configuration(&self) -> &[TimestampedPacket] {
+        &self.reader.configuration
+    }
+
     /// Camera keyframes saved alongside the packet stream, if present.
     pub fn camera_track(&self) -> Option<&CameraTrack> {
         self.reader.camera_track.as_ref()

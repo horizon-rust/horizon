@@ -3,6 +3,7 @@
 //! Provides native session packet recording (`.mcpr` format).
 
 pub mod camera;
+pub mod configuration;
 pub mod mcpr;
 pub mod path_render;
 pub mod recorder;

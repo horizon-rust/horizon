@@ -5,6 +5,10 @@
 //! - `recording.tmcpr`: binary stream of chronological timestamped network packets:
 //!   `[timestamp_ms: u32 big-endian][packet_length: u32 big-endian][packet_data: VarInt(packet_id) + payload]`
 //! - Optional `recording.tmcpr.crc32`: CRC32 of the packet stream.
+//! - Optional `configuration.tmcpr`: the configuration-phase packets the session started with
+//!   (registries and tags), in the same frame layout as `recording.tmcpr` but with configuration
+//!   packet ids. Play packet ids mean nothing without the registries they index, so playback
+//!   applies these before the first play packet; files without the entry fall back to vanilla's.
 
 use super::spline::CameraTrack;
 use horizon_protocol::buf::{Reader, write_varint};
@@ -20,6 +24,10 @@ const MAX_METADATA_BYTES: u64 = 1 << 20;
 /// The most `recording.tmcpr` may inflate to. The reader streams to disk, but
 /// still caps archive expansion to protect disk space from hostile archives.
 const MAX_STREAM_BYTES: u64 = 1 << 30;
+/// The most `configuration.tmcpr` may inflate to: a modded server's registries are a few MiB.
+const MAX_CONFIGURATION_BYTES: u64 = 64 << 20;
+/// The archive entry holding the configuration-phase packets.
+pub const CONFIGURATION_ENTRY: &str = "configuration.tmcpr";
 /// Keep one seek anchor for every group of this many packets.
 const STREAM_INDEX_STRIDE: usize = 1024;
 /// How much recording time a stream and its metadata may hold in memory before
@@ -111,6 +119,51 @@ impl TimestampedPacket {
     }
 }
 
+/// Frames `packets` the way `recording.tmcpr` stores them.
+pub fn encode_packets(packets: &[TimestampedPacket]) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    for packet in packets {
+        out.extend_from_slice(&frame(packet.timestamp_ms, packet.id, &packet.payload)?);
+    }
+    Ok(out)
+}
+
+/// One frame: `[timestamp_ms][length][VarInt id + payload]`.
+fn frame(timestamp_ms: u32, id: i32, payload: &[u8]) -> io::Result<Vec<u8>> {
+    let mut frame = Vec::with_capacity(13 + payload.len());
+    frame.extend_from_slice(&timestamp_ms.to_be_bytes());
+    frame.extend_from_slice(&[0; 4]);
+    write_varint(&mut frame, id);
+    frame.extend_from_slice(payload);
+    let packet_length = u32::try_from(frame.len() - 8)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "packet too large"))?;
+    frame[4..8].copy_from_slice(&packet_length.to_be_bytes());
+    Ok(frame)
+}
+
+/// The whole frames of `data`, in order; a frame cut short ends the list.
+pub fn decode_packets(data: &[u8]) -> Vec<TimestampedPacket> {
+    let mut packets = Vec::new();
+    let mut offset = 0;
+    while let Some((timestamp_ms, length, id_bytes)) = frame_head(data, offset) {
+        let Some(body) = offset
+            .checked_add(8)
+            .and_then(|start| data.get(start..start.checked_add(length)?))
+        else {
+            break;
+        };
+        let mut reader = Reader::new(&body[..id_bytes]);
+        let Ok(id) = reader.varint() else { break };
+        packets.push(TimestampedPacket::new(
+            timestamp_ms,
+            id,
+            body[id_bytes..].to_vec(),
+        ));
+        offset += 8 + length;
+    }
+    packets
+}
+
 /// An editor bookmark stored with a replay, without player identity data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -170,6 +223,14 @@ fn metadata_beside(stream: &Path) -> PathBuf {
     stream.with_file_name(name)
 }
 
+/// The configuration packets beside a stream: `<stream>.configuration`. Written when
+/// recording starts and packaged with the stream, like the metadata beside it.
+fn configuration_beside(stream: &Path) -> PathBuf {
+    let mut name = stream.file_name().unwrap_or_default().to_os_string();
+    name.push(".configuration");
+    stream.with_file_name(name)
+}
+
 /// Writer for generating `.mcpr` replay files.
 ///
 /// Packets go to a stream file beside the destination
@@ -183,6 +244,8 @@ pub struct McprWriter {
     dest_path: PathBuf,
     temp_tmcpr_path: PathBuf,
     temp_meta_path: PathBuf,
+    /// Where `set_configuration` put the configuration packets, until `finish` packages them.
+    temp_configuration_path: Option<PathBuf>,
     writer: Option<BufWriter<File>>,
     metadata: Metadata,
     markers: Vec<Marker>,
@@ -234,6 +297,7 @@ impl McprWriter {
             dest_path,
             temp_tmcpr_path,
             temp_meta_path,
+            temp_configuration_path: None,
             writer,
             metadata,
             markers: Vec::new(),
@@ -253,6 +317,17 @@ impl McprWriter {
         Ok(this)
     }
 
+    /// Keep the configuration-phase packets (registries and tags) the session started with in
+    /// the archive as `configuration.tmcpr`. Call it before the first packet: a crash recovery
+    /// packages it with the stream.
+    pub fn set_configuration(&mut self, packets: &[TimestampedPacket]) -> io::Result<()> {
+        let path = configuration_beside(&self.temp_tmcpr_path);
+        let bytes = encode_packets(packets)?;
+        // Recorded first, so a write that fails halfway is still cleaned up.
+        let path = self.temp_configuration_path.insert(path);
+        write_private_file(path, &bytes)
+    }
+
     /// Record a packet at the given elapsed timestamp.
     ///
     /// After an error the writer refuses further packets; `finish` still
@@ -265,14 +340,7 @@ impl McprWriter {
             .writer
             .as_mut()
             .ok_or_else(|| io::Error::other("writer already closed"))?;
-        let mut frame = Vec::with_capacity(13 + payload.len());
-        frame.extend_from_slice(&timestamp_ms.to_be_bytes());
-        frame.extend_from_slice(&[0; 4]);
-        write_varint(&mut frame, id);
-        frame.extend_from_slice(payload);
-        let packet_length = u32::try_from(frame.len() - 8)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "packet too large"))?;
-        frame[4..8].copy_from_slice(&packet_length.to_be_bytes());
+        let frame = frame(timestamp_ms, id, payload)?;
 
         if let Err(e) = writer.write_all(&frame) {
             self.failed = true;
@@ -367,6 +435,9 @@ impl McprWriter {
             Ok(()) => {
                 let _ = fs::remove_file(&self.temp_tmcpr_path);
                 let _ = fs::remove_file(&self.temp_meta_path);
+                if let Some(path) = &self.temp_configuration_path {
+                    let _ = fs::remove_file(path);
+                }
                 Ok(self.dest_path.clone())
             }
             Err(e) => {
@@ -489,6 +560,7 @@ impl McprWriter {
             &self.temp_tmcpr_path,
             self.bytes_written,
             &self.markers,
+            self.temp_configuration_path.as_deref(),
             part,
         )?;
         fs::rename(part, &self.dest_path)
@@ -503,6 +575,7 @@ fn package_stream(
     stream: &Path,
     bytes: u64,
     markers: &[Marker],
+    configuration: Option<&Path>,
     part: &Path,
 ) -> io::Result<()> {
     let mut zip = zip::ZipWriter::new(File::create_new(part)?);
@@ -543,6 +616,11 @@ fn package_stream(
         serde_json::to_writer_pretty(&mut zip, markers).map_err(io::Error::other)?;
     }
 
+    if let Some(configuration) = configuration {
+        zip.start_file(CONFIGURATION_ENTRY, options)?;
+        zip.write_all(&fs::read(configuration)?)?;
+    }
+
     let file = zip.finish().map_err(io::Error::other)?;
     file.sync_all()?;
     drop(file);
@@ -557,6 +635,9 @@ impl Drop for McprWriter {
             self.writer = None;
             let _ = fs::remove_file(&self.temp_tmcpr_path);
             let _ = fs::remove_file(&self.temp_meta_path);
+            if let Some(path) = &self.temp_configuration_path {
+                let _ = fs::remove_file(path);
+            }
         }
     }
 }
@@ -686,6 +767,9 @@ pub struct McprReader {
     pub camera_track: Option<CameraTrack>,
     /// User-created editor bookmarks stored in the replay archive.
     pub markers: Vec<Marker>,
+    /// The configuration-phase packets the recording started with (registries and tags);
+    /// empty for files that don't carry them.
+    pub configuration: Vec<TimestampedPacket>,
 }
 
 fn read_entry(archive: &mut zip::ZipArchive<File>, name: &str, max: u64) -> io::Result<Vec<u8>> {
@@ -796,6 +880,16 @@ impl McprReader {
         let markers =
             read_optional_json::<Vec<Marker>>(&mut archive, "markers.json", MAX_METADATA_BYTES)?
                 .unwrap_or_default();
+        let configuration =
+            match read_entry(&mut archive, CONFIGURATION_ENTRY, MAX_CONFIGURATION_BYTES) {
+                Ok(bytes) => decode_packets(&bytes),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+                // The recording still plays without them, on vanilla's registries.
+                Err(error) => {
+                    log::warn!("Studio: ignoring the recording's {CONFIGURATION_ENTRY}: {error}");
+                    Vec::new()
+                }
+            };
         // A recording that stopped mid-write ends in a frame that isn't whole:
         // indexing and playback both stop before it.
         let mut packet_index = Vec::new();
@@ -829,6 +923,7 @@ impl McprReader {
             total_packets,
             camera_track,
             markers,
+            configuration,
         })
     }
 
@@ -1084,7 +1179,9 @@ fn recover_stream(
     metadata.duration = whole.last_timestamp_ms;
     let dest = free_name(dest);
     let part = sibling(&dest, "mcpr.part");
-    if let Err(e) = package_stream(&metadata, stream, whole.bytes, &[], &part) {
+    let configuration = configuration_beside(stream);
+    let configuration = configuration.is_file().then_some(configuration.as_path());
+    if let Err(e) = package_stream(&metadata, stream, whole.bytes, &[], configuration, &part) {
         let _ = fs::remove_file(&part);
         return Err(e);
     }
@@ -1094,6 +1191,7 @@ fn recover_stream(
     }
     let _ = fs::remove_file(stream);
     let _ = fs::remove_file(metadata_beside(stream));
+    let _ = fs::remove_file(configuration_beside(stream));
     Ok((dest, whole.packets))
 }
 
@@ -1563,6 +1661,32 @@ mod tests {
         assert_eq!(first.payload, vec![10, 20]);
         assert_eq!(reader.next_packet().unwrap().unwrap().id, 0x02);
         assert_eq!(reader.next_packet().unwrap(), None);
+    }
+
+    /// The configuration packets written when recording began survive a crash: the recovered
+    /// archive plays on the registries it was recorded with.
+    #[test]
+    fn a_crashed_recording_recovers_its_configuration() {
+        let scratch = Scratch::new("recover_configuration");
+        let mut tmcpr = Vec::new();
+        frame(&mut tmcpr, 10, 3, &[0x01, 10, 20]);
+        let stream = leftover(&scratch, "session", Some(&Metadata::default()), &tmcpr);
+        let configuration = [
+            TimestampedPacket::new(0, 0x07, vec![1, 2, 3]),
+            TimestampedPacket::new(0, 0x0D, vec![9]),
+        ];
+        fs::write(
+            configuration_beside(&stream),
+            encode_packets(&configuration).unwrap(),
+        )
+        .unwrap();
+
+        let report = recover_crashed_recordings(&scratch.0).unwrap();
+        assert_eq!(report.recovered.len(), 1, "{report:?}");
+        assert!(!configuration_beside(&stream).exists());
+
+        let reader = McprReader::open(&scratch.0.join("session.mcpr")).unwrap();
+        assert_eq!(reader.configuration, configuration);
     }
 
     /// A leftover from before the sidecar existed is still packaged, with the

@@ -25,6 +25,9 @@ pub(super) struct Replay {
     pub(super) standalone: bool,
     pub(super) last_tick: Option<std::time::Instant>,
     pub(super) virtual_tick_ms: f32,
+    /// The registries the replay was recorded with, when its file kept them: a standalone
+    /// replay applies them in place of the vanilla ones, on open and after each seek.
+    pub(super) registries: Option<std::sync::Arc<horizon_protocol::registry::Dynamic>>,
 }
 
 impl Replay {
@@ -590,7 +593,13 @@ impl Game<'_> {
             is_singleplayer,
             horizon_core::release::VERSION.into(),
         );
-        match horizon_client::studio::StudioRecorder::start(path.clone(), meta) {
+        // The registries the play packets' ids index: the replay applies them on open.
+        let configuration = horizon_client::studio::configuration::packets(&r.registries);
+        match horizon_client::studio::StudioRecorder::start_with_configuration(
+            path.clone(),
+            meta,
+            &configuration,
+        ) {
             Ok(recorder) => {
                 r.session.start_recording(recorder, |recorder| {
                     self.dump_world_snapshot_to_recorder(recorder);
@@ -655,6 +664,9 @@ impl Game<'_> {
         };
 
         let standalone = self.replay.driver.is_none() && self.remote.is_none();
+        self.replay.registries =
+            horizon_client::studio::configuration::registries(driver.configuration())
+                .map(std::sync::Arc::new);
         if self.remote.is_none()
             && let Err(error) = self.init_remote_for_replay()
         {
@@ -756,7 +768,7 @@ impl Game<'_> {
             horizon_protocol::packets::play::Login {
                 player_id: r.entity_id,
                 hardcore: self.level.hardcore,
-                levels: vec!["minecraft:overworld".into()],
+                levels: vec![r.level.clone()],
                 max_players: 20,
                 chunk_radius: self.settings.render_distance,
                 simulation_distance: self.settings.simulation_distance,
@@ -764,8 +776,12 @@ impl Game<'_> {
                 show_death_screen: true,
                 limited_crafting: false,
                 spawn: horizon_protocol::packets::play::SpawnInfo {
-                    dimension_type: 0,
-                    dimension: "minecraft:overworld".into(),
+                    // An id into the recording's dimension type registry (its configuration).
+                    dimension_type: r
+                        .registries
+                        .id("minecraft:dimension_type", &r.dimension.name)
+                        .unwrap_or(0),
+                    dimension: r.level.clone(),
                     seed: 0,
                     game_type: 0,
                     previous_game_type: None,

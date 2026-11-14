@@ -1519,6 +1519,11 @@ impl Game<'_> {
         self.clock = horizon_client::clock::FixedStep::client();
         self.adv = Default::default();
         self.stats = Default::default();
+        // The recording's own registries, applied as a live join applies the server's, so
+        // its biome ids, dimension types and tags mean what they meant when it was made.
+        if let Some(registries) = self.replay.registries.clone() {
+            self.set_registries(registries);
+        }
         Ok(())
     }
 
