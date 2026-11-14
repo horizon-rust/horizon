@@ -312,6 +312,7 @@ mod tests {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         // WGL can hang while creating a test instance on Windows (#5238).
         descriptor.backends = wgpu::Backends::PRIMARY;
+        crate::gfx::test_gpu::turn();
         let instance = wgpu::Instance::new(descriptor);
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         if !adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {

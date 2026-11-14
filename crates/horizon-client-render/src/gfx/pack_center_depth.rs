@@ -280,6 +280,7 @@ mod tests {
     use super::*;
 
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        crate::gfx::test_gpu::turn();
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle().with_env());
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
