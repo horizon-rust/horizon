@@ -138,6 +138,8 @@ distance = 12.0            # optional: how far, in blocks (4 to 32); eases out o
 cells = 16                 # optional: grid cells along a face's side (4 to 64)
 option = "displacement_on" # optional: a bool option that turns it on (else always on)
 cells_option = "cells"     # optional: a choice option of cell counts that replaces `cells`
+
+[motion]                   # optional, 0.2, needs [[post]], no keys: the post stage gets `motion_at`
 steps_option = "steps"     # optional: a bool option: each cell a flat step with walls while it's on
 ```
 
@@ -211,8 +213,8 @@ blend = "gamma"            # optional: gamma (default) or linear
 primaries = "bt709"        # optional: bt709 (default) or bt2020, which needs blend = "linear"
 ```
 
-0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]`, `[entity]` or
-`[frame]` is refused. The example's port is `crates/horizon-shader-api/packs/golden_hour_0_2`, a test pack of the SDK.
+0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]`, `[entity]`,
+`[frame]` or `[motion]` is refused. The example's port is `crates/horizon-shader-api/packs/golden_hour_0_2`, a test pack of the SDK.
 
 ## Testing a pack frame by frame
 
@@ -246,6 +248,11 @@ draws them itself (the material stage covers terrain only). The first-person han
 
 ## Changelog
 
+- 2026-11-14: API 0.2 (additions, experimental): `[motion]`: the post stage of a pack that sets it gets the motion
+  guide, `scene_motion` (binding 14), `fn motion_at(texel: vec2<i32>) -> MotionData` and the `MOTION_CAMERA`,
+  `MOTION_OBJECT`, `MOTION_NEW` and `MOTION_NO_HISTORY` kinds: how each pixel's surface moved since last frame, for
+  temporal passes. `horizon-shader check` takes it; the game refuses a pack with `[motion]` until it draws the guide.
+  A pack without the key is built from the same WGSL as before, a test holds; API 0.1 is unchanged.
 - 2026-11-10: API 0.2 (additions, experimental): the `[entity]` stage, `fn entity(input: EntityInput) -> Surface`,
   for entities, block entities, items and particles, with the material stage's shadow maps and coloured lights. The
   reference gives vanilla's own as the stage's function. `horizon-shader check` takes it; the game refuses a pack
