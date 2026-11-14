@@ -7,7 +7,7 @@ use crate::lan::discovery::Scanner;
 use crate::text::{DARK_GRAY, GRAY, Text, format_translation};
 use crate::title::confirm_top;
 use horizon_protocol::servers::{self, ServerEntry};
-pub use page::Form;
+pub use page::{Form, report_bugs_page};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

@@ -17,6 +17,7 @@
 //! pages, [`hud`] for what it draws on the HUD, [`lang`] for the lang files with its text.
 #![forbid(unsafe_code)]
 
+pub mod details;
 pub mod hud;
 pub mod lang;
 pub mod pages;

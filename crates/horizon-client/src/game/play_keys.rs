@@ -83,6 +83,7 @@ impl Game<'_> {
                 Screen::Stats | Screen::Friends => self.screen = Screen::Paused,
                 Screen::Social => self.close_social(),
                 Screen::ServerLinks => self.screen = Screen::Paused,
+                Screen::ReportForm => self.close_report_form(),
                 // ConfirmScreen.keyPressed: Escape answers no; both return to
                 // the Server Links screen they came from.
                 Screen::ConfirmLink => self.screen = self.confirm_link_back(),

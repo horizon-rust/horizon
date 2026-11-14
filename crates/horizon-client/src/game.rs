@@ -424,6 +424,7 @@ mod screenshot_sequence;
 mod sculk;
 mod sculk_fixture;
 mod seats;
+mod report_form;
 mod server_links;
 mod server_packs;
 mod server_travel;
@@ -662,6 +663,9 @@ enum Screen {
     BlockEditor,
     /// ServerLinksDialogScreen: a server's links (game/server_links.rs).
     ServerLinks,
+    /// The page a crate registered at the pause menu's Report Bugs icon, as a form
+    /// (game/report_form.rs).
+    ReportForm,
     /// ConfirmLinkScreen for a server link (game/server_links.rs).
     ConfirmLink,
     /// DialogScreen.WarningScreen: the note about custom screens.
@@ -702,6 +706,7 @@ impl Screen {
             Screen::CommandBlock => "command_block",
             Screen::BlockEditor => "block_editor",
             Screen::ServerLinks => "server_links",
+            Screen::ReportForm => "report_bugs",
             Screen::ConfirmLink => "confirm_link",
             Screen::DialogWarning => "dialog_warning",
             Screen::Win => "win",
@@ -3156,6 +3161,7 @@ struct Game<'a> {
     adv_ui: advancements_screen::AdvUi,
     /// The Server Links screens' state (game/server_links.rs).
     links_ui: server_links::LinksUi,
+    report: report_form::ReportForm,
     camera_type: perspective::CameraType,
     fangs: fangs::FangState,
     /// The local player as a model (third person, the inventory).
@@ -6244,6 +6250,7 @@ impl Game<'_> {
             Screen::Friends => self.draw_friends_screen(&mut batch),
             Screen::Social => self.draw_social_screen(&mut batch),
             Screen::ServerLinks => self.draw_server_links(&mut batch),
+            Screen::ReportForm => self.draw_report_form(&mut batch),
             Screen::ConfirmLink => self.draw_confirm_link(&mut batch),
             Screen::DialogWarning => self.draw_dialog_warning(&mut batch),
             Screen::CommandBlock => self.draw_command_block(&mut batch),
@@ -10721,6 +10728,9 @@ impl Game<'_> {
                         Screen::Social if pressed && button == MouseButton::Left => {
                             self.social_click()
                         }
+                        Screen::ReportForm if pressed && button == MouseButton::Left => {
+                            self.report_form_click()
+                        }
                         Screen::CommandBlock if pressed && button == MouseButton::Left => {
                             self.command_block_click()
                         }
@@ -11930,6 +11940,7 @@ impl<'a> Game<'a> {
             stats_ui: Default::default(),
             adv_ui: Default::default(),
             links_ui: Default::default(),
+            report: Default::default(),
             camera_type: Default::default(),
             fangs: Default::default(),
             player_model: None,
