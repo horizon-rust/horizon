@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "הוסף סמן",
   "horizon.studio.topbar.clear_keyframes": "🗑 נקה נקודות מפתח",
   "horizon.studio.topbar.timeline_hud": "⏱ ציר זמן",
-  "horizon.studio.topbar.split_scene": "פצל סצנה"
+  "horizon.studio.topbar.split_scene": "פצל סצנה",
+  "horizon.options.block_vibration": "רטט בעת שבירת בלוק",
+  "horizon.options.impulse_triggers": "הדקים אימפולסיביים",
+  "A tick when you break a block, as in Bedrock.": "כשאתם שוברים בלוק הוא רוטט, כמו ב-Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "ההדקים של בקר Xbox One רוטטים יחד עם הידיות שלו."
 }

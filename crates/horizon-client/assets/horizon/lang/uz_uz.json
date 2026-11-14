@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "Belgi qo'shish",
   "horizon.studio.topbar.clear_keyframes": "🗑 Kalit kadrlarni tozalash",
   "horizon.studio.topbar.timeline_hud": "⏱ Vaqt chizig'i",
-  "horizon.studio.topbar.split_scene": "Sahnani bo'lish"
+  "horizon.studio.topbar.split_scene": "Sahnani bo'lish",
+  "horizon.options.block_vibration": "Blok sindirishda tebranish",
+  "horizon.options.impulse_triggers": "Impuls triggerlari",
+  "A tick when you break a block, as in Bedrock.": "Blokni sindirganingizda u Bedrockdagidek tebranadi.",
+  "An Xbox One controller's triggers buzz with its handles.": "Xbox One kontrollerining triggerlari tutqichlari bilan birga tebranadi."
 }

@@ -7786,7 +7786,7 @@ impl Game<'_> {
     }
     /// MultiPlayerGameMode.destroyBlock: the predicted break.
     fn predict_break(&mut self, pos: [i32; 3], state: BlockStateId, sequence: i32) {
-        self.tutorial_destroy(state, 1.0);
+        self.player_broke_block(state);
         // BlockStatePredictionHandler.retainKnownServerState.
         let here = self.player_position();
         if let Some(r) = self.remote.as_mut() {

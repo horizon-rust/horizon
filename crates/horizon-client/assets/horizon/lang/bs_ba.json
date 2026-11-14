@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "Dodaj oznaku",
   "horizon.studio.topbar.clear_keyframes": "🗑 Očisti ključne kadrove",
   "horizon.studio.topbar.timeline_hud": "⏱ Vremenska linija",
-  "horizon.studio.topbar.split_scene": "Podijeli scenu"
+  "horizon.studio.topbar.split_scene": "Podijeli scenu",
+  "horizon.options.block_vibration": "Vibracija blokova",
+  "horizon.options.impulse_triggers": "Impulsni triggeri",
+  "A tick when you break a block, as in Bedrock.": "Kada razbijete blok, on vibrira, kao u Bedrocku.",
+  "An Xbox One controller's triggers buzz with its handles.": "Triggeri Xbox One kontrolera vibriraju zajedno s ručkama."
 }

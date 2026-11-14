@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "Markearring tafoegje",
   "horizon.studio.topbar.clear_keyframes": "🗑 Keyframes wiskje",
   "horizon.studio.topbar.timeline_hud": "⏱ Tiidline",
-  "horizon.studio.topbar.split_scene": "Sêne splitsje"
+  "horizon.studio.topbar.split_scene": "Sêne splitsje",
+  "horizon.options.block_vibration": "Vibraasje by blokbrekken",
+  "horizon.options.impulse_triggers": "Impulstriggers",
+  "A tick when you break a block, as in Bedrock.": "As jo in blok brekke, trilket it, lykas yn Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "De triggers fan in Xbox One-controller trilken mei syn handgrepen."
 }

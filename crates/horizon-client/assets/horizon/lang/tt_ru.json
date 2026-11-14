@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "Маркер өстәү",
   "horizon.studio.topbar.clear_keyframes": "🗑 Көйләү нокталарын чистарту",
   "horizon.studio.topbar.timeline_hud": "⏱ Вакыт сызыгы",
-  "horizon.studio.topbar.split_scene": "Күренешне бүлү"
+  "horizon.studio.topbar.split_scene": "Күренешне бүлү",
+  "horizon.options.block_vibration": "Блок ватканда тибрәнү",
+  "horizon.options.impulse_triggers": "Импульс триггерлары",
+  "A tick when you break a block, as in Bedrock.": "Блок ватканда ул Bedrock кебек тибрәнә.",
+  "An Xbox One controller's triggers buzz with its handles.": "Xbox One контроллеры триггерлары аның тоткычлары белән бергә тибрәнә."
 }

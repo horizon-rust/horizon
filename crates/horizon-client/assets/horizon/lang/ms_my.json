@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "Tambah Penanda",
   "horizon.studio.topbar.clear_keyframes": "🗑 Kosongkan Bingkai Kunci",
   "horizon.studio.topbar.timeline_hud": "⏱ Garis Masa",
-  "horizon.studio.topbar.split_scene": "Pisah Babak"
+  "horizon.studio.topbar.split_scene": "Pisah Babak",
+  "horizon.options.block_vibration": "Getaran semasa memecahkan blok",
+  "horizon.options.impulse_triggers": "Pencetus impuls",
+  "A tick when you break a block, as in Bedrock.": "Apabila anda memecahkan blok, ia bergetar, seperti dalam Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Pencetus pengawal Xbox One bergetar bersama pemegangnya."
 }

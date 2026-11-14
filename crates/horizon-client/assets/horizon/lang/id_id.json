@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "Tambah Penanda",
   "horizon.studio.topbar.clear_keyframes": "🗑 Hapus Keyframe",
   "horizon.studio.topbar.timeline_hud": "⏱ Linimasa",
-  "horizon.studio.topbar.split_scene": "Pisahkan Adegan"
+  "horizon.studio.topbar.split_scene": "Pisahkan Adegan",
+  "horizon.options.block_vibration": "Getaran saat memecahkan blok",
+  "horizon.options.impulse_triggers": "Pemicu impuls",
+  "A tick when you break a block, as in Bedrock.": "Saat kamu memecahkan blok, blok itu bergetar, seperti di Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Pemicu pengontrol Xbox One bergetar bersama gagangnya."
 }

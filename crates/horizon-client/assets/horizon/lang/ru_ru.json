@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "Добавить метку",
   "horizon.studio.topbar.clear_keyframes": "🗑 Очистить ключевые кадры",
   "horizon.studio.topbar.timeline_hud": "⏱ Таймлайн",
-  "horizon.studio.topbar.split_scene": "Разделить сцену"
+  "horizon.studio.topbar.split_scene": "Разделить сцену",
+  "horizon.options.block_vibration": "Вибрация при разрушении блоков",
+  "horizon.options.impulse_triggers": "Импульсные курки",
+  "A tick when you break a block, as in Bedrock.": "Когда вы разрушаете блок, он вибрирует, как в Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Курки контроллера Xbox One вибрируют вместе с его рукоятками."
 }

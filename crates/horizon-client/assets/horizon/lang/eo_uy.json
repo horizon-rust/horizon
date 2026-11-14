@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "Aldoni markilon",
   "horizon.studio.topbar.clear_keyframes": "🗑 Malplenigi ŝloskadrojn",
   "horizon.studio.topbar.timeline_hud": "⏱ Tempolinio",
-  "horizon.studio.topbar.split_scene": "Fendi scenon"
+  "horizon.studio.topbar.split_scene": "Fendi scenon",
+  "horizon.options.block_vibration": "Vibrado ĉe rompo de blokoj",
+  "horizon.options.impulse_triggers": "Impulsaj ellasiloj",
+  "A tick when you break a block, as in Bedrock.": "Kiam vi rompas blokon, ĝi vibradas, kiel en Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "La ellasiloj de Xbox One-regilo vibradas kune kun ĝiaj teniloj."
 }

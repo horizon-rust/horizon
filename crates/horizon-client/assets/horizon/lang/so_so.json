@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "Ku dar Calaamad",
   "horizon.studio.topbar.clear_keyframes": "🗑 Nadiifi Keyframes",
   "horizon.studio.topbar.timeline_hud": "⏱ Jadwalka Waqtiga",
-  "horizon.studio.topbar.split_scene": "Kala qaybi Muuqaalka"
+  "horizon.studio.topbar.split_scene": "Kala qaybi Muuqaalka",
+  "horizon.options.block_vibration": "Gariirka marka la jebinayo block",
+  "horizon.options.impulse_triggers": "Triggers-ka impulse",
+  "A tick when you break a block, as in Bedrock.": "Markaad jebiso block, way gariirtaa, sida Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "Triggers-ka Xbox One controller waxay la gariiraan gacmahiisa."
 }

@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "Markéierer dobäisetzen",
   "horizon.studio.topbar.clear_keyframes": "🗑 Keyframen läschen",
   "horizon.studio.topbar.timeline_hud": "⏱ Zäitachs",
-  "horizon.studio.topbar.split_scene": "Szen splécken"
+  "horizon.studio.topbar.split_scene": "Szen splécken",
+  "horizon.options.block_vibration": "Vibratioun beim Block ofbauen",
+  "horizon.options.impulse_triggers": "Impulstrigger",
+  "A tick when you break a block, as in Bedrock.": "Wann s du e Block ofbaust, vibréiert en, wéi am Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "D'Triggere vun engem Xbox One Controller vibréieren zesumme mat senge Grëffer."
 }

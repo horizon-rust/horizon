@@ -1045,5 +1045,9 @@
   "horizon.studio.topbar.add_marker": "לייג צו מאַרקער",
   "horizon.studio.topbar.clear_keyframes": "🗑 ליידיק שליסלראַמען",
   "horizon.studio.topbar.timeline_hud": "⏱ צײַטליניע",
-  "horizon.studio.topbar.split_scene": "צעטיילן סצענע"
+  "horizon.studio.topbar.split_scene": "צעטיילן סצענע",
+  "horizon.options.block_vibration": "וויבראַציע ביים ברעכן אַ בלאָק",
+  "horizon.options.impulse_triggers": "אימפּולס טריגערס",
+  "A tick when you break a block, as in Bedrock.": "ווען דו ברעכסט אַ בלאָק, עס וויברירט, ווי אין Bedrock.",
+  "An Xbox One controller's triggers buzz with its handles.": "די טריגערס פֿון אַן Xbox One קאָנטראָלער וויברירן צוזאַמען מיט זײַנע האַנטגרעפֿן."
 }

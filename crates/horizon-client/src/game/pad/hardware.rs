@@ -1,12 +1,14 @@
-//! The real controllers (the `controllers` feature): gilrs' pads, and the DualSense's own output
-//! over HID: its rumble, adaptive triggers, lights and HD haptics. A build without the feature (the
-//! server build) has the stub in pad.rs instead, and only `horizon-ctl pad`'s virtual pad.
+//! The real controllers (the `controllers` feature): gilrs' pads, and the DualSense's and Xbox One's
+//! own output over HID: rumble, adaptive triggers, lights, HD haptics and impulse triggers. A build
+//! without the feature (the server build) has the stub in pad.rs instead, and only `horizon-ctl
+//! pad`'s virtual pad.
 use super::{
     super::{Game, Screen},
     Connection, PadEvent, Pads,
 };
 use horizon_client::controller_ui::Device;
 use horizon_client::gamepad::{self, Button, GlyphStyle, PadState, Rumble, TriggerFeel};
+use horizon_dualsense::xbox;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -16,7 +18,7 @@ mod sdl_row;
 mod trigger_effects;
 mod triggers;
 
-/// The controllers gilrs sees and the DualSense's output.
+/// The controllers gilrs sees and the pads' own outputs.
 #[derive(Default)]
 pub(super) struct Devices {
     gilrs: Option<gilrs::Gilrs>,
@@ -32,6 +34,14 @@ pub(super) struct Devices {
     /// Its own output over HID (rumble here; gilrs only reads it), started once this window
     /// has the pad in hand; dropped, it releases the pad.
     output: Option<horizon_dualsense::Link>,
+    /// The active pad is an Xbox One pad.
+    xbox: bool,
+    /// Which physical pad the Xbox output drives: the active one, not just the first there is, so
+    /// a second controller can't take the first one's motors.
+    xbox_target: xbox::Target,
+    /// Its own output over HID: the handles and the impulse triggers, which gilrs has no force
+    /// feedback for; started like the DualSense's.
+    xbox_output: Option<xbox::Link>,
     /// Its HD haptics, on USB: looked for once each time the output opens.
     haptics: Option<horizon_dualsense::haptics::Haptics>,
     haptics_tried: bool,
@@ -81,6 +91,7 @@ impl Devices {
             "backend": self.gilrs.is_some() || self.routed.is_some(),
             "controllers": pads,
             "dualsense_output": self.output.as_ref().and_then(|o| o.open()).map(|t| format!("{t:?}")),
+            "xbox_output": self.xbox_output.as_ref().and_then(|o| o.open()).map(|t| format!("{t:?}")),
             "trigger_effects": self.shown.map(|s| s.triggers),
         })
     }
@@ -113,6 +124,39 @@ fn is_dualsense(pad: &gilrs::Gamepad) -> bool {
         (Some(vendor), Some(product)) if horizon_dualsense::is_dualsense(vendor, product))
 }
 
+/// Whether a pad's own output takes it. On Windows, Windows.Gaming.Input drives the four motors
+/// of any Xbox-style pad it lists, Microsoft's or not (a GameSir, an 8BitDo in Xbox mode), so every
+/// pad that isn't a DualSense (which has its own output) rides the Xbox path; one WGI can't reach
+/// leaves the link closed and gilrs' force feedback plays instead. Elsewhere only Microsoft's
+/// Xbox One ids are known to take the Xbox One reports.
+#[cfg(windows)]
+fn is_xbox_pad(pad: &gilrs::Gamepad) -> bool {
+    !is_dualsense(pad)
+}
+
+#[cfg(not(windows))]
+fn is_xbox_pad(pad: &gilrs::Gamepad) -> bool {
+    matches!((pad.vendor_id(), pad.product_id()),
+        (Some(vendor), Some(product)) if xbox::is_xbox_one(vendor, product))
+}
+
+/// The pad `id` as the Xbox writer names it: its ids, and which of several identical pads it is
+/// in the system's order, so the writer opens this pad and not the first one there is.
+fn xbox_target(gilrs: &gilrs::Gilrs, id: PadId) -> Option<xbox::Target> {
+    let pad = gilrs.connected_gamepad(id)?;
+    let (vendor, product) = (pad.vendor_id()?, pad.product_id()?);
+    let mut index = 0;
+    for (other, same) in gilrs.gamepads() {
+        if other == id {
+            return Some(xbox::Target::new(vendor, product, index));
+        }
+        if (same.vendor_id(), same.product_id()) == (Some(vendor), Some(product)) {
+            index += 1;
+        }
+    }
+    None
+}
+
 /// SDL rows gilrs' bundled DB is missing (or only ships for Windows). Newer
 /// than the crate's copy; `GilrsBuilder::add_mappings` prefers these. The
 /// Ultimate 2's Linux/BT rows put the right stick on a2/a3 — without them
@@ -122,6 +166,25 @@ const EXTRA_SDL_MAPPINGS: &str = concat!(
     "05000000c82d00001260000001000000,8BitDo Ultimate 2,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:a5,leftx:a0,lefty:a1,paddle1:b17,paddle2:b16,paddle3:b2,paddle4:b5,rightshoulder:b7,rightstick:b14,righttrigger:a4,rightx:a2,righty:a3,start:b11,x:b3,y:b4,platform:Linux,\n",
     "03000000c82d00000b31000014010000,8BitDo Ultimate 2,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,\n",
 );
+
+/// The pad gilrs can make vibrate: the active one, or the same pad's other entry. Windows lists
+/// an Xbox pad twice (the WGI gamepad, which has force feedback, and a raw HID one, which has
+/// none), and whichever last sent input is the one the game reads.
+fn ff_pad(gilrs: &gilrs::Gilrs, id: PadId) -> PadId {
+    let Some(pad) = gilrs.connected_gamepad(id) else {
+        return id;
+    };
+    if pad.is_ff_supported() {
+        return id;
+    }
+    let device = (pad.vendor_id(), pad.product_id());
+    gilrs
+        .gamepads()
+        .find(|(_, other)| {
+            other.is_ff_supported() && (other.vendor_id(), other.product_id()) == device
+        })
+        .map_or(id, |(other, _)| other)
+}
 
 /// A vibration on pad `id` through gilrs' force feedback, kept alive until its end. Platforms
 /// without it (gilrs on macOS) skip it.
@@ -169,6 +232,22 @@ fn play_pulse(
     }
 }
 
+/// The steps an Xbox One pad's own output plays: all four motors, with the triggers zeroed when
+/// the player turned Impulse Triggers off.
+fn xbox_steps(rumble: Rumble, impulse: bool) -> Vec<(xbox::Motors, Duration)> {
+    rumble
+        .shape()
+        .into_iter()
+        .map(|step| {
+            let triggers = if impulse { step.triggers } else { [0.0; 2] };
+            (
+                xbox::Motors::levels(step.strong, step.weak, triggers),
+                Duration::from_millis(u64::from(step.millis)),
+            )
+        })
+        .collect()
+}
+
 /// The one way to open gilrs: each reader needs the extra rows.
 fn gilrs_builder() -> gilrs::GilrsBuilder {
     gilrs::GilrsBuilder::new().add_mappings(EXTRA_SDL_MAPPINGS)
@@ -212,6 +291,8 @@ impl Pads {
             self.devices.rumbles.clear();
             self.devices.dualsense = false;
             self.devices.output = None;
+            self.devices.xbox = false;
+            self.devices.xbox_output = None;
             self.devices.shown = None;
         }
     }
@@ -244,6 +325,10 @@ impl Pads {
                     if let Some(output) = &self.devices.output {
                         output.scan();
                     }
+                    // The pad may have moved to its other link (cable ↔ Bluetooth). A handle to
+                    // the old one keeps accepting writes and buzzes nothing, so drop it and open
+                    // the pad afresh: `pad_output_frame` starts a new link while this pad plays.
+                    self.devices.xbox_output = None;
                 }
                 E::Disconnected => {
                     log::info!("Controller disconnected: {}", gilrs.gamepad(id).name());
@@ -257,6 +342,10 @@ impl Pads {
                     if let Some(output) = &self.devices.output {
                         output.scan();
                     }
+                    // The pad may have moved to its other link (cable ↔ Bluetooth). A handle to
+                    // the old one keeps accepting writes and buzzes nothing, so drop it and open
+                    // the pad afresh: `pad_output_frame` starts a new link while this pad plays.
+                    self.devices.xbox_output = None;
                 }
                 E::ButtonPressed(..) => self.devices.active = Some(id),
                 E::AxisChanged(axis, value, _)
@@ -273,6 +362,8 @@ impl Pads {
             self.menu.armed = None;
             self.radial.cancel();
             self.menu.stop_craft();
+            // The output follows the pad in use: a new one must not keep writing to the old.
+            self.devices.xbox_output = None;
         }
         let Some(pad) = self
             .devices
@@ -281,12 +372,20 @@ impl Pads {
         else {
             // Before any pad is touched (the virtual pad playing), a DualSense still shows it.
             self.devices.dualsense = gilrs.gamepads().any(|(_, pad)| is_dualsense(&pad));
+            self.devices.xbox = gilrs.gamepads().any(|(_, pad)| is_xbox_pad(&pad));
+            self.devices.xbox_target = xbox::Target::ANY;
             self.device = gilrs.gamepads().next().map(|(_, pad)| device_of(&pad));
             return PadState::default();
         };
         self.device = Some(device_of(&pad));
         self.style = GlyphStyle::of_device(pad.vendor_id(), pad.product_id());
         self.devices.dualsense = is_dualsense(&pad);
+        self.devices.xbox = is_xbox_pad(&pad);
+        self.devices.xbox_target = self
+            .devices
+            .active
+            .and_then(|id| xbox_target(gilrs, id))
+            .unwrap_or(xbox::Target::ANY);
         state_of(&pad)
     }
 }
@@ -433,6 +532,7 @@ impl PadRouter {
         if pads.devices.active != Some(id) {
             pads.devices.rumbles.clear();
             pads.devices.output = None;
+            pads.devices.xbox_output = None;
             pads.devices.shown = None;
         }
         pads.devices.dualsense = self
@@ -440,6 +540,11 @@ impl PadRouter {
             .as_ref()
             .and_then(|g| g.connected_gamepad(id))
             .is_some_and(|p| is_dualsense(&p));
+        pads.devices.xbox = self
+            .gilrs
+            .as_ref()
+            .and_then(|g| g.connected_gamepad(id))
+            .is_some_and(|p| is_xbox_pad(&p));
         pads.devices.active = Some(id);
         pads.devices.started = true;
         pads.devices.gilrs = self.gilrs.take();
@@ -555,13 +660,15 @@ impl PadRouter {
 }
 
 impl Game<'_> {
-    /// Controllers are turned off: dropping the DualSense's output frees its triggers.
+    /// Controllers are turned off: dropping the pads' outputs frees their triggers (and the
+    /// Xbox pad's handle).
     pub(super) fn pad_output_off(&mut self) {
         self.pad.devices.output = None;
+        self.pad.devices.xbox_output = None;
         self.pad.devices.shown = None;
     }
 
-    /// After each poll: the DualSense's output opens once this window has the pad in hand, then
+    /// After each poll: a pad's own output opens once this window has the pad in hand, then
     /// shows what the game is doing; vibrations that are over stop.
     pub(super) fn pad_output_frame(&mut self) {
         if self.pad.devices.dualsense
@@ -571,10 +678,25 @@ impl Game<'_> {
         {
             self.pad.devices.output = Some(horizon_dualsense::Link::start());
         }
+        if self.pad.devices.xbox
+            && self.pad.in_use
+            && self.pad_has_window()
+            && self.pad.devices.xbox_output.is_none()
+        {
+            self.pad.devices.xbox_output = Some(xbox::Link::start(self.pad.devices.xbox_target));
+        }
         self.pad_haptics();
         self.pad_show();
         let now = Instant::now();
         self.pad.devices.rumbles.retain(|(_, end)| *end > now);
+    }
+
+    /// The Xbox pad's HID output, while it is the active pad, open, and this window has focus
+    /// (another game on the same pad keeps it otherwise).
+    fn pad_xbox_output(&self) -> Option<&xbox::Link> {
+        let output = self.pad.devices.xbox_output.as_ref()?;
+        (self.pad.devices.xbox && self.pad_has_window() && output.open().is_some())
+            .then_some(output)
     }
 
     /// The DualSense's HID output, while it is the active pad, open, and this window has focus
@@ -713,14 +835,16 @@ impl Game<'_> {
         }
     }
 
-    /// Release the DualSense's output (the game is quitting).
+    /// Release the pads' outputs (the game is quitting).
     pub(in crate::game) fn pad_close_output(&mut self) {
         self.pad.devices.haptics = None;
         self.pad.devices.output = None;
+        self.pad.devices.xbox_output = None;
     }
 
-    /// Play a vibration on the active pad: a DualSense through its own report, else gilrs' force
-    /// feedback, which platforms without it (gilrs on macOS) skip.
+    /// Play a vibration on the active pad: a DualSense through its own report, an Xbox One pad
+    /// through its handles and impulse triggers, else gilrs' force feedback, which platforms
+    /// without it (gilrs on macOS) skip.
     pub(super) fn pad_vibrate(&mut self, rumble: Rumble, pulse: gamepad::Pulse) {
         let level = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         if let Some(haptics) = self
@@ -748,6 +872,17 @@ impl Game<'_> {
             output.rumble(steps.collect());
             return;
         }
+        if let Some(output) = self.pad_xbox_output() {
+            // All four motors go through the pad's own output. The trigger motors have no other
+            // path, and the handles ride along so the same pulse can't be cut: gilrs' force
+            // feedback (Windows.Gaming.Input on Windows) always sets the triggers to zero, so a
+            // handles-only pulse on that path would stop a trigger mid-vibration.
+            output.rumble(xbox_steps(
+                rumble,
+                self.settings.controller.impulse_triggers,
+            ));
+            return;
+        }
         // Splitscreen's router holds the only reader, and plays this after the player's turn.
         if self.pad.feed.is_some() && self.pad.devices.gilrs.is_none() {
             self.pad.devices.routed_rumbles.push(pulse);
@@ -757,7 +892,7 @@ impl Game<'_> {
         else {
             return;
         };
-        if let Some(playing) = play_pulse(gilrs, id, pulse) {
+        if let Some(playing) = play_pulse(gilrs, ff_pad(gilrs, id), pulse) {
             self.pad.devices.rumbles.push(playing);
         }
     }
@@ -782,6 +917,7 @@ mod one_reader_tests {
         pads.devices.routed_rumbles.push(gamepad::Pulse {
             strong: 1.0,
             weak: 1.0,
+            triggers: [0.0, 0.0],
             millis: 100,
         });
         PadRouter::default().play_rumbles(&mut pads, None);
@@ -880,5 +1016,42 @@ mod takeover_tests {
             !axis_takes_over(A::Unknown, -0.99, true),
             "its triggers rest here"
         );
+    }
+}
+
+#[cfg(test)]
+mod xbox_output_tests {
+    use super::*;
+
+    #[test]
+    fn a_handles_only_pulse_rides_the_pads_own_output_too() {
+        // A radial tick moves no trigger. If it stayed on gilrs, its force feedback (triggers
+        // always zero) could stop a trigger motor mid-vibration.
+        let steps = xbox_steps(Rumble::RadialSlot, true);
+        assert!(!steps.is_empty());
+        let motors = steps[0].0;
+        assert!(motors.strong > 0 || motors.weak > 0);
+        assert_eq!([motors.left_trigger, motors.right_trigger], [0, 0]);
+    }
+
+    #[test]
+    fn the_trigger_motors_follow_the_pulse_unless_turned_off() {
+        let on = xbox_steps(Rumble::BlockBroken, true);
+        // All four at one fixed 35%: both triggers and both grips.
+        assert_eq!(on[0].0.left_trigger, 89);
+        assert_eq!(on[0].0.right_trigger, 89);
+        assert_eq!(on[0].0.strong, 89);
+        assert_eq!(on[0].0.weak, 89);
+        let off = xbox_steps(Rumble::BlockBroken, false);
+        assert_eq!([off[0].0.left_trigger, off[0].0.right_trigger], [0, 0]);
+        assert_eq!([off[0].0.strong, off[0].0.weak], [89, 89]);
+    }
+
+    #[test]
+    fn a_hit_drives_all_four_motors_hard() {
+        let motors = xbox_steps(Rumble::Hurt(4.0), true)[0].0;
+        assert!(motors.strong >= 178, "the heavy handle: {}", motors.strong);
+        assert!(motors.weak >= 153, "the light handle: {}", motors.weak);
+        assert_eq!([motors.left_trigger, motors.right_trigger], [166, 166]);
     }
 }
