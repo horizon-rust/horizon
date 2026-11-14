@@ -295,7 +295,7 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
         }
         S::Llama | S::TraderLlama => super::llama::finalize(m),
         // Camel.finalizeSpawn: standing, with fixed attributes.
-        S::Camel | S::CamelHusk => super::camel::stand_up_instantly(m),
+        S::Camel | S::CamelHusk => super::camel::reset_pose_to_full_stand(m),
         S::Nautilus | S::ZombieNautilus => super::nautilus::finalize(m, biome.coral_nautilus),
         S::SulfurCube => super::sulfur_cube::finalize(m),
         // Piglin.createSpawnWeapon: half crossbows, half golden swords, and

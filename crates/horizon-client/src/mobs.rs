@@ -3540,8 +3540,8 @@ impl Mob {
                 amount *= 0.15;
             }
         }
-        // Wolf.actuallyHurt: wolf armor takes the damage instead of the wolf.
-        let absorbed = self.wolf_armor_absorbs(&source);
+        camel::actually_hurt(self);
+        let absorbed = self.wolf_armor_absorbs(&source); // Wolf.actuallyHurt's armor
         let mut knock = true;
         // What came off the health, for `LivingDamageEvent.Post`.
         let mut taken = 0.0;

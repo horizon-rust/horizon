@@ -2493,7 +2493,7 @@ pub fn mob_from_nbt_with_random(
             Some(Tag::Long(v)) => *v,
             _ => 0,
         };
-        crate::mobs::camel::stand_up_instantly(&mut m);
+        crate::mobs::camel::reset_pose_to_full_stand(&mut m);
         m.extra.pose_change_tick = tick;
         m.extra.camel_sitting = tick < 0;
         // Camels are always tame (`Camel.register` in Horizon).

@@ -2114,8 +2114,10 @@ impl Goal for AvoidEntity {
         };
     }
 }
+mod brain_look;
 mod tempt;
 
+pub use brain_look::BrainLookAround;
 pub use tempt::Tempt;
 fn look_angles(look: [f64; 3]) -> (f64, f64) {
     let yaw = (-look[0]).atan2(look[2]).to_degrees();
