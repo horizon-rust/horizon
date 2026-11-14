@@ -160,3 +160,21 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
 - The native game is not yet linked into the SwiftUI host. The Play button
   must remain disabled until full in-process startup, iOS window ownership,
   rendering, input, assets and on-device testing are complete.
+
+2026-11-14: COMBINED APP LINK MILESTONE
+- platforms/ios/GameRuntime/src/lib.rs exports the same Swift-compatible
+  horizon_ios_host_api_version/game_is_ready/launch_game ABI as the stub host
+  library. It retains the original horizon_official::register() and
+  horizon_game::main() entry as an uncalled native symbol.
+- The game runtime crate now declares the original game's global allocator.
+- platforms/ios/project.yml supports selecting either the standalone
+  horizon_ios_bridge staticlib (lightweight host CI) or the real
+  horizon_ios_game_runtime staticlib (combined CI) via HORIZON_IOS_RUST_LIB.
+- .github/workflows/ios-runtime-probe.yml builds the original Horizon iOS
+  staticlib and then attempts to link it into the SwiftUI app using Xcode,
+  packaging an unsigned integration IPA only when the complete link passes.
+- IMPORTANT: A native linked IPA would STILL NOT be playable until UIKit/winit
+  window ownership, Metal surface presentation, event-loop lifecycle and input
+  integration are implemented and tested. The Play button remains disabled.
+- Main must remain untouched. Check the latest GitHub Actions combined
+  workflow for verified results; never assume success from this note.
