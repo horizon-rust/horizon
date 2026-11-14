@@ -2172,7 +2172,7 @@ impl Hub {
         g.held_ticket_chunk = Some(g.ticket_chunk()); // `teleport` has no `move`
         if let Some(p) = position {
             g.position = p;
-            g.previous_position = p;
+            (g.previous_position, g.first_good) = (p, p); // connection.resetPosition
         }
         g.teleport_counter = (g.teleport_counter + 1) & 0x7FFF_FFFF;
         let id = g.teleport_counter;

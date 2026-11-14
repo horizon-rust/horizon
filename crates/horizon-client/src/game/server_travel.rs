@@ -321,14 +321,17 @@ impl Game<'_> {
         let g = &host.hub.guests[gi];
         let at = Vec3::new(g.position[0], g.position[1], g.position[2]);
         let seen_credits = g.seen_credits;
-        // EndGatewayBlock.getPortalDestination: none without its block entity.
+        // EndGatewayBlock.getPortalDestination: none without its block entity,
+        // and outside the End only the exit the block entity saved (its
+        // getPortalPosition creates one in the End alone).
         let gateway_ok = name != "end_gateway"
             || self
                 .world
                 .block_entities
                 .get(&(pos[0], pos[1], pos[2]))
                 .is_some_and(|e| {
-                    matches!(e, horizon_client::containers::BlockEntity::EndGateway(_))
+                    matches!(e, horizon_client::containers::BlockEntity::EndGateway(g)
+                        if self.dim == Dim::End || g.exit_portal.is_some())
                 });
         if !gateway_ok {
             self.as_guest(host, conn, |g| {
@@ -448,8 +451,10 @@ impl Game<'_> {
         let Some(g) = host.hub.guest(conn) else {
             return;
         };
-        let (at, invulnerable, sleeping, riding) = (
+        let (at, previous, first_good, invulnerable, sleeping, riding) = (
             Vec3::new(g.position[0], g.position[1], g.position[2]),
+            g.previous_position,
+            g.first_good,
             g.creative(),
             g.sleeping,
             g.vehicle.is_some(),
@@ -492,7 +497,16 @@ impl Game<'_> {
             }
             return;
         }
-        let (end_portal, gateway) = self.inside_end_portals(at, WIDTH, HEIGHT);
+        // Entity.checkInsideBlocks sweeps from where this tick's moves began
+        // (`Entity.oldPosition`, the connection's firstGood position), not one
+        // box at the end; a teleport resets it to where it landed
+        // (ServerPlayer.teleport's resetPosition).
+        let from = if previous == g.position {
+            at
+        } else {
+            Vec3::new(first_good[0], first_good[1], first_good[2])
+        };
+        let (end_portal, gateway) = self.inside_end_portals(from, at, WIDTH, HEIGHT);
         if end_portal && !riding {
             // EndPortalBlock.entityInside: the first exit from the End shows the credits.
             if self.dim == Dim::End && !host.hub.guest(conn).is_some_and(|g| g.seen_credits) {
@@ -878,6 +892,9 @@ impl Game<'_> {
             return;
         };
         let (job, destination) = self.gateway_job(gateway);
+        if job == GatewayJob::NoDestination {
+            return;
+        }
         let at = [destination.x, destination.y, destination.z];
         // Relative.union(DELTA, ROTATION).
         host.hub.teleport_keeping_motion(i, at);
@@ -1436,7 +1453,8 @@ mod credits_respawn_tests {
 
     /// A server on a scratch world with one guest, placed in the Overworld,
     /// whose own point is a respawn anchor in the Nether.
-    fn server_with_a_nether_anchor() -> (Game<'static>, super::LanHost, std::path::PathBuf) {
+    pub(super) fn server_with_a_nether_anchor()
+    -> (Game<'static>, super::LanHost, std::path::PathBuf) {
         let mut game = crate::game::native_machines::tests::server_game();
         let scratch = std::env::temp_dir().join(format!(
             "horizon-credits-anchor-{}-{}",
@@ -1606,5 +1624,8 @@ mod credits_respawn_tests {
     }
 }
 
+#[cfg(test)]
+#[path = "end_gateway_outside_tests.rs"]
+mod end_gateway_outside_tests;
 #[cfg(test)]
 mod hold_tests;
