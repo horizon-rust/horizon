@@ -428,6 +428,7 @@ mod server_links;
 mod server_packs;
 mod server_travel;
 mod shader_packs;
+mod share_view;
 mod sheep_dye;
 mod shelf;
 mod shield;
@@ -606,6 +607,8 @@ use resource_loader::{
     EntityModels, GameCpuResources, Loaded, LoaderMsg, PendingWorldEntry, WorldRestLoader,
     run_loading, write_report,
 };
+#[cfg(feature = "friends")]
+pub(crate) use share_view::register_friends;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -2903,9 +2906,6 @@ struct Game<'a> {
     level_shapes: horizon_client::chunk::LevelShapes,
     /// This game is that server thread's (game/integrated.rs).
     serving: Option<integrated::Serving>,
-    /// The open world is shared behind an invite code (game/friends.rs).
-    #[cfg(feature = "friends")]
-    friends: Option<friends::Sharing>,
     /// The Social Interactions screen and the players whose chat is hidden (game/social.rs).
     social: social::Social,
     world_options: Option<lan_screen::WorldOptions>,
@@ -5735,7 +5735,6 @@ impl Game<'_> {
         if let Some(log) = self.world.block_log.as_mut() {
             log.extend(held);
         }
-        span("tick_friends", || self.tick_friends());
         horizon_client::spans::time("tick_hand", || self.tick_hand());
         horizon_client::spans::time("tick_sleep", || self.tick_sleep());
         span("sleep_status", || self.announce_sleep_status());
@@ -11097,6 +11096,7 @@ impl Game<'_> {
                         // the world's own ticks.
                         horizon_client::social::set_presence_status(self.presence_status());
                         horizon_client::social::tick();
+                        self.share_tick();
                         // Minecraft.tick: ClientTickEvent.Pre before any of it.
                         self.native_client_tick_pre();
                         if self.title.is_none() && !self.pause {
@@ -11826,8 +11826,6 @@ impl<'a> Game<'a> {
             test_defs_snapshot: false,
             test_highlights: HashMap::new(),
             game_tests: game_tests::GameTests::default(),
-            #[cfg(feature = "friends")]
-            friends: None,
             social: Default::default(),
             debug_keys: Default::default(),
             debug_charts: Default::default(),

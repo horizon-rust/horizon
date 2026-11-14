@@ -24,6 +24,7 @@ pub mod perf;
 pub mod players;
 mod registry;
 pub mod settings;
+pub mod share;
 pub mod tunnel;
 
 use registry::Registry;
@@ -89,6 +90,14 @@ pub trait Hooks: Sync {
     fn tunnel(&self) -> Option<&dyn tunnel::Resolver> {
         None
     }
+
+    /// Once a client tick (20 a second, also while the game is paused or on the title screen),
+    /// with the window's world ([`share`]). Only the window's own player calls it.
+    fn share(&self, _world: &mut dyn share::ShareView) {}
+
+    /// The window's world stopped being open to LAN: Open to LAN's stop, or the player left the
+    /// world. Called at that moment, by the window's own player only.
+    fn lan_closed(&self) {}
 
     /// Opens and shares saved performance captures ([`perf`]); the first hook that offers one is used.
     fn captures(&self) -> Option<&dyn perf::Captures> {
@@ -304,6 +313,20 @@ pub mod engine {
     pub fn shutdown() {
         for hooks in all() {
             hooks.shutdown();
+        }
+    }
+
+    /// [`Hooks::share`].
+    pub fn share(world: &mut dyn share::ShareView) {
+        for hooks in all() {
+            hooks.share(world);
+        }
+    }
+
+    /// [`Hooks::lan_closed`].
+    pub fn lan_closed() {
+        for hooks in all() {
+            hooks.lan_closed();
         }
     }
 

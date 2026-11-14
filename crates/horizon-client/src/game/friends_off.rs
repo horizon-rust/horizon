@@ -13,10 +13,6 @@ pub fn title() -> String {
 }
 
 impl Game<'_> {
-    pub(super) fn friends_lan_closed(&mut self) {}
-
-    pub(super) fn tick_friends(&mut self) {}
-
     /// Only reached by naming the screen (`horizon-ctl`): back to the pause menu.
     pub(super) fn draw_friends_screen(&mut self, _batch: &mut HudBatch) {
         self.screen = Screen::Paused;

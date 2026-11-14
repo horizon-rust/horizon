@@ -26,6 +26,9 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     horizon_client::telemetry::mark_start();
     // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
     crash::on_report(horizon_client::telemetry::keep_crash);
+    // Play with Friends' host side, until it moves to horizon-friends (spec #14167).
+    #[cfg(feature = "friends")]
+    game::register_friends();
     // Crates above the engine registered their hooks before this (horizon-official's `main`),
     // then the Horizon parts still in this crate; none registers after this point.
     game::player_hooks::register();

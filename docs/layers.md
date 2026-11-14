@@ -287,7 +287,9 @@ build pays nothing.
 
 The hooks today: `started` (once, when someone plays: not a dedicated server, a benchmark or an automated run),
 `published` (the world opened to or closed from LAN or friends, on change), `shutdown` (the window closed, the
-world saved) and `tunnel` (the resolver of `friend:` addresses, Play with Friends') and `captures` (Open and Share for saved performance captures, `horizon-perf-share`: with none registered the game offers neither). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
+world saved), `tunnel` (the resolver of `friend:` addresses, Play with Friends'), `captures` (Open and Share for saved performance captures, `horizon-perf-share`: with none registered the game offers neither), `share` (each client tick, the window's world
+through `share::ShareView`: open it to LAN, its players, chat, the clipboard) and `lan_closed` (it stopped being open
+to LAN). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
 `horizon_hooks::engine` that the engine calls where vanilla does the matching thing; give it plain data or a type
 the engine owns, never one from above. A hook that needs engine types the platform doesn't expose yet (a draw
 context for HUD and chat overlays, a settings page) comes with that type's platform API (M6). An extension point
