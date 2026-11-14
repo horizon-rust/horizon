@@ -366,7 +366,7 @@ fn resident_period() -> u32 {
 /// Whether region game `w` has something for the server's thread, so its region must come back: commands, menus
 /// of native mods, a player dead or leaving.
 fn wants_land(w: &Game<'_>) -> bool {
-    if !w.level_teleports.is_empty() {
+    if !w.level_teleports.is_empty() || !w.server_trips.is_empty() {
         return true;
     }
     let Some(h) = w.lan.as_ref() else {
@@ -684,6 +684,8 @@ impl Game<'_> {
         self.lan_songs.append(&mut w.lan_songs);
         self.lan_kinetic_hits.append(&mut w.lan_kinetic_hits);
         self.lan_global_events.append(&mut w.lan_global_events);
+        self.level_teleports.append(&mut w.level_teleports);
+        self.server_trips.append(&mut w.server_trips);
         std::mem::take(&mut w.rand_sequences)
     }
 }
@@ -705,7 +707,9 @@ impl Game<'_> {
     /// Returns `false`: what no region owns, and the whole level in a tick the regions are back, ticks in the
     /// serial phases on this thread.
     pub(super) fn tick_world_regions(&mut self) -> Result<bool> {
-        if !region_threads_on() || self.regions.worker || self.dim != Dim::Overworld {
+        // The End is one region while its dragon fight runs: the fight belongs to the server's thread.
+        let fighting = self.dim == Dim::End && !(self.fight.killed || self.fight.previously_killed);
+        if !region_threads_on() || self.regions.worker || fighting {
             return Ok(false);
         }
         let dim = self.dim;
@@ -819,7 +823,8 @@ impl Game<'_> {
         ) {
             let mob_ids: Vec<u32> = part.mobs.iter().map(|m| m.id).collect();
             self.lend_region(&mut w, part);
-            w.copy_tick_settings_from(self);
+            // The level's own settings: a game made for another dimension earlier is this one's now.
+            w.copy_world_settings_from(self);
             w.refill_entity_ids(&pool);
             let conns: Vec<u32> = guests.iter().map(|g| g.conn).collect();
             host.hub.away.extend(conns.iter().copied());
@@ -1020,10 +1025,20 @@ impl Game<'_> {
         self.regions.idle.entry(dim).or_default().extend(back);
     }
 
-    /// Every resident region of the level in place back (before a save or a stop).
+    /// Every resident region of every level back (before a save or a stop).
     pub(super) fn land_residents(&mut self) {
-        if let Some(set) = self.regions.resident.remove(&self.dim) {
-            self.land_resident_set(set);
+        let home = self.dim;
+        let dims: Vec<Dim> = self.regions.resident.keys().copied().collect();
+        for dim in dims {
+            if dim != self.dim && self.enter_level(None, dim).is_err() {
+                continue;
+            }
+            if let Some(set) = self.regions.resident.remove(&dim) {
+                self.land_resident_set(set);
+            }
+        }
+        if self.dim != home {
+            let _ = self.enter_level(None, home);
         }
     }
 
