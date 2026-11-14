@@ -412,12 +412,18 @@ impl Game<'_> {
         chunks: &[ChunkPos],
     ) -> horizon_client::random_sequences::RandomSequences {
         let stand_in = self.world.stand_in();
-        self.world
-            .take_back(std::mem::replace(&mut w.world, stand_in));
-        self.block_ticks
-            .take_back(std::mem::take(&mut w.block_ticks), chunks);
-        self.random_tick_sections
-            .take_back(std::mem::take(&mut w.random_tick_sections));
+        let region_world = std::mem::replace(&mut w.world, stand_in);
+        let region_ticks = std::mem::take(&mut w.block_ticks);
+        let region_sections = std::mem::take(&mut w.random_tick_sections);
+        let world = &mut self.world;
+        std::thread::scope(|scope| {
+            let back = scope.spawn(move || world.take_back(region_world));
+            self.block_ticks.take_back(region_ticks, chunks);
+            self.random_tick_sections.take_back(region_sections);
+            if let Err(e) = back.join() {
+                std::panic::resume_unwind(e);
+            }
+        });
         self.mobs.extend(drain(&mut w.mobs));
         self.creaking.take_scanned_back(&mut w.creaking);
         self.dropped.extend(drain(&mut w.dropped));
@@ -585,6 +591,7 @@ impl Game<'_> {
                     .collect()
             })
             .unwrap_or_default();
+        let t0 = std::time::Instant::now();
         let mut host = self.lan.take().expect("checked above");
         let mut split_guests = host
             .hub
@@ -608,6 +615,7 @@ impl Game<'_> {
             w.lan = Some(shell);
             flights.push((w, chunks, conns));
         }
+        let t_lend = t0.elapsed();
         // The regions tick at once: a thread for each group of them, as many as there are cores.
         let lanes = horizon_threads::worker_count()
             .clamp(1, 16)
@@ -641,6 +649,7 @@ impl Game<'_> {
                 results.push(outcome.map_err(Into::into));
             }
         }
+        let t_run = t0.elapsed();
         // Landed in region order.
         let mut back = Vec::with_capacity(flights.len());
         for (mut w, chunks, _) in flights {
@@ -654,6 +663,27 @@ impl Game<'_> {
         self.lan = Some(host);
         back.extend(extra);
         self.regions.idle.insert(dim, back);
+        {
+            use std::sync::atomic::AtomicU64;
+            static N: AtomicU64 = AtomicU64::new(0);
+            static SUM: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+            let t_land = t0.elapsed();
+            let us = |d: std::time::Duration| d.as_micros() as u64;
+            SUM[0].fetch_add(us(t_lend), Ordering::Relaxed);
+            SUM[1].fetch_add(us(t_run) - us(t_lend), Ordering::Relaxed);
+            SUM[2].fetch_add(us(t_land) - us(t_run), Ordering::Relaxed);
+            let n = N.fetch_add(1, Ordering::Relaxed) + 1;
+            if n % 200 == 0 {
+                let avg = |i: usize| SUM[i].swap(0, Ordering::Relaxed) as f64 / 200_000.0;
+                log::info!(
+                    "regions: split+lend {:.1} ms, run {:.1} ms, land {:.1} ms (avg of 200 ticks, {} regions)",
+                    avg(0),
+                    avg(1),
+                    avg(2),
+                    regions.count
+                );
+            }
+        }
         results.into_iter().collect::<Result<Vec<()>>>()?;
         Ok(true)
     }
@@ -809,9 +839,23 @@ impl Game<'_> {
             .map(|_| horizon_core::random::RandomSource::next_long(&mut self.world.random))
             .collect();
         let tick_seeds: Vec<i32> = seeds.iter().map(|s| *s as i32).collect();
-        let worlds = self.world.lend(n, of_chunk, &seeds);
-        let ticks = self.block_ticks.lend(&chunks, &tick_seeds);
-        let sections = self.random_tick_sections.lend(n, of_chunk);
+        // The world's chunks, the scheduled ticks and the random-tick sections move on threads of their own at
+        // once (each touches only its own part of the level), the entities are sorted meanwhile on this one.
+        let (world, block_ticks, sections_of) = (
+            &mut self.world,
+            &mut self.block_ticks,
+            &mut self.random_tick_sections,
+        );
+        let (chunks_ref, seeds_ref, tick_seeds_ref) = (&chunks, &seeds, &tick_seeds);
+        let (worlds, ticks, sections) = std::thread::scope(|scope| {
+            let worlds = scope.spawn(move || world.lend(n, of_chunk, seeds_ref));
+            let ticks = scope.spawn(move || block_ticks.lend(chunks_ref, tick_seeds_ref));
+            let sections = sections_of.lend(n, of_chunk);
+            match (worlds.join(), ticks.join()) {
+                (Ok(w), Ok(t)) => (w, t, sections),
+                (Err(e), _) | (_, Err(e)) => std::panic::resume_unwind(e),
+            }
+        });
         let mut sequences = self.rand_sequences.split(n + 1);
         // The level's own sequences stay with the level (the first of the split).
         self.rand_sequences = sequences.remove(0);

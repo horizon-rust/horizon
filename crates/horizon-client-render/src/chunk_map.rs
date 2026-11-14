@@ -213,10 +213,10 @@ impl ChunkMap {
             if self.fresh.remove(&key) {
                 out[r].fresh.insert(key);
             }
-            for z in key.1 - 1..=key.1 + 1 {
-                for x in key.0 - 1..=key.0 + 1 {
-                    *out[r].near.entry((x, z)).or_insert(0) += 1;
-                }
+            // The count of resident neighbours as the whole map has it: a region owns a ring of chunks around the
+            // ones it ticks, so only the edge of what it owns counts neighbours it was not lent.
+            if let Some(&n) = self.near.get(&key) {
+                out[r].near.insert(key, n);
             }
             out[r].columns.insert(key, chunk);
         }
