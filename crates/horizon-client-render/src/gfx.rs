@@ -1188,6 +1188,7 @@ pub struct Renderer {
     crumbling_pipeline: wgpu::RenderPipeline,
     shadow_blob_pipeline: wgpu::RenderPipeline,
     translucent_item_pipeline: wgpu::RenderPipeline,
+    translucent_beam_pipeline: wgpu::RenderPipeline,
     /// `RenderPipelines.WATER_MASK`: depth writes only, no colour.
     water_mask_pipeline: wgpu::RenderPipeline,
     cloud_pipeline: wgpu::RenderPipeline,
@@ -3961,6 +3962,15 @@ impl Renderer {
             alpha_blend,
             false,
         );
+        let translucent_beam_pipeline = entity_pipeline(
+            "Translucent beam",
+            None,
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            Default::default(),
+            alpha_blend,
+            false,
+        );
         let cloud_pipeline = entity_pipeline(
             "Clouds",
             Some(wgpu::Face::Back),
@@ -4904,6 +4914,7 @@ impl Renderer {
             crumbling_pipeline,
             shadow_blob_pipeline,
             translucent_item_pipeline,
+            translucent_beam_pipeline,
             water_mask_pipeline,
             cloud_pipeline,
             hdr_cloud_mark_pipeline,
@@ -9293,6 +9304,7 @@ impl Renderer {
             shadow_quads,
             translucent_particle_quads,
             translucent_item_quads,
+            translucent_beam_quads,
             oit_entity_quads,
             fluid_quads,
             world_text_quads,
@@ -9325,6 +9337,7 @@ impl Renderer {
             + shadow_quads
             + translucent_particle_quads
             + translucent_item_quads
+            + translucent_beam_quads
             + oit_entity_quads
             + fluid_quads
             + world_text_quads
@@ -9343,6 +9356,10 @@ impl Renderer {
             - native_solid_quads
             - native_cutout_quads
             - native_cutout_mipped_quads;
+        let beam_start = base_quads - translucent_beam_quads;
+        let item_start = beam_start - translucent_item_quads;
+        let particle_start = item_start - translucent_particle_quads;
+        let shadow_start = particle_start - shadow_quads;
         let native_clouds = self.native.as_ref().is_none_or(|n| n.vanilla_clouds);
         let cloud_quads = if let Some(input) = frame.clouds.as_ref().filter(|_| native_clouds) {
             let (rebuilt, uniform) =
@@ -10821,15 +10838,7 @@ impl Renderer {
                 pass.set_pipeline(warped.map_or(&self.shadow_blob_pipeline, |w| &w.entity_shadows));
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
-                    0..shadow_quads * 6,
-                    ((base_quads
-                        - translucent_item_quads
-                        - translucent_particle_quads
-                        - shadow_quads)
-                        * 4) as i32,
-                    0..1,
-                );
+                pass.draw_indexed(0..shadow_quads * 6, (shadow_start * 4) as i32, 0..1);
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if translucent_item_quads > 0 && !oit_on {
@@ -10839,20 +10848,22 @@ impl Renderer {
                 );
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
-                    0..translucent_item_quads * 6,
-                    ((base_quads - translucent_item_quads) * 4) as i32,
-                    0..1,
-                );
+                pass.draw_indexed(0..translucent_item_quads * 6, (item_start * 4) as i32, 0..1);
                 if light_marks(self.output.frame.format, self.hdr.is_some()) {
                     // A glowing item in the world (Item sheet quads), as entities are.
                     pass.set_pipeline(hdr_mark);
-                    pass.draw_indexed(
-                        0..translucent_item_quads * 6,
-                        ((base_quads - translucent_item_quads) * 4) as i32,
-                        0..1,
-                    );
+                    pass.draw_indexed(0..translucent_item_quads * 6, (item_start * 4) as i32, 0..1);
                 }
+                pass.set_bind_group(0, &self.group, &[]);
+            }
+            if translucent_beam_quads > 0 && !oit_on {
+                pass.stage(self.own_timing.as_mut(), "translucent beam");
+                pass.set_pipeline(
+                    warped.map_or(&self.translucent_beam_pipeline, |w| &w.translucent_beam),
+                );
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                pass.draw_indexed(0..translucent_beam_quads * 6, (beam_start * 4) as i32, 0..1);
                 pass.set_bind_group(0, &self.group, &[]);
             }
             // Native terrain models use the block sprite arrays with their own
@@ -11112,27 +11123,14 @@ impl Renderer {
                                 + translucent_crumbling_quads
                                 + water_mask_quads,
                         );
-                        quads(
-                            pass,
-                            &f.shadow[s],
-                            shadow_quads,
-                            base_quads
-                                - translucent_item_quads
-                                - translucent_particle_quads
-                                - shadow_quads,
-                        );
+                        quads(pass, &f.shadow[s], shadow_quads, shadow_start);
                         quads(
                             pass,
                             &f.entity[s],
                             translucent_particle_quads,
-                            base_quads - translucent_item_quads - translucent_particle_quads,
+                            particle_start,
                         );
-                        quads(
-                            pass,
-                            &f.entity[s],
-                            translucent_item_quads,
-                            base_quads - translucent_item_quads,
-                        );
+                        quads(pass, &f.entity[s], translucent_item_quads, item_start);
                         // Translucent, emissive, eyes and breeze wind models:
                         // the same fragment, their light and shading are in
                         // the vertices.
@@ -11221,11 +11219,8 @@ impl Renderer {
                         for (quads, first) in [
                             (oit_entity_quads, base_quads),
                             (additive_quads, world_quads),
-                            (translucent_item_quads, base_quads - translucent_item_quads),
-                            (
-                                translucent_particle_quads,
-                                base_quads - translucent_item_quads - translucent_particle_quads,
-                            ),
+                            (translucent_item_quads, item_start),
+                            (translucent_particle_quads, particle_start),
                         ] {
                             if quads > 0 {
                                 pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
@@ -11301,7 +11296,7 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
                     0..translucent_particle_quads * 6,
-                    ((base_quads - translucent_item_quads - translucent_particle_quads) * 4) as i32,
+                    (particle_start * 4) as i32,
                     0..1,
                 );
                 if light_marks(self.output.frame.format, self.hdr.is_some()) {
@@ -11309,8 +11304,7 @@ impl Renderer {
                     pass.set_pipeline(hdr_entity_mark);
                     pass.draw_indexed(
                         0..translucent_particle_quads * 6,
-                        ((base_quads - translucent_item_quads - translucent_particle_quads) * 4)
-                            as i32,
+                        (particle_start * 4) as i32,
                         0..1,
                     );
                 }
@@ -13210,7 +13204,7 @@ mod tests {
         let mut batch = super::EntityBatch::default();
         let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8), false);
         let vertices = &batch.combined;
-        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             vertices
                 .as_chunks::<4>()

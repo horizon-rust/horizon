@@ -162,6 +162,7 @@ pub(super) struct Pipelines {
     pub entities: wgpu::RenderPipeline,
     pub static_entities: wgpu::RenderPipeline,
     pub translucent_items: wgpu::RenderPipeline,
+    pub translucent_beam: wgpu::RenderPipeline,
     pub text: wgpu::RenderPipeline,
     pub entity_shadows: wgpu::RenderPipeline,
     pub hdr_mark: wgpu::RenderPipeline,
@@ -474,6 +475,7 @@ impl WorldWarps {
             entities: entity_pipeline(&ENTITIES),
             static_entities: entity_pipeline(&STATIC_ENTITIES),
             translucent_items: entity_pipeline(&TRANSLUCENT_ITEMS),
+            translucent_beam: entity_pipeline(&TRANSLUCENT_BEAM),
             text: entity_pipeline(&TEXT),
             entity_shadows: entity_pipeline(&ENTITY_SHADOWS),
             hdr_mark: entity_pipeline(&HDR_MARK),
@@ -563,6 +565,12 @@ const STATIC_ENTITIES: EntityLook = EntityLook {
 };
 const TRANSLUCENT_ITEMS: EntityLook = EntityLook {
     label: "Warped translucent items",
+    bias: NO_BIAS,
+    ..ENTITIES
+};
+const TRANSLUCENT_BEAM: EntityLook = EntityLook {
+    label: "Warped translucent beam",
+    depth_write: false,
     bias: NO_BIAS,
     ..ENTITIES
 };

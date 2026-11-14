@@ -13,10 +13,12 @@ use super::Vertex;
 /// With improved transparency on, quads tagged `OIT_ENTITY` are a tenth
 /// material at the end: the render types vanilla gives an `OitPipelineSet`
 /// (translucent, emissive, eyes and breeze wind entity models). Off, the tag is
-/// ignored and they stay in the first one, in their order.
+/// ignored and they stay in the first one, in their order (except for the translucent
+/// beacon beam glow, which draws as material 9 without depth writes).
 /// Sorted still-fluid geometry follows, then the two native world-canvas text materials,
 /// NORMAL and POLYGON_OFFSET. Material storage order is independent of their draw stages.
-const MATERIALS: usize = 16;
+const MATERIALS: usize = 17;
+pub const BEACON_BEAM_OVERLAY: u32 = 6;
 pub const TERRAIN_MODEL_SOLID_OVERLAY: u32 = 42;
 pub const TERRAIN_MODEL_CUTOUT_OVERLAY: u32 = 43;
 pub const TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY: u32 = 44;
@@ -83,20 +85,23 @@ pub const WORLD_TEXT_POLYGON_OFFSET_OVERLAY: u32 = 40;
 /// bits, as entity.wgsl reads it; HDR output's tier rides in the high ones.
 fn material(layer: u32, oit: bool) -> usize {
     match layer & 0xffff {
-        TERRAIN_MODEL_SOLID_OVERLAY => return 13,
-        TERRAIN_MODEL_CUTOUT_OVERLAY => return 14,
-        TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY => return 15,
+        TERRAIN_MODEL_SOLID_OVERLAY => return 14,
+        TERRAIN_MODEL_CUTOUT_OVERLAY => return 15,
+        TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY => return 16,
         _ => {}
     }
     if layer & 0xffff == FLUID_OVERLAY {
-        return 10;
+        return 11;
     }
     if oit && layer & OIT_ENTITY != 0 {
+        return 10;
+    }
+    if !oit && layer & 0xffff == BEACON_BEAM_OVERLAY && layer & OIT_ENTITY != 0 {
         return 9;
     }
     match layer & 0xffff {
-        WORLD_TEXT_OVERLAY => 11,
-        WORLD_TEXT_POLYGON_OFFSET_OVERLAY => 12,
+        WORLD_TEXT_OVERLAY => 12,
+        WORLD_TEXT_POLYGON_OFFSET_OVERLAY => 13,
         TEXT_POLYGON_OFFSET_OVERLAY => 1,
         11 => 2,
         12 => 3,
@@ -156,7 +161,7 @@ impl EntityBatch {
         self.combined.clear();
         self.combined
             .reserve(entity_vertices + additive.len() + hand.len() + see_through.len());
-        for runs in &self.runs[..10] {
+        for runs in &self.runs[..11] {
             for &(first, count) in runs {
                 self.combined
                     .extend_from_slice(&entities[first * 4..(first + count) * 4]);
@@ -174,7 +179,7 @@ impl EntityBatch {
                         normal: [0; 4],
                         ..*v
                     }));
-                    counts[9] += 1;
+                    counts[10] += 1;
                     self.moved_additive += 1;
                 }
             }
@@ -182,7 +187,7 @@ impl EntityBatch {
         // Fluid and RenderType.text sort their own alpha-blended quads far to
         // near. Fluid precedes both world-canvas layers, after existing materials
         // (including eyes moved out of additive).
-        for runs in &self.runs[10..13] {
+        for runs in &self.runs[11..14] {
             let start = self.combined.len();
             for &(first, count) in runs {
                 self.combined
@@ -201,7 +206,7 @@ impl EntityBatch {
                 });
         }
         // Native solid/cutout models are depth writing and keep their submission order.
-        for runs in &self.runs[13..] {
+        for runs in &self.runs[14..] {
             for &(first, count) in runs {
                 self.combined
                     .extend_from_slice(&entities[first * 4..(first + count) * 4]);
@@ -256,7 +261,7 @@ mod tests {
             &quad(0, 12.0),
             true,
         );
-        assert_eq!(counts, [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 2, 1, 1]);
+        assert_eq!(counts, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 2, 1, 1]);
         let xs: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(
             xs,
@@ -305,7 +310,7 @@ mod tests {
         let mut batch = EntityBatch::default();
         assert_eq!(
             batch.update(&entities, &additive, &quad(0, 9.0), &quad(0, 10.0), true),
-            [1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 1, 0, 0, 0]
+            [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 1, 0, 0, 0]
         );
         let positions: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(
@@ -412,12 +417,12 @@ mod tests {
         let mut batch = EntityBatch::default();
         // Off: the tag changes nothing, the quads keep their place.
         let counts = batch.update(&entities, &[], &[], &[], false);
-        assert_eq!(counts, [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts, [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 1.0, 2.0, 4.0, 3.0]);
         // On: the tagged quads come last, in order.
         let counts = batch.update(&entities, &[], &[], &[], true);
-        assert_eq!(counts, [2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts, [2, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0]);
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 2.0, 3.0, 1.0, 4.0]);
     }
@@ -441,17 +446,40 @@ mod tests {
         let mut batch = EntityBatch::default();
         // Off: untouched.
         let counts = batch.update(&entities, &additive, &[], &[], false);
-        assert_eq!((counts[9], batch.moved_additive), (0, 0));
+        assert_eq!((counts[10], batch.moved_additive), (0, 0));
         assert_eq!(batch.combined.len(), 12);
         assert_eq!(batch.combined[4].layer, 2 | OIT_ENTITY | 3 << 16);
         // On: the eyes are an entity quad without the additive overlay, the ray stays.
         let counts = batch.update(&entities, &additive, &[], &[], true);
-        assert_eq!((counts[0], counts[9], batch.moved_additive), (1, 1, 1));
+        assert_eq!((counts[0], counts[10], batch.moved_additive), (1, 1, 1));
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 1.0, 2.0]);
         assert_eq!(batch.combined[4].layer, OIT_ENTITY | 3 << 16);
         assert_eq!(batch.combined[4].normal, [0; 4]);
         assert_eq!(batch.combined[8].layer, 2);
+    }
+
+    #[test]
+    fn beacon_beam_routes_to_material_9_when_oit_off_and_10_when_on() {
+        let quad = |layer: u32| {
+            (0..4).map(move |_| Vertex {
+                layer,
+                ..geometry(1, false)[0]
+            })
+        };
+        // Beam core (layer 6) and translucent glow (layer 6 | OIT_ENTITY).
+        let entities: Vec<Vertex> = [6, 6 | OIT_ENTITY].into_iter().flat_map(quad).collect();
+        let mut batch = EntityBatch::default();
+        // OIT off: glow goes to material 9 (drawn with depth_write: false).
+        let counts = batch.update(&entities, &[], &[], &[], false);
+        assert_eq!(counts[0], 1);
+        assert_eq!(counts[9], 1);
+        assert_eq!(counts[10], 0);
+        // OIT on: glow goes to material 10 (OIT pass).
+        let counts = batch.update(&entities, &[], &[], &[], true);
+        assert_eq!(counts[0], 1);
+        assert_eq!(counts[9], 0);
+        assert_eq!(counts[10], 1);
     }
 
     #[test]
