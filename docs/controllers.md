@@ -981,10 +981,12 @@ Bluetooth.
 
 ## Xbox One output
 
-Gilrs only reads the pads, and its force feedback has no trigger motors. An
-Xbox One or Series pad (Microsoft 045e; the ids in `horizon-dualsense`'s
-`xbox::XBOX_ONE`) is also written to directly: over hidapi, and on Windows
-through Windows.Gaming.Input for a pad on a cable.
+Gilrs only reads the pads, and its force feedback has no trigger motors. A pad
+in use is also written to directly: Microsoft's Xbox One and Series pads
+(045e; the ids in `horizon-dualsense`'s `xbox::XBOX_ONE`) over hidapi, and, on
+Windows, any Xbox-style pad Windows.Gaming.Input lists (a GameSir G7, an
+8BitDo in Xbox mode) through WGI, whose four motors don't need Microsoft's
+ids.
 
 - **Report.** The pad has four motors: the two handles (heavy and light) and
   one in each trigger, the impulse triggers. A vibration writes all four:
@@ -993,8 +995,11 @@ through Windows.Gaming.Input for a pad on a cable.
   effect's duration, delay and loop bytes); report 0x03 over Bluetooth, 9
   bytes, with the same four levels. SDL's `ControllerHasTriggerRumble` marks
   only Microsoft's own pads: a licensed third-party pad takes the same bytes
-  and buzzes its handles, with nothing in its triggers. Unit tests pin the
-  bytes to SDL's `SDL_hidapi_xboxone.c`.
+  and buzzes its handles, with nothing in its triggers. On Windows,
+  Windows.Gaming.Input's four motors reach a third-party Xbox-style pad's
+  handles too, so a GameSir or an 8BitDo in Xbox mode buzzes both sides and
+  both triggers when it has them. Unit tests pin the bytes to SDL's
+  `SDL_hidapi_xboxone.c`.
 - **Windows on a cable.** A wired pad's HID endpoint is XGIP's stand-in and
   takes no output report (SDL skips every `\\?\HID#` path there). Windows.
   Gaming.Input is the way to its trigger motors: `Gamepad::SetVibration`
@@ -1014,6 +1019,11 @@ through Windows.Gaming.Input for a pad on a cable.
   takes its HID report and falls back to WGI. That also settles the case where
   a cable is plugged into a pad that is still paired over Bluetooth, which
   otherwise opened a dead Bluetooth handle.
+- **Which pad.** The output follows the pad the player is using, not the first
+  one the system lists: the writer takes its ids and its place among identical
+  pads, then asks WGI or hidapi for that one. Connecting a second controller
+  therefore neither takes the first one's output nor silences it, and each pad
+  keeps its own four motors.
 - **Switching links.** When a controller connects or disconnects, the pad's
   own output is dropped instead of kept: a handle to the old link keeps
   accepting writes and buzzes nothing. The next frame opens the pad afresh on
@@ -1026,10 +1036,11 @@ through Windows.Gaming.Input for a pad on a cable.
   steps.
 - **Trigger levels.** The triggers feel where the action is: a broken block
   buzzes both, an explosion and a totem both, a hit both (the handles carry it
-  too), and the radial menu's ticks neither. **Impulse Triggers**
-  (`impulseTriggers:`, on by default) stops the trigger motors and leaves the
-  handles; **Block Vibration** (`blockVibration:`) turns off the broken
-  block's tick.
+  too), and the radial menu's ticks neither. The broken block's tick is one
+  fixed level, 35% on all four motors, so every block feels the same.
+  **Impulse Triggers** (`impulseTriggers:`, on by default) stops the trigger
+  motors and leaves the handles; **Block Vibration** (`blockVibration:`)
+  turns off the broken block's tick.
 - **Handles and triggers.** Windows lists an Xbox pad twice, the WGI gamepad
   with force feedback and a raw HID entry without one; when the pad in use is
   the second, falling back to gilrs' rumble goes to its gamepad twin. That
@@ -1055,11 +1066,12 @@ them (Chromium's writer is BSD):
 
 Verified against the references and a player's pads: `cargo run -p
 horizon-dualsense --example xbox -- handles`, `-- triggers` and `-- link` each
-played physically over Bluetooth (the four motors and the link's stop), and,
-over a cable in the game, the right trigger buzzed on a broken block and the
-handles on a hit — Windows.Gaming.Input's trigger motors do reach a wired pad.
-The two-trigger block tick and the four-motor hit still need a pad to confirm,
-as does switching cable ↔ Bluetooth mid-game.
+played physically over Bluetooth (the four motors and the link's stop). In the
+game on a player's wired 1708 pad, both triggers buzzed on a broken block, and
+cable ↔ Bluetooth worked both ways without a restart —
+Windows.Gaming.Input's trigger motors do reach a wired pad. The four-motor hit
+still needs a feel check, and a GameSir G7 and a second controller's pad need
+a physical check.
 
 `cargo run -p horizon-dualsense --example xbox -- all` plays each motor on a
 real pad, which is how to check a change without the game.

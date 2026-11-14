@@ -6,7 +6,7 @@
 //! On Windows a pad on a cable goes through Windows.Gaming.Input, whose four motors are the only
 //! way to its triggers there; a Bluetooth pad uses its HID report, as on Linux and macOS.
 use horizon_dualsense::xbox::{
-    Motors,
+    Motors, Target,
     device::{Link, Xbox},
 };
 use std::time::Duration;
@@ -21,7 +21,7 @@ fn main() {
         link();
     }
     let api = hidapi::HidApi::new().expect("hidapi");
-    let mut pad = match Xbox::open(&api) {
+    let mut pad = match Xbox::open(&api, Target::ANY) {
         Some(Ok(pad)) => pad,
         Some(Err(e)) => panic!("the Xbox pad is there but can't be opened: {e}"),
         None => panic!("no Xbox One pad found that takes output on this system"),
@@ -76,7 +76,7 @@ fn main() {
 /// The writer thread: a two-step vibration, and the stop when it drops.
 fn link() {
     println!("link:");
-    let link = Link::start();
+    let link = Link::start(Target::ANY);
     let start = std::time::Instant::now();
     while link.open().is_none() && start.elapsed() < Duration::from_secs(3) {
         std::thread::sleep(Duration::from_millis(20));

@@ -45,6 +45,47 @@ pub fn is_xbox_one(vendor: u16, product: u16) -> bool {
     vendor == MICROSOFT && XBOX_ONE.contains(&product)
 }
 
+/// Which pad a [`Link`] writes to: its USB ids, and which of several identical pads it is (0 is
+/// the first the system lists). Gilrs tells the game which pad the player is using; the writer
+/// asks Windows.Gaming.Input or hidapi for that one, so a second controller can't take the first
+/// one's output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Target {
+    pub vendor: u16,
+    pub product: u16,
+    pub index: usize,
+}
+
+impl Target {
+    /// The first pad the output can drive, whatever its ids: what the example and older callers
+    /// ask for. Only Microsoft's Xbox One pads qualify.
+    pub const ANY: Target = Target {
+        vendor: 0,
+        product: 0,
+        index: 0,
+    };
+
+    /// The pad with these ids, the `index`-th of its model in the order the system lists them.
+    pub fn new(vendor: u16, product: u16, index: usize) -> Target {
+        Target {
+            vendor,
+            product,
+            index,
+        }
+    }
+
+    /// Whether a pad with these ids is this target. [`Target::ANY`] matches every Xbox One pad.
+    pub fn matches(self, vendor: u16, product: u16) -> bool {
+        self == Target::ANY || (self.vendor == vendor && self.product == product)
+    }
+
+    /// Whether the Xbox One reports are the pad's own. Only Microsoft's pads are known to take
+    /// them; another pad's four motors are reachable through Windows.Gaming.Input alone.
+    pub fn xbox_reports(self) -> bool {
+        is_xbox_one(self.vendor, self.product)
+    }
+}
+
 /// The pad's four motors, 0..255: the left (heavy, low) and right (light, high) handles, then
 /// the left and right triggers' impulse motors.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -190,5 +231,19 @@ mod tests {
         assert!(!is_xbox_one(MICROSOFT, 0x02ff), "XGIP's software device");
         assert!(!is_xbox_one(0x054c, 0x0ce6), "a DualSense");
         assert!(!is_xbox_one(0x045e, 0x0001), "another Microsoft device");
+    }
+
+    #[test]
+    fn a_target_names_one_pad_and_any_is_every_xbox_one() {
+        let gamepad = Target::new(0x3537, 0x1022, 1);
+        assert!(gamepad.matches(0x3537, 0x1022));
+        assert!(!gamepad.matches(0x3537, 0x1023), "another GameSir model");
+        assert!(!gamepad.matches(MICROSOFT, 0x02fd), "the Xbox One");
+        // A third-party pad's reports are not the Xbox One ones: only WGI drives its four motors.
+        assert!(!gamepad.xbox_reports());
+        assert!(Target::new(MICROSOFT, 0x02fd, 0).xbox_reports());
+        // The first Xbox One pad, as before targets existed.
+        assert!(Target::ANY.matches(MICROSOFT, 0x02fd));
+        assert!(!Target::ANY.xbox_reports());
     }
 }

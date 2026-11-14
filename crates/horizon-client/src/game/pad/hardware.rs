@@ -36,6 +36,9 @@ pub(super) struct Devices {
     output: Option<horizon_dualsense::Link>,
     /// The active pad is an Xbox One pad.
     xbox: bool,
+    /// Which physical pad the Xbox output drives: the active one, not just the first there is, so
+    /// a second controller can't take the first one's motors.
+    xbox_target: xbox::Target,
     /// Its own output over HID: the handles and the impulse triggers, which gilrs has no force
     /// feedback for; started like the DualSense's.
     xbox_output: Option<xbox::Link>,
@@ -121,9 +124,37 @@ fn is_dualsense(pad: &gilrs::Gamepad) -> bool {
         (Some(vendor), Some(product)) if horizon_dualsense::is_dualsense(vendor, product))
 }
 
+/// Whether a pad's own output takes it. On Windows, Windows.Gaming.Input drives the four motors
+/// of any Xbox-style pad it lists, Microsoft's or not (a GameSir, an 8BitDo in Xbox mode), so every
+/// pad that isn't a DualSense (which has its own output) rides the Xbox path; one WGI can't reach
+/// leaves the link closed and gilrs' force feedback plays instead. Elsewhere only Microsoft's
+/// Xbox One ids are known to take the Xbox One reports.
+#[cfg(windows)]
+fn is_xbox_pad(pad: &gilrs::Gamepad) -> bool {
+    !is_dualsense(pad)
+}
+
+#[cfg(not(windows))]
 fn is_xbox_pad(pad: &gilrs::Gamepad) -> bool {
     matches!((pad.vendor_id(), pad.product_id()),
         (Some(vendor), Some(product)) if xbox::is_xbox_one(vendor, product))
+}
+
+/// The pad `id` as the Xbox writer names it: its ids, and which of several identical pads it is
+/// in the system's order, so the writer opens this pad and not the first one there is.
+fn xbox_target(gilrs: &gilrs::Gilrs, id: PadId) -> Option<xbox::Target> {
+    let pad = gilrs.connected_gamepad(id)?;
+    let (vendor, product) = (pad.vendor_id()?, pad.product_id()?);
+    let mut index = 0;
+    for (other, same) in gilrs.gamepads() {
+        if other == id {
+            return Some(xbox::Target::new(vendor, product, index));
+        }
+        if (same.vendor_id(), same.product_id()) == (Some(vendor), Some(product)) {
+            index += 1;
+        }
+    }
+    None
 }
 
 /// SDL rows gilrs' bundled DB is missing (or only ships for Windows). Newer
@@ -331,6 +362,8 @@ impl Pads {
             self.menu.armed = None;
             self.radial.cancel();
             self.menu.stop_craft();
+            // The output follows the pad in use: a new one must not keep writing to the old.
+            self.devices.xbox_output = None;
         }
         let Some(pad) = self
             .devices
@@ -340,6 +373,7 @@ impl Pads {
             // Before any pad is touched (the virtual pad playing), a DualSense still shows it.
             self.devices.dualsense = gilrs.gamepads().any(|(_, pad)| is_dualsense(&pad));
             self.devices.xbox = gilrs.gamepads().any(|(_, pad)| is_xbox_pad(&pad));
+            self.devices.xbox_target = xbox::Target::ANY;
             self.device = gilrs.gamepads().next().map(|(_, pad)| device_of(&pad));
             return PadState::default();
         };
@@ -347,6 +381,11 @@ impl Pads {
         self.style = GlyphStyle::of_device(pad.vendor_id(), pad.product_id());
         self.devices.dualsense = is_dualsense(&pad);
         self.devices.xbox = is_xbox_pad(&pad);
+        self.devices.xbox_target = self
+            .devices
+            .active
+            .and_then(|id| xbox_target(gilrs, id))
+            .unwrap_or(xbox::Target::ANY);
         state_of(&pad)
     }
 }
@@ -644,7 +683,7 @@ impl Game<'_> {
             && self.pad_has_window()
             && self.pad.devices.xbox_output.is_none()
         {
-            self.pad.devices.xbox_output = Some(xbox::Link::start());
+            self.pad.devices.xbox_output = Some(xbox::Link::start(self.pad.devices.xbox_target));
         }
         self.pad_haptics();
         self.pad_show();
@@ -998,20 +1037,21 @@ mod xbox_output_tests {
     #[test]
     fn the_trigger_motors_follow_the_pulse_unless_turned_off() {
         let on = xbox_steps(Rumble::BlockBroken, true);
-        // Both triggers: the broken block is felt in each hand.
-        assert_eq!(on[0].0.left_trigger, 179);
-        assert_eq!(on[0].0.right_trigger, 179);
-        assert!(on[0].0.weak > 0, "the handles still buzz");
+        // All four at one fixed 35%: both triggers and both grips.
+        assert_eq!(on[0].0.left_trigger, 89);
+        assert_eq!(on[0].0.right_trigger, 89);
+        assert_eq!(on[0].0.strong, 89);
+        assert_eq!(on[0].0.weak, 89);
         let off = xbox_steps(Rumble::BlockBroken, false);
         assert_eq!([off[0].0.left_trigger, off[0].0.right_trigger], [0, 0]);
-        assert!(off[0].0.weak > 0);
+        assert_eq!([off[0].0.strong, off[0].0.weak], [89, 89]);
     }
 
     #[test]
     fn a_hit_drives_all_four_motors_hard() {
         let motors = xbox_steps(Rumble::Hurt(4.0), true)[0].0;
-        assert!(motors.strong >= 153, "the heavy handle: {}", motors.strong);
-        assert!(motors.weak >= 128, "the light handle: {}", motors.weak);
-        assert_eq!([motors.left_trigger, motors.right_trigger], [179, 179]);
+        assert!(motors.strong >= 178, "the heavy handle: {}", motors.strong);
+        assert!(motors.weak >= 153, "the light handle: {}", motors.weak);
+        assert_eq!([motors.left_trigger, motors.right_trigger], [166, 166]);
     }
 }

@@ -2,24 +2,29 @@
 //! impulse-trigger motors of a pad on a cable, and one that shares the pad with other programs
 //! instead of taking its HID endpoint. Windows lists an Xbox pad as a WGI gamepad and as a raw
 //! HID entry; only the first is a WGI gamepad, which is the one this opens.
-use crate::xbox::{Motors, is_xbox_one};
+use crate::xbox::{Motors, Target, is_xbox_one};
 use windows::Gaming::Input::{Gamepad, GamepadVibration, RawGameController};
 
 /// A pad WGI can make vibrate.
+#[derive(Clone)]
 pub struct Pad {
     gamepad: Gamepad,
     wireless: bool,
 }
 
 impl Pad {
-    /// The Xbox One pad WGI lists that is also a WGI gamepad (the raw HID entry beside it is not):
-    /// a wired one before a wireless one, because a pad on a cable can still be listed over
-    /// Bluetooth for a moment. `None` when there is none; an error when WGI itself is unavailable.
-    pub fn open() -> windows::core::Result<Option<Pad>> {
+    /// The WGI gamepad for `target`: a wired one before a wireless one, because a pad on a cable
+    /// can still be listed over Bluetooth for a moment. A target with no matching gamepad (the
+    /// ids gilrs reports can differ from the ones WGI does) falls back to the first WGI gamepad,
+    /// so a third-party Xbox-style pad still takes its four motors. [`Target::ANY`] keeps the old
+    /// choice: the first Microsoft Xbox One pad. `None` when there is none; an error when WGI
+    /// itself is unavailable.
+    pub fn open(target: Target) -> windows::core::Result<Option<Pad>> {
         let controllers = RawGameController::RawGameControllers()?;
         // Not `into_iter()`: it crashes when the game runs through Steam (gilrs-core #132).
         let count = controllers.Size()?;
-        let mut wireless = None;
+        let mut matching = Vec::new();
+        let mut fallback = Vec::new();
         for index in 0..count {
             let Ok(controller) = controllers.GetAt(index) else {
                 continue;
@@ -30,23 +35,35 @@ impl Pad {
             ) else {
                 continue;
             };
-            if !is_xbox_one(vendor, product) {
+            if target == Target::ANY && !is_xbox_one(vendor, product) {
                 continue;
             }
             let Ok(gamepad) = Gamepad::FromGameController(&controller) else {
                 continue;
             };
-            let is_wireless = controller.IsWireless().unwrap_or(false);
             let pad = Pad {
                 gamepad,
-                wireless: is_wireless,
+                wireless: controller.IsWireless().unwrap_or(false),
             };
-            if !is_wireless {
-                return Ok(Some(pad));
+            if target.matches(vendor, product) {
+                matching.push(pad);
+            } else {
+                fallback.push(pad);
             }
-            wireless = wireless.or(Some(pad));
         }
-        Ok(wireless)
+        // Stable: wired stays before wireless, and same-link pads keep the system's order.
+        matching.sort_by_key(|pad| pad.wireless);
+        fallback.sort_by_key(|pad| pad.wireless);
+        let rank = if target == Target::ANY {
+            0
+        } else {
+            target.index
+        };
+        Ok(matching
+            .get(rank)
+            .or_else(|| matching.first())
+            .or_else(|| fallback.first())
+            .cloned())
     }
 
     /// Whether the system says the pad is on a wireless link: a wired pad goes through WGI's

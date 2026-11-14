@@ -1624,21 +1624,21 @@ impl Rumble {
         match self {
             Rumble::Hurt(amount) if amount > 0.0 => Some(Pulse {
                 // A hit is felt everywhere the pad can buzz: both handles and both trigger
-                // motors together. The handles are the loud half, or a trigger at 70% would
-                // drown out the 20–30% the handles used to get.
-                strong: (0.55 + 0.05 * amount).min(0.8),
-                weak: (0.45 + 0.05 * amount).min(0.75),
-                triggers: [0.7, 0.7],
+                // motors together. The handles lead, so the trigger motors can't mask them.
+                strong: (0.7 + 0.03 * amount).min(0.9),
+                weak: (0.6 + 0.03 * amount).min(0.8),
+                triggers: [0.65, 0.65],
                 millis: (200.0 + 20.0 * amount).min(450.0) as u32,
             }),
             Rumble::Hurt(_) => None,
             // Attack is the right trigger by default, but both thumbs are on the pad: the broken
-            // block buzzes both triggers. Long enough to feel on a Bluetooth pad, which takes a
-            // report about every 50 ms.
+            // block buzzes all four motors at one fixed level, 35%, so the tick feels the same
+            // on every block instead of varying with the handles and triggers. Long enough to
+            // feel on a Bluetooth pad, which takes a report about every 50 ms.
             Rumble::BlockBroken => Some(Pulse {
-                strong: 0.0,
-                weak: 0.4,
-                triggers: [0.7, 0.7],
+                strong: 0.35,
+                weak: 0.35,
+                triggers: [0.35, 0.35],
                 millis: 100,
             }),
             Rumble::Explosion { distance, radius } => {
@@ -2636,7 +2636,7 @@ bind_key.hotbar.2:north
         let small = Rumble::Hurt(1.0).pulse().unwrap();
         let big = Rumble::Hurt(10.0).pulse().unwrap();
         assert!(big.strong > small.strong && big.millis > small.millis);
-        assert!(Rumble::Hurt(100.0).pulse().unwrap().strong <= 0.8);
+        assert!(Rumble::Hurt(100.0).pulse().unwrap().strong <= 0.9);
         assert_eq!(Rumble::Hurt(0.0).pulse(), None);
         let near = Rumble::Explosion {
             distance: 2.0,
@@ -2659,7 +2659,12 @@ bind_key.hotbar.2:north
             .pulse(),
             None
         );
-        assert_eq!(Rumble::BlockBroken.pulse().unwrap().strong, 0.0);
+        let broken = Rumble::BlockBroken.pulse().unwrap();
+        // One fixed level, all four motors: every block ticks alike at 35%.
+        assert_eq!(
+            (broken.strong, broken.weak, broken.triggers),
+            (0.35, 0.35, [0.35, 0.35])
+        );
         // Shapes open at the pulse's strength and fade; nothing for what isn't felt.
         for rumble in [
             Rumble::Hurt(4.0),
@@ -2700,9 +2705,10 @@ bind_key.hotbar.2:north
 
     #[test]
     fn the_trigger_motors_buzz_where_the_action_is() {
-        // Both triggers: the broken block is felt in each hand.
+        // Both triggers: the broken block is felt in each hand, and both handles carry it too.
         let broken = Rumble::BlockBroken.pulse().unwrap();
-        assert_eq!(broken.triggers, [0.7, 0.7]);
+        assert_eq!(broken.triggers, [0.35, 0.35]);
+        assert!(broken.strong > 0.0 && broken.weak > 0.0);
         // A blast and a totem are felt in both.
         let blast = Rumble::Explosion {
             distance: 2.0,
@@ -2716,7 +2722,7 @@ bind_key.hotbar.2:north
         // the trigger motors, and it holds before fading.
         let hurt = Rumble::Hurt(4.0).pulse().unwrap();
         assert!(hurt.strong >= 0.6 && hurt.weak >= 0.5);
-        assert_eq!(hurt.triggers, [0.7, 0.7]);
+        assert_eq!(hurt.triggers, [0.65, 0.65]);
         assert!(Rumble::Hurt(4.0).shape()[0].millis >= 120);
         // The radial ticks are the handles' alone.
         assert_eq!(Rumble::RadialSlot.pulse().unwrap().triggers, [0.0, 0.0]);

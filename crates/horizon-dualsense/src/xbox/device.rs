@@ -1,9 +1,9 @@
 //! The pad over hidapi and Windows.Gaming.Input, and the thread that writes to it: writes block
 //! (a Bluetooth report can take milliseconds), so the game only hands over what the pad should
 //! do.
-use crate::xbox::Motors;
 #[cfg(windows)]
 use crate::xbox::wgi;
+use crate::xbox::{Motors, Target};
 #[cfg(not(target_os = "ios"))]
 use crate::xbox::{bluetooth, is_xbox_one, usb};
 #[cfg(not(target_os = "ios"))]
@@ -94,39 +94,42 @@ enum Backend {
 
 #[cfg(not(target_os = "ios"))]
 impl Xbox {
-    /// The first Xbox One pad this process can write to. Windows.Gaming.Input says which link the
+    /// The pad `target` names, on the link it is on. Windows.Gaming.Input says which link the
     /// pad is on: a wired pad goes through it (its HID endpoint takes no report), and a paired
     /// Bluetooth entry that Windows still lists after the cable goes in can't win. A pad on
     /// Bluetooth takes its own HID report when that opens, as on Linux and macOS, and WGI
-    /// otherwise. `None` when there is none, an error when it can't be opened (Linux without
-    /// access to its hidraw node).
-    pub fn open(api: &HidApi) -> Option<Result<Self>> {
+    /// otherwise. [`Target::ANY`] keeps the old choice, the first Microsoft Xbox One pad; a
+    /// third-party target reaches WGI even though its ids aren't Microsoft's. `None` when there
+    /// is none, an error when it can't be opened (Linux without access to its hidraw node).
+    pub fn open(api: &HidApi, target: Target) -> Option<Result<Self>> {
         static SKIPPED: AtomicBool = AtomicBool::new(false);
         let transport = |d: &hidapi::DeviceInfo| match d.bus_type() {
             BusType::Bluetooth => Transport::Bluetooth,
             _ => Transport::Usb,
         };
-        let mut wired = None;
-        let mut wireless = None;
-        let mut skipped = false;
-        let mut open_error = None;
-        for info in api
+        // The matches, wired first: a pad on a cable can still be listed over Bluetooth for a
+        // moment. `index` picks among identical pads of this model.
+        let mut pads: Vec<&hidapi::DeviceInfo> = api
             .device_list()
-            .filter(|d| is_xbox_one(d.vendor_id(), d.product_id()))
-        {
-            if !output_supported(transport(info)) {
-                skipped = true;
-                continue;
-            }
-            match transport(info) {
-                Transport::Usb if wired.is_none() => wired = Some(info),
-                Transport::Bluetooth if wireless.is_none() => wireless = Some(info),
-                _ => {}
-            }
+            .filter(|d| {
+                is_xbox_one(d.vendor_id(), d.product_id())
+                    && target.matches(d.vendor_id(), d.product_id())
+            })
+            .collect();
+        pads.sort_by_key(|d| transport(d) == Transport::Bluetooth);
+        let rank = if target == Target::ANY {
+            0
+        } else {
+            target.index
+        };
+        let chosen = pads.get(rank).or_else(|| pads.first()).copied();
+        let skipped = chosen.is_some_and(|info| !output_supported(transport(info)));
+        if skipped && !SKIPPED.swap(true, Ordering::Relaxed) {
+            log::info!("Horizon: a wired Xbox pad has no output on this system");
         }
         #[cfg(windows)]
         {
-            match wgi::Pad::open() {
+            match wgi::Pad::open(target) {
                 // A cable: WGI is the only way to its trigger motors.
                 Ok(Some(pad)) if !pad.wireless() => {
                     return Some(Ok(Xbox {
@@ -137,7 +140,8 @@ impl Xbox {
                 // Bluetooth: the pad's own report is the proven path for its triggers. WGI takes
                 // the pad when that endpoint can't be opened (another process holds it).
                 Ok(Some(pad)) => {
-                    if let Some(info) = wireless
+                    if let Some(info) = chosen
+                        && transport(info) == Transport::Bluetooth
                         && let Ok(device) = info.open_device(api)
                     {
                         return Some(Ok(Xbox {
@@ -155,23 +159,19 @@ impl Xbox {
                 Err(e) => log::debug!("Horizon: Windows.Gaming.Input: {e}"),
             }
         }
-        if let Some(info) = wired.or(wireless) {
+        if let Some(info) = chosen {
             let transport = transport(info);
-            match info.open_device(api) {
-                Ok(device) => {
-                    return Some(Ok(Xbox {
-                        backend: Backend::Hid(device),
-                        transport,
-                    }));
+            if output_supported(transport) {
+                match info.open_device(api) {
+                    Ok(device) => {
+                        return Some(Ok(Xbox {
+                            backend: Backend::Hid(device),
+                            transport,
+                        }));
+                    }
+                    Err(e) => return Some(Err(e.into())),
                 }
-                Err(e) => open_error = Some(e),
             }
-        }
-        if let Some(e) = open_error {
-            return Some(Err(e.into()));
-        }
-        if skipped && !SKIPPED.swap(true, Ordering::Relaxed) {
-            log::info!("Horizon: a wired Xbox pad has no output on this system");
         }
         None
     }
@@ -216,15 +216,15 @@ pub struct Link {
 }
 
 impl Link {
-    /// Start the thread and look for an Xbox One pad.
+    /// Start the thread and look for the pad `target` names.
     #[cfg(not(target_os = "ios"))]
-    pub fn start() -> Link {
+    pub fn start(target: Target) -> Link {
         let (tx, rx) = mpsc::channel();
         let open = Arc::new(AtomicU8::new(0));
         let shown = open.clone();
         let thread = std::thread::Builder::new()
             .name("xbox".into())
-            .spawn(move || Writer::new(shown).run(rx))
+            .spawn(move || Writer::new(shown, target).run(rx))
             .map_err(|e| log::warn!("Horizon: Xbox output: {e}"))
             .ok();
         Link {
@@ -236,7 +236,7 @@ impl Link {
 
     /// No output on iOS: hidapi has no backend there. The Link never opens.
     #[cfg(target_os = "ios")]
-    pub fn start() -> Link {
+    pub fn start(_target: Target) -> Link {
         Link {
             tx: None,
             open: Arc::new(AtomicU8::new(0)),
@@ -290,6 +290,8 @@ struct Writer {
     api: Option<HidApi>,
     pad: Option<Box<dyn Handle>>,
     open: Arc<AtomicU8>,
+    /// The pad this writer drives, not just the first one there is.
+    target: Target,
     rumble: Rumble,
     /// When the vibration's current step ends.
     step_end: Option<Instant>,
@@ -315,11 +317,12 @@ impl Handle for Xbox {
 
 #[cfg(not(target_os = "ios"))]
 impl Writer {
-    fn new(open: Arc<AtomicU8>) -> Self {
+    fn new(open: Arc<AtomicU8>, target: Target) -> Self {
         Writer {
             api: None,
             pad: None,
             open,
+            target,
             rumble: Vec::new(),
             step_end: None,
             sent: None,
@@ -381,7 +384,7 @@ impl Writer {
             None => HidApi::new().map(|api| &*self.api.insert(api)),
         };
         let found = match api {
-            Ok(api) => Xbox::open(api),
+            Ok(api) => Xbox::open(api, self.target),
             Err(e) => {
                 log::warn!("Horizon: Xbox output: {e}");
                 None
@@ -492,7 +495,7 @@ mod tests {
         write_fails: bool,
     ) -> (Writer, Arc<std::sync::Mutex<Vec<Motors>>>) {
         let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut writer = Writer::new(open.clone());
+        let mut writer = Writer::new(open.clone(), Target::ANY);
         writer.pad = Some(Box::new(FakePad {
             writes: writes.clone(),
             write_fails,
