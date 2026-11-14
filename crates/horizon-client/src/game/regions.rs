@@ -260,13 +260,82 @@ pub(super) struct RegionState {
 
 /// A level's regions that stay on their threads between ticks.
 pub(super) struct ResidentSet {
-    games: Vec<Box<Game<'static>>>,
+    games: Vec<Slot>,
     /// Each region's chunks when it was lent.
     chunks: Vec<Vec<ChunkPos>>,
     /// The layout they were lent in: what their players' views must stay inside.
     layout: Arc<Regions>,
     /// Ticks since they were lent.
     age: u32,
+}
+
+/// One resident region: its game when it is home, or the channel its thread sends it back on while it ticks.
+struct Slot {
+    game: Option<Box<Game<'static>>>,
+    running:
+        Option<std::sync::mpsc::Receiver<(Box<Game<'static>>, std::result::Result<(), String>)>>,
+    /// Where its players stood when it was last home: the areas the server keeps loaded for them.
+    places: Vec<(i32, i32)>,
+}
+
+impl Slot {
+    fn new(game: Box<Game<'static>>) -> Self {
+        Self {
+            game: Some(game),
+            running: None,
+            places: Vec::new(),
+        }
+    }
+    /// Takes the game in if its thread finished (waiting until `until`, or for good when None); false while it
+    /// still runs.
+    fn home(&mut self, until: Option<std::time::Instant>) -> std::result::Result<bool, String> {
+        let Some(rx) = self.running.as_ref() else {
+            return Ok(true);
+        };
+        let got = match until {
+            None => rx
+                .recv()
+                .map_err(|_| std::sync::mpsc::TryRecvError::Disconnected),
+            Some(t) => {
+                match rx.recv_timeout(t.saturating_duration_since(std::time::Instant::now())) {
+                    Ok(b) => Ok(b),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        Err(std::sync::mpsc::TryRecvError::Empty)
+                    }
+                    Err(_) => Err(std::sync::mpsc::TryRecvError::Disconnected),
+                }
+            }
+        };
+        match got {
+            Ok((game, result)) => {
+                self.running = None;
+                self.places = game
+                    .lan
+                    .as_ref()
+                    .map(|h| h.hub.guests.iter().map(|g| g.chunk()).collect())
+                    .unwrap_or_default();
+                self.game = Some(game);
+                result.map(|()| true)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(false),
+            Err(_) => {
+                self.running = None;
+                Err("a region thread stopped".to_owned())
+            }
+        }
+    }
+}
+
+/// How long a tick waits for its regions (`HORIZON_REGION_DEADLINE_MS`, 50): one that runs longer keeps going
+/// on its own thread and its players are ticked again once it is home, so a slow region does not hold the others.
+fn region_deadline() -> std::time::Duration {
+    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    std::time::Duration::from_millis(*MS.get_or_init(|| {
+        std::env::var("HORIZON_REGION_DEADLINE_MS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(50)
+    }))
 }
 
 /// Ticks between the resident regions' returns (`HORIZON_RESIDENT_TICKS`, 20 by default).
@@ -747,7 +816,7 @@ impl Game<'_> {
                 shell.hub.set_tracker(tracker);
             }
             w.lan = Some(shell);
-            set.games.push(w);
+            set.games.push(Slot::new(w));
             set.chunks.push(chunks);
         }
         self.lan = Some(host);
@@ -764,16 +833,27 @@ impl Game<'_> {
             self.land_resident_set(set);
             return Ok(None);
         }
-        let Some(mut host) = self.lan.take() else {
-            self.land_resident_set(set);
-            return Ok(None);
-        };
         let pool = Arc::clone(
             self.regions
                 .entity_pool
                 .get_or_insert_with(|| Arc::new(AtomicU32::new(self.next_entity + 1))),
         );
-        for w in &mut set.games {
+        let started = std::time::Instant::now();
+        // A region still ticking from an earlier tick is left to finish; the others start.
+        let mut failed: Option<String> = None;
+        let mut launched = Vec::new();
+        for (k, slot) in set.games.iter_mut().enumerate() {
+            match slot.home(Some(started)) {
+                Err(e) => {
+                    failed.get_or_insert(e);
+                    continue;
+                }
+                Ok(false) => continue,
+                Ok(true) => {}
+            }
+            let Some(mut w) = slot.game.take() else {
+                continue;
+            };
             if first {
                 w.copy_tick_settings_from(self);
             } else {
@@ -783,49 +863,42 @@ impl Game<'_> {
             w.world.game_time = self.world.game_time;
             w.world.day_time = self.world.day_time;
             w.world.weather = self.world.weather;
-            if let Some(shell) = w.lan.as_mut() {
+            if let (Some(shell), Some(host)) = (w.lan.as_mut(), self.lan.as_mut()) {
                 shell.hub.copy_region_settings(&host.hub);
                 host.hub.give_away(&mut shell.hub);
             }
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            slot.running = Some(rx);
+            let spawned = std::thread::Builder::new()
+                .name(format!("Region {k}"))
+                .spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        w.tick_region_phases().map_err(|e| e.to_string())
+                    }))
+                    .unwrap_or_else(|_| Err("a region thread panicked".to_owned()));
+                    let _ = tx.send((w, result));
+                });
+            if spawned.is_err() {
+                slot.running = None;
+                failed.get_or_insert("a region thread could not start".to_owned());
+            } else {
+                launched.push(k);
+            }
         }
-        self.lan = Some(host);
         set.age += 1;
-        // The regions tick at once: a thread for each group of them, as many as there are cores.
-        let lanes = horizon_threads::worker_count()
-            .clamp(1, 16)
-            .min(set.games.len());
-        let per = set.games.len().div_ceil(lanes);
-        let outcomes: Vec<Vec<std::result::Result<(), String>>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = set
-                .games
-                .chunks_mut(per)
-                .map(|group| {
-                    scope.spawn(move || {
-                        group
-                            .iter_mut()
-                            .map(|w| {
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    w.tick_region_phases().map_err(|e| e.to_string())
-                                }))
-                                .unwrap_or_else(|_| Err("a region thread panicked".to_owned()))
-                            })
-                            .collect()
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap_or_default())
-                .collect()
-        });
-        let failed = outcomes.into_iter().flatten().find_map(|r| r.err());
+        // Waited for until the deadline: what runs past it carries on by itself.
+        let deadline = started + region_deadline();
+        for k in launched {
+            if let Err(e) = set.games[k].home(Some(deadline)) {
+                failed.get_or_insert(e);
+            }
+        }
         // Where its players stand: the areas the server keeps loaded for them.
         if let Some(host) = self.lan.as_mut() {
             host.hub.away_places = set
                 .games
                 .iter()
-                .filter_map(|w| w.lan.as_ref())
-                .flat_map(|h| h.hub.guests.iter().map(|g| g.chunk()))
+                .flat_map(|s| s.places.iter().copied())
                 .collect();
         }
         if let Some(e) = failed {
@@ -848,18 +921,24 @@ impl Game<'_> {
             return true;
         }
         let reach = host.hub.config.view_distance.clamp(2, 32) + 1;
-        set.games.iter().enumerate().any(|(k, w)| {
-            wants_land(w)
-                || w.lan.as_ref().is_none_or(|h| {
-                    h.hub.guests.iter().any(|g| {
-                        let (cx, cz) = g.chunk();
-                        ((cx - reach) >> SECTION_SHIFT..=(cx + reach) >> SECTION_SHIFT).any(|sx| {
-                            ((cz - reach) >> SECTION_SHIFT..=(cz + reach) >> SECTION_SHIFT)
-                                .any(|sz| set.layout.owned.get(&(sx, sz)) != Some(&k))
+        set.games
+            .iter()
+            .enumerate()
+            .filter_map(|(k, s)| Some((k, s.game.as_ref()?)))
+            .any(|(k, w)| {
+                wants_land(w)
+                    || w.lan.as_ref().is_none_or(|h| {
+                        h.hub.guests.iter().any(|g| {
+                            let (cx, cz) = g.chunk();
+                            ((cx - reach) >> SECTION_SHIFT..=(cx + reach) >> SECTION_SHIFT).any(
+                                |sx| {
+                                    ((cz - reach) >> SECTION_SHIFT..=(cz + reach) >> SECTION_SHIFT)
+                                        .any(|sz| set.layout.owned.get(&(sx, sz)) != Some(&k))
+                                },
+                            )
                         })
                     })
-                })
-        })
+            })
     }
 
     /// The resident regions of the level in place back: their parts of the level and their players.
@@ -867,7 +946,12 @@ impl Game<'_> {
         let dim = self.dim;
         let mut host = self.lan.take();
         let mut back = Vec::with_capacity(set.games.len());
-        for (mut w, chunks) in set.games.into_iter().zip(set.chunks) {
+        for (mut slot, chunks) in set.games.into_iter().zip(set.chunks) {
+            // One still ticking is waited for.
+            let _ = slot.home(None);
+            let Some(mut w) = slot.game.take() else {
+                continue;
+            };
             self.take_region_back(&mut w, &chunks);
             if let (Some(host), Some(shell)) = (host.as_mut(), w.lan.as_mut()) {
                 host.hub.park_tracker(&mut shell.hub);
