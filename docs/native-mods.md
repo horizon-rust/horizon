@@ -2,7 +2,7 @@
 
 `native_explosion_entities(dimension, center, entities)` (server) runs after `native_explosion_detonate`, before an explosion at `center` hurts and pushes anything: `entities` holds the ids of the entities in its reach (`ServerExplosion.hurtEntities`), players aside, which `native_living_incoming_damage` hears. Take out the ids to spare: they are neither hurt nor pushed, as NeoForge's `ExplosionEvent.Detonate` does with its entity list. Bundles need "hooks": 644.
 
-`native_chat_suggestion_applied(original, start, end, suggestion, input)` reports a suggestion accepted in the open chat by Tab or a mouse click, after the text and caret have changed. `original` is the suggestion list's input before any completion; `start` and `end` are the replaced range in that string, in Java UTF-16 units (end exclusive). They keep referring to `original` when Tab cycles through the list. `suggestion` is the selected replacement text, and `input` is the actual resulting field value, including any length-limit truncation. This is a read-only notification: previews, list navigation, server replies, ordinary typing and command-block editors do not fire it. Trait mods implement `Hooks::chat_suggestion_applied`; mixin bundles use `chat_suggestion_applied`, hook version 1. Bundles need "hooks": 566 (assigned at merge).
+`native_chat_suggestion_applied(original, start, end, suggestion, input)` reports a suggestion accepted in the open chat by Tab or a mouse click, after the text and caret have changed. `original` is the suggestion list's input before any completion; `start` and `end` are the replaced range in that string, in Java UTF-16 units (end exclusive). They keep referring to `original` when Tab cycles through the list. `suggestion` is the selected replacement text, and `input` is the actual resulting field value, including any length-limit truncation. This is a read-only notification: previews, list navigation, server replies, ordinary typing and command-block editors do not fire it. Trait mods implement `Hooks::chat_suggestion_applied`; mixin bundles use `chat_suggestion_applied`, hook version 1. Bundles need "hooks": 566.
 
 API 362 adds `native_compute_fov_modifier(player, base, modifier)` on the client each tick for the local player's FOV scale, after vanilla effects and before zoom and camera easing. `player` contains the calculation inputs and `base` is the original scale. Non-finite modifiers or values outside 0.01..=10 fall back to `base`. It does not affect a spectator camera on a mob. Bundles need "hooks": 362.
 
@@ -64,7 +64,7 @@ including for nested bundle items: `item`, `count`, explicit component `patch` (
 defaults), and the runtime bundle selection. Listeners run in mod order; later answers win.
 Use `"property": "example:charged"` with both `on_true` and `on_false` in the item's
 `minecraft:condition` node. Custom special model renderers are not supplied by this hook.
-Bundles need `"hooks": 385` once this pending hook is stamped.
+Bundles need `"hooks": 385`.
 
 ## Item frame rendering
 
@@ -165,7 +165,7 @@ with no re-release for each Nightly.
 
 Hook and helper authors use [API fragments](../tools/native-hook-fragments/README.md) to request a number.
 
-The pending `hud_mode` helper fragment adds `Host::hud_mode()` and
+API 571 adds `Host::hud_mode()` and
 `Host::set_hud_mode(HudMode)`. `HudMode::AllVisible` shows the HUD and permits
 first-person hands; `NoHud` hides the HUD while permitting hands;
 `AllHidden` hides both. Spectator, sleeping, camera and death restrictions,
@@ -178,14 +178,14 @@ tick callback. No cancellable input hook is required. Without a mod, F1 keeps
 its normal all-visible/all-hidden toggle; each F1 toggle clears the independent
 hand override. The mode is window UI state, never a saved player setting.
 Writes on a server or during a borrowed server guest's turn do nothing.
-This fragment receives an API number when stamped after merge.
+Bundles that use them need `"hooks": 571`.
 
 API 2 adds the item panel beside container screens and its recipe pages (`native_panel_items`,
 `native_panel_recipes`, and the hook `native_panel_event` for the player's clicks, searches and keys over items), and
 the game's items and recipes (`native_recipes`, `native_known_recipes`, `native_place_recipe`, `native_give`): what a
 recipe viewer needs.
 
-The pending `panel_style` helper, `native_panel_style(mod_id, style)`, lets a recipe viewer's panel look like one:
+The `panel_style` helper, `native_panel_style(mod_id, style)`, lets a recipe viewer's panel look like one:
 `NativePanelStyle::Viewer` draws its page buttons as square buttons on a bar over the items and its search box with the
 viewer's skin, as Horizon's Recipes panel does; `NativePanelStyle::RecipeBook` (the default) keeps the recipe book's
 arrows. Only the drawing changes. Bundles need `"hooks": 622`.
@@ -504,7 +504,7 @@ dedicated host for each guest (the helpers read that player), and in a remote cl
 changes the speed alike on both sides keeps the crack in step with the server. It is asked every tick of a dig, on
 each side, so it takes `&self` and should only compute. API 439.
 
-### Host-aware weapon damage (API next)
+### Host-aware weapon damage (API 384)
 
 `living_incoming_damage_v2` is an additive hook, like `menu_button_v2`; v1 keeps its signature and firing point.
 It receives a mutable `Host`, attacker/victim network ids, damage type, optional source position, victim position
@@ -513,7 +513,7 @@ levels. Change `amount` or return `Flow::Cancel`; the host can read the world an
 It currently fires for player-to-mob melee, sweep and spear hits (including LAN guests), after the victim's invulnerability check (an invulnerable or dead victim fires nothing) and before
 v1. Unless canceled, v1 receives the modified amount. It is not a replacement for v1 on
 projectiles, player victims, dragons, mob attacks or environmental damage. There is no extra per-hit allocation
-without loaded mods. The fragment `living_incoming_damage_v2.json` receives its API number at merge.
+without loaded mods. Bundles that use it need `"hooks": 384`.
 
 ### Damage the health takes
 
@@ -680,9 +680,8 @@ mob's death loot; on other rolls `place` is `None`.
 
 ### Recipe book category declarations (first slice of #5501)
 
-The pending `recipe_book_categories` API fragment adds a declaration hook and a
-lookup helper. It has no API number until stamping; do not require a guessed
-hooks version. Trait mods import `RecipeBookCategory` from `horizon_client::mod_api`
+API 378 adds a declaration hook and a
+lookup helper (`recipe_book_categories`); bundles that use them need `"hooks": 378`. Trait mods import `RecipeBookCategory` from `horizon_client::mod_api`
 and append declarations in `Hooks::recipe_book_categories`:
 
 ```rust,ignore
@@ -1247,7 +1246,7 @@ API 143 adds data maps (`RegisterDataMapTypesEvent`). `native_data_map_types(typ
 
 `native_living_heal(entity, amount, cancel)` corresponds to NeoForge's `LivingHealEvent` at `LivingEntity.heal`. The amount can be changed and cancellation prevents the heal. It covers player effect, food and peaceful regeneration healing and the wired mob healing paths. Other healing paths and client-side coverage remain unverified. `entity` is the affected player or mob ID. Bundles need `"hooks": 358`.
 
-`native_living_death_message(entity, kind, message)` is asked for the death message a tamed mob (wolf, cat, parrot, nautilus) sends its owner, as vanilla's `TamableAnimal.die` does. It is asked once the message is built and only when it would be sent: the owner is online and `show_death_messages` is on. `message` holds the text: replace it, or set it to `None` to tell the owner nothing; every mod is asked in order. Vanilla's named-mob line (`LivingEntity.die`) is only logged on the server, not sent to players, so it is not hooked. This is a pending hook: it gets its API number when its fragment is stamped (`tools/native-hook-fragments/living_death_message.json`).
+`native_living_death_message(entity, kind, message)` is asked for the death message a tamed mob (wolf, cat, parrot, nautilus) sends its owner, as vanilla's `TamableAnimal.die` does. It is asked once the message is built and only when it would be sent: the owner is online and `show_death_messages` is on. `message` holds the text: replace it, or set it to `None` to tell the owner nothing; every mod is asked in order. Vanilla's named-mob line (`LivingEntity.die`) is only logged on the server, not sent to players, so it is not hooked. Bundles need `"hooks": 640`.
 
 `native_living_drown(entity, kind, is_drowning, damage_amount, bubble_count, cancel)` asks on the server when a player or generic-air mob cannot breathe and has no air (NeoForge's `LivingDrownEvent`, `LivingEntity.baseTick`). Mods may change the drowning decision, damage and bubble count, or cancel. Damage at or below zero does not hurt. The normal eight bubbles use the entity event; other positive counts are sent in a particle packet, and nonpositive counts suppress bubbles. Bundles need "hooks": 356.
 
@@ -2681,8 +2680,7 @@ recorded only while a native mod is loaded), and armor-stand sweeps. V2 runs aft
 their shared paths; cancellation from either prevents motion, so a trait mod that listens to
 both sees each hit twice and should pick one. Mob melee, player hits, sweeps and spears use the
 shared knockback path; direct velocity pushes (explosions, Punch arrows, hoglin throws) are not
-`LivingEntity.knockback` and do not fire it. The fragment assigns the new API number when
-stamped; the existing hook stays version 1.
+`LivingEntity.knockback` and do not fire it. `living_knockback_v2` is API 383; the existing hook stays version 1.
 
 ### Server settings (draft)
 
@@ -5843,7 +5841,7 @@ assert!(claimed);
 
 ### Item fallback on native mobs
 
-`native_item_interact_mob(entity, kind, stack, swing)` is a pending fragment for
+`native_item_interact_mob(entity, kind, stack, swing)` (API 449) is for
 an item's fallback after a native Mob's ordinary interaction passes. Existing
 `native_interact_entity` (API 29), the entity's own handlers and built-in item
 actions retain priority; errors propagate before the fallback. This is the
@@ -5858,8 +5856,7 @@ nonempty item. `stack` is that hand's item snapshot; a hook changes inventories
 through ordinary Host helpers when needed. First `Some(true)` owns the turn and
 swings once, `Some(false)` owns it without a swing, and `None` passes to the next
 mod. An earlier mixin result also owns the output. No item count or world change
-is performed merely because a hook answers. The fragment is unstamped; it adds
-no manually assigned global API number.
+is performed merely because a hook answers. Bundles need `"hooks": 449`.
 
 ### Adding a hook
 
@@ -6026,14 +6023,14 @@ cannot depend on the level, neighbouring blocks, position or block-entity data.
 
 ### Wind burst block protection
 
-The pending `wind_burst` hook receives `dimension`, `center` and mutable `blocks`
+The `wind_burst` hook receives `dimension`, `center` and mutable `blocks`
 just before wind-charge, breeze-charge or Wind Burst mace block interactions.
 Remove positions to keep their doors, levers, candles and other reactive blocks
 unchanged. The list has already been shuffled; entity knockback and the shuffle's
 random draws are unaffected. A breeze blocked by `mob_griefing` does not call the hook.
 This is separate from `explosion_detonate`, and does not cancel the burst's sound,
-particles or entity effects. The pending fragment assigns its API number at merge.
+particles or entity effects. Bundles need `"hooks": 565`.
 
 ### Advancement displays
 
-The pending `advancement_display` helper (`host.advancement_display`) returns an `AdvancementDisplay` for an advancement id in the loaded tree: `title` and `description` as `Text` (the components as the datapack wrote them), `frame` as `task`, `goal` or `challenge`, `announce_to_chat` and `hidden`. It is None for an unknown id or one without a display. The helper loads the tree on first use, so it is for server-side reads, not hot paths. The pending fragment assigns its API number at merge (`591`).
+The `advancement_display` helper (`host.advancement_display`) returns an `AdvancementDisplay` for an advancement id in the loaded tree: `title` and `description` as `Text` (the components as the datapack wrote them), `frame` as `task`, `goal` or `challenge`, `announce_to_chat` and `hidden`. It is None for an unknown id or one without a display. The helper loads the tree on first use, so it is for server-side reads, not hot paths. Bundles need `"hooks": 591`.
