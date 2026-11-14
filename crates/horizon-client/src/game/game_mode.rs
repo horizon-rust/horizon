@@ -131,7 +131,7 @@ impl Game<'_> {
         }
         if mode == GameMode::Spectator {
             self.mining = None;
-            self.using = None;
+            self.stop_using();
             self.left = false;
             self.dismount_for_spectator();
             if let Some(p) = self.player.as_mut() {
@@ -301,6 +301,12 @@ impl Game<'_> {
     /// matches the clicked block (`Player.mayUseItemAt`).
     pub(super) fn can_place_on_in_adventure(&self, clicked: [i32; 3]) -> bool {
         self.adventure_predicate("minecraft:can_place_on", clicked)
+    }
+    /// `ItemStack.useOn`'s gate before any item's own `useOn`: a player who
+    /// may build, or an adventure player whose held item's `can_place_on`
+    /// matches the clicked block.
+    pub(super) fn may_use_on(&self, clicked: [i32; 3]) -> bool {
+        self.may_build() || self.can_place_on_in_adventure(clicked)
     }
     /// `ServerPlayer.setGameMode(SPECTATOR)`: `stopRiding`.
     fn dismount_for_spectator(&mut self) {
