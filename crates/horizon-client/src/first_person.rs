@@ -15,6 +15,9 @@ pub enum ItemPose {
     /// A STAB swing (`SwingAnimationType` 2): a spear's jab.
     Stab,
     Using,
+    /// `ItemUseAnimation.BLOCK` of an item that is no `ShieldItem` (a server's
+    /// sword made to block): the hand tilts it up across the body.
+    Block,
     Eat {
         remaining: f32,
         duration: f32,
@@ -83,6 +86,15 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
     }
     if matches!(pose, ItemPose::Using) {
         return m;
+    }
+    if matches!(pose, ItemPose::Block) {
+        // FirstPersonHandsAndItemsRenderer: `case BLOCK` after the item's arm
+        // transform, unless the item is a `ShieldItem`.
+        return m
+            * Mat4::from_translation(Vec3::new(invert * -0.14142136, 0.08, 0.14142136))
+            * Mat4::from_rotation_x((-102.25f32).to_radians())
+            * Mat4::from_rotation_y((invert * 13.365f32).to_radians())
+            * Mat4::from_rotation_z((invert * 78.05f32).to_radians());
     }
     if let ItemPose::Brush { remaining, partial } = pose {
         return m * brush_transform(left, remaining, partial);
@@ -1594,11 +1606,39 @@ mod action_result_tests {
             consumable_animation(&serde_json::json!({"animation":"drink"})),
             Drink
         );
-        for animation in ["none", "block", "bow", "brush"] {
+        // ItemUseAnimation.CODEC's names.
+        for (name, expected) in [
+            ("none", None),
+            ("block", Block),
+            ("bow", Bow),
+            ("trident", Trident),
+            ("crossbow", Crossbow),
+            ("spyglass", Spyglass),
+            ("toot_horn", TootHorn),
+            ("brush", Brush),
+            ("bundle", Bundle),
+            ("spear", Spear),
+        ] {
             assert_eq!(
-                consumable_animation(&serde_json::json!({"animation":animation})),
-                None
+                consumable_animation(&serde_json::json!({"animation":name})),
+                expected
             );
+        }
+    }
+
+    /// `case BLOCK` of `FirstPersonHandsAndItemsRenderer`: after the arm's
+    /// transform the item moves by (invert * -0.14142136, 0.08, 0.14142136)
+    /// and turns, so it differs from a plain use; the left hand mirrors the x.
+    #[test]
+    fn block_pose_moves_a_sword_by_vanillas_translation() {
+        use glam::Vec3;
+        for (left, invert) in [(false, 1.0f32), (true, -1.0)] {
+            let plain = item_pose(left, 0.0, 0.0, ItemPose::Using);
+            let block = item_pose(left, 0.0, 0.0, ItemPose::Block);
+            assert!(!block.abs_diff_eq(plain, 1e-3));
+            let moved = block.transform_point3(Vec3::ZERO) - plain.transform_point3(Vec3::ZERO);
+            let expected = Vec3::new(invert * -0.14142136, 0.08, 0.14142136);
+            assert!(moved.abs_diff_eq(expected, 1e-5), "{moved} vs {expected}");
         }
     }
 

@@ -7096,16 +7096,8 @@ impl Game<'_> {
             if player {
                 // AvatarRenderer.getArmPose: the used item's BLOCK animation
                 // (an item with `blocks_attacks`) raises the arm.
-                let used = if m.extra.using_off_hand {
-                    &m.extra.off_hand
-                } else {
-                    &m.extra.main_hand
-                };
                 m.extra.blocking = m.extra.using_item > 0
-                    && used
-                        .as_ref()
-                        .and_then(|i| world_items!(self).get(i))
-                        .is_some_and(|i| i.blocks_attacks.is_some());
+                    && horizon_client::item_sync::remote_blocking(&m.extra, world_items!(self));
             }
             if m.extra.using_item > 0 {
                 if player {

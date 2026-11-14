@@ -362,19 +362,11 @@ impl Game<'_> {
                     partial: a,
                 },
                 _ if using => {
-                    let view = horizon_client::item_render::stack_view(&stack);
-                    let mut animation = self
-                        .pack
-                        .item_renderer
-                        .models
-                        .components_view(&view)
-                        .get("minecraft:consumable")
-                        .map_or(horizon_world::consumable::UseAnimation::None, |c| {
-                            horizon_client::first_person::consumable_animation(c)
-                        });
+                    let mut animation = self.use_animation(&stack);
                     self.native_use_animation(&stack, &mut animation);
                     item_use::use_pose(
                         animation,
+                        &*stack.item == "minecraft:shield",
                         owner.use_item_remaining_ticks as f32,
                         owner.use_duration as f32,
                         a,

@@ -9,6 +9,15 @@ pub fn consumable_animation(v: &serde_json::Value) -> horizon_world::consumable:
     {
         "eat" => UseAnimation::Eat,
         "drink" => UseAnimation::Drink,
+        "block" => UseAnimation::Block,
+        "bow" => UseAnimation::Bow,
+        "trident" => UseAnimation::Trident,
+        "crossbow" => UseAnimation::Crossbow,
+        "spyglass" => UseAnimation::Spyglass,
+        "toot_horn" => UseAnimation::TootHorn,
+        "brush" => UseAnimation::Brush,
+        "bundle" => UseAnimation::Bundle,
+        "spear" => UseAnimation::Spear,
         _ => UseAnimation::None,
     }
 }

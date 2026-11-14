@@ -496,7 +496,9 @@ impl Game<'_> {
         let blocking = self
             .using
             .and_then(|(slot, _)| self.stack_in(slot))
-            .is_some_and(|stack| self.blocks_attacks(stack).is_some());
+            .is_some_and(|stack| {
+                self.use_animation(stack) == horizon_world::consumable::UseAnimation::Block
+            });
         let charged = self.inventory[self.selected]
             .as_ref()
             .is_some_and(|s| s.data().is_some_and(|d| !d.charged.is_empty()));

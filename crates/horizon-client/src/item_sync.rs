@@ -415,6 +415,86 @@ pub fn consumable(stack: &ItemStack, items: &crate::items::Items) -> Option<Item
     out
 }
 
+/// `ItemUseAnimation.BY_ID` (`ByIdMap.continuous`, out of bounds is `NONE`):
+/// the animation a `Consumable.STREAM_CODEC` names by its VarInt id.
+fn wire_use_animation(id: i32) -> UseAnimation {
+    match id {
+        1 => UseAnimation::Eat,
+        2 => UseAnimation::Drink,
+        3 => UseAnimation::Block,
+        4 => UseAnimation::Bow,
+        5 => UseAnimation::Trident,
+        6 => UseAnimation::Crossbow,
+        7 => UseAnimation::Spyglass,
+        8 => UseAnimation::TootHorn,
+        9 => UseAnimation::Brush,
+        10 => UseAnimation::Bundle,
+        11 => UseAnimation::Spear,
+        _ => UseAnimation::None,
+    }
+}
+
+/// `ItemUseAnimation.getSerializedName`, the name `ItemUseAnimation.CODEC` saves.
+fn use_animation_name(animation: UseAnimation) -> &'static str {
+    match animation {
+        UseAnimation::None => "none",
+        UseAnimation::Eat => "eat",
+        UseAnimation::Drink => "drink",
+        UseAnimation::Block => "block",
+        UseAnimation::Bow => "bow",
+        UseAnimation::Trident => "trident",
+        UseAnimation::Crossbow => "crossbow",
+        UseAnimation::Spyglass => "spyglass",
+        UseAnimation::TootHorn => "toot_horn",
+        UseAnimation::Brush => "brush",
+        UseAnimation::Bundle => "bundle",
+        UseAnimation::Spear => "spear",
+    }
+}
+
+/// `Item.getUseAnimation` of `stack`: its `consumable`'s animation (the
+/// item's own, a saved or the server's patched one), else `BLOCK` for a stack
+/// with `blocks_attacks` (a shield, or a server's sword made to block), else
+/// `SPEAR` for a kinetic weapon.
+pub fn use_animation(stack: &ItemStack, items: &crate::items::Items) -> UseAnimation {
+    if let Some(consumable) = consumable(stack, items) {
+        return consumable.animation;
+    }
+    if crate::items::BlocksAttacks::of_stack(stack, items.get(&stack.item)).is_some()
+        || patched_use(stack).1
+    {
+        return UseAnimation::Block;
+    }
+    if crate::spear::Kinetic::of(&stack.item).is_some() {
+        return UseAnimation::Spear;
+    }
+    UseAnimation::None
+}
+
+/// Whether another player's used item raises the arm (`ArmPose.BLOCK`): the
+/// main hand keeps the stack the server sent, whose patched `consumable` or
+/// `blocks_attacks` picks the animation; the off hand knows its item id only.
+pub fn remote_blocking(extra: &crate::mobs::Extra, items: &crate::items::Items) -> bool {
+    if !extra.using_off_hand
+        && let Some(stack) = extra.main_hand_stack()
+    {
+        return use_animation(stack, items) == UseAnimation::Block;
+    }
+    let used = if extra.using_off_hand {
+        &extra.off_hand
+    } else {
+        &extra.main_hand
+    };
+    let info = used.as_deref().and_then(|i| items.get(i));
+    info.is_some_and(|i| {
+        i.consumable
+            .as_ref()
+            .map_or(i.blocks_attacks.is_some(), |c| {
+                c.animation == UseAnimation::Block
+            })
+    })
+}
+
 /// Decodes the `minecraft:consumable` component from its saved/NBT tag form.
 pub fn decode_consumable_tag(tag: &Tag) -> Option<ItemConsumable> {
     let json = crate::item_render::tag_json(tag);
@@ -459,10 +539,7 @@ pub fn decode_consumable_bytes_with(
     let mut r = Reader::new(bytes);
     let seconds = r.f32().ok()?;
     let animation_id = r.varint().ok()?;
-    let animation = match animation_id {
-        2 => UseAnimation::Drink,
-        _ => UseAnimation::Eat,
-    };
+    let animation = wire_use_animation(animation_id);
     let sound_holder = r.varint().ok()?;
     let sound = match sound_holder {
         0 => {
@@ -1158,10 +1235,7 @@ fn consumable_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
     let mut r = Reader::new(bytes);
     let seconds = r.f32().ok()?;
     let animation_id = r.varint().ok()?;
-    let animation = match animation_id {
-        2 => "drink",
-        _ => "eat",
-    };
+    let animation = use_animation_name(wire_use_animation(animation_id));
     let sound = sound_tag(&mut r, builtin)?;
     let particles = r.bool().ok()?;
     let n = r.count(r.remaining()).ok()?;
@@ -1403,6 +1477,51 @@ mod tests {
     use super::*;
     use horizon_protocol::registry::Ids;
     use std::path::Path;
+
+    /// `Consumable.STREAM_CODEC` of 1.0 seconds, animation `id`, an inline
+    /// sound `x`, particles and no effects.
+    fn consumable_bytes(id: u8) -> Vec<u8> {
+        let mut b = 1.0f32.to_be_bytes().to_vec();
+        b.extend([id, 0, 1, b'x', 0, 1, 0]);
+        b
+    }
+
+    /// `ItemUseAnimation`'s ids (`BLOCK(3)`, `SPEAR(11)`, ...) are what the
+    /// server's consumable names, and one out of range is `NONE`.
+    #[test]
+    fn a_wire_consumable_keeps_its_use_animation() {
+        for (id, expected) in [
+            (0, UseAnimation::None),
+            (1, UseAnimation::Eat),
+            (2, UseAnimation::Drink),
+            (3, UseAnimation::Block),
+            (4, UseAnimation::Bow),
+            (5, UseAnimation::Trident),
+            (6, UseAnimation::Crossbow),
+            (7, UseAnimation::Spyglass),
+            (8, UseAnimation::TootHorn),
+            (9, UseAnimation::Brush),
+            (10, UseAnimation::Bundle),
+            (11, UseAnimation::Spear),
+            (12, UseAnimation::None),
+        ] {
+            let bytes = consumable_bytes(id);
+            let consumable = decode_consumable_bytes(&bytes).unwrap();
+            assert_eq!(consumable.animation, expected, "id {id}");
+            // The saved form reads back as the same animation.
+            let tag = consumable_tag(&bytes, &Builtin::default()).unwrap();
+            let named = tag.get("animation").unwrap();
+            let json = serde_json::json!({ "animation": match named {
+                Tag::String(s) => s.to_string_lossy(),
+                _ => unreachable!(),
+            }});
+            assert_eq!(
+                crate::first_person::consumable_animation(&json),
+                expected,
+                "id {id}"
+            );
+        }
+    }
 
     /// `Equippable.equipSound` is the stack's component's own: a replaced
     /// component without one plays the generic sound, a removed one none.
