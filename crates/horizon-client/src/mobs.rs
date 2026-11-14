@@ -2785,6 +2785,8 @@ pub struct PlayerView {
     /// The Invisibility effect (`isInvisible`).
     pub invisible: bool,
     pub spectator: bool,
+    /// `Player.onClimbable`: a climbable block at its feet (`LivingEntity.isPushable` vetoes it).
+    pub on_climbable: bool,
     /// `PiglinAi.isWearingSafeArmor`: some golden armour.
     pub gold_armor: bool,
     /// `getLastHurtByMob` (within 100 ticks) and when.
@@ -2815,8 +2817,7 @@ pub struct PlayerView {
     pub passenger: bool,
     /// The vehicle entity id, including mounts without a `Vehicle` follow view.
     pub riding_vehicle: Option<u32>,
-    /// The boat or nautilus the player rides and steers
-    /// (`getControllingPassenger`).
+    /// The boat or nautilus the player rides and steers (`getControllingPassenger`).
     pub vehicle: Option<Vehicle>,
 }
 /// What a player rides, for the mobs that follow it (`FollowPlayerRiddenEntityGoal`).
@@ -2828,8 +2829,7 @@ pub struct Vehicle {
     pub velocity: Vec3,
 }
 impl PlayerView {
-    /// Worn stacks in `EquipmentSlot.VALUES` order. A player has no body or
-    /// saddle slot.
+    /// Worn stacks in `EquipmentSlot.VALUES` order. A player has no body or saddle slot.
     fn worn_slots(&self) -> [(&'static str, Option<&str>); 6] {
         [
             ("mainhand", self.main_hand.as_deref()),
