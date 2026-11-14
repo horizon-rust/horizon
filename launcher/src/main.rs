@@ -382,6 +382,8 @@ struct Launcher {
     /// The game is waiting for its session (a token renewal), or a Java instance for its files
     /// and Java (`start_java`), before it starts.
     starting_client: Option<String>,
+    /// The instance that start is for, whatever is selected by the time it ends.
+    starting_instance: Option<String>,
     /// Play was pressed on a version not prepared yet: it starts once this preparation ends well.
     play_when_prepared: Option<String>,
     /// Join a friend: the code typed on the Play page, and the one the game
@@ -688,6 +690,7 @@ impl Launcher {
             owner: None,
             owner_screen_open: false,
             starting_client: None,
+            starting_instance: None,
             play_when_prepared: None,
             friend_code: line_edit::LineEdit::new(String::new(), 256, 32),
             friend_focused: false,
@@ -1204,6 +1207,7 @@ impl Launcher {
                 Msg::Playing(playing) => self.playing = playing,
                 Msg::OfficialPlayers(players) => self.official_players = players,
                 Msg::JavaGame(id, home, cmd) => {
+                    self.starting_instance = None;
                     self.starting_client = None;
                     let spawned = cmd.and_then(|(cmd, vars)| {
                         self.client_vars = vars;
@@ -1230,6 +1234,7 @@ impl Launcher {
                 }
                 Msg::Session(session) => {
                     self.load_auth_statuses(false);
+                    self.starting_instance = None;
                     if let Some(tag) = self.starting_client.take() {
                         let mut cmd = backend::client_command(&tag);
                         let account::GameSession { file, offline, env } = match session {
@@ -1260,21 +1265,8 @@ impl Launcher {
                         }
                         self.accounts = Accounts::load();
                         // A pack's Play button plays that pack; Play plays the selected instance.
-                        let (profile, run) = match self.starting_pack.take() {
-                            Some(work) => {
-                                let id = instances::list()
-                                    .into_iter()
-                                    .find(|i| i.work == work)
-                                    .map(|i| i.id);
-                                let applied =
-                                    horizon_launcher::modpacks::apply_profile(&mut cmd, &work);
-                                (applied, id)
-                            }
-                            None => {
-                                let instance = instances::selected();
-                                (instances::apply(&mut cmd, &instance), Some(instance.id))
-                            }
-                        };
+                        let (profile, run) =
+                            instances_page::apply_start(&mut cmd, self.starting_pack.take());
                         if let Err(e) = profile {
                             self.client_error = Some(e);
                             account::discard_unread_sessions();
@@ -1856,6 +1848,7 @@ impl Launcher {
         self.client_started =
             Some(std::time::SystemTime::now() - std::time::Duration::from_secs(2));
         self.starting_client = Some(instance.id.clone());
+        self.starting_instance = Some(instance.id.clone());
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let log = |line: String| {
@@ -1906,6 +1899,8 @@ impl Launcher {
         // round trip when the token needs renewing) come first; `drain` starts the game when the
         // session arrives.
         self.starting_client = Some(tag.clone());
+        let pack = self.starting_pack.as_deref();
+        self.starting_instance = instances_page::start_instance(pack, self.selected_instance());
         self.play_pressed = Some(Instant::now());
         let tx = self.tx.clone();
         // Registry mods update before the game reads them (`horizon::auto`); native mods only
@@ -5928,6 +5923,32 @@ mod tests {
         assert!(!starts_now(true, true, false), "prepared again under way");
         assert!(!starts_now(false, false, false), "not prepared");
         assert!(!starts_now(true, false, true), "already running");
+    }
+
+    /// A sidebar row says Running or Starting for the instance that was started, not for
+    /// whichever one is selected (#16186).
+    #[test]
+    fn a_row_shows_the_game_of_its_own_instance_only() {
+        use super::frame::{row_phase, running_ids, RowPhase};
+        assert_eq!(row_phase("a", &["a"], None), Some(RowPhase::Running));
+        assert_eq!(row_phase("b", &["a"], None), None, "B is only selected");
+        assert_eq!(row_phase("a", &[], Some("a")), Some(RowPhase::Starting));
+        assert_eq!(row_phase("b", &[], Some("a")), None);
+        assert_eq!(row_phase("a", &[], None), None, "nothing runs");
+        // Several games: one runs while another starts.
+        assert_eq!(row_phase("a", &["a"], Some("b")), Some(RowPhase::Running));
+        assert_eq!(row_phase("b", &["a"], Some("b")), Some(RowPhase::Starting));
+        assert_eq!(row_phase("b", &["a", "b"], None), Some(RowPhase::Running));
+        // The started instance deleted (ids don't change on a rename): no row has its game.
+        assert_eq!(row_phase("c", &["a"], Some("b")), None);
+        // The ids come from the run's own instance, and only while its game runs.
+        let run = ("a".to_string(), std::time::Instant::now());
+        assert_eq!(running_ids(true, Some(&run)), ["a"]);
+        assert!(running_ids(false, Some(&run)).is_empty());
+        assert!(
+            running_ids(true, None).is_empty(),
+            "a pack with no instance"
+        );
     }
 
     #[test]

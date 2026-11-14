@@ -985,3 +985,30 @@ pub(super) fn initial(name: &str) -> String {
         .to_uppercase()
         .to_string()
 }
+
+/// The instance a start under way is for, noted when Play is pressed: a pack's own, else the
+/// selected one. The game starts as this one, whatever is selected when its session arrives.
+pub(super) fn start_instance(
+    pack: Option<&std::path::Path>,
+    selected: Option<&Instance>,
+) -> Option<String> {
+    match pack {
+        Some(work) => instances::list().into_iter().find(|i| i.work == work),
+        None => selected.cloned(),
+    }
+    .map(|i| i.id)
+}
+
+/// Turns the game's command into a pack's, or into the selected instance, with the instance's
+/// id.
+pub(super) fn apply_start(
+    cmd: &mut std::process::Command,
+    pack: Option<std::path::PathBuf>,
+) -> (Result<(), String>, Option<String>) {
+    if let Some(work) = pack {
+        let id = start_instance(Some(&work), None);
+        return (horizon_launcher::modpacks::apply_profile(cmd, &work), id);
+    }
+    let instance = instances::selected();
+    (instances::apply(cmd, &instance), Some(instance.id))
+}
