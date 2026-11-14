@@ -295,14 +295,16 @@ How each pixel's surface moved since last frame, for temporal passes (TAA, denoi
 every post pass's prelude also has the names below; a pack without the key has none of them, and no other stage does.
 `horizon-shader check` takes it; **the game doesn't draw it yet** and refuses a pack with `[motion]`.
 
-- `var scene_motion: texture_2d<f32>` (binding 14): the engine's objects only. Read it through `motion_at`.
+- `var scene_motion: texture_2d<f32>` (binding 14): the engine's objects (z 1 matched, xy the delta; w 1
+  nothing to match), and at depth 0 the sky's motion (xy; w 1 behind last frame's view). Read it through `motion_at`.
 - `fn motion_at(texel: vec2<i32>) -> MotionData`: the motion at a pixel of the world's picture, as `scene_depth` holds it.
 - `struct MotionData { delta: vec2<f32>, kind: u32 }`. `delta` is where the surface was last frame less where it is
   now, in top-left UV of the world's picture (`frame.resolution`): `uv + delta` is its place in last frame's picture.
   `kind` says how far to trust it:
   - `MOTION_CAMERA` (0): everything that isn't one of the engine's objects (terrain, still block entities, the sky),
-    moved by the camera alone, through `scene_depth`, `frame.previous_view_projection` and `frame.camera_motion`; at
-    depth 0 the sky as a direction. It assumes still geometry: terrain a `[vertex]` stage animates, drifting clouds and
+    moved by the camera alone, through `scene_depth`, `frame.previous_view_projection` and `frame.camera_motion`. The
+    sky (depth 0) is drawn without the view bob, so Horizon writes its motion into `scene_motion` itself, from the
+    unbobbed views. It assumes still geometry: terrain a `[vertex]` stage animates, drifting clouds and
     moving water are wrong here. Mark such surfaces with `set_surface`'s `data` and treat them as reactive.
   - `MOTION_OBJECT` (1): one of the engine's objects matched to last frame's, vertex by vertex, limbs and spin
     included: mobs, dropped items, boats, carts, item frames and their items, armour stands, piston blocks, animated

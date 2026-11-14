@@ -946,8 +946,10 @@ pub fn post_target_declarations(manifest: &crate::manifest::Manifest) -> String 
 pub const MOTION_BINDING: u32 = 14;
 
 /// The motion guide's declarations, at `MOTION_BINDING`. The raw texture holds the engine's
-/// objects only (`frame_gen/motion.wgsl`): z 1 a matched one with xy its delta, w 1 one with
-/// nothing to match, 0 elsewhere; `motion_at` adds the camera's motion for the rest.
+/// objects (`frame_gen/motion.wgsl`): z 1 a matched one with xy its delta, w 1 one with nothing
+/// to match. At depth 0 the engine writes the sky's camera motion from its unposed view (no bob
+/// or spin, as the sky is drawn): xy the delta, w 1 behind last frame's view. `motion_at` adds
+/// the camera's motion for the rest.
 const MOTION: &str = "\
 // The engine's objects' motion this frame (read it through `motion_at`).
 @group(3) @binding(14) var scene_motion: texture_2d<f32>;
@@ -973,18 +975,22 @@ fn motion_at(texel: vec2<i32>) -> MotionData {
     if object.z > 0.5 {
         return MotionData(object.xy, MOTION_OBJECT);
     }
+    let depth = textureLoad(scene_depth, t, 0);
+    // The sky, drawn without the view bob: the engine wrote its motion, w 1 behind last frame's view.
+    if depth == 0.0 {
+        if object.w > 0.5 {
+            return MotionData(vec2<f32>(0.0), MOTION_NO_HISTORY);
+        }
+        return MotionData(object.xy, MOTION_CAMERA);
+    }
     if object.w > 0.5 {
         return MotionData(vec2<f32>(0.0), MOTION_NEW);
     }
-    // Still geometry, moved by the camera alone; the sky (depth 0) is a direction.
+    // Still geometry, moved by the camera alone.
     let uv = (vec2<f32>(t) + 0.5) / vec2<f32>(size);
-    let depth = textureLoad(scene_depth, t, 0);
     let view = frame.projection_inverse * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
-    var point = vec4<f32>((frame.view_inverse * vec4<f32>(view.xyz, 0.0)).xyz, 0.0);
-    if depth > 0.0 {
-        point = vec4<f32>(point.xyz / view.w + frame.camera_motion, 1.0);
-    }
-    let clip = frame.previous_view_projection * point;
+    let point = (frame.view_inverse * vec4<f32>(view.xyz / view.w, 0.0)).xyz + frame.camera_motion;
+    let clip = frame.previous_view_projection * vec4<f32>(point, 1.0);
     // Behind last frame's camera: nothing there to reproject from.
     if clip.w <= 0.0 {
         return MotionData(vec2<f32>(0.0), MOTION_NO_HISTORY);

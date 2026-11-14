@@ -60,6 +60,17 @@ fn every_post_pass_of_a_motion_pack_reads_the_guide() {
     assert!(checked(true, direct).unwrap().stages[0].reads("scene_motion"));
 }
 
+/// The sky (depth 0) takes the engine's texel, written from the unbobbed views, before anything
+/// reads `w` as an object with nothing to match. M2b's GPU tests hold the numbers.
+#[test]
+fn the_sky_reads_the_engine_s_motion() {
+    let text = compose(&pack("0.2", true, &[READER]), StageKind::Post, "post0.wgsl").text;
+    let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle}"));
+    let sky = at("if depth == 0.0 {");
+    let camera = at("return MotionData(object.xy, MOTION_CAMERA);");
+    assert!(sky < camera && camera < at("return MotionData(vec2<f32>(0.0), MOTION_NEW);"));
+}
+
 #[test]
 fn the_guide_without_motion_says_to_set_it() {
     let problems = checked(false, READER).expect_err("should fail");

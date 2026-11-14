@@ -138,8 +138,6 @@ distance = 12.0            # optional: how far, in blocks (4 to 32); eases out o
 cells = 16                 # optional: grid cells along a face's side (4 to 64)
 option = "displacement_on" # optional: a bool option that turns it on (else always on)
 cells_option = "cells"     # optional: a choice option of cell counts that replaces `cells`
-
-[motion]                   # optional, 0.2, needs [[post]], no keys: the post stage gets `motion_at`
 steps_option = "steps"     # optional: a bool option: each cell a flat step with walls while it's on
 ```
 
@@ -198,6 +196,9 @@ uses the no-pack frame. What it changes from 0.1:
   returns. BT.2020 holds colours outside sRGB, which HDR displays show. It needs `blend = "linear"`. `Frame` says
   which in `primaries`, with that space's luminance weights in `luminance`, after `black_level`. `"bt2020"` passes
   the check, but the game doesn't serve it yet.
+- **`[motion]`** (no keys, needs `[[post]]`): every post pass gets `fn motion_at(texel: vec2<i32>) -> MotionData`, how
+  each pixel's surface moved since last frame, for temporal passes. The check takes it, but **the game doesn't draw
+  it yet** and refuses a pack that has it.
 
 ```toml
 api = "0.2"
@@ -211,10 +212,13 @@ file = "entity.wgsl"
 [frame]
 blend = "gamma"            # optional: gamma (default) or linear
 primaries = "bt709"        # optional: bt709 (default) or bt2020, which needs blend = "linear"
+
+[motion]                   # optional, needs [[post]]: the post stage's motion guide (not drawn yet)
 ```
 
 0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]`, `[entity]`,
-`[frame]` or `[motion]` is refused. The example's port is `crates/horizon-shader-api/packs/golden_hour_0_2`, a test pack of the SDK.
+`[frame]` or `[motion]` is refused. The example's port is `crates/horizon-shader-api/packs/golden_hour_0_2`, a test
+pack of the SDK.
 
 ## Testing a pack frame by frame
 
