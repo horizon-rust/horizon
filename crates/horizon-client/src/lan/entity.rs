@@ -2204,6 +2204,40 @@ mod tests {
     }
 
     #[test]
+    fn a_vehicle_hurt_animation_returns_to_its_defaults() {
+        let mut e = state(0.0);
+        e.kind = "minecraft:oak_boat".into();
+        e.defaults = vec![
+            (8, serializer::INT, Value::Int(0)),
+            (9, serializer::INT, Value::Int(1)),
+            (10, serializer::FLOAT, Value::Float(0.0)),
+        ];
+        e.meta = vec![
+            (8, serializer::INT, Value::Int(10)),
+            (9, serializer::INT, Value::Int(-1)),
+            (10, serializer::FLOAT, Value::Float(4.0)),
+        ];
+        let mut s = added(&e);
+        changes(&mut s, &e);
+        e.meta.clear();
+        let data = changes(&mut s, &e)
+            .into_iter()
+            .find_map(|p| match p {
+                play::Clientbound::SetEntityData(d) => Some(d),
+                _ => None,
+            })
+            .expect("the boat's finished hurt animation is sent");
+        assert_eq!(
+            data.values,
+            vec![
+                (8, serializer::INT, Value::Int(0)),
+                (9, serializer::INT, Value::Int(1)),
+                (10, serializer::FLOAT, Value::Float(0.0)),
+            ]
+        );
+    }
+
+    #[test]
     fn metadata_and_equipment_send_only_the_changes() {
         let mut e = state(0.0);
         let mut s = added(&e);

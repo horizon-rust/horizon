@@ -56,7 +56,16 @@ fn state(id: u32, kind: &str, position: [f64; 3], yaw: f32, on_ground: bool) -> 
 
 /// `VehicleEntity`'s DATA_ID_HURT, DATA_ID_HURTDIR and DATA_ID_DAMAGE
 /// (entries 8 to 10) when they differ from their defaults (0, 1, 0).
-fn push_vehicle_meta(meta: &mut Vec<(u8, i32, Value)>, hurt_time: i32, hurt_dir: i32, damage: f32) {
+///
+/// The defaults are included even when the current values are omitted so a
+/// client that was hurt can be told when the wobble has fully worn off.
+fn push_vehicle_meta(
+    meta: &mut Vec<(u8, i32, Value)>,
+    defaults: &mut Vec<(u8, i32, Value)>,
+    hurt_time: i32,
+    hurt_dir: i32,
+    damage: f32,
+) {
     if hurt_time != 0 {
         meta.push((8, serializer::INT, Value::Int(hurt_time)));
     }
@@ -66,6 +75,11 @@ fn push_vehicle_meta(meta: &mut Vec<(u8, i32, Value)>, hurt_time: i32, hurt_dir:
     if damage != 0.0 {
         meta.push((10, serializer::FLOAT, Value::Float(damage)));
     }
+    defaults.extend([
+        (8, serializer::INT, Value::Int(0)),
+        (9, serializer::INT, Value::Int(1)),
+        (10, serializer::FLOAT, Value::Float(0.0)),
+    ]);
 }
 
 /// `AbstractMinecart`'s DATA_ID_CUSTOM_DISPLAY_BLOCK (entry 11, an optional
@@ -216,7 +230,13 @@ impl Game<'_> {
             // Leashable.setLeashedTo / dropLeash: who holds the boat's lead.
             e.leash = leash;
             e.velocity = [b.velocity.x, b.velocity.y, b.velocity.z];
-            push_vehicle_meta(&mut e.meta, b.hurt_time, b.hurt_dir, b.damage);
+            push_vehicle_meta(
+                &mut e.meta,
+                &mut e.defaults,
+                b.hurt_time,
+                b.hurt_dir,
+                b.damage,
+            );
             // Entity.DATA_SHARED_FLAGS_ID: FLAG_ONFIRE.
             if b.fire_ticks > 0 {
                 e.meta.push((0, serializer::BYTE, Value::Byte(1)));
@@ -266,7 +286,13 @@ impl Game<'_> {
                     Vec::new()
                 });
             }
-            push_vehicle_meta(&mut e.meta, c.hurt_time, c.hurt_dir, c.damage);
+            push_vehicle_meta(
+                &mut e.meta,
+                &mut e.defaults,
+                c.hurt_time,
+                c.hurt_dir,
+                c.damage,
+            );
             cart_display_data(e, shown, c.custom_offset, default);
             match c.kind {
                 // MinecartFurnace.DATA_ID_FUEL.
@@ -1172,7 +1198,15 @@ mod tests {
             let mut s = horizon_client::entities::ArmorStand::new(10, Default::default(), 0.0);
             s.pose[0] = [5.0, 0.0, 0.0];
             push_stand_poses(&mut e.meta, &s);
-            push_vehicle_meta(&mut e.meta, 2, 1, 3.5);
+            push_vehicle_meta(&mut e.meta, &mut e.defaults, 2, 1, 3.5);
+            assert_eq!(
+                e.defaults,
+                vec![
+                    (8, serializer::INT, Value::Int(0)),
+                    (9, serializer::INT, Value::Int(1)),
+                    (10, serializer::FLOAT, Value::Float(0.0)),
+                ]
+            );
             (e.kind.as_ptr(), e.meta.as_ptr(), e.meta.capacity())
         };
         assert!(meta_cap >= 2);
@@ -1187,7 +1221,7 @@ mod tests {
                 0.0,
                 false,
             );
-            push_vehicle_meta(&mut e.meta, 0, 1, 0.0);
+            push_vehicle_meta(&mut e.meta, &mut e.defaults, 0, 1, 0.0);
             (e.kind.as_ptr(), e.meta.as_ptr(), e.meta.capacity())
         };
         assert_eq!(kind_ptr2, kind_ptr);
