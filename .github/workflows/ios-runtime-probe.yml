@@ -115,6 +115,27 @@ jobs:
           path.write_text(source.replace(old, new, 1))
           PY
           git diff -- crates/horizon-client/src/game/launch_options.rs
+      - name: Select Metal as Horizon's only iOS graphics backend
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("crates/horizon-client-render/src/gfx.rs")
+          source = path.read_text()
+          old = '    if os == "macos" || wgpu_backend {\n        return vec![Backends::default()];\n    }'
+          new = '''    // Nova iOS: UIKit provides a CAMetalLayer, not Vulkan or desktop GL.
+              // Choose the native Metal backend regardless of desktop settings.
+              if os == "ios" {
+                  return vec![Backends::METAL];
+              }
+              if os == "macos" || wgpu_backend {
+                  return vec![Backends::default()];
+              }'''
+          assert source.count(old) == 1, "Horizon renderer backend order changed"
+          path.write_text(source.replace(old, new, 1))
+          PY
+          git diff -- crates/horizon-client-render/src/gfx.rs
+
       - name: Add iOS-only engine startup and rendering diagnostics
         shell: bash
         run: |
@@ -208,6 +229,48 @@ jobs:
           patch(loading, "                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {",
                 "                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {\n                    if !self.title_drawn { nova_diag(\"renderer.title.frame-presented\"); }")
 
+          # Copy existing renderer startup checkpoints into the same file as
+          # Nova's launcher and engine breadcrumbs. This also catches driver
+          # crashes during instance creation/surface acquisition.
+          gfx = Path("crates/horizon-client-render/src/gfx.rs")
+          patch(gfx, '''fn startup_step(step: std::fmt::Arguments) {
+              log::info!("Horizon renderer: {step}");''',
+                '''fn startup_step(step: std::fmt::Arguments) {
+              if let Some(path) = std::env::var_os("NOVA_DIAGNOSTIC_LOG") {
+                  use std::io::Write as _;
+                  if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+                      let _ = writeln!(file, "[renderer] {step}");
+                      let _ = file.flush();
+                  }
+              }
+              log::info!("Horizon renderer: {step}");''')
+          patch(gfx, "    let instance = open(wgpu::Dx12Compiler::Fxc);",
+                '''    startup_step(format_args!("backend.{name}.instance.begin"));
+                  let instance = open(wgpu::Dx12Compiler::Fxc);
+                  startup_step(format_args!("backend.{name}.instance.created"));''')
+          patch(gfx, '''    let surface = if offscreen {
+                  None
+              } else {
+                  Some(
+                      instance''',
+                '''    startup_step(format_args!("gpu.surface.begin"));
+                  let surface = if offscreen {
+                      None
+                  } else {
+                      Some(
+                          instance''')
+          patch(gfx, '''    let adapter = instance
+                  .request_adapter(&wgpu::RequestAdapterOptions {''',
+                '''    startup_step(format_args!("gpu.surface.created"));
+                  startup_step(format_args!("gpu.adapter.begin"));
+                  let adapter = instance
+                      .request_adapter(&wgpu::RequestAdapterOptions {''')
+          patch(gfx, '''        .map_err(|e| NoDevice::NoAdapter(e.to_string()))?;
+              Ok((surface, adapter))''',
+                '''        .map_err(|e| NoDevice::NoAdapter(e.to_string()))?;
+              startup_step(format_args!("gpu.adapter.created"));
+              Ok((surface, adapter))''')
+
           loader = Path("crates/horizon-client/src/game/resource_loader.rs")
           patch(loader, "    let progress = Progress::new();",
                 "    loading_screen::nova_diag(\"resources.loading.begin\");\n    let progress = Progress::new();")
@@ -216,7 +279,8 @@ jobs:
           PY
           git diff --stat -- crates/horizon-client/src/entry.rs \
             crates/horizon-client/src/game/loading_screen.rs \
-            crates/horizon-client/src/game/resource_loader.rs
+            crates/horizon-client/src/game/resource_loader.rs \
+            crates/horizon-client-render/src/gfx.rs
 
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
