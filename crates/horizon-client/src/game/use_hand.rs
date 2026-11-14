@@ -495,7 +495,9 @@ impl Game<'_> {
         {
             self.world.block_entities.insert(key, entity);
         }
-        if self.world.block_entities.get(&key).is_some() {
+        if self.world.block_entities.get(&key).is_some()
+            || &*self.res.facts().get(state).name == "minecraft:decorated_pot"
+        {
             self.apply_placed_item(target, &stack, game_master);
             // Block.setPlacedBy.
             match self.world.block_entities.get(&key) {
