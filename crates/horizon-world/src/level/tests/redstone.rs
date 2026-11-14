@@ -1213,6 +1213,76 @@ fn lava_flowing_down_onto_water_makes_stone_and_stays_lava() {
     );
 }
 
+#[test]
+fn flowing_water_meets_lava_source() {
+    let mut w = world!();
+    w.floor(0, 4, "stone");
+    let water_src = BlockPos::new(0, 1, 0);
+    let lava_src = BlockPos::new(2, 1, 0);
+    w.set(lava_src, w.id("lava", &[]));
+    w.set(water_src, w.id("water", &[]));
+    for _ in 0..20 {
+        w.tick();
+    }
+    assert_eq!(
+        w.get(lava_src),
+        w.id("obsidian", &[]),
+        "lava source becomes obsidian when water spreads next to it"
+    );
+}
+
+#[test]
+fn flowing_water_meets_flowing_lava() {
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    for x in -1..=4 {
+        w.set(BlockPos::new(x, 1, -1), w.id("stone", &[]));
+        w.set(BlockPos::new(x, 1, 1), w.id("stone", &[]));
+    }
+    w.set(BlockPos::new(-1, 1, 0), w.id("stone", &[]));
+    w.set(BlockPos::new(4, 1, 0), w.id("stone", &[]));
+
+    let lava_src = BlockPos::new(3, 1, 0);
+    let water_src = BlockPos::new(0, 1, 0);
+    w.set(lava_src, w.id("lava", &[]));
+    for _ in 0..100 {
+        w.tick();
+    }
+    w.set(water_src, w.id("water", &[]));
+    for _ in 0..100 {
+        w.tick();
+    }
+    let p1 = BlockPos::new(1, 1, 0);
+    let p2 = BlockPos::new(2, 1, 0);
+    assert!(
+        w.get(p1) == w.id("cobblestone", &[]) || w.get(p2) == w.id("cobblestone", &[]),
+        "flowing water meeting flowing lava generates cobblestone"
+    );
+    assert_ne!(
+        w.get(lava_src),
+        w.id("water", &[]),
+        "lava source was not removed by water"
+    );
+}
+
+#[test]
+fn water_flowing_down_onto_lava_source_makes_obsidian() {
+    let mut w = world!();
+    w.floor(0, 4, "stone");
+    let (lava_at, water_at) = (BlockPos::new(0, 1, 0), BlockPos::new(0, 2, 0));
+    w.set(lava_at, w.id("lava", &[]));
+    w.set(water_at, w.id("water", &[]));
+    for _ in 0..80 {
+        w.tick();
+    }
+    assert_eq!(
+        w.get(lava_at),
+        w.id("obsidian", &[]),
+        "the lava source water flowed down onto is obsidian: {}",
+        w.name(lava_at)
+    );
+}
+
 /// `FallingBlock.isFree` is `state.isAir() || state.is(BlockTags.FIRE) || state.liquid()
 /// || state.canBeReplaced()`: sand falls through air, either kind of fire, any liquid
 /// and the blocks flagged replaceable (grass, vines, dead bushes, snow), and rests on

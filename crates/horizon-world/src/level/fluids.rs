@@ -173,7 +173,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn can_be_replaced_with(
         &self,
         fluid: FluidState,
-        pos: BlockPos,
+        _pos: BlockPos,
         other: FluidKind,
         direction: Direction,
     ) -> bool {
@@ -183,7 +183,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
         match kind.source() {
             FluidKind::Water => direction == Direction::Down && !is_water(other),
-            FluidKind::Lava => self.fluid_height(fluid, pos) >= 0.444_444_45 && is_water(other),
+            FluidKind::Lava => direction == Direction::Down && is_water(other),
             // `BaseFlowingFluid.canBeReplacedWith`: a mod fluid is never replaced by another.
             _ => false,
         }
