@@ -750,7 +750,9 @@ impl Game<'_> {
             .keys()
             .copied()
             .filter(|&(x, z)| levels.block_ticking(x, z));
-        let regions = Regions::new(ticking, &players, view);
+        // One chunk wider than a player's view, as `residents_must_land` asks for: a player standing still
+        // never counts as having left its region.
+        let regions = Regions::new(ticking, &players, view + 1);
         if regions.count < 2 {
             return Ok(false);
         }
