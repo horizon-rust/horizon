@@ -162,6 +162,82 @@ fn flat_vertices<'a>(
     }
 }
 
+/// The world's section lists and the arena pages they draw from, borrowed apart from the rest
+/// of the renderer: a shader pack's shadow passes draw the light's lists through them.
+#[derive(Clone, Copy)]
+pub(super) struct SectionLists<'a> {
+    draws: &'a [[u32; 5]],
+    pages: &'a [(u32, Option<u32>)],
+    arena: &'a arena::Arena,
+    translucent_arena: Option<&'a arena::Arena>,
+    sorted_indices: &'a arena::Arena,
+    /// The quad indices.
+    pub indices: &'a wgpu::Buffer,
+    /// The flat draws' lists, where they are made.
+    pub flat: Option<&'a flat::Flat>,
+    multi_draw: bool,
+}
+
+impl<'a> SectionLists<'a> {
+    /// `Renderer::draw_sections_from`.
+    pub(super) fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        indirect: &wgpu::Buffer,
+        base: u32,
+        first: u32,
+        count: u32,
+        pulled: bool,
+    ) {
+        let (draws, pages) = (self.draws, self.pages);
+        let (mut i, end) = (first as usize, (first + count) as usize);
+        while i < end {
+            let (page, index_page) = pages[i];
+            let run = pages[i..end]
+                .iter()
+                .take_while(|&&p| p == (page, index_page))
+                .count();
+            // Translucent draws, and only they, have sorted indices; split, their large
+            // pages are bound up to their last range in use (`Arena::binding`).
+            let (vertices, indices) = match (self.translucent_arena, index_page) {
+                (Some(arena), Some(p)) => (arena.binding(page), self.sorted_indices.binding(p)),
+                (_, p) => (
+                    self.arena.buffer(page).slice(..),
+                    p.map_or(self.indices, |p| self.sorted_indices.buffer(p))
+                        .slice(..),
+                ),
+            };
+            pass.set_vertex_buffer(0, vertices);
+            if pulled
+                && index_page.is_none()
+                && let Some(group) = self.flat.and_then(|f| f.page_group(page))
+            {
+                pass.set_bind_group(1, group, &[]);
+            }
+            pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
+            if self.multi_draw {
+                let offset = (i - base as usize) as u64 * 20;
+                pass.multi_draw_indexed_indirect(indirect, offset, run as u32);
+            } else {
+                for d in &draws[i..i + run] {
+                    pass.draw_indexed(d[2]..d[2] + d[0], d[3] as i32, d[4]..d[4] + 1);
+                }
+            }
+            i += run;
+        }
+        if pages[first as usize..end]
+            .iter()
+            .any(|(_, sorted)| sorted.is_some())
+        {
+            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+        }
+    }
+    /// `flat_vertices` of these arenas.
+    pub(super) fn flat_vertices(&self) -> impl Fn(u32) -> wgpu::BufferSlice<'a> + Copy {
+        flat_vertices(self.arena, self.translucent_arena)
+    }
+}
+
 /// Bytes of `texture` with every mip level of every layer.
 pub(crate) fn texture_bytes(texture: &wgpu::Texture) -> u64 {
     let size = texture.size();
@@ -192,6 +268,7 @@ fn packed_wanted() -> bool {
 pub(crate) mod animate;
 mod arena;
 pub mod capture;
+mod celestial;
 mod census;
 pub mod compositor;
 pub(crate) mod core_lines;
@@ -1210,7 +1287,7 @@ pub struct Renderer {
     world_text_pipeline: wgpu::RenderPipeline,
     fluid_pipeline: wgpu::RenderPipeline,
     terrain_model_pipelines: [wgpu::RenderPipeline; 3],
-    celestial_pipeline: wgpu::RenderPipeline,
+    celestial: celestial::Celestial,
     celestial_buffer: wgpu::Buffer,
     end_sky: end_sky::EndSky,
     stars: stars::Stars,
@@ -2538,7 +2615,7 @@ impl Renderer {
         previous: Option<&Self>,
         api: GraphicsApi,
         translucent_batching: bool,
-        shader_pack: bool,
+        (shader_pack, pack_starts_wide): (bool, bool),
         // The settings and the pack's `request` pick the frame (`output::resolve_frame`),
         // with what this window's display reported to the renderer before (`display`).
         settings: &crate::graphics::Graphics,
@@ -4261,58 +4338,13 @@ impl Renderer {
             },
             ..additive_descriptor
         });
-        let celestial_pipeline = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Celestial bodies"),
-            layout: Some(&entity_layout),
-            vertex: wgpu::VertexState {
-                module: &entity_shader,
-                entry_point: Some("vs_entity"),
-                compilation_options: Default::default(),
-                buffers: &entity_vertex,
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &entity_shader,
-                entry_point: Some("fs_sky_celestial"),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &linear_blend::frame_constants(frame_format, linear_light),
-                    ..Default::default()
-                },
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: frame_format,
-                    // RenderPipelines.CELESTIAL: additive (src alpha, one), with
-                    // the colour premultiplied in fs_sky_celestial. Its alpha is
-                    // how much a texel adds: HDR output (hdr.wgsl) lets the sun's
-                    // and moon's discs shine; nothing else reads the frame's alpha.
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::Zero,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let celestial = celestial::Celestial::new(
+            &kept,
+            &entity_layout,
+            &entity_shader,
+            &entity_vertex,
+            (frame_format, linear_light),
+        );
         drop(entity_step);
         // WorldBorderRenderer: misc/forcefield.png as a MipmappedTexture
         // (repeat, linear minification with mipmaps, nearest magnification).
@@ -4682,7 +4714,7 @@ impl Renderer {
         };
         // The solid quads in the compact layout where every pass reads it; the first world
         // frames settle it for the picked pack (`follow_packed_layout`).
-        let packed_quads = flat.is_some() && !shader_pack && packed_wanted();
+        let packed_quads = flat.is_some() && !pack_starts_wide && packed_wanted();
         packed::pack_quads(packed_quads);
         // A native mod's world warp builds its pipelines with these layouts once it is given one.
         let world_warps = world_warp::WorldWarps::new(world_warp::Kit {
@@ -4740,9 +4772,8 @@ impl Renderer {
         // first world frame (`shader_pack`: the picked pack draws flat, a `shaders/`
         // pack or one of Horizon's own with `[shadow]`), and the frames before it, the
         // level loading screen's among them, keep the layout the sections upload in
-        // (`draw_frame`). It starts as that pack's, a `shaders/` pack taken to draw
-        // terrain: the pack loading keeps it, and only one whose terrain and shadow
-        // pass draw none meshes the sections again.
+        // (`draw_frame`). It starts as that pack's (`pack_starts_wide`: a `shaders/` pack
+        // taken to draw terrain), so the pack loading keeps it.
         let (sorted_indices, translucent_arena) = arena::Arena::translucent_arenas(
             &device,
             std::mem::size_of::<TerrainVertex>() as u64,
@@ -4923,7 +4954,7 @@ impl Renderer {
             world_text_pipeline,
             fluid_pipeline,
             terrain_model_pipelines,
-            celestial_pipeline,
+            celestial,
             celestial_buffer,
             end_sky: end_sky::EndSky::default(),
             stars,
@@ -6083,48 +6114,17 @@ impl Renderer {
         count: u32,
         pulled: bool,
     ) {
-        let (draws, pages) = (&self.draws[..], &self.draw_pages[..]);
-        let (mut i, end) = (first as usize, (first + count) as usize);
-        while i < end {
-            let (page, index_page) = pages[i];
-            let run = pages[i..end]
-                .iter()
-                .take_while(|&&p| p == (page, index_page))
-                .count();
-            // Translucent draws, and only they, have sorted indices; split, their large
-            // pages are bound up to their last range in use (`Arena::binding`).
-            let (vertices, indices) = match (&self.translucent_arena, index_page) {
-                (Some(arena), Some(p)) => (arena.binding(page), self.sorted_indices.binding(p)),
-                (_, p) => (
-                    self.arena.buffer(page).slice(..),
-                    p.map_or(&self.indices, |p| self.sorted_indices.buffer(p))
-                        .slice(..),
-                ),
-            };
-            pass.set_vertex_buffer(0, vertices);
-            if pulled
-                && index_page.is_none()
-                && let Some(group) = self.flat.as_ref().and_then(|f| f.page_group(page))
-            {
-                pass.set_bind_group(1, group, &[]);
-            }
-            pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
-            if self.multi_draw {
-                let offset = (i - base as usize) as u64 * 20;
-                pass.multi_draw_indexed_indirect(indirect, offset, run as u32);
-            } else {
-                for d in &draws[i..i + run] {
-                    pass.draw_indexed(d[2]..d[2] + d[0], d[3] as i32, d[4]..d[4] + 1);
-                }
-            }
-            i += run;
-        }
-        if pages[first as usize..end]
-            .iter()
-            .any(|(_, sorted)| sorted.is_some())
-        {
-            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        }
+        let lists = SectionLists {
+            draws: &self.draws,
+            pages: &self.draw_pages,
+            arena: &self.arena,
+            translucent_arena: self.translucent_arena.as_ref(),
+            sorted_indices: &self.sorted_indices,
+            indices: &self.indices,
+            flat: self.flat.as_ref(),
+            multi_draw: self.multi_draw,
+        };
+        lists.draw(pass, indirect, base, first, count, pulled);
     }
     fn release_section(&mut self, key: SectionKey) {
         if let Some(s) = self.sections.remove(key) {
@@ -6500,16 +6500,12 @@ impl Renderer {
         }
     }
     /// Uploads solid quads in the compact layout (`packed_quads`) unless a pack reads the
-    /// arena's vertices as `TerrainVertex`es: Horizon's own packs' stages, and a `shaders/`
-    /// pack's terrain and shadow programs outside flat draws (flat ones unpack the records,
-    /// `pack_atlas::PULL_FLAT`). Leaving it drops every section and far tile for the game to
-    /// mesh again, as `follow_translucent_layout` does.
+    /// arena's vertices as `TerrainVertex`es: a `shaders/` pack's terrain and shadow
+    /// programs outside flat draws (flat ones unpack the records, `pack_atlas::PULL_FLAT`).
+    /// Leaving it drops every section and far tile for the game to mesh again.
     fn follow_packed_layout(&mut self) {
         let pack = self.pack_post.as_ref().and_then(|p| p.1.as_ref()).is_some();
-        let want = self.flat.is_some()
-            && (!pack || self.pack_terrain_flat)
-            && self.native.is_none()
-            && self.packed_on;
+        let want = self.flat.is_some() && (!pack || self.pack_terrain_flat) && self.packed_on;
         if want == self.packed_quads {
             return;
         }
@@ -6527,7 +6523,7 @@ impl Renderer {
         self.packed_quads = want;
         packed::pack_quads(want);
         let laid_out = self.sections.values().any(|s| s.packed)
-            || self.lods.values().any(|t| t.drawn().packed);
+            || self.lods.values().any(|t| t.holds_packed());
         if !want && laid_out {
             self.sections_dropped = true;
             self.clear_sections(self.layout);
@@ -6890,17 +6886,16 @@ impl Renderer {
             .map(entity_skin::EntitySkin::stored)
     }
 
-    /// Whether the game may pose ordinary entity models on the GPU (`Frame::skin`).
-    /// Standard packs need every bridge stage; native packs, frame generation and
-    /// native observers of the CPU entity stream retain their existing fallback.
+    /// Whether ordinary entity models may be posed on the GPU (`Frame::skin`, `entity_skin::poses`).
     pub fn skins_entities(&self) -> bool {
         self.entity_skin.is_some()
-            && !self.frame_gen.on
-            && self.pack_post.as_ref().is_none_or(|(_, post)| {
-                post.as_ref().is_some_and(|post| post.skins_entities())
-                    && !native_render::render_needs().entity_spans
-            })
-            && self.native.is_none()
+            && entity_skin::poses(
+                self.frame_gen.on,
+                (self.pack_post.as_ref())
+                    .map(|(_, p)| p.as_ref().is_some_and(|p| p.skins_entities())),
+                self.native.is_some(),
+                || native_render::render_needs().entity_spans,
+            )
     }
 
     /// Whether the layers tagged `OIT_ENTITY` (the eyes render type's, horse
@@ -8685,14 +8680,14 @@ impl Renderer {
                             let s = self.sections.get(v.slot);
                             (s.solid > 0).then(|| displace::Near {
                                 buffer: self.arena.buffer(s.page),
-                                start: s.start,
+                                base: s.solid_base(),
                                 quads: s.solid,
                                 origin: v.origin,
                             })
                         })
                         .collect()
                 };
-            d.prepare(&self.queue, &mut encoder, &near, view_proj);
+            d.prepare(&self.device, &self.queue, &mut encoder, &near, view_proj);
         }
         // Solid sections front to back, then translucent ones back to front,
         // as one list of indirect draws over the section arena.
@@ -9953,118 +9948,52 @@ impl Renderer {
         if !frame.title
             && let Some(native) = &mut self.native
         {
-            let size = self
-                .world_post
-                .size()
-                .filter(|_| scaled.is_some())
-                .unwrap_or([self.config.width, self.config.height]);
-            native
-                .frame
-                .write(&self.queue, frame, size, output.display());
-            native.frame.block_light.update(
-                &self.queue,
-                frame.camera,
-                &self.light_blocks,
-                self.light_revision,
-            );
-            if let Some(t) = &mut native.timing {
-                t.begin(&self.device, &self.queue);
-                native_sky_pass =
-                    native.sky.is_some() && t.recording() && sky_visible && frame.skybox;
-            }
+            native_sky_pass = native.start_frame(native_pack::FrameStart {
+                device: &self.device,
+                queue: &self.queue,
+                frame,
+                size: self
+                    .world_post
+                    .size()
+                    .filter(|_| scaled.is_some())
+                    .unwrap_or([self.config.width, self.config.height]),
+                output: &output,
+                lights: &self.light_blocks,
+                light_revision: self.light_revision,
+                sky_visible,
+            });
         }
-        // One of Horizon's own packs with `[shadow]`: the solid terrain the light sees, from the
-        // shadow camera's lists, into the pack's shadow map (a pack without one gets its 1×1 map
-        // cleared to "far" once).
+        // One of Horizon's own packs: its shadow passes, from the shadow camera's lists.
         if !frame.title
             && let Some(native) = &mut self.native
         {
-            native.frame.shadow_map.clear_blank(&mut encoder);
-        }
-        if !frame.title
-            && shadow_view.is_some()
-            && let Some(native) = &self.native
-            && let Some(shadow) = &native.shadow
-        {
-            let mut pass = native.frame.shadow_map.begin(
-                &mut encoder,
-                "Native shader pack shadow",
-                self.own_timing.as_mut(),
-            );
-            pass.set_bind_group(0, &self.group, &[]);
-            pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
-            if flat_frame
-                && let Some(flat) = &self.flat
-                && let Some(pipeline) = &shadow.flat
-            {
-                pass.set_pipeline(pipeline);
-                let [first, translucent] = flat.shadow_calls;
-                flat.draw(
-                    &mut pass,
-                    &flat.calls[first..translucent],
-                    flat_vertices(&self.arena, self.translucent_arena.as_ref()),
-                );
-            } else if !flat_frame {
-                pass.set_pipeline(&shadow.solid);
-                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.set_vertex_buffer(1, self.instances.slice(..));
-                self.draw_sections(&mut pass, &self.indirect, 0, shadow_first, shadow_solid);
-            }
-            // `[displacement]`'s grid casts in place of the flat quads it took over.
-            if let Some((d, picks, pipeline)) = native
-                .displacement
-                .as_ref()
-                .and_then(|d| Some((d, d.shadow.as_ref()?, shadow.displaced.as_ref()?)))
-            {
-                d.draw(&mut pass, picks, pipeline);
-            }
-            drop(pass);
-            let mut pass = native.frame.shadow_map.begin_translucent(
-                &mut encoder,
-                "Native shader pack translucent shadow",
-                self.own_timing.as_mut(),
-            );
-            pass.set_bind_group(0, &self.group, &[]);
-            pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
-            if flat_frame
-                && let Some(flat) = &self.flat
-                && let Some(pipeline) = &shadow.flat_translucent
-            {
-                pass.set_pipeline(pipeline);
-                let [_, translucent] = flat.shadow_calls;
-                flat.draw(
-                    &mut pass,
-                    &flat.calls[translucent..],
-                    flat_vertices(&self.arena, self.translucent_arena.as_ref()),
-                );
-            } else if !flat_frame {
-                pass.set_pipeline(&shadow.translucent);
-                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.set_vertex_buffer(1, self.instances.slice(..));
-                self.draw_sections(
-                    &mut pass,
-                    &self.indirect,
-                    0,
-                    shadow_first + shadow_solid,
-                    shadow_translucent,
-                );
-            }
-            drop(pass);
-            if entity_quads > 0 || shadow_only_quads > 0 {
-                let mut pass = native
-                    .frame
-                    .shadow_map
-                    .begin_entities(&mut encoder, "Native shader pack entity shadow");
-                pass.set_pipeline(&shadow.entity);
-                pass.set_bind_group(0, &self.entity_group, &[]);
-                pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
-                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
-                // At the end of the buffer (`EntityBatch::append_shadow_only`).
-                let first = entity_vertices as u32 - shadow_only_quads * 4;
-                pass.draw_indexed(0..shadow_only_quads * 6, first as i32, 0..1);
-            }
+            let lists = shadow_view.is_some().then(|| native_shadow::ShadowLists {
+                group: &self.group,
+                sections: SectionLists {
+                    draws: &self.draws,
+                    pages: &self.draw_pages,
+                    arena: &self.arena,
+                    translucent_arena: self.translucent_arena.as_ref(),
+                    sorted_indices: &self.sorted_indices,
+                    indices: &self.indices,
+                    flat: self.flat.as_ref(),
+                    multi_draw: self.multi_draw,
+                },
+                flat_frame,
+                instances: &self.instances,
+                indirect: &self.indirect,
+                draws: [shadow_first, shadow_solid, shadow_translucent],
+                entity_group: &self.entity_group,
+                entity_vertices: &self.entity_buffer,
+                entity_quads,
+                shadow_only_quads,
+                outline_base,
+            });
+            native.draw_shadow(native_shadow::ShadowDraws {
+                encoder: &mut encoder,
+                timing: self.own_timing.as_mut(),
+                lists,
+            });
         }
         if native_sky_pass
             && let Some(native) = &mut self.native
@@ -10217,33 +10146,17 @@ impl Renderer {
                 reflection = Some(mirror.color.clone());
             }
         }
+        // One of Horizon's own packs: the mirror its material reads, and its copies of the world
+        // before translucent terrain and its surface target, the size of this frame's targets.
         if let Some(native) = &mut self.native {
-            let reflection =
-                reflection.map(|view| native.frame.linear_mirror(&self.device, &mut encoder, view));
-            native
-                .frame
-                .set_reflection(&self.device, reflection.as_ref());
-        }
-        // The material stage's copies of the world before translucent terrain, the size of
-        // this frame's targets.
-        if let Some(native) = &mut self.native
-            && native.material.is_some()
-            && !frame.title
-        {
-            let color = scaled.as_ref().map(|(c, _)| c.texture());
-            native
-                .frame
-                .fit_opaque(&self.device, world_depth.texture(), color);
-        }
-        if let Some(native) = self.native.as_mut().filter(|_| !frame.title) {
-            let writes = native.material.as_ref().is_some_and(|m| m.writes_surface);
-            let depth = world_depth.texture();
-            let size = if writes {
-                [depth.width(), depth.height()]
-            } else {
-                [1, 1]
-            };
-            native.frame.fit_surface(&self.device, size);
+            native.prepare_world_targets(native_pack::WorldTargets {
+                device: &self.device,
+                encoder: &mut encoder,
+                reflection,
+                title: frame.title,
+                depth: world_depth.texture(),
+                color: scaled.as_ref().map(|(c, _)| c.texture()),
+            });
         }
         laps.lap("r_mirror");
         // One of Horizon's own packs with a material stage: terrain draws with its pipelines,
@@ -10392,7 +10305,7 @@ impl Renderer {
                     self.panorama.draw(&mut pass);
                     pass.set_bind_group(0, &self.group, &[]);
                 } else if celestial_vertices > 0 || frame.end_sky {
-                    pass.set_pipeline(&self.celestial_pipeline);
+                    pass.set_pipeline(&self.celestial.added);
                     pass.set_bind_group(0, &self.entity_group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     if frame.end_sky {
@@ -10401,7 +10314,7 @@ impl Renderer {
                         if self.custom_sky.is_drawing() && !pack_draws_sky && self.native.is_none()
                         {
                             self.custom_sky.draw(&mut pass);
-                            pass.set_pipeline(&self.celestial_pipeline);
+                            pass.set_pipeline(&self.celestial.added);
                             pass.set_bind_group(0, &self.entity_group, &[]);
                         }
                     }
@@ -10414,8 +10327,14 @@ impl Renderer {
                                 .as_ref()
                                 .is_some_and(|n| n.sky.is_some() && !n.vanilla_sun);
                         let first = if own_sun { 6 } else { 0 };
+                        // A resource pack's core/sky isn't vanilla's sky times the sky's
+                        // lift, which the sun's disc pass assumes: today's add there.
+                        let lifted = hdr_gain
+                            && self.hdr.as_ref().is_some_and(|h| h.lighting)
+                            && !self.core_sky.as_ref().is_some_and(|c| c.draws_disc());
+                        let bodies = first..(celestial_vertices as u32 / 4) * 6;
                         pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
-                        pass.draw_indexed(first..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
+                        self.celestial.draw_bodies(&mut pass, lifted, bodies);
                     }
                     pass.set_bind_group(0, &self.group, &[]);
                 }
@@ -10600,9 +10519,8 @@ impl Renderer {
                         ],
                         _ => &[(solid_pipeline, 0..phase1_draws, phase1_draws..solid_draws)],
                     };
-                    // The vanilla solid pipelines read the page themselves; a native
-                    // material's take it as vertices.
-                    let pulled = material.is_none() && self.flat.is_some();
+                    // The solid pipelines, a native material's too, read the page themselves.
+                    let pulled = self.flat.is_some();
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     pass.stage(self.own_timing.as_mut(), "solid terrain");
