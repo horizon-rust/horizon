@@ -176,7 +176,7 @@ impl Game<'_> {
     pub(super) fn idle(&mut self, event_loop: &dyn EventLoopCtl) {
         // A splitscreen player's game has nothing to save: P1's shuts the process down.
         if horizon_threads::stop_requests() > 0
-            && !self.options.split_guest
+            && !self.options.role.is_guest()
             && self.pending_save.as_ref().is_none_or(|save| !save.quit)
         {
             // SIGTERM, SIGINT or SIGHUP: the shutdown hook's server halt, as a window close.
@@ -364,7 +364,7 @@ impl ApplicationHandler for Game<'_> {
             && self.captured
             && self.focused
             && self.keyboard_mouse
-            && (!self.options.offscreen || self.split_window)
+            && (!self.options.offscreen || self.options.role.in_window())
             && self.screen == Screen::Playing
             && let DeviceEvent::MouseMotion { delta: (x, y) } = event
         {

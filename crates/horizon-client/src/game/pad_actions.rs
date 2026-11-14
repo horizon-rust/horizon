@@ -72,7 +72,7 @@ impl Game<'_> {
         }
         let mut declared = widgets::last_actions(self.key_screen());
         // A split guest's Quit Game does nothing.
-        if self.options.split_guest && self.title.is_some() {
+        if self.options.role.is_guest() && self.title.is_some() {
             declared.retain(|d| d.action != Action::Exit);
         }
         declared

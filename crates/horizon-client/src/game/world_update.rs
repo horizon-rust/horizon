@@ -61,7 +61,7 @@ impl Game<'_> {
             // guest's (the player's own world, its other guests writing the
             // same folder): nothing to keep.
             (None, None, Some(remote))
-                if self.options.split_guest
+                if self.options.role.is_guest()
                     || remote
                         .session
                         .address

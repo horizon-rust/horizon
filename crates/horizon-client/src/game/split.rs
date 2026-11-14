@@ -29,6 +29,7 @@
 use super::{
     Game, UiResources, build_renderer,
     pad::{PadId, PadRouter},
+    role::Role,
     start_game,
 };
 use horizon_client::gamepad::Button;
@@ -76,7 +77,7 @@ impl Game<'_> {
     /// An error stops the event loop, as ever, but not in another splitscreen player's game:
     /// that player drops out (`Split::drop_out`), the others play on.
     pub(in crate::game) fn exit_on_error(&self, event_loop: &dyn super::event_loop::EventLoopCtl) {
-        if !self.options.split_guest {
+        if !self.options.role.is_guest() {
             event_loop.exit();
         }
     }
@@ -409,9 +410,10 @@ impl<'a> Split<'a> {
         };
         self.host.renderer = Some(renderer);
         self.host.forget_atlas_slots();
-        self.host.split_window = !self.offscreen;
         self.host.options.offscreen = true;
-        self.host.options.paced_by_split = true;
+        self.host.options.role = Role::Host {
+            window: !self.offscreen,
+        };
         // The new renderer takes the old one's present mode, settings and all: P1's again.
         self.host.apply_settings();
         self.host.clear_lod();
@@ -488,8 +490,7 @@ impl<'a> Split<'a> {
         self.host.renderer = Some(renderer);
         self.host.forget_atlas_slots();
         self.host.options.offscreen = self.offscreen;
-        self.host.split_window = false;
-        self.host.options.paced_by_split = false;
+        self.host.options.role = Role::Alone;
         // Alone again: the pointer is P1's, its view the whole window.
         self.focus = 0;
         self.host.keyboard_mouse = true;

@@ -125,12 +125,15 @@ impl Studio { fn flying(&self) -> bool { self.freecam.active } }
 struct Replay { driver: Option<()> }
 impl Replay { fn playing(&self) -> bool { self.driver.is_some() } }
 #[derive(Default)]
-struct Options { offscreen: bool }
+struct Role { window: bool }
+impl Role { fn in_window(&self) -> bool { self.window } }
+#[derive(Default)]
+struct Options { offscreen: bool, role: Role }
 #[derive(Default)]
 struct ServerPacks { prompt: Option<()> }
 struct Game {
     focused: bool, agent_pointer: bool, window: Option<Window>, mouse: Mouse,
-    keyboard_mouse: bool, split_window: bool, view_at: [u32; 2],
+    keyboard_mouse: bool, view_at: [u32; 2],
     captured: bool, capture_mode: Option<CursorGrabMode>, regrab_on_refocus: bool, title: Option<()>, screen: Screen,
     remote: Option<Remote>,
     studio: Studio, replay: Replay,
@@ -141,7 +144,7 @@ struct Game {
 impl Default for Game {
     fn default() -> Self {
         Self { focused: true, agent_pointer: false, window: Some(Window::default()),
-            keyboard_mouse: true, split_window: false, view_at: [0, 0],
+            keyboard_mouse: true, view_at: [0, 0],
             mouse: Mouse::default(), captured: false, capture_mode: None, regrab_on_refocus: false, title: None,
             screen: Screen::Playing, remote: None, studio: Studio::default(), replay: Replay::default(),
             mining: false, lan_acting: None,
@@ -327,7 +330,7 @@ fn main() {
     {
         let mut game = Game::default();
         game.options.offscreen = true;
-        game.split_window = true;
+        game.options.role.window = true;
         game.window.as_ref().unwrap().visible.set(true);
         game.capture(true);
         assert!(game.captured);
@@ -488,7 +491,9 @@ struct ActiveEventLoop;
 struct DeviceId;
 enum DeviceEvent { MouseMotion { delta: (f64, f64) }, Other }
 #[derive(PartialEq)] enum Screen { Playing, Paused }
-struct Options { offscreen: bool }
+struct Role { window: bool }
+impl Role { fn in_window(&self) -> bool { self.window } }
+struct Options { offscreen: bool, role: Role }
 mod input_trace {
     pub enum InputOrigin { User }
     pub enum TraceKind { Motion { x: f64, y: f64 } }
@@ -497,7 +502,7 @@ struct Radial(bool);
 impl Radial { fn is_open(&self) -> bool { self.0 } }
 struct Pad { radial: Radial }
 struct Game {
-    pending_save: Option<()>, captured: bool, focused: bool, keyboard_mouse: bool, split_window: bool,
+    pending_save: Option<()>, captured: bool, focused: bool, keyboard_mouse: bool,
     options: Options, screen: Screen, mouse: MouseLook, last_input: Instant, pad: Pad, scripted: bool,
 }
 impl Game {
@@ -526,7 +531,7 @@ fn main() {
     ] {
         let mut game = Game {
             pending_save: saving.then_some(()), captured: true, focused: active,
-            keyboard_mouse: owner, split_window: split, options: Options { offscreen },
+            keyboard_mouse: owner, options: Options { offscreen, role: Role { window: split } },
             screen: if playing { Screen::Playing } else { Screen::Paused },
             mouse: MouseLook::default(), last_input: Instant::now(), pad: Pad { radial: Radial(radial) },
             scripted,

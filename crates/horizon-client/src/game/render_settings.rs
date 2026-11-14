@@ -57,8 +57,8 @@ impl Game<'_> {
     /// this frame draws. Without the switch a frame stays until the next start, as before.
     pub(super) fn follow_frame(&mut self) {
         if !native_shaders::linear_frame_switch()
-            || self.options.paced_by_split
-            || self.options.split_guest
+            || self.options.role.paced()
+            || self.options.role.is_guest()
         {
             return;
         }

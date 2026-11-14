@@ -259,7 +259,7 @@ impl Game<'_> {
     /// it: a genuinely hidden `--offscreen` run, an agent's window no one has clicked yet, or a
     /// scripted run, which plays the game while the person may be using the computer.
     pub(super) fn internal_grab(&self) -> bool {
-        (self.options.offscreen && !self.split_window)
+        (self.options.offscreen && !self.options.role.in_window())
             || self.unclaimed_window
             || self.scripted_run()
     }
