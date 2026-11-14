@@ -45,6 +45,13 @@ jobs:
           PY
           # All modifications stay in the ephemeral runner checkout.
           git diff -- crates/horizon-threads/src/allocator_stats.rs
+      - name: Trace desktop Wayland dependency on iOS
+        shell: bash
+        run: |
+          cargo tree --manifest-path platforms/ios/GameRuntime/Cargo.toml \
+            --target aarch64-apple-ios -i wayland-backend \
+            -e features > ios-wayland-tree.log 2>&1 || true
+          head -n 100 ios-wayland-tree.log
       - name: Cross-check the original Horizon game for iOS
         id: crosscheck
         continue-on-error: true
@@ -80,6 +87,7 @@ jobs:
         with:
           name: horizon-original-ios-compile-log
           path: |
+            ios-wayland-tree.log
             ios-runtime-check.log
             ios-runtime-link.log
           if-no-files-found: warn
