@@ -2167,7 +2167,7 @@ async fn open_device(
     window: &Arc<Window>,
     offscreen: bool,
     api: GraphicsApi,
-    layers: u32,
+    needs: surface_setup::DeviceNeeds,
 ) -> Result<Opened> {
     let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();
     let mut first = None;
@@ -2178,7 +2178,7 @@ async fn open_device(
         horizon_system::machine_arch(),
         wgpu_backend,
     ) {
-        match open_device_with(window, offscreen, &order, layers, allow_cpu).await {
+        match open_device_with(window, offscreen, &order, needs, allow_cpu).await {
             Ok(opened) => {
                 if let Some(first) = &first {
                     log::warn!(
@@ -2231,7 +2231,7 @@ async fn open_device_with(
     window: &Arc<Window>,
     offscreen: bool,
     order: &[wgpu::Backends],
-    layers: u32,
+    needs: surface_setup::DeviceNeeds,
     allow_cpu: bool,
 ) -> Result<Opened> {
     let mut failures = Vec::new();
@@ -2240,7 +2240,7 @@ async fn open_device_with(
         if attempt > 0 {
             log::warn!("Horizon renderer: trying {name} ({})", failures.join("; "));
         }
-        match open_with_retry(backends, window, offscreen, layers, allow_cpu).await {
+        match open_with_retry(backends, window, offscreen, needs, allow_cpu).await {
             Ok(opened) => return Ok(opened),
             Err(e) => failures.push(e),
         }
@@ -2263,17 +2263,17 @@ async fn open_with_retry(
     backends: wgpu::Backends,
     window: &Arc<Window>,
     offscreen: bool,
-    layers: u32,
+    needs: surface_setup::DeviceNeeds,
     allow_cpu: bool,
 ) -> std::result::Result<Opened, String> {
-    match open_backend(backends, window, offscreen, false, layers, allow_cpu).await {
+    match open_backend(backends, window, offscreen, false, needs, allow_cpu).await {
         Err(NoDevice::NoAdapter(hidden)) => {
             log::warn!(
                 "Horizon renderer: {} has no conformant adapter ({hidden}); asking again for the \
                  ones wgpu hides as non-conformant",
                 backends_name(backends)
             );
-            match open_backend(backends, window, offscreen, true, layers, allow_cpu).await {
+            match open_backend(backends, window, offscreen, true, needs, allow_cpu).await {
                 Ok(opened) => {
                     let info = opened.adapter.get_info();
                     if is_broken_haswell_vulkan(&info) {
@@ -2322,7 +2322,7 @@ async fn open_backend(
     window: &Arc<Window>,
     offscreen: bool,
     allow_nonconformant: bool,
-    layers: u32,
+    needs: surface_setup::DeviceNeeds,
     allow_cpu: bool,
 ) -> std::result::Result<Opened, NoDevice> {
     let name = backends_name(backends);
@@ -2375,7 +2375,7 @@ async fn open_backend(
     let mut tried = Vec::new();
     let mut adapter = adapter;
     loop {
-        let why = match open_adapter(name, window, surface.as_ref(), &adapter, layers).await {
+        let why = match open_adapter(name, window, surface.as_ref(), &adapter, needs).await {
             Ok(adapted) => {
                 return Ok(Opened {
                     instance,
@@ -2585,7 +2585,7 @@ impl Renderer {
             }
             None => {
                 let _step = crate::spans::startup::step("renderer.open_device");
-                open_device(&window, offscreen, api, layers).await?
+                open_device(&window, offscreen, api, request.needs(layers)).await?
             }
         };
         // Computed once: the sprite arrays, the shaders' constants and the
@@ -2698,11 +2698,6 @@ impl Renderer {
             count: None,
         };
         let vf = wgpu::ShaderStages::VERTEX_FRAGMENT;
-        let sprite_array = wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension: wgpu::TextureViewDimension::D2Array,
-            multisampled: false,
-        };
         let sprite_arrays = layers.div_ceil(split).max(1);
         if sprite_arrays > 1 {
             log::info!("Horizon: {layers} block textures in {sprite_arrays} arrays");
@@ -2713,61 +2708,7 @@ impl Renderer {
         ];
         let bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Horizon terrain bindings"),
-            entries: &[
-                entry(
-                    0,
-                    vf,
-                    wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                ),
-                entry(
-                    1,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                ),
-                entry(
-                    1 + 1,
-                    vf,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                ),
-                entry(
-                    3,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-                entry(
-                    4,
-                    vf,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                ),
-                entry(5, vf, sprite_array),
-                entry(6, vf, sprite_array),
-                entry(7, vf, sprite_array),
-                entry(8, vf, sprite_array),
-                entry(9, vf, sprite_array),
-                entry(10, vf, sprite_array),
-                entry(11, vf, sprite_array),
-                entry(
-                    12,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-            ],
+            entries: &native_material::terrain_entries(),
         });
         let layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Horizon terrain layout"),
@@ -4844,7 +4785,7 @@ impl Renderer {
             last_wait: std::time::Duration::ZERO,
             last_encode: std::time::Duration::ZERO,
             window,
-            ray_scene: surface_setup::ray_query::ray_scene::RayScene::new(&device),
+            ray_scene: surface_setup::ray_query::ray_scene::RayScene::forced(&device),
             device,
             reuse,
             queue: submit::Queue::new(queue, submit::wanted()),
@@ -6814,9 +6755,7 @@ impl Renderer {
     }
     /// This renderer's output as applied, with what its destination offers and reports.
     pub fn output(&self) -> output::EffectiveOutput {
-        let native = self.native.as_ref().map(|n| n.frame.api);
-        self.output
-            .with_pack(self.shader_pack_kind() == Some("iris"), native)
+        self.output_with_rays()
     }
     /// What this renderer's display last reported: a renderer made again for the window
     /// starts from it (`Renderer::new`'s `display`).
@@ -7021,7 +6960,7 @@ impl Renderer {
         });
         self.pack_post = Some((dimension, post));
         if self.pack_post.as_ref().is_some_and(|p| p.1.is_some()) {
-            self.native = None;
+            self.replace_native(None);
         }
         Ok(report)
     }
@@ -7218,7 +7157,7 @@ impl Renderer {
     pub fn drop_shader_packs(&mut self) {
         self.pack_loading = None;
         self.pack_post = None;
-        self.native = None;
+        self.replace_native(None);
         self.pack_atlas = None;
         self.separate_ao = false;
     }
@@ -7261,13 +7200,14 @@ impl Renderer {
             );
         }
         let Some((report, constants, sprite_tags, sprite_materials, lights)) = pack else {
-            self.native = None;
+            self.replace_native(None);
             return Ok(Vec::new());
         };
         let terrain = native_material::TerrainShape {
             globals: &self.terrain_layout,
             flat: self.flat.as_ref().map(|f| &f.draw_layout),
             sprites: self.terrain_sprites,
+            sprite_views: &self.sprite_views,
             format: self.output.frame.format,
             linear: self.output.frame.linear_light,
             sprite_tags: &sprite_tags,
@@ -7284,7 +7224,7 @@ impl Renderer {
             &constants,
             lights,
         )?;
-        self.native = pack.draws().then_some(pack);
+        self.replace_native(pack.draws().then_some(pack));
         if self.native.is_some() {
             self.pack_post = None;
             self.pack_atlas = None;
@@ -9933,9 +9873,8 @@ impl Renderer {
                 .size()
                 .filter(|_| scaled.is_some())
                 .unwrap_or([self.config.width, self.config.height]);
-            native
-                .frame
-                .write(&self.queue, frame, size, output.display());
+            let scene = self.ray_scene.as_ref();
+            native.write(&self.queue, frame, size, output.display(), scene);
             native.frame.block_light.update(
                 &self.queue,
                 frame.camera,
@@ -10219,6 +10158,7 @@ impl Renderer {
                 [1, 1]
             };
             native.frame.fit_surface(&self.device, size);
+            native.bind_scene(&self.device, self.ray_scene.as_ref(), frame.camera);
         }
         laps.lap("r_mirror");
         // One of Horizon's own packs with a material stage: terrain draws with its pipelines,
@@ -10227,7 +10167,7 @@ impl Renderer {
             .native
             .as_ref()
             .filter(|_| !frame.title && !warp_on)
-            .and_then(|n| Some((n.material.as_ref()?, &n.frame.group)));
+            .and_then(|n| n.terrain());
         // Without HDR output, the solid shaders without its lighting (`SolidPipeline`).
         let hdr = self.hdr.is_some();
         // A world warp's pipelines in place of the terrain's and the entities' (`warp_on`).
@@ -10337,7 +10277,12 @@ impl Renderer {
                         .as_ref()
                         .and_then(|n| Some((n.sky.as_ref()?, &n.frame)))
                     {
-                        Some((sky, native)) => sky.draw(&mut pass, native),
+                        Some((sky, native)) => {
+                            sky.draw(&mut pass, native);
+                            // The sky binds the frame's own group; a material stage that
+                            // traces draws with the scene's.
+                            pack_frame(&mut pass);
+                        }
                         None => {
                             match self.core_sky.as_ref().filter(|c| c.draws_disc()) {
                                 Some(core) => {
@@ -10725,7 +10670,7 @@ impl Renderer {
                 .as_ref()
                 .filter(|_| !frame.title && !pack_draws_terrain && !warp_on)
                 && let Some(d) = &n.displacement
-                && let Some(pipeline) = n.material.as_ref().and_then(|m| m.displaced.as_ref())
+                && let Some(pipeline) = material.and_then(|(m, _)| m.displaced.as_ref())
             {
                 pass.stage(self.own_timing.as_mut(), "displacement");
                 pass.set_bind_group(0, &self.group, &[]);
@@ -11523,16 +11468,16 @@ impl Renderer {
             && let Some(native) = &mut self.native
             && let Some(post) = &mut native.post
         {
-            let size = self.world_post.size().unwrap_or([1, 1]);
             let history_reset = native.frame.take_history_reset();
             post.run(
                 &self.device,
                 &mut encoder,
                 (color, depth, &native.frame.surface_view),
                 &view_target,
-                size,
+                self.world_post.size().unwrap_or([1, 1]),
                 history_reset,
                 native.timing.as_mut(),
+                self.ray_scene.as_ref().map(|s| (s, frame.camera)),
             );
         } else if let (Some((_, generated)), Some((_, depth))) = (&fg_frames, &scaled) {
             let world = self
