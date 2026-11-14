@@ -1627,7 +1627,7 @@ impl Game<'_> {
             c.insert("LastPoseTick".into(), Tag::Long(tick));
         }
         self.write_leash(&mut tag, i);
-        self.put_mob_passengers(&mut tag, id);
+        self.put_riding(&mut tag, i, id);
         self.save_portal_cooldown(id, &mut tag);
         tag
     }

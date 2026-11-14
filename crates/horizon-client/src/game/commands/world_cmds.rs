@@ -1839,6 +1839,21 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// `Entity.saveWithoutId`'s riding parts for mob `i` (id `id`): a passenger saves `Pos` at
+    /// its vehicle's x and z with its own y, then the mobs riding it go under `Passengers`.
+    pub(in crate::game) fn put_riding(&mut self, tag: &mut Tag, i: usize, id: u32) {
+        let vehicle = self.ride_vehicle(Target::Mob(id));
+        if let (Some(at), Tag::Compound(c)) =
+            (vehicle.and_then(|v| self.target_position(v)), &mut *tag)
+        {
+            let pos = [at[0], self.mobs[i].position.y, at[2]];
+            c.insert(
+                "Pos".into(),
+                Tag::List(pos.map(|v| Tag::Double(v.to_bits())).into()),
+            );
+        }
+        self.put_mob_passengers(tag, id);
+    }
     /// Entity.getVehicle: the player's mount, or a mob's.
     pub(super) fn ride_vehicle(&self, t: Target) -> Option<Target> {
         let id = match t {
