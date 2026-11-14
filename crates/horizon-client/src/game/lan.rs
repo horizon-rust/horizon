@@ -4225,7 +4225,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod world_spawn_sync_tests {
+pub(crate) mod world_spawn_sync_tests {
     use super::*;
     use horizon_client::lan::{Joined, Out, PlayerSender, guest::Guest};
     use horizon_protocol::packets::play::{self, Clientbound as C};
@@ -4236,7 +4236,7 @@ mod world_spawn_sync_tests {
     }
 
     /// An integrated LAN host with one placed guest (uuid 1) in the Nether.
-    pub(super) fn host_for(game: &mut Game<'_>) -> mpsc::Receiver<Out> {
+    pub(crate) fn host_for(game: &mut Game<'_>) -> mpsc::Receiver<Out> {
         game.lan_host(
             LanSettings {
                 port: 0,

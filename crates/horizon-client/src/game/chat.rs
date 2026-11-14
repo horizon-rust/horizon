@@ -7,7 +7,7 @@ use super::{Game, Screen};
 use horizon_client::{
     chat::{
         Chat, ChatAbilities, ChatAction, ChatScreen, ChatSource, ChatVisibility, Commands,
-        SYSTEM_INDICATOR, normalize_chat_message,
+        QUEUE_EXPAND_ID, SYSTEM_INDICATOR, normalize_chat_message,
     },
     command::{ArgType, Dispatcher, MOD_COMMAND, Registries},
     gamerules::GameRules,
@@ -1057,7 +1057,7 @@ impl Game<'_> {
         self.capture(false);
     }
     /// The open chat box's text and its cursor, counted in characters; `None`
-    /// while the chat screen isn't open. API @API:chat_input@.
+    /// while the chat screen isn't open. API 559.
     #[allow(dead_code)]
     pub(super) fn native_chat_input(&self) -> Option<(String, usize)> {
         let screen = self.ui.chat_screen.as_ref()?;
@@ -1067,7 +1067,7 @@ impl Game<'_> {
     /// (characters, clamped to the text), as an edit: completions refresh as
     /// they do for typing. What typing can't put in the box isn't put there
     /// either (`chat_box_text`), and the 256-character limit holds. An error
-    /// while the chat screen isn't open. API @API:chat_input@.
+    /// while the chat screen isn't open. API 559.
     #[allow(dead_code)]
     pub(super) fn native_set_chat_input(
         &mut self,
@@ -1498,12 +1498,23 @@ impl Game<'_> {
         } else {
             return;
         }
-        let style = self.ui.chat.style_at(
-            &self.gui.atlas.font,
-            height as i32,
-            cursor.0 as f64,
-            cursor.1 as f64,
-        );
+        let style = self
+            .ui
+            .chat
+            .style_at(
+                &self.gui.atlas.font,
+                height as i32,
+                cursor.0 as f64,
+                cursor.1 as f64,
+            )
+            .or_else(|| {
+                self.ui.chat.queue_style_at(
+                    &self.gui.atlas.font,
+                    height as i32,
+                    cursor.0 as f64,
+                    cursor.1 as f64,
+                )
+            });
         // PvP & HUD's copy on click: a message where the click has nothing else to do.
         if self.pvp_chat().copy
             && !self.has_shift_down()
@@ -1560,6 +1571,11 @@ impl Game<'_> {
             // screen, and closes back to it.
             Some(ClickEvent::ShowDialog(dialog)) => self.show_dialog_ref(&dialog),
             // Screen.defaultHandleGameClickEvent: custom actions retain chat.
+            // ChatScreen.handleComponentClicked: the queue row's internal id
+            // shows the next held-back message; other custom ids go on.
+            Some(ClickEvent::Custom { id, .. }) if id == QUEUE_EXPAND_ID => {
+                self.accept_next_delayed_message();
+            }
             Some(ClickEvent::Custom { id, payload }) => {
                 if let Some(remote) = &self.remote {
                     remote.session.send_custom_click(&id, payload);
@@ -1709,6 +1725,8 @@ impl Game<'_> {
             .map(|s| s.value());
         self.ui.chat.set_search(&self.gui.atlas, query);
         self.ui.chat.search_prompt = focused && self.pvp.chat_search;
+        // `ChatComponent`'s queue row: the messages Chat Delay holds back.
+        self.ui.chat.queue = self.chat_queue_len();
         if self.ui.hide_gui && !focused {
             return;
         }
@@ -1804,7 +1822,16 @@ impl Game<'_> {
                 .chat
                 .focused_tags(&self.gui.atlas.font, height, cx, cy);
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &tag_icons);
-        if let Some(style) = self.ui.chat.style_at(&self.gui.atlas.font, height, cx, cy) {
+        let style = self
+            .ui
+            .chat
+            .style_at(&self.gui.atlas.font, height, cx, cy)
+            .or_else(|| {
+                self.ui
+                    .chat
+                    .queue_style_at(&self.gui.atlas.font, height, cx, cy)
+            });
+        if let Some(style) = style {
             // ActiveTextCollector.ClickableStyleFinder: a click event, or an
             // insertion while Shift is held (ChatScreen.includeInsertions).
             if style.click.is_some() || (style.insertion.is_some() && self.has_shift_down()) {

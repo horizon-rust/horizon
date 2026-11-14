@@ -3,6 +3,7 @@
 //! `TRIGGER_BLOCK`: no damage, only knockback and the blocks that react).
 use super::Game;
 use super::entity::{Blast, Entity as _, for_each_entity_mut};
+use super::minecarts::CartHit;
 use horizon_client::advancements::EntityView;
 use horizon_client::join_seq::Joined as _;
 use horizon_client::{
@@ -197,7 +198,13 @@ impl Game<'_> {
         if let Some(i) = self.boats.iter().position(|b| b.id == id) {
             self.hurt_boat(i, amount, creative);
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-            self.hurt_cart(i, amount, creative, false);
+            self.hurt_cart(
+                i,
+                amount,
+                creative,
+                false,
+                CartHit::projectile(p.owner, p.guest),
+            );
         } else {
             self.projectile_hurts_frame(id, p.owner == Some(Who::Player), creative);
         }
@@ -722,6 +729,7 @@ impl Game<'_> {
             may_build: true,
             can_eat: false,
             game_master: false,
+            respawn_point: None,
         };
         self.with_level(|b, level, ticks| {
             b.use_without_item(

@@ -738,6 +738,10 @@ fn players(id: &str, ctx: &Context, env: &mut dyn Env) -> CmdResult<i32> {
             let op = string(ctx, "operation");
             let sources = holders(ctx, "source", env, true)?;
             let source_objective = objective_name(ctx, env, "sourceObjective")?;
+            let source_read_only = env
+                .sb()
+                .objective(&source_objective)
+                .is_some_and(|o| criteria_read_only(&o.criteria));
             let mut tracker = Tracker::default();
             for t in &targets {
                 for s in &sources {
@@ -747,6 +751,14 @@ fn players(id: &str, ctx: &Context, env: &mut dyn Env) -> CmdResult<i32> {
                     env.sb_mut()
                         .set_with(&t.name, &target_objective, na, t.display.as_ref());
                     if op == "><" {
+                        // `ScoreAccess.set` on a source score created without
+                        // `forceWritable` throws after the target's write; the
+                        // exception is not a `CommandSyntaxException`, so the
+                        // command reports `command.failed` and no result
+                        // callback runs (`Commands.performCommand`).
+                        if source_read_only {
+                            return Err(CommandError::unexpected());
+                        }
                         env.sb_mut().set(&s.name, &source_objective, nb);
                     }
                 }

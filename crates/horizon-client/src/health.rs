@@ -120,6 +120,17 @@ pub struct Knock {
     pub x: f64,
     pub z: f64,
 }
+/// `CombatRules.getDamageAfterAbsorb`'s weapon: the stack
+/// `DamageSource.getWeaponItem` names, the registry its `armor_effectiveness`
+/// enchantments (Breach) are read from, and the entity that swung it.
+pub struct ArmorWeapon {
+    pub stack: crate::items::ItemStack,
+    pub enchantments: std::sync::Arc<crate::enchant::Enchantments>,
+    /// The causing and direct entity's type id: one entity swung.
+    pub attacker: String,
+    /// `DamageSource.isDirect`: the causing entity swung itself.
+    pub is_direct: bool,
+}
 /// The game's native knockback hook (`native_living_knockback`), set once by
 /// the game: `LivingEntity.knockback`, at its start (`LivingKnockBackEvent`), on the raw strength
 /// and before the knockback resistance and the motion change. It may change the [`Knock`]; true
@@ -527,6 +538,8 @@ impl PlayerMotion {
             client_loaded: self.client_loaded,
             rules,
             source,
+            weapon: None,
+            random: &mut self.random,
             living_cause,
             events: &mut self.events,
             dead: &mut h.dead,
@@ -638,6 +651,14 @@ pub(crate) struct Environment<'a> {
     pub(crate) client_loaded: bool,
     pub(crate) rules: HealthRules,
     pub(crate) source: DamageSource<'a, ()>,
+    /// `DamageSource.getWeaponItem` with the registry of its
+    /// `armor_effectiveness` enchantments, for `getDamageAfterArmorAbsorb`.
+    pub(crate) weapon: Option<&'a ArmorWeapon>,
+    /// The victim's own random. `Enchantment.modifyDamageFilteredValue` gives
+    /// its value effects `victim.getRandom()`; `Enchantments::modify_value`
+    /// takes one random for those and for the requirements, which vanilla
+    /// draws from the level's.
+    pub(crate) random: &'a mut horizon_core::random::EntityRandom,
     /// The causing entity is a living non-player (a mob, or its projectile's owner).
     pub(crate) living_cause: bool,
     pub(crate) events: &'a mut Vec<MotionEvent>,
@@ -780,18 +801,44 @@ impl Observer for Environment<'_> {
         Updates(self.events).updated(data, id)
     }
 }
-impl ArmorWorld for Environment<'_> {
+impl<'a> ArmorWorld for Environment<'a> {
     type Error = io::Error;
-    type Weapon = ();
+    type Weapon = &'a ArmorWeapon;
     type ServerLevel = ();
-    fn weapon(&mut self) -> io::Result<Option<()>> {
-        Ok(None)
+    fn weapon(&mut self) -> io::Result<Option<&'a ArmorWeapon>> {
+        Ok(self.weapon)
     }
     fn server_level(&mut self) -> io::Result<Option<()>> {
         Ok(Some(()))
     }
-    fn modify_armor_effectiveness(&mut self, _: (), _: (), value: f32) -> io::Result<f32> {
-        Ok(value)
+    /// `EnchantmentHelper.modifyArmorEffectiveness`: the weapon's
+    /// `armor_effectiveness` effects over the fraction the armour, toughness
+    /// and damage left.
+    fn modify_armor_effectiveness(
+        &mut self,
+        _: (),
+        weapon: &'a ArmorWeapon,
+        value: f32,
+    ) -> io::Result<f32> {
+        let ctx = crate::enchant::EffectContext {
+            // `Enchantment.damageContext` carries no tool, so `match_tool`
+            // matches nothing and never reads the item tables.
+            items: None,
+            tool: None,
+            damage_type: Some(&self.source.definition().name),
+            is_direct: weapon.is_direct,
+            this: Some("minecraft:player"),
+            attacker: Some(&weapon.attacker),
+            direct_attacker: Some(&weapon.attacker),
+            direct_motion: None,
+        };
+        Ok(weapon.enchantments.modify_value(
+            Some(&weapon.stack),
+            "minecraft:armor_effectiveness",
+            &ctx,
+            &mut *self.random,
+            value,
+        ))
     }
 }
 impl ServerDamageEnvironment<Attributes> for Environment<'_> {
