@@ -1,0 +1,123 @@
+HORIZON iOS / iPadOS -- IMPLEMENTATION PLAN FOR FUTURE AI AGENTS
+Last updated: 2026-11-14
+Repository: https://github.com/kipd0/nova-ios
+Upstream source of truth: https://github.com/horizon-rust/horizon
+Development branch: test. Do not merge to main without explicit user instruction.
+
+MISSION
+Build a small native iOS/iPadOS app that launches the ORIGINAL, current Horizon game.
+Do NOT port the desktop Horizon launcher UI. The iOS host only needs a basic launch
+screen (initially a Play button), app lifecycle, runtime services, game display and
+event input. The gameplay, world generation, rendering logic, combat, networking,
+menus, mechanics, and Horizon-specific features must continue to come from the
+original upstream game; it is not yet 1:1 with vanilla and receives frequent changes.
+
+NON-NEGOTIABLE RULES
+1. Do not rewrite, copy, fork into divergent implementations, or edit Horizon gameplay
+   systems to implement iOS. Preserve upstream crates/ gameplay source verbatim.
+2. Prefer purely additive code in platforms/ios/ and new iOS build workflows.
+3. If an upstream change prevents an iOS build, fix the iOS adapter first. If a
+   core compatibility hook is truly unavoidable, isolate a minimal build-time patch
+   (document purpose, upstream commit, and test); do not silently change gameplay.
+4. Do not use old iOS launchers as the base game. Existing iOS code may be consulted
+   for platform integration only, reviewed file-by-file.
+5. Keep Horizon's own default gameplay features and runtime behavior; don't disable
+   new gameplay features merely to make the iOS build green.
+6. Never automatically merge unverified upstream changes or broken builds to main.
+7. No unapproved force-pushes, branch deletion, or destructive repository rewriting.
+8. Maintain legal/license attribution and required third-party notices.
+
+IMPORTANT SOURCE FINDINGS (verified in upstream Horizon)
+- crates/horizon-client/src/lib.rs exposes pub mod entry.
+- crates/horizon-client/src/entry.rs exposes pub fn main() and main_with(...);
+  startup currently reads process args, registers hooks, initializes logging and
+  invokes game::run_with(). It is NOT proven to work in an iOS app as-is.
+- crates/horizon-client/src/main.rs is the desktop binary wrapper.
+- crates/horizon-client-input/src/keymapping.rs manages press/release/toggle states.
+- crates/horizon-client-input/src/input.rs computes keyboard movement, including
+  diagonal normalization.
+- crates/horizon-client-input/src/mouse.rs has MouseLook::add_motion(dx,dy),
+  sensitivity, turn and wheel handling.
+- Game dependencies include wgpu (with Metal backend) and winit, but iOS window
+  lifecycle, rendering, audio, asset paths, native networking, threads, OS-specific
+  dependencies, and cross-compilation have NOT been proven.
+- The desktop launcher backend starts child processes; iOS must instead bundle the
+  compiled native game into the same app and start it in-process.
+
+PROPOSED LAYOUT (new/additive, not currently guaranteed to exist)
+platforms/ios/
+  App/                  Swift / UIKit (or appropriate iOS host)
+  GameHost/             iOS surface, event-loop and Rust startup integration
+  RustBridge/           narrow FFI between iOS host and Horizon client
+  Input/                virtual keyboard + mouse adapter, touch overlay
+  Resources/            Info.plist, app assets, packaged game resources
+  Build/                cross-compilation, packaging and signing helpers
+.github/workflows/ios-build.yml  iOS build and verification, separate from desktop CI
+
+RUNTIME DESIGN
+- Build the original Horizon client Rust crate and dependencies for the iOS device
+  target (aarch64-apple-ios); simulator builds may be added separately.
+- Embed compiled game code in the native iOS app: no launching a separate desktop
+  executable through std::process::Command.
+- Use a minimal, narrow bridge to call upstream game initialization. Study whether
+  the public entry API supports iOS event-loop ownership; a separate host API may be
+  necessary. Do not assume calling entry::main() from Swift will work.
+- Provide a Metal-backed drawable and connect it to Horizon's existing wgpu renderer.
+- Map sandboxed iOS file locations to game data, caches, saves, mods and assets.
+- Handle app pause/resume, backgrounding, memory pressure, orientation, scaling,
+  safe areas, and supported controllers/keyboard/mouse as host concerns.
+- Keep game GUI/inventory/gameplay systems upstream; do not reimplement them.
+
+TOUCH CONTROLS: OPTIONAL AFTER BASE GAME WORKS
+- Touch overlay belongs entirely in iOS app, drawn over the original game.
+- Translate each touch to normal in-process keyboard/mouse input at the existing
+  input-event boundary, not privileged OS-level synthetic events.
+- Digital movement: stick/cardinal zones -> W/A/S/D key states; movement goes
+  through upstream keyboard-direction and diagonal normalization.
+- Buttons: Space jump, Shift sneak, Ctrl sprint, left mouse attack, right mouse
+  use/place; inventory/menu/hotbar via ordinary key/wheel inputs.
+- Look swipe -> relative mouse deltas passed through Horizon sensitivity.
+- Correctly handle down/up, simultaneous multitouch, focus loss, UI screens,
+  toggles, rebinding, repeated actions and frame timings.
+- Fairness: no auto aim, target assist, reach changes, auto attacks, faster hits,
+  altered movement speeds, or bypass of in-game cooldowns.
+- Validate touch parity against physical keyboard and mouse on the same build.
+
+PHASED EXECUTION / ACCEPTANCE CRITERIA
+PHASE 0: Inspect upstream SHA, iOS toolchain and full dependency graph. Record exact
+         errors; separate build blockers from gameplay changes.
+PHASE 1: Add self-contained iOS scaffold; compile a simple signed/unsigned iOS
+         native host in CI without touching original Horizon gameplay files.
+PHASE 2: Cross-compile Horizon dependencies/client for aarch64-apple-ios; identify
+         blockers with source paths and minimal external workarounds.
+PHASE 3: Start original Horizon game in-process; show its menu on a real device
+         using the existing graphics system; prove stable app lifecycle.
+PHASE 4: Verify worlds, saves, networking, resource loading, audio, account/session
+         requirements and the upstream features required to play normally.
+PHASE 5: Add configurable touch-to-keyboard/mouse overlay without gameplay edits.
+PHASE 6: CI builds IPA artifacts, records upstream SHA, compiler/linker logs, and
+         reports verification status. Signing requires appropriate Apple credentials.
+PHASE 7: Set up safe upstream syncing into test: fetch original Horizon; build,
+         verify, then propose PR/merge only with explicit approval.
+PHASE 8: Only after testing, submit test -> main merge PR for user review.
+
+UPSTREAM UPDATE POLICY
+- The game source is upstream-owned; apply normal upstream commits without manual
+  gameplay cherry-picks and without rewriting mechanics.
+- Updates may break iOS builds if platform assumptions or APIs change. Detect and
+  fix those in the iOS compatibility layer; full compatibility is a goal, NOT a
+  guarantee for every upstream commit.
+- Track the exact tested upstream revision and compare behavior with desktop.
+- Do not add a second permanent implementation of game mechanics.
+
+REPO CLEANUP CONTEXT
+This branch removes non-runtime prose documentation and prior AI-agent guidance
+where safe. Do not remove Cargo files, Rust source, workflows required to build the
+game, shader/resource inputs, test fixtures, license or third-party legal notices.
+For original upstream engineering documentation consult horizon-rust/horizon directly.
+Do not treat removed documents as a license to guess APIs; inspect current source.
+
+HOW TO REPORT PROGRESS
+For every change: list files changed, upstream SHA, iOS build target, verification
+performed, remaining blockers, and whether any game source was modified. Never
+claim an IPA works without successful compile/package and on-device verification.
