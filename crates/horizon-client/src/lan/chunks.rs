@@ -654,6 +654,41 @@ impl ChunkEncoder {
         )
     }
 
+    /// The section entries and the column heightmaps cached, each as (entries, bytes).
+    pub fn cache_census(&self) -> [(usize, usize); 2] {
+        use std::mem::size_of;
+        let (entries, sections, wire) = {
+            let cache = self.cache.lock().unwrap();
+            let wire: usize = cache
+                .values()
+                .filter_map(|e| e.wire.as_ref())
+                .map(|(bytes, entities)| bytes.len() + entities.len() * size_of::<(u16, u32)>())
+                .sum();
+            (
+                cache.len(),
+                cache.capacity() * (size_of::<(usize, Encoded)>() + 1),
+                wire,
+            )
+        };
+        let heights = self.heights.lock().unwrap();
+        let maps: usize = heights
+            .values()
+            .map(|h| {
+                h.sections.capacity() * size_of::<std::sync::Weak<Section>>()
+                    + h.maps
+                        .iter()
+                        .map(|(_, v)| v.capacity() * 8 + 24)
+                        .sum::<usize>()
+            })
+            .sum();
+        [
+            (entries, sections + wire),
+            (
+                heights.len(),
+                maps + heights.capacity() * (size_of::<((i32, i32), Heights)>() + 1),
+            ),
+        ]
+    }
     /// The cached entry for a section, made with `non_air` when missing.
     fn cached<T>(&self, section: &Arc<Section>, read: impl FnOnce(&mut Encoded) -> T) -> T {
         read(self.entry(&mut self.cache.lock().unwrap(), section))
@@ -1341,6 +1376,12 @@ pub fn entity_tag(entity: &BlockEntity, trial_active: bool) -> Option<Tag> {
         BlockEntity::CreakingHeart(h) => Some(Tag::compound(
             h.creaking
                 .map(|(_, uuid)| ("creaking", crate::save::uuid_tag(uuid))),
+        )),
+        // ConduitBlockEntity.getUpdateTag: saveCustomOnly, which for a conduit
+        // is its `Target` alone. The empty tag of a conduit that stopped
+        // hunting still goes out (remote.rs loads it): it clears the target.
+        BlockEntity::Conduit(target) => Some(Tag::compound(
+            target.map(|uuid| ("Target", Tag::IntArray(uuid.to_vec()))),
         )),
         // No getUpdatePacket: these, chests, hives, command blocks and the rest.
         BlockEntity::Jukebox(_) | BlockEntity::Lectern(_) => None,
