@@ -1116,8 +1116,6 @@ pub fn mob_to_nbt(
         }
         "minecraft:villager" => {
             map.insert("VillagerData".into(), villager_data(m));
-            // A loaded villager with VillagerData is finalized.
-            map.insert("VillagerDataFinalized".into(), Tag::Byte(1));
             let t = m.extra.trade.as_deref().cloned().unwrap_or_default();
             map.insert("Xp".into(), Tag::Int(t.xp));
             map.insert("LastRestock".into(), Tag::Long(t.last_restock));
@@ -4074,6 +4072,8 @@ mod tnt_power_tests {
 
 #[cfg(test)]
 mod spell_ticks_nbt_tests;
+#[cfg(test)]
+mod villager_finalized_tests;
 
 #[cfg(test)]
 mod tests {
@@ -7188,7 +7188,7 @@ mod sheep_nbt_tests {
         let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
         assert_eq!(number(tag.get("Age")), Some(-21359));
         assert_eq!(number(tag.get("AgeLocked")), Some(0));
-        assert_eq!(number(tag.get("VillagerDataFinalized")), Some(1));
+        assert_eq!(number(tag.get("VillagerDataFinalized")), Some(0));
     }
 
     /// `Dolphin.addAdditionalSaveData`: a fed dolphin stays fed and a wet one
