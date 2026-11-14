@@ -6176,16 +6176,6 @@ impl Game<'_> {
             self.gui_layer("minecraft:scoreboard_sidebar", &mut batch, |g, batch| {
                 g.draw_scoreboard(batch);
             });
-            if subtitles != Subtitles::Hidden {
-                self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
-                    g.draw_subtitles(batch);
-                });
-            }
-        } else if subtitles == Subtitles::Deferred {
-            // F1 hid the HUD, but an in-game screen still shows the subtitles.
-            self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
-                g.draw_subtitles(batch);
-            });
         }
         let atlas = &self.gui.atlas;
         if show_hud
@@ -6204,6 +6194,13 @@ impl Game<'_> {
             }
             self.gui_layer("minecraft:tab_list", &mut batch, |g, batch| {
                 g.draw_tab_list(batch);
+            });
+        }
+        // Hud.extractRenderState draws them after the chat and the tab list; an in-game
+        // screen keeps them under F1 (`Subtitles::Deferred`).
+        if subtitles != Subtitles::Hidden {
+            self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
+                g.draw_subtitles(batch);
             });
         }
         // Screen.extractBlurredBackground blurs the world and HUD, while the
