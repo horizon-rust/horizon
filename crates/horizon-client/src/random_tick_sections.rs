@@ -55,9 +55,10 @@ struct Cached {
     read: Vec<Weak<Section>>,
     sections: Sections,
     /// Each ticking section's [`RandomTickMask`], built at its first draw
-    /// and dropped when the section is read again. `Arc` (it moves between threads with its level): the
-    /// tick thread hands one out per ticking section per tick, and an atomic
-    /// count on a mask out of cache stalled the whole random tick loop.
+    /// and dropped when the section is read again. `Arc`, not `Rc`: the cache
+    /// moves with its level to a region's thread. (It was an `Rc` because the
+    /// atomic count on a mask out of cache stalled the random tick loop: measure
+    /// the loop before and after this change.)
     masks: Vec<Option<Arc<RandomTickMask>>>,
 }
 /// Vanilla keeps a count of randomly ticking blocks and fluids per section,
@@ -80,6 +81,18 @@ impl RandomTickSections {
     }
     pub fn remove(&mut self, key: &(i32, i32)) {
         self.chunks.remove(key);
+    }
+    /// Each region's chunks' cached sections, moved out for the region's ticks.
+    pub fn lend(&mut self, regions: usize, region_of: impl Fn((i32, i32)) -> Option<usize>) -> Vec<Self> {
+        let mut out: Vec<Self> = (0..regions).map(|_| Self::default()).collect();
+        for (key, cached) in self.chunks.extract_if(|key, _| region_of(*key).is_some()) {
+            out[region_of(key).expect("extracted for its region")].chunks.insert(key, cached);
+        }
+        out
+    }
+    /// The sections [`RandomTickSections::lend`] lent, back.
+    pub fn take_back(&mut self, region: Self) {
+        self.chunks.extend(region.chunks);
     }
     /// The sections of `chunk` holding a randomly ticking block or fluid.
     pub fn get(&mut self, key: (i32, i32), chunk: &Arc<Chunk>, facts: &BlockFacts) -> Sections {
