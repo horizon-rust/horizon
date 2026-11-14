@@ -17,6 +17,7 @@
 //! ```
 use super::event_loop::EventLoopCtl;
 use super::input_trace::{InputOrigin, TraceEvent, TraceKind};
+use super::owner_link::{ControlRequest, OwnerRequest};
 use super::{Game, Screen};
 use horizon_client::{Result, gamepad::Button, keybinds, text::Text, title::world_management};
 use horizon_core::geometry::Vec3;
@@ -550,7 +551,9 @@ impl Game<'_> {
         // save folder is the one to copy, not the client's title-screen save.
         let world_root = if mode == "local" {
             match self.integrated.as_ref() {
-                Some(server) => server.call(|game| game.world_root.clone()),
+                Some(server) => {
+                    server.ask(|reply| OwnerRequest::Control(ControlRequest::WorldRoot(reply)))
+                }
                 None if !self.world_root.as_os_str().is_empty() => Some(self.world_root.clone()),
                 None => None,
             }
@@ -585,13 +588,13 @@ impl Game<'_> {
             if let Some(server) = self.integrated.as_ref() {
                 // The server thread saves, then waits there for the copy: pausing it instead
                 // runs its pause save (which renames files into place) during the copy.
-                let (saved_tx, saved) = mpsc::channel();
+                let (saved_tx, saved) = mpsc::sync_channel(1);
                 let (copied, copied_rx) = mpsc::channel::<()>();
-                // A server that has stopped drops the task, and `saved_tx` with it.
-                server.post(move |game| {
-                    let _ = saved_tx.send(game.save_game().map_err(|e| e.to_string()));
-                    let _ = copied_rx.recv();
-                });
+                // A server that has stopped drops the request, and `saved_tx` with it.
+                server.tell(OwnerRequest::Control(ControlRequest::SaveThenWait {
+                    saved: saved_tx,
+                    copied: copied_rx,
+                }));
                 match saved.recv() {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {

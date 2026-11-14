@@ -1,6 +1,7 @@
 //! Control-socket block commands for scripted tests: `setblock`, `fill`,
 //! `getblock` and `container` (list or put items in a block entity).
 use super::Game;
+use super::owner_link::{ControlRequest, OwnerRequest};
 use horizon_client::{Result, items::ItemStack};
 use horizon_world::{chunk::BlockState, registry::BlockStateId};
 use serde_json::{Value, json};
@@ -73,9 +74,11 @@ impl Game<'_> {
         if ours && let Some(server) = &self.integrated {
             let owned: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
             return server
-                .call(move |g| {
-                    let words: Vec<&str> = owned.iter().map(String::as_str).collect();
-                    g.in_owner_level(|g| g.block_command(&words).map_err(|e| e.to_string()))
+                .ask(|reply| {
+                    OwnerRequest::Control(ControlRequest::BlockCommand {
+                        words: owned,
+                        reply,
+                    })
                 })
                 .ok_or(super::integrated::NO_ANSWER)?
                 .map_err(Into::into);

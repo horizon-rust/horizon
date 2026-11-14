@@ -7,6 +7,7 @@
 mod navigation;
 
 use super::event_loop::EventLoopCtl;
+use super::owner_link::{ControlRequest, OwnerRequest};
 use super::{Game, Screen};
 use horizon_client::actions::Action;
 use horizon_client::held::Source;
@@ -1793,7 +1794,9 @@ impl Game<'_> {
                 // Single player's console is its server thread's.
                 if let Some(server) = &self.integrated {
                     let chat = server
-                        .call(move |g| g.owner_console_command(&command))
+                        .ask(|reply| {
+                            OwnerRequest::Control(ControlRequest::ConsoleCommand { command, reply })
+                        })
                         .ok_or(super::integrated::NO_ANSWER)?;
                     return ok(json!({ "ok": true, "chat": chat }));
                 }

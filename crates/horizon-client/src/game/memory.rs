@@ -3,7 +3,10 @@
 //! the census of the columns, the server's entities, players and chunk send
 //! caches, the renderer's bookkeeping and the GPU allocator's resources by
 //! label say where it goes. `unattributed_mb` is what the named parts leave.
-use super::Game;
+use super::{
+    Game,
+    owner_link::{ControlRequest, OwnerRequest},
+};
 use horizon_client::chunk::ColumnCensus;
 use horizon_client::fast_hash::FxHashSet;
 use horizon_client::lan::hub::Hub;
@@ -256,7 +259,7 @@ struct Renderer {
 }
 
 /// A serving game's own parts: the columns it holds, its generation, entities, players, chunk send caches and queues.
-struct ServerSide {
+pub(super) struct ServerSide {
     columns: Columns,
     addresses: FxHashSet<usize>,
     generation: Generation,
@@ -432,11 +435,11 @@ impl Game<'_> {
         std::iter::once(&self.world).chain(self.levels.parked_worlds())
     }
     /// The census of this game's levels: the one in place and the parked ones.
-    fn level_census(&self) -> ColumnCensus {
+    pub(super) fn level_census(&self) -> ColumnCensus {
         census(self.all_worlds())
     }
     /// The addresses of this game's sections.
-    fn section_addresses(&self) -> FxHashSet<usize> {
+    pub(super) fn section_addresses(&self) -> FxHashSet<usize> {
         self.all_worlds()
             .flat_map(|w| w.chunks.values())
             .flat_map(|c| c.sections.iter().map(|s| Arc::as_ptr(s) as usize))
@@ -510,7 +513,7 @@ impl Game<'_> {
     }
 
     /// This game's own server parts: it is a dedicated server, or the single-player server thread.
-    fn server_side(&self) -> ServerSide {
+    pub(super) fn server_side(&self) -> ServerSide {
         let (players, chunk_send) = match &self.lan {
             Some(host) => (player_census(&host.hub), chunk_send_census(&host.hub)),
             None => (Players::default(), ChunkSend::default()),
@@ -553,9 +556,9 @@ impl Game<'_> {
         let server = if dedicated {
             Some(self.server_side())
         } else {
-            self.integrated
-                .as_ref()
-                .and_then(|i| i.call(|g| g.server_side()))
+            self.integrated.as_ref().and_then(|i| {
+                i.ask(|reply| OwnerRequest::Control(ControlRequest::ServerSide(reply)))
+            })
         };
         let window = (!dedicated).then(|| self.level_census());
         // The window's sections the server thread holds too (lan/handoff.rs).

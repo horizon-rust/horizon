@@ -3,7 +3,7 @@
 //! player through memory, so a world tick never holds up a frame.
 //!
 //! The window asks its server for what only the server knows (Open to LAN,
-//! the world's options) with [`Integrated::call`], as vanilla's client calls
+//! the world's options) with [`Integrated::ask`] and an `OwnerRequest`, as vanilla's client calls
 //! into its `IntegratedServer`.
 //!
 //! Every single-player world runs this way; LAN guests and dedicated servers
@@ -12,6 +12,7 @@ use super::{
     Dim, Game, Options, PackResources, Resources, UiResources, WorldIcon,
     execution_role::ExecutionRole,
     lan::{LanSettings, Owner, SyncPreload, preload_sync_data},
+    owner_link::{OwnerRequest, Reply},
     world_loading::{WorldLoader, WorldRequest},
 };
 use horizon_client::level_loading::{STATUS_RADIUS, Stage};
@@ -38,9 +39,9 @@ use std::{
 
 pub(super) mod capture;
 
-/// How long the window waits for the server thread to answer a `call`.
+/// How long the window waits for the server thread to answer an `ask`.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
-/// The error of a `call` without an answer: the server stopped, or it was
+/// The error of an `ask` without an answer: the server stopped, or it was
 /// busy past `CALL_TIMEOUT` (the log says which).
 pub(super) const NO_ANSWER: &str =
     "the integrated server stopped or did not answer within 10 s (the game log says which)";
@@ -92,14 +93,11 @@ struct Flags {
     debug: Mutex<super::debug_lines::ServerDebug>,
 }
 
-/// Work the window hands its server thread (`MinecraftServer.execute`).
-type Task = Box<dyn FnOnce(&mut Game<'_>) + Send>;
-
 /// The window's handle on its server thread.
 pub(super) struct Integrated {
     flags: Arc<Flags>,
     thread: Option<JoinHandle<()>>,
-    tasks: Sender<Task>,
+    tasks: Sender<OwnerRequest>,
     /// The world's name (`level.dat`'s `LevelName`), for the pause menu.
     pub world_name: String,
 }
@@ -107,13 +105,7 @@ impl Integrated {
     /// Queue every change, even if the currently published tree still has the requested state:
     /// an earlier update may be waiting for a busy server thread.
     fn queue_pregen_option(&self, enabled: bool) {
-        let _ = self.tasks.send(Box::new(move |g| {
-            use horizon_client::command::vanilla;
-            if vanilla::game_dispatcher().find("pregen").is_some() != enabled {
-                vanilla::set_horizon_commands(enabled);
-                g.resend_commands_filtered();
-            }
-        }));
+        self.tell(OwnerRequest::SetPregen(enabled));
     }
     /// The generator of the server's level in `dimension`, once it has run.
     pub fn terrain(
@@ -170,11 +162,7 @@ impl Integrated {
             .lock()
             .unwrap()
             .retain(|&u| u != uuid);
-        self.call(move |g| {
-            if let Some(host) = g.lan.as_mut() {
-                host.hub.ops.remove(&uuid);
-            }
-        });
+        self.ask(|done| OwnerRequest::LeaveSplit(uuid, done));
     }
     /// Splitscreen: a connection through memory for another player on this machine, who gets
     /// the owner's permissions. `None` once the server has stopped.
@@ -182,13 +170,7 @@ impl Integrated {
         let uuid = horizon_protocol::crypto::offline_uuid(name);
         self.flags.split_players.lock().unwrap().push(uuid);
         let pipe = self
-            .call(move |g| {
-                let host = g.lan.as_mut()?;
-                let owner = host.owner.as_ref()?.uuid;
-                let level = host.hub.ops.get(&owner).copied().unwrap_or(0);
-                host.hub.ops.insert(uuid, level);
-                host.hub.lan.connect_local().ok()
-            })
+            .ask(|reply| OwnerRequest::JoinSplit(uuid, reply))
             .flatten();
         if pipe.is_none() {
             self.leave_split(name);
@@ -214,20 +196,13 @@ impl Integrated {
     pub fn published(&self) -> Option<u16> {
         Some(self.flags.published.load(Ordering::Relaxed)).filter(|&p| p != 0)
     }
-    /// `executeBlocking`: run `f` on the server thread between two ticks and
-    /// wait for its answer; `None` once the server has stopped, or when it has
-    /// not answered within `CALL_TIMEOUT` (`f` still runs there later). The log
-    /// tells the two apart.
-    pub fn call<T: Send + 'static>(
+    /// `executeBlocking`: `None` once the server stopped or after `CALL_TIMEOUT` (the log tells which).
+    pub(super) fn ask<T: Send + 'static>(
         &self,
-        f: impl FnOnce(&mut Game<'_>) -> T + Send + 'static,
+        build: impl FnOnce(Reply<T>) -> OwnerRequest,
     ) -> Option<T> {
         let (tx, rx) = sync_channel(1);
-        self.tasks
-            .send(Box::new(move |g| {
-                let _ = tx.send(f(g));
-            }))
-            .ok()?;
+        self.tasks.send(build(tx)).ok()?;
         match rx.recv_timeout(CALL_TIMEOUT) {
             Ok(answer) => Some(answer),
             Err(RecvTimeoutError::Timeout) => {
@@ -244,10 +219,9 @@ impl Integrated {
             Err(RecvTimeoutError::Disconnected) => None,
         }
     }
-    /// `execute`: run `f` on the server thread between two ticks, without
-    /// waiting for it. False once the server has stopped.
-    pub fn post(&self, f: impl FnOnce(&mut Game<'_>) + Send + 'static) -> bool {
-        self.tasks.send(Box::new(f)).is_ok()
+    /// `execute`: send a request without waiting for it. False once the server has stopped.
+    pub(super) fn tell(&self, request: OwnerRequest) -> bool {
+        self.tasks.send(request).is_ok()
     }
     /// `IntegratedServer.halt(true)`: returns once the world is saved and let go.
     pub fn stop(mut self) -> Result<()> {
@@ -292,7 +266,7 @@ impl Drop for Integrated {
 /// The server thread's side of the window's handle (`Game::serving`).
 pub(super) struct Serving {
     flags: Arc<Flags>,
-    tasks: Receiver<Task>,
+    tasks: Receiver<OwnerRequest>,
     /// The window's profile.
     pub(super) owner: u128,
     /// Open to LAN or closed from inside a player's command, while the hub
@@ -676,7 +650,7 @@ impl Game<'_> {
         &mut self,
         launch: Launch,
         flags: Arc<Flags>,
-        tasks: Receiver<Task>,
+        tasks: Receiver<OwnerRequest>,
         ready: &Sender<Ready>,
         opening: Opening,
     ) -> Result<()> {
@@ -693,7 +667,7 @@ impl Game<'_> {
         &mut self,
         launch: Launch,
         flags: Arc<Flags>,
-        tasks: Receiver<Task>,
+        tasks: Receiver<OwnerRequest>,
         ready: &Sender<Ready>,
         opening: Opening,
     ) -> Result<()> {
@@ -858,7 +832,7 @@ impl Game<'_> {
         &mut self,
         launch: &Launch,
         flags: &Arc<Flags>,
-        tasks: Receiver<Task>,
+        tasks: Receiver<OwnerRequest>,
         ready: &Sender<Ready>,
         opening: Opening,
     ) -> Result<()> {
@@ -1125,12 +1099,12 @@ impl Game<'_> {
 
     /// The window's requests, between two ticks.
     fn run_tasks(&mut self) {
-        let tasks: Vec<Task> = match &self.serving {
+        let requests: Vec<OwnerRequest> = match &self.serving {
             Some(s) => s.tasks.try_iter().collect(),
             None => return,
         };
-        for task in tasks {
-            task(self);
+        for request in requests {
+            self.serve_owner_request(request);
             self.apply_publish();
         }
     }
@@ -1313,7 +1287,7 @@ fn serve(
     settings: Settings,
     launch: Launch,
     flags: Arc<Flags>,
-    tasks: Receiver<Task>,
+    tasks: Receiver<OwnerRequest>,
     ready: &Sender<Ready>,
 ) -> Result<()> {
     // The world prepares, and the registries the server sends are read, on
@@ -1487,10 +1461,16 @@ mod tests {
         server.queue_pregen_option(true);
         server.queue_pregen_option(false);
         assert!(
-            waiting_server.try_recv().is_ok(),
+            matches!(waiting_server.try_recv(), Ok(OwnerRequest::SetPregen(true))),
             "enable must reach the server"
         );
-        assert!(waiting_server.try_recv().is_ok(), "disable must follow it");
+        assert!(
+            matches!(
+                waiting_server.try_recv(),
+                Ok(OwnerRequest::SetPregen(false))
+            ),
+            "disable must follow it"
+        );
         assert!(waiting_server.try_recv().is_err());
     }
 

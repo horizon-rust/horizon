@@ -1,5 +1,6 @@
 //! Commands from the control socket (`horizon-ctl`), run on the game thread.
 use super::event_loop::EventLoopCtl;
+use super::owner_link::{ControlRequest, OwnerRequest};
 use super::{Game, Screen};
 use horizon_client::gfx::pack_timing;
 use horizon_client::held::Source;
@@ -646,7 +647,9 @@ impl Game<'_> {
                     }
                     return Ok(Some(if let Some(server) = &self.integrated {
                         server
-                            .call(move |g| g.in_owner_level(move |g| g.blocks_json(lo, hi)))
+                            .ask(|reply| {
+                                OwnerRequest::Control(ControlRequest::Blocks { lo, hi, reply })
+                            })
                             .ok_or(super::integrated::NO_ANSWER)?
                     } else {
                         self.blocks_json(lo, hi)
@@ -654,14 +657,10 @@ impl Game<'_> {
                 }
                 let value = if let Some(server) = &self.integrated {
                     server
-                        .call(|g| {
-                            g.in_owner_level(|g| {
-                                json!({ "game_time": g.world.game_time, "projectiles": g.projectiles_status() })
-                            })
-                        })
+                        .ask(|reply| OwnerRequest::Control(ControlRequest::Simulation(reply)))
                         .ok_or(super::integrated::NO_ANSWER)?
                 } else {
-                    json!({ "game_time": self.world.game_time, "projectiles": self.projectiles_status() })
+                    self.simulation_status()
                 };
                 Ok(Some(value))
             }
@@ -674,7 +673,9 @@ impl Game<'_> {
                 };
                 if let Some(server) = &self.integrated {
                     server
-                        .call(move |g| g.agent.hold_server = held)
+                        .ask(|done| {
+                            OwnerRequest::Control(ControlRequest::HoldServer { held, done })
+                        })
                         .ok_or(super::integrated::NO_ANSWER)?;
                 } else if self.remote.is_some() {
                     return Err("server-hold requires the world's host".into());
@@ -992,7 +993,9 @@ impl Game<'_> {
                 if let Some(server) = &self.integrated {
                     let command = format!("give @s {item} {count}");
                     server
-                        .call(move |g| g.owner_console_command(&command))
+                        .ask(|reply| {
+                            OwnerRequest::Control(ControlRequest::ConsoleCommand { command, reply })
+                        })
                         .ok_or(super::integrated::NO_ANSWER)?;
                     return Ok(Some(json!({ "ok": true, "given": count })));
                 }
@@ -1045,7 +1048,9 @@ impl Game<'_> {
                 // Single player's clock is its server thread's.
                 if let Some(server) = &self.integrated {
                     server
-                        .call(move |g| g.world.day_time = time)
+                        .ask(|done| {
+                            OwnerRequest::Control(ControlRequest::SetDayTime { time, done })
+                        })
                         .ok_or(super::integrated::NO_ANSWER)?;
                 }
                 ok()
@@ -1064,9 +1069,12 @@ impl Game<'_> {
                         None => self.default_summon_position()?,
                     };
                     let id = server
-                        .call(move |g| {
-                            g.in_owner_level(|g| {
-                                g.summon(&kind, Some(at), baby).map_err(|e| e.to_string())
+                        .ask(|reply| {
+                            OwnerRequest::Control(ControlRequest::Summon {
+                                kind,
+                                at,
+                                baby,
+                                reply,
                             })
                         })
                         .ok_or(super::integrated::NO_ANSWER)??;
@@ -1081,7 +1089,13 @@ impl Game<'_> {
                 if let Some(server) = &self.integrated {
                     let center = self.player.as_ref().map_or(Vec3::ZERO, |p| p.position);
                     let value = server
-                        .call(move |g| g.in_owner_level(|g| g.control_mobs_at(radius, center)))
+                        .ask(|reply| {
+                            OwnerRequest::Control(ControlRequest::MobsAt {
+                                radius,
+                                center,
+                                reply,
+                            })
+                        })
                         .ok_or(super::integrated::NO_ANSWER)?;
                     return Ok(Some(value));
                 }
@@ -1091,7 +1105,7 @@ impl Game<'_> {
                 self.require_world()?;
                 if let Some(server) = &self.integrated {
                     let value = server
-                        .call(|g| g.control_hurt_log())
+                        .ask(|reply| OwnerRequest::Control(ControlRequest::HurtLog(reply)))
                         .ok_or(super::integrated::NO_ANSWER)?;
                     return Ok(Some(value));
                 }
@@ -1335,7 +1349,7 @@ impl Game<'_> {
                 // Single player's world is its server thread's.
                 if let Some(server) = &self.integrated {
                     server
-                        .call(move |g| g.control_save(all).map_err(|e| e.to_string()))
+                        .ask(|reply| OwnerRequest::Control(ControlRequest::Save { all, reply }))
                         .ok_or(super::integrated::NO_ANSWER)??;
                 } else if self.remote.is_none() {
                     self.begin_control_save(all, reply.clone())?;
@@ -1377,8 +1391,13 @@ impl Game<'_> {
         }
     }
 
+    /// `horizon-ctl simulation`: the world's clock and its projectiles.
+    pub(super) fn simulation_status(&self) -> Value {
+        json!({ "game_time": self.world.game_time, "projectiles": self.projectiles_status() })
+    }
+
     /// `horizon-ctl save` and `save-all`.
-    fn control_save(&mut self, all: bool) -> Result<()> {
+    pub(super) fn control_save(&mut self, all: bool) -> Result<()> {
         if all {
             let keys: Vec<_> = self.world.chunks.keys().copied().collect();
             self.world.modified.extend(keys);
@@ -1464,7 +1483,7 @@ impl Game<'_> {
 
     /// The hurts and melee attacks each player logged since the last call
     /// (`PlayerMotion::hurt_log`, `attack_log`), taken out.
-    fn control_hurt_log(&mut self) -> Value {
+    pub(super) fn control_hurt_log(&mut self) -> Value {
         fn drain(
             name: &str,
             hurt_log: &mut Vec<horizon_client::health::HurtRecord>,

@@ -1,7 +1,10 @@
 //! Mods in the game (`docs/mods.md`): content mods' blocks, items, data and
 //! assets (`content_root`), and the Mods page's rows. Code mods are native
 //! (`native_hooks.rs`); WebAssembly code mods don't run any more.
-use super::Game;
+use super::{
+    Game,
+    owner_link::{ModsReload, OwnerRequest},
+};
 use horizon_client::{
     lang,
     mod_list::{self, Installed},
@@ -703,29 +706,32 @@ impl Game<'_> {
         if !applied {
             return;
         }
-        let root = self.options.resources.clone();
-        let enabled = self.applied_mods();
-        let reload = move |g: &mut Game<'_>| {
-            let at = std::time::Instant::now();
-            g.options.resources = root;
-            g.settings.mods.enabled = enabled.clone();
-            g.mods.applied = Some(enabled);
-            g.mods.data_switched = true;
-            if g.world_root.as_os_str().is_empty() {
-                return;
-            }
-            g.reload_datapacks(true);
-            log::info!(
-                "Horizon: content mods switched live: server data reloaded in {} ms",
-                at.elapsed().as_millis()
-            );
+        let reload = ModsReload {
+            root: self.options.resources.clone(),
+            enabled: self.applied_mods(),
         };
         log::info!("Horizon: content mods switched live: resources reloaded in {resources_ms} ms");
         if let Some(server) = &self.integrated {
-            server.post(reload);
+            server.tell(OwnerRequest::ReloadMods(reload));
         } else if self.remote.is_none() {
-            reload(self);
+            self.apply_mods_reload(reload);
         }
+    }
+    /// The server's side of a live switch: the data packs reload from the new root.
+    pub(super) fn apply_mods_reload(&mut self, reload: ModsReload) {
+        let at = std::time::Instant::now();
+        self.options.resources = reload.root;
+        self.settings.mods.enabled = reload.enabled.clone();
+        self.mods.applied = Some(reload.enabled);
+        self.mods.data_switched = true;
+        if self.world_root.as_os_str().is_empty() {
+            return;
+        }
+        self.reload_datapacks(true);
+        log::info!(
+            "Horizon: content mods switched live: server data reloaded in {} ms",
+            at.elapsed().as_millis()
+        );
     }
     /// Trait mods follow the player's switches at once
     /// (`mod_api::set_mod_on`): the next dispatch skips a mod turned off.

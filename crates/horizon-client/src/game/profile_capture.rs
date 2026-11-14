@@ -5,6 +5,7 @@ use super::integrated::{
     capture::{Live, ServerSide, Target},
 };
 use super::memory::{MEMORY_EVERY_S, flatten_report};
+use super::owner_link::OwnerRequest;
 use super::perf_remote::Served;
 use super::profile_lines::{self as lines, Notice};
 use crate::Result;
@@ -443,9 +444,10 @@ impl Game<'_> {
                     StopRoute::ServerOnly => {
                         let integrated = self.integrated.as_ref().ok_or(NO_CAPTURE)?;
                         let reply = reply.clone();
-                        if !integrated
-                            .post(move |g| g.stop_server_capture(StopReason::Normal, Some(reply)))
-                        {
+                        if !integrated.tell(OwnerRequest::StopServerCapture(
+                            StopReason::Normal,
+                            Some(reply),
+                        )) {
                             return Err(NO_ANSWER.into());
                         }
                     }
@@ -479,8 +481,7 @@ impl Game<'_> {
                 let (client, server) = self.profile.mark(parsed.side, &name);
                 let posted = server.filter(|_| {
                     self.integrated.as_ref().is_some_and(|integrated| {
-                        let label = name.clone();
-                        integrated.post(move |g| g.mark_server_capture(&label))
+                        integrated.tell(OwnerRequest::MarkServerCapture(name.clone()))
                     })
                 });
                 let t = client.or(posted).ok_or(NO_CAPTURE)?;
@@ -610,7 +611,7 @@ impl Game<'_> {
         };
         let handoff = live.clone();
         let path = integrated
-            .call(move |g| g.start_server_capture(target, handoff))
+            .ask(|reply| OwnerRequest::StartServerCapture(target, handoff, Some(reply)))
             .ok_or(NO_ANSWER)??;
         let started = Started {
             ok: true,
@@ -639,11 +640,11 @@ impl Game<'_> {
         };
         let live = Live::new();
         let handoff = live.clone();
-        let posted = integrated.post(move |g| {
-            if let Err(e) = g.start_server_capture(Target::Join(join), handoff) {
-                log::warn!("Horizon: the server thread is not captured: {e}");
-            }
-        });
+        let posted = integrated.tell(OwnerRequest::StartServerCapture(
+            Target::Join(join),
+            handoff,
+            None,
+        ));
         if posted {
             self.profile.joined = Some(live);
             self.profile.link = ServerLink::Off;
@@ -669,7 +670,7 @@ impl Game<'_> {
             return Err("no capture is running".into());
         }
         if server && let Some(integrated) = &self.integrated {
-            integrated.post(move |g| g.stop_server_capture(reason, None));
+            integrated.tell(OwnerRequest::StopServerCapture(reason, None));
         }
         self.stop_joined_server();
         self.profile.link = ServerLink::Off;
