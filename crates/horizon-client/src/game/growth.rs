@@ -31,14 +31,12 @@ impl Game<'_> {
         };
         let pos = BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]);
         let used = self.with_level(|b, level, ticks| b.use_bone_meal(level, ticks, pos, face));
-        // ItemStack.causeUseVibration at the player, after the meal is used
-        // up (shrunk even in creative): an emptied stack has no use effects.
-        if used
-            && stack.count > 1
-            && let Some(p) = self.player.as_ref().map(|p| p.position)
-        {
-            let ctx = self.player_context(None);
-            self.post_game_event("minecraft:item_interact_finish", [p.x, p.y, p.z], ctx);
+        // BoneMealItem.useOn: after growCrop shrank the stack,
+        // `ItemStack.causeUseVibration` posts ITEM_INTERACT_FINISH from the
+        // player when the stack's use effects ask for it (the default), the
+        // emptied stack too: the held one is consumed only below.
+        if used {
+            self.use_vibration(stack, "minecraft:item_interact_finish");
         }
         self.process_level_events()?;
         if used {
@@ -122,3 +120,7 @@ pub(super) fn install_live_features(
         Err(e) => log::warn!("Horizon: live features unavailable: {e}"),
     }
 }
+
+#[cfg(test)]
+#[path = "bone_meal_vibration_tests.rs"]
+mod bone_meal_vibration_tests;
