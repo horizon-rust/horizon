@@ -753,9 +753,9 @@ pub fn ridden_step(m: &mut Mob) {
         return;
     }
     if super::camel::is_camel(m.species()) {
-        // Camel.tickRidden / getRiddenInput: forward stands it up; no input
-        // while sitting; the jump is a dash.
-        if r.forward > 0.0 && super::camel::sitting(m) {
+        // Camel.tickRidden / getRiddenInput: forward stands it up once a pose
+        // transition is over; no input while sitting; the jump is a dash.
+        if r.forward > 0.0 && super::camel::sitting(m) && !super::camel::in_transition(m) {
             let mut ev = Vec::new();
             super::camel::stand_up(m, &mut ev);
         }

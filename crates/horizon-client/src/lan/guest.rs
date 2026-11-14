@@ -130,6 +130,12 @@ pub struct Guest {
     /// bots do not each hold a whole view distance.
     pub fake: bool,
     pub position: [f64; 3],
+    /// Where the player's chunk tickets stay while they are not at `position`.
+    /// `None`: they are at `position`'s chunk. `Some(chunk)`: a teleport sent
+    /// the player away and they are still at the chunk it left. The hold ends
+    /// (back to `None`) at an accepted move, the teleport's ack, a passenger or
+    /// vehicle move, a camera change and a placement.
+    pub held_ticket_chunk: Option<(i32, i32)>,
     pub previous_position: [f64; 3],
     pub yaw: f32,
     pub pitch: f32,
@@ -187,6 +193,8 @@ pub struct Guest {
     /// the moves it sent from the old level are ignored, as they would be
     /// while it had a teleport to accept.
     pub landing: bool,
+    /// `landing` was set by a `tp` hold waiting for chunks (`Game::hold_for_chunks`), not by a portal.
+    pub tp_held: bool,
     pub teleport_counter: i32,
     /// `ServerPlayer.getCamera() != this`.
     pub watching: bool,
@@ -495,6 +503,7 @@ impl Guest {
             channels: j.configured.channels,
             configuration_pack_answers: j.configured.pack_answers,
             position,
+            held_ticket_chunk: None,
             previous_position: position,
             yaw: 0.0,
             pitch: 0.0,
@@ -524,6 +533,7 @@ impl Guest {
             awaiting_teleport: None,
             awaiting_keeps_motion: false,
             landing: false,
+            tp_held: false,
             teleport_counter: 0,
             watching: false,
             teleport_tick: 0,
@@ -755,6 +765,33 @@ impl Guest {
         for p in packets {
             self.send(p);
         }
+    }
+    /// A new player at `at` (`ChunkMap.addEntity`; the tickets start there).
+    pub fn place(&mut self, at: [f64; 3]) {
+        (
+            self.position,
+            self.previous_position,
+            self.held_ticket_chunk,
+        ) = (at, at, None);
+    }
+    /// `ServerChunkCache.move` after an accepted move: the tickets follow.
+    pub fn accept_move(&mut self, to: [f64; 3]) {
+        self.previous_position = self.position;
+        (self.position, self.held_ticket_chunk) = (to, None);
+    }
+    /// The chunk the player's `DistanceManager` tickets are at. Teleporting
+    /// does not move them: `ServerChunkCache.move` does, and its callers are an
+    /// accepted move or the ack of a teleport (`handlePlayerPositionChange`),
+    /// a vehicle or passenger move (`handleMoveVehicle`) and a camera
+    /// (`ServerPlayer.setCamera` and its tick), whose chunk is `position`'s.
+    pub fn ticket_chunk(&self) -> (i32, i32) {
+        self.held_ticket_chunk
+            .filter(|_| !self.watching)
+            .unwrap_or_else(|| self.chunk())
+    }
+    /// A camera change or a passenger's move: the tickets follow `position`.
+    pub fn release_tickets(&mut self) {
+        self.held_ticket_chunk = None;
     }
     pub fn chunk(&self) -> (i32, i32) {
         (

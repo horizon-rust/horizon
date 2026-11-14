@@ -80,6 +80,7 @@ impl Mob {
             is_vehicle: equine::is_vehicle(m),
             still: m.species() == Species::HappyGhast && happy_ghast::on_still_timeout(m),
             carrying: m.rider.is_some() || m.extra.rider.is_some(),
+            collisions: 0,
             knockback_resistance: m.attrs.knockback_resistance,
             effects: m
                 .extra
@@ -90,6 +91,7 @@ impl Mob {
             hunted_recently: m.species() == Species::Piglin && m.extra.ints[0] > 0,
             hurt_recently: m.species() == Species::Piglin && m.extra.piglin.hurt,
             huntable: m.species() == Species::Hoglin && !m.is_baby() && !m.extra.cannot_be_hunted,
+            invulnerable: m.is_invulnerable(),
         }
     }
 }
