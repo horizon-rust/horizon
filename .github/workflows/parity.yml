@@ -90,6 +90,13 @@ jobs:
           python3 tools/prepare_output.py check --cache --base "$BASE_SHA"
       - name: The version constants are the pinned jar's
         run: python3 tools/gen_version_consts.py --check
+      - name: The packet ids are the report's
+        run: |
+          if [ ! -f .local/datagen/out/reports/packets.json ]; then
+            echo "No packets report here: nothing to check"
+            exit 0
+          fi
+          python3 tools/generate_packet_ids.py --check
       - name: The harnesses this change can affect
         env:
           PARITY_HOSTS: ''
