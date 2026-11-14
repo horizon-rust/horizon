@@ -3513,16 +3513,35 @@ pub fn beam(base: Mat4, b: BeamShape, s: Rect, out: &mut Vec<Vertex>) {
         rot * Vec3::new(-r, 0.0, 0.0),
         rot * Vec3::new(0.0, 0.0, -r),
     ];
+    let mut emit = |corners: [Vec3; 4], [v1, v2]: [f32; 2], color: u32, layer: u32| {
+        let [wn, en, ws, es] = corners;
+        for (c1, c2) in [(wn, en), (es, ws), (en, es), (ws, wn)] {
+            let at = |c: Vec3, y: i32| {
+                base.transform_point3(Vec3::new(0.5, 0.0, 0.5) + c + Vec3::new(0.0, y as f32, 0.0))
+            };
+            for (p, uv) in [
+                (at(c1, end), [s.u1, v1]),
+                (at(c1, b.start), [s.u1, v2]),
+                (at(c2, b.start), [s.u0, v2]),
+                (at(c2, end), [s.u0, v1]),
+            ] {
+                out.push(Vertex {
+                    // The beacon beam render types keep the default back-face culling: seen
+                    // from inside a beam, its walls must not show.
+                    normal: CULL_BACK,
+                    pos: p.to_array(),
+                    uv,
+                    layer,
+                    color,
+                    light: wrap,
+                    glint_uv: [0.0, 0.0],
+                });
+            }
+        }
+    };
     let v2 = -1.0 + v_off;
     let v1 = b.height as f32 * b.scale * (0.5 / r) + v2;
-    let part = BeamPart {
-        base,
-        start: b.start,
-        end,
-        s,
-        wrap,
-    };
-    part.emit(out, corners, [v1, v2], abgr(255));
+    emit(corners, [v1, v2], abgr(255), 6);
     // Glow, translucent.
     let g = b.glow_radius;
     let corners = [
@@ -3532,51 +3551,7 @@ pub fn beam(base: Mat4, b: BeamShape, s: Rect, out: &mut Vec<Vertex>) {
         Vec3::new(g, 0.0, g),
     ];
     let v1 = b.height as f32 * b.scale + v2;
-    part.emit(out, corners, [v1, v2], abgr(32));
-}
-struct BeamPart {
-    base: Mat4,
-    start: i32,
-    end: i32,
-    s: Rect,
-    wrap: u32,
-}
-impl BeamPart {
-    /// `BeaconRenderer.renderPart`: four quads between the corners (wn, en, ws, es).
-    fn emit(
-        &self,
-        out: &mut Vec<Vertex>,
-        [wn, en, ws, es]: [Vec3; 4],
-        [v1, v2]: [f32; 2],
-        color: u32,
-    ) {
-        let s = self.s;
-        for (a, b) in [(wn, en), (es, ws), (en, es), (ws, wn)] {
-            let at = |c: Vec3, y: i32| {
-                self.base
-                    .transform_point3(Vec3::new(0.5, 0.0, 0.5) + c + Vec3::new(0.0, y as f32, 0.0))
-            };
-            for (p, uv) in [
-                (at(a, self.end), [s.u1, v1]),
-                (at(a, self.start), [s.u1, v2]),
-                (at(b, self.start), [s.u0, v2]),
-                (at(b, self.end), [s.u0, v1]),
-            ] {
-                out.push(Vertex {
-                    // The beacon beam render types keep the default back-face culling: seen
-                    // from inside a beam, its walls must not show.
-                    normal: CULL_BACK,
-                    pos: p.to_array(),
-                    uv,
-                    layer: 6,
-                    color,
-                    light: self.wrap,
-
-                    glint_uv: [0.0, 0.0],
-                });
-            }
-        }
-    }
+    emit(corners, [v1, v2], abgr(32), 6 | crate::gfx::OIT_ENTITY);
 }
 
 /// `EndGatewayRenderState`'s beam fields (zero when there is no beam).
