@@ -8,6 +8,7 @@ pub mod entry;
 pub mod game;
 mod horizon_look;
 pub mod mod_api;
+pub mod server_impulse;
 
 #[cfg(test)]
 mod brewing_speed_load_tests;
