@@ -1,8 +1,9 @@
 //! A shader pack's kept resources (#16011 item 4): the storage its `[[resource]]`s declare,
-//! made per view, the layout entries a pass binds them with, and what a device lacks for them.
-//! Nothing binds or clears them yet; the game still refuses such a pack.
-use horizon_shader_api::check::CheckedStage;
-use horizon_shader_api::kept::{Dispatch, Format, Kept, Shape};
+//! made per view, the layout entries a pass binds them with, what a device lacks for them, and
+//! the epochs that say when they start over. Nothing binds or clears them yet; the game still
+//! refuses such a pack.
+use horizon_shader_api::check::{CheckedStage, Report};
+use horizon_shader_api::kept::{self, Dispatch, Format, Keep, Kept, Shape};
 use horizon_shader_api::stages::{KeptAccess, KeptBinding, kept_bindings};
 use horizon_shader_api::{Manifest, StageKind};
 
@@ -18,6 +19,9 @@ pub(super) struct KeptStore {
     kept: Kept,
     held: Vec<Held>,
     size: [u32; 2],
+    /// This frame's view and world epochs and R, from frame prep (`NativePack::write`), which
+    /// it clears and fits by from P4a on.
+    next: ([u32; 2], [u32; 2]),
 }
 
 impl KeptStore {
@@ -27,7 +31,18 @@ impl KeptStore {
             .map(|r| make(device, &r.name, r.shape, size))
             .collect();
         let kept = kept.clone();
-        Self { kept, held, size }
+        let next = ([1, 1], size);
+        Self {
+            kept,
+            held,
+            size,
+            next,
+        }
+    }
+
+    /// Takes this frame's `epochs` (view, world) and R, which it clears and fits by.
+    pub(super) fn frame(&mut self, epochs: [u32; 2], size: [u32; 2]) {
+        self.next = (epochs, size);
     }
 
     /// Remakes the R-relative textures, as zeros, when R changes.
@@ -41,6 +56,166 @@ impl KeptStore {
                 *held = make(device, &r.name, r.shape, size);
             }
         }
+    }
+}
+
+impl super::NativePost {
+    /// Takes the kept resources of `old`, the pack this one rebuilds (`NativePack::carry`).
+    pub(in crate::gfx) fn carry(&mut self, old: &mut Self) {
+        self.kept = old.kept.take().or(self.kept.take());
+    }
+
+    /// Hands the kept resources this frame's `epochs` (view, world) and R (`NativePack::write`).
+    pub(in crate::gfx) fn kept_frame(&mut self, epochs: [u32; 2], size: [u32; 2]) {
+        if let Some(kept) = &mut self.kept {
+            kept.frame(epochs, size);
+        }
+    }
+}
+
+impl super::NativeFrame {
+    /// Takes the epochs of `old`, the pack this one rebuilds (`NativePack::carry`), and its last
+    /// frame: a pause or a teleport across the rebuild still resets the carried resources.
+    pub(in crate::gfx) fn carry(&mut self, old: &mut Self) {
+        self.epochs = old.epochs.take();
+        self.last = old.last;
+    }
+}
+
+/// Resets that clear the world resources too.
+const WORLD: u32 =
+    kept::REASON_LOAD | kept::REASON_RESET | kept::REASON_WORLD | kept::REASON_TELEPORT;
+
+/// When a pack's kept resources start over (`frame.view_epoch`, `world_epoch`) and why
+/// (`reset_reasons`). An epoch moves on once in a frame that resets it, and is never 0, so a
+/// cell cleared to zeros never matches one.
+pub(in crate::gfx) struct Epochs {
+    view: u32,
+    world: u32,
+    reasons: u32,
+    moves: [bool; 2],
+    /// A teleport further than this, in blocks, resets both.
+    reach: f64,
+    /// Last frame's R and whether it was HDR.
+    seen: Option<([u32; 2], bool)>,
+}
+
+impl Epochs {
+    /// A fresh store's: both 1, loaded. Without `[kept] reach` (no world resources), view
+    /// resources clear on a teleport of 256 blocks (#16011 item 4's example).
+    pub(in crate::gfx) fn new(reach: Option<u32>) -> Self {
+        let reach = f64::from(reach.unwrap_or(256));
+        let (moves, seen) = ([false; 2], None);
+        let (view, world, reasons) = (1, 1, kept::REASON_LOAD);
+        Self {
+            view,
+            world,
+            reasons,
+            moves,
+            reach,
+            seen,
+        }
+    }
+
+    /// A reset for `bits` (`kept::REASON_*`): the view's on any, the world's too on a load,
+    /// reset, world change or teleport.
+    pub(in crate::gfx) fn note(&mut self, bits: u32) {
+        self.reasons |= bits;
+        self.moves[0] = true;
+        self.moves[1] |= bits & WORLD != 0;
+    }
+
+    /// A changed option marked `resets = keep`.
+    fn option(&mut self, keep: Keep) {
+        self.note(kept::REASON_OPTION);
+        self.moves[1] |= keep == Keep::World;
+    }
+
+    /// This frame's `[view_epoch, world_epoch, reset_reasons]`, at R `size`, HDR or not,
+    /// after a pause or not, the camera `moved` blocks since last frame. The reasons are this
+    /// frame's only.
+    pub(super) fn advance(
+        &mut self,
+        size: [u32; 2],
+        hdr: bool,
+        paused: bool,
+        moved: f64,
+    ) -> [u32; 3] {
+        let seen = self.seen.replace((size, hdr));
+        for (bit, reset) in [
+            (kept::REASON_PAUSE, paused),
+            (kept::REASON_SIZE, seen.is_some_and(|s| s.0 != size)),
+            (kept::REASON_DISPLAY, seen.is_some_and(|s| s.1 != hdr)),
+            (kept::REASON_TELEPORT, moved > self.reach),
+        ] {
+            if reset {
+                self.note(bit);
+            }
+        }
+        let next = |e: u32, moves| {
+            if moves {
+                e.checked_add(1).unwrap_or(1)
+            } else {
+                e
+            }
+        };
+        (self.view, self.world) = (
+            next(self.view, self.moves[0]),
+            next(self.world, self.moves[1]),
+        );
+        self.moves = [false; 2];
+        [self.view, self.world, std::mem::take(&mut self.reasons)]
+    }
+
+    /// The epochs (view, world) last advanced to.
+    pub(in crate::gfx) fn current(&self) -> [u32; 2] {
+        [self.view, self.world]
+    }
+}
+
+/// What lets a rebuilt pack keep the kept resources of the pack before (`NativePack::carry`):
+/// the same declaration and composed stages, with its option values and their `resets`.
+pub(in crate::gfx) struct Signature {
+    hash: u64,
+    values: Vec<(String, f64)>,
+    resets: Vec<(String, Keep)>,
+}
+
+impl Signature {
+    /// `report`'s with the option values `constants`, if it declares kept resources.
+    pub(in crate::gfx) fn of(report: &Report, constants: &[(String, f64)]) -> Option<Self> {
+        use std::hash::{Hash, Hasher};
+        let kept = &report.manifest.kept;
+        if kept.resources.is_empty() {
+            return None;
+        }
+        let mut hasher = std::hash::DefaultHasher::new();
+        format!("{kept:?}").hash(&mut hasher);
+        for s in &report.stages {
+            (format!("{:?}", s.kind), &s.file, &s.source, &s.scene_source).hash(&mut hasher);
+        }
+        Some(Self {
+            hash: hasher.finish(),
+            values: constants.to_vec(),
+            resets: kept.resets.clone(),
+        })
+    }
+
+    /// Notes on `epochs` the resets of the options changed since `old`, if the store of `old`
+    /// carries over; else false.
+    pub(in crate::gfx) fn carry(&self, old: &Self, epochs: &mut Epochs) -> bool {
+        if self.hash != old.hash {
+            return false;
+        }
+        let value = |values: &[(String, f64)], id: &str| {
+            values.iter().find(|(k, _)| k == id).map(|(_, v)| *v)
+        };
+        for (id, keep) in &self.resets {
+            if value(&self.values, id) != value(&old.values, id) {
+                epochs.option(*keep);
+            }
+        }
+        true
     }
 }
 
