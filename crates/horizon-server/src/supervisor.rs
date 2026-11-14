@@ -313,7 +313,9 @@ pub fn run(dir: &Path) -> Result<(), String> {
             w.deadline = Instant::now() + w.timeout;
         }
         let exit = supervise(&shared, &mut child, &console, &mut watch);
-        shared.proxy_game_up(false);
+        // A game that ended for good has no one to start it again: its players are sent away. Any other end is
+        // a restart or a crash: they were held, or are now.
+        shared.proxy(|p| p.game_exited(matches!(exit, Exit::Stopped)));
         {
             let mut state = shared.state.lock().unwrap();
             state.engine_pid = None;
@@ -666,6 +668,8 @@ fn pump(shared: &Arc<Shared>, from: impl Read + Send + 'static, to_stderr: bool)
                         // The game's own `stop` (a command in the game, not the supervisor's), or the
                         // start of the wait `[transfer]` makes before it, so a proxy hears of it then.
                         crate::management::stopping(&shared);
+                        // `/restart` in the game too: its players are held before its kick comes.
+                        shared.proxy(crate::proxy::Proxy::game_stopping);
                     }
                 }
                 shared.log_line(line);
@@ -794,8 +798,12 @@ fn supervise(
     let mut restart = false;
     let mut not_up = false;
     let mut handled = signals::requests();
+    let mut announced = false;
     loop {
-        shared.proxy_game_up(up(shared));
+        if !announced && up(shared) {
+            announced = true;
+            shared.proxy(crate::proxy::Proxy::game_up);
+        }
         if let Some(w) = watch.as_ref() {
             if up(shared) {
                 came_up(shared, w);
@@ -818,6 +826,7 @@ fn supervise(
             // another way (in game, RCON, `horizon-server cmd`) leaves the supervisor and its API up.
             if command == "stop" {
                 shared.shutdown.store(true, Ordering::SeqCst);
+                shared.proxy(crate::proxy::Proxy::closing);
             }
             if command == "stop" && stopping.is_none() {
                 stopping = Some(Instant::now());
@@ -842,6 +851,8 @@ fn supervise(
         if shared.restart.swap(false, Ordering::SeqCst) && stopping.is_none() {
             restart = true;
             note(shared, "INFO", "Restarting the server");
+            // Before the game stops, so that its kick is not what the players see.
+            shared.proxy(crate::proxy::Proxy::game_stopping);
             stopping = Some(Instant::now());
             shared.set_phase(Phase::Restarting);
             crate::management::stopping(shared);
@@ -849,6 +860,7 @@ fn supervise(
         }
         if asked {
             restart = false;
+            shared.proxy(crate::proxy::Proxy::closing);
             if stopping.is_none() {
                 note(shared, "INFO", "Stopping the server");
                 stopping = Some(Instant::now());

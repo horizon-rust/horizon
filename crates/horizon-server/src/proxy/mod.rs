@@ -32,6 +32,12 @@ const SECRET_FILE: &str = "forwarding.secret";
 const OWN_SECRET: &str = ".horizon/proxy-forwarding.secret";
 /// How long a client may take over its handshake and login.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often held players are looked after.
+const TICK: Duration = if cfg!(test) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_secs(1)
+};
 
 pub struct Inner {
     /// The game, on this machine.
@@ -40,12 +46,81 @@ pub struct Inner {
     /// The threshold the proxy compresses its clients' connections with.
     pub compression: i32,
     keys: Option<auth::Keys>,
-    /// Whether a game that answers is running: the server list asks it only then.
-    up: AtomicBool,
+    /// What the game is doing for the players: see [`Gate`].
+    gate: Mutex<Gate>,
+    /// How long a held player waits for the game before it is sent away.
+    hold: Duration,
+    /// Every player through the proxy.
+    pub sessions: Mutex<Vec<Arc<session::Session>>>,
     log: Mutex<Box<dyn Fn(&str, &str) + Send>>,
 }
 
+/// Whether the game takes logins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Gate {
+    /// Not yet, or not for now (it starts, restarts or crashed): players that come are held.
+    Holding,
+    Up,
+    /// A stop for good has begun: the game's kicks reach the players as they are.
+    Closing,
+}
+
 impl Inner {
+    fn gate(&self) -> std::sync::MutexGuard<'_, Gate> {
+        self.gate.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn is_up(&self) -> bool {
+        *self.gate() == Gate::Up
+    }
+
+    pub fn closing(&self) -> bool {
+        *self.gate() == Gate::Closing
+    }
+
+    /// A game that stops itself sends everyone its shutdown kick: unless the stop is for good, that is the
+    /// start of a hold, not something to pass on.
+    pub fn hold_on_shutdown(&self) -> bool {
+        !self.closing()
+    }
+
+    fn snapshot(&self) -> Vec<Arc<session::Session>> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The game is going away (a restart, a crash): every player is held, and the ones that come.
+    pub fn stopping(&self) {
+        {
+            let mut gate = self.gate();
+            if *gate == Gate::Closing {
+                return;
+            }
+            *gate = Gate::Holding;
+        }
+        for s in self.snapshot() {
+            s.hold();
+        }
+    }
+
+    fn game_up(&self) {
+        *self.gate() = Gate::Up;
+        for s in self.snapshot() {
+            s.resume();
+        }
+    }
+
+    /// The game stopped and will not be started again: the players are sent away.
+    fn release_all(&self) {
+        *self.gate() = Gate::Holding;
+        let reason = wire::translated("horizon.proxy.stopped", "The server was stopped");
+        for s in self.snapshot() {
+            s.disconnect(&reason);
+        }
+    }
+
     pub fn note(&self, level: &str, line: &str) {
         (self.log.lock().unwrap_or_else(|e| e.into_inner()))(level, line);
     }
@@ -95,7 +170,9 @@ pub fn start(
         secret,
         compression: compression_threshold(config),
         keys,
-        up: AtomicBool::new(false),
+        gate: Mutex::new(Gate::Holding),
+        hold: Duration::from_secs(u64::from(config.proxy.hold_seconds)),
+        sessions: Mutex::new(Vec::new()),
         log: Mutex::new(Box::new(log)),
     });
     let accepting = inner.clone();
@@ -103,13 +180,45 @@ pub fn start(
         .name("Proxy listener".into())
         .spawn(move || accept(listener, &accepting))
         .map_err(|e| e.to_string())?;
+    let ticking = inner.clone();
+    thread::Builder::new()
+        .name("Proxy keep-alive".into())
+        .spawn(move || {
+            loop {
+                thread::sleep(TICK);
+                let now = std::time::Instant::now();
+                for s in ticking.snapshot() {
+                    s.tick(now, ticking.hold);
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
     Ok(Proxy { inner })
 }
 
 impl Proxy {
-    /// The game answers (`true`) or is down or still starting (`false`).
-    pub fn set_game_up(&self, up: bool) {
-        self.inner.up.store(up, Ordering::SeqCst);
+    /// The game answers: held players are logged into it again, and new ones go straight in.
+    pub fn game_up(&self) {
+        self.inner.game_up();
+    }
+
+    /// The game is about to stop, or has stopped by itself, and will be started again: hold everyone.
+    pub fn game_stopping(&self) {
+        self.inner.stopping();
+    }
+
+    /// A stop for good has begun: what the game says to the players reaches them.
+    pub fn closing(&self) {
+        *self.inner.gate() = Gate::Closing;
+    }
+
+    /// The game's process ended. `for_good`: nothing starts it again, so the players are sent away.
+    pub fn game_exited(&self, for_good: bool) {
+        if for_good {
+            self.inner.release_all();
+        } else {
+            self.inner.stopping();
+        }
     }
 }
 
@@ -336,8 +445,7 @@ fn serve_status(c: &mut Connection, inner: &Arc<Inner>, protocol: i32) -> Result
             status::Serverbound::StatusRequest(_) => {
                 answered = true;
                 let json = inner
-                    .up
-                    .load(Ordering::SeqCst)
+                    .is_up()
                     .then(|| backend::status_json(inner.game).ok())
                     .flatten()
                     .unwrap_or_else(|| restarting_status(protocol));
