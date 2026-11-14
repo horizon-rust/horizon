@@ -8781,6 +8781,11 @@ impl Game<'_> {
                 self.wake_up();
             }
             self.wake_guests();
+            // The resident regions wake their players on their next tick.
+            if let Some(h) = self.lan.as_mut() {
+                h.hub.wake_request = true;
+                h.hub.away_sleep = (0, 0, 0);
+            }
             // SleepStatus.removeAllSleepers: waking everyone is not announced.
             self.sleep_seen.1 = 0;
         }

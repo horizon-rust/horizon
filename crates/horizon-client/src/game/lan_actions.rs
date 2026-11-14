@@ -4788,7 +4788,7 @@ impl Game<'_> {
     /// `SleepStatus.update`'s counts over the host's player and the guests:
     /// the players not in spectator mode, how many are in bed, and how many
     /// of those have slept 100 ticks.
-    fn sleep_counts(&self) -> (i64, i64, i64) {
+    pub(super) fn sleep_counts(&self) -> (i64, i64, i64) {
         let (mut active, mut sleeping, mut deep) = (0i64, 0i64, 0i64);
         let mut count = |in_bed: bool, timer: u32| {
             active += 1;
@@ -4811,6 +4811,11 @@ impl Game<'_> {
             }) {
                 count(g.bed.is_some(), g.sleep_timer);
             }
+            // The players in resident regions, as the regions reported them.
+            let away = host.hub.away_sleep;
+            active += away.0;
+            sleeping += away.1;
+            deep += away.2;
         }
         (active, sleeping, deep)
     }

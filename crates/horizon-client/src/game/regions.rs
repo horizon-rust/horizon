@@ -328,6 +328,8 @@ struct Slot {
     fresh: bool,
     /// The connections of its players.
     conns: Vec<u32>,
+    /// Its players' sleep counts as it last reported them.
+    sleep: (i64, i64, i64),
 }
 
 impl Slot {
@@ -344,6 +346,7 @@ impl Slot {
             landed: false,
             fresh: false,
             conns: Vec::new(),
+            sleep: (0, 0, 0),
         }
     }
     /// Takes the game in if its thread finished (waiting until `until`, or for good when None); false while it
@@ -1012,6 +1015,7 @@ impl Game<'_> {
             if let (Some(shell), Some(host)) = (w.lan.as_mut(), self.lan.as_mut()) {
                 shell.hub.copy_region_settings(&host.hub);
                 host.hub.give_away(&mut shell.hub);
+                shell.hub.wake_request |= host.hub.wake_request;
             }
             self.regions.prof.add(Step::Copy, copying);
             let spawning = std::time::Instant::now();
@@ -1068,6 +1072,24 @@ impl Game<'_> {
                 })
                 .collect(),
         );
+        // The sleep counts the regions reported, for the server's night skip; the wake-up went out with them.
+        for slot in set.games.iter_mut().filter(|s| !s.landed) {
+            if let Some(w) = slot.game.as_ref()
+                && let Some(shell) = w.lan.as_ref()
+            {
+                slot.sleep = shell.hub.away_sleep;
+            }
+        }
+        let (mut a, mut s, mut d) = (0, 0, 0);
+        for slot in set.games.iter().filter(|s| !s.landed) {
+            a += slot.sleep.0;
+            s += slot.sleep.1;
+            d += slot.sleep.2;
+        }
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.away_sleep = (a, s, d);
+            host.hub.wake_request = false;
+        }
         // Where its players stand: the areas the server keeps loaded for them.
         if let Some(host) = self.lan.as_mut() {
             host.hub.away_places = set
@@ -1334,6 +1356,22 @@ impl Game<'_> {
         self.tick_block_entities()?;
         // Its players' turn: their own ticks, entities, chunks and block changes, from its own world.
         self.tick_lan(false);
+        // Sculk in its own chunks: the vibrations its players and mobs make, and the sensors, shriekers and
+        // catalysts that answer them.
+        self.tick_sculk_entities();
+        self.tick_sculk_blocks()?;
+        // Sleep: the night is skipped by the server, which sums what the regions report; a skipped night wakes
+        // this region's players too.
+        if self.lan.as_mut().is_some_and(|h| std::mem::take(&mut h.hub.wake_request)) {
+            self.wake_guests();
+        }
+        if let Some(h) = self.lan.as_mut() {
+            h.hub.away_sleep = (0, 0, 0);
+        }
+        let counts = self.sleep_counts();
+        if let Some(h) = self.lan.as_mut() {
+            h.hub.away_sleep = counts;
+        }
         Ok(())
     }
 }
