@@ -15,7 +15,7 @@ alpha:
 | Alpha | Means |
 | --- | --- |
 | below 0.75 | a light source: its tier and how much it is lifted |
-| 0.76 to 1 | HDR lighting's gain on a surface |
+| 0.75 and above | nothing lifted |
 | 1/255 | the first-person hand |
 | what the HUD and menus leave | how much they cover the world |
 
@@ -82,7 +82,7 @@ below); where HDR's settings live (a later note).
   in HDR a roll-off into the headroom (ITU-R BT.2390's EETF in PQ; HDR's black level already uses the same
   recommendation's lift), in SDR a clip at white, as vanilla. A pack that only grades keeps Horizon's tone curve;
   one that only tone maps needs no post chain. Horizon's curve keeps light as it is up to its knee, 60% of the peak
-  and at least paper white, where HDR lighting eased into the peak before it. The source's peak is where the EETF
+  and at least paper white. The source's peak is where the EETF
   puts its knee there (13.7 times paper white at 203 and 1000 nits, PQ's 10 000 nits at most), and light past it
   shows at the peak. The curve acts on the brightest channel and scales the others with it, so light keeps its hue
   as it eases and no channel passes the peak.
@@ -146,9 +146,21 @@ The water mirror and `shadow_color` draw no blends, so they store linear in both
 Each shader that marks the frame today writes the light instead:
 
 - **Light sources** (`mesher` `EMISSION_BITS`, `hdr_tier`, `gfx/hdr.rs` `TIERS`): the face's colour times its tier's
-  gain, in units of paper white. Easing into the peak moves to the tone curve.
-- **HDR lighting** (light levels 11 to 15, up to 4 times): the lightmap going past 1, which is what its alpha means
-  now.
+  gain, in units of paper white. Easing into the peak moves to the tone curve. A placed block's texel leaves the
+  light that falls on it behind as it lifts (`hdr_unshade`, terrain.wgsl `solid_finish_at`): the face's shading,
+  ambient occlusion and its light level lose their darkening by the texel's lift, so a fully lifted texel shines
+  the same on every face and an unlifted one stays as SDR draws it. The vertex colour is tint, shade and the
+  lightmap in one, so the shader scales its brightest channel rather than dividing the shade out, and to the
+  lightmap's brightest channel at full light (sky 15, block 15), not to 1: that is 1 unless something dims all
+  light, the Darkness effect or a wither's bar, and a light source dims with the rest of the world. The hue stays
+  the shade's on purpose: it is the hue SDR and the frame before showed for that face, and this changes brightness
+  only. The scale is never below 1, since a coloured light adds past the lightmap. Sections, fluids, distant
+  terrain and the visibility buffer share the one place. Items and block entities keep their shading: their
+  vertex colour is their own colour, the diffuse light is baked in the vertex stage, and the entity fragment
+  stage has no input left to carry the two apart (#8195); and a dropped torch lights nothing, so its lightmap
+  should still darken it.
+- **Lit surfaces** get no gain, however strongly the sun or a torch lights them: diffuse white stays at paper white,
+  where ITU-R BT.2408 puts it, and HDR's range above it is the light sources' and the sun's.
 - **Where:** terrain and fluids (`terrain.wgsl`, `mesher/fluid.rs`, distant terrain in `lod/mesh.rs`, the visibility
   buffer), particles (`particles.rs`), the sun and moon (`fs_sky_celestial`), entities, dropped and held items
   (`entity.wgsl`, `dynamic_light.rs`) and lightning (`gfx/lightning.rs`).
@@ -308,8 +320,8 @@ Behind `HORIZON_HDR_FRAME=float` until the last step, each a small pull request:
      derived from the same headroom. The rule: the scene's peak S sits just above the brightest light the world
      writes, and the world is mastered for a 1000-nit display at ITU-R BT.2408's 203-nit reference white, as HDR10
      content usually is: S = 1000/203 (4.93). The tiers multiply their brightest pixels by 1.6 (low), 2.4
-     (incandescent), 2.8 (bright) and 4.0 (very bright), and HDR lighting the strongest-lit surfaces by 3.0
-     (`gfx/hdr.rs` `TIERS`, `SUNLIT_GAIN`, `SCENE_PEAK`). The curve holds light above S at S, keeping its hue (where
+     (incandescent), 2.8 (bright) and 4.0 (very bright), and lit surfaces stay at their SDR light, diffuse
+     white at paper white (`gfx/hdr.rs` `TIERS`, `SCENE_PEAK`). The curve holds light above S at S, keeping its hue (where
      the sky adds onto the sun), then maps S onto the display's peak T with BT.2390's EETF in PQ on the brightest
      channel: the identity where T reaches S, that is where Peak Brightness is at least 1000/203 times Paper White,
      so at a paper white of 203 a display at 1000 nits or more shows the scene as written and one above 1000 shows
