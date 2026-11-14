@@ -3950,7 +3950,7 @@ impl Game<'_> {
                 f64::from(c.pos[2]) + 0.5,
             ]
         });
-        let mut level = elsewhere.map_or(super::Dim::Overworld, |c| c.dim);
+        let mut level = elsewhere.map_or(self.world_spawn_dimension(), |c| c.dim);
         let mut spawn = elsewhere.map_or(spawn, |c| {
             [
                 f64::from(c.pos[0]) + 0.5,
@@ -3958,8 +3958,16 @@ impl Game<'_> {
                 f64::from(c.pos[2]) + 0.5,
             ]
         });
+        // TeleportTransition.createDefault: a player without a point of its
+        // own comes back facing the world spawn's angle; a bed or an anchor
+        // faces the player at it (findRespawnAndUseSpawnBlock).
+        let angle = if own.is_none() {
+            self.level.world_spawn_angle
+        } else {
+            [0.0; 2]
+        };
         // PlayerRespawnPositionEvent: a point the mods choose is taken as it is.
-        let (mut dimension, mut at, mut rotation) = (level.id().to_owned(), spawn, [0.0f32; 2]);
+        let (mut dimension, mut at, mut rotation) = (level.id().to_owned(), spawn, angle);
         let (uuid, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
         let [yaw, pitch] = &mut rotation;
         self.native_player_respawn_position(uuid, &name, &mut dimension, &mut at, yaw, pitch);
@@ -3980,7 +3988,9 @@ impl Game<'_> {
         }
         let back = self.dim;
         let left = super::Dim::from_id(&host.hub.guests[i].dimension);
-        let away = server && host.hub.guests[i].dimension != level.id();
+        // PlayerList.respawn builds the new player in its respawn level: that
+        // level is put in place for the respawn, and comes back after.
+        let away = level != back || host.hub.guests[i].dimension != level.id();
         if server {
             self.server_trips.retain(|t| !t.is(conn));
         }

@@ -1253,11 +1253,17 @@ fn enforce_guest_game_mode(
 impl Game<'_> {
     /// The level's default point, independently of the acting player's bed or spawnpoint.
     pub(super) fn world_spawn_position(&self) -> [f64; 3] {
-        self.level
-            .world_spawn
-            .map_or([0.5, 80.0, 0.5], |[x, y, z]| {
-                [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
-            })
+        Self::spawn_centre(self.border_adjusted_world_spawn().unwrap_or([0, 80, 0]))
+    }
+
+    /// The world spawn as `level.dat` stores it, outside the border included.
+    pub(super) fn raw_world_spawn_position(&self) -> [f64; 3] {
+        Self::spawn_centre(self.level.world_spawn.unwrap_or([0, 80, 0]))
+    }
+
+    /// `Vec3.atBottomCenterOf` of a spawn block.
+    fn spawn_centre([x, y, z]: [i32; 3]) -> [f64; 3] {
+        [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
     }
 
     /// MinecraftServer.setRespawnData: every placed player hears a changed world spawn.
@@ -1266,7 +1272,7 @@ impl Game<'_> {
             for guest in host.hub.guests.iter().filter(|guest| guest.placed) {
                 guest.send(&host.hub.default_spawn(
                     guest.uuid,
-                    self.world_spawn_position(),
+                    self.raw_world_spawn_position(),
                     self.level.world_spawn_angle,
                 ));
             }

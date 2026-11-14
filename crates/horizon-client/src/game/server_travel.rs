@@ -817,15 +817,16 @@ impl Game<'_> {
 
     /// TeleportTransition.createDefault and missingRespawnBlock: the player
     /// waits at the world spawn for its chunks, then PlayerSpawnFinder puts
-    /// it on a free column within the respawn radius.
+    /// it on a free column within the respawn radius. The spawn's level is
+    /// `findRespawnDimension`'s, and its point the border-adjusted one.
     pub(super) fn world_spawn_trip(&mut self, conn: u32) {
-        let Some([x, y, z]) = self.level.world_spawn else {
+        let Some([x, y, z]) = self.border_adjusted_world_spawn() else {
             return;
         };
         self.server_trips.retain(|t| !t.is(conn));
         self.server_trips.push(Trip {
             conn,
-            dim: Dim::Overworld,
+            dim: self.world_spawn_dimension(),
             source: self.dim,
             target: Vec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5),
             end: false,
@@ -842,16 +843,16 @@ impl Game<'_> {
         });
     }
 
-    /// TeleportTransition.missingRespawnBlock: the world spawn, in the
-    /// Overworld.
+    /// TeleportTransition.missingRespawnBlock: the world spawn, in its own
+    /// level.
     fn respawn_at_world_spawn(&mut self, host: &mut LanHost, conn: u32) {
-        let at = self.level.world_spawn.map_or(
+        let at = self.border_adjusted_world_spawn().map_or(
             self.spawn.map_or([0.5, 80.0, 0.5], |s| [s.x, s.y, s.z]),
             |[x, y, z]| [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5],
         );
         self.level_teleports.push(LevelTeleport {
             conn,
-            dim: Dim::Overworld,
+            dim: self.world_spawn_dimension(),
             at,
             rotation: None,
             vehicle: None,
@@ -908,9 +909,17 @@ impl Game<'_> {
                 self.server_trips.remove(k);
                 continue;
             };
+            // The world spawn is the border-adjusted one of the level in place
+            // (`Level.getWorldBorderAdjustedRespawnData`).
+            let target = if trip.world_spawn {
+                let [x, y, z] = self.world_spawn_position();
+                Vec3::new(x, y, z)
+            } else {
+                trip.target
+            };
             let (cx, cz) = (
-                (trip.target.x.floor() as i32) >> 4,
-                (trip.target.z.floor() as i32) >> 4,
+                (target.x.floor() as i32) >> 4,
+                (target.z.floor() as i32) >> 4,
             );
             if trip.hold {
                 host.hub.guests[i].landing = true;
@@ -961,9 +970,10 @@ impl Game<'_> {
                     }
                 }
             } else if trip.world_spawn {
-                // PlayerSpawnFinder.findSpawn around the world spawn.
-                let suggestion =
-                    [trip.target.x, trip.target.y, trip.target.z].map(|v| v.floor() as i32);
+                // PlayerSpawnFinder.findSpawn around the world spawn, whose
+                // respawn data's angle is where the player faces.
+                let suggestion = [target.x, target.y, target.z].map(|v| v.floor() as i32);
+                host.hub.guests[i].pitch = self.level.world_spawn_angle[1];
                 match self.search_spawn(suggestion, &mut trip.finder) {
                     // The respawn already put the player on this column:
                     // vanilla teleports once, so no second move.
@@ -971,7 +981,7 @@ impl Game<'_> {
                         self.tell_mods_changed_dimension(host, trip.conn, trip.left, trip.dim);
                         continue;
                     }
-                    Ok(at) => (at, yaw),
+                    Ok(at) => (at, self.level.world_spawn_angle[0]),
                     Err(chunk) => {
                         self.spawn_wait.push(chunk);
                         self.server_trips.insert(k, trip);
@@ -1603,3 +1613,6 @@ mod credits_respawn_tests {
 
 #[cfg(test)]
 mod hold_tests;
+
+#[cfg(test)]
+mod respawn_data_tests;
