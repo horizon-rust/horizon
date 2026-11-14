@@ -66,6 +66,7 @@ mod scrollbar;
 mod servers_page;
 #[cfg(windows)]
 mod setup_page;
+mod several_games;
 mod shell;
 mod shortcut_page;
 mod sky;
@@ -402,6 +403,8 @@ struct Launcher {
     client_run: Option<(String, Instant)>,
     /// The running game's instance variables, for its post-exit command.
     client_vars: horizon_launcher::launch::Vars,
+    /// Games a newer one moved out of the front, still running (`several_games.rs`).
+    background: Vec<several_games::BackgroundGame>,
     /// Settings' Game arguments field: the line, whether it has focus, and its focus handle.
     args_input: line_edit::LineEdit,
     args_focused: bool,
@@ -699,6 +702,7 @@ impl Launcher {
             quick_play: None,
             client_run: None,
             client_vars: Vec::new(),
+            background: Vec::new(),
             collection: collection::Collection::load(),
             agents: agents_page::AgentsUi::default(),
             playing: None,
@@ -1205,6 +1209,7 @@ impl Launcher {
                 Msg::OfficialPlayers(players) => self.official_players = players,
                 Msg::JavaGame(id, home, cmd) => {
                     self.starting_client = None;
+                    self.move_front_game_back();
                     let spawned = cmd.and_then(|(cmd, vars)| {
                         self.client_vars = vars;
                         backend::spawn(Job::Client, cmd, self.tx.clone())
@@ -1294,6 +1299,7 @@ impl Launcher {
                         let instance = run
                             .as_ref()
                             .and_then(|id| instances::list().into_iter().find(|i| &i.id == id));
+                        self.move_front_game_back();
                         self.client_vars = instance
                             .as_ref()
                             .map(|i| i.vars(cmd.get_program()))
@@ -1506,6 +1512,7 @@ impl Launcher {
                                 tail.map_or(e.clone(), |t| format!("{e}: {t}"))
                             });
                         }
+                        Job::Client if self.background_game_ended() => {}
                         Job::Client => {
                             self.client = None;
                             // Any session file the game didn't read (it crashed first).
@@ -1815,7 +1822,7 @@ impl Launcher {
                 .take()
                 .filter(|(flag, _)| *flag == "--server")
                 .map(|(_, ip)| ip);
-            if self.client.is_some() || self.starting_client.is_some() {
+            if self.game_blocks_start() {
                 return;
             }
             self.starting_pack = None;
@@ -1870,27 +1877,11 @@ impl Launcher {
         });
     }
 
-    /// Whether `tag` can start now ([`starts_now`]): prepared, no preparation under way, no game
-    /// running or starting.
-    pub(crate) fn can_start(&self, tag: &str) -> bool {
-        let running = self.client.is_some() || self.starting_client.is_some();
-        starts_now(backend::is_prepared(tag), self.preparing, running)
-    }
-
     /// Whether the selected instance's version can start now, from a shortcut (a server's Join,
     /// a world's Play, a friend's code): Horizon's only, never a Java instance.
     pub(crate) fn can_start_selected(&self) -> bool {
         self.selected_instance().is_none_or(|i| i.java.is_none())
             && self.selected().is_some_and(|tag| self.can_start(tag))
-    }
-
-    /// Whether a server's Join starts the selected instance now: a Java instance too, as Play
-    /// would (no game running or starting).
-    pub(crate) fn can_join_selected(&self) -> bool {
-        match self.selected_instance() {
-            Some(i) if i.java.is_some() => self.client.is_none() && self.starting_client.is_none(),
-            _ => self.can_start_selected(),
-        }
     }
 
     /// Starts the game: the session first (a network round trip when the token needs

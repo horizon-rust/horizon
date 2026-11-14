@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Maŋimus huksemis, Horizon {commit}:s {mods} dihte, ii {horizon}:s",
   "In the last build, on {horizon}": "Maŋimus huksemis, {horizon}:s",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Vuoje máŋga ovdamearkka seammás",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Speallat sáhttá álggahit eará ovdamearkka go speallu johtá. Bisset loahpaha válljejuvvon ovdamearkka spealu."
 }

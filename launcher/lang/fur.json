@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Te ultime costruzion, su Horizon {commit} par {mods}, no su {horizon}",
   "In the last build, on {horizon}": "Te ultime costruzion, su {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Fâs lâ plui istancis tal stes timp",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Zuie e pues inviâ une altre istance intant che un zûc al è in esecuzion. Ferme al finìs il zûc de istance selezionade."
 }

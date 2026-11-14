@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "В останній збірці — на Horizon {commit} заради {mods}, не на {horizon}",
   "In the last build, on {horizon}": "В останній збірці — на {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Запускати кілька збірок одночасно",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Поки триває гра, «Грати» може запустити іншу збірку. «Зупинити» завершує гру вибраної збірки."
 }

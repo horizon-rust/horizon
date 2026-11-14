@@ -98,8 +98,11 @@ impl Launcher {
     /// A sidebar row's state line and its dot (the mockup's `statusOf`), from what the launcher
     /// knows of the instance.
     fn row_state(&self, i: &Instance) -> (Tone, String) {
-        let running =
-            self.client.is_some() && self.selected_instance().is_some_and(|s| s.id == i.id);
+        let running = if self.settings.several_games {
+            self.instance_running(&i.id)
+        } else {
+            self.client.is_some() && self.selected_instance().is_some_and(|s| s.id == i.id)
+        };
         if running {
             return (Tone::Live, tr("Running").into());
         }

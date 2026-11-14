@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Er sevel diwezhañ, war Horizon {commit} evit {mods}, ket war {horizon}",
   "In the last build, on {horizon}": "Er sevel diwezhañ, war {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Lañsañ meur a skouerenn war un dro",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "E-pad m'emañ ur c'hoari o vont en-dro e c'hall C'hoari loc'hañ ur skouerenn all. Paouez a echu c'hoari ar skouerenn dibabet."
 }

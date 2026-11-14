@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "בבנייה האחרונה, על Horizon {commit} בשביל {mods}, לא על {horizon}",
   "In the last build, on {horizon}": "בבנייה האחרונה, על {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "הפעלת כמה מופעים בו־זמנית",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "בזמן שמשחק פועל, „שחק” יכול להפעיל מופע נוסף. „עצור” מסיים את המשחק של המופע הנבחר."
 }

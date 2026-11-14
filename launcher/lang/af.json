@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "In die laaste bou, op Horizon {commit} vir {mods}, nie op {horizon} nie",
   "In the last build, on {horizon}": "In die laaste bou, op {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Laat verskeie instansies gelyktydig loop",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Speel kan nog 'n instansie begin terwyl 'n speletjie loop. Stop beëindig die gekose instansie se speletjie."
 }

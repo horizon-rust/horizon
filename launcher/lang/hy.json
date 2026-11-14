@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Վերջին կառուցման մեջ՝ Horizon {commit}-ի վրա {mods}-ի համար, ոչ {horizon}-ի վրա",
   "In the last build, on {horizon}": "Վերջին կառուցման մեջ՝ {horizon}-ի վրա",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Միաժամանակ գործարկել մի քանի օրինակ",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Խաղը աշխատելիս Խաղալ-ը կարող է գործարկել մեկ այլ օրինակ։ Կանգնեցնել-ը ավարտում է ընտրված օրինակի խաղը։"
 }

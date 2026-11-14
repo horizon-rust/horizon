@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "We ôstatnij kompilacyji na Horizonie {commit} dlo {mods}, niy na {horizon}",
   "In the last build, on {horizon}": "We ôstatnij kompilacyji na {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Sztartuj pora instancyji naroz",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Kej gra je sztartniynto, Grej poradzi sztartnōńć inkszo instancyjo. Zastow kōńczy gra ôbranyj instancyje."
 }

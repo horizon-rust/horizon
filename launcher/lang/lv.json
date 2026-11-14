@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Pēdējā būvējumā uz Horizon {commit} dēļ {mods}, nevis uz {horizon}",
   "In the last build, on {horizon}": "Pēdējā būvējumā uz {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Palaist vairākas instances vienlaikus",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Kamēr darbojas spēle, Spēlēt var palaist citu instanci. Apturēt beidz atlasītās instances spēli."
 }

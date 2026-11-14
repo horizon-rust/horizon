@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "I senaste bygget, på Horizon {commit} för {mods}, inte på {horizon}",
   "In the last build, on {horizon}": "I senaste bygget, på {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Kör flera instanser samtidigt",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Spela kan starta en annan instans medan ett spel körs. Stoppa avslutar den valda instansens spel."
 }

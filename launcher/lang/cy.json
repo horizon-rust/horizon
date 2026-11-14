@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Yn yr adeiladu diwethaf, ar Horizon {commit} ar gyfer {mods}, nid ar {horizon}",
   "In the last build, on {horizon}": "Yn yr adeiladu diwethaf, ar {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Rhedeg sawl enghraifft ar unwaith",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Gall Chwarae gychwyn enghraifft arall tra bo gêm yn rhedeg. Mae Stopio yn gorffen gêm yr enghraifft a ddewiswyd."
 }

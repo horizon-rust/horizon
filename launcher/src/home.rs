@@ -202,7 +202,7 @@ impl Launcher {
     /// `ready`: prepared, or a Java instance (its game comes with Play).
     pub(super) fn home_actions(&self, ready: bool, java: bool, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        let running = self.client.is_some() || self.starting_client.is_some();
+        let running = self.game_blocks_start();
         if self.preparing {
             // Play waits for the steps below it; a download can stop (the next one goes on from
             // there).

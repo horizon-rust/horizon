@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Fl-aħħar bini, fuq Horizon {commit} għal {mods}, mhux fuq {horizon}",
   "In the last build, on {horizon}": "Fl-aħħar bini, fuq {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Ħaddem diversi istanzi fl-istess ħin",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Ilgħab jista' jibda istanza oħra waqt li logħba tkun għaddejja. Waqqaf itemm il-logħba tal-istanza magħżula."
 }

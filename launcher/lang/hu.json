@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "A legutóbbi buildben a Horizon {commit} verzión a(z) {mods} miatt, nem ezen: {horizon}",
   "In the last build, on {horizon}": "A legutóbbi buildben ezen: {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Több példány futtatása egyszerre",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Amíg egy játék fut, a Játék elindíthat egy másik példányt. A Leállítás a kiválasztott példány játékát állítja le."
 }

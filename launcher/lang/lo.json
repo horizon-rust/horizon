@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "ໃນການສ້າງຫຼ້າສຸດ, ໃນ Horizon {commit} ສຳລັບ {mods}, ບໍ່ແມ່ນໃນ {horizon}",
   "In the last build, on {horizon}": "ໃນການສ້າງຫຼ້າສຸດ, ໃນ {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "ເປີດຫຼາຍອິນສະແຕນພ້ອມກັນ",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "ຫຼິ້ນ ສາມາດເລີ່ມອິນສະແຕນອື່ນໄດ້ ໃນຂະນະທີ່ເກມກຳລັງເຮັດວຽກ. ຢຸດ ຈະປິດເກມຂອງອິນສະແຕນທີ່ເລືອກ."
 }

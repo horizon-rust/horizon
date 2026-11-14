@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Στο τελευταίο χτίσιμο, στο Horizon {commit} για τα {mods}, όχι στο {horizon}",
   "In the last build, on {horizon}": "Στο τελευταίο χτίσιμο, στο {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Εκτέλεση πολλών εκδοχών ταυτόχρονα",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Το Παιχνίδι μπορεί να ξεκινήσει άλλη εκδοχή ενώ τρέχει ένα παιχνίδι. Η Διακοπή τερματίζει το παιχνίδι της επιλεγμένης εκδοχής."
 }

@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Dins la darrièra compilacion, sus Horizon {commit} per {mods}, pas sus {horizon}",
   "In the last build, on {horizon}": "Dins la darrièra compilacion, sus {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Aviar mantuna instància a l'encòp",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Jogar pòt aviar una autra instància pendent qu'un jòc s'executa. Arrestar acaba lo jòc de l'instància seleccionada."
 }

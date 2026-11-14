@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Акыркы курууда, {mods} үчүн Horizon {commit} боюнча, {horizon} эмес",
   "In the last build, on {horizon}": "Акыркы курууда, {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Бир нече нусканы бир убакта иштетүү",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Оюн жүрүп жатканда «Ойноо» башка нусканы баштай алат. «Токтотуу» тандалган нусканын оюнун бүтүрөт."
 }

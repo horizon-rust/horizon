@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Sa tógáil dheireanach, ar Horizon {commit} do {mods}, ní ar {horizon}",
   "In the last build, on {horizon}": "Sa tógáil dheireanach, ar {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Rith roinnt cásanna ag an am céanna",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Is féidir le Imir cás eile a thosú fad is atá cluiche ag rith. Críochnaíonn Stad cluiche an cháis roghnaithe."
 }

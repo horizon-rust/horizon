@@ -265,6 +265,31 @@ impl Launcher {
         )
     }
 
+    /// The Game card's switch for running several instances at once (`several_games.rs`).
+    fn several_games_row(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let on = self.settings.several_games;
+        ui::setting_row(
+            tr("Run several instances at once"),
+            Some(
+                div()
+                    .child(tr(
+                        "Play can start another instance while a game runs. Stop ends the selected instance's game.",
+                    ))
+                    .into_any_element(),
+            ),
+            Some(
+                crate::switch("several-games", on, &t)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.settings.several_games = !this.settings.several_games;
+                        this.save_settings();
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ),
+        )
+    }
+
     /// The Game card's Native mods row. The mockup has an on/off switch; native mods are always
     /// on here, so the row picks the profile they build with, as the Mods page does.
     fn native_mods_row(&mut self, cx: &mut Context<Self>) -> Div {
@@ -450,6 +475,7 @@ impl Launcher {
             .child(self.game_architecture_row(n, cx))
             .child(self.game_args_row(n + 1, cx))
             .child(self.mods_auto_update_row(cx))
+            .child(self.several_games_row(cx))
             .child(self.native_mods_row(cx));
         let ai = card()
             .child(self.no_ai_row(n, cx))

@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "ในการบิลด์ล่าสุด บน Horizon {commit} เพื่อ {mods} ไม่ใช่บน {horizon}",
   "In the last build, on {horizon}": "ในการบิลด์ล่าสุด บน {horizon}",
   "Duplicate native mod {id}.": "พบม็อดเนทีฟ {id} ซ้ำกัน",
-  "Native and content mod ids differ.": "ID ของม็อดเนทีฟและม็อดเนื้อหาไม่ตรงกัน"
+  "Native and content mod ids differ.": "ID ของม็อดเนทีฟและม็อดเนื้อหาไม่ตรงกัน",
+  "Run several instances at once": "เปิดหลายอินสแตนซ์พร้อมกัน",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "เล่นสามารถเริ่มอินสแตนซ์อื่นได้ขณะที่เกมกำลังทำงาน หยุดจะปิดเกมของอินสแตนซ์ที่เลือก"
 }

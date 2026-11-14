@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "در آخرین ساخت، روی Horizon {commit} برای {mods}، نه روی {horizon}",
   "In the last build, on {horizon}": "در آخرین ساخت، روی {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "اجرای چند نمونه به‌طور هم‌زمان",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "در حین اجرای یک بازی، «بازی» می‌تواند نمونهٔ دیگری را اجرا کند. «توقف» بازی نمونهٔ انتخاب‌شده را پایان می‌دهد."
 }

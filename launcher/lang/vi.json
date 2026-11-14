@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Trong lần build gần nhất, trên Horizon {commit} vì {mods}, không phải {horizon}",
   "In the last build, on {horizon}": "Trong lần build gần nhất, trên {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Chạy nhiều phiên bản cùng lúc",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Chơi có thể khởi động một phiên bản khác khi một trò chơi đang chạy. Dừng sẽ kết thúc trò chơi của phiên bản đã chọn."
 }

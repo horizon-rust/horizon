@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Oxirgi yig'ishda, {mods} uchun Horizon {commit} da, {horizon} da emas",
   "In the last build, on {horizon}": "Oxirgi yig'ishda, {horizon} da",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Bir nechta nusxani bir vaqtda ishga tushirish",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "O‘yin ishlayotganda O‘ynash boshqa nusxani ishga tushira oladi. To‘xtatish tanlangan nusxaning o‘yinini tugatadi."
 }

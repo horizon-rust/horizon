@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "V zadnji gradnji na Horizonu {commit} zaradi {mods}, ne na {horizon}",
   "In the last build, on {horizon}": "V zadnji gradnji na {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Zaženi več primerkov hkrati",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Medtem ko igra teče, lahko Igraj zažene drug primerek. Ustavi konča igro izbranega primerka."
 }

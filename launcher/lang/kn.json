@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "ಕೊನೆಯ ಬಿಲ್ಡ್‌ನಲ್ಲಿ, {mods} ಗಾಗಿ Horizon {commit} ನಲ್ಲಿ, {horizon} ನಲ್ಲಿ ಅಲ್ಲ",
   "In the last build, on {horizon}": "ಕೊನೆಯ ಬಿಲ್ಡ್‌ನಲ್ಲಿ, {horizon} ನಲ್ಲಿ",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "ಒಂದೇ ಸಮಯದಲ್ಲಿ ಹಲವು ಇನ್‌ಸ್ಟೆನ್ಸ್‌ಗಳನ್ನು ಚಲಾಯಿಸಿ",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "ಆಟ ನಡೆಯುತ್ತಿರುವಾಗ ಆಡು ಇನ್ನೊಂದು ಇನ್‌ಸ್ಟೆನ್ಸ್ ಪ್ರಾರಂಭಿಸಬಹುದು. ನಿಲ್ಲಿಸು ಆಯ್ಕೆಮಾಡಿದ ಇನ್‌ಸ್ಟೆನ್ಸ್‌ನ ಆಟವನ್ನು ಕೊನೆಗೊಳಿಸುತ್ತದೆ."
 }

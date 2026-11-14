@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "אין דעם לעצטן בוי, אויף Horizon {commit} פֿאַר {mods}, נישט אויף {horizon}",
   "In the last build, on {horizon}": "אין דעם לעצטן בוי, אויף {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "לויפֿן עטלעכע עקזעמפּלאַרן אויף אַמאָל",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "שפּיל קען אָנהייבן אַן אַנדער עקזעמפּלאַר בשעת אַ שפּיל לויפֿט. אָפּשטעלן ענדיקט די שפּיל פֿון דעם אויסגעקליבענעם עקזעמפּלאַר."
 }

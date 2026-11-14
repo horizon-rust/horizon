@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Ekwakhiweni kokugcina, ku-Horizon {commit} ngenxa ka-{mods}, hhayi ku-{horizon}",
   "In the last build, on {horizon}": "Ekwakhiweni kokugcina, ku-{horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Qhuba izibonelo eziningana ngesikhathi esisodwa",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Dlala ingaqala esinye isibonelo ngesikhathi umdlalo usaqhubeka. Misa iqeda umdlalo wesibonelo esikhethiwe."
 }

@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Azken eraikuntzan, Horizon {commit}-n {mods}-engatik, ez {horizon}-n",
   "In the last build, on {horizon}": "Azken eraikuntzan, {horizon}-n",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Exekutatu hainbat instantzia aldi berean",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Joko bat martxan dagoen bitartean, Jolastu-k beste instantzia bat abiarazi dezake. Gelditu-k hautatutako instantziaren jokoa amaitzen du."
 }

@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Son derlemede, {mods} için Horizon {commit} üzerinde, {horizon} üzerinde değil",
   "In the last build, on {horizon}": "Son derlemede, {horizon} üzerinde",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Birden çok örneği aynı anda çalıştır",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Bir oyun çalışırken Oyna başka bir örneği başlatabilir. Durdur, seçili örneğin oyununu sonlandırır."
 }

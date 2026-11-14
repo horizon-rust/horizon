@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "У апошняй зборцы — на Horizon {commit} дзеля {mods}, не на {horizon}",
   "In the last build, on {horizon}": "У апошняй зборцы — на {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Запускаць некалькі асобнікаў адначасова",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Пакуль ідзе гульня, «Гуляць» можа запусціць іншы асобнік. «Спыніць» завяршае гульню выбранага асобніка."
 }

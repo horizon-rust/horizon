@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Sa huling build, sa Horizon {commit} para sa {mods}, hindi sa {horizon}",
   "In the last build, on {horizon}": "Sa huling build, sa {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Magpatakbo ng ilang instance nang sabay-sabay",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Maaaring magsimula ang Laro ng isa pang instance habang tumatakbo ang isang laro. Tinatapos ng Ihinto ang laro ng napiling instance."
 }

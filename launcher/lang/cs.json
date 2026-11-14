@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "V posledním sestavení na Horizonu {commit} kvůli {mods}, ne na {horizon}",
   "In the last build, on {horizon}": "V posledním sestavení na {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Spouštět více instancí najednou",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Zatímco běží hra, Hrát může spustit další instanci. Zastavit ukončí hru vybrané instance."
 }

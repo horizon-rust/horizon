@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "上次构建：因 {mods} 在 Horizon {commit} 上，而非 {horizon}",
   "In the last build, on {horizon}": "上次构建：在 {horizon} 上",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "同时运行多个实例",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "游戏运行时，“开始游戏”可以启动另一个实例。“停止”会结束所选实例的游戏。"
 }

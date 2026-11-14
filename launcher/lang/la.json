@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "In ultima aedificatione, in Horizon {commit} propter {mods}, non in {horizon}",
   "In the last build, on {horizon}": "In ultima aedificatione, in {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Plura exempla simul currere",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Ludere aliud exemplum incipere potest dum ludus currit. Siste ludum exempli selecti finit."
 }

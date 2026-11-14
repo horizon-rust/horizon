@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Соңгы җыюда, {mods} өчен Horizon {commit} өстендә, {horizon} түгел",
   "In the last build, on {horizon}": "Соңгы җыюда, {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Берничә нөсхәне бер үк вакытта эшләтү",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Уен барганда «Уйнау» башка нөсхәне башлый ала. «Туктату» сайланган нөсхәнең уенын туктата."
 }

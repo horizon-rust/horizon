@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Í síðustu byggingu, á Horizon {commit} fyrir {mods}, ekki á {horizon}",
   "In the last build, on {horizon}": "Í síðustu byggingu, á {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Keyra mörg tilvik í einu",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Spila getur ræst annað tilvik á meðan leikur er í gangi. Stöðva lýkur leik valda tilviksins."
 }

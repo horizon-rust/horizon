@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Һуңғы йыйылышта, {mods} өсөн Horizon {commit}, {horizon} түгел",
   "In the last build, on {horizon}": "Һуңғы йыйылышта, {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Бер нисә күсермәне бер юлы эшләтеү",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Уйын барғанда Уйнау тағы бер күсермәне башлай ала. Туҡтатыу һайланған күсермәнең уйынын туҡтата."
 }

@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Di build terakhir, pada Horizon {commit} untuk {mods}, bukan pada {horizon}",
   "In the last build, on {horizon}": "Di build terakhir, pada {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Jalankan beberapa instans sekaligus",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Main dapat memulai instans lain saat sebuah game berjalan. Hentikan mengakhiri game instans yang dipilih."
 }

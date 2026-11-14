@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Në ndërtimin e fundit, në Horizon {commit} për {mods}, jo në {horizon}",
   "In the last build, on {horizon}": "Në ndërtimin e fundit, në {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Ekzekuto disa instanca njëkohësisht",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Luaj mund të nisë një instancë tjetër ndërsa një lojë është në ekzekutim. Ndalo përfundon lojën e instancës së zgjedhur."
 }

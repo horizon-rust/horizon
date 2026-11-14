@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Бүтэһик хомууругар, {mods} иһин Horizon {commit} барылыгар, {horizon} буолбатах",
   "In the last build, on {horizon}": "Бүтэһик хомууругар, {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Хас да экземпляры биир кэмҥэ үлэлэтии",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Оонньуу барар кэмигэр «Оонньоо» атын экземпляры саҕалыан сөп. «Тохтот» талыллыбыт экземпляр оонньуутун түмүктүүр."
 }

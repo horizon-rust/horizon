@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Ma ke kūkulu hope loa, ma Horizon {commit} no {mods}, ʻaʻole ma {horizon}",
   "In the last build, on {horizon}": "Ma ke kūkulu hope loa, ma {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "E holo i kekahi mau kope i ka manawa hoʻokahi",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Hiki iā Pāʻani ke hoʻomaka i kekahi kope ʻē aʻe ʻoiai e holo ana kekahi pāʻani. Hoʻopau ʻo Hoʻōki i ka pāʻani o ke kope i koho ʻia."
 }

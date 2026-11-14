@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "கடைசி உருவாக்கத்தில், {mods} க்காக Horizon {commit} இல், {horizon} இல் அல்ல",
   "In the last build, on {horizon}": "கடைசி உருவாக்கத்தில், {horizon} இல்",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "ஒரே நேரத்தில் பல நிகழ்வுகளை இயக்கு",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "ஒரு விளையாட்டு இயங்கும்போது விளையாடு இன்னொரு நிகழ்வைத் தொடங்கலாம். நிறுத்து தேர்ந்தெடுத்த நிகழ்வின் விளையாட்டை முடிக்கும்."
 }

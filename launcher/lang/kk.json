@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Соңғы жинақта, {mods} үшін Horizon {commit} нұсқасында, {horizon} емес",
   "In the last build, on {horizon}": "Соңғы жинақта, {horizon}",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Бірнеше данаға бір мезгілде іске қосу",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Ойын жүріп жатқанда «Ойнау» басқа дананы іске қоса алады. «Тоқтату» таңдалған дананың ойынын аяқтайды."
 }

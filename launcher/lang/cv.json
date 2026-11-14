@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Юлашки пухӑмра, {mods} валли Horizon {commit} ҫинче, {horizon} ҫинче мар",
   "In the last build, on {horizon}": "Юлашки пухӑмра, {horizon} ҫинче",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "Темиҫе экземплярпа пӗр харӑс ӗҫлетмелле",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Вӑйӑ пынӑ чух Выляс тепӗр экземпляра ҫутма пултарать. Чар суйланӑ экземплярӑн вӑййине вӗҫлет."
 }

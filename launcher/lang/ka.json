@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "ბოლო აგებაში, Horizon {commit}-ზე {mods}-ის გამო, არა {horizon}-ზე",
   "In the last build, on {horizon}": "ბოლო აგებაში, {horizon}-ზე",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "რამდენიმე ეგზემპლარის ერთდროულად გაშვება",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "თამაშის მიმდინარეობისას „თამაში“ სხვა ეგზემპლარს გაუშვებს. „შეჩერება“ ასრულებს არჩეული ეგზემპლარის თამაშს."
 }

@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "पिछले बिल्ड में, {mods} के लिए Horizon {commit} पर, {horizon} पर नहीं",
   "In the last build, on {horizon}": "पिछले बिल्ड में, {horizon} पर",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "एक साथ कई इंस्टेंस चलाएँ",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "गेम चलते समय खेलें एक और इंस्टेंस शुरू कर सकता है। रोकें चुने गए इंस्टेंस का गेम बंद करता है।"
 }

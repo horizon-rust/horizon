@@ -1238,5 +1238,7 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "前回のビルドは {mods} のため Horizon {commit} 上（{horizon} ではありません）",
   "In the last build, on {horizon}": "前回のビルドは {horizon} 上",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Run several instances at once": "複数のインスタンスを同時に実行",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "ゲームの実行中でも、プレイで別のインスタンスを起動できます。停止は選択中のインスタンスのゲームを終了します。"
 }
