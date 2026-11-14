@@ -31,11 +31,9 @@ impl Game<'_> {
         };
         let pos = BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]);
         let used = self.with_level(|b, level, ticks| b.use_bone_meal(level, ticks, pos, face));
-        // BoneMealItem.useOn: after growCrop shrank the stack,
-        // `ItemStack.causeUseVibration` posts ITEM_INTERACT_FINISH from the
-        // player when the stack's use effects ask for it (the default), the
-        // emptied stack too: the held one is consumed only below.
-        if used {
+        // BoneMealItem.useOn checks use effects after shrinking, even in
+        // creative: an emptied stack exposes no components.
+        if used && stack.count > 1 {
             self.use_vibration(stack, "minecraft:item_interact_finish");
         }
         self.process_level_events()?;

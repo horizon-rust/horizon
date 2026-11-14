@@ -1,8 +1,7 @@
 //! `BoneMealItem.useOn`'s vibration: `growCrop` shrinks the stack first and
 //! then `ItemStack.causeUseVibration` posts `ITEM_INTERACT_FINISH` from the
 //! player whenever the stack's `use_effects` component asks for it (the
-//! default) — a stack of one that the click empties included, since the
-//! component survives a count of 0.
+//! default), provided shrinking the stack did not empty it.
 use super::*;
 use crate::game::{Hit, native_machines::tests::server_game};
 use horizon_client::{items::ItemStack, mobs::Who, motion::PlayerMotion};
@@ -50,36 +49,35 @@ fn click(game: &mut Game<'_>) -> Vec<(&'static str, [f64; 3], Option<Who>)> {
     crate::game::sculk::TEST_POSTED_EVENTS.with(|e| e.borrow_mut().take().unwrap_or_default())
 }
 
-/// The bone meal that empties the stack still vibrates, and so does every
-/// earlier one; in creative the stack is not consumed at all, and a stack
-/// whose use effects turn interaction vibrations off is silent.
+/// The last bone meal is silent even in creative; earlier uses respect the
+/// stack's interaction vibration setting.
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-fn the_bone_meal_that_empties_the_stack_still_vibrates() {
+fn bone_meal_vibrations_respect_remaining_count_and_use_effects() {
     if std::env::var_os("HORIZON_TEST_RESOURCES").is_none() {
         return;
     }
     let finish = [("minecraft:item_interact_finish", PLAYER, Some(Who::Player))];
     let mut game = game();
-    // A stack of one: the click empties it and vanilla still posts the event.
+    // A stack of one is empty when vanilla checks its components.
     game.creative = false;
     hold(&mut game, ItemStack::new("minecraft:bone_meal", 1));
-    assert_eq!(click(&mut game), finish);
+    assert!(click(&mut game).is_empty());
     assert!(game.held().is_none(), "the click emptied the hand");
-    // Two clicks of a stack of two vibrate twice, as in the repro.
+    // Only the first click of a stack of two vibrates.
     hold(&mut game, ItemStack::new("minecraft:bone_meal", 2));
     assert_eq!(click(&mut game), finish);
-    assert_eq!(click(&mut game), finish);
+    assert!(click(&mut game).is_empty());
     assert!(game.held().is_none(), "both meals were used");
-    // Creative leaves the stack alone and still vibrates.
+    // Creative restores the stack only after the vibration check.
     game.creative = true;
     hold(&mut game, ItemStack::new("minecraft:bone_meal", 1));
-    assert_eq!(click(&mut game), finish);
+    assert!(click(&mut game).is_empty());
     assert_eq!(game.held().unwrap().count, 1, "creative kept the meal");
     // A stack whose use effects turn interaction vibrations off is silent
     // (`ItemStack.causeUseVibration`), the component `use_vibration` reads.
     game.creative = false;
-    let mut silent = ItemStack::new("minecraft:bone_meal", 1);
+    let mut silent = ItemStack::new("minecraft:bone_meal", 2);
     silent.data_mut().set_loot_component(
         "minecraft:use_effects",
         &serde_json::json!({"interact_vibrations": false}),
