@@ -33,6 +33,27 @@ fn content_files(bundle: &Bundle) -> Result<Vec<(String, PathBuf)>, String> {
         .collect())
 }
 
+/// Copy `bundle` into `to` for a build, and say where the copy's bundle folder is. A combined
+/// mod keeps its shape there (`horizon-native.json` and its content beside `mixins/<id>/`), so
+/// `bundle_root` finds the content in the copy as in the source, for the build's key and its
+/// `native-content/` (#15933); a code-only mod is its bundle folder, as before.
+pub(super) fn copy_for_build(bundle: &Bundle, to: &Path) -> Result<PathBuf, String> {
+    let root = bundle_root(bundle);
+    if root == bundle.dir {
+        copy_bundle(bundle, to)?;
+        return Ok(to.to_path_buf());
+    }
+    let dir = to.join("mixins").join(&bundle.id);
+    copy_bundle(bundle, &dir)?;
+    let manifest = (NATIVE_MANIFEST.to_owned(), root.join(NATIVE_MANIFEST));
+    for (name, path) in std::iter::once(manifest).chain(content_files(bundle)?) {
+        let copy = to.join(&name);
+        fs::create_dir_all(copy.parent().unwrap_or(to)).map_err(|e| e.to_string())?;
+        fs::copy(&path, &copy).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(dir)
+}
+
 pub(super) fn build_files(bundle: &Bundle) -> Result<Vec<(String, PathBuf)>, String> {
     let mut files = bundle_files(bundle)?;
     files.extend(content_files(bundle)?);

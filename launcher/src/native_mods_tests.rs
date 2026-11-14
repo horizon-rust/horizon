@@ -2103,6 +2103,42 @@ fn a_build_smart_app_control_blocked_says_how_to_build() {
     assert!(!e.contains("Smart App Control"), "{e}");
 }
 
+/// The build copies its mods before it builds them: a combined mod's copy still carries its
+/// content, so the build's `native-content/` has it (#15933).
+#[test]
+fn a_build_copy_of_a_combined_mod_keeps_its_content() {
+    let incoming = dir("combined-copy-source");
+    write_native(&incoming, "veinminer", A, B);
+    fs::write(incoming.join("horizon-mod.toml"), "id=\"veinminer\"\nname=\"Sounds\"\nversion=\"0.3.0\"\napi=\"0.2\"\ncapabilities=[\"registries\"]\n").unwrap();
+    let sound = "assets/veinminer/sounds.json";
+    fs::create_dir_all(incoming.join("assets/veinminer")).unwrap();
+    fs::write(incoming.join(sound), b"{}").unwrap();
+    let found = bundles(&incoming).unwrap();
+    let copy = dir("combined-copy");
+    let copied = Bundle {
+        dir: copy_for_build(&found[0], &copy.join("veinminer")).unwrap(),
+        ..found[0].clone()
+    };
+    assert_eq!(
+        build_files(&copied)
+            .unwrap()
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>(),
+        build_files(&found[0])
+            .unwrap()
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>(),
+        "the copy is built from the same files"
+    );
+    let built = dir("combined-copy-built");
+    install_content(&[copied], &built).unwrap();
+    let snapshot = built.join("native-content/veinminer");
+    assert_eq!(fs::read(snapshot.join(sound)).unwrap(), b"{}");
+    assert!(snapshot.join("horizon-mod.toml").is_file());
+}
+
 #[test]
 fn combined_content_is_snapshotted_with_its_exact_native_build() {
     let incoming = dir("combined-source");

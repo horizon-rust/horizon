@@ -36,7 +36,7 @@ mod isolate;
 mod source;
 
 use source::{
-    api_target, build_files, bundle_files, files, files_with_api, install_content,
+    api_target, build_files, bundle_files, copy_for_build, files, files_with_api, install_content,
     installed_mods_into, mod_hash, source_digest,
 };
 
@@ -2128,11 +2128,12 @@ fn pipeline(
     let built_on = about(base);
     let origin = built_on.as_ref().map_or(base, |a| a.base.as_str());
     let mut ids = std::collections::HashSet::new();
+    let mut copies = std::collections::HashMap::new();
     for b in &found {
         if !ids.insert(&b.id) {
             return Err(format!("Duplicate native mod id {:?}.", b.id).into());
         }
-        copy_bundle(b, &incoming.join(&b.id))?;
+        copies.insert(b.id.clone(), copy_for_build(b, &incoming.join(&b.id))?);
     }
     // Read before `repin` rewrites a copy's manifest.
     let digests: std::collections::HashMap<String, Option<String>> = found
@@ -2142,7 +2143,7 @@ fn pipeline(
     let mods: Vec<Bundle> = found
         .into_iter()
         .map(|b| Bundle {
-            dir: incoming.join(&b.id),
+            dir: copies.remove(&b.id).unwrap_or_else(|| incoming.join(&b.id)),
             ..b
         })
         .collect();
