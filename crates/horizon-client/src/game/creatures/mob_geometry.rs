@@ -75,20 +75,24 @@ impl Game<'_> {
             }
             let beam = horizon_client::mobs::guardian::beam(mob, alpha as f32);
             // EntityRenderer.shouldRender: the renderer's interpolated culling box,
-            // grown by 0.5 (GuardianRenderer also draws while its beam is out).
-            if let Some(view) = &self.view_frustum
-                && beam.is_none()
-            {
+            // grown by 0.5 (GuardianRenderer also draws while its beam is out). One only the
+            // ray scene's entity layer reaches is its alone (`ray_only`), with no outline.
+            let mut sight = super::super::entity_culling::Sight {
+                camera: true,
+                rays: false,
+            };
+            if beam.is_none() {
                 let (lo, hi) = super::super::entity_culling::cull_box(mob, alpha);
                 let (lo, hi) = (
                     (lo - camera - glam::DVec3::splat(0.5)).as_vec3(),
                     (hi - camera + glam::DVec3::splat(0.5)).as_vec3(),
                 );
-                if !view.intersects(lo, hi) {
-                    continue;
+                match self.sight(lo, hi) {
+                    Some(seen) => sight = seen,
+                    None => continue,
                 }
             }
-            let outline = self.mob_outline(mob);
+            let outline = self.mob_outline(mob).filter(|_| sight.camera);
             // Entity.DATA_SHARED_FLAGS_ID invisible: only the name tag draws (and
             // the outline of a glowing mob, LivingEntityRenderer.getRenderType).
             // A player keeps its armour, elytra and held items
@@ -98,6 +102,7 @@ impl Game<'_> {
                 continue;
             }
             let culling = if PRECHECK
+                && sight.camera
                 && outline.is_none()
                 && !is_player
                 && mob.kind.id.starts_with("minecraft:")
@@ -117,13 +122,16 @@ impl Game<'_> {
             } else {
                 EntityCullDecision::CheckVertices
             };
+            let culling = self.sighted_decision(sight, || culling);
             if culling.hides_entity() {
                 continue;
             }
             let entity_start = out.len();
             self.mark_motion(entity_start, (1 << 32) | u64::from(mob.id));
             self.mark_entity(entity_start, &mob.kind.id);
-            self.rendered_mobs.set(self.rendered_mobs.get() + 1);
+            if !culling.rays_only() {
+                self.rendered_mobs.set(self.rendered_mobs.get() + 1);
+            }
             // `EntityRenderer.getPackedLightCoords`: the block the mob's light
             // probe (its eye) is in, at the position this frame draws rather
             // than this tick's.
@@ -176,9 +184,12 @@ impl Game<'_> {
                         continue;
                     }
                 }
-                if outline.is_none() {
-                    self.cull_entity_vertices(out, entity_start);
+                if culling.rays_only() {
+                    self.ray_only(out, entity_start);
+                } else if outline.is_none() {
+                    self.culled_for_rays(|| self.cull_entity_vertices(out, entity_start));
                 }
+                self.lit_entity(entity_start..out.len());
                 continue;
             }
             if mob.species() == Species::SulfurCube
@@ -248,7 +259,7 @@ impl Game<'_> {
                 );
             }
             // HDR output: mobs that are light shine by their kind, as blocks do (entity.wgsl
-            // fs_hdr_mark); a tier's window lifts only their bright texels.
+            // hdr_entity_mark); a tier's window lifts only their bright texels.
             if let Some(tier) = match mob.species() {
                 Species::Blaze => Some(horizon_client::mesher::BRIGHT),
                 Species::MagmaCube | Species::GlowSquid => Some(horizon_client::mesher::LOW),
@@ -320,10 +331,17 @@ impl Game<'_> {
             }
             // Glowing outlines and a guardian's beam remain visible independently
             // of whether the body is hidden behind terrain.
+            if culling.rays_only() {
+                self.ray_only(out, entity_start);
+                continue;
+            }
             if outline.is_none() && culling.checks_vertices() && beam.is_none() {
                 // What the GPU draws of the mob counts by its bounds' corners.
-                self.cull_skinned(out, entity_start, skinned);
+                self.culled_for_rays(|| self.cull_skinned(out, entity_start, skinned));
             }
+            // The mob with what it holds and wears, once nothing more can drop it. Its beam,
+            // next, is no surface of it: Horizon's to draw.
+            self.lit_entity(entity_start..out.len());
             // GuardianRenderer: the laser to the locked target.
             if let Some((time, scale)) = beam
                 && let Some(target) = self.beam_target(mob.ai.target, alpha)
@@ -379,6 +397,9 @@ impl Game<'_> {
             }
             let p = glam::DVec3::from_array(at) - camera;
             let c = p.as_vec3();
+            // A projectile with a model is the `[entity]` stage's (`lit_entity`); one drawn as
+            // an item, and the fire on any, is Horizon's.
+            let start = out.len();
             // EntityRenderer.getPackedLightCoords: the block its light probe
             // (the eye) is in, at the position this frame draws rather than
             // this tick's, and not the one under its feet.
@@ -445,6 +466,7 @@ impl Game<'_> {
                     0,
                     out,
                 );
+                self.lit_entity(start..out.len());
                 if a.arrow.as_ref().is_some_and(|s| s.on_fire()) {
                     flame_geometry(atlas, c, 0.5, 0.5, self.yaw, light, out);
                 }
@@ -472,6 +494,7 @@ impl Game<'_> {
                     0,
                     out,
                 );
+                self.lit_entity(start..out.len());
                 continue;
             }
             // WindChargeRenderer.
@@ -480,6 +503,7 @@ impl Game<'_> {
                 ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
             ) {
                 self.wind_charge_geometry(a, c, packed, alpha as f32, out);
+                self.lit_entity(start..out.len());
                 continue;
             }
             // ShulkerBulletRenderer: the tumbling bullet model, then a larger
@@ -533,6 +557,7 @@ impl Game<'_> {
                     );
                     horizon_client::gfx::mark_oit(&mut out[shell..]);
                 }
+                self.lit_entity(start..out.len());
                 continue;
             }
             // WitherSkullRenderer: the skull model facing its flight.
@@ -560,6 +585,7 @@ impl Game<'_> {
                         out,
                     );
                 }
+                self.lit_entity(start..out.len());
                 continue;
             }
             if let Some(stack) = a.drawn_item() {

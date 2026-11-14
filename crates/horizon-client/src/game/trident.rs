@@ -1293,9 +1293,10 @@ impl Game<'_> {
         let live = self
             .tridents
             .iter()
-            .filter(|t| {
-                // EntityRenderer.shouldRender; ThrownTridentRenderer grows the box by 1.5.
-                self.standing_entity_in_view(
+            .filter_map(|t| {
+                // EntityRenderer.shouldRender; ThrownTridentRenderer grows the box by 1.5. One
+                // only the ray scene's entity layer reaches is its alone (`ray_only`).
+                let sight = self.standing_entity_sight(
                     camera,
                     super::entity_culling::at(t.previous),
                     super::entity_culling::at(t.position),
@@ -1304,23 +1305,26 @@ impl Game<'_> {
                     2.0 * HALF,
                     range,
                     1.5,
-                )
+                )?;
+                Some((t, sight.camera))
             })
-            .map(|t| {
+            .map(|(t, seen)| {
                 let at = [
                     t.previous.x + (t.position.x - t.previous.x) * alpha,
                     t.previous.y + (t.position.y - t.previous.y) * alpha,
                     t.previous.z + (t.position.z - t.previous.z) * alpha,
                 ];
-                (t, at)
+                (t, at, seen)
             });
         // ItemPickupParticle: a picked-up trident flying to its collector,
         // drawn with the render state extracted at partial tick 1.
         let taken = self.pickups.live.iter().filter_map(|p| match &p.taken {
-            super::pickups::Taken::Trident(t) => Some((&**t, super::pickups::position(p, alpha))),
+            super::pickups::Taken::Trident(t) => {
+                Some((&**t, super::pickups::position(p, alpha), true))
+            }
             _ => None,
         });
-        for (t, at) in live.chain(taken) {
+        for (t, at, seen) in live.chain(taken) {
             // Frame generation and temporal upscaling follow its own flight and spin.
             self.mark_motion(out.len(), Self::MOTION_OBJECT | u64::from(t.id));
             let p = glam::DVec3::from_array(at) - camera;
@@ -1332,7 +1336,7 @@ impl Game<'_> {
                 t.position.y.floor() as i32,
                 t.position.z.floor() as i32,
             );
-            if t.fire_ticks > 0 {
+            if t.fire_ticks > 0 && seen {
                 // The flames face the camera, turned round in the front view.
                 let fire_yaw =
                     if self.camera_type == super::perspective::CameraType::ThirdPersonFront {
@@ -1353,6 +1357,7 @@ impl Game<'_> {
             }
             let packed = (u32::from(l >> 4) * 16) | ((u32::from(l & 15) * 16) << 8);
             let poses = Poses::new(model);
+            let start = out.len();
             horizon_client::mobs::render::draw(
                 model,
                 base,
@@ -1375,6 +1380,11 @@ impl Game<'_> {
                     0,
                     out,
                 );
+            }
+            if seen {
+                self.lit_entity(start..out.len());
+            } else {
+                self.ray_only(out, start);
             }
         }
         self.mark_motion(out.len(), 0);

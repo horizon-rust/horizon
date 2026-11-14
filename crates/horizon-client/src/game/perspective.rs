@@ -1566,6 +1566,19 @@ mod preview_tests {
         assert!(!shadow_pass_takes_own_model(false, true, false));
     }
     #[test]
+    fn a_native_pack_takes_the_first_person_model_for_its_shadow_pass_or_its_rays() {
+        use super::super::entity_culling::native_casters;
+        let takes = |shadow, rays, spectator| {
+            shadow_pass_takes_own_model(native_casters(shadow, rays).1, false, spectator)
+        };
+        // The ray scene's entity layer alone (a traced shadow, no `[shadow]`), a spectator too.
+        assert!(takes(false, true, false) && takes(false, true, true));
+        assert!(takes(true, false, false) && takes(true, true, false));
+        // Neither: the camera's own model isn't built in first person.
+        assert!(!takes(false, false, false) && !takes(false, false, true));
+        assert!(!native_casters(true, true).0);
+    }
+    #[test]
     fn the_player_model_rises_with_the_camera_at_levitation_255() {
         // LivingEntity.travel at Levitation 255: 0.05 * 255 blocks a tick.
         let from = Vec3::new(0.5, 80.0, 0.5);

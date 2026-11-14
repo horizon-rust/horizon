@@ -1,23 +1,69 @@
 //! The terrain as acceleration structures, with ray tracing on (#13780 step 2, after the #1180
-//! spike; `ray_query`): one BLAS per section's solid quads within `reach` chunks of the camera,
-//! compacted once built, and one TLAS of them, built again only when a BLAS changes or the camera
-//! enters another chunk column (its instances sit relative to that column). Nothing traces them
-//! yet. Without ray queries on the device there is no scene and nothing here runs.
+//! spike; `ray_query`): within `reach` chunks of the camera one BLAS per section's solid quads
+//! and one per its translucent quads (`Layer`), compacted once built, and one TLAS of them,
+//! built again only when a BLAS changes or the camera enters another chunk column (its instances
+//! sit relative to that column). A shader pack's `trace` reads them (`traced`,
+//! gfx/native_trace.rs). Without ray queries on the device there is no scene and nothing here
+//! runs.
 //!
-//! The section arena keeps its compact layout: a section about to get a BLAS has its solid quads
-//! written out as vertices first (`Unpacker`, `rt_unpack.wgsl`), as the solid draws expand them.
+//! The scene keeps every such section's quads as vertices (`TerrainVertex`) in one store that
+//! lasts from frame to frame (spec #15624): the BLAS are built from it, and a ray that hits a
+//! triangle reads that triangle's vertices there. A TLAS instance's custom data is its quads'
+//! first in the store. The unpack pass (`Unpacker`, `rt_unpack.wgsl`) writes a section's solid
+//! quads into their slot (`Slots`) as the solid draws read them, from a record or a vertex, so
+//! the section arena keeps its compact layout. A full store grows: the larger one gets the old
+//! contents copied over, so every slot keeps its place and no BLAS is built again.
+//!
+//! The two layers are told apart twice (spec #16011): by their instances' masks, so a ray's
+//! cull mask picks the layers it reads, and by their place in the TLAS, the solid instances
+//! first, so a hit's instance index says which layer it is in (`Traced::solid_instances`).
+//! Translucent quads are vertices in their arena already, in the mesher's order: drawing sorts
+//! them back to front through an index list of its own (gfx/translucency.rs), which the scene
+//! never reads, so a camera that moves builds nothing here. Their vertices are copied into the
+//! store as they are.
+//!
+//! For a pack whose files name `RAY_ENTITY` the scene has a third layer, the entities within its
+//! reach (spec #16011 item 3, `Entities`): one BLAS over the entity stream's quads that the batch
+//! marked, read from its vertex buffer as it is, its instance after the translucent ones. It is
+//! built again every frame, after the stream's upload, so the TLAS is too. Its third geometry is
+//! the entities the camera doesn't draw (step 2): the game moves them out of what the camera
+//! draws (`Renderer::take_ray_only`), and the batch puts them where no pass draws from. Its
+//! fourth is the camera's own body in first person, the stream's shadow-only quads where they
+//! are: a ray that starts at the camera passes it (the prelude's `horizon_ray_entity_stops`). The
+//! block entities the renderer keeps on the GPU have a BLAS a section (step 3, `ray_retained.rs`),
+//! their instances after the stream's.
 
 use glam::DVec3;
 
+use horizon_shader_api::stages::{RAY_ENTITY, RAY_SOLID, RAY_TRANSLUCENT};
+
+use crate::block_entity_render::StaticSectionSnapshot;
 use crate::fast_hash::FxHashMap;
 use crate::gfx::{Renderer, SectionGpu, SectionKey, arena::Arena, resident::Resident};
-use crate::mesher::TerrainVertex;
+use crate::mesher::{TerrainVertex, Vertex};
+use retained::Retained;
 
 /// BLAS builds per frame at most: a world that just loaded builds over a few frames.
 const BUILDS_PER_FRAME: usize = 512;
+/// Bytes per vertex in the store.
+const STRIDE: u64 = std::mem::size_of::<TerrainVertex>() as u64;
+/// Vertices the store starts with.
+const FIRST_STORE: u64 = 1 << 20;
+/// Vertices the store holds at most: an instance's custom data holds its first quad in 24 bits.
+const MOST_STORE: u64 = 1 << 26;
 /// Chunks around the camera the TLAS spans, unless `HORIZON_RT_CHUNKS` says otherwise. The
 /// #1180 spike's TLAS over every section cost 2-7 ms of CPU a frame at render distance 32.
 const REACH: i32 = 8;
+/// Bytes per vertex of the entity stream.
+const ENTITY_STRIDE: u64 = std::mem::size_of::<Vertex>() as u64;
+/// What the entity vertex buffer needs on top of its own usages for the entity layer: its BLAS
+/// is built from it, and rays read it.
+const ENTITY_INPUT: wgpu::BufferUsages =
+    wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::BLAS_INPUT);
+/// The entity layer's geometries, each a range of the stream: the ordinary quads the camera
+/// draws, improved transparency's, the ray-only ones, and the shadow-only ones (the camera's own
+/// body in first person) (`EntityBatch::ray_ranges`).
+pub(in crate::gfx) const GEOMETRIES: usize = 4;
 
 /// The renderer's side: the calls gfx.rs makes, each one line there.
 impl Renderer {
@@ -35,49 +81,361 @@ impl Renderer {
         }
     }
 
-    /// The frame's BLAS builds and TLAS, recorded in `encoder` before the world pass.
+    /// The frame's BLAS builds and TLAS, recorded in `encoder` after the entity stream's
+    /// upload and before the passes that trace (the native shadow pass, the world pass).
     pub(in crate::gfx) fn ray_prepare(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         camera: DVec3,
-        title: bool,
+        frame: &crate::gfx::Frame<'_>,
     ) {
-        if let Some(rt) = &mut self.ray_scene
-            && !title
-        {
-            crate::spans::time("ray scene", || {
-                rt.prepare(
-                    &self.device,
-                    &self.queue,
-                    encoder,
-                    &self.sections,
-                    &self.arena,
-                    &self.indices,
-                    camera,
-                )
+        if self.ray_scene.is_none() || frame.title {
+            return;
+        }
+        let entities = self.traces_entities();
+        if entities && !self.entity_buffer.usage().contains(ENTITY_INPUT) {
+            // The layer just came on: a buffer with its usages, given this frame's vertices again,
+            // since the old one can't be copied from. They are the batch's alone: nothing is posed
+            // on the GPU under a native pack (`skins_entities`).
+            self.entity_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Entity vertices"),
+                size: self.entity_buffer.size(),
+                usage: self.entity_usage(),
+                mapped_at_creation: false,
             });
+            let vertices = bytemuck::cast_slice(&self.entity_batch.combined);
+            self.uploads
+                .buffer(encoder, &self.entity_buffer, 0, vertices);
+        }
+        // The ray-only and shadow-only geometries and a retained section can hold more quads than
+        // anything drawn: the shared indices cover them.
+        let retained = frame.static_block_entities;
+        let [.., (_, ray_only), (_, shadow_only)] = self.entity_batch.ray_ranges;
+        let most = || (ray_only.max(shadow_only)).max(Retained::most_quads(retained));
+        if entities && most() > self.index_quads {
+            self.index_quads = most().next_power_of_two();
+            self.indices = Self::quad_indices(&self.device, self.index_quads);
+        }
+        let stream = entities.then_some(Stream {
+            buffer: &self.entity_buffer,
+            atlas: &self.entity_atlas,
+            ranges: self.entity_batch.ray_ranges,
+            retained,
+        });
+        let Some(rt) = &mut self.ray_scene else {
+            return;
+        };
+        crate::spans::time("ray scene", || {
+            rt.prepare(
+                &self.device,
+                &self.queue,
+                encoder,
+                (&self.sections, &self.arena),
+                self.translucent_arena.as_ref().unwrap_or(&self.arena),
+                &self.indices,
+                camera,
+                stream,
+            )
+        });
+    }
+
+    /// Whether the scene has the entity layer: the device traces, and the native pack's rays
+    /// read the layer (its files name `RAY_ENTITY`). The game then names the stream's entities.
+    pub fn traces_entities(&self) -> bool {
+        self.ray_scene.is_some() && self.native.as_ref().is_some_and(|n| n.traces_entities())
+    }
+
+    /// The camera-relative box of the columns the scene spans around `camera`'s, while it has the
+    /// entity layer: the game generates the entities the camera doesn't draw within it.
+    pub fn ray_entity_reach(&self, camera: DVec3) -> Option<crate::gfx::Frustum> {
+        let rt = self.ray_scene.as_ref().filter(|_| self.traces_entities())?;
+        let (lo, hi) = reach_box(camera, rt.reach);
+        Some(crate::gfx::Frustum::boxed(lo, hi))
+    }
+
+    /// Takes the frame's ray-only entities (`EntityBatch::ray_only`): their vertices, which the
+    /// game moved out of the entity stream, and their runs. Both are left empty. The batch also
+    /// learns whether the layer is on, for the frame's shadow-only quads (`EntityBatch::ray`).
+    pub fn take_ray_only(
+        &mut self,
+        vertices: &mut Vec<Vertex>,
+        runs: &mut crate::gfx::native_entity::EntityRuns,
+    ) {
+        std::mem::swap(&mut self.entity_batch.ray_only, vertices);
+        std::mem::swap(&mut self.entity_batch.ray_kinds, runs);
+        self.entity_batch.ray = self.traces_entities();
+        vertices.clear();
+        runs.clear();
+    }
+
+    /// The entity vertex buffer's usages, `ENTITY_INPUT` among them with the entity layer.
+    pub(in crate::gfx) fn entity_usage(&self) -> wgpu::BufferUsages {
+        let usage = crate::gfx::entity_skin::EntitySkin::usage(self.entity_skin.is_some());
+        match self.traces_entities() {
+            true => usage | ENTITY_INPUT,
+            false => usage,
         }
     }
 }
 
+/// The camera-relative corners of the columns within `reach` chunks of `camera`'s, which the
+/// TLAS spans (`within`), over their whole height: no world reaches a million blocks.
+fn reach_box(camera: DVec3, reach: i32) -> (glam::Vec3, glam::Vec3) {
+    let (x, z) = crate::gfx::resident::camera_column(camera);
+    let edge = |c: i32, at: f64| (f64::from(c) * 16.0 - at) as f32;
+    let lo = glam::Vec3::new(edge(x - reach, camera.x), -1.0e6, edge(z - reach, camera.z));
+    let hi = glam::Vec3::new(
+        edge(x + reach + 1, camera.x),
+        1.0e6,
+        edge(z + reach + 1, camera.z),
+    );
+    (lo, hi)
+}
+
+/// What the entity layer is built from this frame: the entity stream's vertex buffer, its
+/// texture atlas, and where the batch's ordinary, improved transparency, ray-only and shadow-only
+/// quads are in it, as (first quad, quads) (`EntityBatch::ray_ranges`); and the retained block
+/// entities' sections.
+pub(in crate::gfx) struct Stream<'a> {
+    buffer: &'a wgpu::Buffer,
+    atlas: &'a wgpu::TextureView,
+    ranges: [(u32, u32); GEOMETRIES],
+    retained: &'a [StaticSectionSnapshot],
+}
+
+/// The entity layer: one BLAS of four geometries, the stream's ranges, read where they are
+/// in its vertex buffer (positions first, camera-relative) with the shared quad indices, and
+/// built again every frame. wgpu has no refit, and a compacted BLAS can't be built again.
+struct Entities {
+    blas: wgpu::Blas,
+    /// Quads each geometry holds at most.
+    sizes: [u32; GEOMETRIES],
+    /// Quads of the stream the layer's binding holds (`largest_entity_binding`).
+    most: u32,
+    buffer: wgpu::Buffer,
+    atlas: wgpu::TextureView,
+    /// Nearest, as entity.wgsl samples the atlas.
+    sampler: wgpu::Sampler,
+    /// This frame's geometries, within `most`.
+    ranges: [(u32, u32); GEOMETRIES],
+    /// Whether the log said the binding holds fewer quads than the stream.
+    capped_logged: bool,
+    /// The block entities kept on the GPU: a BLAS a section.
+    retained: Retained,
+}
+
+impl Entities {
+    fn new(device: &wgpu::Device, stream: &Stream<'_>) -> Self {
+        let sizes = [64; GEOMETRIES];
+        Self {
+            blas: entity_blas(device, sizes),
+            sizes,
+            most: largest_entity_binding(&device.limits()),
+            buffer: stream.buffer.clone(),
+            atlas: stream.atlas.clone(),
+            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Ray tracing: entity atlas"),
+                ..Default::default()
+            }),
+            ranges: [(0, 0); GEOMETRIES],
+            capped_logged: false,
+            retained: Retained::new(device),
+        }
+    }
+
+    /// Takes this frame's `stream`: its ranges, as far as the binding holds them, and a BLAS
+    /// large enough for them. Whether its buffer is another one than last frame's.
+    fn fit(&mut self, device: &wgpu::Device, stream: &Stream<'_>) -> bool {
+        let (ranges, capped) = within_binding(stream.ranges, self.most);
+        if capped && !std::mem::replace(&mut self.capped_logged, true) {
+            log::warn!(
+                "Horizon renderer: the ray tracing scene's entity layer holds {} entity quads; \
+                 the ones past them let rays through",
+                self.most
+            );
+        }
+        self.ranges = ranges;
+        if ranges.iter().zip(self.sizes).any(|(r, size)| r.1 > size) {
+            self.sizes = ranges.map(|r| r.1.next_power_of_two()).map(|n| n.max(64));
+            self.blas = entity_blas(device, self.sizes);
+        }
+        let other = self.buffer != *stream.buffer;
+        self.buffer = stream.buffer.clone();
+        other
+    }
+
+    /// The geometries' sizes this frame.
+    fn built_sizes(&self) -> [wgpu::BlasTriangleGeometrySizeDescriptor; GEOMETRIES] {
+        self.ranges.map(|r| geometry_size(r.1))
+    }
+
+    /// The build of the BLAS from the stream, with the geometries' `sizes` (`built_sizes`).
+    fn build<'a>(
+        &'a self,
+        sizes: &'a [wgpu::BlasTriangleGeometrySizeDescriptor; GEOMETRIES],
+        indices: &'a wgpu::Buffer,
+    ) -> wgpu::BlasBuildEntry<'a> {
+        let geometry = |i: usize| wgpu::BlasTriangleGeometry {
+            size: &sizes[i],
+            vertex_buffer: &self.buffer,
+            first_vertex: self.ranges[i].0 * 4,
+            vertex_stride: ENTITY_STRIDE,
+            index_buffer: Some(indices),
+            first_index: Some(0),
+            transform_buffer: None,
+            transform_buffer_offset: None,
+        };
+        wgpu::BlasBuildEntry {
+            blas: &self.blas,
+            geometry: wgpu::BlasGeometries::TriangleGeometries(
+                (0..GEOMETRIES).map(geometry).collect(),
+            ),
+        }
+    }
+}
+
+/// A triangle geometry of `quads` quads: their vertices' positions are three floats, and the
+/// shared quad indices make two triangles of each.
+fn geometry_size(quads: u32) -> wgpu::BlasTriangleGeometrySizeDescriptor {
+    wgpu::BlasTriangleGeometrySizeDescriptor {
+        vertex_format: wgpu::VertexFormat::Float32x3,
+        vertex_count: quads * 4,
+        index_format: Some(wgpu::IndexFormat::Uint32),
+        index_count: Some(quads * 6),
+        // Not opaque: rays test the texels themselves.
+        flags: wgpu::AccelerationStructureGeometryFlags::empty(),
+    }
+}
+
+/// The entity layer's BLAS, of four geometries of `sizes` quads at most.
+fn entity_blas(device: &wgpu::Device, sizes: [u32; GEOMETRIES]) -> wgpu::Blas {
+    device.create_blas(
+        &wgpu::CreateBlasDescriptor {
+            label: Some("Ray tracing: entities"),
+            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_BUILD,
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+        },
+        wgpu::BlasGeometrySizeDescriptors::Triangles {
+            descriptors: sizes.map(geometry_size).to_vec(),
+        },
+    )
+}
+
+/// Quads of the entity stream a binding holds on a device with `limits`: rays read the layer's
+/// vertices through one.
+fn largest_entity_binding(limits: &wgpu::Limits) -> u32 {
+    (limits.max_storage_buffer_binding_size / (ENTITY_STRIDE * 4)).min(u64::from(u32::MAX)) as u32
+}
+
+/// `ranges` (first quad, quads) cut to the first `most` quads, and whether any lost quads.
+fn within_binding(ranges: [(u32, u32); GEOMETRIES], most: u32) -> ([(u32, u32); GEOMETRIES], bool) {
+    let cut = ranges.map(|(first, quads)| {
+        let first = first.min(most);
+        (first, quads.min(most - first))
+    });
+    let capped = cut.iter().zip(&ranges).any(|(c, r)| c.1 < r.1);
+    (cut, capped)
+}
+
+/// Which of a section's quads: the scene has a layer of each, and a ray reads the ones it asks
+/// for (the shader API's `trace_layers`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Layer {
+    Solid,
+    /// What the translucent pass draws of the section: water, stained glass, ice.
+    Translucent,
+}
+
+impl Layer {
+    const BOTH: [Self; 2] = [Self::Solid, Self::Translucent];
+
+    /// Its instances' mask in the TLAS: the bit a ray's cull mask names it by.
+    fn mask(self) -> u8 {
+        match self {
+            Self::Solid => RAY_SOLID as u8,
+            Self::Translucent => RAY_TRANSLUCENT as u8,
+        }
+    }
+
+    /// Section `s`'s quads in it.
+    fn quads(self, s: &SectionGpu) -> u32 {
+        match self {
+            Self::Solid => s.solid,
+            Self::Translucent => s.translucent,
+        }
+    }
+}
+
+/// A section's quads of one layer: what a BLAS and a slot of the store hold.
+type Part = (SectionKey, Layer);
+
 /// The terrain's acceleration structures.
 pub(in crate::gfx) struct RayScene {
-    /// Each section's BLAS, while it has solid quads within reach.
-    blas: FxHashMap<SectionKey, wgpu::Blas>,
-    /// Sections meshed again or emptied since their BLAS was built.
-    dirty: Vec<SectionKey>,
+    /// Each part's BLAS, while it has quads within reach.
+    blas: FxHashMap<Part, wgpu::Blas>,
+    /// Parts meshed again or emptied since their BLAS was built.
+    dirty: Vec<Part>,
     tlas: wgpu::Tlas,
+    /// The TLAS's instances of the solid layer, which come first in it.
+    solid_instances: u32,
     /// The camera's chunk column when the TLAS was built: its instances are placed relative to
     /// that column's corner, so moving inside it needs no new TLAS.
     anchor: Option<(i32, i32)>,
     /// Chunks around the anchor the TLAS spans.
     reach: i32,
     /// BLAS built this frame, to measure for compaction once submitted.
-    to_compact: Vec<(SectionKey, wgpu::Blas)>,
+    to_compact: Vec<(Part, wgpu::Blas)>,
     /// BLAS whose compacted size the GPU is measuring.
-    compacting: Vec<(SectionKey, wgpu::Blas)>,
-    /// Sections in the arena's compact layout, written out as vertices for their BLAS.
+    compacting: Vec<(Part, wgpu::Blas)>,
+    /// The store, and the pass that writes sections into it.
     unpacker: Unpacker,
+    /// Each part's place in the store: exactly the parts with a BLAS.
+    slots: Slots,
+    /// Whether the log said the store is at its largest.
+    full_logged: bool,
+    /// How many TLAS and stores were made: a bind group made at another count holds an old one.
+    generation: u64,
+    /// The TLAS's instances of both terrain layers: the entity layer's instance comes after.
+    translucent_instances: u32,
+    /// The entity layer, while the native pack's rays read it.
+    entities: Option<Entities>,
+    /// Where the entity layer's instances of retained block entities start, after the stream's.
+    retained_instances: u32,
+}
+
+/// What a trace reads this frame (spec #15624).
+pub(in crate::gfx) struct Traced<'a> {
+    pub tlas: &'a wgpu::Tlas,
+    /// How many of its instances are solid terrain's, the first ones: a hit on a later one is
+    /// on translucent terrain.
+    pub solid_instances: u32,
+    /// The sections' vertices: an instance's custom data is its quads' first here.
+    pub store: &'a wgpu::Buffer,
+    /// Where translucent terrain's instances end: the next is the entity layer's.
+    pub translucent_instances: u32,
+    /// The entity layer, while the native pack's rays read it.
+    pub entities: Option<TracedEntities<'a>>,
+    /// Changes when `tlas`, `store` or the entity layer's buffer is another object than last
+    /// frame's.
+    pub generation: u64,
+    /// The camera in the TLAS's space: from the anchor column's corner along x and z, the
+    /// world's y.
+    pub camera: [f32; 3],
+    /// Blocks from the camera, along x and along z, the TLAS spans whichever way one goes.
+    pub distance: f32,
+}
+
+/// What a trace reads of the entity layer.
+pub(in crate::gfx) struct TracedEntities<'a> {
+    /// The stream's vertices, as far as a binding holds them.
+    pub vertices: wgpu::BufferBinding<'a>,
+    pub atlas: &'a wgpu::TextureView,
+    pub sampler: &'a wgpu::Sampler,
+    /// Each of the BLAS's four geometries' first quad in `vertices`.
+    pub bases: [u32; GEOMETRIES],
+    /// The retained block entities' quads, and their first instance in the TLAS.
+    pub retained: &'a wgpu::Buffer,
+    pub retained_instances: u32,
 }
 
 impl RayScene {
@@ -90,23 +448,63 @@ impl RayScene {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(REACH);
+        let most = largest_store(&device.limits());
+        let slots = Slots::new(FIRST_STORE.min(most), most);
         Some(Self {
             blas: FxHashMap::default(),
             dirty: Vec::new(),
             tlas: create_tlas(device, 1024),
+            solid_instances: 0,
             anchor: None,
             reach,
             to_compact: Vec::new(),
             compacting: Vec::new(),
-            unpacker: Unpacker::new(device, 1 << 20),
+            unpacker: Unpacker::new(device, slots.capacity),
+            slots,
+            full_logged: false,
+            generation: 0,
+            translucent_instances: 0,
+            entities: None,
+            retained_instances: 0,
+        })
+    }
+
+    /// What a trace from `camera` reads, once this world's first TLAS is built: before that
+    /// the TLAS is unbuilt, or still holds the world left.
+    pub(in crate::gfx) fn traced(&self, camera: DVec3) -> Option<Traced<'_>> {
+        let (camera, distance) = scene_space(camera, self.anchor?, self.reach);
+        let entities = self.entities.as_ref().map(|e| TracedEntities {
+            vertices: wgpu::BufferBinding {
+                buffer: &e.buffer,
+                offset: 0,
+                size: wgpu::BufferSize::new(
+                    e.buffer.size().min(u64::from(e.most) * 4 * ENTITY_STRIDE),
+                ),
+            },
+            atlas: &e.atlas,
+            sampler: &e.sampler,
+            bases: e.ranges.map(|r| r.0),
+            retained: e.retained.store(),
+            retained_instances: self.retained_instances,
+        });
+        Some(Traced {
+            tlas: &self.tlas,
+            solid_instances: self.solid_instances,
+            store: &self.unpacker.store,
+            translucent_instances: self.translucent_instances,
+            entities,
+            generation: self.generation,
+            camera,
+            distance,
         })
     }
 
     fn mark(&mut self, key: SectionKey) {
-        self.dirty.push(key);
+        self.dirty.extend(Layer::BOTH.map(|layer| (key, layer)));
     }
 
     fn clear(&mut self) {
+        self.slots.clear();
         self.blas.clear();
         self.dirty.clear();
         self.to_compact.clear();
@@ -140,104 +538,182 @@ impl RayScene {
         changed
     }
 
-    /// Builds the BLAS of sections marked since the last frame (at most `BUILDS_PER_FRAME`, and
-    /// as many as the unpacker has room for), and the TLAS again when a BLAS changed or the
-    /// camera entered another chunk column.
+    /// Builds the BLAS of parts marked since the last frame (at most `BUILDS_PER_FRAME`, and as
+    /// many as the store has room for), and the TLAS again when a BLAS changed or the camera
+    /// entered another chunk column, or every frame with the entity layer (from `stream`).
+    /// `translucent` is the arena the sections' translucent quads are in
+    /// (`SectionGpu::translucent_at`).
     #[allow(clippy::too_many_arguments)]
     fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        sections: &Resident<SectionGpu>,
-        arena: &Arena,
+        (sections, arena): (&Resident<SectionGpu>, &Arena),
+        translucent: &Arena,
         indices: &wgpu::Buffer,
         camera: DVec3,
+        stream: Option<Stream<'_>>,
     ) {
+        let retained = stream.as_ref().map_or(&[][..], |s| s.retained);
+        match (&mut self.entities, stream) {
+            (_, None) => self.entities = None,
+            (Some(e), Some(stream)) => {
+                if e.fit(device, &stream) {
+                    self.generation += 1;
+                }
+            }
+            (None, Some(stream)) => {
+                let mut e = Entities::new(device, &stream);
+                e.fit(device, &stream);
+                self.entities = Some(e);
+                self.generation += 1;
+            }
+        }
         let column = crate::gfx::resident::camera_column(camera);
+        if let Some(e) = &mut self.entities
+            && e.retained
+                .update(device, encoder, retained, column, self.reach)
+        {
+            self.generation += 1;
+        }
         // Only sections within `reach` get a BLAS (at render distance 32 all of them took 1.3 GB
         // of video memory); those past `reach + 2` lose theirs, so walking along a chunk border
         // doesn't build the same ones over and over.
         let keep = self.reach + 2;
         let mut changed = self.compact(queue);
         if self.anchor != Some(column) {
-            let before = self.blas.len();
-            self.blas.retain(|k, _| within(k, column, keep));
-            changed |= self.blas.len() != before;
+            changed |= leave(&mut self.blas, &mut self.slots, column, keep);
             for (key, s, _) in sections.iter() {
-                if within(&key, column, self.reach) && s.solid > 0 && !self.blas.contains_key(&key)
-                {
-                    self.dirty.push(key);
+                if !within(&key, column, self.reach) {
+                    continue;
+                }
+                for layer in Layer::BOTH {
+                    if layer.quads(s) > 0 && !self.blas.contains_key(&(key, layer)) {
+                        self.dirty.push((key, layer));
+                    }
                 }
             }
         }
-        let take = self.dirty.len().min(BUILDS_PER_FRAME);
         let mut builds: Vec<Build<'_>> = Vec::new();
         let mut deferred = Vec::new();
-        // Vertices the unpacker writes this frame.
-        let mut unpacked = 0;
-        for key in self.dirty.drain(..take) {
-            if builds.iter().any(|b| b.key == key) {
+        // A part with nothing to build (most sections have no translucent quads) costs a
+        // lookup: only the builds count toward the frame's share.
+        let mut taken = 0;
+        while taken < self.dirty.len() && builds.len() < BUILDS_PER_FRAME {
+            let part = self.dirty[taken];
+            taken += 1;
+            if builds.iter().any(|b| b.part == part) || deferred.contains(&part) {
                 continue;
             }
+            let (key, layer) = part;
             match sections
                 .find(key)
-                .filter(|s| s.solid > 0 && within(&key, column, self.reach))
+                .filter(|s| layer.quads(s) > 0 && within(&key, column, self.reach))
             {
                 Some(s) => {
-                    let at = if s.packed {
-                        let vertices = u64::from(s.solid) * 4;
-                        if unpacked + vertices > self.unpacker.capacity {
-                            if unpacked > 0 {
-                                // The rest waits for the next frame's room.
-                                deferred.push(key);
-                                continue;
-                            }
-                            self.unpacker.grow(device, vertices);
+                    let quads = layer.quads(s);
+                    // A part meshed again leaves its old slot: its old BLAS goes from the
+                    // TLAS below, before anything traces the part written over it.
+                    let Some(first) = self.slots.alloc(part, u64::from(quads) * 4) else {
+                        // The store is at its largest: the part keeps its old BLAS and
+                        // slot, if it has them, and waits for a later frame's room.
+                        if !self.full_logged {
+                            self.full_logged = true;
+                            log::warn!(
+                                "Horizon renderer: the ray tracing scene's store is full ({} \
+                                 vertices); some sections wait for room",
+                                self.slots.capacity
+                            );
                         }
-                        unpacked += vertices;
-                        Some(unpacked - vertices)
-                    } else {
-                        None
+                        deferred.push(part);
+                        continue;
                     };
-                    let (size, blas) = new_blas(device, s.solid);
+                    let (size, blas) = new_blas(device, quads);
                     builds.push(Build {
-                        key,
+                        part,
                         s,
+                        quads,
                         size,
                         blas,
-                        unpacked: at,
+                        first,
                     });
                 }
-                None => changed |= self.blas.remove(&key).is_some(),
+                None => {
+                    self.slots.free(part);
+                    changed |= self.blas.remove(&part).is_some();
+                }
             }
         }
+        self.dirty.drain(..taken);
         self.dirty.extend(deferred);
-        if builds.is_empty() && !changed && self.anchor == Some(column) {
+        // Before the unpack pass writes into the store.
+        if self.unpacker.fit(device, encoder, self.slots.capacity) {
+            self.generation += 1;
+        }
+        if builds.is_empty() && !changed && self.anchor == Some(column) && self.entities.is_none() {
             return;
         }
-        self.unpacker.run(device, encoder, arena, &builds);
+        self.unpacker
+            .run(device, encoder, arena, translucent, &builds);
         for b in &builds {
-            self.blas.insert(b.key, b.blas.clone());
-            self.to_compact.push((b.key, b.blas.clone()));
+            self.blas.insert(b.part, b.blas.clone());
+            self.to_compact.push((b.part, b.blas.clone()));
         }
-        let near = |k: &SectionKey| within(k, column, self.reach);
-        let count = self.blas.keys().filter(|k| near(k)).count();
+        let near = |part: &Part| within(&part.0, column, self.reach);
+        // A layer without quads this frame has no instance: an empty BLAS can't be built.
+        let entities = self
+            .entities
+            .as_ref()
+            .filter(|e| e.ranges.iter().any(|r| r.1 > 0));
+        let retained = self.entities.as_ref().map(|e| &e.retained);
+        let retained_count = retained.map_or(0, |r| r.instances(column, self.reach).count());
+        let count = self.blas.keys().filter(|part| near(part)).count()
+            + usize::from(entities.is_some())
+            + retained_count;
         if count > self.tlas.get().len() {
             self.tlas = create_tlas(device, (count as u32).next_power_of_two());
+            self.generation += 1;
         }
         let min_y = sections.min_y();
         let mut n = 0;
-        for (key, blas) in self.blas.iter().filter(|(k, _)| near(k)) {
-            let o = instance_origin(*key, min_y, column);
-            self.tlas[n] = Some(wgpu::TlasInstance::new(
-                blas,
-                [
-                    1.0, 0.0, 0.0, o[0], 0.0, 1.0, 0.0, o[1], 0.0, 0.0, 1.0, o[2],
-                ],
-                0,
-                0xff,
-            ));
+        // The solid layer's instances first: a hit tells its layer by its instance's index.
+        for layer in Layer::BOTH {
+            let parts = self.blas.iter();
+            for (part, blas) in parts.filter(|(part, _)| part.1 == layer && near(part)) {
+                let o = instance_origin(part.0, min_y, column);
+                // Below `MOST_STORE / 4`, so it fits the custom data's 24 bits.
+                let first_quad = self.slots.first(*part).map_or(0, |at| at / 4) as u32;
+                self.tlas[n] = Some(wgpu::TlasInstance::new(
+                    blas,
+                    [
+                        1.0, 0.0, 0.0, o[0], 0.0, 1.0, 0.0, o[1], 0.0, 0.0, 1.0, o[2],
+                    ],
+                    first_quad,
+                    layer.mask(),
+                ));
+                n += 1;
+            }
+            if layer == Layer::Solid {
+                self.solid_instances = n as u32;
+            }
+        }
+        self.translucent_instances = n as u32;
+        if let Some(e) = entities {
+            // The stream's vertices are camera-relative: the camera's place in the TLAS's space.
+            let ([x, y, z], _) = scene_space(camera, column, self.reach);
+            let transform = [1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, z];
+            let mask = RAY_ENTITY as u8;
+            self.tlas[n] = Some(wgpu::TlasInstance::new(&e.blas, transform, 0, mask));
+            n += 1;
+        }
+        self.retained_instances = n as u32;
+        let retained = self.entities.as_ref().map(|e| &e.retained);
+        for instance in retained
+            .into_iter()
+            .flat_map(|r| r.instances(column, self.reach))
+        {
+            self.tlas[n] = Some(instance);
             n += 1;
         }
         for i in n..self.tlas.get().len() {
@@ -246,10 +722,42 @@ impl RayScene {
             }
             self.tlas[i] = None;
         }
-        let entries = build_entries(&builds, arena, &self.unpacker, indices);
+        let mut entries = build_entries(&builds, &self.unpacker.store, indices);
+        let sizes = entities.map(Entities::built_sizes);
+        if let (Some(e), Some(sizes)) = (entities, &sizes) {
+            entries.push(e.build(sizes, indices));
+        }
+        entries.extend(retained.into_iter().flat_map(|r| r.builds(indices)));
         encoder.build_acceleration_structures(entries.iter(), std::iter::once(&self.tlas));
         self.anchor = Some(column);
     }
+}
+
+/// Drops from `blas` both layers of the sections past `keep` chunks of column `column`, and
+/// frees their slots. Whether any went.
+fn leave<T>(
+    blas: &mut FxHashMap<Part, T>,
+    slots: &mut Slots,
+    column: (i32, i32),
+    keep: i32,
+) -> bool {
+    let before = blas.len();
+    blas.retain(|part, _| {
+        let kept = within(&part.0, column, keep);
+        if !kept {
+            slots.free(*part);
+        }
+        kept
+    });
+    blas.len() != before
+}
+
+/// Vertices the store may grow to on a device with `limits`: the unpack pass binds it whole.
+fn largest_store(limits: &wgpu::Limits) -> u64 {
+    let bytes = limits
+        .max_buffer_size
+        .min(limits.max_storage_buffer_binding_size);
+    MOST_STORE.min(bytes / STRIDE / 4 * 4)
 }
 
 /// Whether section `key` is within `reach` chunks of column `column`, along x and z.
@@ -259,22 +767,14 @@ fn within(key: &SectionKey, column: (i32, i32), reach: i32) -> bool {
 
 /// A BLAS to build this frame.
 struct Build<'a> {
-    key: SectionKey,
+    part: Part,
     s: &'a SectionGpu,
+    /// The part's quads.
+    quads: u32,
     size: wgpu::BlasTriangleGeometrySizeDescriptor,
     blas: wgpu::Blas,
-    /// Its first vertex in the unpacker's buffer, for a section in the compact layout.
-    unpacked: Option<u64>,
-}
-
-impl Build<'_> {
-    /// The buffer holding its solid quads as vertices, and its first vertex there.
-    fn vertices<'b>(&self, arena: &'b Arena, unpacker: &'b Unpacker) -> (&'b wgpu::Buffer, u64) {
-        match self.unpacked {
-            Some(at) => (&unpacker.out, at),
-            None => (arena.buffer(self.s.page), self.s.start),
-        }
-    }
+    /// Its first vertex in the store.
+    first: u64,
 }
 
 /// `rt_unpack.wgsl`'s `RtJob`.
@@ -287,14 +787,12 @@ struct RtJob {
     pad: u32,
 }
 
-/// Writes the solid quads of sections in the arena's compact layout out as vertices, for their
-/// BLAS (BLAS builds read vertices; the records are only for the draws to expand). The buffer
-/// is reused every frame: a frame takes only the sections it has room for.
+/// The store, and the pass that writes sections' solid quads into it as vertices: BLAS builds
+/// and rays read vertices, while the arena's compact layout holds records only the draws
+/// expand. Translucent quads are vertices wherever they are kept, and are copied.
 struct Unpacker {
     pipeline: wgpu::ComputePipeline,
-    out: wgpu::Buffer,
-    /// Vertices `out` holds.
-    capacity: u64,
+    store: wgpu::Buffer,
 }
 
 impl Unpacker {
@@ -313,31 +811,51 @@ impl Unpacker {
         });
         Self {
             pipeline,
-            out: unpacked_buffer(device, capacity),
-            capacity,
+            store: store_buffer(device, capacity),
         }
     }
 
-    /// Room for at least `vertices` (one section larger than the buffer).
-    fn grow(&mut self, device: &wgpu::Device, vertices: u64) {
-        self.capacity = vertices.next_power_of_two();
-        self.out = unpacked_buffer(device, self.capacity);
+    /// A store of `vertices` when it holds fewer: the larger one gets the old contents first
+    /// (recorded before this frame's unpack pass), so every slot keeps its place. The old one
+    /// lives on in `encoder` until it is submitted. Whether the store is a new one.
+    fn fit(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        vertices: u64,
+    ) -> bool {
+        if vertices * STRIDE <= self.store.size() {
+            return false;
+        }
+        let store = store_buffer(device, vertices);
+        encoder.copy_buffer_to_buffer(&self.store, 0, &store, 0, self.store.size());
+        self.store = store;
+        true
     }
 
-    /// Writes out the builds' sections that are in the compact layout, one dispatch per arena
-    /// page.
+    /// Writes the builds' quads into their slots: the translucent ones a copy each out of
+    /// `translucent`, the solid ones one dispatch per page of `arena`.
     fn run(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         arena: &Arena,
+        translucent: &Arena,
         builds: &[Build<'_>],
     ) {
-        let mut pages: Vec<u32> = builds
-            .iter()
-            .filter(|b| b.unpacked.is_some())
-            .map(|b| b.s.page)
-            .collect();
+        let (builds, copied): (Vec<_>, Vec<_>) =
+            builds.iter().partition(|b| b.part.1 == Layer::Solid);
+        for b in copied {
+            let (page, at) = b.s.translucent_at;
+            encoder.copy_buffer_to_buffer(
+                translucent.buffer(page),
+                at * STRIDE,
+                &self.store,
+                b.first * STRIDE,
+                u64::from(b.quads) * 4 * STRIDE,
+            );
+        }
+        let mut pages: Vec<u32> = builds.iter().map(|b| b.s.page).collect();
         pages.sort_unstable();
         pages.dedup();
         if pages.is_empty() {
@@ -357,14 +875,12 @@ impl Unpacker {
         for page in pages {
             let jobs: Vec<RtJob> = builds
                 .iter()
-                .filter_map(|b| {
-                    let at = b.unpacked.filter(|_| b.s.page == page)?;
-                    Some(RtJob {
-                        base: b.s.solid_base(),
-                        quads: b.s.solid,
-                        out: at as u32,
-                        pad: 0,
-                    })
+                .filter(|b| b.s.page == page)
+                .map(|b| RtJob {
+                    base: b.s.solid_base(),
+                    quads: b.s.solid,
+                    out: b.first as u32,
+                    pad: 0,
                 })
                 .collect();
             let jobs_buffer = wgpu::util::DeviceExt::create_buffer_init(
@@ -393,7 +909,7 @@ impl Unpacker {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: self.out.as_entire_binding(),
+                        resource: self.store.as_entire_binding(),
                     },
                 ],
             });
@@ -411,11 +927,14 @@ pub(in crate::gfx) fn unpack_shader() -> String {
     crate::gfx::terrain_shader() + include_str!("../rt_unpack.wgsl")
 }
 
-fn unpacked_buffer(device: &wgpu::Device, vertices: u64) -> wgpu::Buffer {
+fn store_buffer(device: &wgpu::Device, vertices: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Ray tracing: unpacked sections"),
-        size: vertices * std::mem::size_of::<TerrainVertex>() as u64,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::BLAS_INPUT,
+        label: Some("Ray tracing: section vertices"),
+        size: vertices * STRIDE,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::BLAS_INPUT
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
 }
@@ -429,17 +948,18 @@ fn create_tlas(device: &wgpu::Device, capacity: u32) -> wgpu::Tlas {
     })
 }
 
-/// A new BLAS for `solid` quads, and its size.
+/// A new BLAS for `quads` quads, and its size.
 fn new_blas(
     device: &wgpu::Device,
-    solid: u32,
+    quads: u32,
 ) -> (wgpu::BlasTriangleGeometrySizeDescriptor, wgpu::Blas) {
     let size = wgpu::BlasTriangleGeometrySizeDescriptor {
         vertex_format: wgpu::VertexFormat::Float32x3,
-        vertex_count: solid * 4,
+        vertex_count: quads * 4,
         index_format: Some(wgpu::IndexFormat::Uint32),
-        index_count: Some(solid * 6),
-        flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
+        index_count: Some(quads * 6),
+        // Not opaque: rays test cut-out texels (leaves, plants) and clear ones themselves.
+        flags: wgpu::AccelerationStructureGeometryFlags::empty(),
     };
     let blas = device.create_blas(
         &wgpu::CreateBlasDescriptor {
@@ -455,36 +975,139 @@ fn new_blas(
     (size, blas)
 }
 
-/// Build entries reading each section's solid vertices (`pos` is `TerrainVertex`'s first field)
-/// with the shared quad indices.
+/// Build entries reading each part's vertices in the store (`pos` is `TerrainVertex`'s first
+/// field) with the shared quad indices.
 fn build_entries<'a>(
     builds: &'a [Build<'a>],
-    arena: &'a Arena,
-    unpacker: &'a Unpacker,
+    store: &'a wgpu::Buffer,
     indices: &'a wgpu::Buffer,
 ) -> Vec<wgpu::BlasBuildEntry<'a>> {
-    let stride = std::mem::size_of::<TerrainVertex>() as u64;
     builds
         .iter()
-        .map(|b| {
-            let (source, first) = b.vertices(arena, unpacker);
-            wgpu::BlasBuildEntry {
-                blas: &b.blas,
-                geometry: wgpu::BlasGeometries::TriangleGeometries(vec![
-                    wgpu::BlasTriangleGeometry {
-                        size: &b.size,
-                        vertex_buffer: source,
-                        first_vertex: first as u32,
-                        vertex_stride: stride,
-                        index_buffer: Some(indices),
-                        first_index: Some(0),
-                        transform_buffer: None,
-                        transform_buffer_offset: None,
-                    },
-                ]),
-            }
+        .map(|b| wgpu::BlasBuildEntry {
+            blas: &b.blas,
+            geometry: wgpu::BlasGeometries::TriangleGeometries(vec![wgpu::BlasTriangleGeometry {
+                size: &b.size,
+                vertex_buffer: store,
+                first_vertex: b.first as u32,
+                vertex_stride: STRIDE,
+                index_buffer: Some(indices),
+                first_index: Some(0),
+                transform_buffer: None,
+                transform_buffer_offset: None,
+            }]),
         })
         .collect()
+}
+
+/// Where each part's vertices sit in the store: first fit over the free ranges, which merge
+/// with their neighbours when freed. A store with no range to fit grows, up to `most`. The
+/// retained block entities' store keeps its sections by their key (`ray_retained.rs`).
+struct Slots<K = Part> {
+    taken: FxHashMap<K, (u64, u64)>,
+    /// Free (first vertex, vertices), in order, none touching another.
+    free: Vec<(u64, u64)>,
+    /// Vertices the store holds.
+    capacity: u64,
+    most: u64,
+}
+
+impl<K: Copy + Eq + std::hash::Hash> Slots<K> {
+    fn new(capacity: u64, most: u64) -> Self {
+        Self {
+            taken: FxHashMap::default(),
+            free: vec![(0, capacity)],
+            capacity,
+            most,
+        }
+    }
+
+    /// Part `key`'s first vertex.
+    fn first(&self, key: K) -> Option<u64> {
+        self.taken.get(&key).map(|s| s.0)
+    }
+
+    /// A slot of `vertices` for part `key` in place of its old one, the first that fits, in
+    /// a store twice as large (at least large enough) when none does. None at `most`: `key`
+    /// then keeps its old slot.
+    fn alloc(&mut self, key: K, vertices: u64) -> Option<u64> {
+        let old = self.taken.remove(&key);
+        if let Some(old) = old {
+            self.release(old);
+        }
+        let fits = |free: &[(u64, u64)]| free.iter().find(|r| r.1 >= vertices).map(|r| r.0);
+        let mut at = fits(&self.free);
+        if at.is_none() {
+            let capacity = (self.capacity * 2)
+                .max(self.capacity + vertices)
+                .min(self.most);
+            if capacity > self.capacity {
+                self.release((self.capacity, capacity - self.capacity));
+                self.capacity = capacity;
+                at = fits(&self.free);
+            }
+        }
+        let slot = match at {
+            Some(at) => (at, vertices),
+            None => old?,
+        };
+        self.take(slot);
+        self.taken.insert(key, slot);
+        at
+    }
+
+    fn free(&mut self, key: K) {
+        if let Some(slot) = self.taken.remove(&key) {
+            self.release(slot);
+        }
+    }
+
+    /// Every slot free; the store keeps its size.
+    fn clear(&mut self) {
+        self.taken.clear();
+        self.free = vec![(0, self.capacity)];
+    }
+
+    /// Takes `slot` out of the free range holding it.
+    fn take(&mut self, (at, n): (u64, u64)) {
+        let i = self.free.partition_point(|r| r.0 + r.1 <= at);
+        let (start, len) = self.free[i];
+        let parts = [(start, at - start), (at + n, start + len - at - n)];
+        self.free
+            .splice(i..=i, parts.into_iter().filter(|p| p.1 > 0));
+    }
+
+    /// Gives `slot` back, merged with the free ranges it touches.
+    fn release(&mut self, (mut at, mut n): (u64, u64)) {
+        let mut i = self.free.partition_point(|r| r.0 < at);
+        if let Some(next) = self.free.get(i).filter(|r| at + n == r.0) {
+            n += next.1;
+            self.free.remove(i);
+        }
+        if let Some(before) = i.checked_sub(1).map(|j| self.free[j])
+            && before.0 + before.1 == at
+        {
+            (at, n) = (before.0, before.1 + n);
+            i -= 1;
+            self.free.remove(i);
+        }
+        self.free.insert(i, (at, n));
+    }
+}
+
+/// `camera` in the space of a TLAS anchored at chunk column `anchor` (worked out in doubles:
+/// far from the world's origin a float holds a position to centimetres), and how far from it
+/// along x and along z a TLAS of `reach` chunks around that column spans at least.
+fn scene_space(camera: DVec3, anchor: (i32, i32), reach: i32) -> ([f32; 3], f32) {
+    let x = camera.x - f64::from(anchor.0) * 16.0;
+    let z = camera.z - f64::from(anchor.1) * 16.0;
+    // The columns span from `reach` chunks before the anchor's corner to `reach + 1` after it.
+    let (low, high) = (f64::from(reach) * 16.0, f64::from(reach + 1) * 16.0);
+    let distance = (x + low).min(high - x).min(z + low).min(high - z);
+    (
+        [x as f32, camera.y as f32, z as f32],
+        distance.max(0.0) as f32,
+    )
 }
 
 /// Where section `key` sits relative to the corner of chunk column `anchor`.
@@ -496,6 +1119,13 @@ fn instance_origin(key: SectionKey, min_y: i32, anchor: (i32, i32)) -> [f32; 3] 
     ]
 }
 
+#[path = "ray_retained.rs"]
+mod retained;
+
+#[cfg(test)]
+#[path = "ray_entity_tests.rs"]
+pub(in crate::gfx) mod entity_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,6 +1135,152 @@ mod tests {
         // Section 5 of column (3, -2), the world starting at y = -64, seen from column (2, -2).
         assert_eq!(instance_origin((3, 5, -2), -64, (2, -2)), [16.0, 16.0, 0.0]);
         assert_eq!(instance_origin((2, 0, -2), -64, (2, -2)), [0.0, -64.0, 0.0]);
+    }
+
+    #[test]
+    fn the_camera_sits_in_the_anchor_column_s_space_far_from_the_origin() {
+        // 30 million blocks out, 3.25 and 12.5 blocks into column (1_875_000, -1_875_000).
+        let camera = DVec3::new(30_000_003.25, 70.5, -29_999_987.5);
+        let (at, distance) = scene_space(camera, (1_875_000, -1_875_000), 8);
+        assert_eq!(at, [3.25, 70.5, 12.5]);
+        // Nearest edge: 8 chunks and 3.25 blocks west; east it is 9 chunks less 3.25.
+        assert_eq!(distance, 131.25);
+        // A reach of no chunks is the anchor column alone.
+        assert_eq!(scene_space(camera, (1_875_000, -1_875_000), 0).1, 3.25);
+    }
+
+    const A: Part = ((0, 0, 0), Layer::Solid);
+    const B: Part = ((1, 0, 0), Layer::Solid);
+    const C: Part = ((2, 0, 0), Layer::Solid);
+    /// Section A's translucent quads.
+    const A_CLEAR: Part = ((0, 0, 0), Layer::Translucent);
+
+    #[test]
+    fn freed_slots_merge_and_are_taken_first_fit() {
+        let mut slots = Slots::new(64, 64);
+        assert_eq!(slots.alloc(A, 16), Some(0));
+        assert_eq!(slots.alloc(B, 16), Some(16));
+        assert_eq!(slots.alloc(C, 16), Some(32));
+        slots.free(B);
+        slots.free(A);
+        // 32 fit only where A's and B's slots merged; the 16 left at the end come next.
+        assert_eq!(slots.alloc(A, 32), Some(0));
+        assert_eq!(slots.alloc(B, 8), Some(48));
+        assert_eq!(slots.capacity, 64);
+    }
+
+    #[test]
+    fn a_section_meshed_again_leaves_its_old_slot() {
+        let mut slots = Slots::new(64, 64);
+        slots.alloc(A, 8);
+        slots.alloc(B, 8);
+        assert_eq!(slots.alloc(A, 4), Some(0));
+        // Its old 8 are free again, but 16 don't fit before B.
+        assert_eq!(slots.alloc(A, 16), Some(16));
+        assert_eq!(slots.alloc(C, 8), Some(0));
+        assert_eq!(slots.first(B), Some(8));
+    }
+
+    #[test]
+    fn a_section_s_translucent_quads_come_and_go_beside_its_solid_ones() {
+        let mut slots = Slots::new(64, 64);
+        assert_eq!(slots.alloc(A, 16), Some(0));
+        assert_eq!(slots.alloc(A_CLEAR, 8), Some(16));
+        assert_eq!(slots.alloc(B, 8), Some(24));
+        // Water placed in the section: both parts are meshed again, each into a slot of its own.
+        assert_eq!(slots.alloc(A, 16), Some(0));
+        assert_eq!(slots.alloc(A_CLEAR, 12), Some(32));
+        // The water is gone: its slot goes, the solid quads stay where they are.
+        slots.free(A_CLEAR);
+        assert_eq!((slots.first(A), slots.first(A_CLEAR)), (Some(0), None));
+        assert_eq!(slots.alloc(C, 32), Some(32));
+        // Only translucent quads left (a section of water alone): they take the solid ones' room.
+        slots.free(A);
+        assert_eq!(slots.alloc(A_CLEAR, 16), Some(0));
+        assert_eq!((slots.first(A), slots.first(B)), (None, Some(24)));
+    }
+
+    #[test]
+    fn the_translucent_layer_grows_the_store_and_waits_at_its_cap() {
+        const B_CLEAR: Part = ((1, 0, 0), Layer::Translucent);
+        let mut slots = Slots::new(16, 48);
+        assert_eq!(slots.alloc(A, 16), Some(0));
+        assert_eq!(slots.alloc(A_CLEAR, 8), Some(16));
+        assert_eq!(slots.capacity, 32);
+        assert_eq!(slots.alloc(B, 8), Some(24));
+        // Grown to its largest, the store has 16 free: B's water waits, and nothing moved.
+        assert_eq!(slots.alloc(B_CLEAR, 32), None);
+        assert_eq!(slots.capacity, 48);
+        let firsts = [A, A_CLEAR, B, B_CLEAR].map(|p| slots.first(p));
+        assert_eq!(firsts, [Some(0), Some(16), Some(24), None]);
+        // A's water spreads: no room for it either, so it keeps its old slot.
+        assert_eq!(slots.alloc(A_CLEAR, 24), None);
+        assert_eq!(slots.first(A_CLEAR), Some(16));
+        // Another world: every slot of both layers is free.
+        slots.clear();
+        assert_eq!(slots.alloc(B_CLEAR, 48), Some(0));
+    }
+
+    #[test]
+    fn a_section_leaving_reach_takes_both_its_layers() {
+        const FAR: Part = ((20, 0, 0), Layer::Solid);
+        const FAR_CLEAR: Part = ((20, 0, 0), Layer::Translucent);
+        let mut slots = Slots::new(64, 64);
+        let mut blas = FxHashMap::default();
+        for (part, vertices) in [(A, 8), (A_CLEAR, 8), (FAR, 16), (FAR_CLEAR, 8)] {
+            slots.alloc(part, vertices);
+            blas.insert(part, ());
+        }
+        assert!(leave(&mut blas, &mut slots, (1, 0), 10));
+        let mut kept: Vec<Part> = blas.keys().copied().collect();
+        kept.sort_by_key(|p| p.1 == Layer::Translucent);
+        assert_eq!(kept, [A, A_CLEAR]);
+        assert_eq!((slots.first(FAR), slots.first(FAR_CLEAR)), (None, None));
+        // Their 24 vertices are free again, after A's two slots.
+        assert_eq!(slots.alloc(C, 48), Some(16));
+        assert!(!leave(&mut blas, &mut slots, (1, 0), 10));
+    }
+
+    #[test]
+    fn the_store_s_cap_comes_from_the_device_s_limits() {
+        let mut limits = wgpu::Limits {
+            max_buffer_size: 1 << 40,
+            max_storage_buffer_binding_size: 1 << 30,
+            ..Default::default()
+        };
+        // A gibibyte of 24-byte vertices, whole quads of them.
+        assert_eq!(STRIDE, 24);
+        assert_eq!(largest_store(&limits), 44_739_240);
+        limits.max_storage_buffer_binding_size = 1 << 40;
+        assert_eq!(largest_store(&limits), MOST_STORE);
+    }
+
+    #[test]
+    fn a_full_store_grows_and_every_slot_stays() {
+        let mut slots = Slots::new(16, 1 << 26);
+        assert_eq!(slots.alloc(A, 16), Some(0));
+        assert_eq!(slots.alloc(B, 8), Some(16));
+        assert_eq!(slots.capacity, 32);
+        // Larger than twice the store: the store takes it whole after its free 8.
+        assert_eq!(slots.alloc(C, 100), Some(24));
+        assert_eq!(slots.capacity, 132);
+        assert_eq!((slots.first(A), slots.first(B)), (Some(0), Some(16)));
+    }
+
+    #[test]
+    fn at_the_largest_store_a_section_waits_in_its_old_slot() {
+        let mut slots = Slots::new(16, 32);
+        slots.alloc(A, 16);
+        slots.alloc(B, 16);
+        assert_eq!(slots.alloc(C, 4), None);
+        assert_eq!(slots.alloc(A, 20), None);
+        assert_eq!(slots.first(A), Some(0));
+        // Nothing was lost on the way: A's slot was taken back.
+        assert_eq!(slots.alloc(C, 4), None);
+        slots.free(B);
+        assert_eq!(slots.alloc(A, 20), Some(0));
+        slots.clear();
+        assert_eq!(slots.alloc(C, 32), Some(0));
     }
 
     #[test]
@@ -534,5 +1310,6 @@ mod tests {
         assert!(!super::super::on(&device));
         assert!(RayScene::new(&device).is_none());
         assert!(super::super::blas_input(&device).is_empty());
+        assert!(super::super::arena_input(&device).is_empty());
     }
 }
