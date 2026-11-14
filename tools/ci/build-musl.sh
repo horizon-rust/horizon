@@ -2,7 +2,7 @@
 # Called inside rust:alpine3.22 by game-build.yml, without release credentials.
 set -eu
 
-apk add --no-cache build-base pkgconf alsa-lib-dev eudev-dev python3 git
+apk add --no-cache build-base pkgconf alsa-lib-dev eudev-dev linux-headers python3 git
 git config --global --add safe.directory /work
 # Match the stable channel used by the other release jobs, not the image's bundled Rust.
 rustup update stable --no-self-update
