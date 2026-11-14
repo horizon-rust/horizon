@@ -2455,12 +2455,11 @@ impl Game<'_> {
             }));
             events
         };
-        let Some(back) = horizon_client::spans::time("lan_events", || {
+        let Some(mut host) = horizon_client::spans::time("lan_events", || {
             self.lan_process_events(host, events, entities.as_slice(), spawn)
         }) else {
             return;
         };
-        host = back;
         if !host.quiet.is_empty() {
             self.lan = Some(host);
             horizon_client::spans::time("lan_quiet_commands", || self.run_quiet_commands());
@@ -2495,6 +2494,7 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the mods' moves");
         }
+        self.send_packet_marked_motion(&mut host);
         host.states = entities;
         self.level_pass.packets_drained = true;
         drop(holding);
