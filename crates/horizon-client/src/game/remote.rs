@@ -743,7 +743,7 @@ pub(super) struct Remote {
     /// `Player.DATA_SHOULDER_PARROT_LEFT` and `_RIGHT` of the own player.
     pub(super) own_shoulders: [Option<i32>; 2],
     /// The local player's profile UUID (always in the level).
-    profile: u128,
+    pub(super) profile: u128,
     /// The local player's profile name: its score holder and team member.
     pub(super) profile_name: String,
     /// `MultiPlayerGameMode.destroyBlockPos`, `.destroyProgress` and the face last sent: the block
@@ -1486,7 +1486,7 @@ impl Game<'_> {
             own_arrows: 0,
             own_stingers: 0,
             own_shoulders: [None; 2],
-            profile: 0,
+            profile: horizon_client::studio::recorder::RECORDER_UUID,
             profile_name: String::new(),
             destroying: None,
             destroying_item: String::new(),
@@ -5476,6 +5476,36 @@ impl Game<'_> {
                     .set_object_skin(format!("name:{}", name.to_ascii_lowercase()), skin);
             }
         }
+    }
+    /// The local player's tab list entry as a recording keeps it (their name, game mode and
+    /// skin under the recorder id), for the snapshot a recording starts with. `None` while the
+    /// session has no name for them.
+    pub(super) fn recorder_tab_entry(&self) -> Option<play::Clientbound> {
+        let r = self.remote.as_ref()?;
+        let name = r
+            .tab_players
+            .get(&r.profile)
+            .map(|t| t.name.as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&r.profile_name);
+        if name.is_empty() {
+            return None;
+        }
+        // The server's textures for them, else the account's own (single player sends none).
+        let account = match &r.own_profile {
+            OwnProfile::Done(Some(t)) => Some(t),
+            _ => None,
+        };
+        let textures = r
+            .skin_textures
+            .get(&r.profile)
+            .filter(|t| t.skin.is_some())
+            .or(account);
+        Some(horizon_client::studio::recorder::recorder_entry(
+            name,
+            r.game_mode,
+            textures,
+        ))
     }
     fn poll_own_profile(&mut self) {
         let auth = self.auth();
