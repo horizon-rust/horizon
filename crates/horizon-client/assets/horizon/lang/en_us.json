@@ -1225,5 +1225,7 @@
   "horizon.perf.retry_hover": "Try the upload again. The profile is still saved on your computer.",
   "horizon.perf.link_hover": "Open the shared profile in your browser.",
   "horizon.commands.restart.restarting": "Restarting the server",
-  "horizon.commands.restart.unsupervised": "Nothing would start the game again: /restart needs a server run by horizon-server"
+  "horizon.commands.restart.unsupervised": "Nothing would start the game again: /restart needs a server run by horizon-server",
+  "horizon.proxy.restarting": "Restarting, back in a moment",
+  "horizon.proxy.unavailable": "The server is not available right now. Try again in a moment."
 }
