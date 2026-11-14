@@ -173,10 +173,16 @@ impl ObjectMotion {
                         .as_ref()
                         .map_or(now[i].pos, |then| (Vec3::from(then[i].pos) + shift).into()),
                     uv: now[i].uv,
-                    flags: new | if translucent(&now[i]) { TRANSLUCENT } else { 0 },
+                    // The whole layer, unmasked, as frame generation has always tested it.
+                    flags: new
+                        | if translucent(now[i].layer) {
+                            TRANSLUCENT
+                        } else {
+                            0
+                        },
                 };
                 for q in (0..now.len() / 4).map(|q| q * 4) {
-                    if translucent(&now[q]) && !self.translucent_items
+                    if !self.translucent_items && translucent(now[q].layer & 0xffff)
                         || new != 0 && !writes_depth(now[q].layer)
                     {
                         continue;
@@ -185,6 +191,7 @@ impl ObjectMotion {
                         .extend([q, q + 1, q + 2, q, q + 2, q + 3].map(pair));
                 }
             }
+            drop(then);
             if id != 0 {
                 tracked.insert(id, now.to_vec());
             }
@@ -296,9 +303,9 @@ impl ObjectMotion {
     }
 }
 
-fn translucent(vertex: &Vertex) -> bool {
+fn translucent(layer: u32) -> bool {
     matches!(
-        vertex.layer,
+        layer,
         super::super::entity_batch::TRANSLUCENT_ITEM_OVERLAY
             | super::super::entity_batch::TRANSLUCENT_GLINT_ITEM_OVERLAY
     )
@@ -436,10 +443,12 @@ mod tests {
                 super::super::optical_flow::tests::upload(&device, &queue, [1, 1], &[0; 4])
             });
             let mut motion = ObjectMotion::new(&device, atlas, false);
-            let item = square(0.0, TRANSLUCENT_ITEM_OVERLAY);
-            motion.track(&item, &[(0, 7)], DVec3::ZERO);
-            motion.track(&item, &[(0, 7)], DVec3::ZERO);
-            assert_eq!(motion.staged.len(), if with_atlas { 6 } else { 0 });
+            for layer in [TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY | 3 << 16] {
+                let item = square(0.0, layer);
+                motion.track(&item, &[(0, 7)], DVec3::ZERO);
+                motion.track(&item, &[(0, 7)], DVec3::ZERO);
+                assert_eq!(motion.staged.len(), if with_atlas { 6 } else { 0 });
+            }
         }
     }
 
