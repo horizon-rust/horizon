@@ -100,6 +100,10 @@ impl ApplicationHandler for Missing {
         }
         let attributes =
             horizon_client::window::with_icon(Window::default_attributes().with_title("Horizon"))
+                .with_min_inner_size(winit::dpi::PhysicalSize::new(
+                    horizon_client::window::MIN_WINDOW_WIDTH,
+                    horizon_client::window::MIN_WINDOW_HEIGHT,
+                ))
                 .with_inner_size(winit::dpi::LogicalSize::new(1040.0, 700.0));
         let made = event_loop
             .create_window(attributes)

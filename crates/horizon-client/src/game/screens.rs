@@ -122,6 +122,10 @@ impl Screen {
 /// aligned at (0.5, 0.25). Extra rows hold a server dialog or links
 /// (`PauseScreen.getCustomAdditions`), followed by the guest profile settings.
 fn pause_grid(w: f32, h: f32, extra_rows: u8) -> (f32, f32) {
+    let (w, h) = (
+        w.max(horizon_client::window::MIN_WINDOW_WIDTH as f32),
+        h.max(horizon_client::window::MIN_WINDOW_HEIGHT as f32),
+    );
     let (grid_w, grid_h) = (212.0, 166.0 + 24.0 * f32::from(extra_rows));
     (((w - grid_w) * 0.5).floor(), ((h - grid_h) * 0.25).floor())
 }
@@ -258,6 +262,10 @@ fn death_confirm_texts() -> (Text, [Text; 2]) {
     )
 }
 fn death_buttons(w: f32, h: f32, hardcore: bool) -> [(f32, f32, &'static str, u8); 2] {
+    let (w, h) = (
+        w.max(horizon_client::window::MIN_WINDOW_WIDTH as f32),
+        h.max(horizon_client::window::MIN_WINDOW_HEIGHT as f32),
+    );
     let respawn = if hardcore {
         "deathScreen.spectate"
     } else {
@@ -1000,6 +1008,17 @@ mod tests {
         let at = |w, h| death_buttons(w, h, false).map(|b| (b.0, b.1));
         assert_eq!(at(427.0, 253.0), [(113.0, 135.0), (113.0, 159.0)]);
         assert_eq!(at(320.0, 334.0), [(60.0, 155.0), (60.0, 179.0)]);
+    }
+
+    #[test]
+    fn pause_menu_clamps_to_min_window_size_and_does_not_overlap_title() {
+        // Issue #16198: when squished vertically below 240 GUI pixels (e.g. h = 155),
+        // pause buttons clamp to MIN_WINDOW_HEIGHT (240) so the first button stays at y = 68
+        // and does not overlap the title drawn at y = 40.
+        let buttons_155 = pause_buttons(1476.0, 155.0, false, false, false, &[]);
+        let buttons_240 = pause_buttons(1476.0, 240.0, false, false, false, &[]);
+        assert_eq!(buttons_155[0].1, buttons_240[0].1);
+        assert!(buttons_155[0].1 >= 68.0);
     }
 
     #[test]

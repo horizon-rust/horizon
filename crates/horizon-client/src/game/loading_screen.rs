@@ -107,6 +107,10 @@ impl Loading {
         let window_step = startup::step("window.create");
         let window = match event_loop.create_window(
             attributes
+                .with_min_inner_size(winit::dpi::PhysicalSize::new(
+                    horizon_client::window::MIN_WINDOW_WIDTH,
+                    horizon_client::window::MIN_WINDOW_HEIGHT,
+                ))
                 .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
                 .with_visible(!self.options.as_ref().is_some_and(|o| o.offscreen)),
