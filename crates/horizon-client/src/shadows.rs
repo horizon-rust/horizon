@@ -93,15 +93,17 @@ pub fn mob_shadow_radius(m: &Mob) -> f32 {
 /// `EntityRenderer.extractShadow` skips an entity whose
 /// `EntityRenderState.isInvisible` is set (`Entity.isInvisible`).
 pub fn mob_casters(mobs: &[Mob], alpha: f64) -> impl Iterator<Item = (DVec3, f32, f32)> {
-    mobs.iter().filter(|m| !m.is_invisible()).map(move |m| {
-        let (p, q) = (m.previous, m.position);
-        let pos = DVec3::new(
-            p.x + (q.x - p.x) * alpha,
-            p.y + (q.y - p.y) * alpha,
-            p.z + (q.z - p.z) * alpha,
-        );
-        (pos, mob_shadow_radius(m), shadow_params(&m.kind.id).1)
-    })
+    mobs.iter()
+        .filter(|m| !m.is_invisible() && !m.removed)
+        .map(move |m| {
+            let (p, q) = (m.previous, m.position);
+            let pos = DVec3::new(
+                p.x + (q.x - p.x) * alpha,
+                p.y + (q.y - p.y) * alpha,
+                p.z + (q.z - p.z) * alpha,
+            );
+            (pos, mob_shadow_radius(m), shadow_params(&m.kind.id).1)
+        })
 }
 
 /// `DisplayRenderer.getShadowRadius` and `DisplayRenderer.getShadowStrength`:
@@ -448,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn invisible_mobs_cast_no_shadow() {
+    fn invisible_and_removed_mobs_cast_no_shadow() {
         use horizon_core::geometry::Vec3;
         let kind = crate::mobs::sensor_scan_tests::kind();
         let mut seen = Mob::new(1, kind.clone(), Vec3::new(1.0, 64.0, 1.0), 0.0);
@@ -457,14 +459,16 @@ mod tests {
         // with the Invisibility effect.
         let mut flagged = Mob::new(2, kind.clone(), Vec3::ZERO, 0.0);
         flagged.invisible = true;
-        let mut potion = Mob::new(3, kind, Vec3::ZERO, 0.0);
+        let mut potion = Mob::new(3, kind.clone(), Vec3::ZERO, 0.0);
         potion.add_effect("minecraft:invisibility", 600, 0);
-        let mobs = [seen, flagged, potion];
+        let mut removed = Mob::new(4, kind, Vec3::ZERO, 0.0);
+        removed.removed = true;
+        let mobs = [seen, flagged, potion, removed];
         let casters: Vec<_> = mob_casters(&mobs, 0.5).collect();
         assert_eq!(
             casters,
             vec![(DVec3::new(0.5, 64.0, 1.0), 0.7, 1.0)],
-            "only the visible mob casts a shadow"
+            "only the visible, non-removed mob casts a shadow"
         );
     }
     fn mob(id: &str, species: crate::mobs::Species) -> Mob {

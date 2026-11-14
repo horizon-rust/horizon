@@ -57,6 +57,9 @@ impl Game<'_> {
             ..Default::default()
         });
         for mob in &self.mobs {
+            if mob.removed {
+                continue;
+            }
             // LevelRenderer: the entity the view looks out of is not drawn
             // in first person.
             if self.hides_as_camera(mob.id) {
