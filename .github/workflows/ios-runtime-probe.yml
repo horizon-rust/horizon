@@ -45,6 +45,17 @@ jobs:
           PY
           # All modifications stay in the ephemeral runner checkout.
           git diff -- crates/horizon-threads/src/allocator_stats.rs
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("crates/horizon-client-input/Cargo.toml")
+          old = 'arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }'
+          new = 'arboard = { version = "3.6.1", default-features = false }'
+          source = path.read_text()
+          assert source.count(old) == 1, "Upstream clipboard dependency changed; review patch"
+          path.write_text(source.replace(old, new, 1))
+          PY
+          git diff -- crates/horizon-client-input/Cargo.toml
+
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
         run: |
