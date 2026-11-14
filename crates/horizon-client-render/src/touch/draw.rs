@@ -6,7 +6,8 @@
 //! Drawing the touch controls on the HUD, in GUI pixels. Buttons use the
 //! resource pack's own button sprite (`widget/button`, highlighted while held)
 //! with a short label; the joystick, the D-pad and the tap marker are plain
-//! shapes. No art of its own ships with the game.
+//! shapes. No art of its own ships with the game. Custom buttons draw
+//! the same way (see `custom.rs`).
 use super::{Control, Mode, Placement, Role, TouchControls, layout};
 use crate::gamepad::{Button, PadState};
 use crate::hud::{HudAtlas, HudBatch, rgba};
@@ -18,13 +19,29 @@ const BUTTON_HELD: &str = "gui/sprites/widget/button_highlighted";
 impl TouchControls {
     /// Draws every visible control, then the tap marker in the tap schemes.
     pub fn draw(&self, b: &mut HudBatch, a: &HudAtlas) {
+        if self.editor.is_some() {
+            self.draw_editor_toolbar(b, a);
+        }
         let state = self.state();
         for control in Control::ALL {
             if !self.visible(control) {
                 continue;
             }
             let p = self.placement(control);
-            let color = rgba(255, 255, 255, alpha(p.opacity));
+            // The editor shows invisible controls faintly, so they can be found.
+            let opacity = if self.editor.is_some() {
+                p.opacity.max(0.25)
+            } else {
+                p.opacity
+            };
+            let color = rgba(255, 255, 255, alpha(opacity));
+            if self
+                .editor
+                .as_ref()
+                .is_some_and(|e| e.selected == Some(control))
+            {
+                self.draw_selection(b, a, square(b, p.center, p.size));
+            }
             if control == Control::Move {
                 self.draw_move(b, a, p, &state, color);
                 continue;
@@ -38,7 +55,10 @@ impl TouchControls {
                     .any(|(_, point)| layout::contains(rect, *point));
             button(b, a, bounds, &self.label(control), pressed, color);
         }
-        if let Some(point) = self.pointer() {
+        self.draw_custom(b, a);
+        if self.editor.is_some() {
+            self.draw_editor(b, a);
+        } else if let Some(point) = self.pointer() {
             let center = [point[0] * b.width, point[1] * b.height];
             let radius = self.settings.circle_size / 2.0;
             ring(b, a, center, radius + 0.7, rgba(0, 0, 0, 110));
@@ -54,7 +74,18 @@ impl TouchControls {
 
     /// Whether a control shows as held: its button is down, or it latched.
     fn held(&self, control: Control, state: &PadState) -> bool {
-        if control == Control::Sneak && self.sneaking {
+        let sneaking = if self.inventory_mode {
+            self.inventory_shift
+        } else {
+            self.sneaking
+        };
+        if control == Control::Sneak && sneaking {
+            return true;
+        }
+        if self.inventory_mode
+            && Self::inventory_token(control)
+                .is_some_and(|token| self.held_custom_tokens().any(|held| held == token))
+        {
             return true;
         }
         Self::button(control).is_some_and(|button| match button {
@@ -105,8 +136,9 @@ impl TouchControls {
         });
         let center = match anchor {
             Some(anchor) if self.dynamic_joystick() => anchor,
-            // A dynamic joystick only shows while a finger holds it.
-            None if self.dynamic_joystick() => return,
+            // A dynamic joystick only shows while a finger holds it (and in
+            // the editor, at home, so it can be moved).
+            None if self.dynamic_joystick() && self.editor.is_none() => return,
             _ => p.center,
         };
         let [x, y, size, _] = square(b, center, p.size);
@@ -148,7 +180,7 @@ fn knob(middle: [f32; 2], left: [f32; 2], size: f32) -> [f32; 2] {
 }
 
 /// A placement's square in GUI pixels, `[x, y, size, size]`.
-fn square(b: &HudBatch, center: [f32; 2], size: f32) -> [f32; 4] {
+pub(super) fn square(b: &HudBatch, center: [f32; 2], size: f32) -> [f32; 4] {
     let size = size * b.height;
     [
         center[0] * b.width - size / 2.0,
@@ -158,13 +190,13 @@ fn square(b: &HudBatch, center: [f32; 2], size: f32) -> [f32; 4] {
     ]
 }
 
-fn alpha(opacity: f32) -> u8 {
+pub(super) fn alpha(opacity: f32) -> u8 {
     (opacity.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// A labelled button: the pack's button sprite, or a plain frame when the
 /// pack has none. A held button darkens and its label drops a pixel.
-fn button(
+pub(super) fn button(
     b: &mut HudBatch,
     a: &HudAtlas,
     bounds: [f32; 4],
