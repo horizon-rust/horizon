@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 /// own an iOS event loop; do not invoke its desktop-style entry from SwiftUI.
 struct LauncherView: View {
     @State private var showArchivePicker = false
+    @State private var showMetalDiagnostic = false
     @State private var archiveName: String? = NovaGameFiles.stagedArchiveName()
     @State private var archiveMessage: String?
     @State private var importInProgress = false
@@ -47,6 +48,12 @@ struct LauncherView: View {
                             .multilineTextAlignment(.center)
                     }
 
+                    Button("Test Metal display") {
+                        showMetalDiagnostic = true
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityHint("Opens a GPU display test, not Horizon gameplay")
+
                     Divider().overlay(.white.opacity(0.2))
 
                     Text("Game files")
@@ -84,6 +91,20 @@ struct LauncherView: View {
                 .padding(28)
                 .frame(maxWidth: .infinity)
             }
+        }
+        .sheet(isPresented: $showMetalDiagnostic) {
+            VStack(spacing: 12) {
+                Text("Nova Metal surface test")
+                    .font(.title3.bold())
+                Text("This is a GPU display diagnostic, not the Horizon game.")
+                    .font(.footnote)
+                GameSurfaceView()
+                    .frame(minHeight: 180)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                Button("Close") { showMetalDiagnostic = false }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding()
         }
         .fileImporter(
             isPresented: $showArchivePicker,

@@ -44,3 +44,20 @@ mod tests {
         assert_eq!(horizon_ios_launch_game(), -1);
     }
 }
+
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+// Weak, non-owning native view handle. The Swift host resets it on teardown.
+// No dereference is performed until the engine's real surface adapter exists.
+static METAL_VIEW: AtomicUsize = AtomicUsize::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_set_metal_view(view: *mut c_void) {
+    METAL_VIEW.store(view as usize, Ordering::Release);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn horizon_ios_has_metal_view() -> bool {
+    METAL_VIEW.load(Ordering::Acquire) != 0
+}

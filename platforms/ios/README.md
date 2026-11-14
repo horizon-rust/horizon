@@ -62,3 +62,12 @@ and resources under `assets/minecraft/`, and the current desktop entry
 creates its own winit event loop. Do NOT enable Play simply because a ZIP
 was imported. Examine the ZIP version and directory structure first. Do not
 commit user-supplied Minecraft assets to this public repository.
+
+## Metal surface integration diagnostic
+
+Nova's "Test Metal display" screen creates an MTKView, presents a simple
+GPU-cleared frame, and registers a **non-owning** UIView pointer through
+`horizon_ios_set_metal_view` in either Rust bridge variant. It unregisters
+the pointer when dismissed. This proves the SwiftUI -> Rust ABI and native
+drawable creation can be exercised; it does NOT pass a wgpu surface to Horizon,
+does NOT start Horizon's event loop, and is not game rendering.
