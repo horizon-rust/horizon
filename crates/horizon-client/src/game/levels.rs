@@ -689,6 +689,8 @@ impl Game<'_> {
                 let _span = horizon_client::spans::guard("mods_level_tick_post");
                 self.native_level_tick_post(dim.id());
             }
+            #[cfg(feature = "state-digest")]
+            self.state_digest_tick(dim, running);
             horizon_client::spans::time("server_debug", || self.publish_server_debug(dim));
             // An entity that crossed into a level that already ticked this
             // server tick is in it when the tick ends (`addDuringTeleport`).
