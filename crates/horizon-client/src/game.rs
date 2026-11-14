@@ -2794,7 +2794,7 @@ struct Game<'a> {
         horizon_threads::alloc_count::Counts,
     )>,
     /// This play session's frame and tick times, for opt-in performance statistics.
-    perf: horizon_client::telemetry::Session,
+    perf: horizon_client::play_session::Session,
     /// Control replies waiting for a rendered frame or a benchmark deadline.
     pending_screenshot: Option<std::sync::mpsc::Sender<String>>,
     /// `screenshot-sequence` while it runs.
@@ -12259,11 +12259,11 @@ pub fn run_with() -> Result<()> {
         options.spikes = Some(dedicated::SLOW_TICK_MS);
     }
     tick_profile::want_spans(tick_profile::SPANS_SPIKES, options.spikes.is_some());
-    // A player who allows performance statistics also says what their slow frames spent their
-    // time in: this thread, which draws the frames, times its steps (wall time only).
+    // A hook that wants to know what slow frames spent their time in (a player who allows
+    // performance statistics): this thread, which draws the frames, times its steps (wall time
+    // only).
     if options.execution_role.is_client()
-        && horizon_telemetry::Consent::load(&horizon_client::logging::game_home())
-            .allows(horizon_telemetry::Kind::Perf)
+        && horizon_hooks::engine::wants_frame_steps(&horizon_client::logging::game_home())
     {
         horizon_client::spans::record_here(true);
     }
@@ -12288,7 +12288,7 @@ pub fn run_with() -> Result<()> {
     // for a server, a benchmark, a run that quits by itself, a harness's fixture or a run that
     // horizon-ctl drives: those start in a source checkout and wrote the list there.
     if !options.offscreen && !synchronous_startup(&options) {
-        let version = horizon_client::telemetry::version();
+        let version = horizon_client::crash::build();
         let game_dir = horizon_client::logging::player_dir();
         horizon_hooks::engine::started(&horizon_hooks::Started::new(&version, &game_dir));
     }

@@ -45,7 +45,7 @@ pub fn enabled() -> bool {
 }
 /// Record this thread's spans even with spans off, their wall time only (no CPU clock read):
 /// what the render thread's slow frames spent their time in, for the opt-in performance
-/// statistics (`telemetry::Session::frame`). The thread takes them every frame ([`take`]).
+/// statistics (`play_session::Session::frame`). The thread takes them every frame ([`take`]).
 pub fn record_here(on: bool) {
     HERE.with(|h| h.set(on));
 }
@@ -475,7 +475,7 @@ pub mod startup {
             Mutex, OnceLock,
             atomic::{AtomicBool, AtomicU32, Ordering},
         },
-        time::Instant,
+        time::{Duration, Instant},
     };
 
     static ON: AtomicBool = AtomicBool::new(false);
@@ -496,6 +496,11 @@ pub mod startup {
             std::fs::File::create(&path).ok().map(Mutex::new)
         });
         ON.store(sink.is_some(), Ordering::Relaxed);
+    }
+
+    /// The time since the process started ([`init`]'s origin; zero before it).
+    pub fn since_start() -> Duration {
+        ORIGIN.get().map_or(Duration::ZERO, Instant::elapsed)
     }
 
     /// Whether a trace is being written.

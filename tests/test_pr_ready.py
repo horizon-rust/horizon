@@ -174,6 +174,8 @@ class PrReadyTests(unittest.TestCase):
         self.assertEqual(pr_ready.mod_features(["horizon-client"]), "")
         self.assertEqual(pr_ready.mod_features(["horizon-mods"]),
                          " --features horizon-mods/index")
+        self.assertEqual(pr_ready.mod_features(["horizon-bench", "horizon-telemetry"]),
+                         " --features horizon-telemetry/game")
         self.assertEqual(pr_ready.mod_features(None), MODS)
 
     def test_mod_api_data_inputs_build_and_test_the_consuming_crates(self):

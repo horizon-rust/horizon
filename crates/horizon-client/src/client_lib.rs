@@ -112,6 +112,7 @@ pub mod patrol;
 pub mod perf_net;
 pub mod perf_overlay;
 pub mod pick_item;
+pub mod play_session;
 pub mod player_sync;
 pub mod portal_sections;
 pub mod pose;
@@ -142,7 +143,6 @@ pub mod stations;
 pub mod stopwatches;
 pub mod structure_blocks;
 pub mod studio;
-pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 pub mod text_display;

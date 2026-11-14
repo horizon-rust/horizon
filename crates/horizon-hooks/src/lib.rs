@@ -28,7 +28,9 @@ pub mod tunnel;
 
 use registry::Registry;
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::time::Duration;
 
 /// What a crate above the engine hears from the game. Every method has an empty default:
 /// implement only those you need. Hooks run on the game's thread (the render thread) unless a
@@ -45,6 +47,39 @@ pub trait Hooks: Sync {
 
     /// The game is ending normally: its window closed and the world is saved. Not after a crash.
     fn shutdown(&self) {}
+
+    /// A moment of the game's start, once each, with the time since the process started.
+    fn startup(&self, _milestone: Milestone, _since_start: Duration) {}
+
+    /// Whether this hook wants the render thread to time its steps in every frame, for
+    /// [`PlayedFrame::slowest_step`]. Asked once as the game starts (not on a dedicated server);
+    /// `home` is the game's home folder. Timing the steps costs microseconds a frame.
+    fn wants_frame_steps(&self, _home: &Path) -> bool {
+        false
+    }
+
+    /// A world's first frame was drawn: the time since it started opening (single player, a
+    /// server, LAN). Every time a world is entered.
+    fn world_shown(&self, _since_opening: Duration) {}
+
+    /// A frame drawn while playing: not in the menus or while a world loads. Every frame.
+    fn played_frame(&self, _frame: &PlayedFrame<'_>) {}
+
+    /// The player left a world (to the title screen, or by quitting): the end of a play
+    /// session, with the settings it was played with.
+    fn world_left(&self, _left: &WorldLeft<'_>) {}
+
+    /// The screen the window is on: when the window opens, and again as a session ends (on
+    /// Wayland a window is on a screen only once it has been shown).
+    fn display(&self, _display: &Display) {}
+
+    /// The game crashed, once, before its report is saved in `crash-reports/`. Called on the
+    /// thread that crashed, whatever the mode (a dedicated server too).
+    fn crashed(&self, _crash: &Crash<'_>) {}
+
+    /// A `--benchmark` run finished and saved its report (docs/benchmark.md), once, before the
+    /// game quits.
+    fn benchmarked(&self, _run: &Benchmarked<'_>) {}
 
     /// Once a frame, before drawing: `sprites` takes the pictures the crate's
     /// [`players::Sprites`] lacked. Only a window's game calls it (each splitscreen player in
@@ -180,6 +215,117 @@ pub enum GameMode {
     Spectator,
 }
 
+/// What [`Hooks::benchmarked`] gets.
+pub struct Benchmarked<'a> {
+    /// The game's home folder.
+    pub home: &'a Path,
+    /// As [`Crash::version`].
+    pub version: &'a str,
+    /// The report as it may be uploaded (`horizon_bench::Report::for_upload`,
+    /// docs/benchmark-report.md), as JSON.
+    pub report: &'a str,
+}
+
+/// The graphics adapter the renderer runs on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Gpu {
+    pub name: String,
+    pub vendor: String,
+    /// `integrated`, `discrete`, `virtual`, `cpu` or `other`.
+    pub kind: String,
+    pub driver: String,
+    /// `metal`, `vulkan`, `dx12` or `gl`.
+    pub backend: String,
+}
+
+/// The screen a window is on ([`Hooks::display`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Display {
+    /// Physical pixels.
+    pub width: u32,
+    pub height: u32,
+    /// `None` where the OS doesn't say.
+    pub refresh_hz: Option<u32>,
+    pub scale: f64,
+}
+
+/// What [`Hooks::crashed`] gets: the crash report's parts.
+pub struct Crash<'a> {
+    /// The game's home folder.
+    pub home: &'a Path,
+    /// The build: the release (`v0.2.3`), or `dev <crate version>` for a build from source.
+    pub version: &'a str,
+    /// The error's message.
+    pub error: &'a str,
+    /// Where it happened and how it got there: one frame a line.
+    pub stack: &'a str,
+    pub thread: &'a str,
+    /// The report's details (`Horizon Version`, `World`, `Server`...), as written in it.
+    pub details: &'a [(String, String)],
+    /// The renderer's adapter, once it has one.
+    pub gpu: Option<&'a Gpu>,
+}
+
+/// A moment of the game's start ([`Hooks::startup`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Milestone {
+    /// The resources the menus need are loaded.
+    CoreReady,
+    /// The rest (what a world needs) too.
+    RestReady,
+    /// The title screen drew its first frame.
+    TitleShown,
+}
+
+impl Milestone {
+    fn bit(self) -> u8 {
+        match self {
+            Self::CoreReady => 1,
+            Self::RestReady => 2,
+            Self::TitleShown => 4,
+        }
+    }
+}
+
+/// What [`Hooks::played_frame`] gets.
+pub struct PlayedFrame<'a> {
+    /// How long the frame took.
+    pub ms: f32,
+    slowest_step: &'a dyn Fn() -> Option<(String, f32)>,
+}
+
+impl<'a> PlayedFrame<'a> {
+    /// `slowest_step` gives [`PlayedFrame::slowest_step`], only when asked.
+    pub fn new(ms: f32, slowest_step: &'a dyn Fn() -> Option<(String, f32)>) -> Self {
+        Self { ms, slowest_step }
+    }
+
+    /// The step the frame spent the most time in (`render/terrain`) and its milliseconds, when
+    /// the steps were timed ([`Hooks::wants_frame_steps`]). Worked out on each call: ask only
+    /// for a slow frame.
+    pub fn slowest_step(&self) -> Option<(String, f32)> {
+        (self.slowest_step)()
+    }
+}
+
+/// What [`Hooks::world_left`] gets: the game's home folder, the build, the adapter and the
+/// settings played with.
+pub struct WorldLeft<'a> {
+    pub home: &'a Path,
+    /// As [`Crash::version`].
+    pub version: &'a str,
+    /// The renderer's adapter.
+    pub gpu: Option<&'a Gpu>,
+    pub render_distance: i32,
+    pub simulation_distance: i32,
+    /// `None`: unlimited.
+    pub max_fps: Option<u32>,
+    pub vsync: bool,
+    pub fullscreen: bool,
+    /// The graphics preset's name.
+    pub graphics: &'a str,
+}
+
 /// What [`Hooks::started`] gets.
 #[non_exhaustive]
 pub struct Started<'a> {
@@ -307,6 +453,65 @@ pub mod engine {
         }
     }
 
+    /// The milestones already said.
+    static MILESTONES: AtomicU8 = AtomicU8::new(0);
+
+    /// [`Hooks::startup`], the first time `milestone` is reached; later calls do nothing.
+    pub fn startup(milestone: Milestone, since_start: Duration) {
+        if MILESTONES.fetch_or(milestone.bit(), Ordering::Relaxed) & milestone.bit() == 0 {
+            for hooks in all() {
+                hooks.startup(milestone, since_start);
+            }
+        }
+    }
+
+    /// [`Hooks::wants_frame_steps`]: whether any hook wants them.
+    pub fn wants_frame_steps(home: &Path) -> bool {
+        all().iter().any(|h| h.wants_frame_steps(home))
+    }
+
+    /// [`Hooks::world_shown`].
+    pub fn world_shown(since_opening: Duration) {
+        for hooks in all() {
+            hooks.world_shown(since_opening);
+        }
+    }
+
+    /// [`Hooks::played_frame`].
+    pub fn played_frame(frame: &PlayedFrame<'_>) {
+        for hooks in all() {
+            hooks.played_frame(frame);
+        }
+    }
+
+    /// [`Hooks::world_left`].
+    pub fn world_left(left: &WorldLeft<'_>) {
+        for hooks in all() {
+            hooks.world_left(left);
+        }
+    }
+
+    /// [`Hooks::display`].
+    pub fn display(display: &Display) {
+        for hooks in all() {
+            hooks.display(display);
+        }
+    }
+
+    /// [`Hooks::crashed`].
+    pub fn crashed(crash: &Crash<'_>) {
+        for hooks in all() {
+            hooks.crashed(crash);
+        }
+    }
+
+    /// [`Hooks::benchmarked`].
+    pub fn benchmarked(run: &Benchmarked<'_>) {
+        for hooks in all() {
+            hooks.benchmarked(run);
+        }
+    }
+
     /// Whether any hook is registered: without one the engine builds no view to hand them.
     pub fn any() -> bool {
         !all().is_empty()
@@ -393,6 +598,30 @@ mod tests {
         }
         fn published(&self, open: bool) {
             self.0.lock().unwrap().push(format!("published {open}"));
+        }
+        fn startup(&self, milestone: Milestone, since_start: Duration) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{milestone:?} {}", since_start.as_millis()));
+        }
+        fn wants_frame_steps(&self, _home: &Path) -> bool {
+            true
+        }
+        fn benchmarked(&self, run: &Benchmarked<'_>) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("benchmarked {} {}", run.version, run.report));
+        }
+        fn played_frame(&self, frame: &PlayedFrame<'_>) {
+            let step = frame
+                .slowest_step()
+                .map(|(name, ms)| format!(" {name} {ms}"));
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("played {}{}", frame.ms, step.unwrap_or_default()));
         }
         fn activity(&self, now: Activity) {
             self.0.lock().unwrap().push(format!("{now:?}"));
@@ -585,6 +814,21 @@ mod tests {
         for open in [false, true, true, true, false, false] {
             engine::published(open);
         }
+        // Each milestone once: the first time it is reached.
+        engine::startup(Milestone::CoreReady, Duration::from_millis(900));
+        engine::startup(Milestone::TitleShown, Duration::from_millis(1500));
+        engine::startup(Milestone::CoreReady, Duration::from_millis(4000));
+        // Any hook that wants the steps timed has them.
+        assert!(engine::wants_frame_steps(Path::new("home")));
+        engine::played_frame(&PlayedFrame::new(70.0, &|| {
+            Some(("render/terrain".into(), 50.0))
+        }));
+        // A finished benchmark's report reaches every hook.
+        engine::benchmarked(&Benchmarked {
+            home: Path::new("home"),
+            version: "v0.2.31",
+            report: "{}",
+        });
         let world = Activity::World {
             play: Play::Singleplayer,
             dimension: Dimension::Nether,
@@ -638,6 +882,10 @@ mod tests {
                 "started 0.2.31",
                 "published true",
                 "published false",
+                "CoreReady 900",
+                "TitleShown 1500",
+                "played 70 render/terrain 50",
+                "benchmarked v0.2.31 {}",
                 "Menus",
                 "World { play: Singleplayer, dimension: Nether, mode: Creative }",
                 "frame 4"

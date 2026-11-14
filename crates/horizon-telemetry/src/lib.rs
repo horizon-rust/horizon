@@ -15,6 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod batch;
 pub mod consent;
+#[cfg(feature = "game")]
+pub mod game;
 pub mod live;
 pub mod outbox;
 pub mod payload;
