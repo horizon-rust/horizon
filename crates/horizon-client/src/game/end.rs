@@ -105,6 +105,16 @@ fn exit_target(exit: [i32; 3], exact: bool, find: impl FnOnce([i32; 3]) -> [i32;
     if exact { exit } else { find(exit) }
 }
 
+/// `TeleportTransition` for a traveller through an End portal: where it
+/// lands, the angles it faces (`None`: a relative rotation, so unchanged) and
+/// whether the respawn block it named is gone.
+pub(super) struct EndArrival {
+    pub at: Vec3,
+    pub yaw: Option<f32>,
+    pub pitch: Option<f32>,
+    pub missing_respawn_block: bool,
+}
+
 fn fallback_spawn(own: Option<Vec3>, world: Option<[i32; 3]>) -> Vec3 {
     let s = own.unwrap_or_else(|| {
         let [x, y, z] = world.unwrap_or([0, 64, 0]);
@@ -691,16 +701,17 @@ impl Game<'_> {
         Some(fallback_spawn(self.spawn, self.level.world_spawn))
     }
 
-    /// Where an End portal's traveller lands once `target` has loaded, and
-    /// the yaw it faces there: the platform below the End's spawn point,
-    /// facing west, or the top of the Overworld's spawn column.
+    /// Where an End portal's traveller lands once `target` has loaded, the
+    /// angles it faces there, and whether the respawn block it names is gone:
+    /// the platform below the End's spawn point, facing west, or the
+    /// Overworld respawn point (a bed or anchor, else the shared spawn).
     /// None while a candidate of the world spawn's search loads (`finder`
     /// keeps it, see `search_spawn`).
     pub(super) fn end_arrival(
         &mut self,
         target: Vec3,
         finder: &mut Option<PlayerSpawnFinder>,
-    ) -> Result<Option<(Vec3, Option<f32>)>> {
+    ) -> Result<Option<EndArrival>> {
         if self.dim == Dim::End {
             // EndPlatformFeature.createEndPlatform below the spawn point.
             let origin = [END_SPAWN[0], END_SPAWN[1] - 1, END_SPAWN[2]];
@@ -729,25 +740,48 @@ impl Game<'_> {
                 }
             }
             self.native_portal_create("minecraft:the_end", origin);
-            // Direction.WEST.toYRot().
-            return Ok(Some((target, Some(90.0))));
+            // EndPortalBlock.getPortalDestination: Direction.WEST.toYRot(),
+            // the pitch a relative X_ROT of 0, so the traveller keeps its own.
+            return Ok(Some(EndArrival {
+                at: target,
+                yaw: Some(90.0),
+                pitch: None,
+                missing_respawn_block: false,
+            }));
         }
         // ServerPlayer.findRespawnPositionAndUseSpawnBlock: where the bed or
-        // anchor puts the player, facing it; else onto the spawn column.
+        // anchor puts the player, facing it and level; else the level's own
+        // spawn point and angles.
         let mut target = target;
+        let mut missing = false;
         if let Some(c) = self.respawn_config.filter(|c| c.dim == self.dim) {
-            // This existing owner transition adapter carries yaw only; its pitch path remains open.
-            if let Some((at, yaw, _pitch)) = self.find_respawn_and_use(c, false)? {
-                return Ok(Some((at, Some(yaw))));
+            if let Some((at, yaw, pitch)) = self.find_respawn_and_use(c, false)? {
+                return Ok(Some(EndArrival {
+                    at,
+                    yaw: Some(yaw),
+                    pitch: Some(pitch),
+                    missing_respawn_block: false,
+                }));
             }
+            // TeleportTransition.missingRespawnBlock: the shared spawn, and
+            // the player is told its spawn block is gone.
             target = fallback_spawn(self.spawn, self.level.world_spawn);
+            missing = true;
         }
+        // TeleportTransition.createDefault and missingRespawnBlock: the
+        // respawn data's angles, which ServerPlayer.teleport sets whole.
+        let [yaw, pitch] = self.level.world_spawn_angle;
+        let arrival = |at| EndArrival {
+            at,
+            yaw: Some(yaw),
+            pitch: Some(pitch),
+            missing_respawn_block: missing,
+        };
         let (x, z) = (target.x.floor() as i32, target.z.floor() as i32);
-        // TeleportTransition.missingRespawnBlock: PlayerSpawnFinder around
-        // the world spawn.
+        // PlayerSpawnFinder around the world spawn.
         if let Some(world) = self.level.world_spawn.filter(|w| w[0] == x && w[2] == z) {
             return Ok(match self.search_spawn(world, finder) {
-                Ok(at) => Some((at, None)),
+                Ok(at) => Some(arrival(at)),
                 Err(chunk) => {
                     self.spawn_wait.push(chunk);
                     None
@@ -755,7 +789,7 @@ impl Game<'_> {
             });
         }
         let y = self.land_column(x, z).map_or(target.y, f64::from);
-        Ok(Some((Vec3::new(target.x, y, target.z), None)))
+        Ok(Some(arrival(Vec3::new(target.x, y, target.z))))
     }
 
     /// EnderDragonFight without a dragon: once the centre of the main island
