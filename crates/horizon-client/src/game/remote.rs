@@ -7267,7 +7267,7 @@ impl Game<'_> {
             let mut items = std::mem::take(&mut self.dropped);
             items.retain_mut(|item| {
                 // The server decides entity collisions. This copy predicts block movement.
-                let (_, discarded) =
+                let (_, discarded, _) =
                     self.tick_item_with_block_contacts(item, None, &[], true, &mut |splash| {
                         entered.push(splash);
                     });
