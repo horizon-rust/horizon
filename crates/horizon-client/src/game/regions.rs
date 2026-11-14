@@ -922,18 +922,16 @@ impl Game<'_> {
             slot.running = Some(rx);
             slot.since = started;
             slot.told = None;
-            let spawned = std::thread::Builder::new()
-                .name(format!("Region {k}"))
-                .spawn(move || {
-                    let began = std::time::Instant::now();
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        w.tick_region_phases().map_err(|e| e.to_string())
-                    }))
-                    .unwrap_or_else(|_| Err("a region thread panicked".to_owned()));
-                    let _ = tx.send((w, result, began.elapsed().as_secs_f32() * 1000.0));
-                });
+            let spawned = super::region_pool::run(move || {
+                let began = std::time::Instant::now();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    w.tick_region_phases().map_err(|e| e.to_string())
+                }))
+                .unwrap_or_else(|_| Err("a region thread panicked".to_owned()));
+                let _ = tx.send((w, result, began.elapsed().as_secs_f32() * 1000.0));
+            });
             self.regions.prof.add(Step::Spawn, spawning);
-            if spawned.is_err() {
+            if !spawned {
                 slot.running = None;
                 failed.get_or_insert("a region thread could not start".to_owned());
             } else {
