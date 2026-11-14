@@ -18,7 +18,11 @@ impl Screen {
     pub(super) fn takes_presses(self) -> bool {
         matches!(
             self,
-            Self::Social | Self::CommandBlock | Self::DebugOptions | Self::BlockEditor
+            Self::Social
+                | Self::CommandBlock
+                | Self::DebugOptions
+                | Self::BlockEditor
+                | Self::ReportForm
         )
     }
 }
@@ -28,6 +32,7 @@ impl Game<'_> {
     pub(super) fn screen_press(&mut self, event: &winit::event::KeyEvent) {
         match self.screen {
             Screen::Social => self.social_key(event),
+            Screen::ReportForm => self.report_form_key(event),
             Screen::CommandBlock => self.command_block_key(event),
             Screen::DebugOptions => self.debug_options_key(event),
             Screen::BlockEditor => self.block_editor_key(event),
@@ -75,6 +80,7 @@ impl Screen {
             | Self::WorldOptions
             | Self::Friends
             | Self::ServerLinks
+            | Self::ReportForm
             | Self::ConfirmLink
             | Self::DialogWarning
             | Self::CommandBlock
@@ -95,6 +101,7 @@ impl Screen {
             | Self::Friends
             | Self::Social
             | Self::ServerLinks
+            | Self::ReportForm
             | Self::ConfirmLink
             | Self::DialogWarning
             | Self::DebugOptions => true,
@@ -474,7 +481,12 @@ impl Game<'_> {
                 self.screen = Screen::ServerLinks;
             }
             // ConfirmLinkScreen.confirmLink(this, CommonLinks...) on the pause screen.
-            12 => self.confirm_trusted_link(BUGS_LINK, Screen::Paused),
+            // Horizon's report form when a crate registered one, else vanilla's link.
+            12 => {
+                if !self.open_report_form() {
+                    self.confirm_trusted_link(BUGS_LINK, Screen::Paused)
+                }
+            }
             13 => self.confirm_trusted_link(feedback_link(), Screen::Paused),
             // PauseScreen: `new SocialInteractionsScreen(this)`.
             15 => self.open_social(true),

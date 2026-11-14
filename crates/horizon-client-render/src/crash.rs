@@ -113,10 +113,23 @@ fn contained_panic(info: &std::panic::PanicHookInfo) -> bool {
     true
 }
 
+/// The details a bug report may show too (`horizon_hooks::details`): not the world's or the
+/// server's, which name them.
+const SHARED: [&str; 5] = [
+    "Graphics Adapter",
+    "DirectX 12 shader compiler",
+    "Render Settings",
+    "Resource Packs",
+    "Native Mods",
+];
+
 /// Sets one line of the report's details (replacing the last value under `key`).
 pub fn set_detail(key: &'static str, value: impl Into<String>) {
     let mut details = DETAILS.lock().unwrap_or_else(|e| e.into_inner());
     let value = value.into();
+    if SHARED.contains(&key) {
+        horizon_hooks::details::engine::set(key, value.clone());
+    }
     match details.iter_mut().find(|(k, _)| *k == key) {
         Some(entry) => entry.1 = value,
         None => details.push((key, value)),
