@@ -82,6 +82,19 @@ jobs:
           path.write_text(source)
           PY
           git diff -- crates/horizon-hdr/src/lib.rs
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("crates/horizon-client-input/src/keybinds.rs")
+          source = path.read_text()
+          old_import = '    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;'
+          old_match = '    match event.key_without_modifiers() {'
+          assert source.count(old_import) == 1 and source.count(old_match) == 1
+          source = source.replace(old_import, '    // iOS: use platform-provided logical keys (modifier supplement unavailable).')
+          source = source.replace(old_match, '    match &event.logical_key {')
+          path.write_text(source)
+          PY
+          git diff -- crates/horizon-client-input/src/keybinds.rs
+
 
 
       - name: Trace desktop Wayland dependency on iOS
