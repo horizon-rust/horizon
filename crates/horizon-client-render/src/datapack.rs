@@ -666,6 +666,8 @@ pub struct DataStore {
     pub slot_sources: BTreeMap<String, serde_json::Value>,
     /// Slot-source tags belong to the same loaded snapshot as their definitions.
     pub slot_source_tags: BTreeMap<String, Vec<(String, bool)>>,
+    /// Registry-definition parse errors reject the candidate, retaining the loaded snapshot.
+    pub slot_source_errors: Vec<(String, String)>,
     /// The content tables' raw files from the packs after the built-in one:
     /// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `dialog/`, `damage_type/`, `data_maps/`, `enchantment/` and `tags/…/` files, by
     /// `<kind-dir>/<ns>:<path>`, each id's files in pack order. The tables
@@ -774,9 +776,17 @@ impl DataStore {
                     slot.extend(entries);
                 } else if let Some(id) = resource_id(&f, "slot_source", ".json")
                     && let Some(bytes) = pack.read(&f)
-                    && let Ok(v) = serde_json::from_slice(&bytes)
                 {
-                    s.slot_sources.insert(id, v);
+                    // ResourceManagerRegistryLoadTask.load decodes only the
+                    // winning resource, not shadowed definitions or errors.
+                    s.slot_sources.remove(&id);
+                    s.slot_source_errors.retain(|(old, _)| old != &id);
+                    match serde_json::from_slice(&bytes) {
+                        Ok(value) => {
+                            s.slot_sources.insert(id, value);
+                        }
+                        Err(error) => s.slot_source_errors.push((id, error.to_string())),
+                    }
                 } else if !builtin
                     && let Some(id) = content_id(&f)
                     && let Some(bytes) = pack.read(&f)
@@ -1040,6 +1050,54 @@ pub fn worldgen_overrides(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slot_source_parse_errors_follow_the_winning_pack() {
+        let root =
+            std::env::temp_dir().join(format!("hz-slot-source-priority-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        for name in ["lower", "higher"] {
+            let pack = root.join(name);
+            std::fs::create_dir_all(pack.join("data/test/slot_source")).unwrap();
+            std::fs::write(
+                pack.join("pack.mcmeta"),
+                r#"{"pack":{"description":"slot-source priority test"}}"#,
+            )
+            .unwrap();
+        }
+        let lower = root.join("lower/data/test/slot_source/one.json");
+        let higher = root.join("higher/data/test/slot_source/one.json");
+        let valid = r#"{"type":"minecraft:slot_range","slots":"container.0"}"#;
+        let packs = discover_folder(&root);
+        let lower_pack = packs.iter().find(|p| p.id == "file/lower").unwrap();
+        let higher_pack = packs.iter().find(|p| p.id == "file/higher").unwrap();
+        for (low, high, accepted) in [("{", valid, true), (valid, "{", false), ("{", "[", false)] {
+            std::fs::write(&lower, low).unwrap();
+            std::fs::write(&higher, high).unwrap();
+            let store = DataStore::load(&[lower_pack, higher_pack]);
+            if accepted {
+                assert!(store.slot_source_errors.is_empty());
+                assert_eq!(
+                    store.slot_sources["test:one"],
+                    serde_json::from_str::<serde_json::Value>(valid).unwrap()
+                );
+            } else {
+                assert!(!store.slot_sources.contains_key("test:one"));
+                assert_eq!(store.slot_source_errors.len(), 1);
+                assert_eq!(store.slot_source_errors[0].0, "test:one");
+                let error = serde_json::from_str::<serde_json::Value>(high).unwrap_err();
+                assert_eq!(store.slot_source_errors[0].1, error.to_string());
+            }
+        }
+        // Overriding one resource must not erase another resource's error.
+        std::fs::write(lower.with_file_name("other.json"), "{").unwrap();
+        std::fs::write(&higher, valid).unwrap();
+        let store = DataStore::load(&[lower_pack, higher_pack]);
+        assert!(store.slot_sources.contains_key("test:one"));
+        assert_eq!(store.slot_source_errors.len(), 1);
+        assert_eq!(store.slot_source_errors[0].0, "test:other");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn folder_metadata_is_required_before_contents_are_discovered() {

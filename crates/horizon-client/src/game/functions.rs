@@ -1,5 +1,7 @@
 //! Data packs in the game: functions (`/function`, `/return`, tick and load
 //! tags, `/schedule`), predicates, `/reload` and `/datapack`.
+mod slot_sources;
+
 use super::{
     Game,
     commands::{
@@ -202,17 +204,23 @@ impl Game<'_> {
     }
     /// `ServerFunctionLibrary.reload`: validate the candidate functions with
     /// the current content before exposing them to execution.
-    pub(super) fn reload_datapacks(&mut self, run_load: bool) {
+    pub(super) fn reload_datapacks(&mut self, run_load: bool) -> bool {
         let stack = pack_stack(
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
             &self.level.enabled_features,
         );
-        self.fns.packs = stack.packs;
-        self.fns.enabled = stack.enabled;
         let store = self.load_store();
         self.fns.loaded = true;
+        // MinecraftServer.reloadResources selects the packs only once their
+        // data loaded: a rejected candidate keeps the old selection too.
+        if let Err(error) = self.slot_source_registries(&store) {
+            log::warn!("Slot-source reload rejected: {error}");
+            return false;
+        }
+        self.fns.packs = stack.packs;
+        self.fns.enabled = stack.enabled;
         self.fns.load_pending = true;
         // An explicit reload (`/reload`, `/datapack`) reloads the content
         // tables with the functions, as `ReloadableServerResources` does;
@@ -224,6 +232,7 @@ impl Game<'_> {
         if self.fns.schedule.is_empty() {
             self.load_schedule();
         }
+        true
     }
     fn load_store(&self) -> DataStore {
         // The built-in pack first (lowest priority), unless disabled.
@@ -247,23 +256,14 @@ impl Game<'_> {
         self.sync_enchantment_registries();
         // A function's `loot ... loot <id>` names the reloaded packs' tables.
         self.sync_loot_table_ids();
-        let mut registries = self.ui.registries.clone();
+        let Ok(mut registries) = self.slot_source_registries(&store) else {
+            return;
+        };
         registries.permission = self.fns.command_level();
         registries.functions = store.functions.keys().cloned().collect();
         registries.function_tags = store.function_tags.keys().cloned().collect();
         registries.predicates = store.predicates.keys().cloned().collect();
         registries.item_modifiers = store.item_modifiers.keys().cloned().collect();
-        let sources = registries
-            .by_registry
-            .entry("minecraft:slot_source".into())
-            .or_default();
-        sources.ids = store.slot_sources.keys().cloned().collect();
-        sources.tags = store
-            .slot_source_tags
-            .keys()
-            .filter(|id| store.slot_source_tag(id).is_ok())
-            .cloned()
-            .collect();
         for (id, ids) in [
             ("minecraft:predicate", &registries.predicates),
             ("minecraft:item_modifier", &registries.item_modifiers),
@@ -918,7 +918,9 @@ impl Game<'_> {
     /// ReloadCommand: the message, then the (asynchronous) reload; returns 0.
     pub(super) fn cmd_reload(&mut self) -> R<i32> {
         self.feedback(Text::translate("commands.reload.success", &[]));
-        self.reload_datapacks(true);
+        if !self.reload_datapacks(true) {
+            self.feedback(Text::translate("commands.reload.failure", &[]));
+        }
         Ok(0)
     }
     /// `PackLocationInfo.createChatLink`: the id decorated with its source
@@ -1035,6 +1037,13 @@ impl Game<'_> {
     }
     pub(super) fn cmd_datapack(&mut self, id: &str, ctx: &Context) -> R<i32> {
         self.ensure_datapacks();
+        let previous = (self.fns.enabled.clone(), self.cmds.vanilla_disabled);
+        if id == "datapack.list" {
+            // PackRepository.reload discovers available packs without replacing
+            // the loaded registry snapshot or changing the selected pack order.
+            self.fns.packs =
+                datapack::discover_with_features(&self.world_root, &self.options.resources);
+        }
         let name = match ctx.get("name") {
             Some(Arg::Str(n)) => Some(n.clone()),
             _ => None,
@@ -1141,7 +1150,7 @@ impl Game<'_> {
                     "commands.datapack.modify.enable",
                     &[self.pack_link(&name, true)],
                 ));
-                self.apply_pack_change();
+                self.apply_pack_change(previous);
                 Ok(self.selected_packs().len() as i32)
             }
             _ => {
@@ -1166,7 +1175,7 @@ impl Game<'_> {
                     "commands.datapack.modify.disable",
                     &[self.pack_link(&name, true)],
                 ));
-                self.apply_pack_change();
+                self.apply_pack_change(previous);
                 Ok(self.selected_packs().len() as i32)
             }
         }
@@ -1174,9 +1183,18 @@ impl Game<'_> {
     /// `ReloadCommand.reloadPacks`: no message of its own. It reloads the
     /// server's data as `/reload` does (`reload_datapacks`), the content
     /// tables with the functions.
-    fn apply_pack_change(&mut self) {
+    /// A rejected candidate keeps the packs selected before the command, as
+    /// `MinecraftServer.reloadResources` selects them only after a load.
+    fn apply_pack_change(&mut self, previous: (Vec<String>, bool)) {
         self.save_datapack_settings();
         let store = self.load_store();
+        if let Err(error) = self.slot_source_registries(&store) {
+            log::warn!("Slot-source reload rejected: {error}");
+            (self.fns.enabled, self.cmds.vanilla_disabled) = previous;
+            self.save_datapack_settings();
+            self.feedback(Text::translate("commands.reload.failure", &[]));
+            return;
+        }
         self.fns.load_pending = true;
         self.reload_world_tables();
         self.admit_store(store);
