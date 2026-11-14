@@ -1,5 +1,5 @@
 //! The terrain as acceleration structures, with ray tracing on (#13780 step 2, after the #1180
-//! spike; `ray_query`): one BLAS per section's solid quads within `reach` chunks of the camera,
+//! spike; `query`): one BLAS per section's solid quads within `reach` chunks of the camera,
 //! compacted once built, and one TLAS of them, built again only when a BLAS changes or the camera
 //! enters another chunk column (its instances sit relative to that column). Nothing traces them
 //! yet. Without ray queries on the device there is no scene and nothing here runs.
@@ -96,9 +96,9 @@ pub(in crate::gfx) struct RayScene {
 }
 
 impl RayScene {
-    /// The scene, when the device has ray queries (`ray_query`).
+    /// The scene, when the device has ray queries (`query`).
     pub(in crate::gfx) fn new(device: &wgpu::Device) -> Option<Self> {
-        if !super::on(device) {
+        if !super::query::on(device) {
             return None;
         }
         let reach = std::env::var("HORIZON_RT_CHUNKS")
@@ -441,7 +441,7 @@ impl Unpacker {
 /// terrain.wgsl with the unpacking entry point after it, which reads sections as its solid
 /// draws do (`section_corner`).
 pub(in crate::gfx) fn unpack_shader() -> String {
-    crate::gfx::terrain_shader() + include_str!("../rt_unpack.wgsl")
+    crate::gfx::terrain_shader() + include_str!("../../rt_unpack.wgsl")
 }
 
 fn store_buffer(device: &wgpu::Device, vertices: u64) -> wgpu::Buffer {
@@ -713,9 +713,9 @@ mod tests {
         else {
             return;
         };
-        assert!(!super::super::on(&device));
+        assert!(!super::super::query::on(&device));
         assert!(RayScene::new(&device).is_none());
-        assert!(super::super::blas_input(&device).is_empty());
-        assert!(super::super::arena_input(&device).is_empty());
+        assert!(super::super::query::blas_input(&device).is_empty());
+        assert!(super::super::query::arena_input(&device).is_empty());
     }
 }

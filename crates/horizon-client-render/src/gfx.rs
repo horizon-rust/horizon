@@ -258,6 +258,7 @@ pub mod panorama;
 mod readback;
 mod resident;
 mod reuse;
+mod rt;
 mod screenshot_save;
 mod stars;
 mod surface_setup;
@@ -1106,8 +1107,8 @@ pub struct Renderer {
     /// Sections upload their solid quads in the compact layout (`mesher::packed`): the solid
     /// passes read the arena themselves (`flat`) and no shader pack reads it as vertices.
     packed_quads: bool,
-    /// The terrain's acceleration structures, with ray tracing on (`ray_scene`).
-    ray_scene: Option<surface_setup::ray_query::ray_scene::RayScene>,
+    /// The terrain's acceleration structures, with ray tracing on (`rt::scene`).
+    ray_scene: Option<rt::scene::RayScene>,
     /// The compact layout is allowed (`HORIZON_PACKED_QUADS`, `set_packed_layout`).
     packed_on: bool,
     /// The visibility buffer for flat frames' solid terrain (`visbuffer`,
@@ -4844,7 +4845,7 @@ impl Renderer {
             last_wait: std::time::Duration::ZERO,
             last_encode: std::time::Duration::ZERO,
             window,
-            ray_scene: surface_setup::ray_query::ray_scene::RayScene::new(&device),
+            ray_scene: rt::scene::RayScene::new(&device),
             device,
             reuse,
             queue: submit::Queue::new(queue, submit::wanted()),
@@ -5269,7 +5270,7 @@ impl Renderer {
         pass.draw(0..4, first..first + edges);
     }
     fn quad_indices(device: &wgpu::Device, quads: u32) -> wgpu::Buffer {
-        surface_setup::ray_query::quad_indices(device, quads)
+        rt::query::quad_indices(device, quads)
     }
     fn offscreen_target(
         device: &wgpu::Device,
@@ -13334,7 +13335,7 @@ mod tests {
                 // occlusion test is appended to gpu_culling.wgsl, on Vulkan alone.
                 continue;
             } else if name == "rt_unpack.wgsl" {
-                // Appended to terrain.wgsl (`ray_scene`'s `Unpacker`), on ray tracing devices.
+                // Appended to terrain.wgsl (`rt::scene`'s `Unpacker`), on ray tracing devices.
                 continue;
             } else if name == "terrain.wgsl"
                 || name == "entity.wgsl"

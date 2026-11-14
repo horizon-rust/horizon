@@ -3,10 +3,6 @@
 //! draws with it yet. Without the variable the device is opened exactly as before. Every build
 //! has it: it is a render capability for shader packs (spec #15624), not a Horizon extra.
 
-/// The terrain's acceleration structures (step 2).
-#[path = "ray_scene.rs"]
-pub(in crate::gfx) mod ray_scene;
-
 /// The ray query feature.
 const RAY_QUERY: wgpu::Features = wgpu::Features::EXPERIMENTAL_RAY_QUERY;
 
@@ -26,7 +22,7 @@ pub(in crate::gfx) fn blas_input(device: &wgpu::Device) -> wgpu::BufferUsages {
 }
 
 /// What the arena's vertex pages need on top of their own usage: the unpack pass reads every
-/// section with a BLAS from them (`ray_scene`). Nothing without ray queries, so the off path's
+/// section with a BLAS from them (`scene`). Nothing without ray queries, so the off path's
 /// pages are main's.
 pub(in crate::gfx) fn arena_input(device: &wgpu::Device) -> wgpu::BufferUsages {
     if on(device) {
@@ -64,7 +60,7 @@ fn asked(var: Option<&str>) -> bool {
 }
 
 /// The features to request on `adapter`: ray queries, when asked for and offered.
-pub(super) fn features(adapter: &wgpu::Adapter) -> wgpu::Features {
+pub(in crate::gfx) fn features(adapter: &wgpu::Adapter) -> wgpu::Features {
     let features = pick(requested(), adapter.features());
     if requested() {
         let info = adapter.get_info();
@@ -95,7 +91,7 @@ fn pick(requested: bool, offered: wgpu::Features) -> wgpu::Features {
 }
 
 /// The device's opt-in to `features`' experimental ones.
-pub(super) fn experimental(features: wgpu::Features) -> wgpu::ExperimentalFeatures {
+pub(in crate::gfx) fn experimental(features: wgpu::Features) -> wgpu::ExperimentalFeatures {
     if features.contains(RAY_QUERY) {
         horizon_hdr::experimental_features()
     } else {
