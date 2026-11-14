@@ -391,7 +391,10 @@ fn script(pre_launch: &str) -> String {
 /// A word quoted for a Windows command line, as programs built with the C runtime read it back.
 fn windows_quote(word: &OsStr) -> String {
     let word = word.to_string_lossy();
-    if !word.is_empty() && !word.contains([' ', '\t', '"']) {
+    // cmd.exe acts on these outside quotes (the pre-launch line goes through it): only quoting
+    // keeps a `Rock&Roll` folder one word.
+    const CMD_SPECIAL: [char; 10] = [' ', '\t', '"', '&', '|', '<', '>', '^', '(', ')'];
+    if !word.is_empty() && !word.contains(CMD_SPECIAL) {
         return word.into_owned();
     }
     let mut out = String::from("\"");

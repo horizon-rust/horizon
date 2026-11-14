@@ -1055,13 +1055,9 @@ pub fn game_mod_api_level() -> Option<u32> {
 /// contract of Horizon 0.2.67 and 0.2.68.
 pub fn mod_api_level(tag: &str) -> u32 {
     static LEVELS: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
-    let mut levels = LEVELS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(&(_, level)) = levels.iter().find(|(t, _)| t == tag) {
-        return level;
-    }
-    let level = program_mod_api_level(&version_dir(tag).join(CLIENT));
-    levels.push((tag.to_owned(), level));
-    level
+    crate::file_safety::cached(&LEVELS, tag, || {
+        program_mod_api_level(&version_dir(tag).join(CLIENT))
+    })
 }
 
 /// The mod API level in the game program at `path`: its mark's, else 0.
@@ -1893,7 +1889,7 @@ fn complete_reports(versions: &Path, tag: &str) -> bool {
             continue;
         };
         // Copied beside it and renamed: an interrupted copy never looks complete.
-        let partial = to.join(format!(".{name}.partial-{}", std::process::id()));
+        let partial = crate::file_safety::unique_partial(&to, name);
         let copied = fs::copy(&from, &partial).and_then(|_| fs::rename(&partial, to.join(name)));
         if copied.is_err() {
             let _ = fs::remove_file(&partial);
@@ -2534,24 +2530,15 @@ pub fn preparer(
     let jar = data_dir()
         .join("server-jars")
         .join(format!("{version}.jar"));
-    if !reused && !jar.exists() {
-        let json: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&manifest).map_err(|e| e.to_string())?)
+    if !reused {
+        crate::file_safety::server_jar(&jar, &manifest, &version, log, &|url| {
+            let mut body = Vec::new();
+            get(url)?
+                .into_reader()
+                .read_to_end(&mut body)
                 .map_err(|e| e.to_string())?;
-        let url = json["downloads"]["server"]["url"]
-            .as_str()
-            .ok_or_else(|| format!("{} has no server download", manifest.display()))?;
-        log(format!("Downloading the {version} server jar from Mojang"));
-        fs::create_dir_all(jar.parent().unwrap()).map_err(|e| e.to_string())?;
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        let partial = jar.with_extension("partial");
-        fs::write(&partial, body)
-            .and_then(|_| fs::rename(&partial, &jar))
-            .map_err(|e| e.to_string())?;
+            Ok(body)
+        })?;
     }
     if let Some(binary) = binary {
         if prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
@@ -4612,8 +4599,9 @@ impl Settings {
         let tmp = dir.join(format!("settings.{}.tmp", std::process::id()));
         let json =
             serde_json::to_vec_pretty(self).map_err(|e| format!("{}: {e}", path.display()))?;
+        // Owner only: it can hold a proxy's user name and password.
         let written = fs::create_dir_all(&dir)
-            .and_then(|()| fs::write(&tmp, json))
+            .and_then(|()| crate::file_safety::write_owner_only(&tmp, &json))
             .and_then(|()| fs::rename(&tmp, &path));
         if let Err(e) = written {
             let _ = fs::remove_file(&tmp);
