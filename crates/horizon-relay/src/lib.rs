@@ -1014,6 +1014,63 @@ mod tests {
         assert!(Net::parse("0.0.0.0/0").unwrap().contains(ip("203.0.113.1")));
     }
 
+    /// docs/play-with-friends.md, "Settings, all optional": each default in the table is the one in
+    /// `Config::default()`.
+    #[test]
+    fn the_defaults_are_the_ones_the_docs_table_gives() {
+        let docs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/play-with-friends.md"
+        ))
+        .unwrap();
+        let c = Config::default();
+        let rates = &c.rates;
+        for (name, value) in [
+            ("RELAY_MAX_HOSTS", c.max_hosts.to_string()),
+            (
+                "RELAY_MAX_HOSTS_PER_ADDRESS",
+                rates.hosts_per_address.to_string(),
+            ),
+            (
+                "RELAY_MAX_OPEN_PER_ADDRESS",
+                rates.open_per_address.to_string(),
+            ),
+            ("RELAY_MAX_BRIDGES", c.max_bridges.to_string()),
+            (
+                "RELAY_MAX_PENDING_PER_HOST",
+                c.max_pending_per_host.to_string(),
+            ),
+            ("RELAY_MAX_CONNECTIONS", c.max_connections.to_string()),
+            ("RELAY_SESSION_KBPS", format!("{}", c.session_rate / 1024.0)),
+            (
+                "RELAY_TOTAL_MBPS",
+                format!("{}", c.total_rate * 8.0 / 1_000_000.0),
+            ),
+            (
+                "RELAY_GLOBAL_UNKNOWN_PER_MIN",
+                format!("{}", c.global_unknown_per_min),
+            ),
+            (
+                "RELAY_NAMEPLATE_UNKNOWN_PER_MIN",
+                format!("{}", rates.nameplate_unknown_per_min),
+            ),
+            (
+                "RELAY_PER_ADDRESS_LIMITS",
+                i32::from(c.per_address).to_string(),
+            ),
+            (
+                "RELAY_PROXY_PROTOCOL",
+                i32::from(c.proxy_protocol).to_string(),
+            ),
+        ] {
+            let row = docs
+                .lines()
+                .find(|l| l.starts_with(&format!("| `{name}` |")))
+                .unwrap_or_else(|| panic!("the table has a row for {name}"));
+            assert_eq!(row.split('|').nth(2).unwrap().trim(), value, "{name}");
+        }
+    }
+
     #[test]
     fn proxy_lines() {
         assert_eq!(
