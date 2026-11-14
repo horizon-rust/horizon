@@ -8,4 +8,7 @@ publish = false
 name = "horizon_ios_bridge"
 crate-type = ["staticlib"]
 
+[dependencies]
+nova-asset-importer = { path = "../AssetImporter" }
+
 [workspace]

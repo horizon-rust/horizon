@@ -54,3 +54,6 @@ mod metal_tests {
         assert!(!super::horizon_ios_has_metal_view());
     }
 }
+
+#[path = "../../AssetImporter/src/ffi_adapter.rs"]
+mod nova_asset_ffi;

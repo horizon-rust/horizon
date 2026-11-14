@@ -12,4 +12,12 @@ int32_t horizon_ios_launch_game(void);
 void horizon_ios_set_metal_view(void *view);
 bool horizon_ios_has_metal_view(void);
 
+// Install a user-provided ZIP into a private, validated prepared-resource root.
+// Error strings are UTF-8, null-terminated (when capacity > 0).
+int32_t nova_ios_install_resources_zip(const char *zip_path,
+                                       const char *destination_path,
+                                       char *error_buffer,
+                                       uintptr_t error_capacity);
+bool nova_ios_resources_present(const char *destination_path);
+
 #endif

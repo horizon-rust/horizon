@@ -61,3 +61,6 @@ pub extern "C" fn horizon_ios_set_metal_view(view: *mut c_void) {
 pub extern "C" fn horizon_ios_has_metal_view() -> bool {
     METAL_VIEW.load(Ordering::Acquire) != 0
 }
+
+#[path = "../../AssetImporter/src/ffi_adapter.rs"]
+mod nova_asset_ffi;
