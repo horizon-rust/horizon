@@ -5,6 +5,7 @@
 //! everywhere.
 pub mod check;
 pub mod inputs;
+pub mod kept;
 pub mod manifest;
 pub mod package;
 pub mod reference;
@@ -17,4 +18,4 @@ pub use manifest::{
     PackTexture, PageItem, Primaries, SCHEMA, SpriteTag, Stage,
 };
 pub use package::{EXTENSION, Pack};
-pub use stages::{Composed, StageKind, compose};
+pub use stages::{Composed, StageKind, compose, compose_scene};
