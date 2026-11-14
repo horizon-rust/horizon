@@ -51,12 +51,12 @@ impl Game<'_> {
             && matches!(species, Species::Wolf | Species::Cat)
             && let Some(child) = self.mobs.iter_mut().find(|m| m.id == id)
         {
+            child.extra.owner = owner;
             if species == Species::Wolf {
                 horizon_client::mobs::tame::set_tame(child, true);
             } else {
                 child.extra.tame = true;
             }
-            child.extra.owner = owner;
         }
         // `DyeColor.getMixedColor(level, c, c)` for a lamb's wool or a tame
         // wolf's or cat's collar: a colour mixed with itself, but the level's
@@ -181,9 +181,6 @@ impl Game<'_> {
         // (`Mob.playAmbientSound`), before the egg is used up and the place
         // is announced.
         self.mob_ambient(id)?;
-        self.post_block_game_event("minecraft:entity_place", p, Some(Who::Player), None);
-        self.award_stat("used", &stack.item, 1);
-        self.swing_arm();
         if !self.creative
             && let Some(s) = self.held_mut().as_mut()
         {
@@ -192,6 +189,9 @@ impl Game<'_> {
                 *self.held_mut() = None;
             }
         }
+        self.post_block_game_event("minecraft:entity_place", p, Some(Who::Player), None);
+        self.award_stat("used", &stack.item, 1);
+        self.swing_arm();
         Ok(true)
     }
     /// `EntityType.updateCustomEntityTag`: the egg's `minecraft:entity_data` on
