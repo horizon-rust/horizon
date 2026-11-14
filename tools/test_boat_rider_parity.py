@@ -130,7 +130,7 @@ def main():
         return
     binary = args.binary
     if binary is None:
-        run(['cargo', 'build', '-p', 'horizon-client', '--bin', 'horizon-client'], 'compile-rust')
+        run(['cargo', 'build', '-p', 'horizon-game', '--bin', 'horizon-client'], 'compile-rust')
         binary = lab.cargo_target() / 'debug' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
     with tempfile.TemporaryDirectory(prefix='hz-boat-rider-') as scratch:
         with (work / 'rust.log').open('w', encoding='utf-8') as log:

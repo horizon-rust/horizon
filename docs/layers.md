@@ -224,7 +224,7 @@ that. horizon-plain becomes a plain build of this repository.
    the official game build in CI, plugged in through the platform's hooks. Players never compile them: a native
    mod is source the launcher compiles per instance, so it is not the way. The official executable is a thin
    binary crate in the Horizon repository that links the platform and the Horizon crates; this repository keeps
-   its own plain executable. The game runs the same without them.
+   its own plain executable, `horizon-game`'s `horizon-client`. The game runs the same without them.
 4. Every Horizon address is in `horizon-addresses`, which moves with the layer.
 5. The launcher is Horizon's: it moves too. It installs the game from this repository's releases and adds the
    Horizon layer to it.
@@ -257,7 +257,7 @@ The seam's points 1-3 above, as they work today (layer plan M5).
 |---|---|---|
 | `horizon-hooks` | engine | The `Hooks` trait, `register`, and the engine's dispatch (`horizon_hooks::engine`) |
 | `horizon-platform` | platform | `horizon_platform::hooks`: `Hooks`, `Started`, `register`, without the dispatch |
-| `horizon-game` | platform | The game for an executable to start: `horizon_game::main()`, the allocator, the mod API mark. The platform's own parts register here as they leave the engine (M6) |
+| `horizon-game` | platform | The game for an executable to start: `horizon_game::main()`, the allocator, the mod API mark. The platform's own parts register here as they leave the engine (M6). Its `horizon-client` executable is this repository's plain game, with no Horizon part: `cargo run -p horizon-game`, the harnesses, `horizon-ctl launch`, the server build and horizon-plain run it |
 | `horizon-official` | Horizon | The official executable: `register()` adds the Horizon crates' hooks, then it runs `horizon_game::main()` |
 
 A Horizon crate that runs in the game:

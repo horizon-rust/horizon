@@ -9,7 +9,7 @@ Optimizations are not extras; they are part of the game in every build.
 ## Building without Horizon's extras
 
 ```sh
-cargo build --release -p horizon-client --no-default-features --features audio,controllers
+cargo build --release -p horizon-game --no-default-features --features audio,controllers
 ```
 
 Best effort: CI builds and tests the default only. The server build (`--no-default-features`,

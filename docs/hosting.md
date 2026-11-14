@@ -63,7 +63,7 @@ for Windows includes it), else against the SHA-256 GitHub publishes, and never a
 - a `game-files` folder for the files you prepare, kept across updates.
 
 Options: `--version vX.Y.Z`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version`, `-Dir`). Other systems,
-such as Linux on ARM, build from source: `cargo build --release -p horizon-client --bin horizon-client -p
+such as Linux on ARM, build from source: `cargo build --release -p horizon-game --bin horizon-client -p
 horizon-server` and keep both programs in one folder.
 
 On Nix and NixOS, the repository's flake builds `horizon-server` from source and has a

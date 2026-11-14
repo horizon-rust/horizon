@@ -1,7 +1,7 @@
 //! The official game: the platform's game (`horizon-game`) with Horizon's own in-game parts
 //! plugged in through the platform's hooks (docs/layers.md, "How a Horizon crate plugs in").
 //! The release builds ship its executable under the game's name, `horizon-client`
-//! (`game-build.yml`); horizon-client keeps its own plain executable.
+//! (`game-build.yml`); horizon-game holds this repository's plain executable.
 //!
 //! Each Horizon crate that runs in the game gives a `&'static` value implementing
 //! `horizon_platform::hooks::Hooks`, and its settings store and pages if it has any, and

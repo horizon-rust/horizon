@@ -20,7 +20,7 @@ Checks: a bare name is a harness (`python3 tools/parity.py <name>`, script `tool
 
 For the full set of harnesses a file can affect, ask the runner:
 `printf '%s\n' <paths> > /tmp/p.txt && python3 tools/parity.py --changed-files /tmp/p.txt --list`.
-Client probes are built with `-p horizon-client-lib`; the game with `-p horizon-client`.
+Client probes are built with `-p horizon-client-lib`; the game with `-p horizon-game`.
 Because the probe library does not compile gameplay, its dep-info does not include `game.rs`
 or `game/`. Exact harness counts still depend on refreshed records and reachability; use the
 command above to inspect the selection rather than relying on historical counts.

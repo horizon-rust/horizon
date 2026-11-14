@@ -116,10 +116,10 @@ verified, it is reused and the named files aren't read. Two things no such launc
 ```sh
 cargo run --release -p horizon-prepare -- --prepare --server-jar ~/Downloads/server.jar
 cargo run --release -p horizon-prepare -- sounds
-cargo run --release -p horizon-client -- --render-distance 12
+cargo run --release -p horizon-game -- --render-distance 12
 ```
 
-Development builds that link quickly: `cargo build --profile fast -p horizon-client`.
+Development builds that link quickly: `cargo build --profile fast -p horizon-game`.
 
 `HORIZON_OCCLUSION_PROFILE=1` enables detailed entity-occlusion phase and bounds-scan timings
 in `horizon-ctl stats` and `bench`. The normal benchmark keeps these CPU-clock reads disabled;
@@ -174,7 +174,7 @@ The native Rust adapter recognizes 26.2, 26.1.x, 1.21.11, 1.21.9/1.21.10,
 the adapter. The client still needs its prepared **26.3** resources.
 
 ```sh
-HORIZON_OLDER_SERVERS=1 cargo run --profile fast -p horizon-client -- --server 127.0.0.1:25565
+HORIZON_OLDER_SERVERS=1 cargo run --profile fast -p horizon-game -- --server 127.0.0.1:25565
 ```
 
 In PowerShell, set `$env:HORIZON_OLDER_SERVERS = '1'`, then run the same Cargo
@@ -289,7 +289,7 @@ local socket; under control, losing window focus does not pause the game or
 release held keys, so a script can play while you use other windows.
 
 ```sh
-cargo build --release -p horizon-client -p horizon-client-lib --bins
+cargo build --release -p horizon-game -p horizon-client-lib --bins
 C=target/release/horizon-ctl
 $C launch --world Survival --seed 5 --wait   # start the game, open or create the world, wait for it
 $C state                                     # player, world, screen, crosshair target
@@ -451,7 +451,7 @@ To play on another machine without Rust, JDK or prepared resources,
 package a release build where they exist:
 
 ```sh
-cargo build --release -p horizon-client
+cargo build --release -p horizon-game
 python3 tools/package_native_client.py --out ~/builds/horizon
 ```
 

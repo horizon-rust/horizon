@@ -15,7 +15,7 @@ when a probe finds no entity or reports an error. Run files stay under `.local/s
 
     test_<x>_save_reload_parity.py [--binary PATH] [--keep]
 
-`--binary` is a built `horizon-client` (default: `cargo build --profile fast -p horizon-client`).
+`--binary` is a built `horizon-client` (default: `cargo build --profile fast -p horizon-game`).
 """
 import argparse
 import json
@@ -129,7 +129,7 @@ def horizon_binary(args, build):
         # Each server runs with its world as the working directory, so a relative path must be the caller's.
         return Path(os.path.abspath(args.binary))
     with (build / 'cargo-build.log').open('w') as log:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client', '--bin', 'horizon-client'],
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'],
                        cwd=lab.ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))

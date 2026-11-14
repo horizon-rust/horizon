@@ -111,7 +111,7 @@ def touched_crates(paths, packages):
         if "horizon-client-lib" in packages and path.startswith("crates/horizon-client/"):
             relative = path.removeprefix("crates/horizon-client/")
             gameplay = relative in {"Cargo.toml", "build.rs", "windows-segment-heap.manifest",
-                                    "src/lib.rs", "src/main.rs", "src/entry.rs", "src/game.rs", "tests/launch_api.rs"} \
+                                    "src/lib.rs", "src/entry.rs", "src/game.rs"} \
                 or relative.startswith("src/game/")
             crates.add("horizon-client" if gameplay else "horizon-client-lib")
             continue
@@ -304,7 +304,7 @@ def parity_summary(output):
 # CI's verify job (.github/workflows/ci.yml): clippy over the whole workspace, and over the server build (the game
 # without sound or controllers).
 CI_CLIPPY = "cargo clippy --workspace --all-targets --locked -- -D warnings"
-CI_CLIPPY_SERVER = "cargo clippy -p horizon-client --all-targets --locked --no-default-features -- -D warnings"
+CI_CLIPPY_SERVER = "cargo clippy -p horizon-client -p horizon-game --all-targets --locked --no-default-features -- -D warnings"
 
 
 # CI installs the current stable each run (rustup toolchain install stable), and Rust ships one every six weeks
