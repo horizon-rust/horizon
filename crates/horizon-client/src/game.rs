@@ -42,7 +42,7 @@ macro_rules! world_biomes {
 }
 
 /// The world's packs' content files, as a field-level borrow (see the macros).
-fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOverlay<'_> {
+fn pack_files(world_tables: &Option<Arc<WorldTables>>) -> horizon_world::loot::PackOverlay<'_> {
     match world_tables {
         Some(t) => horizon_world::loot::PackOverlay { files: &t.files },
         None => horizon_world::loot::PackOverlay::NONE,
@@ -2125,6 +2125,8 @@ struct TickScratch {
 }
 
 struct Game<'a> {
+    /// What ticking by regions keeps (`regions.rs`).
+    regions: regions::RegionState,
     /// Shared with an integrated server; `collision` and `motion` borrow from it.
     res: Arc<Resources>,
     rest_loader: Option<WorldRestLoader>,
@@ -2604,7 +2606,7 @@ struct Game<'a> {
     owner_migration: Option<(u128, u128)>,
     /// The world's data packs' content tables, when it has packs (`None`
     /// keeps `Resources.rest`'s own in use).
-    world_tables: Option<WorldTables>,
+    world_tables: Option<Arc<WorldTables>>,
     /// The world is superflat (`ServerLevel.isFlat`, for every dimension).
     world_flat: bool,
     /// The world is the Debug preset (`Level.isDebug`, for every dimension): its blocks
@@ -7426,8 +7428,9 @@ impl Game<'_> {
         self.share_spawn_conditions();
         self.score = Default::default();
         self.fns = Default::default();
-        (self.world_tables, self.health_resources) =
-            self.build_world_tables(false, &level.enabled_features)?;
+        let (tables, health) = self.build_world_tables(false, &level.enabled_features)?;
+        self.world_tables = tables.map(Arc::new);
+        self.health_resources = health;
         self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
         // Native tag reads use the lock to tell that the tag tables are ready.
         self.session_lock = Some(session_lock);
@@ -11557,6 +11560,7 @@ impl<'a> Game<'a> {
             guardian_look_scratch: Vec::new(),
             dropped: Default::default(),
             next_entity: 0,
+            regions: Default::default(),
             ticked_entities_through: u32::MAX,
             contact_drops: 0..0,
             particles,
