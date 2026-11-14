@@ -23,6 +23,7 @@ mod terrain_cmds;
 mod test_locate;
 mod test_runs;
 mod text_commands;
+mod tp_motion;
 mod world_cmds;
 
 use super::{Dim, Game, Screen, chat::PLAYER_NAME};
@@ -1513,13 +1514,11 @@ impl Game<'_> {
         self.feedback(message);
         Ok(targets.len() as i32)
     }
-    /// `Entity.teleportTo(level, x, y, z, relatives, yRot, xRot, ...)`, as
-    /// `/tp` and `/spreadplayers` call it: its transition has no motion and no
-    /// relative delta, so `teleportSetPosition` leaves the moving entity still.
-    /// (An end gateway's or a vehicle's transition carries its motion.)
-    pub(super) fn teleport_stops(&mut self, t: Target) {
+    /// `Entity.teleportSetPosition` for a transition that carries no motion
+    /// (`teleportTo`'s): the axes `relatives` names keep the entity's own.
+    pub(super) fn teleport_stops(&mut self, t: Target, relatives: i32) {
         let _ = self.in_target_level(t, |g| {
-            target_entity_mut!(g, t, e => *e.velocity_mut() = Vec3::ZERO);
+            target_entity_mut!(g, t, e => tp_motion::keep_motion(e.velocity_mut(), relatives));
             // The dragon's flight builds on the motion it carries.
             if let Target::Dragon(id) = t
                 && let Some(d) = g.dragon.as_mut().filter(|d| d.id == id)
@@ -1533,8 +1532,8 @@ impl Game<'_> {
     /// vertical motion is zeroed and it is on the ground; a mob's navigation
     /// stops (`PathfinderMob`; the others hold no path). The players' own
     /// ground is their clients'.
-    fn tp_lands(&mut self, t: Target) {
-        self.teleport_stops(t);
+    fn tp_lands(&mut self, t: Target, relatives: i32) {
+        self.teleport_stops(t, relatives);
         let _ = self.in_target_level(t, |g| {
             if let Target::Mob(id) = t
                 && let Some(m) = g.mobs.iter_mut().find(|m| m.id == id)
@@ -1556,9 +1555,12 @@ impl Game<'_> {
         pos: [f64; 3],
         rotation: Option<[f32; 2]>,
         turn_riders: bool,
+        relatives: i32,
     ) {
         // An entity in another level is teleported in the level that holds it.
-        let _ = self.in_target_level(t, |g| g.teleport_to_in_level(t, pos, rotation, turn_riders));
+        let _ = self.in_target_level(t, |g| {
+            g.teleport_to_in_level(t, pos, rotation, turn_riders, relatives)
+        });
     }
     pub(super) fn teleport_to_in_level(
         &mut self,
@@ -1566,6 +1568,7 @@ impl Game<'_> {
         pos: [f64; 3],
         rotation: Option<[f32; 2]>,
         turn_riders: bool,
+        relatives: i32,
     ) {
         use super::entity::Entity;
         let from = self.target_position(t);
@@ -1582,29 +1585,20 @@ impl Game<'_> {
         match t {
             Target::Guest(_) => {
                 self.for_player(t, |g| {
-                    g.teleport_to(Target::Player, pos, rotation, turn_riders)
+                    g.teleport_to(Target::Player, pos, rotation, turn_riders, relatives)
                 });
             }
             Target::Player => {
+                // ServerPlayer.teleportTo: a sleeper gets up before the move, and
+                // a relative destination moves from where they got up.
+                let (v, was) = self.tp_wake(v, relatives);
                 // ServerPlayer.teleport: removeVehicle before placing the player.
                 self.stop_riding();
                 // A server's player teleported within their level is placed
                 // there at once: the arrival they were waiting for elsewhere
                 // in it (whose chunks lose their tickets) is abandoned.
-                if let Some(conn) = self.lan_acting {
-                    horizon_client::lan::hub::teleport_cause(Some("command"));
-                    self.hold_for_chunks(conn, v);
-                }
-                let from = self
-                    .player
-                    .as_ref()
-                    .map(|p| [p.position.x, p.position.y, p.position.z]);
-                if let Some(p) = self.player.as_mut() {
-                    p.position = v;
-                    p.velocity = Vec3::new(0.0, 0.0, 0.0);
-                    p.fall_distance = 0.0;
-                    p.ground.on_ground = false;
-                }
+                self.tp_hold_guest(v, relatives);
+                self.tp_place_player(v, relatives);
                 self.previous_position = v;
                 if let Some([yaw, pitch]) = rotation {
                     if yaw.is_finite() {
@@ -1620,7 +1614,7 @@ impl Game<'_> {
                     self.lan_acting,
                     self.lan_acting_uuid,
                     self.lan_acting_name.clone(),
-                    from,
+                    was.map(|p| [p.x, p.y, p.z]),
                 ) {
                     self.teleport_notes
                         .push(super::server_travel::TeleportNote {
@@ -1839,8 +1833,9 @@ impl Game<'_> {
         pos: [f64; 3],
         rotation: Option<[f32; 2]>,
         turn_riders: bool,
+        relatives: i32,
     ) -> R<bool> {
-        match self.teleport_vehicle_across(t, level, pos, rotation, turn_riders) {
+        match self.teleport_vehicle_across(t, level, pos, rotation, turn_riders, relatives) {
             Ok(true) => return Ok(true),
             Ok(false) => {}
             Err(error) => {
@@ -1939,11 +1934,11 @@ impl Game<'_> {
                     .unwrap_or_else(Text::empty)
             });
             for &t in &targets {
-                if !self.teleport_across(t, level, pos, rotation, true)? {
+                if !self.teleport_across(t, level, pos, rotation, true, 0)? {
                     // TeleportCommand.teleportToEntity: the destination's angles,
                     // which the riders turn to as well.
-                    self.teleport_to(t, pos, rotation, true);
-                    self.tp_lands(t);
+                    self.teleport_to(t, pos, rotation, true, 0);
+                    self.tp_lands(t, 0);
                 }
             }
             let message = if targets.len() == 1 {
@@ -1963,6 +1958,7 @@ impl Game<'_> {
         let pos = self
             .position_arg(ctx, "location")
             .unwrap_or(self.source_position());
+        let relatives = tp_motion::delta_relatives(self.coords(ctx, "location").as_ref());
         if !(-30_000_000.0..30_000_000.0).contains(&pos[0])
             || !(-30_000_000.0..30_000_000.0).contains(&pos[2])
             || !(-20_000_000.0..20_000_000.0).contains(&pos[1])
@@ -2041,15 +2037,15 @@ impl Game<'_> {
                     }
                 }))
             });
-            if self.teleport_across(t, source_level, pos, rotation, turn_riders)? {
+            if self.teleport_across(t, source_level, pos, rotation, turn_riders, relatives)? {
                 continue;
             }
-            self.teleport_to(t, pos, rotation, turn_riders);
+            self.teleport_to(t, pos, rotation, turn_riders, relatives);
             // LookAt.perform after a successful teleportTo.
             if let Some(f) = facing {
                 self.send_player_look_at(t, anchored_eyes, f, facing_entity);
             }
-            self.tp_lands(t);
+            self.tp_lands(t, relatives);
         }
         let [x, y, z] = pos.map(|v| Text::literal(format_double(v)));
         let message = if targets.len() == 1 {
@@ -4529,11 +4525,11 @@ mod teleport_pitch_tests {
         ] {
             game.yaw = 10.0;
             game.pitch = 20.0;
-            game.teleport_to_in_level(Target::Player, [0.0; 3], Some(rotation), true);
+            game.teleport_to_in_level(Target::Player, [0.0; 3], Some(rotation), true, 0);
             assert_eq!([game.yaw, game.pitch], expected);
             game.mobs[0].yaw = 10.0;
             game.mobs[0].head_pitch = 20.0;
-            game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation), true);
+            game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation), true, 0);
             assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
         }
         game.build_registries();
@@ -4743,7 +4739,13 @@ mod teleport_rider_tests {
         game.mobs.push(rider);
         // Entity.teleportPassengers: the rider keeps its offset from the
         // vehicle and turns by what the vehicle turned.
-        game.teleport_to_in_level(Target::Mob(42), [10.0, 70.0, -4.0], Some([90.0, 0.0]), true);
+        game.teleport_to_in_level(
+            Target::Mob(42),
+            [10.0, 70.0, -4.0],
+            Some([90.0, 0.0]),
+            true,
+            0,
+        );
         let vehicle = game.mobs.iter().find(|m| m.id == 42).unwrap();
         assert_eq!(vehicle.position, Vec3::new(10.0, 70.0, -4.0));
         let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
@@ -4761,11 +4763,18 @@ mod teleport_rider_tests {
             [10.0, 70.0, -4.0],
             Some([180.0, 0.0]),
             true,
+            0,
         );
         let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(rider.yaw, 210.0, "the rider turns by the vehicle's turn");
         // `facing` keeps the transition's rotation: the vehicle looks, the rider does not turn.
-        game.teleport_to_in_level(Target::Mob(42), [10.0, 70.0, -4.0], Some([0.0, 0.0]), false);
+        game.teleport_to_in_level(
+            Target::Mob(42),
+            [10.0, 70.0, -4.0],
+            Some([0.0, 0.0]),
+            false,
+            0,
+        );
         let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(
             rider.yaw, 210.0,
@@ -4773,7 +4782,7 @@ mod teleport_rider_tests {
         );
         // Entity.teleport's stopRiding(): a target that is itself a passenger
         // leaves its vehicle, or the next sync seats it where it was.
-        game.teleport_to_in_level(Target::Mob(43), [0.0, 64.0, 0.0], None, false);
+        game.teleport_to_in_level(Target::Mob(43), [0.0, 64.0, 0.0], None, false, 0);
         let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(rider.extra.mount, None, "the teleported rider dismounted");
         assert_eq!(rider.position, Vec3::new(0.0, 64.0, 0.0));
@@ -4798,7 +4807,13 @@ mod teleport_rider_tests {
         rider2.extra.mount = Some(50);
         game.mobs.push(rider2);
         // Absolute turn: vehicle 0 -> 40, rider keeps its 30-degree offset.
-        game.teleport_to_in_level(Target::Mob(50), [10.0, 64.0, 10.0], Some([40.0, 0.0]), true);
+        game.teleport_to_in_level(
+            Target::Mob(50),
+            [10.0, 64.0, 10.0],
+            Some([40.0, 0.0]),
+            true,
+            0,
+        );
         let rider2 = game.mobs.iter().find(|m| m.id == 51).unwrap();
         assert_eq!(
             rider2.yaw, 70.0,
@@ -4806,14 +4821,26 @@ mod teleport_rider_tests {
         );
         // Relative turn (~10 on the vehicle): the transition carries the
         // 10-degree delta and the rider adds it to its own angle (70 -> 80).
-        game.teleport_to_in_level(Target::Mob(50), [10.0, 64.0, 10.0], Some([50.0, 0.0]), true);
+        game.teleport_to_in_level(
+            Target::Mob(50),
+            [10.0, 64.0, 10.0],
+            Some([50.0, 0.0]),
+            true,
+            0,
+        );
         let rider2 = game.mobs.iter().find(|m| m.id == 51).unwrap();
         assert_eq!(
             rider2.yaw, 80.0,
             "relative turn shifts the rider by the delta"
         );
         // `facing` (turn_riders = false) leaves the rider's angle alone.
-        game.teleport_to_in_level(Target::Mob(50), [10.0, 64.0, 10.0], Some([0.0, 0.0]), false);
+        game.teleport_to_in_level(
+            Target::Mob(50),
+            [10.0, 64.0, 10.0],
+            Some([0.0, 0.0]),
+            false,
+            0,
+        );
         let rider2 = game.mobs.iter().find(|m| m.id == 51).unwrap();
         assert_eq!(
             rider2.yaw, 80.0,

@@ -183,6 +183,9 @@ pub struct Guest {
     pub awaiting_teleport: Option<(i32, [f64; 3])>,
     /// The teleport awaited keeps the player's motion (`Hub::teleport_keeping_motion`).
     pub awaiting_keeps_motion: bool,
+    /// The `Relative` bits of a command's teleport the hub has not sent yet
+    /// (`TeleportCommand.getRelatives`): `Hub::teleport` sends them.
+    pub teleport_relatives: i32,
     /// Through a portal, until `LanHub::land` gives the client its position:
     /// the moves it sent from the old level are ignored, as they would be
     /// while it had a teleport to accept.
@@ -525,6 +528,7 @@ impl Guest {
             respawn_elsewhere: None,
             awaiting_teleport: None,
             awaiting_keeps_motion: false,
+            teleport_relatives: 0,
             landing: false,
             tp_held: false,
             teleport_counter: 0,

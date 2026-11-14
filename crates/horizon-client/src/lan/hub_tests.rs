@@ -1471,3 +1471,38 @@ fn a_second_accept_of_the_same_teleport_disconnects() {
     tick_packet(&mut hub, &mut world, accept(id));
     assert!(!hub.guests[0].left_reason.is_empty());
 }
+
+/// A command's teleport carries the `Relative` bits `TeleportCommand.getRelatives`
+/// gave it (`Guest::teleport_relatives`), so the guest's client keeps the motion
+/// of the axes a relative destination named, and the next teleport does not.
+#[test]
+fn a_command_teleport_sends_the_relative_bits_it_was_given() {
+    use horizon_protocol::packets::play::relative::{DELTA_X, DELTA_Y, DELTA_Z};
+    let (mut hub, rx) = hub_with_a_guest();
+    let heard = |rx: &std::sync::mpsc::Receiver<crate::lan::Out>| {
+        let mut sent = None;
+        while let Ok(out) = rx.try_recv() {
+            let crate::lan::Out::Packet(body) = out else {
+                continue;
+            };
+            let mut r = horizon_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            if let C::PlayerPosition(p) = C::decode(id, r.rest()).unwrap() {
+                sent = Some(p);
+            }
+        }
+        sent
+    };
+    hub.guests[0].teleport_relatives = DELTA_X | DELTA_Y | DELTA_Z;
+    hub.teleport(0, Some([5.0, 70.0, 5.0]));
+    assert!(hub.guests[0].awaiting_keeps_motion, "the motion is kept");
+    let p = heard(&rx).expect("the guest hears the teleport");
+    assert_eq!(p.relatives, DELTA_X | DELTA_Y | DELTA_Z);
+    assert_eq!(p.position, [5.0, 70.0, 5.0], "the position is absolute");
+    assert_eq!(p.delta, [0.0; 3], "a zero delta leaves the motion alone");
+    // The bits are spent: a teleport nobody asked to keep the motion for stops.
+    hub.teleport(0, Some([6.0, 70.0, 6.0]));
+    assert!(!hub.guests[0].awaiting_keeps_motion);
+    let p = heard(&rx).expect("the second teleport is sent");
+    assert_eq!(p.relatives, 0);
+}

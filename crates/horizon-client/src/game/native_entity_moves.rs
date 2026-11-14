@@ -31,10 +31,10 @@ impl Game<'_> {
         if !spawnable(pos) || rotation.is_some_and(|r| !r.iter().all(|v| v.is_finite())) {
             return false;
         }
-        self.teleport_to(t, pos, rotation, true);
+        self.teleport_to(t, pos, rotation, true, 0);
         // Entity.teleportTo's transition has no motion (TeleportCommand's
         // ground step is the command's own, not teleportTo's).
-        self.teleport_stops(t);
+        self.teleport_stops(t, 0);
         true
     }
     /// Turns the entity to `yaw` and `pitch` in degrees (`Entity.setYRot`,

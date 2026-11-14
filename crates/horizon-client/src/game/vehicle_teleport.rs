@@ -235,6 +235,7 @@ impl Game<'_> {
         at: [f64; 3],
         rotation: Option<[f32; 2]>,
         turn_riders: bool,
+        relatives: i32,
     ) -> horizon_client::Result<bool> {
         let Some(root) = vehicle_id(target) else {
             return Ok(false);
@@ -256,11 +257,12 @@ impl Game<'_> {
                 game.snap_mob_passengers(root);
             }
             game.prepare_vehicle_transition(root);
-            game.teleport_to_in_level(target, at, rotation, turn_riders);
+            game.teleport_to_in_level(target, at, rotation, turn_riders, relatives);
             // teleportCrossDimension: the new entity's teleportSetPosition takes
-            // the transition's motion, which /tp's teleportTo makes zero. (The
-            // ground flag performTeleport then sets lands on the old entity.)
-            game.teleport_stops(target);
+            // the transition's motion, which is zero but for the axes the command
+            // named relative. (The ground flag performTeleport then sets lands on
+            // the old entity.)
+            game.teleport_stops(target, relatives);
             let mounts: Vec<_> = game.mobs.iter().map(|m| (m.id, m.extra.mount)).collect();
             let tree = super::persist::vehicle_tree(root, &mounts);
             let tag = game.vehicle_tree_nbt(root).ok_or("missing vehicle tree")?;

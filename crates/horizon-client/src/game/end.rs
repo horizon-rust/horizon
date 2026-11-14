@@ -1727,7 +1727,7 @@ impl Game<'_> {
                 if let Some(target) = self.level_entity(id as i32) {
                     // Entity.teleportSameDimension keeps the live entity and
                     // its motion, and moves every passenger in the same operation.
-                    self.teleport_to_in_level(target, [at.x, at.y, at.z], None, false);
+                    self.teleport_to_in_level(target, [at.x, at.y, at.z], None, false, 0);
                     self.set_portal_cooldown(id);
                     self.place_portal_ticket(key);
                 }
