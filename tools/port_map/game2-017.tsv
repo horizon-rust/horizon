@@ -64,7 +64,7 @@ DecoratedPotBlockEntity.saveAdditional	port	crates/horizon-client/src/game/decor
 DecoratedPotBlockEntity.loadAdditional	port	crates/horizon-client/src/game/decorated_pot.rs::Game::set_pot_data	Command NBT uses the existing canonical codec and authoritative saved tag without unpacking loot; gap: major: save/reopen, components and other entry points remain unverified.
 DecoratedPotBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	sherds and item as components
 DecoratedPotBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	sherds and item as components
-DecoratedPotBlockEntity.splitTheItem	missing		`decorated_pot.rs` has no split-count step for the pot's item
+DecoratedPotBlockEntity.splitTheItem	port	crates/horizon-client/src/game/machines.rs::Game::suck_from_pot	a hopper above a pot takes one item a move (`ContainerSingleItem.removeItem(1)`): the saved `item` is split, a pending loot table is unpacked first, and the rest stays (the tag goes when the last item leaves)
 DecoratedPotBlockEntity.wobble	port	crates/horizon-client/src/game/decorated_pot.rs::Game::use_decorated_pot	wobble event sent on a hit
 DispenserBlockEntity.insertItem	port	crates/horizon-client/src/game/machines.rs::Game::add_item	slot-by-slot insert, as hoppers use it
 DispenserBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	Items (9 slots)
