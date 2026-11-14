@@ -3957,7 +3957,7 @@ impl Game<'_> {
         let pierce = std::mem::take(&mut self.combat.piercing_hit);
         let melee = self.combat.melee_mob.take();
         // ServerPlayer.canHarmPlayer refused another player's projectile.
-        if self.creative || self.combat.refuse_player_hit {
+        if self.abilities_refuse_hit(damage_type) || self.combat.refuse_player_hit {
             self.combat.forget_noted(false);
             return false;
         }
@@ -5164,8 +5164,8 @@ impl Game<'_> {
         {
             // AbstractArrow.onHitEntity on an item frame: spent when the
             // frame took the hit, turned back when a fixed one refused it.
-            let by_player = p.owner == Some(Who::Player);
-            let hurt = self.projectile_hurts_frame(id, by_player, by_player && self.creative);
+            let (cause, creative) = self.projectile_source(p.owner, p.guest);
+            let hurt = self.projectile_hurts_frame(id, cause, creative);
             let outcome = if hurt {
                 EntityHit::Hurt
             } else {
@@ -5199,8 +5199,8 @@ impl Game<'_> {
             // takes the arrow's damage, and the arrow is spent.
             let mut arrow = p.clone();
             let amount = self.shot_damage(&mut arrow, None);
-            let creative = p.owner == Some(Who::Player) && self.creative;
-            self.hurt_boat(i, amount, creative);
+            let (cause, creative) = self.projectile_source(p.owner, p.guest);
+            self.hurt_boat(i, amount, creative, cause);
             self.finish_arrow_hit(arrow, EntityHit::Hurt);
             return Ok(());
         }

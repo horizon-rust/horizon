@@ -349,7 +349,13 @@ impl Game<'_> {
             }
             return true;
         }
-        self.hit_frame(i, true, self.creative);
+        let with_frame = self.item_frames[i].item.is_none();
+        self.hit_frame(
+            i,
+            with_frame,
+            Some(super::commands::Target::Player),
+            self.creative,
+        );
         true
     }
     /// `ItemFrame.hurtServer` from a projectile (`AbstractArrow.onHitEntity`,
@@ -361,7 +367,7 @@ impl Game<'_> {
     pub(super) fn projectile_hurts_frame(
         &mut self,
         id: u32,
-        by_player: bool,
+        source: Option<super::commands::Target>,
         creative: bool,
     ) -> bool {
         let Some(i) = self.item_frames.iter().position(|f| f.id == id) else {
@@ -373,16 +379,25 @@ impl Game<'_> {
             }
             self.item_frames[i].item = None;
         }
-        self.hit_frame(i, by_player, creative);
+        let with_frame = self.item_frames[i].item.is_none();
+        self.hit_frame(i, with_frame, source, creative);
         true
     }
-    /// The non-fixed part of `ItemFrame.hurtServer`: a filled frame gives its
-    /// item up (`shouldDamageDropItem`), an empty one breaks
-    /// (`BlockAttachedEntity.hurtServer`). `by_player`: the damage source's
-    /// entity is the acting player, `creative` when they have infinite
-    /// materials (no drops).
-    fn hit_frame(&mut self, i: usize, by_player: bool, creative: bool) {
-        let with_frame = self.item_frames[i].item.is_none();
+    /// `ItemFrame.hurtServer`'s non-fixed part: a filled frame gives its item
+    /// up (`shouldDamageDropItem`), an empty or exploded one breaks whole
+    /// (`BlockAttachedEntity.hurtServer`). `source`: the damage source's entity
+    /// (`DamageSource.getEntity`), which the death and block change events are
+    /// attributed to and which decides the drops (`Player.hasInfiniteMaterials`
+    /// when `creative`).
+    pub(super) fn hit_frame(
+        &mut self,
+        i: usize,
+        with_frame: bool,
+        source: Option<super::commands::Target>,
+        creative: bool,
+    ) {
+        use super::commands::Target;
+        let by_player = matches!(source, Some(Target::Player | Target::Guest(_)));
         let entity_id = self.item_frames[i].id;
         if with_frame {
             let (kind, pos) = (self.item_frames[i].kind(), self.item_frames[i].pos);
@@ -406,7 +421,7 @@ impl Game<'_> {
             self.item_frames[i].item = None;
         } else {
             // BlockAttachedEntity.kill precedes ItemFrame.dropItem's break sound.
-            self.entity_killed_event(at, true);
+            self.entity_killed_event_by(at, source);
             self.audio.play(&sound(&f, "break"), Some(at), 1.0, 1.0);
         }
         // ItemFrame.dropItem clears the item (updating comparators) before drops.
@@ -419,9 +434,7 @@ impl Game<'_> {
         }
         // BLOCK_CHANGE by the attacker after the drops: ItemFrame.hurtServer
         // for the item, ItemFrame.dropItem(level, causedBy) for the frame.
-        let who = by_player.then_some(horizon_client::mobs::Who::Player);
-        let ctx = self.who_context(who, None);
-        self.post_game_event("minecraft:block_change", at, ctx);
+        self.entity_event_by("minecraft:block_change", at, source);
         if !with_frame {
             // ItemFrame.hurtServer plays this after the event.
             self.audio
@@ -470,6 +483,11 @@ impl Game<'_> {
         by_player: bool,
         creative: bool,
     ) {
+        // `ItemFrame.dropItem(level, causedBy, withFrame)` does nothing at all
+        // for a fixed frame.
+        if f.fixed {
+            return;
+        }
         // The framed map forgets the frame, except when the drops are off and
         // something caused the break (`removeFramedMap` runs only for a null
         // `causedBy` then).

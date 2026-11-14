@@ -195,8 +195,16 @@ impl Game<'_> {
             _ => by.and_then(|t| self.target_position(t)),
         };
         // Destruction can remove the target before its success message is built.
-        let item_name = matches!(target, Target::Item(_) | Target::Boat(_) | Target::Cart(_))
-            .then(|| self.target_name(target));
+        let item_name = matches!(
+            target,
+            Target::Item(_)
+                | Target::Boat(_)
+                | Target::Cart(_)
+                | Target::Frame(_)
+                | Target::Painting(_)
+                | Target::Cushion(_)
+        )
+        .then(|| self.target_name(target));
         let hurt = self.damage_target(target, amount, &ty, cause, by, from);
         if !hurt {
             return Err(err("commands.damage.invulnerable", &[]));
@@ -241,7 +249,9 @@ impl Game<'_> {
                     _ => Some(None),
                 };
                 self.for_player(target, |g| {
-                    if g.spectator() {
+                    // Player.hurtServer's `abilities.invulnerable`, which
+                    // `#bypasses_invulnerability` passes.
+                    if g.spectator() && !g.bypasses_invulnerability(ty) {
                         return false;
                     }
                     if let Some(name) = named {
@@ -311,8 +321,142 @@ impl Game<'_> {
                 self.command_damage_crystal(id, ty, Self::damage_kind(ty), cause.or(by))
             }
             Target::Stand(id) => self.command_damage_stand(id, ty, cause.or(by)),
+            Target::Frame(id) => self.command_damage_frame(id, ty, cause.or(by)),
+            Target::Painting(id) => self.command_damage_painting(id, ty, cause.or(by)),
+            Target::Cushion(id) => self.command_damage_cushion(id, ty, cause.or(by)),
             _ => false,
         }
+    }
+
+    /// `Entity.isInvulnerableToBase` for a hanging decoration: its
+    /// `Invulnerable` tag, which `#bypasses_invulnerability` and a creative
+    /// player pass. The damage type, when the hit may go on.
+    fn hanging_damage_type(
+        &self,
+        id: u32,
+        damage_type: &str,
+        creative: bool,
+    ) -> Option<horizon_world::damage_source::DamageTypeId> {
+        let registry = &self.motion.health.damage;
+        let kind = registry.id(damage_type)?;
+        let invulnerable = self
+            .persist
+            .raw
+            .get(&id)
+            .is_some_and(|tag| horizon_client::entity_nbt::flag(tag, "Invulnerable"));
+        if invulnerable && !creative && !registry.in_tag(kind, "minecraft:bypasses_invulnerability")
+        {
+            return None;
+        }
+        Some(kind)
+    }
+
+    /// `BlockAttachedEntity.hurtServer`'s `mobGriefing` refusal of a mob's hit.
+    fn mob_griefing_refuses(&self, causing: Option<Target>) -> bool {
+        !self.ui.rules.bool("mob_griefing") && matches!(causing, Some(Target::Mob(_)))
+    }
+
+    /// `ItemFrame.hurtServer`: a filled frame gives its item up (unless the
+    /// source is an explosion, which breaks it whole); a fixed one only gives
+    /// way to a creative player or `#bypasses_invulnerability`.
+    fn command_damage_frame(
+        &mut self,
+        id: u32,
+        damage_type: &str,
+        causing: Option<Target>,
+    ) -> bool {
+        let Some(i) = self.item_frames.iter().position(|f| f.id == id) else {
+            return false;
+        };
+        let (creative, _) = self.causing_abilities(causing);
+        let Some(kind) = self.hanging_damage_type(id, damage_type, creative) else {
+            return false;
+        };
+        if self.item_frames[i].fixed {
+            // `ItemFrame.canHurtWhenFixed`, then `BlockAttachedEntity.hurtServer`.
+            if (!creative
+                && !self
+                    .motion
+                    .health
+                    .damage
+                    .in_tag(kind, "minecraft:bypasses_invulnerability"))
+                || self.mob_griefing_refuses(causing)
+            {
+                return false;
+            }
+            // `ItemFrame.dropItem` does nothing for a fixed frame: the item
+            // goes with it, dropped or not.
+            self.item_frames[i].item = None;
+            self.hit_frame(i, true, causing, creative);
+            return true;
+        }
+        // `ItemFrame.shouldDamageDropItem`: not an explosion, and something held.
+        let explosion = self
+            .motion
+            .health
+            .damage
+            .in_tag(kind, "minecraft:is_explosion");
+        let with_frame = explosion || self.item_frames[i].item.is_none();
+        if with_frame && self.mob_griefing_refuses(causing) {
+            return false;
+        }
+        self.hit_frame(i, with_frame, causing, creative);
+        true
+    }
+
+    /// `BlockAttachedEntity.hurtServer` from `/damage` for a painting:
+    /// `Painting.hurtServer` kills it, then `dropItem` drops it.
+    fn command_damage_painting(
+        &mut self,
+        id: u32,
+        damage_type: &str,
+        causing: Option<Target>,
+    ) -> bool {
+        let Some(i) = self.paintings.iter().position(|p| p.id == id) else {
+            return false;
+        };
+        let (creative, _) = self.causing_abilities(causing);
+        if self
+            .hanging_damage_type(id, damage_type, creative)
+            .is_none()
+            || self.mob_griefing_refuses(causing)
+        {
+            return false;
+        }
+        let by_player = matches!(causing, Some(Target::Player | Target::Guest(_)));
+        self.break_painting_by(i, by_player, causing)
+    }
+
+    /// `Cushion.hurtServer`: refused for a causing player who may not build or
+    /// may not interact there, else `BlockAttachedEntity.hurtServer`.
+    fn command_damage_cushion(
+        &mut self,
+        id: u32,
+        damage_type: &str,
+        causing: Option<Target>,
+    ) -> bool {
+        let Some(i) = self.cushions.iter().position(|c| c.id == id) else {
+            return false;
+        };
+        let (creative, may_build) = self.causing_abilities(causing);
+        if self
+            .hanging_damage_type(id, damage_type, creative)
+            .is_none()
+            || self.mob_griefing_refuses(causing)
+        {
+            return false;
+        }
+        let pos = self.cushions[i].pos;
+        if matches!(causing, Some(Target::Player | Target::Guest(_)))
+            && (!may_build
+                || !self.may_interact_at(horizon_core::position::BlockPos::new(
+                    pos[0], pos[1], pos[2],
+                )))
+        {
+            return false;
+        }
+        self.break_cushion_by(i, causing);
+        true
     }
 
     /// `VehicleEntity.hurtServer`: report acceptance even when the vehicle survives.
@@ -348,11 +492,10 @@ impl Game<'_> {
         let ignites = registry.in_tag(kind, "minecraft:is_fire")
             || registry.in_tag(kind, "minecraft:is_explosion");
         match target {
-            Target::Boat(_) => self
-                .boats
-                .iter()
-                .position(|b| b.id == id)
-                .is_some_and(|i| self.hurt_boat_result(i, amount, creative).is_some()),
+            Target::Boat(_) => self.boats.iter().position(|b| b.id == id).is_some_and(|i| {
+                self.hurt_boat_result(i, amount, creative, causing)
+                    .is_some()
+            }),
             Target::Cart(_) => self
                 .carts
                 .iter()

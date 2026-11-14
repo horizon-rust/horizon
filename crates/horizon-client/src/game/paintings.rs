@@ -370,7 +370,9 @@ impl Game<'_> {
         }
         self.audio
             .play("minecraft:entity.painting.break", Some(at), 1.0, 1.0);
-        if by_player && self.creative {
+        // Painting.dropItem: a causing player with infinite materials drops
+        // nothing, and neither does a blast they set off.
+        if self.causing_abilities(source).0 {
             return true;
         }
         // HangingEntity.spawnAtLocation: 0.15 out from the wall.

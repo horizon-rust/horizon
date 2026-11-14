@@ -3951,7 +3951,7 @@ mod container_drop_tests {
             }
             game.world.random.set_seed(1234);
             if boat {
-                assert_eq!(game.hurt_boat_result(0, 100.0, false), Some(true));
+                assert_eq!(game.hurt_boat_result(0, 100.0, false, None), Some(true));
                 assert!(game.boats.is_empty());
             } else {
                 assert!(game.hurt_cart_result(0, 100.0, false, false));

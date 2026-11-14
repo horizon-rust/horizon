@@ -381,16 +381,11 @@ impl Game<'_> {
     /// `Cushion.dropItem`: the break sound and particles, then the coloured
     /// item unless drops are off or the breaker has infinite materials.
     pub(super) fn break_cushion(&mut self, index: usize, by_player: bool) {
-        self.break_cushion_by(
-            index,
-            by_player,
-            by_player.then_some(super::commands::Target::Player),
-        )
+        self.break_cushion_by(index, by_player.then_some(super::commands::Target::Player))
     }
     pub(super) fn break_cushion_by(
         &mut self,
         index: usize,
-        by_player: bool,
         source: Option<super::commands::Target>,
     ) {
         let c = self.cushions.remove(index);
@@ -408,7 +403,7 @@ impl Game<'_> {
             1.0,
         );
         self.cushion_break_particles(&c);
-        if !self.ui.rules.bool("entity_drops") || (by_player && self.creative) {
+        if !self.ui.rules.bool("entity_drops") || self.causing_abilities(source).0 {
             return;
         }
         let stack = c.item_stack_with_data();
