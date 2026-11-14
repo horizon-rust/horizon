@@ -1856,6 +1856,11 @@ fn cem_key(model_key: &str) -> &str {
 /// and the warden's glowing layers (whether they glow this frame or not). Random textures
 /// choose a variant for each.
 pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
+    drawn_textures_picking(m, data, &|key| m.random_textures.model(key))
+}
+
+/// [`drawn_textures`] with the custom models' random variants `pick` gives by layer key.
+pub fn drawn_textures_picking(m: &Mob, data: &MobData, pick: &dyn Fn(&str) -> u32) -> Vec<String> {
     fn push(names: &mut Vec<String>, custom: Option<&super::cem::CemLayer>, vanilla: String) {
         if let Some(texture) = custom.and_then(|c| c.texture_for(&vanilla)) {
             names.push(texture.to_owned());
@@ -1869,7 +1874,11 @@ pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
     let (model_key, texture) = body(m);
     let cem_key = cem_key(&model_key);
     let mut names = Vec::new();
-    push(&mut names, cem.layer(cem_key), texture.into_owned());
+    push(
+        &mut names,
+        cem.layer_picked(cem_key, pick(cem_key)),
+        texture.into_owned(),
+    );
     let mut all_layers = layers(m, m.age as f32);
     if m.species() == Species::Warden {
         for (model, texture, _) in super::warden::emissive_layers(m, 0.0) {
@@ -1885,7 +1894,7 @@ pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
     let body_keys = [&*model_key, cem_key];
     for (i, layer) in all_layers.iter().enumerate() {
         let custom = cem
-            .layer(&layer.model)
+            .layer_picked(&layer.model, pick(&layer.model))
             .filter(|_| paints_with_jem(&all_layers, i, body_keys));
         push(&mut names, custom, layer.texture.to_string());
     }
@@ -1927,7 +1936,7 @@ fn posed_body(
         .cem
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let custom = cem.layer(cem_key(&model_key));
+    let custom = cem.layer_of(cem_key(&model_key), m);
     let model = match custom {
         Some(c) => c.model.clone(),
         None => m
@@ -1971,7 +1980,7 @@ fn render_visible(
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let cem_key = cem_key(&model_key);
-    let custom_body = cem.layer(cem_key);
+    let custom_body = cem.layer_of(cem_key, m);
     let body_animation = custom_body.and_then(|c| c.animation.as_ref());
     let model = match custom_body {
         Some(custom) => custom.model.clone(),
@@ -2065,7 +2074,7 @@ fn render_visible(
                     // is the only difference from a plain draw.
                     (skin.models.tagged && (eyes_layer(m, layer) || !layer.full_bright)
                         || !layer.full_bright && !translucent_layer(m, layer))
-                        && cem.layer(&layer.model).is_none()
+                        && cem.layer_of(&layer.model, m).is_none()
                         && m.kind
                             .layer(&layer.model)
                             .is_none_or(|part| skin.supports(part))
@@ -2135,7 +2144,7 @@ fn render_visible(
     let mut layer_poses = Poses::pooled();
     let body_keys = [&*model_key, cem_key];
     for (i, layer) in all_layers.iter().enumerate() {
-        let custom = cem.layer(&layer.model);
+        let custom = cem.layer_of(&layer.model, m);
         // `layer.texture` stays the vanilla name (the villager hats below look for its
         // `/type/` folder).
         let texture = cem_texture(
