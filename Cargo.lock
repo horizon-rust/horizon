@@ -1690,6 +1690,7 @@ dependencies = [
  "cpal",
  "hidapi",
  "log",
+ "windows 0.62.2",
 ]
 
 [[package]]

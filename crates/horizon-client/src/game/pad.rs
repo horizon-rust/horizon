@@ -836,6 +836,10 @@ impl Game<'_> {
         if !settings.enabled || !settings.vibration || !self.pad.in_use {
             return;
         }
+        // Bedrock's own switch, off for a player who doesn't want every block to tick.
+        if rumble == Rumble::BlockBroken && !settings.block_vibration {
+            return;
+        }
         let Some(pulse) = rumble.pulse() else {
             return;
         };
@@ -910,7 +914,8 @@ impl Game<'_> {
                     "enabled": self.settings.controller.enabled,
                     "glyphs": self.pad.style.name(),
                     "last_rumble": self.pad.last_rumble.map(|(why, p)| json!({
-                        "reason": why, "strong": p.strong, "weak": p.weak, "ms": p.millis,
+                        "reason": why, "strong": p.strong, "weak": p.weak,
+                        "triggers": p.triggers, "ms": p.millis,
                     })),
                     "in_use": self.pad.in_use,
                     "notice": self.split_hud.notice.showing().map(|(title, body)| {

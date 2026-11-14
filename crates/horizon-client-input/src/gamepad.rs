@@ -645,6 +645,10 @@ pub struct PadSettings {
     pub play_in_background: bool,
     /// A DualSense's triggers push back (Horizon's; docs/controllers.md).
     pub adaptive_triggers: bool,
+    /// An Xbox One pad's impulse triggers buzz with the handles (docs/controllers.md).
+    pub impulse_triggers: bool,
+    /// A broken block ticks the pad, as in Bedrock (docs/controllers.md).
+    pub block_vibration: bool,
     pub lightbar: Lightbar,
     /// 0..1; 0.5 is the default speed, 1 twice that.
     pub look_sensitivity: f32,
@@ -698,6 +702,8 @@ impl Default for PadSettings {
             vibration: true,
             play_in_background: false,
             adaptive_triggers: true,
+            impulse_triggers: true,
+            block_vibration: true,
             lightbar: Lightbar::Health,
             look_sensitivity: 0.5,
             invert_x: false,
@@ -778,6 +784,8 @@ impl PadSettings {
                 "vibration" => s.vibration = flag(s.vibration),
                 "playInBackground" => s.play_in_background = flag(s.play_in_background),
                 "adaptiveTriggers" => s.adaptive_triggers = flag(s.adaptive_triggers),
+                "impulseTriggers" => s.impulse_triggers = flag(s.impulse_triggers),
+                "blockVibration" => s.block_vibration = flag(s.block_vibration),
                 "lightbar" => s.lightbar = Lightbar::parse(value),
                 "lookSensitivity" => s.look_sensitivity = unit(s.look_sensitivity),
                 "invertX" => s.invert_x = flag(s.invert_x),
@@ -893,10 +901,12 @@ impl PadSettings {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nglyphs:{}\nnintendoLetters:{}\nkeyboard:{}\n",
+            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nimpulseTriggers:{}\nblockVibration:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nglyphs:{}\nnintendoLetters:{}\nkeyboard:{}\n",
             bool_text(self.enabled),
             bool_text(self.vibration),
             bool_text(self.adaptive_triggers),
+            bool_text(self.impulse_triggers),
+            bool_text(self.block_vibration),
             self.lightbar.name(),
             self.look_sensitivity,
             bool_text(self.invert_x),
@@ -1590,6 +1600,9 @@ impl From<crate::input_source::Feedback> for Rumble {
 pub struct Pulse {
     pub strong: f32,
     pub weak: f32,
+    /// The impulse-trigger motors (left, right), 0..1: an Xbox One pad's, which a DualSense
+    /// leaves alone.
+    pub triggers: [f32; 2],
     pub millis: u32,
 }
 use crate::radial::{RADIAL_NOTHING, RADIAL_PAGE_TICK, RADIAL_TICK};
@@ -1612,13 +1625,19 @@ impl Rumble {
             Rumble::Hurt(amount) if amount > 0.0 => Some(Pulse {
                 strong: (0.2 + 0.06 * amount).min(0.8),
                 weak: 0.3,
+                // A hit is felt everywhere the pad can buzz, the trigger motors included.
+                triggers: [0.7, 0.7],
                 millis: (150.0 + 20.0 * amount).min(400.0) as u32,
             }),
             Rumble::Hurt(_) => None,
+            // Attack is the right trigger by default, but both thumbs are on the pad: the broken
+            // block buzzes both triggers. Long enough to feel on a Bluetooth pad, which takes a
+            // report about every 50 ms.
             Rumble::BlockBroken => Some(Pulse {
                 strong: 0.0,
-                weak: 0.25,
-                millis: 60,
+                weak: 0.4,
+                triggers: [0.7, 0.7],
+                millis: 100,
             }),
             Rumble::Explosion { distance, radius } => {
                 // Felt up to four times the blast radius, fading with distance.
@@ -1627,6 +1646,7 @@ impl Rumble {
                 (near > 0.05).then_some(Pulse {
                     strong: 0.9 * near,
                     weak: 0.6 * near,
+                    triggers: [0.9 * near, 0.9 * near],
                     millis: 350,
                 })
             }
@@ -1636,6 +1656,7 @@ impl Rumble {
             Rumble::Totem => Some(Pulse {
                 strong: 0.7,
                 weak: 0.7,
+                triggers: [0.7, 0.7],
                 millis: 500,
             }),
         }
@@ -1650,10 +1671,11 @@ impl Rumble {
         let step = |level: f32, millis: u32| Pulse {
             strong: p.strong * level,
             weak: p.weak * level,
+            triggers: [p.triggers[0] * level, p.triggers[1] * level],
             millis,
         };
         match self {
-            Rumble::BlockBroken => vec![Pulse { millis: 35, ..p }],
+            Rumble::BlockBroken => vec![p],
             Rumble::RadialSlot
             | Rumble::RadialPage
             | Rumble::RadialWrap
@@ -2652,8 +2674,58 @@ bind_key.hotbar.2:north
             Rumble::Totem.shape().iter().map(|s| s.millis).sum::<u32>(),
             500
         );
-        assert_eq!(Rumble::BlockBroken.shape()[0].millis, 35);
+        assert_eq!(
+            Rumble::BlockBroken.shape()[0].millis,
+            Rumble::BlockBroken.pulse().unwrap().millis
+        );
         assert!(Rumble::Hurt(0.0).shape().is_empty());
+    }
+
+    #[test]
+    fn impulse_triggers_and_block_vibration_are_on_until_saved_off() {
+        let settings = PadSettings::default();
+        assert!(settings.impulse_triggers && settings.block_vibration);
+        let off = PadSettings::parse("impulseTriggers:false\nblockVibration:false\n");
+        assert!(!off.impulse_triggers && !off.block_vibration);
+        assert!(
+            off.serialize()
+                .contains("impulseTriggers:false\nblockVibration:false\n")
+        );
+        assert_eq!(PadSettings::parse(&off.serialize()), off);
+    }
+
+    #[test]
+    fn the_trigger_motors_buzz_where_the_action_is() {
+        // Both triggers: the broken block is felt in each hand.
+        let broken = Rumble::BlockBroken.pulse().unwrap();
+        assert_eq!(broken.triggers, [0.7, 0.7]);
+        // A blast and a totem are felt in both.
+        let blast = Rumble::Explosion {
+            distance: 2.0,
+            radius: 4.0,
+        }
+        .pulse()
+        .unwrap();
+        assert!(blast.triggers[0] > 0.0 && blast.triggers[1] > 0.0);
+        assert!(Rumble::Totem.pulse().unwrap().triggers[0] > 0.0);
+        // A hit is felt in all four motors.
+        let hurt = Rumble::Hurt(4.0).pulse().unwrap();
+        assert!(hurt.strong > 0.0 && hurt.weak > 0.0);
+        assert_eq!(hurt.triggers, [0.7, 0.7]);
+        // The radial ticks are the handles' alone.
+        assert_eq!(Rumble::RadialSlot.pulse().unwrap().triggers, [0.0, 0.0]);
+        // The shaped steps keep them and fade as the handles do.
+        let shape = Rumble::Explosion {
+            distance: 2.0,
+            radius: 4.0,
+        }
+        .shape();
+        assert_eq!(shape[0].triggers, blast.triggers);
+        assert!(
+            shape
+                .windows(2)
+                .all(|w| w[1].triggers[0] < w[0].triggers[0])
+        );
     }
 
     #[test]

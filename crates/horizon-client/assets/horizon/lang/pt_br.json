@@ -5,6 +5,8 @@
   "horizon.options.controller": "Controlador",
   "horizon.options.three_d_skin_layers": "Camadas de skin 3D",
   "horizon.options.vibration": "Vibração",
+  "horizon.options.block_vibration": "Vibração ao quebrar blocos",
+  "horizon.options.impulse_triggers": "Gatilhos de impulso",
   "horizon.options.play_in_background": "Jogar em segundo plano",
   "horizon.options.adaptive_triggers": "Gatilhos adaptativos",
   "horizon.options.gameplay_guide": "Guia de jogo",

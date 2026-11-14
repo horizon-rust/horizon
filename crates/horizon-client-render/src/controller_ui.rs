@@ -54,12 +54,47 @@ pub enum Info {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
     Option(Opt),
+    /// A switch this screen owns, not a vanilla option: it has no key in `Opt`.
+    Switch(Switch),
     /// Wait for a button to bind to this action.
     Bind(&'static str),
     ResetBinds,
     /// Opens the radial menu's pages (`radial_editor`).
     Radial,
     Info(Info),
+}
+
+/// A pad switch the controller screen lists itself, outside the oversized `Opt` matches
+/// (docs/layers.md#file-size).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    /// A broken block ticks the pad, as in Bedrock.
+    BlockVibration,
+    /// An Xbox One pad's impulse triggers buzz with its handles.
+    ImpulseTriggers,
+}
+
+impl Switch {
+    fn caption(self) -> &'static str {
+        match self {
+            Switch::BlockVibration => "horizon.options.block_vibration",
+            Switch::ImpulseTriggers => "horizon.options.impulse_triggers",
+        }
+    }
+    fn on(self, s: &Settings) -> bool {
+        match self {
+            Switch::BlockVibration => s.controller.block_vibration,
+            Switch::ImpulseTriggers => s.controller.impulse_triggers,
+        }
+    }
+    fn toggle(self, s: &mut Settings) {
+        match self {
+            Switch::BlockVibration => s.controller.block_vibration = !s.controller.block_vibration,
+            Switch::ImpulseTriggers => {
+                s.controller.impulse_triggers = !s.controller.impulse_triggers
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -124,6 +159,12 @@ fn choice_description(opt: Opt, pad: &PadSettings) -> Option<&'static str> {
 fn option(opt: Opt, text: &'static str) -> Setting {
     Setting {
         item: Item::Option(opt),
+        text,
+    }
+}
+fn switch(setting: Switch, text: &'static str) -> Setting {
+    Setting {
+        item: Item::Switch(setting),
         text,
     }
 }
@@ -313,6 +354,14 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                     "Feedback",
                     vec![
                         option(Opt::PadVibration, "Rumble when something happens to you."),
+                        switch(
+                            Switch::BlockVibration,
+                            "A tick when you break a block, as in Bedrock.",
+                        ),
+                        switch(
+                            Switch::ImpulseTriggers,
+                            "An Xbox One controller's triggers buzz with its handles.",
+                        ),
                         option(
                             Opt::PadAdaptiveTriggers,
                             "A DualSense's triggers push back on bows and tools.",
@@ -363,6 +412,8 @@ impl Item {
         match self {
             Item::Option(Opt::PadEnabled) => Some(c.enabled),
             Item::Option(Opt::PadVibration) => Some(c.vibration),
+            Item::Switch(Switch::BlockVibration) => Some(c.block_vibration),
+            Item::Switch(Switch::ImpulseTriggers) => Some(c.impulse_triggers),
             Item::Option(Opt::PadPlayInBackground) => Some(c.play_in_background),
             Item::Option(Opt::PadAdaptiveTriggers) => Some(c.adaptive_triggers),
             Item::Option(Opt::PadInvertX) => Some(c.invert_x),
@@ -461,6 +512,12 @@ fn row(setting: Setting, s: &Settings, context: &Context) -> Row<Item> {
                 ..Row::new(item, name, value).about(about)
             }
         }
+        Item::Switch(setting) => Row::new(
+            item,
+            lang::get(setting.caption()),
+            Value::Switch(setting.on(s)),
+        )
+        .about(about),
         Item::Bind(action) => {
             let name = lang::get(gamepad::action_caption(action));
             let value = Value::Binding(binding(action, &s.controller, context.glyphs));
@@ -521,6 +578,10 @@ impl Screen for ControllerScreen {
         match item {
             Item::Option(o) => {
                 o.cycle(s, back, self.framebuffer);
+                vec![Output::Event(Event::Changed)]
+            }
+            Item::Switch(setting) => {
+                setting.toggle(s);
                 vec![Output::Event(Event::Changed)]
             }
             Item::ResetBinds => {
@@ -704,6 +765,21 @@ mod tests {
         ] {
             assert!(items.contains(&Item::Option(opt)), "{opt:?}");
         }
+        for setting in [Switch::BlockVibration, Switch::ImpulseTriggers] {
+            assert!(items.contains(&Item::Switch(setting)), "{setting:?}");
+        }
+    }
+
+    /// A switch row ticks its pad setting and asks for the screen to save.
+    #[test]
+    fn a_switch_row_ticks_its_pad_setting() {
+        let mut s = Settings::default();
+        let mut ui = ui(Page::Device);
+        draw(&mut ui, &s, None);
+        let item = Item::Switch(Switch::BlockVibration);
+        let at = ui.point_at(&s, SIZE, item);
+        ui.click(&mut s, at, SIZE, false, false, false);
+        assert!(!s.controller.block_vibration && ui.changed());
     }
 
     /// Undo comes with a change, the game's binding of a button too, and goes when a value is
