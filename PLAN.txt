@@ -248,3 +248,9 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
   that no prepared Minecraft assets were packaged in either unsigned IPA.
 - Next: iOS lifecycle adapter for Horizon's original winit event loop; connect
   the validated private resource path to the game's options and Metal surface.
+
+2026-11-14: IPA OUTPUT NAMING
+- Both CI jobs package the IPA with the exact lowercase filename nova.ipa.
+- The stub-host workflow uploads artifact nova-host; the original-game-linked
+  integration workflow uploads artifact nova. This distinguishes the two
+  outputs while keeping the IPA filename identical. Main remains unchanged.

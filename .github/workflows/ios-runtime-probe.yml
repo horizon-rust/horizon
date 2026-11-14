@@ -165,9 +165,9 @@ jobs:
           ditto Build/Derived/Build/Products/Release-iphoneos/Nova.app \
             Build/package/Payload/Nova.app
           cd Build/package
-          zip -qry Nova-game-linked-unsigned.ipa Payload
-          unzip -t Nova-game-linked-unsigned.ipa
-          if unzip -Z1 Nova-game-linked-unsigned.ipa | grep -Ei '(assets/minecraft/|horizon-resources\.json|GameFiles\.zip)'; then
+          zip -qry nova.ipa Payload
+          unzip -t nova.ipa
+          if unzip -Z1 nova.ipa | grep -Ei '(assets/minecraft/|horizon-resources\.json|GameFiles\.zip)'; then
             echo "::error::Game assets must never be bundled in Nova"
             exit 1
           fi
@@ -175,8 +175,8 @@ jobs:
         if: steps.ipa.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: Nova-game-linked-unsigned
-          path: platforms/ios/Build/package/Nova-game-linked-unsigned.ipa
+          name: nova
+          path: platforms/ios/Build/package/nova.ipa
           retention-days: 7
           if-no-files-found: error
       - name: Upload Xcode linker diagnostic log

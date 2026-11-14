@@ -56,16 +56,16 @@ jobs:
           ditto Build/Derived/Build/Products/Release-iphoneos/Nova.app \
             Build/package/Payload/Nova.app
           cd Build/package
-          zip -qry Nova-host-unsigned.ipa Payload
-          unzip -t Nova-host-unsigned.ipa
-          if unzip -Z1 Nova-host-unsigned.ipa | grep -Ei '(assets/minecraft/|horizon-resources\.json|GameFiles\.zip)'; then
+          zip -qry nova.ipa Payload
+          unzip -t nova.ipa
+          if unzip -Z1 nova.ipa | grep -Ei '(assets/minecraft/|horizon-resources\.json|GameFiles\.zip)'; then
             echo "::error::Game assets must never be bundled in Nova"
             exit 1
           fi
       - name: Upload unsigned host IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Nova-host-unsigned
-          path: platforms/ios/Build/package/Nova-host-unsigned.ipa
+          name: nova-host
+          path: platforms/ios/Build/package/nova.ipa
           if-no-files-found: error
           retention-days: 7
