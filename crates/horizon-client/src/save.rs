@@ -17,6 +17,7 @@ mod backpressure;
 mod block_entity_order;
 mod far_regions;
 mod respawn;
+mod world_spawn;
 mod writes;
 use writes::{Outstanding, Writer};
 
@@ -3751,6 +3752,10 @@ pub struct Level {
     pub world_spawn: Option<[i32; 3]>,
     /// The world spawn's yaw and pitch (`setworldspawn`'s rotation).
     pub world_spawn_angle: [f32; 2],
+    /// The world spawn's level (`level.dat` `spawn.dimension`): where a
+    /// player without a respawn point of its own comes back
+    /// (`MinecraftServer.findRespawnDimension`).
+    pub world_spawn_dimension: String,
     pub difficulty: String,
     pub hardcore: bool,
     /// `difficulty_settings.locked` (LevelData.isDifficultyLocked).
@@ -3863,21 +3868,10 @@ impl Level {
             ..Self::default()
         };
         // 26.3: spawn {pos: [I; x, y, z], dimension, yaw, pitch}; older: SpawnX/Y/Z.
-        level.world_spawn = match data.get("spawn").and_then(|s| s.get("pos")) {
-            Some(Tag::IntArray(p)) if p.len() == 3 => Some([p[0], p[1], p[2]]),
-            _ => data.get("SpawnX").map(|_| {
-                [
-                    n(data.get("SpawnX")) as i32,
-                    n(data.get("SpawnY")) as i32,
-                    n(data.get("SpawnZ")) as i32,
-                ]
-            }),
-        };
-        let angle = |k: &str| match data.get("spawn").and_then(|s| s.get(k)) {
-            Some(Tag::Float(b)) => f32::from_bits(*b),
-            _ => 0.0,
-        };
-        level.world_spawn_angle = [angle("yaw"), angle("pitch")];
+        let (spawn, angle, dimension) = world_spawn::read(data);
+        level.world_spawn = spawn;
+        level.world_spawn_angle = angle;
+        level.world_spawn_dimension = dimension;
         if let Some(d) = data.get("difficulty_settings") {
             level.difficulty = text(d.get("difficulty")).unwrap_or_else(|| "normal".into());
             level.hardcore = n(d.get("hardcore")) != 0;
@@ -4443,7 +4437,6 @@ impl Level {
                 ]
             });
         }
-        let spawn = self.world_spawn.unwrap_or([0, 64, 0]);
         let mut history: Vec<Tag> = match data.get("version_history") {
             Some(Tag::List(l)) => l.clone(),
             _ => Vec::new(),
@@ -4498,15 +4491,7 @@ impl Level {
             ("GameType", Tag::Int(self.mode())),
             ("Time", Tag::Long(self.time)),
             ("LastPlayed", Tag::Long(now)),
-            (
-                "spawn",
-                Tag::compound([
-                    ("pos", Tag::IntArray(spawn.to_vec())),
-                    ("dimension", string("minecraft:overworld")),
-                    ("yaw", Tag::Float(self.world_spawn_angle[0].to_bits())),
-                    ("pitch", Tag::Float(self.world_spawn_angle[1].to_bits())),
-                ]),
-            ),
+            ("spawn", self.spawn_tag()),
             ("difficulty_settings", difficulty),
             ("initialized", Tag::Byte(1)),
             ("ServerBrands", Tag::List(brands)),
@@ -7711,6 +7696,7 @@ mod tests {
             dimension: "minecraft:the_nether".into(),
             world_spawn: Some([8, 64, 8]),
             world_spawn_angle: [45.0, -10.0],
+            world_spawn_dimension: "minecraft:the_nether".into(),
             spawn: Some([20.0, 70.0, 20.0]),
             difficulty_locked: true,
             flying: true,
@@ -7747,6 +7733,7 @@ mod tests {
         assert_eq!(back.dimension, "minecraft:the_nether");
         assert_eq!(back.world_spawn, Some([8, 64, 8]));
         assert_eq!(back.world_spawn_angle, [45.0, -10.0]);
+        assert_eq!(back.world_spawn_dimension, "minecraft:the_nether");
         assert_eq!(back.spawn, Some([8.0, 64.0, 8.0]));
         assert_eq!(
             back.respawn_elsewhere,
