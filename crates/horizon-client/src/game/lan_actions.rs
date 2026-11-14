@@ -3696,12 +3696,12 @@ impl Game<'_> {
         };
         self.ui.registries.permission = level;
         let mut lines = self.chat_capture.take().unwrap_or_default();
-        let mut host = self.lan.take().expect("a command puts the hub back");
+        let mut host = self.lan.take()?; // a kick or disconnect may have cleared the hub
         self.leave_guest(&mut host, swap);
         if std::mem::take(&mut self.save_after_guest_turn) {
             self.lan = Some(host);
             lines.push(self.save_all_reply());
-            host = self.lan.take().expect("saving puts the hub back");
+            host = self.lan.take()?;
         }
         host.hub.sync_all_effects();
         if !c.integrated {
