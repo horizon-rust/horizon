@@ -54,6 +54,11 @@ fn a_buffer_blends_its_two_nearest_levels() {
     let pixels = gpu.render(&mut post, [4, 4]);
     // Level 1.5: 1.0 and 0.5 mixed 1:1, 0.75; level 1.25: mixed 3:1, 0.875.
     let [r, g, ..] = pixels[0];
+    if !gpu.blends_exactly() {
+        // A hardware adapter: both between the two levels, 1.25 nearer level 1.
+        assert!(128 < r && r < g && g < 255, "red {r}, green {g}");
+        return;
+    }
     assert!(
         r.abs_diff(191) <= 2 && g.abs_diff(223) <= 2,
         "levels 1.5 and 1.25: got red {r}, green {g}, expected 191 and 223"

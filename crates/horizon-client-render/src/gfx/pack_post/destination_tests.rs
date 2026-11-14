@@ -177,6 +177,13 @@ impl Fixture {
         })
     }
 
+    /// Whether the adapter blends two mip levels by the level's fraction: a software one
+    /// (WARP, lavapipe). NVIDIA's hardware weighs them its own way, and differently on
+    /// Vulkan and DirectX 12 (#16295).
+    pub(super) fn blends_exactly(&self) -> bool {
+        self.adapter.get_info().device_type == wgpu::DeviceType::Cpu
+    }
+
     fn texture(&self, size: [u32; 2], format: T) -> wgpu::TextureView {
         self.device
             .create_texture(&wgpu::TextureDescriptor {

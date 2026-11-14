@@ -103,6 +103,11 @@ fn the_atlas_blends_its_two_nearest_levels() {
     )
     .expect("the pack runs");
     for p in gpu.render(&mut post, [4, 4]) {
+        if !gpu.blends_exactly() {
+            // A hardware adapter: both between the two levels, 0.25 nearer level 0.
+            assert!(0 < p[1] && p[1] < p[0] && p[0] < 255, "{p:?}");
+            continue;
+        }
         // Half of white, and a quarter (within the blend's 8-bit weight).
         assert!(p[0].abs_diff(128) <= 2 && p[1].abs_diff(64) <= 2, "{p:?}");
     }
