@@ -97,6 +97,7 @@ pub struct Fluids {
     pub in_water: bool,
     pub in_lava: bool,
     pub eye_in_water: bool,
+    pub eye_in_lava: bool,
     /// The mod fluid the mob is deepest in (`isInFluidType`): not water to the
     /// game, but the mob moves in it as in water, with its numbers.
     pub modded: Option<ModFluidImmersion>,
@@ -236,7 +237,7 @@ impl MobWorld<'_> {
         // for the camera.
         for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
             let (fluid, h) = self.fluid_height(ex, y, ez);
-            if fluid != Fluid::Water || f64::from(y) + h < lo.y || eye_y < f64::from(y) {
+            if fluid == Fluid::None || f64::from(y) + h < lo.y || eye_y < f64::from(y) {
                 continue;
             }
             let state = self.world.block(ex, y, ez);
@@ -252,7 +253,11 @@ impl MobWorld<'_> {
                 h
             };
             if eye_y <= f64::from(y) + camera {
-                out.eye_in_water = true;
+                match fluid {
+                    Fluid::Water => out.eye_in_water = true,
+                    Fluid::Lava => out.eye_in_lava = true,
+                    Fluid::None => {}
+                }
             }
         }
         out
@@ -387,6 +392,22 @@ impl MobWorld<'_> {
     /// `BlockState.getCollisionShape(level, pos)` (the empty collision
     /// context) as boxes in the world.
     pub fn block_collision_boxes(&self, x: i32, y: i32, z: i32) -> Vec<Aabb> {
+        let offset = Vec3::new(f64::from(x), f64::from(y), f64::from(z));
+        self.block_shape(x, y, z)
+            .map(|shape| shape.boxes().iter().map(|b| b.move_by(offset)).collect())
+            .unwrap_or_default()
+    }
+    /// Whether the block's collision shape (empty context) has a box meeting `area`.
+    fn block_collides_with(&self, x: i32, y: i32, z: i32, area: Aabb) -> bool {
+        let offset = Vec3::new(f64::from(x), f64::from(y), f64::from(z));
+        self.block_shape(x, y, z).is_some_and(|shape| {
+            shape
+                .boxes()
+                .iter()
+                .any(|b| b.move_by(offset).intersects(area))
+        })
+    }
+    fn block_shape(&self, x: i32, y: i32, z: i32) -> Option<horizon_core::geometry::VoxelShape> {
         let mut scene = SceneCollisions {
             world: self.world,
             binding: self.collision,
@@ -395,11 +416,9 @@ impl MobWorld<'_> {
         let state = self.world.block(x, y, z);
         let at = horizon_core::position::BlockPos::new(x, y, z);
         let context = horizon_world::collision_context::CollisionContext::empty(false);
-        let offset = Vec3::new(f64::from(x), f64::from(y), f64::from(z));
         self.collision
             .collision_shape_with_context(&mut scene, state, at, &context)
-            .map(|shape| shape.boxes().iter().map(|b| b.move_by(offset)).collect())
-            .unwrap_or_default()
+            .ok()
     }
     /// `Level.findSupportingBlock`: of the blocks whose collision shape
     /// meets `area`, the one whose centre is nearest `from` (ties: the
@@ -452,11 +471,7 @@ impl MobWorld<'_> {
                     {
                         continue;
                     }
-                    if !self
-                        .block_collision_boxes(x, y, z)
-                        .iter()
-                        .any(|b| b.intersects(area))
-                    {
+                    if !self.block_collides_with(x, y, z, area) {
                         continue;
                     }
                     let d = (f64::from(x) + 0.5 - from.x).powi(2)
@@ -714,6 +729,52 @@ impl Mob {
     }
     pub fn height(&self) -> f32 {
         self.dims().1 as f32
+    }
+    /// `EntityAttachment.NAME_TAG` of the current pose, before
+    /// `SubmitNodeCollector.submitNameTag` lifts it 0.5: the box height
+    /// (`EntityAttachment.Fallback.AT_HEIGHT`), unless the type attaches the
+    /// tag elsewhere, scaled like the box (`EntityDimensions.scale`).
+    pub fn name_tag_height(&self) -> f64 {
+        if self.kind.species == super::Species::Sniffer {
+            // `EntityTypes.SNIFFER`: `.nameTagOffset(2.05F)` over a 1.75 box.
+            // `Sniffer.DIGGING_DIMENSIONS` is built without the attachment, so
+            // a digging sniffer falls back to its 1.75 - 0.4 box.
+            let height = if super::sniffer::digging(self) {
+                1.75_f32 - 0.4
+            } else {
+                2.05_f32
+            };
+            // `getAgeScale()` (a baby sniffer is `Baby::Scale(0.5)`), then
+            // `getScale()`; `EntityAttachments.scale` multiplies the point in
+            // `Vec3`'s doubles, so these are double products.
+            let age = match super::species::def(self.kind.species).baby {
+                super::species::Baby::Scale(s, _) if self.is_baby() => s as f32,
+                _ => 1.0,
+            };
+            f64::from(height) * f64::from(age) * f64::from(self.model_scale())
+        } else {
+            f64::from(self.height())
+        }
+    }
+    /// `Entity.saveWithoutId`'s `CustomName`: the whole component as
+    /// `ComponentSerialization.CODEC` writes it (a name tag's `custom_name`
+    /// keeps its colour), else the plain text. `None` without a name.
+    pub fn custom_name_tag(&self) -> Option<horizon_world::nbt::Tag> {
+        let name = self.custom_name.as_ref()?;
+        Some(match &self.custom_name_text {
+            Some(text) => crate::scoreboard::component_tag(&text.component()),
+            None => horizon_world::nbt::Tag::String(name.as_str().into()),
+        })
+    }
+    /// Whether the save's `CustomName` is not this mob's name, style included:
+    /// a rename to the same text with another colour still changes it.
+    pub fn custom_name_changed(&self, saved: Option<&horizon_world::nbt::Tag>) -> bool {
+        match (&self.custom_name_text, saved) {
+            (Some(current), Some(saved)) => crate::entity_nbt::name_text(saved) != *current,
+            (Some(_), None) => true,
+            // A plain name with no component (a mod's) still compares as text.
+            (None, _) => saved.and_then(crate::entity_nbt::custom_name) != self.custom_name,
+        }
     }
     /// `AgeableMob.isBaby`: `canBeABaby() && getAge() < 0`. The age alone is
     /// not enough — a frog, a parrot, a zombie nautilus, a camel husk, a slime,
@@ -1581,7 +1642,17 @@ impl Mob {
         }
     }
     /// LivingEntity.travel.
-    pub fn travel(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
+    pub fn travel(&mut self, w: &MobWorld, mut input: Vec3, events: &mut Vec<MobEvent>) {
+        // Camel.travel: on the ground, a camel that sits or changes pose keeps
+        // the vertical part of its motion and drops the horizontal input.
+        if super::camel::is_camel(self.species())
+            && self.on_ground
+            && super::camel::refuse_to_move(self)
+        {
+            let vertical = Vec3::new(0.0, 1.0, 0.0);
+            self.velocity = self.velocity.multiply(vertical);
+            input = input.multiply(vertical);
+        }
         if super::ai::custom_travel(self, w, input, events) {
             return;
         }
@@ -2298,6 +2369,9 @@ impl RestitutionWorld for MobRestitution<'_> {
 #[cfg(test)]
 #[path = "living_climbable_tests.rs"]
 mod climbable_tests;
+#[cfg(test)]
+#[path = "name_tag_nbt_tests.rs"]
+mod name_tag_nbt_tests;
 #[cfg(test)]
 #[path = "living_tests.rs"]
 mod tests;
