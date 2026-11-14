@@ -3011,13 +3011,26 @@ pub fn remove_version(tag: &str) -> Result<(), String> {
     if in_use(tag) {
         return Err(format!("{tag} is running. Quit it first."));
     }
-    remove(tag)?;
+    if crate::native_mods::is_native(tag) {
+        remove_native_in(&version_dir(tag), &build_dir())?;
+    } else {
+        remove(tag)?;
+    }
     let mut settings = Settings::load();
     if settings.selected.as_deref() == Some(tag) {
         settings.selected = installed().first().cloned();
         settings.save()?;
     }
     Ok(())
+}
+
+// Cargo artifacts are shared across native versions. Explicit removal evicts disposable
+// outputs, retaining installed games. A busy/unsafe cache leaves the version discoverable.
+fn remove_native_in(dir: &Path, build_dir: &Path) -> Result<(), String> {
+    let cache =
+        crate::native_cache::Cache::acquire(build_dir).map_err(crate::native_mods::cache_error)?;
+    cache.clear().map_err(crate::native_mods::cache_error)?;
+    remove_in(dir)
 }
 
 /// How many of the newest managed versions of each kind stay installed by default.
@@ -7203,6 +7216,45 @@ pub fn {f}("
         assert_eq!(
             envs.get(OsStr::new("PIPEWIRE_PROPS")),
             Some(&Some(OsStr::new("kept")))
+        );
+    }
+}
+
+#[cfg(test)]
+mod removed_native_cache_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_removal_clears_shared_outputs_and_preserves_other_versions() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let removed = home.join("versions/native-old");
+        let kept = home.join("versions/native-kept");
+        let output = home.join("native/target/fast/deps/output");
+        for dir in [&removed, &kept, output.parent().unwrap()] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(removed.join(COMPLETE), "").unwrap();
+        fs::write(kept.join(CLIENT), "installed binary").unwrap();
+        fs::write(&output, "shared compiler output").unwrap();
+        let lease = crate::native_cache::Cache::acquire(home).unwrap();
+        assert!(remove_native_in(&removed, home).is_err());
+        assert!(removed.join(COMPLETE).is_file());
+        assert!(output.is_file());
+        drop(lease);
+        // Validate the cache before unlisting the version, even when a cache path is unsafe.
+        let records = home.join("native/built.json");
+        fs::create_dir(&records).unwrap();
+        assert!(remove_native_in(&removed, home).is_err());
+        assert!(removed.join(COMPLETE).is_file());
+        assert!(output.is_file());
+        fs::remove_dir(records).unwrap();
+        remove_native_in(&removed, home).unwrap();
+        assert!(!removed.exists());
+        assert!(!output.exists());
+        assert_eq!(
+            fs::read_to_string(kept.join(CLIENT)).unwrap(),
+            "installed binary"
         );
     }
 }

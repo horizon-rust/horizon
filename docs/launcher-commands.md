@@ -42,6 +42,12 @@ Remove an installed version.
 
 - `TAG`
 
+Removing a native version also clears the shared fast/release compilation outputs, even below
+`native-cache-gib` (including when its automatic limit is disabled). Installed binaries of other
+versions remain playable; the next changed native build recompiles. Removal refuses while a
+native build or cache cleanup is running. Automatic pruning keeps its existing cache policy.
+Source downloads, patched workspaces and incomplete installs are separate from this compiler cache.
+
 MCP: `remove`, needs `confirm: true`.
 
 ## `horizon-launcher import-build`
