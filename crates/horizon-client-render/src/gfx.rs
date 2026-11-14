@@ -2538,7 +2538,7 @@ impl Renderer {
         previous: Option<&Self>,
         api: GraphicsApi,
         translucent_batching: bool,
-        shader_pack: bool,
+        (shader_pack, pack_starts_wide): (bool, bool),
         // The settings and the pack's `request` pick the frame (`output::resolve_frame`),
         // with what this window's display reported to the renderer before (`display`).
         settings: &crate::graphics::Graphics,
@@ -4682,7 +4682,7 @@ impl Renderer {
         };
         // The solid quads in the compact layout where every pass reads it; the first world
         // frames settle it for the picked pack (`follow_packed_layout`).
-        let packed_quads = flat.is_some() && !shader_pack && packed_wanted();
+        let packed_quads = flat.is_some() && !pack_starts_wide && packed_wanted();
         packed::pack_quads(packed_quads);
         // A native mod's world warp builds its pipelines with these layouts once it is given one.
         let world_warps = world_warp::WorldWarps::new(world_warp::Kit {
@@ -4740,9 +4740,8 @@ impl Renderer {
         // first world frame (`shader_pack`: the picked pack draws flat, a `shaders/`
         // pack or one of Horizon's own with `[shadow]`), and the frames before it, the
         // level loading screen's among them, keep the layout the sections upload in
-        // (`draw_frame`). It starts as that pack's, a `shaders/` pack taken to draw
-        // terrain: the pack loading keeps it, and only one whose terrain and shadow
-        // pass draw none meshes the sections again.
+        // (`draw_frame`). It starts as that pack's (`pack_starts_wide`: a `shaders/` pack
+        // taken to draw terrain, or one with `[displacement]`), so the pack loading keeps it.
         let (sorted_indices, translucent_arena) = arena::Arena::translucent_arenas(
             &device,
             std::mem::size_of::<TerrainVertex>() as u64,
@@ -6500,16 +6499,15 @@ impl Renderer {
         }
     }
     /// Uploads solid quads in the compact layout (`packed_quads`) unless a pack reads the
-    /// arena's vertices as `TerrainVertex`es: Horizon's own packs' stages, and a `shaders/`
-    /// pack's terrain and shadow programs outside flat draws (flat ones unpack the records,
-    /// `pack_atlas::PULL_FLAT`). Leaving it drops every section and far tile for the game to
-    /// mesh again, as `follow_translucent_layout` does.
+    /// arena's vertices as `TerrainVertex`es: some of Horizon's own packs' stages
+    /// (`NativePack::reads_terrain_vertices`), and a `shaders/` pack's terrain and shadow
+    /// programs outside flat draws (flat ones unpack the records, `pack_atlas::PULL_FLAT`).
+    /// Leaving it drops every section and far tile for the game to mesh again.
     fn follow_packed_layout(&mut self) {
         let pack = self.pack_post.as_ref().and_then(|p| p.1.as_ref()).is_some();
-        let want = self.flat.is_some()
-            && (!pack || self.pack_terrain_flat)
-            && self.native.is_none()
-            && self.packed_on;
+        let native = matches!(&self.native, Some(n) if n.reads_terrain_vertices());
+        let want =
+            self.flat.is_some() && (!pack || self.pack_terrain_flat) && !native && self.packed_on;
         if want == self.packed_quads {
             return;
         }
@@ -6527,7 +6525,7 @@ impl Renderer {
         self.packed_quads = want;
         packed::pack_quads(want);
         let laid_out = self.sections.values().any(|s| s.packed)
-            || self.lods.values().any(|t| t.drawn().packed);
+            || self.lods.values().any(|t| t.holds_packed());
         if !want && laid_out {
             self.sections_dropped = true;
             self.clear_sections(self.layout);
@@ -10008,7 +10006,7 @@ impl Renderer {
                 pass.set_pipeline(&shadow.solid);
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.set_vertex_buffer(1, self.instances.slice(..));
-                self.draw_sections(&mut pass, &self.indirect, 0, shadow_first, shadow_solid);
+                self.draw_solid_sections(&mut pass, &self.indirect, 0, shadow_first, shadow_solid);
             }
             // `[displacement]`'s grid casts in place of the flat quads it took over.
             if let Some((d, picks, pipeline)) = native
@@ -10600,9 +10598,8 @@ impl Renderer {
                         ],
                         _ => &[(solid_pipeline, 0..phase1_draws, phase1_draws..solid_draws)],
                     };
-                    // The vanilla solid pipelines read the page themselves; a native
-                    // material's take it as vertices.
-                    let pulled = material.is_none() && self.flat.is_some();
+                    // The solid pipelines, a native material's too, read the page themselves.
+                    let pulled = self.flat.is_some();
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     pass.stage(self.own_timing.as_mut(), "solid terrain");
