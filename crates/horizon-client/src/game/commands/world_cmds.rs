@@ -981,7 +981,9 @@ impl Game<'_> {
         }
         self.feedback(Text::translate(
             "commands.particle.success",
-            &[Text::literal(name.to_owned())],
+            // ParticleCommand.sendParticles: the type's registry key, not the
+            // text the player typed.
+            &[Text::literal(ty.id())],
         ));
         Ok(reached)
     }
@@ -2815,3 +2817,7 @@ mod vehicle_damage_command_tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "particle_command_tests.rs"]
+mod particle_command_tests;
