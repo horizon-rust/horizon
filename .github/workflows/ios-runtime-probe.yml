@@ -61,7 +61,7 @@ jobs:
           source = path.read_text()
           old = '#[cfg(not(target_os = "macos"))]'
           ios_safe = '#[cfg(not(any(target_os = "macos", target_os = "ios")))]'
-          assert source.count(old) == 4, "Upstream HDR API changed; review patch"
+          assert source.count(old) == 3, "Upstream HDR API changed; review patch"
           source = source.replace(old, ios_safe)
           old_mac = '#[cfg(target_os = "macos")]'
           assert source.count(old_mac) == 1
