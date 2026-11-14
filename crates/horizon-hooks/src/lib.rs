@@ -17,12 +17,14 @@
 //! pages, [`hud`] for what it draws on the HUD, [`lang`] for the lang files with its text.
 #![forbid(unsafe_code)]
 
+pub mod actions;
 pub mod hud;
 pub mod lang;
 pub mod pages;
 pub mod perf;
 pub mod players;
 mod registry;
+pub mod screens;
 pub mod settings;
 pub mod tunnel;
 
@@ -247,6 +249,7 @@ pub mod engine {
     /// registration ends.
     pub fn seal() {
         all();
+        crate::actions::all();
         crate::settings::all();
         crate::pages::engine::all();
         crate::hud::engine::all();
