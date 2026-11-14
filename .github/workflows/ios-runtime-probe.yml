@@ -50,8 +50,8 @@ jobs:
         run: |
           cargo tree --manifest-path platforms/ios/GameRuntime/Cargo.toml \
             --target aarch64-apple-ios -i wayland-backend \
-            -e features > ios-wayland-tree.log 2>&1 || true
-          head -n 100 ios-wayland-tree.log
+            > ios-wayland-tree.log 2>&1 || true
+          tail -n 130 ios-wayland-tree.log
       - name: Cross-check the original Horizon game for iOS
         id: crosscheck
         continue-on-error: true
@@ -92,3 +92,9 @@ jobs:
             ios-runtime-link.log
           if-no-files-found: warn
           retention-days: 14
+      - name: Enforce real iOS game compile result
+        if: always()
+        shell: bash
+        run: |
+          test "${{ steps.crosscheck.outcome }}" = success
+          test "${{ steps.linkprobe.outcome }}" = success

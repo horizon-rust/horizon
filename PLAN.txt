@@ -121,3 +121,23 @@ HOW TO REPORT PROGRESS
 For every change: list files changed, upstream SHA, iOS build target, verification
 performed, remaining blockers, and whether any game source was modified. Never
 claim an IPA works without successful compile/package and on-device verification.
+
+IMPLEMENTATION STATUS / VERIFIED BUILD BLOCKERS (2026-11-14)
+- Added platforms/ios/GameRuntime as an independent staticlib which references
+  the original official game register() and horizon_game::main(), without
+  changing crates/ game source or enabling the SwiftUI Play button.
+- Added .github/workflows/ios-runtime-probe.yml which cross-checks and tries
+  to build the original game for aarch64-apple-ios. It must fail its final
+  status if compilation or linking fails; logs are uploaded for diagnosis.
+- Original build check initially failed in horizon-threads allocator_stats.rs:
+  CStr::from_ptr(raw) gets *mut u8 on iOS instead of *const i8.
+  CI now makes a one-line safe pointer cast in the EPHEMERAL checkout only:
+  CStr::from_ptr(raw.cast()). Never commit this change into core game files.
+- Next observed error: wayland-backend 0.3.17 (desktop Wayland server backend)
+  compiles in the iOS target graph and fails with missing poll_fd/ret,
+  SendFlags::NOSIGNAL, RecvFlags::CMSG_CLOEXEC, dispatch_all_clients.
+  Investigate which upstream dependency enables Wayland on iOS, and make
+  target-appropriate dependency selection or a scoped build-time adjustment.
+  Avoid modifying gameplay and do not silently drop original gameplay features.
+- The original game has NOT yet linked as an iOS staticlib, has NOT started on
+  an iPhone/iPad, and is not bundled into the host IPA.
