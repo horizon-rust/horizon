@@ -250,8 +250,9 @@ fn launching_from_a_block_and_while_gliding_use_the_rocket_up() {
 /// `FireworkRocketEntity.tick` for a rocket attached to another player, as a
 /// client ticks it: gliding, it sits at the rocket hand,
 /// `Entity.getHandHoldingItemAngle` (`calculateViewVector(0, yRot + 80)`
-/// scaled by 0.5 for a right main arm holding it); not gliding, at the feet.
-/// Either way it takes the holder's motion (`setDeltaMovement`), not its step.
+/// scaled by 0.5 for a right main arm holding it, `yRot - 80` for a rocket
+/// only in the offhand); not gliding, at the feet. It takes the holder's
+/// motion (`setDeltaMovement`), or the holder's step when no motion came.
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn another_players_boost_rocket_sits_at_their_rocket_hand() {
@@ -274,17 +275,23 @@ fn another_players_boost_rocket_sits_at_their_rocket_hand() {
         rocket.attached_to = Some(43);
         rocket.lifetime = 100;
         game.rockets.push(rocket);
+        let offset = |game: &mut Game<'_>, hand: [f64; 3]| {
+            game.tick_remote_projectiles(|_, at| at);
+            let at = game.rockets[0].position;
+            for (got, want) in [at.x - feet.x, at.y - feet.y, at.z - feet.z]
+                .into_iter()
+                .zip(hand)
+            {
+                assert!((got - want).abs() < 1e-3, "{at:?}: hand offset {hand:?}");
+            }
+        };
 
-        game.tick_remote_projectiles(|_, at| at);
         // yRot + 80 = 110: (-sin 110°, 0, cos 110°) / 2, to Mth's table.
-        let at = game.rockets[0].position;
-        let hand = [-0.469_846_310_4, 0.0, -0.171_010_071_7];
-        for (got, want) in [at.x - feet.x, at.y - feet.y, at.z - feet.z]
-            .into_iter()
-            .zip(hand)
-        {
-            assert!((got - want).abs() < 1e-3, "{at:?}: hand offset {hand:?}");
-        }
+        offset(game, [-0.469_846_310_4, 0.0, -0.171_010_071_7]);
+        // Only in the offhand: the left arm, yRot - 80 = -50.
+        game.mobs[0].extra.main_hand = None;
+        game.mobs[0].extra.off_hand = Some("minecraft:firework_rocket".into());
+        offset(game, [0.383_022_221_6, 0.0, 0.321_393_804_8]);
 
         game.mobs[0].extra.fall_flying = false;
         game.tick_remote_projectiles(|_, at| at);
@@ -295,5 +302,11 @@ fn another_players_boost_rocket_sits_at_their_rocket_hand() {
             Vec3::new(0.25, -0.5, 1.0),
             "the holder's motion"
         );
+
+        // No motion came for the holder (a Horizon server sends none): its step.
+        game.mobs[0].velocity = Vec3::ZERO;
+        game.mobs[0].previous = Vec3::new(3.5, 210.25, 5.0);
+        game.tick_remote_projectiles(|_, at| at);
+        assert_eq!(game.rockets[0].velocity, Vec3::new(0.5, -0.25, 1.0));
     });
 }

@@ -601,7 +601,19 @@ impl Game<'_> {
             [0.0; 3]
         };
         r.position = m.position.add_vector(Vec3::new(hand[0], hand[1], hand[2]));
-        r.velocity = m.velocity;
+        // A vanilla server sends a gliding entity's motion every update
+        // (`ServerEntity.sendChanges`), but Horizon's LAN and dedicated
+        // servers send a player's only when it needs a sync, so this copy's
+        // stays zero: then the holder's step this tick stands in for it.
+        r.velocity = if m.velocity == Vec3::ZERO {
+            Vec3::new(
+                m.position.x - m.previous.x,
+                m.position.y - m.previous.y,
+                m.position.z - m.previous.z,
+            )
+        } else {
+            m.velocity
+        };
     }
     pub(super) fn tick_rockets(&mut self) {
         let targets = if self.rockets.is_empty() {
