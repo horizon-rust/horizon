@@ -92,8 +92,8 @@ impl Game<'_> {
     /// This player's `options.txt`: in the game folder, or in `--player-dir` when several
     /// players share one (`logging::set_player_dir`).
     pub(super) fn options_path() -> std::path::PathBuf {
-        // Splitscreen's second player has its own options (`split::options_path`).
-        if let Some(path) = super::split::options_path() {
+        // Splitscreen's second player has its own options (`turn::options_path`).
+        if let Some(path) = super::turn::options_path() {
             return path;
         }
         horizon_client::logging::player_dir().join("options.txt")
@@ -527,7 +527,7 @@ impl Game<'_> {
     /// the compositor set up.
     fn apply_fullscreen(&mut self) {
         // A splitscreen guest draws in a window it shares: its option never changes the window.
-        if self.options.split_guest {
+        if self.options.role.is_guest() {
             return;
         }
         if let Some(w) = self.window.clone() {
@@ -615,7 +615,7 @@ impl Game<'_> {
         let mut volumes = s.volumes;
         volumes[0] = 1.0;
         // Splitscreen: the speakers are P1's, and so are their volumes.
-        if !self.options.split_guest {
+        if !self.options.role.is_guest() {
             horizon_client::settings::set_source_volumes(volumes);
         }
         super::narrator::sync(s);
@@ -652,7 +652,7 @@ impl Game<'_> {
             return;
         }
         let Some(w) = &self.window else { return };
-        if self.options.split_guest {
+        if self.options.role.is_guest() {
             return;
         }
         if let Some(now) = self.fullscreen.observe(w.fullscreen().is_some())
@@ -666,7 +666,7 @@ impl Game<'_> {
     pub(super) fn toggle_fullscreen(&mut self) {
         // Splitscreen: another player's F11 toggles the window it plays in, kept out of its
         // options (a profile that saved it would turn the next window fullscreen on joining).
-        if self.options.split_guest {
+        if self.options.role.is_guest() {
             // Window 1 is P1's: its fullscreen follows P1's option, not a guest's key.
             if self.options.split_in_main_window {
                 return;
@@ -735,7 +735,7 @@ impl Game<'_> {
     /// below 260 frames per second, sleeping then spin-waiting until the
     /// frame's slot ends (not in scripted frame-count runs).
     pub(super) fn limit_frame(&mut self) {
-        if self.options.frames.is_some() || self.options.paced_by_split {
+        if self.options.frames.is_some() || self.options.role.paced() {
             return;
         }
         let limit = self.framerate_limit();

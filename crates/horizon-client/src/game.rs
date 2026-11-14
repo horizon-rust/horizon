@@ -414,6 +414,7 @@ mod resource_load;
 mod resource_loader;
 mod resource_tables;
 mod respawn_anchor;
+mod role;
 mod saves_control;
 mod saving;
 mod scoreboard;
@@ -475,6 +476,7 @@ mod transient_blocks;
 mod trial_spawner;
 mod trial_visuals;
 mod trident;
+mod turn;
 mod tutorial;
 mod ui_control;
 mod upload_pace;
@@ -606,6 +608,7 @@ use resource_loader::{
     EntityModels, GameCpuResources, Loaded, LoaderMsg, PendingWorldEntry, WorldRestLoader,
     run_loading, write_report,
 };
+use role::Role;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -2275,15 +2278,12 @@ struct Game<'a> {
     regrab_on_refocus: bool,
     /// Only the local player owning keyboard and mouse changes the native pointer.
     keyboard_mouse: bool,
-    /// Offscreen rendering into a visible splitscreen window still accepts native input.
-    split_window: bool,
     /// This view's corner in its shared window; cursor warps include the offset.
     view_at: [u32; 2],
     /// Splitscreen: what it draws over this player's view (its badge, questions, notices).
     split_hud: split::Hud,
-    /// Splitscreen: this player's own Microsoft account session (one of the launcher's other
-    /// accounts), in place of the process's (P1's) for its connections and skin.
-    split_auth: Option<std::sync::Arc<horizon_client::auth::AuthSession>>,
+    /// What this game swaps in and out when it shares its thread with other players' games.
+    turn: turn::Turn,
     focused: bool,
     /// The visible window of a game an agent started, until a person focuses it: it opened
     /// without the focus, and its pointer grab stays inside the game as `--offscreen`'s does,
@@ -8325,7 +8325,7 @@ impl Game<'_> {
         }
         // Split-screen compositors and guests share the device; rebuilding one
         // renderer alone would leave the other windows using invalid resources.
-        if self.options.paced_by_split {
+        if self.options.role.paced() {
             return Err("the graphics device was lost during split-screen play".into());
         }
         let now = Instant::now();
@@ -11464,10 +11464,9 @@ impl<'a> Game<'a> {
             capture_mode: None,
             regrab_on_refocus: false,
             keyboard_mouse: true,
-            split_window: false,
             view_at: [0, 0],
             split_hud: Default::default(),
-            split_auth: None,
+            turn: Default::default(),
             focused: true,
             unclaimed_window: false,
             focus_after_run: None,

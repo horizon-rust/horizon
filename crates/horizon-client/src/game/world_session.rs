@@ -23,7 +23,7 @@ impl Game<'_> {
     ) -> Result<()> {
         match action {
             // A splitscreen player's title never ends the process (P1's does).
-            Action::Quit if self.options.split_guest => {}
+            Action::Quit if self.options.role.is_guest() => {}
             Action::Quit => event_loop.exit(),
             Action::Options => self.open_options(true),
             Action::Accessibility => {
@@ -173,7 +173,7 @@ impl Game<'_> {
     /// allows performance statistics (`horizon_client::telemetry`), and starts the next one.
     pub(super) fn finish_perf(&mut self) {
         // One session per computer: P1's (a splitscreen player's would count it again).
-        if self.options.split_guest {
+        if self.options.role.is_guest() {
             return;
         }
         let s = &self.settings;

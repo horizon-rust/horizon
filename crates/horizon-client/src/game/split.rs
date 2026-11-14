@@ -29,13 +29,13 @@
 use super::{
     Game, UiResources, build_renderer,
     pad::{PadId, PadRouter},
+    role::Role,
     start_game,
 };
 use horizon_client::gamepad::Button;
 use horizon_client::split_layout::{self as layout, MAX_PLAYERS, Placement, Spot, View};
 use horizon_client::{Result, gfx::compositor::Compositor, widgets};
 use std::{
-    cell::RefCell,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -61,22 +61,11 @@ pub(super) use hud::Hud;
 use hud::*;
 use windows::*;
 
-thread_local! {
-    /// The options file of the player whose turn it is (none for P1, whose is the game's own):
-    /// every player runs on this thread, one after another.
-    static OPTIONS: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-}
-
-/// The `options.txt` of the player whose turn it is; `None` for P1.
-pub(super) fn options_path() -> Option<PathBuf> {
-    OPTIONS.with_borrow(Clone::clone)
-}
-
 impl Game<'_> {
     /// An error stops the event loop, as ever, but not in another splitscreen player's game:
     /// that player drops out (`Split::drop_out`), the others play on.
     pub(in crate::game) fn exit_on_error(&self, event_loop: &dyn super::event_loop::EventLoopCtl) {
-        if !self.options.split_guest {
+        if !self.options.role.is_guest() {
             event_loop.exit();
         }
     }
@@ -91,13 +80,10 @@ struct Guest<'a> {
     name: Option<String>,
     /// Its seat (2 to `MAX_PLAYERS`): its number (P2...), its control socket, its sounds.
     seat: usize,
-    options: PathBuf,
     /// The controller it plays with.
     pad: Option<PadId>,
     /// The window it plays in, by number.
     window: u8,
-    /// Its buttons and focus targets while another player's game runs.
-    widgets: widgets::Saved,
     /// Its profile got into the world: turned away after that (a kick), it leaves; before, it
     /// picks again.
     entered: bool,
@@ -146,9 +132,8 @@ pub(super) struct Split<'a> {
     clock: horizon_client::window::SystemClock,
     /// P1's resources, shared by the other players' games for the process's lifetime.
     res: Option<&'static Arc<super::Resources>>,
-    /// Whose game runs now (0 = P1), and P1's buttons while another's does.
+    /// Whose game runs now (0 = P1).
     turn: usize,
-    host_widgets: widgets::Saved,
     /// The launcher's other Microsoft accounts' sessions, for splitscreen players to sign in
     /// with (`launcher::accounts`).
     accounts: Vec<Arc<horizon_client::auth::AuthSession>>,
@@ -208,7 +193,6 @@ impl<'a> Split<'a> {
             clock: Default::default(),
             res: None,
             turn: 0,
-            host_widgets: Default::default(),
             accounts: launcher::accounts(),
             stats: std::env::var_os("HORIZON_SPLIT_STATS").map(|_| Instant::now()),
             spent: Default::default(),
@@ -226,43 +210,27 @@ impl<'a> Split<'a> {
         1 + self.guests.len()
     }
 
-    /// Player `i`'s turn (0 = P1): its options file, and its own buttons and focus targets, which
-    /// screens record while drawing and the control socket and the controller's cursor read.
+    /// Player `i`'s turn (0 = P1): the game swaps itself in (`Game::run_turn`).
     fn turn(&mut self, i: usize) {
-        if let Some(game) = self.game(i) {
-            horizon_client::hud::GUI_SCALE.store(
-                game.settings.gui_scale,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-        }
         if i == self.turn {
+            if let Some(game) = self.game(i) {
+                game.set_turn_gui_scale();
+            }
             return;
         }
-        let current = widgets::take();
-        match self.turn {
-            0 => self.host_widgets = current,
-            t => {
-                if let Some(g) = self.guests.get_mut(t - 1) {
-                    g.widgets = current;
-                }
-            }
+        if let Some(game) = self.game_mut(self.turn) {
+            game.leave_turn();
+        } else {
+            // The game that had the turn is gone; its buttons go with it.
+            widgets::take();
         }
-        let next = match i {
-            0 => std::mem::take(&mut self.host_widgets),
-            _ => self
-                .guests
-                .get_mut(i - 1)
-                .map(|g| std::mem::take(&mut g.widgets))
-                .unwrap_or_default(),
-        };
-        widgets::put(next);
-        OPTIONS.set(
-            self.guests
-                .get(i.wrapping_sub(1))
-                .map(|g| g.options.clone()),
-        );
-        let seat = self.guests.get(i.wrapping_sub(1)).map_or(1, |g| g.seat);
-        horizon_hooks::engine::set_seat(seat - 1);
+        if let Some(game) = self.game_mut(i) {
+            game.run_turn();
+        } else {
+            widgets::put(Default::default());
+            super::turn::set_options(None);
+            horizon_hooks::engine::set_seat(0);
+        }
         self.turn = i;
     }
 
@@ -409,9 +377,10 @@ impl<'a> Split<'a> {
         };
         self.host.renderer = Some(renderer);
         self.host.forget_atlas_slots();
-        self.host.split_window = !self.offscreen;
         self.host.options.offscreen = true;
-        self.host.options.paced_by_split = true;
+        self.host.options.role = Role::Host {
+            window: !self.offscreen,
+        };
         // The new renderer takes the old one's present mode, settings and all: P1's again.
         self.host.apply_settings();
         self.host.clear_lod();
@@ -488,8 +457,7 @@ impl<'a> Split<'a> {
         self.host.renderer = Some(renderer);
         self.host.forget_atlas_slots();
         self.host.options.offscreen = self.offscreen;
-        self.host.split_window = false;
-        self.host.options.paced_by_split = false;
+        self.host.options.role = Role::Alone;
         // Alone again: the pointer is P1's, its view the whole window.
         self.focus = 0;
         self.host.keyboard_mouse = true;

@@ -13,7 +13,7 @@ impl Game<'_> {
     /// `Minecraft.tick` -> `MusicManager.tick`, once per client tick.
     pub(super) fn tick_music(&mut self) {
         // Splitscreen: one music, P1's.
-        if self.options.split_guest {
+        if self.options.role.is_guest() {
             return;
         }
         let (mut music, mut volume) = self.situational_music();
