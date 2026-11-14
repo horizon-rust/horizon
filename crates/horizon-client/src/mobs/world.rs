@@ -7,7 +7,7 @@ use crate::{
     collisions::SceneCollisions,
 };
 use horizon_core::{
-    geometry::{Aabb, Vec3, VoxelShape, block_floor_height, traverse_blocks},
+    geometry::{Aabb, ShapeOp, Vec3, VoxelShape, block_floor_height, traverse_blocks},
     position::BlockPos,
 };
 use horizon_world::{
@@ -32,6 +32,25 @@ pub struct TargetInfo {
 }
 thread_local! {
     static NEAR_BUF_POOL: std::cell::RefCell<Vec<Vec<u32>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What `push_entities` pushes: who, where, whether it rides a vehicle (`Entity.isPassenger`),
+/// whether it shares the pusher's root vehicle (`isPassengerOfSameVehicle`), and whether it is
+/// itself a vehicle.
+pub(super) type PushTarget = (Who, Vec3, bool, bool, bool);
+thread_local! {
+    static PUSH_TARGETS: std::cell::RefCell<Vec<PushTarget>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+/// This thread's list for `push_entities`, empty: a crowd would otherwise allocate one for
+/// every mob on every tick. Taken out, so a call that reaches it again meanwhile gets its own.
+pub(super) fn take_push_targets() -> Vec<PushTarget> {
+    let mut targets = PUSH_TARGETS.with(|t| std::mem::take(&mut *t.borrow_mut()));
+    targets.clear();
+    targets
+}
+/// Keep `targets` for the next [`take_push_targets`].
+pub(super) fn give_push_targets(targets: Vec<PushTarget>) {
+    PUSH_TARGETS.with(|t| *t.borrow_mut() = targets);
 }
 
 pub struct NearIter<'a> {
@@ -509,6 +528,30 @@ impl MobWorld<'_> {
             .collision_shape(&mut scene, state, p)
             .ok()?
             .bounds()
+    }
+    /// `Block.isFaceFull(state.getCollisionShape(level, pos), Direction.UP)`:
+    /// the state at `p` covers its whole top face, as a full block does, as a
+    /// top slab and upside-down stairs do, and as a 14/16 snow layer does not.
+    pub fn top_face_full(&self, p: [i32; 3]) -> bool {
+        let state = self.world.block(p[0], p[1], p[2]);
+        if self.facts.get(state).full_collision {
+            return true;
+        }
+        let mut scene = SceneCollisions {
+            world: self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        let Ok(shape) = self.collision.collision_shape(&mut scene, state, p) else {
+            return false;
+        };
+        shape
+            .face_shape(horizon_core::geometry::Direction::Up)
+            .is_ok_and(|face| {
+                VoxelShape::block()
+                    .join_is_not_empty(&face, ShapeOp::XOR)
+                    .is_ok_and(|differs| !differs)
+            })
     }
     /// LivingEntity.hasLineOfSight: eye to eye within 128 blocks.
     pub fn line_of_sight(&self, from_eye: Vec3, to: Vec3) -> bool {
