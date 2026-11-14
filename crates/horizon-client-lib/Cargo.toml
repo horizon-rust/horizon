@@ -22,8 +22,6 @@ horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
 # Extension points for the crates above the engine (docs/layers.md, "How a Horizon crate plugs in").
 horizon-hooks = { path = "../horizon-hooks" }
-# `horizon-ctl mcp`: the Model Context Protocol, shared with the launcher and the server.
-horizon-mcp = { path = "../horizon-mcp" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
 horizon-optifine = { path = "../horizon-optifine" }
 horizon-threads = { path = "../horizon-threads" }
@@ -140,10 +138,6 @@ horizon-items = { path = "../horizon-items", features = ["test-support"] }
 horizon-perf = { path = "../horizon-perf" }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-out"] }
-
-[[bin]]
-name = "horizon-ctl"
-path = "../horizon-client/src/bin/horizon-ctl/main.rs"
 
 [[example]]
 name = "chunk_load_bench"

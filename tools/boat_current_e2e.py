@@ -97,7 +97,7 @@ def main():
     for binary in (client, ctl_path):
         if not binary.exists():
             raise Failed(f'{binary} is missing; build it (cargo build --profile fast -p horizon-client '
-                         '-p horizon-client-lib --bins) or pass --bin-dir')
+                         '-p horizon-ctl --bins) or pass --bin-dir')
     resources = Path(args.resources).resolve()
     if not resources.exists():
         raise Failed(f'{resources} is missing; run tools/lab.py prepare')

@@ -1606,7 +1606,6 @@ dependencies = [
  "horizon-hdr",
  "horizon-hooks",
  "horizon-items",
- "horizon-mcp",
  "horizon-mods",
  "horizon-narrator",
  "horizon-optifine",
@@ -1726,6 +1725,17 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "horizon-ctl"
+version = "0.1.0"
+dependencies = [
+ "horizon-client-lib",
+ "horizon-core",
+ "horizon-mcp",
+ "horizon-threads",
+ "serde_json",
 ]
 
 [[package]]
