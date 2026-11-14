@@ -2,16 +2,43 @@
 use horizon_world::nbt::Tag;
 use std::sync::Arc;
 
-/// `BannerPatternLayers.Layer`: a pattern id and the dye name it is painted in.
+/// `BannerPattern`: a `banner_pattern` registry reference, or a direct holder
+/// that carries its own `asset_id` and `translation_key`
+/// (`BannerPattern.DIRECT_CODEC`, inline definitions allowed).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PatternRef {
+    /// A registry reference: the pattern's id.
+    Id(Arc<str>),
+    /// A direct holder: the definition the layer carries itself.
+    Inline {
+        /// `asset_id`, the texture under `entity/banner` and `entity/shield`.
+        asset: Arc<str>,
+        /// `translation_key`, the tooltip name's prefix.
+        translation_key: Arc<str>,
+    },
+}
+impl PatternRef {
+    /// The registry id, when this is a reference (`None` for a direct holder,
+    /// which no registry holds).
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::Id(id) => Some(id),
+            Self::Inline { .. } => None,
+        }
+    }
+}
+
+/// `BannerPatternLayers.Layer`: a pattern and the dye name it is painted in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BannerLayer {
-    pub pattern: Arc<str>,
+    pub pattern: PatternRef,
     pub color: Arc<str>,
 }
 impl BannerLayer {
+    /// A layer whose pattern is a registry reference.
     pub fn new(pattern: &str, color: &str) -> Self {
         Self {
-            pattern: Arc::from(pattern),
+            pattern: PatternRef::Id(Arc::from(pattern)),
             color: Arc::from(color),
         }
     }
@@ -23,8 +50,20 @@ pub fn layers_to_nbt(layers: &[BannerLayer]) -> Tag {
         layers
             .iter()
             .map(|l| {
+                // `Holder`'s encode: a reference writes its id, a direct holder
+                // its own definition.
+                let pattern = match &l.pattern {
+                    PatternRef::Id(id) => Tag::String((&**id).into()),
+                    PatternRef::Inline {
+                        asset,
+                        translation_key,
+                    } => Tag::compound([
+                        ("asset_id", Tag::String((&**asset).into())),
+                        ("translation_key", Tag::String((&**translation_key).into())),
+                    ]),
+                };
                 Tag::compound([
-                    ("pattern", Tag::String((&*l.pattern).into())),
+                    ("pattern", pattern),
                     ("color", Tag::String((&*l.color).into())),
                 ])
             })
@@ -44,7 +83,29 @@ pub fn layers_from_nbt(tag: Option<&Tag>) -> Vec<BannerLayer> {
             Some(Tag::String(s)) => Some(s.to_string_lossy()),
             _ => None,
         };
-        let pattern = text("pattern")?;
+        // `RegistryFileCodec`: an identifier is a registry reference; anything
+        // else is decoded with `BannerPattern.DIRECT_CODEC` (`asset_id`, then
+        // `translation_key`) and becomes a direct holder.
+        let pattern = match e.get("pattern")? {
+            // `Identifier.CODEC` rejects an invalid id, which fails the layer.
+            Tag::String(id) => PatternRef::Id(Arc::from(
+                horizon_client_core::identifier::normalize_id(&id.to_string_lossy())?.as_str(),
+            )),
+            Tag::Compound(c) => {
+                let field = |k: &str| match c.get(&k.into()) {
+                    Some(Tag::String(s)) => Some(s.to_string_lossy()),
+                    _ => None,
+                };
+                // `Identifier.CODEC` rejects an invalid `asset_id`, which fails
+                // the layer and with it the list.
+                let asset = horizon_client_core::identifier::normalize_id(&field("asset_id")?)?;
+                PatternRef::Inline {
+                    asset: Arc::from(asset.as_str()),
+                    translation_key: Arc::from(field("translation_key")?.as_str()),
+                }
+            }
+            _ => return None,
+        };
         let color = text("color")?;
         if !crate::firework::DYE_FIREWORK_COLORS
             .iter()
@@ -52,14 +113,10 @@ pub fn layers_from_nbt(tag: Option<&Tag>) -> Vec<BannerLayer> {
         {
             return None;
         }
-        Some(BannerLayer::new(
-            &if pattern.contains(':') {
-                pattern
-            } else {
-                format!("minecraft:{pattern}")
-            },
-            &color,
-        ))
+        Some(BannerLayer {
+            pattern,
+            color: Arc::from(color.as_str()),
+        })
     };
     let mut layers = Vec::with_capacity(list.len());
     for e in list {
