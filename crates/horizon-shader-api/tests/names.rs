@@ -9,7 +9,7 @@
 //! manifest key (and compose the pack here without it), or add its line to the list in a pull
 //! request that says why no pack can hold the name. A stage added later starts its own list:
 //! no pack had it, so its names collide with nothing.
-use horizon_shader_api::{Api, MANIFEST, Pack, Problem, check, compose};
+use horizon_shader_api::{MANIFEST, Pack, Problem, StageKind, check, compose};
 use std::collections::BTreeSet;
 
 const STAGES: &str = "[sky]\nfile = \"sky.wgsl\"\n[material]\nfile = \"material.wgsl\"\n\
@@ -127,7 +127,7 @@ fn parsed(wgsl: &str) -> BTreeSet<String> {
 #[test]
 fn a_0_2_prelude_declares_only_the_names_on_its_list() {
     let pack = pack(None);
-    for &kind in Api::V0_2.stages() {
+    for kind in StageKind::ALL {
         let file = format!("{}.wgsl", kind.name());
         let composed = compose(&pack, kind, &file);
         let (part, range) = &composed.parts[0];
