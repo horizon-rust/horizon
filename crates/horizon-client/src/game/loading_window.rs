@@ -383,12 +383,11 @@ pub(super) fn start_game<'a>(
         Some(folder) => {
             let (seed, creative) = (game.options.seed, game.options.creative);
             if std::env::var_os("HORIZON_COMMAND_SCRIPT").is_some() {
-                // The loaded-command fixture pins the server's valid minimum.
-                // Client options reject simulationDistance2 (their UI starts at5),
-                // so an options.txt value cannot establish this prerequisite.
-                if std::env::var_os("HORIZON_HARNESS_LOADED_FIXTURE").is_some() {
-                    game.settings.simulation_distance = 2;
-                }
+                // The command oracle gives its stand-in player temporary DRAGON tickets
+                // for only a 5x5 area. Keep the native harness at that same radius: the
+                // player's normal simulation distance would tick unrelated generated
+                // chunks and let their scheduled ticks consume the level random.
+                game.settings.simulation_distance = 2;
                 // Headless, but with the same server and memory connection as play.
                 game.open_integrated(&folder, None, Some(seed), creative, None)?;
             } else {
