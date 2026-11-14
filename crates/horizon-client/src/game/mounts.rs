@@ -397,6 +397,7 @@ impl Game<'_> {
             && matches!(species, Species::Donkey | Species::Mule)
             && tamed
             && !m.extra.chested
+            && (!baby || !dandelion)
         {
             m.extra.chested = true;
             Some("minecraft:entity.donkey.chest")
@@ -1871,6 +1872,11 @@ mod tests {
         // A chest on a tamed foal: donkeys and mules take one while still young.
         mount(&mut game, "minecraft:donkey", 2, [0.5, 64.0, 0.5], 9);
         game.mobs[0].extra.age = -24000;
+        game.offhand = Some(ItemStack::new("minecraft:golden_dandelion", 1));
+        let (used, _, _) = click(&mut game, "minecraft:chest");
+        assert!(!used, "a held golden dandelion prevents chesting a foal");
+        assert!(!game.mobs[0].extra.chested);
+        game.offhand = None;
         let (used, sounds, events) = click(&mut game, "minecraft:chest");
         assert!(used, "a foal takes the chest");
         assert!(game.mobs[0].extra.chested);
