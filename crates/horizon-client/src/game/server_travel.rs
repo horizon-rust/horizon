@@ -240,6 +240,11 @@ impl Game<'_> {
             }
         }
     }
+    /// The gateway jobs of the trips still waiting to arrive.
+    pub(super) fn gateway_trip_jobs(&self) -> impl Iterator<Item = GatewayJob> + '_ {
+        self.server_trips.iter().filter_map(|t| t.gateway)
+    }
+
     /// Whether `conn` is between two levels: the server leaves its body
     /// alone until it arrives.
     pub(super) fn on_server_trip(&self, conn: u32) -> bool {
@@ -918,7 +923,13 @@ impl Game<'_> {
                 }
             } else if let Some(job) = trip.gateway {
                 match self.resolve_gateway(job, trip.target) {
-                    Ok(at) => (at, yaw),
+                    Ok(Some(at)) => (at, yaw),
+                    // The exit search waits for a candidate chunk to load.
+                    Ok(None) => {
+                        self.server_trips.insert(k, trip);
+                        k += 1;
+                        continue;
+                    }
                     Err(e) => {
                         log::error!("End gateway exit: {e}");
                         (trip.target, yaw)

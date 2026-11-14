@@ -122,6 +122,11 @@ pub(super) struct EndState {
     arrivals: Vec<GatewayArrival>,
     /// The chunks kept loaded for those arrivals.
     areas: Vec<(i32, i32)>,
+    /// Every candidate chunk an exit search has tested
+    /// (`findExitPortalXZPosTentative`), by the gateway whose exit it looks
+    /// for: kept loaded with the areas until no traveller waits for that
+    /// gateway, so that a retry never finds an earlier candidate unloaded.
+    search: Vec<([i32; 3], Vec<(i32, i32)>)>,
     /// `Entity.placePortalTicket` of the pearls that came out of a gateway:
     /// the chunk each landed in, kept loaded for the ticks left of its
     /// `TicketType.PORTAL`, so that it can come down and take its owner there.
@@ -1020,11 +1025,23 @@ impl Game<'_> {
         (job, destination)
     }
 
-    fn chunk_empty(&self, x: f64, z: f64) -> Option<bool> {
-        let chunk = self
-            .world
-            .chunks
-            .get(&((x / 16.0).floor() as i32, (z / 16.0).floor() as i32))?;
+    /// `TheEndGatewayBlockEntity.isChunkEmpty` for the exit search. Vanilla's
+    /// `getChunk` loads the candidate on the spot; here the search asks for it
+    /// ([`EndState::search`]) and waits, so that which chunks happen to be
+    /// loaded cannot change where it ends. Every chunk tested stays asked for.
+    fn search_chunk_empty(&mut self, gateway: [i32; 3], x: f64, z: f64) -> Option<bool> {
+        let key = ((x / 16.0).floor() as i32, (z / 16.0).floor() as i32);
+        let corridor = match self.end.search.iter().position(|(g, _)| *g == gateway) {
+            Some(i) => &mut self.end.search[i].1,
+            None => {
+                self.end.search.push((gateway, Vec::new()));
+                &mut self.end.search.last_mut().expect("just pushed").1
+            }
+        };
+        if !corridor.contains(&key) {
+            corridor.push(key);
+        }
+        let chunk = self.world.chunks.get(&key)?;
         Some(chunk.sections.iter().all(|s| s.is_uniform(0)))
     }
 
@@ -1054,16 +1071,23 @@ impl Game<'_> {
 
     /// The teleport position of a gateway job, creating the exit gateway (and
     /// an island when the chunk has no landing spot) for new destinations.
-    pub(super) fn resolve_gateway(&mut self, job: GatewayJob, target: Vec3) -> Result<Vec3> {
+    /// `None` while the exit search waits for a candidate chunk to load.
+    pub(super) fn resolve_gateway(
+        &mut self,
+        job: GatewayJob,
+        target: Vec3,
+    ) -> Result<Option<Vec3>> {
         let bottom_center = horizon_client::end_gateway::bottom_center;
         let find_exit = |game: &Self, exit: [i32; 3]| {
             let p = game.tallest_block([exit[0], exit[1] + 2, exit[2]], 5, false);
             [p[0], p[1] + 1, p[2]]
         };
         match job {
-            GatewayJob::Known { exit, exact } => Ok(bottom_center(exit_target(exit, exact, |e| {
-                find_exit(self, e)
-            }))),
+            GatewayJob::Known { exit, exact } => {
+                Ok(Some(bottom_center(exit_target(exit, exact, |e| {
+                    find_exit(self, e)
+                }))))
+            }
             GatewayJob::Find { gateway, exact } => {
                 if !self
                     .world
@@ -1076,23 +1100,36 @@ impl Game<'_> {
                 // first one to arrive finds the exit, the others use it.
                 let known = self.known_gateway_exit(gateway);
                 if let Some((exit, exact)) = known {
-                    return Ok(bottom_center(exit_target(exit, exact, |e| {
+                    return Ok(Some(bottom_center(exit_target(exit, exact, |e| {
                         find_exit(self, e)
-                    })));
+                    }))));
                 }
-                // findExitPortalXZPosTentative over the loaded chunks.
+                // findExitPortalXZPosTentative: back while the candidate's chunk is
+                // not empty, then forward while it is, 16 steps each way.
                 let dir = glam::DVec2::new(f64::from(gateway[0]), f64::from(gateway[2]))
                     .normalize_or_zero();
                 let mut pos = glam::DVec2::new(target.x, target.z);
                 let mut limit = 16;
-                while self.chunk_empty(pos.x, pos.y) == Some(false) && limit > 0 {
-                    limit -= 1;
-                    pos -= dir * 16.0;
+                while limit > 0 {
+                    match self.search_chunk_empty(gateway, pos.x, pos.y) {
+                        Some(false) => {
+                            limit -= 1;
+                            pos -= dir * 16.0;
+                        }
+                        Some(true) => break,
+                        None => return Ok(None),
+                    }
                 }
                 let mut limit = 16;
-                while self.chunk_empty(pos.x, pos.y) == Some(true) && limit > 0 {
-                    limit -= 1;
-                    pos += dir * 16.0;
+                while limit > 0 {
+                    match self.search_chunk_empty(gateway, pos.x, pos.y) {
+                        Some(true) => {
+                            limit -= 1;
+                            pos += dir * 16.0;
+                        }
+                        Some(false) => break,
+                        None => return Ok(None),
+                    }
                 }
                 let (cx, cz) = ((pos.x / 16.0).floor() as i32, (pos.y / 16.0).floor() as i32);
                 // findValidSpawnInChunk: end stone with two non-full blocks above, closest to 0,0,0.
@@ -1141,9 +1178,9 @@ impl Game<'_> {
                 self.set_gateway_exit(exit, gateway, false)?;
                 // setExitPosition keeps the gateway's own exactTeleport.
                 self.set_gateway_exit(gateway, exit, exact)?;
-                Ok(bottom_center(exit_target(exit, exact, |e| {
+                Ok(Some(bottom_center(exit_target(exit, exact, |e| {
                     find_exit(self, e)
-                })))
+                }))))
             }
         }
     }
@@ -1714,7 +1751,9 @@ impl Game<'_> {
             return Some(arrival);
         }
         let at = match self.resolve_gateway(arrival.job, arrival.target) {
-            Ok(at) => at,
+            Ok(Some(at)) => at,
+            // The exit search waits for a candidate chunk to load.
+            Ok(None) => return Some(arrival),
             Err(e) => {
                 // The traveller waits for the exit: the failure is retried.
                 log::warn!("End gateway: {e}");
@@ -1746,13 +1785,31 @@ impl Game<'_> {
     /// The chunks the entities waiting to arrive need, kept loaded like the
     /// areas a server keeps around its players.
     pub(super) fn keep_gateway_destinations(&mut self) {
+        let in_end = self.dim == Dim::End;
         let areas = &self.end.areas;
+        // The exit searches' chunks are End chunks, asked for in the End's ticks.
+        let searched =
+            |c: &(i32, i32)| in_end && self.end.search.iter().any(|(_, s)| s.contains(c));
         self.streaming
             .extra
-            .retain(|&(c, r)| !(r == 1 && areas.contains(&c)));
+            .retain(|&(c, r)| !(r == 1 && (areas.contains(&c) || searched(&c))));
+        if in_end {
+            // A search's chunks are released once no traveller waits for its gateway.
+            let waiting: Vec<[i32; 3]> = self
+                .end
+                .arrivals
+                .iter()
+                .map(|a| a.job)
+                .chain(self.gateway_trip_jobs())
+                .filter_map(|job| match job {
+                    GatewayJob::Find { gateway, .. } => Some(gateway),
+                    GatewayJob::Known { .. } => None,
+                })
+                .collect();
+            self.end.search.retain(|(g, _)| waiting.contains(g));
+        }
         // The pearls' portal tickets hold End chunks, and run out there
         // (TicketType.PORTAL's timeout).
-        let in_end = self.dim == Dim::End;
         if in_end {
             self.end.tickets.retain_mut(|(_, ticks)| {
                 *ticks = ticks.saturating_sub(1);
@@ -1772,10 +1829,17 @@ impl Game<'_> {
             .arrivals
             .iter()
             .filter_map(|a| a.job.source_chunk());
+        let search = self
+            .end
+            .search
+            .iter()
+            .filter(|_| in_end)
+            .flat_map(|(_, s)| s.iter().copied());
         for c in arrivals
             .chain(tickets.map(|&(c, _)| c))
             .chain(sources)
             .chain(self.gateway_source_chunks())
+            .chain(search)
         {
             if !areas.contains(&c) {
                 areas.push(c);
@@ -1823,6 +1887,10 @@ fn eye_quad(
 #[cfg(test)]
 #[path = "end_gateway_ticking_tests.rs"]
 mod ticking_tests;
+
+#[cfg(test)]
+#[path = "end_gateway_exit_search_tests.rs"]
+mod exit_search_tests;
 
 #[cfg(test)]
 mod tests {
