@@ -67,6 +67,9 @@ waiting in loops, and work someone else had already done. Tests were a small par
   `sleep` or `until grep` polling of builds, harnesses or CI.
 - **One test per changed behaviour.** None for a refactor or a file move, none that reads source text, and no
   harness where vanilla has nothing to compare (Horizon's own features, performance work).
+- **Don't take the person's screen.** Agent runs use `--offscreen` (no window, no pointer grab) or a
+  `--control` window, which stays unfocused until they click it. A visible window that grabs the pointer
+  is a show-the-person mode (`--show` on a tool), only when they asked to look.
 - **A red check isn't always yours.** When `verify` fails in a test your change can't reach, say so in the pull
   request and move on; don't hunt it.
 - **Unsure about a rule? Finish the work.** Take the reading that lets you finish, and say in the pull request
