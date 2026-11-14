@@ -2697,11 +2697,6 @@ impl Renderer {
             count: None,
         };
         let vf = wgpu::ShaderStages::VERTEX_FRAGMENT;
-        let sprite_array = wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension: wgpu::TextureViewDimension::D2Array,
-            multisampled: false,
-        };
         let sprite_arrays = layers.div_ceil(split).max(1);
         if sprite_arrays > 1 {
             log::info!("Horizon: {layers} block textures in {sprite_arrays} arrays");
@@ -2712,61 +2707,7 @@ impl Renderer {
         ];
         let bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Horizon terrain bindings"),
-            entries: &[
-                entry(
-                    0,
-                    vf,
-                    wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                ),
-                entry(
-                    1,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                ),
-                entry(
-                    1 + 1,
-                    vf,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                ),
-                entry(
-                    3,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-                entry(
-                    4,
-                    vf,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                ),
-                entry(5, vf, sprite_array),
-                entry(6, vf, sprite_array),
-                entry(7, vf, sprite_array),
-                entry(8, vf, sprite_array),
-                entry(9, vf, sprite_array),
-                entry(10, vf, sprite_array),
-                entry(11, vf, sprite_array),
-                entry(
-                    12,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-            ],
+            entries: &native_material::terrain_entries(),
         });
         let layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Horizon terrain layout"),
@@ -7293,6 +7234,7 @@ impl Renderer {
             globals: &self.terrain_layout,
             flat: self.flat.as_ref().map(|f| &f.draw_layout),
             sprites: self.terrain_sprites,
+            sprite_views: &self.sprite_views,
             format: self.output.frame.format,
             linear: self.output.frame.linear_light,
             sprite_tags: &sprite_tags,
@@ -9958,9 +9900,8 @@ impl Renderer {
                 .size()
                 .filter(|_| scaled.is_some())
                 .unwrap_or([self.config.width, self.config.height]);
-            native
-                .frame
-                .write(&self.queue, frame, size, output.display());
+            let scene = self.ray_scene.as_ref();
+            native.write(&self.queue, frame, size, output.display(), scene);
             native.frame.block_light.update(
                 &self.queue,
                 frame.camera,
@@ -10244,6 +10185,7 @@ impl Renderer {
                 [1, 1]
             };
             native.frame.fit_surface(&self.device, size);
+            native.bind_scene(&self.device, self.ray_scene.as_ref(), frame.camera);
         }
         laps.lap("r_mirror");
         // One of Horizon's own packs with a material stage: terrain draws with its pipelines,
@@ -10252,7 +10194,7 @@ impl Renderer {
             .native
             .as_ref()
             .filter(|_| !frame.title && !warp_on)
-            .and_then(|n| Some((n.material.as_ref()?, &n.frame.group)));
+            .and_then(|n| n.terrain());
         // Without HDR output, the solid shaders without its lighting (`SolidPipeline`).
         let hdr = self.hdr.is_some();
         // A world warp's pipelines in place of the terrain's and the entities' (`warp_on`).
@@ -10362,7 +10304,12 @@ impl Renderer {
                         .as_ref()
                         .and_then(|n| Some((n.sky.as_ref()?, &n.frame)))
                     {
-                        Some((sky, native)) => sky.draw(&mut pass, native),
+                        Some((sky, native)) => {
+                            sky.draw(&mut pass, native);
+                            // The sky binds the frame's own group; a material stage that
+                            // traces draws with the scene's.
+                            pack_frame(&mut pass);
+                        }
                         None => {
                             match self.core_sky.as_ref().filter(|c| c.draws_disc()) {
                                 Some(core) => {
@@ -10750,7 +10697,7 @@ impl Renderer {
                 .as_ref()
                 .filter(|_| !frame.title && !pack_draws_terrain && !warp_on)
                 && let Some(d) = &n.displacement
-                && let Some(pipeline) = n.material.as_ref().and_then(|m| m.displaced.as_ref())
+                && let Some(pipeline) = material.and_then(|(m, _)| m.displaced.as_ref())
             {
                 pass.stage(self.own_timing.as_mut(), "displacement");
                 pass.set_bind_group(0, &self.group, &[]);
@@ -11548,16 +11495,16 @@ impl Renderer {
             && let Some(native) = &mut self.native
             && let Some(post) = &mut native.post
         {
-            let size = self.world_post.size().unwrap_or([1, 1]);
             let history_reset = native.frame.take_history_reset();
             post.run(
                 &self.device,
                 &mut encoder,
                 (color, depth, &native.frame.surface_view),
                 &view_target,
-                size,
+                self.world_post.size().unwrap_or([1, 1]),
                 history_reset,
                 native.timing.as_mut(),
+                self.ray_scene.as_ref().map(|s| (s, frame.camera)),
             );
         } else if let (Some((_, generated)), Some((_, depth))) = (&fg_frames, &scaled) {
             let world = self
