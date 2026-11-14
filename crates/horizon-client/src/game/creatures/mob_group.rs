@@ -102,6 +102,12 @@ pub(super) struct Turns<'t, 'w> {
     pub difficulty: &'t (dyn Fn([f64; 3]) -> LocalDifficulty + Sync),
     /// The last chunk's difficulty: mobs come in runs of one chunk.
     pub cached_difficulty: Option<((i32, i32), LocalDifficulty)>,
+    /// The doses of the clouds that joined between the mobs, given before the turn of the first
+    /// mob that joined after each (`potions/cloud_tick.rs`): only a serial loop has them.
+    pub doses: Option<(
+        &'t mut super::super::potions::CloudDoses,
+        &'t super::super::potions::EntityTags,
+    )>,
 }
 
 /// What a group starts from besides its mobs and their snapshot.
@@ -187,6 +193,16 @@ impl<M: MobSlot> Group<M> {
         // A panic in a turn still lets the other groups finish (the threads' join passes it on).
         let _done = self.random.lane_done();
         for i in 0..self.mobs.len() {
+            if let Some((doses, tags)) = turns.doses.as_mut() {
+                let (snapshot, grid) = (&mut self.snapshot[..], &mut self.grid);
+                doses.run(
+                    (*tags, shared.uuid),
+                    i,
+                    &mut self.mobs,
+                    &self.keep,
+                    (snapshot, grid),
+                );
+            }
             let at = self.at(i);
             self.random.begin_item(at);
             #[cfg(test)]

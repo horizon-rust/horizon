@@ -1164,6 +1164,7 @@ impl Game<'_> {
         self.init_sulfur_attribute_maps();
         let uuid = self.level.player_uuid;
         let level_id = self.dim.id();
+        self.order_mobs_for_cloud_doses();
         // Each mob's climbing, refreshed, and its snapshot entry (creatures/prep.rs).
         let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
         self.prepare_mobs(uuid, &mut snapshot);
@@ -1172,7 +1173,7 @@ impl Game<'_> {
         // SulfurCube.primeWhenOnPoweredPosition runs before super.tick adopts
         // the body: the cubes whose adopted body explodes, as this tick starts.
         let primable = self.sulfur_cubes_adopted_explosive();
-        let mobs = std::mem::take(&mut self.mobs);
+        let (mut doses, mobs) = (self.take_cloud_doses(), std::mem::take(&mut self.mobs));
         // Each mob's target as the mods last heard it, by its place in `mobs`
         // (`native_living_change_target`).
         let mut targets = std::mem::take(&mut self.creatures.target_buf);
@@ -1243,6 +1244,7 @@ impl Game<'_> {
                 canceled: &|id| round.canceled(id),
                 difficulty: &difficulty,
                 cached_difficulty: None,
+                doses: Some((&mut doses, &world_stations!(self).enchantments.entity_tags)),
             };
             // The mobs in islands on several threads (creatures/mob_islands.rs), or all of them
             // in one group, in order, on this one.
@@ -1334,15 +1336,13 @@ impl Game<'_> {
             bindings.retain(|id, _| live.contains(id));
             host.mob_players = bindings;
         }
-        // The mobs added during the tick (into the emptied `self.mobs`) come
-        // first, as `append` put them; with none, the ticked list goes back
-        // as it is instead of being copied into a new one, every mob a tick.
-        if self.mobs.is_empty() {
-            self.mobs = mobs.into();
-        } else {
-            self.mobs.append(&mut mobs);
-        }
+        // The mobs added during the tick (into the emptied `self.mobs`) go after the ticked ones,
+        // as `EntityTickList.add` puts a new entity at the end of its linked map: they tick after
+        // them next tick too. Only the new ones are copied.
+        mobs.append(&mut self.mobs);
+        self.mobs = mobs.into();
         self.died = died;
+        self.finish_cloud_doses(doses);
         snapshot.clear();
         self.creatures.seen_buf = snapshot;
         self.creatures.ticked = ticked;

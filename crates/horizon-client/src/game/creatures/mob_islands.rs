@@ -18,8 +18,9 @@
 //!
 //! `HORIZON_PARALLEL_TICK=1` turns it on (off by default), `verify` also runs the serial loop on
 //! copies and logs a tick whose result differs. The loop stays serial under `HORIZON_TEST_SEEDS`,
-//! with few ticking mobs, when one island holds most of them, and while a native mod may hook a
-//! mob's turn, as the build finds it (`horizon_mod_api_gen::mob_turn`). The hooks that hand
+//! with few ticking mobs, when one island holds most of them, on a tick a lingering cloud doses
+//! mobs between their turns (`potions/cloud_tick.rs`), and while a native mod may hook a mob's
+//! turn, as the build finds it (`horizon_mod_api_gen::mob_turn`). The hooks that hand
 //! nothing back are kept and told at the join, in list order (`native_client_hooks::Deferred`).
 //! Everything else a mob can reach in its turn is in its reach: a pet's teleport to its owner, a
 //! teleporting meal, a changed speed, a wither's head targets and a warden's suspects; a raid's
@@ -164,6 +165,12 @@ impl Islands<'_> {
         {
             return None;
         }
+        // A cloud's dose between the mobs' turns reaches every mob in its box, whatever their island.
+        if let Some((doses, _)) = &turns.doses
+            && doses.between_turns(mobs)
+        {
+            return None;
+        }
         // A content mod's effect ticks through the native mods (`ModEffectTicks`), which run
         // only on the server thread.
         if defers()
@@ -204,8 +211,11 @@ impl Islands<'_> {
         // Neither the global counter nor the client threads' clock/seed policy is changed.
         let serial = verifying().then(|| {
             let mut serial = Group::new(mobs.clone(), snapshot.clone(), start.clone());
+            // The copy gives no cloud doses: they are the real mobs' (none is due between turns
+            // while the islands run).
+            let doses = turns.doses.take();
             let (_, seeds) = random_source::record_seeds(|| serial.run(turns, shared, None));
-            turns.cached_difficulty = None;
+            (turns.doses, turns.cached_difficulty) = (doses, None);
             (serial, seeds)
         });
         let n = mobs.len();
@@ -377,6 +387,7 @@ impl Islands<'_> {
                 canceled: &|id| canceled(id),
                 difficulty,
                 cached_difficulty: None,
+                doses: None,
             };
             if let Some(seeds) = seeds {
                 horizon_client::random_source::replay_seeds(Arc::clone(seeds), || {
@@ -1271,6 +1282,7 @@ mod tests {
                         horizon_client::mobs::spawning::LocalDifficulty::new(2, 0, 0, 0.0)
                     },
                     cached_difficulty: None,
+                    doses: None,
                 };
                 let start = Start {
                     events: Vec::new(),
@@ -1517,6 +1529,7 @@ mod tests {
             canceled: &|_| false,
             difficulty: &|_| horizon_client::mobs::spawning::LocalDifficulty::new(2, 0, 0, 0.0),
             cached_difficulty: None,
+            doses: None,
         };
         // The host player stands in the third herd.
         let owners = [([0, 0, 0, 7], Vec3::new(2003.5, 65.0, 3.5))];
@@ -1751,6 +1764,7 @@ mod tests {
             canceled: &|_| false,
             difficulty: &|_| horizon_client::mobs::spawning::LocalDifficulty::new(2, 0, 0, 0.0),
             cached_difficulty: None,
+            doses: None,
         };
         let start = Start {
             events: Vec::new(),
@@ -1949,6 +1963,90 @@ mod tests {
             CHECK.with(Cell::get),
             (if grouped > 1 { 20 } else { 0 }, 0),
             "verify checked every grouped tick, or the hardware cap kept it serial"
+        );
+    }
+
+    /// A lingering cloud doses each mob at its place in the join order with the islands on, as
+    /// with one thread (#12183): a cloud that joined between two pigs doses the first after its
+    /// turn and the second before it, and one that joined after every mob doses after them all.
+    /// Expected: the 26.3 server's values (`potions/cloud_dose_order_tests.rs`). The first cloud's
+    /// dose tick runs serially, so verify checks every other tick and not that one.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn cloud_doses_keep_the_join_order_on_islands() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                LANES.with(|l| l.set(None));
+                VERIFY.with(|v| v.set(false));
+            }
+        }
+        let _reset = Reset;
+        let pig = |game: &mut Game<'static>, n: i32, (x, z): (f64, f64)| {
+            let summon =
+                format!("summon pig {x} 65 {z} {{UUID:[I;0,12183,0,{n}],NoAI:1b,Silent:1b}}");
+            assert!(game.run_command(&summon), "{summon}");
+        };
+        let cloud = |game: &mut Game<'static>, (x, z): (f64, f64)| {
+            let summon = format!(
+                "summon area_effect_cloud {x} 65 {z} {{Radius:1.5f,WaitTime:0,Duration:200,\
+                 potion_contents:{{custom_effects:[{{id:\"minecraft:speed\",duration:100}},\
+                 {{id:\"minecraft:instant_damage\"}}]}}}}"
+            );
+            assert!(game.run_command(&summon), "{summon}");
+        };
+        // Pig `n`: its Speed ticks left, hurt timer and health.
+        let values = |game: &Game<'static>, n: i32| {
+            let m = game
+                .mobs
+                .iter()
+                .find(|m| game.persist.uuid_of(m.id) == Some([0, 12183, 0, n]))
+                .expect("the pig is there");
+            let speed = m.extra.effects.iter().find(|e| e.0 == "minecraft:speed");
+            (speed.map_or(0, |e| e.1), m.hurt_time, m.health)
+        };
+        let mut runs = Vec::new();
+        for lanes in [1, 3] {
+            let mut game = separated_herds_game();
+            // Beside the first herd: pig 1, a cloud, then pig 2; pig 3 under the cloud that
+            // joins a tick later, after every mob.
+            pig(&mut game, 1, (15.5, 15.5));
+            cloud(&mut game, (15.5, 15.5));
+            pig(&mut game, 2, (15.5, 15.5));
+            pig(&mut game, 3, (15.5, 2.5));
+            LANES.with(|l| l.set(Some(lanes)));
+            VERIFY.with(|v| v.set(lanes > 1));
+            CHECK.with(|c| c.set((0, 0)));
+            let (mut ran, mut doses) = (Vec::new(), Vec::new());
+            for tick in 1..=6 {
+                if tick == 2 {
+                    cloud(&mut game, (15.5, 2.5));
+                }
+                RAN.with(|r| r.set(0));
+                game.tick_potion_clouds();
+                game.tick_creature_entities().unwrap();
+                ran.push(RAN.with(Cell::get));
+                // The first cloud's dose tick (its fifth), then the second's.
+                match tick {
+                    5 => doses.extend([values(&game, 1), values(&game, 2)]),
+                    6 => doses.push(values(&game, 3)),
+                    _ => {}
+                }
+            }
+            runs.push((doses, ran, CHECK.with(Cell::get)));
+        }
+        // Before its cloud: Speed 100 and hurt timer 10; after it: 99 and 9.
+        let want = vec![(100, 10, 7.0), (99, 9, 7.0), (100, 10, 7.0)];
+        assert_eq!(runs[0], (want.clone(), vec![0; 6], (0, 0)), "one lane");
+        assert_eq!(runs[1].0, want, "three lanes");
+        let groups = groups_for(3);
+        assert_eq!(runs[1].1[0], groups, "the islands ran before any dose");
+        assert_eq!(runs[1].1[5], groups, "and with the doses after every mob");
+        let grouped = runs[1].1.iter().filter(|&&g| g > 1).count();
+        assert_eq!(runs[1].2, (grouped, 0), "verify checked the grouped ticks");
+        assert!(
+            grouped == 0 || runs[1].1[4] == 0,
+            "the doses between turns ran serially"
         );
     }
 

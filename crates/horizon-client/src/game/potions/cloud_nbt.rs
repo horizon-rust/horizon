@@ -54,6 +54,7 @@ pub(in crate::game) fn potion_cloud_from_nbt(tag: &Tag) -> Option<(Vec3, Breath)
     Some((
         at,
         Breath {
+            join: Default::default(),
             id: 0,
             at: [at.x, at.y, at.z],
             motion: [motion.x, motion.y, motion.z],
