@@ -932,6 +932,25 @@ mod tests {
         assert_eq!(render(&Config::default()), TEMPLATE);
     }
 
+    /// docs/hosting.md shows `server.toml` with its defaults in the `toml` block that starts with `[server]`:
+    /// that block loads, and loads as the defaults.
+    #[test]
+    fn the_hosting_guides_server_toml_block_is_the_default() {
+        let docs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/hosting.md"
+        ))
+        .unwrap()
+        .replace("\r\n", "\n");
+        let block = docs
+            .split("```toml\n[server]\n")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("hosting.md has a toml block that starts with [server]");
+        let shown = Config::parse(&format!("[server]\n{block}")).unwrap();
+        assert_eq!(shown, Config::default());
+    }
+
     /// `[transfer]` is off by default, passes nothing to the game then, and is checked when it is read.
     #[test]
     fn transfers_are_off_by_default_and_checked() {
