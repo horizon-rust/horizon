@@ -1,12 +1,12 @@
-//! Mobs: entity types (dimensions and default attributes exported from
-//! vanilla), models (vanilla `LayerDefinitions` baked part trees) and the
-//! `Mob` entity with vanilla's AI framework: goal and target selectors with
-//! priorities and control flags (`goals`), A* pathfinding with walk, swim,
-//! fly and amphibious node evaluators (`path`, `nav`), move/look/jump/body
-//! controls (`control`), `LivingEntity` physics (`living`) and per-species
-//! behaviour, models, animations and sounds.
+//! Mobs: entity types (dimensions and default attributes exported from vanilla), models (vanilla
+//! `LayerDefinitions` baked part trees) and the `Mob` entity with vanilla's AI framework: goal and
+//! target selectors with priorities and control flags (`goals`), A* pathfinding with walk, swim,
+//! fly and amphibious node evaluators (`path`, `nav`), move/look/jump/body controls (`control`),
+//! `LivingEntity` physics (`living`) and per-species behaviour, models, animations and sounds.
 mod mob_slot;
 mod pending_pushes;
+mod push;
+pub use creaking::mob_can_use_portal;
 pub use mob_slot::MobSlot;
 pub use pending_pushes::{PendingPushes, apply_mob_pushes};
 pub mod ai;
@@ -34,6 +34,7 @@ pub mod copper_golem;
 pub mod creaking;
 pub mod creaking_heart;
 pub mod cube;
+pub mod dab;
 pub mod data;
 pub mod dolphin;
 pub mod doors;
@@ -55,6 +56,7 @@ pub mod hostile;
 mod hurt_by;
 pub mod illager;
 pub mod illusioner;
+pub mod invulnerable;
 pub mod item_break;
 pub mod keyframes;
 pub mod landing;
@@ -558,6 +560,8 @@ pub enum DamageKind {
     /// `spear`: a stab of a spear (the player attack tags too).
     Spear,
     MobAttack,
+    /// `mob_attack_no_aggro`: a goat's ram, the one type in `#no_anger`.
+    MobAttackNoAggro,
     Arrow,
     Thrown,
     Fireball,
@@ -766,6 +770,8 @@ impl Damage {
                 | DamageKind::Stalagmite
                 | DamageKind::Starve
                 | DamageKind::Campfire
+                // `mob_attack` panics; its no-aggro twin is not in the tag.
+                | DamageKind::MobAttackNoAggro
         )
     }
     /// DamageTypeTags.BYPASSES_ARMOR
@@ -1068,7 +1074,7 @@ pub struct Extra {
     /// horse still rearing then goes on with the rider's keys until the rear
     /// ends (`tick` clears it).
     pub stand_sliding: bool,
-    /// Species scratch values (the wither's head targets and clocks).
+    /// Species scratch values (the wither's head targets and clocks, a ghast's power).
     pub ints: [i32; 6],
     pub counter: i32,
     /// Nautilus ATTACK_TARGET_COOLDOWN saved slot: None is absent,
@@ -1299,6 +1305,8 @@ pub struct Mob {
     /// `Entity.needsSync`: knocked back, pushed or jumped since its server
     /// last sent it, so the next update goes out at once.
     pub needs_sync: bool,
+    /// The mobs it pushed this turn, kept while the collision cap is on (`push::Cap`).
+    pub pushed: Vec<u32>,
     /// `Entity.syncPosition`: it bounced this tick (`restituteMovementAfterCollisions`),
     /// so its tracker keeps this position as a step of the next move it sends.
     pub sync_position: bool,
@@ -1367,6 +1375,10 @@ pub struct Mob {
     /// direction and feet, which `SulfurCube.knockback` turns the launch by. Set by whoever deals
     /// the blow (`Game::attacker_aim`) and cleared once it is dealt.
     pub attacker_aim: Option<Aim>,
+    /// `DamageSource.isCreativePlayer()` of the blow being dealt: its causing entity is a
+    /// player in creative mode, whose hits `Entity.isInvulnerableToBase` lets through. Set by
+    /// whoever deals the blow (`Game::hurt_by_player`) and cleared once it is dealt.
+    pub creative_attacker: bool,
     /// The horizontal motion `(x, z)` of the projectile that is the direct entity of the blow
     /// being dealt (`Projectile.calculateHorizontalHurtKnockbackDirection`): the knock goes the
     /// way it was travelling. None for any other direct entity.
@@ -1691,16 +1703,16 @@ pub enum MobEvent {
         state: horizon_world::registry::BlockStateId,
     },
     AttackPlayer(f32, [f64; 3]),
-    /// `Bee.doHurtTarget` on a player: a sting that lands leaves its stinger
-    /// in them and poisons them for `poison_ticks` (none on easy).
-    StingPlayer {
+    /// `Bee.doHurtTarget`: a sting that lands leaves its stinger and poisons.
+    Sting {
+        target: Who,
         amount: f32,
-        from: [f64; 3],
         poison_ticks: i32,
+        source: Damage,
     },
     /// A melee hit whose effect comes only if the hit lands (husk hunger,
-    /// cave spider poison, wither skeleton wither, bee and pufferfish
-    /// poison): a shield-blocked hit gives nothing.
+    /// cave spider poison, wither skeleton wither): a shield-blocked hit gives
+    /// nothing.
     AttackPlayerWithEffect {
         amount: f32,
         from: [f64; 3],
@@ -1928,12 +1940,12 @@ pub enum MobEvent {
         setup: SpawnSetup,
     },
     /// `Mob.convertTo` with `ConversionType.SINGLE` ([`conversion::single`]):
-    /// a new mob of `kind` takes the place of `from` (already removed) and
-    /// keeps its gear, name and flags.
+    /// `from` (already removed) becomes `kind` with its gear, name and flags, then `after`.
     Convert {
         from: Box<Mob>,
         kind: &'static str,
         params: conversion::Params,
+        after: conversion::After,
     },
     DropItem {
         mob: u32,
@@ -2402,8 +2414,7 @@ pub struct Seen {
     pub xp: i32,
     /// What other villagers read of a villager's state and brain.
     pub villager: Option<Arc<villager::Seen>>,
-    /// `MAX_HEALTH`, `JUMP_STRENGTH` and `MOVEMENT_SPEED` base values (a
-    /// horse's breeding stock).
+    /// `MAX_HEALTH`, `JUMP_STRENGTH` and `MOVEMENT_SPEED` base values (a horse's breeding stock).
     pub stats: [f64; 3],
     /// `Wolf.isInSittingPose`.
     pub sitting: bool,
@@ -2424,10 +2435,14 @@ pub struct Seen {
     pub hurt_recently: bool,
     /// `Hoglin.canBeHunted`: an adult hoglin without `CannotBeHunted`.
     pub huntable: bool,
+    /// `Entity.isInvulnerable`: `Invulnerable`, or `invulnerableTime` left.
+    pub invulnerable: bool,
     /// A happy ghast's `isOnStillTimeout` (a player on its back holds it).
     pub still: bool,
     /// `Entity.isVehicle`: something rides it.
     pub carrying: bool,
+    /// Pushes given or taken so far this tick, while the collision cap is on.
+    pub collisions: u32,
 }
 impl Seen {
     /// Whether `canBeCollidedWith` can ever hold for this kind: the slots
@@ -2586,13 +2601,6 @@ impl Mob {
 /// `events[from..]` into `pending`, which the caller adds to each mob's
 /// velocity before its tick (and to every mob once all have ticked). The
 /// other events keep their order.
-/// The part of `Entity.canUsePortal` a mob's own state decides: it is alive,
-/// it is not a boss that never travels, and — over `Monster.canUsePortal` —
-/// it is not a creaking bound to a heart (`Creaking.canUsePortal`). The
-/// rides and the players a side carries are the caller's half.
-pub fn mob_can_use_portal(m: &Mob) -> bool {
-    m.alive() && m.species() != Species::Wither && creaking::can_use_portal(m)
-}
 pub fn take_mob_pushes(events: &mut Vec<MobEvent>, from: usize, pending: &mut PendingPushes) {
     // One pass: a crowd's tick holds a push per neighbour, and removing each
     // in place would shift the rest every time.
@@ -2794,8 +2802,7 @@ pub struct PlayerView {
     pub effects: Vec<&'static str>,
     /// The player's UUID (villagers' gossip is keyed by it).
     pub uuid: [i32; 4],
-    /// The mobs on the player's team (`isAlliedTo`): combat targeting
-    /// leaves the player alone.
+    /// The mobs on the player's team (`isAlliedTo`): combat targeting leaves the player alone.
     pub allies: std::sync::Arc<std::collections::HashSet<u32>>,
     /// A LAN guest: its own client moves it, and touching mobs push it there
     /// (`EntitySelector.pushableBy` on the client).
@@ -3064,6 +3071,7 @@ impl Mob {
             horizontal_collision: false,
             vertical_collision_below: false,
             needs_sync: false,
+            pushed: Vec::new(),
             sync_position: false,
             gear_knockback_resistance: None,
             hurt_time: 0,
@@ -3097,6 +3105,7 @@ impl Mob {
             silent: false,
             invulnerable_flag: false,
             attacker_aim: None,
+            creative_attacker: false,
             projectile_motion: None,
             climbing: false,
             on_climbable: false,
@@ -3337,14 +3346,6 @@ impl Mob {
     pub fn damage(&mut self, amount: f32, source: Damage) -> bool {
         self.damage_with(amount, source, None)
     }
-    /// `LivingEntity.isInvulnerableTo` and dead or removed: only #bypasses_invulnerability gets
-    /// past the flag. The guard every damage hook runs after (`LivingIncomingDamageEvent`).
-    pub fn refuses_damage(&self, source: &Damage) -> bool {
-        self.extra.client_side
-            || !self.alive()
-            || self.removed
-            || (self.is_invulnerable() && !source.kind.bypasses_invulnerability())
-    }
     /// `Entity.isInvulnerable`: `Invulnerable`, or `invulnerable_time` left.
     pub fn is_invulnerable(&self) -> bool {
         self.invulnerable_flag || self.invulnerable_time > 0
@@ -3380,12 +3381,9 @@ impl Mob {
         armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
         player_uuid: Option<[i32; 4]>,
     ) -> bool {
-        // Enderman.hurtServer: past `isInvulnerableTo`, the teleport draw
-        // follows `super.hurtServer` whatever it answered (a hurt cooldown, a
-        // dead enderman), its hurt sound's pitch included.
-        let enderman = self.species() == Species::Enderman
-            && !self.removed
-            && !(self.is_invulnerable() && !source.kind.bypasses_invulnerability());
+        // `Guardian.hurtServer`'s spikes answer its attacker before
+        // `super.hurtServer`'s guards; the enderman's teleport waits for after.
+        let enderman = hurt_by::before_hurt(self, &source);
         let hurt = self.hurt_server(amount, source, armor_effectiveness, player_uuid);
         if enderman {
             enderman::after_hurt(self, &source);
@@ -3600,12 +3598,7 @@ impl Mob {
         }
         self.last_damage = Some((source, i64::from(self.age)));
         self.last_direct = None;
-        if let Some(who) = source.attacker {
-            self.ai.hurt_by(who, self.age as i32);
-            if who == Who::Player {
-                self.ai.last_hurt_by_player = 100;
-            }
-        }
+        hurt_by::resolve(self, &source);
         // dealDefaultKnockback, unless the damage type is tagged no_knockback;
         // a source without a position knocks in a random direction.
         if knock && !source.no_knockback() {
@@ -3713,7 +3706,7 @@ impl Mob {
         let cloud = self.species() == Species::Enderman
             && direct == "minecraft:area_effect_cloud"
             && !self.removed
-            && !(self.is_invulnerable() && !source.kind.bypasses_invulnerability());
+            && !self.is_invulnerable_to(&source);
         let hurt = self.damage(amount, source);
         if cloud {
             enderman::teleport_chance(self, &source);
@@ -4053,7 +4046,7 @@ impl Mob {
         // `setHealth(1.0F)`, then `DeathProtection.applyEffects`.
         self.health = 1.0;
         for effect in &effects {
-            self.apply_death_effect(effect);
+            self.apply_consume_effect(effect);
         }
         let at = [self.position.x, self.position.y, self.position.z];
         self.outbox.push(MobEvent::EntityEvent {
@@ -4063,9 +4056,9 @@ impl Mob {
         });
         true
     }
-    /// One `ConsumeEffect` of a `death_protection` component on the mob.
-    /// Teleporting, sounds and a mod's own kinds are not applied to mobs.
-    fn apply_death_effect(&mut self, effect: &crate::items::ConsumeEffect) {
+    /// One `ConsumeEffect` of a totem or a fox's food on the mob. Teleporting,
+    /// sounds and a mod's own kinds are not applied here.
+    pub(crate) fn apply_consume_effect(&mut self, effect: &crate::items::ConsumeEffect) {
         use crate::items::ConsumeEffect;
         match effect {
             // `LivingEntity.removeAllEffects` -> `onEffectsRemoved` ->
@@ -4304,9 +4297,10 @@ impl Mob {
             self.position.z,
         ]
     }
+    /// `Entity.playSound(event, 1.0, 1.0)`: at the feet, and nothing while silent.
     pub fn sound(&self, event: &'static str, events: &mut Vec<MobEvent>) {
-        let at = [self.position.x, self.eye_y(), self.position.z];
-        events.push(MobEvent::Sound(event, at, 1.0, 1.0));
+        let at = [self.position.x, self.position.y, self.position.z];
+        events.extend((!self.silent).then_some(MobEvent::Sound(event, at, 1.0, 1.0)));
     }
     /// `Mob.getAmbientSoundInterval`; `HappyGhast` waits six times as long
     /// while it carries a passenger.
@@ -4345,9 +4339,8 @@ impl Mob {
     }
     /// Mob.playSound with LivingEntity.getVoicePitch.
     pub fn voice(&mut self, event: &'static str, events: &mut Vec<MobEvent>) {
-        // Java evaluates the arguments of `playSound(event, getSoundVolume(),
-        // getVoicePitch())` before the call, so the pitch is drawn even for a
-        // silent entity, whose `Entity.playSound` then plays nothing.
+        // Java draws the pitch before `Entity.playSound` looks at isSilent, so a
+        // silent entity draws it and then plays nothing.
         let pitch = self.voice_pitch();
         if self.silent {
             return;
@@ -6416,7 +6409,7 @@ mod hidden_speed_mob_tick_tests {
         assert_eq!(to.extra.effect_fallbacks, m.extra.effect_fallbacks);
         to.extra.effect_fallbacks[0].duration = 222;
         assert_eq!(m.extra.effect_fallbacks[0].duration, 300);
-        m.apply_death_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
+        m.apply_consume_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
             "minecraft:speed".into(),
         ]));
         assert_eq!(m.extra.effects, [("minecraft:night_vision", 400, 0)]);
@@ -6425,7 +6418,7 @@ mod hidden_speed_mob_tick_tests {
         assert!(m.extra.effect_fallbacks.is_empty());
         m.add_effect("speed", 5, 1);
         assert_eq!(m.extra.effect_fallbacks[0].duration, 20);
-        m.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        m.apply_consume_effect(&crate::items::ConsumeEffect::ClearAllEffects);
         assert!(m.extra.effects.is_empty() && m.extra.effect_fallbacks.is_empty());
         // The basic add has default incoming flags, while preserving its
         // existing active flag policy; a newly retained weaker node gets them.
@@ -6448,7 +6441,7 @@ mod hidden_speed_mob_tick_tests {
         m.add_effect("health_boost", 200, 1);
         assert_eq!(m.attrs.max_health, 18.0);
         m.health = 18.0;
-        m.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        m.apply_consume_effect(&crate::items::ConsumeEffect::ClearAllEffects);
         assert_eq!(m.attrs.max_health, 10.0);
         assert_eq!(m.health, 10.0);
     }
@@ -6480,7 +6473,7 @@ mod hidden_speed_mob_tick_tests {
         m0.add_effect("absorption", 600, 0);
         assert_eq!(armor::max_absorption(&m0), 4.0);
         assert_eq!(m0.absorption, 4.0);
-        m0.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        m0.apply_consume_effect(&crate::items::ConsumeEffect::ClearAllEffects);
         assert_eq!(
             m0.absorption, 0.0,
             "base 0 mob loses absorption on ClearAllEffects"
@@ -6497,7 +6490,7 @@ mod hidden_speed_mob_tick_tests {
         m20.add_effect("absorption", 600, 0);
         assert_eq!(armor::max_absorption(&m20), 24.0);
         assert_eq!(m20.absorption, 4.0);
-        m20.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        m20.apply_consume_effect(&crate::items::ConsumeEffect::ClearAllEffects);
         assert_eq!(
             m20.absorption, 4.0,
             "base 20 mob keeps absorption on ClearAllEffects"
@@ -6514,7 +6507,7 @@ mod hidden_speed_mob_tick_tests {
         m20_clamp.extra.armor_attributes = Some(Box::new(attrs3));
         m20_clamp.add_effect("absorption", 600, 0);
         m20_clamp.absorption = 24.0;
-        m20_clamp.apply_death_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
+        m20_clamp.apply_consume_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
             "minecraft:absorption".into(),
         ]));
         assert_eq!(
@@ -6528,7 +6521,7 @@ mod hidden_speed_mob_tick_tests {
         let mut m0_remove = Mob::new(4, kind, Vec3::ZERO, 0.0);
         m0_remove.add_effect("absorption", 600, 0);
         assert_eq!(m0_remove.absorption, 4.0);
-        m0_remove.apply_death_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
+        m0_remove.apply_consume_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
             "minecraft:absorption".into(),
         ]));
         assert_eq!(
@@ -6537,3 +6530,5 @@ mod hidden_speed_mob_tick_tests {
         );
     }
 }
+#[cfg(test)]
+mod guardian_tests;

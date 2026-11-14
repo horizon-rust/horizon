@@ -9,7 +9,7 @@ use horizon_client::{
     camera::wrap_degrees,
     fast_hash::FxHashMap,
     join_seq::ListStamp,
-    mobs::{BoxReach, Mob, Species, Who, drops::is_animal, equine, riders, seen_grid::SeenGrid},
+    mobs::{BoxReach, Mob, Species, Who, drops::is_animal, riders, seen_grid::SeenGrid},
     scoreboard::pushable_by,
 };
 use horizon_core::geometry::{Aabb, Vec3};
@@ -62,11 +62,9 @@ fn carries(m: &Mob) -> bool {
 }
 /// `isPushable`, as `pushableBy` and `canVehicleCollide` ask it:
 /// `Mob::pushable` plus the shulkers it leaves out (they take no push, but
-/// count), less a ridden horse (`AbstractHorse.isPushable`).
+/// count).
 fn pushable(m: &Mob) -> bool {
-    !m.removed
-        && (m.pushable() || m.species() == Species::Shulker && m.alive())
-        && !(equine::is_equine(m.species()) && carries(m))
+    !m.removed && (m.pushable() || m.species() == Species::Shulker && m.alive())
 }
 /// Whether `Entity.push` moves the mob: it is pushable and carries no one.
 fn moved_by_push(m: &Mob) -> bool {
@@ -220,24 +218,6 @@ impl Game<'_> {
             }
         }
         self.vehicle_mobs.near.set(near);
-    }
-    /// The slots, ascending, of the mobs whose box may meet a cart, read from the mobs' grid
-    /// once per cart. None when the mobs are the fewer (asking the carts' grid once per mob
-    /// is then the shorter way) or the grid does not answer.
-    pub(super) fn mobs_near_carts(&self) -> Option<Vec<u32>> {
-        if self.mobs.len() <= self.carts.len() {
-            return None;
-        }
-        let (mut slots, mut near) = (Vec::new(), Vec::new());
-        for c in self.carts.iter() {
-            if !self.vehicle_mobs_near(c.bounds(), &mut near) {
-                return None;
-            }
-            slots.extend_from_slice(&near);
-        }
-        slots.sort_unstable();
-        slots.dedup();
-        Some(slots)
     }
     /// Whether mob `m`, whose box `reach` bounds, may touch a cart: the carts' grid (`cells`)
     /// names the carts near it, or every cart when the grid cannot (a superset either way).

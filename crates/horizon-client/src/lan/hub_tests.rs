@@ -1,5 +1,7 @@
 #[path = "hub/tests/cave_air_tests.rs"]
 mod cave_air_tests;
+#[path = "hub/tests/effect_meta_tests.rs"]
+mod effect_meta_tests;
 #[path = "hub/far_tests.rs"]
 mod far_tests;
 #[path = "hub/tests/sound_tests.rs"]
@@ -1381,6 +1383,57 @@ fn memory_connection_first_view_sends_every_ready_column() {
     );
 }
 
+/// The equipment as it was before the cache: every equipped slot converted in turn.
+fn equipment_converted_every_time(
+    hub: &mut Hub,
+) -> Vec<(u8, Option<horizon_protocol::item::Stack>)> {
+    let g = &hub.guests[0];
+    let sources = [
+        (0u8, g.inventory.get(g.selected).cloned().flatten()),
+        (1, g.offhand.clone()),
+        (5, g.armor[0].clone()),
+        (4, g.armor[1].clone()),
+        (3, g.armor[2].clone()),
+        (2, g.armor[3].clone()),
+    ];
+    let mut out = Vec::new();
+    for (slot, item) in sources {
+        if item.is_some() {
+            out.push((slot, hub.stack(&item)));
+        }
+    }
+    out
+}
+
+#[test]
+fn equipment_is_converted_again_only_when_a_stack_changes() {
+    use crate::items::ItemStack;
+    let stack = |item: &str, count: u32| ItemStack {
+        item: item.into(),
+        count,
+        damage: 0,
+        extra: None,
+    };
+    let (mut hub, _rx) = hub_with_a_guest();
+    hub.guests[0].inventory[0] = Some(stack("minecraft:stone", 1));
+    hub.guests[0].offhand = Some(stack("minecraft:shield", 1));
+    hub.guests[0].armor[0] = Some(stack("minecraft:iron_helmet", 1));
+    let first = equipment_converted_every_time(&mut hub);
+    for _ in 0..3 {
+        assert_eq!(hub.guest_equipment(0), first);
+    }
+
+    hub.guests[0].inventory[0] = Some(stack("minecraft:stone", 3));
+    let changed = equipment_converted_every_time(&mut hub);
+    assert_ne!(changed, first);
+    assert_eq!(hub.guest_equipment(0), changed);
+
+    hub.guests[0].offhand = None;
+    let cleared = equipment_converted_every_time(&mut hub);
+    assert_eq!(cleared.len(), changed.len() - 1);
+    assert_eq!(hub.guest_equipment(0), cleared);
+}
+
 /// `ServerGamePacketListenerImpl.handleAcceptTeleportPacket`: an accept whose id is
 /// the last teleport's (`awaitingTeleport`) while none is awaited any more
 /// (`awaitingPositionFromClient` is null) disconnects with
@@ -1417,4 +1470,42 @@ fn a_second_accept_of_the_same_teleport_disconnects() {
     // The same id again, with nothing awaited: disconnected.
     tick_packet(&mut hub, &mut world, accept(id));
     assert!(!hub.guests[0].left_reason.is_empty());
+}
+
+/// A guest's `/tp`: `ServerGamePacketListenerImpl.teleport` does not call `ServerChunkCache.move`,
+/// so its tickets stay at the chunk it left (also over a second teleport) until the client's
+/// ack of the teleport (`handleAcceptTeleportPacket` -> `handlePlayerPositionChange`) moves them.
+/// A camera change moves them at once (`ServerPlayer.setCamera`), also back to the player.
+#[test]
+fn a_teleported_guests_tickets_stay_where_it_left_until_the_teleport_is_acked() {
+    let (mut hub, _rx) = hub_with_a_guest();
+    let mut world = floor_at(0);
+    let left = hub.guests[0].chunk();
+    hub.teleport(0, Some([104.5, 70.0, 8.5]));
+    assert_eq!(hub.guests[0].ticket_chunk(), left);
+    hub.teleport(0, Some([200.5, 70.0, 8.5]));
+    assert_eq!(
+        (hub.guests[0].chunk(), hub.guests[0].ticket_chunk()),
+        ((12, 0), left)
+    );
+    let id = hub.guests[0].teleport_counter;
+    tick_packet(
+        &mut hub,
+        &mut world,
+        S::AcceptTeleportation(play::AcceptTeleportation {
+            id,
+            x: 200.5,
+            y: 70.0,
+            z: 8.5,
+            yaw: 0.0,
+            pitch: 0.0,
+        }),
+    );
+    assert_eq!(hub.guests[0].ticket_chunk(), (12, 0));
+    // `guest_set_camera`: watching, the teleport to the camera, the tickets released.
+    hub.guests[0].watching = true;
+    hub.teleport(0, Some([8.5, 70.0, 8.5]));
+    hub.guests[0].release_tickets();
+    hub.guests[0].watching = false;
+    assert_eq!(hub.guests[0].ticket_chunk(), left);
 }
