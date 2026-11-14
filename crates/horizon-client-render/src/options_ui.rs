@@ -6359,10 +6359,10 @@ mod tests {
         );
         assert!(s.extras.sort);
         assert_eq!(
-            press(&mut ui, &mut s, crate::extras::Item::Pregen),
+            press(&mut ui, &mut s, crate::extras::Item::ChatAnimation),
             vec![Event::ButtonClick, Event::Changed]
         );
-        assert!(s.extras.pregen);
+        assert!(s.extras.chat_animation);
         assert_eq!(
             press(&mut ui, &mut s, crate::extras::Item::SortKey),
             vec![Event::ButtonClick]
