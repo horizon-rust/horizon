@@ -7659,6 +7659,30 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_right_click_block_v2(self, mod_api::mods(), pos, face, hand, cancel);
     }
+
+    /// A native mod can consume the local prediction for a right-click on a
+    /// block. The normal `UseItemOn` packet is still sent, and the server
+    /// handles the click. Cancelling stops local block and item
+    /// prediction and ends the click before the other hand. The hook is not
+    /// called for spectators. Client-side. API @API:block_use_prediction@.
+    pub(super) fn native_block_use_prediction(
+        &self,
+        pos: [i32; 3],
+        face: [i32; 3],
+        hand: Hand,
+        stack: Option<&ItemStack>,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_block_use_prediction(
+            self,
+            mod_api::mods(),
+            pos,
+            face,
+            hand,
+            stack,
+            cancel,
+        );
+    }
     /// `native_player_fish` with the hand: the server player's fishing rod in `hand`, with
     /// `state` as v1 has it (0 the cast, 1 a bite, 2 to 4 the reel-ins). The cast and the
     /// reel-ins name the hand the rod is used with (Bukkit's `PlayerFishEvent.getHand`); a bite
