@@ -55,6 +55,34 @@ jobs:
           path.write_text(source.replace(old, new, 1))
           PY
           git diff -- crates/horizon-client-input/Cargo.toml
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("crates/horizon-hdr/src/lib.rs")
+          source = path.read_text()
+          old = '#[cfg(not(target_os = "macos"))]'
+          ios_safe = '#[cfg(not(any(target_os = "macos", target_os = "ios")))]'
+          assert source.count(old) == 4, "Upstream HDR API changed; review patch"
+          source = source.replace(old, ios_safe)
+          old_mac = '#[cfg(target_os = "macos")]'
+          assert source.count(old_mac) == 1
+          source = source.replace(old_mac, '#[cfg(any(target_os = "macos", target_os = "ios"))]')
+          stub = '''
+// iOS is Metal-only here. Vulkan HDR metadata does not apply.
+#[cfg(target_os = "ios")]
+pub fn open_vulkan_device(
+    _adapter: &wgpu::Adapter,
+    _desc: &wgpu::DeviceDescriptor<'_>,
+) -> Option<Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError>> {
+    None
+}
+'''
+          anchor = '/// wgpu\'s opt-in to its'
+          assert source.count(anchor) == 1
+          source = source.replace(anchor, stub + '\\n' + anchor)
+          path.write_text(source)
+          PY
+          git diff -- crates/horizon-hdr/src/lib.rs
+
 
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
