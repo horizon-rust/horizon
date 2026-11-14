@@ -271,6 +271,7 @@ pub(crate) mod upload;
 mod view;
 mod visbuffer;
 mod wgsl_prefix;
+mod world_handover;
 mod world_post;
 pub mod world_primitives;
 mod world_warp;
@@ -6845,32 +6846,6 @@ impl Renderer {
         if let Some(hdr) = &mut self.hdr {
             hdr.look = on;
         }
-    }
-    /// Whether this renderer's frame is the one a renderer made now would draw in
-    /// (`requested_frame`). Under `HORIZON_HDR_FRAME=float` the game makes the renderer again
-    /// when it isn't (docs/design/hdr-linear-light.md, "When it changes").
-    pub fn frame_follows(
-        &self,
-        settings: &crate::graphics::Graphics,
-        request: output::FrameRequest,
-    ) -> bool {
-        self.requested_frame(settings, request) == self.output.frame
-    }
-    /// The frame a renderer made now would draw in (`output::resolve_frame`) for `settings`
-    /// and the pack's `request`, with what this renderer's destination offers and its display
-    /// reports.
-    pub fn requested_frame(
-        &self,
-        settings: &crate::graphics::Graphics,
-        request: output::FrameRequest,
-    ) -> output::FrameConfiguration {
-        output::resolve_frame(
-            settings,
-            request,
-            self.caps_for(settings),
-            output_apply::graced(self.auto_off_since, self.reading, &self.output),
-            self.config.format,
-        )
     }
     /// Measures which pixels of each block sprite may shine (`hdr_stats`), at the current
     /// masks. Only with HDR output on: without it the frame's alpha is never read.
@@ -14529,9 +14504,11 @@ struct DisplayWatch {
 }
 
 impl DisplayReading {
-    /// What wgpu reads from the OS for `surface`'s display; nothing without one.
+    /// What wgpu reads from the OS for `surface`'s display; without one, `hdr::offscreen_display`.
     fn read(surface: Option<&wgpu::Surface>, adapter: &wgpu::Adapter) -> Self {
-        surface.map_or_else(Self::default, |s| Self::os(&s.display_hdr_info(adapter)))
+        surface.map_or_else(hdr::offscreen_display, |s| {
+            Self::os(&s.display_hdr_info(adapter))
+        })
     }
     fn os(info: &wgpu::DisplayHdrInfo) -> Self {
         #[cfg(target_os = "macos")]
