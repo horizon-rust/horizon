@@ -2740,6 +2740,7 @@ mod tests {
         compiler: wgpu::Dx12Compiler,
         name: &str,
     ) -> Option<(wgpu::Device, wgpu::Queue)> {
+        crate::gfx::test_gpu::turn();
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = backends;
         desc.backend_options.dx12.shader_compiler = compiler;

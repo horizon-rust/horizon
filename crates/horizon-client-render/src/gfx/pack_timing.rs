@@ -1473,6 +1473,7 @@ mod tests {
 }";
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        crate::gfx::test_gpu::turn();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         let needed =
@@ -1590,6 +1591,7 @@ mod tests {
     const SIDE: u32 = 64;
 
     fn stats_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        crate::gfx::test_gpu::turn();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         let needed = wgpu::Features::TIMESTAMP_QUERY
@@ -1835,6 +1837,7 @@ mod tests {
 
     #[test]
     fn stages_split_a_render_pass_in_a_plain_frame_and_kept_frames_hold_them() {
+        crate::gfx::test_gpu::turn();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;
