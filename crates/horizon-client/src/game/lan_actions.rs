@@ -3922,26 +3922,17 @@ impl Game<'_> {
         // count) falls instead of staying up for a player who is gone.
         self.guest_container_closed(host, conn);
         host.hub.close_container(conn);
-        // PlayerList.respawn builds a new `ServerPlayer`, whose `lastEquipmentItems` starts
-        // empty: the mods hear each worn item again from empty (`native_players_equipment`).
         if let Some(play) = host.play.get_mut(&conn) {
             play.equipment_heard = None;
             play.inventory_heard = None;
             play.level_up_sound = Default::default();
         }
-        // PlayerList.respawn: a server's player comes back in its respawn
-        // point's level: the Overworld, where the world spawn and beds are,
-        // or another one's anchor or forced point, which its block resolves
-        // once the level has loaded around it.
         let server = self.options.dedicated.is_some();
         let own = host.hub.guests[i]
             .respawn_elsewhere
             .as_ref()
             .map(RespawnConfig::from_saved);
         let mut elsewhere = own.filter(|_| server);
-        // In the window's world a guest has no level of its own to wait in:
-        // its bed is resolved at once when its chunk is there, else it
-        // comes back on the bed.
         let mut in_frame_bed = own.filter(|c| !server && c.dim == super::Dim::Overworld);
         let spawn = in_frame_bed.map_or(spawn, |c| {
             [
@@ -3950,7 +3941,7 @@ impl Game<'_> {
                 f64::from(c.pos[2]) + 0.5,
             ]
         });
-        let mut level = elsewhere.map_or(self.world_spawn_dimension(), |c| c.dim);
+        let mut level = own.map_or(self.world_spawn_dimension(), |c| c.dim);
         let mut spawn = elsewhere.map_or(spawn, |c| {
             [
                 f64::from(c.pos[0]) + 0.5,
@@ -3958,9 +3949,6 @@ impl Game<'_> {
                 f64::from(c.pos[2]) + 0.5,
             ]
         });
-        // TeleportTransition.createDefault: a player without a point of its
-        // own comes back facing the world spawn's angle; a bed or an anchor
-        // faces the player at it (findRespawnAndUseSpawnBlock).
         let angle = if own.is_none() {
             self.level.world_spawn_angle
         } else {
@@ -4076,18 +4064,17 @@ impl Game<'_> {
             let found = self
                 .as_guest(host, conn, |g| g.resolve_server_respawn(c, true))
                 .flatten();
-            let world = self
-                .level
-                .world_spawn
-                .map_or([0.5, 80.0, 0.5], |[x, y, z]| {
-                    [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
-                });
+            let world = self.world_spawn_position();
             let at = found.map_or(world, |(at, yaw, pitch)| {
                 (host.hub.guests[i].yaw, host.hub.guests[i].pitch) = (yaw, pitch);
                 [at.x, at.y, at.z]
             });
             if found.is_none() {
                 // TeleportTransition.missingRespawnBlock.
+                (host.hub.guests[i].yaw, host.hub.guests[i].pitch) = (
+                    self.level.world_spawn_angle[0],
+                    self.level.world_spawn_angle[1],
+                );
                 host.hub.missing_respawn_block(conn);
                 self.world_spawn_trip(conn);
             }

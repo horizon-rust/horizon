@@ -854,7 +854,7 @@ impl Game<'_> {
             conn,
             dim: self.world_spawn_dimension(),
             at,
-            rotation: None,
+            rotation: Some(self.level.world_spawn_angle),
             vehicle: None,
             cause: None,
         });

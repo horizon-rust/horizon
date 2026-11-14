@@ -135,3 +135,32 @@ fn a_world_spawn_outside_the_border_respawns_inside_it() {
     assert!(game.border.contains(at[0], at[2]), "inside: {at:?}");
     assert_eq!((at[0], at[2]), (500.5, 500.5), "the border's centre column");
 }
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn an_overworld_bed_takes_precedence_over_a_nether_world_spawn() {
+    let (mut game, mut host, _rx) = server();
+    game.options.dedicated = None;
+    game.level.world_spawn_dimension = "minecraft:the_nether".into();
+    host.hub.guests[0].respawn_elsewhere =
+        Some(("minecraft:overworld".into(), [0, 64, 0], 0.0, 0.0, false));
+    game.guest_respawn(&mut host, CONN);
+    assert_eq!(host.hub.guests[0].dimension, "minecraft:overworld");
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_missing_bed_faces_the_world_spawn_angle() {
+    let (mut game, mut host, _rx) = server();
+    game.options.dedicated = None;
+    game.level.world_spawn = Some([1000, 64, 1000]);
+    game.level.world_spawn_angle = [180.0, 20.0];
+    host.hub.guests[0].respawn_elsewhere =
+        Some(("minecraft:overworld".into(), [0, 64, 0], 0.0, 0.0, false));
+    light(&mut game, 0);
+    game.guest_respawn(&mut host, CONN);
+    assert_eq!(
+        [host.hub.guests[0].yaw, host.hub.guests[0].pitch],
+        [180.0, 20.0]
+    );
+}
