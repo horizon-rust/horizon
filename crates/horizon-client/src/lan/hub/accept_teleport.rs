@@ -42,4 +42,16 @@ impl Hub {
         let rot = (p.yaw, p.pitch);
         self.position_change(i, [p.x, p.y, p.z], rot, 0, ctx, events);
     }
+
+    /// `handleMovePlayer` while a teleport awaits its accept (`updateAwaitingTeleport`): the move's
+    /// position is ignored, its turn is not: `absSnapRotationTo(Mth.wrapDegrees(yRot),
+    /// Mth.wrapDegrees(xRot))`, which clamps the pitch to 90 degrees either way. A move without a
+    /// turn carries the player's own, so it changes nothing.
+    pub(super) fn snap_rotation(&mut self, i: usize, rot: Option<(f32, f32)>) {
+        if let Some((yaw, pitch)) = rot {
+            let g = &mut self.guests[i];
+            g.yaw = wrap_degrees(yaw);
+            g.pitch = wrap_degrees(pitch).clamp(-90.0, 90.0);
+        }
+    }
 }

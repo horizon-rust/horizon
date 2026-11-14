@@ -4244,7 +4244,7 @@ impl Hub {
             if self.ticks - g.teleport_tick > 20 {
                 self.resend_teleport(i, Some(at));
             }
-            return;
+            return self.snap_rotation(i, rot);
         }
         let to = pos.unwrap_or(g.position);
         let rot = rot.unwrap_or((g.yaw, g.pitch));
