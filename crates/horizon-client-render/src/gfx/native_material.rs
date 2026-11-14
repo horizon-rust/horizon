@@ -110,16 +110,20 @@ fn horizon_material_out(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f
 }
 @vertex fn horizon_material_vs(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
+    @location(2) layer_light: u32, @location(3) color: vec4<f32>,
     @location(5) origin: vec4<f32>) -> HorizonMaterialOut {
+    let layer = layer_light & 0xffffu;
+    let light = vec2<u32>((layer_light >> 16u) & 0xffu, (layer_light >> 24u) & 0xffu);
     return horizon_material_vertex(position, horizon_terrain_terrain_uv(uv, origin.w), layer,
         color, light, origin);
 }
 @vertex fn horizon_material_vs_flat(
     @builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+    @location(2) layer_light: u32, @location(3) color: vec4<f32>
 ) -> HorizonMaterialOut {
+    let layer = layer_light & 0xffffu;
+    let light = vec2<u32>((layer_light >> 16u) & 0xffu, (layer_light >> 24u) & 0xffu);
     let origin = horizon_terrain_slot_origins[horizon_terrain_block_slots[vertex >> 8u]];
     return horizon_material_vertex(position, horizon_terrain_terrain_uv(uv, origin.w), layer,
         color, light, origin);

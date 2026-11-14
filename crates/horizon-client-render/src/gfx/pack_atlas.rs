@@ -727,8 +727,7 @@ impl PackAtlas {
         } else {
             String::from(
                 "layout(location = 0) in vec3 hz_v_pos;\nlayout(location = 1) in uvec2 hz_v_uv;\n\
-                 layout(location = 2) in uint hz_v_layer;\nlayout(location = 3) in vec4 hz_v_color;\n\
-                 layout(location = 4) in uvec2 hz_v_light;\n",
+                 layout(location = 2) in uint hz_v_layer_light;\nlayout(location = 3) in vec4 hz_v_color;\n",
             )
         };
         let origin = if flat {
@@ -806,6 +805,13 @@ impl PackAtlas {
             scale[0], scale[1],
         );
         let mut body = body;
+        if !flat {
+            body.insert_str(
+                0,
+                "    uint hz_v_layer = hz_v_layer_light & 65535u;\n    \\
+                 uvec2 hz_v_light = uvec2((hz_v_layer_light >> 16u) & 255u, hz_v_layer_light >> 24u);\n",
+            );
+        }
         if flat {
             body.insert_str(0, PULL_FLAT);
             body.push_str(FACE);
@@ -1257,6 +1263,14 @@ mod tests {
             stitched: None,
         };
         let inputs_default = atlas.terrain_inputs(false);
+        assert!(inputs_default
+            .declarations
+            .contains("layout(location = 2) in uint hz_v_layer_light;"));
+        assert!(!inputs_default.declarations.contains("layout(location = 4)"));
+        assert!(inputs_default
+            .body
+            .contains("uint hz_v_layer = hz_v_layer_light & 65535u;"));
+        assert!(inputs_default.body.contains("hz_v_layer_light >> 24u"));
         assert!(
             inputs_default
                 .body

@@ -26,9 +26,9 @@ const CRUMBLING_BLEND: wgpu::BlendState = wgpu::BlendState {
     },
     alpha: wgpu::BlendComponent::REPLACE,
 };
-/// `TerrainVertex` for `vs_terrain`: position, UV, layer, light, colour.
-const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
-    wgpu::vertex_attr_array![0=>Float32x3,1=>Uint16x2,2=>Uint16,4=>Uint8x2,3=>Unorm8x4];
+/// `TerrainVertex` for `vs_terrain`: position, UV, packed layer/light, colour.
+const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![0=>Float32x3,1=>Uint16x2,2=>Uint32,3=>Unorm8x4];
 
 /// entity.wgsl after the OverlayTexture constants it reads.
 fn entity_shader() -> String {
@@ -14035,9 +14035,16 @@ mod tests {
                 (0, offset_of!(TerrainVertex, pos)),
                 (1, offset_of!(TerrainVertex, uv)),
                 (2, offset_of!(TerrainVertex, layer)),
-                (4, offset_of!(TerrainVertex, light)),
                 (3, offset_of!(TerrainVertex, color)),
             ]
+        );
+        assert_eq!(
+            super::TERRAIN_ATTRIBUTES[2].format,
+            wgpu::VertexFormat::Uint32
+        );
+        assert_eq!(
+            offset_of!(TerrainVertex, light),
+            offset_of!(TerrainVertex, layer) + 2
         );
         assert_eq!(std::mem::size_of::<TerrainVertex>(), 24);
     }

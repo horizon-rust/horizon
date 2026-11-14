@@ -388,10 +388,10 @@ fn fade_code(w: f32) -> u32 {
 }
 @vertex fn vs_terrain(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
+    @location(2) layer_light: u32, @location(3) color: vec4<f32>,
     @location(5) origin: vec4<f32>) -> TerrainWire {
-    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w));
+    return terrain_vertex_packed(position, terrain_uv(uv, origin.w), layer_light, color, origin.xyz,
+        origin.w);
 }
 // Flat section draws (gfx/flat.rs): one draw per arena page over the frame's
 // index list. A section's vertices fill whole 256-vertex blocks of its page:
@@ -401,11 +401,11 @@ fn fade_code(w: f32) -> u32 {
 @vertex fn vs_terrain_flat(
     @builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+    @location(2) layer_light: u32, @location(3) color: vec4<f32>
 ) -> TerrainWire {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w));
+    return terrain_vertex_packed(position, terrain_uv(uv, origin.w), layer_light, color, origin.xyz,
+        origin.w);
 }
 // Solid terrain draws in two passes, each over its own part of every mesh's quads
 // (`mesher::Part`): first the quads with no cutout that are not fading, through
@@ -425,39 +425,39 @@ fn left_out() -> TerrainOut {
 }
 @vertex fn vs_terrain_opaque(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
+    @location(2) layer_light: u32, @location(3) color: vec4<f32>,
     @location(5) origin: vec4<f32>) -> TerrainWire {
-    if !opaque_quad(layer, origin.w) { return to_wire(left_out()); }
-    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w));
+    if !opaque_quad(layer_light & 0xffffu, origin.w) { return to_wire(left_out()); }
+    return terrain_vertex_packed(position, terrain_uv(uv, origin.w), layer_light, color, origin.xyz,
+        origin.w);
 }
 @vertex fn vs_terrain_cutout(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
+    @location(2) layer_light: u32, @location(3) color: vec4<f32>,
     @location(5) origin: vec4<f32>) -> TerrainWire {
-    if opaque_quad(layer, origin.w) { return to_wire(left_out()); }
-    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w));
+    if opaque_quad(layer_light & 0xffffu, origin.w) { return to_wire(left_out()); }
+    return terrain_vertex_packed(position, terrain_uv(uv, origin.w), layer_light, color, origin.xyz,
+        origin.w);
 }
 @vertex fn vs_terrain_flat_opaque(
     @builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+    @location(2) layer_light: u32, @location(3) color: vec4<f32>
 ) -> TerrainWire {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    if !opaque_quad(layer, origin.w) { return to_wire(left_out()); }
-    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w));
+    if !opaque_quad(layer_light & 0xffffu, origin.w) { return to_wire(left_out()); }
+    return terrain_vertex_packed(position, terrain_uv(uv, origin.w), layer_light, color, origin.xyz,
+        origin.w);
 }
 @vertex fn vs_terrain_flat_cutout(
     @builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+    @location(2) layer_light: u32, @location(3) color: vec4<f32>
 ) -> TerrainWire {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    if opaque_quad(layer, origin.w) { return to_wire(left_out()); }
-    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w));
+    if opaque_quad(layer_light & 0xffffu, origin.w) { return to_wire(left_out()); }
+    return terrain_vertex_packed(position, terrain_uv(uv, origin.w), layer_light, color, origin.xyz,
+        origin.w);
 }
 // Solid section draws that read their vertices from the arena page (gfx.rs's `pulled`
 // pipelines; `mesher/packed.rs`): a draw's vertex indices below PACKED_BASE name vertices
@@ -675,6 +675,12 @@ fn hdr_scene_alpha(scene: f32) -> f32 {
 var<private> hdr_normal: vec3<f32>;
 fn hdr_facing() -> f32 {
     return mix(0.45, 1.0, max(dot(hdr_normal, globals.sun.xyz), 0.0));
+}
+fn terrain_vertex_packed(position: vec3<f32>, uv: vec2<f32>, layer_light: u32,
+    color: vec4<f32>, origin: vec3<f32>, w: f32) -> TerrainWire {
+    let layer = layer_light & 0xffffu;
+    let light = vec2<u32>((layer_light >> 16u) & 0xffu, (layer_light >> 24u) & 0xffu);
+    return to_wire(terrain_vertex(position, uv, layer, color, light, origin, w));
 }
 fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
     light: vec2<u32>, origin: vec3<f32>, w: f32) -> TerrainOut {
