@@ -14,9 +14,12 @@ fn server() -> horizon_mcp::Server<'static> {
     horizon_mcp::Server::new("horizon-ctl", horizon_core::release::VERSION, INSTRUCTIONS)
 }
 
-fn tools() -> Vec<Value> {
+/// The tools: the table's commands, then `crates`, the running game's
+/// (`Session::crate_commands`).
+fn tools(crates: &[&'static commands::Cmd]) -> Vec<Value> {
     commands::COMMANDS
         .iter()
+        .chain(crates.iter().copied())
         .filter(|c| c.mcp)
         .map(|c| {
             let mut description = format!("{}. Usage: horizon-ctl {}", capital(c.summary), c.usage);
@@ -35,7 +38,7 @@ fn tools() -> Vec<Value> {
             }
             if commands::DESTRUCTIVE.contains(&c.name) {
                 tool["annotations"] = json!({ "destructiveHint": true });
-            } else if commands::OPEN_WORLD.contains(&c.name) {
+            } else if commands::open_world(c) {
                 tool["annotations"] = json!({ "openWorldHint": true });
             }
             tool
@@ -90,6 +93,15 @@ fn still(cmd: &commands::Cmd) -> bool {
 }
 
 impl Session {
+    /// The command behind an MCP tool: the table's, else one the running game describes.
+    fn tool(&mut self, name: &str) -> Option<&'static commands::Cmd> {
+        let is = |c: &&commands::Cmd| c.mcp && commands::tool_name(c) == name;
+        commands::COMMANDS
+            .iter()
+            .find(is)
+            .or_else(|| self.crate_commands().into_iter().find(is))
+    }
+
     /// The screen the game shows, if it answers.
     fn screen_now(&mut self) -> Option<String> {
         let reply = self.run(&["screen".to_owned()]).ok()?;
@@ -102,9 +114,7 @@ impl Session {
     /// the next, only when the game is playing (not over another menu, nor a pause a person
     /// opened). Reading tools leave it open. A LAN or server world does not stop.
     fn call(&mut self, name: &str, args: &Value) -> (Vec<Value>, bool) {
-        let cmd = commands::COMMANDS
-            .iter()
-            .find(|c| c.mcp && commands::tool_name(c) == name);
+        let cmd = self.tool(name);
         let pace = self.paced && cmd.is_some_and(|c| !still(c));
         if pace && std::mem::take(&mut self.held) && self.screen_now().as_deref() == Some("paused")
         {
@@ -120,10 +130,7 @@ impl Session {
     /// One tool call: (content blocks, is_error).
     fn call_tool(&mut self, name: &str, args: &Value) -> (Vec<Value>, bool) {
         let text = |v: &Value| json!({ "type": "text", "text": serde_json::to_string_pretty(v).unwrap_or_default() });
-        let Some(cmd) = commands::COMMANDS
-            .iter()
-            .find(|c| c.mcp && commands::tool_name(c) == name)
-        else {
+        let Some(cmd) = self.tool(name) else {
             return (
                 vec![text(&json!({ "error": format!("unknown tool {name}") }))],
                 true,
@@ -191,13 +198,17 @@ impl Session {
     /// `server/discover`) and frames these results for the revision the request speaks.
     fn handle(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         match method {
-            "tools/list" => Ok(json!({ "tools": tools() })),
+            // A crate's tools are listed while a game that has the crate answers: no
+            // `notifications/tools/list_changed` follows a game's start or end, so a client sees
+            // them at its next list (`horizon_mcp::LIST_TTL_MS`).
+            "tools/list" => Ok(json!({ "tools": tools(&self.crate_commands()) })),
             "tools/call" => {
                 let name = params
                     .get("name")
                     .and_then(Value::as_str)
                     .ok_or((-32602, "name is required".to_string()))?;
-                if !tools().iter().any(|t| t["name"] == name) {
+                let tools = tools(&self.crate_commands());
+                if !tools.iter().any(|t| t["name"] == name) {
                     return Err((-32602, format!("Unknown tool {name}")));
                 }
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
@@ -205,7 +216,7 @@ impl Session {
                 let mut result = json!({ "content": content, "isError": error });
                 // A tool that declares an outputSchema answers with structuredContent too.
                 if !error
-                    && tools()
+                    && tools
                         .iter()
                         .any(|t| t["name"] == name && t.get("outputSchema").is_some())
                     && let Some(v) = result["content"][0]["text"]
@@ -270,7 +281,7 @@ mod tests {
 
     #[test]
     fn tools_have_schemas_and_unique_names() {
-        let list = tools();
+        let list = tools(&[]);
         let mut names = std::collections::HashSet::new();
         for t in &list {
             assert!(names.insert(t["name"].as_str().unwrap().to_owned()));
@@ -279,7 +290,11 @@ mod tests {
         let by = |n: &str| list.iter().find(|t| t["name"] == n).unwrap();
         assert_eq!(
             by("hello")["outputSchema"]["required"],
-            json!(["protocol", "release", "features"])
+            json!(["protocol", "release", "features", "commands"])
+        );
+        assert!(
+            !names.contains("friends"),
+            "friends comes from the game's hello"
         );
         assert_eq!(
             by("status")["outputSchema"]["properties"]["screen"]["type"],
@@ -301,6 +316,30 @@ mod tests {
             let want = if want == "break_block" { "break" } else { want };
             assert!(names.contains(want), "{want}");
         }
+    }
+
+    #[test]
+    fn a_running_games_crate_commands_are_tools() {
+        let hello = json!({ "commands": [{
+            "name": "tea-pot", "usage": "tea-pot fill|empty", "summary": "fill or empty the pot",
+            "params": [{ "name": "action", "type": "enum", "values": ["fill", "empty"], "required": true }],
+            "mcp": true, "open_world": true,
+        }, { "name": "kettle", "summary": "CLI only", "mcp": false }] });
+        let list = tools(&commands::from_hello(&hello));
+        let tool = list.iter().find(|t| t["name"] == "tea_pot").unwrap();
+        assert_eq!(tool["annotations"], json!({ "openWorldHint": true }));
+        assert_eq!(
+            tool["inputSchema"]["properties"]["action"]["enum"],
+            json!(["fill", "empty"])
+        );
+        assert!(
+            tool["description"]
+                .as_str()
+                .unwrap()
+                .starts_with("Fill or empty the pot. Usage: horizon-ctl tea-pot fill|empty")
+        );
+        assert!(!list.iter().any(|t| t["name"] == "kettle"));
+        assert_eq!(list.len(), tools(&[]).len() + 1);
     }
 
     #[test]

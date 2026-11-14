@@ -142,6 +142,9 @@ pub struct Session {
     /// `--api LINE`: the protocol line this run speaks; a game on another line is refused.
     pub api: Option<String>,
     client: Option<Client>,
+    /// The running game's crate commands (`commands::from_hello`), with the `commands` of the
+    /// `hello` they were read from: asked again each time, rebuilt only when that changes.
+    crates: (Value, Vec<&'static commands::Cmd>),
     /// `mcp --paced`: the world stands still between tool calls (`mcp::Session::call`).
     pub paced: bool,
     /// The pause menu `--paced` opened, which the next action closes.
@@ -156,6 +159,7 @@ impl Session {
             home: horizon_client::logging::game_home(),
             api: None,
             client: None,
+            crates: (Value::Null, Vec::new()),
             paced: false,
             held: false,
         }
@@ -173,6 +177,26 @@ impl Session {
             self.client = Some(client);
         }
         Ok(self.client.as_mut().unwrap())
+    }
+    /// The commands of the crates the running game has, as its `hello` describes them: none
+    /// when no game answers, while No AI is on, or from a game that describes none. They come and
+    /// go with the game, so the help and the MCP tool list ask each time.
+    pub fn crate_commands(&mut self) -> Vec<&'static commands::Cmd> {
+        if self.allowed().is_err() {
+            return Vec::new();
+        }
+        let Ok(hello) = self.game("hello") else {
+            return Vec::new();
+        };
+        let described = hello.get("commands").cloned().unwrap_or(Value::Null);
+        if described != self.crates.0 {
+            self.crates = (described, commands::from_hello(&hello));
+        }
+        self.crates.1.clone()
+    }
+    /// A command by name: the table's, else one the running game describes.
+    pub fn find(&mut self, name: &str) -> Option<&'static commands::Cmd> {
+        commands::find(name).or_else(|| self.crate_commands().into_iter().find(|c| c.name == name))
     }
     /// Send a line to the game; a reply with "error" is a failure.
     pub fn game(&mut self, line: &str) -> Result<Value, Failure> {
@@ -746,6 +770,7 @@ fn main() -> ExitCode {
     let status = match name.as_deref() {
         None | Some("-h" | "--help") => {
             print!("{}", commands::overview());
+            print!("{}", commands::crate_overview(&session.crate_commands()));
             0
         }
         Some("help") if args.get(1).is_some_and(|a| a == "--markdown") => {
@@ -755,9 +780,10 @@ fn main() -> ExitCode {
         Some("help") if args.get(1).is_none_or(|a| a != "--game") => match args.get(1) {
             None => {
                 print!("{}", commands::overview());
+                print!("{}", commands::crate_overview(&session.crate_commands()));
                 0
             }
-            Some(c) => match commands::find(c) {
+            Some(c) => match session.find(c) {
                 Some(cmd) => {
                     print!("{}", commands::detail(cmd));
                     0
@@ -772,7 +798,7 @@ fn main() -> ExitCode {
             },
         },
         Some(c) if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") => {
-            match commands::find(c) {
+            match session.find(c) {
                 Some(cmd) => {
                     print!("{}", commands::detail(cmd));
                     0
@@ -1012,6 +1038,33 @@ mod tests {
         s.home = std::env::temp_dir().join("horizon-ctl-api-no-home");
         s.api = Some(api.to_owned());
         s
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_crate_command_is_found_while_a_game_that_has_it_answers() {
+        let (path, game) = fake_game(
+            "crates",
+            r#"{"protocol":"0.1.1","release":"x","features":["tea"],"commands":[{"name":"tea","usage":"tea brew","summary":"brew a pot","mcp":true}]}"#,
+        );
+        let mut s = Session::new(path.clone(), Some(Duration::from_secs(5)));
+        s.home = std::env::temp_dir().join("horizon-ctl-crates-no-home");
+        let tea = s.find("tea").expect("the game describes tea");
+        assert_eq!(tea.usage, "tea brew");
+        // The same hello again: the same command, not a second copy.
+        assert!(std::ptr::eq(s.find("tea").unwrap(), tea));
+        assert!(s.find("coffee").is_none());
+        // The table's commands need no game.
+        assert!(s.find("status").is_some());
+        drop(s);
+        assert_eq!(game.join().unwrap(), ["hello", "hello", "hello"]);
+        let _ = std::fs::remove_file(path);
+
+        // No game: no crate command, and no error.
+        let mut s = Session::new(std::env::temp_dir().join("hctl-no-game.sock"), None);
+        s.home = std::env::temp_dir().join("horizon-ctl-crates-no-home");
+        assert!(s.crate_commands().is_empty());
+        assert!(s.find("tea").is_none());
     }
 
     #[test]

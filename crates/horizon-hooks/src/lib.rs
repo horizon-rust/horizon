@@ -17,6 +17,7 @@
 //! pages, [`hud`] for what it draws on the HUD, [`lang`] for the lang files with its text.
 #![forbid(unsafe_code)]
 
+pub mod control;
 pub mod hud;
 pub mod lang;
 pub mod pages;
@@ -121,8 +122,9 @@ pub trait Hooks: Sync {
     }
 
     /// The `horizon-ctl` commands this crate answers in the game: their group, as `hello` lists
-    /// it, and the lines `help` adds for them.
-    fn control_commands(&self) -> Option<(&'static str, &'static [&'static str])> {
+    /// it, the lines `help` adds for them, and each command as plain data, which `hello` sends so
+    /// `horizon-ctl` offers them only when the running game has this crate ([`control`]).
+    fn control_commands(&self) -> Option<control::Commands> {
         None
     }
 
@@ -426,7 +428,7 @@ pub mod engine {
     }
 
     /// [`Hooks::control_commands`] of every hook, in registration order.
-    pub fn control_commands() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
+    pub fn control_commands() -> impl Iterator<Item = crate::control::Commands> {
         all().iter().filter_map(|hooks| hooks.control_commands())
     }
 

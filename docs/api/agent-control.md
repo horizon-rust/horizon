@@ -55,6 +55,10 @@ API offers; the other commands the game's socket answers are test hooks and expe
 - 0.1.0: the first numbered line. `hello` answers `protocol`, `release` (the game's version, which MCP `serverInfo`
   carries too) and `features` (the command groups the game serves). Before it the command table and the generated
   reference were the contract.
+- 0.1.1: `hello` also answers `commands`: the commands of the crates above the engine that the game has (Play with
+  Friends' `friends` in the official build), each with its name, usage, summary, details, examples, params, `mcp` and
+  `open_world`. `horizon-ctl` reads them at run time for its help and its MCP tools instead of keeping them in its
+  table, so a game without the crate offers neither the command nor the tool (#14500).
 - `horizon-ctl --api 0.1` (a tool change, the protocol stays 0.1.0): calls `hello` before the first command and refuses a
   game on another line or one without `hello` (exit status 5, `kind: "api"`). `0.1` takes 0.1.x; a full version must
   match exactly.

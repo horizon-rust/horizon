@@ -14,7 +14,7 @@ use winit::{event::MouseButton, keyboard::KeyCode};
 
 /// The control protocol's version (`docs/api/stability.md`): before 1.0 an
 /// addition makes the next patch and a breaking change the next line.
-const PROTOCOL: &str = "0.1.0";
+const PROTOCOL: &str = "0.1.1";
 
 /// The command groups the game serves, as `help` chains them: what `hello` reports as its features.
 const FEATURES: &[&str] = &[
@@ -22,15 +22,59 @@ const FEATURES: &[&str] = &[
     "saves", "pad", "studio",
 ];
 
-/// `hello`: the protocol the socket speaks, the game's release and the command groups it serves
-/// (the engine's, then those of the crates that answer commands, `Hooks::control_commands`).
+/// `hello`: the protocol the socket speaks, the game's release, the command groups it serves
+/// (the engine's, then those of the crates that answer commands, `Hooks::control_commands`) and
+/// those crates' commands, described so `horizon-ctl` can offer them (its help, its MCP tools).
 fn hello() -> Value {
-    let groups = horizon_hooks::engine::control_commands().map(|(group, _)| group);
-    let features: Vec<&str> = FEATURES.iter().copied().chain(groups).collect();
+    hello_with(horizon_hooks::engine::control_commands())
+}
+
+/// [`hello`] for these crates' commands.
+fn hello_with(crates: impl Iterator<Item = horizon_hooks::control::Commands>) -> Value {
+    let mut features: Vec<&str> = FEATURES.to_vec();
+    let mut commands = Vec::new();
+    for group in crates {
+        features.push(group.group);
+        commands.extend(group.commands.iter().map(crate_command));
+    }
     json!({
         "protocol": PROTOCOL,
         "release": horizon_core::release::VERSION,
         "features": features,
+        "commands": commands,
+    })
+}
+
+/// One crate command as `hello` sends it: plain data, read by `horizon-ctl`
+/// (`commands::from_hello`).
+fn crate_command(command: &horizon_hooks::control::Command) -> Value {
+    use horizon_hooks::control::Kind;
+    let params: Vec<Value> = command
+        .params
+        .iter()
+        .map(|p| {
+            let mut param = json!({
+                "name": p.name,
+                "type": p.kind.name(),
+                "required": p.required,
+                "flag": p.flag,
+                "help": p.help,
+            });
+            if let Kind::Enum(values) = p.kind {
+                param["values"] = json!(values);
+            }
+            param
+        })
+        .collect();
+    json!({
+        "name": command.name,
+        "usage": command.usage,
+        "summary": command.summary,
+        "details": command.details,
+        "examples": command.examples,
+        "params": params,
+        "mcp": command.mcp,
+        "open_world": command.open_world,
     })
 }
 
@@ -459,7 +503,7 @@ impl Game<'_> {
                 .chain(super::station_control::HELP)
                 .chain(super::blockctl::HELP)
                 .chain(super::lan::HELP)
-                .chain(horizon_hooks::engine::control_commands().flat_map(|(_, help)| help))
+                .chain(horizon_hooks::engine::control_commands().flat_map(|group| group.help))
                 .chain(super::render_control::HELP)
                 .chain(super::sculk::HELP)
                 .chain(super::agent::HELP)
@@ -1883,6 +1927,71 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), features.len(), "a group is named twice");
+    }
+
+    #[test]
+    fn hello_describes_the_commands_of_the_crates_that_answer_some() {
+        use horizon_hooks::control::{Command, Commands, Kind, Param};
+        // No crate: the engine's groups only, and no command to add.
+        let plain = hello_with(std::iter::empty());
+        assert_eq!(plain["commands"], json!([]));
+        assert!(
+            !plain["features"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("tea"))
+        );
+
+        let tea = Commands {
+            group: "tea",
+            help: &["tea brew KIND            brew a pot"],
+            commands: &[Command {
+                name: "tea",
+                usage: "tea brew KIND [--cups N]",
+                summary: "brew a pot",
+                details: "",
+                examples: &["horizon-ctl tea brew green"],
+                params: &[
+                    Param {
+                        name: "kind",
+                        kind: Kind::Enum(&["green", "black"]),
+                        required: true,
+                        flag: false,
+                        help: "which leaves",
+                    },
+                    Param {
+                        name: "cups",
+                        kind: Kind::Int,
+                        required: false,
+                        flag: true,
+                        help: "how many",
+                    },
+                ],
+                mcp: true,
+                open_world: true,
+            }],
+        };
+        let reply = hello_with(std::iter::once(tea));
+        assert_eq!(
+            reply["features"].as_array().unwrap().last(),
+            Some(&json!("tea"))
+        );
+        assert_eq!(
+            reply["commands"],
+            json!([{
+                "name": "tea",
+                "usage": "tea brew KIND [--cups N]",
+                "summary": "brew a pot",
+                "details": "",
+                "examples": ["horizon-ctl tea brew green"],
+                "params": [
+                    { "name": "kind", "type": "enum", "values": ["green", "black"], "required": true, "flag": false, "help": "which leaves" },
+                    { "name": "cups", "type": "int", "required": false, "flag": true, "help": "how many" },
+                ],
+                "mcp": true,
+                "open_world": true,
+            }])
+        );
     }
 
     #[test]

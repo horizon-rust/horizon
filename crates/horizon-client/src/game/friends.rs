@@ -14,7 +14,7 @@
 //! through `Hooks::control`.
 use horizon_friends::{Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun};
 use horizon_hooks::{
-    Hooks,
+    Hooks, control,
     pages::{Act, Page, Place, Row},
     share::{LanOptions, ShareView},
 };
@@ -97,8 +97,12 @@ pub struct Friends;
 pub static HOOKS: Friends = Friends;
 
 impl Hooks for Friends {
-    fn control_commands(&self) -> Option<(&'static str, &'static [&'static str])> {
-        Some(("friends", HELP))
+    fn control_commands(&self) -> Option<control::Commands> {
+        Some(control::Commands {
+            group: "friends",
+            help: HELP,
+            commands: COMMANDS,
+        })
     }
 
     /// `horizon-ctl friends host|stop|status`.
@@ -144,6 +148,24 @@ impl Hooks for Friends {
         }
     }
 }
+
+/// `horizon-ctl friends`, as the game's `hello` describes it.
+const COMMANDS: &[control::Command] = &[control::Command {
+    name: "friends",
+    usage: "friends host|stop|status",
+    summary: "Play with Friends: share the open world behind an invite code, stop, or see who joined",
+    details: "status gives the code: share it only when the player asks. Friends join with connect friend:CODE.",
+    examples: &["horizon-ctl friends host", "horizon-ctl friends status"],
+    params: &[control::Param {
+        name: "action",
+        kind: control::Kind::Enum(&["host", "stop", "status"]),
+        required: true,
+        flag: false,
+        help: "what to do",
+    }],
+    mcp: true,
+    open_world: true,
+}];
 
 pub const HELP: &[&str] = &[
     "friends host                   share the open world behind an invite code",
