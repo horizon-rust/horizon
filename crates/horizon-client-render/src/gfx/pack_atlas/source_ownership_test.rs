@@ -422,3 +422,207 @@ fn terrain_source_ownership_gpu() {
         assert_eq!(neutral[2 * i + 1], [0.0; 4]);
     }
 }
+
+/// A compact-layout mesh (records past `PACKED_BASE`) reads each quad's own `mc_Entity`
+/// and owning cell, both for quads packed into a record and for those kept as wide vertices.
+#[test]
+#[ignore = "offscreen GPU control; run explicitly with an available adapter"]
+fn terrain_source_ownership_packed_gpu() {
+    use crate::mesher::packed;
+
+    let instance = crate::gfx::test_gpu::instance();
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
+        .expect("executed GPU control requires an adapter");
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let atlas = PackAtlas::new(&device, &mut encoder, &[texture], 1, 1, 1).unwrap();
+    let inputs = atlas.terrain_inputs(true);
+
+    let tint = 0x7F_B238u32;
+    let ao = [255u32, 153, 102, 204];
+    let face = |x: f32, y: f32| {
+        let pos = [
+            [x, y, 5.0],
+            [x, y, 6.0],
+            [x + 1.0, y, 6.0],
+            [x + 1.0, y, 5.0],
+        ];
+        let uv = [[0, 0], [16 << 10, 0], [16 << 10, 16 << 10], [0, 16 << 10]];
+        (0..4).map(move |i| {
+            let [r, g, b] = [16, 8, 0].map(|s| 200 * (tint >> s & 255) / 255);
+            crate::mesher::TerrainVertex {
+                pos: pos[i],
+                uv: uv[i],
+                layer: 0x8000,
+                light: 0xF0 | 0x40 << 8,
+                color: r | g << 8 | b << 16 | ao[i] << 24,
+            }
+        })
+    };
+    // Three whole faces (pack into compact records) and one partial slab face (kept as full quad).
+    let solid: Vec<_> = [(3.0, 15.0), (5.0, 15.0), (7.0, 15.0), (3.0, 8.5)]
+        .into_iter()
+        .flat_map(|(x, y)| face(x, y))
+        .collect();
+    let records = packed::layout(&solid, &[tint; 4]);
+    assert_eq!(
+        packed::packed_quads(&records, 4),
+        3,
+        "three whole faces pack, the slab does not"
+    );
+
+    let declarations = inputs
+        .declarations
+        .lines()
+        .filter(|l| !l.starts_with("layout(location"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let attribute = |name: &str| {
+        inputs
+            .attributes
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap()
+            .1
+            .as_str()
+    };
+    let source = format!(
+        "#version 450\n{declarations}\n\
+         layout(local_size_x=1) in;\n\
+         layout(set=0,binding=0) buffer Results {{ vec4 result[]; }};\n\
+         void main() {{\n\
+         uint hz_index=0x10000000u + gl_GlobalInvocationID.x;\n\
+         vec4 hz_Vertex, hz_MultiTexCoord0, hz_MultiTexCoord1, hz_MultiTexCoord2, hz_Color; vec3 hz_Normal;\n\
+         {}\nresult[2u*gl_GlobalInvocationID.x]={}; result[2u*gl_GlobalInvocationID.x+1u]={};\n}}",
+        inputs.body.replace("gl_VertexIndex", "hz_index"),
+        attribute("mc_Entity"),
+        attribute("at_midBlock")
+    );
+    let mut frontend = naga::front::glsl::Frontend::default();
+    let module = frontend
+        .parse(
+            &naga::front::glsl::Options::from(naga::ShaderStage::Compute),
+            &source,
+        )
+        .unwrap();
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Packed terrain source control"),
+        source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+    });
+    let layouts: Vec<_> = [1, 2, 0, 3]
+        .into_iter()
+        .map(|count| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &(0..count)
+                    .map(|binding| wgpu::BindGroupLayoutEntry {
+                        binding,
+                        visibility: if count == 1 {
+                            wgpu::ShaderStages::COMPUTE
+                        } else {
+                            wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX
+                        },
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage {
+                                read_only: binding != 0 || count != 1,
+                            },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    })
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &layouts.iter().map(Some).collect::<Vec<_>>(),
+        ..Default::default()
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        module: &shader,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let storage = |bytes: &[u8]| {
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+        })
+    };
+    let result = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: solid.len() as u64 * 32,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let slots = storage(bytemuck::cast_slice(&[0u32]));
+    let origins = storage(bytemuck::cast_slice(&[[0.0f32, 0.0, 0.0, -1.0]]));
+    let sources = [
+        crate::mesher::TerrainSource::new(0, [3, 15, 5], 0, false),
+        crate::mesher::TerrainSource::new(1, [5, 15, 5], 13, false),
+        crate::mesher::TerrainSource::new(2, [7, 15, 5], 7, false),
+        crate::mesher::TerrainSource::new(3, [3, 8, 5], 4, false),
+    ];
+    let ids = storage(bytemuck::cast_slice(&sources));
+    let vertex_storage = storage(bytemuck::cast_slice(&records));
+    let rects = storage(bytemuck::cast_slice(
+        &super::super::pack_post::terrain_tables(&[31, -1, 47, -1, 59, -1, 71, -1], &[0, 1, 2, 3]),
+    ));
+    let group = |set: u32, buffers: &[&wgpu::Buffer]| {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(set),
+            entries: &buffers
+                .iter()
+                .enumerate()
+                .map(|(i, b)| wgpu::BindGroupEntry {
+                    binding: i as u32,
+                    resource: b.as_entire_binding(),
+                })
+                .collect::<Vec<_>>(),
+        })
+    };
+    let groups = [
+        group(0, &[&result]),
+        group(1, &[&slots, &origins]),
+        group(2, &[]),
+        group(3, &[&ids, &vertex_storage, &rects]),
+    ];
+    queue.submit([encoder.finish()]);
+    let actual = dispatch(&device, &queue, &pipeline, &groups, &result);
+    for (i, _) in solid.iter().enumerate() {
+        let q = i / 4;
+        let expected_id = [31.0, 47.0, 59.0, 71.0][q];
+        let expected_light = [0.0, 13.0, 7.0, 4.0][q];
+        assert_eq!(
+            actual[i * 2],
+            [expected_id, 0.0, 0.0, 0.0],
+            "quad {q} vertex {i} mc_Entity"
+        );
+        assert_eq!(
+            actual[i * 2 + 1][3],
+            expected_light,
+            "quad {q} vertex {i} emission"
+        );
+    }
+}

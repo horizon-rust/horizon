@@ -36,7 +36,8 @@ pub(super) fn move_off_page<'a>(
         let Some(to) = arena.alloc_moved(vertices) else {
             return false;
         };
-        arena.copy(encoder, (page, start), to, vertices);
+        let packed = matches!(part, Part::Section { .. }) && s.packed;
+        arena.copy(encoder, (page, start), to, vertices, packed);
         arena.release(page, start, vertices);
         if let (Some((flat, device, uploads)), Some(id)) = (&mut flat, s.flat_id) {
             let key = match part {
