@@ -257,6 +257,9 @@ pub(super) struct RegionState {
     factory: Vec<std::sync::mpsc::Receiver<std::result::Result<Box<Game<'static>>, String>>>,
     /// Each level's resident regions: their games keep their parts of the level and their players.
     pub resident: std::collections::HashMap<Dim, ResidentSet>,
+    /// The regions just came home for nothing the server's thread has to do (their age, a player near the edge
+    /// of its region): the level is split again in the same tick, instead of ticking whole on this thread.
+    resplit: bool,
     /// Where the server thread's tick time goes while regions are resident.
     pub(super) prof: super::region_profile::TickProfile,
 }
@@ -716,13 +719,17 @@ impl Game<'_> {
             return Ok(false);
         }
         let dim = self.dim;
-        let entered = std::time::Instant::now();
+        let mut entered = std::time::Instant::now();
         if let Some(set) = self.regions.resident.remove(&dim) {
             self.regions.prof.note_resident();
             if let Some(set) = self.resident_tick(set, false)? {
                 self.regions.resident.insert(dim, set);
+                return Ok(false);
             }
-            return Ok(false);
+            if !std::mem::take(&mut self.regions.resplit) {
+                return Ok(false);
+            }
+            entered = std::time::Instant::now();
         }
         let Some(host) = self.lan.as_ref() else {
             return Ok(false);
@@ -858,6 +865,7 @@ impl Game<'_> {
     fn resident_tick(&mut self, mut set: ResidentSet, first: bool) -> Result<Option<ResidentSet>> {
         if !first && let Some(why) = self.residents_must_land(&set) {
             self.regions.prof.landed_because(why);
+            self.regions.resplit = matches!(why, "age" | "left section");
             let landing = std::time::Instant::now();
             horizon_client::spans::time("regions_land", || self.land_resident_set(set));
             self.regions.prof.add(Step::Land, landing);
