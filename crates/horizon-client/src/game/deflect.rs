@@ -65,11 +65,11 @@ pub(super) fn attackable(p: &Projectile) -> bool {
     redirectable(p) || (!p.stuck && matches!(p.kind, ProjectileKind::ShulkerBullet { .. }))
 }
 
-/// Its box for the crosshair: the entity's (a fireball 1 x 1, a wind charge or a
-/// shulker bullet 0.3125, a wind charge's 0.15 below its feet) grown by the pick
+/// Its box for the crosshair and projectile collisions: the entity's (a fireball 1 x 1,
+/// a wind charge or a shulker bullet 0.3125, a wind charge's 0.15 below its feet) grown by the pick
 /// radius, which only `AbstractHurtingProjectile` has (`getPickRadius`: 1; a
 /// shulker bullet's is 0).
-fn pick_box(p: &Projectile) -> Aabb {
+pub(super) fn pick_box(p: &Projectile) -> Aabb {
     let radius = pick_radius(p);
     p.bounds().inflate(Vec3::new(radius, radius, radius))
 }

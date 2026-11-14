@@ -187,7 +187,12 @@ fn pickable_projectile_hitboxes_into(
             .iter()
             .enumerate()
             .filter(|(j, q)| *j != skip && alive[*j] && super::deflect::redirectable(q))
-            .map(|(j, q)| (Who::Mob(PICKABLE_PROJECTILE_IDS + j as u32), q.aabb())),
+            .map(|(j, q)| {
+                (
+                    Who::Mob(PICKABLE_PROJECTILE_IDS + j as u32),
+                    super::deflect::pick_box(q),
+                )
+            }),
     );
 }
 
@@ -8398,6 +8403,38 @@ mod pickable_projectile_tests {
                 "it struck the fireball"
             ),
             other => panic!("the pearl flew through the fireball: {other:?}"),
+        }
+    }
+
+    /// A pearl thrown near a wind charge strikes its pick-radius inflated box
+    /// (`AbstractHurtingProjectile.getPickRadius`: 1.0; parity regression #16302).
+    #[test]
+    fn a_pearl_thrown_near_a_wind_charge_strikes_its_pick_box() {
+        let mut pearl = Projectile::new(
+            ProjectileKind::EnderPearl,
+            Vec3::new(0.0, 100.0, 0.0),
+            Some(Who::Player),
+        );
+        pearl.velocity = Vec3::new(1.5, 0.0, 0.0);
+        let wind = Projectile::fireball(
+            ProjectileKind::WindCharge,
+            Vec3::new(1.0, 100.5, 0.0),
+            None,
+            [0.0, 0.0, 0.0],
+        );
+        let list = vec![pearl, wind];
+        let alive = vec![true; list.len()];
+        let world = Open(pickable_projectile_hitboxes(&list, &alive, 0));
+        let mut pearl = list[0].clone();
+        let (keep, hit) = pearl.tick(&world);
+        assert!(!keep, "the pearl hits the wind charge");
+        match hit {
+            Hit::Entity { who: Who::Mob(id), .. } => assert_eq!(
+                pickable_projectile_hit(id),
+                Some(1),
+                "the wind charge is the projectile struck"
+            ),
+            other => panic!("the pearl missed the wind charge: {other:?}"),
         }
     }
 }

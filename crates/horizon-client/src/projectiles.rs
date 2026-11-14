@@ -1220,7 +1220,13 @@ impl Projectile {
             if Some(*who) == self.owner && !self.left_owner {
                 continue;
             }
-            if let Some(at) = b.inflate(Vec3::new(margin, margin, margin)).clip(from, end) {
+            let inflated = b.inflate(Vec3::new(margin, margin, margin));
+            let hit = if inflated.contains(from) {
+                Some(inflated.clip(from, end).unwrap_or(from))
+            } else {
+                inflated.clip(from, end)
+            };
+            if let Some(at) = hit {
                 let d = (at.x - from.x).powi(2) + (at.y - from.y).powi(2) + (at.z - from.z).powi(2);
                 if best.is_none_or(|bb| d < bb.2) {
                     best = Some((*who, at, d));
@@ -1606,7 +1612,12 @@ impl Projectile {
                 continue;
             }
             let inflated = b.inflate(Vec3::new(margin, margin, margin));
-            if let Some(at) = inflated.clip(from, end) {
+            let hit = if inflated.contains(from) {
+                Some(inflated.clip(from, end).unwrap_or(from))
+            } else {
+                inflated.clip(from, end)
+            };
+            if let Some(at) = hit {
                 let d = (at.x - from.x).powi(2) + (at.y - from.y).powi(2) + (at.z - from.z).powi(2);
                 if best.is_none_or(|bb| d < bb.2) {
                     best = Some((*who, at, d));
