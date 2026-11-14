@@ -477,6 +477,7 @@ mod trial_visuals;
 mod trident;
 mod tutorial;
 mod ui_control;
+mod upload_pace;
 mod use_hand;
 mod using_item;
 mod vault;
@@ -561,7 +562,7 @@ use horizon_world::{
     level::{
         Behaviours, BucketContent, Dimension as LevelDimension, EntityQuery, Landing, LevelAccess,
         LevelEvent, PlaceContext, PlaceOutcome, PlacementContext, PlayerContext, PlayerEffect,
-        Ticks, flags as level_flags,
+        RandomTickMaskUpdate, Ticks, flags as level_flags,
     },
     registry::BlockStateId,
 };
@@ -596,7 +597,7 @@ pub use native_reload_listeners::NativeReloadListener;
 pub use native_server::NativeExperienceOrb;
 pub use native_slot_roles::NativeSlotRole;
 pub use native_structures::{NativeStructureBlock, NativeStructureTemplate};
-pub use native_world_columns::NativeColumnBlocks;
+pub use native_world_columns::{NativeColumnBlocks, NativeTerrainColumn};
 pub use native_world_draw::NativeWorldDraw;
 pub use native_world_edit::{NativeBlockEdit, NativeBlockNbt, NativeBlockRun, NativeHeightmap};
 pub use native_world_read::NativeBlockReadError;
@@ -626,13 +627,6 @@ use winit::{
     window::{CursorGrabMode, Window, WindowId},
 };
 
-/// The time a frame spends uploading chunk meshes when the player set no
-/// Chunk Updates or Upload Budget: a burst past it waits for the next frames.
-const AUTO_UPLOAD_TIME: Duration = Duration::from_millis(2);
-/// `AUTO_UPLOAD_TIME` while the view's terrain is still arriving (a world's
-/// open, a teleport): the meshes waiting then are the view itself, not edits
-/// to it, so a frame gives them more of its time to fill the view sooner.
-const AUTO_UPLOAD_TIME_ARRIVING: Duration = Duration::from_millis(6);
 /// A frame's finished meshes up to this many upload at once, unqueued.
 const AUTO_UPLOADS_AT_ONCE: usize = 8;
 /// The most changed columns far terrain waits on behind a mod's hold (`Game::lod_held`): past
@@ -2499,8 +2493,8 @@ struct Game<'a> {
     /// `getUseDuration` when that use started, as a mod left it
     /// (`game/item_use.rs`): consumables and mod items count to it.
     use_duration: i32,
-    /// A mod's `Start` or `Tick` set that use's ticks left (`game/item_use.rs`).
-    use_ticks_set: bool,
+    /// What that use began with (`useItem`) and whether a mod set its ticks left (`item_use.rs`).
+    use_start: using_item::UseStart,
     /// The crossbow charge's start and middle loading sounds played so far
     /// (`game/crossbow.rs`): each charge plays each of them once, however
     /// far a mod's tick moved the charge at a time.
@@ -2852,6 +2846,7 @@ struct Game<'a> {
     native_mod_screen: Option<String>,
     /// Meshed sections waiting for an upload budget (Horizon settings).
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
+    upload_pace: upload_pace::UploadPace,
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::Frustum>,
     /// Whether the renderer's section-occlusion graph is active for this view.
@@ -4488,6 +4483,8 @@ impl Game<'_> {
                         1044 => Some(("minecraft:block.smithing_table.use", 1.0)),
                         // LevelEvent.SOUND_PAGE_TURN (a lectern's page).
                         1043 => Some(("minecraft:item.book.page_turn", 1.0)),
+                        // LevelEvent.SOUND_PHANTOM_BITE: a phantom's bite.
+                        1039 => Some(("minecraft:entity.phantom.bite", 0.3)),
                         // LevelEvent.SOUND_SPLASH_POTION and its instant twin.
                         1053 | 1054 => Some(("minecraft:entity.splash_potion.break", 1.0)),
                         _ => None,
@@ -4505,12 +4502,9 @@ impl Game<'_> {
                                 let r = self.particles.level_random();
                                 2.6 + (r.next_float() - r.next_float()) * 0.8
                             }
-                            1045 | 1046 | 1047 | 1052 => {
-                                self.particles.level_random().next_float() * 0.1 + 0.9
-                            }
-                            1053 | 1054 => {
-                                // LevelEventHandler's client random: impact audio
-                                // must not change the server's bottle XP stream.
+                            1039 | 1045 | 1046 | 1047 | 1052 | 1053 | 1054 => {
+                                // LevelEventHandler draws these from the client
+                                // level's random, not the server's.
                                 self.particles.level_random().next_float() * 0.1 + 0.9
                             }
                             1029 | 1030 | 1042 | 1043 | 1044 => {
@@ -4534,6 +4528,7 @@ impl Game<'_> {
                                 | 1027
                                 | 1029
                                 | 1030
+                                | 1039
                                 | 1045
                                 | 1052
                                 | 1053
@@ -5677,7 +5672,7 @@ impl Game<'_> {
             self.lan_synced_since(from);
             horizon_client::spans::time("tick_lecterns", || self.tick_lecterns());
             horizon_client::spans::time("tick_maps", || self.tick_maps());
-            self.tick_lodestone_compasses();
+            self.tick_equipment_compasses();
             horizon_client::spans::time("tick_bolts", || self.tick_bolts());
             horizon_client::spans::time("tick_fishing", || self.tick_fishing());
             self.ordered_before(ordered_tick::Batch::Tridents)?;
@@ -7770,9 +7765,7 @@ impl Game<'_> {
             .filter(|s| s.name.ends_with("cauldron"))
             .cloned()?;
         let above = self.world.block(pos[0], pos[1] + 1, pos[2]);
-        let under_water = registry
-            .state(above)
-            .is_some_and(|s| s.name == "minecraft:water");
+        let under_water = cauldrons::is_under_water(self.res.facts(), above);
         Some((state, under_water))
     }
     /// What `BlockTransformer.transformBlock` would do with a held axe, hoe
@@ -8003,7 +7996,7 @@ impl Game<'_> {
                 return Ok(UseResult::Pass);
             };
             // `BucketItem.use`: `level.mayInteract` and `mayUseItemAt`.
-            if !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
+            if self.bucket_use_refused(hit.pos) {
                 return Ok(UseResult::Fail);
             }
             let mut canceled = false;
@@ -8054,7 +8047,7 @@ impl Game<'_> {
         };
         let clicked = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
         if let Some((content, sound, mob)) = bucket {
-            if !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
+            if self.bucket_use_refused(hit.pos) {
                 return Ok(UseResult::Fail);
             }
             let target = self.bucket_target(content, &hit);
@@ -8128,15 +8121,13 @@ impl Game<'_> {
                 );
             }
             self.trigger_block("minecraft:placed_block", target, stack);
-            if !self.creative {
-                *self.held_mut() = Some(ItemStack::new("minecraft:bucket", 1));
-            }
+            self.bucket_emptied(&stack.item);
             return Ok(UseResult::Success { swing: true });
         }
-        if self.use_block_transformer(stack, hit.pos, hit.face)? {
+        if self.may_use_on(hit.pos) && self.use_block_transformer(stack, hit.pos, hit.face)? {
             return Ok(UseResult::Success { swing: true });
         }
-        if item == "honeycomb" {
+        if self.may_use_on(hit.pos) && item == "honeycomb" {
             let registry = self.pack.assets.registry;
             let old = registry.state(clicked);
             if let Some(waxed) = old.and_then(|old| self.res.transformers().waxed(registry, old))
@@ -8618,7 +8609,7 @@ impl Game<'_> {
             self.snap_player_model_pitch();
         }
         self.occupy_bed(head);
-        self.award_custom_stat("sleep_in_bed", 1);
+        self.award_custom_stat(self.slept_in_bed_stat(state), 1);
         self.trigger_player("minecraft:slept_in_bed");
         self.stats.reset("custom", "minecraft:time_since_rest");
     }
@@ -11063,6 +11054,7 @@ impl Game<'_> {
                     let elapsed = now.duration_since(self.previous);
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
                     self.previous = now;
+                    self.upload_pace.frame(elapsed);
                     self.studio_fly(elapsed);
                     // Arrow-key camera controls belong to gameplay; chat and
                     // other screens use the same keys for their own navigation.
@@ -11593,7 +11585,7 @@ impl<'a> Game<'a> {
             },
             using: None,
             use_duration: 0,
-            use_ticks_set: false,
+            use_start: Default::default(),
             crossbow_sounds: [false; 2],
             view: Default::default(),
             limiter: horizon_client::window::FramerateLimiter::new(0),
@@ -11792,6 +11784,7 @@ impl<'a> Game<'a> {
             async_particle_culler: RefCell::new(Default::default()),
             pack_shadow_casters: (false, false),
             pending_uploads: Vec::new(),
+            upload_pace: Default::default(),
             frame_graph: Default::default(),
             extras: Default::default(),
             pvp: Default::default(),
@@ -12512,13 +12505,13 @@ fn reset_world_progress(adv: &mut advancements::AdvState, stats: &mut stats::Sta
 }
 
 #[cfg(test)]
-mod startup_cpu_tests;
-
+mod entity_model_loading_tests;
+#[cfg(test)]
+mod player_kill_credit_tests;
 #[cfg(test)]
 mod runtime_reset_tests;
-
 #[cfg(test)]
-mod entity_model_loading_tests;
+mod startup_cpu_tests;
 
 /// `LocalPlayer.moveTowardsClosestSpace` at the body's four corners (aiStep, unless a spectator or a
 /// passenger): a corner inside a suffocating block sets a 0.1 speed towards the nearest side that is
@@ -12641,6 +12634,8 @@ struct LandingVibration {
 }
 #[cfg(test)]
 mod allay_pickup_cooldown_tests;
+#[cfg(test)]
+mod cauldron_underwater_tests;
 #[cfg(test)]
 mod dragon_fireball_motion_tests;
 #[cfg(test)]
