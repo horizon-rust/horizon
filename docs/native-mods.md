@@ -38,6 +38,25 @@ It preserves lock files, refuses symbolic links and Windows junctions, and never
 versions, exported servers, instances, saves, mods, Rust toolchains or downloaded crates.
 
 
+### Nightly cache
+
+Each Nightly also carries, per platform, `native-cache-<triple>-fast.tar.zst` (`aarch64-apple-darwin`,
+`x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-gnu`; not Windows ARM64), the compiled crates of
+the launcher's own native build of that commit with no mods, so a launcher can start `native/target/fast` from it and
+compile only what the mods change. `tools/ci/native_cache.py` (job `native_cache` of `nightly-build.yml`) builds it
+the way the launcher does: the Rust the launcher pins (`launcher/src/rust_toolchain.rs`, and its MinGW-w64 on Windows),
+the commit's files without `.git`, a scrubbed environment (no `HORIZON_VERSION` or `HORIZON_NIGHTLY`, which Cargo
+tracks), and `cargo build --locked --profile fast --features horizon-client/mods -p horizon-official --bin
+horizon-official` from the filesystem root. The archive holds a top folder `fast/` with only `deps/`, `build/` and
+`.fingerprint/` (no `incremental/`, no final programs) and a top-level `native-cache.json`: `format` (1), `commit` (the
+Nightly's 40-hex commit), `triple`, `profile` (`fast`), `rustc` (`rustc -vV`), `cargo` (`cargo -V`), `package`,
+`features` and `cargo_lock_sha256`. Each archive is listed in the release's `SHA256SUMS`, which the `sign` job signs
+with the game files (`SHA256SUMS.sig`, `SHA256SUMS.v2.sig`), so a launcher verifies it like them. A launcher uses it
+only when `commit`, `triple`, `rustc` and `cargo_lock_sha256` match its build. Cargo goes by file times for the
+workspace's own crates: its files must be newer than the stage's (unpack or touch them after the stage is written),
+else those crates recompile. A failed or timed-out cache job leaves the Nightly without that platform's archive; it never holds the
+Nightly.
+
 ## Conditional item model properties
 
 A client mod supplies its own namespaced `minecraft:condition` property by implementing
