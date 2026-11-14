@@ -987,7 +987,7 @@ impl Mob {
         }
     }
     /// `Entity.getBlockSpeedFactor` at the mob's feet.
-    fn block_speed_factor(&self, w: &MobWorld) -> f32 {
+    pub(crate) fn block_speed_factor(&self, w: &MobWorld) -> f32 {
         crate::motion::block_speed_factor_at(
             w.world,
             w.movement,
@@ -1976,8 +1976,12 @@ impl Mob {
     }
     /// `LivingEntity.getJumpPower(float multiplier)`
     pub fn jump_power_with(&self, w: &MobWorld, multiplier: f32) -> f32 {
-        self.attrs.jump_strength as f32 * multiplier * self.block_jump_factor(w)
-            + self.jump_boost_power()
+        self.jump_power_with_factor(multiplier, self.block_jump_factor(w))
+    }
+    /// `getJumpPower(multiplier)` with `Entity.getBlockJumpFactor` already read:
+    /// a caller that has no world around the mob reads 1.0, the factor of air.
+    pub fn jump_power_with_factor(&self, multiplier: f32, block_jump_factor: f32) -> f32 {
+        self.attrs.jump_strength as f32 * multiplier * block_jump_factor + self.jump_boost_power()
     }
     /// `LivingEntity.getJumpBoostPower`: amplifier + 1 times 0.1, or 0.0 without the effect.
     pub fn jump_boost_power(&self) -> f32 {

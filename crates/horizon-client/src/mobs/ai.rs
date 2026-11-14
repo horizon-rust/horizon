@@ -1916,7 +1916,7 @@ pub(super) fn server_ai_step(
     }
     // A saddled mount follows its rider instead of its goals.
     if super::equine::controlled(m) {
-        super::equine::ridden_step(m);
+        super::equine::ridden_step(m, Some(w));
         return;
     }
     super::riders::drive(m, w);

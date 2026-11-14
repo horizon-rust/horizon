@@ -1549,7 +1549,7 @@ mod tests {
                 steer: true,
                 ..Default::default()
             });
-            equine::ridden_step(&mut m);
+            equine::ridden_step(&mut m, None);
             // tickBoost post-increments, then boostFactor reads boostTime 1.
             let boost = 1.0 + FACTOR * (1.0_f32 / TOTAL as f32 * std::f32::consts::PI).msin();
             let expected = (0.25_f64 * steer) as f32 * boost;

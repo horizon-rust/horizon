@@ -2269,8 +2269,8 @@ pub fn mob_from_nbt_with_random(
                 let (Some(id), Some(v)) = (text(a.get("id")), float(a.get("base"))) else {
                     continue;
                 };
-                if id == "minecraft:jump_strength" {
-                    m.extra.vector[0] = v;
+                if id == "minecraft:jump_strength" && v > 0.0 {
+                    crate::mobs::equine::set_jump_strength(&mut m, v);
                 }
             }
         }

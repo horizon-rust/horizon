@@ -173,7 +173,7 @@ pub fn breed_offspring(m: &mut Mob, partner: &Seen) -> Offspring {
 pub fn apply_offspring(child: &mut Mob, o: &Offspring) {
     set_base(child, Attr::MaxHealth, f64::from(o.max_health));
     child.health = o.max_health;
-    child.extra.vector[0] = o.jump;
+    equine::set_jump_strength(child, o.jump);
     set_base(child, Attr::MovementSpeed, o.speed);
     child.extra.variant2 = o.strength;
     child.extra.variant = o.variant;

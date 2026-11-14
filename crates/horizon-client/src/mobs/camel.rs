@@ -434,20 +434,28 @@ fn animation_states(m: &mut Mob, pose_time: i64, sitting: bool) {
 /// jump is used up: it is, by a dash or when the camel cannot dash at all (cooling down,
 /// refusing to move: `onPlayerJump` would not have taken it); it waits while the camel is off
 /// the ground (`AbstractHorse.tickRidden` runs a pending jump when it lands).
-pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>) -> bool {
+pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>, w: Option<&MobWorld>) -> bool {
     if m.extra.anim_ticks > 0 || refuse_to_move(m) {
         return true;
     }
     if !m.on_ground {
         return false;
     }
+    let jump_factor = super::equine::block_jump_factor(m, w);
+    let speed_factor = super::equine::block_speed_factor(m, w);
     let yaw = m.yaw.to_radians();
     let (dx, dz) = (f64::from(-yaw.msin()), f64::from(yaw.mcos()));
     let speed = m.movement_speed();
-    let a = f64::from(amount);
-    m.velocity.x += dx * 22.2222 * a * speed;
-    m.velocity.z += dz * 22.2222 * a * speed;
-    m.velocity.y += 1.4285 * a * 0.42;
+    // 22.2222F * amount is a float in vanilla, then times the double speed
+    // and the block's speed factor (honey and soul sand: 0.4).
+    let k = f64::from(22.2222_f32 * amount) * speed * f64::from(speed_factor);
+    m.velocity.x += dx * k;
+    m.velocity.z += dz * k;
+    // 1.4285F * amount * getJumpPower(): the camel's own jump strength, the
+    // block's jump factor and Jump Boost, not a hard-coded 0.42.
+    let jump_power = m.jump_power_with_factor(1.0, jump_factor);
+    // 1.4285F * amount * jumpMomentum stays a float product in vanilla.
+    m.velocity.y += f64::from(1.4285_f32 * amount * jump_power);
     m.extra.anim_ticks = DASH_COOLDOWN;
     m.extra.flag2 = true;
     crate::motion::native_living_jump(m.id, &m.kind.id);

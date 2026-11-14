@@ -1477,7 +1477,7 @@ mod tests {
         // pushes along the rider's look, starts the 40-tick dash clock, raises
         // DASH and queues the dash sound.
         m.extra.saddled = true;
-        equine::ridden_step(&mut m);
+        equine::ridden_step(&mut m, None);
         assert_eq!(m.rider.expect("the rider stays on").jump, 0.0);
         assert_eq!(m.extra.anim_ticks, 40, "the dash clock");
         assert!(m.extra.flag2, "DASH");
