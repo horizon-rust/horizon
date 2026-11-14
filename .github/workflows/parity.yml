@@ -90,6 +90,18 @@ jobs:
           python3 tools/prepare_output.py check --cache --base "$BASE_SHA"
       - name: The version constants are the pinned jar's
         run: python3 tools/gen_version_consts.py --check
+      - name: Integrated-server portal pause regression
+        env:
+          HORIZON_TEST_RESOURCES: ${{ github.workspace }}/.local/horizon-client/26.3
+        run: >-
+          cargo test --locked -p horizon-client --lib
+          game::server_travel::tests::paused_server_pass_does_not_finish_a_portal_arrival -- --ignored
+      - name: Client respawn loading-screen regression
+        env:
+          HORIZON_TEST_RESOURCES: ${{ github.workspace }}/.local/horizon-client/26.3
+        run: >-
+          cargo test --locked -p horizon-client --lib
+          game::native_entity_refs::client_tests::a_client_reads_the_entities_and_menu_the_server_shows_it -- --ignored
       - name: The harnesses this change can affect
         env:
           PARITY_HOSTS: ''
