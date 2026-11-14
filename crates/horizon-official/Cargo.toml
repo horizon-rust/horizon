@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 horizon-game = { path = "../horizon-game" }
 horizon-platform = { path = "../horizon-platform" }
+horizon-theme = { path = "../horizon-theme" }
 horizon-heartbeat = { path = "../horizon-heartbeat" }
 horizon-friends = { path = "../horizon-friends", features = ["game"] }
 horizon-official-servers = { path = "../horizon-official-servers" }

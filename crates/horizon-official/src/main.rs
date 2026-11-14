@@ -11,5 +11,7 @@ static MOD_API_LEVEL: [u8; horizon_game::MOD_API_LEVEL.len()] = horizon_game::MO
 fn main() {
     std::hint::black_box(&MOD_API_LEVEL);
     horizon_official::register();
+    // Horizon's mark in the windows and the taskbar (branding: the plain game keeps the default icon).
+    horizon_game::set_icon_png(horizon_theme::ICON_PNG);
     horizon_game::main();
 }
