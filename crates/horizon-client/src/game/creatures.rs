@@ -738,9 +738,9 @@ impl Game<'_> {
         }
     }
     /// `LivingEntity.hurtArmor` -> `LivingEntity.doHurtEquipment`, from the hit
-    /// `MobEvent::ArmorHurt` reported. Only `Horse` overrides `hurtArmor` for a
-    /// mob, and its override asks for the BODY slot alone, so the body piece is
-    /// the only one this wears: it loses `max(1, damage / 4)` durability,
+    /// `MobEvent::ArmorHurt` reported. `Horse` and `Wolf` override `hurtArmor`,
+    /// and both ask for the BODY slot alone, so the body piece is the only one
+    /// this wears: it loses `max(1, damage / 4)` durability,
     /// Unbreaking applied, and at its maximum the slot empties and the break
     /// event goes out (`LivingEntity.entityEventForEquipmentBreak`: 65 for the
     /// body — 49 to 52 are the four armour slots, which only a player's own

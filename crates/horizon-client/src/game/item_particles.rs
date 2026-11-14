@@ -129,3 +129,7 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "wolf_armor_tests.rs"]
+mod wolf_armor_tests;

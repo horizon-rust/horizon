@@ -114,6 +114,7 @@ pub mod warden;
 pub mod warden_brain;
 pub mod witch;
 pub mod wither;
+pub mod wolf;
 
 #[cfg(test)]
 mod invisible_follow_tests;
@@ -1613,10 +1614,11 @@ pub enum MobEvent {
         velocities: Vec<Vec3>,
     },
     /// `LivingEntity.hurtArmor` (`doHurtEquipment`): a hit that landed on a mob
-    /// wearing body armour (a horse's) leaves the piece owing
-    /// `max(1, damage / 4)` durability. The host applies it: it is the one
-    /// that knows the item's maximum, whether it wears when hurt at all and
-    /// whether a fire hit leaves it alone (`ItemStack.canBeHurtBy`).
+    /// wearing body armour (a horse's, or a wolf's on a hit its armour did not
+    /// take) leaves the piece owing `max(1, damage / 4)` durability. The host
+    /// applies it: it is the one that knows the item's maximum, whether it
+    /// wears when hurt at all and whether a fire hit leaves it alone
+    /// (`ItemStack.canBeHurtBy`).
     ArmorHurt {
         mob: u32,
         amount: f32,
@@ -3541,13 +3543,13 @@ impl Mob {
             }
         }
         // Wolf.actuallyHurt: wolf armor takes the damage instead of the wolf.
-        let absorbed = self.wolf_armor_absorbs(&source);
+        let absorbed = wolf::armor_absorbs(self, &source);
         let mut knock = true;
         // What came off the health, for `LivingDamageEvent.Post`.
         let mut taken = 0.0;
         let dealt = if cooldown {
             if absorbed {
-                self.hurt_wolf_armor(amount);
+                wolf::hurt_armor(self, amount);
             } else {
                 let through = self.soak_hit(amount, &source);
                 taken = self.hurt_health(through, &source);
@@ -3559,7 +3561,7 @@ impl Mob {
             self.last_hurt = incoming;
             self.invulnerable = 20;
             if absorbed {
-                self.hurt_wolf_armor(amount);
+                wolf::hurt_armor(self, amount);
             } else {
                 let through = self.soak_hit(amount, &source);
                 taken = self.hurt_health(through, &source);
@@ -3578,14 +3580,14 @@ impl Mob {
         if !absorbed {
             crate::health::damage_post(crate::health::Hurting::Mob(self, &source), taken);
         }
-        // LivingEntity.hurtArmor: `Horse` is the only mob that overrides it, and
-        // it hands `doHurtEquipment` the body slot alone. A wolf's armour has
-        // its own rule (`Wolf.actuallyHurt`, `hurt_wolf_armor`) and a player's
-        // four pieces theirs, so the other "body slot" species — donkey, mule,
+        // LivingEntity.hurtArmor: `Horse` and `Wolf` override it, and both hand
+        // `doHurtEquipment` the body slot alone — the wolf's only on a hit its
+        // armour did not take (`Wolf.actuallyHurt`). A player's four pieces
+        // have their own, so the other "body slot" species — donkey, mule,
         // llama, camel, the skeleton and zombie horses — wear nothing.
         if let Some(damage) = armor_hit
-            && self.species() == Species::Horse
             && self.extra.body.is_some()
+            && (self.species() == Species::Horse || wolf::wears_body(self, absorbed))
         {
             self.outbox.push(MobEvent::ArmorHurt {
                 mob: self.id,
@@ -3721,60 +3723,6 @@ impl Mob {
             self.last_direct = Some(direct);
         }
         hurt
-    }
-    /// `Wolf.canArmorAbsorb`: it wears wolf armor and the damage type is not
-    /// in `#bypasses_wolf_armor` (drowning, magic, thorns, in a wall, out of
-    /// the world and the untyped kills).
-    fn wolf_armor_absorbs(&self, source: &Damage) -> bool {
-        self.species() == Species::Wolf
-            && self.extra.body.as_deref() == Some("minecraft:wolf_armor")
-            && !matches!(
-                source.kind,
-                DamageKind::Drown
-                    | DamageKind::Magic
-                    | DamageKind::IndirectMagic
-                    | DamageKind::InWall
-                    | DamageKind::Thorns
-                    | DamageKind::OutOfWorld
-                    | DamageKind::Cramming
-                    | DamageKind::Generic
-                    | DamageKind::GenericKill
-                    | DamageKind::OutsideBorder
-                    | DamageKind::Starve
-                    | DamageKind::Wither
-            )
-    }
-    /// `Wolf.actuallyHurt`: the armor loses `ceil(damage)` durability, cracks
-    /// at `Crackiness.WOLF_ARMOR` steps and breaks at its maximum.
-    fn hurt_wolf_armor(&mut self, damage: f32) {
-        let crack = |lost: i32| {
-            let left = (WOLF_ARMOR_DURABILITY - lost) as f32 / WOLF_ARMOR_DURABILITY as f32;
-            [0.95_f32, 0.69, 0.32].iter().filter(|t| left < **t).count()
-        };
-        let before = self.extra.body_damage;
-        let after = before + damage.ceil() as i32;
-        let at = [self.position.x, self.position.y, self.position.z];
-        if after >= WOLF_ARMOR_DURABILITY {
-            self.extra.body = None;
-            self.extra.body_damage = 0;
-            self.extra.body_extra = None;
-            self.outbox
-                .push(MobEvent::Sound("item.wolf_armor.break", at, 1.0, 1.0));
-        } else {
-            self.extra.body_damage = after;
-            if crack(before) != crack(after) {
-                self.outbox
-                    .push(MobEvent::Sound("item.wolf_armor.crack", at, 1.0, 1.0));
-                // Twenty scutes fly off, a block above the wolf's feet.
-                self.outbox.push(MobEvent::ItemParticles {
-                    item: "minecraft:armadillo_scute",
-                    at: [at[0], at[1] + 1.0, at[2]],
-                    spread: [0.2, 0.1, 0.2],
-                    speed: 0.1,
-                    count: 20,
-                });
-            }
-        }
     }
     /// LivingEntity.knockback(power, xd, zd, source) towards the negative
     /// direction. `Creaking.knockback`: a creaking that cannot move is not
@@ -5579,11 +5527,11 @@ mod armor_hurt_tests {
         );
     }
 
-    /// `Horse` is the only mob that overrides `LivingEntity.hurtArmor` (the
-    /// base one is empty, `LivingEntity.java:1887`), so a donkey wearing a body
-    /// item — `/item replace entity @e[type=minecraft:donkey,limit=1]
+    /// `Horse` and `Wolf` are the mobs that override `LivingEntity.hurtArmor`
+    /// (the base one is empty, `LivingEntity.java:1887`), so a donkey wearing a
+    /// body item — `/item replace entity @e[type=minecraft:donkey,limit=1]
     /// armor.body with minecraft:wolf_armor` — wears nothing, even though
-    /// vanilla only gives a horse's body piece the wear.
+    /// vanilla only gives a horse's and a wolf's body piece the wear.
     #[test]
     fn a_donkey_wearing_a_body_item_wears_nothing() {
         let mut donkey = mob("minecraft:donkey", Species::Donkey);
@@ -5597,7 +5545,7 @@ mod armor_hurt_tests {
                 .outbox
                 .iter()
                 .any(|e| matches!(e, MobEvent::ArmorHurt { .. })),
-            "only a horse's own override wears its body piece"
+            "only a horse's or a wolf's own override wears its body piece"
         );
     }
 
