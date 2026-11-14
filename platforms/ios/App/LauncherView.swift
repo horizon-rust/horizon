@@ -10,6 +10,8 @@ struct LauncherView: View {
     @State private var archiveName: String? = NovaGameFiles.stagedArchiveName()
     @State private var archiveMessage: String?
     @State private var importInProgress = false
+    @State private var prepareInProgress = false
+    @State private var resourcesInstalled = NovaGameFiles.resourcesPresent()
 
     private let gameAvailable = horizon_ios_game_is_ready()
 
@@ -60,18 +62,48 @@ struct LauncherView: View {
                         .font(.title3.bold())
                         .foregroundStyle(.white)
 
-                    Text(archiveName.map { "Stored archive: \($0)" }
-                         ?? "You can import your previous launcher's ZIP archive for inspection.")
-                        .foregroundStyle(.white.opacity(0.75))
+                    Text(resourcesInstalled ? "Prepared resources installed locally." : "No validated game resources installed.")
+                        .foregroundStyle(resourcesInstalled ? .green : .white.opacity(0.75))
                         .multilineTextAlignment(.center)
+
+                    if let archiveName {
+                        Text("Imported ZIP: \(archiveName)")
+                            .font(.footnote)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
 
                     Button(importInProgress ? "Importing…" : "Import game files ZIP") {
                         showArchivePicker = true
                     }
                     .buttonStyle(.bordered)
-                    .disabled(importInProgress)
+                    .disabled(importInProgress || prepareInProgress)
 
-                    Text("Import only stores the ZIP in Nova's Documents folder. It does not extract, validate game versions, or enable Play.")
+                    Button(prepareInProgress ? "Preparing resources…" : "Extract and verify game files") {
+                        prepareInProgress = true
+                        archiveMessage = "Extracting your local ZIP. Keep Nova open."
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            let result = Result { try NovaGameFiles.prepareStoredZip() }
+                            DispatchQueue.main.async {
+                                prepareInProgress = false
+                                resourcesInstalled = NovaGameFiles.resourcesPresent()
+                                archiveName = NovaGameFiles.stagedArchiveName()
+                                switch result {
+                                case .success:
+                                    archiveMessage = "Game files prepared locally. Horizon startup integration is still in development."
+                                case .failure(let error):
+                                    archiveMessage = "Preparation failed: \(error.localizedDescription)"
+                                }
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(archiveName == nil || importInProgress || prepareInProgress)
+
+                    if prepareInProgress {
+                        ProgressView().tint(.white)
+                    }
+
+                    Text("Files stay on this device. Nova never bundles or downloads Minecraft assets. Structural checks do not enable Play.")
                         .font(.footnote)
                         .foregroundStyle(.white.opacity(0.55))
                         .multilineTextAlignment(.center)
@@ -122,7 +154,7 @@ struct LauncherView: View {
                         switch result {
                         case .success(let name):
                             archiveName = name
-                            archiveMessage = "Archive stored for later compatibility checking."
+                            archiveMessage = "ZIP imported locally. Tap Extract and verify game files."
                         case .failure(let error):
                             archiveMessage = "Could not import ZIP: \(error.localizedDescription)"
                         }
