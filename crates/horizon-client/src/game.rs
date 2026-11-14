@@ -444,7 +444,7 @@ mod special_attacks;
 mod spectator;
 mod spill;
 mod splash_water;
-mod split;
+pub(crate) mod split;
 mod startup_menu;
 mod station_control;
 mod stations;

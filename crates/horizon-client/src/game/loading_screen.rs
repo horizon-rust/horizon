@@ -2,6 +2,8 @@
 //! takes over (`App`), and the checks a start makes first: missing or damaged prepared files,
 //! an unclean last exit, a fullscreen the window system could not show.
 use super::*;
+pub(in crate::game) mod app_hook;
+use app_hook::GameApp;
 
 /// The window system ended the event loop with a failure (on Linux, a compositor dropping the
 /// connection after a protocol error) while fullscreen was on: the next start opens windowed, so a
@@ -28,9 +30,9 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
         write_report(&game)?;
         return game.error.take().map_or(Ok(()), Err);
     }
-    let mut split = split::Split::new(game);
-    let result = EventLoop::new()?.run_app(&mut split);
-    game = split.host;
+    let mut app = app_hook::app_for(game);
+    let result = EventLoop::new()?.run_app(&mut app);
+    game = app.into_game();
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
@@ -296,7 +298,7 @@ impl Loading {
             );
         }
     }
-    pub(super) fn finish(&mut self, loaded: Loaded) -> Result<Option<split::Split<'static>>> {
+    pub(super) fn finish(&mut self, loaded: Loaded) -> Result<Option<Box<dyn GameApp<'static>>>> {
         let handoff_at = Instant::now();
         let mut options = self.options.take().ok_or("loading already finished")?;
         options.resources = loaded.root.clone();
@@ -389,7 +391,7 @@ impl Loading {
             renderer_ms,
             game_ms
         );
-        Ok(Some(split::Split::new(game)))
+        Ok(Some(app_hook::app_for(game)))
     }
 }
 
@@ -397,7 +399,7 @@ impl Loading {
 /// the game itself, on the same event loop and window.
 pub(super) enum App {
     Loading(Box<Loading>),
-    Ready(Box<split::Split<'static>>),
+    Ready(Box<dyn GameApp<'static>>),
 }
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -420,7 +422,7 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         enum Step {
             Waiting,
-            Ready(Box<split::Split<'static>>),
+            Ready(Box<dyn GameApp<'static>>),
             Done,
             Failed(Box<dyn std::error::Error>),
         }
@@ -443,7 +445,7 @@ impl ApplicationHandler for App {
                     None => Step::Waiting,
                     Some(Err(e)) => Step::Failed(e.into()),
                     Some(Ok(loaded)) => match loading.finish(loaded) {
-                        Ok(Some(game)) => Step::Ready(Box::new(game)),
+                        Ok(Some(game)) => Step::Ready(game),
                         Ok(None) => Step::Done,
                         Err(e) => Step::Failed(e),
                     },

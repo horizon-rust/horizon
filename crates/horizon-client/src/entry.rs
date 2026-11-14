@@ -18,6 +18,8 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     crate::horizon_look::give();
     // OptiFine's and Polytone's pack formats (platform, docs/layers.md), before any pack loads.
     horizon_client::pack_formats::install();
+    // Splitscreen's app, until its crate registers it (spec #14206).
+    game::split::register();
     // horizon-extras (docs/forking.md): without the feature, no Horizon Settings or Mods page.
     if !cfg!(feature = "horizon-extras") {
         horizon_client::options_ui::HORIZON_EXTRAS
