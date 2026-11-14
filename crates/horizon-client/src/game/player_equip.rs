@@ -182,4 +182,82 @@ mod tests {
         let (speed, _) = charge(&mut game, &mut host);
         assert!(speed < 4.0, "the spear's attack speed: {speed}");
     }
+    /// The other side of #15524: what a guest switches to or puts on applies by its next tick, as
+    /// vanilla's `detectEquipmentUpdates` does: a mace's and an iron axe's attack speed (4 plus the
+    /// `float` modifiers `-3.4F` and `-3.1F`), Efficiency V's mining efficiency (5² + 1) and a diamond
+    /// chestplate's 8 armour, worn in the tick it switched hands or on its own (vanilla 26.3's data).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn what_a_guest_switches_to_applies_by_its_next_tick() {
+        let mut pickaxe = ItemStack::new("minecraft:diamond_pickaxe", 1);
+        pickaxe.data_mut().enchantments = vec![("minecraft:efficiency".into(), 5)];
+        let chestplate = || Some(ItemStack::new("minecraft:diamond_chestplate", 1));
+        // (what slot 1 holds, armour put on with the swap, swaps, the attribute, before its tick, after)
+        let cases = [
+            (
+                Some(ItemStack::new("minecraft:mace", 1)),
+                None,
+                true,
+                "minecraft:attack_speed",
+                Some(4.0),
+                4.0 + f64::from(-3.4f32),
+            ),
+            (
+                Some(ItemStack::new("minecraft:iron_axe", 1)),
+                None,
+                true,
+                "minecraft:attack_speed",
+                Some(4.0),
+                4.0 + f64::from(-3.1f32),
+            ),
+            (
+                Some(pickaxe),
+                None,
+                true,
+                "minecraft:mining_efficiency",
+                Some(0.0),
+                26.0,
+            ),
+            (
+                Some(ItemStack::new("minecraft:stick", 1)),
+                chestplate(),
+                true,
+                "minecraft:armor",
+                Some(0.0),
+                8.0,
+            ),
+            (None, chestplate(), false, "minecraft:armor", None, 8.0),
+        ];
+        let read = |game: &mut Game<'_>, host: &mut super::super::lan::LanHost, attribute: &str| {
+            game.as_guest(host, 2, |g| {
+                g.player.as_mut().unwrap().attribute(attribute).unwrap()
+            })
+            .unwrap()
+        };
+        for (held, worn, swaps, attribute, before, after) in cases {
+            let mut game = game();
+            let mut host = game.lan.take().unwrap();
+            host.hub.guests[0].inventory[1] = held;
+            // It has played a tick with its empty hand and nothing on.
+            game.tick_guests(&mut host);
+            host.hub.guests[0].armor[1] = worn; // the chest (head, chest, legs, feet)
+            if swaps {
+                let swap = S::SetCarriedItem(play::SetCarriedItem { slot: 1 });
+                game.lan_guest_packet(&mut host, 2, swap);
+            }
+            if let Some(before) = before {
+                let value = read(&mut game, &mut host, attribute);
+                assert!(
+                    (value - before).abs() < 1e-9,
+                    "{attribute} before its tick: {value}"
+                );
+            }
+            game.tick_guests(&mut host);
+            let value = read(&mut game, &mut host, attribute);
+            assert!(
+                (value - after).abs() < 1e-9,
+                "{attribute} after its tick: {value}"
+            );
+        }
+    }
 }
