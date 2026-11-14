@@ -246,3 +246,54 @@ fn launching_from_a_block_and_while_gliding_use_the_rocket_up() {
         assert_eq!(game.stats.get("used", "minecraft:firework_rocket"), 6);
     });
 }
+
+/// `FireworkRocketEntity.tick` for a rocket attached to another player, as a
+/// client ticks it: gliding, it sits at the rocket hand,
+/// `Entity.getHandHoldingItemAngle` (`calculateViewVector(0, yRot + 80)`
+/// scaled by 0.5 for a right main arm holding it); not gliding, at the feet.
+/// Either way it takes the holder's motion (`setDeltaMovement`), not its step.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn another_players_boost_rocket_sits_at_their_rocket_hand() {
+    with_game(|game| {
+        let kind = game.res.player_type().clone().unwrap();
+        let feet = Vec3::new(4.0, 210.0, 6.0);
+        let mut other = horizon_client::mobs::Mob::new(43, kind, feet, 30.0);
+        other.yaw = 30.0;
+        other.extra.fall_flying = true;
+        other.extra.main_hand = Some("minecraft:firework_rocket".into());
+        other.velocity = Vec3::new(0.25, -0.5, 1.0);
+        game.mobs.push(other);
+        let stack = ItemStack::new("minecraft:firework_rocket", 1);
+        let mut rocket = game.new_rocket(
+            Vec3::new(3.0, 209.0, 5.0),
+            &stack,
+            true,
+            &mut LegacyRandom::new(0),
+        );
+        rocket.attached_to = Some(43);
+        rocket.lifetime = 100;
+        game.rockets.push(rocket);
+
+        game.tick_remote_projectiles(|_, at| at);
+        // yRot + 80 = 110: (-sin 110°, 0, cos 110°) / 2, to Mth's table.
+        let at = game.rockets[0].position;
+        let hand = [-0.469_846_310_4, 0.0, -0.171_010_071_7];
+        for (got, want) in [at.x - feet.x, at.y - feet.y, at.z - feet.z]
+            .into_iter()
+            .zip(hand)
+        {
+            assert!((got - want).abs() < 1e-3, "{at:?}: hand offset {hand:?}");
+        }
+
+        game.mobs[0].extra.fall_flying = false;
+        game.tick_remote_projectiles(|_, at| at);
+        let r = &game.rockets[0];
+        assert_eq!(r.position, feet, "no glide: handAngle is Vec3.ZERO");
+        assert_eq!(
+            r.velocity,
+            Vec3::new(0.25, -0.5, 1.0),
+            "the holder's motion"
+        );
+    });
+}
