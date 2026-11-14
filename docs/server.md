@@ -624,18 +624,19 @@ horizon-server run                       supervisor + engine in the foreground; 
 horizon-server start | stop | restart    in the background (detached `run`); start also resumes a stopped supervisor
 horizon-server status [--json]           up?, uptime, TPS, MSPT, players, RAM, CPU, crashes
 horizon-server cmd <command…>            one console command, with its output
+horizon-server report [SECONDS] [--no-samples]   record a performance report, 1 to 600 s (hosting.md)
 horizon-server console                   attach: the live log, and send commands (Ctrl-D detaches)
 horizon-server logs [-f] [-n N]
 horizon-server op|deop <player>
 horizon-server whitelist on|off|list|add|remove [player]
 horizon-server players [--json]          who is online, operators, whitelist, bans
 horizon-server kick|ban <player> [reason]   pardon <player>   ban-ip <address|player> [reason]   pardon-ip <address>
-horizon-server backup [NAME]             backups             restore <backup> [--yes]
+horizon-server backup [NAME]             backups [--json]    restore <backup> [--dimension ID] [--yes]
 horizon-server import <server.properties>
 horizon-server config [--json]           config set KEY=VALUE... [--json]
 horizon-server service install|uninstall|print [--system]
 horizon-server panel                     the panel's address and a one-time login link
-horizon-server update [--check] [--version vX.Y.Z] [--timeout S]     rollback [--timeout S]
+horizon-server update [--check [--json]] [--version vX.Y.Z] [--timeout S]     rollback [--timeout S]
 horizon-server update --archive FILE --version NAME     an archive you have (your own build)
 horizon-server mcp                       MCP server on stdio (section 8)
 horizon-server import-resources <dir>    copy game files prepared elsewhere into place (checked first)
