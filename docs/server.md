@@ -714,10 +714,10 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   hosting panel's console) still ends both, and while the game is stopped that stdin takes `start` and `stop`.
   `horizon-server start` or `POST /api/v1/start` starts the game again; `horizon-server stop` and the management
   protocol's `server/stop` (as vanilla's, the process exits) still shut down both the game and the supervisor. File-backed player-list edits are safe during this stopped state.
-- **Crash restart.** If the engine exits without being asked to stop, the supervisor keeps the last 200 log
-  lines and the engine's crash report (`crash-reports/`), restarts it after 5 s, and doubles the wait up to
-  5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a broken world, and shows the
-  reason in `status` and the panel.
+- **Crash restart.** If the engine exits without being asked to stop, the supervisor restarts it after 5 s
+  (the last 2000 log lines stay in `logs` and the panel, and the engine's crash report in `crash-reports/`),
+  and doubles the wait up to 5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a
+  broken world, and shows the reason in `status` and the panel.
 - **Updates** (`crates/horizon-server/src/update.rs`), for a `horizon-server` installed by `install.sh` or
   `install.ps1`. Releases ship often (release-flow.md), so updates stay opt-in: a running server looks for a
   newer release a minute after it starts and then every 6 hours, and only says so, in its log, in `status`
