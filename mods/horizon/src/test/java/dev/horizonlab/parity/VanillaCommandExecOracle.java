@@ -747,8 +747,13 @@ public final class VanillaCommandExecOracle {
                             for (var target : op.getAsJsonArray("chunks")) {
                                 var p = target.getAsJsonArray(); int x = p.get(0).getAsInt(), z = p.get(1).getAsInt();
                                 var chunk = player.level().getChunkSource().getChunkNow(x, z);
+                                long key = new net.minecraft.world.level.ChunkPos(x, z).pack();
+                                // A chunk whose level ticks entities is ready once it does: its
+                                // 5x5 has loaded (ChunkMap.prepareEntityTickingChunk).
+                                boolean entityTicking = player.level().getChunkSource().chunkMap.getDistanceManager().inEntityTickingRange(key);
                                 ready &= chunk != null && chunk.isLightCorrect()
-                                    && player.level().areEntitiesLoaded(new net.minecraft.world.level.ChunkPos(x, z).pack());
+                                    && player.level().areEntitiesLoaded(key)
+                                    && (!entityTicking || player.level().isPositionEntityTicking(new net.minecraft.core.BlockPos(x << 4, 0, z << 4)));
                             }
                             if (ready) break;
                             if (System.nanoTime() > deadline) throw new IllegalStateException("initial target readiness timed out");
