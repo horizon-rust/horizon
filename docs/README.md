@@ -8,7 +8,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [How Horizon is built](how-horizon-is-built.md): who writes Horizon, how changes are checked, and what is safe to run.
 - [Release flow](release-flow.md): pull request checks, merging and the automatic Nightly releases that reach players.
 - [Operations](operations.md): running Horizon by hand when no agent runs and the maintainer's machines are off: merging, releases, offline runners, the mods registry, Kira, the official server, security.
-- [Build from source](../README.md#build-from-source): your own copy of the game, resource preparation, `cargo run`.
+- [Build from source](native-client.md#run-from-a-checkout): your own copy of the game, resource preparation, `cargo run`.
 - [Build times](build-times.md): `tools/build_times.py` measures cold and incremental builds per crate and the critical path, writes a JSON report and a table, and compares two reports; the first numbers, Windows and Linux.
 - [Native client](native-client.md): options, controls, the dedicated server, `horizon-ctl` scripting, packaging, architecture.
 - [Controllers](controllers.md): playing with PlayStation, Xbox and Nintendo Switch Pro controllers, Steam Deck built-in controls, analog movement, and the input layer.
@@ -77,6 +77,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [HUD kit](ui-kit.md): the pieces Horizon's own HUD overlays share: `Room`, which keeps the controller notice and splitscreen's join strip below the boss bars, `Plate`, the box behind their text, and controller glyphs asked for by what the button does, with the Nintendo letter rule.
 - Splitscreen plumbing (#3541): the renderer hands its window surface to a compositor that places each view (`cargo run --profile fast -p horizon-client-render --example compositor [-- --smoke]`), and `Audio::share(owner)` gives each view its own sound engine on one output, playing a world sound once from the nearest camera (`cargo test -p horizon-client-render --lib audio::tests`).
 - [Linear light for HDR and shader packs](design/hdr-linear-light.md): the proposed shader API 0.2 colour contract and frame format for HDR output.
+- [The shader API 0.2 frame](design/shader-api-frame.md): proposed: where a 0.2 pack's stages, post chain and tone curve run, who owns anti-aliasing and coverage, and room for clouds, mods, LabPBR and ray tracing.
 - [Live mod reloading](design/mod-hotload.md): loading, enabling and updating mods from inside the game without a restart.
 - [Mod registry v2](design/registry-v2.md): project kinds, metadata, installation locations and the registry rollout.
 
