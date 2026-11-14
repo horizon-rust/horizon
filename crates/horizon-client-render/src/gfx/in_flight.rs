@@ -54,7 +54,9 @@ impl Renderer {
         if let Some(timer) = &mut self.own_timing {
             timer.submitted(&self.queue);
         }
-        if offscreen && let Some(submission) = submission {
+        if (offscreen || cfg!(target_os = "macos"))
+            && let Some(submission) = submission
+        {
             self.in_flight.push_back(submission);
             if !self.paced_elsewhere {
                 self.wait_frames();
