@@ -81,12 +81,15 @@ impl Game<'_> {
 
     /// The block entity at `key` as vanilla saves it, with its custom name.
     fn saved_block_entity(&self, key: (i32, i32, i32)) -> Option<Tag> {
-        let entity = self.world.block_entities.get(&key)?;
         let block = &self
             .res
             .facts()
             .get(self.world.block(key.0, key.1, key.2))
             .name;
+        if &**block == "minecraft:decorated_pot" {
+            return self.pot_data([key.0, key.1, key.2]);
+        }
+        let entity = self.world.block_entities.get(&key)?;
         let mut tag = save::encode_block_entity(key, entity, block);
         if let (Some(name), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
             map.insert("CustomName".into(), name.clone());
@@ -304,6 +307,12 @@ impl Game<'_> {
     /// components but not its `block_entity_data` (`updateCustomBlockEntityTag`
     /// returns on a client), so a copied sign's editor opens with its text (#8102).
     pub(super) fn apply_predicted_item(&mut self, pos: [i32; 3], stack: &ItemStack) {
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        // Prediction rolls back block states, not a pot's saved NBT. Wait
+        // for the server's block entity update to install its decorations.
+        if &*self.res.facts().get(state).name == "minecraft:decorated_pot" {
+            return;
+        }
         let mut stack = stack.clone();
         if stack.data().is_some() {
             stack
@@ -333,6 +342,12 @@ impl Game<'_> {
         if placed == saved {
             return;
         }
+        // Pots keep their block entity in the chunk's saved NBT, not the typed map.
+        if &*self.res.facts().get(state).name == "minecraft:decorated_pot" {
+            super::spill::put_saved_entity(&mut self.world, pos, placed);
+            self.mark_block_entity_updated(key);
+            return;
+        }
         let Some((_, mut entity)) = save::decode_block_entity(&placed) else {
             return;
         };
@@ -348,6 +363,10 @@ impl Game<'_> {
         self.update_spawner_display(key);
     }
 }
+
+#[cfg(test)]
+#[path = "decorated_pot_placement_tests.rs"]
+mod decorated_pot_placement_tests;
 
 #[cfg(test)]
 mod tests {
