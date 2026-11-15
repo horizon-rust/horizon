@@ -1559,7 +1559,8 @@ mod tests {
 
     #[test]
     fn ensure_tool_links_links_libllvm_for_apple_darwin() {
-        let dir = std::env::temp_dir().join(format!("horizon-toolchain-link-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("horizon-toolchain-link-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let host = HOSTS
             .iter()
@@ -1578,7 +1579,10 @@ mod tests {
 
         let target_lib = dir.join("lib/rustlib/aarch64-apple-darwin/lib");
         let link = target_lib.join("libLLVM.dylib");
-        assert!(link.is_file(), "libLLVM.dylib must be present in target lib");
+        assert!(
+            link.is_file(),
+            "libLLVM.dylib must be present in target lib"
+        );
         #[cfg(unix)]
         {
             let symlink_target = fs::read_link(&link).unwrap();
@@ -1589,8 +1593,10 @@ mod tests {
 
     #[test]
     fn ensure_tool_links_noop_for_non_darwin() {
-        let dir =
-            std::env::temp_dir().join(format!("horizon-toolchain-non-darwin-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-toolchain-non-darwin-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&dir);
         let host = HOSTS
             .iter()
