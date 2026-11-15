@@ -32,9 +32,11 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -77,6 +79,15 @@ LAUNCHER_FEATURES = """export features=""
 if [ "$(uname)" = Darwin ] && ! xcrun metal --version > /dev/null 2>&1; then features="--features gpui_platform/runtime_shaders"; fi
 in_shell() { if [ "$(uname)" = Linux ] && ! pkg-config --exists xkbcommon 2>/dev/null && command -v nix-shell > /dev/null; then
   nix-shell shell.nix --run "$1"; else bash -c "$1"; fi; }"""
+# The launcher's tests write where the launcher keeps its data: the native build log, the build lease and the native
+# build cache it trims, versions. As every run (AGENTS.md), they get a scratch home, removed afterwards, never the
+# player's own (#16877).
+LAUNCHER_TEST_HOME = (("HORIZON_LAUNCHER_HOME", "launcher"), ("HORIZON_HOME", "game"),
+                      ("HORIZON_LAUNCHER_LOCATION_FILE", "location.json"), ("XDG_DATA_HOME", "data"),
+                      ("XDG_CONFIG_HOME", "config"), ("HORIZON_LAUNCHER_TRASH", "trash"),
+                      ("HORIZON_LAUNCHER_CLIPBOARD", "clipboard"), ("HORIZON_LAUNCHER_DESKTOP", "desktop"))
+LAUNCHER_TEST_SCRATCH = ("scratch=$(mktemp -d) && trap 'rm -rf \"$scratch\"' EXIT && export "
+                         + " ".join(f'{name}="$scratch/{path}"' for name, path in LAUNCHER_TEST_HOME))
 
 
 # Build-script inputs outside the crates: catalog-only edits still need to build and test their consumers.
@@ -597,8 +608,9 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
     for name, command in [("launcher rustfmt", "cargo fmt --check"),
                           ("launcher clippy", "cargo clippy --all-targets --locked $features -- -D warnings"),
                           ("launcher tests", "cargo test --locked --lib --bins $features")]:
-        steps.append(Step(name, f"cd launcher && {LAUNCHER_FEATURES}\nin_shell {shlex.quote(command)}", skip=launcher_skip,
-                          summary=tests_passed if name == "launcher tests" else None))
+        home = f"\n{LAUNCHER_TEST_SCRATCH}" if name == "launcher tests" else ""
+        steps.append(Step(name, f"cd launcher && {LAUNCHER_FEATURES}{home}\nin_shell {shlex.quote(command)}",
+                          skip=launcher_skip, summary=tests_passed if name == "launcher tests" else None))
     harness = Step("Parity", summary=parity_summary)
     affected = affected_here(changed)
     local_data = (ROOT / ".local" / "minecraft").exists() and (ROOT / ".local" / "horizon-client").exists()
@@ -688,6 +700,7 @@ def run_windows(steps, verbose):
         cwd = ROOT
         env = os.environ.copy()
         env["PYTHONUTF8"] = "1"
+        scratch = None
         if step.name == "Public tree":
             command = [sys.executable, "tools/check_public_tree.py"]
         elif step.name == "Layers":
@@ -713,6 +726,8 @@ def run_windows(steps, verbose):
         elif step.name == "launcher tests":
             command = ["cargo", "test", "--locked", "--lib", "--bins"]
             cwd = ROOT / "launcher"
+            scratch = tempfile.mkdtemp(prefix="horizon-launcher-tests-")
+            env.update({name: os.path.join(scratch, path) for name, path in LAUNCHER_TEST_HOME})
         elif step.name == "Parity":
             command = shlex.split(step.command)
             if command and command[0] == "PARITY_HOSTS=":
@@ -744,6 +759,9 @@ def run_windows(steps, verbose):
             step.status = "pass" if status == 0 else "fail"
         except OSError as error:
             step.status, step.detail = "fail", str(error)
+        finally:
+            if scratch:
+                shutil.rmtree(scratch, ignore_errors=True)
         step.seconds = int(time.monotonic() - started)
         finish(step, verbose)
 
