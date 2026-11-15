@@ -310,3 +310,15 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
   changes are committed in Nova. Ask for system crash/Jetsam report if
   no additional checkpoints appear; launch-log absence cannot distinguish
   a hard native crash from process kill due to memory.
+
+2026-11-15: FIRST RENDERER::NEW STACK EXPERIMENT
+- Confirmed on-device game build 32d591ae / Actions run 43672496619.
+  The new checkpoints prove panorama preparation, atlas access, and font
+  cache reset are completed. Last line before termination is
+  loading_renderer.renderer-new.begin, BEFORE renderer.new.entry.
+- In the iOS-only CI checkout, split graphics default and display-reading
+  evaluation from the async Renderer::new call. Record future creation and
+  size, then Box::pin the future on the heap before pollster::block_on.
+- This tests potential UIKit main-thread stack exhaustion (NOT proven).
+  Check the new log checkpoints plus OS crash report / JetsamEvent. Keep
+  the upstream renderer and game source unchanged in the committed git tree.
