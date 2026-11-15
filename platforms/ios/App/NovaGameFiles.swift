@@ -23,27 +23,16 @@ enum NovaGameFiles {
         return manager.fileExists(atPath: old.path) ? old : nil
     }
 
-    /// Persistent private game data, excluded from iCloud backup.
+    /// Prepared user-imported assets are accessible under Files → Nova → Resources.
+    /// Existing private installations migrate without reimporting the ZIP.
     static func resourceDirectory() throws -> URL {
-        let support = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        let folder = support.appendingPathComponent("Nova", isDirectory: true)
-        try manager.createDirectory(at: folder, withIntermediateDirectories: true)
-        var localFolder = folder
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try localFolder.setResourceValues(values)
-        return folder.appendingPathComponent("Resources", isDirectory: true)
+        try NovaVisibleStorage.directory(named: "Resources")
     }
 
-    /// Game saves/config/logs stay separate from prepared resource files.
+    /// Game saves, options, logs, resourcepacks and shaders are exposed in
+    /// Files → Nova → Game. Original game data migrates before Horizon boots.
     static func gameDirectory() throws -> URL {
-        let support = try manager.url(for: .applicationSupportDirectory,
-                                      in: .userDomainMask,
-                                      appropriateFor: nil,
-                                      create: true)
-        let home = support.appendingPathComponent("Nova/Game", isDirectory: true)
-        try manager.createDirectory(at: home, withIntermediateDirectories: true)
-        return home
+        try NovaVisibleStorage.directory(named: "Game")
     }
 
     static func stagedArchiveName() -> String? {

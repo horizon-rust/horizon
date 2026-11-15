@@ -1,8 +1,8 @@
 import Foundation
 
-/// Persistent, private launch diagnostics. The game-owned UIKit process
-/// writes to the same file through NOVA_DIAGNOSTIC_LOG, so a black screen
-/// can be diagnosed from the SwiftUI launcher on the next normal app launch.
+/// Persistent launch diagnostics are visible in Files → Nova → Diagnostics.
+/// The game-owned UIKit process writes the same file through NOVA_DIAGNOSTIC_LOG
+/// so startup failures can be inspected without exporting a separate log.
 ///
 /// Do not log game content, player data, accounts, or absolute sandbox paths.
 enum NovaDiagnostics {
@@ -10,19 +10,8 @@ enum NovaDiagnostics {
     private static let maxBytes: UInt64 = 2_000_000
 
     static func logURL() -> URL? {
-        guard let support = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first else { return nil }
-        let directory = support.appendingPathComponent("Nova/Diagnostics", isDirectory: true)
         do {
-            try FileManager.default.createDirectory(
-                at: directory, withIntermediateDirectories: true
-            )
-            var localDirectory = directory
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            try localDirectory.setResourceValues(values)
-
+            let directory = try NovaVisibleStorage.directory(named: "Diagnostics")
             let url = directory.appendingPathComponent("nova-diagnostics.log")
             if !FileManager.default.fileExists(atPath: url.path) {
                 guard FileManager.default.createFile(
