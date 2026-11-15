@@ -380,6 +380,9 @@ mod play_keys;
 mod player_equip;
 pub(crate) mod player_hooks;
 mod player_spawn;
+mod player_suffocation;
+#[cfg(test)]
+mod player_suffocation_tests;
 mod pointer_capture;
 #[cfg(test)]
 mod portal_ticking_tests;
@@ -3554,15 +3557,12 @@ impl Game<'_> {
         self.clip_ray_fluids(origin, dir, reach, false)
     }
     /// `LocalPlayer.moveTowardsClosestSpace` at the body's four corners
-    /// (aiStep, unless a spectator or a passenger): a corner inside a
-    /// suffocating block sets a 0.1 speed towards the nearest side that is
-    /// free, on that side's axis; a later corner overwrites an earlier one.
-    /// Suffocating is a full collision cube that is also a full render cube,
-    /// as `in_wall` has it.
+    /// (aiStep, unless a spectator or a passenger)
+    /// (game/player_suffocation.rs).
     fn closest_space_nudge(&self) -> [Option<f64>; 2] {
         match self.player.as_ref() {
             Some(p) if !p.spectator && self.riding.is_none() => {
-                closest_space_nudge(p, &self.world, self.res.facts())
+                player_suffocation::closest_space_nudge(p, self)
             }
             _ => [None; 2],
         }
@@ -8434,15 +8434,16 @@ impl Game<'_> {
         } else {
             None
         };
-        // ServerPlayer.bedBlocked: Player.freeAt (not suffocating) for the
-        // blocks above the head and the foot, as `in_wall` reads suffocating.
+        // ServerPlayer.bedBlocked: Player.freeAt, `!isSuffocating` and nothing
+        // else, for the blocks above the head and the foot.
         let blocked = problem.is_none()
             && [head, foot].iter().any(|bed| {
-                let f = self
-                    .res
-                    .facts()
-                    .get(self.world.block(bed[0], bed[1] + 1, bed[2]));
-                f.full_collision && f.solid_render
+                let pos = [bed[0], bed[1] + 1, bed[2]];
+                player_suffocation::is_suffocating(
+                    self,
+                    self.world.block(pos[0], pos[1], pos[2]),
+                    pos,
+                )
             });
         if blocked {
             problem = Some("obstructed");
@@ -12494,62 +12495,6 @@ mod player_kill_credit_tests;
 mod runtime_reset_tests;
 #[cfg(test)]
 mod startup_cpu_tests;
-
-/// `LocalPlayer.moveTowardsClosestSpace` at the body's four corners (aiStep, unless a spectator or a
-/// passenger): a corner inside a suffocating block sets a 0.1 speed towards the nearest side that is
-/// free, on that side's axis; a later corner overwrites an earlier one. Suffocating is a full
-/// collision cube that is also a full render cube, as `in_wall` has it.
-pub(crate) fn closest_space_nudge(
-    p: &PlayerMotion,
-    world: &World,
-    facts: &BlockFacts,
-) -> [Option<f64>; 2] {
-    use horizon_core::geometry::Axis;
-    let mut out = [None; 2];
-    let body = p.bounds();
-    let (min_y, max_y) = (body.min(Axis::Y) + 1.0e-7, body.max(Axis::Y) - 1.0e-7);
-    let suffocates_at = |x: i32, z: i32| {
-        ((min_y.floor() as i32 - 1)..=(max_y.ceil() as i32 + 1)).any(|y| {
-            f64::from(y) < max_y && f64::from(y + 1) > min_y && {
-                let f = facts.get(world.block(x, y, z));
-                f.full_collision && f.solid_render
-            }
-        })
-    };
-    let side = f64::from(p.dimensions.width) * 0.35;
-    let (px, pz) = (p.position.x, p.position.z);
-    for (x, z) in [
-        (px - side, pz + side),
-        (px - side, pz - side),
-        (px + side, pz - side),
-        (px + side, pz + side),
-    ] {
-        let (bx, bz) = (x.floor() as i32, z.floor() as i32);
-        if !suffocates_at(bx, bz) {
-            continue;
-        }
-        let (xd, zd) = (x - f64::from(bx), z - f64::from(bz));
-        // WEST, EAST, NORTH, SOUTH: (axis, step, distance to that edge).
-        let mut closest = 1.797_693_134_862_315_7e308; // Double.MAX_VALUE
-        let mut chosen = None;
-        for (axis, step, distance) in [(0, -1, xd), (0, 1, 1.0 - xd), (1, -1, zd), (1, 1, 1.0 - zd)]
-        {
-            let (nx, nz) = if axis == 0 {
-                (bx + step, bz)
-            } else {
-                (bx, bz + step)
-            };
-            if distance < closest && !suffocates_at(nx, nz) {
-                closest = distance;
-                chosen = Some((axis, step));
-            }
-        }
-        if let Some((axis, step)) = chosen {
-            out[axis] = Some(0.1 * f64::from(step));
-        }
-    }
-    out
-}
 
 use subtitles::{Subtitles, in_game_ui, subtitles};
 

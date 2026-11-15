@@ -5031,20 +5031,10 @@ impl Game<'_> {
         });
     }
 
-    /// `Entity.isInWall`: a suffocating block in the box at the eyes as wide
-    /// as 0.8 of the body (0.48 at scale 1, 0.048 at scale 0.1). Suffocating
-    /// is a full collision box that is also a full render cube
-    /// (`BlockBehaviour.isSuffocating`'s default; glass and the like opt
-    /// out), as the mobs' check has it.
-    fn in_wall(&self, at: [f64; 3], body: Dimensions) -> bool {
-        let y = (at[1] + f64::from(body.eye_height)).floor() as i32;
-        let [xs, zs] = eye_columns(at, body);
-        xs.into_iter().any(|x| {
-            zs.clone().any(|z| {
-                let f = self.res.facts().get(self.world.block(x, y, z));
-                f.full_collision && f.solid_render
-            })
-        })
+    /// `Entity.isInWall` at the eyes: a suffocating block whose collision shape
+    /// meets the box there (game/player_suffocation.rs).
+    pub(super) fn in_wall(&self, at: [f64; 3], body: Dimensions) -> bool {
+        super::player_suffocation::in_wall(self, at, body)
     }
 
     /// ServerPlayerGameMode.handleBlockBreakAction, STOP_DESTROY_BLOCK: the client finished
@@ -5723,7 +5713,7 @@ fn touching_unloaded_chunk(
 
 /// The block columns `Entity.isInWall` looks at: `AABB.ofSize` around the
 /// eyes, 0.8 of the body's width across (`BlockPos.betweenClosedStream`).
-fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>; 2] {
+pub(super) fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>; 2] {
     let half = f64::from(body.width * 0.8) / 2.0;
     let range = |v: f64| (v - half).floor() as i32..=(v + half).floor() as i32;
     [range(at[0]), range(at[2])]
