@@ -133,6 +133,39 @@ change(loading,
                 self.ios_touch_mouse(event_loop, id, touch);
             }""")
 
+# winit's desktop device-event handler requires an OS pointer grab,
+# foreground focus and a keyboard/mouse owner. None are reliable indicators
+# of a finger drag on iOS. Feed touch movement to the existing mouse look
+# accumulator, so Horizon applies its normal sensitivity and frame smoothing.
+# Keep this scoped to live first-person gameplay, never menus or Nova UI.
+change(loading,
+       """                Input::Motion(x, y) => self.device_event_here(
+                    event_loop, DeviceId::dummy(),
+                    DeviceEvent::MouseMotion { delta: (x, y) },
+                ),""",
+       """                Input::Motion(x, y) => {
+                    if let App::Ready(game) = self {
+                        let host = &mut game.host;
+                        if host.screen == Screen::Playing
+                            && host.title.is_none()
+                            && !host.screen_over_playing()
+                            && !host.scripted_run()
+                            && host.pending_save.is_none()
+                            && !host.pad_radial_captures()
+                        {
+                            // UIKit has no desktop mouse grab. Once the
+                            // world is playing, use the iOS software capture.
+                            if !host.captured {
+                                host.capture(true);
+                            }
+                            if host.captured {
+                                host.mouse.add_motion(x, y);
+                                host.last_input = Instant::now();
+                            }
+                        }
+                    }
+                },""")
+
 # A touchscreen is not a desktop keyboard: focusing chat, a sign or
 # another field must not summon the iOS keyboard automatically. Nova's
 # explicit Type control remains the only keyboard activation path.
