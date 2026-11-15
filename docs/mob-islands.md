@@ -167,9 +167,10 @@ turns' new RNGs (`in_seed_order`) and the lookups by id.
 
 A capture (`horizon-ctl profile`, `/profiler`) counts every tick of the loop under `mob_islands.ticks`, labelled
 `verdict`: `grouped`, or the rule that kept the tick serial: `one_lane`, `mods_hook_turns`, `few_mobs`
-(under 256 mobs in the loop), `repeating_seeds`, `mod_effect`, `unbounded_reach` (a mob's reach has no finite
-bound: the whole loop stays serial), `few_ticking`, `over_budget`, `one_island` (one island holds more than
-three quarters of the ticking mobs) and `one_group`. The gauges `mob_islands.ticking`, `.islands` and
+(under 256 mobs in the loop), `repeating_seeds`, `mod_effect`, `few_ticking`, `over_budget`, `one_island` (one island holds more than
+three quarters of the ticking mobs) and `one_group`, or one of four that say a reach has no finite bound, which keeps every mob of the level
+serial: `unbounded_state` (a mob's position or velocity is not finite), `unbounded_locomotion`,
+`unbounded_meal` and `unbounded_lists`. The server log names the first such mob, once a minute. The gauges `mob_islands.ticking`, `.islands` and
 `.largest_island` hold what the last plan that got that far found. Read them with
 `horizon-perf query series` on the capture.
 
