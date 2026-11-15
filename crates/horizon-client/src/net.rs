@@ -523,22 +523,6 @@ pub fn is_invite(code: &str, full: bool) -> bool {
     horizon_hooks::engine::tunnel().is_some_and(|r| r.is_code(code, full))
 }
 
-/// Whether an invite code can be joined: a resolver is registered (horizon-official registers
-/// horizon-friends'). The title screen's Friends icon, which opens Join a Friend, is inactive
-/// without one, as the pause menu's is without a page to share from.
-pub fn joins_friends() -> bool {
-    #[cfg(test)]
-    if JOINS_FRIENDS_IN_TEST.get() {
-        return true;
-    }
-    horizon_hooks::engine::tunnel().is_some()
-}
-#[cfg(test)]
-thread_local! {
-    /// A test's stand-in for a registered resolver: the registry is the process's and sealed.
-    pub(crate) static JOINS_FRIENDS_IN_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
 /// An address as players and logs see it: a friend's invite code stays
 /// out of it (its secret is in there).
 pub fn shown_address(address: &str) -> String {
@@ -551,22 +535,7 @@ pub fn shown_address(address: &str) -> String {
     }
 }
 
-/// The relay the player set (`friendsRelay` in horizon.txt, beside
-/// options.txt), else the resolver's (`HORIZON_RELAY_URL`). None by default.
-pub fn friends_relay_setting() -> Option<String> {
-    let dir = std::env::current_dir().ok()?;
-    crate::ui_theme::preference(&dir, "friendsRelay")
-        .filter(|r| !r.is_empty())
-        .or_else(|| horizon_hooks::engine::tunnel().and_then(|r| r.relay_from_env()))
-}
-/// Remember the relay typed on Join a friend (empty forgets it).
-pub fn save_friends_relay(relay: &str) {
-    if let Ok(dir) = std::env::current_dir() {
-        crate::ui_theme::set_preference(&dir, "friendsRelay", (!relay.is_empty()).then_some(relay));
-    }
-}
-
-/// Reach the friend's world from the code (directly, or through a relay)
+/// Reach the friend's world from the code (directly, or through the resolver's relay)
 /// and open the tunnel: the loopback address to connect to, and the token to send on it first.
 /// Without a resolver (a build without Play with Friends) the address is refused, never retried.
 fn join_friend(
@@ -593,9 +562,7 @@ fn join_friend(
         };
         status(send, &tr(lang, key));
     };
-    let opened = resolver
-        .open(code, friends_relay_setting(), &mut progress)
-        .map_err(Reason::plain)?;
+    let opened = resolver.open(code, &mut progress).map_err(Reason::plain)?;
     Ok(("127.0.0.1".to_owned(), opened.port, opened.token))
 }
 

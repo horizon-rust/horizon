@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Гуляць з сябрамі",
+  "horizon.friends.hint": "Сябры ўстаўце код пасля кнопкі \"Сябры\" на тытульным экране ў раздзеле \"Прамое злучэнне\" або на старонцы \"Прайграванне\" праграмы запуску.",
+  "horizon.friends.copied": "Скапіравана",
+  "horizon.friends.copy_code": "Скапіруйце код",
+  "horizon.friends.stop_sharing": "Спыніць абагульванне",
+  "horizon.friends.none_yet": "Тут пакуль няма сяброў.",
+  "horizon.friends.here_now": "Вось зараз: %s",
+  "horizon.friends.share_intro": "Падзяліцеся гэтым светам за кодам запрашэння: ён адкрываецца ў лакальнай сеткі, і сябры ў Інтэрнэце далучаюцца з кодам. Наш сервер не задзейнічаны.",
+  "horizon.friends.start_sharing": "Пачніце абагульваць",
+  "horizon.friends.troubleshooting": "Ліквідацыя непаладак...",
+  "horizon.friends.stopped": "Абагульванне кода запрашэння спынена.",
+  "horizon.friends.short_code_changed": "Хтосьці спрабаваў увесці няправільны кароткі код, таму ён змяніўся.",
+  "horizon.friends.wrong_code": "Хтосьці паспрабаваў увесці няправільны код.",
+  "horizon.friends.relay_stopped": "Занадта шмат няправільных кароткіх кодаў, таму рэле выключана, пакуль вы не падзеліцеся зноў. Сябры ўсё яшчэ могуць далучыцца з поўным кодам.",
+  "horizon.friends.code_ready": "Ваш код запрашэння гатовы: меню гульні, гульня з сябрамі. Скапіруйце яго і адпраўце сваім сябрам.",
+  "horizon.friends.share_failed": "Не атрымалася падзяліцца светам: %s",
+  "horizon.friends.finding_route": "Пошук, як сябры могуць звязацца з вамі...",
+  "horizon.multiplayer.join": "Далучайцеся",
+  "horizon.multiplayer.join_friend": "Далучайцеся да сяброў",
+  "horizon.multiplayer.invite_code": "Код запрашэння",
+  "horizon.multiplayer.relay": "Рэле (неабавязкова)"
+}

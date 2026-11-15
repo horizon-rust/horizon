@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "العب مع الأصدقاء",
+  "horizon.friends.hint": "يقوم الأصدقاء بلصق الرمز بعد زر الأصدقاء على شاشة العنوان، أو في الاتصال المباشر، أو على صفحة التشغيل الخاصة بالمشغل.",
+  "horizon.friends.copied": "منقول",
+  "horizon.friends.copy_code": "نسخ الرمز",
+  "horizon.friends.stop_sharing": "توقف عن المشاركة",
+  "horizon.friends.none_yet": "لا يوجد أصدقاء هنا بعد.",
+  "horizon.friends.here_now": "هنا الآن: %s",
+  "horizon.friends.share_intro": "شارك هذا العالم خلف رمز الدعوة: فهو يفتح على شبكة LAN، وينضم الأصدقاء على الإنترنت باستخدام الرمز. لا يوجد خادم خاص بنا متورط.",
+  "horizon.friends.start_sharing": "ابدأ المشاركة",
+  "horizon.friends.troubleshooting": "استكشاف الأخطاء وإصلاحها...",
+  "horizon.friends.stopped": "تم إيقاف مشاركة رمز الدعوة.",
+  "horizon.friends.short_code_changed": "استمر شخص ما في تجربة رمز قصير خاطئ، لذلك تغير.",
+  "horizon.friends.wrong_code": "حاول شخص ما رمزا خاطئا.",
+  "horizon.friends.relay_stopped": "رموز قصيرة خاطئة كثيرة، لذا أُوقف التتابع حتى تشارك مجددًا. يمكن للأصدقاء الانضمام بالرمز الكامل.",
+  "horizon.friends.code_ready": "رمز الدعوة الخاص بك جاهز: قائمة الألعاب، العب مع الأصدقاء. انسخها وأرسلها إلى أصدقائك.",
+  "horizon.friends.share_failed": "لا يمكن مشاركة العالم: %s",
+  "horizon.friends.finding_route": "التعرف على كيفية وصول الأصدقاء إليك...",
+  "horizon.multiplayer.join": "انضم",
+  "horizon.multiplayer.join_friend": "انضم إلى صديق",
+  "horizon.multiplayer.invite_code": "رمز الدعوة",
+  "horizon.multiplayer.relay": "التتابع (اختياري)"
+}

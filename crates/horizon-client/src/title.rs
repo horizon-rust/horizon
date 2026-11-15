@@ -5281,8 +5281,8 @@ mod classic_tests {
 
     #[test]
     fn classic_main_menu_icons_route_language_and_accessibility() {
-        // Join a Friend needs a resolver (title/tests.rs tests the icon without one).
-        crate::net::JOINS_FRIENDS_IN_TEST.set(true);
+        // The Friends icon opens a page registered there (title/tests.rs tests it without one).
+        crate::multiplayer::stand_in_title_page(true);
         let mut title = Title::new(
             PathBuf::new(),
             Path::new("/nonexistent/horizon-test-resources"),
@@ -5312,7 +5312,7 @@ mod classic_tests {
                 if id == 5 {
                     assert!(matches!(
                         title.mode,
-                        Mode::Multiplayer(crate::multiplayer::Screen::Friend { .. })
+                        Mode::Multiplayer(crate::multiplayer::Screen::Page(_))
                     ));
                     title.mode = Mode::Main;
                 }

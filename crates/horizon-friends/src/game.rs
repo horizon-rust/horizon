@@ -1,7 +1,13 @@
-//! Play with Friends in the game, joining side (the `game` feature): the engine's `friend:`
+//! Play with Friends in the game (the `game` feature). Joining: the engine's `friend:`
 //! addresses (`horizon_platform::hooks::tunnel`) read as invite codes, and joined through this
-//! crate's tunnel. `horizon-official` registers [`HOOKS`]; the game's own executable has none, so
-//! there no invite code joins.
+//! crate's tunnel, from Join a Friend ([`JOIN`], what the title screen's Friends icon opens).
+//! Hosting ([`share`]): the pause menu's Friends page ([`PAGE`]) shares the open world behind an
+//! invite code. `horizon-official` registers [`HOOKS`], both pages and their text ([`LANG`]); the
+//! game's own executable has none of them, so there no invite code joins and nothing is shared.
+mod join;
+mod lang;
+mod share;
+
 use crate::{
     PathMode,
     guest::{self, GuestConfig},
@@ -10,10 +16,14 @@ use crate::{
 use horizon_platform::{
     hooks::{
         Hooks,
+        share::ShareView,
         tunnel::{Opened, Progress, Resolver},
     },
     version::{PROTOCOL_VERSION, VANILLA_VERSION},
 };
+pub use join::PAGE as JOIN;
+pub use lang::LANG;
+pub use share::PAGE;
 use std::net::SocketAddr;
 
 /// What `horizon-official` registers: Play with Friends' hooks.
@@ -24,6 +34,22 @@ pub struct Friends;
 impl Hooks for Friends {
     fn tunnel(&self) -> Option<&dyn Resolver> {
         Some(&Invites)
+    }
+
+    fn share(&self, world: &mut dyn ShareView) {
+        share::HOOKS.share(world);
+    }
+
+    fn lan_closed(&self) {
+        share::HOOKS.lan_closed();
+    }
+
+    fn control_commands(&self) -> Option<(&'static str, &'static [&'static str])> {
+        share::HOOKS.control_commands()
+    }
+
+    fn control(&self, words: &[&str], world: &mut dyn ShareView) -> Option<Result<String, String>> {
+        share::HOOKS.control(words, world)
     }
 }
 
@@ -61,20 +87,12 @@ impl Resolver for Invites {
         }
     }
 
-    fn relay_from_env(&self) -> Option<String> {
-        crate::relay_url()
-    }
-
-    fn open(
-        &self,
-        code: &str,
-        relay: Option<String>,
-        progress: &mut dyn FnMut(Progress),
-    ) -> Result<Opened, String> {
+    /// Through the relay the player set on Join a Friend, else `HORIZON_RELAY_URL`.
+    fn open(&self, code: &str, progress: &mut dyn FnMut(Progress)) -> Result<Opened, String> {
         progress(Progress::Finding);
         let tunnel = guest::join(&GuestConfig {
             code: code.to_owned(),
-            relay,
+            relay: share::relay(),
             protocol: PROTOCOL_VERSION,
             game: VANILLA_VERSION.to_owned(),
             path: PathMode::from_env(),

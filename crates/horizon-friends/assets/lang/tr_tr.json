@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Arkadaşlarla Oyna",
+  "horizon.friends.hint": "Arkadaşlar kodu başlık ekranındaki Arkadaşlar düğmesinden sonra, Doğrudan Bağlantı'da veya başlatıcının Oyna sayfasında yapıştırır.",
+  "horizon.friends.copied": "Kopyalandı",
+  "horizon.friends.copy_code": "Kodu Kopyala",
+  "horizon.friends.stop_sharing": "Paylaşımı Durdur",
+  "horizon.friends.none_yet": "Burada henüz arkadaş yok.",
+  "horizon.friends.here_now": "Şu an burada: %s",
+  "horizon.friends.share_intro": "Bu dünyayı bir davet koduyla paylaşın: LAN'a açılır ve internetteki arkadaşlar kodla katılır. Bizim hiçbir sunucumuz devrede olmaz.",
+  "horizon.friends.start_sharing": "Paylaşmayı Başlat",
+  "horizon.friends.troubleshooting": "Sorun Giderme...",
+  "horizon.friends.stopped": "Davet kodu paylaşımı durduruldu.",
+  "horizon.friends.short_code_changed": "Biri sürekli yanlış kısa kod denedi, bu yüzden kod değişti.",
+  "horizon.friends.wrong_code": "Biri yanlış bir kod denedi.",
+  "horizon.friends.relay_stopped": "Çok fazla yanlış kısa kod denendi, bu yüzden siz yeniden paylaşana kadar aktarıcı kapalı. Arkadaşlar yine de tam kodla katılabilir.",
+  "horizon.friends.code_ready": "Davet kodunuz hazır: Oyun Menüsü, Arkadaşlarla Oyna. Kopyalayın ve arkadaşlarınıza gönderin.",
+  "horizon.friends.share_failed": "Dünya paylaşılamadı: %s",
+  "horizon.friends.finding_route": "Arkadaşların size nasıl ulaşacağı aranıyor…",
+  "horizon.multiplayer.join": "Katıl",
+  "horizon.multiplayer.join_friend": "Bir Arkadaşa Katıl",
+  "horizon.multiplayer.invite_code": "Davet Kodu",
+  "horizon.multiplayer.relay": "Aktarıcı (İsteğe Bağlı)"
+}

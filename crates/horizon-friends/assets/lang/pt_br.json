@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Jogue com amigos",
+  "horizon.friends.hint": "Amigos colam o código após o botão Amigos da tela de título, no Direct Connection ou na página Play do inicializador.",
+  "horizon.friends.copied": "Copiado",
+  "horizon.friends.copy_code": "Copiar código",
+  "horizon.friends.stop_sharing": "Pare de compartilhar",
+  "horizon.friends.none_yet": "Nenhum amigo aqui ainda.",
+  "horizon.friends.here_now": "Aqui agora: %s",
+  "horizon.friends.share_intro": "Compartilhe este mundo por meio de um código de convite: ele abre para LAN e amigos na internet entram com o código. Nenhum servidor nosso está envolvido.",
+  "horizon.friends.start_sharing": "Comece a compartilhar",
+  "horizon.friends.troubleshooting": "Solução de problemas...",
+  "horizon.friends.stopped": "Parou de compartilhar o código de convite.",
+  "horizon.friends.short_code_changed": "Alguém continuou tentando um código curto errado, então ele mudou.",
+  "horizon.friends.wrong_code": "Alguém tentou um código errado.",
+  "horizon.friends.relay_stopped": "Muitos códigos curtos errados, então o relé fica desligado até você compartilhar de novo. Amigos ainda podem entrar com o código completo.",
+  "horizon.friends.code_ready": "Seu código de convite está pronto: Menu do Jogo, Jogue com Amigos. Copie e envie para seus amigos.",
+  "horizon.friends.share_failed": "Não foi possível compartilhar o mundo: %s",
+  "horizon.friends.finding_route": "Descobrir como os amigos podem entrar em contato com você…",
+  "horizon.multiplayer.join": "Junte-se",
+  "horizon.multiplayer.join_friend": "Junte-se a um amigo",
+  "horizon.multiplayer.invite_code": "Código de convite",
+  "horizon.multiplayer.relay": "Relé (opcional)"
+}

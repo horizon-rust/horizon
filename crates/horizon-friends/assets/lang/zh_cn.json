@@ -1,0 +1,23 @@
+{
+  "horizon.friends.relay_stopped": "错误短代码尝试过多，中继已关闭，直到你再次共享。好友仍可用完整代码加入。",
+  "horizon.friends.title": "与好友一起玩",
+  "horizon.friends.hint": "好友可以在标题画面的“好友”按钮后、直连界面或启动器的“开始游戏”页粘贴该代码。",
+  "horizon.friends.copied": "已复制",
+  "horizon.friends.copy_code": "复制代码",
+  "horizon.friends.stop_sharing": "停止共享",
+  "horizon.friends.none_yet": "还没有好友加入。",
+  "horizon.friends.here_now": "当前在线：%s",
+  "horizon.friends.share_intro": "通过邀请码共享这个世界：它会开放到局域网，互联网上的好友可以用代码加入。不经过我们的任何服务器。",
+  "horizon.friends.start_sharing": "开始共享",
+  "horizon.friends.troubleshooting": "疑难解答…",
+  "horizon.friends.stopped": "已停止共享邀请码。",
+  "horizon.friends.short_code_changed": "有人反复尝试错误的短代码，因此已更换。",
+  "horizon.friends.wrong_code": "有人尝试了错误的代码。",
+  "horizon.friends.code_ready": "你的邀请码已就绪：游戏菜单 → 与好友一起玩。复制后发给好友。",
+  "horizon.friends.share_failed": "无法共享世界：%s",
+  "horizon.friends.finding_route": "正在寻找好友连接你的方式…",
+  "horizon.multiplayer.join": "加入",
+  "horizon.multiplayer.join_friend": "加入好友",
+  "horizon.multiplayer.invite_code": "邀请码",
+  "horizon.multiplayer.relay": "中继（可选）"
+}

@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Грати з друзями",
+  "horizon.friends.hint": "Друзі вставляють код після кнопки «Друзі» на головному екрані, у «Пряме з’єднання» або на сторінці «Грати» в лаунчері.",
+  "horizon.friends.copied": "Скопійовано",
+  "horizon.friends.copy_code": "Копіювати код",
+  "horizon.friends.stop_sharing": "Припинити поширення",
+  "horizon.friends.none_yet": "Друзів тут поки немає.",
+  "horizon.friends.here_now": "Зараз тут: %s",
+  "horizon.friends.share_intro": "Поділіться цим світом за допомогою коду запрошення: він відкривається для LAN, а друзі з інтернету приєднуються за кодом. Жоден наш сервер не залучається.",
+  "horizon.friends.start_sharing": "Почати поширення",
+  "horizon.friends.troubleshooting": "Усунення несправностей…",
+  "horizon.friends.stopped": "Поширення коду запрошення припинено.",
+  "horizon.friends.short_code_changed": "Хтось раз за разом вводив неправильний короткий код, тож його змінено.",
+  "horizon.friends.wrong_code": "Хтось ввів неправильний код.",
+  "horizon.friends.code_ready": "Ваш код запрошення готовий: Ігрове меню, Грати з друзями. Скопіюйте його та надішліть друзям.",
+  "horizon.friends.share_failed": "Не вдалося поділитися світом: %s",
+  "horizon.friends.finding_route": "З’ясовуємо, як друзі можуть до вас під’єднатися…",
+  "horizon.friends.relay_stopped": "Забагато неправильних коротких кодів, тому ретранслятор вимкнено, доки ви знову не поділитеся світом. Друзі все ще можуть приєднатися за повним кодом.",
+  "horizon.multiplayer.join": "Приєднатися",
+  "horizon.multiplayer.join_friend": "Приєднатися до друга",
+  "horizon.multiplayer.invite_code": "Код запрошення",
+  "horizon.multiplayer.relay": "Ретранслятор (необов’язково)"
+}

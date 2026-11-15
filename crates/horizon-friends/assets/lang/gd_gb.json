@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Cluich le caraidean",
+  "horizon.friends.hint": "Bidh caraidean a’ cuir a-steach an còd às deidh putan Caraidean an sgrion tiotal, ann an Direct Connection, no air duilleag Cluich an lannsair.",
+  "horizon.friends.copied": "Rinn lethbhreac",
+  "horizon.friends.copy_code": "Dèan lethbhreac den Chòd",
+  "horizon.friends.stop_sharing": "Stad air roinneadh",
+  "horizon.friends.none_yet": "Chan eil caraidean an seo fhathast.",
+  "horizon.friends.here_now": "Seo agaibh a-nis: %s",
+  "horizon.friends.share_intro": "Roinn an saoghal seo air cùl còd cuireadh: bidh e a’ fosgladh gu LAN, agus bidh caraidean air an eadar-lìn a’ tighinn còmhla ris a’ chòd. Chan eil seirbheisiche sam bith againn an sàs.",
+  "horizon.friends.start_sharing": "Tòisich a 'roinneadh",
+  "horizon.friends.troubleshooting": "Fuasgladh thrioblaidean...",
+  "horizon.friends.stopped": "Sguir a bhith a’ roinneadh a’ chòd cuireadh.",
+  "horizon.friends.short_code_changed": "Chùm cuideigin a’ feuchainn còd goirid ceàrr, agus mar sin dh’atharraich e.",
+  "horizon.friends.wrong_code": "Dh’fheuch cuideigin còd ceàrr.",
+  "horizon.friends.relay_stopped": "Cus de chòdan goirid ceàrr, agus mar sin tha an t-sealaidheachd dheth gus an roinn thu a-rithist. Faodaidh caraidean a dhol còmhla leis a' chòd slàn fhathast.",
+  "horizon.friends.code_ready": "Tha an còd cuireadh agad deiseil: Clàr Gèam, Cluich le Caraidean. Dèan lethbhreac dheth agus cuir gu do charaidean e.",
+  "horizon.friends.share_failed": "Cha b’ urrainn dhuinn an saoghal a cho-roinn: %s",
+  "horizon.friends.finding_route": "Faigh a-mach mar as urrainn do charaidean ruighinn ort…",
+  "horizon.multiplayer.join": "Thig còmhla",
+  "horizon.multiplayer.join_friend": "Thig còmhla ri Caraid",
+  "horizon.multiplayer.invite_code": "Còd cuireadh",
+  "horizon.multiplayer.relay": "Ath-chraoladh (roghainneil)"
+}

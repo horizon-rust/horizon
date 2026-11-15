@@ -523,7 +523,7 @@ fn debug_options_interrupts(screen: Screen, playing_overlay: bool) -> bool {
         | Screen::EmoteWheel
         | Screen::Stats
         | Screen::Advancements
-        | Screen::Friends
+        | Screen::AddedPage
         | Screen::Social
         | Screen::ServerLinks
         | Screen::ConfirmLink
@@ -584,7 +584,7 @@ mod tests {
             Screen::GameModeSwitcher,
             Screen::Stats,
             Screen::Advancements,
-            Screen::Friends,
+            Screen::AddedPage,
             Screen::Social,
             Screen::ServerLinks,
             Screen::ConfirmLink,

@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Играть с друзьями",
+  "horizon.friends.hint": "Друзья вставляют код после кнопки «Друзья» на титульном экране, в «Прямом подключении» или на странице «Играть» в лаунчере.",
+  "horizon.friends.copied": "Скопировано",
+  "horizon.friends.copy_code": "Копировать код",
+  "horizon.friends.stop_sharing": "Прекратить доступ",
+  "horizon.friends.none_yet": "Здесь пока нет друзей.",
+  "horizon.friends.here_now": "Сейчас здесь: %s",
+  "horizon.friends.share_intro": "Откройте этот мир по коду приглашения: он открывается в локальную сеть, а друзья в интернете подключаются по коду. Наши серверы не участвуют.",
+  "horizon.friends.start_sharing": "Открыть доступ",
+  "horizon.friends.troubleshooting": "Решение проблем...",
+  "horizon.friends.stopped": "Доступ по коду приглашения закрыт.",
+  "horizon.friends.short_code_changed": "Кто-то подряд вводил неверный короткий код, поэтому он изменился.",
+  "horizon.friends.wrong_code": "Кто-то ввёл неверный код.",
+  "horizon.friends.relay_stopped": "Слишком много неверных коротких кодов, поэтому ретранслятор выключен, пока вы не откроете доступ снова. Друзья всё ещё могут войти по полному коду.",
+  "horizon.friends.code_ready": "Ваш код приглашения готов: меню игры, «Играть с друзьями». Скопируйте его и отправьте друзьям.",
+  "horizon.friends.share_failed": "Не удалось открыть мир: %s",
+  "horizon.friends.finding_route": "Ищем, как друзья могут к вам подключиться…",
+  "horizon.multiplayer.join": "Подключиться",
+  "horizon.multiplayer.join_friend": "Играть с другом",
+  "horizon.multiplayer.invite_code": "Код приглашения",
+  "horizon.multiplayer.relay": "Ретранслятор (необязательно)"
+}

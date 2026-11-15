@@ -21,10 +21,28 @@ const WIDTH: f32 = 300.0;
 
 /// The page the title screen's Friends icon opens: the first registered there.
 pub(super) fn title_page() -> Option<&'static dyn Page> {
+    #[cfg(test)]
+    if let Some(page) = TITLE_PAGE_IN_TEST.get() {
+        return Some(page);
+    }
     pages::engine::all()
         .iter()
         .copied()
         .find(|page| page.place() == Place::Title)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for a page registered at `Place::Title`: the registry is the
+    /// process's and sealed.
+    static TITLE_PAGE_IN_TEST: std::cell::Cell<Option<&'static dyn Page>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Tests: whether the title screen's Friends icon has a page (a join form) on this thread.
+#[cfg(test)]
+pub fn stand_in_title_page(on: bool) {
+    TITLE_PAGE_IN_TEST.set(on.then(|| tests::join() as &dyn Page));
 }
 
 /// An open form: the page, and what the engine keeps while it is open.
@@ -60,8 +78,10 @@ struct Button {
 }
 
 impl Form {
-    /// The form of `page`, its fields holding the text its rows start with, the first focused.
+    /// The form of `page`, which hears it opens, its fields holding the text its rows start
+    /// with, the first focused.
     pub fn open(page: &'static dyn Page) -> Self {
+        page.opened();
         let mut rows = Vec::new();
         page.rows(&mut rows);
         let texts: Vec<String> = rows
@@ -353,7 +373,7 @@ mod tests {
     use std::sync::Mutex;
 
     /// A join form: a code and a relay, Join while the code has 4 characters or more.
-    struct Join {
+    pub(super) struct Join {
         heard: Mutex<Vec<(usize, Act)>>,
         code: Mutex<String>,
     }
@@ -363,19 +383,16 @@ mod tests {
             "test.join"
         }
         fn title(&self) -> &'static str {
-            "horizon.multiplayer.join_friend"
+            "test.page.join_friend"
         }
         fn place(&self) -> Place {
             Place::Title
         }
         fn rows(&self, rows: &mut Vec<Row>) {
             let code = self.code.lock().unwrap().clone();
-            rows.push(Row::field("horizon.multiplayer.invite_code", code.clone()).max(8));
-            rows.push(Row::field(
-                "horizon.multiplayer.relay",
-                "relay.example:25599",
-            ));
-            rows.push(Row::button("horizon.multiplayer.join").active(code.len() >= 4));
+            rows.push(Row::field("test.page.invite_code", code.clone()).max(8));
+            rows.push(Row::field("test.page.relay", "relay.example:25599"));
+            rows.push(Row::button("test.page.join").active(code.len() >= 4));
         }
         fn act(&self, row: usize, act: Act) {
             if let (0, Act::Edit(text)) = (row, &act) {
@@ -391,7 +408,7 @@ mod tests {
         }
     }
 
-    fn join() -> &'static Join {
+    pub(super) fn join() -> &'static Join {
         Box::leak(Box::new(Join {
             heard: Mutex::new(Vec::new()),
             code: Mutex::new(String::new()),

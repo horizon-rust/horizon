@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "שפּיל מיט פריינט",
+  "horizon.friends.hint": "פרענדז פּאַפּ די קאָד נאָך די Friends קנעפּל פון דעם טיטל פאַרשטעלן, אין דירעקט קאַנעקשאַן אָדער אויף די שפּיל בלאַט פון די לאָנטשער.",
+  "horizon.friends.copied": "קאַפּיד",
+  "horizon.friends.copy_code": "קאָפּי קאָד",
+  "horizon.friends.stop_sharing": "האַלטן ייַנטיילונג",
+  "horizon.friends.none_yet": "קיין פריינט דאָ נאָך.",
+  "horizon.friends.here_now": "דאָ איצט: %s",
+  "horizon.friends.share_intro": "ייַנטיילן דעם וועלט הינטער אַ פאַרבעטונג קאָד: עס עפענען צו לאַן, און פרענדז אויף דער אינטערנעץ פאַרבינדן מיט די קאָד. קיין סערווער פון אונדזער איז ינוואַלווד.",
+  "horizon.friends.start_sharing": "אָנהייב ייַנטיילונג",
+  "horizon.friends.troubleshooting": "טראָובלעשאָאָטינג ...",
+  "horizon.friends.stopped": "פארשטאפט ייַנטיילן דעם פאַרבעטונג קאָד.",
+  "horizon.friends.short_code_changed": "עמעצער האט טריינג אַ פאַלש קורץ קאָד, אַזוי עס געביטן.",
+  "horizon.friends.wrong_code": "עמעצער געפרוווט אַ פאַלש קאָד.",
+  "horizon.friends.relay_stopped": "צו פֿיל פֿאַלשע קורץ־קאָדן, דערפֿאַר איז דער רעלעי אַוועק ביז דו טיילסט ווידער. פֿרײַנד קענען זיך נאָך באַטייליקן מיט דעם פֿולן קאָד.",
+  "horizon.friends.code_ready": "דיין פאַרבעטונג קאָד איז גרייט: שפּיל מעניו, שפּיל מיט פרענדז. קאָפּי עס און שיקן עס צו דיין פרענדז.",
+  "horizon.friends.share_failed": "קען נישט טיילן די וועלט: %s",
+  "horizon.friends.finding_route": "געפֿינען ווי פרענדז קענען דערגרייכן איר ...",
+  "horizon.multiplayer.join": "פאַרבינדן",
+  "horizon.multiplayer.join_friend": "פאַרבינדן אַ פרייַנד",
+  "horizon.multiplayer.invite_code": "לאַדן קאָד",
+  "horizon.multiplayer.relay": "רעלע (אַפּשאַנאַל)"
+}

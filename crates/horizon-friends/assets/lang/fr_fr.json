@@ -1,0 +1,23 @@
+{
+  "horizon.friends.relay_stopped": "Trop de codes courts erronés : le relais est désactivé jusqu'à ce que vous partagiez à nouveau. Vos amis peuvent toujours rejoindre avec le code complet.",
+  "horizon.friends.title": "Jouer avec des amis",
+  "horizon.friends.hint": "Vos amis collent le code après le bouton Amis de l'écran titre, dans « Connexion rapide » ou sur la page Jouer du lanceur.",
+  "horizon.friends.copied": "Copié",
+  "horizon.friends.copy_code": "Copier le code",
+  "horizon.friends.stop_sharing": "Arrêter le partage",
+  "horizon.friends.none_yet": "Aucun ami pour l'instant.",
+  "horizon.friends.here_now": "Présents : %s",
+  "horizon.friends.share_intro": "Partagez ce monde avec un code d'invitation : il s'ouvre au LAN, et vos amis sur internet le rejoignent avec le code. Aucun serveur de notre part n'est impliqué.",
+  "horizon.friends.start_sharing": "Commencer le partage",
+  "horizon.friends.troubleshooting": "Dépannage...",
+  "horizon.friends.stopped": "Le partage du code d'invitation est arrêté.",
+  "horizon.friends.short_code_changed": "Quelqu'un a essayé plusieurs fois un mauvais code court, il a donc été changé.",
+  "horizon.friends.wrong_code": "Quelqu'un a essayé un mauvais code.",
+  "horizon.friends.code_ready": "Votre code d'invitation est prêt : Menu du jeu, Jouer avec des amis. Copiez-le et envoyez-le à vos amis.",
+  "horizon.friends.share_failed": "Impossible de partager le monde : %s",
+  "horizon.friends.finding_route": "Recherche de la manière dont vos amis peuvent vous joindre…",
+  "horizon.multiplayer.join": "Rejoindre",
+  "horizon.multiplayer.join_friend": "Rejoindre un ami",
+  "horizon.multiplayer.invite_code": "Code d'invitation",
+  "horizon.multiplayer.relay": "Relais (facultatif)"
+}

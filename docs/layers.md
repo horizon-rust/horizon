@@ -287,7 +287,11 @@ build pays nothing.
 
 The hooks today: `started` (once, when someone plays: not a dedicated server, a benchmark or an automated run),
 `published` (the world opened to or closed from LAN or friends, on change), `shutdown` (the window closed, the
-world saved) and `tunnel` (the resolver of `friend:` addresses, Play with Friends') and `captures` (Open and Share for saved performance captures, `horizon-perf-share`: with none registered the game offers neither). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
+world saved), `tunnel` (the resolver of `friend:` addresses, Play with Friends'), `captures` (Open and Share for saved
+performance captures, `horizon-perf-share`: with none registered the game offers neither), `share` (each client tick,
+the window's world through `share::ShareView`: open it to LAN, its players, chat, the clipboard), `lan_closed` (it
+stopped being open to LAN), `control_commands` and `control` (the `horizon-ctl` commands a crate answers in the game,
+with that view). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
 `horizon_hooks::engine` that the engine calls where vanilla does the matching thing; give it plain data or a type
 the engine owns, never one from above. A hook that needs engine types the platform doesn't expose yet (a draw
 context for HUD and chat overlays, a settings page) comes with that type's platform API (M6). An extension point
@@ -363,7 +367,7 @@ pub trait Store: Sync {
 A page lives in the options screen's shell, and its entry sits on one of the game's menus.
 
 ```rust
-pub enum Place { HorizonSettings, Pause, Extras, Title }
+pub enum Place { HorizonSettings, Pause, Extras, Title, PauseFriends }
 pub trait Page: Sync {
     fn id(&self) -> &'static str;            // stable, for horizon-ctl and the page stack
     fn title(&self) -> &'static str;         // translation key
@@ -372,6 +376,7 @@ pub trait Page: Sync {
     fn act(&self, row: usize, act: Act);     // a click, a reverse click, a slider's value, a key
     fn tooltip(&self, row: usize) -> Option<Label> { None }   // hover text, may follow the value
     fn back(&self) -> &'static str { "gui.done" }            // the leave button of a page drawn as a screen
+    fn opened(&self) {}                                       // a form (Place::Title) opens: start over
 }
 pub enum Row {
     Heading(&'static str),                   // translation key
@@ -390,10 +395,13 @@ pub enum Act { Press, PressBack, Slide(f32), Bind(String), Edit(String), Submit 
 pub fn connect(address: impl Into<String>);                   // from a Title page's act: join that server
 ```
 
-- `HorizonSettings`: a row of the Horizon Settings page, after the engine's own pages. `Title` and `Pause`: a
-  button on the title screen or the pause menu that opens the page. These buttons exist only when something
+- `HorizonSettings`: a row of the Horizon Settings page, after the engine's own pages. `Pause`: a
+  button on the pause menu that opens the page. These buttons exist only when something
   registered, so the vanilla menus keep vanilla's look. The page is drawn with the same widgets, tooltips,
   narration, controller focus and `horizon-ctl` ids as the engine's pages.
+- `PauseFriends`: what the pause menu's vanilla Friends icon opens. The icon is active while a page is registered
+  there and the world can be shared; the page is drawn as its own screen over the paused world (title, rows down the
+  middle, footer buttons beside Done), the way Play with Friends' screen always looked.
 - `Button` and `Text` are built with `Row::button` and `Row::text` and their options: `.active(false)` greys a
   button, `.half()` puts two side by side, `.footer()` sets one beside Done on a page drawn as its own screen,
   `.quiet()` greys text, `.groups()` breaks it only between `-`-separated groups (an invite code). In the options
@@ -402,9 +410,9 @@ pub fn connect(address: impl Into<String>);                   // from a Title pa
   keeps its place and look at every GUI scale, and opens the first page registered there as a form drawn as Join a
   Friend is (`multiplayer/page.rs`): the title, the rows from y 53 (a field's grey label, its 200-wide box 11
   below, 41 a field), the buttons in a column from a quarter of the height + 114, the back button last
-  (`Page::back`, `gui.cancel` for a form). It shows heading, note, text, space, field and button rows. With no page
-  there the icon opens the engine's Join a Friend while an invite-code resolver is registered, else it is
-  inactive.
+  (`Page::back`, `gui.cancel` for a form). It shows heading, note, text, space, field and button rows, and calls
+  `Page::opened` each time it opens. With no page there (horizon-client's own executable) the icon is inactive.
+  horizon-friends' Join a Friend is the official executable's.
 - `Field` is vanilla's `EditBox` on a page drawn as its own screen: focus by click or Tab, typing, the caret keys,
   selection, copy and paste, at most `max` characters (32 by default). The engine keeps its text while the page is
   open and sends each change (`Act::Edit`, before any other act or redraw reaches the page) and Enter
@@ -577,7 +585,7 @@ Both run in CI's verify job and in `tools/pr_ready.py`.
 
 | Crate | Uses, against the rule |
 |---|---|
-| `horizon-client` | platform: `horizon-anticheat`, `-chat-filter`, `-dualsense`, `-hdr`, `-mod-api-gen`, `-mods`, `-optifine`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-cosmetics`, `-friends`, `-telemetry` |
+| `horizon-client` | platform: `horizon-anticheat`, `-chat-filter`, `-dualsense`, `-hdr`, `-mod-api-gen`, `-mods`, `-optifine`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-cosmetics`, `-telemetry` (`horizon-friends` left through `Hooks::tunnel`, `share`, `control` and its page, #14167) |
 | `horizon-client-lib` | platform: `horizon-anticheat`, `-hdr`, `-mcp`, `-mods`, `-optifine`, `-shader-api`, `-shaders`; Horizon: `horizon-telemetry` |
 | `horizon-client-render` | platform: `horizon-hdr`, `-optifine`, `-polytone`, `-shader-api`, `-shaders` |
 

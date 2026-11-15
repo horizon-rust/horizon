@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "मित्रों के साथ खेलें",
+  "horizon.friends.hint": "मित्र शीर्षक स्क्रीन के फ्रेंड्स बटन के बाद, डायरेक्ट कनेक्शन में, या लॉन्चर के प्ले पेज पर कोड पेस्ट करते हैं।",
+  "horizon.friends.copied": "कॉपी किया गया",
+  "horizon.friends.copy_code": "कोड कॉपी करें",
+  "horizon.friends.stop_sharing": "साझा करना बंद करें",
+  "horizon.friends.none_yet": "यहाँ अभी कोई मित्र नहीं है।",
+  "horizon.friends.here_now": "अभी यहाँ हैं: %s",
+  "horizon.friends.share_intro": "इस दुनिया को आमंत्रण कोड के पीछे साझा करें: यह LAN के लिए खुलता है, और इंटरनेट पर मित्र कोड के साथ जुड़ते हैं। इसमें हमारा कोई सर्वर शामिल नहीं है।",
+  "horizon.friends.start_sharing": "साझा करना शुरू करें",
+  "horizon.friends.troubleshooting": "समस्या निवारण...",
+  "horizon.friends.stopped": "आमंत्रण कोड साझा करना बंद कर दिया।",
+  "horizon.friends.short_code_changed": "किसी ने बार-बार गलत शॉर्ट कोड आजमाया, इसलिए यह बदल गया।",
+  "horizon.friends.wrong_code": "किसी ने गलत कोड आजमाया।",
+  "horizon.friends.relay_stopped": "बहुत अधिक गलत शॉर्ट कोड, इसलिए दोबारा साझा करने तक रिले बंद है। मित्र अभी भी पूर्ण कोड से जुड़ सकते हैं।",
+  "horizon.friends.code_ready": "आपका आमंत्रण कोड तैयार है: गेम मेनू, प्ले विद फ्रेंड्स। इसे कॉपी करें और अपने मित्रों को भेजें।",
+  "horizon.friends.share_failed": "दुनिया साझा नहीं की जा सकी: %s",
+  "horizon.friends.finding_route": "ढूंढ रहे हैं कि मित्र आप तक कैसे पहुँच सकते हैं…",
+  "horizon.multiplayer.join": "शामिल हों",
+  "horizon.multiplayer.join_friend": "मित्र से जुड़ें",
+  "horizon.multiplayer.invite_code": "आमंत्रण कोड",
+  "horizon.multiplayer.relay": "रिले (वैकल्पिक)"
+}

@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Játssz a barátokkal",
+  "horizon.friends.hint": "Az ismerősök beillesztik a kódot a címképernyő Barátok gombja mögé, a Közvetlen kapcsolatba vagy az indító Play oldalára.",
+  "horizon.friends.copied": "Másolva",
+  "horizon.friends.copy_code": "Kód másolása",
+  "horizon.friends.stop_sharing": "Megosztás leállítása",
+  "horizon.friends.none_yet": "Még nincsenek itt barátok.",
+  "horizon.friends.here_now": "Itt most: %s",
+  "horizon.friends.share_intro": "Oszd meg ezt a világot egy meghívókód mögött: megnyílik a LAN-hoz, és az interneten lévő ismerősök is csatlakoznak a kódhoz. A mi szerverünk nem érintett.",
+  "horizon.friends.start_sharing": "Indítsa el a Megosztást",
+  "horizon.friends.troubleshooting": "Hibaelhárítás...",
+  "horizon.friends.stopped": "A meghívókód megosztása leállt.",
+  "horizon.friends.short_code_changed": "Valaki folyamatosan rossz rövid kóddal próbálkozott, ezért megváltozott.",
+  "horizon.friends.wrong_code": "Valaki rossz kóddal próbálkozott.",
+  "horizon.friends.relay_stopped": "Túl sok rossz rövid kód érkezett, ezért a relé ki van kapcsolva, amíg újra nem osztja meg. A barátok a teljes kóddal továbbra is csatlakozhatnak.",
+  "horizon.friends.code_ready": "A meghívókód készen áll: Játékmenü, Játssz a barátokkal. Másold ki és küldd el ismerőseidnek.",
+  "horizon.friends.share_failed": "Nem sikerült megosztani a világot: %s",
+  "horizon.friends.finding_route": "Megtudja, hogyan érhetnek el barátaid…",
+  "horizon.multiplayer.join": "Csatlakozz",
+  "horizon.multiplayer.join_friend": "Csatlakozz egy baráthoz",
+  "horizon.multiplayer.invite_code": "Meghívó kód",
+  "horizon.multiplayer.relay": "Relé (opcionális)"
+}

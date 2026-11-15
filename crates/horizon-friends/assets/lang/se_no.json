@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Speallat ustibiiguin",
+  "horizon.friends.hint": "Friends liibmet koda maŋŋel nammačájáhusa Friends-boalu, Direct Connection:as dahje álggaheaddji Play-siiddus.",
+  "horizon.friends.copied": "Kopieren",
+  "horizon.friends.copy_code": "Kopiere koda",
+  "horizon.friends.stop_sharing": "Heaittit juohkima",
+  "horizon.friends.none_yet": "Eai leat skihpárat dáppe vuos.",
+  "horizon.friends.here_now": "Dáppe dál: %s",
+  "horizon.friends.share_intro": "Juohkit dán máilmmi bovdehuskoda duohken: dat rahppo LAN:ii, ja skihpárat interneahtas servet kodain. Ii oktage min bálvaleaddji leat mielde.",
+  "horizon.friends.start_sharing": "Álggat juohkit",
+  "horizon.friends.troubleshooting": "Vealaheapmi...",
+  "horizon.friends.stopped": "Heaittihan bovdehuskoda juohkima.",
+  "horizon.friends.short_code_changed": "Muhtin geahččalii ain boastut oanehis koda, nu ahte dat rievddai.",
+  "horizon.friends.wrong_code": "Muhtin geahččalii boastut koda.",
+  "horizon.friends.relay_stopped": "Ollu boastut oanehis kodat, nu ahte rele lea heaittihuvvon gitta dassážii go juohkit ođđasit. Skihpárat sáhttet ain searvat olles kodain.",
+  "horizon.friends.code_ready": "Du bovdehuskoda lea gárvvis: Speallanmenu, Speallan ustibiiguin. Kopiere dan ja sádde dan iežat skihpáriidda.",
+  "horizon.friends.share_failed": "Ii sáhttán juohkit máilmmi: %s",
+  "horizon.friends.finding_route": "Gávdnat mo skihpárat sáhttet olahit du...",
+  "horizon.multiplayer.join": "Searvva",
+  "horizon.multiplayer.join_friend": "Searvva ovtta skihpárii",
+  "horizon.multiplayer.invite_code": "Bovdehuskoda",
+  "horizon.multiplayer.relay": "Rele (válljejuvvon)"
+}

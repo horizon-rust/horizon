@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Mängige sõpradega",
+  "horizon.friends.hint": "Sõbrad kleebivad koodi pealkirjaekraani nupu Sõbrad järele, otseühenduses või käivitusprogrammi Play lehel.",
+  "horizon.friends.copied": "Kopeeritud",
+  "horizon.friends.copy_code": "Kopeeri kood",
+  "horizon.friends.stop_sharing": "Lõpeta jagamine",
+  "horizon.friends.none_yet": "Siin pole veel sõpru.",
+  "horizon.friends.here_now": "Siin praegu: %s",
+  "horizon.friends.share_intro": "Jagage seda maailma kutsekoodi taga: see avaneb LAN-i ja Internetis olevad sõbrad liituvad koodiga. Ükski meie server ei ole sellega seotud.",
+  "horizon.friends.start_sharing": "Alusta jagamist",
+  "horizon.friends.troubleshooting": "Veaotsing...",
+  "horizon.friends.stopped": "Kutsekoodi jagamine lõpetati.",
+  "horizon.friends.short_code_changed": "Keegi proovis pidevalt valet lühikoodi, nii et see muutus.",
+  "horizon.friends.wrong_code": "Keegi proovis vale koodi.",
+  "horizon.friends.relay_stopped": "Liiga palju valesid lühikoode, seega relee on väljas, kuni uuesti jagad. Sõbrad saavad siiski täiskoodiga liituda.",
+  "horizon.friends.code_ready": "Teie kutsekood on valmis: Mängumenüü, Mängige sõpradega. Kopeerige see ja saatke see oma sõpradele.",
+  "horizon.friends.share_failed": "Ei saanud maailma jagada: %s",
+  "horizon.friends.finding_route": "Kuidas sõbrad teiega ühendust saavad…",
+  "horizon.multiplayer.join": "Liitu",
+  "horizon.multiplayer.join_friend": "Liituge sõbraga",
+  "horizon.multiplayer.invite_code": "Kutsekood",
+  "horizon.multiplayer.relay": "Relee (valikuline)"
+}

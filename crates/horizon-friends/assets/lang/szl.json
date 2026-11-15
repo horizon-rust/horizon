@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Graj z Kamratami",
+  "horizon.friends.hint": "Kamraci wklejajōm kod po knopku Kamraci na ekranie tytułowym, w bezpostrzednim połōnczyniu abo na strōnie Ôdtworz ôd startera.",
+  "horizon.friends.copied": "Skopiowane",
+  "horizon.friends.copy_code": "Kopiuj kodu",
+  "horizon.friends.stop_sharing": "Przestań udostępnianie",
+  "horizon.friends.none_yet": "Jeszcze niy ma tutaj kamratōw.",
+  "horizon.friends.here_now": "Tu teraz: %s",
+  "horizon.friends.share_intro": "Podzielij sie tym światym za kodym zaproszynio: ôn sie ôtwiyro na LAN, a kamraty w Internecie prziłōnczajōm sie z kodym. Żodyn nasz serwer niy je zaangażowany.",
+  "horizon.friends.start_sharing": "Zacznij udostępnianie",
+  "horizon.friends.troubleshooting": "Rozwiōnzowanie problymōw...",
+  "horizon.friends.stopped": "Przestało udostępnianie kodu zaproszynio.",
+  "horizon.friends.short_code_changed": "Ktoś durch prōbowoł felerny krōtki kod, tōż sie zmiyniyło.",
+  "horizon.friends.wrong_code": "Ktoś prōbowoł felernego kodu.",
+  "horizon.friends.relay_stopped": "Za moc złych krōtkich kodōw, tōż przekaźnik je wyłōnczōny, dopōki niy udostympnisz nazod. Kamraci mogōm sie durch prziłōnczyć pełnym kodym.",
+  "horizon.friends.code_ready": "Kod zaproszynio je gotowy: Menu Grōw, Gra z Kamratami. Skopiuj ja i wysyłaj do swojich kamratōw.",
+  "horizon.friends.share_failed": "Niy mōg sie dzielić światym: %s",
+  "horizon.friends.finding_route": "Znojdowanie, jak kamraci mogōm sie z Tobōm dotrzeć...",
+  "horizon.multiplayer.join": "Prziłōncz sie",
+  "horizon.multiplayer.join_friend": "Prziłōncz sie do Kamrata",
+  "horizon.multiplayer.invite_code": "Kod zaproszynio",
+  "horizon.multiplayer.relay": "Przekaźnik (opcjōnalnie)"
+}

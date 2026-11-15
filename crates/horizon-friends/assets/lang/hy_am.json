@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Խաղացեք ընկերների հետ",
+  "horizon.friends.hint": "Ընկերները տեղադրում են կոդը վերնագրի էկրանի Ընկերներ կոճակից հետո, ուղիղ միացումում կամ գործարկողի Play էջում:",
+  "horizon.friends.copied": "Պատճենվել է",
+  "horizon.friends.copy_code": "Պատճենել կոդը",
+  "horizon.friends.stop_sharing": "Դադարեցնել համօգտագործումը",
+  "horizon.friends.none_yet": "Այստեղ դեռ ընկերներ չկան:",
+  "horizon.friends.here_now": "Ահա հիմա: %s",
+  "horizon.friends.share_intro": "Կիսվեք այս աշխարհով հրավերի կոդով. այն բացվում է LAN-ի համար, և ինտերնետում գտնվող ընկերները միանում են կոդով: Մեր ոչ մի սերվեր ներգրավված չէ:",
+  "horizon.friends.start_sharing": "Սկսեք համօգտագործել",
+  "horizon.friends.troubleshooting": "Անսարքությունների վերացում...",
+  "horizon.friends.stopped": "Դադարեցվել է հրապարակել հրավերի կոդը:",
+  "horizon.friends.short_code_changed": "Ինչ-որ մեկը շարունակում էր սխալ կարճ կոդ փորձել, ուստի այն փոխվեց:",
+  "horizon.friends.wrong_code": "Ինչ-որ մեկը սխալ կոդ է փորձել:",
+  "horizon.friends.relay_stopped": "Չափից շատ սխալ կարճ կոդեր, ուստի ռելեն անջատված է, մինչև նորից կիսվեք։ Ընկերները դեռ կարող են միանալ ամբողջական կոդով։",
+  "horizon.friends.code_ready": "Ձեր հրավերի կոդը պատրաստ է. Խաղի ընտրացանկ, Խաղացեք ընկերների հետ: Պատճենեք այն և ուղարկեք ձեր ընկերներին։",
+  "horizon.friends.share_failed": "Չեմ կարող կիսվել աշխարհով. %s",
+  "horizon.friends.finding_route": "Գտեք, թե ինչպես ընկերները կարող են կապվել ձեզ հետ…",
+  "horizon.multiplayer.join": "Միանալ",
+  "horizon.multiplayer.join_friend": "Միացեք ընկերոջը",
+  "horizon.multiplayer.invite_code": "Հրավիրել կոդը",
+  "horizon.multiplayer.relay": "Ռելե (ըստ ցանկության)"
+}

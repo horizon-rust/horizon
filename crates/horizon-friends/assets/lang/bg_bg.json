@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Играйте с приятели",
+  "horizon.friends.hint": "Приятели поставете кода след бутона Приятели на заглавния екран, в Direct Connection или на страницата за възпроизвеждане на стартовия панел.",
+  "horizon.friends.copied": "Копирано",
+  "horizon.friends.copy_code": "Копиране на код",
+  "horizon.friends.stop_sharing": "Спиране на споделянето",
+  "horizon.friends.none_yet": "Тук все още няма приятели.",
+  "horizon.friends.here_now": "Тук сега: %s",
+  "horizon.friends.share_intro": "Споделете този свят зад код за покана: той се отваря към LAN и приятели в интернет се присъединяват с кода. Не е включен наш сървър.",
+  "horizon.friends.start_sharing": "Започнете споделяне",
+  "horizon.friends.troubleshooting": "Отстраняване на неизправности...",
+  "horizon.friends.stopped": "Спря споделянето на кода за покана.",
+  "horizon.friends.short_code_changed": "Някой продължаваше да опитва грешен кратък код, така че той се промени.",
+  "horizon.friends.wrong_code": "Някой е опитал грешен код.",
+  "horizon.friends.relay_stopped": "Твърде много грешни кратки кодове, затова релето е изключено, докато не споделите отново. Приятелите все още могат да се присъединят с пълния код.",
+  "horizon.friends.code_ready": "Вашият код за покана е готов: Меню за игри, Играйте с приятели. Копирайте го и го изпратете на приятелите си.",
+  "horizon.friends.share_failed": "Не можах да споделя света: %s",
+  "horizon.friends.finding_route": "Търся как приятелите могат да се свържат с вас...",
+  "horizon.multiplayer.join": "Присъединете се",
+  "horizon.multiplayer.join_friend": "Присъединете се към приятел",
+  "horizon.multiplayer.invite_code": "Код за покана",
+  "horizon.multiplayer.relay": "Реле (по избор)"
+}

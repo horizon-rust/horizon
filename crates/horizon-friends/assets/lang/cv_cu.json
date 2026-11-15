@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Юлташсемпе выля",
+  "horizon.friends.hint": "Туссем ҫак кода титул экранӗнчи Туссем кнопки хыҫҫӑн, Тӳрӗ ҫыхӑнура е пуҫлаканӑн Play страницинче ҫыпӑҫтараҫҫӗ.",
+  "horizon.friends.copied": "Копиленӗ",
+  "horizon.friends.copy_code": "Код копийӗ",
+  "horizon.friends.stop_sharing": "Пайлама пӑрахӑр",
+  "horizon.friends.none_yet": "Кунта туссем ҫук-ха.",
+  "horizon.friends.here_now": "Акӑ халӗ: %s",
+  "horizon.friends.share_intro": "Ҫак тӗнчене йыхрав кодӗ хыҫӗнче пайла: вӑл LAN-а уҫӑлать, интернетри туссем вара ҫав кодпа хутшӑнаҫҫӗ. Пирӗн пӗр сервер та ҫак ӗҫе хутшӑнмасть.",
+  "horizon.friends.start_sharing": "Пайлама пуҫлӑр",
+  "horizon.friends.troubleshooting": "Ҫитменлӗхсене пӗтересси...",
+  "horizon.friends.stopped": "Чӗнӳ кодне пайлама пӑрахрӑм.",
+  "horizon.friends.short_code_changed": "Такам кӗске кода йӑнӑш ҫырса пӑхрӗ, ҫавӑнпа вӑл улшӑнчӗ.",
+  "horizon.friends.wrong_code": "Такам йӑнӑш кодпа усӑ курса пӑхнӑ.",
+  "horizon.friends.relay_stopped": "Ытла нумай тӗрӗс мар кӗске код, ҫавӑнпа реле эсир тепӗр хут пайласан ҫеҫ ӗҫлӗ. Тусем тулли кодпа кӗме пултараҫҫӗ.",
+  "horizon.friends.code_ready": "Сирӗн чӗнӳ кодӗ хатӗр: Вӑйӑ меню, Туссемпе выля. Ӑна копилесе юлташсене ярса парӑр.",
+  "horizon.friends.share_failed": "Тӗнчене пайлаймарӑм: %s",
+  "horizon.friends.finding_route": "Юлташсем сирӗн пата мӗнле ҫитме пултарнине тупасси...",
+  "horizon.multiplayer.join": "Пӗрлешӗр",
+  "horizon.multiplayer.join_friend": "Тус ҫумне хутшӑн",
+  "horizon.multiplayer.invite_code": "Йыхрав кодӗ",
+  "horizon.multiplayer.relay": "Реле (опционально)"
+}

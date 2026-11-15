@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "C'hoari gant mignoned",
+  "horizon.friends.hint": "Pegañ a ra ar vignoned ar c'hod goude bouton Mignoned ar skramm titl, e Kevreadur war-eeun, pe war bajenn C'hoari al lañser.",
+  "horizon.friends.copied": "Eilet",
+  "horizon.friends.copy_code": "Eilañ ar c'hod",
+  "horizon.friends.stop_sharing": "Paouez da rannañ",
+  "horizon.friends.none_yet": "Mignon ebet amañ c'hoazh.",
+  "horizon.friends.here_now": "Setu bremañ : %s",
+  "horizon.friends.share_intro": "Rannañ ar bed-mañ a-dreñv ur c'hod pediñ : digeriñ a ra d'ar LAN, ha mignoned war internet a gemer perzh gant ar c'hod. N'eus servijer ebet ac'hanomp e-barzh.",
+  "horizon.friends.start_sharing": "Kregiñ da rannañ",
+  "horizon.friends.troubleshooting": "Diskoulmañ kudennoù...",
+  "horizon.friends.stopped": "Paouezet da rannañ ar c'hod pediñ.",
+  "horizon.friends.short_code_changed": "Unan bennak a gendalc'has da glask ur c'hod berr fazius, setu m'eo cheñchet.",
+  "horizon.friends.wrong_code": "Unan bennak en deus klasket ur c'hod fall.",
+  "horizon.friends.relay_stopped": "Re a godoù berr fazius, setu m'eo diweredekaet an treuzkas betek ma rannit en-dro. Ar vignoned a c'hall c'hoazh mont e-barzh gant ar c'hod klok.",
+  "horizon.friends.code_ready": "Prest eo ho kod pediñ : Menü ar c'hoari, C'hoari gant mignoned. Eilañ anezhañ ha kas anezhañ d'ho mignoned.",
+  "horizon.friends.share_failed": "N'hall ket rannañ ar bed : %s",
+  "horizon.friends.finding_route": "Kavout penaos e c'hall mignoned tizhout ac'hanoc'h...",
+  "horizon.multiplayer.join": "Kemer perzh",
+  "horizon.multiplayer.join_friend": "Kemer perzh en ur mignon",
+  "horizon.multiplayer.invite_code": "Kod pediñ",
+  "horizon.multiplayer.relay": "Treuzkas (dibar)"
+}

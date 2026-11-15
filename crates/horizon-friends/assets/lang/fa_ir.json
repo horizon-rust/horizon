@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "با دوستان بازی کنید",
+  "horizon.friends.hint": "دوستان کد را بعد از دکمه Friends صفحه عنوان، در اتصال مستقیم یا در صفحه Play راه‌انداز قرار می‌دهند.",
+  "horizon.friends.copied": "کپی شده است",
+  "horizon.friends.copy_code": "کد را کپی کنید",
+  "horizon.friends.stop_sharing": "اشتراک گذاری را متوقف کنید",
+  "horizon.friends.none_yet": "هنوز دوستی اینجا نیست",
+  "horizon.friends.here_now": "اکنون اینجا: %s",
+  "horizon.friends.share_intro": "این دنیا را پشت یک کد دعوت به اشتراک بگذارید: به شبکه LAN باز می شود و دوستانی که در اینترنت هستند با این کد ملحق می شوند. هیچ سروری از ما درگیر نیست.",
+  "horizon.friends.start_sharing": "اشتراک گذاری را شروع کنید",
+  "horizon.friends.troubleshooting": "عیب یابی ...",
+  "horizon.friends.stopped": "اشتراک‌گذاری کد دعوت متوقف شد.",
+  "horizon.friends.short_code_changed": "کسی مدام یک کد کوتاه اشتباه را امتحان می‌کرد، بنابراین تغییر کرد.",
+  "horizon.friends.wrong_code": "شخصی کد اشتباهی را امتحان کرده است.",
+  "horizon.friends.relay_stopped": "کدهای کوتاه اشتباه بیش از حد بود، بنابراین رله تا اشتراک‌گذاری دوباره خاموش است. دوستان هنوز می‌توانند با کد کامل بپیوندند.",
+  "horizon.friends.code_ready": "کد دعوت شما آماده است: منوی بازی، بازی با دوستان. کپی کنید و برای دوستانتان ارسال کنید.",
+  "horizon.friends.share_failed": "نمی توان جهان را به اشتراک گذاشت: %s",
+  "horizon.friends.finding_route": "یافتن نحوه ارتباط دوستان با شما…",
+  "horizon.multiplayer.join": "بپیوندید",
+  "horizon.multiplayer.join_friend": "به یک دوست بپیوندید",
+  "horizon.multiplayer.invite_code": "کد دعوت",
+  "horizon.multiplayer.relay": "رله (اختیاری)"
+}

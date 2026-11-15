@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Giœgar cunt i amì",
+  "horizon.friends.hint": "I amis incollan el codes dopu el buttun Amis de la scherma del titul, en Cunnession diretta o sü la pagina Play del lanciador.",
+  "horizon.friends.copied": "Copià",
+  "horizon.friends.copy_code": "Codèss de copia",
+  "horizon.friends.stop_sharing": "Ferma de condivider",
+  "horizon.friends.none_yet": "Ancamò nissun amis chi.",
+  "horizon.friends.here_now": "Qui adess: %s",
+  "horizon.friends.share_intro": "Condividi chestu mund deré a un codes de invito: se derva a la LAN e i amis sü Internet se unisen cunt el codes. Nissun noster server l’è coinvolt.",
+  "horizon.friends.start_sharing": "Cumincià a condivider",
+  "horizon.friends.troubleshooting": "Risoluziun di prublem...",
+  "horizon.friends.stopped": "Fermà de condivider el codèss de invito.",
+  "horizon.friends.short_code_changed": "Quaivun g’ha continuà a pruvar un codes curt sbajaa, inscì l’è cambià.",
+  "horizon.friends.wrong_code": "Quaivun g’ha pruvà un codes sbajaa.",
+  "horizon.friends.relay_stopped": "Trope codes curt sbajaa, donca el relè l'è spent fin quand te condividet ancamò. I amis pœden entrà ancamò cunt el codes cumplet.",
+  "horizon.friends.code_ready": "El tò codes de invito l’è pront: Menu del giœugh, Giœugh cunt i amì. Copia-la e manda-la ai tò amis.",
+  "horizon.friends.share_failed": "Pudeva minga cundivider el mund: %s",
+  "horizon.friends.finding_route": "Truvà cuma i amis pœden rivà a ti...",
+  "horizon.multiplayer.join": "Partecipa",
+  "horizon.multiplayer.join_friend": "Unis-te a un amig",
+  "horizon.multiplayer.invite_code": "Codex de l'invito",
+  "horizon.multiplayer.relay": "Relè (facultatif)"
+}

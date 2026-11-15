@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Chơi với bạn bè",
+  "horizon.friends.hint": "Bạn bè dán mã sau nút Bạn bè của màn hình tiêu đề, trong Kết nối Trực tiếp hoặc trên trang Play của trình khởi chạy.",
+  "horizon.friends.copied": "Đã sao chép",
+  "horizon.friends.copy_code": "Sao chép mã",
+  "horizon.friends.stop_sharing": "Dừng chia sẻ",
+  "horizon.friends.none_yet": "Chưa có bạn bè ở đây.",
+  "horizon.friends.here_now": "Ở đây bây giờ: %s",
+  "horizon.friends.share_intro": "Chia sẻ thế giới này đằng sau mã mời: nó mở ra mạng LAN và bạn bè trên internet tham gia bằng mã. Không có máy chủ của chúng tôi có liên quan.",
+  "horizon.friends.start_sharing": "Bắt đầu chia sẻ",
+  "horizon.friends.troubleshooting": "Đang khắc phục sự cố...",
+  "horizon.friends.stopped": "Đã dừng chia sẻ mã mời.",
+  "horizon.friends.short_code_changed": "Ai đó liên tục thử sai mã ngắn nên nó đã thay đổi.",
+  "horizon.friends.wrong_code": "Ai đó đã thử nhập sai mã.",
+  "horizon.friends.relay_stopped": "Quá nhiều mã ngắn bị nhập sai nên rơle tắt cho đến khi bạn chia sẻ lại. Bạn bè vẫn có thể tham gia bằng mã đầy đủ.",
+  "horizon.friends.code_ready": "Mã mời của bạn đã sẵn sàng: Menu trò chơi, Chơi cùng bạn bè. Sao chép nó và gửi cho bạn bè của bạn.",
+  "horizon.friends.share_failed": "Không thể chia sẻ thế giới: %s",
+  "horizon.friends.finding_route": "Đang tìm cách bạn bè có thể liên hệ với bạn…",
+  "horizon.multiplayer.join": "Tham gia",
+  "horizon.multiplayer.join_friend": "Tham gia cùng một người bạn",
+  "horizon.multiplayer.invite_code": "Mã mời",
+  "horizon.multiplayer.relay": "Rơle (tùy chọn)"
+}

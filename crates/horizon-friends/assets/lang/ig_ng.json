@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Soro ndị enyi gwuo egwu",
+  "horizon.friends.hint": "Ndị enyi na-amanye koodu ahụ ka bọtịnụ ndị enyi gachara aha ihuenyo ahụ, na njikọ Direct, ma ọ bụ na ibe Play nke onye mbido.",
+  "horizon.friends.copied": "Eṅomiri",
+  "horizon.friends.copy_code": "Detuo koodu",
+  "horizon.friends.stop_sharing": "Kwụsị ikekọrịta",
+  "horizon.friends.none_yet": "Onweghi enyi ebea.",
+  "horizon.friends.here_now": "Ebe a ugbu a: %s",
+  "horizon.friends.share_intro": "Kekọrịta ụwa a n'azụ koodu ịkpọ òkù: ọ ga-emepe na LAN, ndị enyi na ịntanetị sonye na koodu ahụ. Ọ nweghị ihe nkesa nke anyị metụtara.",
+  "horizon.friends.start_sharing": "Malite ikekọrịta",
+  "horizon.friends.troubleshooting": "Nchọpụta nsogbu...",
+  "horizon.friends.stopped": "Kwụsị ikesa koodu ịkpọ òkù.",
+  "horizon.friends.short_code_changed": "Mmadụ nọgidere na-agbalị koodu dị mkpirikpi na-ezighi ezi, ya mere ọ gbanwere.",
+  "horizon.friends.wrong_code": "Mmadụ nwara koodu na-ezighi ezi.",
+  "horizon.friends.relay_stopped": "Koodu mkpụmkpụ na-ezighi ezi karịrị oke, ya mere relay agbanyụrụ ruo mgbe i ga-ekerịta ọzọ. Ndị enyi ka nwere ike iso na koodu zuru oke.",
+  "horizon.friends.code_ready": "Koodu ịkpọ oku gị adịla njikere: NchNhr Egwuregwu, Soro ndị enyi gwuo egwu. Detuo ya ma ziga ya ndị enyi gị.",
+  "horizon.friends.share_failed": "Enweghị ike ịkekọrịta ụwa: %s",
+  "horizon.friends.finding_route": "Ịchọta ka ndị enyi ga-esi nweta gị…",
+  "horizon.multiplayer.join": "Soro",
+  "horizon.multiplayer.join_friend": "Soro enyi",
+  "horizon.multiplayer.invite_code": "Koodu ịkpọ oku",
+  "horizon.multiplayer.relay": "Ntugharị (nhọrọ)"
+}

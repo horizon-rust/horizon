@@ -1,0 +1,23 @@
+{
+  "horizon.friends.title": "Bermain dengan Kawan",
+  "horizon.friends.hint": "Rakan tampal kod selepas butang Rakan skrin tajuk, dalam Sambungan Terus atau pada halaman Main pelancar.",
+  "horizon.friends.copied": "disalin",
+  "horizon.friends.copy_code": "Salin Kod",
+  "horizon.friends.stop_sharing": "Berhenti Berkongsi",
+  "horizon.friends.none_yet": "Belum ada kawan di sini.",
+  "horizon.friends.here_now": "Di sini sekarang: %s",
+  "horizon.friends.share_intro": "Kongsi dunia ini di sebalik kod jemputan: ia dibuka kepada LAN, dan rakan di Internet menyertai kod tersebut. Tiada pelayan kami terlibat.",
+  "horizon.friends.start_sharing": "Mula Berkongsi",
+  "horizon.friends.troubleshooting": "Menyelesaikan masalah...",
+  "horizon.friends.stopped": "Berhenti berkongsi kod jemputan.",
+  "horizon.friends.short_code_changed": "Seseorang terus mencuba kod pendek yang salah, jadi ia berubah.",
+  "horizon.friends.wrong_code": "Seseorang mencuba kod yang salah.",
+  "horizon.friends.relay_stopped": "Terlalu banyak kod pendek yang salah, jadi geganti dimatikan sehingga anda berkongsi semula. Rakan masih boleh menyertai dengan kod penuh.",
+  "horizon.friends.code_ready": "Kod jemputan anda sudah sedia: Menu Permainan, Main dengan Rakan. Salin dan hantar kepada rakan anda.",
+  "horizon.friends.share_failed": "Tidak dapat berkongsi dunia: %s",
+  "horizon.friends.finding_route": "Mencari cara rakan boleh menghubungi anda…",
+  "horizon.multiplayer.join": "Sertai",
+  "horizon.multiplayer.join_friend": "Sertai Rakan",
+  "horizon.multiplayer.invite_code": "Kod Jemputan",
+  "horizon.multiplayer.relay": "Relay (pilihan)"
+}
