@@ -5,7 +5,7 @@ pub(super) mod compute;
 mod data;
 mod display_names;
 mod target_position;
-pub(super) use data::place_summoned;
+pub(super) use data::{place_summoned, strip_finalize_tree};
 mod effects;
 pub(super) mod execute;
 pub(super) mod extra;
@@ -766,7 +766,6 @@ impl Game<'_> {
         origin: [f64; 3],
     ) -> Vec<(Target, f64)> {
         let level = self.experience.level;
-        let creative = self.creative;
         // EntitySelector tests the type before any predicate. With no scores=
         // or team= (whose holders may be made as they are read), the rest of
         // the extra filter is a pure test of each candidate, so the ones of
@@ -798,7 +797,7 @@ impl Game<'_> {
                     return None;
                 }
                 for (name, neg) in &s.names {
-                    let n = self.target_name(t).plain();
+                    let n = self.target_plain_name(t);
                     if (n == *name) == *neg {
                         return None;
                     }
@@ -807,7 +806,8 @@ impl Game<'_> {
                     return None;
                 }
                 let player = match t {
-                    Target::Player => Some((level, if creative { "creative" } else { "survival" })),
+                    // ServerPlayer.gameMode: the real mode, not `creative`.
+                    Target::Player => Some((level, self.mode.name())),
                     Target::Guest(conn) => self.guest_level_and_mode(conn),
                     _ => None,
                 };
@@ -1314,7 +1314,7 @@ impl Game<'_> {
         })
     }
     /// `ItemStack.getDisplayName`: the hover name (custom name in italics,
-    /// a written book's title, a potion's effect name, else the item's
+    /// a written book's title, a potion's effect name, a lodestone compass, else the item's
     /// translated name) in brackets, in the rarity colour and showing the
     /// stack on hover unless it is empty.
     pub(super) fn stack_display_name(&self, s: &ItemStack) -> Text {
@@ -1326,6 +1326,12 @@ impl Game<'_> {
         } else if let Some(key) = horizon_client::brewing::contents_name_key(s) {
             // A potion's or tipped arrow's own name, over its `item_name`.
             Text::translate(&key, &[])
+        } else if item == "minecraft:compass"
+            && s.data()
+                .is_some_and(|d| d.other("minecraft:lodestone_tracker").is_some())
+        {
+            // `CompassItem.getName`: a lodestone tracker names it, over `item_name`.
+            Text::translate("item.minecraft.lodestone_compass", &[])
         } else if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
             // `ItemStack.getItemName`: the `item_name` component wins over the
             // item's own name (`Item.getName`), so a datapack's or a server's
@@ -1387,18 +1393,6 @@ impl Game<'_> {
         wrapped
             .with_color(color)
             .with_component_fields(vec![("hover_event".into(), shown)])
-    }
-    pub(super) fn item_rarity(&self, item: &str) -> String {
-        static RARITY: std::sync::OnceLock<std::collections::HashMap<String, String>> =
-            std::sync::OnceLock::new();
-        let map = RARITY.get_or_init(|| {
-            horizon_world::item_defaults::read(&self.options.resources)
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|(k, c)| c["minecraft:rarity"].as_str().map(|r| (k, r.to_owned())))
-                .collect()
-        });
-        map.get(item).cloned().unwrap_or_else(|| "common".into())
     }
     fn cmd_give(&mut self, ctx: &Context) -> R<i32> {
         let Some(Arg::Item(ItemInput { id, components, .. })) = ctx.get("item").cloned() else {
@@ -1804,8 +1798,7 @@ impl Game<'_> {
                     c.at = pos;
                 }
             }
-            // Wall-mounted entities do not move.
-            Target::Frame(_) | Target::Painting(_) => {}
+            Target::Frame(_) | Target::Painting(_) => self.teleport_hanging(t, v),
             // The commands leave a natural knot out (`without_knots`).
             Target::Knot(_) => {}
         }
@@ -1839,12 +1832,12 @@ impl Game<'_> {
         rotation: Option<[f32; 2]>,
         turn_riders: bool,
     ) -> R<bool> {
-        match self.teleport_vehicle_across(t, level, pos, rotation, turn_riders) {
+        match self.teleport_any_across(t, level, pos, rotation, turn_riders) {
             Ok(true) => return Ok(true),
             Ok(false) => {}
             Err(error) => {
                 log::error!("entity teleport into {}: {error}", level.id());
-                return Err(err("commands.generic.exception", &[]));
+                return Err(err("command.failed", &[]));
             }
         }
         let conn = match t {
@@ -2064,38 +2057,6 @@ impl Game<'_> {
         };
         self.feedback(message);
         Ok(targets.len() as i32)
-    }
-    /// `ServerClockManager.getInstance`: commands address clock-keyed state.
-    /// Keep the existing Overworld clock tied to the world's canonical day time.
-    pub(super) fn command_clock_time(&self, clock: &str) -> i64 {
-        if clock == "minecraft:overworld" {
-            self.world.day_time
-        } else {
-            self.ui.command_clocks.get(clock).map_or(0, |c| c.0)
-        }
-    }
-    pub(super) fn set_command_clock_time(&mut self, clock: &str, total: i64) {
-        if clock == "minecraft:overworld" {
-            self.world.day_time = total;
-        } else {
-            self.ui
-                .command_clocks
-                .entry(clock.to_owned())
-                .or_default()
-                .0 = total;
-        }
-    }
-    pub(super) fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
-        if clock == "minecraft:overworld" {
-            &mut self.ui.clock
-        } else {
-            &mut self
-                .ui
-                .command_clocks
-                .entry(clock.to_owned())
-                .or_default()
-                .1
-        }
     }
     /// `TimeCommand.getDefaultClock`: explicit registered clocks and dimension defaults are
     /// separate; built-in timelines and markers belong only to Overworld.
@@ -2465,9 +2426,7 @@ impl Game<'_> {
                 Some(target) => self.target_name(target),
                 // Spawned as a kind no command target stands for (primed
                 // TNT, falling blocks, projectiles): its type's name.
-                None if self.spawned_mark() != before => {
-                    Text::translate(&entity_name_key(&kind), &[])
-                }
+                None if self.spawned_mark() != before => data::summon_type_name(&kind),
                 None => return Err(err("commands.summon.failed", &[])),
             };
             self.feedback(Text::translate("commands.summon.success", &[name]));
@@ -2483,15 +2442,11 @@ impl Game<'_> {
             name = self.target_name(Target::Mob(id));
         } else {
             match short.as_str() {
-                "item" => {
-                    // An item entity needs an item; vanilla spawns an empty one that despawns.
-                    return Err(err("commands.summon.failed", &[]));
-                }
                 "experience_orb" => {
-                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck like any orb spawn.
-                    let at = self.unstuck_orb(pos);
+                    // `EntityType`'s factory, `new ExperienceOrb(EntityType, Level)`,
+                    // which only `snapTo`s: the position is kept, even in a block.
                     self.next_entity += 1;
-                    let at = Vec3::new(at[0], at[1], at[2]);
+                    let at = Vec3::new(pos[0], pos[1], pos[2]);
                     let orb = horizon_client::entities::ExperienceOrb::new(
                         self.next_entity,
                         at,
@@ -2563,9 +2518,7 @@ impl Game<'_> {
                         Some(target) => self.target_name(target),
                         // Spawned as a kind no command target stands for
                         // (primed TNT, falling blocks, projectiles).
-                        None if self.spawned_mark() != before => {
-                            Text::translate(&entity_name_key(&kind), &[])
-                        }
+                        None if self.spawned_mark() != before => data::summon_type_name(&kind),
                         None => return Err(err("commands.summon.failed", &[])),
                     };
                 }
@@ -2733,7 +2686,7 @@ impl Game<'_> {
             return Err(err("commands.setblock.failed", &[]));
         }
         let current = self.world.block(pos[0], pos[1], pos[2]);
-        if ctx.has("keep") && current != self.world.air {
+        if ctx.has("keep") && !self.res.facts().is_air(current) {
             return Err(err("commands.setblock.failed", &[]));
         }
         // SetBlockCommand.setBlock skips placement when destruction already
@@ -2970,7 +2923,6 @@ impl Game<'_> {
             return Err(err("commands.fill.failed", &[]));
         }
         let state = self.block_state(&block)?;
-        let air = self.world.air;
         let (hollow, outline, destroy, strict, keep) = (
             ctx.has("hollow"),
             ctx.has("outline"),
@@ -2997,7 +2949,7 @@ impl Game<'_> {
             for z in min[2]..=max[2] {
                 for x in min[0]..=max[0] {
                     let current = self.world.block(x, y, z);
-                    if keep && current != air {
+                    if keep && !self.res.facts().is_air(current) {
                         continue;
                     }
                     // Already the block it would become: nothing to place (place_state would do nothing either).
@@ -3031,7 +2983,7 @@ impl Game<'_> {
                         || z == min[2]
                         || z == max[2];
                     let mut affected = false;
-                    if destroy && current != air {
+                    if destroy && !self.res.facts().is_air(current) {
                         self.destroy_block_dropping([x, y, z])?;
                         affected = true;
                     }
@@ -3043,7 +2995,7 @@ impl Game<'_> {
                             }
                             continue;
                         }
-                        air
+                        self.world.air
                     } else {
                         state
                     };
@@ -3133,8 +3085,8 @@ impl Game<'_> {
             to_dim.unwrap_or(here),
         )
     }
-    /// `BlockPosArgument.getLoadedBlockPos` in the level a dimension argument
-    /// names, or, without one, the command's own (as `block_pos_arg` checks it).
+    /// `BlockPosArgument.getLoadedBlockPos` (`Level.isInWorldBounds`) in the
+    /// level a dimension argument names, or, without one, the command's own.
     fn clone_loaded(
         &mut self,
         dim: Option<Dim>,
@@ -3154,7 +3106,7 @@ impl Game<'_> {
         if !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
             return Err(err("argument.pos.unloaded", &[]));
         }
-        if p[1] < self.world.bottom_y() || p[1] >= self.world.top_y() {
+        if p[1] < self.world.shape.min_y || p[1] >= self.world.shape.max_y() {
             return Err(err("argument.pos.outofworld", &[]));
         }
         Ok(())
@@ -3207,12 +3159,8 @@ impl Game<'_> {
         if area > i64::from(limit) {
             return Err(err("commands.clone.toobig", &[&limit, &area]));
         }
-        self.clone_enter(to_dim)?;
-        for p in [dest, dmax] {
-            if !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
-                return Err(err("argument.pos.unloaded", &[]));
-            }
-        }
+        // CloneCommands.clone: every column of both boxes must be loaded, in each level.
+        self.clone_boxes_loaded([(from_dim, a, b), (to_dim, dest, dmax)])?;
         // CloneCommands.clone: the destination level being a Debug world fails it.
         if self.world_debug {
             return Err(err("commands.clone.failed", &[]));
@@ -3221,7 +3169,6 @@ impl Game<'_> {
             Some(Arg::Block(f)) => Some(f.clone()),
             _ => None,
         };
-        let air = self.world.air;
         let masked = ctx.has("masked");
         self.clone_enter(from_dim)?;
         let mut copies = Vec::new();
@@ -3229,7 +3176,7 @@ impl Game<'_> {
             for z in min[2]..=max[2] {
                 for x in min[0]..=max[0] {
                     let s = self.world.block(x, y, z);
-                    if masked && s == air {
+                    if masked && self.res.facts().is_air(s) {
                         continue;
                     }
                     if let Some(f) = &filter
@@ -3253,7 +3200,7 @@ impl Game<'_> {
         }
         if moving {
             for (from, ..) in &copies {
-                self.place_state(*from, air, true, false)?;
+                self.place_state(*from, self.world.air, true, false)?;
             }
         }
         self.clone_enter(to_dim)?;
@@ -3264,7 +3211,8 @@ impl Game<'_> {
         let mut count = 0;
         for (_, to, s, entity, name) in copies {
             self.place_state(to, s, strict, false)?;
-            if Some(s) != barrier {
+            // CloneCommands.clone counts a block only when Level.setBlock returned true.
+            if self.clone_writable(to) && Some(s) != barrier {
                 count += 1;
             }
             if let Some(e) = entity {
@@ -3295,33 +3243,11 @@ impl Game<'_> {
         }
         Ok(count)
     }
-    /// Player.giveExperiencePoints including negative amounts.
-    /// The caller reports the level change to the mods.
+    /// Player.giveExperiencePoints including negative amounts, which
+    /// `Experience::give` walks down a level at a time. The caller reports the
+    /// level change to the mods.
     fn give_points(&mut self, amount: i32) {
-        let e = &mut self.experience;
-        let mut sound_level = None;
-        e.progress += amount as f32 / horizon_client::entities::Experience::needed(e.level) as f32;
-        e.total = e.total.saturating_add(amount).clamp(0, i32::MAX);
-        while e.progress < 0.0 {
-            let f = e.progress * horizon_client::entities::Experience::needed(e.level) as f32;
-            if e.level > 0 {
-                e.level -= 1;
-                e.progress = 1.0 + f / horizon_client::entities::Experience::needed(e.level) as f32;
-            } else {
-                e.level = 0;
-                e.progress = 0.0;
-            }
-        }
-        while e.progress >= 1.0 {
-            e.progress =
-                (e.progress - 1.0) * horizon_client::entities::Experience::needed(e.level) as f32;
-            e.level += 1;
-            if e.level % 5 == 0 {
-                sound_level.get_or_insert(e.level);
-            }
-            e.progress /= horizon_client::entities::Experience::needed(e.level) as f32;
-        }
-        if let Some(level) = sound_level {
+        if let Some(level) = self.experience.give(amount) {
             self.play_level_up(1, level);
         }
     }
@@ -4275,30 +4201,7 @@ impl Game<'_> {
             _ => String::new(),
         };
         let message = self.expand_selectors(&raw);
-        // CommandSourceStack.getDisplayName: the executing entity's name.
-        let name = match self.command_source {
-            Some(source) => match source.entity {
-                Some(target) => self.target_name(target),
-                None => source
-                    .block
-                    .and_then(|pos| match self.world.block_entities.get(&pos) {
-                        Some(horizon_client::containers::BlockEntity::CommandBlock(block)) => {
-                            Some(block.name())
-                        }
-                        _ => None,
-                    })
-                    .or_else(|| {
-                        source.cart.and_then(|id| {
-                            self.carts
-                                .iter()
-                                .find(|cart| cart.id == id)
-                                .map(|cart| cart.command.name())
-                        })
-                    })
-                    .unwrap_or_else(|| self.server_name()),
-            },
-            None => self.player_display_name(),
-        };
+        let name = self.source_display_name();
         // A player's command whose output is captured (a function, `execute …
         // run say`, the command harness) gets the announcement with that
         // output, in order; everyone else gets the broadcast.
@@ -4475,6 +4378,11 @@ fn difficulty_names(from: u8, to: u8) -> (&'static str, &'static str) {
 }
 
 #[cfg(test)]
+mod clone_writes_tests;
+
+#[cfg(test)]
+mod air_filter_tests;
+#[cfg(test)]
 mod teleport_pitch_tests {
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
@@ -4622,6 +4530,10 @@ mod difficulty_tests {
         assert_eq!(difficulty_names(7, 4), ("hard", "peaceful"));
     }
 }
+
+#[cfg(test)]
+#[path = "summon_item_orb_tests.rs"]
+mod summon_item_orb_tests;
 
 #[cfg(test)]
 mod summon_tests {

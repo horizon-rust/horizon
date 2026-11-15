@@ -62,7 +62,7 @@ fn rain_puts_a_burning_item_out_with_the_hiss() {
         item.age = 10;
     }
     // The hiss takes its pitch from the item's own random, in vanilla's order.
-    game.dropped[0].random = LegacyRandom::new(11);
+    *game.dropped[0].random = LegacyRandom::new(11);
     let mut random = LegacyRandom::new(11);
     let pitch = 1.6 + (random.next_float() - random.next_float()) * 0.4;
     game.audio.capture = Some(Vec::new());
