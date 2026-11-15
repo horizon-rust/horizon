@@ -73,8 +73,8 @@ fn a_withers_nether_star_lives_12000_ticks() {
     assert_eq!(age, -6000, "ItemEntity.setExtendedLifetime");
     assert_eq!(
         [position.x, position.y, position.z],
-        [wither_at.x, wither_at.y + 0.5, wither_at.z],
-        "spawnAtLocation at the death drop's position"
+        [wither_at.x, wither_at.y, wither_at.z],
+        "spawnAtLocation at the death drop's position, with no offset"
     );
     let ordinary = |game: &Game<'_>| {
         game.dropped

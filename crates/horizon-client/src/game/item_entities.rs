@@ -1101,6 +1101,9 @@ mod escape_tests {
 }
 
 #[cfg(test)]
+#[path = "death_drop_position_tests.rs"]
+mod death_drop_position_tests;
+#[cfg(test)]
 #[path = "item_void_tests.rs"]
 mod item_void_tests;
 #[cfg(test)]

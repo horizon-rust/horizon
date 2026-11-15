@@ -1546,7 +1546,7 @@ impl Game<'_> {
         let slain_by_player = by_player && !killed_by_mob(m);
         self.raider_died(m, slain_by_player, killer.flatten());
         self.villager_murdered(m, slain_by_player, killer.flatten());
-        let pos = [m.position.x, m.position.y + 0.5, m.position.z];
+        let pos = [m.position.x, m.position.y, m.position.z];
         let killer_entity = self.killer_loot_entity(killer.flatten());
         // LAST_DAMAGE_PLAYER only while the player is still in the world and
         // the hurt memory lasts (LivingEntity.dropFromLootTable). Experience
