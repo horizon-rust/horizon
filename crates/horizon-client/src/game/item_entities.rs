@@ -185,9 +185,10 @@ impl Game<'_> {
             }
             // Entity.applyEffectsFromBlocks asks `isInRain` after the block
             // contacts, which may have ignited the item this tick, so the
-            // question is asked every tick (it answers at once while it does
-            // not rain).
-            let in_rain = self.in_rain(item.position, item.bounds().max_position().y);
+            // question is asked every tick. Like Level.precipitationAt, skip
+            // the position checks when the rain level is too low.
+            let in_rain = self.weather_levels(1.0).0 > 0.2
+                && self.in_rain(item.position, item.bounds().max_position().y);
             let environment = item.environment_tick(
                 &self.world,
                 self.res.facts(),
