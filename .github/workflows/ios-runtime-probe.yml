@@ -332,6 +332,37 @@ jobs:
 
           pub(super) fn loading_frame''')
 
+          # Temporary iOS-only test: a large renderer async future may
+          # overflow the UIKit main thread's limited native stack.
+          # Split argument evaluation from future creation/polling, report the
+          # future size, and store it in a heap-pinned Box before block_on.
+          patch(loading_window, '''    loading_screen::nova_diag("loading_renderer.renderer-new.begin");
+              let mut renderer = pollster::block_on(Renderer::new(''',
+                '''    loading_screen::nova_diag("loading_renderer.renderer-new.begin");
+              loading_screen::nova_diag("loading_renderer.graphics-default.begin");
+              let graphics = horizon_client::graphics::Graphics::default();
+              loading_screen::nova_diag("loading_renderer.graphics-default.done");
+              let display = previous.map(|r| r.display_reading()).unwrap_or_default();
+              loading_screen::nova_diag("loading_renderer.display-reading.ready");
+              let future = Renderer::new(''')
+          patch(loading_window, '''        &horizon_client::graphics::Graphics::default(),
+                  Default::default(),
+                  previous.map(|r| r.display_reading()).unwrap_or_default(),
+              ))?;
+              loading_screen::nova_diag("loading_renderer.renderer-new.done");''',
+                '''        &graphics,
+                  Default::default(),
+                  display,
+              );
+              loading_screen::nova_diag(&format!(
+                  "loading_renderer.future.created; bytes={}",
+                  std::mem::size_of_val(&future)
+              ));
+              let future = Box::pin(future);
+              loading_screen::nova_diag("loading_renderer.future.boxed");
+              let mut renderer = pollster::block_on(future)?;
+              loading_screen::nova_diag("loading_renderer.renderer-new.done");''')
+
           # Stack-local frame reduction experiment on the MAIN thread. No
           # cross-thread renderer movement: Renderer/Future aren't Send, and
           # UIKit/Metal window surfaces have main-thread affinity.

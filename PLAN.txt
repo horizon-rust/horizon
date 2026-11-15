@@ -348,3 +348,10 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
   The hypothesis is unproven. Observe poll.helper.enter and renderer.new.entry.
 - Recommend an iOS Analytics native crash/Jetsam report to confirm cause if
   the new build still terminates. Original Horizon source unmodified in git.
+
+2026-11-15: RESTORE PINNED FUTURE BEFORE NOINLINE POLL
+- The first main-thread CI patch failed to find pollster::block_on(future)
+  because its patch block had accidentally omitted the earlier future
+  creation/Box::pin transformation. Restored both original iOS-only
+  transformations before the new noinline poll helper. The workflow's
+  sequential patch asserts each expected upstream shape exactly once.
