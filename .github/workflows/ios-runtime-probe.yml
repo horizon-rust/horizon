@@ -1,18 +1,14 @@
 name: iOS upstream game compile probe
 
+# Build only when manually requested from Actions → Run workflow.
+# Routine pushes to test must not start expensive iOS builds.
 on:
-  push:
-    branches: [test]
-    paths:
-      - 'platforms/ios/GameRuntime/**'
-      - 'platforms/ios/App/**'
-      - 'platforms/ios/project.yml'
-      - 'platforms/ios/patches/**'
-      - '.github/workflows/ios-runtime-probe.yml'
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
   workflow_dispatch:
+
+# If another manual run starts for the same branch, retire the older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

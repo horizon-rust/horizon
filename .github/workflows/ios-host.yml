@@ -1,12 +1,14 @@
 name: iOS host (scaffold)
 
+# Build only when manually requested from Actions → Run workflow.
+# Routine pushes to test must not start expensive iOS builds.
 on:
-  push:
-    branches: [test]
-    paths:
-      - 'platforms/ios/**'
-      - '.github/workflows/ios-host.yml'
   workflow_dispatch:
+
+# If another manual run starts for the same branch, retire the older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
