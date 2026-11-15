@@ -570,15 +570,37 @@ keep = 1                     # other releases kept by updates, besides the one i
 ```
 
 This is the file `init` writes today, and it also writes `[panel]` (`bind = "127.0.0.1:8130"` and
-`allow_public = false`, section 6), `[api]`, `[transfer]` (off; a proxy's hand-overs, section 2) and `[discord]`. The defaults are vanilla 26.3's (a test checks
+`allow_public = false`, section 6), `[api]`, `[transfer]` (off; a proxy's hand-overs, section 2) and `[discord]`. `[entities]` (mob AI far from players, off) is written only when set ([hosting](hosting.md)). The defaults are vanilla 26.3's (a test checks
 each one). Unknown keys are errors, as are a typed key set again under `[properties]` and values vanilla would
 refuse. There is no `backups.before_update` setting: an update always backs up the world first (section 7).
 
+- **`[entities]`: villagers that cannot move.** Not vanilla, so off. `villager_lobotomize = true` makes the
+  engine skip the brain of a villager that is *stuck*, and `villager_lobotomize_check_interval = 100` (ticks)
+  is how often each villager is rechecked (staggered by id). The game reads the section itself, and
+  `init` leaves it out until it is set. A villager is stuck when it rides something, or when the cells it can walk to
+  (a free block at its height, down a fall of up to 3, or one block up with room above; beds and slabs count as
+  cells it can step onto) number at most 6 and no door villagers open leads out. So a 1×1 cell, a 1×2 cell with a bed, or a
+  pocket with a workstation are stuck whatever covers the head; a room of 3×3, open ground, or a cell with a door
+  are not; a sleeping villager never is. A stuck villager skips its brain (sensors,
+  behaviours, schedule, gossip spreading, sleep, farming, breeding, panic, point-of-interest searches) and
+  keeps gravity, damage, despawning, trading with its XP and level-ups, and its trades. Its job site
+  stays: while it would work (ticks 2000 to 9000 of the day) it restocks as `WorkAtPoi` does, every 300 ticks with a
+  workstation still there, at most twice a day. When the cell opens, the next recheck gives it its brain
+  back. A villager that was never free does not claim a job site or a bed.
+- **Entity collision cap (`[entities] max_collisions`).** Off (0) is vanilla. In a crowded pen every mob pushes
+  every mob it overlaps each tick, so the work grows with the square of the crowd (about 8 ms a tick on a
+  79-player server with crowded chicken farms). `max_collisions = N` (not in the file until you add it) makes a
+  mob push at most N other mobs per tick. The pushes a mob receives count as well: a mob that has had N this
+  tick is skipped by the others, and the counts start again every tick. The mobs pushed are the first N in
+  vanilla's order, so the result is the same from run to run. `max_entity_cramming` still counts every entity
+  in the box before the cap applies, so cramming damage is vanilla's. It covers mobs pushing mobs: players,
+  boats and minecarts push as in vanilla. It reaches the game as `HORIZON_MAX_ENTITY_COLLISIONS`, at the next
+  start; with the setting at 0 a variable already in the server's environment still applies.
 - **Import.** `horizon-server init` in a folder with a `server.properties`, or `horizon-server import
   server.properties`, reads it with vanilla's own parser (`ServerProperties`). Keys with typed fields go into
   their sections; any other key that differs from vanilla's default goes into `[properties]`. Keys left at
-  their defaults are dropped, so the TOML stays short. The original file is kept as
-  `server.properties.imported`.
+  their defaults are dropped, so the TOML stays short. `init` keeps the original beside the new file as
+  `server.properties.imported`; `import` only writes `server.toml` and leaves the file it read where it is.
 - **Changes made in game.** The engine writes `server.properties` itself, for example after `/whitelist on`.
   After it stops, the supervisor compares the file with what it wrote and copies any changed keys back into
   `server.toml`, so an in-game change survives the next start. Edits go through `toml_edit`, so the owner's
@@ -602,18 +624,19 @@ horizon-server run                       supervisor + engine in the foreground; 
 horizon-server start | stop | restart    in the background (detached `run`); start also resumes a stopped supervisor
 horizon-server status [--json]           up?, uptime, TPS, MSPT, players, RAM, CPU, crashes
 horizon-server cmd <command…>            one console command, with its output
+horizon-server report [SECONDS] [--no-samples]   record a performance report, 1 to 600 s (hosting.md)
 horizon-server console                   attach: the live log, and send commands (Ctrl-D detaches)
 horizon-server logs [-f] [-n N]
 horizon-server op|deop <player>
 horizon-server whitelist on|off|list|add|remove [player]
 horizon-server players [--json]          who is online, operators, whitelist, bans
 horizon-server kick|ban <player> [reason]   pardon <player>   ban-ip <address|player> [reason]   pardon-ip <address>
-horizon-server backup [NAME]             backups             restore <backup> [--yes]
+horizon-server backup [NAME]             backups [--json]    restore <backup> [--dimension ID] [--yes]
 horizon-server import <server.properties>
 horizon-server config [--json]           config set KEY=VALUE... [--json]
 horizon-server service install|uninstall|print [--system]
 horizon-server panel                     the panel's address and a one-time login link
-horizon-server update [--check] [--version vX.Y.Z] [--timeout S]     rollback [--timeout S]
+horizon-server update [--check [--json]] [--version vX.Y.Z] [--timeout S]     rollback [--timeout S]
 horizon-server update --archive FILE --version NAME     an archive you have (your own build)
 horizon-server mcp                       MCP server on stdio (section 8)
 horizon-server import-resources <dir>    copy game files prepared elsewhere into place (checked first)
@@ -692,10 +715,10 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   hosting panel's console) still ends both, and while the game is stopped that stdin takes `start` and `stop`.
   `horizon-server start` or `POST /api/v1/start` starts the game again; `horizon-server stop` and the management
   protocol's `server/stop` (as vanilla's, the process exits) still shut down both the game and the supervisor. File-backed player-list edits are safe during this stopped state.
-- **Crash restart.** If the engine exits without being asked to stop, the supervisor keeps the last 200 log
-  lines and the engine's crash report (`crash-reports/`), restarts it after 5 s, and doubles the wait up to
-  5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a broken world, and shows the
-  reason in `status` and the panel.
+- **Crash restart.** If the engine exits without being asked to stop, the supervisor restarts it after 5 s
+  (the last 2000 log lines stay in `logs` and the panel, and the engine's crash report in `crash-reports/`),
+  and doubles the wait up to 5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a
+  broken world, and shows the reason in `status` and the panel.
 - **Updates** (`crates/horizon-server/src/update.rs`), for a `horizon-server` installed by `install.sh` or
   `install.ps1`. Releases ship often (release-flow.md), so updates stay opt-in: a running server looks for a
   newer release a minute after it starts and then every 6 hours, and only says so, in its log, in `status`
