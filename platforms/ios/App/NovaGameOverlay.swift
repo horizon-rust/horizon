@@ -41,9 +41,21 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     private let overlay = NovaPassthroughView()
     private var panelController: UIViewController?
     private var activeControls: [(view: UIView, control: NovaTouchControl)] = []
-    private let cursorView = UIImageView(image: UIImage(named: "NovaPointer")
-                                        ?? UIImage(systemName: "cursorarrow"))
+    private let mouseSurface = NovaMouseSurface(frame: .zero)
+    private let cursorView: UIImageView = {
+        // This is the actual supplied black/white PNG, not a system symbol.
+        let url = Bundle.main.url(forResource: "NovaPointer", withExtension: "png")
+            ?? Bundle.main.url(forResource: "NovaPointer", withExtension: "png",
+                               subdirectory: "GameHost")
+        let original = url.flatMap { UIImage(contentsOfFile: $0.path) }
+            ?? UIImage(named: "NovaPointer")
+        let view = UIImageView(image: original?.withRenderingMode(.alwaysOriginal)
+            ?? UIImage(systemName: "cursorarrow")?.withRenderingMode(.alwaysTemplate))
+        view.tintColor = .white
+        return view
+    }()
     private var cursorPoint: CGPoint?
+    private var lastCursorEpoch: UInt64?
     private var cursorVisibilityTimer: Timer?
     private var layout: NovaTouchLayout = NovaTouchLayouts.current()
     private let textField = UITextField(frame: CGRect(x: 0, y: 0, width: 2, height: 2))
@@ -85,6 +97,18 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         // Metal-backed view, so SwiftUI sheets and alerts can be presented.
         window.rootViewController?.view.addSubview(overlay)
 
+        // Every unobstructed part of the screen acts as a mouse surface.
+        // Explicit touch buttons and the joystick are placed above it.
+        mouseSurface.frame = overlay.bounds
+        mouseSurface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        mouseSurface.onDrag = { [weak self] delta in
+            self?.moveCursor(by: delta)
+        }
+        mouseSurface.onTap = { [weak self] location in
+            self?.tapGameSurface(at: location)
+        }
+        overlay.addSubview(mouseSurface)
+
         textField.alpha = 0.02
         textField.autocapitalizationType = .none
         textField.autocorrectionType = .no
@@ -101,7 +125,7 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         nova_ios_set_touch_gestures(enabled)
         applyLayout()
         showMenu()
-        cursorVisibilityTimer = Timer.scheduledTimer(withTimeInterval: 0.15,
+        cursorVisibilityTimer = Timer.scheduledTimer(withTimeInterval: 0.08,
                                                      repeats: true) { [weak self] _ in
             self?.updateCursorVisibility()
         }
@@ -128,12 +152,8 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
                 continue
             }
             if control.kind == "virtualMouse" {
-                let pad = NovaTrackpadView(control: control)
-                pad.onMove = { [weak self] delta in
-                    self?.moveCursor(by: delta)
-                }
-                overlay.addSubview(pad)
-                activeControls.append((pad, control))
+                // Legacy layouts may still contain a trackpad control.
+                // It is no longer drawn or necessary.
                 continue
             }
             let button = NovaOverlayButton(control: control)
@@ -163,8 +183,6 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
             let side: CGFloat
             if control.kind == "joystick" {
                 side = max(110, CGFloat(control.size))
-            } else if control.kind == "virtualMouse" {
-                side = max(112, CGFloat(control.size))
             } else {
                 side = CGFloat(control.size)
             }
@@ -224,7 +242,9 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
 
     private func setControlsVisible(_ visible: Bool) {
         activeControls.forEach { $0.view.isHidden = !visible }
+        mouseSurface.isHidden = !visible
         if !visible {
+            mouseSurface.cancelTouch()
             for item in activeControls {
                 (item.view as? NovaJoystickView)?.releaseAll()
             }
@@ -259,6 +279,7 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         nova_ios_set_overlay_active(false)
         setControlsVisible(true)
         refreshTouchGestures()
+        updateCursorVisibility()
     }
 
     private func removePanel() {
