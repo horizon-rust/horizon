@@ -545,6 +545,13 @@ private struct NovaGameLogsView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Refresh") { logs = NovaDiagnostics.tail() }
                 }
+                ToolbarItem(placement: .bottomBar) {
+                    if let url = NovaDiagnostics.logURL() {
+                        ShareLink(item: url) {
+                            Label("Export lastlog.text", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                }
             }
         }
     }

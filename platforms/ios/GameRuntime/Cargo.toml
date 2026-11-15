@@ -14,6 +14,7 @@ crate-type = ["staticlib"]
 horizon-official = { path = "../../../crates/horizon-official" }
 horizon-game = { path = "../../../crates/horizon-game" }
 horizon-client-input = { path = "../../../crates/horizon-client-input" }
+horizon-client-render = { path = "../../../crates/horizon-client-render" }
 nova-asset-importer = { path = "../AssetImporter" }
 
 [workspace]

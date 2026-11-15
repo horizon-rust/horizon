@@ -127,6 +127,12 @@ pub extern "C" fn horizon_ios_start_original_game(
         diagnostics::trace(&format!("rust.panic: {info}"));
         previous_hook(info);
     }));
+    // The logger is initialized later by Horizon. Install the callback now so
+    // all normal in-game records join the per-launch Nova diagnostics file.
+    horizon_client_render::logging::set_line_hook(
+        |_, _, _, formatted| diagnostics::game_log(formatted),
+    );
+    diagnostics::trace("rust.log-forwarding-enabled");
     diagnostics::trace("rust.start.horizon-official-entry");
     horizon_ios_original_game_entry();
     diagnostics::trace("rust.start.horizon-returned");

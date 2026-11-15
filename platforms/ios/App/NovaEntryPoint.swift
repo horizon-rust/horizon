@@ -10,6 +10,8 @@ enum NovaEntryPoint {
     private static let nextLaunchKey = "nova.launchHorizonOnce"
 
     static func main() {
+        NovaDiagnostics.startSession()
+        NovaDiagnostics.captureConsole()
         let defaults = UserDefaults.standard
         // Once game files are installed, Horizon owns UIKit from app startup.
         // Nova's launcher is then a UIKit overlay over the SAME live game window:

@@ -70,6 +70,11 @@ struct LauncherView: View {
                     }
                     .buttonStyle(.bordered)
 
+                    Text("Current session: Diagnostics/lastlog.text. Earlier sessions have dated filenames in Files → Nova → Diagnostics.")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .multilineTextAlignment(.center)
+
                     Button("View Logs") {
                         displayedDiagnostics = NovaDiagnostics.tail()
                         showDiagnostics = true
