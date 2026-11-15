@@ -114,6 +114,7 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         textField.autocorrectionType = .no
         textField.spellCheckingType = .no
         textField.delegate = self
+        textField.text = " "
         overlay.addSubview(textField)
         // A PC-style mouse pointer is independent of touch controls. It
         // never receives taps, and left/right buttons use its position.
@@ -385,6 +386,7 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
             sendCurrentCursor()
             nova_ios_input_mouse(1, true)
         case "virtualKeyboard":
+            textField.text = " "
             textField.becomeFirstResponder()
         case "menu":
             if isInMenu { hidePanel() } else { showMenu() }
@@ -421,7 +423,13 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         } else {
             string.withCString { nova_ios_input_text($0) }
         }
+        // Restore a deletable sentinel for consecutive Backspace presses.
+        textField.text = " "
         return false
+    }
+
+    func textFieldDidEndEditing(_ textField: UITextField) {
+        nova_ios_input_keyboard_closed()
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {

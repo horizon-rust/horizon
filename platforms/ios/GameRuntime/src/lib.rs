@@ -182,6 +182,13 @@ pub extern "C" fn nova_ios_input_text(text: *const std::ffi::c_char) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn nova_ios_input_keyboard_closed() {
+    horizon_client_input::ios_input::push(
+        horizon_client_input::ios_input::Input::KeyboardClosed
+    );
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn nova_ios_input_close() {
     horizon_client_input::ios_input::push(
         horizon_client_input::ios_input::Input::Close

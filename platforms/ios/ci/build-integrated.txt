@@ -3,3 +3,4 @@ Requested after cursor, drag-anywhere, and menu-centering fixes.
 Branch: test
 Requested per-launch timestamped logs and full Horizon log forwarding.
 Requested independent X/Y button sizes up to 300 percent.
+Fix virtual keyboard delete, dismissal, F3 and menu Escape routing.

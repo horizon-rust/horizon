@@ -15,7 +15,7 @@ def change(path, old, new):
 
 queue_path = Path("crates/horizon-client-input/src/ios_input.rs")
 assert not queue_path.exists(), "Upstream now owns ios_input; reassess integration"
-queue_path.write_text("//! Nova iOS input bridge. The gameplay runtime calls these safe functions;\n//! only the iOS host's C ABI needs raw pointers. Nothing runs on desktop.\nuse std::sync::{\n    Mutex, OnceLock,\n    atomic::{AtomicBool, Ordering},\n};\n\n#[derive(Debug)]\npub enum Input {\n    Key(u32, bool),\n    Mouse(u32, bool),\n    Cursor(f64, f64),\n    Motion(f64, f64),\n    Text(String),\n    Close,\n}\n\nstatic INPUTS: OnceLock<Mutex<Vec<Input>>> = OnceLock::new();\nstatic TOUCH_GESTURES: AtomicBool = AtomicBool::new(true);\n\nfn input_queue() -> &'static Mutex<Vec<Input>> {\n    INPUTS.get_or_init(|| Mutex::new(Vec::new()))\n}\n\npub fn push(event: Input) {\n    if let Ok(mut inputs) = input_queue().lock() {\n        // Ignore excessive events instead of exhausting the main thread.\n        if inputs.len() < 2048 {\n            inputs.push(event);\n        }\n    }\n}\n\npub fn take() -> Vec<Input> {\n    input_queue()\n        .lock()\n        .map(|mut inputs| std::mem::take(&mut *inputs))\n        .unwrap_or_default()\n}\n\npub fn set_touch_gestures(value: bool) {\n    TOUCH_GESTURES.store(value, Ordering::Relaxed);\n}\n\npub fn touch_gestures() -> bool {\n    TOUCH_GESTURES.load(Ordering::Relaxed)\n}\n")
+queue_path.write_text("//! Nova iOS input bridge. The gameplay runtime calls these safe functions;\n//! only the iOS host's C ABI needs raw pointers. Nothing runs on desktop.\nuse std::sync::{\n    Mutex, OnceLock,\n    atomic::{AtomicBool, Ordering},\n};\n\n#[derive(Debug)]\npub enum Input {\n    Key(u32, bool),\n    Mouse(u32, bool),\n    Cursor(f64, f64),\n    Motion(f64, f64),\n    Text(String),\n    KeyboardClosed,\n    Close,\n}\n\nstatic INPUTS: OnceLock<Mutex<Vec<Input>>> = OnceLock::new();\nstatic TOUCH_GESTURES: AtomicBool = AtomicBool::new(true);\n\nfn input_queue() -> &'static Mutex<Vec<Input>> {\n    INPUTS.get_or_init(|| Mutex::new(Vec::new()))\n}\n\npub fn push(event: Input) {\n    if let Ok(mut inputs) = input_queue().lock() {\n        // Ignore excessive events instead of exhausting the main thread.\n        if inputs.len() < 2048 {\n            inputs.push(event);\n        }\n    }\n}\n\npub fn take() -> Vec<Input> {\n    input_queue()\n        .lock()\n        .map(|mut inputs| std::mem::take(&mut *inputs))\n        .unwrap_or_default()\n}\n\npub fn set_touch_gestures(value: bool) {\n    TOUCH_GESTURES.store(value, Ordering::Relaxed);\n}\n\npub fn touch_gestures() -> bool {\n    TOUCH_GESTURES.load(Ordering::Relaxed)\n}\n")
 
 change("crates/horizon-client-input/src/lib.rs", "pub mod input;\n",
        'pub mod input;\n#[cfg(target_os = "ios")]\npub mod ios_input;\n')
@@ -40,23 +40,24 @@ KEY_MAP
             match input {
                 Input::Key(code, down) => {
                     let Some(key) = Self::ios_key_code(code) else { continue };
-                    match self {
-                        App::Loading(loading) => {
-                            if down {
-                                loading.menu_key_focus(event_loop, key);
-                            }
-                        }
-                        App::Ready(game) => {
-                            if down {
-                                game.host.physical_keys.insert(key);
-                            } else {
-                                game.host.physical_keys.remove(&key);
-                            }
-                            if let Err(error) = game.host.mapped_key_event(key, down, false) {
-                                log::warn!("Nova iOS virtual key: {error}");
-                            }
-                        }
-                    }
+                    // Use the normal keyboard event path for menus, F3 and Escape.
+                    self.window_event_here(
+                        event_loop, id,
+                        WindowEvent::KeyboardInput {
+                            device_id: DeviceId::dummy(),
+                            event: winit::event::KeyEvent {
+                                physical_key: winit::keyboard::PhysicalKey::Code(key),
+                                logical_key: winit::keyboard::Key::Unidentified(
+                                    winit::keyboard::NativeKey::Unidentified,
+                                ),
+                                text: None,
+                                location: winit::keyboard::KeyLocation::Standard,
+                                state: if down { ElementState::Pressed } else { ElementState::Released },
+                                repeat: false,
+                            },
+                            is_synthetic: false,
+                        },
+                    );
                 }
                 Input::Mouse(button, down) => {
                     self.window_event_here(
@@ -83,6 +84,20 @@ KEY_MAP
                     event_loop, id,
                     WindowEvent::Ime(winit::event::Ime::Commit(text)),
                 ),
+                Input::KeyboardClosed => {
+                    match self {
+                        App::Loading(loading) => {
+                            if let Some(window) = &loading.window {
+                                window.set_ime_allowed(false);
+                            }
+                        }
+                        App::Ready(game) => {
+                            if let Some(window) = &game.host.window {
+                                window.set_ime_allowed(false);
+                            }
+                        }
+                    }
+                }
                 Input::Close => self.window_event_here(
                     event_loop, id, WindowEvent::CloseRequested,
                 ),
