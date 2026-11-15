@@ -1,7 +1,7 @@
 //! The scene in the post passes of a shader pack with `[ray_tracing]` (docs/shaders.md, spec
 //! #15624): where the device traces rays, each pass is built a second time from the module the
 //! check made against the scene (`CheckedStage::scene`), and its group 3 also holds the TLAS,
-//! the store of the sections' vertices (gfx/ray_scene.rs), the block sprites and the pack's
+//! the store of the sections' vertices (gfx/rt/scene.rs), the block sprites and the pack's
 //! material id and tags of each sprite layer, which the prelude's `trace` reads. Those passes
 //! draw in frames that have a scene; in the others, and on a device that can't hold the
 //! bindings, the passes whose `trace` misses draw, as on a device without ray queries.
@@ -12,7 +12,7 @@ use horizon_shader_api::stages::{
 };
 
 use super::{INTERMEDIATE, NativePost, post_pipeline};
-pub(in crate::gfx) use crate::gfx::surface_setup::ray_query::ray_scene::{RayScene, Traced};
+pub(in crate::gfx) use crate::gfx::rt::scene::{RayScene, Traced};
 
 /// What the scene's passes are built against besides the scene: the terrain's sprites and the
 /// pack's tables of them.
@@ -166,8 +166,8 @@ impl NativePost {
         constants: &[(String, f64)],
         shape: &TraceShape<'_>,
     ) {
-        // Without ray queries there is no scene (`ray_query` said so if they were asked for).
-        if !crate::gfx::surface_setup::ray_query::on(device) || scenes.len() != self.passes.len() {
+        // Without ray queries there is no scene (`rt::query` said so if they were asked for).
+        if !crate::gfx::rt::query::on(device) || scenes.len() != self.passes.len() {
             return;
         }
         let mut entries = self.entries.clone();

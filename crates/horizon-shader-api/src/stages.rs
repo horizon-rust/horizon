@@ -526,7 +526,7 @@ fn trace_any(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> bool
 }
 ";
 
-/// `trace` and `trace_any` through the scene the renderer binds (gfx/ray_scene.rs): a hit is a
+/// `trace` and `trace_any` through the scene the renderer binds (gfx/rt/scene.rs): a hit is a
 /// triangle of a quad in the store, read as terrain.wgsl reads the mesher's vertices.
 const RAY_SCENE: &str = "\
 struct horizon_RaySpace {

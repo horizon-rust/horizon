@@ -10,7 +10,7 @@ use super::native_post::{NativeFrame, NativePost};
 use super::native_shadow::{NativeShadow, ShadowGrid};
 use super::native_sky::NativeSky;
 use super::pack_timing::PassTiming;
-use super::surface_setup::ray_query::ray_scene::RayScene;
+use super::rt::scene::RayScene;
 
 pub struct NativePack {
     pub frame: NativeFrame,
