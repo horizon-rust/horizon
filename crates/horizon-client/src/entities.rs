@@ -14,7 +14,7 @@ use crate::{
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, VoxelShape, border::BorderGeometry},
     position::BlockPos,
-    random::{LegacyRandom, RandomSource},
+    random::{EntityRandom, RandomSource},
 };
 use horizon_world::{
     block_collision::BlockCollisionRegistry,
@@ -82,6 +82,8 @@ fn slime_at(world: &World, facts: &BlockFacts, position: BlockPos) -> bool {
 }
 
 mod fluids;
+mod item_damage;
+pub use item_damage::ItemHits;
 mod item_fall;
 mod item_no_physics;
 pub mod nameplate;
@@ -240,7 +242,7 @@ pub struct ItemEntity {
     pub horizontal_collision: bool,
     /// `Entity.random`, after the constructor's draws: `moveTowardsClosestSpace`
     /// takes an item's escape speed from it.
-    pub random: horizon_core::random::LegacyRandom,
+    pub random: horizon_core::random::EntityRandom,
     /// `Entity.fallDistance` (`fall_distance` in its save): what the item has
     /// fallen since it last touched ground or water.
     pub fall_distance: f64,
@@ -340,6 +342,9 @@ impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for Ite
 pub struct ItemEnvironmentTick {
     pub alive: bool,
     pub lava_hurt: bool,
+    /// The `entity_damage` events its block hits post at its own position
+    /// (`ItemEntity.hurtServer`).
+    pub damage_events: u32,
     /// `ItemStack.onDestroyed` of the damage that emptied the health: the
     /// stacks the destroyed item left, which `ItemUtils.onContainerDestroyed`
     /// adds to the level where it lay.
@@ -476,6 +481,9 @@ impl ItemEntity {
             ),
         )
     }
+    /// `Entity.applyEffectsFromBlocks` after the move: water puts the item
+    /// out, then lava, fire and cactus hurt it. Each hit posts `entity_damage`
+    /// at the item's position, and the hit that destroys it ends the pass.
     pub fn environment_tick(
         &mut self,
         world: &World,
@@ -483,25 +491,11 @@ impl ItemEntity {
         registry: &horizon_world::registry::BlockRegistry,
         items: &crate::items::Items,
     ) -> ItemEnvironmentTick {
-        let at = world.block(
-            self.position.x.floor() as i32,
-            (self.position.y + 0.1).floor() as i32,
-            self.position.z.floor() as i32,
-        );
-        let fluid = facts.get(at).fluid;
+        let fluid = self.fluid_at_feet(world, facts);
         let fire_immune = items.resists_fire(&self.stack, "minecraft:in_fire");
-        let mut spilled = Vec::new();
+        let mut hits = ItemHits::default();
         if fluid == Fluid::Water || fire_immune {
             self.fire_ticks = 0;
-        }
-        if self.fire_ticks > 0 {
-            if self.fire_ticks % 20 == 0
-                && fluid != Fluid::Lava
-                && !items.resists_fire(&self.stack, "minecraft:on_fire")
-            {
-                spilled.extend(self.hurt(1).unwrap_or_default());
-            }
-            self.fire_ticks -= 1;
         }
         let mut lava_hurt = false;
         // LavaCauldronBlock.entityInside applies LAVA_IGNITE and then lavaHurt.
@@ -512,14 +506,13 @@ impl ItemEntity {
             if contacts > 0 {
                 self.fire_ticks = self.fire_ticks.max(300);
             }
-            // StepBasedCollector coalesces ignition, but keeps each block's
-            // runAfter(lavaHurt) callback. Stop once an item is destroyed.
+            // StepBasedCollector coalesces ignition but keeps each lavaHurt.
             for _ in 0..contacts {
                 if self.health <= 0 {
                     break;
                 }
                 if !items.resists_fire(&self.stack, "minecraft:lava") {
-                    spilled.extend(self.hurt(4).unwrap_or_default());
+                    hits.hit(self, 4);
                     lava_hurt = true;
                 }
             }
@@ -528,22 +521,21 @@ impl ItemEntity {
         if fire_damage > 0.0 && !fire_immune {
             self.fire_ticks = self.fire_ticks.max(160);
             if !items.resists_fire(&self.stack, "minecraft:in_fire") {
-                spilled.extend(self.hurt(fire_damage as i32).unwrap_or_default());
+                hits.hit(self, fire_damage as i32);
             }
         }
-        // CactusBlock.entityInside: `entity.hurt(cactus, 1.0)`. An item has no
-        // hurt cooldown, so it loses 1 health every tick it touches a cactus
-        // (5 health: gone in 5 ticks). Fire resistance does not help;
-        // `ItemStack.canBeHurtBy` only skips it for a damage_resistant stack.
+        // CactusBlock.entityInside: `entity.hurt(cactus, 1.0)`, a point a tick
+        // (an item has no hurt cooldown), unless `canBeHurtBy` skips it.
         if crate::motion::environment::cactus_contact(world, registry, self.bounds())
             && !items.resists_cactus(&self.stack)
         {
-            spilled.extend(self.hurt(1).unwrap_or_default());
+            hits.hit(self, 1);
         }
         ItemEnvironmentTick {
             alive: self.health > 0,
             lava_hurt,
-            spilled,
+            spilled: hits.spilled,
+            damage_events: hits.events,
         }
     }
     /// `ItemEntity.hurtServer`'s health: `amount` off the health, and an item
@@ -1743,6 +1735,7 @@ pub struct Experience {
     pub level: i32,
     pub progress: f32,
     pub total: i32,
+    pub score: i32,
 }
 impl Experience {
     /// `Player.getBaseExperienceReward`: keep-inventory and spectators drop none.
@@ -1753,7 +1746,7 @@ impl Experience {
             self.level.wrapping_mul(7).clamp(0, 100) as u32
         }
     }
-    /// `ServerPlayer.restoreFrom`: only keep-inventory and spectators retain XP.
+    /// `ServerPlayer.restoreFrom`: only keep-inventory and spectators keep XP and the score.
     pub fn respawn(&mut self, keep: bool) {
         if !keep {
             *self = Self::default();
@@ -1772,6 +1765,7 @@ impl Experience {
     /// first multiple of 5 the player reached, where each level gained would
     /// play the level-up sound (`Player.giveExperienceLevels`).
     pub fn give(&mut self, points: i32) -> Option<i32> {
+        self.score = self.score.wrapping_add(points);
         let mut sound_level = None;
         self.progress += points as f32 / Self::needed(self.level) as f32;
         self.total = self.total.saturating_add(points).clamp(0, i32::MAX);
@@ -1782,7 +1776,8 @@ impl Experience {
                 self.progress = 1.0 + remaining / Self::needed(self.level) as f32;
             } else {
                 // `giveExperienceLevels(-1)` at level 0 zeroes the total with it.
-                *self = Self::default();
+                self.progress = 0.0;
+                self.total = 0;
             }
         }
         while self.progress >= 1.0 {
@@ -1822,11 +1817,9 @@ impl LevelUpSound {
         }
     }
 }
-
 #[cfg(test)]
 mod level_up_sound {
     use super::LevelUpSound;
-
     #[test]
     fn players_have_independent_ages_and_cooldowns() {
         let mut a = LevelUpSound::default();
@@ -1991,7 +1984,7 @@ pub struct ItemFrame {
     pub check_interval: u32,
     /// `Entity.getCustomName` (`CustomName`), copied onto the dropped frame.
     pub custom_name: Option<horizon_world::nbt::Tag>,
-    pub random: LegacyRandom,
+    pub random: EntityRandom,
 }
 impl ItemFrame {
     pub fn step(&self) -> [i32; 3] {
@@ -3098,7 +3091,7 @@ mod merge_tests {
     fn item(id: &str, count: u32, x: f64, age: i32) -> ItemEntity {
         let at = Vec3::new(x, 64.0, 0.5);
         ItemEntity {
-            random: horizon_core::random::LegacyRandom::new(0),
+            random: EntityRandom::own(horizon_core::random::LegacyRandom::new(0)),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -3596,7 +3589,7 @@ mod honey_slide_tests {
     pub(super) fn falling_item(x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
-            random: horizon_core::random::LegacyRandom::new(0),
+            random: EntityRandom::own(horizon_core::random::LegacyRandom::new(0)),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -3749,7 +3742,7 @@ mod slime_bounce_tests {
     fn grounded_item() -> ItemEntity {
         let at = Vec3::new(0.5, 2.0, 0.5);
         ItemEntity {
-            random: horizon_core::random::LegacyRandom::new(0),
+            random: EntityRandom::own(horizon_core::random::LegacyRandom::new(0)),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -4607,7 +4600,7 @@ mod item_destroyed_tests {
             .map(|(id, count)| ItemStack::new(id, *count))
             .collect();
         ItemEntity {
-            random: horizon_core::random::LegacyRandom::new(0),
+            random: EntityRandom::own(horizon_core::random::LegacyRandom::new(0)),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -4850,7 +4843,7 @@ mod dropped_item_light_tests {
 
     fn item(previous_y: f64, y: f64) -> ItemEntity {
         ItemEntity {
-            random: horizon_core::random::LegacyRandom::new(0),
+            random: EntityRandom::own(horizon_core::random::LegacyRandom::new(0)),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -4914,7 +4907,7 @@ mod dropped_item_light_tests {
         assert_eq!(falling.light_probe(1.0)[1].floor(), 65.0);
         // Across x and z too, not just down.
         let sliding = ItemEntity {
-            random: horizon_core::random::LegacyRandom::new(0),
+            random: EntityRandom::own(horizon_core::random::LegacyRandom::new(0)),
             position: Vec3::new(1.5, 64.0, 0.5),
             previous: Vec3::new(0.5, 64.0, 0.5),
             ..item(64.0, 64.0)
@@ -4932,7 +4925,7 @@ mod dropped_item_light_tests {
         assert_eq!(cold.render_light(light(15, 0)), (15 * 16) as u32);
         assert_eq!(cold.render_light(light(0, 9)), ((9 * 16) << 8) as u32);
         let burning = ItemEntity {
-            random: horizon_core::random::LegacyRandom::new(0),
+            random: EntityRandom::own(horizon_core::random::LegacyRandom::new(0)),
             fire_ticks: 160,
             ..item(64.0, 64.0)
         };

@@ -200,6 +200,19 @@ pub fn seat(attachment: [f64; 3], rider_offset: f64, at: Vec3, yaw: f32) -> Vec3
     Vec3::new(at.x + x, at.y + y - rider_offset, at.z + z)
 }
 
+/// `EntitySelector.notRiding(mob)`: whether the player the mobs see is the
+/// mob's rider, through any chain of vehicles (`isPassenger`).
+pub fn player_rides(m: &Mob, w: &MobWorld) -> bool {
+    let mut up = w.player.as_ref().and_then(|p| p.riding_vehicle);
+    while let Some(id) = up {
+        if id == m.id {
+            return true;
+        }
+        up = w.seen(id).and_then(|s| s.vehicle);
+    }
+    false
+}
+
 /// `Entity.startRiding`: the link it makes, `rider` on `vehicle` as its first
 /// passenger (`addPassenger`).
 pub fn link<M: super::MobSlot>(mobs: &mut [M], rider: u32, vehicle: u32) {
@@ -309,6 +322,38 @@ pub fn start_riding<M: super::MobSlot>(mobs: &mut [M], rider: u32, vehicle: u32)
     }
     link(mobs, rider, vehicle);
     true
+}
+/// `Mob.startRiding` for a brain's `StartRiding` event: link the rider, and
+/// when it is leashed replace the event with the `LeashBreak` the game applies
+/// (`dropLeash()`: the lead item at the mob). The game seats riders
+/// (`positionRider`) before it handles events, so the event keeps where the
+/// mob stood when it boarded. Returns the index after the event: one past it
+/// when kept, the same when removed.
+pub fn start_riding_event<M: super::MobSlot>(
+    mobs: &mut [M],
+    events: &mut Vec<super::MobEvent>,
+    i: usize,
+    rider: u32,
+    vehicle: u32,
+) -> usize {
+    let leashed_at = mobs
+        .iter()
+        .map(super::MobSlot::mob)
+        .find(|m| m.id == rider && m.extra.leash.is_some())
+        .map(|m| [m.position.x, m.position.y, m.position.z]);
+    let boarded = start_riding(mobs, rider, vehicle);
+    if let Some(at) = leashed_at.filter(|_| boarded) {
+        events[i] = super::MobEvent::LeashBreak {
+            mob: rider,
+            drop: true,
+            sound: false,
+            at: Some(at),
+        };
+        i + 1
+    } else {
+        events.remove(i);
+        i
+    }
 }
 /// `LivingEntity.stopRiding` for the mob itself: it leaves its vehicle (which
 /// forgets it when the riders are next synced), cannot board again for 60
@@ -512,7 +557,7 @@ pub fn tick<M: super::MobSlot>(
     mobs: &mut [M],
     index: usize,
     w: &MobWorld,
-    random: &mut horizon_core::random::LegacyRandom,
+    random: &mut horizon_core::random::LevelRandom,
     events: &mut Vec<super::MobEvent>,
 ) -> bool {
     let mut owner = index;

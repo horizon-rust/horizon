@@ -3341,7 +3341,7 @@ impl OptionsUi {
         atlas: &HudAtlas,
         cursor: (f32, f32),
     ) {
-        self.output = output;
+        self.output = output.shown(self.in_world);
         let (w, h) = (batch.width, batch.height);
         if let Some(error) = &self.resource_error {
             ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.in_world);
@@ -5277,6 +5277,7 @@ mod tests {
             options: Vec::new(),
             values: Vec::new(),
             pages: Vec::new(),
+            traces: false,
         };
         let mut s = Settings {
             shader_packs: vec![entry("A.zip"), entry("B.zip")],

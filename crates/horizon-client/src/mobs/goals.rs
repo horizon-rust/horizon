@@ -4,7 +4,7 @@ use super::{Mob, MobEvent, MobWorld, Seen, Species, Who, world::TargetInfo};
 use horizon_core::{
     geometry::{Aabb, Vec3},
     jmath,
-    random::{LegacyRandom, RandomSource},
+    random::{LevelRandom, RandomSource},
 };
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ pub struct Cx<'a, 'w> {
     pub w: &'a MobWorld<'w>,
     /// The level's random (`level.getRandom()`), for the draws vanilla's
     /// behaviours make from it rather than from the mob's own.
-    pub lr: &'a mut LegacyRandom,
+    pub lr: &'a mut LevelRandom,
     pub events: &'a mut Vec<MobEvent>,
 }
 pub trait Goal: std::fmt::Debug + Send + Sync {
@@ -623,7 +623,7 @@ impl Mob {
         if let Some(v) = self.ai.seen_cache.iter().find(|(k, _)| *k == who) {
             return v.1;
         }
-        let Some(t) = w.target_info(who) else {
+        let Some(t) = w.target_info(who).filter(|_| !super::ravager::blind(self)) else {
             return false;
         };
         let eye = Vec3::new(self.position.x, self.eye_y(), self.position.z);
@@ -1147,8 +1147,8 @@ pub struct LookAtPlayer {
     pub only_horizontal: bool,
     /// `LookAtPlayerGoal(Mob.class, ...)`: the nearest mob, not the player.
     pub mobs: bool,
-    /// `LookAtPlayerGoal(Strider.class, ...)`: only mobs of this species.
-    pub only: Option<Species>,
+    /// `LookAtPlayerGoal(<species class>, ...)`: only these species, subclasses too.
+    pub only: &'static [Species],
     /// InteractGoal: LOOK and MOVE.
     pub interact: bool,
     look_at: Option<Who>,
@@ -1161,7 +1161,7 @@ impl LookAtPlayer {
             probability: 0.02,
             only_horizontal: false,
             mobs: false,
-            only: None,
+            only: &[],
             interact: false,
             look_at: None,
             look_time: 0,
@@ -1175,9 +1175,9 @@ impl LookAtPlayer {
         }
     }
     /// `LookAtPlayerGoal(this, <species class>, range)`.
-    pub fn species(species: Species, range: f32) -> Self {
+    pub fn species(list: &'static [Species], range: f32) -> Self {
         Self {
-            only: Some(species),
+            only: list,
             ..Self::mobs(range)
         }
     }
@@ -1226,8 +1226,8 @@ impl Goal for LookAtPlayer {
         self.look_at = None;
         let range = f64::from(self.range);
         if !self.mobs {
-            // level.getNearestPlayer(forNonCombat().range(lookDistance)).
-            if m.can_see_player(cx.w, range) {
+            // `EntitySelector.notRiding(mob)`: never the player riding it.
+            if !super::riders::player_rides(m, cx.w) && m.can_see_player(cx.w, range) {
                 self.look_at = Some(Who::Player);
             }
             return self.look_at.is_some();
@@ -1239,7 +1239,7 @@ impl Goal for LookAtPlayer {
         let candidates: Vec<(u32, Vec3)> =
             cx.w.others_near(area)
                 .filter(|s| s.id != id && s.alive && s.bounds.intersects(area))
-                .filter(|s| only.is_none_or(|o| s.species == o))
+                .filter(|s| only.is_empty() || only.contains(&s.species))
                 .map(|s| (s.id, s.position))
                 .collect();
         let mut best: Option<(u32, f64)> = None;
@@ -2934,7 +2934,7 @@ mod eat_block_tests {
         with_built_test_world_rules(&[], griefing, true, build, |w, types| {
             let kind = Arc::new(types.types["minecraft:sheep"].clone());
             let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
-            let mut random = LegacyRandom::new(0);
+            let mut random = crate::mobs::world::level_random(0);
             let mut events = Vec::new();
             for _ in 0..6000 {
                 crate::mobs::ai::tick(&mut m, w, &mut random, &mut events);
@@ -3054,7 +3054,7 @@ mod peaceful_targets_tests {
             let mut wolf = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
             wolf.ai.last_hurt_by = Some(Who::Player);
             wolf.ai.last_hurt_by_time = 5;
-            let mut random = LegacyRandom::new(0);
+            let mut random = crate::mobs::world::level_random(0);
             let mut events = Vec::new();
             let mut cx = Cx {
                 w: &w,
@@ -3100,7 +3100,7 @@ mod peaceful_targets_tests {
         with_test_world(&seen, |w, types| {
             let kind = Arc::new(types.types["minecraft:cow"].clone());
             let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
-            let mut lr = LegacyRandom::new(0);
+            let mut lr = crate::mobs::world::level_random(0);
             let mut events = Vec::new();
             let mut cx = Cx {
                 w,
@@ -3273,7 +3273,7 @@ mod melee_continue_tests {
 
     /// Tick one `<MeleeAttack>` goal through the real selector.
     fn tick(goals: &mut GoalSelector, m: &mut Mob, world: &MobWorld) {
-        let mut lr = LegacyRandom::new(0);
+        let mut lr = crate::mobs::world::level_random(0);
         let mut events = Vec::new();
         let mut cx = Cx {
             w: world,
@@ -3389,7 +3389,7 @@ mod hurt_by_anger_tests {
                 m.ai.last_hurt_by = Some(Who::Player);
                 m.ai.last_hurt_by_time = 1;
                 m.ai.goals.add(1, HurtByTarget::new());
-                let mut lr = LegacyRandom::new(0);
+                let mut lr = crate::mobs::world::level_random(0);
                 let mut events = Vec::new();
                 let mut cx = Cx {
                     w: &world,
@@ -3439,7 +3439,7 @@ mod breed_continue_tests {
         let mut started = None;
         let calm = [partner.seen(None)];
         if !with_test_world(&calm, |w, _| {
-            let mut lr = LegacyRandom::new(0);
+            let mut lr = crate::mobs::world::level_random(0);
             let mut events = Vec::new();
             let mut cx = Cx {
                 w,
@@ -3457,7 +3457,7 @@ mod breed_continue_tests {
         let panicking = [partner.seen(None)];
         let mut stopped = None;
         if !with_test_world(&panicking, |w, _| {
-            let mut lr = LegacyRandom::new(0);
+            let mut lr = crate::mobs::world::level_random(0);
             let mut events = Vec::new();
             let mut cx = Cx {
                 w,

@@ -15,7 +15,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Host a server](hosting.md): install `horizon-server`, prepare the game files, first run, `server.toml`, the commands, the web panel, backups, services and Docker; what works today and what doesn't yet.
 - [A server's levels](server-levels.md): how the dedicated server and single player's server thread tick, save and travel between dimensions.
 - [Velocity forwarding](velocity-forwarding.md): the player-information exchange behind a Velocity proxy and how it was checked.
-- [The anticheat](anticheat.md): the dedicated server's own checks, off unless `server.toml`'s `[anticheat]` turns them on: violation levels, setback, alerts, kicks, the log, and how to write a check.
+- [The anticheat](anticheat.md): the dedicated server's own checks, on by default (`combat` and `ground` act, `timer` and `prediction` only log) and set in `server.toml`'s `[anticheat]`: violation levels, setback, alerts, kicks, the log, and how to write a check.
 - [The chat filter](chat-filter.md): the dedicated server refuses hate slurs in chat, message commands, signs, anvil names and book titles: the list and its normalising, mutes, temporary bans, `[chat_filter]`.
 - [Nix and NixOS](nix.md): the flake's packages: server, engine, prepare, client and launcher, and the `services.horizon-server` NixOS module.
 - [Hosting a server: design](server.md): `horizon-server`, the design and the plan: install, `server.toml`, the CLI, the web panel, backups, services, Docker, and the bot benchmark against vanilla.

@@ -351,6 +351,7 @@ mod nautili;
 mod net_harness;
 mod nether_portal;
 mod no_resources;
+mod nonliving_hurt;
 mod occlusion_culling;
 mod ominous_item_spawner;
 mod options;
@@ -2117,8 +2118,8 @@ struct Game<'a> {
     /// again only when the feet block (or the dimension) changes.
     debug_density: RefCell<debug_keys::DensityCache>,
     pending_pack_reload: bool,
-    /// HDR, Smooth Gradients, picked path and outcome at the last frame attempt, including a failed
-    /// replacement (`follow_frame`).
+    /// HDR, picked path and outcome at the last frame attempt, including a failed replacement
+    /// (`follow_frame`).
     frame_attempted: render_settings::FrameAttempt,
     /// When `resourcepacks/` was last looked at for the open pack screen, and what it held
     /// (`watch_pack_folder`).
@@ -2271,10 +2272,12 @@ struct Game<'a> {
     /// accounts), in place of the process's (P1's) for its connections and skin.
     split_auth: Option<std::sync::Arc<horizon_client::auth::AuthSession>>,
     focused: bool,
-    /// The visible window of a game an agent started, until a person focuses it: it opened
-    /// without the focus, and its pointer grab stays inside the game as `--offscreen`'s does,
-    /// so the person's pointer is never taken, hidden or moved.
+    /// The visible window of a game an agent started, until a person clicks into it: its
+    /// pointer grab stays inside the game as `--offscreen`'s does, so the person's pointer is
+    /// never taken, hidden or moved, and their keys and mouse don't reach the game.
     unclaimed_window: bool,
+    /// The modifiers the person last held at it, applied at the claim (`held_modifiers`).
+    unclaimed_modifiers: Option<winit::event::Modifiers>,
     /// The window's last focus change during a scripted run, applied once the run ends.
     focus_after_run: Option<bool>,
     /// Whether the window currently accepts input method events.
@@ -3529,8 +3532,7 @@ impl Game<'_> {
         }
         let (origin, dir) = self.aim()?;
         // GameRenderer.pick: the block ray runs out to the larger of the two
-        // interaction ranges; filterHitResult then drops a hit past the
-        // block's.
+        // interaction ranges; filterHitResult then drops a hit past the block's.
         self.clip_ray(origin, dir, self.block_reach.max(self.entity_reach))
             .filter(|hit| {
                 let distance: [f64; 3] = std::array::from_fn(|i| hit.point[i] - origin[i]);
@@ -3610,11 +3612,11 @@ impl Game<'_> {
         player.item_use_slows_sprint = item_use_slows_sprint;
         player.respiration = respiration;
         player.glider = glider;
-        // On someone else's server the glide flag is the server's
-        // (`DATA_SHARED_FLAGS_ID`, applied by the SetEntityData handler); the
-        // game's own integrated server has no such round trip, so the client
-        // keeps predicting the clear a tick after the landing glide.
-        player.server_owns_glide = self.integrated.is_none();
+        // A client of a server, the window's own integrated one included, takes
+        // the glide's end from the server's flag alone (`DATA_SHARED_FLAGS_ID`,
+        // applied by the SetEntityData handler): vanilla's LocalPlayer never
+        // ends a glide itself.
+        player.server_owns_glide = self.remote.is_some();
         let _ = player.set_sleeping(sleeping);
         player.leather_boots = leather_boots;
         player.freeze_immune = freeze_immune;
@@ -5006,7 +5008,6 @@ impl Game<'_> {
         if canceled {
             return Ok(false);
         }
-        self.input_feedback(horizon_client::input_source::Feedback::BlockBroken);
         let broken = state;
         let facts = self.res.facts().get(state).clone();
         let state = self.crack_mined_pot(pos, state);
@@ -6536,9 +6537,7 @@ impl Game<'_> {
         let mut static_block_entities = std::sync::Arc::from([]);
         let mut visible_static_block_entity_sections = Vec::new();
         let mut static_block_entity_stats = StaticCacheFrameStats::default();
-        self.entity_spans.borrow_mut().clear();
-        self.entity_motion.borrow_mut().clear();
-        self.entity_motion_posed.borrow_mut().clear();
+        self.clear_entity_marks();
         self.maps.slots.next_frame();
         // LevelExtractor.extract: the transient blocks queued since the last frame.
         self.drain_transient_block_queue();
@@ -6695,19 +6694,19 @@ impl Game<'_> {
         self.mark_player(out.len(), !self.own_body_in_view());
         let player_start = out.len();
         self.mark_motion(player_start, Self::MOTION_OWN_PLAYER);
-        let player_alpha = self.own_player_alpha();
-        self.player_model_geometry(camera, player_alpha, &mut out);
+        self.player_model_geometry(camera, self.own_player_alpha(), &mut out);
         // A native pack's shadow pass alone gets the first-person model (no per-entity draws).
         if self.pack_ids.is_none() && !self.own_body_in_view() {
             self.shadow_only_vertices
                 .borrow_mut()
                 .extend(out.drain(player_start..));
         }
+        self.lit_entity(player_start..out.len());
         self.mark_motion(out.len(), 0);
         // What crates draw around players: first person, see-through (game/player_hooks.rs).
         self.players_after_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:evoker_fangs");
-        self.fangs_geometry(camera, alpha, &mut out);
+        self.lit(&mut out, |g, o| g.fangs_geometry(camera, alpha, o));
         self.block_item_display_geometry(camera, alpha, &mut out);
         laps.lap("eg_players");
         let mut see_through = std::mem::take(&mut self.see_through_vertices);
@@ -6876,10 +6875,10 @@ impl Game<'_> {
                 );
                 !self.block_entity_occluded(bounds)
             };
-            let lid = |p: [i32; 3]| self.chest_lid(p, alpha as f32);
             let anim = |p: [i32; 3]| self.block_anim(p, alpha as f32);
             let scene = BlockEntityScene {
                 camera,
+                spyglass_outline: self.camera_type.first_person() && self.scoping(),
                 orientation: self.camera_orientation(),
                 anim: &anim,
                 texts: None,
@@ -6892,7 +6891,7 @@ impl Game<'_> {
                 translucent_sprites: &self.gui.atlas.translucent,
                 atlas_revision: self.gui.atlas.revision,
                 nether: self.nether_lighting(),
-                lid: &lid,
+                lid: &|p: [i32; 3]| self.chest_lid(p, alpha as f32),
                 sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
                     Some(BlockEntity::Sign(sign)) => Some(sign),
                     _ => None,
@@ -6919,6 +6918,7 @@ impl Game<'_> {
             // through the per-vertex occlusion callback both repeats that work
             // and disables their per-section GPU cache. Shader packs still need
             // per-entity span marks, so they keep the callback path.
+            let block_entities = out.len();
             if self.pack_ids.is_some() {
                 let section_revision = |pos| r.block_entity_section_revision(pos);
                 static_block_entity_stats = self
@@ -6989,6 +6989,7 @@ impl Game<'_> {
                 alpha as f32,
                 &mut out,
             );
+            self.lit_block_entity(block_entities..out.len());
             self.mark_stage(out.len(), "DESTROY");
             for &(pos, stage) in &cracks {
                 let state = self.world.block(pos[0], pos[1], pos[2]);
@@ -7075,7 +7076,7 @@ impl Game<'_> {
                         pos: v.to_array(),
                         uv,
                         // ExperienceOrbRenderer: `RenderTypes.entityTranslucent`; in HDR
-                        // output the orbs shine (entity.wgsl fs_hdr_mark).
+                        // output the orbs shine (entity.wgsl hdr_entity_mark).
                         layer: horizon_client::gfx::OIT_ENTITY
                             | u32::from(horizon_client::mesher::VERY_BRIGHT) << 16,
                         color,
@@ -7084,6 +7085,7 @@ impl Game<'_> {
                         glint_uv: [0.0, 0.0],
                     });
                 }
+                self.lit_entity(out.len() - 4..out.len());
             }
         }
         laps.lap("eg_orbs");
@@ -7153,29 +7155,29 @@ impl Game<'_> {
         // LevelRenderer.submitTransientBlocks.
         self.transient_block_geometry(camera, &mut out);
         self.mark_entity(out.len(), "minecraft:tnt");
-        self.tnt_geometry(camera, alpha, &mut out);
+        self.lit(&mut out, |g, o| g.tnt_geometry(camera, alpha, o));
         self.mark_motion(out.len(), 0);
         self.mark_entity(out.len(), "minecraft:painting");
-        self.painting_geometry(camera, &mut out);
+        self.lit(&mut out, |g, o| g.painting_geometry(camera, o));
         self.mark_motion(out.len(), 0);
         self.mark_entity(out.len(), "minecraft:item_frame");
         self.frame_geometry(camera, &mut out);
         self.mark_motion(out.len(), 0);
         self.mark_entity(out.len(), "minecraft:armor_stand");
-        self.armor_stand_geometry(camera, alpha, &mut out);
+        self.lit(&mut out, |g, o| g.armor_stand_geometry(camera, alpha, o));
         self.mark_motion(out.len(), 0);
-        self.cushion_geometry(camera, &mut out);
+        self.lit(&mut out, |g, o| g.cushion_geometry(camera, o));
         self.mark_entity(out.len(), "minecraft:oak_boat");
-        self.boat_geometry(camera, alpha, &mut out);
+        self.lit(&mut out, |g, o| g.boat_geometry(camera, alpha, o));
         self.mark_motion(out.len(), 0);
         self.mark_entity(out.len(), "minecraft:minecart");
-        self.cart_geometry(camera, alpha, &mut out);
+        self.lit(&mut out, |g, o| g.cart_geometry(camera, alpha, o));
         self.mark_motion(out.len(), 0);
         // Beams: `gbuffers_beaconbeam`, not a block entity's program (5.4 has no stage for them).
         self.mark_stage(out.len(), "NONE");
         self.beacon_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:fishing_bobber");
-        self.fishing_geometry(camera, alpha, &mut out);
+        self.lit(&mut out, |g, o| g.fishing_geometry(camera, alpha, o));
         self.mark_entity(out.len(), "minecraft:leash_knot");
         self.leash_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:trident");
@@ -7408,6 +7410,7 @@ impl Game<'_> {
         self.fns = Default::default();
         (self.world_tables, self.health_resources) =
             self.build_world_tables(false, &level.enabled_features)?;
+        self.invalidate_tagged_shader_ids();
         self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
         // Native tag reads use the lock to tell that the tag tables are ready.
         self.session_lock = Some(session_lock);
@@ -7526,7 +7529,7 @@ impl Game<'_> {
             .is_some_and(|w| w.preset == horizon_client::save::WorldPreset::Flat);
         self.world_debug = horizon_client::save::WorldGen::read(&save_root)
             .is_some_and(|w| w.preset == horizon_client::save::WorldPreset::Debug);
-        self.block_ticks = Ticks::new(self.level.seed as i32);
+        self.block_ticks = self.levels.new_ticks(self.level.seed as i32);
         self.tick_chunks.clear();
         self.clear_entities();
         self.player = None;
@@ -7549,6 +7552,7 @@ impl Game<'_> {
             level: self.level.xp_level,
             progress: self.level.xp_progress,
             total: self.level.xp_total,
+            score: self.level.score,
         };
         self.restore_effects();
         self.mining = None;
@@ -7666,9 +7670,7 @@ impl Game<'_> {
         self.see_through_vertices.clear();
         self.glowing_vertices.get_mut().clear();
         self.shadow_only_vertices.get_mut().clear();
-        self.entity_spans.borrow_mut().clear();
-        self.entity_motion.borrow_mut().clear();
-        self.entity_motion_posed.borrow_mut().clear();
+        self.clear_entity_marks();
         self.skin_models
             .borrow_mut()
             .restart(&mut self.skin_frame.borrow_mut());
@@ -8094,7 +8096,7 @@ impl Game<'_> {
                 *capture = keep;
             }
             if let Some(kind) = mob {
-                if let Some(id) = self.spawn_mob_at(kind, (target[0], target[1], target[2]), true) {
+                if let Some(id) = self.spawn_bucket_mob(kind, (target[0], target[1], target[2])) {
                     self.mob_placed(id, stack)?;
                 }
                 self.post_block_game_event(
@@ -8736,6 +8738,7 @@ impl Game<'_> {
         level.xp_level = self.experience.level;
         level.xp_progress = self.experience.progress;
         level.xp_total = self.experience.total;
+        level.score = self.experience.score;
         level.root_vehicle = vehicle.as_ref().map(|v| v.2).or(self.pending_vehicle);
         // The ride's tree, or none once the file's own came back.
         match vehicle {
@@ -8773,7 +8776,6 @@ impl Game<'_> {
                 map.insert("attributes".into(), p.saved_attributes());
             }
             level.fall_distance = p.fall_distance;
-
             level.food = p.health.food.food;
             level.saturation = p.health.food.saturation;
             level.flying = p.flying;
@@ -9058,12 +9060,12 @@ impl Game<'_> {
             )
         });
         let (camera, underwater, view_yaw, view_pitch) = match view {
-            Some((c, yaw, pitch)) => {
-                let s =
-                    self.world
-                        .block(c.x.floor() as i32, c.y.floor() as i32, c.z.floor() as i32);
-                (c, self.res.facts().get(s).fluid == Fluid::Water, yaw, pitch)
-            }
+            Some((c, yaw, pitch)) => (
+                c,
+                self.camera_submersion([c.x, c.y, c.z]) == horizon_client::fog::FogType::Water,
+                yaw,
+                pitch,
+            ),
             None => (
                 glam::DVec3::new(0.5, 100.0, 0.5),
                 false,
@@ -9495,10 +9497,10 @@ impl Game<'_> {
         // The dragon is drawn in every dimension, as any entity: a dragon
         // summoned outside the End (the server's AddEntity) is shown too.
         if !title {
-            let mut dragon = Vec::new();
-            self.dragon_geometry(camera, alpha, &mut dragon, &mut additive);
-            self.dragon_fireball_geometry(camera, alpha, &mut dragon);
-            entities.extend(dragon);
+            let dragon = entities.len();
+            self.dragon_geometry(camera, alpha, &mut entities, &mut additive);
+            self.dragon_fireball_geometry(camera, alpha, &mut entities);
+            self.lit_entity(dragon..entities.len());
         }
         pr.lap("pr_dragon_bolts");
         let (celestial, stars) = if title {
@@ -9613,12 +9615,7 @@ impl Game<'_> {
             },
             title,
             sky_blocked: horizon_client::fog::sky_pass_skipped(
-                horizon_client::fog::fog_type(
-                    &self.world,
-                    self.res.facts(),
-                    [camera.x, camera.y, camera.z],
-                    &self.near_plane(),
-                ),
+                self.camera_submersion([camera.x, camera.y, camera.z]),
                 self.potions.effects.get("blindness").is_some()
                     || self.potions.effects.get("darkness").is_some(),
                 self.boss_overlay.should_create_world_fog(),
@@ -9696,10 +9693,7 @@ impl Game<'_> {
             border,
             game_time: self.world.game_time as f32,
             shader_game_time: ((self.world.game_time % 24000) as f32 + alpha as f32) / 24000.0,
-            crumbling_sprite: frame_geometry::crumbling_sprite(
-                &self.gui.atlas.sprites,
-                self.settings.improved_transparency,
-            ),
+            crumbling_sprite: frame_geometry::crumbling_sprite(&self.gui.atlas.sprites),
             end_portal_sprites: ["environment/end_sky", "entity/end_portal/end_portal"].map(|n| {
                 self.gui
                     .atlas
@@ -9756,6 +9750,7 @@ impl Game<'_> {
                 } else {
                     horizon_client::debug_overlay::GPU_TIMING_GAP
                 });
+                renderer.take_entity_runs(self.native_shaders.entity_runs.get_mut());
                 horizon_client::spans::time("renderer", || renderer.render(&frame))
             }
             None => Err("renderer".into()),
@@ -9790,7 +9785,6 @@ impl Game<'_> {
 fn autosave_interval(rate: f32) -> i64 {
     i64::from((rate * 300.0) as i32).max(100)
 }
-
 /// winit's events for a window's game, with any loop: a headless client (#4951) has no
 /// winit loop and calls these from its own.
 impl Game<'_> {
@@ -10199,12 +10193,6 @@ impl Game<'_> {
                     self.focused = focused;
                     self.focus_lost = (!focused).then(Instant::now);
                     if focused {
-                        if std::mem::take(&mut self.unclaimed_window) {
-                            // A person clicked into the agent's window: from now on it is a
-                            // window like any other, and their click takes the pointer
-                            // (`MouseHandler.onPress`) instead of attacking.
-                            self.captured = false;
-                        }
                         self.regrab_on_refocus();
                     } else {
                         // A held pointer goes with the focus, wherever the
@@ -11454,6 +11442,7 @@ impl<'a> Game<'a> {
             split_auth: None,
             focused: true,
             unclaimed_window: false,
+            unclaimed_modifiers: None,
             focus_after_run: None,
             ime_allowed: false,
             ime_area: None,
