@@ -337,3 +337,14 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
   occurs, revert this experiment and use an OS crash report. After device
   validation, evaluate a correct main-thread surface and larger-stack
   resource preparation architecture that keeps UIKit on the main thread.
+
+2026-11-15: LARGE-STACK WORKER REJECTED; SAFE MAIN-THREAD EXPERIMENT
+- CI run 43699969269 failed with six E0277 errors: Renderer contains
+  non-Sync channels/external pipelines, &Renderer makes the async future
+  non-Send, and Box<dyn Error> is not Send either. Do not force Send.
+- Replaced the worker-thread experiment with a no-inline generic helper
+  that polls the pinned future on the original main thread; this may reduce
+  peak stack by separating argument preparation and future polling frames.
+  The hypothesis is unproven. Observe poll.helper.enter and renderer.new.entry.
+- Recommend an iOS Analytics native crash/Jetsam report to confirm cause if
+  the new build still terminates. Original Horizon source unmodified in git.
