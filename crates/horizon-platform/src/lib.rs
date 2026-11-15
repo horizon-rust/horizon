@@ -61,8 +61,8 @@ pub mod hooks {
         PlayerModel, PlayerModels, Quad, SpriteStore, Sprites, View,
     };
     pub use horizon_hooks::{
-        Activity, Client, Dimension, GameMode, GetTheGame, Hooks, Play, Started, TooLate, perf,
-        register, seat, tunnel,
+        Activity, Benchmarked, Client, Crash, Dimension, Display, GameMode, GetTheGame, Gpu, Hooks,
+        Milestone, Play, PlayedFrame, Started, TooLate, WorldLeft, perf, register, seat, tunnel,
     };
 }
 

@@ -271,7 +271,7 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
         vram_mb: None,
     });
     if let Some(gpu) = report.hardware.gpu.as_mut() {
-        let vendor = horizon_telemetry::system::gpu_vendor(&gpu.name, 0);
+        let vendor = horizon_system::gpu_vendor(&gpu.name, 0);
         let vendor = if gpu.vendor.is_empty() {
             vendor
         } else {
@@ -279,11 +279,10 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
         }
         .to_owned();
         if gpu.kind.contains("iscrete") {
-            gpu.vram_mb = horizon_telemetry::system::vram_mb(&vendor);
+            gpu.vram_mb = horizon_system::vram_mb(&vendor);
         }
     }
-    report.hardware.storage =
-        horizon_telemetry::system::storage(&setup.game_dir).map(str::to_owned);
+    report.hardware.storage = horizon_system::storage(&setup.game_dir).map(str::to_owned);
     report.hardware.display = serde_json::from_value(title["display"].clone()).ok();
 
     let mut steady = Vec::new();
@@ -337,7 +336,13 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
     if let Ok(meta) = std::env::current_exe().and_then(std::fs::metadata) {
         report.metric("game.binary_bytes", &[meta.len() as f64]);
     }
-    crate::telemetry::keep_benchmark(&crate::logging::game_home(), &report);
+    // Opt-in telemetry (a part above the engine) keeps it for the launcher to send.
+    let upload = report.for_upload().to_json();
+    horizon_hooks::engine::benchmarked(&horizon_hooks::Benchmarked {
+        home: &crate::logging::game_home(),
+        version: &crate::crash::build(),
+        report: &upload,
+    });
     let written = report
         .write_to(&setup.game_dir.join("benchmarks"))
         .map_err(|e| e.to_string())?;
