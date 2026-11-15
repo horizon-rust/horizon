@@ -8,14 +8,15 @@
 // and works out the screen gradients `dpdx`/`dpdy` would give, so the texel, mip level, light
 // and fog come out as in the normal path.
 
-// Bit 31: terrain is here; bit 30: the quad has a record (`mesher/packed.rs`); bits 24 to 29:
-// the arena page (`visbuffer::MAX_PAGES`); bits 0 to 23: the quad's record's slot in the page,
-// else its first vertex over 4 (a page holds at most `arena::PAGE_BYTES` / 24 bytes =
-// 11 184 810 slots, under 2^24).
-fn vis_id(page: u32, s: SectionCorner) -> u32 {
-    let at = 0x80000000u | ((page & 0x3fu) << 24u);
+// Bit 31: terrain is here; bit 30: the quad has a record (`mesher/packed.rs`); bit 29: that
+// record is a far tile's (`lod/packed.rs`, drawn from `FAR_BASE`); bits 24 to 28: the arena
+// page (`visbuffer::MAX_PAGES`); bits 0 to 23: the quad's record's slot in the page, else its
+// first vertex over 4 (a page holds at most `arena::PAGE_BYTES` / 24 bytes = 11 184 810
+// slots, under 2^24). `vertex`: the draw's vertex index `s` was read for.
+fn vis_id(page: u32, s: SectionCorner, vertex: u32) -> u32 {
+    let at = 0x80000000u | ((page & 0x1fu) << 24u);
     if s.packed {
-        return at | 0x40000000u | s.slot;
+        return at | 0x40000000u | select(0u, 0x20000000u, vertex >= FAR_BASE) | s.slot;
     }
     return at | (s.slot >> 2u);
 }
@@ -85,7 +86,7 @@ struct VisIdOut {
     }
     let position = bitcast<vec3<f32>>(s.c.p);
     out.clip = fade_depth(globals.view_proj * vec4(position + origin.xyz, 1.0), origin.w);
-    out.id = vis_id(page, s);
+    out.id = vis_id(page, s, vertex);
     return out;
 }
 @fragment fn fs_vis_id(in: VisIdOut) -> @location(0) u32 {
@@ -119,7 +120,7 @@ struct VisCutoutOut {
     let light = vec2((s.c.r.y >> 16u) & 0xffu, s.c.r.y >> 24u);
     let pos = position + origin.xyz;
     out.clip = fade_depth(globals.view_proj * vec4(pos, 1.0), origin.w);
-    out.id = vis_id(page, s);
+    out.id = vis_id(page, s, vertex);
     out.uv = terrain_uv(uv, origin.w);
     out.layer = layer;
     let block = max(f32(light.y), dynamic_block_light(pos));
@@ -282,10 +283,18 @@ fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> Terrai
         rest.y & 0xffffu, unpack4x8unorm(rest.z), light, origin.xyz, origin.w);
 }
 
+// Corner `corner` of a record: a far tile's (`far_corner`) or a section's (`packed_corner`).
+fn vis_record_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32, far: bool) -> ArenaCorner {
+    if far {
+        return far_corner(lo, hi, corner);
+    }
+    return packed_corner(lo, hi, corner);
+}
+
 @fragment fn fs_vis_resolve(in: VisResolveOut) -> @location(0) vec4<f32> {
     let pixel = vec2<i32>(floor(in.clip.xy));
     let id = textureLoad(vis_ids, pixel, 0).x;
-    let page = (id >> 24u) & 0x3fu;
+    let page = (id >> 24u) & 0x1fu;
     if (id & 0x80000000u) == 0u || page / 16u != in.chunk {
         discard;
     }
@@ -323,10 +332,11 @@ fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> Terrai
     var p3: vec3<u32>;
     var r3: vec3<u32>;
     if record {
-        let c0 = packed_corner(lo, hi, 0u);
-        let c1 = packed_corner(lo, hi, 1u);
-        let c2 = packed_corner(lo, hi, 2u);
-        let c3 = packed_corner(lo, hi, 3u);
+        let far = (id & 0x20000000u) != 0u;
+        let c0 = vis_record_corner(lo, hi, 0u, far);
+        let c1 = vis_record_corner(lo, hi, 1u, far);
+        let c2 = vis_record_corner(lo, hi, 2u, far);
+        let c3 = vis_record_corner(lo, hi, 3u, far);
         p0 = c0.p;
         r0 = c0.r;
         p1 = c1.p;
