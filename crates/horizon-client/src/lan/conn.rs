@@ -841,6 +841,11 @@ fn refuse(
 /// ServerLoginPacketListenerImpl.onDisconnect, once the server thread sees
 /// the connection closed: by a refusal, or by the client ("Disconnected").
 fn lost(shared: &Shared, user: &str, text: &str) {
+    // Some of `text` comes from the client (its mod list): one log line, whatever it holds.
+    let text: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     if let Some(log) = &shared.config.log {
         (log.write)(
             "Server thread",

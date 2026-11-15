@@ -597,9 +597,11 @@ impl ClientSession {
             });
         }
         if v.at_most(ServerVersion::V26_1) {
-            let entities = self.entities.lock().unwrap();
+            // Locked only when a packet names an entity (spectate), not for every packet.
             let entity_of = |uuid: u128| {
-                entities
+                self.entities
+                    .lock()
+                    .unwrap()
                     .iter()
                     .find(|(_, (_, u))| *u == uuid)
                     .map(|(&id, _)| id)
@@ -708,10 +710,14 @@ impl ClientSession {
             pitch: r.f32()?,
         };
         let relatives = r.i32()?;
-        self.teleports
-            .lock()
-            .unwrap()
-            .push_back(Teleport { id, to, relatives });
+        // Only the recent ones: a client that never accepts a teleport gets a new one every second,
+        // and a vanilla client accepts within a second or two.
+        const MAX_PENDING: usize = 64;
+        let mut teleports = self.teleports.lock().unwrap_or_else(|e| e.into_inner());
+        if teleports.len() >= MAX_PENDING {
+            teleports.pop_front();
+        }
+        teleports.push_back(Teleport { id, to, relatives });
         Ok(())
     }
 

@@ -135,10 +135,15 @@ pub fn clientbound(
             return v1_21_1::recipes::clientbound(session, id, payload)
                 .map(|body| body.map(|body| (id, Some(body))));
         }
-        if id == cb::CONTAINER_SET_SLOT
-            && let Some((id, body)) = v1_21_1::container_slot(session, payload)?
-        {
-            return Ok(Some((id, Some(body))));
+        if id == cb::CONTAINER_SET_SLOT {
+            // The old client ignored a window that was neither its menu nor -1 (cursor) or -2
+            // (inventory), rather than disconnecting.
+            if matches!(payload.first().map(|&b| b as i8), Some(i8::MIN..=-3)) {
+                return Ok(None);
+            }
+            if let Some((id, body)) = v1_21_1::container_slot(session, payload)? {
+                return Ok(Some((id, Some(body))));
+            }
         }
         if id == cb::EXPLODE {
             return v1_21_1::explosion(session, payload).map(|body| Some((id, Some(body))));
