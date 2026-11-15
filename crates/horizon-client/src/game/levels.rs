@@ -900,6 +900,7 @@ impl Game<'_> {
                     // (`TicketType.shouldKeepDimensionActive`), and so does a
                     // thrown ender pearl (`TicketType.ENDER_PEARL`).
                     || !self.portal_tickets_in(*d).is_empty()
+                    || !self.pearl_tickets_in(*d).is_empty()
                     || self
                         .level_projectiles(*d)
                         .iter()
@@ -921,6 +922,17 @@ impl Game<'_> {
                 .parked
                 .get(&dim)
                 .map_or(&[], |p| p.tickets.portal_tickets())
+        }
+    }
+
+    fn pearl_tickets_in(&self, dim: Dim) -> &[PortalTicket] {
+        if dim == self.dim {
+            self.tickets.pearl_tickets()
+        } else {
+            self.levels
+                .parked
+                .get(&dim)
+                .map_or(&[], |p| p.tickets.pearl_tickets())
         }
     }
 
@@ -949,6 +961,7 @@ impl Game<'_> {
                 )
             })
             .collect();
+        chunks.extend(self.pearl_tickets_in(dim).iter().map(|t| t.chunk));
         chunks.sort_unstable();
         chunks.dedup();
         chunks

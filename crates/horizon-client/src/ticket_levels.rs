@@ -270,6 +270,8 @@ pub struct ChunkTickets {
     sources: Option<Sources>,
     levels: Levels,
     portal: Vec<PortalTicket>,
+    pearls: Vec<PortalTicket>,
+    pearl_timers: std::collections::HashMap<u64, u8>,
 }
 
 impl ChunkTickets {
@@ -371,6 +373,44 @@ impl ChunkTickets {
             t.ticks_left = t.ticks_left.wrapping_sub(1);
             t.ticks_left >= 0
         });
+    }
+    /// Refresh a live pearl after its entity tick, at its new chunk.
+    pub fn tick_pearl(&mut self, id: u64, previous: (i32, i32), chunk: (i32, i32)) {
+        let timer = self.pearl_timers.entry(id).or_default();
+        *timer = timer.saturating_sub(1);
+        if *timer == 0 || previous != chunk {
+            *timer = 39;
+            if let Some(ticket) = self.pearls.iter_mut().find(|t| t.chunk == chunk) {
+                ticket.ticks_left = 40;
+            } else {
+                self.pearls.push(PortalTicket {
+                    chunk,
+                    level: ENDER_PEARL_LEVEL,
+                    ticks_left: 40,
+                });
+            }
+        }
+    }
+    /// Forget timers for entities no longer present; their tickets remain.
+    pub fn retain_pearl_timers(&mut self, mut alive: impl FnMut(u64) -> bool) {
+        self.pearl_timers.retain(|id, _| alive(*id));
+    }
+    /// Age tickets only when their chunks are ready, just like portal tickets.
+    pub fn tick_pearl_tickets(
+        &mut self,
+        mut can_expire: impl FnMut(&PortalTicket) -> bool,
+    ) -> bool {
+        let before = self.pearls.len();
+        self.pearls.retain_mut(|t| {
+            if can_expire(t) {
+                t.ticks_left -= 1;
+            }
+            t.ticks_left >= 0
+        });
+        self.pearls.len() != before
+    }
+    pub fn pearl_tickets(&self) -> &[PortalTicket] {
+        &self.pearls
     }
     /// While one is held, it keeps its level active (`shouldKeepDimensionActive`).
     pub fn portal_tickets(&self) -> &[PortalTicket] {
@@ -983,5 +1023,44 @@ mod tiled_tests {
             }
             assert_eq!(tiled.get(50_000, -50_000), NONE);
         }
+    }
+}
+
+#[cfg(test)]
+mod pearl_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn pearl_tickets_keep_their_remaining_lifetime_and_refresh_on_move() {
+        let mut tickets = ChunkTickets::default();
+        tickets.tick_pearl(1, (0, 0), (0, 0));
+        for _ in 0..10 {
+            tickets.tick_pearl_tickets(|_| true);
+            tickets.tick_pearl(1, (0, 0), (0, 0));
+        }
+        tickets.tick_pearl(1, (0, 0), (1, 0));
+        assert_eq!(tickets.pearl_tickets().len(), 2);
+        tickets.retain_pearl_timers(|_| false);
+        for _ in 0..30 {
+            tickets.tick_pearl_tickets(|_| true);
+        }
+        assert_eq!(tickets.pearl_tickets().len(), 2);
+        tickets.tick_pearl_tickets(|_| true);
+        assert_eq!(
+            tickets
+                .pearl_tickets()
+                .iter()
+                .map(|t| t.chunk)
+                .collect::<Vec<_>>(),
+            vec![(1, 0)]
+        );
+        for _ in 0..9 {
+            tickets.tick_pearl_tickets(|_| true);
+        }
+        assert_eq!(tickets.pearl_tickets().len(), 1);
+        tickets.tick_pearl_tickets(|_| false);
+        assert_eq!(tickets.pearl_tickets().len(), 1);
+        tickets.tick_pearl_tickets(|_| true);
+        assert!(tickets.pearl_tickets().is_empty());
     }
 }

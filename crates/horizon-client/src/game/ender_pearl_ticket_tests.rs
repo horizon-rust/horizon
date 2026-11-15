@@ -53,4 +53,19 @@ fn a_pearl_keeps_its_chunk_and_level_ticking_with_nobody_in_it() {
     // `TicketType.ENDER_PEARL.shouldKeepDimensionActive`: the level runs with
     // no player in it, as a forced chunk's level does.
     assert_eq!(game.levels_to_tick(), vec![Dim::Nether]);
+
+    // A ticket placed by the last refresh survives the pearl and keeps the
+    // empty dimension and its block-ticking ring until it times out.
+    game.tickets.tick_pearl(1, (5, -3), (5, -3));
+    game.creatures.projectiles.clear();
+    for _ in 0..40 {
+        game.tickets.tick_pearl_tickets(|_| true);
+        game.update_chunk_tickets();
+        assert!(game.tickets.levels().block_ticking(6, -3));
+        assert_eq!(game.levels_to_tick(), vec![Dim::Nether]);
+    }
+    game.tickets.tick_pearl_tickets(|_| true);
+    game.update_chunk_tickets();
+    assert!(!game.tickets.levels().block_ticking(6, -3));
+    assert_eq!(game.levels_to_tick(), vec![Dim::Overworld]);
 }
