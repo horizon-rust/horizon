@@ -275,6 +275,12 @@ impl Game<'_> {
                             Some(x) => self.provider_float(x, c, d)?,
                             None => 0.0,
                         };
+                        // `ContextFloatProvider.getFloatOrThrow`: a non-finite
+                        // probability is an ArithmeticException, which
+                        // `ComputeCommand.computeAsInt` reports.
+                        if !p.is_finite() {
+                            return Err(format!("Invalid value: {}", java_float(p)));
+                        }
                         (0..n.max(0))
                             .filter(|_| self.world.random.next_float() < p)
                             .count() as i32
@@ -525,7 +531,13 @@ impl Game<'_> {
                         blocks_ok && props_ok
                     }
                     "random_chance" => {
-                        let chance = o.get("chance").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                        // `ContextFloatProvider.getFloat`: the chance is a
+                        // provider, and an exception or a non-finite value
+                        // reads as 0 (so the draw always fails).
+                        let chance = o
+                            .get("chance")
+                            .map_or(0.0, |v| self.provider_float(v, c, 0).unwrap_or(0.0));
+                        let chance = if chance.is_finite() { chance } else { 0.0 };
                         self.world.random.next_float() < chance
                     }
                     _ => {
@@ -539,3 +551,7 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "compute_condition_tests.rs"]
+mod compute_condition_tests;

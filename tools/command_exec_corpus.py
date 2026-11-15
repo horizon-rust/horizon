@@ -2978,6 +2978,15 @@ def compute():
         cmd('/compute default integer {type:"minecraft:from_float",input:{type:"minecraft:div",left:1,right:0}}'),
         cmd('/compute default integer {type:"minecraft:uniform",min:3,max:3}'),
         cmd('/compute default integer {type:"minecraft:conditional",condition:{type:"minecraft:inverted",term:{type:"minecraft:match_block",blocks:"minecraft:stone"}},on_true:5}'),
+        # The condition's `random_chance` chance is a ContextFloatProvider, and
+        # a non-finite value reads as 0 there (ContextFloatProvider.getFloat).
+        cmd('/compute default integer {type:"minecraft:conditional",condition:{type:"minecraft:random_chance",chance:{type:"minecraft:constant",value:1.0}},on_true:5,on_false:7}'),
+        cmd('/compute default integer {type:"minecraft:conditional",condition:{type:"minecraft:random_chance",chance:{type:"minecraft:constant",value:0.0}},on_true:5,on_false:7}'),
+        cmd('/compute default integer {type:"minecraft:conditional",condition:{type:"minecraft:random_chance",chance:{type:"minecraft:div",left:1,right:0}},on_true:5,on_false:7}'),
+        # `binomial` asks for p with getFloatOrThrow: a non-finite one throws.
+        cmd('/compute default integer {type:"minecraft:binomial",n:3,p:{type:"minecraft:constant",value:1.0}}'),
+        cmd('/compute default integer {type:"minecraft:binomial",n:3,p:{type:"minecraft:constant",value:0.0}}'),
+        cmd('/compute default integer {type:"minecraft:binomial",n:3,p:{type:"minecraft:div",left:1,right:0}}'),
         cmd('/compute default integer {type:"minecraft:nope"}'),
         cmd('/compute default integer minecraft:brewing/uses_default'),
         cmd('/compute default integer minecraft:cooking/time_coal'),
