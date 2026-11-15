@@ -237,23 +237,23 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         let sensitivity = CGFloat(saved == 0 ? 1 : saved)
         let dx = delta.x * sensitivity
         let dy = delta.y * sensitivity
+        if (nova_ios_pointer_state() & 1) != 0 {
+            // First-person look is purely relative; don't move/redraw the
+            // hidden UIKit cursor at every touch sample.
+            nova_ios_input_motion(Double(dx), Double(dy))
+            return
+        }
+
+        // Only GUI screens need absolute cursor updates in Metal pixels.
         let prev = cursorPoint ?? CGPoint(x: overlay.bounds.midX, y: overlay.bounds.midY)
         cursorPoint = CGPoint(
             x: min(overlay.bounds.maxX - 8, max(0, prev.x + dx)),
             y: min(overlay.bounds.maxY - 8, max(0, prev.y + dy))
         )
         redrawCursor()
-        if (nova_ios_pointer_state() & 1) != 0 {
-            // First-person look uses RELATIVE motion only. Sending a cursor
-            // event too caused unnecessary UI event processing every frame.
-            // Touch deltas are already in points, not retina-scaled pixels.
-            nova_ios_input_motion(Double(dx), Double(dy))
-        } else {
-            // GUI menus need an absolute cursor in the Metal surface's pixels.
-            let scale = Double(window.screen.scale)
-            let point = cursorPoint ?? prev
-            nova_ios_input_cursor(Double(point.x) * scale, Double(point.y) * scale)
-        }
+        let scale = Double(window.screen.scale)
+        let point = cursorPoint ?? prev
+        nova_ios_input_cursor(Double(point.x) * scale, Double(point.y) * scale)
     }
 
     private func tapGameSurface(at location: CGPoint) {
