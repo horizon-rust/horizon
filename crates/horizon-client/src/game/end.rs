@@ -147,6 +147,8 @@ pub(super) struct EndState {
     /// Thrown eyes of ender in flight.
     eyes: Vec<EyeOfEnder>,
     flash: EndFlash,
+    /// Gateways waiting for their 3x3 footprint chunks to load before placing.
+    pub(super) pending_gateways: Vec<[i32; 3]>,
 }
 
 /// EndFlashState: a purple flash in the End sky every 600 ticks that also
@@ -644,6 +646,7 @@ impl Game<'_> {
         self.tick_crystals();
         self.clear_crystal_fire();
         self.tick_eyes();
+        self.tick_pending_gateways()?;
         if self.dimension_type().has_ender_dragon_fight {
             self.ensure_exit_portal()?;
         }
@@ -796,7 +799,7 @@ impl Game<'_> {
         if self.exit_portal().is_some() {
             // The gateway may have been out of range when it was placed.
             if won
-                && self.world.loaded(gateway[0], gateway[2])
+                && self.gateway_footprint_loaded(gateway)
                 && &*self.block_name(gateway) != "minecraft:end_gateway"
                 && &*self.block_name([gateway[0], gateway[1] + 2, gateway[2]])
                     != "minecraft:bedrock"
@@ -820,7 +823,7 @@ impl Game<'_> {
         let origin = [0, y.max(1), 0];
         self.set_exit_portal(origin);
         self.place_podium(origin, won)?;
-        if won && self.world.loaded(gateway[0], gateway[2]) {
+        if won && self.gateway_footprint_loaded(gateway) {
             self.place_gateway(gateway)?;
         }
         Ok(())
@@ -864,7 +867,42 @@ impl Game<'_> {
         self.place_podium(origin, true)
     }
     pub(super) fn place_gateway_at(&mut self, pos: [i32; 3]) -> Result<()> {
+        if !self.gateway_footprint_loaded(pos) {
+            if !self.end.pending_gateways.contains(&pos) {
+                self.end.pending_gateways.push(pos);
+                self.fight.dirty = true;
+            }
+            return Ok(());
+        }
         self.place_gateway(pos)
+    }
+
+    /// Whether every chunk holding a block in the gateway's 3x3 footprint is loaded.
+    pub(super) fn gateway_footprint_loaded(&self, origin: [i32; 3]) -> bool {
+        Self::is_gateway_footprint_loaded(&self.world, origin)
+    }
+
+    pub(super) fn is_gateway_footprint_loaded(
+        world: &horizon_client::world::World,
+        origin: [i32; 3],
+    ) -> bool {
+        (-1..=1).all(|dx| (-1..=1).all(|dz| world.loaded(origin[0] + dx, origin[2] + dz)))
+    }
+
+    fn tick_pending_gateways(&mut self) -> Result<()> {
+        if self.end.pending_gateways.is_empty() {
+            return Ok(());
+        }
+        let pending = std::mem::take(&mut self.end.pending_gateways);
+        for pos in pending {
+            if self.gateway_footprint_loaded(pos) {
+                self.place_gateway(pos)?;
+                self.fight.dirty = true;
+            } else {
+                self.end.pending_gateways.push(pos);
+            }
+        }
+        Ok(())
     }
 
     /// The first gateway of the shuffled ring (EnderDragonFight constructor
@@ -943,6 +981,9 @@ impl Game<'_> {
 
     /// EndGatewayFeature.place: the gateway block in a bedrock cross.
     fn place_gateway(&mut self, origin: [i32; 3]) -> Result<()> {
+        if !self.gateway_footprint_loaded(origin) {
+            return Err("gateway footprint chunk is not loaded".into());
+        }
         for y in -2i32..=2 {
             for z in -1..=1 {
                 for x in -1..=1 {
@@ -2083,6 +2124,22 @@ mod tests {
         for (x, y) in [(-60.0, -180.0), (10.0, 95.0), (-25.0, 3.0)] {
             assert!((at(x, y).length() - 100.0).abs() < 1e-3);
         }
+    }
+
+    #[test]
+    fn gateway_footprint_loaded_requires_all_boundary_chunks() {
+        use horizon_client::chunk::Chunk;
+        use horizon_world::registry::BlockStateId;
+
+        let mut world = horizon_client::world::World::new(BlockStateId(0), 0);
+        world.chunks.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+
+        let origin = [15, 75, 8];
+        assert!(world.loaded(origin[0], origin[2]));
+        assert!(!Game::is_gateway_footprint_loaded(&world, origin));
+
+        world.chunks.insert((1, 0), Arc::new(Chunk::empty(1, 0)));
+        assert!(Game::is_gateway_footprint_loaded(&world, origin));
     }
 }
 
