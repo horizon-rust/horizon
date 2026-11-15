@@ -482,6 +482,7 @@ impl Game<'_> {
             Screen::Friends => "friends",
             Screen::Social => "social",
             Screen::ServerLinks => "server-links",
+            Screen::ReportForm => "report-bugs",
             Screen::ConfirmLink => "confirm-link",
             Screen::DialogWarning => "dialog-warning",
             Screen::CommandBlock => "command-block",

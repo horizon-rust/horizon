@@ -363,7 +363,7 @@ pub trait Store: Sync {
 A page lives in the options screen's shell, and its entry sits on one of the game's menus.
 
 ```rust
-pub enum Place { HorizonSettings, Pause, Extras, Title }
+pub enum Place { HorizonSettings, Pause, Extras, Title, ReportBugs }
 pub trait Page: Sync {
     fn id(&self) -> &'static str;            // stable, for horizon-ctl and the page stack
     fn title(&self) -> &'static str;         // translation key
@@ -371,6 +371,7 @@ pub trait Page: Sync {
     fn rows(&self, rows: &mut Vec<Row>);     // asked when the page is drawn, not every frame elsewhere
     fn act(&self, row: usize, act: Act);     // a click, a reverse click, a slider's value, a key
     fn tooltip(&self, row: usize) -> Option<Label> { None }   // hover text, may follow the value
+    fn opened(&self) {}                                      // a page drawn as a screen is about to open
     fn back(&self) -> &'static str { "gui.done" }            // the leave button of a page drawn as a screen
 }
 pub enum Row {
@@ -405,6 +406,11 @@ pub fn connect(address: impl Into<String>);                   // from a Title pa
   (`Page::back`, `gui.cancel` for a form). It shows heading, note, text, space, field and button rows. With no page
   there the icon opens the engine's Join a Friend while an invite-code resolver is registered, else it is
   inactive.
+- `ReportBugs` is the pause menu's Report Bugs icon: it opens the first page registered there as the same form,
+  over the world (`game/report_form.rs`), and vanilla's link with none. `Page::opened` tells the page first, so a
+  finished form can start over. `horizon_platform::details` gives such a page what the engine says of the machine
+  and its settings (the graphics adapter and driver, the render settings, resource packs, native mods), never a
+  world's, a server's or a player's name.
 - `Field` is vanilla's `EditBox` on a page drawn as its own screen: focus by click or Tab, typing, the caret keys,
   selection, copy and paste, at most `max` characters (32 by default). The engine keeps its text while the page is
   open and sends each change (`Act::Edit`, before any other act or redraw reaches the page) and Enter

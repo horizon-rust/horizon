@@ -77,6 +77,12 @@ pub mod pages {
     pub use horizon_hooks::pages::{Act, Label, Page, Place, Row, connect, register};
 }
 
+/// What the game says about the machine and its settings, for a bug report
+/// (docs/layers.md, "Platform registries").
+pub mod details {
+    pub use horizon_hooks::details::all;
+}
+
 /// The lang files with a crate's text, loaded with the game's own (docs/layers.md, "Platform
 /// registries").
 pub mod lang {

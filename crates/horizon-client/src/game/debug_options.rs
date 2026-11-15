@@ -526,6 +526,7 @@ fn debug_options_interrupts(screen: Screen, playing_overlay: bool) -> bool {
         | Screen::Friends
         | Screen::Social
         | Screen::ServerLinks
+        | Screen::ReportForm
         | Screen::ConfirmLink
         | Screen::DialogWarning
         | Screen::Mod => true,

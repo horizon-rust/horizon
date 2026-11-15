@@ -24,6 +24,10 @@ pub enum Place {
     /// its own, as Join a Friend is drawn ([`Row::Field`]). It shows heading, note, text, space,
     /// field and button rows; the others belong in the options shell.
     Title,
+    /// The pause menu's Report Bugs icon (vanilla's `PauseScreen.REPORT_BUGS`): with a page
+    /// registered here the icon opens the first one as a form over the world, drawn as a
+    /// [`Place::Title`] page is; without one it opens vanilla's link.
+    ReportBugs,
 }
 
 /// One page. Its values live in the crate (statics, often its settings [`crate::settings::Store`]);
@@ -45,6 +49,9 @@ pub trait Page: Sync {
     fn tooltip(&self, _row: usize) -> Option<Label> {
         None
     }
+    /// The engine is about to draw the page as its own screen ([`Place::Title`],
+    /// [`Place::ReportBugs`]), before it asks for the rows: a form can start over here.
+    fn opened(&self) {}
     /// The label of the button the engine adds to leave a page drawn as its own screen: a
     /// translation key, `gui.done` by default (`gui.cancel` for a form that does something).
     fn back(&self) -> &'static str {

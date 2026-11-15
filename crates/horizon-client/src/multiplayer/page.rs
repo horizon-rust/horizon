@@ -27,6 +27,14 @@ pub(super) fn title_page() -> Option<&'static dyn Page> {
         .find(|page| page.place() == Place::Title)
 }
 
+/// The page the pause menu's Report Bugs icon opens: the first registered there.
+pub fn report_bugs_page() -> Option<&'static dyn Page> {
+    pages::engine::all()
+        .iter()
+        .copied()
+        .find(|page| page.place() == Place::ReportBugs)
+}
+
 /// An open form: the page, and what the engine keeps while it is open.
 #[derive(Clone)]
 pub struct Form {
@@ -62,6 +70,7 @@ struct Button {
 impl Form {
     /// The form of `page`, its fields holding the text its rows start with, the first focused.
     pub fn open(page: &'static dyn Page) -> Self {
+        page.opened();
         let mut rows = Vec::new();
         page.rows(&mut rows);
         let texts: Vec<String> = rows
