@@ -4721,11 +4721,11 @@ impl Game<'_> {
             }
         }
     }
-    /// `AmethystBlock.onProjectileHit`: a projectile that strikes an amethyst
-    /// block rings `block.amethyst_block.chime` there, pitched by the level random.
+    /// `AmethystBlock.onProjectileHit`, inherited by every cluster, bud and
+    /// budding amethyst: a projectile that strikes one rings the chime there.
     fn amethyst_projectile_hit(&mut self, pos: [i32; 3]) {
         let state = self.world.block(pos[0], pos[1], pos[2]);
-        if &*self.res.facts().get(state).name != "minecraft:amethyst_block" {
+        if !self.res.facts().get(state).has_class("AmethystBlock") {
             return;
         }
         let pitch = 0.5 + self.world.random.next_float() * 1.2;
