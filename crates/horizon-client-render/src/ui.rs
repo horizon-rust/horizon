@@ -104,7 +104,7 @@ pub fn read_metadata(root: &Path) -> UiMetadata {
         let Ok(text) = horizon_core::prepared_files::read_to_string(&p) else {
             continue;
         };
-        let Some(nine_slice) = serde_json::from_str(&text)
+        let Some(nine_slice) = crate::packs::first_json(text.as_bytes())
             .ok()
             .as_ref()
             .and_then(parse_nine_slice)
@@ -1208,6 +1208,18 @@ fn tooltip_size(atlas: &HudAtlas, lines: &[Text]) -> (f32, f32) {
     };
     (w, h)
 }
+/// Vanilla's tooltip panel round content at `rect` (`TooltipRenderUtil`): its background and
+/// frame sprites, from the resource packs, reaching 12 GUI pixels out. For anything drawn as a
+/// tooltip that isn't lines of text beside the cursor.
+pub fn tooltip_panel(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4]) {
+    let (px, py, pw, ph) = (x - 12.0, y - 12.0, w + 24.0, h + 24.0);
+    for sprite in [
+        "gui/sprites/tooltip/background",
+        "gui/sprites/tooltip/frame",
+    ] {
+        nine_slice(batch, atlas, sprite, px, py, pw, ph, u32::MAX);
+    }
+}
 fn tooltip_box(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -1218,26 +1230,7 @@ fn tooltip_box(
     h: f32,
 ) {
     crate::widgets::frame_tooltip(lines);
-    nine_slice(
-        batch,
-        atlas,
-        "gui/sprites/tooltip/background",
-        x - 12.0,
-        y - 12.0,
-        w + 24.0,
-        h + 24.0,
-        u32::MAX,
-    );
-    nine_slice(
-        batch,
-        atlas,
-        "gui/sprites/tooltip/frame",
-        x - 12.0,
-        y - 12.0,
-        w + 24.0,
-        h + 24.0,
-        u32::MAX,
-    );
+    tooltip_panel(batch, atlas, [x, y, w, h]);
     let mut ly = y;
     for (i, line) in lines.iter().enumerate() {
         batch.text_styled(atlas, line, x, ly, u32::MAX, true);
@@ -1878,17 +1871,14 @@ impl EditBox {
         skin: Option<&str>,
     ) {
         self.layout(atlas);
-        crate::widgets::target_as(
-            [self.x, self.y, self.width, self.height],
-            crate::widgets::Kind::Field,
-        );
+        // The focus outline and a press go round the box's frame where it has one.
+        let rect = self
+            .frame
+            .unwrap_or([self.x, self.y, self.width, self.height]);
+        crate::widgets::target_as(rect, crate::widgets::Kind::Field);
         crate::widgets::narratable(|| {
-            crate::widgets::Narratable::edit_box(
-                self.message.clone(),
-                self.value.clone(),
-                [self.x, self.y, self.width, self.height],
-            )
-            .focused(self.focused)
+            crate::widgets::Narratable::edit_box(self.message.clone(), self.value.clone(), rect)
+                .focused(self.focused)
         });
         if self.bordered {
             let sprite = skin.unwrap_or(if self.focused {
@@ -2024,6 +2014,28 @@ impl EditBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notes_after_a_sprites_metadata_keep_its_nine_slice() {
+        // Gson stops reading after the first value, so vanilla keeps this nine slice
+        // (CozyUI+'s highlighted button, #3046).
+        let root = std::env::temp_dir().join(format!("horizon-ui-meta-{}", std::process::id()));
+        let widget = root.join("assets/minecraft/textures/gui/sprites/widget");
+        std::fs::create_dir_all(&widget).unwrap();
+        std::fs::write(
+            widget.join("button_highlighted.png.mcmeta"),
+            "{\"gui\": {\"scaling\": {\"type\": \"nine_slice\", \"width\": 80, \"height\": 20,\n\
+             \"border\": {\"left\": 34, \"top\": 8, \"right\": 34, \"bottom\": 8}}}}\n\n// 0  10\n// 1  8\n",
+        )
+        .unwrap();
+        let metadata = read_metadata(&root);
+        std::fs::remove_dir_all(&root).unwrap();
+        let slice = metadata.0["gui/sprites/widget/button_highlighted"];
+        assert_eq!(
+            (slice.width, slice.height, slice.border),
+            (80, 20, [34, 8, 34, 8])
+        );
+    }
 
     /// The quads' destination rectangles and their UVs.
     fn quads(batch: &HudBatch) -> Vec<([f32; 4], [f32; 4])> {

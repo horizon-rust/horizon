@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 fn item(id: u32, at: Vec3) -> ItemEntity {
     ItemEntity {
-        random: horizon_core::random::LegacyRandom::new(0),
+        random: horizon_core::random::EntityRandom::own(horizon_core::random::LegacyRandom::new(0)),
         rotation: [0.0, 0.0],
         join: Default::default(),
         no_gravity: true,
@@ -68,6 +68,7 @@ fn items_past_the_simulation_distance_enter_no_end_gateway() {
         game.world
             .chunks
             .insert((cx, 0), Arc::new(Chunk::empty(cx, 0)));
+        game.load_ticking_neighbourhood(cx, 0);
         game.world.set(x, 64, 8, gateway).unwrap();
         game.dropped
             .push(item(id, Vec3::new(f64::from(x) + 0.5, 64.2, 8.5)));

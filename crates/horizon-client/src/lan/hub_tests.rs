@@ -1,5 +1,7 @@
 #[path = "hub/tests/cave_air_tests.rs"]
 mod cave_air_tests;
+#[path = "hub/tests/effect_meta_tests.rs"]
+mod effect_meta_tests;
 #[path = "hub/far_tests.rs"]
 mod far_tests;
 #[path = "hub/tests/sound_tests.rs"]
@@ -1468,4 +1470,42 @@ fn a_second_accept_of_the_same_teleport_disconnects() {
     // The same id again, with nothing awaited: disconnected.
     tick_packet(&mut hub, &mut world, accept(id));
     assert!(!hub.guests[0].left_reason.is_empty());
+}
+
+/// A guest's `/tp`: `ServerGamePacketListenerImpl.teleport` does not call `ServerChunkCache.move`,
+/// so its tickets stay at the chunk it left (also over a second teleport) until the client's
+/// ack of the teleport (`handleAcceptTeleportPacket` -> `handlePlayerPositionChange`) moves them.
+/// A camera change moves them at once (`ServerPlayer.setCamera`), also back to the player.
+#[test]
+fn a_teleported_guests_tickets_stay_where_it_left_until_the_teleport_is_acked() {
+    let (mut hub, _rx) = hub_with_a_guest();
+    let mut world = floor_at(0);
+    let left = hub.guests[0].chunk();
+    hub.teleport(0, Some([104.5, 70.0, 8.5]));
+    assert_eq!(hub.guests[0].ticket_chunk(), left);
+    hub.teleport(0, Some([200.5, 70.0, 8.5]));
+    assert_eq!(
+        (hub.guests[0].chunk(), hub.guests[0].ticket_chunk()),
+        ((12, 0), left)
+    );
+    let id = hub.guests[0].teleport_counter;
+    tick_packet(
+        &mut hub,
+        &mut world,
+        S::AcceptTeleportation(play::AcceptTeleportation {
+            id,
+            x: 200.5,
+            y: 70.0,
+            z: 8.5,
+            yaw: 0.0,
+            pitch: 0.0,
+        }),
+    );
+    assert_eq!(hub.guests[0].ticket_chunk(), (12, 0));
+    // `guest_set_camera`: watching, the teleport to the camera, the tickets released.
+    hub.guests[0].watching = true;
+    hub.teleport(0, Some([8.5, 70.0, 8.5]));
+    hub.guests[0].release_tickets();
+    hub.guests[0].watching = false;
+    assert_eq!(hub.guests[0].ticket_chunk(), left);
 }

@@ -47,11 +47,25 @@ pub fn register(m: &mut Mob) {
     );
     m.set_malus(super::path::PathType::Water, -1.0);
 }
+/// `LivingEntity.PLAYER_NOT_WEARING_DISGUISE_ITEM` is false: the helmet is in
+/// `#gaze_disguise_equipment` (only the carved pumpkin unless a pack changes it).
+pub fn wears_gaze_disguise(w: &MobWorld, p: &super::PlayerView) -> bool {
+    let Some(head) = p.head.as_deref() else {
+        return false;
+    };
+    match w
+        .items
+        .and_then(|i| i.item_tags.get("minecraft:gaze_disguise_equipment"))
+    {
+        Some(tag) => tag.contains(head),
+        None => head == "minecraft:carved_pumpkin",
+    }
+}
 /// Enderman.isBeingStaredBy: the player's look within a cone of 0.025 / distance
-/// of the eyes, with line of sight, and no carved pumpkin.
+/// of the eyes, with line of sight, and no gaze disguise on the head.
 pub fn stared_at(m: &Mob, w: &MobWorld) -> bool {
     let Some(p) = &w.player else { return false };
-    if !p.alive || p.head.as_deref() == Some("minecraft:carved_pumpkin") {
+    if !p.alive || wears_gaze_disguise(w, p) {
         return false;
     }
     let look = p.look;
@@ -793,7 +807,7 @@ mod tests {
                 &mut m,
                 &death(true),
                 &mut sequences,
-                &mut horizon_core::random::LegacyRandom::new(0),
+                &mut crate::mobs::world::level_random(0),
             );
             let dropped: Vec<String> = out
                 .into_iter()
@@ -818,7 +832,7 @@ mod tests {
             &mut m,
             &death(false),
             &mut sequences,
-            &mut horizon_core::random::LegacyRandom::new(0),
+            &mut crate::mobs::world::level_random(0),
         );
         assert!(
             !out.iter()
@@ -855,7 +869,7 @@ mod tests {
                         teleport: 0,
                     },
                 );
-                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut lr = crate::mobs::world::level_random(0);
                 let mut events = Vec::new();
                 let mut cx = Cx {
                     w: &world,

@@ -628,7 +628,7 @@ impl Game<'_> {
             spectator: false,
             stepping_carefully: false,
             dampens: mob.is_some_and(|m| m.species() == Species::Warden),
-            targetable: mob.is_some_and(|m| m.alive() && m.species() != Species::Warden),
+            targetable: mob.is_some_and(warden::can_be_targeted),
             living: true,
             player: mob.is_some_and(|m| m.rider.is_some()),
         }
@@ -967,8 +967,9 @@ impl Game<'_> {
     /// `Warden.VibrationUser`: accept a vibration for the warden at `index`.
     fn warden_listen(&mut self, index: usize, event: &'static str, pos: [f64; 3], ctx: &Context) {
         let now = self.world.game_time;
+        let ctx = warden::heard_by(*ctx, &self.mob_teams(), self.mobs[index].id);
         let (occludes, world) = (&self.sculk.tables.occludes, &self.world);
-        let avoided = warden::listen(&mut self.mobs[index], now, event, pos, ctx, |a, b| {
+        let avoided = warden::listen(&mut self.mobs[index], now, event, pos, &ctx, |a, b| {
             sculk::is_occluded(a, b, |p| {
                 let state = world.block(p.x, p.y, p.z);
                 occludes.get(state.0 as usize).copied().unwrap_or(false)
@@ -1905,14 +1906,19 @@ impl Game<'_> {
     /// `position` (`Entity.checkFallDamage`): its supporting block's
     /// (`mainSupportingBlockPos`), else the block at `getOnPosLegacy`.
     pub(super) fn landing_state(&self, position: Vec3, bounds: Aabb) -> BlockStateId {
-        let p = self.supporting_block(position, bounds).unwrap_or_else(|| {
+        let p = self.landing_pos(position, bounds);
+        self.world.block(p.x, p.y, p.z)
+    }
+    /// Where [`Self::landing_state`] reads its block: the supporting block,
+    /// else `getOnPosLegacy`.
+    pub(super) fn landing_pos(&self, position: Vec3, bounds: Aabb) -> BlockPos {
+        self.supporting_block(position, bounds).unwrap_or_else(|| {
             BlockPos::new(
                 position.x.floor() as i32,
                 (position.y - 0.2).floor() as i32,
                 position.z.floor() as i32,
             )
-        });
-        self.world.block(p.x, p.y, p.z)
+        })
     }
     /// The player shot or threw something.
     pub(super) fn player_projectile_shot(&mut self) {

@@ -80,6 +80,9 @@ pub(crate) struct TestLevel {
     pub occupants: Vec<u128>,
     /// Occupants a mod's physical-trigger hook cancels.
     pub spared: HashSet<u128>,
+    /// `Level.getWorldBorder`, for `within_world_border`: centred on the
+    /// origin at vanilla's default size unless a test moves it.
+    pub border: horizon_core::geometry::border::BorderGeometry,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -107,10 +110,20 @@ impl TestLevel {
             opened: HashSet::new(),
             occupants: Vec::new(),
             spared: HashSet::new(),
+            border: horizon_core::geometry::border::BorderGeometry::new(
+                [0.0, 0.0],
+                5.999_996_8e7,
+                29_999_984,
+            )
+            .unwrap(),
         }
     }
 }
 impl LevelAccess for TestLevel {
+    fn within_world_border(&self, pos: BlockPos) -> bool {
+        self.border
+            .is_within_bounds(f64::from(pos.x), f64::from(pos.z), 0.0)
+    }
     fn count_entities_at(
         &self,
         _pos: BlockPos,
@@ -556,6 +569,90 @@ fn neighbor_observation_follows_dispatch_order() {
     assert_eq!(
         level.seen.borrow().last(),
         Some(&(BlockPos::new(3, 4, 5), b.air(), changed, true))
+    );
+}
+
+/// Two floating redstone wires in a row, at (1, 64, 0) and (2, 64, 0), and a
+/// stone changed at (0, 64, 0) whose neighbours are notified, with `max` as the
+/// level's chained neighbour update limit (`None`: the default). A wire breaks
+/// when an update reaches it (`RedStoneWireBlock.neighborChanged`, no support
+/// below); the second only breaks if the first's removal is allowed to update
+/// its own neighbours in turn. Tells which of the two broke.
+fn wires_broken_by_updates(f: &Fixture, max: Option<i32>) -> (bool, bool) {
+    let mut w = World::new(f);
+    if let Some(max) = max {
+        w.ticks.set_max_chained_neighbor_updates(max);
+    }
+    let wire = w.id("redstone_wire", &[]);
+    let (first, second) = (BlockPos::new(1, 64, 0), BlockPos::new(2, 64, 0));
+    w.put(first, wire);
+    w.put(second, wire);
+    let stone = w.b().table.block_by_name("minecraft:stone").unwrap();
+    w.b()
+        .update_neighbors_at(&mut w.level, &mut w.ticks, BlockPos::new(0, 64, 0), stone);
+    (w.get(first) != wire, w.get(second) != wire)
+}
+
+/// `CollectingNeighborUpdater.addAndRun` drops an update as too many only when
+/// `maxChainedNeighborUpdates >= 0 && count >= maxChainedNeighborUpdates`, and
+/// the count restarts at 0 when a chain ends. The dedicated server's
+/// `max-chained-neighbor-updates` is that limit: 0 lets no update through, 1
+/// lets the first notification through and drops what it sets off, a negative
+/// value is no limit.
+#[test]
+fn max_chained_neighbor_updates_limits_a_chain_and_a_negative_value_lifts_it() {
+    let Some(f) = fixture() else { return };
+    assert_eq!(wires_broken_by_updates(f, None), (true, true), "default");
+    assert_eq!(wires_broken_by_updates(f, Some(-1)), (true, true), "-1");
+    assert_eq!(wires_broken_by_updates(f, Some(1)), (true, false), "1");
+    assert_eq!(wires_broken_by_updates(f, Some(0)), (false, false), "0");
+}
+
+/// `CollectingNeighborUpdater.addAndRun` logs once per chain, when the count
+/// first passes the limit, naming the position of the first update it drops:
+/// `Too many chained neighbor updates. Skipping the rest. First skipped
+/// position: 1, 63, 0` (`BlockPos.toShortString`). With the limit 1 the first
+/// notification (of the stone's neighbours) is let through and the first wire
+/// breaks. Its removal (`RedStoneWireBlock.affectNeighborsAfterRemoval`, run by
+/// `LevelChunk.setBlockState` before `Level.setBlock` updates the neighbours)
+/// notifies the neighbours of each of its own neighbours in `Direction.values()`
+/// order, the one below first: that, at (1, 63, 0), is the first update dropped;
+/// the ones after it are dropped without a line.
+#[test]
+fn passing_max_chained_neighbor_updates_logs_one_error_with_the_first_skipped_position() {
+    struct Lines(std::sync::Mutex<Vec<(std::thread::ThreadId, String)>>);
+    impl log::Log for Lines {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() == log::Level::Error
+        }
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((std::thread::current().id(), record.args().to_string()));
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LINES: Lines = Lines(std::sync::Mutex::new(Vec::new()));
+    let Some(f) = fixture() else { return };
+    log::set_logger(&LINES).expect("no other test installs a logger");
+    log::set_max_level(log::LevelFilter::Error);
+    wires_broken_by_updates(f, Some(1));
+    // Only this test's thread: the tests of the crate run side by side.
+    let me = std::thread::current().id();
+    let mine: Vec<String> = LINES
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(thread, _)| *thread == me)
+        .map(|(_, line)| line.clone())
+        .collect();
+    assert_eq!(
+        mine,
+        ["Too many chained neighbor updates. Skipping the rest. First skipped position: 1, 63, 0"]
     );
 }
 
@@ -1413,6 +1510,7 @@ impl World<'_> {
             may_build: true,
             can_eat: true,
             game_master: false,
+            respawn_point: None,
         };
         let hit = horizon_core::geometry::Vec3::new(
             f64::from(pos.x) + 0.5,
@@ -1437,6 +1535,7 @@ impl World<'_> {
             may_build: true,
             can_eat: false,
             game_master: false,
+            respawn_point: None,
         };
         let hit = horizon_core::geometry::Vec3::new(
             f64::from(pos.x) + 0.5,
@@ -1473,6 +1572,7 @@ impl World<'_> {
             may_build: true,
             can_eat: true,
             game_master: false,
+            respawn_point: None,
         };
         let hit = horizon_core::geometry::Vec3::new(
             f64::from(pos.x) + 0.5,
@@ -1527,31 +1627,6 @@ fn use_on_a_block_says_which_branch_answered() {
         w.use_branch(pos, Some("minecraft:bone_meal")),
         (InteractionResult::Pass, UseBranch::ItemOn)
     );
-}
-
-#[test]
-fn glowstone_charges_a_respawn_anchor_up_to_four() {
-    // RespawnAnchorBlock.useItemOn: glowstone on an anchor below 4 charges
-    // charges it and the click ends (SUCCESS), so no glowstone is placed (#3034).
-    let mut w = world!();
-    let pos = BlockPos::new(0, 1, 0);
-    let empty = w.id("respawn_anchor", &[("charges", "0")]);
-    w.put(pos, empty);
-    for charges in 1..=4 {
-        assert_eq!(
-            w.use_item(pos, "minecraft:glowstone"),
-            InteractionResult::Success
-        );
-        assert_eq!(w.prop(pos, "charges"), charges.to_string());
-    }
-    // A full anchor can't be charged: TRY_WITH_EMPTY_HAND, then useWithoutItem
-    // (the respawn point), which leaves the charges alone.
-    w.use_item(pos, "minecraft:glowstone");
-    assert_eq!(w.prop(pos, "charges"), "4");
-    // Anything else on an empty anchor passes, so the item is used instead.
-    w.put(pos, empty);
-    assert_eq!(w.use_item(pos, "minecraft:stone"), InteractionResult::Pass);
-    assert_eq!(w.prop(pos, "charges"), "0");
 }
 
 #[test]
@@ -2165,6 +2240,43 @@ fn dripstone_fills_cauldrons() {
         w.tick();
     }
     assert_eq!(w.name(BlockPos::new(0, 5, 0)), "water_cauldron[level=1]");
+}
+
+/// `PointedDripstoneBlock.canGrow`: the fluid two blocks above the tip must be
+/// water AND a source (`FluidState.is(Fluids.WATER)` and `isSource`), so
+/// flowing and falling water, which are other fluids of the family, grow nothing.
+#[test]
+fn a_dripstone_tip_grows_only_under_a_water_source() {
+    let mut w = world!();
+    let block = w.id("dripstone_block", &[]);
+    let tip = w.id(
+        "pointed_dripstone",
+        &[("vertical_direction", "down"), ("thickness", "tip")],
+    );
+    let stone = w.id("stone", &[]);
+    let top = BlockPos::new(0, 9, 0);
+    // Whether any pointed dripstone stands in the column besides the first tip.
+    let grown = |w: &World| {
+        (0..9).any(|y| {
+            w.name(BlockPos::new(0, y, 0))
+                .starts_with("pointed_dripstone")
+        })
+    };
+    for (level, expect) in [("0", true), ("1", false), ("8", false)] {
+        w.put(BlockPos::new(0, 11, 0), w.id("water", &[("level", level)]));
+        w.put(BlockPos::new(0, 10, 0), block);
+        w.put(top, tip);
+        w.put(BlockPos::new(0, 2, 0), stone);
+        for y in 0..9 {
+            if y != 2 {
+                w.put(BlockPos::new(0, y, 0), w.id("air", &[]));
+            }
+        }
+        for _ in 0..4000 {
+            w.b().random_tick(&mut w.level, &mut w.ticks, top);
+        }
+        assert_eq!(grown(&w), expect, "water level {level}");
+    }
 }
 
 #[test]
@@ -4083,8 +4195,11 @@ fn fresh_chunk_block_events_do_not_wait_for_ticking_readiness() {
 }
 
 mod barrel;
+mod interact;
 mod pistons;
+mod portals;
 mod redstone;
+mod respawn_anchor;
 mod trigger_tests;
 
 /// `ShulkerBoxBlockEntity.doNeighborUpdates`: the neighbours' shape updates

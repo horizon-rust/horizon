@@ -29,9 +29,20 @@ pub fn notify_leash_holder(m: &mut Mob) {
 pub fn is_leash_holder(m: &Mob) -> bool {
     m.extra.scratch[1] > 0
 }
-/// `Attributes.FLYING_SPEED` and the speed `travel` uses (`* 5 / 3`).
+/// `createAttributes`' default `Attributes.FLYING_SPEED`, and the speed `travel` uses at it
+/// (`* 5 / 3`). A mob reads its own value through [`flying_speed`].
 pub const FLYING_SPEED: f64 = 0.05;
 pub const AIR_SPEED: f32 = 0.05 * 5.0 / 3.0;
+
+/// `getAttributeValue(FLYING_SPEED)`: the base and its modifiers (`/attribute`).
+pub fn flying_speed(m: &Mob) -> f64 {
+    super::finalize::value(m, super::finalize::Attr::FlyingSpeed)
+}
+/// `HappyGhast.travel`: `(float) getAttributeValue(FLYING_SPEED) * 5.0F / 3.0F`, in the
+/// air, in water and in lava.
+pub fn travel_speed(m: &Mob) -> f32 {
+    flying_speed(m) as f32 * 5.0 / 3.0
+}
 
 pub fn register(m: &mut Mob) {
     setup(m, m.is_baby());
@@ -158,14 +169,14 @@ pub fn move_control(m: &mut Mob, w: &MobWorld) {
     let [wx, wy, wz] = m.ai.mov.wanted;
     let travel = Vec3::new(wx - m.position.x, wy - m.position.y, wz - m.position.z);
     if can_reach(m, w, travel) {
-        // travel.normalize().scale(FLYING_SPEED * 5 / 3)
+        // travel.normalize().scale(getAttributeValue(FLYING_SPEED) * 5 / 3)
         let len = (travel.x * travel.x + travel.y * travel.y + travel.z * travel.z).sqrt();
         let unit = if len < f64::from(1.0e-5_f32) {
             Vec3::ZERO
         } else {
             Vec3::new(travel.x / len, travel.y / len, travel.z / len)
         };
-        let speed = FLYING_SPEED * 5.0 / 3.0;
+        let speed = flying_speed(m) * 5.0 / 3.0;
         m.velocity =
             m.velocity
                 .add_vector(Vec3::new(unit.x * speed, unit.y * speed, unit.z * speed));
@@ -524,7 +535,7 @@ pub fn ridden(m: &mut Mob) {
     if r.jumping {
         up += 0.5;
     }
-    let scale = 3.9 * FLYING_SPEED as f32;
+    let scale = 3.9 * flying_speed(m) as f32;
     m.ai.xxa = r.strafe * scale;
     m.ai.yya = up * scale;
     m.ai.zza = forward * scale;
@@ -566,15 +577,16 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld) {
             m.ai.home = Some((here, radius));
         }
     }
-    // continuousHeal: a point every 30 seconds, every second in rain or snow
-    // (Level.precipitationAt).
+    // continuousHeal: a point every 30 seconds, every second in the clouds
+    // (`isInClouds`) or in rain or snow (`Level.precipitationAt`).
     if m.alive() && m.death_time == 0 && m.health < m.attrs.max_health {
         let (x, y, z) = (
             m.position.x.floor() as i32,
             m.position.y.floor() as i32,
             m.position.z.floor() as i32,
         );
-        let wet = w.precipitation_at(x, y, z).is_some();
+        let wet = w.in_clouds(m.position.y, f64::from(m.height()))
+            || w.precipitation_at(x, y, z).is_some();
         let interval = if wet { 20 } else { 600 };
         if m.age.is_multiple_of(interval) {
             m.heal(1.0);
@@ -671,6 +683,44 @@ mod tests {
         assert!((f64::from(AIR_SPEED) - FLYING_SPEED * 5.0 / 3.0).abs() < 1e-7);
     }
 
+    /// `HappyGhast.getRiddenInput` scales by `3.9F * getAttributeValue(FLYING_SPEED)` and
+    /// `travel` flies at `(float) getAttributeValue(FLYING_SPEED) * 5.0F / 3.0F`, so
+    /// `/attribute ... minecraft:flying_speed base set` changes both; the default is 0.05.
+    #[test]
+    fn a_happy_ghast_rides_and_flies_at_its_flying_speed_attribute() {
+        use crate::mobs::{Species, finalize};
+        let mut t = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        t.species = Species::HappyGhast;
+        // `createAttributes`' value, as the registry's table carries it.
+        t.attributes = std::sync::Arc::new(
+            [("minecraft:flying_speed".to_owned(), 0.05)]
+                .into_iter()
+                .collect(),
+        );
+        let mut m = Mob::new(
+            1,
+            std::sync::Arc::new(t),
+            horizon_core::geometry::Vec3::ZERO,
+            0.0,
+        );
+        m.rider = Some(crate::mobs::equine::Rider {
+            forward: 1.0,
+            ..Default::default()
+        });
+
+        ridden(&mut m);
+        assert_eq!(m.ai.zza, 3.9 * 0.05_f32);
+        assert_eq!(travel_speed(&m), 0.05_f32 * 5.0 / 3.0);
+        assert_eq!(travel_speed(&m), AIR_SPEED);
+
+        finalize::set_base(&mut m, finalize::Attr::FlyingSpeed, 0.17);
+
+        ridden(&mut m);
+        assert_eq!(m.ai.zza, 3.9 * 0.17_f32);
+        assert_eq!(travel_speed(&m), 0.17_f32 * 5.0 / 3.0);
+        assert_eq!(flying_speed(&m), 0.17);
+    }
+
     /// `HappyGhast.ageBoundaryReached` runs the setup at the age crossing, not
     /// at the next tick: `DriedGhastBlock.spawnGhastling` makes its ghastling a
     /// baby before `addFreshEntity`, and `AgeableMob.setAge` calls
@@ -729,7 +779,7 @@ mod still_float_tests {
         m.fluids.water = 1.0;
         let mut stopped = None;
         let ran = with_test_world(&[], |w, _| {
-            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut lr = crate::mobs::world::level_random(0);
             let mut events = Vec::new();
             let mut cx = Cx {
                 w,
@@ -756,5 +806,153 @@ mod still_float_tests {
             Some(true),
             "a happy ghast on a still timeout must stop floating"
         );
+    }
+}
+
+#[cfg(test)]
+mod cloud_heal_tests {
+    use super::*;
+    use crate::mobs::world::{with_built_test_world, with_test_world};
+    use horizon_world::dimension_type::DimensionFacts;
+
+    /// `HappyGhast.continuousHeal`'s subject: the data's adult happy ghast (a
+    /// four-block box, 20 health) hurt down to 4, standing at `y`.
+    fn hurt_ghast(types: &crate::mobs::MobTypes, y: f64) -> Mob {
+        let kind = std::sync::Arc::new(types.types["minecraft:happy_ghast"].clone());
+        let mut m = Mob::new(1, kind, Vec3::new(0.5, y, 0.5), 0.0);
+        m.health = 4.0;
+        m
+    }
+
+    /// The health after one `aiStep` on tick `tick`.
+    fn health_after(m: &mut Mob, w: &MobWorld, tick: u32) -> f32 {
+        m.age = tick;
+        ai_step(m, w);
+        m.health
+    }
+
+    /// The overworld with its clouds at 120, their colour as opaque as `alpha`
+    /// makes it (0 is a dimension without clouds).
+    fn cloudy(alpha: f32) -> &'static DimensionFacts {
+        let mut d = DimensionFacts::overworld().clone();
+        d.cloud_height = 120.0;
+        d.cloud_color_alpha = alpha;
+        Box::leak(Box::new(d))
+    }
+
+    /// `Entity.isInClouds` is half of `isFastHealing`: a hurt ghast whose box
+    /// reaches the cloud band heals on tick 20, one just below it on tick 600.
+    #[test]
+    fn a_happy_ghast_in_the_clouds_heals_every_second() {
+        let dim = cloudy(0.8);
+        let mut seen = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut w = MobWorld::clone(w);
+            w.dimension_type = dim;
+            let mut above = hurt_ghast(types, 120.0);
+            let mut below = hurt_ghast(types, 115.0);
+            seen = Some((
+                health_after(&mut above, &w, 20),
+                health_after(&mut below, &w, 20),
+                health_after(&mut below, &w, 600),
+            ));
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            seen,
+            Some((5.0, 4.0, 5.0)),
+            "in the clouds heals on tick 20; below them only on tick 600"
+        );
+    }
+
+    /// The band runs from `visual/cloud_height` to four blocks above it, and
+    /// the box counts, not the feet: a four-block box whose top only touches
+    /// the bottom is in (`getY() + getBbHeight() < cloudBottom` is false), and
+    /// so are feet exactly at the top (`getY() <= cloudTop`), but not above it.
+    #[test]
+    fn the_cloud_band_is_the_four_blocks_over_its_bottom() {
+        let dim = cloudy(0.8);
+        let mut seen = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut w = MobWorld::clone(w);
+            w.dimension_type = dim;
+            // 116 + 4 == 120: the box top exactly at the bottom of the band.
+            let mut top_at_bottom = hurt_ghast(types, 116.0);
+            // 120 + 4: the feet exactly at the top of the band, and above it.
+            let mut feet_at_top = hurt_ghast(types, 124.0);
+            let mut feet_above = hurt_ghast(types, 124.5);
+            seen = Some((
+                health_after(&mut top_at_bottom, &w, 20),
+                health_after(&mut feet_at_top, &w, 20),
+                health_after(&mut feet_above, &w, 20),
+            ));
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            seen,
+            Some((5.0, 5.0, 4.0)),
+            "a box top at 120 and feet at 124 are in the clouds, feet at 124.5 are not"
+        );
+    }
+
+    /// A dimension whose `visual/cloud_color` is transparent has no clouds to
+    /// stand in (the Nether and the End), so the slow interval stays.
+    #[test]
+    fn a_dimension_without_clouds_never_counts_as_in_them() {
+        let dim = cloudy(0.0);
+        let mut seen = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut w = MobWorld::clone(w);
+            w.dimension_type = dim;
+            let mut m = hurt_ghast(types, 120.0);
+            seen = Some((health_after(&mut m, &w, 20), health_after(&mut m, &w, 600)));
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(seen, Some((4.0, 5.0)), "no cloud colour: the slow heal");
+    }
+
+    /// The other half of `isFastHealing`: `Level.precipitationAt` at the
+    /// block position, which the cloud test must not replace.
+    #[test]
+    fn a_happy_ghast_in_the_rain_still_heals_every_second() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let Ok(biomes) = crate::biome::Biomes::load(&root) else {
+            return;
+        };
+        let plains = biomes.id("minecraft:plains");
+        let dim = cloudy(0.0);
+        let mut seen = None;
+        let ran = with_built_test_world(
+            &[],
+            |world, _| {
+                let mut chunk = crate::chunk::Chunk::empty(0, 0);
+                let qy = (120 - chunk.min_y()) >> 2;
+                for qx in 0..4 {
+                    for qz in 0..4 {
+                        chunk.set_biome_cell(qx, qy, qz, plains);
+                    }
+                }
+                world.chunks.insert((0, 0), std::sync::Arc::new(chunk));
+            },
+            |w, types| {
+                let mut w = MobWorld::clone(w);
+                w.raining = true;
+                w.dimension_type = dim;
+                let mut m = hurt_ghast(types, 120.0);
+                seen = Some(health_after(&mut m, &w, 20));
+            },
+        );
+        if !ran {
+            return;
+        }
+        assert_eq!(seen, Some(5.0), "rain over a wet biome: the fast heal");
     }
 }

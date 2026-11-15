@@ -198,7 +198,16 @@ impl Particle {
                 LEGACY_ENTITY_EFFECT_PARTICLE_ID
             }
         } else {
-            ids::particle(id)
+            // An id the pinned registry lacks maps to -1, which is also the mod-particle sentinel:
+            // it would read the bytes after it as a name.
+            match ids::particle(id) {
+                mapped if mapped < 0 => {
+                    return Err(crate::Error::new(format!(
+                        "particle type {id} has no pinned counterpart"
+                    )));
+                }
+                mapped => mapped,
+            }
         };
         // A native mod's type: the namespaced name follows the sentinel id.
         if id == MOD_PARTICLE_ID {
@@ -299,7 +308,18 @@ impl Particle {
     pub fn write(&self, w: &mut Writer) {
         w.varint(self.id);
         let Some(data) = &self.data else { return };
+        // Written for a client before 1.21.2: dust colors are three floats (the reverse of `legacy_rgb`).
+        let legacy = matches!(ids::active(), Some((ids, ids::Way::Down)) if ids.quirks.components_before_1_21_2);
         match data {
+            ParticleData::ColorScale(c, f) if legacy => {
+                write_legacy_rgb(*c, w);
+                w.f32(*f);
+            }
+            ParticleData::ColorScale2(a, b, f) if legacy => {
+                write_legacy_rgb(*a, w);
+                write_legacy_rgb(*b, w);
+                w.f32(*f);
+            }
             ParticleData::State(s) | ParticleData::Delay(s) => w.varint(*s),
             ParticleData::Color(c) | ParticleData::Geyser(c) => w.i32(*c),
             ParticleData::ColorScale(c, f)
@@ -338,12 +358,19 @@ impl Particle {
         }
     }
 }
+/// An RGB color as three floats 0..=1 (Vector3f before 1.21.2).
+fn write_legacy_rgb(c: i32, w: &mut Writer) {
+    for shift in [16, 8, 0] {
+        w.f32(((c >> shift) & 0xFF) as f32 / 255.0);
+    }
+}
 // ARGB.colorFromFloat(1, r, g, b), preserving Java's float multiply before flooring.
 fn legacy_rgb(r: &mut Reader) -> Result<i32> {
     let red = (r.f32()? * 255.0).floor() as i32;
     let green = (r.f32()? * 255.0).floor() as i32;
     let blue = (r.f32()? * 255.0).floor() as i32;
-    Ok((255_i32 << 24) | (red << 16) | (green << 8) | blue)
+    // ARGB.color masks each channel: a component outside 0..1 stays in its own byte.
+    Ok((255_i32 << 24) | ((red & 0xFF) << 16) | ((green & 0xFF) << 8) | (blue & 0xFF))
 }
 
 /// Serializer ids in EntityDataSerializers registration order.
@@ -553,8 +580,16 @@ impl Codec<Vec<(u8, i32, Value)>> for EntityData {
     }
     fn write(v: &Vec<(u8, i32, Value)>, w: &mut Writer) {
         for (index, kind, value) in v {
+            // Written for an older client: its serializer ids, and nothing it has no serializer for.
+            let wire = match ids::active() {
+                Some((ids, ids::Way::Down)) => match ids.entity_data_serializer.down(*kind) {
+                    Some(wire) => wire,
+                    None => continue,
+                },
+                _ => *kind,
+            };
             w.u8(*index);
-            w.varint(*kind);
+            w.varint(wire);
             write_value(*kind, value, w);
         }
         w.u8(0xFF);
@@ -567,6 +602,53 @@ pub const ITEM_ENTITY_ITEM: u8 = 8;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_old_particle_with_no_pinned_counterpart_is_refused() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        let _up = ids::renumbering(ServerVersion::V1_20_3.ids().unwrap(), Way::Up);
+        let missing = (0..200)
+            .find(|&id| !matches!(id, 0 | 21) && ids::particle(id) < 0)
+            .unwrap();
+        // A name-like tail: read as a mod particle's name before.
+        let mut w = Writer::new();
+        w.varint(missing);
+        w.string("minecraft:flame");
+        assert!(Particle::read(&mut Reader::new(&w.data)).is_err());
+    }
+
+    #[test]
+    fn an_older_client_is_written_its_own_serializer_ids_and_none_it_lacks() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        use crate::buf::Codec;
+        let ids = ServerVersion::V1_21_11.ids().unwrap();
+        let profile = Value::Profile(Profile {
+            name: Some("npc".into()),
+            uuid: Some(7),
+            ..Default::default()
+        });
+        let data = vec![
+            (2u8, serializer::POSE, Value::Id(0)),
+            (17u8, serializer::RESOLVABLE_PROFILE, profile),
+            (18u8, serializer::CAT_SOUND_VARIANT, Value::Id(0)),
+        ];
+        let mut w = Writer::new();
+        {
+            let _down = crate::adapter::ids::renumbering(ids, Way::Down);
+            EntityData::write(&data, &mut w);
+        }
+        // 1.21.11: pose 20 as pinned, the profile serializer 37 (pinned 41), no cat sound variant
+        let mut r = Reader::new(&w.data);
+        assert_eq!((r.u8().unwrap(), r.varint().unwrap()), (2, 20));
+        r.varint().unwrap();
+        assert_eq!((r.u8().unwrap(), r.varint().unwrap()), (17, 37));
+        let back = {
+            let _up = crate::adapter::ids::renumbering(ids, Way::Up);
+            EntityData::read(&mut Reader::new(&w.data)).unwrap()
+        };
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[1].1, serializer::RESOLVABLE_PROFILE);
+    }
 
     #[test]
     fn vanilla_vibration_sources_cross_the_identifier_boundary() {
@@ -676,6 +758,38 @@ mod tests {
             assert_eq!(Particle::read(&mut r).unwrap(), particle);
             assert_eq!(r.remaining(), 0);
         }
+    }
+
+    #[test]
+    fn dust_is_written_with_float_colors_for_a_client_before_1_21_2() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        let ids = ServerVersion::V1_21_1.ids().unwrap();
+        let dust = Particle {
+            id: 13,
+            data: Some(ParticleData::ColorScale(0xFFFF_8000u32 as i32, 1.5)),
+        };
+        let mut w = Writer::new();
+        {
+            let _down = crate::adapter::ids::renumbering(ids, Way::Down);
+            dust.write(&mut w);
+        }
+        let mut r = Reader::new(&w.data);
+        r.varint().unwrap();
+        assert_eq!(
+            [r.f32().unwrap(), r.f32().unwrap(), r.f32().unwrap()],
+            [1.0, 128.0 / 255.0, 0.0]
+        );
+        assert_eq!(r.f32().unwrap(), 1.5);
+        assert_eq!(r.remaining(), 0);
+        // read back as 1.21.1 data: the same color
+        let back = {
+            let _up = crate::adapter::ids::renumbering(ids, Way::Up);
+            Particle::read(&mut Reader::new(&w.data)).unwrap()
+        };
+        assert_eq!(
+            back.data,
+            Some(ParticleData::ColorScale(0xFFFF_8000u32 as i32, 1.5))
+        );
     }
 
     #[test]
@@ -969,5 +1083,17 @@ mod tests {
                 (18, serializer::BOOLEAN, Value::Bool(true)),
             ]
         );
+    }
+
+    #[test]
+    fn a_legacy_dust_colour_keeps_each_channel_in_its_byte() {
+        let colour = |rgb: [f32; 3]| {
+            let mut w = Writer::new();
+            rgb.iter().for_each(|c| w.f32(*c));
+            legacy_rgb(&mut Reader::new(&w.data)).unwrap()
+        };
+        assert_eq!(colour([1.0, 0.5, 0.0]) as u32, 0xFFFF_7F00);
+        // 2.0 * 255 = 510 = 0x1FE: only 0xFE stays in red; -0.5 floors to -128 = 0x80 in green.
+        assert_eq!(colour([2.0, -0.5, 0.0]) as u32, 0xFFFE_8000);
     }
 }

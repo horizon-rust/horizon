@@ -81,40 +81,73 @@ impl Game<'_> {
                 t.position, t.position,
             ));
         }
-        // BigDripleafBlock.entityInside also asks whether the player stands on
-        // the ground and how high its feet are: the leaves its box's feet
-        // layer is inside (the host and the LAN guests).
-        scratch.standing.clear();
-        let feet = self
-            .player
-            .iter()
-            .filter(|_| !self.spectator())
-            .map(|p| {
-                (
-                    [p.position.x, p.position.y, p.position.z],
-                    p.ground.on_ground,
-                    f64::from(p.dimensions.width) / 2.0,
-                )
-            })
-            .chain(
-                self.lan_guest_feet()
-                    .into_iter()
-                    .map(|(at, on_ground)| (at, on_ground, 0.3)),
-            );
-        for (at, on_ground, w) in feet {
-            let y = (at[1] + 1e-7).floor() as i32;
-            for x in (at[0] - w + 1e-7).floor() as i32..=(at[0] + w - 1e-7).floor() as i32 {
-                for z in (at[2] - w + 1e-7).floor() as i32..=(at[2] + w - 1e-7).floor() as i32 {
-                    scratch
-                        .standing
-                        .push((BlockPos::new(x, y, z), on_ground, at[1]));
-                }
-            }
-        }
         // ServerLevel.tick ticks only the entities in entity-ticking chunks, and
         // applyEffectsFromBlocks runs in their tick: a mob or item past the
         // simulation distance presses, burns and slows on nothing.
         let entity_ticking = self.entity_ticking_area();
+        // BigDripleafBlock.entityInside also asks whether the entity stands on
+        // the ground and how high its feet are: the leaves its box's feet
+        // layer is inside. The host, LAN guests, mobs, dropped items, boats,
+        // minecarts and other entities feed it; fishing hooks are still separate.
+        scratch.standing.clear();
+        for p in self.player.iter().filter(|_| !self.spectator()) {
+            standing_feet(
+                &mut scratch.standing,
+                [p.position.x, p.position.y, p.position.z],
+                p.ground.on_ground,
+                f64::from(p.dimensions.width) / 2.0,
+            );
+        }
+        for (at, on_ground) in self.lan_guest_feet() {
+            standing_feet(&mut scratch.standing, at, on_ground, 0.3);
+        }
+        {
+            use entity::{Entity as _, entity_lists_of, for_each_entity};
+            let lists = entity_lists_of!(self);
+            for_each_entity!(lists, e => {
+                // A kind that `applyEffectsFromBlocks` never reaches says so
+                // (`sweeps_blocks_inside`); the carts, swept with the players
+                // below, say so too.
+                let at = e.position();
+                if !e.is_removed()
+                    && e.is_alive()
+                    && e.sweeps_blocks_inside()
+                    && entity_ticking(at.x.floor() as i32, at.z.floor() as i32)
+                {
+                    let b = e.bounds();
+                    standing_feet(
+                        &mut scratch.standing,
+                        [at.x, at.y, at.z],
+                        e.on_ground(),
+                        (b.max_position().x - b.min_position().x) / 2.0,
+                    );
+                }
+            });
+            // AbstractArrow.applyEffectsFromBlocks reaches a trident in the
+            // ground too: it is off the box sweep only because `tick_blocks`
+            // takes a trident's blocks from its path (`arrows::blocks_inside`).
+            for t in lists.tridents {
+                let at = t.position;
+                if !t.is_removed()
+                    && t.is_alive()
+                    && entity_ticking(at.x.floor() as i32, at.z.floor() as i32)
+                {
+                    let b = t.bounds();
+                    standing_feet(
+                        &mut scratch.standing,
+                        [at.x, at.y, at.z],
+                        t.on_ground,
+                        (b.max_position().x - b.min_position().x) / 2.0,
+                    );
+                }
+            }
+        }
+        for c in &self.carts {
+            let at = c.position;
+            if entity_ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                standing_feet(&mut scratch.standing, [at.x, at.y, at.z], c.on_ground, 0.49);
+            }
+        }
         let first_contact_drop = self.next_entity + 1;
         self.with_level(|b, level, ticks| {
             // LilyPadBlock.entityInside: a boat inside a lily pad breaks it.
@@ -242,32 +275,33 @@ impl Game<'_> {
             horizon_client::spans::time("random_ticks", || {
                 for (x, z) in scratch.ticking.drain(..).filter(|_| !debug) {
                     // The last answer, asked from Y `from` at a world revision:
-                    // the next ticking section and its mask. It stands for a
-                    // later Y up to that section's until a block changes.
-                    let mut last: Option<(u64, i32, Option<(i32, std::rc::Rc<_>)>)> = None;
+                    // the next ticking section. It stands for a later Y up to
+                    // that section's until a block changes; the mask itself is
+                    // retained by tick_chunk_random_masked between callback asks.
+                    let mut last: Option<(u64, i32, Option<i32>)> = None;
                     let pos = horizon_core::position::ChunkPos::new(x, z);
                     b.tick_chunk_random_masked(level, ticks, pos, |level, from| {
                         let revision = level.world.revision;
-                        let stands = last.as_ref().is_some_and(|(r, f, next)| {
-                            *r == revision
-                                && *f <= from
-                                && next.as_ref().is_none_or(|(y, _)| from <= *y)
+                        let stands = last.as_ref().is_some_and(|(r, f, next_y)| {
+                            *r == revision && *f <= from && next_y.is_none_or(|y| from <= y)
                         });
-                        if !stands {
-                            let next = level.world.chunks.get(&(x, z)).and_then(|chunk| {
-                                level.random_tick_sections.next_masked(
-                                    (x, z),
-                                    chunk,
-                                    level.facts,
-                                    |id| b.random_tick_candidate(BlockStateId(id)),
-                                    from,
-                                )
+                        if stands {
+                            return last.as_ref().and_then(|(_, _, next_y)| {
+                                next_y.map(|y| (y, RandomTickMaskUpdate::Keep))
                             });
-                            last = Some((revision, from, next));
                         }
-                        last.as_ref()
-                            .and_then(|(_, _, next)| next.as_ref())
-                            .map(|(y, mask)| (*y, Some(mask.clone())))
+                        let next = level.world.chunks.get(&(x, z)).and_then(|chunk| {
+                            level.random_tick_sections.next_masked(
+                                (x, z),
+                                chunk,
+                                level.facts,
+                                |id| b.random_tick_candidate(BlockStateId(id)),
+                                from,
+                            )
+                        });
+                        let next_y = next.as_ref().map(|(y, _)| *y);
+                        last = Some((revision, from, next_y));
+                        next.map(|(y, mask)| (y, RandomTickMaskUpdate::Replace(Some(mask))))
                     });
                 }
             });
@@ -386,5 +420,23 @@ impl Game<'_> {
     }
 }
 
+/// The blocks the feet layer of an entity centred at `at` and `w` wide is
+/// inside, with whether it stands on the ground and how high its feet are:
+/// what `BigDripleafBlock.canEntityTilt` reads. Vanilla's `checkInsideBlocks`
+/// sweeps the whole deflated box, but `canEntityTilt` needs the feet above the
+/// leaf's 0.6875 and a box starts at its feet, so only a leaf in the feet
+/// layer can pass it.
+fn standing_feet(out: &mut Vec<(BlockPos, bool, f64)>, at: [f64; 3], on_ground: bool, w: f64) {
+    let epsilon = f64::from(1.0e-5_f32);
+    let y = (at[1] + epsilon).floor() as i32;
+    for x in (at[0] - w + epsilon).floor() as i32..=(at[0] + w - epsilon).floor() as i32 {
+        for z in (at[2] - w + epsilon).floor() as i32..=(at[2] + w - epsilon).floor() as i32 {
+            out.push((BlockPos::new(x, y, z), on_ground, at[1]));
+        }
+    }
+}
+
+#[cfg(test)]
+mod big_dripleaf_tests;
 #[cfg(test)]
 mod random_order_tests;

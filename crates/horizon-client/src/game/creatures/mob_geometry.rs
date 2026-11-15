@@ -1,6 +1,10 @@
 //! Drawing the mobs, players and projectiles the client sees, each frame (`mob_geometry`).
 use super::*;
 
+#[cfg(test)]
+#[path = "spectator_view_tests.rs"]
+mod spectator_view_tests;
+
 impl Game<'_> {
     pub(in crate::game) fn mob_geometry(
         &self,
@@ -35,6 +39,8 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let scale = self.view_scale();
+        // Who watches (`Entity.isInvisibleTo`): the local player's team.
+        let viewer = self.player_team();
         self.rendered_mobs.set(0);
         let skinning = self.skinning();
         // What custom entity model animations read of the frame.
@@ -89,12 +95,23 @@ impl Game<'_> {
                 }
             }
             let outline = self.mob_outline(mob);
-            // Entity.DATA_SHARED_FLAGS_ID invisible: only the name tag draws (and
-            // the outline of a glowing mob, LivingEntityRenderer.getRenderType).
-            // A player keeps its armour, elytra and held items
-            // (`LivingEntityRenderer.submit` skips only the body).
-            let layers_only = mob.invisible && outline.is_none() && is_player;
-            if mob.invisible && outline.is_none() && !layers_only {
+            // Entity.DATA_SHARED_FLAGS_ID invisible (the flag the invisibility
+            // effect sets): only the name tag draws (and the outline of a
+            // glowing mob, LivingEntityRenderer.getRenderType). A player keeps
+            // its armour, elytra and held items (`LivingEntityRenderer.submit`
+            // skips only the body).
+            let invisible = mob.is_invisible();
+            // Entity.isInvisibleTo(viewer): a spectator sees it anyway, the
+            // body forced translucent (`LivingEntityRenderer.submit`).
+            let seen_invisible = invisible
+                && !horizon_client::scoreboard::invisible_to(
+                    self.mob_team_of(mob),
+                    viewer,
+                    self.spectator(),
+                    true,
+                );
+            let layers_only = invisible && outline.is_none() && is_player && !seen_invisible;
+            if invisible && outline.is_none() && !layers_only && !seen_invisible {
                 continue;
             }
             let culling = if PRECHECK
@@ -171,7 +188,7 @@ impl Game<'_> {
             if modded {
                 if let Some(rgb) = outline {
                     self.mark_outline(&out[entity_start..], rgb);
-                    if mob.invisible {
+                    if invisible && !seen_invisible {
                         out.truncate(entity_start);
                         continue;
                     }
@@ -179,6 +196,7 @@ impl Game<'_> {
                 if outline.is_none() {
                     self.cull_entity_vertices(out, entity_start);
                 }
+                self.lit_entity(entity_start..out.len());
                 continue;
             }
             if mob.species() == Species::SulfurCube
@@ -203,10 +221,11 @@ impl Game<'_> {
             // (a player's, the HDR tiers below, the sulfur cube's shell). A glowing mob's
             // silhouette is posed too (`SkinFrame::outline_since`), unless it is invisible:
             // then only the outline draws.
-            let silhouette_on_gpu = outline.is_none() || !mob.invisible;
+            let silhouette_on_gpu = outline.is_none() || !invisible;
             let posable = skinning
                 && !is_player
                 && !layers_only
+                && !seen_invisible
                 && silhouette_on_gpu
                 && armor.is_empty()
                 && !matches!(
@@ -233,6 +252,8 @@ impl Game<'_> {
             } else {
                 let render = if layers_only {
                     horizon_client::mobs::render::render_layers
+                } else if seen_invisible {
+                    horizon_client::mobs::render::render_seen_invisible
                 } else {
                     horizon_client::mobs::render::render_with
                 };
@@ -248,7 +269,7 @@ impl Game<'_> {
                 );
             }
             // HDR output: mobs that are light shine by their kind, as blocks do (entity.wgsl
-            // fs_hdr_mark); a tier's window lifts only their bright texels.
+            // hdr_entity_mark); a tier's window lifts only their bright texels.
             if let Some(tier) = match mob.species() {
                 Species::Blaze => Some(horizon_client::mesher::BRIGHT),
                 Species::MagmaCube | Species::GlowSquid => Some(horizon_client::mesher::LOW),
@@ -265,13 +286,15 @@ impl Game<'_> {
                 // and SpinAttackEffectLayer. Only the cape hides with the body;
                 // the others have no `isInvisible` check.
                 let chest = mob.extra.chest.as_deref();
-                if !layers_only {
+                // `CapeLayer` and `Deadmau5EarsLayer`: `!state.isInvisible`, whoever sees the body.
+                if !invisible {
                     self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
                 }
-                if let Some((_, name)) = self
-                    .remote_player_names()
-                    .into_iter()
-                    .find(|(id, _)| *id == mob.id)
+                if !invisible
+                    && let Some((_, name)) = self
+                        .remote_player_names()
+                        .into_iter()
+                        .find(|(id, _)| *id == mob.id)
                 {
                     self.player_ears_geometry(mob, &name, camera, alpha as f32, packed, out);
                 }
@@ -313,7 +336,7 @@ impl Game<'_> {
                     let color = horizon_client::mobs::render::abgr(rgb);
                     self.skin_frame.borrow_mut().outline_since(first, color);
                 }
-                if mob.invisible {
+                if invisible && !seen_invisible {
                     out.truncate(entity_start);
                     continue;
                 }
@@ -324,6 +347,9 @@ impl Game<'_> {
                 // What the GPU draws of the mob counts by its bounds' corners.
                 self.cull_skinned(out, entity_start, skinned);
             }
+            // The mob with what it holds and wears, once nothing more can drop it. Its beam,
+            // next, is no surface of it: Horizon's to draw.
+            self.lit_entity(entity_start..out.len());
             // GuardianRenderer: the laser to the locked target.
             if let Some((time, scale)) = beam
                 && let Some(target) = self.beam_target(mob.ai.target, alpha)
@@ -379,6 +405,9 @@ impl Game<'_> {
             }
             let p = glam::DVec3::from_array(at) - camera;
             let c = p.as_vec3();
+            // A projectile with a model is the `[entity]` stage's (`lit_entity`); one drawn as
+            // an item, and the fire on any, is Horizon's.
+            let start = out.len();
             // EntityRenderer.getPackedLightCoords: the block its light probe
             // (the eye) is in, at the position this frame draws rather than
             // this tick's, and not the one under its feet.
@@ -445,6 +474,7 @@ impl Game<'_> {
                     0,
                     out,
                 );
+                self.lit_entity(start..out.len());
                 if a.arrow.as_ref().is_some_and(|s| s.on_fire()) {
                     flame_geometry(atlas, c, 0.5, 0.5, self.yaw, light, out);
                 }
@@ -472,6 +502,7 @@ impl Game<'_> {
                     0,
                     out,
                 );
+                self.lit_entity(start..out.len());
                 continue;
             }
             // WindChargeRenderer.
@@ -480,6 +511,7 @@ impl Game<'_> {
                 ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
             ) {
                 self.wind_charge_geometry(a, c, packed, alpha as f32, out);
+                self.lit_entity(start..out.len());
                 continue;
             }
             // ShulkerBulletRenderer: the tumbling bullet model, then a larger
@@ -533,6 +565,7 @@ impl Game<'_> {
                     );
                     horizon_client::gfx::mark_oit(&mut out[shell..]);
                 }
+                self.lit_entity(start..out.len());
                 continue;
             }
             // WitherSkullRenderer: the skull model facing its flight.
@@ -560,6 +593,7 @@ impl Game<'_> {
                         out,
                     );
                 }
+                self.lit_entity(start..out.len());
                 continue;
             }
             if let Some(stack) = a.drawn_item() {
@@ -582,7 +616,9 @@ impl Game<'_> {
             // returns (a fire charge until `setItem` gave it another), its model
             // at the renderer's scale for the kind. `packed` is already 15, the
             // renderer's full bright.
-            if let Some(stack) = a.item.as_ref() {
+            // (A thrown item's own stack is only saved so far; it is drawn
+            // as its kind's sprite below.)
+            if let Some(stack) = a.item.as_ref().filter(|_| a.kind.is_item_fireball()) {
                 let owner = super::super::item_draw::owner_at(at, 0.0, a.kind.id());
                 let state = self.resolve_item(stack, DisplayContext::Ground, Some(&owner), 0);
                 let pose = glam::Mat4::from_translation(c)

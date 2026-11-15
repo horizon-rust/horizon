@@ -25,7 +25,7 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
-    random::{LegacyRandom, RandomSource},
+    random::{LegacyRandom, LevelRandom, RandomSource},
 };
 use horizon_world::loot::PackOverlay;
 use horizon_world::{chunk::BlockState, registry::BlockRegistry, registry::BlockStateId};
@@ -237,7 +237,7 @@ fn goal_name(m: &Mob, name: &str) -> String {
         "RestrictSun" => "RestrictSunGoal",
         "FleeSun" => "FleeSunGoal",
         // `Cat.CatAvoidEntityGoal`, `Fox.FoxAvoidEntityGoal`... name their subclass.
-        "AvoidEntity" if m.species() == Species::Cat => "CatAvoidEntityGoal",
+        "AvoidEntity" | "CatAvoid" if m.species() == Species::Cat => "CatAvoidEntityGoal",
         "AvoidEntity" => "AvoidEntityGoal",
         "BowAttack" => "RangedBowAttackGoal",
         "Swell" => "SwellGoal",
@@ -340,7 +340,7 @@ fn summon_golem(
     w: &MobWorld,
     types: &MobTypes,
     born: &mut Vec<Mob>,
-    level_random: &mut LegacyRandom,
+    level_random: &mut LevelRandom,
 ) {
     use horizon_client::mobs::{villager, villager_brain};
     let Some(near) = villager::golem_summoners(mobs, a, w.game_time, needed) else {
@@ -382,7 +382,7 @@ fn villager_events(
     items: &Items,
     born: &mut Vec<Mob>,
     day_time: i64,
-    level_random: &mut LegacyRandom,
+    level_random: &mut LevelRandom,
 ) {
     use horizon_client::mobs::villager;
     let index = |mobs: &[Mob], id: u32| {
@@ -608,7 +608,11 @@ fn player_damage(e: &MobEvent) -> f32 {
     match e {
         MobEvent::AttackPlayer(amount, _)
         | MobEvent::CubeHurtPlayer { amount, .. }
-        | MobEvent::StingPlayer { amount, .. }
+        | MobEvent::Sting {
+            target: Who::Player,
+            amount,
+            ..
+        }
         | MobEvent::AttackPlayerWithEffect { amount, .. }
         | MobEvent::DamagePlayer { amount, .. }
         | MobEvent::IronGolemHit {
@@ -632,7 +636,11 @@ fn player_hurt(player: Option<&PlayerView>, e: &MobEvent) -> bool {
     match e {
         MobEvent::AttackPlayer(amount, _)
         | MobEvent::CubeHurtPlayer { amount, .. }
-        | MobEvent::StingPlayer { amount, .. }
+        | MobEvent::Sting {
+            target: Who::Player,
+            amount,
+            ..
+        }
         | MobEvent::AttackPlayerWithEffect { amount, .. }
         | MobEvent::DamagePlayer { amount, .. }
         | MobEvent::IronGolemHit {
@@ -1176,7 +1184,7 @@ pub fn main() -> horizon_client::Result<()> {
                 vehicle: None,
             }
         });
-        let mut scratch = LegacyRandom::new(0);
+        let mut scratch = LevelRandom::for_level(LegacyRandom::new(0));
         // The level random for eating sounds: only goats and sniffers draw
         // from it, and the scenarios feed neither.
         let mut level_random = LegacyRandom::new(0);
@@ -1440,6 +1448,36 @@ pub fn main() -> horizon_client::Result<()> {
                         let n = raised.len();
                         events.splice(k + 1..k + 1, raised);
                         k += n;
+                    }
+                    k += 1;
+                }
+                // `Bee.doHurtTarget`: the game applies the stinger, the poison
+                // and the sound only when the sting landed (the scenario's
+                // player is hurtable every tick); a refused one gives the bee
+                // its stinger and its anger back.
+                let mut k = from;
+                while k < events.len() {
+                    let attacker = match &events[k] {
+                        MobEvent::Sting {
+                            target: Who::Player,
+                            source,
+                            ..
+                        } => match source.attacker {
+                            Some(Who::Mob(id)) => Some(id),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(id) = attacker
+                        && let Some(b) = mobs.iter_mut().find(|m| m.id == id)
+                    {
+                        if !player_hurt(player.as_ref(), &events[k]) {
+                            horizon_client::mobs::bee::sting_refused(b);
+                        } else if horizon_client::mobs::bee::sting_landed(b) {
+                            let at = [b.position.x, b.position.y, b.position.z];
+                            events.insert(k + 1, MobEvent::Sound("entity.bee.sting", at, 1.0, 1.0));
+                            k += 1;
+                        }
                     }
                     k += 1;
                 }

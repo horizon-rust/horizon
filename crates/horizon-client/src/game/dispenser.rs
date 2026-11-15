@@ -12,7 +12,6 @@ use horizon_client::{
     mobs::{Mob, Species, sulfur_cube},
     particles::{ParticleOptions, ParticleType},
     projectiles::{Projectile, ProjectileKind},
-    random_source,
 };
 // Its old home, for mixin code that names it here.
 pub(super) use horizon_client::mod_api::NativeDispensed;
@@ -838,6 +837,21 @@ impl Game<'_> {
     }
     /// `EntityType.spawn(.., pos, reason, tryMoveDown, false)` for a mob.
     pub(super) fn spawn_mob_at(&mut self, kind: &str, p: Pos, try_move_down: bool) -> Option<u32> {
+        self.spawn_mob_finalized_at(kind, p, try_move_down, true)
+    }
+    /// `MobBucketItem.spawn`: `EntityType.create(.., EntitySpawnReason.BUCKET, true, false)`.
+    /// `Axolotl.finalizeSpawn` returns first for that reason, without a draw.
+    pub(super) fn spawn_bucket_mob(&mut self, kind: &str, p: Pos) -> Option<u32> {
+        let axolotl = matches!(kind, "axolotl" | "minecraft:axolotl");
+        self.spawn_mob_finalized_at(kind, p, true, !axolotl)
+    }
+    fn spawn_mob_finalized_at(
+        &mut self,
+        kind: &str,
+        p: Pos,
+        try_move_down: bool,
+        finalize: bool,
+    ) -> Option<u32> {
         let name = if kind.contains(':') {
             kind.to_owned()
         } else {
@@ -872,17 +886,20 @@ impl Game<'_> {
             f64::from(p.2) + 0.5,
         ];
         // EntityType.create: `snapTo(.., Mth.wrapDegrees(level.random.nextFloat() * 360), 0)`.
-        let id = self.spawn_mob_reason_yaw(
+        let id = self.spawn_mob_internal(
             &name,
             at,
             true,
             false,
             false,
+            finalize,
             super::creatures::SpawnYaw::Created,
         )?;
         // finalizeSpawn's riders (chicken jockeys, spider jockeys...) come
         // with a dispensed mob as with any spawn that is not natural.
-        self.spawn_jockeys(id, false);
+        if finalize {
+            self.spawn_jockeys(id, false);
+        }
         Some(id)
     }
     /// `Player.setItemSlot` of a dispensed piece for the player in place:
@@ -1044,7 +1061,7 @@ impl Game<'_> {
         true
     }
     /// After `EntityType.spawn` / `MobBucketItem.spawn`: `mob.playAmbientSound()`.
-    fn mob_ambient(&mut self, id: u32) -> Result<()> {
+    pub(super) fn mob_ambient(&mut self, id: u32) -> Result<()> {
         if self.dragon_spawn_ambient(id) {
             return Ok(());
         }
@@ -1069,7 +1086,9 @@ impl Game<'_> {
     pub(super) fn mob_placed(&mut self, id: u32, stack: &ItemStack) -> Result<()> {
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             m.persistent = false;
-            horizon_client::entity_nbt::apply_item_components(m, stack);
+        }
+        self.apply_bucket_stack_config(id, stack);
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             match m.species() {
                 Species::Cod
                 | Species::Salmon
@@ -1116,7 +1135,7 @@ impl Game<'_> {
         // EntityType.updateCustomEntityTag: a configured egg
         // (`/give @s pig_spawn_egg[minecraft:entity_data={…}]`) spawns the mob
         // it describes from a dispenser too, not only from a player's hand.
-        self.apply_spawn_egg_entity_data(id, &stack);
+        self.apply_spawn_egg_entity_data(id, &stack, true);
         self.mob_ambient(id)?;
         // SpawnEggItemBehavior: the entity was placed by the dispenser.
         self.post_block_game_event("minecraft:entity_place", [pos.0, pos.1, pos.2], None, None);
@@ -1198,9 +1217,9 @@ impl Game<'_> {
             "minecraft:experience_bottle"
             | "minecraft:splash_potion"
             | "minecraft:lingering_potion" => {
-                let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
-                shot.shoot(&mut random_source::entity(), dir, power, uncertainty);
-                self.launch_thrown(one, at, shot.velocity, None);
+                let mut shot = super::potions::thrown_projectile(one, at, false);
+                shot.shoot_own(dir, power, uncertainty);
+                self.add_projectile(shot);
             }
             _ => {
                 let kind = match item.as_str() {
@@ -1267,14 +1286,18 @@ impl Game<'_> {
         self.next_entity += 1;
         let (_, uuid) = horizon_client::mobs::living_random();
         self.persist.uuids.insert(self.next_entity, uuid);
-        let mut stand =
+        let stand =
             horizon_client::entities::ArmorStand::new(self.next_entity, foot, y_rot(facing));
-        // Entity.applyImplicitComponents: a name from an anvil names the stand.
-        if let Some(name) = stack.custom_name() {
-            stand.custom_name = Some(horizon_client::text::Text::literal(name));
-        }
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
         self.armor_stands.push(stand);
+        // EntityType.appendDefaultStackConfig: the dispenser's yaw first, then
+        // the item's createDefaultStackConfig with no user.
+        self.apply_item_stack_config(
+            super::commands::Target::Stand(self.next_entity),
+            "minecraft:armor_stand",
+            &stack,
+            false,
+        );
         (shrink(stack), CLICK)
     }
     /// A tame donkey, mule or llama in front without a chest gets it.
@@ -1343,7 +1366,7 @@ impl Game<'_> {
         self.boats.push(boat);
         // BoatDispenseItemBehavior: createDefaultStackConfig with no user,
         // then setYRot(direction.toYRot()).
-        self.apply_vehicle_stack_config(super::commands::Target::Boat(id), &kind, &stack, false);
+        self.apply_item_stack_config(super::commands::Target::Boat(id), &kind, &stack, false);
         self.set_boat_yaw(id, yaw);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let boat = self.boats.last().unwrap();
@@ -1393,12 +1416,7 @@ impl Game<'_> {
         self.carts.push(cart);
         // AbstractMinecart.createMinecart: createDefaultStackConfig with no user.
         let id = self.next_entity;
-        self.apply_vehicle_stack_config(
-            super::commands::Target::Cart(id),
-            kind.id(),
-            &stack,
-            false,
-        );
+        self.apply_item_stack_config(super::commands::Target::Cart(id), kind.id(), &stack, false);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let cart = self.carts.last().unwrap();
             self.native_vehicle_create(
@@ -1441,7 +1459,7 @@ impl Game<'_> {
         if let Some(kind) = mob {
             // MobBucketItem.checkExtraContent: the mob from the bucket calls
             // out, then ENTITY_PLACE.
-            if let Some(id) = self.spawn_mob_at(kind, target, true) {
+            if let Some(id) = self.spawn_bucket_mob(kind, target) {
                 self.mob_placed(id, &stack)?;
             }
             self.post_block_game_event(
