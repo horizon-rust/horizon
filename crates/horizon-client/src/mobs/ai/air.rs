@@ -5,6 +5,10 @@ use super::{Mob, MobWorld, axolotl_air_supply, hurt, nautilus_air_supply};
 use crate::breathing::{Breath, breathe, drown};
 use crate::mobs::{Damage, DamageKind, MobEvent, Species};
 
+#[cfg(test)]
+#[path = "sink_tests.rs"]
+mod sink_tests;
+
 /// `LivingEntity.canBreatheUnderWater`: the `can_breathe_under_water` tag, which
 /// `MobType.flags.breathes_water` holds, and the two overrides — a baby happy ghast
 /// and a sulfur cube with a block in its body breathe under water too.
