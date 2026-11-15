@@ -542,6 +542,8 @@ impl NativePack {
             hides_stars: self.sky.is_some() && !self.vanilla_stars,
             tone_curve: self.post.tonemaps(),
             ray_scene: self.traces,
+            entities: self.entity.is_some(),
+            ray_entities: self.traces_entities(),
         }
     }
 

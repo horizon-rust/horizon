@@ -386,30 +386,52 @@ impl NativeEntity {
     }
 }
 
+/// The pipelines a pack's entity stage draws the entity stream's ordinary quads and the
+/// retained block entities with, and what they read beside the entities' groups
+/// (`NativePack::entity_layers`).
+#[derive(Clone, Copy)]
+pub struct EntityLayers<'a> {
+    entities: &'a wgpu::RenderPipeline,
+    retained: &'a wgpu::RenderPipeline,
+    frame: &'a wgpu::BindGroup,
+}
+
+impl super::native_pack::NativePack {
+    /// The layers the entities draw with this frame, with an entity stage.
+    pub fn entity_layers(&self) -> Option<EntityLayers<'_>> {
+        let stage = self.entity.as_ref()?;
+        Some(EntityLayers {
+            entities: &stage.entities,
+            retained: &stage.retained,
+            frame: &self.frame.group,
+        })
+    }
+}
+
 /// Sets the pipeline of the entity stream's ordinary quads, or of the `retained` block
 /// entities: the `stage`'s with the pack's frame at its group, else Horizon's `own`.
 pub(super) fn set_pipeline(
     pass: &mut wgpu::RenderPass<'_>,
-    stage: Option<(&NativeEntity, &wgpu::BindGroup)>,
+    stage: Option<EntityLayers<'_>>,
     own: &wgpu::RenderPipeline,
     retained: bool,
 ) {
-    let Some((stage, frame)) = stage else {
+    let Some(stage) = stage else {
         return pass.set_pipeline(own);
     };
     pass.set_pipeline(if retained {
-        &stage.retained
+        stage.retained
     } else {
-        &stage.entities
+        stage.entities
     });
-    pass.set_bind_group(GROUP, frame, &[]);
+    pass.set_bind_group(GROUP, stage.frame, &[]);
 }
 
 impl super::Renderer {
     /// Whether a pack's `[entity]` stage draws this renderer's entities: the game then names
     /// the runs of them it lights (`take_entity_runs`).
     pub fn draws_entity_stage(&self) -> bool {
-        self.native.as_ref().is_some_and(|n| n.entity.is_some())
+        self.executor.is_some_and(|c| c.entities)
     }
 
     /// Whether the game names the runs of its entities (`take_entity_runs`): a pack's `[entity]`

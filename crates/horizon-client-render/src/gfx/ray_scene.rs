@@ -176,7 +176,7 @@ impl Renderer {
     /// Whether the scene has the entity layer: the device traces, and the native pack's rays
     /// read the layer (its files name `RAY_ENTITY`). The game then names the stream's entities.
     pub fn traces_entities(&self) -> bool {
-        self.ray_scene.is_some() && self.native.as_ref().is_some_and(|n| n.traces_entities())
+        self.ray_scene.is_some() && self.executor.is_some_and(|c| c.ray_entities)
     }
 
     /// The camera-relative box of the columns the scene spans around `camera`'s, while it has the

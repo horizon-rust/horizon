@@ -63,6 +63,10 @@ pub struct Capabilities {
     pub tone_curve: bool,
     /// It traces rays through a scene the engine keeps.
     pub ray_scene: bool,
+    /// Its entities draw with pipelines of its own: the game names the runs of them it lights.
+    pub entities: bool,
+    /// Its rays read the scene's entity layer, which the engine then builds.
+    pub ray_entities: bool,
 }
 
 /// What the shadow camera sees of the terrain, for the game's draw lists: its view and
