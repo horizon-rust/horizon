@@ -30,6 +30,18 @@ def setup(*commands):
     return [cmd(c, False) for c in commands]
 
 
+def gone(target):
+    """The guard that a chunk's unload saved and dropped `target`, read while the chunk is out (#16772).
+
+    `/execute unless loaded` alone doesn't prove it: `ExecuteCommand.isChunkLoaded` wants ENTITY_TICKING, and the
+    entities stay loaded while any ticket keeps the chunk FULL (`PersistentEntitySectionManager.processUnloads`
+    unloads only HIDDEN chunks). A command that reaches the chunk (`ServerChunkCache.getChunkFutureMainThread`)
+    adds a `TicketType.UNKNOWN` ticket at FULL, and `ServerChunkCache.tick` purges none while `/tick freeze`
+    holds: unloaded frozen, the second read is of the same live entity. So these groups unload unfrozen and
+    freeze only before the chunk comes back."""
+    return cmd(f'/execute unless entity {target}', expect_result=1)
+
+
 def weather_predicate_cases():
     return [('any', None, None), ('rain', True, None), ('dry', False, None),
             ('thunder', None, True), ('quiet', None, False),
@@ -1345,7 +1357,8 @@ def vehicle_saved_ground_and_fall():
 
     AbstractBoat.checkFallDamage resets the fall on the ground and adds the drop off it; a cart that loads on
     the ground slows as one on the ground does. Read after summoning, after one and five ticks, after an
-    unload and reload (frozen, so only the save and the load count), and three ticks later.
+    unload and reload (frozen from before the load, so only the save and the load count), and three ticks
+    later.
     """
     x0, y0, z0 = 3264, 300, 3264
     chunk = [[x0 >> 4, z0 >> 4]]
@@ -1373,8 +1386,9 @@ def vehicle_saved_ground_and_fall():
     reads()
     ops.append({'op': 'tick', 'n': 4})
     reads()
-    ops += [cmd('/tick freeze', False), cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+    ops += [cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
             cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            gone('000030e5-0000-0000-0000-000100000001'), cmd('/tick freeze', False),
             cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
     reads()
     ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 3}]
@@ -1388,7 +1402,8 @@ def ravager_saved_movement_speed():
     """Ravager.aiStep sets the movement_speed base to 0.0 while biting, stunned or roaring, then lerps it back
     toward 0.3. The instance exists only from that first aiStep (AttributeMap.getInstance makes it lazily), and
     AttributeMap.pack saves it with the current base, so a reloaded ravager keeps its speed. Read after
-    summoning, after one and five ticks, after an unload and reload (frozen), and two ticks later.
+    summoning, after one and five ticks, after an unload and reload (frozen from before the load), and two
+    ticks later.
     """
     x0, y0, z0 = 3904, 300, 3904
     chunk = [[x0 >> 4, z0 >> 4]]
@@ -1408,8 +1423,9 @@ def ravager_saved_movement_speed():
     reads()
     ops.append({'op': 'tick', 'n': 4})
     reads()
-    ops += [cmd('/tick freeze', False), cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+    ops += [cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
             cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            gone('@e[tag=rav_speed_0,limit=1]'), cmd('/tick freeze', False),
             cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
     reads()
     ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}]
@@ -2116,6 +2132,7 @@ def dispensed_spawn_egg_persistence():
     # Unload the chunk (saving its mobs), then load it again.
     ops += [*setup(f'/forceload remove {x} {z} {x + 15} {z + 15}'), {'op': 'tick', 'n': 60},
             cmd(f'/execute unless loaded {x} {y} {z}', expect_result=1),
+            gone(f'@e[type=minecraft:pig,x={x},y={y - 8},z={z},dx=16,dy=24,dz=16,limit=1]'),
             *setup(f'/forceload add {x} {z} {x + 15} {z + 15}'),
             {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
     ops += reads()
@@ -3690,6 +3707,7 @@ def experience_orb_saved_value():
     # Unload the chunk (saving its entities), then load it again.
     ops += [*setup(f'/forceload remove {x} {z}'), {'op': 'tick', 'n': 60},
             cmd(f'/execute unless loaded {x} {y} {z}', expect_result=1),
+            gone('0000c0de-0000-0000-0000-000000000001'),
             *setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]},
             {'op': 'tick', 'n': 2}]
     ops += reads()
@@ -3815,6 +3833,7 @@ def ominous_spawner_saved_motion():
     # Unload the chunk (saving its entities), then load it again.
     ops += [*setup(f'/forceload remove {x} {z}'), {'op': 'tick', 'n': 60},
             cmd(f'/execute unless loaded {x} {y} {z}', expect_result=1),
+            gone('0000c0df-0000-0000-0000-000000000001'),
             *setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
     ops += reads()
     return ops + setup(f'/kill @e[type=minecraft:ominous_item_spawner,x={x},y={y - 8},z={z},dx=16,dy=24,dz=16]',
@@ -5353,6 +5372,7 @@ def entity_ticking_gate():
     # The chunk stays loaded for a while after it stops ticking entities.
     ops += [cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
             cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            gone('000031e1-0000-0000-0000-000100000001'),
             cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
     reads()
     ops.append({'op': 'tick', 'n': 3})
@@ -5394,6 +5414,7 @@ def summoned_eye_of_ender():
     ops.append({'op': 'tick', 'n': 50})
     ops += [cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
             cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            gone(last),
             cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
     ops.append(cmd(f'/data get entity {last} Pos'))
     ops.append({'op': 'tick', 'n': 80})
@@ -5486,6 +5507,7 @@ def sulfur_cube_size_attributes():
             ops += setup(f'/forceload remove {x} {z}')
             ops.append({'op': 'tick', 'n': 60})
             ops.append(cmd(f'/execute unless loaded {x} 300 {z}', expect_result=1))
+            ops.append(gone('00000000-0000-0000-0000-031500000001'))
             ops += setup(f'/forceload add {x} {z}')
             ops.append({'op': 'wait_chunks', 'chunks': chunk})
         for uuid in uuids:
@@ -7257,6 +7279,7 @@ def end_crystal_saved_fall():
     # The chunk saves and drops its entities, then loads them back.
     ops += [cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
             {**cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1), 'guard': True},
+            gone('0000394f-0000-0000-0000-000100000001'),
             cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': ring}]
     reads()
     # A new crystal where the third (OnGround:3b, fall_distance:4.0d) was.
@@ -7320,7 +7343,8 @@ def loaded_health_above_max():
     to the max health the saved `attributes` leave. A saved Health Boost doesn't raise that bound: its
     modifier comes back after the read. A slime's saved attributes replace its size's
     (`AbstractCubeMob.readAdditionalSaveData` sets the size first). Read after summoning, after a tick,
-    after an unload and reload (frozen, so only the save and the load count), and two ticks later."""
+    after an unload and reload (frozen from before the load, so only the save and the load count), and two
+    ticks later."""
     x0, y0, z0 = 3840, 260, 3776
     chunk = [[x0 >> 4, z0 >> 4]]
     leader = '{id:"minecraft:leader_zombie_bonus",amount:50.0d,operation:"add_value"}'
@@ -7356,8 +7380,9 @@ def loaded_health_above_max():
     reads()
     ops.append({'op': 'tick', 'n': 1})
     reads()
-    ops += [cmd('/tick freeze', False), cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+    ops += [cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
             cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            gone('0000410e-0000-0000-0000-000100000001'), cmd('/tick freeze', False),
             cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
     reads()
     ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}]
@@ -7634,6 +7659,7 @@ def ominous_spawner_loaded_entity_fields():
     ops += reads() + [{'op': 'tick', 'n': 1}] + reads()
     ops += [*setup(f'/forceload remove {x0} {z0}'), {'op': 'tick', 'n': 60},
             cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            gone('0000396c-0000-0000-0000-000100000001'),
             *setup(f'/forceload add {x0} {z0}'), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
     return ops + reads() + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
                                  f'/forceload remove {x0} {z0}')
@@ -7642,7 +7668,7 @@ def ominous_spawner_loaded_entity_fields():
 def thrown_item_kept():
     """#16698: `ThrowableItemProjectile` keeps the stack it was loaded with in its entity data and
     saves it back as `Item`, wherever it has flown to since. Read after summoning, after a tick of
-    flight, and after an unload and reload (frozen, so only the save and the load count)."""
+    flight, and after an unload and reload (frozen from before the load, so only the save and the load count)."""
     x0, y0, z0 = 3904, 260, 3776
     chunk = [[x0 >> 4, z0 >> 4]]
     subjects = [('egg', 'diamond_pickaxe'), ('snowball', 'diamond_pickaxe'), ('egg', 'blue_egg'),
@@ -7662,8 +7688,9 @@ def thrown_item_kept():
     reads()
     ops.append({'op': 'tick', 'n': 1})
     reads()
-    ops += [cmd('/tick freeze', False), cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+    ops += [cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
             cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            gone('0000413a-0000-0000-0000-000100000001'), cmd('/tick freeze', False),
             cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
     reads()
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]', '/tick unfreeze',
