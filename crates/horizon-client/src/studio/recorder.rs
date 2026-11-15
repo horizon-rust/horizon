@@ -6,7 +6,11 @@
 use super::mcpr::{McprWriter, Metadata, TimestampedPacket};
 use crate::net::PacketRecorder;
 pub use crate::net::RecorderStatus;
-use horizon_protocol::{buf::Reader, crypto::generate_secret, packets::play};
+use horizon_protocol::{
+    buf::Reader,
+    crypto::generate_secret,
+    packets::{login::Property, play},
+};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -18,6 +22,81 @@ use std::{
     thread::{self, JoinHandle},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+
+/// The id the recorded player's tab list entry has in a recording. The recorder's account id
+/// stays out of the file, and playback takes this id for the local player (their skin is the
+/// entry's textures).
+pub const RECORDER_UUID: u128 = 0;
+
+/// The recorded player's tab list entry as a recording keeps it: their name, game mode and
+/// skin textures (URLs only, unsigned) under [`RECORDER_UUID`]. Nothing of any other player.
+pub fn recorder_entry(
+    name: &str,
+    game_mode: i32,
+    textures: Option<&crate::skins::Textures>,
+) -> play::Clientbound {
+    play::Clientbound::PlayerInfoUpdate(play::PlayerInfoUpdate {
+        // ADD_PLAYER, UPDATE_GAME_MODE, UPDATE_LISTED.
+        actions: 1 | 4 | 8,
+        entries: vec![play::PlayerInfo {
+            uuid: RECORDER_UUID,
+            name: Some(name.to_owned()),
+            properties: textures
+                .filter(|t| t.skin.is_some())
+                .map(|t| Property {
+                    name: "textures".into(),
+                    value: crate::skins::pack(t),
+                    signature: None,
+                })
+                .into_iter()
+                .collect(),
+            game_mode: Some(game_mode),
+            listed: Some(true),
+            ..play::PlayerInfo::default()
+        }],
+    })
+}
+
+/// What a later `PlayerInfoUpdate` of the recorder's own entry keeps: that entry alone, under
+/// [`RECORDER_UUID`], without its chat key and with its textures re-packed as URLs only.
+/// `None` when the update names no one but other players.
+fn own_entry_update(update: &play::PlayerInfoUpdate, own: u128) -> Option<play::Clientbound> {
+    let mut entries: Vec<play::PlayerInfo> = update
+        .entries
+        .iter()
+        .filter(|entry| entry.uuid == own)
+        .cloned()
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    for entry in &mut entries {
+        entry.uuid = RECORDER_UUID;
+        entry.chat_session = None;
+        // Only the skin: another property is not the recording's to keep.
+        entry
+            .properties
+            .retain(|property| property.name == "textures");
+        for property in &mut entry.properties {
+            if property.name == "textures" {
+                let textures = crate::skins::unpack(
+                    &property.value,
+                    crate::skins::Signature::Unsigned,
+                    crate::skins::texture_uris(),
+                );
+                property.value = crate::skins::pack(&textures);
+                property.signature = None;
+            }
+        }
+    }
+    Some(play::Clientbound::PlayerInfoUpdate(
+        play::PlayerInfoUpdate {
+            // INITIALIZE_CHAT carried the chat key; it is not kept.
+            actions: update.actions & !2,
+            entries,
+        },
+    ))
+}
 
 static RECORDING_NAME_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -39,6 +118,8 @@ pub struct StudioRecorder {
     worker: Option<JoinHandle<io::Result<PathBuf>>>,
     start_time: Instant,
     dest_path: PathBuf,
+    /// The recording player's account id, whose own tab list entry the recording keeps.
+    own_player: Option<u128>,
 }
 
 impl StudioRecorder {
@@ -120,7 +201,15 @@ impl StudioRecorder {
             worker: Some(worker),
             start_time,
             dest_path,
+            own_player: None,
         })
+    }
+
+    /// Keep the tab list entry of `uuid` (the recording player, under [`RECORDER_UUID`]) while
+    /// every other player's stays out of the recording. Without it none is kept.
+    pub fn with_own_player(mut self, uuid: u128) -> Self {
+        self.own_player = Some(uuid);
+        self
     }
 
     /// Record a clientbound packet if recording is active.
@@ -137,6 +226,18 @@ impl StudioRecorder {
             };
             *self.failure.lock().unwrap() = Some(message.into());
             self.active.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Record a clientbound packet the client made, at an explicit timestamp, through the same
+    /// privacy filter as the packets the server sent ([`recordable`]): an `AddEntity` gets a
+    /// fresh UUID, and the ones the filter drops are not written.
+    pub fn record_filtered_at(&self, timestamp_ms: u32, packet: &play::Clientbound) {
+        let encoded = packet.encode();
+        let mut reader = Reader::new(&encoded);
+        let Ok(id) = reader.varint() else { return };
+        if let Some((id, payload)) = recordable(packet, id, reader.rest(), self.own_player) {
+            self.record_packet_at(timestamp_ms, id, &payload);
         }
     }
 
@@ -195,7 +296,7 @@ impl PacketRecorder for StudioRecorder {
     /// Keeps what [`recordable`] lets through: the filter copies what it keeps, and re-encodes
     /// AddEntity with a fresh UUID.
     fn received(&self, packet: &play::Clientbound, id: i32, payload: &[u8]) {
-        if let Some((id, payload)) = recordable(packet, id, payload) {
+        if let Some((id, payload)) = recordable(packet, id, payload, self.own_player) {
             StudioRecorder::record_packet(self, id, &payload);
         }
     }
@@ -219,6 +320,7 @@ fn recordable<'a>(
     packet: &play::Clientbound,
     packet_id: i32,
     payload: &'a [u8],
+    own_player: Option<u128>,
 ) -> Option<(i32, std::borrow::Cow<'a, [u8]>)> {
     use play::Clientbound as P;
     use std::borrow::Cow;
@@ -227,6 +329,14 @@ fn recordable<'a>(
             let mut anonymous = entity.clone();
             anonymous.uuid = u128::from_be_bytes(generate_secret().ok()?);
             let encoded = P::AddEntity(anonymous).encode();
+            let mut reader = Reader::new(&encoded);
+            let id = reader.varint().ok()?;
+            Some((id, Cow::Owned(reader.rest().to_vec())))
+        }
+        // Only the recorder's own entry, so the replay's player has the skin it was recorded with.
+        P::PlayerInfoUpdate(update) => {
+            let kept = own_entry_update(update, own_player?)?;
+            let encoded = kept.encode();
             let mut reader = Reader::new(&encoded);
             let id = reader.varint().ok()?;
             Some((id, Cow::Owned(reader.rest().to_vec())))
@@ -240,7 +350,6 @@ fn recordable<'a>(
         | P::PlayerChat(_)
         | P::PlayerCombatKill(_)
         | P::PlayerInfoRemove(_)
-        | P::PlayerInfoUpdate(_)
         | P::ResetScore(_)
         | P::ResourcePackPush(_)
         | P::ServerLinks(_)
@@ -431,11 +540,82 @@ mod tests {
 
         for packet in packets {
             assert!(
-                recordable(&packet, packet.id(), b"raw packet payload").is_none(),
+                recordable(&packet, packet.id(), b"raw packet payload", None).is_none(),
                 "{} should be excluded from recordings",
                 packet.name()
             );
         }
+    }
+
+    /// A signed `textures` property as a server sends it: it names the account (`profileId`,
+    /// `profileName`) next to the skin.
+    const SIGNED_TEXTURES: &str = "eyJ0aW1lc3RhbXAiOjEsInByb2ZpbGVJZCI6ImFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5IiwicHJvZmlsZU5hbWUiOiJNZSIsInRleHR1cmVzIjp7IlNLSU4iOnsidXJsIjoiaHR0cHM6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvYWJjIiwibWV0YWRhdGEiOnsibW9kZWwiOiJzbGltIn19fX0=";
+
+    fn info(uuid: u128, name: &str) -> play::PlayerInfo {
+        play::PlayerInfo {
+            uuid,
+            name: Some(name.into()),
+            properties: vec![Property {
+                name: "textures".into(),
+                value: SIGNED_TEXTURES.into(),
+                signature: Some("signature".into()),
+            }],
+            chat_session: Some((5, 6, vec![1], vec![2])),
+            game_mode: Some(1),
+            ..play::PlayerInfo::default()
+        }
+    }
+
+    #[test]
+    fn studio_recording_keeps_only_the_recorders_own_tab_entry() {
+        let own = 0x99;
+        let packet = play::Clientbound::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: 1 | 2 | 4,
+            entries: vec![info(7, "Other"), info(own, "Me")],
+        });
+        let (id, payload) = recordable(&packet, packet.id(), b"unused", Some(own)).unwrap();
+        let play::Clientbound::PlayerInfoUpdate(kept) =
+            play::Clientbound::decode(id, &payload).unwrap()
+        else {
+            panic!("sanitized packet changed type")
+        };
+
+        // The chat key action is gone, and one entry stays: ours, under the recorder id.
+        assert_eq!(kept.actions, 1 | 4);
+        assert_eq!(kept.entries.len(), 1);
+        let entry = &kept.entries[0];
+        assert_eq!(entry.uuid, RECORDER_UUID);
+        assert_eq!(entry.name.as_deref(), Some("Me"));
+        assert_eq!(entry.game_mode, Some(1));
+        assert_eq!(entry.chat_session, None);
+        let textures = &entry.properties[0];
+        assert_eq!(textures.signature, None);
+        // The skin survives; the account it named does not.
+        let decoded =
+            String::from_utf8(crate::skins::base64_decode(&textures.value).unwrap()).unwrap();
+        assert!(
+            !decoded.contains("profileId") && !decoded.contains("profileName"),
+            "{decoded}"
+        );
+        let skin = crate::skins::unpack(
+            &textures.value,
+            crate::skins::Signature::Unsigned,
+            crate::skins::texture_uris(),
+        );
+        assert_eq!(
+            skin.skin.as_deref(),
+            Some("https://textures.minecraft.net/texture/abc")
+        );
+        assert!(skin.slim);
+    }
+
+    #[test]
+    fn studio_recording_drops_tab_updates_that_name_only_other_players() {
+        let packet = play::Clientbound::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: 1,
+            entries: vec![info(7, "Other")],
+        });
+        assert!(recordable(&packet, packet.id(), b"unused", Some(0x99)).is_none());
     }
 
     #[test]
@@ -452,7 +632,7 @@ mod tests {
             data: 4,
         };
         let packet = play::Clientbound::AddEntity(original.clone());
-        let (id, payload) = recordable(&packet, packet.id(), b"unused").unwrap();
+        let (id, payload) = recordable(&packet, packet.id(), b"unused", None).unwrap();
         let play::Clientbound::AddEntity(recorded) =
             play::Clientbound::decode(id, &payload).unwrap()
         else {
@@ -468,6 +648,70 @@ mod tests {
         assert_eq!(recorded.yaw, original.yaw);
         assert_eq!(recorded.head_yaw, original.head_yaw);
         assert_eq!(recorded.data, original.data);
+    }
+
+    #[test]
+    fn a_snapshot_packet_is_written_at_zero_through_the_privacy_filter() {
+        let dir = std::env::temp_dir().join(format!(
+            "studio_snapshot_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("snapshot_test.mcpr");
+        let recorder = StudioRecorder::start(path.clone(), Metadata::default()).unwrap();
+        let uuid = 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10;
+        let entity = play::AddEntity {
+            id: 18,
+            uuid,
+            kind: 42,
+            position: [1.0, 64.0, -2.0],
+            velocity: [0.0; 3],
+            pitch: 1,
+            yaw: 2,
+            head_yaw: 3,
+            data: 4,
+        };
+        let data = play::SetEntityData {
+            id: 18,
+            values: vec![(0, 0, horizon_protocol::entity_data::Value::Byte(1))],
+        };
+        recorder.record_filtered_at(0, &play::Clientbound::AddEntity(entity.clone()));
+        recorder.record_filtered_at(0, &play::Clientbound::SetEntityData(data.clone()));
+        // A dropped packet is not written.
+        recorder.record_filtered_at(
+            0,
+            &play::Clientbound::PlayerInfoRemove(play::PlayerInfoRemove { uuids: vec![uuid] }),
+        );
+        recorder.stop().unwrap();
+
+        let mut reader = super::super::mcpr::McprReader::open(&path).unwrap();
+        assert_eq!(reader.total_packets(), 2);
+        let mut recorded = Vec::new();
+        while let Some(packet) = reader.next_packet().unwrap() {
+            assert_eq!(packet.timestamp_ms, 0);
+            recorded.push(play::Clientbound::decode(packet.id, &packet.payload).unwrap());
+        }
+        let [
+            play::Clientbound::AddEntity(added),
+            play::Clientbound::SetEntityData(kept),
+        ] = &recorded[..]
+        else {
+            panic!("unexpected snapshot packets: {recorded:?}")
+        };
+        assert_ne!(added.uuid, uuid);
+        assert_eq!(
+            play::AddEntity {
+                uuid: 0,
+                ..added.clone()
+            },
+            play::AddEntity { uuid: 0, ..entity }
+        );
+        assert_eq!(kept, &data);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
