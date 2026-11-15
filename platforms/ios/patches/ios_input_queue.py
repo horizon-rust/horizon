@@ -40,24 +40,16 @@ KEY_MAP
             match input {
                 Input::Key(code, down) => {
                     let Some(key) = Self::ios_key_code(code) else { continue };
-                    // Use the normal keyboard event path for menus, F3 and Escape.
-                    self.window_event_here(
-                        event_loop, id,
-                        WindowEvent::KeyboardInput {
-                            device_id: DeviceId::dummy(),
-                            event: winit::event::KeyEvent {
-                                physical_key: winit::keyboard::PhysicalKey::Code(key),
-                                logical_key: winit::keyboard::Key::Unidentified(
-                                    winit::keyboard::NativeKey::Unidentified,
-                                ),
-                                text: None,
-                                location: winit::keyboard::KeyLocation::Standard,
-                                state: if down { ElementState::Pressed } else { ElementState::Released },
-                                repeat: false,
-                            },
-                            is_synthetic: false,
-                        },
-                    );
+                    // Winit KeyEvent has private platform fields: use Horizon's
+                    // supported mapped-key input path instead of fabricating one.
+                    match self {
+                        App::Ready(game) => {
+                            game.host.mapped_key_event(key, down, false);
+                        }
+                        App::Loading(loading) => {
+                            loading.menu_key_focus(key, down);
+                        }
+                    }
                 }
                 Input::Mouse(button, down) => {
                     self.window_event_here(
