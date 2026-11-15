@@ -946,8 +946,10 @@ impl Game<'_> {
     /// `Player.jumpableVehicle`: a saddled mount that jumps (not a pig or a
     /// strider, which a saddle only steers).
     pub(super) fn jumpable_mount(&self) -> bool {
-        self.mount_index()
-            .is_some_and(|i| self.mobs[i].extra.saddled && Self::jumps(self.mobs[i].species()))
+        self.remote.as_ref().is_none_or(|r| r.first_passenger)
+            && self
+                .mount_index()
+                .is_some_and(|i| self.mobs[i].extra.saddled && Self::jumps(self.mobs[i].species()))
     }
     /// `willPrioritizeJumpInfo`: charging a jump or recharging.
     pub(super) fn mount_jumping(&self) -> bool {

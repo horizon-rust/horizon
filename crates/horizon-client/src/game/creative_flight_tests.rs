@@ -183,6 +183,37 @@ fn a_riding_player_double_jump_toggles_creative_flight() {
     );
 }
 
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_camel_second_passenger_cannot_toggle_creative_flight() {
+    let mut game = crate::game::native_machines::tests::server_game();
+    let (client, _server) = Pipe::pair();
+    game.connect_local(client, "FlightTest").unwrap();
+    game.remote.as_mut().unwrap().joined = true;
+    game.remote.as_mut().unwrap().first_passenger = true;
+    game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
+    game.player.as_mut().unwrap().may_fly = true;
+    let kind = game.res.mob_types().get("minecraft:camel").unwrap().clone();
+    let mut camel = Mob::new(7, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+    camel.set_saddle(Some(ItemStack::new("minecraft:saddle", 1)));
+    game.mobs.clear();
+    game.mobs.push(camel);
+    game.riding = Some(7);
+    assert!(game.jumpable_mount(), "the saddled camel must be jumpable");
+    game.remote.as_mut().unwrap().first_passenger = false;
+    for jump in [true, false, true] {
+        game.remote_ride(
+            Keys {
+                jump,
+                ..Default::default()
+            },
+            0,
+        )
+        .unwrap();
+    }
+    assert!(!game.player.as_ref().unwrap().flying);
+}
+
 /// A mod that refuses every flight toggle.
 struct RefuseFlight;
 impl Hooks for Arc<RefuseFlight> {
