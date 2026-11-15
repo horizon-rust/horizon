@@ -1213,6 +1213,9 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
+mod stonecutter_stat_tests;
+
+#[cfg(test)]
 mod machine_recipe_placement_tests {
     use super::*;
     use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};

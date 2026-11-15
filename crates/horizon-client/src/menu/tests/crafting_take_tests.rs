@@ -23,3 +23,14 @@ fn a_secondary_click_counts_only_the_amount_it_asked_for() {
         assert_eq!(counted, [("minecraft:oak_planks".to_owned(), 2)]);
     });
 }
+
+#[test]
+fn a_number_key_take_counts_the_whole_result() {
+    with_menu(Kind::Crafting, |env, menu| {
+        menu.creative = false;
+        menu.set_slot(env, 1, stack("oak_log", 1));
+        menu.click(env, 0, 0, Input::Swap).unwrap();
+        assert_eq!(menu.player_item(0).map(|s| s.count), Some(4));
+        assert_eq!(menu.crafted_counts, [("minecraft:oak_planks".into(), 4)]);
+    });
+}

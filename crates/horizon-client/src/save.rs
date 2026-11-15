@@ -59,6 +59,11 @@ use std::{
 
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
 
+#[cfg(test)]
+mod compression_bench;
+mod compression_pool;
+#[cfg(test)]
+mod compression_tests;
 mod gateway;
 #[cfg(test)]
 mod loot_tests;
@@ -2236,36 +2241,15 @@ fn write_region_records(
     Ok(())
 }
 
-/// Fewest chunks each helper of `compress_records` takes: below this a thread
-/// costs more to start than it saves.
-const CHUNKS_PER_HELPER: usize = 4;
 /// Each record encoded and compressed (`None` for a deletion), in the order
-/// given. Vanilla's IOWorker does this one chunk after another; here a batch
-/// is shared out to scoped threads, which take the next chunk as they finish
-/// one. Each chunk's bytes depend only on the chunk, and the writes stay in
-/// order, so the files are the same as from one thread. At most half the
-/// hardware threads help, leaving the rest to the game and its workers.
+/// given. Chunk compression and NBT encoding are offloaded across a persistent
+/// background worker pool, keeping region file writing and header flushes
+/// ordered, atomic, and thread-safe.
 fn compress_records(
     records: &[((i32, i32), &Record)],
     timestamp: u32,
 ) -> Vec<std::io::Result<Option<ChunkRecord>>> {
-    // `RegionFile.getVersion`: the version `region-file-compression` selected
-    // (`RegionFileVersion.getSelected`), zlib unless a dedicated server said
-    // otherwise.
-    let compression = Compression::selected();
-    let compress = |record: &Record| {
-        record
-            .tag()
-            .map(|tag| ChunkRecord::from_nbt(&tag, compression, timestamp, Limits::saved()))
-            .transpose()
-    };
-    let helpers = horizon_threads::worker_count()
-        .div_ceil(2)
-        .min(records.len() / CHUNKS_PER_HELPER);
-    if helpers <= 1 {
-        return records.iter().map(|(_, r)| compress(r)).collect();
-    }
-    share_out(records.len(), helpers, |i| compress(records[i].1), || true)
+    compression_pool::compress_records(records, timestamp)
 }
 
 /// `job(i)` for every `i` below `count`, in order, shared between this thread
@@ -2274,6 +2258,7 @@ fn compress_records(
 /// container at its limit of threads: EAGAIN) leaves its share to the
 /// others: this thread does all of it at worst, and never panics for it, as
 /// `thread::scope`'s own `spawn` would, which stopped the region writer.
+#[cfg(test)]
 fn share_out<R: Send>(
     count: usize,
     helpers: usize,
@@ -5505,6 +5490,81 @@ mod tests {
         save.save_attachments(&map).unwrap();
         assert_eq!(save.load_attachments().get(&key), Ok(7));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn loaded_chunk_uses_saved_monument_from_its_referenced_start_chunk() {
+        use horizon_core::{
+            geometry::Direction,
+            random::{LegacyRandom, WorldgenRandom},
+        };
+        use horizon_world::worldgen::structure::{
+            legacy::{LegacyPiece, random_horizontal},
+            monument::MonumentBuilding,
+        };
+        let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").expect("resources"));
+        let assets = Arc::new(crate::assets::Assets::load(&root).expect("assets"));
+        let biomes = Arc::new(Biomes::load(&root).expect("biomes"));
+        let inner = Arc::new(
+            crate::vanillagen::VanillaTerrain::new(
+                &root.join("worldgen"),
+                assets.registry,
+                &biomes,
+                12345,
+            )
+            .unwrap(),
+        );
+        // A moved, rotated monument that generation cannot reproduce at the owning chunk.
+        // Vanilla reseeds, draws the default even with a saved orientation, then rebuilds.
+        let mut random = WorldgenRandom::new(LegacyRandom::new(0));
+        random.set_large_feature_seed(12345, -2, 3);
+        random_horizontal(&mut random);
+        let top = MonumentBuilding::new(&mut random, 100, -300, Direction::East);
+        let expected = Tag::compound([
+            ("id", string("minecraft:monument")),
+            ("ChunkX", Tag::Int(-2)),
+            ("ChunkZ", Tag::Int(3)),
+            ("references", Tag::Int(5)),
+            (
+                "Children",
+                Tag::List(vec![Tag::Compound(top.save().unwrap())]),
+            ),
+        ]);
+        let mut saved = encode(&Chunk::empty(-2, 3), assets.registry, &biomes);
+        let Some(Tag::Compound(structures)) = saved.tag.get_mut("structures") else {
+            panic!("structures")
+        };
+        structures.insert(
+            "starts".into(),
+            Tag::compound([("minecraft:monument", expected.clone())]),
+        );
+        let save = Arc::new(SaveDir::new(
+            std::env::temp_dir().join(format!("horizon-saved-monument-{}", std::process::id())),
+            LevelShape::OVERWORLD,
+        ));
+        save.pending
+            .lock()
+            .unwrap()
+            .insert((Folder::Region, -2, 3), (0, Record::Tag(Arc::new(saved))));
+        let generator = Persistent {
+            inner: inner.clone(),
+            save,
+            registry: assets,
+            biomes,
+        };
+        let mut worker = generator.worker();
+        let mut referring = Chunk::empty(-1, 3);
+        referring
+            .structure_refs
+            .push(("minecraft:monument".into(), (-2, 3)));
+        generator.prepare_loaded(&mut worker, &referring);
+        let starts = inner.starts_at(-2, 3);
+        let restored = starts
+            .iter()
+            .find(|s| s.name == "minecraft:monument")
+            .expect("referenced saved monument");
+        assert_eq!(restored.save(), Some(expected));
     }
 
     #[test]
