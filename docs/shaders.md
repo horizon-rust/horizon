@@ -318,11 +318,11 @@ Every other pack is built and runs as without it.
 
 | | |
 | --- | --- |
-| In it | Within the scene's reach, mobs, players (third person, and the others), armour stands, item frames, paintings, projectiles, vehicles, falling blocks and block displays, whether the camera draws them this frame or not (behind it, beside it, hidden behind terrain), so turning the camera changes nothing; and the block entities the camera draws with them (a chest while it opens) |
-| Not in it | Particles, world text and name tags, the hand, the camera's own body in first person, items Horizon draws itself (a dropped item, a framed one), translucent items, breaking cracks, entity shadows, energy swirls, beams, portals, lightning, glowing outlines, additive glows; block entities at rest (a closed chest) or out of view |
+| In it | Within the scene's reach, mobs, players (third person, and the others), armour stands, item frames, paintings, projectiles, vehicles, falling blocks and block displays, whether the camera draws them this frame or not (behind it, beside it, hidden behind terrain), so turning the camera changes nothing; the block entities at rest that the block entity cache keeps (on in every graphics preset: closed chests, shulker boxes, bells, decorated pots, banners, within vanilla's 64 blocks), in view or not; and the other block entities the camera draws (a chest while it opens) |
+| Not in it | Particles, world text and name tags, the hand, the camera's own body in first person, items Horizon draws itself (a dropped item, a framed one), translucent items, breaking cracks, entity shadows, energy swirls, beams, portals, lightning, glowing outlines, additive glows; other block entities out of view (a chest opening behind the camera) |
 | A hit | `entity` true. `albedo` the entity texture's texel in linear light, `tint`, `light` and `uv` its vertices' (the colour vanilla multiplies in, alpha included; block and sky light; the atlas position), `normal` the face's against the ray, `tangent` from its uvs; `material`, `tags`, `emission` and `fluid` 0, `translucent` false, and `hit_normal_map` and `hit_specular_map` give their defaults |
 | A ray stops | Where vanilla's alpha test keeps the entity's pixel, `(texel * tint).a` 0.1 or more, from either side of the face (on the dying dragon's dissolve, where vanilla's mask keeps it). A pack's own `[entity]` alpha is not the layer's: the scene runs no pack code |
-| Cost | For a pack that names the layer: the models of the entities within reach that the camera doesn't draw, posed on the CPU every frame, and one BLAS of the frame's entity quads and the TLAS built again every frame |
+| Cost | For a pack that names the layer: the models of the entities within reach that the camera doesn't draw, posed on the CPU every frame, and one BLAS of the frame's entity quads and the TLAS built again every frame. The cached block entities have a BLAS a section, built again only when that section's change (a chest opens or closes, one is placed or broken) |
 
 A mob's traced shadow on what a post pass lights, starting off the surface as from terrain:
 
@@ -361,12 +361,12 @@ what a reflected ray hits.
 Shader API 0.2 has the keys for storage a pack keeps between frames and for compute passes: `[[resource]]` (buffers,
 and textures with this frame's and last frame's versions), `[kept] reach`, `[[before_world]]`, `[[post]]` entries
 with `compute = true`, and an option's `resets`. A compute file defines `fn compute(input: ComputeInput)`.
-`horizon-shader check` takes them now, but **they run in a later Horizon**: this game refuses a pack that declares a
-resource or a compute pass. The keys, their limits and the WGSL each pass sees are in the
+The game runs them, except beside `[ray_tracing]`: it refuses a pack that has both, as one that needs a later
+Horizon. The keys, their limits and the WGSL each pass sees are in the
 [reference](api/shaders-reference-0.2.md#kept-resources-and-compute-passes).
 
-Two parts come in later steps, not with these keys: a compute or `[[before_world]]` file doesn't get `trace` or the
-other ray functions under `[ray_tracing]`, and `[material]` can't read kept resources.
+Three parts come in later steps: kept resources beside `[ray_tracing]`, `trace` and the other ray functions in a
+compute or `[[before_world]]` file, and `[material]` reading kept resources.
 
 ## Options
 
