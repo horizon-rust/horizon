@@ -77,39 +77,38 @@ impl Renderer {
         }
     }
 
-    /// Runs `pack` from now on (none: no Horizon pack). The scene follows it: a pack that
-    /// declares `[ray_tracing]` keeps the scene there is, or gets one built from the sections
-    /// resident now; another pack, or none, drops it (`ray_query::wanted`: with
-    /// `HORIZON_RAY_TRACING=1` every pack keeps one). Called before the pack's first frame, so
-    /// the scene is there when it gathers what it traces. A rebuild of the pack that runs keeps
-    /// its kept resources (`NativePack::carry`); else they go before the new pack's are made.
-    pub(in crate::gfx) fn replace_native(
+    /// Runs `pack` from now on (none: no pack's pipeline), its manifest's metadata gone until
+    /// the caller sets the new one. The scene follows it: a pack that declares `[ray_tracing]`
+    /// keeps the scene there is, or gets one built from the sections resident now; another pack,
+    /// or none, drops it (`ray_query::wanted`: with `HORIZON_RAY_TRACING=1` every pack keeps
+    /// one). Called before the pack's first frame, so the scene is there when it gathers what it
+    /// traces. A rebuild of the pack that runs keeps what it kept from frame to frame
+    /// (`ExternalPipeline::take_over`); else that goes before the new pack's is made.
+    pub(in crate::gfx) fn replace_executor(
         &mut self,
-        mut pack: Option<crate::gfx::native_pack::NativePack>,
+        mut pack: Option<Box<dyn crate::gfx::external::ExternalPipeline>>,
     ) {
-        if let (Some(new), Some(old)) = (&mut pack, &mut self.native) {
-            new.carry(old);
+        match (&mut pack, &mut self.external) {
+            (Some(new), old) => new.take_over(&self.device, old.as_deref_mut()),
+            (None, Some(old)) => old.retire(&self.device),
+            (None, None) => {}
         }
-        let old = self.native.as_mut().map(|p| &mut p.post);
-        let new = pack.as_mut().map(|p| &mut p.post);
-        crate::gfx::native_post::kept::install(&self.device, new, old);
-        let capabilities = pack
-            .as_ref()
-            .map(crate::gfx::native_pack::NativePack::capabilities);
+        let capabilities = pack.as_ref().map(|p| p.capabilities());
         let traces = capabilities.is_some_and(|c| c.ray_scene);
         follow(
             &mut self.ray_scene,
             &self.device,
             super::wanted(super::switch(), traces),
         );
-        self.native = pack;
+        self.external = pack;
         self.executor = capabilities;
+        self.pack_metadata = None;
     }
 
     /// Every section is gone (a new world, a new dimension): so are the pack's kept resources.
     pub(in crate::gfx) fn ray_clear(&mut self) {
-        if let Some(epochs) = self.native.as_mut().and_then(|n| n.frame.epochs.as_mut()) {
-            epochs.note(horizon_shader_api::kept::REASON_WORLD);
+        if let Some(pipeline) = &mut self.external {
+            pipeline.world_cleared();
         }
         if let Some(rt) = &mut self.ray_scene {
             rt.clear();
@@ -402,7 +401,7 @@ impl Layer {
 type Part = (SectionKey, Layer);
 
 /// The terrain's acceleration structures.
-pub(in crate::gfx) struct RayScene {
+pub struct RayScene {
     /// Each part's BLAS, while it has quads within reach.
     blas: FxHashMap<Part, wgpu::Blas>,
     /// Parts meshed again or emptied since their BLAS was built.
@@ -446,7 +445,7 @@ pub(in crate::gfx) struct RayScene {
 }
 
 /// What a trace reads this frame (spec #15624).
-pub(in crate::gfx) struct Traced<'a> {
+pub struct Traced<'a> {
     pub tlas: &'a wgpu::Tlas,
     /// How many of its instances are solid terrain's, the first ones: a hit on a later one is
     /// on translucent terrain.
@@ -468,7 +467,7 @@ pub(in crate::gfx) struct Traced<'a> {
 }
 
 /// What a trace reads of the entity layer.
-pub(in crate::gfx) struct TracedEntities<'a> {
+pub struct TracedEntities<'a> {
     /// The stream's vertices, as far as a binding holds them.
     pub vertices: wgpu::BufferBinding<'a>,
     pub atlas: &'a wgpu::TextureView,
@@ -517,7 +516,7 @@ impl RayScene {
     }
 
     /// The scene a renderer starts with: one only when `HORIZON_RAY_TRACING=1` asks for it with
-    /// any pack or none; otherwise the pack that loads brings it (`Renderer::replace_native`).
+    /// any pack or none; otherwise the pack that loads brings it (`Renderer::replace_executor`).
     pub(in crate::gfx) fn forced(device: &wgpu::Device) -> Option<Self> {
         super::wanted(super::switch(), false)
             .then(|| Self::new(device))

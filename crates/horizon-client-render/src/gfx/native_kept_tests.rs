@@ -1208,7 +1208,7 @@ fn a_pack_without_kept_resources_makes_the_layouts_and_groups_it_made_before() {
     assert_eq!(before, [[3, 0, 1], [0, 6, 0], [0, 0, 0]]);
 }
 
-/// #16011 item 4: a pack's kept resources are made at install (`replace_native`), not while it
+/// #16011 item 4: a pack's kept resources are made at install (`replace_executor`), not while it
 /// builds, so one that fails to build makes none; a reload destroys the old store before it
 /// makes the new one, and a carried store stays; a pack whose kept formats the device can't make
 /// is refused while it builds, and the running store stays. Counted with

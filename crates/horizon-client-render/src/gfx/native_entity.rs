@@ -15,6 +15,7 @@
 
 use horizon_shader_api::{check::CheckedStage, stages::GROUP};
 
+use super::external::EntityLayers;
 use super::native_post::{NativeFrame, present_constants};
 
 /// What a run of the entity geometry is to the stage, as `EntityInput.kind` numbers it. Items
@@ -386,16 +387,6 @@ impl NativeEntity {
     }
 }
 
-/// The pipelines a pack's entity stage draws the entity stream's ordinary quads and the
-/// retained block entities with, and what they read beside the entities' groups
-/// (`NativePack::entity_layers`).
-#[derive(Clone, Copy)]
-pub struct EntityLayers<'a> {
-    entities: &'a wgpu::RenderPipeline,
-    retained: &'a wgpu::RenderPipeline,
-    frame: &'a wgpu::BindGroup,
-}
-
 impl super::native_pack::NativePack {
     /// The layers the entities draw with this frame, with an entity stage.
     pub fn entity_layers(&self) -> Option<EntityLayers<'_>> {
@@ -406,25 +397,6 @@ impl super::native_pack::NativePack {
             frame: &self.frame.group,
         })
     }
-}
-
-/// Sets the pipeline of the entity stream's ordinary quads, or of the `retained` block
-/// entities: the `stage`'s with the pack's frame at its group, else Horizon's `own`.
-pub(super) fn set_pipeline(
-    pass: &mut wgpu::RenderPass<'_>,
-    stage: Option<EntityLayers<'_>>,
-    own: &wgpu::RenderPipeline,
-    retained: bool,
-) {
-    let Some(stage) = stage else {
-        return pass.set_pipeline(own);
-    };
-    pass.set_pipeline(if retained {
-        stage.retained
-    } else {
-        stage.entities
-    });
-    pass.set_bind_group(GROUP, stage.frame, &[]);
 }
 
 impl super::Renderer {
