@@ -296,7 +296,30 @@ class PrReadyTests(unittest.TestCase):
         self.assertNotEqual(subprocess.run([BASH, "-c", 'test -e "$1"', "bash", home]).returncode, 0,
                             "the scratch home is removed afterwards")
 
-    def launcher_step_arguments(self, command, uname, metal, cargo="#!/bin/sh\nprintf '%s\\n' \"$@\"\n"):
+    @unittest.skipUnless(POSIX_BASH, "needs a bash that is not WSL's")
+    def test_the_launcher_tests_step_stops_when_it_has_no_scratch_home(self):
+        """Without one, the tests would run in the player's launcher data again."""
+        with mock.patch.object(pr_ready, "affected_here", return_value=[]):
+            steps = pr_ready.plan(args(quick=True), "origin/main", {"launcher/src/main.rs"},
+                                  PACKAGES, LIBRARIES, DEPENDENCIES)
+        command = {step.name: step for step in steps}["launcher tests"].command
+        with self.assertRaises(subprocess.CalledProcessError) as stopped:
+            self.launcher_step_arguments(command, "Linux", False, "#!/bin/sh\necho cargo ran\n",
+                                         fakes={"mktemp": "#!/bin/sh\nexit 1\n"})
+        self.assertNotIn("cargo ran", stopped.exception.stdout)
+
+    def test_a_windows_scratch_home_goes_where_the_launcher_builds_in_place(self):
+        """A temp folder whose real path has a space or a letter outside ASCII makes the launcher build in
+        %ProgramData% instead (backend::build_dir), outside the scratch home: the home goes there then."""
+        public = os.path.abspath(os.sep + "pr-ready-public-fixture")
+        for temp, base in ((os.path.abspath(os.sep + "pr-ready-temp-fixture"), None),
+                           (os.path.abspath(os.sep + "pr-ready John Doe"), public),
+                           (os.path.abspath(os.sep + "pr-ready-Кирилл"), public)):
+            with self.subTest(temp=temp), mock.patch.object(pr_ready.tempfile, "gettempdir", return_value=temp), \
+                    mock.patch.dict(os.environ, {"ProgramData": public}):
+                self.assertEqual(pr_ready.launcher_test_base(), base or temp)
+
+    def launcher_step_arguments(self, command, uname, metal, cargo="#!/bin/sh\nprintf '%s\\n' \"$@\"\n", fakes=None):
         """Run a launcher step's shell snippet with fake uname, xcrun, pkg-config and cargo; what the fake
         cargo receives is the snippet's observable behaviour."""
         with tempfile.TemporaryDirectory() as fake_bin:
@@ -304,7 +327,7 @@ class PrReadyTests(unittest.TestCase):
                        "xcrun": f"#!/bin/sh\nexit {0 if metal else 1}\n",
                        # xkbcommon found: Linux never looks for nix-shell (a NixOS host would have it).
                        "pkg-config": "#!/bin/sh\nexit 0\n",
-                       "cargo": cargo}
+                       "cargo": cargo, **(fakes or {})}
             for name, script in scripts.items():
                 path = os.path.join(fake_bin, name)
                 # LF on every host: text mode makes the shebang "#!/bin/sh\r" on

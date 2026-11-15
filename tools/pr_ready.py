@@ -81,13 +81,25 @@ in_shell() { if [ "$(uname)" = Linux ] && ! pkg-config --exists xkbcommon 2>/dev
   nix-shell shell.nix --run "$1"; else bash -c "$1"; fi; }"""
 # The launcher's tests write where the launcher keeps its data: the native build log, the build lease and the native
 # build cache it trims, versions. As every run (AGENTS.md), they get a scratch home, removed afterwards, never the
-# player's own (#16877).
+# player's own (#16877). A step that can't make one stops: the tests would use the player's data.
 LAUNCHER_TEST_HOME = (("HORIZON_LAUNCHER_HOME", "launcher"), ("HORIZON_HOME", "game"),
                       ("HORIZON_LAUNCHER_LOCATION_FILE", "location.json"), ("XDG_DATA_HOME", "data"),
                       ("XDG_CONFIG_HOME", "config"), ("HORIZON_LAUNCHER_TRASH", "trash"),
                       ("HORIZON_LAUNCHER_CLIPBOARD", "clipboard"), ("HORIZON_LAUNCHER_DESKTOP", "desktop"))
 LAUNCHER_TEST_SCRATCH = ("scratch=$(mktemp -d) && trap 'rm -rf \"$scratch\"' EXIT && export "
-                         + " ".join(f'{name}="$scratch/{path}"' for name, path in LAUNCHER_TEST_HOME))
+                         + " ".join(f'{name}="$scratch/{path}"' for name, path in LAUNCHER_TEST_HOME)
+                         + " || { echo 'pr_ready: no scratch home for the launcher tests' >&2; exit 1; }")
+
+
+def launcher_test_base():
+    """Where run_windows makes the launcher tests' scratch home: the temp folder, unless its real path has a space or a
+    letter outside ASCII. The launcher then builds in %ProgramData% instead (backend::build_dir), outside the home
+    and never removed, so the home goes in %ProgramData% itself, as the launcher's own fallback does."""
+    temp = os.path.realpath(tempfile.gettempdir())
+    if temp.isascii() and " " not in temp:
+        return temp
+    public = os.environ.get("ProgramData", "")
+    return public if os.path.isabs(public) and public.isascii() and " " not in public else r"C:\ProgramData"
 
 
 # Build-script inputs outside the crates: catalog-only edits still need to build and test their consumers.
@@ -726,7 +738,7 @@ def run_windows(steps, verbose):
         elif step.name == "launcher tests":
             command = ["cargo", "test", "--locked", "--lib", "--bins"]
             cwd = ROOT / "launcher"
-            scratch = tempfile.mkdtemp(prefix="horizon-launcher-tests-")
+            scratch = tempfile.mkdtemp(prefix="horizon-launcher-tests-", dir=launcher_test_base())
             env.update({name: os.path.join(scratch, path) for name, path in LAUNCHER_TEST_HOME})
         elif step.name == "Parity":
             command = shlex.split(step.command)
