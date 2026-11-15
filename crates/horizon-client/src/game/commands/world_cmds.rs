@@ -352,11 +352,10 @@ impl Game<'_> {
         let ignites = registry.in_tag(kind, "minecraft:is_fire")
             || registry.in_tag(kind, "minecraft:is_explosion");
         match target {
-            Target::Boat(_) => self
-                .boats
-                .iter()
-                .position(|b| b.id == id)
-                .is_some_and(|i| self.hurt_boat_result(i, amount, creative).is_some()),
+            Target::Boat(_) => self.boats.iter().position(|b| b.id == id).is_some_and(|i| {
+                self.hurt_boat_result(i, amount, creative, causing)
+                    .is_some()
+            }),
             Target::Cart(_) => self.carts.iter().position(|c| c.id == id).is_some_and(|i| {
                 self.hurt_cart_result(i, amount, creative, ignites, CartHit::command(by, causing))
             }),
@@ -578,11 +577,7 @@ impl Game<'_> {
         let targets = if ctx.get("targets").is_some() {
             self.entities(ctx, "targets", false)?
         } else {
-            vec![
-                self.command_source
-                    .and_then(|s| s.entity)
-                    .unwrap_or(Target::Player),
-            ]
+            vec![self.implied(false)?]
         };
         let mut tracker = Tracker::default();
         for t in targets {
@@ -957,7 +952,9 @@ impl Game<'_> {
         }
         self.feedback(Text::translate(
             "commands.particle.success",
-            &[Text::literal(name.to_owned())],
+            // ParticleCommand.sendParticles: the type's registry key, not the
+            // text the player typed.
+            &[Text::literal(ty.id())],
         ));
         Ok(reached)
     }
@@ -2881,8 +2878,12 @@ mod vehicle_damage_command_tests {
 }
 
 #[cfg(test)]
-#[path = "../particle_command_tests.rs"]
+#[path = "particle_command_tests.rs"]
 mod particle_command_tests;
+
+#[cfg(test)]
+#[path = "../particle_command_tests.rs"]
+mod particle_render_command_tests;
 
 #[cfg(test)]
 #[path = "attribute_tests.rs"]

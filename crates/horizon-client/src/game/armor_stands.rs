@@ -735,6 +735,16 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
+        // ArmorStand.skipAttackInteraction: `mayInteract` at its block refuses
+        // the hit before any damage is worked out (so before its RNG draws).
+        let at = self.armor_stands[i].position;
+        if !self.may_interact_at(BlockPos::new(
+            at.x.floor() as i32,
+            at.y.floor() as i32,
+            at.z.floor() as i32,
+        )) {
+            return true;
+        }
         let ((_, scale, crit, magic), admitted) =
             self.melee_damage_with_admission("minecraft:armor_stand", true);
         let hurt = self.hit_armor_stand(i, |g, area, id| {
@@ -913,6 +923,19 @@ impl Game<'_> {
             let travels = !self.armor_stands[i].marker && !self.armor_stands[i].no_gravity;
             if travels && obstacles.is_none() {
                 obstacles = Some(self.stand_entity_collisions());
+            }
+            // LivingEntity.baseTick: air below the max refills by 4 a tick
+            // (increaseAirSupply), in water too, as armor_stand is in the
+            // can_breathe_under_water tag. A stand's air is its loaded tag's.
+            let id = self.armor_stands[i].id;
+            if let Some(horizon_world::nbt::Tag::Compound(map)) = self.persist.raw.get_mut(&id)
+                && let Some(air) = map
+                    .get(&"Air".into())
+                    .and_then(horizon_client::nbt_path::int_value)
+                && air < 300
+            {
+                let air = (air + 4).min(300) as i16;
+                map.insert("Air".into(), horizon_world::nbt::Tag::Short(air));
             }
             let a = &mut self.armor_stands[i];
             a.previous = a.position;

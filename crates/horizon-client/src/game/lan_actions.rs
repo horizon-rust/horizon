@@ -574,6 +574,7 @@ impl Game<'_> {
                 level: g.xp_level,
                 progress: g.xp_progress,
                 total: g.xp_total,
+                score: g.score,
             },
         );
         let level_up_sound = std::mem::replace(&mut self.level_up_sound, play.level_up_sound);
@@ -678,14 +679,14 @@ impl Game<'_> {
             &mut self.applied_modifiers,
             std::mem::take(&mut play.modifiers),
         );
-        // Its worn armour on its attributes, when it changed.
+        // Its equipment on its attributes, when it changed (once its tick saw a new hand item).
         let selected_item = self.inventory.get(self.selected).and_then(Option::as_ref);
         let unchanged = play.equipped.as_deref().is_some_and(|eq| {
             eq.len() == self.armor.len() + 1
                 && eq[..self.armor.len()] == self.armor[..]
                 && eq[self.armor.len()].as_ref() == selected_item
         });
-        if !unchanged {
+        if !unchanged && (play.equipped.is_none() || self.held_item_ticked()) {
             let mut equipped: Vec<Option<ItemStack>> = self.armor.to_vec();
             equipped.push(selected_item.cloned());
             self.apply_equipment();
@@ -766,7 +767,6 @@ impl Game<'_> {
             building_boxes,
         })
     }
-
     /// The second half of `as_guest`: the guest's state back into their
     /// record, the game's back in place, and what the turn changed sent.
     pub(super) fn leave_guest(&mut self, host: &mut LanHost, swap: GuestSwap) {
@@ -970,7 +970,6 @@ impl Game<'_> {
         // An ender chest the guest opened: the menu shows their inventory
         // itself (lan_open_container), not a stand-in block entity.
         self.close_ender_chest();
-
         // What the action opened: handed to the guest instead of the host.
         let opened = self.container.take();
         let guest_table = std::mem::replace(&mut self.craft_table, craft_table);
@@ -1081,6 +1080,7 @@ impl Game<'_> {
         g.xp_level = new_xp.level;
         g.xp_progress = new_xp.progress;
         g.xp_total = new_xp.total;
+        g.score = new_xp.score;
         let new_mode = self.mode_id();
         self.mode = mode;
         self.creative = creative;
@@ -1245,7 +1245,6 @@ impl Game<'_> {
                     .for_turn(actor, None, building_players(host));
         }
     }
-
     /// `ServerLevel.broadcastDamageEvent` for a guest that took an unblocked hit.
     fn guest_damage_broadcast(
         &mut self,
@@ -1264,7 +1263,6 @@ impl Game<'_> {
             .map_or("minecraft:generic", |d| d.name.as_str());
         host.hub.damage_event(id, kind, None, None, at);
     }
-
     /// `LivingEntity.playHurtSound` for a guest: the server's `Entity.playSound`
     /// reaches every player around but the hurt one, whose own client plays it
     /// from `handleDamageEvent` (#4149).
@@ -1277,7 +1275,6 @@ impl Game<'_> {
         self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
         host.hub.sound(sound, at, 1.0, 1.0, source, Some(conn));
     }
-
     /// `ServerLevel.players()` in turn: the host's own player, then each
     /// guest in the level in place with their state swapped in (`as_guest`).
     /// What reaches the players around a point (a beacon's powers, a splash
@@ -1968,14 +1965,14 @@ impl Game<'_> {
     }
 
     /// The rest of it: a block in `dimension` within `radius` of the world
-    /// spawn (square, in the Overworld only).
+    /// spawn (square, and only in the dimension the spawn belongs to).
     pub(super) fn spawn_protects(&self, radius: i32, dimension: &str, pos: [i32; 3]) -> bool {
         let Some(spawn) = self.level.world_spawn else {
             return false;
         };
         let dx = pos[0].abs_diff(spawn[0]);
         let dz = pos[2].abs_diff(spawn[2]);
-        dimension == "minecraft:overworld" && dx.max(dz) <= radius as u32
+        dimension == self.level.spawn_dimension() && dx.max(dz) <= radius as u32
     }
 
     /// ServerPlayer.sendSpawnProtectionMessage.
@@ -3848,9 +3845,11 @@ impl Game<'_> {
             level: g.xp_level,
             progress: g.xp_progress,
             total: g.xp_total,
+            score: g.score,
         };
         xp.respawn(self.ui.rules.bool("keep_inventory") || g.game_mode == SPECTATOR);
-        (g.xp_level, g.xp_progress, g.xp_total) = (xp.level, xp.progress, xp.total);
+        (g.xp_level, g.xp_progress, g.xp_total, g.score) =
+            (xp.level, xp.progress, xp.total, xp.score);
         // PlayerEvent.Clone, at the end of `restoreFrom`: the data is copied,
         // the new player not yet placed.
         let (cloned, name) = (g.uuid, g.name.clone());
@@ -4232,6 +4231,7 @@ impl Game<'_> {
                 level: g.xp_level,
                 progress: g.xp_progress,
                 total: g.xp_total,
+                score: g.score,
             }
             .death_reward(self.ui.rules.bool("keep_inventory") || g.game_mode == SPECTATOR);
             let (name, uuid) = (g.name.clone(), g.uuid);
@@ -4868,7 +4868,7 @@ impl Game<'_> {
         }
         if self.guest_can_glide(host, conn) != Some(true) {
             if let Some(g) = host.hub.guest_mut(conn) {
-                g.fall_flying = false;
+                g.end_glide();
             }
             return;
         }
