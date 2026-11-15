@@ -195,6 +195,8 @@ pub(super) struct Crystal {
     /// as loaded until `/tp` grounds it or a cobweb or powder snow resets the
     /// fall (`crystal.rs`).
     pub fall: (bool, f64),
+    /// Yaw and pitch as loaded (`Rotation`): `EndCrystal.tick` never turns it.
+    pub rotation: [f32; 2],
 }
 impl Crystal {
     /// `EntityType.END_CRYSTAL`: 2 x 2.
@@ -3650,7 +3652,7 @@ impl Crystal {
             "minecraft:end_crystal",
             self.position,
             Vec3::ZERO,
-            [0.0, 0.0],
+            self.rotation,
             self.fall,
             uuid,
             raw,
@@ -3669,8 +3671,12 @@ impl Crystal {
     }
     pub(super) fn from_nbt(tag: &Tag, time: i32) -> Option<Self> {
         let (position, _, _) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
+        let [yaw, pitch] = horizon_client::entity_nbt::rotation(tag);
         Some(Self {
             id: 0,
+            // Entity.load ends in setRot: the yaw `% 360`, and setXRot clamps
+            // the pitch.
+            rotation: [yaw % 360.0, (pitch % 360.0).clamp(-90.0, 90.0)],
             position,
             show_bottom: horizon_client::entity_nbt::flag_or(tag, "ShowBottom", true),
             time,

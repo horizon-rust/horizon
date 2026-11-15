@@ -7269,6 +7269,33 @@ def item_fall_distance():
 
 
 
+def loaded_crystal_rotation():
+    """#16752: `Entity.load` reads an end crystal's `Rotation` and `Entity.saveWithoutId` writes
+    it back; `EndCrystal.tick` never turns it. The load wraps the yaw (`% 360`) and clamps the
+    pitch. Read after summoning and after an unload and reload (frozen, so only the save and the
+    load count)."""
+    x0, y0, z0 = 3584, 260, 3776
+    chunk = [[x0 >> 4, z0 >> 4]]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
+    uuids = []
+    for n, rotation in enumerate(('45.0f,10.0f', '-170.5f,-30.0f', '400.0f,120.0f', None), 1):
+        uuids.append(f'00004170-0000-0000-0000-{n:04x}00000001')
+        field = f',Rotation:[{rotation}]' if rotation else ''
+        ops.append(cmd(f'/summon end_crystal {x0 + 3 * n}.5 {y0} {z0 + 8}.5 '
+                       f'{{UUID:[I;16752,0,{n},1],ShowBottom:0b{field}}}', expect_result=1))
+
+    def reads():
+        for uuid in uuids:
+            ops.append(cmd(f'/data get entity {uuid} Rotation'))
+
+    reads()
+    ops += [cmd('/tick freeze', False), cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
+    reads()
+    return ops + setup('/tick unfreeze', *[f'/kill {uuid}' for uuid in uuids], f'/forceload remove {x0} {z0}')
+
+
 def loaded_dead_mob():
     """#13199: `LivingEntity.readAdditionalSaveData` reads `Health` through `setHealth`, which
     clamps a negative value to 0 and keeps the body: a mob summoned dead is there, `/data` reads
@@ -8496,6 +8523,7 @@ def groups():
         ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
         ('loaded dead mob', loaded_dead_mob()),
+        ('loaded crystal rotation', loaded_crystal_rotation()),
         ('falling block fall float', falling_block_fall_float()),
         ('explosion infested blocks', explosion_infested_blocks()),
         ('jigsaw default joint', jigsaw_default_joint()),

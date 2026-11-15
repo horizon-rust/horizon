@@ -13,6 +13,7 @@ impl Crystal {
             beam: None,
             invulnerable: false,
             fall: (false, 0.0),
+            rotation: [0.0, 0.0],
         }
     }
     /// The start of `time` (the spin and bob) for a crystal at `position`: the random draw
