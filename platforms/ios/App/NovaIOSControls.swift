@@ -99,44 +99,55 @@ final class NovaJoystickView: UIView {
     }
 }
 
-/// A touch surface for moving a separate desktop-style pointer (menus) or
-/// looking around (while in a world). It does not render the cursor itself.
-final class NovaTrackpadView: UIView {
-    let control: NovaTouchControl
-    var onMove: ((CGPoint) -> Void)?
-    private var finger: UITouch?
 
-    init(control: NovaTouchControl) {
-        self.control = control
-        super.init(frame: .zero)
-        isMultipleTouchEnabled = false
-        backgroundColor = UIColor.black.withAlphaComponent(control.opacity * 0.12)
-        layer.borderColor = UIColor.white.withAlphaComponent(0.25).cgColor
-        layer.borderWidth = 1
-        layer.cornerRadius = 16
+/**
+ Invisible full-screen touch surface. Buttons and the joystick stay above this
+ view, so they still receive their own multitouch contacts.
+ */
+final class NovaMouseSurface: UIView {
+    var onDrag: ((CGPoint) -> Void)?
+    var onTap: ((CGPoint) -> Void)?
+    private var activeTouch: UITouch?
+    private var distance: CGFloat = 0
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isMultipleTouchEnabled = true
         isExclusiveTouch = false
     }
 
-    required init?(coder: NSCoder) { fatalError("Use init(control:)") }
+    required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard finger == nil else { return }
-        finger = touches.first
+        guard activeTouch == nil, let touch = touches.first else { return }
+        activeTouch = touch
+        distance = 0
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let finger, touches.contains(finger) else { return }
-        let here = finger.location(in: self)
-        let previous = finger.previousLocation(in: self)
-        let delta = CGPoint(x: here.x - previous.x, y: here.y - previous.y)
-        if delta != .zero { onMove?(delta) }
+        guard let touch = activeTouch, touches.contains(touch) else { return }
+        let now = touch.location(in: self)
+        let prev = touch.previousLocation(in: self)
+        let delta = CGPoint(x: now.x - prev.x, y: now.y - prev.y)
+        distance += hypot(delta.x, delta.y)
+        if delta != .zero { onDrag?(delta) }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let finger, touches.contains(finger) { self.finger = nil }
+        guard let touch = activeTouch, touches.contains(touch) else { return }
+        if distance < 8 { onTap?(touch.location(in: self)) }
+        activeTouch = nil
+        distance = 0
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        finger = nil
+        activeTouch = nil
+        distance = 0
+    }
+
+    func cancelTouch() {
+        activeTouch = nil
+        distance = 0
     }
 }
