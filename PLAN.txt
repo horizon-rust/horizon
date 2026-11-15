@@ -296,3 +296,17 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
   runner patch, plus Rust panic hook in the GameRuntime bridge.
 - Keep vanilla gameplay and renderer sources untouched in git. Don't conclude
   GPU cause until a device log from this tagged build confirms it.
+
+2026-11-15: RENDERER WRAPPER BREADCRUMBS
+- Latest user-provided log verifies full build commit 74d28c5e, run
+  43669568689. It still exits <3s after renderer.boot.begin, without
+  gpu.open_device.*, renderer.new.entry or rust.panic. This means failure
+  is BEFORE first traced Renderer::new point, or early native termination
+  has prevented logging. Root cause is not established.
+- Added diagnostics at loading_renderer() entry, panorama preparation,
+  boot atlas data, font-cache reset, Renderer::new call/return, and wrapper
+  completion. The patch is only applied to the CI checkout of
+  crates/horizon-client/src/game/loading_window.rs. No upstream game code
+  changes are committed in Nova. Ask for system crash/Jetsam report if
+  no additional checkpoints appear; launch-log absence cannot distinguish
+  a hard native crash from process kill due to memory.

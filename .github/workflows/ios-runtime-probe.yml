@@ -289,6 +289,49 @@ jobs:
           patch(gfx, '        match open_device_with(window, offscreen, &order, layers, allow_cpu).await {',
                 '        startup_step(format_args!("gpu.open_device.try backends={order:?}"));\n        match open_device_with(window, offscreen, &order, layers, allow_cpu).await {')
 
+          # The device log reached renderer.boot.begin but no gpu or Rust
+          # panic checkpoint. Trace the synchronous loading_renderer wrapper
+          # before Renderer::new (which may fail or abort first).
+          loading_window = Path("crates/horizon-client/src/game/loading_window.rs")
+          patch(loading_window, "    static FORCEFIELD: [u8; 4] = [0; 4];",
+                '    loading_screen::nova_diag("loading_renderer.entry");\n    static FORCEFIELD: [u8; 4] = [0; 4];')
+          patch(loading_window, "    let panorama = panorama\n        .cloned()",
+                '    loading_screen::nova_diag("loading_renderer.panorama.begin");\n    let panorama = panorama\n        .cloned()')
+          patch(loading_window, "    let (pixels, width, height) = atlas.map_or(",
+                '    loading_screen::nova_diag("loading_renderer.panorama.ready");\n    let (pixels, width, height) = atlas.map_or(')
+          patch(loading_window, '''    if let Some(atlas) = atlas {
+                  atlas.font.reset_cache();
+              }
+              let mut renderer = pollster::block_on(Renderer::new(''',
+                '''    loading_screen::nova_diag("loading_renderer.atlas.ready");
+              if let Some(atlas) = atlas {
+                  loading_screen::nova_diag("loading_renderer.font-cache-reset.begin");
+                  atlas.font.reset_cache();
+                  loading_screen::nova_diag("loading_renderer.font-cache-reset.done");
+              }
+              loading_screen::nova_diag("loading_renderer.renderer-new.begin");
+              let mut renderer = pollster::block_on(Renderer::new(''')
+          patch(loading_window, '''    ))?;
+              if let Some(atlas) = atlas {
+                  renderer.hud.sprite_animations''',
+                '''    ))?;
+              loading_screen::nova_diag("loading_renderer.renderer-new.done");
+              if let Some(atlas) = atlas {
+                  renderer.hud.sprite_animations''')
+          patch(loading_window, '''            .collect();
+              }
+              Ok(renderer)
+          }
+
+          pub(super) fn loading_frame''',
+                '''            .collect();
+              }
+              loading_screen::nova_diag("loading_renderer.completed");
+              Ok(renderer)
+          }
+
+          pub(super) fn loading_frame''')
+
           loader = Path("crates/horizon-client/src/game/resource_loader.rs")
           patch(loader, "    let progress = Progress::new();",
                 "    loading_screen::nova_diag(\"resources.loading.begin\");\n    let progress = Progress::new();")
@@ -298,6 +341,7 @@ jobs:
           git diff --stat -- crates/horizon-client/src/entry.rs \
             crates/horizon-client/src/game/loading_screen.rs \
             crates/horizon-client/src/game/resource_loader.rs \
+            crates/horizon-client/src/game/loading_window.rs \
             crates/horizon-client-render/src/gfx.rs
 
       - name: Trace desktop Wayland dependency on iOS
