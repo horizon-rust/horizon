@@ -12,8 +12,8 @@ use super::pack_timing::PassTiming;
 use super::surface_setup::ray_query::ray_scene::{RayScene, Traced};
 
 impl ExternalPipeline for NativePack {
-    fn capabilities(&self) -> Capabilities {
-        NativePack::capabilities(self)
+    fn capabilities(&self) -> Option<Capabilities> {
+        Some(NativePack::capabilities(self))
     }
 
     /// A rebuild of the pack that ran keeps its kept resources (`NativePack::carry`); else

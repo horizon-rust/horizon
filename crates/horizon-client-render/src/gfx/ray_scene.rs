@@ -93,7 +93,7 @@ impl Renderer {
             (None, Some(old)) => old.retire(&self.device),
             (None, None) => {}
         }
-        let capabilities = pack.as_ref().map(|p| p.capabilities());
+        let capabilities = pack.as_ref().and_then(|p| p.capabilities());
         let traces = capabilities.is_some_and(|c| c.ray_scene);
         follow(
             &mut self.ray_scene,

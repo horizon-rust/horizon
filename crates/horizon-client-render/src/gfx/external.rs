@@ -37,9 +37,10 @@ pub struct FrameState<'a> {
 /// title frames, unless a point says so), in the order below, and as it is installed, replaced
 /// and reset. Every method has a default that leaves vanilla's way in place.
 pub trait ExternalPipeline: Send + std::any::Any {
-    /// What it does in the engine's place, asked once, when it is installed.
-    fn capabilities(&self) -> Capabilities {
-        Capabilities::default()
+    /// What it does in the engine's place, asked once, when it is installed. None: it draws
+    /// nothing of the world, and the renderer runs as without a shader pack.
+    fn capabilities(&self) -> Option<Capabilities> {
+        None
     }
     /// It runs from now on in place of `old` (none: nothing ran), dropped after: a rebuild of
     /// the same pipeline may take what `old` kept from frame to frame.
