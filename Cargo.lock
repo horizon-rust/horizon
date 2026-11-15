@@ -1521,7 +1521,6 @@ dependencies = [
  "horizon-core",
  "horizon-cosmetics",
  "horizon-dualsense",
- "horizon-friends",
  "horizon-hdr",
  "horizon-hooks",
  "horizon-items",

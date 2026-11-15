@@ -1,7 +1,10 @@
-//! Play with Friends in the game, joining side (the `game` feature): the engine's `friend:`
+//! Play with Friends in the game (the `game` feature). Joining: the engine's `friend:`
 //! addresses (`horizon_platform::hooks::tunnel`) read as invite codes, and joined through this
-//! crate's tunnel. `horizon-official` registers [`HOOKS`]; the game's own executable has none, so
-//! there no invite code joins.
+//! crate's tunnel. Hosting ([`share`]): the pause menu's Friends page shares the open world
+//! behind an invite code. `horizon-official` registers [`HOOKS`] and [`PAGE`]; the game's own
+//! executable has neither, so there no invite code joins and nothing is shared.
+mod share;
+
 use crate::{
     PathMode,
     guest::{self, GuestConfig},
@@ -10,10 +13,12 @@ use crate::{
 use horizon_platform::{
     hooks::{
         Hooks,
+        share::ShareView,
         tunnel::{Opened, Progress, Resolver},
     },
     version::{PROTOCOL_VERSION, VANILLA_VERSION},
 };
+pub use share::PAGE;
 use std::net::SocketAddr;
 
 /// What `horizon-official` registers: Play with Friends' hooks.
@@ -24,6 +29,22 @@ pub struct Friends;
 impl Hooks for Friends {
     fn tunnel(&self) -> Option<&dyn Resolver> {
         Some(&Invites)
+    }
+
+    fn share(&self, world: &mut dyn ShareView) {
+        share::HOOKS.share(world);
+    }
+
+    fn lan_closed(&self) {
+        share::HOOKS.lan_closed();
+    }
+
+    fn control_commands(&self) -> Option<(&'static str, &'static [&'static str])> {
+        share::HOOKS.control_commands()
+    }
+
+    fn control(&self, words: &[&str], world: &mut dyn ShareView) -> Option<Result<String, String>> {
+        share::HOOKS.control(words, world)
     }
 }
 
