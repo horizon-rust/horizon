@@ -571,6 +571,32 @@ impl Game<'_> {
     /// rider's and the vehicle's heights, then the free spot nearest there
     /// (`findFreePosition` within the rider's own box). No get-up sound:
     /// `Cushion.removePassenger` plays none once the cushion is removed.
+    /// `LivingEntity.dismountVehicle` for the mob at `j` when its vehicle is
+    /// gone or stands in a portal: where it is, no lower than the vehicle, then
+    /// the nearest spot its box fits within that box (`findFreePosition`).
+    pub(super) fn mob_dismount_in_place(&self, j: usize, vehicle_y: f64) -> Vec3 {
+        let m = &self.mobs[j];
+        let at = Vec3::new(m.position.x, m.position.y.max(vehicle_y), m.position.z);
+        // `getBbWidth() <= 4 && getBbHeight() <= 4`.
+        if m.width() > 4.0 || m.height() > 4.0 {
+            return at;
+        }
+        let (w, h) = (f64::from(m.width()), f64::from(m.height()));
+        let center = at.add_vector(Vec3::new(0.0, h / 2.0, 0.0));
+        let size = Vec3::new(w, h, w);
+        let b = self.res.behaviours();
+        horizon_world::level::portal_travel::find_free_position(
+            Aabb::of_size(center, size),
+            center,
+            size,
+            &self.border_bounds(),
+            |q| {
+                b.collision_shape(self.world.block(q.x, q.y, q.z))
+                    .map(|s| s.moved(Vec3::new(f64::from(q.x), f64::from(q.y), f64::from(q.z))))
+            },
+        )
+        .map_or(at, |free| free.add_vector(Vec3::new(0.0, -h / 2.0, 0.0)))
+    }
     pub(super) fn dismount_removed_vehicle(&mut self, vehicle_y: f64) {
         self.riding = None;
         let border = self.border_bounds();

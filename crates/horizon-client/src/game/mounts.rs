@@ -1014,7 +1014,7 @@ fn rider_poses(p: &PlayerMotion) -> Vec<(Pose, Dimensions)> {
         .collect()
 }
 /// The level queries a dismount makes.
-trait DismountWorld {
+pub(super) trait DismountWorld {
     /// `getFluidState(pos).is(FluidTags.LAVA)`.
     fn lava(&self, p: [i32; 3]) -> bool;
     /// `BlockGetter.getBlockFloorHeight(pos)`.
@@ -1022,7 +1022,7 @@ trait DismountWorld {
     /// `DismountHelper.canDismountTo(level, passenger, box)`.
     fn can_dismount_to(&self, bounds: Aabb) -> bool;
 }
-struct GameDismountWorld<'a, 'g>(&'a Game<'g>);
+pub(super) struct GameDismountWorld<'a, 'g>(pub(super) &'a Game<'g>);
 impl DismountWorld for GameDismountWorld<'_, '_> {
     fn lava(&self, p: [i32; 3]) -> bool {
         let g = self.0;

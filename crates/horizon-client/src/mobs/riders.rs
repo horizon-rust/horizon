@@ -365,7 +365,12 @@ pub fn stop_riding(m: &mut Mob, at: Option<Vec3>) {
     }
     m.extra.passenger = false;
     m.extra.boarding_cooldown = BOARDING_COOLDOWN;
-    if let Some(at) = at {
+    if let Some(mut at) = at {
+        // LivingEntity.dismountTo lands through `setPos`, which a shulker no
+        // longer riding snaps to its block (`Shulker.setPos`).
+        if m.species() == Species::Shulker {
+            at = super::shulker::off_vehicle_position(at);
+        }
         m.position = at;
         m.previous = at;
     }

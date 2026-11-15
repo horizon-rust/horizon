@@ -1477,12 +1477,7 @@ impl Game<'_> {
                 if self.riding == Some(c.id) {
                     self.riding = None;
                 }
-                let y = c.position.y;
-                for m in self.mobs.iter_mut().filter(|m| m.extra.mount == Some(c.id)) {
-                    let at = Vec3::new(m.position.x, m.position.y.max(y), m.position.z);
-                    riders::stop_riding(m, Some(at));
-                    m.previous = at;
-                }
+                self.eject_cart_riders(c.id, c.position.y, Some(c));
                 if c.hurt_time == 0 {
                     c.hurt_dir = -c.hurt_dir;
                     c.hurt_time = 10;
@@ -1869,19 +1864,30 @@ impl Game<'_> {
             }
         }
     }
-    /// `ejectPassengers` for the mobs in cart `i`.
+    /// `ejectPassengers` for the mobs in cart `i` as it leaves the level.
     pub(super) fn eject_cart_mobs(&mut self, i: usize) {
         let (id, y) = (self.carts[i].id, self.carts[i].position.y);
+        self.eject_cart_riders(id, y, None);
+    }
+    /// `Entity.ejectPassengers` for the mobs on cart `id`, its feet at
+    /// `cart_y`: each one's `LivingEntity.dismountVehicle` asks a cart still in
+    /// the level (`live`) where to get out (`getDismountLocationForPassenger`),
+    /// unless it stands in a portal; then, as for a removed cart, the mob gets
+    /// off where it is.
+    fn eject_cart_riders(&mut self, id: u32, cart_y: f64, live: Option<&Minecart>) {
+        let live = live.filter(|c| {
+            let block = [c.position.x, c.position.y, c.position.z].map(|v| v.floor() as i32);
+            !self.block_in_tag("minecraft:portals", &self.block_name(block))
+        });
         let js: Vec<usize> = (0..self.mobs.len())
             .filter(|&j| self.mobs[j].extra.mount == Some(id))
             .collect();
         for j in js {
-            let at = {
-                let m = &self.mobs[j];
-                Vec3::new(m.position.x, m.position.y.max(y), m.position.z)
+            let at = match live {
+                Some(c) => self.cart_mob_dismount_point(c, j),
+                None => self.mob_dismount_in_place(j, cart_y),
             };
             riders::stop_riding(&mut self.mobs[j], Some(at));
-            self.mobs[j].previous = at;
         }
     }
     /// Every cart but the ridden one (which ticks with its rider).

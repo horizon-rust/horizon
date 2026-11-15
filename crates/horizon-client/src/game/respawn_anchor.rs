@@ -370,7 +370,7 @@ impl Game<'_> {
     // ---- respawning -------------------------------------------------------
 
     /// This level as the stand-up search reads it (`crate::stand_up`).
-    fn stand_up_level(&self) -> StandUpLevel<'_, '_> {
+    pub(super) fn stand_up_level(&self) -> StandUpLevel<'_, '_> {
         StandUpLevel {
             world: &self.world,
             registry: self.pack.assets.registry,

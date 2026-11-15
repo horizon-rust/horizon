@@ -585,6 +585,11 @@ pub fn client_tick(m: &mut Mob) {
     ease_peek(m);
     m.body_yaw = 0.0;
 }
+/// `Shulker.setPos` off a vehicle: the block centre, its y rounded to the
+/// nearest whole block.
+pub fn off_vehicle_position(at: Vec3) -> Vec3 {
+    Vec3::new(at.x.floor() + 0.5, (at.y + 0.5).floor(), at.z.floor() + 0.5)
+}
 /// `Shulker.setPos`. A shulker's interpolation handler is `NO_OP`, so a move
 /// packet lands here instead of being stepped. Not a passenger: the position
 /// snaps to the block centre. A block change after the first tick closes the
@@ -596,7 +601,7 @@ pub fn client_set_pos(m: &mut Mob, x: f64, y: f64, z: f64) {
     m.position = if m.extra.passenger {
         Vec3::new(x, y, z)
     } else {
-        Vec3::new(x.floor() + 0.5, (y + 0.5).floor(), z.floor() + 0.5)
+        off_vehicle_position(Vec3::new(x, y, z))
     };
     // `setPos` sees `tickCount == 0` and starts nothing.
     if m.age == 0 {
@@ -950,6 +955,19 @@ mod tests {
         assert_eq!(m.position, Vec3::new(0.5, 3.0, 0.5));
         client_set_pos(&mut m, 2.9, 3.0, -0.2);
         assert_eq!(m.position, Vec3::new(2.5, 3.0, -0.5));
+    }
+
+    /// `LivingEntity.dismountTo` lands through `Shulker.setPos`, so a shulker
+    /// set down on soul sand's 0.875 top (#16907) snaps up into the block
+    /// above, centred on it.
+    #[test]
+    fn a_shulker_off_its_vehicle_snaps_to_its_block() {
+        let mut m = shulker();
+        m.extra.mount = Some(7);
+        m.extra.passenger = true;
+        crate::mobs::riders::stop_riding(&mut m, Some(Vec3::new(63.5, 146.875, -60.5)));
+        assert_eq!(m.position, Vec3::new(63.5, 147.0, -60.5));
+        assert_eq!(m.previous, m.position);
     }
 
     /// `Mth.clamp` saturates when the target is below the floor: a negative
