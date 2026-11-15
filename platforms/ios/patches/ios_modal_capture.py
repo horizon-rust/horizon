@@ -90,6 +90,9 @@ change(capture,
        "if self.internal_grab() {",
        'if self.internal_grab() || cfg!(target_os = "ios") {')
 change(capture,
+       "        let active = self.focused || self.agent_pointer;",
+       '        let active = self.focused || self.agent_pointer || cfg!(target_os = "ios");')
+change(capture,
        'if capture\n            && ((!self.focused && !self.unclaimed_window && !self.scripted_run())',
        'if capture\n            && ((!self.focused && !self.unclaimed_window && !self.scripted_run() && !cfg!(target_os = "ios"))')
 
