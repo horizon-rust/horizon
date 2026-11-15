@@ -25,7 +25,7 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::{Aabb, Axis, Direction, Vec3},
-    random::{LegacyRandom, RandomSource},
+    random::{EntityRandom, LegacyRandom, RandomSource},
 };
 use horizon_world::nbt::Tag;
 
@@ -74,7 +74,7 @@ pub(super) struct ThrownPotion {
     last_deflected_by: Option<u32>,
     /// `Entity.random`: `ProjectileDeflection.REVERSE` draws from the
     /// projectile's own source, not the level's.
-    random: LegacyRandom,
+    random: EntityRandom,
 }
 /// The player (not one of `skip`, the thrower and who rides with them before
 /// it has left them) whose box, grown by `margin` (`ProjectileUtil.computeMargin`),
@@ -114,6 +114,7 @@ const REAPPLICATION_DELAY: i32 = 20;
 mod cloud_nbt;
 mod cloud_particle;
 pub(in crate::game) use cloud_nbt::{potion_cloud_from_nbt, potion_cloud_to_nbt};
+pub(in crate::game) use cloud_particle::particle_options;
 /// An entity a cloud has affected (`AreaEffectCloud.victims`).
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Victim {
@@ -480,7 +481,7 @@ impl PotionState {
             guest: None,
             left_owner: false,
             last_deflected_by: None,
-            random: LegacyRandom::new(i64::from(id)),
+            random: EntityRandom::own(LegacyRandom::new(i64::from(id))),
         });
     }
     /// ThrowableItemProjectile.DATA_ITEM_STACK: the potion it shows.

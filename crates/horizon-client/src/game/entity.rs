@@ -241,9 +241,9 @@ pub(super) trait Entity: EntityRules {
         PushReaction::PushPull
     }
     /// Width and height of the box a portal sweep follows, or None for a kind
-    /// the game does not carry through portals (so far armor stands and
-    /// falling blocks; fishing hooks are off the walk, and
-    /// `FishingHook.canUsePortal` is false in vanilla).
+    /// the game does not carry through portals (so far falling blocks; fishing
+    /// hooks are off the walk, and `FishingHook.canUsePortal` is false in
+    /// vanilla).
     fn portal_size(&self) -> Option<(f32, f32)> {
         None
     }
@@ -554,7 +554,9 @@ mod render_bounds_tests {
             invisible: false,
             check_interval: 0,
             custom_name: None,
-            random: horizon_core::random::LegacyRandom::new(0),
+            random: horizon_core::random::EntityRandom::own(
+                horizon_core::random::LegacyRandom::new(0),
+            ),
         };
         let bounds = frame.render_bounds(1.0);
         assert!(bounds.min_position().x <= -0.71875);
@@ -1581,6 +1583,18 @@ impl Entity for ArmorStand {
             PushReaction::PushPull
         }
     }
+    /// `ArmorStand.getDefaultDimensions`: the box a portal sweep follows, and
+    /// the size its exit is placed by. `ArmorStand.readAdditionalSaveData`
+    /// makes a stand without `hasPhysics` (a marker or a `NoGravity` one)
+    /// `noPhysics`, so `Entity.isAffectedByBlocks` never runs its sweep and it
+    /// enters no portal; a marker's box is `MARKER_DIMENSIONS`, 0 by 0, too.
+    fn portal_size(&self) -> Option<(f32, f32)> {
+        if self.marker || self.no_gravity {
+            return None;
+        }
+        let (width, height) = armor_stand_size(self);
+        Some((width as f32, height as f32))
+    }
 }
 
 impl Entity for PrimedTnt {
@@ -2290,6 +2304,7 @@ mod set_rotation_tests {
             air: 300,
             rotation: [0.0, 0.0],
             following: None,
+            fire_ticks: 0,
         };
         orb.set_rotation([90.0, 10.0]);
         assert_eq!(orb.rotation(), [90.0, 10.0]);
