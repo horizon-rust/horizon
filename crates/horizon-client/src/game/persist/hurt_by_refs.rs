@@ -1,6 +1,7 @@
 //! `LivingEntity.lastHurtByMob` is an `EntityReference`: a UUID that stands for
 //! the entity once it is in the level. What a mob saves of it, how a value read
-//! back resolves, and the same for the player in `lastHurtByPlayer`.
+//! back resolves, and the same for the player in `lastHurtByPlayer`, which
+//! `baseTick` forgets once its memory time has run out.
 use super::Game;
 use horizon_client::mobs::{Mob, Who};
 use horizon_world::nbt::{JavaString, Tag};
@@ -54,7 +55,7 @@ impl Game<'_> {
     /// any other. One naming nothing here stays a bare UUID, still saved. A
     /// reference to the mob itself resolves like any other (`getEntity` looks
     /// up the UUID and does not exclude the holder).
-    pub(in crate::game) fn resolve_last_hurt_by_refs(&mut self) {
+    fn resolve_last_hurt_by_refs(&mut self) {
         let resolved: Vec<(usize, Who)> = self
             .mobs
             .iter()
@@ -65,6 +66,31 @@ impl Game<'_> {
             let ai = &mut self.mobs[i].ai;
             ai.last_hurt_by = Some(who);
             ai.last_hurt_by_ref = None;
+        }
+    }
+    /// The hurt-by records made right before the mobs' own `baseTick`s: the
+    /// references read back from a save name their attacker once that entity is
+    /// here, and a player memory that has run out forgets the player.
+    /// `LivingEntity.baseTick` drops `lastHurtByPlayer` on the first tick whose
+    /// `lastHurtByPlayerMemoryTime` is already zero, after that tick's own fire
+    /// damage; the deaths queued from the previous tick (`mob_died`, before
+    /// this) still see the reference, as vanilla's own blow does. `getKillCredit`
+    /// then finds no player: a mob that dies long after the hit is nobody's
+    /// kill. (The loot and experience read the memory time itself, which has
+    /// run out either way.)
+    pub(in crate::game) fn settle_hurt_by_records(&mut self) {
+        self.resolve_last_hurt_by_refs();
+        if self.last_hurt_by_player.is_empty() {
+            return;
+        }
+        let expired: Vec<u32> = self
+            .mobs
+            .iter()
+            .filter(|m| m.ai.last_hurt_by_player == 0)
+            .map(|m| m.id)
+            .collect();
+        for id in expired {
+            self.last_hurt_by_player.remove(&id);
         }
     }
     /// The player in the world with `uuid` (`EntityReference.getPlayer`), as

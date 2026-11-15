@@ -18,6 +18,10 @@ mod revenge_home_tests;
 #[cfg(test)]
 #[path = "zombie_ignite_tests.rs"]
 mod zombie_ignite_tests;
+// `lastHurtByPlayer`'s memory time and the causing entity of a kill.
+#[cfg(test)]
+#[path = "last_hurt_by_player_tests.rs"]
+mod last_hurt_by_player_tests;
 use horizon_client::{
     health::HealthEvent,
     mobs::{Damage, Mob, Species, Who},
@@ -837,6 +841,27 @@ fn fall_location_of(name: &str, trapdoor: bool) -> &'static str {
         "minecraft:scaffolding" => "scaffolding",
         _ => "other_climbable",
     }
+}
+
+/// `DamageSource.getEntity()` of a mob's killing blow: the entity that caused
+/// it, which is no player for a fall, lava, fire or the void.
+fn causing_entity(m: &Mob) -> Option<Who> {
+    m.last_damage.and_then(|(d, _)| d.attacker)
+}
+
+/// Whether the killing blow's causing entity was a mob, such as a tame wolf
+/// whose owner gets the kill credit.
+pub(super) fn killed_by_mob(m: &Mob) -> bool {
+    matches!(causing_entity(m), Some(Who::Mob(_)))
+}
+
+/// Whether the killing blow's causing entity was a player: `Raider.die` grants
+/// hero of the village to that entity, not to the player `getKillCredit` names.
+/// `Villager.die` gossips about any causing entity, a mob's included, under its
+/// UUID; no player reputation reads a mob's, so only a player's blow is a murder
+/// here.
+pub(super) fn killed_by_player(m: &Mob) -> bool {
+    matches!(causing_entity(m), Some(Who::Player))
 }
 
 /// Whether the causing entity deals `kind` itself, so it is the source's direct

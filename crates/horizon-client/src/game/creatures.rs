@@ -1143,9 +1143,9 @@ impl Game<'_> {
             self.died.insert(m.id);
             self.mob_died(&m);
         }
-        // A `last_hurt_by_mob` read from a save names its attacker once that
-        // entity is here, before the mobs' `baseTick`s.
-        self.resolve_last_hurt_by_refs();
+        // Before the mobs' `baseTick`s: a saved `last_hurt_by_mob` names its
+        // attacker, and a player memory that ran out forgets the player.
+        self.settle_hurt_by_records();
         // Their victims have been looted and mourned: no charged creeper is
         // waiting any more.
         self.combat.charged_exploders.clear();
@@ -1542,8 +1542,8 @@ impl Game<'_> {
         // `score_destroyed_entities`): LivingEntity.die does not reset them.
         // Raider.die's hero and Villager.tellWitnessesThatIWasMurdered go to
         // the causing entity, not the credited player: a tame wolf's kill is
-        // neither its owner's heroism nor a murder by them.
-        let slain_by_player = by_player && !killed_by_mob(m);
+        // neither its owner's heroism nor a murder by them, nor is a fall's.
+        let slain_by_player = by_player && super::combat::killed_by_player(m);
         self.raider_died(m, slain_by_player, killer.flatten());
         self.villager_murdered(m, slain_by_player, killer.flatten());
         let pos = [m.position.x, m.position.y + 0.5, m.position.z];
@@ -1609,7 +1609,7 @@ impl Game<'_> {
         // Player.killedEntity: the killed statistic goes to the causing
         // entity, so a kill by a mob (a tame wolf credited to its owner)
         // leaves it out; ServerPlayer.awardKillScore counts the rest.
-        if !killed_by_mob(m) {
+        if !super::combat::killed_by_mob(m) {
             self.award_stat("killed", &m.kind.id, 1);
         }
         self.award_custom_stat("mob_kills", 1);
@@ -7789,13 +7789,6 @@ mod tests {
         let (right, _) = thrown_item_axes(CameraType::ThirdPersonBack, 0.0, 0.0);
         assert!(right.abs_diff_eq(glam::Vec3::NEG_X, 1e-5), "{right}");
     }
-}
-
-/// Whether the killing blow's causing entity (`DamageSource.getEntity`) was a
-/// mob, such as a tame wolf whose owner gets the kill credit.
-fn killed_by_mob(m: &Mob) -> bool {
-    m.last_damage
-        .is_some_and(|(d, _)| matches!(d.attacker, Some(Who::Mob(_))))
 }
 
 /// `Animal.finalizeSpawnChildFromBreeding`'s player: the one who fed the
