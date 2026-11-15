@@ -163,8 +163,8 @@ names an exact filesystem path; `shaders/` packs still use filenames.
 ## Shader API 0.2 (experimental)
 
 0.2 is the line for linear light and HDR ([hdr-linear-light.md](../design/hdr-linear-light.md)). A pack opts in with
-`api = "0.2"`. `horizon-shader check` and `pack` take it; **the game draws 0.2 packs only with
-`HORIZON_HDR_FRAME=float` set, and the registry doesn't list them**. With the switch, a 0.2 pack draws the world
+`api = "0.2"`. `horizon-shader check` and `pack` take it and the game draws it; **the registry doesn't list 0.2
+packs yet**. A 0.2 pack draws the world
 into a float frame where the device can (else the 8-bit one): the frame follows the picked pack,
 rebuilding the renderer and remeshing the world when needed. A refused or missing pack, or one whose owner mod is off,
 uses the no-pack frame. What it changes from 0.1:
@@ -252,7 +252,7 @@ it: [the guide](../shaders.md#testing-a-pack-frame-by-frame).
 ## Stability
 
 Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md). API
-0.2 is experimental too, and the game draws it only with `HORIZON_HDR_FRAME=float`.
+0.2 is experimental too; the game draws both lines.
 While the API is experimental, a line is served until the next one is on by default: 0.1 ends when 0.2 is
 ([hdr-linear-light.md](../design/hdr-linear-light.md), step 5).
 
@@ -269,6 +269,30 @@ draws them itself (the material stage covers terrain only). The first-person han
   `MOTION_OBJECT`, `MOTION_NEW` and `MOTION_NO_HISTORY` kinds: how each pixel's surface moved since last frame, for
   temporal passes. `horizon-shader check` takes it; the game refuses a pack with `[motion]` until it draws the guide.
   A pack without the key is built from the same WGSL as before, a test holds; API 0.1 is unchanged.
+- 2026-11-13: API 0.2 (additions, experimental, not run yet): `[[before_world]]` (#16011 item 4): compute passes
+  once a frame before the world draws, with the keys of a compute `[[post]]` entry, at most 4. Their prelude has the
+  frame, the samplers and the shadow maps. Their invocations count toward the 2^26 a frame with the compute
+  `[[post]]` entries'. The game refuses a pack with one until a later Horizon runs it.
+- 2026-11-13: API 0.2 (additions, experimental, not run yet): compute passes (#16011 item 4). `[[post]]`
+  entries with `compute = true` are dispatches in the chain, with `dispatch` (`[x, y, z]` cells or `"pixels"`),
+  `workgroup`, `reads` and `writes`, at most 8; an ordinary pass lists the kept resources it `reads`. A compute file
+  defines `fn compute(input: ComputeInput)`, and Horizon adds the `@compute` entry with the pass's workgroup size,
+  every invocation running and `in_bounds` false past the dispatch. Each pass's prelude declares only the resources it
+  lists, at group 3 from binding 64. `horizon-shader check` builds compute files as it builds post passes, refuses a
+  file that uses a resource its pass doesn't list, and refuses sampling or gathering an `r32float` or `rgba32float`
+  texture (`textureLoad` only). Compute work is capped at 2^25 invocations a dispatch and 2^26 a frame over every
+  compute pass, counted as whole workgroups, a `"pixels"` dispatch as 3840×2160. Compute files don't get `trace` yet, and `[material]` can't read kept resources yet:
+  both come in later steps. The game refuses a pack with a compute pass until a later Horizon runs it. Packs without
+  them are built from the same WGSL as before, a test holds.
+- 2026-11-13: API 0.2 (additions, experimental, not run yet): kept resources (#16011 item 4). `[[resource]]`
+  declares a buffer (`buffer` bytes of an `element`: `u32`, `atomic<u32>`, `f32`, `vec4<u32>` or `vec4<f32>`) or a
+  texture (`format`: `rgba16float`, `r32float`, `rgba32float` or `rgba32uint`, the last read as `texture_2d<u32>` and
+  written by compute passes only, never an `output`; a fixed `size` or a `scale` of the render size) a
+  pack keeps between frames, `keep = "view"` or `"world"`, the latter fixed in size and with `[kept] reach`. A
+  `[[post]] output` may name a kept texture; an option may say what it `resets`. `horizon-shader check` takes them,
+  with their names, counts and memory checked (at most 8 resources, 32 MiB of buffers, 1 MiB of fixed textures, and
+  R-relative textures two each of the 4 post targets); the game refuses a pack that declares one until a later
+  Horizon runs them. Compute passes and the WGSL that reads the resources come next.
 - 2026-11-13: API 0.2 (additions, experimental): under `[ray_tracing]` the scene holds translucent terrain (water,
   stained glass, ice) in a second layer. Where `trace` is, the prelude gets
   `fn trace_layers(origin, direction, max_distance, layers) -> RayHit`, `fn trace_any_layers(...) -> bool` and the
@@ -317,6 +341,9 @@ draws them itself (the material stage covers terrain only). The first-person han
   names: a later release adds a name to a stage's prelude only under a manifest key the pack sets or in a new stage,
   and a test holds each prelude to its list of names. API 0.1 is unchanged: the uploaded `Frame` buffer grows by 16
   bytes after the fields 0.1 declares.
+- 2026-11-13: API 0.2 (change, experimental): the game draws 0.2 packs without `HORIZON_HDR_FRAME=float`; the
+  switch is gone, and setting it does nothing. HDR is offered only where the device draws the float frame and keeps
+  the HUD on a layer of its own. API 0.1 is unchanged: with HDR on, a 0.1 pack keeps the frame it had.
 - 2026-11-09: API 0.2 (change, experimental): the game draws `[frame] blend = "linear"` packs instead of refusing
   them: the frame holds linear light, so see-through draws blend as light does, and a stage sees the same values
   as under `"gamma"`. API 0.1 is unchanged.

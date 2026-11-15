@@ -15,6 +15,8 @@ use super::Frame;
 
 pub(super) const INTERMEDIATE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+#[path = "native_kept.rs"]
+pub(super) mod kept;
 /// The scene the post passes of a pack with `[ray_tracing]` trace.
 #[path = "native_trace.rs"]
 pub(super) mod trace;
@@ -326,6 +328,8 @@ pub struct NativePost {
     /// size.
     scales: Vec<f32>,
     named: Option<([u32; 2], Vec<wgpu::TextureView>)>,
+    /// The pack's `[[resource]]`s, sized to the world (none without).
+    kept: Option<kept::KeptStore>,
     /// The screen's colour format, the world target's too.
     format: wgpu::TextureFormat,
     /// Under 0.2: the decode, the picture and the tonemap.
@@ -382,6 +386,8 @@ pub struct NativeFrame {
     /// `frame.ray_distance` while the pack traces this frame's scene (`NativePack::write`),
     /// set before `write`: `frame.has_ray_tracing` is 1 then.
     pub(super) ray_distance: Option<f32>,
+    /// A pack with kept resources: their epochs (`NativePack::carry` moves them on).
+    pub(super) epochs: Option<kept::Epochs>,
     start: std::time::Instant,
     frames: u32,
     /// `frame.wetness`, and when it was last written.
@@ -611,6 +617,7 @@ impl NativeFrame {
             eye: [f32::NAN; 4],
             history_reset: true,
             ray_distance: None,
+            epochs: None,
             start: std::time::Instant::now(),
             frames: 0,
             wetness: (0.0, None),
@@ -885,6 +892,7 @@ impl NativeFrame {
             * Mat4::from_cols_array_2d(&inputs.view))
         .to_cols_array_2d();
         inputs.previous_view_projection = view_proj;
+        let (last, mut paused) = (self.last, false);
         // `write` skips title frames, so a gap means a pause or another world: the frame
         // before says nothing about this one, and the eased values start over.
         // A scripted clock's frames follow each other however long one takes to draw.
@@ -897,11 +905,17 @@ impl NativeFrame {
                 inputs.delta_time = (now - time).as_secs_f32();
             }
             _ => {
+                paused = last.is_some();
                 self.eye = [f32::NAN; 4];
                 self.history_reset = true;
             }
         }
         self.last = Some((view_proj, frame.camera, now));
+        if let Some(epochs) = &mut self.epochs {
+            let moved = last.map_or(0.0, |l| frame.camera.distance(l.1));
+            [inputs.view_epoch, inputs.world_epoch, inputs.reset_reasons] =
+                epochs.advance(size, inputs.hdr == 1, paused, moved);
+        }
         // The eye's light and medium eased by half-lives in seconds, from where they are at
         // first.
         let targets = [
@@ -930,6 +944,9 @@ impl NativeFrame {
     /// Forgets the frames before, as a freshly loaded pack: the post stage's next `history` is
     /// black, eased values start at their targets, wetness dry, the frame count at 0.
     pub(super) fn reset_history(&mut self) {
+        if let Some(epochs) = &mut self.epochs {
+            epochs.note(horizon_shader_api::kept::REASON_RESET);
+        }
         self.last = None;
         self.frames = 0;
         self.wetness = (0.0, None);
@@ -1116,6 +1133,13 @@ impl NativePost {
             .extend((0..targets.len() as u32).map(|j| {
                 texture_entry(horizon_shader_api::stages::POST_TARGET_BINDING + j, float)
             }));
+        let resources = &manifest.kept.resources;
+        if let Some(why) = (!resources.is_empty())
+            .then(|| kept::unmet(device, manifest, &stages, &entries))
+            .flatten()
+        {
+            return Err(why);
+        }
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Native shader pack post"),
             entries: &entries,
@@ -1210,6 +1234,8 @@ impl NativePost {
             scales: targets.iter().map(|t| t.1).collect(),
             named: None,
             plan,
+            kept: (!resources.is_empty())
+                .then(|| kept::KeptStore::declared(&manifest.kept, [1, 1])),
             format,
             display,
         })
@@ -1246,6 +1272,9 @@ impl NativePost {
         history_reset: bool,
         scene: Option<&trace::Traced<'_>>,
     ) {
+        if let Some(kept) = &mut self.kept {
+            kept.fit(device, size);
+        }
         if let Some(d) = &mut self.display {
             if d.scene.as_ref().is_none_or(|s| s.0 != size) {
                 d.scene = Some((
@@ -1695,7 +1724,11 @@ pub fn frame_inputs(
         has_ray_tracing: 0,
         ray_distance: 0.0,
         luminance: Primaries::Bt709.luminance(),
-        padding: 0,
+        // Kept resources' epochs: no pack with `[[resource]]` runs yet.
+        view_epoch: 0,
+        world_epoch: 0,
+        reset_reasons: 0,
+        padding: [0; 2],
     }
 }
 

@@ -3,8 +3,8 @@
 Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test it reference::`
 rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).
 
-**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, the game draws them only
-with `HORIZON_HDR_FRAME=float` set, the registry doesn't list them, and anything here may change in any release.
+**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs and the game draws them,
+the registry doesn't list them yet, and anything here may change in any release.
 The design: [hdr-linear-light.md](../design/hdr-linear-light.md).
 
 ## Colour
@@ -375,6 +375,93 @@ Bindings 48 to 59 of group 3 hold the scene while the game traces, and in a post
 12 and 13 the LabPBR maps (the material stage has them there already). They are Horizon's, as their
 `horizon_` names say, and change with the renderer.
 
+## Kept resources and compute passes
+
+**Checked, not run yet:** `horizon-shader check` takes these keys, and the game refuses a pack that declares a
+`[[resource]]`, a `[[before_world]]` entry or a compute `[[post]]` entry: it needs a later Horizon.
+
+- `[[resource]]`: `name`; `buffer` (bytes) with `element` (`u32`, `atomic<u32>`, `f32`, `vec4<u32>`, `vec4<f32>`), or `format`
+  (`rgba16float`, `r32float`, `rgba32float`, `rgba32uint`) with `size = [w, h]` texels or `scale` (1, 0.5 or 0.25 of the render size); `keep`, `"view"`
+  (screen history) or `"world"` (a cache, fixed `size` only, which needs `[kept] reach`: a teleport further, in
+  blocks, clears it). A texture has this frame's version, `<name>`, and last frame's, `<name>_previous`; a buffer
+  has one. Both names are free WGSL names, as an `output`'s, and no word WGSL reserves.
+- `[[before_world]]`: a compute pass once a frame, before the world draws: `file`, `dispatch` (`[x, y, z]`
+  cells, or `"pixels"`, one per texel of the render size), `workgroup = [x, y, z]`, `reads` and `writes`.
+- `[[post]]` with `compute = true` and the same keys: a dispatch in the chain where it stands. It has no `output`
+  or `scale`, isn't the last entry and doesn't advance `previous`. An ordinary pass lists what it `reads`, and its
+  `output` may name a kept texture, which it draws at that texture's size.
+- An option's `resets = "view"` clears the view's kept resources when the player changes it, `"world"` all
+  of them.
+
+A pass lists every resource it uses: in `reads` this frame's `x` or last frame's `x_previous`, in `writes` (a
+compute pass's) `x`, once. An `output` is its pass's write. Its prelude declares only what it lists, so a name
+it doesn't list is the file's own, and using such a resource is refused as unlisted. The check also refuses a
+compute pass that writes a texture and reads it back (read `_previous`, or a buffer), and a pass that reads its
+own `output`.
+
+A compute file defines `fn compute(input: ComputeInput)`, and Horizon adds the `@compute` entry with the pass's
+workgroup size. Every invocation of every workgroup runs it, so `var<workgroup>` and `workgroupBarrier()`
+reductions stay uniform: one beyond the dispatch has `in_bounds` false and touches no resource. A compute
+`[[post]]` pass's prelude is the post stage's with `ComputeInput` for `PostInput`; a `[[before_world]]` pass has
+the frame, the samplers and the shadow maps (bindings below) with `shadow_position`.
+
+**Not yet, in later steps:** a compute or `[[before_world]]` file doesn't get `trace` or the other ray functions
+under `[ray_tracing]`, and `[material]` can't read kept resources.
+
+### `ComputeInput`
+
+One invocation of a dispatch, for `fn compute(input: ComputeInput)`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `cell` | `vec3<u32>` | The invocation's cell: where it is in the whole dispatch. |
+| `local` | `u32` | Its index in its workgroup, from 0 to the workgroup's invocations less 1. |
+| `size` | `vec3<u32>` | The dispatch's cells: its `dispatch`, or the render size and 1 for `"pixels"`. |
+| `in_bounds` | `bool` | Whether `cell` is within `size`. Every invocation of every workgroup runs: one beyond `size` touches no resource, but still reaches every `workgroupBarrier()`. |
+
+A pass's prelude declares the resources it lists, the pack's resource i at binding 64 + 2i of group
+3 and its `_previous` at 65 + 2i: a buffer `var<storage, read_write> x: array<element>` where written,
+`var<storage, read>` where only read (an `atomic<u32>` buffer then reads as `array<u32>`); a texture
+`texture_storage_2d<format, write>` where written, else `texture_2d<f32>` (`texture_2d<u32>` for
+`rgba32uint`, which only a compute pass writes). An `r32float`, `rgba32float` or `rgba32uint` texture is read
+with `textureLoad` only: the check refuses sampling or gathering one, also through a function's argument. Data is data: Horizon doesn't decode, clamp or force the alpha of a kept resource.
+
+`[[before_world]]` resources (bind group 3):
+
+| Binding | Declaration | Meaning |
+| --- | --- | --- |
+| 0 | `var<uniform> frame: Frame` | The frame (`Frame`). |
+| 4 | `var linear_sampler: sampler` | Bilinear filtering, clamped to the edges. |
+| 5 | `var nearest_sampler: sampler` | Nearest texel, clamped to the edges. |
+| 6 | `var shadow_map: texture_depth_2d` | This frame's shadow map: the depth of the solid terrain and entities the light sees, 0 at the light, 1 away from it (and where nothing is), stored at `shadow_position`'s mapping. Valid while `frame.has_shadow` is 1 (the pack asks for it with `[shadow]`), else a 1×1 map that lights everything. |
+| 7 | `var shadow_sampler: sampler_comparison` | Depth comparison, bilinear (2×2 percentage-closer filtering): `textureSampleCompareLevel(shadow_map, shadow_sampler, p.xy, p.z)` is 1 where the point is lit, 0 in shadow. |
+| 9 | `var shadow_map_translucent: texture_depth_2d` | `shadow_map` with the translucent terrain (water, stained glass, ice) the light passes through drawn in too, read with `shadow_sampler` the same way: a point lit in `shadow_map` but not here lies under such a surface, which `shadow_color` gives the colour of. |
+| 10 | `var shadow_color: texture_2d<f32>` | The texture colour times the vertex colour (rgb: the tint, the face's directional shade and ambient occlusion) of the nearest translucent surface the light passes through at each texel of `shadow_map_translucent`, white where there is none; alpha is 1 on a fluid (water) and the texture's alpha, at most 0.99, on anything else. Read it with `textureLoad` at `shadow_position`'s xy times `textureDimensions(shadow_color)`. |
+
+A kept resource starts as zeros and is zeros again when cleared: a `keep = "view"` one when
+`frame.view_epoch` changes, every one when `frame.world_epoch` does (never 0, so a cleared value never
+matches). Both change before the frame that sees them draws, and `frame.reset_reasons` has a bit for each
+reason, a `const` of the prelude (`frame.reset_reasons & REASON_TELEPORT`); only a pack with `[[resource]]`
+has these fields and constants. A world cache keyed by `world_epoch` survives a camera cut. Nothing else
+says the world changed, not the camera's distance or `frame_index`.
+
+| Reason | Bit | Clears | When |
+| --- | --- | --- | --- |
+| `REASON_LOAD` | 1 | both | The pack was loaded or reloaded: its first frame. |
+| `REASON_RESET` | 2 | both | Horizon restarted the pack's history (a screenshot sequence's first shot). |
+| `REASON_WORLD` | 4 | both | Another world or dimension, or its meshes were rebuilt (a render setting). |
+| `REASON_TELEPORT` | 8 | both | The camera moved further than `[kept] reach` since last frame. |
+| `REASON_PAUSE` | 16 | view | Over half a second since last frame, as `delta_time` 0. |
+| `REASON_SIZE` | 32 | view | The render size or the window's changed. |
+| `REASON_DISPLAY` | 64 | view | The output turned HDR or SDR. |
+| `REASON_OPTION` | 128 | its `resets` | The player changed an option marked `resets`. |
+
+Limits: 8 resources, 4 `[[before_world]]` entries, 8 compute
+`[[post]]` entries; 32 MiB of buffers and 1024 KiB of fixed-size textures, both versions counted; each R-relative
+kept texture takes two of the post targets `output`s share; a workgroup of up to [256, 256, 64] and
+256 invocations; 33554432 invocations a dispatch and 67108864 a frame over every
+compute pass, `[[before_world]]` and `[[post]]` together, counted as whole workgroups, a `"pixels"` dispatch as 3840×2160 (R isn't known at load).
+
 ### Motion guide
 
 How each pixel's surface moved since last frame, for temporal passes (TAA, denoisers, light caches) that reproject
@@ -573,6 +660,9 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `has_ray_tracing` | `u32` | 776 | 1 while `trace` and `trace_any` read this frame's scene, else 0 (a GPU without ray queries, ray tracing off, no world): every ray then misses. Only a pack with `[ray_tracing]` has this field. |
 | `ray_distance` | `f32` | 780 | How far from the camera along x and along z, in blocks, the scene is sure to reach; 0 while `has_ray_tracing` is 0. Only a pack with `[ray_tracing]` has this field. |
 | `luminance` | `vec3<f32>` | 784 | The weights that give a colour's luminance in those primaries, `dot(c, frame.luminance)`: (0.2126, 0.7152, 0.0722) for BT.709, (0.2627, 0.6780, 0.0593) for BT.2020. |
+| `view_epoch` | `u32` | 796 | Changes when the pack's `keep = "view"` resources are cleared, to zeros (`reset_reasons` says why), and is never 0. Only a pack with `[[resource]]` has this field. |
+| `world_epoch` | `u32` | 800 | The same for its `keep = "world"` resources. `view_epoch` changes with it: what clears the world's clears the view's too. Only a pack with `[[resource]]` has this field. |
+| `reset_reasons` | `u32` | 804 | Why an epoch changed this frame: the prelude's `REASON_*` bits ("Kept resources"); 0 when neither did. Only a pack with `[[resource]]` has this field. |
 
 ## Anti-aliasing
 
