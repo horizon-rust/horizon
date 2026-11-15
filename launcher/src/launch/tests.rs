@@ -112,6 +112,11 @@ fn windows_words_are_quoted_as_the_c_runtime_reads_them() {
     assert_eq!(q(""), "\"\"");
     assert_eq!(q(r#"say "hi""#), r#""say \"hi\"""#);
     assert_eq!(q(r"C:\My Folder\"), r#""C:\My Folder\\""#);
+    // cmd.exe's own characters: quoted even without a space.
+    assert_eq!(q(r"C:\Users\Rock&Roll"), r#""C:\Users\Rock&Roll""#);
+    for w in ["a|b", "a<b", "a>b", "a^b", "(x)"] {
+        assert_eq!(q(w), format!("\"{w}\""));
+    }
 }
 
 #[test]
