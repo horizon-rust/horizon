@@ -196,3 +196,8 @@ pub extern "C" fn nova_ios_set_overlay_active(active: bool) {
 pub extern "C" fn nova_ios_is_playing() -> bool {
     horizon_client_input::ios_input::playing()
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nova_ios_pointer_state() -> u64 {
+    horizon_client_input::ios_input::pointer_state()
+}

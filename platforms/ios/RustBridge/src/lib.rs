@@ -88,3 +88,6 @@ pub extern "C" fn nova_ios_set_overlay_active(_: bool) {}
 
 #[no_mangle]
 pub extern "C" fn nova_ios_is_playing() -> bool { false }
+
+#[no_mangle]
+pub extern "C" fn nova_ios_pointer_state() -> u64 { 0 }
