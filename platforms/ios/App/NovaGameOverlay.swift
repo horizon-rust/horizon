@@ -199,40 +199,68 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         if let panel = panelController?.view { overlay.bringSubviewToFront(panel) }
     }
 
+
     private func redrawCursor() {
         let scale = UserDefaults.standard.double(forKey: "nova.mouse.scale")
         let factor = CGFloat(scale == 0 ? 1.0 : scale)
-        let location = cursorPoint ?? CGPoint(x: overlay.bounds.midX, y: overlay.bounds.midY)
-        // Image is the provided pointer PNG, with its click hotspot at top left.
+        let location = cursorPoint ?? CGPoint(x: overlay.bounds.midX,
+                                              y: overlay.bounds.midY)
         cursorView.frame = CGRect(x: location.x, y: location.y,
                                   width: 24 * factor, height: 36 * factor)
-        updateCursorVisibility()
+    }
+
+    private func centerCursor() {
+        // Menu opening resets the pointer's visual position and engine position.
+        cursorPoint = CGPoint(x: overlay.bounds.midX, y: overlay.bounds.midY)
+        redrawCursor()
+        sendCurrentCursor()
     }
 
     private func updateCursorVisibility() {
-        // Desktop-style cursor in menus, hidden while the game has its mouse
-        // captured for first-person looking; Horizon draws the crosshair.
-        cursorView.isHidden = isInMenu || nova_ios_is_playing()
+        let state = nova_ios_pointer_state()
+        let inWorld = (state & 1) != 0
+        let epoch = state >> 1
+        if lastCursorEpoch != epoch {
+            lastCursorEpoch = epoch
+            if !inWorld && !isInMenu {
+                centerCursor()
+            }
+        }
+        // Horizon's title is not world gameplay. Keep the cursor available
+        // in the title, inventory, options, pause and other GUI screens.
+        cursorView.isHidden = isInMenu || inWorld
     }
 
     private func moveCursor(by delta: CGPoint) {
         guard !isInMenu, let window = gameWindow else { return }
         let saved = UserDefaults.standard.double(forKey: "nova.mouse.sensitivity")
         let sensitivity = CGFloat(saved == 0 ? 1 : saved)
-        let xShift = delta.x * sensitivity, yShift = delta.y * sensitivity
+        let dx = delta.x * sensitivity
+        let dy = delta.y * sensitivity
         let prev = cursorPoint ?? CGPoint(x: overlay.bounds.midX, y: overlay.bounds.midY)
         cursorPoint = CGPoint(
-            x: min(overlay.bounds.maxX - 8, max(0, prev.x + xShift)),
-            y: min(overlay.bounds.maxY - 8, max(0, prev.y + yShift))
+            x: min(overlay.bounds.maxX - 8, max(0, prev.x + dx)),
+            y: min(overlay.bounds.maxY - 8, max(0, prev.y + dy))
         )
         redrawCursor()
-        let pixelScale = Double(window.screen.scale)
-        let cursor = cursorPoint ?? prev
-        nova_ios_input_cursor(Double(cursor.x) * pixelScale,
-                              Double(cursor.y) * pixelScale)
-        // Gameplay uses relative motion, whereas GUIs use absolute cursor.
-        nova_ios_input_motion(Double(xShift) * pixelScale,
-                              Double(yShift) * pixelScale)
+        let scale = Double(window.screen.scale)
+        let point = cursorPoint ?? prev
+        nova_ios_input_cursor(Double(point.x) * scale, Double(point.y) * scale)
+        nova_ios_input_motion(Double(dx) * scale, Double(dy) * scale)
+    }
+
+    private func tapGameSurface(at location: CGPoint) {
+        guard !isInMenu, (nova_ios_pointer_state() & 1) == 0 else { return }
+        // Preserve direct menu taps. Never trigger attack in first-person
+        // merely because a finger landed on the screen.
+        cursorPoint = CGPoint(
+            x: max(0, min(overlay.bounds.maxX, location.x)),
+            y: max(0, min(overlay.bounds.maxY, location.y))
+        )
+        redrawCursor()
+        sendCurrentCursor()
+        nova_ios_input_mouse(0, true)
+        nova_ios_input_mouse(0, false)
     }
 
     private func refreshTouchGestures() {
