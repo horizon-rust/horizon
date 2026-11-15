@@ -684,7 +684,7 @@ pub fn with_icon(attributes: winit::window::WindowAttributes) -> winit::window::
     let icon =
         icon_png().map(|png| decode_icon(png).expect("the window icon must decode on Windows"));
 
-    // Vanilla 26.3 Window.<init>: glfwSetWindowSizeLimits(this.window, 320, 240, -1, -1).
+    // Vanilla 26.3 Window.createWindow: SDL_SetWindowMinimumSize(windowHandle, 320, 240).
     let attributes =
         attributes.with_min_inner_size(winit::dpi::LogicalSize::new(320.0f64, 240.0f64));
     let attributes = attributes.with_window_icon(icon.clone());
