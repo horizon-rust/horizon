@@ -3253,10 +3253,10 @@ impl Launcher {
                     .text_color(t.ink)
                     .child(tr("Create a server")),
             )
-            .child(text(theme::CAPTION).text_color(t.muted).child(
+            .child(text(theme::CAPTION).text_color(t.muted).child(tr(
                 "Everything has a default: tick the EULA and Create makes a friends-only survival \
                  world. You can change all of it later.",
-            ))
+            )))
             .child(row(
                 "Name",
                 self.field(Field::Name, "My server", 400., cx)
@@ -3347,8 +3347,8 @@ impl Launcher {
                     .child(tr("Tick the EULA box to create the server.")),
             );
         }
-        let cancel = button("create-cancel", "Cancel", Kind::Secondary, &t);
-        let create = button("create-go", "Create", Kind::Primary, &t);
+        let cancel = button("create-cancel", tr("Cancel"), Kind::Secondary, &t);
+        let create = button("create-go", tr("Create"), Kind::Primary, &t);
         foot = if creating {
             foot.child(disabled(cancel)).child(disabled(create))
         } else {
