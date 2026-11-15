@@ -47,7 +47,9 @@ KEY_MAP
                             game.host.mapped_key_event(key, down, false);
                         }
                         App::Loading(loading) => {
-                            loading.menu_key_focus(key, down);
+                            if down {
+                                loading.menu_key_focus(event_loop, key);
+                            }
                         }
                     }
                 }
