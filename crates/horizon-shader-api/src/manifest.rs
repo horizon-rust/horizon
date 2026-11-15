@@ -160,7 +160,25 @@ pub struct Manifest {
     pub shadow: Option<Shadow>,
     /// Relief as geometry near the camera, if the pack asks for it; needs `[material]`.
     pub displacement: Option<Displacement>,
+    /// 0.2: the scene the post stage's `trace` reads, if the pack asks for it; needs `[[post]]`.
+    pub ray_tracing: Option<RayTracing>,
+    /// 0.2: the motion guide the post stage's `motion_at` reads, if the pack asks for it;
+    /// needs `[[post]]`.
+    pub motion: Option<Motion>,
 }
+
+/// `[ray_tracing]` (0.2): the pack's post passes get `trace` and `trace_any`, which read the
+/// terrain around the camera where the device traces rays (`frame.has_ray_tracing`) and miss
+/// where it doesn't. No keys yet.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RayTracing {}
+
+/// `[motion]` (0.2): the pack's post passes get `scene_motion`, `motion_at`, `MotionData` and
+/// the `MOTION_` kinds, how each pixel's surface moved since last frame. No keys yet.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Motion {}
 
 /// `[displacement]`: within `distance` of the camera, the faces of solid terrain whose
 /// resource pack textures have LabPBR heights are drawn as a grid of `cells` by `cells`, each
@@ -540,6 +558,8 @@ struct Raw {
     reflection: Option<Reflection>,
     shadow: Option<Shadow>,
     displacement: Option<RawDisplacement>,
+    ray_tracing: Option<RayTracing>,
+    motion: Option<Motion>,
 }
 
 #[derive(Deserialize)]
@@ -573,8 +593,11 @@ struct RawBudget {
 
 /// `[[post]] scale` and `output`: scales from `POST_SCALES`, below 1 only with an output,
 /// the last pass drawing the picture itself, outputs named as WGSL names no other resource
-/// takes, each at one scale, `MAX_POST_TARGETS` at most.
-fn check_post_targets(post: &[Stage]) -> Result<(), String> {
+/// takes (under `[ray_tracing]`, `ray_tracing`, nor its functions'; under `[motion]`, nor the
+/// guide's `scene_motion` and `motion_at`), each at one scale, `MAX_POST_TARGETS` at most.
+fn check_post_targets(post: &[Stage], ray_tracing: bool, motion: bool) -> Result<(), String> {
+    let traced = ["trace", "trace_any"];
+    let guide = ["scene_motion", "motion_at"];
     let reserved = [
         "frame",
         "scene_color",
@@ -616,7 +639,10 @@ fn check_post_targets(post: &[Stage]) -> Result<(), String> {
                 .chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
             && !name.starts_with("horizon_");
-        if !valid || reserved.contains(&name.as_str()) {
+        let taken = reserved.contains(&name.as_str())
+            || (ray_tracing && traced.contains(&name.as_str()))
+            || (motion && guide.contains(&name.as_str()));
+        if !valid || taken {
             return Err(format!(
                 "{}: output {name:?} is not a free WGSL name ([a-z][a-z0-9_]*, at most 32)",
                 p.file
@@ -663,6 +689,8 @@ impl Manifest {
                 (raw.tonemap.is_some(), "[tonemap]"),
                 (raw.entity.is_some(), "[entity]"),
                 (raw.frame.is_some(), "[frame]"),
+                (raw.ray_tracing.is_some(), "[ray_tracing]"),
+                (raw.motion.is_some(), "[motion]"),
                 (
                     raw.material.as_ref().is_some_and(|m| m.coverage.is_some()),
                     "[material] coverage",
@@ -765,7 +793,18 @@ impl Manifest {
         {
             return Err(err("`scale` and `output` are keys of [[post]] only".into()));
         }
-        check_post_targets(&raw.post).map_err(err)?;
+        check_post_targets(&raw.post, raw.ray_tracing.is_some(), raw.motion.is_some())
+            .map_err(err)?;
+        if raw.ray_tracing.is_some() && raw.post.is_empty() {
+            return Err(err(
+                "[ray_tracing] needs a [[post]] pass: `trace` is the post stage's".into(),
+            ));
+        }
+        if raw.motion.is_some() && raw.post.is_empty() {
+            return Err(err(
+                "[motion] needs a [[post]] pass: the motion guide is the post stage's".into(),
+            ));
+        }
         if raw.post.len() > MAX_POST_PASSES {
             return Err(err(format!(
                 "{} post passes; a pack may chain {MAX_POST_PASSES}",
@@ -818,10 +857,12 @@ impl Manifest {
             }
             options.push(option);
         }
-        if !raw.tags.is_empty() && raw.material.is_none() {
-            return Err(err(
-                "tags are read by the material stage: give it a [material]".into(),
-            ));
+        // `RayHit` has a surface's tags and material id, as `MaterialInput` does.
+        let traced = raw.ray_tracing.is_some();
+        if !raw.tags.is_empty() && raw.material.is_none() && !traced {
+            return Err(err("tags are read by the material stage and by `trace`: \
+                 give it a [material] or a [ray_tracing]"
+                .into()));
         }
         if raw.tags.len() > MAX_TAGS {
             return Err(err(format!(
@@ -845,10 +886,11 @@ impl Manifest {
             }
         }
         let solid_ids = raw.shadow.iter().any(|s| !s.solid_materials.is_empty());
-        if !raw.materials.is_empty() && raw.material.is_none() && !solid_ids {
+        if !raw.materials.is_empty() && raw.material.is_none() && !solid_ids && !traced {
             return Err(err(
-                "materials are read by the material stage and shadow.solid_materials: \
-                 give it a [material] or use them there"
+                "materials are read by the material stage, `trace` and \
+                 shadow.solid_materials: give it a [material] or a [ray_tracing], or use \
+                 them there"
                     .into(),
             ));
         }
@@ -1128,6 +1170,8 @@ impl Manifest {
             reflection: raw.reflection,
             shadow: raw.shadow,
             displacement,
+            ray_tracing: raw.ray_tracing,
+            motion: raw.motion,
         })
     }
 
