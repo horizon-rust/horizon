@@ -174,6 +174,26 @@ impl Game<'_> {
             Ok(())
         })
     }
+
+    /// Complete the oracle's synchronous portal operation without ticking a
+    /// player or world. Unlike a paused game's pass, this fixture lands portals.
+    fn harness_arrive_trips(&mut self) -> Result<()> {
+        let back = self.dim;
+        let result = (|| -> Result<()> {
+            for dim in self.levels_to_tick() {
+                self.enter_level(None, dim)?;
+                let mut host = self.lan.take().ok_or("command harness: no hub")?;
+                self.arrive_server_trips(&mut host, false);
+                self.lan = Some(host);
+            }
+            Ok(())
+        })();
+        // Attempt restoration even after a partial pass fails, but keep that
+        // original error if restoration fails too.
+        let restored = self.enter_level(None, back);
+        result.and(restored)
+    }
+
     /// Load terrain until the player stands in lit chunks.
     fn harness_settle(&mut self, deadline: Instant, required: Option<&Value>) -> Result<()> {
         loop {
@@ -606,9 +626,9 @@ impl Game<'_> {
                     }
                 }
                 "settle" => {
-                    // Finish portal arrivals using connection-only passes too.
                     while !self.server_trips.is_empty() {
                         self.tick_server(true)?;
+                        self.harness_arrive_trips()?;
                         if Instant::now() > deadline {
                             return Err("command harness: portal did not arrive".into());
                         }
@@ -1297,5 +1317,81 @@ impl Game<'_> {
         }
         std::fs::write(output, out)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::game::{Dim, lan::LanSettings, native_machines::tests::server_game};
+    use horizon_client::lan::{NetConfig, hub::HubConfig};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn arrival_settle_restores_the_level_on_success_and_error() {
+        let mut game = server_game();
+        let scratch = std::env::temp_dir().join(format!(
+            "horizon-arrival-settle-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        game.world_root = scratch.clone();
+        game.streaming.forced.insert((0, 0));
+        game.enter_level(None, Dim::Nether).unwrap();
+        assert_eq!(game.levels_to_tick(), vec![Dim::Overworld]);
+
+        // The first level swap succeeds, then the missing hub fails the pass.
+        let error = game.harness_arrive_trips().unwrap_err();
+        assert_eq!(error.to_string(), "command harness: no hub");
+        assert_eq!(
+            game.dim,
+            Dim::Nether,
+            "restore after the partial pass fails"
+        );
+        assert!(game.lan.is_none());
+
+        game.lan_host(
+            LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                listen: false,
+                announce: false,
+                ..NetConfig::loopback(0, String::new(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: Dim::Nether.id().into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: true,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let game_time = game.world.game_time;
+        game.harness_arrive_trips().unwrap();
+        assert_eq!(game.dim, Dim::Nether, "restore after a successful pass");
+        assert_eq!(
+            game.lan.as_ref().unwrap().hub.config.dimension,
+            Dim::Nether.id()
+        );
+        assert_eq!(
+            game.world.game_time, game_time,
+            "settle does not tick the world"
+        );
+        drop(game);
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 }

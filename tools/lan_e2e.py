@@ -839,9 +839,23 @@ def check_portals(host, guest, out):
 def portals(host, guest, out, x, y, z, hx, hy, hz):
     nether_portal(guest, x, y, z + 3)
     guest.wait(5)
+    # This host has already opened a real LAN listener. Its PauseScreen must
+    # not pause the published server or be replaced while the guest travels.
+    host.raw('key', 'esc', 'tap')
+    host.wait(2)
+    pause_screen = host('state').get('screen')
+    assert pause_screen == 'paused', f'the LAN host did not open PauseScreen: {pause_screen}'
+    host.shot(out, 'portals-host-paused')
     guest('command', command=f'tp @s {x + 0.5} {y} {z + 3.5}')
     # players_nether_portal_default_delay: 80 ticks in survival.
     there = wait_dimension(guest, 'minecraft:the_nether', 600)
+    host_pause_during_travel = host('state').get('screen')
+    assert host_pause_during_travel == 'paused', (
+        f'the published LAN host lost PauseScreen during the guest arrival: {host_pause_during_travel}'
+    )
+    host.shot(out, 'portals-host-paused-during-travel')
+    host.raw('key', 'esc', 'tap')
+    host.wait(2)
     # On a server the guest is held where it entered until the chunks around the destination are
     # lit, then placed in its portal: wait for that before reading where it arrived.
     for _ in range(30):
@@ -892,7 +906,14 @@ def portals(host, guest, out, x, y, z, hx, hy, hz):
     guest.shot(out, 'portals-back')
     assert home.get('dimension') == 'minecraft:overworld', f'the host stayed in {home.get("dimension")}'
     assert back.get('dimension') == 'minecraft:overworld', f'the guest stayed in {back.get("dimension")}'
-    return {'guest_nether': arrived, 'host_end': [ex, ey, ez], 'credits': credits, 'back': pos_of(guest)}
+    return {
+        'guest_nether': arrived,
+        'host_end': [ex, ey, ez],
+        'credits': credits,
+        'back': pos_of(guest),
+        'published_host_pause_screen': pause_screen,
+        'host_pause_during_guest_arrival': host_pause_during_travel,
+    }
 
 
 NETHER, END, OVERWORLD = 'minecraft:the_nether', 'minecraft:the_end', 'minecraft:overworld'

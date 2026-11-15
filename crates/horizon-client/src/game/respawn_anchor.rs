@@ -621,7 +621,7 @@ mod connected_spawnpoint_rotation_tests {
 
     #[test]
     #[ignore = "prepared resources and isolated scratch homes/cwd"]
-    fn command_forced_free_point_survives_real_guest_death_and_respawn_packet() {
+    fn command_forced_free_point_survives_guest_death_and_respawn_during_paused_server_pass() {
         let mut game = crate::game::native_machines::tests::server_game();
         game.set_allow_commands(true);
         let scratch = std::env::temp_dir().join(format!(
@@ -753,7 +753,9 @@ mod connected_spawnpoint_rotation_tests {
             7,
             S::ClientCommand(play::ClientCommand { action: 0 }),
         );
-        game.tick_server_travel(&mut host);
+        game.lan = Some(host);
+        game.tick_server(true).unwrap();
+        let host = game.lan.take().unwrap();
         assert!(
             !game.on_server_trip(7),
             "admitted lit columns permit actual arrival"

@@ -441,12 +441,62 @@ mod client_tests {
         assert_eq!((&*stone.item, stone.count), ("minecraft:stone", 5));
         assert!(own[1..].iter().all(Option::is_none));
 
+        // Vanilla's handleRespawn replaces an open screen with the new
+        // level's LevelLoadingScreen; closing it leaves the player playing.
+        // Horizon draws that screen from Remote::level_load over Playing.
+        game.remote.as_mut().unwrap().level_load.finish();
+        assert!(
+            !game.remote_screen_up(),
+            "the login's loading screen has closed"
+        );
+        game.screen = crate::game::Screen::Paused;
+        // A multiplayer PauseScreen does not pause simulation, but portal
+        // effects must leave it open until the server sends Respawn (26.3 E2E).
+        assert!(!game.pauses_game());
+        for _ in 0..2 {
+            game.client_inside_nether_portal();
+            assert!(game.client_portal_effect());
+            assert!(
+                matches!(game.screen, crate::game::Screen::Paused),
+                "portal ticks preserve a pause screen before Respawn"
+            );
+        }
         // A new client level: the handles of the old one read as None.
         game.handle_packet(C::Respawn(play::Respawn {
             spawn: spawn("minecraft:the_nether"),
             keep: 0,
         }))
         .unwrap();
+        assert!(
+            matches!(game.screen, crate::game::Screen::Playing),
+            "Respawn replaces a pause screen instead of keeping it"
+        );
+        assert!(
+            game.remote.as_ref().unwrap().level_load.is_active(),
+            "the new level's loading screen is up"
+        );
+        assert!(
+            game.remote_screen_up(),
+            "the loading screen takes the frame"
+        );
+        game.handle_packet(C::PlayerPosition(play::PlayerPosition {
+            teleport: 2,
+            position: [8.5, 65.0, 8.5],
+            delta: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            relatives: 0,
+        }))
+        .unwrap();
+        game.remote.as_mut().unwrap().level_load.finish();
+        assert!(
+            !game.remote_screen_up(),
+            "the loading screen closes once the level is ready"
+        );
+        assert!(
+            matches!(game.screen, crate::game::Screen::Playing),
+            "the player is back in the world"
+        );
         assert_eq!(game.native_entity_position(stand), None);
         assert_eq!(game.native_entity_kind(display), None);
     }

@@ -91,12 +91,12 @@ fn a_hold_ignores_the_clients_moves_until_a_tp_to_lit_land_replaces_it() {
     let (mut game, mut host, _rx) = server();
     host.hub.guests[0].position = [FAR, 150.0, FAR];
     game.hold_for_chunks(CONN, Vec3::new(FAR, 150.0, FAR));
-    game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host, false);
     assert!(landing(&host), "held while the far chunks are not lit");
     // A second `tp`, to land that is lit, ends the wait: the moves are heard again.
     host.hub.guests[0].position = [0.5, 100.0, 0.5];
     game.hold_for_chunks(CONN, Vec3::new(0.5, 100.0, 0.5));
-    game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host, false);
     assert!(!game.on_server_trip(CONN));
     assert!(!landing(&host), "no hold left, so no moves ignored");
 }
@@ -107,11 +107,11 @@ fn a_hold_ended_by_a_trip_elsewhere_hears_the_client_again() {
     let (mut game, mut host, _rx) = server();
     host.hub.guests[0].position = [FAR, 150.0, FAR];
     game.hold_for_chunks(CONN, Vec3::new(FAR, 150.0, FAR));
-    game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host, false);
     assert!(landing(&host));
     // What a death, a respawn or a `tp` to another level does to the trip waiting for the player.
     game.server_trips.retain(|t| !t.is(CONN));
-    game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host, false);
     assert!(!landing(&host));
 }
 
@@ -121,10 +121,10 @@ fn a_hold_places_the_player_once_the_chunks_are_lit() {
     let (mut game, mut host, _rx) = server();
     host.hub.guests[0].position = [FAR, 150.0, FAR];
     game.hold_for_chunks(CONN, Vec3::new(FAR, 150.0, FAR));
-    game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host, false);
     assert!(landing(&host));
     light(&mut game, (FAR as i32) >> 4);
-    game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host, false);
     let guest = &host.hub.guests[0];
     assert!(!game.on_server_trip(CONN));
     assert!(!guest.landing);
@@ -140,14 +140,14 @@ fn a_hold_follows_the_destination_a_mod_chose() {
     game.hold_for_chunks(CONN, Vec3::new(FAR, 150.0, FAR));
     // A mod redirected the move to another unlit place: the hub put the player there, and the wait is for it.
     host.hub.guests[0].position = [-FAR, 150.0, 0.5];
-    game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host, false);
     let trips: Vec<_> = game.server_trips.iter().filter(|t| t.is(CONN)).collect();
     assert_eq!(trips.len(), 1);
     assert_eq!(trips[0].target, Vec3::new(-FAR, 150.0, 0.5));
     // A mod canceled it: the player stays on lit land, so there is nothing to wait for.
     host.hub.guests[0].position = [0.5, 100.0, 0.5];
-    game.tick_server_travel(&mut host);
-    game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host, false);
+    game.tick_server_travel(&mut host, false);
     assert!(!game.on_server_trip(CONN));
     assert!(!landing(&host));
 }
@@ -178,7 +178,7 @@ fn a_command_arrival_holds_movement_until_lit_then_ticks_damage_again() {
         cause: Some("command"),
     });
     game.run_level_teleports(&mut host);
-    game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host, false);
     assert!(game.on_server_trip(CONN));
     let id = host.hub.guests[0].teleport_counter;
     host.hub.guests[0].inbox.push_back((
@@ -209,7 +209,7 @@ fn a_command_arrival_holds_movement_until_lit_then_ticks_damage_again() {
     assert!(landing(&host));
 
     light(&mut game, chunk);
-    game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host, false);
     assert!(!game.on_server_trip(CONN));
     assert!(!landing(&host));
     // End the preceding client tick's position-packet budget before the next move.
@@ -261,7 +261,7 @@ fn respawn_arrivals_hold_movement_then_resume_damage_and_pickups() {
             }
         }
         game.guest_respawn(&mut host, CONN);
-        game.tick_server_travel(&mut host);
+        game.tick_server_travel(&mut host, false);
         assert!(game.on_server_trip(CONN));
         assert!(landing(&host), "respawn must hold movement while loading");
         let guest = &mut host.hub.guests[0];
@@ -296,10 +296,10 @@ fn respawn_arrivals_hold_movement_then_resume_damage_and_pickups() {
         );
         // A second pass must preserve the respawn search, even if its eventual stand-up spot
         // differs from the original target; it must not turn into an ordinary teleport hold.
-        game.tick_server_travel(&mut host);
+        game.tick_server_travel(&mut host, false);
         assert!(landing(&host));
         light(&mut game, chunk);
-        game.tick_server_travel(&mut host);
+        game.tick_server_travel(&mut host, false);
         assert!(!game.on_server_trip(CONN));
         assert!(!landing(&host));
         if personal {
@@ -345,7 +345,7 @@ fn a_world_spawn_search_keeps_movement_held_between_candidate_chunks() {
     // same search state a previous arrival pass keeps when a candidate is missing.
     game.server_trips[0].finder = Some(PlayerSpawnFinder::new([0, 100, 0], 64, |_| 0));
     for _ in 0..2 {
-        game.tick_server_travel(&mut host);
+        game.tick_server_travel(&mut host, false);
         assert!(game.on_server_trip(CONN));
         assert!(
             landing(&host),
@@ -360,7 +360,7 @@ fn a_world_spawn_search_keeps_movement_held_between_candidate_chunks() {
                 .insert_remote(&mut game.world, Chunk::empty(x, z));
         }
     }
-    game.tick_server_travel(&mut host);
+    game.tick_server_travel(&mut host, false);
     assert!(!game.on_server_trip(CONN));
     assert!(!landing(&host));
 }
