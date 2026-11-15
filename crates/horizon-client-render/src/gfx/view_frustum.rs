@@ -5,9 +5,20 @@ use glam::{Vec3, Vec4};
 /// Camera-relative clip planes (`Frustum`).
 #[derive(Clone, Copy, Debug)]
 pub struct Frustum {
-    pub(super) planes: [Vec4; 6],
+    pub(crate) planes: [Vec4; 6],
 }
 impl Frustum {
+    /// Construct a frustum from six camera-relative clip planes.
+    #[inline]
+    pub fn from_planes(planes: [Vec4; 6]) -> Self {
+        Self { planes }
+    }
+
+    /// The six camera-relative clip planes.
+    #[inline]
+    pub fn planes(&self) -> &[Vec4; 6] {
+        &self.planes
+    }
     /// Whether the camera-relative box `min..max` is at least partly inside.
     pub fn intersects(&self, min: Vec3, max: Vec3) -> bool {
         !self.planes.iter().any(|p| {
@@ -85,14 +96,12 @@ impl Frustum {
         for plane in &mut planes {
             plane.w += blocks * plane.truncate().dot(axis);
         }
-        Frustum { planes }
+        Self::from_planes(planes)
     }
     /// The frustum of a camera-relative `view_proj`, for tests outside this module.
     #[cfg(test)]
     pub(crate) fn from_view_projection(view_proj: glam::Mat4) -> Frustum {
-        Frustum {
-            planes: super::frustum(view_proj),
-        }
+        Self::from_planes(super::frustum(view_proj))
     }
 }
 #[cfg(test)]
