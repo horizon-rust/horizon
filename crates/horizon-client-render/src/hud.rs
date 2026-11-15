@@ -1284,12 +1284,7 @@ impl HudAtlas {
                     }
                 }
             };
-            // LabPBR's maps beside a texture are the world's (sprites.rs), not images to draw.
-            if let Some(base) = name.strip_suffix("_n").or_else(|| name.strip_suffix("_s"))
-                && textures.join(format!("{base}.png")).is_file()
-            {
-                return None;
-            }
+            // Companion discovery does not reserve ordinary image names ending in _n or _s.
             let image = decode(path)
                 .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
                 .ok()?;
@@ -4908,3 +4903,7 @@ texture=wide",
         }
     }
 }
+
+#[cfg(test)]
+#[path = "hud/material_name_tests.rs"]
+mod material_name_tests;
