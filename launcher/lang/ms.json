@@ -516,6 +516,7 @@
   "Not checked: {error}": "Tidak ditanda: {error}",
   "Home background": "Latar belakang rumah",
   "Downloading Rust {version} (once): {done}%": "Memuat turun Rust {version} (sekali): {done}%",
+  "Downloading compiled game crates: {done}%": "Memuat turun pustaka permainan yang telah dikompil: {done}%",
   "The game folder's own layout, zipped.": "Susun atur folder permainan itu sendiri, dizip.",
   "Installed": "Dipasang",
   "No AI": "Tiada AI",

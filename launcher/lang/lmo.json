@@ -518,6 +518,7 @@
   "Not checked: {error}": "Minga cuntrulà: {error}",
   "Home background": "Sfond de casa",
   "Downloading Rust {version} (once): {done}%": "Scaricà Rust {version} (una volta): {done}%",
+  "Downloading compiled game crates: {done}%": "Scaricà i librarìi compilaa del gioch: {done}%",
   "The game folder's own layout, zipped.": "Layout de la cartella del giœugh, zipà.",
   "Installed": "Instalà",
   "No AI": "Nissüna IA",

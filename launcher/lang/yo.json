@@ -516,6 +516,7 @@
   "Not checked: {error}": "Ko ṣayẹwo: {error}",
   "Home background": "Ipilẹ ile",
   "Downloading Rust {version} (once): {done}%": "Gbigba ipata {version} (lẹẹkan): {done}%",
+  "Downloading compiled game crates: {done}%": "Gbigba awọn ile-ikawe ere ti a ṣe akojọpọ: {done}%",
   "The game folder's own layout, zipped.": "Awọn ere folda ile ti ara akọkọ, zipped.",
   "Installed": "Ti fi sori ẹrọ",
   "No AI": "Ko si AI",

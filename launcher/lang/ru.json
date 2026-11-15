@@ -518,6 +518,7 @@
   "Not checked: {error}": "Не проверено: {error}",
   "Home background": "Фон главной",
   "Downloading Rust {version} (once): {done}%": "Загрузка Rust {version} (один раз): {done}%",
+  "Downloading compiled game crates: {done}%": "Загрузка скомпилированных библиотек игры: {done}%",
   "The game folder's own layout, zipped.": "Собственная структура папки игры в архиве .zip.",
   "Installed": "Установлено",
   "No AI": "Без ИИ",

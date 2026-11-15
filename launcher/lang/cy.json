@@ -516,6 +516,7 @@
   "Not checked: {error}": "Heb ei wirio: {error}",
   "Home background": "Cefndir cartref",
   "Downloading Rust {version} (once): {done}%": "Lawrlwytho Rust {version} (unwaith): {done}%",
+  "Downloading compiled game crates: {done}%": "Lawrlwytho llyfrgelloedd cêm wedi'u llunio: {done}%",
   "The game folder's own layout, zipped.": "Cynllun y ffolder gêm ei hun, wedi'i sipio.",
   "Installed": "Wedi'i osod",
   "No AI": "Dim AI",

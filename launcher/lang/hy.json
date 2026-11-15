@@ -516,6 +516,7 @@
   "Not checked: {error}": "Չստուգված՝ {error}",
   "Home background": "Տնային ֆոն",
   "Downloading Rust {version} (once): {done}%": "Ներբեռնում է Rust {version} (մեկ անգամ): {done}%",
+  "Downloading compiled game crates: {done}%": "Խաղի կոմպիլացված գրադարանների ներբեռնում․ {done}%",
   "The game folder's own layout, zipped.": "Խաղի թղթապանակի սեփական դասավորությունը՝ սեղմված:",
   "Installed": "Տեղադրված է",
   "No AI": "Ոչ մի AI",

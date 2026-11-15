@@ -516,6 +516,7 @@
   "Not checked: {error}": "No marcat: {error}",
   "Home background": "Fons de casa",
   "Downloading Rust {version} (once): {done}%": "S'està baixant Rust {version} (una vegada): {done}%",
+  "Downloading compiled game crates: {done}%": "S'estan baixant les biblioteques compilades del joc: {done}%",
   "The game folder's own layout, zipped.": "Disseny propi de la carpeta del joc, comprimit.",
   "Installed": "Instal·lat",
   "No AI": "Sense IA",

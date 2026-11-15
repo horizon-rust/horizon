@@ -516,6 +516,7 @@
   "Not checked: {error}": "Шалгаагүй: {error}",
   "Home background": "Гэрийн дэвсгэр",
   "Downloading Rust {version} (once): {done}%": "Rust {version} татаж байна (нэг удаа): {done}%",
+  "Downloading compiled game crates: {done}%": "Хөрвүүлсэн тоглоомын сангуудыг татаж байна: {done}%",
   "The game folder's own layout, zipped.": "Тоглоомын хавтасны өөрийнх нь байрлал, зиплэгдсэн.",
   "Installed": "Суулгасан",
   "No AI": "AI байхгүй",

@@ -516,6 +516,7 @@
   "Not checked: {error}": "Mhux iċċekkjat: {error}",
   "Home background": "Sfond tad-dar",
   "Downloading Rust {version} (once): {done}%": "Niżżel Rust {version} (darba): {done}%",
+  "Downloading compiled game crates: {done}%": "Qed jitniżżlu l-libreriji kkompilati tal-logħba: {done}%",
   "The game folder's own layout, zipped.": "It-tqassim tal-folder tal-logħba stess, zipped.",
   "Installed": "Installat",
   "No AI": "L-ebda AI",

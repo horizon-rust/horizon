@@ -516,6 +516,7 @@
   "Not checked: {error}": "ບໍ່ໄດ້ກວດສອບ: {error}",
   "Home background": "ພື້ນຫຼັງເຮືອນ",
   "Downloading Rust {version} (once): {done}%": "ກຳລັງດາວໂຫຼດ Rust {version} (ຄັ້ງດຽວ): {done}%",
+  "Downloading compiled game crates: {done}%": "ກຳລັງດາວໂຫຼດຄັງຄຳສັ່ງເກມທີ່ຄອມໄພລ໌ແລ້ວ: {done}%",
   "The game folder's own layout, zipped.": "ຮູບແບບຂອງໂຟນເດີ້ເກມເອງ, zipped.",
   "Installed": "ຕິດຕັ້ງແລ້ວ",
   "No AI": "ບໍ່ມີ AI",

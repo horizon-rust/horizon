@@ -516,6 +516,7 @@
   "Not checked: {error}": "Не е проверено: {error}",
   "Home background": "Позадина на домот",
   "Downloading Rust {version} (once): {done}%": "Преземање Rust {version} (еднаш): {done}%",
+  "Downloading compiled game crates: {done}%": "Преземање на компајлираните библиотеки на играта: {done}%",
   "The game folder's own layout, zipped.": "Сопствениот распоред на папката со играта, зипен.",
   "Installed": "Инсталиран",
   "No AI": "Нема вештачка интелигенција",

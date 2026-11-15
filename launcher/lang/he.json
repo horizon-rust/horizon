@@ -518,6 +518,7 @@
   "Not checked: {error}": "לא מסומן: {error}",
   "Home background": "רקע ביתי",
   "Downloading Rust {version} (once): {done}%": "הורדת Rust {version} (פעם אחת): {done}%",
+  "Downloading compiled game crates: {done}%": "מוריד ספריות משחק מקומפלות: {done}%",
   "The game folder's own layout, zipped.": "פריסת תיקיית המשחק עצמה, מכווצת.",
   "Installed": "מותקן",
   "No AI": "אין AI",

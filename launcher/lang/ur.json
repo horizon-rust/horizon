@@ -518,6 +518,7 @@
   "Not checked: {error}": "چیک نہیں کیا گیا: {error}",
   "Home background": "ہوم پس منظر",
   "Downloading Rust {version} (once): {done}%": "زنگ کو ڈاؤن لوڈ کرنا {version} (ایک بار): {done}%",
+  "Downloading compiled game crates: {done}%": "مرتب شدہ گیم لائبریریاں ڈاؤن لوڈ ہو رہی ہیں: {done}%",
   "The game folder's own layout, zipped.": "گیم فولڈر کا اپنا لے آؤٹ، زپ۔",
   "Installed": "انسٹال",
   "No AI": "کوئی AI نہیں ہے۔",

@@ -516,6 +516,7 @@
   "Not checked: {error}": "არ არის შემოწმებული: {error}",
   "Home background": "სახლის ფონი",
   "Downloading Rust {version} (once): {done}%": "Rust {version} ჩამოტვირთვა (ერთხელ): {done}%",
+  "Downloading compiled game crates: {done}%": "თამაშის კომპილირებული ბიბლიოთეკების ჩამოტვირთვა: {done}%",
   "The game folder's own layout, zipped.": "თამაშის საქაღალდის საკუთარი განლაგება, zipped.",
   "Installed": "დაყენებულია",
   "No AI": "არა AI",

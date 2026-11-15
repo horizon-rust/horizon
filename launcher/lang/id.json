@@ -518,6 +518,7 @@
   "Not checked: {error}": "Tidak diperiksa: {error}",
   "Home background": "Latar belakang beranda",
   "Downloading Rust {version} (once): {done}%": "Mengunduh Rust {version} (sekali): {done}%",
+  "Downloading compiled game crates: {done}%": "Mengunduh pustaka game yang sudah dikompilasi: {done}%",
   "The game folder's own layout, zipped.": "Tata letak folder game itu sendiri, dalam bentuk zip.",
   "Installed": "Diinstal",
   "No AI": "Tanpa AI",

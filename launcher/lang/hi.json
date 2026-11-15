@@ -518,6 +518,7 @@
   "Not checked: {error}": "जाँच नहीं की गई: {error}",
   "Home background": "होम पृष्ठभूमि",
   "Downloading Rust {version} (once): {done}%": "Rust {version} डाउनलोड हो रहा है (एक बार): {done}%",
+  "Downloading compiled game crates: {done}%": "संकलित गेम लाइब्रेरी डाउनलोड हो रही हैं: {done}%",
   "The game folder's own layout, zipped.": "गेम फ़ोल्डर का अपना लेआउट, ज़िप किया गया।",
   "Installed": "इंस्टॉल किया गया",
   "No AI": "कोई AI नहीं",

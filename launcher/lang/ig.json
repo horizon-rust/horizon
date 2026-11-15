@@ -516,6 +516,7 @@
   "Not checked: {error}": "Achọpụtaghị ya: {error}",
   "Home background": "Nzụlite ụlọ",
   "Downloading Rust {version} (once): {done}%": "Na-ebudata nchara {version} (otu oge): {done}%",
+  "Downloading compiled game crates: {done}%": "Na-ebudata ọba akwụkwọ egwu ndị a haziri: {done}%",
   "The game folder's own layout, zipped.": "Nhazi nke folda egwuregwu ahụ, zipụrụ.",
   "Installed": "arụnyere",
   "No AI": "Enweghị AI",

@@ -516,6 +516,7 @@
   "Not checked: {error}": "N'eo ket gwiriet : {error}",
   "Home background": "Foñs an ti",
   "Downloading Rust {version} (once): {done}%": "O pellgargañ Rust {version} (ur wech): {done}%",
+  "Downloading compiled game crates: {done}%": "O pellgargañ levraouegoù kempunet ar c’hoari: {done}%",
   "The game folder's own layout, zipped.": "Treuzfurmadur an teuliad c'hoari e-unan, zip.",
   "Installed": "Staliet",
   "No AI": "AI ebet",

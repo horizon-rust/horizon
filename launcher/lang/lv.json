@@ -516,6 +516,7 @@
   "Not checked: {error}": "Nav pārbaudīts: {error}",
   "Home background": "Mājas fons",
   "Downloading Rust {version} (once): {done}%": "Rust lejupielāde {version} (vienreiz): {done}%",
+  "Downloading compiled game crates: {done}%": "Tiek lejupielādētas kompilētās spēles bibliotēkas: {done}%",
   "The game folder's own layout, zipped.": "Spēles mapes izkārtojums, zip.",
   "Installed": "Uzstādīts",
   "No AI": "Nav AI",

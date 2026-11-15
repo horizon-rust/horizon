@@ -518,6 +518,7 @@
   "Not checked: {error}": "Niy zaznaczōne: {error}",
   "Home background": "Tło dōmowe",
   "Downloading Rust {version} (once): {done}%": "Pobiyranie Rust {version} (raz): {done}%",
+  "Downloading compiled game crates: {done}%": "Pobiyranie skompilowanych bibliotek gry: {done}%",
   "The game folder's own layout, zipped.": "Włosny ukłod folderu gry, zazipowany.",
   "Installed": "Zainstalowane",
   "No AI": "Brak sztucznyj inteligyncyje",

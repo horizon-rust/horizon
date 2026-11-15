@@ -518,6 +518,7 @@
   "Not checked: {error}": "لم يتم التحقق: {error}",
   "Home background": "خلفية الشاشة الرئيسية",
   "Downloading Rust {version} (once): {done}%": "جاري تنزيل لغة Rust الإصدار {version} (مرة واحدة): {done}%",
+  "Downloading compiled game crates: {done}%": "جارٍ تنزيل مكتبات اللعبة المترجمة: {done}%",
   "The game folder's own layout, zipped.": "تنسيق مجلد اللعبة الأصلي، مضغوطاً بصيغة zip.",
   "Installed": "مثبت",
   "No AI": "بدون ذكاء اصطناعي",

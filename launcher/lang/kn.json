@@ -516,6 +516,7 @@
   "Not checked: {error}": "ಪರಿಶೀಲಿಸಲಾಗಿಲ್ಲ: {error}",
   "Home background": "ಮನೆಯ ಹಿನ್ನೆಲೆ",
   "Downloading Rust {version} (once): {done}%": "ರಸ್ಟ್ ಡೌನ್‌ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ {version} (ಒಮ್ಮೆ): {done}%",
+  "Downloading compiled game crates: {done}%": "ಕಂಪೈಲ್ ಮಾಡಿದ ಆಟದ ಲೈಬ್ರರಿಗಳನ್ನು ಡೌನ್‌ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ: {done}%",
   "The game folder's own layout, zipped.": "ಆಟದ ಫೋಲ್ಡರ್‌ನ ಸ್ವಂತ ಲೇಔಟ್, ಜಿಪ್ ಮಾಡಲಾಗಿದೆ.",
   "Installed": "ಸ್ಥಾಪಿಸಲಾಗಿದೆ",
   "No AI": "AI ಇಲ್ಲ",

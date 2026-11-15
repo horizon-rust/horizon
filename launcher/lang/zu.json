@@ -516,6 +516,7 @@
   "Not checked: {error}": "Akuhloliwe: {error}",
   "Home background": "Ingemuva lasekhaya",
   "Downloading Rust {version} (once): {done}%": "Ilanda i-Rust {version} (kanye): {done}%",
+  "Downloading compiled game crates: {done}%": "Ilanda amalabhulali egeyimu ahlanganisiwe: {done}%",
   "The game folder's own layout, zipped.": "Isakhiwo sefolda yegeyimu ngokwayo, sip.",
   "Installed": "Kufakiwe",
   "No AI": "Ayikho i-AI",

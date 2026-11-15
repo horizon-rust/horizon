@@ -516,6 +516,7 @@
   "Not checked: {error}": "Lama hubin: {error}",
   "Home background": "Taariikhda guriga",
   "Downloading Rust {version} (once): {done}%": "Soo dejinta miridhku {version} (hal mar): {done}%",
+  "Downloading compiled game crates: {done}%": "Soo dejinta maktabadaha ciyaarta ee la ururiyay: {done}%",
   "The game folder's own layout, zipped.": "Galka ciyaarta qaabkeeda u gaarka ah, oo la siibay.",
   "Installed": "La rakibay",
   "No AI": "Maya AI",

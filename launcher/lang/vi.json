@@ -518,6 +518,7 @@
   "Not checked: {error}": "Chưa được kiểm tra: {error}",
   "Home background": "Nền nhà",
   "Downloading Rust {version} (once): {done}%": "Đang tải xuống Rust {version} (một lần): {done}%",
+  "Downloading compiled game crates: {done}%": "Đang tải xuống các thư viện trò chơi đã biên dịch: {done}%",
   "The game folder's own layout, zipped.": "Bố cục riêng của thư mục trò chơi, được nén.",
   "Installed": "Đã cài đặt",
   "No AI": "Không có AI",

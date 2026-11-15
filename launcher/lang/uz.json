@@ -516,6 +516,7 @@
   "Not checked: {error}": "Belgilanmagan: {error}",
   "Home background": "Uy foni",
   "Downloading Rust {version} (once): {done}%": "Rust {version} yuklab olinmoqda (bir marta): {done}%",
+  "Downloading compiled game crates: {done}%": "O‘yinning kompilyatsiya qilingan kutubxonalari yuklab olinmoqda: {done}%",
   "The game folder's own layout, zipped.": "O'yin papkasining o'z tartibi, ziplangan.",
   "Installed": "Oʻrnatilgan",
   "No AI": "AI yo'q",

@@ -518,6 +518,7 @@
   "Not checked: {error}": "未检查：{error}",
   "Home background": "主页背景",
   "Downloading Rust {version} (once): {done}%": "正在下载 Rust {version}（仅一次）：{done}%",
+  "Downloading compiled game crates: {done}%": "正在下载已编译的游戏库：{done}%",
   "The game folder's own layout, zipped.": "按游戏文件夹原有结构打包的 .zip。",
   "Installed": "已安装",
   "No AI": "无 AI",

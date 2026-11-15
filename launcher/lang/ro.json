@@ -518,6 +518,7 @@
   "Not checked: {error}": "Nebifat: {error}",
   "Home background": "Fundal acasă",
   "Downloading Rust {version} (once): {done}%": "Se descarcă Rust {version} (o dată): {done}%",
+  "Downloading compiled game crates: {done}%": "Se descarcă bibliotecile compilate ale jocului: {done}%",
   "The game folder's own layout, zipped.": "Aspectul propriu al folderului jocului, arhivat.",
   "Installed": "Instalat",
   "No AI": "Fără AI",

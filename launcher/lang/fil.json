@@ -516,6 +516,7 @@
   "Not checked: {error}": "Hindi nasuri: {error}",
   "Home background": "Background ng bahay",
   "Downloading Rust {version} (once): {done}%": "Dina-download ang Rust {version} (isang beses): {done}%",
+  "Downloading compiled game crates: {done}%": "Dina-download ang mga na-compile na library ng laro: {done}%",
   "The game folder's own layout, zipped.": "Ang sariling layout ng folder ng laro, naka-zip.",
   "Installed": "Naka-install",
   "No AI": "Walang AI",

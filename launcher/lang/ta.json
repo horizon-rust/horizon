@@ -516,6 +516,7 @@
   "Not checked: {error}": "சரிபார்க்கப்படவில்லை: {error}",
   "Home background": "வீட்டுப் பின்னணி",
   "Downloading Rust {version} (once): {done}%": "ரஸ்ட் {version} (ஒருமுறை) பதிவிறக்குகிறது: {done}%",
+  "Downloading compiled game crates: {done}%": "தொகுக்கப்பட்ட விளையாட்டு நூலகங்களைப் பதிவிறக்குகிறது: {done}%",
   "The game folder's own layout, zipped.": "கேம் கோப்புறையின் சொந்த தளவமைப்பு, ஜிப் செய்யப்பட்டது.",
   "Installed": "நிறுவப்பட்டது",
   "No AI": "AI இல்லை",

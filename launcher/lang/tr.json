@@ -499,6 +499,7 @@
   "Native build · {version}": "Yerel derleme · {version}",
   "Plays {build}, built on Horizon {version}.": "{build} ile oynuyor, Horizon {version} üzerinde derlendi.",
   "Downloading Rust {version} (once): {done}%": "Rust {version} indiriliyor (bir kez): %{done}",
+  "Downloading compiled game crates: {done}%": "Derlenmiş oyun kitaplıkları indiriliyor: %{done}",
   "Building horizon-mixins (once)": "horizon-mixins derleniyor (bir kez)",
   "Downloading Horizon's source at {revision}": "Horizon kaynak kodu {revision} indiriliyor",
   "Applying the mixins": "Mixin'ler uygulanıyor",

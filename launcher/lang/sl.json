@@ -516,6 +516,7 @@
   "Not checked: {error}": "Ni označeno: {error}",
   "Home background": "Domače ozadje",
   "Downloading Rust {version} (once): {done}%": "Prenos Rust {version} (enkrat): {done}%",
+  "Downloading compiled game crates: {done}%": "Prenos prevedenih knjižnic igre: {done}%",
   "The game folder's own layout, zipped.": "Lastna postavitev mape igre, stisnjena.",
   "Installed": "Nameščeno",
   "No AI": "Brez AI",

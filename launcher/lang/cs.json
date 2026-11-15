@@ -518,6 +518,7 @@
   "Not checked: {error}": "Nezaškrtnuto: {error}",
   "Home background": "Domácí pozadí",
   "Downloading Rust {version} (once): {done}%": "Stahování Rust {version} (jednou): {done}%",
+  "Downloading compiled game crates: {done}%": "Stahování zkompilovaných knihoven hry: {done}%",
   "The game folder's own layout, zipped.": "Vlastní rozložení herní složky, zip.",
   "Installed": "Instalováno",
   "No AI": "Žádná umělá inteligence",

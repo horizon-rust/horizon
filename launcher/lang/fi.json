@@ -518,6 +518,7 @@
   "Not checked: {error}": "Ei tarkistettu: {error}",
   "Home background": "Koti tausta",
   "Downloading Rust {version} (once): {done}%": "Ladataan Rust {version} (kerran): {done}%",
+  "Downloading compiled game crates: {done}%": "Ladataan käännettyjä pelikirjastoja: {done}%",
   "The game folder's own layout, zipped.": "Pelikansion oma asettelu, zip-pakattu.",
   "Installed": "Asennettu",
   "No AI": "Ei AI",

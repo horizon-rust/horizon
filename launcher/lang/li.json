@@ -518,6 +518,7 @@
   "Not checked: {error}": "Neet gecontroleerd: {error}",
   "Home background": "Achtergroond vaan thoes",
   "Downloading Rust {version} (once): {done}%": "Rust {version} downloade (einmaol): {done}%",
+  "Downloading compiled game crates: {done}%": "Gecompileerde spelbibliotheke downloade: {done}%",
   "The game folder's own layout, zipped.": "De eige indeiling vaan de speulmap, gezip.",
   "Installed": "Geïnstalleerd",
   "No AI": "Gein AI",

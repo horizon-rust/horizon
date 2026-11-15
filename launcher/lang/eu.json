@@ -516,6 +516,7 @@
   "Not checked: {error}": "Ez da egiaztatu: {error}",
   "Home background": "Hasierako atzeko planoa",
   "Downloading Rust {version} (once): {done}%": "Rust {version} deskargatzen (behin): {done}%",
+  "Downloading compiled game crates: {done}%": "Jokoaren liburutegi konpilatuak deskargatzen: {done}%",
   "The game folder's own layout, zipped.": "Jokoaren karpetaren diseinua, konprimituta.",
   "Installed": "Instalatua",
   "No AI": "AIrik ez",

@@ -516,6 +516,7 @@
   "Not checked: {error}": "Тикшерелмәгән: {error}",
   "Home background": "Төп фон",
   "Downloading Rust {version} (once): {done}%": "Скачать Руст {version} (бер тапҡыр): {done}%",
+  "Downloading compiled game crates: {done}%": "Төҙөлгән уйын китапханаларын йөкләү: {done}%",
   "The game folder's own layout, zipped.": "Уйын папкаһының үҙ макеты, zipped.",
   "Installed": "Ҡуйылған",
   "No AI": "ЯИ юҡ",

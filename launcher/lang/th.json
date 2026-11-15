@@ -518,6 +518,7 @@
   "Not checked: {error}": "ไม่ได้ตรวจสอบ: {error}",
   "Home background": "พื้นหลังหน้าแรก",
   "Downloading Rust {version} (once): {done}%": "กำลังดาวน์โหลด Rust {version} (ครั้งเดียว): {done}%",
+  "Downloading compiled game crates: {done}%": "กำลังดาวน์โหลดไลบรารีเกมที่คอมไพล์แล้ว: {done}%",
   "The game folder's own layout, zipped.": "โฟลเดอร์เกมตามโครงสร้างเดิม บีบอัดเป็น ZIP",
   "Installed": "ติดตั้งแล้ว",
   "No AI": "ไม่ใช้ AI",

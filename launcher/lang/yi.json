@@ -516,6 +516,7 @@
   "Not checked: {error}": "ניט אָפּגעשטעלט: {error}",
   "Home background": "היים הינטערגרונט",
   "Downloading Rust {version} (once): {done}%": "דאַונלאָודינג זשאַווער {version} (אַמאָל): {done}%",
+  "Downloading compiled game crates: {done}%": "דאַונלאָודינג קאָמפּיילירטע שפּיל־ביבליאָטעקן: {done}%",
   "The game folder's own layout, zipped.": "די שפּיל טעקע ס אייגן אויסלייג, זיפּט.",
   "Installed": "אינסטאַלירן",
   "No AI": "קיין אַי",

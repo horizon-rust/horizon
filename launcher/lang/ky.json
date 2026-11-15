@@ -516,6 +516,7 @@
   "Not checked: {error}": "Текшерилген жок: {error}",
   "Home background": "Үйдүн фону",
   "Downloading Rust {version} (once): {done}%": "Rust {version} жүктөлүп алынууда (бир жолу): {done}%",
+  "Downloading compiled game crates: {done}%": "Оюндун компиляцияланган китепканалары жүктөлүп алынууда: {done}%",
   "The game folder's own layout, zipped.": "Оюндун папкасынын өзүнүн макети, сыдырмаланган.",
   "Installed": "Орнотулган",
   "No AI": "AI жок",

@@ -516,6 +516,7 @@
   "Not checked: {error}": "E pa kontrolluar: {error}",
   "Home background": "Sfondi i shtëpisë",
   "Downloading Rust {version} (once): {done}%": "Duke shkarkuar Rust {version} (një herë): {done}%",
+  "Downloading compiled game crates: {done}%": "Duke shkarkuar bibliotekat e përpiluara të lojës: {done}%",
   "The game folder's own layout, zipped.": "Struktura e vetë dosjes së lojës, e mbyllur.",
   "Installed": "Instaluar",
   "No AI": "Nuk ka AI",

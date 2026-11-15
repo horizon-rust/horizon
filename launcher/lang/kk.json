@@ -516,6 +516,7 @@
   "Not checked: {error}": "Тексерілмеген: {error}",
   "Home background": "Үй фоны",
   "Downloading Rust {version} (once): {done}%": "Rust {version} жүктелуде (бір рет): {done}%",
+  "Downloading compiled game crates: {done}%": "Ойынның құрастырылған кітапханалары жүктелуде: {done}%",
   "The game folder's own layout, zipped.": "Ойын қалтасының өзіндік орналасуы, қысылған.",
   "Installed": "Орнатылған",
   "No AI": "AI жоқ",

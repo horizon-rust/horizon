@@ -516,6 +516,7 @@
   "Not checked: {error}": "Није означено: {error}",
   "Home background": "Хоме бацкгроунд",
   "Downloading Rust {version} (once): {done}%": "Преузимање Руст {version} (једном): {done}%",
+  "Downloading compiled game crates: {done}%": "Преузимање компајлираних библиотека игре: {done}%",
   "The game folder's own layout, zipped.": "Сопствени изглед фасцикле игре, компримован.",
   "Installed": "Инсталиран",
   "No AI": "Нема АИ",

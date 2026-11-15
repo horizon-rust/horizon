@@ -516,6 +516,7 @@
   "Not checked: {error}": "Net kontrolearre: {error}",
   "Home background": "Home eftergrûn",
   "Downloading Rust {version} (once): {done}%": "Rust {version} downloade (ien kear): {done}%",
+  "Downloading compiled game crates: {done}%": "Kompilearre spylbiblioteken downloade: {done}%",
   "The game folder's own layout, zipped.": "It spultsje map syn eigen yndieling, zipped.",
   "Installed": "Ynstallearre",
   "No AI": "Gjin AI",

@@ -516,6 +516,7 @@
   "Not checked: {error}": "Ne kontrolita: {error}",
   "Home background": "Hejma fono",
   "Downloading Rust {version} (once): {done}%": "Elŝutante Rust {version} (unufoje): {done}%",
+  "Downloading compiled game crates: {done}%": "Elŝutante kompilitajn ludbibliotekojn: {done}%",
   "The game folder's own layout, zipped.": "La propra aranĝo de la luddosierujo, zipita.",
   "Installed": "Instalita",
   "No AI": "Neniu AI",

@@ -518,6 +518,7 @@
   "Not checked: {error}": "Бэрэбиэркэлэммэтэх: {error}",
   "Home background": "Дьиэ фона",
   "Downloading Rust {version} (once): {done}%": "Rust {version} (биирдэ) хачайдыы: {done}%",
+  "Downloading compiled game crates: {done}%": "Хомпуйуллубут оонньуур библиотекалары хачайдыы: {done}%",
   "The game folder's own layout, zipped.": "Оонньуу папкатын туспа макета, архивтаммыт.",
   "Installed": "Установлено",
   "No AI": "ИИ суох",

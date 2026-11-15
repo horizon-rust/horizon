@@ -516,6 +516,7 @@
   "Not checked: {error}": "Net kontrolléiert: {error}",
   "Home background": "Heem Hannergrond",
   "Downloading Rust {version} (once): {done}%": "Download Rust {version} (eemol): {done}%",
+  "Downloading compiled game crates: {done}%": "Kompiléiert Spillbibliothéiken eroflueden: {done}%",
   "The game folder's own layout, zipped.": "D'Spill Dossier eegen Layout, zipped.",
   "Installed": "Installéiert",
   "No AI": "Keng AI",

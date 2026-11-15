@@ -518,6 +518,7 @@
   "Not checked: {error}": "Nicht geprüft: {error}",
   "Home background": "Startseiten-Hintergrund",
   "Downloading Rust {version} (once): {done}%": "Rust {version} wird heruntergeladen (einmalig): {done} %",
+  "Downloading compiled game crates: {done}%": "Kompilierte Spielbibliotheken werden heruntergeladen: {done} %",
   "The game folder's own layout, zipped.": "Die eigene Ordnerstruktur des Spiels als .zip-Archiv.",
   "Installed": "Installiert",
   "No AI": "Keine KI",

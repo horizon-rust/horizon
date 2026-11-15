@@ -516,6 +516,7 @@
   "Not checked: {error}": "Non marcado: {error}",
   "Home background": "Fondo de casa",
   "Downloading Rust {version} (once): {done}%": "Descargando Rust {version} (unha vez): {done}%",
+  "Downloading compiled game crates: {done}%": "Descargando as bibliotecas compiladas do xogo: {done}%",
   "The game folder's own layout, zipped.": "Disposición propia do cartafol do xogo, comprimido.",
   "Installed": "Instalado",
   "No AI": "Sen AI",

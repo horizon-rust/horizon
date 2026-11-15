@@ -518,6 +518,7 @@
   "Not checked: {error}": "Ikke markeret: {error}",
   "Home background": "Hjem baggrund",
   "Downloading Rust {version} (once): {done}%": "Downloader Rust {version} (én gang): {done}%",
+  "Downloading compiled game crates: {done}%": "Downloader kompilerede spilbiblioteker: {done}%",
   "The game folder's own layout, zipped.": "Spillemappens eget layout, zippet.",
   "Installed": "Installeret",
   "No AI": "Ingen AI",

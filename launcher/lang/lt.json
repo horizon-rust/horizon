@@ -518,6 +518,7 @@
   "Not checked: {error}": "Nepažymėta: {error}",
   "Home background": "Namų fonas",
   "Downloading Rust {version} (once): {done}%": "„Rust“ atsisiuntimas {version} (vieną kartą): {done}%",
+  "Downloading compiled game crates: {done}%": "Atsisiunčiamos sukompiliuotos žaidimo bibliotekos: {done}%",
   "The game folder's own layout, zipped.": "Pats žaidimo aplanko išdėstymas, supakuotas.",
   "Installed": "Įdiegta",
   "No AI": "Nėra AI",

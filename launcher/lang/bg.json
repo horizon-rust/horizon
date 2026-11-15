@@ -518,6 +518,7 @@
   "Not checked: {error}": "Не е отметнато: {error}",
   "Home background": "Домашен фон",
   "Downloading Rust {version} (once): {done}%": "Изтегляне на Rust {version} (веднъж): {done}%",
+  "Downloading compiled game crates: {done}%": "Изтегляне на компилираните библиотеки на играта: {done}%",
   "The game folder's own layout, zipped.": "Собствено оформление на папката на играта, компресирано.",
   "Installed": "Инсталиран",
   "No AI": "Без AI",

@@ -518,6 +518,7 @@
   "Not checked: {error}": "Nezačiarknuté: {error}",
   "Home background": "Domáce pozadie",
   "Downloading Rust {version} (once): {done}%": "Sťahovanie Rust {version} (raz): {done}%",
+  "Downloading compiled game crates: {done}%": "Sťahovanie skompilovaných knižníc hry: {done}%",
   "The game folder's own layout, zipped.": "Vlastné rozloženie priečinka s hrou, zips.",
   "Installed": "Nainštalované",
   "No AI": "Žiadna AI",

@@ -516,6 +516,7 @@
   "Not checked: {error}": "Yoxlanmayıb: {error}",
   "Home background": "Ev fonu",
   "Downloading Rust {version} (once): {done}%": "Rust {version} endirilir (bir dəfə): {done}%",
+  "Downloading compiled game crates: {done}%": "Tərtib edilmiş oyun kitabxanaları endirilir: {done}%",
   "The game folder's own layout, zipped.": "Oyun qovluğunun öz tərtibatı, sıxılmışdır.",
   "Installed": "Quraşdırılıb",
   "No AI": "AI yoxdur",

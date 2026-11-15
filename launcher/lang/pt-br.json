@@ -499,6 +499,7 @@
   "Native build · {version}": "Compilação nativa · {version}",
   "Plays {build}, built on Horizon {version}.": "Roda {build}, compilado no Horizon {version}.",
   "Downloading Rust {version} (once): {done}%": "Baixando o Rust {version} (uma vez): {done}%",
+  "Downloading compiled game crates: {done}%": "Baixando as bibliotecas compiladas do jogo: {done}%",
   "Building horizon-mixins (once)": "Compilando horizon-mixins (uma vez)",
   "Downloading Horizon's source at {revision}": "Baixando o código do Horizon em {revision}",
   "Applying the mixins": "Aplicando os mixins",

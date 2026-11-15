@@ -516,6 +516,7 @@
   "Not checked: {error}": "Не праверана: {error}",
   "Home background": "Фон галоўнай старонкі",
   "Downloading Rust {version} (once): {done}%": "Загрузка Rust {version} (адзін раз): {done}%",
+  "Downloading compiled game crates: {done}%": "Загрузка скампіляваных бібліятэк гульні: {done}%",
   "The game folder's own layout, zipped.": "Уласны макет тэчкі з гульнёй, заархіваваны.",
   "Installed": "Усталяваны",
   "No AI": "Без AI",

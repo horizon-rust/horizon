@@ -518,6 +518,7 @@
   "Not checked: {error}": "No segnât: {error}",
   "Home background": "Sfont di cjase",
   "Downloading Rust {version} (once): {done}%": "Scaricâ Rust {version} (une volte): {done}%",
+  "Downloading compiled game crates: {done}%": "Scaricâ lis librariis compiladis dal zûc: {done}%",
   "The game folder's own layout, zipped.": "Il layout de cjarte dal zûc, zipât.",
   "Installed": "Instalât",
   "No AI": "Nissune AI",

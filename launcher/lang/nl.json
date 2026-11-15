@@ -518,6 +518,7 @@
   "Not checked: {error}": "Niet aangevinkt: {error}",
   "Home background": "Achtergrond thuis",
   "Downloading Rust {version} (once): {done}%": "Rust downloaden {version} (eenmalig): {done}%",
+  "Downloading compiled game crates: {done}%": "Gecompileerde spelbibliotheken downloaden: {done}%",
   "The game folder's own layout, zipped.": "De eigen lay-out van de gamemap, gecomprimeerd.",
   "Installed": "Geïnstalleerd",
   "No AI": "Geen AI",

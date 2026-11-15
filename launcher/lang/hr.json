@@ -518,6 +518,7 @@
   "Not checked: {error}": "Nije provjereno: {error}",
   "Home background": "Pozadina početne stranice",
   "Downloading Rust {version} (once): {done}%": "Preuzimanje Rusta {version} (jednom): {done}%",
+  "Downloading compiled game crates: {done}%": "Preuzimanje kompajliranih biblioteka igre: {done}%",
   "The game folder's own layout, zipped.": "Vlastiti raspored mape igre, komprimiran u zip.",
   "Installed": "Instalirano",
   "No AI": "Bez AI-ja",

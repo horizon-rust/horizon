@@ -518,6 +518,7 @@
   "Not checked: {error}": "Non vérifié : {error}",
   "Home background": "Fond de l'accueil",
   "Downloading Rust {version} (once): {done}%": "Téléchargement de Rust {version} (une seule fois) : {done} %",
+  "Downloading compiled game crates: {done}%": "Téléchargement des bibliothèques compilées du jeu : {done} %",
   "The game folder's own layout, zipped.": "La structure du dossier du jeu telle quelle, compressée en .zip.",
   "Installed": "Installé",
   "No AI": "Pas d'IA",

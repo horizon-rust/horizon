@@ -516,6 +516,7 @@
   "Not checked: {error}": "Non sedatus:{error}",
   "Home background": "Domus background",
   "Downloading Rust {version} (once): {done}%": "Download Rust{version}(olim);{done}%",
+  "Downloading compiled game crates: {done}%": "Bibliothecae ludi compilatae deponuntur: {done}%",
   "The game folder's own layout, zipped.": "Ludus folder proprium attenditur, zipped.",
   "Installed": "installed",
   "No AI": "Non AI",

@@ -516,6 +516,7 @@
   "Not checked: {error}": "Pole kontrollitud: {error}",
   "Home background": "Kodu taust",
   "Downloading Rust {version} (once): {done}%": "Rusti allalaadimine {version} (üks kord): {done}%",
+  "Downloading compiled game crates: {done}%": "Kompileeritud mänguteekide allalaadimine: {done}%",
   "The game folder's own layout, zipped.": "Mängu kausta enda paigutus, zipped.",
   "Installed": "Paigaldatud",
   "No AI": "Ei mingit AI-d",

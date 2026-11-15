@@ -518,6 +518,7 @@
   "Not checked: {error}": "بررسی نشده: {error}",
   "Home background": "پس زمینه خانه",
   "Downloading Rust {version} (once): {done}%": "دانلود Rust {version} (یک بار): {done}%",
+  "Downloading compiled game crates: {done}%": "در حال دانلود کتابخانه‌های کامپایل‌شده بازی: {done}%",
   "The game folder's own layout, zipped.": "طرح خود پوشه بازی، فشرده شده است.",
   "Installed": "نصب شده است",
   "No AI": "بدون هوش مصنوعی",

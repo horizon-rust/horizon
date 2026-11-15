@@ -516,6 +516,7 @@
   "Not checked: {error}": "Gan seiceáil: {error}",
   "Home background": "Cúlra baile",
   "Downloading Rust {version} (once): {done}%": "Rust á íoslódáil {version} (uair amháin): {done}%",
+  "Downloading compiled game crates: {done}%": "Leabharlanna cumaisc an chluiche á n-íoslódáil: {done}%",
   "The game folder's own layout, zipped.": "Leagan amach an fhillteáin cluiche féin, zipped.",
   "Installed": "Suiteáilte",
   "No AI": "Níl AI",

@@ -516,6 +516,7 @@
   "Not checked: {error}": "Тӗрӗслемен: {error}",
   "Home background": "Килти пурнӑҫ",
   "Downloading Rust {version} (once): {done}%": "Rust {version} (пӗрре) скачать туни: {done}%",
+  "Downloading compiled game crates: {done}%": "Выляван пухса тунӑ библиотекӑсене тиевлесе илни: {done}%",
   "The game folder's own layout, zipped.": "Вӑйӑ папкин хӑйӗн раскладки, зиппланӑ.",
   "Installed": "вырнаҫтарнӑ",
   "No AI": "ИИ ҫук",

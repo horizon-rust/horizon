@@ -518,6 +518,7 @@
   "Not checked: {error}": "확인되지 않음: {error}",
   "Home background": "홈 배경화면",
   "Downloading Rust {version} (once): {done}%": "Rust {version} 다운로드 중 (최초 1회): {done}%",
+  "Downloading compiled game crates: {done}%": "컴파일된 게임 라이브러리 다운로드 중: {done}%",
   "The game folder's own layout, zipped.": "게임 폴더 구조 그대로 압축된 파일입니다.",
   "Installed": "설치됨",
   "No AI": "AI 없음",

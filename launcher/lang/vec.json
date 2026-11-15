@@ -518,6 +518,7 @@
   "Not checked: {error}": "No segnà: {error}",
   "Home background": "Fondo de casa",
   "Downloading Rust {version} (once): {done}%": "Scaricando Rust {version} (una volta): {done}%",
+  "Downloading compiled game crates: {done}%": "Scaricando le librerie compilae del gioco: {done}%",
   "The game folder's own layout, zipped.": "El layout de ła cartèła del xogo, zipà.",
   "Installed": "Instałà",
   "No AI": "No IA",

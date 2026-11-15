@@ -516,6 +516,7 @@
   "Not checked: {error}": "Nie gemerk nie: {error}",
   "Home background": "Tuis agtergrond",
   "Downloading Rust {version} (once): {done}%": "Laai tans Rust {version} af (een keer): {done}%",
+  "Downloading compiled game crates: {done}%": "Laai tans saamgestelde speletjie-biblioteke af: {done}%",
   "The game folder's own layout, zipped.": "Die speletjie-lêergids se eie uitleg, gerits.",
   "Installed": "Geïnstalleer",
   "No AI": "Geen KI",

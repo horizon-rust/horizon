@@ -516,6 +516,7 @@
   "Not checked: {error}": "Gun sgrùdadh: {error}",
   "Home background": "Cùl-fhiosrachadh dachaigh",
   "Downloading Rust {version} (once): {done}%": "A’ luchdachadh sìos meirge {version} (aon turas): {done}%",
+  "Downloading compiled game crates: {done}%": "A’ luchdadh a-nuas leabharlannan co-chruinnichte a’ gheama: {done}%",
   "The game folder's own layout, zipped.": "Cruth pasgan a’ gheama fhèin, zipped.",
   "Installed": "Air a stàladh",
   "No AI": "Chan eil AI",

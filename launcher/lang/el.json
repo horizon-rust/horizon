@@ -518,6 +518,7 @@
   "Not checked: {error}": "Μη ελεγμένο: {error}",
   "Home background": "Αρχική φόντο",
   "Downloading Rust {version} (once): {done}%": "Λήψη Rust {version} (μία φορά): {done}%",
+  "Downloading compiled game crates: {done}%": "Λήψη μεταγλωττισμένων βιβλιοθηκών του παιχνιδιού: {done}%",
   "The game folder's own layout, zipped.": "Η διάταξη του φακέλου του παιχνιδιού, συμπιεσμένη.",
   "Installed": "Εγκατεστημένο",
   "No AI": "Όχι AI",

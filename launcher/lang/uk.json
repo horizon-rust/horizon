@@ -518,6 +518,7 @@
   "Not checked: {error}": "Не перевірено: {error}",
   "Home background": "Тло головної",
   "Downloading Rust {version} (once): {done}%": "Завантаження Rust {version} (один раз): {done}%",
+  "Downloading compiled game crates: {done}%": "Завантаження скомпільованих бібліотек гри: {done}%",
   "The game folder's own layout, zipped.": "Власна структура папки гри в архіві .zip.",
   "Installed": "Встановлено",
   "No AI": "Без ШІ",

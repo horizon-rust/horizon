@@ -518,6 +518,7 @@
   "Not checked: {error}": "Ii merkejuvvon: {error}",
   "Home background": "Ruovttu duogáš",
   "Downloading Rust {version} (once): {done}%": "Viežžan Rust {version} (oktii): {done}%",
+  "Downloading compiled game crates: {done}%": "Viežžan čoahkkáigeassojuvvon speallabibliotehkaid: {done}%",
   "The game folder's own layout, zipped.": "Speallomáhppa iežas ortnet, zippejuvvon.",
   "Installed": "Installerejuvvon",
   "No AI": "Ii AI",

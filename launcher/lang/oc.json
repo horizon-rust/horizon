@@ -518,6 +518,7 @@
   "Not checked: {error}": "Pas marcat : {error}",
   "Home background": "Fòrd de l'ostal",
   "Downloading Rust {version} (once): {done}%": "Telecargament de Rust {version} (un còp): {done}%",
+  "Downloading compiled game crates: {done}%": "Telecargament de las bibliotècas compiladas del jòc: {done}%",
   "The game folder's own layout, zipped.": "La disposicion pròpria del dorsièr de jòc, zipada.",
   "Installed": "Installat",
   "No AI": "Pas d'IA",

@@ -516,6 +516,7 @@
   "Not checked: {error}": "ʻAʻole i nānā ʻia: {error}",
   "Home background": "Kāpae home",
   "Downloading Rust {version} (once): {done}%": "Hoʻoiho iā Rust {version} (hoʻokahi): {done}%",
+  "Downloading compiled game crates: {done}%": "Hoʻoiho ʻia nā waihona pūnaewele i hoʻākoakoa ʻia o ka pāʻani: {done}%",
   "The game folder's own layout, zipped.": "ʻO ka hoʻonohonoho ponoʻī o ka waihona pāʻani, zipped.",
   "Installed": "Hoʻokomo ʻia",
   "No AI": "ʻAʻole AI",

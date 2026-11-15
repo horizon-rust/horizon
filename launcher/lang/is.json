@@ -516,6 +516,7 @@
   "Not checked: {error}": "Ekki merkt: {error}",
   "Home background": "Heimabakgrunnur",
   "Downloading Rust {version} (once): {done}%": "Sækir Rust {version} (einu sinni): {done}%",
+  "Downloading compiled game crates: {done}%": "Sækir þýddar leikjasöfn: {done}%",
   "The game folder's own layout, zipped.": "Eigin uppsetning leikmöppunnar, rennt.",
   "Installed": "Uppsett",
   "No AI": "Engin gervigreind",

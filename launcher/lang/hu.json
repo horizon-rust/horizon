@@ -518,6 +518,7 @@
   "Not checked: {error}": "Nincs bejelölve: {error}",
   "Home background": "Otthoni háttér",
   "Downloading Rust {version} (once): {done}%": "Rust letöltése {version} (egyszer): {done}%",
+  "Downloading compiled game crates: {done}%": "A lefordított játékkönyvtárak letöltése: {done}%",
   "The game folder's own layout, zipped.": "A játékmappa saját elrendezésű, cipzáras.",
   "Installed": "Telepítve",
   "No AI": "Nincs AI",
