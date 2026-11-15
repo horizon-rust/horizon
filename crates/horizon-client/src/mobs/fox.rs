@@ -1401,6 +1401,10 @@ pub fn pose(m: &Mob, partial: f32) -> super::body_anim::Fox {
 }
 
 #[cfg(test)]
+#[path = "fox_bite_tests.rs"]
+mod fox_bite_tests;
+
+#[cfg(test)]
 mod trust_tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;

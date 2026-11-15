@@ -13,6 +13,9 @@ mod infested_roll_tests;
 #[path = "bee_sting_tests.rs"]
 mod bee_sting_tests;
 #[cfg(test)]
+#[path = "mob_zero_damage_tests.rs"]
+mod mob_zero_damage_tests;
+#[cfg(test)]
 #[path = "revenge_home_tests.rs"]
 mod revenge_home_tests;
 #[cfg(test)]

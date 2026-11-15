@@ -2641,9 +2641,6 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
         }),
         _ => {}
     }
-    if amount <= 0.0 {
-        amount = 1.0;
-    }
     // The held weapon's enchantments: Sharpness, Smite, Bane of Arthropods,
     // Fire Aspect and Knockback.
     let target_species = match who {
