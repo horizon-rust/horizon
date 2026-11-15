@@ -10,6 +10,7 @@ use super::{
     entity::{
         Entity as _, EntityHandle, ThunderHit, entity_lists_of, for_each_entity, with_entity,
     },
+    minecarts::CartHit,
 };
 use horizon_client::advancements::EntityView;
 use horizon_client::mobs::{Damage, DamageKind, MobEvent, Species, conversion};
@@ -708,7 +709,7 @@ impl Game<'_> {
                 EntityHandle::Boat(i) => {
                     self.hurt_boat(i, 5.0, false);
                 }
-                EntityHandle::Cart(i) => self.hurt_cart(i, 5.0, false, false),
+                EntityHandle::Cart(i) => self.hurt_cart(i, 5.0, false, false, CartHit::default()),
                 EntityHandle::Orb(i) if self.orbs[i].hurt(5.0) => {
                     self.orbs.remove(i);
                 }

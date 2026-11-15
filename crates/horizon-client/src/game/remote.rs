@@ -2465,7 +2465,7 @@ impl Game<'_> {
         let Some(entity) = self.world.block_entities.get(&key) else {
             return;
         };
-        if entity.id() != name || fields.is_empty() {
+        if entity.id() != name || fields.is_empty() && !matches!(entity, BlockEntity::Conduit(_)) {
             return;
         }
         let mut full = fields.clone();
@@ -4062,10 +4062,11 @@ impl Game<'_> {
                     }
                     (None, None) => None,
                 };
+                // `ClientPacketListener.random`, the listener's own stream: a
+                // pickup pitch is never a draw of the level's.
                 if let Some(o) = orb_at {
-                    let pitch = (self.world.random.next_float() - self.world.random.next_float())
-                        * 0.35
-                        + 0.9;
+                    let mut r = horizon_client::random_source::create();
+                    let pitch = (r.next_float() - r.next_float()) * 0.35 + 0.9;
                     self.audio.play(
                         "minecraft:entity.experience_orb.pickup",
                         Some([o.x, o.y, o.z]),
@@ -4073,10 +4074,8 @@ impl Game<'_> {
                         pitch,
                     );
                 } else if let Some(at) = at {
-                    let pitch = ((self.world.random.next_float() - self.world.random.next_float())
-                        * 0.7
-                        + 1.0)
-                        * 2.0;
+                    let mut r = horizon_client::random_source::create();
+                    let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
                     self.audio
                         .play("minecraft:entity.item.pickup", Some(at), 0.2, pitch);
                 }
@@ -5807,10 +5806,10 @@ impl Game<'_> {
         let at = Vec3::new(p[0], p[1], p[2]);
         // ItemEntity's constructor draws bobOffs from the item's own random.
         let mut random = (*horizon_client::mobs::entity_random(id as u32, at)).clone();
-        let bob_offset = random.next_float() * std::f32::consts::PI * 2.0;
+        let bob = super::item_entities::bob_offset(at, random.next_float(), self.clock.still());
         self.dropped.push(ItemEntity {
             random,
-            ..ItemEntity::new(id as u32, stack, at, velocity, bob_offset)
+            ..ItemEntity::new(id as u32, stack, at, velocity, bob)
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
@@ -8068,9 +8067,10 @@ impl Game<'_> {
                 };
                 (result, DryUse::default())
             };
-            // DebugStickItem.useOn once the block passed: SUCCESS on the client
-            // too (the hand swings below); only the server changes the block.
-            let (result, changes) = if debug_stick && !spectator && !result.consumes_action() {
+            let may_use_on =
+                !result.consumes_action() && self.with_hand(hand, |g| g.may_use_on(hit.pos));
+            // DebugStickItem.useOn, gated like every useOn: SUCCESS here; the server acts.
+            let (result, changes) = if debug_stick && !spectator && may_use_on {
                 (InteractionResult::Success, DryUse::default())
             } else {
                 (result, changes)
@@ -8119,7 +8119,7 @@ impl Game<'_> {
                 .is_some_and(|s| &*s.item == "minecraft:armor_stand")
                 && held
                     .as_ref()
-                    .is_some_and(|s| self.armor_stand_spawn(&hit, s).is_some());
+                    .is_some_and(|s| may_use_on && self.armor_stand_spawn(&hit, s).is_some());
             let seq = self.next_sequence();
             let cursor = [
                 (hit.point[0] - f64::from(hit.pos[0])) as f32,
@@ -8131,7 +8131,7 @@ impl Game<'_> {
                 pos: hit.pos,
                 face: i32::from(face_direction(hit.face)),
                 cursor,
-                inside: hit.face == [0; 3],
+                inside: hit.inside,
                 world_border: false,
                 sequence: seq,
             }));
@@ -8175,12 +8175,11 @@ impl Game<'_> {
                 return true;
             } else if held
                 .as_ref()
-                .is_some_and(|s| &*s.item == "minecraft:bone_meal")
+                .is_some_and(|s| &*s.item == "minecraft:bone_meal" && may_use_on)
                 && self.remote_bone_meal_succeeds(&hit)
             {
-                // BoneMealItem.useOn succeeded on this client's level (SUCCESS;
-                // the server grows the plant): this hand swings and the click
-                // ends, so the other hand (a torch) is never tried.
+                // BoneMealItem.useOn succeeded on this client's level where
+                // ItemStack.useOn lets it: this hand swings and the click ends.
                 self.with_hand(hand, Game::swing_arm);
                 return true;
             } else if stand_fits {
@@ -8290,7 +8289,6 @@ impl Game<'_> {
                 // BlockItem.useOn: a consumable that could not be placed is used
                 // (Item.use), which the server does for this same packet. CONSUME
                 // does not swing, and a full player's FAIL still ends the click.
-                // Adventure's can_place_on leaves the placing to the server.
                 if !reacts
                     && placed.is_none()
                     && self.may_build()
@@ -8571,20 +8569,21 @@ impl Game<'_> {
     /// Run BlockItem.place on a disposable level: where it placed and the
     /// blocks it set. The real level supplies collision shapes and
     /// building-blocking entities; random draws, scheduled ticks and events
-    /// stay in the preview.
+    /// stay in the preview. `ItemStack.useOn` runs it in adventure mode only
+    /// when the used stack's `can_place_on` names the clicked block.
     pub(super) fn remote_can_place(
         &mut self,
         hit: &super::Hit,
         stack: &ItemStack,
     ) -> Option<DryPlace> {
-        if !self.may_build() {
+        if !self.may_build() && !self.stack_can_place_on_in_adventure(stack, hit.pos) {
             return None;
         }
         let ctx = horizon_world::level::PlaceContext {
             clicked_pos: horizon_core::position::BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
             face: horizon_core::geometry::Direction::ALL[face_direction(hit.face) as usize],
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
-            inside: hit.face == [0; 3],
+            inside: hit.inside,
             yaw: self.yaw,
             pitch: self.pitch,
             sneaking: self.remote_shift_down(),
@@ -9993,10 +9992,10 @@ impl Game<'_> {
     ) {
         if let Some(r) = self.remote.as_mut() {
             r.menu = Some((container, "minecraft:merchant".to_owned()));
-            r.menu_title = Some(text);
+            r.menu_title = Some(text.clone());
         }
         let session = horizon_client::merchant::Session::new(Vec::new(), true);
-        self.open_remote_merchant(session, (!title.is_empty()).then_some(title));
+        self.open_remote_merchant(session, (!title.is_empty()).then_some(text));
     }
     /// ClientboundMerchantOffersPacket.
     fn remote_merchant_offers(&mut self, p: play::MerchantOffers) {
@@ -11703,6 +11702,7 @@ mod tests {
                 pos,
                 face: [0, 1, 0],
                 point: [f64::from(pos[0]) + 0.5, 70.0, 0.5],
+                inside: false,
             };
             let stack = ItemStack::new(name, 2);
             assert_eq!(game.items().get(name).unwrap().block, Some(target));
@@ -11725,6 +11725,7 @@ mod tests {
             pos: [0, 70, 0],
             face: [0, 1, 0],
             point: [0.5, 71.0, 0.5],
+            inside: false,
         };
         game.set_mode_id(2);
         let before = game.held().cloned();
@@ -13346,6 +13347,7 @@ mod tests {
             pos: [0, 63, 0],
             face: [0, 1, 0],
             point: [0.5, 64.0, 0.5],
+            inside: false,
         });
 
         let done = game.remote_use_block(Hand::Main);

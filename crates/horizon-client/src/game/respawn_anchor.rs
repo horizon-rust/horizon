@@ -934,7 +934,7 @@ mod pitch_preservation_controls {
             forced: true,
         };
         game.respawn_config = Some(invalid);
-        assert!(game.resolve_server_respawn(invalid).is_none());
+        assert!(game.resolve_server_respawn(invalid, true).is_none());
         assert!(game.respawn_config.is_none());
         assert_eq!(game.level.world_spawn, Some([4, 100, 4]));
         assert_eq!(game.level.world_spawn_angle, [-30.0, -5.0]);
