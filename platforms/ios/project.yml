@@ -23,6 +23,8 @@ targets:
         NovaBuildRun: $(NOVA_GIT_RUN)
         LSRequiresIPhoneOS: true
         UIRequiresFullScreen: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         UIStatusBarHidden: true
         UIViewControllerBasedStatusBarAppearance: true
         UIApplicationSupportsDocumentBrowser: false

@@ -11,7 +11,11 @@ enum NovaEntryPoint {
 
     static func main() {
         let defaults = UserDefaults.standard
-        let shouldStartHorizon = defaults.bool(forKey: nextLaunchKey)
+        // Once game files are installed, Horizon owns UIKit from app startup.
+        // Nova's launcher is then a UIKit overlay over the SAME live game window:
+        // Play hides it immediately, without a second UIApplicationMain/restart.
+        let shouldStartHorizon = horizon_ios_host_api_version() >= 2 &&
+                                 NovaGameFiles.resourcesPresent()
         let info = Bundle.main.infoDictionary ?? [:]
         let build = info["NovaBuildCommit"] as? String ?? "unknown"
         let run = info["NovaBuildRun"] as? String ?? "unknown"
@@ -33,6 +37,8 @@ enum NovaEntryPoint {
                 } else {
                     NovaDiagnostics.record("boot.runtime-diagnostics-unavailable")
                 }
+                NovaAudio.configure()
+                NovaGameOverlay.scheduleInstall()
                 NovaDiagnostics.record("boot.calling-original-game")
                 let code = resources.path.withCString { resourcePath in
                     gameHome.path.withCString { homePath in
@@ -47,8 +53,8 @@ enum NovaEntryPoint {
             }
         }
 
-        if shouldStartHorizon && !(horizon_ios_host_api_version() >= 2 && NovaGameFiles.resourcesPresent()) {
-            NovaDiagnostics.record("boot.skipped: missing integrated game runtime or verified resources")
+        if !shouldStartHorizon {
+            NovaDiagnostics.record("launcher.opening; resources-setup-mode")
         }
         NovaDiagnostics.record("launcher.opening")
         // The launcher remains the default, including after a failed game boot.
