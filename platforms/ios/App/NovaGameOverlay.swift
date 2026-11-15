@@ -154,7 +154,9 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     private func refreshSwipe() {
         let hasMenuKey = layout.controls.contains(where: { $0.kind == "menu" })
         let enabled = UserDefaults.standard.object(forKey: "nova.touch.gestures") as? Bool ?? true
-        menuSwipe?.isEnabled = enabled && !hasMenuKey
+        // The drawer is still reachable when game touch gestures are disabled,
+        // unless a dedicated Menu button deliberately replaces the swipe.
+        menuSwipe?.isEnabled = !hasMenuKey
         nova_ios_set_touch_gestures(enabled)
     }
 
