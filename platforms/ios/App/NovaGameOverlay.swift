@@ -1,14 +1,17 @@
 import Foundation
 import UIKit
 import SwiftUI
+import Darwin
 
 /// Transparent overlay over winit's existing UIWindow. Empty areas still
 /// receive native winit touches; only visible controls intercept a finger.
 private final class NovaPassthroughView: UIView {
     var onResize: (() -> Void)?
+    var blocksGameplay = false
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        subviews.contains { view in
+        if blocksGameplay { return bounds.contains(point) }
+        return subviews.contains { view in
             !view.isHidden && view.alpha > 0.01 && view.isUserInteractionEnabled &&
                 view.point(inside: view.convert(point, from: self), with: event)
         }
@@ -40,7 +43,6 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     private var activeButtons: [NovaOverlayButton] = []
     private var layout: NovaTouchLayout = NovaTouchLayouts.current()
     private let textField = UITextField(frame: CGRect(x: 0, y: 0, width: 2, height: 2))
-    private var menuSwipe: UISwipeGestureRecognizer?
     private var isEditingLayout = false
     private var isInMenu = false
     private var firstAppearance = true
@@ -79,13 +81,6 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         // Metal-backed view, so SwiftUI sheets and alerts can be presented.
         window.rootViewController?.view.addSubview(overlay)
 
-        let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swipedLeft))
-        swipe.direction = .left
-        swipe.cancelsTouchesInView = false
-        swipe.delaysTouchesBegan = false
-        window.addGestureRecognizer(swipe)
-        menuSwipe = swipe
-
         textField.alpha = 0.02
         textField.autocapitalizationType = .none
         textField.autocorrectionType = .no
@@ -105,7 +100,14 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         activeButtons.removeAll()
         layout = NovaTouchLayouts.current()
 
-        for control in layout.controls {
+        var controls = layout.controls
+        // A fallback Menu key keeps old or imported layouts usable.
+        if !controls.contains(where: { $0.kind == "menu" }) {
+            controls.append(NovaTouchControl(name: "Menu", kind: "menu",
+                                             x: 0.07, y: 0.12, size: 50,
+                                             opacity: 0.8))
+        }
+        for control in controls {
             let button = NovaOverlayButton(control: control)
             button.isExclusiveTouch = false
             button.backgroundColor = UIColor.black.withAlphaComponent(control.opacity)
@@ -134,7 +136,7 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
             activeButtons.append(button)
         }
         layoutButtons()
-        refreshSwipe()
+        refreshTouchGestures()
     }
 
     private func layoutButtons() {
@@ -153,12 +155,8 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         if let panel = panelController?.view { overlay.bringSubviewToFront(panel) }
     }
 
-    private func refreshSwipe() {
-        let hasMenuKey = layout.controls.contains(where: { $0.kind == "menu" })
+    private func refreshTouchGestures() {
         let enabled = UserDefaults.standard.object(forKey: "nova.touch.gestures") as? Bool ?? true
-        // The drawer is still reachable when game touch gestures are disabled,
-        // unless a dedicated Menu button deliberately replaces the swipe.
-        menuSwipe?.isEnabled = !hasMenuKey
         nova_ios_set_touch_gestures(enabled)
     }
 
@@ -170,6 +168,8 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     private func showMenu() {
         guard !isEditingLayout else { return }
         isInMenu = true
+        overlay.blocksGameplay = true
+        nova_ios_set_overlay_active(true)
         setControlsVisible(false)
         let view = NovaGameMenuView(
             isFirstAppearance: firstAppearance,
@@ -187,8 +187,10 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         removePanel()
         isInMenu = false
         isEditingLayout = false
+        overlay.blocksGameplay = false
+        nova_ios_set_overlay_active(false)
         setControlsVisible(true)
-        refreshSwipe()
+        refreshTouchGestures()
     }
 
     private func removePanel() {
@@ -242,15 +244,9 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     }
 
     private func requestClose() {
-        NovaDiagnostics.record("overlay.quit-requested")
-        hidePanel()
-        // Original Horizon receives CloseRequested and performs its save path.
-        nova_ios_input_close()
-    }
-
-    @objc private func swipedLeft(_ gesture: UISwipeGestureRecognizer) {
-        guard gesture.state == .ended, !isInMenu && !isEditingLayout else { return }
-        showMenu()
+        NovaDiagnostics.record("overlay.force-quit")
+        // Force Close is immediate and does not imply a save.
+        Darwin.exit(EXIT_SUCCESS)
     }
 
     @objc private func buttonDown(_ sender: NovaOverlayButton) {
@@ -348,7 +344,7 @@ private struct NovaGameMenuView: View {
                     Button("Force Close") { confirmClose = true }
                         .buttonStyle(.bordered)
                         .tint(.red)
-                    Text("Swipe left for this menu, unless your layout has a Menu button.")
+                    Text("Open Nova using your Menu touch button.")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.6))
                 }
@@ -359,10 +355,10 @@ private struct NovaGameMenuView: View {
             }
         }
         .foregroundStyle(.white)
-        .confirmationDialog("Close Horizon?", isPresented: $confirmClose) {
-            Button("Close Game", role: .destructive, action: onClose)
+        .confirmationDialog("Force close Nova?", isPresented: $confirmClose) {
+            Button("Force Close App", role: .destructive, action: onClose)
             Button("Cancel", role: .cancel) {}
-        } message: { Text("Horizon will be asked to save and exit.") }
+        } message: { Text("The entire app exits immediately. Unsaved world changes can be lost.") }
     }
 }
 
