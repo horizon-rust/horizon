@@ -11,30 +11,7 @@ impl Game<'_> {
             _ => String::new(),
         };
         let message = self.expand_selectors(&raw);
-        // CommandSourceStack.getDisplayName: the executing entity's name.
-        let name = match self.command_source {
-            Some(source) => match source.entity {
-                Some(target) => self.target_name(target),
-                None => source
-                    .block
-                    .and_then(|pos| match self.world.block_entities.get(&pos) {
-                        Some(horizon_client::containers::BlockEntity::CommandBlock(block)) => {
-                            Some(block.name())
-                        }
-                        _ => None,
-                    })
-                    .or_else(|| {
-                        source.cart.and_then(|id| {
-                            self.carts
-                                .iter()
-                                .find(|cart| cart.id == id)
-                                .map(|cart| cart.command.name())
-                        })
-                    })
-                    .unwrap_or_else(|| self.server_name()),
-            },
-            None => self.player_display_name(),
-        };
+        let name = self.source_display_name();
         // A player's command whose output is captured (a function, `execute …
         // run say`, the command harness) gets the announcement with that
         // output, in order; everyone else gets the broadcast.
