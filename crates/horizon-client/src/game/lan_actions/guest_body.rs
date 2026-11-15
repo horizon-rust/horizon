@@ -44,6 +44,34 @@ pub(super) fn initialize(resources: &MotionResources, guest: &mut Guest) {
     }
 }
 
+/// `Player.playSound`: the guest's own client plays the sound its body makes,
+/// and the server sends it to every player around but the guest
+/// (`ServerLevel.playSound` broadcasts with the player as `except`), on
+/// `Player.getSoundSource`'s `SoundSource.PLAYERS` whatever the event's family
+/// (a footstep on stone is a player's sound, not a block's).
+pub(super) fn own_sound(
+    game: &mut Game<'_>,
+    host: &mut LanHost,
+    conn: u32,
+    sound: &str,
+    volume: f32,
+    pitch: f32,
+) {
+    let Some(g) = host.hub.guest(conn) else {
+        return;
+    };
+    let at = g.position;
+    const PLAYERS: i32 = 7;
+    // A local client (the single-player window, a splitscreen seat) plays what
+    // its own body makes itself, as the player the server leaves out does:
+    // this window playing it too would double it.
+    if g.address != horizon_client::lan::conn::MEMORY_ADDRESS {
+        game.audio.play_unshared(sound, Some(at), volume, pitch);
+    }
+    host.hub
+        .sound(sound, at, volume, pitch, PLAYERS, Some(conn));
+}
+
 impl Game<'_> {
     /// The guest's body on the server each tick: ServerPlayer.tick's damage
     /// clock and Entity.baseTick's fluid phase (burning), then for each move
@@ -136,6 +164,9 @@ impl Game<'_> {
             w.player.health.advance_clock();
             let _ = w.fluid_base_tick();
             w.player.ground.on_ground = from_ground;
+            // Player.getMovementEmission reads isShiftKeyDown for the moves
+            // below: the packet that changed it was handled before this tick.
+            w.player.shift_key_down = sneaking;
             // Player.aiStep: a flying player that isn't riding starts every tick
             // with no fall distance, so flying down in creative and switching to
             // survival lands without the flight's distance.
@@ -185,6 +216,13 @@ impl Game<'_> {
                     let pos = w.legacy_on_position()?;
                     let state = w.block_state(pos)?;
                     w.check_fall_damage(moved[1], on_ground, state, pos)?;
+                    // `Entity.move`'s emission for the move the client reported
+                    // (`handlePlayerPositionChange` runs `player.move`): the
+                    // footstep, the swim sound and the chime, which the players
+                    // around hear. A passenger is not moved this way.
+                    if !riding {
+                        horizon_world::entity_move::move_emission(&mut w, movement, pos, state)?;
+                    }
                     // handlePlayerPositionChange: a move that goes up ends the fall
                     // (`resetFallDistance`), after that move's own fall check.
                     if moved[1] > 0.0 {
@@ -213,7 +251,6 @@ impl Game<'_> {
             w.player.impulse.landed_in_liquid(delta_y, liquid);
             // Entity.applyEffectsFromBlocks along those moves: magma, cactus,
             // lit campfires and grown sweet berry bushes hurt (#1305).
-            w.player.shift_key_down = sneaking;
             let _ = w.player.set_sleeping(sleeping);
             (w.player.freeze_immune, w.player.leather_boots) = (freeze_immune, boots);
             w.player.burn_from_stepping_immune = burn_immune;
@@ -327,6 +364,47 @@ impl Game<'_> {
                 // reaches every player around but the hurt one, whose own
                 // client plays it from handleDamageEvent (#4149).
                 MotionEvent::HurtSound(sound) => self.guest_hurt_sound(host, conn, sound),
+                // `Player.playStepSound` (the muffled step under a swim sound
+                // too), `Entity.playAmethystStepSound`, `Entity.playSwimSound`
+                // and `Entity.doWaterSplashEffect`: the players around hear them
+                // at the guest's feet, and the guest's own client plays them
+                // itself (`Player.playSound` leaves it out).
+                MotionEvent::Emission { state, muffled, .. } => {
+                    let (name, volume, pitch) = self.res.facts().get(state).sounds.step(muffled);
+                    own_sound(self, host, conn, &name, volume, pitch);
+                }
+                MotionEvent::Chime { volume, pitch } => own_sound(
+                    self,
+                    host,
+                    conn,
+                    "minecraft:block.amethyst_block.chime",
+                    volume,
+                    pitch,
+                ),
+                MotionEvent::Swim { volume, pitch } => own_sound(
+                    self,
+                    host,
+                    conn,
+                    "minecraft:entity.player.swim",
+                    volume,
+                    pitch,
+                ),
+                MotionEvent::Splash {
+                    high_speed,
+                    volume,
+                    pitch,
+                } => own_sound(
+                    self,
+                    host,
+                    conn,
+                    if high_speed {
+                        "minecraft:entity.player.splash.high_speed"
+                    } else {
+                        "minecraft:entity.player.splash"
+                    },
+                    volume,
+                    pitch,
+                ),
                 // LivingEntity.checkFallDamage: the crumbs reach every player.
                 MotionEvent::Fall(horizon_client::landing::FallEvent::Particles {
                     state,

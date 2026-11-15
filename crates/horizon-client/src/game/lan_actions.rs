@@ -1269,13 +1269,7 @@ impl Game<'_> {
     /// reaches every player around but the hurt one, whose own client plays it
     /// from `handleDamageEvent` (#4149).
     fn guest_hurt_sound(&mut self, host: &mut LanHost, conn: u32, sound: &str) {
-        let Some(g) = host.hub.guest(conn) else {
-            return;
-        };
-        let at = g.position;
-        let source = horizon_client::settings::sound_source(sound) as i32;
-        self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
-        host.hub.sound(sound, at, 1.0, 1.0, source, Some(conn));
+        guest_body::own_sound(self, host, conn, sound, 1.0, 1.0);
     }
 
     /// `ServerLevel.players()` in turn: the host's own player, then each

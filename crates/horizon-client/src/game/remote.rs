@@ -6451,14 +6451,8 @@ impl Game<'_> {
         for event in events {
             match event {
                 horizon_client::motion::MotionEvent::Emission { state, muffled, .. } => {
-                    let sounds = self.res.facts().get(state).sounds.clone();
-                    // Player.playStepSound: muffled under the swim sound in water.
-                    let (volume, pitch) = if muffled {
-                        (sounds.volume * 0.05, sounds.pitch * 0.8)
-                    } else {
-                        (sounds.volume * 0.15, sounds.pitch)
-                    };
-                    self.audio.play(&sounds.step, Some(feet), volume, pitch);
+                    let (name, volume, pitch) = self.res.facts().get(state).sounds.step(muffled);
+                    self.audio.play(&name, Some(feet), volume, pitch);
                 }
                 horizon_client::motion::MotionEvent::Swim { volume, pitch } => {
                     self.audio

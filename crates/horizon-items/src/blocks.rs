@@ -31,6 +31,18 @@ pub struct Sounds {
     pub hit: Arc<str>,
     pub fall: Arc<str>,
 }
+impl Sounds {
+    /// `Entity.playStepSound`'s step, and `playMuffledStepSound`'s for a step a
+    /// player takes in water (or a combination block's second step): the step
+    /// event, its volume and pitch.
+    pub fn step(&self, muffled: bool) -> (Arc<str>, f32, f32) {
+        if muffled {
+            (self.step.clone(), self.volume * 0.05, self.pitch * 0.8)
+        } else {
+            (self.step.clone(), self.volume * 0.15, self.pitch)
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct StateFacts {
     pub name: Arc<str>,
