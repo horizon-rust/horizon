@@ -205,6 +205,23 @@ impl Report {
     }
 }
 
+/// The renderer's adapter ([`crate::gfx::adapter`]), for the hooks above the engine.
+pub fn gpu() -> Option<horizon_hooks::Gpu> {
+    crate::gfx::adapter().map(|a| horizon_hooks::Gpu {
+        name: a.name,
+        vendor: a.vendor,
+        kind: a.kind,
+        driver: a.driver,
+        backend: a.backend,
+    })
+}
+
+/// The build, for what leaves the machine: the release (`v0.2.3`), or `dev <crate version>` for a
+/// build from source.
+pub fn build() -> String {
+    release_tag().unwrap_or_else(|| format!("dev {}", env!("CARGO_PKG_VERSION")))
+}
+
 /// The release this binary is (`v0.2.3`); a nightly's label (`Nightly 2026-10-28 · 0c02067`); for a
 /// release from before 0.2, its tag and the client's crate version; for a build from source, that
 /// version alone.
@@ -384,19 +401,20 @@ fn thread_name(side: &str) -> String {
 /// promise to launchers (docs/api/launch.md), so it never changes within a line of that API.
 pub const SAVED_LINE: &str = "Horizon: crash report saved to ";
 
-/// What runs on each report before it is saved ([`on_report`]).
-pub type ReportHook = fn(&Path, &Report);
-
-static REPORT_HOOKS: std::sync::RwLock<Vec<ReportHook>> = std::sync::RwLock::new(Vec::new());
-
-/// Runs `hook` with every crash report, before it is saved: the game folder and the report. An
-/// extension point for what lives above the engine (Horizon's opt-in telemetry keeps the
-/// report). A hook runs inside the crash handler: it must not panic or block.
-pub fn on_report(hook: ReportHook) {
-    REPORT_HOOKS
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .push(hook);
+/// The hooks above the engine hear the report before it is saved (`Hooks::crashed`; Horizon's
+/// opt-in telemetry keeps it). They run inside the crash handler: they must not panic or block.
+fn tell_hooks(home: &Path, report: &Report) {
+    let version = build();
+    let gpu = gpu();
+    horizon_hooks::engine::crashed(&horizon_hooks::Crash {
+        home,
+        version: &version,
+        error: &report.error,
+        stack: &report.stack,
+        thread: &report.thread,
+        details: &report.details,
+        gpu: gpu.as_ref(),
+    });
 }
 
 type EmergencyHook = std::sync::Arc<dyn Fn() + Send + Sync>;
@@ -484,13 +502,7 @@ fn deliver(home: &Path, report: Report) -> Option<PathBuf> {
         ),
     );
     crate::logging::flush();
-    for hook in REPORT_HOOKS
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-    {
-        hook(home, &report);
-    }
+    tell_hooks(home, &report);
     // A player of a shared game folder (`--player-dir`) finds the report beside its own log.
     match report.save(crate::logging::player_dir_override().unwrap_or(home)) {
         Ok(path) => {

@@ -124,7 +124,7 @@ impl Loading {
             horizon_threads::system_menu::suppress(hwnd);
         }
         drop(window_step);
-        horizon_client::telemetry::note_display(&window);
+        horizon_client::play_session::note_display(&window);
         // The renderer takes seconds to build and winit's window sits white
         // until the first frame presents, so paint the boot screen on it and
         // keep repainting it as the console's lines arrive; the wgpu frames

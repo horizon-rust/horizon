@@ -287,12 +287,19 @@ build pays nothing.
 
 The hooks today: `started` (once, when someone plays: not a dedicated server, a benchmark or an automated run),
 `published` (the world opened to or closed from LAN or friends, on change), `shutdown` (the window closed, the
-world saved) and `tunnel` (the resolver of `friend:` addresses, Play with Friends') and `captures` (Open and Share for saved performance captures, `horizon-perf-share`: with none registered the game offers neither). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
-`horizon_hooks::engine` that the engine calls where vanilla does the matching thing; give it plain data or a type
-the engine owns, never one from above. A hook that needs engine types the platform doesn't expose yet (a draw
-context for HUD and chat overlays, a settings page) comes with that type's platform API (M6). An extension point
-that belongs to one subsystem (an input source, the compositor) lives in the engine crate that owns it, with the
-same shape: registered before the game runs, read-only after.
+world saved), and the play session's: `startup` (core-ready, rest-ready, the title's first frame, once each),
+`wants_frame_steps` (asked once: time the render thread's steps), `world_shown` (a world's first frame), `played_frame`
+(every frame played), `world_left` (the session's end, with its settings), `display` (the screen the window is on),
+`crashed` (each crash, before its report is saved) and `benchmarked` (a `--benchmark` run's report, as it may be
+uploaded); `tunnel` (the resolver of `friend:` addresses, Play with Friends'); and `captures` (Open and Share for saved
+performance captures, `horizon-perf-share`: with none registered the game offers neither). Opt-in telemetry
+(`horizon_telemetry::game`, registered by `horizon-official`) hears the game through these only. **A hook you need
+and don't find:** add a method with an empty default to `Hooks` and a function in `horizon_hooks::engine` that the
+engine calls where vanilla does the matching thing; give it plain data or a type the engine owns, never one from
+above. A hook that needs engine types the platform doesn't expose yet (a draw context for HUD and chat overlays, a
+settings page) comes with that type's platform API (M6). An extension point that belongs to one subsystem (an input
+source, the compositor) lives in the engine crate that owns it, with the same shape: registered before the game
+runs, read-only after.
 
 **What players get.** The release builds (`game-build.yml`, so the nightly and the release; `tools/ci/build-musl.sh`)
 build `horizon-official` and ship it as `horizon-client`, the name the launcher and players know. The launcher's
