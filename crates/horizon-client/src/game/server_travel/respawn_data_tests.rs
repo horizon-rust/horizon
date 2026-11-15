@@ -164,3 +164,43 @@ fn a_missing_bed_faces_the_world_spawn_angle() {
         [180.0, 20.0]
     );
 }
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_nether_spawn_search_starts_below_the_roof() {
+    let (mut game, mut host, _rx) = server();
+    game.enter_level(Some(&mut host), Dim::Nether).unwrap();
+    light(&mut game, 0);
+    let registry = game.pack.assets.registry;
+    let stone = registry.default_state("minecraft:stone").unwrap();
+    let bedrock = registry.default_state("minecraft:bedrock").unwrap();
+    game.world.set(0, 63, 0, stone).unwrap();
+    game.world.set(0, 127, 0, bedrock).unwrap();
+    game.as_console(|game| assert!(game.run_command("gamerule respawn_radius 0")));
+    let at = game.search_spawn([0, 64, 0], &mut None).unwrap();
+    assert_eq!([at.x, at.y, at.z], [0.5, 64.0, 0.5]);
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_guest_from_another_level_uses_the_destination_border() {
+    let (mut game, mut host, _rx) = server();
+    game.level.world_spawn = Some([0, 64, 0]);
+    game.border.set_center([500.0, 500.0]);
+    game.border.set_size(10.0);
+    light(&mut game, 31);
+    game.enter_level(Some(&mut host), Dim::Nether).unwrap();
+    host.hub.guests[0].dimension = Dim::Nether.id().into();
+    game.guest_respawn(&mut host, CONN);
+    let at = host.hub.guests[0].position;
+    assert_eq!(
+        (at[0], at[2]),
+        (500.5, 500.5),
+        "loads the destination column"
+    );
+    game.enter_level(Some(&mut host), Dim::Overworld).unwrap();
+    game.tick_server_travel(&mut host);
+    let at = host.hub.guests[0].position;
+    assert_eq!((at[0], at[2]), (500.5, 500.5));
+    assert!(!game.on_server_trip(CONN), "the search completed");
+}

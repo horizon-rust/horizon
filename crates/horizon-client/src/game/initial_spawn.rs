@@ -108,10 +108,13 @@ impl Game<'_> {
             world: &self.world,
             properties: &self.pack.assets.properties,
             binding: self.collision,
-            // The spawn searches are the overworld's (PlayerSpawnFinder); a
-            // ceiling starts them at the generator's spawn height.
-            has_ceiling: self.level_shapes.overworld.has_ceiling,
-            spawn_height: self.spawn_origin.map_or(64, |(_, height)| height),
+            // A ceiling starts the search at the generator's spawn height.
+            has_ceiling: self.level_shapes.get(self.dim.id()).has_ceiling,
+            spawn_height: if self.dim == super::Dim::Overworld {
+                self.spawn_origin.map_or(64, |(_, height)| height)
+            } else {
+                64
+            },
         }
     }
     /// ChunkGenerator.getOrigin and getSpawnHeight of the overworld.

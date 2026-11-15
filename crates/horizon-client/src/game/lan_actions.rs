@@ -3955,8 +3955,6 @@ impl Game<'_> {
         }
         let back = self.dim;
         let left = super::Dim::from_id(&host.hub.guests[i].dimension);
-        // PlayerList.respawn builds the new player in its respawn level: that
-        // level is put in place for the respawn, and comes back after.
         let away = level != back || host.hub.guests[i].dimension != level.id();
         if server {
             self.server_trips.retain(|t| !t.is(conn));
@@ -3965,8 +3963,11 @@ impl Game<'_> {
             log::error!("could not open {}: {e}", level.id());
             return;
         }
+        let world = self.world_spawn_position();
+        if own.is_none() && !chosen && host.hub.guests[i].spawn.is_none() {
+            spawn = world;
+        }
         let g = &mut host.hub.guests[i];
-        // restartClientLoadTimerAfterRespawn.
         g.dead = false;
         g.load_timeout = horizon_client::lan::guest::CLIENT_LOADED_TIMEOUT;
         g.loading = true;
@@ -4032,8 +4033,7 @@ impl Game<'_> {
         if let Some(config) = elsewhere {
             self.respawn_trip(conn, config);
         } else if !chosen && in_frame_bed.is_none() && host.hub.guests[i].spawn.is_none() {
-            // TeleportTransition.createDefault: no point of its own, so the
-            // world spawn's free column once its chunks have loaded.
+            // TeleportTransition.createDefault: search once chunks load.
             self.world_spawn_trip(conn);
         }
         if let Some(c) = in_frame_bed
