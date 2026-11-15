@@ -1666,7 +1666,10 @@ impl Game<'_> {
             self.level.difficulty_locked = true;
         }
         if wanted.default_mode != before.default_mode {
+            // IntegratedServer.setWorldGameType: the world's mode, and the
+            // players it forces.
             self.set_default_game_mode(wanted.default_mode);
+            self.update_game_mode_based_on_permission();
         }
         if wanted.personal_mode != before.personal_mode {
             if self.serving() {

@@ -1023,7 +1023,12 @@ impl Game<'_> {
         let settings = super::super::lan::LanSettings {
             port: port as u16,
             guest_commands: allow,
-            force_game_mode: false,
+            // `PublishCommand.publishServer` only opens the LAN: the world's
+            // force-game-mode setting stays what it was.
+            force_game_mode: self
+                .lan
+                .as_ref()
+                .is_none_or(|host| host.settings.force_game_mode),
         };
         // A dedicated server is open from the start (`published` above).
         let started = self.serving() && self.publish(settings).is_ok();

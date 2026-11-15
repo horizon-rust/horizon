@@ -3,6 +3,7 @@
 //! tick and turns what the guests do into gameplay. A world that is not open
 //! costs one `Option` check per tick.
 mod event_timings;
+mod game_mode;
 mod level_event_targets;
 mod mob_states;
 
@@ -20,13 +21,11 @@ use horizon_client::{
     },
     mobs::{Mob, Species, Who, leash::Holder},
     text::Text,
-    world::World,
 };
 use horizon_protocol::{
     entity_data::{Value, serializer},
     packets::play::{self, Clientbound as C},
 };
-use horizon_world::block_collision::BlockCollisionRegistry;
 use level_event_targets::level_event_except;
 use std::{
     collections::HashMap,
@@ -1224,32 +1223,6 @@ pub const HELP: &[&str] = &[
     "lan status                     the hosting state and the guests",
 ];
 
-/// With the game mode forced, the guests online take the default mode
-/// (setting a mode does nothing when it is already theirs). A world open to
-/// LAN is an integrated server, which leaves out the players who have game
-/// master permission; a dedicated server does not.
-fn enforce_guest_game_mode(
-    host: &mut LanHost,
-    world: &World,
-    collision: &BlockCollisionRegistry<'_>,
-) {
-    if !host.hub.config.force_game_mode {
-        return;
-    }
-    let mode = host.hub.config.default_game_mode;
-    let spares_operators = host.hub.config.integrated;
-    let stale: Vec<u32> = host
-        .hub
-        .guests
-        .iter()
-        .filter(|g| g.game_mode != mode && !(spares_operators && g.permission >= 2))
-        .map(|g| g.conn)
-        .collect();
-    for conn in stale {
-        host.hub.set_game_mode(conn, mode, world, Some(collision));
-    }
-}
-
 impl Game<'_> {
     /// The level's default point, independently of the acting player's bed or spawnpoint.
     pub(super) fn world_spawn_position(&self) -> [f64; 3] {
@@ -1835,27 +1808,6 @@ impl Game<'_> {
         }
         self.lan = Some(host);
         stored.map(|name| (uuid, name))
-    }
-
-    /// The world's default game mode (`defaultgamemode`).
-    pub(super) fn set_default_game_mode(&mut self, mode: i32) {
-        self.level.game_mode = mode;
-        self.level.creative = mode == 1;
-        if let Some(host) = self.lan.as_mut() {
-            host.hub.config.default_game_mode = mode;
-            // `setWorldGameType` and `DefaultGameModeCommands.setMode`: a
-            // world that forces its mode puts the guests online in it.
-            enforce_guest_game_mode(host, &self.world, self.collision);
-        }
-    }
-
-    /// Apply the default mode to connected players when forcing it is enabled.
-    pub(super) fn set_force_game_mode(&mut self, force: bool) {
-        if let Some(host) = self.lan.as_mut() {
-            host.settings.force_game_mode = force;
-            host.hub.config.force_game_mode = force;
-            enforce_guest_game_mode(host, &self.world, self.collision);
-        }
     }
 
     /// Update the live view distance used for player chunk tracking.
@@ -2904,7 +2856,17 @@ impl Game<'_> {
         spawn: [f64; 3],
     ) {
         let default_mode = host.hub.config.default_game_mode;
-        let force = host.hub.config.force_game_mode;
+        // `ServerPlayer.calculateGameModeForNewPlayer`: a player new to the
+        // world takes the default mode; a known one keeps its own unless the
+        // server forces its mode, which spares the players who may change
+        // their own (`getProfilePermissions` on an integrated server).
+        let forced = game_mode::forced_game_type(
+            &host.hub.config,
+            self.published_port().is_some(),
+            self.level.hardcore,
+        )
+        .is_some();
+        let spares_operators = host.hub.config.integrated;
         let root = self.world_root.clone();
         let in_place = host.hub.config.dimension.clone();
         let owner = host.owner.as_mut();
@@ -2925,7 +2887,7 @@ impl Game<'_> {
         // PrepareSpawnTask: with no saved rotation the player faces the world
         // spawn's angle (`/setworldspawn ... <angle>`).
         playerdata::face_world_spawn(g, known, self.level.world_spawn_angle);
-        if !known || force {
+        if !known || (forced && !(spares_operators && g.permission >= 2)) {
             g.game_mode = default_mode;
         }
         if !known {

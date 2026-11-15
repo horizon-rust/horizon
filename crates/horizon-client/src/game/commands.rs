@@ -1078,7 +1078,7 @@ impl Game<'_> {
                 let Some(Arg::GameMode(m)) = ctx.get("gamemode") else {
                     return Ok(0);
                 };
-                self.set_default_game_mode(match m {
+                let count = self.set_default_game_mode(match m {
                     horizon_client::command::args::GameMode::Survival => 0,
                     horizon_client::command::args::GameMode::Creative => 1,
                     horizon_client::command::args::GameMode::Adventure => 2,
@@ -1088,7 +1088,7 @@ impl Game<'_> {
                     "commands.defaultgamemode.success",
                     &[Text::translate(&format!("gameMode.{}", m.name()), &[])],
                 ));
-                Ok(0)
+                Ok(count)
             }
             "give" => self.cmd_give(ctx),
             "teleport.location"
@@ -1263,10 +1263,10 @@ impl Game<'_> {
         let Some(Arg::GameMode(mode)) = ctx.get("gamemode").cloned() else {
             return Ok(0);
         };
-        let targets = if ctx.get("target").is_some() {
-            self.entities(ctx, "target", true)?
-        } else {
-            vec![self.implied_player()]
+        let targets = match ctx.get("target") {
+            // GameModeCommand.setMode: `getPlayerOrException`.
+            Some(_) => self.entities(ctx, "target", true)?,
+            None => vec![self.source_player()?],
         };
         let mut count = 0;
         for t in targets {
