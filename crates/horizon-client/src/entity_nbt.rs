@@ -1897,6 +1897,15 @@ pub fn mob_from_nbt_with_random(
     read_mob_home(&mut m, tag);
     m.on_ground = flag(tag, "OnGround");
     m.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
+    let cube = matches!(
+        m.species(),
+        crate::mobs::Species::Slime | crate::mobs::Species::MagmaCube
+    );
+    if cube {
+        // AbstractCubeMob.readAdditionalSaveData: the size's attributes first,
+        // so the saved ones replace them, the type's default too.
+        crate::mobs::cube::set_size(&mut m, number(tag.get("Size")).unwrap_or(0) as i32 + 1);
+    }
     // LivingEntity.readAdditionalSaveData: the saved attribute bases, then
     // the health, the max health when there is none.
     if let Some(Tag::List(attrs)) = tag.get("attributes") {
@@ -1921,10 +1930,11 @@ pub fn mob_from_nbt_with_random(
                 // A saved base other than the type's default is the
                 // attribute's base, which `/attribute ... base get` reads.
                 "minecraft:max_health"
-                    if crate::mobs::finalize::default_value(
-                        &m,
-                        crate::mobs::finalize::Attr::MaxHealth,
-                    ) != Some(v) =>
+                    if cube
+                        || crate::mobs::finalize::default_value(
+                            &m,
+                            crate::mobs::finalize::Attr::MaxHealth,
+                        ) != Some(v) =>
                 {
                     crate::mobs::finalize::set_base(
                         &mut m,
@@ -1934,10 +1944,11 @@ pub fn mob_from_nbt_with_random(
                 }
                 "minecraft:max_health" => m.attrs.max_health = v as f32,
                 "minecraft:movement_speed"
-                    if crate::mobs::finalize::default_value(
-                        &m,
-                        crate::mobs::finalize::Attr::MovementSpeed,
-                    ) != Some(v) =>
+                    if cube
+                        || crate::mobs::finalize::default_value(
+                            &m,
+                            crate::mobs::finalize::Attr::MovementSpeed,
+                        ) != Some(v) =>
                 {
                     crate::mobs::finalize::set_base(
                         &mut m,
@@ -1947,10 +1958,11 @@ pub fn mob_from_nbt_with_random(
                 }
                 "minecraft:movement_speed" => m.attrs.speed = v,
                 "minecraft:attack_damage"
-                    if crate::mobs::finalize::default_value(
-                        &m,
-                        crate::mobs::finalize::Attr::AttackDamage,
-                    ) != Some(v) =>
+                    if cube
+                        || crate::mobs::finalize::default_value(
+                            &m,
+                            crate::mobs::finalize::Attr::AttackDamage,
+                        ) != Some(v) =>
                 {
                     crate::mobs::finalize::set_base(
                         &mut m,
@@ -1960,6 +1972,9 @@ pub fn mob_from_nbt_with_random(
                 }
                 "minecraft:attack_damage" => m.attrs.attack_damage = v as f32,
                 "minecraft:attack_knockback" => m.attrs.attack_knockback = v,
+                "minecraft:armor" if cube => {
+                    crate::mobs::finalize::set_base(&mut m, crate::mobs::finalize::Attr::Armor, v)
+                }
                 "minecraft:flying_speed"
                     if crate::mobs::finalize::default_value(
                         &m,
@@ -1978,6 +1993,9 @@ pub fn mob_from_nbt_with_random(
     }
     saved_attributes::read_attribute_modifiers(&mut m, tag);
     m.health = float(tag.get("Health")).map_or(m.attrs.max_health, |h| h as f32);
+    // setHealth clamps it to the max health the save left, before anything
+    // later in the load (a wolf's taming) changes that.
+    m.health = m.health.min(crate::mobs::finalize::loaded_max_health(&m));
     // LivingEntity.readAdditionalSaveData: `internalSetAbsorptionAmount`
     // stores the value as read; only `setAbsorptionAmount` clamps.
     m.absorption = float(tag.get("AbsorptionAmount")).map_or(0.0, |h| h as f32);
@@ -2650,12 +2668,6 @@ pub fn mob_from_nbt_with_random(
         m.species(),
         crate::mobs::Species::Slime | crate::mobs::Species::MagmaCube
     ) {
-        // AbstractCubeMob.readAdditionalSaveData: the size's attributes, then
-        // the saved health, the max health when there is none.
-        crate::mobs::cube::set_size(&mut m, number(tag.get("Size")).unwrap_or(0) as i32 + 1);
-        if let Some(h) = float(tag.get("Health")) {
-            m.health = h as f32;
-        }
         m.extra.flag2 = flag(tag, "wasOnGround");
     }
     if m.species() == crate::mobs::Species::Phantom {
@@ -3306,8 +3318,9 @@ pub fn throwable_to_nbt(
     }
     // the loaded item stays (blue egg, potion effects) at `setItem`'s count 1.
     if let Tag::Compound(m) = &mut tag {
-        let st = match &p.kind {
-            ProjectileKind::Potion(s, _) => (**s).clone(),
+        let st = match (&p.kind, &p.item) {
+            (ProjectileKind::Potion(s, _), _) => (**s).clone(),
+            (_, Some(thrown)) => thrown.clone(),
             _ => crate::items::ItemStack::new(item, 1),
         };
         if let Tag::Compound(i) = m.entry("Item".into()).or_insert_with(|| item_to_nbt(&st)) {
@@ -3338,6 +3351,13 @@ pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Project
     p.no_gravity = flag(tag, "NoGravity");
     load_projectile_entity_fields(&mut p, tag);
     p.on_ground = flag(tag, "OnGround");
+    if !matches!(p.kind, ProjectileKind::Potion(..))
+        && let Some(item) = tag.get("Item").and_then(item_from_nbt)
+    {
+        // Kept on the projectile: the tag it was loaded from is found by its
+        // position, so it is gone once the projectile has moved.
+        p.set_thrown_item(&item);
+    }
     Some(p)
 }
 
@@ -8334,9 +8354,13 @@ mod fireball_nbt_tests {
             ),
         ]);
         let egg = throwable_from_nbt(&raw, None).unwrap();
+        // With or without the tag it was loaded from, which is lost once it moves.
+        for raw in [Some(&raw), None] {
+            let tag = throwable_to_nbt(&egg, [1; 4], None, raw).unwrap();
+            let item = tag.get("Item").and_then(item_from_nbt).unwrap();
+            assert_eq!(&*item.item, "minecraft:blue_egg");
+        }
         let tag = throwable_to_nbt(&egg, [1; 4], None, Some(&raw)).unwrap();
-        let item = tag.get("Item").and_then(item_from_nbt).unwrap();
-        assert_eq!(&*item.item, "minecraft:blue_egg");
         assert!(tag.get("LeftOwner").is_none() && tag.get("Owner").is_none());
         assert_eq!(number(tag.get("HasBeenShot")), Some(0));
         let wind = Projectile::new(ProjectileKind::WindCharge, Vec3::ZERO, None);

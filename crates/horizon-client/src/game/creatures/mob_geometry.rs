@@ -268,7 +268,7 @@ impl Game<'_> {
                 );
             }
             // HDR output: mobs that are light shine by their kind, as blocks do (entity.wgsl
-            // fs_hdr_mark); a tier's window lifts only their bright texels.
+            // hdr_entity_mark); a tier's window lifts only their bright texels.
             if let Some(tier) = match mob.species() {
                 Species::Blaze => Some(horizon_client::mesher::BRIGHT),
                 Species::MagmaCube | Species::GlowSquid => Some(horizon_client::mesher::LOW),
@@ -604,7 +604,9 @@ impl Game<'_> {
             // returns (a fire charge until `setItem` gave it another), its model
             // at the renderer's scale for the kind. `packed` is already 15, the
             // renderer's full bright.
-            if let Some(stack) = a.item.as_ref() {
+            // (A thrown item's own stack is only saved so far; it is drawn
+            // as its kind's sprite below.)
+            if let Some(stack) = a.item.as_ref().filter(|_| a.kind.is_item_fireball()) {
                 let owner = super::super::item_draw::owner_at(at, 0.0, a.kind.id());
                 let state = self.resolve_item(stack, DisplayContext::Ground, Some(&owner), 0);
                 let pose = glam::Mat4::from_translation(c)
