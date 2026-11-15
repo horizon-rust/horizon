@@ -423,6 +423,12 @@ jobs:
           python3 platforms/ios/patches/ios_input_queue.py
           git diff --check
 
+      - name: Protect gameplay while Nova UI is open and capture iOS mouse
+        shell: bash
+        run: |
+          python3 platforms/ios/patches/ios_modal_capture.py
+          git diff --check
+
       - name: Record iOS audio output initialization result
         shell: bash
         run: |
