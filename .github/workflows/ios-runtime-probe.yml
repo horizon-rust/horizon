@@ -1,8 +1,13 @@
 name: iOS upstream game compile probe
 
-# Build only when manually requested from Actions → Run workflow.
-# Routine pushes to test must not start expensive iOS builds.
+# Only run when a build-request file changes, or via workflow_dispatch
+# (the latter requires these workflows to exist on GitHub's default branch).
 on:
+  # To request a playable IPA build on test, create or edit the request file.
+  push:
+    branches: [test]
+    paths:
+      - 'platforms/ios/ci/build-integrated.txt'
   workflow_dispatch:
 
 # If another manual run starts for the same branch, retire the older one.
