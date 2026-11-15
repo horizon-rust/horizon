@@ -1486,7 +1486,7 @@ fn the_prediction_records_each_client_tick_and_the_server_ticks_it_had_seen() {
     };
     config.timer.enabled = false;
     config.ground.enabled = false;
-    s.hub.set_anticheat(config);
+    s.hub.set_anticheat(horizon_anticheat::hub::watch(config));
     let port = s.hub.lan.port;
     let _bot = run(&mut s, move || connect(port, "Recorded", true));
     let deadline = Instant::now() + Duration::from_secs(5);

@@ -1,6 +1,7 @@
 //! The dedicated server's anticheat (docs/anticheat.md), without the game: the `[anticheat]` section of
 //! `server.toml`, each player's violation levels, and the rules of the checks. The server's hub
-//! (`horizon_client::lan`) feeds it what players send and carries out what it decides.
+//! (`horizon_client::lan`) feeds it what players send, through the engine's hook the `hub` feature fills,
+//! and carries out what it decides.
 //!
 //! It is on by default, and so is every check, but only the checks that have shown no false positive
 //! act on their own: `combat`, which a vanilla client can't trip, and `ground`, which players who
@@ -22,6 +23,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub mod combat;
+#[cfg(feature = "hub")]
+pub mod hub;
 pub mod timer;
 
 /// What one check's violation level leads to.

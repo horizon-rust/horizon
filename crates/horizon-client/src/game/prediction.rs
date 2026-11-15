@@ -15,11 +15,7 @@ impl Game<'_> {
         if !host.hub.recording() {
             return;
         }
-        let tolerance = host
-            .hub
-            .anticheat
-            .as_deref()
-            .map_or(f64::INFINITY, |ac| ac.config.prediction.tolerance);
+        let tolerance = host.hub.prediction_tolerance();
         // The item the guest is using (eating, a bow, a shield): its client moves at the item's
         // `use_effects` speed (ItemUseModifier, 0.2 for most), and may not sprint. The server's copy
         // of a guest doesn't follow it (Game.sync_player_body is the window's player's), so the

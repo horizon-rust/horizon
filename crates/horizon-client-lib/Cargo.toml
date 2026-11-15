@@ -39,8 +39,6 @@ horizon-protocol = { path = "../horizon-protocol" }
 horizon-server-files = { path = "../horizon-server-files" }
 # The control endpoint's token (control.rs), as horizon-server's and the relay's.
 getrandom = "0.3"
-# The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
-horizon-anticheat = { path = "../horizon-anticheat" }
 # Shader packs: reading them and turning their GLSL into naga modules.
 horizon-shaders = { path = "../horizon-shaders" }
 # Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).
@@ -140,6 +138,8 @@ horizon-items = { path = "../horizon-items", features = ["test-support"] }
 horizon-perf = { path = "../horizon-perf" }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-out"] }
+# lan_bot turns the dedicated server's anticheat on, as the game installs it (`lan::watch`).
+horizon-anticheat = { path = "../horizon-anticheat", features = ["hub"] }
 
 [[bin]]
 name = "horizon-ctl"
