@@ -135,53 +135,8 @@ mod teleport_cross_tests;
 impl Game<'_> {
     /// `AbstractMinecart.getDismountLocationForPassenger` for a standing mob.
     pub(super) fn cart_dismount_point(&self, vehicle: u32, rider: usize) -> Option<Vec3> {
-        use horizon_core::geometry::Aabb;
         let cart = self.carts.iter().find(|c| c.id == vehicle)?;
-        let rider = &self.mobs[rider];
-        let direction =
-            (f64::from(cart.yaw) / 90.0 + 0.5).floor() as i32 + if cart.flipped { 3 } else { 1 };
-        let (fx, fz) = [(0, 1), (-1, 0), (0, -1), (1, 0)][(direction & 3) as usize];
-        let (rx, rz) = (-fz, fx);
-        let offsets = [
-            (rx, rz),
-            (-rx, -rz),
-            (rx - fx, rz - fz),
-            (-rx - fx, -rz - fz),
-            (fx + rx, fz + rz),
-            (fx - rx, fz - rz),
-            (-fx, -fz),
-            (fx, fz),
-        ];
-        let [bx, by, bz] =
-            [cart.position.x, cart.position.y, cart.position.z].map(|v| v.floor() as i32);
-        let half = f64::from(rider.width().min(1.0) / 2.0);
-        for dy in [0, 1, -1] {
-            for (dx, dz) in offsets {
-                let p = [bx + dx, by + dy, bz + dz];
-                let shape = self.block_collision_shape(p);
-                let below = self.block_collision_shape([p[0], p[1] - 1, p[2]]);
-                let floor = horizon_core::geometry::block_floor_height(&shape, || &below);
-                if !floor.is_infinite() && floor < 1.0 {
-                    let at = Vec3::new(
-                        f64::from(p[0]) + 0.5,
-                        f64::from(p[1]) + floor,
-                        f64::from(p[2]) + 0.5,
-                    );
-                    let bounds = Aabb::new(
-                        Vec3::new(at.x - half, at.y, at.z - half),
-                        Vec3::new(at.x + half, at.y + f64::from(rider.height()), at.z + half),
-                    );
-                    if self.can_dismount_to(bounds) {
-                        return Some(at);
-                    }
-                }
-            }
-        }
-        Some(Vec3::new(
-            cart.position.x,
-            cart.position.y + super::minecarts::HEIGHT,
-            cart.position.z,
-        ))
+        Some(self.cart_mob_dismount_point(cart, rider))
     }
 
     /// `AbstractHorse.getDismountLocationForPassenger`: try either side

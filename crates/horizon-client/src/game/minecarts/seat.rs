@@ -1,5 +1,6 @@
 //! `AbstractMinecart`'s rider seat and the side it sets a rider down on:
 //! `getPassengerAttachmentPoint` and `getDismountLocationForPassenger`.
+use super::super::mounts::DismountWorld;
 use super::*;
 
 /// AbstractMinecart passenger attachment Y (EntityAttachments).
@@ -50,4 +51,84 @@ pub(super) fn dismount_offsets(face: i32) -> [(i32, i32); 8] {
         (-fx, -fz),
         (fx, fz),
     ]
+}
+
+/// `AbstractMinecart.getDismountLocationForPassenger` for a mob `width` by
+/// `height` in its one dismount pose (`LivingEntity.getDismountPoses`:
+/// standing): the floor of the first block round the cart's, in
+/// `DismountHelper.offsetsForDirection` order from the motion direction
+/// `face`, at the cart's level, then one up, then one down
+/// (`POSE_DISMOUNT_HEIGHTS`), where the mob's box fits (`canDismountTo`).
+/// With no room, `Entity.getDismountLocationForPassenger`: on top of the
+/// cart's box.
+pub(in crate::game) fn mob_dismount_location(
+    cart: Vec3,
+    face: i32,
+    width: f32,
+    height: f32,
+    world: &impl DismountWorld,
+) -> Vec3 {
+    let [bx, by, bz] = [cart.x, cart.y, cart.z].map(|v| v.floor() as i32);
+    let half = f64::from(width.min(1.0) / 2.0);
+    for dy in [0, 1, -1] {
+        for (dx, dz) in dismount_offsets(face) {
+            let p = [bx + dx, by + dy, bz + dz];
+            let floor = world.floor_height(p);
+            // DismountHelper.isBlockFloorValid.
+            if floor.is_infinite() || floor >= 1.0 {
+                continue;
+            }
+            // Vec3.upFromBottomCenterOf.
+            let at = Vec3::new(
+                f64::from(p[0]) + 0.5,
+                f64::from(p[1]) + floor,
+                f64::from(p[2]) + 0.5,
+            );
+            let bounds = Aabb::new(
+                Vec3::new(at.x - half, at.y, at.z - half),
+                Vec3::new(at.x + half, at.y + f64::from(height), at.z + half),
+            );
+            if world.can_dismount_to(bounds) {
+                return at;
+            }
+        }
+    }
+    Vec3::new(cart.x, cart.y + HEIGHT, cart.z)
+}
+
+/// The level as a cart's dismount reads it: its floors come from
+/// `DismountHelper.nonClimbableShape`, so a ladder, scaffolding, a vine or an
+/// open trapdoor is no floor (a mount's own search reads the plain shapes).
+struct CartDismountWorld<'a, 'g>(&'a Game<'g>);
+impl DismountWorld for CartDismountWorld<'_, '_> {
+    fn lava(&self, p: [i32; 3]) -> bool {
+        super::super::mounts::GameDismountWorld(self.0).lava(p)
+    }
+    fn floor_height(&self, p: [i32; 3]) -> f64 {
+        let level = self.0.stand_up_level();
+        let shape = level.non_climbable_shape(p);
+        let below = std::cell::OnceCell::new();
+        horizon_core::geometry::block_floor_height(&shape, || {
+            below.get_or_init(|| level.non_climbable_shape([p[0], p[1] - 1, p[2]]))
+        })
+    }
+    fn can_dismount_to(&self, bounds: Aabb) -> bool {
+        self.0.can_dismount_to(bounds)
+    }
+}
+
+impl Game<'_> {
+    /// Where cart `c` lets the mob at `rider` out
+    /// (`AbstractMinecart.getDismountLocationForPassenger`).
+    pub(in crate::game) fn cart_mob_dismount_point(&self, c: &Minecart, rider: usize) -> Vec3 {
+        let m = &self.mobs[rider];
+        let face = cart_motion_face(c.yaw, c.flipped, self.minecart_improvements());
+        mob_dismount_location(
+            c.position,
+            face,
+            m.width(),
+            m.height(),
+            &CartDismountWorld(self),
+        )
+    }
 }
