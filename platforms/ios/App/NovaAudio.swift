@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import UIKit
 
 /// Configure the system output session before CPAL opens Horizon's audio device.
 enum NovaAudio {
