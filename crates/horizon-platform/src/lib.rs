@@ -83,6 +83,18 @@ pub mod lang {
     pub use horizon_hooks::lang::{Files, register};
 }
 
+/// How the game draws a few things a crate may change, per player (`horizon_hooks::look`):
+/// vanilla's until set.
+pub mod look {
+    pub use horizon_hooks::look::{Chat, Frame, Look, update};
+}
+
+/// Input and drawing on an open container screen (docs/layers.md, "Container screens"): the
+/// `container_*` methods of [`hooks::Hooks`] get the screen as a [`containers::Container`].
+pub mod containers {
+    pub use horizon_hooks::containers::{Click, Container, Role, Slot, SlotId, Stack};
+}
+
 /// Drawing on the HUD (docs/layers.md, "Platform registries").
 pub mod hud {
     pub use horizon_hooks::hud::{Canvas, Corner, Layer, register};

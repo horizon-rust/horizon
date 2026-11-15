@@ -2,6 +2,9 @@
 //! drags, throws and the press/release of a slot click.
 use super::*;
 
+/// What crates above the engine get of these screens (`horizon_hooks::containers`).
+mod containers;
+
 /// Q throws the whole stack with Control down: the same modifier word the
 /// screens read (`has_control_down`), never a latched sprint toggle.
 pub(super) fn drop_whole_stack(modifiers: winit::keyboard::ModifiersState) -> bool {
@@ -161,7 +164,7 @@ impl Game<'_> {
             }
             return;
         }
-        if self.tweak_press(slot, right, shift) {
+        if self.tweak_press(slot, right, shift) || self.container_press(right) {
             return;
         }
         if let Some(slot) = slot
@@ -263,7 +266,9 @@ impl Game<'_> {
     }
     /// Mouse movement while a quick craft drag is running.
     pub(super) fn inventory_drag_move(&mut self) {
-        if self.tweaks_on() && self.tweak_drag_move(self.inventory_target().0) {
+        if self.tweaks_on() && self.tweak_drag_move(self.inventory_target().0)
+            || self.container_drag()
+        {
             return;
         }
         let Some((ty, slots)) = self.inv_drag.clone() else {
@@ -426,6 +431,7 @@ impl Game<'_> {
     pub(super) fn inventory_mouse_release(&mut self, right: bool) {
         use horizon_client::container_screen::{Release, Target};
         self.tweak_release();
+        self.container_release();
         let (slot, outside) = self.inventory_target();
         let dragged = self.inv_drag.as_ref().is_some_and(|(_, s)| !s.is_empty());
         let release = self.inv_clicks.release(
