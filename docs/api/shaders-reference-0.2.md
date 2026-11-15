@@ -333,11 +333,11 @@ asks for ray queries and keeps the scene with any pack or none; any other value 
   terrain, with cut-outs (leaves, plants) and lava; and what the translucent pass draws: water, glass, stained
   glass, ice, slime and honey blocks, any block whose texture has partly see-through texels.
 - `const RAY_ENTITY: u32`: a third layer, only in a pack whose files name it, anywhere outside a comment (dead
-  code too): the entities the camera draws, which are mobs, players, armour stands, item frames, vehicles,
-  projectiles, falling blocks, block displays and the block entities drawn with them (a chest while it opens). Such
-  a pack's `RayHit` also has `entity`. Not in it: particles, text, the hand, the camera's own body in first person,
-  translucent items, additive glows, beams and portals, entities the camera doesn't draw (behind it, hidden), and
-  block entities at rest (a closed chest). `trace` and `trace_any` never read it.
+  code too): the entities within the scene's reach, in view or not (behind the camera, hidden), which are mobs,
+  players, armour stands, item frames, vehicles, projectiles, falling blocks, block displays, and the block entities
+  the camera draws with them (a chest while it opens). Such a pack's `RayHit` also has `entity`. Not in it:
+  particles, text, the hand, the camera's own body in first person, translucent items, additive glows, beams and
+  portals, block entities at rest (a closed chest) and out of view. `trace` and `trace_any` never read it.
 - `fn trace_layers(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, layers: u32) -> RayHit` and
   `fn trace_any_layers(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, layers: u32) -> bool`: `trace`
   and `trace_any` over the layers `layers` names; `trace(o, d, m)` is `trace_layers(o, d, m, RAY_SOLID)`. With no
@@ -477,7 +477,7 @@ says the world changed, not the camera's distance or `frame_index`.
 | `REASON_OPTION` | 128 | its `resets` | The player changed an option marked `resets`. |
 
 Limits: 8 resources, 4 `[[before_world]]` entries, 8 compute
-`[[post]]` entries; 32 MiB of buffers and 1024 KiB of fixed-size textures, both versions counted; each R-relative
+`[[post]]` entries; 32 MiB of buffers and 32 MiB of fixed-size textures, both versions counted; each R-relative
 kept texture takes 2 of the post targets' budget (Limits); a workgroup of up to [256, 256, 64] and
 256 invocations; 33554432 invocations a dispatch and 67108864 a frame over every
 compute pass, `[[before_world]]` and `[[post]]` together, counted as whole workgroups, a `"pixels"` dispatch as 3840×2160 (R isn't known at load).
