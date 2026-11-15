@@ -172,6 +172,8 @@ impl Game<'_> {
         });
         if let Some(boat) = self.boats.iter_mut().find(|b| b.id == vehicle_id) {
             boat.paddle_controller = player_controls;
+            // AbstractBoat.positionRider seats each by its place in this list.
+            boat.listed_passengers = passengers.iter().map(|&p| p as u32).collect();
         }
 
         for m in &mut self.mobs {
