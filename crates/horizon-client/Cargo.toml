@@ -29,6 +29,9 @@ horizon-threads = { path = "../horizon-threads" }
 horizon-perf-format = { path = "../horizon-perf-format" }
 horizon-hdr = { path = "../horizon-hdr" }
 horizon-world = { path = "../horizon-world" }
+# Function calls nest on the native stack; vanilla's queue has no depth limit (CallFunction.execute),
+# so a deep or runaway recursion grows the stack on the heap until the command quota stops it.
+stacker = "0.1"
 horizon-protocol = { path = "../horizon-protocol" }
 # server.properties, eula.txt and the user lists, shared with horizon-server.
 horizon-server-files = { path = "../horizon-server-files" }
