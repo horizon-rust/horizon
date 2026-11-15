@@ -22,7 +22,7 @@ impl Game<'_> {
     /// Each frame: only a change reaches the hooks.
     pub(super) fn report_activity(&self) {
         // One status per computer: P1's, not a splitscreen player's.
-        if self.options.split_guest {
+        if self.options.role.is_guest() {
             return;
         }
         horizon_hooks::engine::activity(self.activity());
