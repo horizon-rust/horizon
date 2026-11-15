@@ -20,6 +20,7 @@ pub(super) struct Studio {
     pub(super) freecam: horizon_client::studio::StudioFreecam,
     pub(super) timeline: horizon_client::studio::TimelineUi,
     pub(super) topbar: horizon_client::studio::TopBarUi,
+    pub(super) visuals: horizon_client::studio::VisualsUi,
     pub(super) rmb_down: bool,
     pub(super) camera_track_dirty: bool,
 }
@@ -314,6 +315,9 @@ impl Game<'_> {
                     .timeline
                     .split_at(self.studio.timeline.current_time_ms);
             }
+            TopBarAction::ToggleVisualsSidebar => {
+                self.studio.visuals.open = !self.studio.visuals.open;
+            }
         }
     }
 
@@ -410,6 +414,9 @@ impl Game<'_> {
                 self.studio.camera_track_dirty = true;
             }
             TimelineAction::SplitClip(time_ms) => self.studio.timeline.split_at(time_ms),
+            TimelineAction::ToggleVisualsSidebar => {
+                self.studio.visuals.open = !self.studio.visuals.open;
+            }
             TimelineAction::None => {}
         }
     }
@@ -532,6 +539,8 @@ impl Game<'_> {
         self.studio.timeline.split_points.clear();
         self.studio.timeline.selected_keyframe = None;
         self.studio.freecam.deactivate();
+        self.studio.visuals.open = false;
+        self.studio.visuals.resizing_width = false;
     }
 }
 
@@ -548,6 +557,14 @@ impl Game<'_> {
             self.cursor,
             self.studio.freecam.locked_to_path,
         );
+        let timeline_h = if self.studio.timeline.visible {
+            self.studio.timeline.height()
+        } else {
+            0.0
+        };
+        self.studio
+            .visuals
+            .render(batch, &self.gui.atlas, self.cursor, timeline_h);
         self.studio
             .timeline
             .render(batch, &self.gui.atlas, self.cursor, &self.studio.freecam);
@@ -565,12 +582,17 @@ impl Game<'_> {
         }
     }
 
-    /// The pointer moved while the timeline's playhead or a keyframe is dragged: Studio took it.
+    /// The pointer moved while the timeline's playhead, a keyframe, or sidebar is dragged: Studio took it.
     pub(super) fn studio_mouse_dragged(&mut self, width: f32) -> bool {
-        if !EDITOR
-            || self.screen != Screen::Playing
-            || !(self.studio.timeline.dragging_playhead
-                || self.studio.timeline.dragging_keyframe.is_some())
+        if !EDITOR || self.screen != Screen::Playing {
+            return false;
+        }
+        if self.studio.visuals.resizing_width {
+            self.studio.visuals.handle_resize_drag(self.cursor.0, width);
+            return true;
+        }
+        if !(self.studio.timeline.dragging_playhead
+            || self.studio.timeline.dragging_keyframe.is_some())
         {
             return false;
         }
@@ -595,6 +617,10 @@ impl Game<'_> {
             return self.screen == Screen::Playing && self.replay.playing();
         }
         if !pressed && button == winit::event::MouseButton::Left {
+            if self.studio.visuals.resizing_width {
+                self.studio.visuals.handle_mouse_up();
+                return true;
+            }
             let action = self.studio.timeline.handle_mouse_up();
             if !matches!(action, TimelineAction::None) {
                 self.handle_studio_timeline_action(action);
@@ -659,6 +685,21 @@ impl Game<'_> {
             if had_open_menu || self.cursor.1 <= self.studio.topbar.height {
                 return true;
             }
+            let timeline_h = if self.studio.timeline.visible {
+                self.studio.timeline.height()
+            } else {
+                0.0
+            };
+            if self.studio.visuals.open
+                && self.studio.visuals.handle_mouse_click(
+                    self.cursor,
+                    batch.width,
+                    batch.height,
+                    timeline_h,
+                )
+            {
+                return true;
+            }
             if self.studio.timeline.visible {
                 let action = self.studio.timeline.handle_mouse_down(
                     self.cursor,
@@ -715,6 +756,7 @@ impl Game<'_> {
             _ if !EDITOR => {}
             KeyCode::KeyF => self.handle_studio_timeline_action(TimelineAction::ToggleFreecam),
             KeyCode::KeyT => self.studio.timeline.visible = !self.studio.timeline.visible,
+            KeyCode::KeyV => self.studio.visuals.open = !self.studio.visuals.open,
             KeyCode::KeyM => self.add_studio_marker(),
             KeyCode::Home => self.handle_studio_topbar_action(
                 horizon_client::studio::TopBarAction::ResetCameraToPlayer,

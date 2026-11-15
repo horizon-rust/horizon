@@ -29,6 +29,7 @@ pub enum TimelineAction {
     SelectKeyframe(usize),
     KeyframeMoved,
     SplitClip(u64),
+    ToggleVisualsSidebar,
     None,
 }
 
@@ -41,6 +42,7 @@ struct TimelineHeaderLayout {
     freecam_x: Option<f32>,
     freecam_width: f32,
     keyframe_x: Option<f32>,
+    visuals_x: Option<f32>,
 }
 
 impl TimelineHeaderLayout {
@@ -66,6 +68,11 @@ impl TimelineHeaderLayout {
             next += freecam_width + 6.0;
         }
         let keyframe_x = (screen_width >= 460.0 && next + 122.0 <= screen_width).then_some(next);
+        let visuals_x = if let Some(kf_x) = keyframe_x {
+            (screen_width >= 580.0 && kf_x + 122.0 + 52.0 <= screen_width).then_some(kf_x + 122.0)
+        } else {
+            (screen_width >= 350.0 && next + 52.0 <= screen_width).then_some(next)
+        };
         Self {
             transport_x,
             time_x,
@@ -74,6 +81,7 @@ impl TimelineHeaderLayout {
             freecam_x,
             freecam_width,
             keyframe_x,
+            visuals_x,
         }
     }
 }
@@ -218,8 +226,28 @@ impl TimelineUi {
         let panel_y = screen_h - panel_h;
         let panel_rect = [0.0, panel_y, screen_w, panel_h];
 
-        // 1. Draw glass background panel
-        style::panel(batch, atlas, panel_rect);
+        // 1. Draw solid dark background panel with top border
+        style::fill(batch, atlas, panel_rect, 0xFF14_161D);
+        style::fill(
+            batch,
+            atlas,
+            [panel_rect[0], panel_rect[1], panel_rect[2], 1.0],
+            0xFF2D_323F,
+        );
+
+        // Header transport row background
+        style::fill(
+            batch,
+            atlas,
+            [panel_rect[0], panel_y, panel_rect[2], 23.0],
+            0xFF18_1B24,
+        );
+        style::fill(
+            batch,
+            atlas,
+            [panel_rect[0], panel_y + 23.0, panel_rect[2], 1.0],
+            0xFF23_2733,
+        );
 
         // 2. Transport & Action Header Bar
         let header_y = panel_y + 3.0;
@@ -382,6 +410,18 @@ impl TimelineUi {
                 [x, y, split_w, btn_h],
                 &Text::translate("horizon.studio.timeline.split", &[]),
                 (split_hover, true, false),
+            );
+        }
+
+        if let Some(x) = layout.visuals_x {
+            let visuals_w = 48.0;
+            let visuals_hover = ui::hovered(cursor, x, y, visuals_w, btn_h);
+            style::button(
+                batch,
+                atlas,
+                [x, y, visuals_w, btn_h],
+                &Text::translate("horizon.studio.timeline.visuals_short", &[]),
+                (visuals_hover, true, false),
             );
         }
     }
@@ -692,6 +732,13 @@ impl TimelineUi {
             let split_w = 38.0;
             if ui::hovered(cursor, kf_x, y, split_w, btn_h) {
                 return TimelineAction::SplitClip(self.current_time_ms);
+            }
+        }
+
+        if let Some(vx) = layout.visuals_x {
+            let visuals_w = 48.0;
+            if ui::hovered(cursor, vx, y, visuals_w, btn_h) {
+                return TimelineAction::ToggleVisualsSidebar;
             }
         }
 

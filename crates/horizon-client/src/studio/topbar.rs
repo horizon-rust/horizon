@@ -31,6 +31,7 @@ pub enum TopBarAction {
     ClearKeyframes,
     ToggleTimeline,
     SplitClip,
+    ToggleVisualsSidebar,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -295,6 +296,7 @@ impl TopBarUi {
                 vec![
                     ("horizon.studio.topbar.timeline_hud", "T"),
                     ("horizon.studio.topbar.split_scene", ""),
+                    ("horizon.studio.topbar.visuals_sidebar", "V"),
                 ],
             ),
         };
@@ -373,7 +375,7 @@ impl TopBarUi {
             let (index, count) = match menu {
                 TopBarMenu::File => (0, 3),
                 TopBarMenu::Camera => (1, 6),
-                TopBarMenu::View => (2, 2),
+                TopBarMenu::View => (2, 3),
             };
             let menu_x = layout.menu_x[index];
             let menu_width = layout.menu_width_for_dropdown(width, menu_x);
@@ -394,6 +396,7 @@ impl TopBarUi {
                     (TopBarMenu::Camera, 5) => TopBarAction::ClearKeyframes,
                     (TopBarMenu::View, 0) => TopBarAction::ToggleTimeline,
                     (TopBarMenu::View, 1) => TopBarAction::SplitClip,
+                    (TopBarMenu::View, 2) => TopBarAction::ToggleVisualsSidebar,
                     _ => TopBarAction::None,
                 };
             }

@@ -10,6 +10,7 @@ pub mod replay;
 pub mod spline;
 pub mod timeline_ui;
 pub mod topbar;
+pub mod visuals_ui;
 
 pub use camera::StudioFreecam;
 pub use mcpr::{
@@ -21,3 +22,4 @@ pub use replay::ReplayDriver;
 pub use spline::{CameraKeyframe, CameraTrack, EvaluatedPose};
 pub use timeline_ui::{TimelineAction, TimelineUi};
 pub use topbar::{TopBarAction, TopBarUi};
+pub use visuals_ui::VisualsUi;
