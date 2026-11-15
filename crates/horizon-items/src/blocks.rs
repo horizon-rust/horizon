@@ -60,6 +60,9 @@ pub struct StateFacts {
     pub random_offset: bool,
     /// Whether the outline, not just the model, follows BlockState.getOffset.
     pub outline_offset: bool,
+    /// `BlockState.shouldSpawnTerrainParticles`: false only for the blocks
+    /// `Blocks` builds with `noTerrainParticles` (the barrier, the structure void).
+    pub spawn_terrain_particles: bool,
     /// `BlockState.isSolid()` (legacy solidity; fluid surfaces read it).
     pub legacy_solid: bool,
     /// `isFaceSturdy(.., SupportType.FULL)` by Direction ordinal.
@@ -525,6 +528,7 @@ impl BlockFacts {
                 waterlogged: prop("waterlogged") == Some("true"),
                 random_offset: entry.offset,
                 outline_offset: entry.outline_offset.unwrap_or(entry.offset),
+                spawn_terrain_particles: entry.spawn_terrain_particles.unwrap_or(true),
                 legacy_solid: behaviour_states[index][1].as_u64().unwrap_or(0) & 1 != 0,
                 sturdy_full: (behaviour_states[index][0].as_u64().unwrap_or(0) & 63) as u8,
                 classes: classes

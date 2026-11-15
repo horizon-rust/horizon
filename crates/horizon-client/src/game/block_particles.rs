@@ -103,9 +103,12 @@ impl Game<'_> {
             .map(|b| std::array::from_fn(|i| b[i] + offset[i % 3]))
             .collect()
     }
-    /// ClientLevel.addDestroyBlockEffect: a burst per outline box.
+    /// ClientLevel.addDestroyBlockEffect: a burst per outline box, unless the
+    /// block spawns no terrain particles (`BlockBehaviour.Properties.noTerrainParticles`).
     pub(super) fn destroy_particles(&mut self, pos: [i32; 3], state: BlockStateId) {
-        if self.settings.extras.hide_block_particles {
+        if self.settings.extras.hide_block_particles
+            || !self.res.facts().get(state).spawn_terrain_particles
+        {
             return;
         }
         let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
@@ -149,9 +152,17 @@ impl Game<'_> {
         Some((sprite, tint))
     }
 
-    /// ClientLevel.addBreakingParticles: one crumb on the face being mined.
+    /// ClientLevel.addBreakingParticles, behind `addBreakingBlockEffects`'
+    /// guard: one crumb on the face being mined, for a visible render shape
+    /// that spawns terrain particles.
     pub(super) fn crack_particle(&mut self, pos: [i32; 3], face: [i32; 3], state: BlockStateId) {
         if self.settings.extras.hide_block_particles {
+            return;
+        }
+        let facts = self.res.facts().get(state);
+        if facts.render_shape == horizon_client::blocks::RenderShape::Invisible
+            || !facts.spawn_terrain_particles
+        {
             return;
         }
         let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
@@ -179,3 +190,7 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "block_particles_tests.rs"]
+mod block_particles_tests;

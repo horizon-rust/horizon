@@ -177,6 +177,7 @@ object!(Entry<'a> {
     sound: Sound<'a> = Sound::default() => typed,
     offset: bool = false => value(flag),
     outline_offset: Option<bool> = None => value(|v: Value| v.as_bool()),
+    spawn_terrain_particles: Option<bool> = None => value(|v: Value| v.as_bool()),
     map_color: Option<u64> = None => value(unsigned),
     outline: Option<&'a RawValue> = None => typed,
     outline_edges: Option<&'a RawValue> = None => typed,
