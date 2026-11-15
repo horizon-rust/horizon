@@ -1119,6 +1119,10 @@ impl Game<'_> {
                             let by = t.guest.map_or(Target::Player, Target::Guest);
                             let hit = CartHit::attributed(Some(by));
                             self.hurt_cart(i, damage, creative, false, hit);
+                        } else if self.armor_stands.iter().any(|a| a.id == id) {
+                            // ArmorStand.hurtServer: `trident` always kills a stand.
+                            let by = t.guest.map_or(Target::Player, Target::Guest);
+                            self.command_damage_stand(id, "minecraft:trident", Some(by));
                         } else {
                             // ItemFrame.hurtServer: the item comes out, or the frame breaks.
                             self.projectile_hurts_frame(id, true, creative);
