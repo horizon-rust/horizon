@@ -55,6 +55,7 @@ fn sizes(store: &KeptStore) -> Vec<(u64, Option<[u32; 2]>)> {
                 (b.size(), None)
             }
             Held::Pair([a, b]) => {
+                let (a, b) = (a.texture(), b.texture());
                 let usage = T::STORAGE_BINDING | T::TEXTURE_BINDING | T::RENDER_ATTACHMENT;
                 assert_eq!((a.usage(), b.usage()), (usage, usage));
                 assert_eq!((size(a), a.format()), (size(b), b.format()));
@@ -78,7 +79,7 @@ fn each_shape_is_made_with_its_size_and_usages_and_fit_remakes_the_scaled_ones()
     let Held::Pair([r32, _]) = &store.held[7] else {
         panic!("a texture")
     };
-    assert_eq!(r32.format(), wgpu::TextureFormat::R32Float);
+    assert_eq!(r32.texture().format(), wgpu::TextureFormat::R32Float);
     store.fit(&device, [40, 9]);
     assert_eq!(
         sizes(&store),
@@ -109,13 +110,9 @@ fn every_shape_allocates_and_binds_without_a_validation_error() {
                 label: None,
                 entries: &layout_entries(&kept, &[binding], visibility),
             });
-            let view;
             let resource = match held {
                 Held::Buffer(b) => b.as_entire_binding(),
-                Held::Pair([t, _]) => {
-                    view = t.create_view(&Default::default());
-                    wgpu::BindingResource::TextureView(&view)
-                }
+                Held::Pair([view, _]) => wgpu::BindingResource::TextureView(view),
             };
             let _group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
@@ -454,6 +451,552 @@ fn a_rebuild_carries_the_epochs_and_options_reset_what_they_name() {
         )
         .is_none()
     );
+}
+
+/// `begin` starts a real frame (`frame`) once, however often it is called: it swaps the
+/// versions then, records its clears of every shape validly (the view's when the view epoch
+/// moved, the world's when the world's did), and says when a new R remade textures. Run with
+/// `WGPU_BACKEND=vulkan` and `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn begin_starts_a_frame_once_and_clears_what_the_epochs_moved() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let mut kept = every_shape();
+    for r in kept.resources.iter_mut().step_by(2) {
+        r.keep = horizon_shader_api::kept::Keep::World;
+    }
+    let mut store = KeptStore::new(&device, &kept, [8, 8]);
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let mut begin = |store: &mut KeptStore, size| {
+        let remade = store.begin(&device, &mut encoder, size);
+        (remade, store.parity, store.cleared)
+    };
+    assert_eq!(begin(&mut store, [8, 8]), (false, 0, [1, 1]));
+    store.frame([1, 1], [8, 8]);
+    assert_eq!(begin(&mut store, [8, 8]), (false, 1, [1, 1]));
+    assert_eq!(begin(&mut store, [8, 8]), (false, 1, [1, 1]));
+    store.frame([2, 1], [8, 8]);
+    assert_eq!(begin(&mut store, [8, 8]), (false, 0, [2, 1]));
+    store.frame([3, 2], [4, 4]);
+    assert_eq!(begin(&mut store, [4, 4]), (true, 1, [3, 2]));
+    queue.submit([encoder.finish()]);
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
+}
+
+/// A device, and its instance, which counts the objects made on it (`generate_report`).
+fn counted() -> Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)> {
+    let instance = crate::gfx::test_gpu::instance();
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).ok()?;
+    Some((instance, device, queue))
+}
+
+const IDENTITY: &str = "fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color; }\n";
+
+/// A 0.2 post chain on 4×4 targets, its tone curve the identity: what its last pass writes
+/// comes back on the screen as 8-bit values.
+struct Chain {
+    frame: super::super::NativeFrame,
+    post: super::super::NativePost,
+    screen: Screen,
+}
+
+/// The world's 4×4 targets a chain reads, and the screen it draws onto.
+struct Screen {
+    color: wgpu::TextureView,
+    depth: wgpu::TextureView,
+    screen: wgpu::Texture,
+}
+
+impl Screen {
+    fn new(device: &wgpu::Device) -> Self {
+        let texture = |format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let usage = T::RENDER_ATTACHMENT | T::TEXTURE_BINDING;
+        let view = |t: wgpu::Texture| t.create_view(&Default::default());
+        Self {
+            color: view(texture(wgpu::TextureFormat::Rgba8Unorm, usage)),
+            depth: view(texture(wgpu::TextureFormat::Depth32Float, usage)),
+            screen: texture(
+                wgpu::TextureFormat::Rgba8Unorm,
+                T::RENDER_ATTACHMENT | T::COPY_SRC,
+            ),
+        }
+    }
+
+    /// Runs `post` at R `size`, with the frame's `surface`; the screen's first pixel.
+    fn show(
+        &self,
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        post: &mut NativePost,
+        surface: &wgpu::TextureView,
+        size: [u32; 2],
+    ) -> [u8; 4] {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let world = (&self.color, &self.depth, surface);
+        let view = self.screen.create_view(&Default::default());
+        post.run(device, &mut encoder, world, &view, size, false, None, None);
+        let buffer = crate::gfx::copy_frame(device, &mut encoder, &self.screen, [4, 4]);
+        queue.submit([encoder.finish()]);
+        (buffer.slice(..)).map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let pixel = buffer.slice(..).get_mapped_range().unwrap()[..4].try_into();
+        pixel.unwrap()
+    }
+}
+
+impl Chain {
+    fn frame(device: &wgpu::Device, queue: &wgpu::Queue) -> super::super::NativeFrame {
+        let frame = super::super::NativeFrame::new(
+            device,
+            None,
+            Vec::new(),
+            Default::default(),
+            None,
+            false,
+        );
+        let inputs = horizon_shader_api::Frame {
+            headroom: 1.0,
+            ..Default::default()
+        };
+        queue.write_buffer(&frame.buffer, 0, bytemuck::bytes_of(&inputs));
+        frame
+    }
+
+    /// The post stage of the pack of `manifest` (after `HEAD`, then `[tonemap]`) and `files`,
+    /// installed.
+    fn post(
+        device: &wgpu::Device,
+        frame: &super::super::NativeFrame,
+        manifest: &str,
+        files: &[(&str, &str)],
+    ) -> super::super::NativePost {
+        let manifest = format!("{manifest}[tonemap]\nfile = \"t.wgsl\"\n");
+        let report = report(&manifest, &[files, &[("t.wgsl", IDENTITY)]].concat());
+        let (passes, others): (Vec<_>, Vec<_>) =
+            (report.stages.into_iter()).partition(|s| s.kind != StageKind::Tonemap);
+        let tonemap = others.iter().find(|s| s.kind == StageKind::Tonemap);
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut post = super::super::NativePost::new(
+            device,
+            passes,
+            &report.manifest,
+            &[],
+            format,
+            frame,
+            tonemap,
+        )
+        .unwrap();
+        install(device, Some(&mut post), None);
+        post
+    }
+
+    fn new(device: &wgpu::Device, frame: super::super::NativeFrame, post: NativePost) -> Self {
+        let screen = Screen::new(device);
+        Self {
+            frame,
+            post,
+            screen,
+        }
+    }
+
+    /// Starts a frame at R `size` (`frame.resolution` too), its epochs `epochs`, and runs it.
+    fn next(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        epochs: [u32; 2],
+        size: [u32; 2],
+    ) -> [u8; 4] {
+        let inputs = horizon_shader_api::Frame {
+            headroom: 1.0,
+            resolution: size.map(|v| v as f32),
+            ..Default::default()
+        };
+        queue.write_buffer(&self.frame.buffer, 0, bytemuck::bytes_of(&inputs));
+        self.post.kept_frame(epochs, size);
+        self.run(device, queue, size)
+    }
+
+    /// Runs the chain at R `size`; the screen's first pixel.
+    fn run(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, size: [u32; 2]) -> [u8; 4] {
+        let surface = &self.frame.surface_view;
+        (self.screen).show((device, queue), &mut self.post, surface, size)
+    }
+}
+
+/// A pass writing `hist` (R-relative, adding a quarter to last frame's), one writing the
+/// `r32float` `acc`, and the last showing `hist_previous`, `hist`'s alpha (the pass's, not 1)
+/// and `acc` as red, green, blue.
+const KEPT_CHAIN: &str = "[[resource]]\nname = \"hist\"\nformat = \"rgba16float\"\nscale = 1.0\n\
+                          keep = \"view\"\n[[resource]]\nname = \"acc\"\nformat = \"r32float\"\n\
+                          size = [4, 4]\nkeep = \"view\"\n\
+                          [[post]]\nfile = \"h.wgsl\"\noutput = \"hist\"\nreads = [\"hist_previous\"]\n\
+                          [[post]]\nfile = \"a.wgsl\"\noutput = \"acc\"\n\
+                          [[post]]\nfile = \"l.wgsl\"\nreads = [\"hist\", \"hist_previous\", \"acc\"]\n";
+const KEPT_FILES: [(&str, &str); 3] = [
+    (
+        "h.wgsl",
+        "fn post(input: PostInput) -> vec4<f32> {\n    \
+         return textureLoad(hist_previous, vec2<i32>(input.pixel), 0) + 0.25;\n}\n",
+    ),
+    (
+        "a.wgsl",
+        "fn post(input: PostInput) -> vec4<f32> { return vec4<f32>(0.6); }\n",
+    ),
+    (
+        "l.wgsl",
+        "fn post(input: PostInput) -> vec4<f32> {\n    let p = vec2<i32>(input.pixel);\n    \
+         let previous = textureLoad(hist_previous, p, 0).r;\n    \
+         return vec4<f32>(previous, textureLoad(hist, p, 0).a, textureLoad(acc, p, 0).r, 1.0);\n}\n",
+    ),
+];
+
+/// #16011 item 4, P4a: a pass's `output` writes this frame's version of a kept texture, which
+/// the next frame reads as `_previous`; a later pass reads it, and an `r32float` one with
+/// `textureLoad`. Another run in the same frame swaps nothing. A moved epoch clears both
+/// versions, and a new R remakes the R-relative pair as zeros. Run with `WGPU_BACKEND=vulkan`
+/// and `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn a_kept_texture_ping_pongs_and_starts_over_on_a_reset_and_a_new_size() {
+    let Some((_, device, queue)) = counted() else {
+        return;
+    };
+    let frame = Chain::frame(&device, &queue);
+    let post = Chain::post(&device, &frame, KEPT_CHAIN, &KEPT_FILES);
+    let mut chain = Chain::new(&device, frame, post);
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let next = |chain: &mut Chain, epochs, size| {
+        chain.post.kept_frame(epochs, size);
+        chain.run(&device, &queue, size)
+    };
+    // The screen holds light encoded (`horizon_encode`).
+    let near = |got: [u8; 4], want: [f32; 3]| {
+        let shown = want.map(|v| (v.powf(1.0 / 2.2) * 255.0).round() as u8);
+        got.iter().zip(shown).all(|(g, w)| g.abs_diff(w) <= 1)
+    };
+    for want in [[0.0, 0.25, 0.6], [0.25, 0.5, 0.6], [0.5, 0.75, 0.6]] {
+        let got = next(&mut chain, [1, 1], [4, 4]);
+        assert!(near(got, want), "{got:?}, {want:?} expected");
+    }
+    let again = chain.run(&device, &queue, [4, 4]);
+    assert!(near(again, [0.5, 0.75, 0.6]), "{again:?} run again");
+    // A history reset moves the view epoch (`super::super::NativeFrame::reset_history`).
+    let reset = next(&mut chain, [2, 1], [4, 4]);
+    assert!(near(reset, [0.0, 0.25, 0.6]), "{reset:?} after the reset");
+    let resized = next(&mut chain, [2, 1], [2, 2]);
+    assert!(near(resized, [0.0, 0.25, 0.6]), "{resized:?} at a new R");
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
+}
+
+/// An `rgba32uint` kept texture binds to a post pass as `texture_2d<u32>`, both versions read
+/// with `textureLoad`: zeros, until compute passes write it, across a swap and a clear. Run with
+/// `WGPU_BACKEND=vulkan` and `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn a_post_pass_loads_an_rgba32uint_texture_and_its_previous() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let manifest = "[[resource]]\nname = \"ints\"\nformat = \"rgba32uint\"\nsize = [4, 4]\n\
+                    keep = \"view\"\n[[post]]\nfile = \"l.wgsl\"\nreads = [\"ints\", \"ints_previous\"]\n";
+    let read = "fn post(input: PostInput) -> vec4<f32> {\n    let p = vec2<i32>(input.pixel);\n    \
+                let n = textureLoad(ints, p, 0) + textureLoad(ints_previous, p, 0);\n    \
+                return vec4<f32>(0.5 + f32(n.x + n.w), 0.25, 0.0, 1.0);\n}\n";
+    let frame = Chain::frame(&device, &queue);
+    let post = Chain::post(&device, &frame, manifest, &[("l.wgsl", read)]);
+    let mut chain = Chain::new(&device, frame, post);
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    // 0.5 and 0.25, encoded (`horizon_encode`).
+    let shown = [0.5f32, 0.25, 0.0].map(|v| (v.powf(1.0 / 2.2) * 255.0).round() as u8);
+    for epochs in [[1, 1], [1, 1], [2, 1]] {
+        chain.post.kept_frame(epochs, [4, 4]);
+        let got = chain.run(&device, &queue, [4, 4]);
+        let near = got.iter().zip(shown).all(|(g, w)| g.abs_diff(w) <= 1);
+        assert!(near, "{got:?}, {shown:?} expected");
+    }
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
+}
+
+/// `want` as the screen shows it (`horizon_encode`), within 1 of `got`.
+fn shows(got: [u8; 4], want: [f32; 3]) -> bool {
+    let shown = want.map(|v| (v.powf(1.0 / 2.2) * 255.0).round() as u8);
+    got.iter().zip(shown).all(|(g, w)| g.abs_diff(w) <= 1)
+}
+
+/// The chain of `manifest` and `files` over `frames` (epochs, R, the colour expected), with no
+/// validation error; a second run in the last frame dispatches nothing and shows the same.
+fn computes(manifest: &str, files: &[(&str, &str)], frames: &[([u32; 2], [u32; 2], [f32; 3])]) {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let frame = Chain::frame(&device, &queue);
+    let post = Chain::post(&device, &frame, manifest, files);
+    let mut chain = Chain::new(&device, frame, post);
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    for (n, &(epochs, size, want)) in frames.iter().enumerate() {
+        let got = chain.next(&device, &queue, epochs, size);
+        assert!(shows(got, want), "frame {n}: {got:?}, {want:?} expected");
+    }
+    let (_, size, want) = frames[frames.len() - 1];
+    let again = chain.run(&device, &queue, size);
+    assert!(
+        shows(again, want),
+        "run again: {again:?}, {want:?} expected"
+    );
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
+}
+
+/// #16011 item 4, P4b: a compute pass writes this frame's version of an R-relative kept texture
+/// (adding to `_previous`), and a later pass shows it; the compute pass doesn't advance
+/// `previous`, so that pass's colour is the first pass's blue. A reset clears it. Run with
+/// `WGPU_BACKEND=vulkan` and `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn a_compute_pass_writes_a_kept_texture_a_later_pass_shows() {
+    let manifest = "[[resource]]\nname = \"img\"\nformat = \"rgba16float\"\nscale = 1.0\n\
+                    keep = \"view\"\n[[post]]\nfile = \"b.wgsl\"\n\
+                    [[post]]\nfile = \"c.wgsl\"\ncompute = true\ndispatch = \"pixels\"\n\
+                    workgroup = [8, 8, 1]\nreads = [\"img_previous\"]\nwrites = [\"img\"]\n\
+                    [[post]]\nfile = \"l.wgsl\"\nreads = [\"img\"]\n";
+    let files = [
+        (
+            "b.wgsl",
+            "fn post(input: PostInput) -> vec4<f32> { return vec4<f32>(0.0, 0.0, 0.6, 1.0); }\n",
+        ),
+        (
+            "c.wgsl",
+            "fn compute(input: ComputeInput) {\n    if input.in_bounds {\n        \
+             let last = textureLoad(img_previous, input.cell.xy, 0);\n        \
+             textureStore(img, input.cell.xy, last + vec4<f32>(0.25, 0.125, 0.0, 0.0));\n    }\n}\n",
+        ),
+        (
+            "l.wgsl",
+            "fn post(input: PostInput) -> vec4<f32> {\n    \
+             let kept = textureLoad(img, vec2<i32>(input.pixel), 0);\n    \
+             return vec4<f32>(kept.rg, input.color.b, 1.0);\n}\n",
+        ),
+    ];
+    let frames = [
+        ([1, 1], [4, 4], [0.25, 0.125, 0.6]),
+        ([1, 1], [4, 4], [0.5, 0.25, 0.6]),
+        ([2, 1], [4, 4], [0.25, 0.125, 0.6]),
+    ];
+    computes(manifest, &files, &frames);
+}
+
+/// A compute pass adding one to the kept buffer `sum` each frame, and the last pass showing it
+/// ×0.25 in red.
+const SUMMING: (&str, [(&str, &str); 2]) = (
+    "[[resource]]\nname = \"sum\"\nbuffer = 16\nelement = \"u32\"\nkeep = \"view\"\n\
+     [[post]]\nfile = \"c.wgsl\"\ncompute = true\ndispatch = [1, 1, 1]\n\
+     workgroup = [1, 1, 1]\nwrites = [\"sum\"]\n[[post]]\nfile = \"l.wgsl\"\nreads = [\"sum\"]\n",
+    [
+        (
+            "c.wgsl",
+            "fn compute(input: ComputeInput) { sum[0] = sum[0] + 1u; }\n",
+        ),
+        (
+            "l.wgsl",
+            "fn post(input: PostInput) -> vec4<f32> {\n    \
+             return vec4<f32>(f32(sum[0]) * 0.25, 0.0, 0.0, 1.0);\n}\n",
+        ),
+    ],
+);
+
+/// A compute pass adds one to a kept buffer each frame, which the last pass shows; a history
+/// reset (the view epoch) starts it over. Run with `WGPU_BACKEND=vulkan` and
+/// `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn a_compute_pass_accumulates_in_a_buffer_and_starts_over_on_a_reset() {
+    let (manifest, files) = SUMMING;
+    let frames = [
+        ([1, 1], [4, 4], [0.25, 0.0, 0.0]),
+        ([1, 1], [4, 4], [0.5, 0.0, 0.0]),
+        ([1, 1], [4, 4], [0.75, 0.0, 0.0]),
+        ([2, 1], [4, 4], [0.25, 0.0, 0.0]),
+    ];
+    computes(manifest, &files, &frames);
+}
+
+/// A compute pass writes an `rgba32uint` kept texture (adding to `_previous`), which a post pass
+/// loads. Run with `WGPU_BACKEND=vulkan` and `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn a_compute_pass_writes_an_rgba32uint_texture_a_post_pass_loads() {
+    let manifest = "[[resource]]\nname = \"ints\"\nformat = \"rgba32uint\"\nsize = [4, 4]\n\
+                    keep = \"view\"\n[[post]]\nfile = \"c.wgsl\"\ncompute = true\n\
+                    dispatch = [4, 4, 1]\nworkgroup = [4, 4, 1]\nreads = [\"ints_previous\"]\n\
+                    writes = [\"ints\"]\n[[post]]\nfile = \"l.wgsl\"\nreads = [\"ints\"]\n";
+    let files = [
+        (
+            "c.wgsl",
+            "fn compute(input: ComputeInput) {\n    \
+             let last = textureLoad(ints_previous, input.cell.xy, 0);\n    \
+             textureStore(ints, input.cell.xy, last + vec4<u32>(1u, 2u, 0u, 0u));\n}\n",
+        ),
+        (
+            "l.wgsl",
+            "fn post(input: PostInput) -> vec4<f32> {\n    \
+             let n = textureLoad(ints, vec2<i32>(input.pixel), 0);\n    \
+             return vec4<f32>(vec2<f32>(n.xy) * 0.125, 0.0, 1.0);\n}\n",
+        ),
+    ];
+    let frames = [
+        ([1, 1], [4, 4], [0.125, 0.25, 0.0]),
+        ([1, 1], [4, 4], [0.25, 0.5, 0.0]),
+    ];
+    computes(manifest, &files, &frames);
+}
+
+/// The frames come from the renderer's own path: a pack built by `NativePack::new`, installed,
+/// and each frame's inputs written by `NativePack::write`, which hands the kept store its frame
+/// (`kept_frame`). Without that the store never starts a frame and the compute pass never runs.
+/// Run with `WGPU_BACKEND=vulkan` and `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn a_pack_s_own_frames_run_its_compute_pass() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let (globals, empty) = crate::gfx::native_pack::tests::terrain_layouts(&device);
+    let terrain = crate::gfx::native_pack::tests::terrain_shape(&globals, &empty);
+    let (manifest, files) = SUMMING;
+    let manifest = format!("{manifest}[tonemap]\nfile = \"t.wgsl\"\n");
+    let report = report(&manifest, &[&files[..], &[("t.wgsl", IDENTITY)]].concat());
+    let built = crate::gfx::native_pack::NativePack::new(
+        &device,
+        &queue,
+        &terrain,
+        report,
+        &[],
+        Default::default(),
+    );
+    let (mut pack, _) = built.unwrap();
+    install(&device, Some(&mut pack.post), None);
+    let screen = Screen::new(&device);
+    let hud = crate::hud::HudBatch::new([4, 4]);
+    let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    for (n, want) in [(1, 0.25), (2, 0.5), (3, 0.75)] {
+        // A scripted clock: a slow frame on a loaded machine is no pause that resets the store.
+        let timing = crate::gfx::pack_uniforms::FrameTiming::nth(n, 50.0);
+        frame.pack.frame_timing = Some(timing);
+        let display = crate::gfx::output::DisplayValues::SDR;
+        pack.write(&queue, &frame, [4, 4], display, None);
+        let post = &mut pack.post;
+        let got = screen.show((&device, &queue), post, &pack.frame.surface_view, [4, 4]);
+        assert!(shows(got, [want, 0.0, 0.0]), "{got:?}, {want} expected");
+    }
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
+}
+
+/// `"pixels"` dispatches R in whole workgroups: at an R of 3×5 with 2×2 workgroups, 4×6
+/// invocations write an 8×8 texture, the 15 in bounds 1 and the rest 0.5, which the last pass
+/// adds up. Run with `WGPU_BACKEND=vulkan` and `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn a_pixels_dispatch_covers_a_render_size_off_the_workgroup() {
+    let manifest = "[[resource]]\nname = \"hit\"\nformat = \"r32float\"\nsize = [8, 8]\n\
+                    keep = \"view\"\n[[post]]\nfile = \"c.wgsl\"\ncompute = true\n\
+                    dispatch = \"pixels\"\nworkgroup = [2, 2, 1]\nwrites = [\"hit\"]\n\
+                    [[post]]\nfile = \"l.wgsl\"\nreads = [\"hit\"]\n";
+    let files = [
+        (
+            "c.wgsl",
+            "fn compute(input: ComputeInput) {\n    \
+             textureStore(hit, input.cell.xy, vec4<f32>(select(0.5, 1.0, input.in_bounds)));\n}\n",
+        ),
+        (
+            "l.wgsl",
+            "fn post(input: PostInput) -> vec4<f32> {\n    var n = 0.0;\n    \
+             for (var i = 0; i < 64; i++) { n += textureLoad(hit, vec2<i32>(i % 8, i / 8), 0).r; }\n    \
+             return vec4<f32>(n / 32.0, 0.0, 0.0, 1.0);\n}\n",
+        ),
+    ];
+    computes(
+        manifest,
+        &files,
+        &[([1, 1], [3, 5], [19.5 / 32.0, 0.0, 0.0])],
+    );
+}
+
+/// Kept resources cost a pack without them nothing: its chain makes one group layout, and on
+/// its first frame a bind group a pass and one for the tonemap, as before them; none on the
+/// next frame. A pack with them makes a group layout a pass besides, and its groups once for
+/// each parity, none after; one with a compute pass, its pipeline too, while it builds.
+#[test]
+fn a_pack_without_kept_resources_makes_the_layouts_and_groups_it_made_before() {
+    let Some((instance, device, queue)) = counted() else {
+        return;
+    };
+    let count = || {
+        let hub = instance.generate_report()?.hub;
+        let counts = [
+            hub.bind_group_layouts,
+            hub.bind_groups,
+            hub.compute_pipelines,
+        ];
+        Some(counts.map(|c| c.num_allocated))
+    };
+    let pass = "fn post(input: PostInput) -> vec4<f32> { return input.color; }\n";
+    let plain =
+        "[[post]]\nfile = \"a.wgsl\"\n[[post]]\nfile = \"b.wgsl\"\n[[post]]\nfile = \"l.wgsl\"\n";
+    let plain_files = [("a.wgsl", pass), ("b.wgsl", pass), ("l.wgsl", pass)];
+    let made = |manifest, files: &[(&str, &str)]| {
+        let frame = Chain::frame(&device, &queue);
+        let before = count()?;
+        let post = Chain::post(&device, &frame, manifest, files);
+        let built = count()?;
+        let mut chain = Chain::new(&device, frame, post);
+        chain.post.kept_frame([1, 1], [4, 4]);
+        chain.run(&device, &queue, [4, 4]);
+        let first = count()?;
+        chain.post.kept_frame([1, 1], [4, 4]);
+        chain.run(&device, &queue, [4, 4]);
+        let second = count()?;
+        let delta = |a: [usize; 3], b: [usize; 3]| [0, 1, 2].map(|i| b[i] - a[i]);
+        Some([
+            delta(before, built),
+            delta(built, first),
+            delta(first, second),
+        ])
+    };
+    // Without a report (a backend outside wgpu-core) there is nothing to count.
+    let Some(plain) = made(plain, &plain_files) else {
+        return;
+    };
+    assert_eq!(plain, [[1, 0, 0], [0, 4, 0], [0, 0, 0]]);
+    let kept = made(KEPT_CHAIN, &KEPT_FILES).unwrap();
+    assert_eq!(kept, [[4, 0, 0], [0, 8, 0], [0, 0, 0]]);
+    let compute = "[[post]]\nfile = \"c.wgsl\"\ncompute = true\ndispatch = [1, 1, 1]\n\
+                   workgroup = [1, 1, 1]\n[[post]]\nfile = \"l.wgsl\"\n";
+    let files = [
+        ("c.wgsl", "fn compute(input: ComputeInput) {}\n"),
+        ("l.wgsl", pass),
+    ];
+    // Without `[[resource]]` the compute pass has nothing to write: nothing is made for it.
+    let idle = made(compute, &files).unwrap();
+    assert_eq!(idle, [[1, 0, 0], [0, 2, 0], [0, 0, 0]]);
+    let (manifest, files) = SUMMING;
+    let computing = made(manifest, &files).unwrap();
+    assert_eq!(computing, [[3, 0, 1], [0, 6, 0], [0, 0, 0]]);
 }
 
 /// #16011 item 4: a pack's kept resources are made at install (`replace_native`), not while it

@@ -8,8 +8,8 @@ design note for a new line ([api/stability.md](../api/stability.md)); this is th
 ## Why
 
 **The frame can't hold light brighter than white.** The world is drawn in vanilla's gamma space into the swapchain's
-8-bit format, or with HDR on into `Rgba16Unorm`, which clips at white after every pass as the 8-bit frame does
-(`gfx.rs` `WIDE_FRAME`). HDR output (`hdr.wgsl`) rebuilds the light above white at the end, from marks in the frame's
+8-bit format, or with HDR on into `Rgba16Unorm`, which clips at white after every pass as the 8-bit frame does.
+HDR output (`hdr.wgsl`) rebuilds the light above white at the end, from marks in the frame's
 alpha:
 
 | Alpha | Means |
@@ -137,7 +137,7 @@ The water mirror and `shadow_color` draw no blends, so they store linear in both
 - A 0.2 pack in SDR moves the frame from 4 to 8 bytes a pixel (about 15 MB more at 1440p), only while it runs. Its
   post chain already uses `Rgba16Float`.
 - WebGPU renders to, blends and filters `Rgba16Float` without optional features, unlike `Rgba16Unorm`
-  (`draws_wide_frame`); the 8-bit fallback stays only for the HUD's target. The GL backend is checked in the series.
+  (`draws_frame`); the 8-bit fallback stays only for the HUD's target. The GL backend is checked in the series.
 - Up to 1, half float steps at least 8 times finer than 8-bit, and far finer in the darks, so Smooth Gradients'
   gain stays without its setting.
 
@@ -246,10 +246,78 @@ From preview on, stability.md's deprecation windows apply.
 ## `shaders/`-format packs
 
 They keep their own buffers and tone map to SDR in their last program, and their alpha is theirs. Their `final`
-program writes all four channels onto the frame (`gfx/pack_post.rs` `target`), and `keep_world` copies that alpha
-into the kept world, but the HDR pass doesn't read it as marks: their picture is shown at paper white with nothing
-lifted, as #3125 suggests. HDR values they could read (`hdr`, headroom,
+program writes all four channels onto the frame (`gfx/pack_post.rs` `target`), and the HDR pass reads its colour
+alone: their picture, on the swapchain's 8-bit frame, is shown at paper white with nothing lifted, the hand and the
+HUD with it, as #3125 suggests. HDR values they could read (`hdr`, headroom,
 paper white) are a later, optional addition for pack authors.
+
+## Horizon's look
+
+What Horizon lifts with HDR on and no pack (light sources, the sun, the tone curve's scene peak) is a look, and
+step 7 makes it one a pack could have written: its numbers and its maths in one WGSL file, drawn through shader
+API 0.2's public inputs.
+
+**Not yet a pack that runs by default.** The goal, approved in
+[#16126](https://github.com/horizon-rust/horizon/issues/16126), is that the look becomes a bundled pack that runs by
+default and the engine carries none of it. Today a 0.2 pack, whatever its stages, turns off what the default path
+has and its own doesn't yet: the compact solid terrain layout (the world is meshed again), TAA, FXAA, upscaling and
+sharpening (`world_post`), frame generation, Improved Transparency and GPU posing of entities. Its bytes can't be
+the default path's either: a material stage works in linear light, so the wrapper decodes and encodes with more
+2.2 powers per pixel than `hdr_light.wgsl`'s writers and rounds apart (`gfx/native_material.rs`), and it runs
+before fade-in and fog, where the lift today multiplies the pixel after them. And the sun's disc, the moon, stars,
+lightning, additive particles and beacon beams reach no stage. Running the pack itself by default waits until the
+pack path keeps those features; #16126 lists each as its own step, and the flip is its step 16.
+
+**One look file, two users.** `hdr_look.wgsl` holds the look's constants (`TIERS`, `SCENE_PEAK`, `SUN_CAP`) and
+pure functions (brightness, the lift's window and gain, `hdr_unshade`, the sun's peak from the headroom), with no
+engine name in it.
+
+- Until the flip, the default pipelines compile it in: today's bytes and cost. The compiled-in copy is removed at the
+  flip (step 16 of #16126); the file survives in the pack. The display reaches it as `Frame.headroom` does a
+  pack (the sun's peak is the headroom clamped between `SCENE_PEAK` and `SUN_CAP`), so the uniforms that carry the
+  windows and gains, and the duplicated functions in `terrain.wgsl` and `entity.wgsl`, go.
+- `packs/horizon_hdr` (in `horizon-shader-api`, beside Golden Hour) is a real 0.2 pack that lists the same file as
+  its shared source: a material stage, an entity stage and a `[tonemap]` with the scene's peak. It is the proof
+  that the API suffices, and the example to copy from. The frame identity harness draws it and holds it to the
+  default path's picture within a stated tolerance (decode and encode rounding, glint).
+
+**What the API gains**, none of it breaking a 0.2 pack:
+
+| Name | Meaning |
+| --- | --- |
+| `MaterialInput.emission_threshold: f32` | The brightness a texel must reach to be the part that shines (a torch's flame, not its handle); 0 where the whole sprite shines. |
+| `EntityInput.light_source: f32` | The thing's own kind of light, on `MaterialInput.emission`'s scale: light-giving particles, glowing items and sign text, eyes. `emission` stays "drawn at full light". |
+| `Frame.full_light: vec3<f32>` | Vanilla's light colour at full light this frame: white unless Darkness or a wither's bar dims all light. What `hdr_unshade` scales to. |
+
+An `[environment]` stage, for what adds light and is no lit surface (the sun, moon, stars, clouds, lightning,
+additive particles, beams), by `kind`, is step 9 of #16126 (it replaces the earlier `[glow]` idea, and settles that
+decision). Until then those stay Horizon's under a pack, at paper white, and the pack's gate leaves the sky out. The
+windows, gains and peaks need no route: they are the look's constants.
+
+**Fog.** Light sources lift before fog on both paths. Today the lift multiplies the fogged pixel, with
+the fog factor inside it; a stage runs before fog and can't. Lifting first takes fog out of the look, so the pack
+and the default path agree. It changes how a light source looks in fog: step 11 of #16126, after the pack covers
+the sky and the light sources' overlays (its steps 9 and 10), a pull request of its own, with captures.
+
+**The lift's 8-bit steps** (`hdr_quantized_mark`) stay until step 11 of #16126, so every step until then is
+byte-identical, and then go in the same pull request as the fog change, with captures: a change of rounding too.
+
+**A pack owns the look.** A player's 0.2 pack and Horizon's lift don't compose: under a pack Horizon lifts
+nothing, as above, and a pack that wants Horizon's light copies it from `packs/horizon_hdr`.
+
+**The HDR page** gets a **Look** row in place of HDR Lighting; nothing else moves, and packs are still picked on
+the Shaders page.
+
+| Running | The row reads | Greyed |
+| --- | --- | --- |
+| No pack | `Look: Horizon` or `Look: Vanilla` | as the rows above it |
+| A 0.2 pack | `Look: <the pack's name>` | "The shader pack lights the world. Pick it under Shaders." |
+| A `shaders/` pack | `Look: <the pack's name>` | "The shader pack's picture is shown at Paper White." |
+
+Horizon is the lift. Vanilla is HDR output with nothing lifted, the SDR picture but where vanilla would have
+clipped before a later blend (Why gamma storage); it stays as the one flag the engine keeps. Saved as
+`hdrLook:horizon` or `hdrLook:vanilla`. An old file's `hdrLighting:false` reads as `vanilla` and `true` as
+`horizon`, and only `hdrLook` is written; an older build ignores the new key and shows Horizon's look.
 
 ## Upscaling, anti-aliasing, frame generation
 
@@ -259,9 +327,8 @@ above. Native upscaling
 blends the gamma-stored frame as it is; a tone-weighted resolve is for passes that accumulate linear light (a 0.2
 pack's post chain, or the frame under linear storage), where bright pixels would otherwise sparkle. Frame generation
 interpolates the float frame's light before the tone curve, and the made frame goes through the tone curve, the HUD's
-layer and HDR output's last pass as the real one does; the compatibility frame keeps it off with HDR output.
+layer and HDR output's last pass as the real one does; a `shaders/` pack's frame keeps it off with HDR output.
 The rules such a pass keeps now are in [hdr-passes.md](../hdr-passes.md).
-Where a 0.2 pack's stages, post chain and `[tonemap]` sit around them is in [shader-api-frame.md](shader-api-frame.md) (proposed).
 
 ## Tests
 
@@ -311,9 +378,10 @@ Behind `HORIZON_HDR_FRAME=float` until step 5, each a small pull request:
      switch, which is gone. HDR is offered only on devices that draw the float frame and keep the HUD on a layer of
      its own: the compatibility frame no longer stands in for it there. It stays, with its marks, for HDR under a
      0.1 or a `shaders/` pack. The HDR setting's default stays Off; Auto as the default is a change of its own.
-   - 5b (done): shader API 0.1 retired; the examples and the registry on 0.2. The compatibility frame stays for
-     HDR under a `shaders/` pack.
-   - 5c: the shim, its marks and Smooth Gradients' 16-bit frame deleted.
+   - 5b (done): shader API 0.1 retired; the examples and the registry on 0.2. The compatibility frame stayed for
+     HDR under a `shaders/` pack until 5c.
+   - 5c (done): the shim, its marks and Smooth Gradients' 16-bit frame deleted. Under a `shaders/` pack HDR output
+     shows the pack's 8-bit picture at paper white, the HUD with it, so UI Brightness doesn't reach it.
 6. One curve from the scene to the display, its constants chosen from captures.
    - 6a, one peak (before step 5, so players see one change of look): the world's light is the same on every
      display, in multiples of paper white, and only the tone curve fits it to the display. Before, the writers'
@@ -347,15 +415,32 @@ Behind `HORIZON_HDR_FRAME=float` until step 5, each a small pull request:
      made for a world lifted up to 3 times and now only darkened: white came out at 230 of 255. A knee just below
      white (0.9) keeps no more of a light source's shape in captures, and still darkens a noon sky.
 
+7. Horizon's look as a look file and a 0.2 pack (see Horizon's look). Each pull request keeps HDR off
+   byte-identical and, unless it says otherwise, the HDR picture too:
+   - 7a: the Look row in place of HDR Lighting, and `hdrLook`.
+   - 7b: the lift's numbers and maths in `hdr_look.wgsl`; the windows' and gains' uniforms and the duplicated
+     functions go.
+   - 7c: the lifted world's tone curve in the look file (`scene_peak` and the sun's peak leave `hdr.wgsl`'s
+     parameters).
+   - 7d: `emission_threshold`, `light_source` and `full_light` in the API and its reference, then wired into the
+     material and entity stages.
+   - 7f: `packs/horizon_hdr`, and its session in the frame identity harness, held to the default path. The gate
+     widens as inputs arrive: terrain and entities first, items and particles with the entity stage's later
+     steps, the sky with `[environment]`.
+   - 7e and 7g, in one pull request: light sources lift before fog on both paths, and the lift's 8-bit steps go.
+     A change of look and of rounding, with captures. It is step 11 of #16126, after the pack steps 9 and 10.
+   - 7b and 7c put the look in `hdr_look.wgsl`, compiled into the engine as preparation; that copy goes at the flip
+     (step 16 of #16126), when the pack runs by default.
+
 The HUD's layer and the tone curve come before light is written: once a shader writes light above white into the
 frame, nothing at the end can take it back out from under the HUD (`shows_world` only skips lifting a mark), and
 without the tone curve it would clip at the peak instead of easing into it.
 
-Later, each its own note or pull request: HDR's light-source lift as a built-in preset on 0.2, values for
-`shaders/` packs, and which settings stay on the HDR page and which move to the shader menu. Additions to 0.2 that
-break no pack, so they can wait: telling post stages which pixels are light sources, and a full-screen peak for
-displays that dim large bright areas below `peak` (Windows reports it, DXGI's `MaxFullFrameLuminance`; other systems
-mostly don't).
+Later, each its own note or pull request: values for `shaders/` packs. (The `[environment]` stage and running
+`packs/horizon_hdr` by default are steps 9 and 16 of #16126, approved.) Additions to 0.2 that break no pack, so
+they can wait: telling post stages which
+pixels are light sources, and a full-screen peak for displays that dim large bright areas below `peak` (Windows
+reports it, DXGI's `MaxFullFrameLuminance`; other systems mostly don't).
 
 ## Decisions for Ludovic
 

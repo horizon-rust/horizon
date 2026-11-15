@@ -1,10 +1,11 @@
 //! One of Horizon's own shader packs while it runs (docs/shaders.md): the frame its stages
-//! read, its sky, material and post stages, and the timer of their passes.
+//! read, its sky, material, entity and post stages, and the timer of their passes.
 
 use horizon_shader_api::check::CheckedStage;
 use horizon_shader_api::{Report, StageKind};
 
 use super::displace::Displacement;
+use super::native_entity::NativeEntity;
 use super::native_material::{DisplacedShape, MaterialPipelines, NativeMaterial, TerrainShape};
 use super::native_post::{NativeFrame, NativePost};
 use super::native_shadow::{NativeShadow, ShadowGrid};
@@ -19,6 +20,7 @@ pub struct NativePack {
     pub frame: NativeFrame,
     pub sky: Option<NativeSky>,
     pub material: Option<NativeMaterial>,
+    pub entity: Option<NativeEntity>,
     /// The post chain (none without `[[post]]`), the decode before it and the tonemap after.
     pub post: NativePost,
     /// With a sky stage, what of Minecraft's sky still draws over it (`[sky]`).
@@ -316,7 +318,7 @@ impl NativePack {
         let (mut post, others): (Vec<_>, Vec<_>) = report
             .stages
             .into_iter()
-            .partition(|s| s.kind == StageKind::Post);
+            .partition(|s| matches!(s.kind, StageKind::Post | StageKind::Compute));
         let sky = others
             .iter()
             .find(|s| s.kind == StageKind::Sky)
@@ -343,6 +345,14 @@ impl NativePack {
                     has_vertex,
                     displaced.as_ref(),
                 )
+            })
+            .transpose()?;
+        let entity = others
+            .iter()
+            .find(|s| s.kind == StageKind::Entity)
+            .map(|stage| {
+                let groups = [terrain.entities, terrain.retained_entities];
+                NativeEntity::new(device, format, groups, &frame, stage, constants)
             })
             .transpose()?;
         // The decode and the tonemap run without a chain too.
@@ -373,7 +383,10 @@ impl NativePack {
         labels.extend(
             others
                 .iter()
-                .filter(|s| material.is_some() && s.kind == StageKind::Material)
+                .filter(|s| match s.kind {
+                    StageKind::Material => material.is_some(),
+                    kind => kind == StageKind::Entity,
+                })
                 .map(|s| s.label.clone()),
         );
         labels.extend(weather_label);
@@ -386,6 +399,7 @@ impl NativePack {
             frame,
             sky,
             material,
+            entity,
             post,
             vanilla_clouds,
             vanilla_sun,
@@ -469,6 +483,80 @@ impl NativePack {
         });
         true
     }
+
+    /// The post stage in place of the renderer's own finish of the world: its passes over the
+    /// world's scaled target, the last onto the screen, with the history reset still pending.
+    pub fn run_post(&mut self, post: WorldPost<'_>) {
+        let WorldPost {
+            device,
+            encoder,
+            world: (color, depth),
+            screen,
+            size,
+            scene,
+        } = post;
+        let history_reset = self.frame.take_history_reset();
+        self.post.run(
+            device,
+            encoder,
+            (color, depth, &self.frame.surface_view),
+            screen,
+            size,
+            history_reset,
+            self.timing.as_mut(),
+            scene,
+        );
+    }
+
+    /// Whether the pack's `[tonemap]` takes the place of Horizon's tone curve.
+    pub fn tonemaps(&self) -> bool {
+        self.post.tonemaps()
+    }
+
+    /// Times the pack's passes, or stops, as the renderer's settings say, before its world
+    /// passes.
+    pub fn set_up_timing(&mut self, setup: TimingSetup<'_>) {
+        if self.timing.is_some() != setup.on {
+            self.timing = setup
+                .on
+                .then(|| PassTiming::new(setup.device, setup.queue))
+                .flatten();
+        }
+        if let Some(t) = &mut self.timing {
+            t.gap = setup.gap;
+            t.keep_frames(setup.keep_frames);
+        }
+    }
+
+    /// The frame with the pack's timed passes was submitted.
+    pub fn timing_submitted(&mut self, queue: &wgpu::Queue) {
+        if let Some(timer) = &mut self.timing {
+            timer.submitted(queue);
+        }
+    }
+}
+
+/// What the renderer hands the pack's post stage (`NativePack::run_post`).
+pub struct WorldPost<'a> {
+    pub device: &'a wgpu::Device,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// The world's scaled target (colour, depth), of `size`.
+    pub world: (&'a wgpu::TextureView, &'a wgpu::TextureView),
+    /// The window's frame, which the last pass draws.
+    pub screen: &'a wgpu::TextureView,
+    pub size: [u32; 2],
+    /// The ray scene and the camera, when the game traces rays.
+    pub scene: Option<(&'a RayScene, glam::DVec3)>,
+}
+
+/// The renderer's pass timing settings (`NativePack::set_up_timing`).
+pub struct TimingSetup<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    /// `set_pass_timing`, `set_pass_timing_gap` and `set_keep_timed_frames`.
+    pub on: bool,
+    pub gap: std::time::Duration,
+    pub keep_frames: bool,
 }
 
 /// What the renderer hands the pack before its world passes (`NativePack::start_frame`).
@@ -503,7 +591,7 @@ pub struct WorldTargets<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::gfx) mod tests {
     use super::{NativePack, TerrainShape, chosen_shadow, reads_opaque};
     use horizon_shader_api::manifest::{OptionKind, PackOption, Shadow};
 
@@ -621,7 +709,9 @@ file = \"material.wgsl\"
 
     /// The terrain's group 0 as the renderer makes it (`Renderer::new`), and an empty layout
     /// for the other groups.
-    fn terrain_layouts(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout) {
+    pub(in crate::gfx) fn terrain_layouts(
+        device: &wgpu::Device,
+    ) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout) {
         // Its uniform, the 10 sampled textures (_terrain.wgsl_'s 8 sprite arrays, the
         // lightmap and the emission thresholds) and two samplers.
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
@@ -666,7 +756,7 @@ file = \"material.wgsl\"
         (globals, empty)
     }
 
-    fn terrain_shape<'a>(
+    pub(in crate::gfx) fn terrain_shape<'a>(
         globals: &'a wgpu::BindGroupLayout,
         empty: &'a wgpu::BindGroupLayout,
     ) -> TerrainShape<'a> {
@@ -680,6 +770,7 @@ file = \"material.wgsl\"
             sprite_tags: &[],
             sprite_materials: &[],
             entities: empty,
+            retained_entities: empty,
             weather_groups: [empty, empty],
             pbr: None,
         }
