@@ -1238,5 +1238,13 @@
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Son quruluşda, {mods} üçün Horizon {commit} üzərində, {horizon} üzərində yox",
   "In the last build, on {horizon}": "Son quruluşda, {horizon} üzərində",
   "Duplicate native mod {id}.": "Duplicate native mod {id}.",
-  "Native and content mod ids differ.": "Native and content mod ids differ."
+  "Native and content mod ids differ.": "Native and content mod ids differ.",
+  "Open the router port by itself": "Open the router port by itself",
+  "When the server runs, ask your router to forward its port (PCP, NAT-PMP or UPnP), keep it open while the server runs and close it when the server stops or this launcher closes. Off by default; not every router answers.": "When the server runs, ask your router to forward its port (PCP, NAT-PMP or UPnP), keep it open while the server runs and close it when the server stops or this launcher closes. Off by default; not every router answers.",
+  "Friends outside can join at {address} (opened on your router with {method}).": "Friends outside can join at {address} (opened on your router with {method}).",
+  "Opened on your router with {method}: friends outside join your public address on port {port}.": "Opened on your router with {method}: friends outside join your public address on port {port}.",
+  "Your router did not open the port: {reason}": "Your router did not open the port: {reason}",
+  "Asking your router to open the port…": "Asking your router to open the port…",
+  "The port is opened once the server runs.": "The port is opened once the server runs.",
+  "This computer has no private network address, so there is no router to ask.": "This computer has no private network address, so there is no router to ask."
 }

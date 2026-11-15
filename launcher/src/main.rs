@@ -5634,11 +5634,11 @@ actions!(horizon_launcher, [Quit, CloseWindow]);
 /// What closing the last window does: stop the servers this launcher started, send the telemetry,
 /// exit. A game that is running keeps running. Cmd+Q goes through here too.
 fn shut_down(cx: &mut App) {
-    servers_page::stop_on_quit();
+    internet::stop_on_quit();
     telemetry::send_before_exit();
     // A staged launcher update goes in once this process has exited.
     horizon_launcher::update_handoff::on_quit();
-    cx.quit()
+    internet::quit(cx)
 }
 
 /// The macOS shortcuts: Cmd+Q quits, Cmd+W closes the window.

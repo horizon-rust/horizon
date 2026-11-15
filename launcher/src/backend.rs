@@ -4511,6 +4511,9 @@ pub struct Settings {
     /// An older file's switch for the release profile, read when `native_profile` is unset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_release: bool,
+    /// A hosted server's port is opened on the router by itself while it runs (`router_port`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub router_port: bool,
 }
 
 impl Settings {
@@ -4522,30 +4525,23 @@ impl Settings {
             return Self::default();
         };
         if let Some(fields) = value.as_object_mut() {
-            // An appearance from a newer launcher is Dark, not a reason to lose every setting.
-            if fields
-                .get("appearance")
-                .is_some_and(|a| serde_json::from_value::<Appearance>(a.clone()).is_err())
-            {
-                fields.remove("appearance");
+            // An appearance, while-playing choice, architecture or accent from a newer launcher is
+            // the default, not a reason to lose every setting.
+            fn drop_unreadable<T: serde::de::DeserializeOwned>(
+                fields: &mut serde_json::Map<String, serde_json::Value>,
+                key: &str,
+            ) {
+                let bad = fields
+                    .get(key)
+                    .is_some_and(|v| serde_json::from_value::<T>(v.clone()).is_err());
+                if bad {
+                    fields.remove(key);
+                }
             }
-            if fields
-                .get("while_playing")
-                .is_some_and(|w| serde_json::from_value::<WhilePlaying>(w.clone()).is_err())
-            {
-                fields.remove("while_playing");
-            }
-            if fields
-                .get("game_architecture")
-                .is_some_and(|a| serde_json::from_value::<GameArchitecture>(a.clone()).is_err())
-            {
-                fields.remove("game_architecture");
-            }
-            if fields.get("accent").is_some_and(|a| {
-                serde_json::from_value::<crate::themes::Accent>(a.clone()).is_err()
-            }) {
-                fields.remove("accent");
-            }
+            drop_unreadable::<Appearance>(fields, "appearance");
+            drop_unreadable::<WhilePlaying>(fields, "while_playing");
+            drop_unreadable::<GameArchitecture>(fields, "game_architecture");
+            drop_unreadable::<crate::themes::Accent>(fields, "accent");
             // A glass or blur that isn't a number is the default, not a reason to lose the rest.
             for key in ["glass", "blur"] {
                 if fields.get(key).is_some_and(|v| !v.is_number()) {
@@ -7204,5 +7200,35 @@ pub fn {f}("
             envs.get(OsStr::new("PIPEWIRE_PROPS")),
             Some(&Some(OsStr::new("kept")))
         );
+    }
+
+    #[test]
+    fn the_router_port_switch_is_off_until_turned_on_and_kept_when_saved() {
+        assert!(!Settings::parse("{}").router_port);
+        assert!(!Settings::parse("not json").router_port);
+        let on = Settings::parse(r#"{"router_port": true, "keep_versions": 3}"#);
+        assert!(on.router_port);
+        let saved = serde_json::to_value(&on).unwrap();
+        assert_eq!(saved["router_port"], true);
+        assert_eq!(saved["keep_versions"], 3);
+        // Off is the default, and nothing is written for it.
+        assert!(serde_json::to_value(Settings::default())
+            .unwrap()
+            .get("router_port")
+            .is_none());
+    }
+
+    #[test]
+    fn a_value_this_launcher_cannot_read_is_dropped_and_the_rest_kept() {
+        let s = Settings::parse(
+            r#"{"appearance": "neon", "while_playing": "x", "game_architecture": 9, "accent": 42,
+                "keep_versions": 3, "router_port": true}"#,
+        );
+        assert_eq!(s.keep_versions, Some(3));
+        assert!(s.router_port);
+        assert!(matches!(s.appearance, Appearance::Dark));
+        assert_eq!(s.while_playing.name(), "stay");
+        assert_eq!(s.game_architecture, GameArchitecture::default());
+        assert_eq!(s.accent.name(), crate::themes::Accent::default().name());
     }
 }
