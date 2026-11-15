@@ -96,6 +96,20 @@ change(capture,
        'if capture\n            && ((!self.focused && !self.unclaimed_window && !self.scripted_run())',
        'if capture\n            && ((!self.focused && !self.unclaimed_window && !self.scripted_run() && !cfg!(target_os = "ios"))')
 
+# iOS does not grab a desktop pointer: its first virtual click is an
+# actual attack/use action rather than a focus-acquiring mouse click.
+change("crates/horizon-client/src/game.rs",
+       """                            if pressed && !self.captured {
+                                self.capture(true);
+                                return Ok(());
+                            }""",
+       """                            if pressed && !self.captured {
+                                self.capture(true);
+                                if !cfg!(target_os = "ios") {
+                                    return Ok(());
+                                }
+                            }""")
+
 handler = "crates/horizon-client/src/game/window_handler.rs"
 change(handler,
        '            && self.captured\n            && self.focused\n',
