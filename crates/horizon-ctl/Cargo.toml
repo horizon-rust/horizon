@@ -1,0 +1,20 @@
+[package]
+name = "horizon-ctl"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "horizon-ctl: play and script a running game through its control socket, and its MCP server (platform, docs/layers.md)"
+
+[dependencies]
+# The control socket's client side (`control::connect`) and the game's folders (`logging`). No default
+# features: the game's own build chooses them, and Cargo unifies them when both are built together.
+horizon-client-lib = { path = "../horizon-client-lib", default-features = false }
+horizon-core = { path = "../horizon-core" }
+# `horizon-ctl mcp`: the Model Context Protocol, shared with the launcher and the server.
+horizon-mcp = { path = "../horizon-mcp" }
+horizon-threads = { path = "../horizon-threads" }
+serde_json = "1.0.151"
+
+[lints]
+workspace = true

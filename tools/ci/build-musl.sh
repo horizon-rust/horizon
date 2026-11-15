@@ -15,7 +15,7 @@ export RUSTFLAGS='-C target-feature=-crt-static'
 target=x86_64-unknown-linux-musl
 bin="target/$target/release"
 cargo build --release --locked --target "$target" \
-  -p horizon-official --bin horizon-official -p horizon-client-lib --bin horizon-ctl \
+  -p horizon-official --bin horizon-official -p horizon-ctl --bin horizon-ctl \
   -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
 # The official game (horizon-client's with Horizon's own parts, docs/layers.md) is what players
 # get, under the game's name.
