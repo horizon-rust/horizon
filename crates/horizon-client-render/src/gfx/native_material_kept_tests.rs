@@ -79,9 +79,53 @@ fn build(
         })
     };
     let own: Vec<_> = (0..8).map(|_| sprite()).collect();
+    // LabPBR maps, so `[displacement]` builds its grid (it needs heights).
+    let map = || {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 16,
+                height: 16,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+    };
+    let pbr = [map(), map()];
     let (globals, empty) = crate::gfx::native_pack::tests::terrain_layouts(device);
+    // The entities' group 0 as the shadow pass's entity draw declares it: the atlas and its
+    // sampler.
+    let fragment = wgpu::ShaderStages::FRAGMENT;
+    let entities = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: fragment,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: fragment,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
     let terrain = crate::gfx::native_material::TerrainShape {
         sprite_views: scene.map_or(&own, |s| &s.sprites),
+        pbr: Some(&pbr),
+        entities: &entities,
         ..crate::gfx::native_pack::tests::terrain_shape(&globals, &empty)
     };
     let (mut pack, _) = NativePack::new(device, queue, &terrain, report, &[], Default::default())?;
@@ -516,4 +560,39 @@ fn the_material_makes_its_kept_groups_once() {
     // Building: the terrain's kept layout is the one layout more, its pipelines as many.
     assert_eq!(with[0][0], without[0][0] + 1);
     assert_eq!(with[0][2], without[0][2]);
+}
+
+/// A material that reads kept resources beside `[vertex]`, `[shadow]` and `[displacement]`:
+/// the shadow pass and the displaced grid compile the material's module, its kept declarations
+/// included, against layouts without them: the pack loads, its shadow and grid pipelines built,
+/// and its terrain reads as before, with no validation error.
+#[test]
+fn a_material_that_reads_loads_with_its_shadow_and_relief() {
+    let Some((_, device, queue)) = device() else {
+        return;
+    };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let manifest = format!(
+        "{COUNTER}[material]\nfile = \"m.wgsl\"\nreads = [\"tex\", \"tex_previous\", \"count\"]\n\
+         [vertex]\nfile = \"v.wgsl\"\n[shadow]\n[displacement]\n"
+    );
+    let material = SHOWS_COUNT.to_owned()
+        + MATERIAL
+        + "fn displacement(input: DisplacementInput) -> f32 { return (1.0 - input.height) * 0.125; }\n";
+    let vertex = "fn vertex(input: VertexInput) -> vec3<f32> { return input.position; }\n";
+    let files = [
+        ("w.wgsl", COUNTS),
+        ("m.wgsl", &material),
+        ("v.wgsl", vertex),
+    ];
+    let (mut pack, source, _) = build(&device, &queue, None, &manifest, &files).unwrap();
+    assert!(pack.shadow.is_some() && pack.displacement.is_some());
+    let gpu = (&device, &queue);
+    for n in 1..=2 {
+        let got = frame(gpu, &mut pack, (&source, None), n, None, None);
+        let n = n as f32;
+        assert_eq!(got, [n, n - 1.0, n, 1.0], "frame {n}");
+    }
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
 }
