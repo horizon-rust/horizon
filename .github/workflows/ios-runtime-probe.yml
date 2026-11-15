@@ -410,6 +410,13 @@ jobs:
           git diff --check
           git diff --stat -- crates/horizon-client/src/game/loading_screen.rs crates/horizon-client/Cargo.toml
 
+      - name: Apply iOS native viewport and touch pointer adaptation
+        shell: bash
+        run: |
+          python3 platforms/ios/patches/ios_display_input.py
+          git diff --check
+          git diff --stat -- crates/horizon-client/src/game/loading_screen.rs crates/horizon-client/src/game/window_handler.rs
+
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
         run: |

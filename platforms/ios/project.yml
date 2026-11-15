@@ -22,6 +22,9 @@ targets:
         NovaBuildCommit: $(NOVA_GIT_COMMIT)
         NovaBuildRun: $(NOVA_GIT_RUN)
         LSRequiresIPhoneOS: true
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: true
         UIApplicationSupportsDocumentBrowser: false
         UIRequiredDeviceCapabilities:
           - arm64
