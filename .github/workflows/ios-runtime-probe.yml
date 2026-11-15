@@ -403,6 +403,13 @@ jobs:
           git diff --check
           git diff --stat -- crates/horizon-client-render/src/gfx.rs
 
+      - name: Grow iOS winit callback stack using horizon-ios approach
+        shell: bash
+        run: |
+          python3 platforms/ios/patches/deep_stack_callbacks.py
+          git diff --check
+          git diff --stat -- crates/horizon-client/src/game/loading_screen.rs crates/horizon-client/Cargo.toml
+
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
         run: |

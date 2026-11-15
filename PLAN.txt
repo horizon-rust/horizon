@@ -374,3 +374,22 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
   renderer.async.device-opened and renderer.finish.enter.
 - Compile in CI and verify on physical device. For independent confirmation
   request an iOS system crash report from the newest Nova build as well.
+
+2026-11-15: BORROW TESTED IOS STACK STRATEGY FROM Kelly-Inc/horizon-ios
+- Physical crash Nova-2026-11-15-141505.ips (14:15 local, 11:15 UTC)
+  matches installed 08439a6b; EXC_BAD_ACCESS SIGSEGV, KERN_PROTECTION_FAILURE
+  in 16 KiB stack guard just below the iOS main thread 1008 KiB stack,
+  Renderer::new as crashing frame. The prior async split alone did not help.
+- Studied Kelly-Inc/horizon-ios/main, not merged: it wraps ALL five winit
+  ApplicationHandler callbacks via stacker::maybe_grow(1<<20,32<<20,...).
+  This switches stack on the SAME OS thread and avoids non-Send Renderer moves.
+  Its source also isolates the async renderer pipeline work and uses 16MiB
+  shader-compilation workers, but we are initially borrowing the precise
+  main-thread stack-growth fix rather than mixing numerous changes.
+- Added platforms/ios/patches/deep_stack_callbacks.py, applied in CI only,
+  using stacker =0.1.25 like the reference fork. All the upstream code and
+  gameplay remain unchanged in git; the existing Nova renderer split remains
+  independently scoped to CI. This is a targeted response to OS crash data.
+- Request device verification only after the real-game IPA builds. If it
+  fails beyond Renderer::new, compare Kelly's shader compilation threading
+  and iOS Metal surface setup, without importing unrelated gameplay edits.
