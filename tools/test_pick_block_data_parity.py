@@ -14,9 +14,18 @@ blocks, spawners, trial spawners, vaults, beehives, pots, skulls, lecterns and
 more, picked and placed back, with hand-written patches (data of another type,
 op-only data without permission, merges into a filled block entity, leftover
 components).
+
+After the codec comparison, an actual server Game regression uses a decorated
+pot normally, saves and reloads its chunk, picks it, and checks its drops. This
+integration check is reported separately from the Java/Rust codec comparison.
 """
 import argparse
 import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
 try:
     from . import interaction_lab as lib
 except ImportError:
@@ -129,11 +138,49 @@ def cases():
     return out
 
 
+def game_placement(work):
+    test = ('game::block_items::decorated_pot_placement_tests::'
+            'ordinary_pot_placement_survives_pick_reload_and_default_replacement')
+    resources = Path(os.environ.get('HORIZON_TEST_RESOURCES', lib.lab.RESOURCES)).resolve()
+    if not (resources / 'block-behaviours.json').is_file():
+        raise SystemExit('Game placement regression needs prepared HORIZON_TEST_RESOURCES')
+    homes = ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME')
+    environment = lib.lab.game_env(
+        {key: value for key, value in os.environ.items() if key not in homes},
+        HORIZON_TEST_RESOURCES=resources, CARGO_TARGET_DIR=lib.lab.cargo_target().resolve(),
+        RUST_MIN_STACK='16777216')
+    built = subprocess.run(['cargo', 'test', '--locked', '-p', 'horizon-client',
+                            '--lib', '--no-run', '--message-format=json'],
+                           cwd=lib.lab.ROOT, env=environment, stdout=subprocess.PIPE, text=True)
+    built.check_returncode()
+    artifacts = [json.loads(line) for line in built.stdout.splitlines() if line.startswith('{')]
+    binaries = [a['executable'] for a in artifacts if a.get('reason') == 'compiler-artifact'
+                and a.get('executable') and a['target']['name'] == 'horizon_client'
+                and a['profile']['test']]
+    if len(binaries) != 1:
+        raise SystemExit('expected one Game test executable')
+    with tempfile.TemporaryDirectory(prefix='pot-placement-') as scratch:
+        done = subprocess.run([binaries[0], test, '--ignored', '--exact', '--nocapture'],
+                              cwd=scratch, env=environment, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, encoding='utf-8', errors='replace')
+    (work / 'placement.txt').write_text(done.stdout, encoding='utf-8')
+    print(done.stdout)
+    done.check_returncode()
+    if not re.search(r'\brunning 1 test\b', done.stdout) or '1 passed; 0 failed' not in done.stdout:
+        raise SystemExit('Game placement regression did not run exactly one passing test')
+    print('Game placement regression: normal use, chunk reload, picks, drops and replacement passed')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--limit', type=int, default=4)
+    parser.add_argument('--game-placement-only', action='store_true',
+                        help='run only the actual Game regression, not the Java/Rust codec comparison')
     args = parser.parse_args()
     work = lib.work_dir('pick-block-data-parity')
+    if args.game_placement_only:
+        game_placement(work)
+        return
     vanilla = lib.Vanilla(work)
     vanilla.compile('ParityData', 'VanillaPickBlockDataOracle')
     all_cases = cases()
@@ -146,7 +193,9 @@ def main():
     total = lib.compare(all_cases, work / 'native.txt', work / 'rust.txt',
                         lambda case, line: case['block'] + (' patch' if 'patch' in case else ''),
                         lambda case: json.dumps(case), args.limit)
-    raise SystemExit(1 if total or errors else 0)
+    if total or errors:
+        raise SystemExit(1)
+    game_placement(work)
 
 
 if __name__ == '__main__':
