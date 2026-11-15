@@ -17,10 +17,16 @@ use horizon_hooks::players::{
 use std::sync::Arc;
 
 /// Registers the hooks of the Horizon parts still in this crate (cosmetics: spec #14091 step 5
-/// moves them out). Before the hooks are sealed.
+/// moves them out; auto-reconnect, on the connection hooks: `horizon_client::reconnect`). Before
+/// the hooks are sealed.
 pub(crate) fn register() {
     if let Err(e) = super::cosmetics::register() {
         log::error!("Cosmetics: their hooks came too late: {e}");
+    }
+    if cfg!(feature = "horizon-extras")
+        && let Err(e) = horizon_hooks::register(&horizon_client::reconnect::HOOKS)
+    {
+        log::error!("Auto-reconnect: its hooks came too late: {e}");
     }
 }
 

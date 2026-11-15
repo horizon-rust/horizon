@@ -154,7 +154,7 @@ impl Game<'_> {
     }
     /// The server's name: a local world's name, a server's entry in the list.
     fn social_server_name(&self) -> String {
-        match (&self.integrated, self.server_address()) {
+        match (&self.integrated, self.last_server.address()) {
             (Some(server), _) => server.world_name.clone(),
             (None, Some(address)) if self.remote.is_some() => address.to_owned(),
             _ => self.level.name.clone(),

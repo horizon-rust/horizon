@@ -517,7 +517,7 @@ impl<'a> Split<'a> {
         if self.host.integrated.is_some() || self.host.remote.is_none() {
             return None;
         }
-        self.host.server_address().map(str::to_owned)
+        self.host.last_server.address().map(str::to_owned)
     }
 
     /// The pads' players who accepted, and the testing players (`HORIZON_SPLIT`, one a frame),
