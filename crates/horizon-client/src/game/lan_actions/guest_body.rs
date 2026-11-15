@@ -124,6 +124,14 @@ impl Game<'_> {
                 return (Vec::new(), None);
             };
             player.fluids.boat = boat;
+            // `DedicatedServer.isUnderSpawnProtection` for the landings this
+            // turn makes: a non-operator's inside the radius of the respawn
+            // level's spawn (`FarmlandBlock.fallOn`, `TurtleEggBlock.fallOn`).
+            let _spawn_protection = horizon_client::landing::spawn_protection(
+                game.lan_acting_spawn_protection
+                    .filter(|_| game.dim.id() == "minecraft:overworld")
+                    .zip(game.level.world_spawn),
+            );
             let mut w = MotionWorld {
                 entities: &[],
                 player,

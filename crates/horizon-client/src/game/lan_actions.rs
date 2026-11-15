@@ -1958,7 +1958,7 @@ impl Game<'_> {
     /// The part of `DedicatedServer.isUnderSpawnProtection` that depends on
     /// the player: the radius that holds them back, None for an operator,
     /// with no operators, a radius of 0 or less, or off a dedicated server.
-    fn spawn_protection_for(&self, host: &LanHost, uuid: u128) -> Option<i32> {
+    pub(super) fn spawn_protection_for(&self, host: &LanHost, uuid: u128) -> Option<i32> {
         let radius = host.hub.spawn_protection;
         (self.options.dedicated.is_some()
             && radius > 0

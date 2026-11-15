@@ -8,6 +8,7 @@ use horizon_protocol::packets::configuration::ClientInformation;
 use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 mod fall_reset;
+mod spawn_protection;
 
 fn guest(entity_id: i32) -> Guest {
     let (sender, _) = mpsc::channel();

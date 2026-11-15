@@ -1,6 +1,8 @@
 //! Powder snow and water cauldrons putting a burning player out: the block
 //! change they make is gated on `mayInteract`, and the move that put the fire
 //! out plays the extinguish hiss (`Entity.playEntityOnFireExtinguishedSound`).
+//! The `mayInteract` answers live here too: the acting player's, and the one a
+//! projectile's owner gets (`Projectile.mayInteract`).
 use super::Game;
 use horizon_client::motion::MotionEvent;
 use horizon_core::position::BlockPos;
@@ -16,6 +18,11 @@ impl Game<'_> {
             && !self.lan_acting_spawn_protection.is_some_and(|radius| {
                 self.spawn_protects(radius, self.dim.id(), [pos.x, pos.y, pos.z])
             })
+    }
+    /// `ServerLevel.mayInteract` at a block a ray met, for the player whose
+    /// turn it is (`BottleItem.use`).
+    pub(super) fn may_interact_block(&self, pos: [i32; 3]) -> bool {
+        self.may_interact_at(BlockPos::new(pos[0], pos[1], pos[2]))
     }
     /// `Entity.applyEffectsFromBlocks` along a server player's moves: the
     /// blocks that put the fire out (`PowderSnowBlock.entityInside`'s
@@ -95,6 +102,45 @@ impl Game<'_> {
     }
 }
 
+impl horizon_client::arrows::OwnerLookup for Game<'_> {
+    fn non_player_entity(&self, uuid: [i32; 4]) -> bool {
+        let found = self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(uuid));
+        !matches!(
+            found,
+            None | Some(super::commands::Target::Player | super::commands::Target::Guest(_))
+        )
+    }
+    /// `Projectile.mayInteract` for a player's arrow: `ServerPlayer.mayInteract`
+    /// is `ServerLevel.mayInteract` for the guest who shot it, which refuses a
+    /// block inside the spawn protection radius (`DedicatedServer.isUnderSpawnProtection`)
+    /// and one outside the world border.
+    fn player_may_interact(&self, guest: Option<u32>, pos: BlockPos) -> bool {
+        let protected = self.lan.as_ref().is_some_and(|host| {
+            host.hub
+                .guests
+                .iter()
+                .find(|g| Some(g.conn) == guest)
+                .is_some_and(|g| {
+                    self.spawn_protection_for(host, g.uuid)
+                        .is_some_and(|radius| {
+                            self.spawn_protects(radius, &g.dimension, [pos.x, pos.y, pos.z])
+                        })
+                })
+        });
+        !protected
+            && self
+                .border
+                .geometry()
+                .is_within_bounds(f64::from(pos.x), f64::from(pos.z), 0.0)
+    }
+}
+
+#[cfg(test)]
+#[path = "arrow_spawn_protection_tests.rs"]
+mod arrow_spawn_protection_tests;
+#[cfg(test)]
+#[path = "bottle_spawn_protection_tests.rs"]
+mod bottle_spawn_protection_tests;
 #[cfg(test)]
 #[path = "extinguish_tests.rs"]
 mod extinguish_tests;

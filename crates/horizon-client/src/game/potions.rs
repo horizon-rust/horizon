@@ -596,12 +596,10 @@ impl Game<'_> {
                 Ok(true)
             }
             "minecraft:glass_bottle" => {
-                // `BottleItem.use`: before the water check, it looks for a living
+                // `BottleItem.use`: before the water check it looks for a living
                 // AreaEffectCloud owned by an EnderDragon within the player's box
-                // grown by 2. If one is found, it shrinks the cloud's radius by 0.5,
-                // plays item.bottle.fill_dragonbreath at the player, emits
-                // GameEvent.FLUID_PICKUP, fires PLAYER_INTERACTED_WITH_ENTITY on the
-                // cloud, and turns one bottle into dragon_breath.
+                // grown by 2: it shrinks by 0.5, plays item.bottle.fill_dragonbreath,
+                // posts FLUID_PICKUP and PLAYER_INTERACTED_WITH_ENTITY, and gives dragon_breath.
                 if let Some(player) = self.player.as_ref()
                     && let Some(cloud_at) =
                         collect_dragon_breath(player.bounds(), &mut self.breath_clouds)
@@ -629,7 +627,9 @@ impl Game<'_> {
                     self.fill_held(ItemStack::new("minecraft:dragon_breath", 1));
                     return Ok(true);
                 }
-                let Some(hit) = self.pick_fluid() else {
+                // `BottleItem.use` refuses the block `level.mayInteract` refuses
+                // (spawn protection, world border) before it looks at the water.
+                let Some(hit) = self.pick_fluid().filter(|h| self.may_interact_block(h.pos)) else {
                     return Ok(false);
                 };
                 let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
