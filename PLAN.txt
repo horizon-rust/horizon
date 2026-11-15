@@ -284,3 +284,15 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
   window creation and first frame for diagnosis. Upstream gameplay unchanged.
 - One-shot startup flag cleared before winit starts so re-opening app after
   killing black screen returns to launcher, where logs can be exported.
+
+2026-11-15: RENDERER-BOOT CRASH TRIAGE
+- User's two new device runs at 02:44 UTC again reached renderer.boot.begin
+  then process terminated without reporting renderer success/error.
+- Previous Metal-selection change compiled in run 43641059453, but old logs
+  cannot prove that exact build was installed or locate crashes before adapter.
+- Bundle now records NovaBuildCommit and NovaBuildRun in every startup line;
+  both workflows set those from their current GitHub SHA/run ID.
+- Added very early renderer.new and open_device checkpoints in an iOS-only
+  runner patch, plus Rust panic hook in the GameRuntime bridge.
+- Keep vanilla gameplay and renderer sources untouched in git. Don't conclude
+  GPU cause until a device log from this tagged build confirms it.

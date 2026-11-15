@@ -12,7 +12,10 @@ enum NovaEntryPoint {
     static func main() {
         let defaults = UserDefaults.standard
         let shouldStartHorizon = defaults.bool(forKey: nextLaunchKey)
-        NovaDiagnostics.record("process.started; boot-request=\(shouldStartHorizon); bridge=\(horizon_ios_host_api_version())")
+        let info = Bundle.main.infoDictionary ?? [:]
+        let build = info["NovaBuildCommit"] as? String ?? "unknown"
+        let run = info["NovaBuildRun"] as? String ?? "unknown"
+        NovaDiagnostics.record("process.started; boot-request=\(shouldStartHorizon); bridge=\(horizon_ios_host_api_version()); commit=\(build); run=\(run)")
         // Clear before entering Rust: a crash must not cause a boot loop.
         defaults.removeObject(forKey: nextLaunchKey)
 

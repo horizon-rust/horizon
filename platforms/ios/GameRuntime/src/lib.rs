@@ -120,6 +120,13 @@ pub extern "C" fn horizon_ios_start_original_game(
     }
     // Continue with the ORIGINAL official Horizon startup and its winit loop.
     // This function normally never returns on iOS.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // An unexpected Rust panic may terminate the iOS process before
+        // the renderer reports a normal error.
+        diagnostics::trace(&format!("rust.panic: {info}"));
+        previous_hook(info);
+    }));
     diagnostics::trace("rust.start.horizon-official-entry");
     horizon_ios_original_game_entry();
     diagnostics::trace("rust.start.horizon-returned");

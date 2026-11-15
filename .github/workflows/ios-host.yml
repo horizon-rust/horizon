@@ -46,7 +46,8 @@ jobs:
           set -euo pipefail
           xcodebuild -project HorizonIOS.xcodeproj -scheme HorizonIOS \
             -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
-            -derivedDataPath Build/Derived CODE_SIGNING_ALLOWED=NO build
+            -derivedDataPath Build/Derived CODE_SIGNING_ALLOWED=NO \
+            NOVA_GIT_COMMIT="$GITHUB_SHA" NOVA_GIT_RUN="$GITHUB_RUN_ID" build
           test -d Build/Derived/Build/Products/Release-iphoneos/Nova.app
       - name: Package unsigned host IPA
         working-directory: platforms/ios

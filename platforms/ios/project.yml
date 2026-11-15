@@ -19,6 +19,8 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: Nova
+        NovaBuildCommit: $(NOVA_GIT_COMMIT)
+        NovaBuildRun: $(NOVA_GIT_RUN)
         LSRequiresIPhoneOS: true
         UIApplicationSupportsDocumentBrowser: false
         UIRequiredDeviceCapabilities:
@@ -33,6 +35,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.horizonios.nova
         PRODUCT_NAME: Nova
+        NOVA_GIT_COMMIT: local
+        NOVA_GIT_RUN: local
         SWIFT_OBJC_BRIDGING_HEADER: RustBridge/include/HorizonBridge.h
         LIBRARY_SEARCH_PATHS:
           - $(inherited)

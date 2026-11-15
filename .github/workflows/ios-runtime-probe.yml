@@ -5,6 +5,8 @@ on:
     branches: [test]
     paths:
       - 'platforms/ios/GameRuntime/**'
+      - 'platforms/ios/App/**'
+      - 'platforms/ios/project.yml'
       - '.github/workflows/ios-runtime-probe.yml'
       - 'crates/**'
       - 'Cargo.toml'
@@ -271,6 +273,31 @@ jobs:
               startup_step(format_args!("gpu.adapter.created"));
               Ok((surface, adapter))''')
 
+          # The older checkpoints started too late for crashes inside
+          # loading_renderer, Renderer::new, device selection or a Rust panic.
+          patch(gfx, '''    ) -> Result<Self> {
+                  let Opened {
+                      instance,''',
+                '''    ) -> Result<Self> {
+                  startup_step(format_args!("renderer.new.entry"));
+                  let Opened {
+                      instance,''')
+          patch(gfx, '''                let _step = crate::spans::startup::step("renderer.open_device");
+                      open_device(&window, offscreen, api, layers).await?''',
+                '''                startup_step(format_args!("renderer.new.open_device.begin"));
+                      let _step = crate::spans::startup::step("renderer.open_device");
+                      open_device(&window, offscreen, api, layers).await?''')
+          patch(gfx, '''    let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();
+                  let mut first = None;''',
+                '''    startup_step(format_args!("gpu.open_device.begin"));
+                  let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();
+                  let mut first = None;''')
+          patch(gfx, '''    ) {
+                  match open_device_with(window, offscreen, &order, layers, allow_cpu).await {''',
+                '''    ) {
+                  startup_step(format_args!("gpu.open_device.try backends={order:?}"));
+                  match open_device_with(window, offscreen, &order, layers, allow_cpu).await {''')
+
           loader = Path("crates/horizon-client/src/game/resource_loader.rs")
           patch(loader, "    let progress = Progress::new();",
                 "    loading_screen::nova_diag(\"resources.loading.begin\");\n    let progress = Progress::new();")
@@ -336,7 +363,8 @@ jobs:
           xcodebuild -project HorizonIOS.xcodeproj -scheme HorizonIOS \
             -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath Build/Derived CODE_SIGNING_ALLOWED=NO \
-            HORIZON_IOS_RUST_LIB=horizon_ios_game_runtime build \
+            HORIZON_IOS_RUST_LIB=horizon_ios_game_runtime \
+            NOVA_GIT_COMMIT="$GITHUB_SHA" NOVA_GIT_RUN="$GITHUB_RUN_ID" build \
             2>&1 | tee ios-app-link.log
           test -d Build/Derived/Build/Products/Release-iphoneos/Nova.app
       - name: Package unsigned integrated iOS app
