@@ -1484,7 +1484,7 @@ impl Goal for MeleeAttack {
                 _ => self.interval,
             };
             self.until_attack = adjusted(true, interval);
-            m.swing();
+            m.swing_for_attack(false);
             super::ai::do_hurt_target(m, who, cx);
             if let Some(sound) = self.bite {
                 let at = [m.position.x, m.position.y, m.position.z];

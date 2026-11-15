@@ -780,7 +780,7 @@ impl B {
                     return false;
                 }
                 mem(m).look_target.set(Tracker::Entity(target, true));
-                m.swing();
+                m.swing_for_attack(false);
                 let mut gcx = Cx {
                     w,
                     lr: cx.lr,

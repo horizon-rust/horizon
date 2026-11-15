@@ -3314,11 +3314,10 @@ impl Game<'_> {
             {
                 // The packet names the hand, while the swing records the arm:
                 // the main hand is the right one unless the mob is left-handed.
-                let off_hand = m
-                    .extra
-                    .swing_right_arm
-                    .is_some_and(|right| right == m.main_arm_left());
-                host.hub.swing(m.id as i32, i32::from(off_hand), at, None);
+                let arm = m.extra.swing_right_arm;
+                let off_hand = arm.is_some_and(|right| right == m.main_arm_left());
+                host.hub
+                    .swing(m.id as i32, off_hand, m.anim.swing_animation, at, None);
             }
             seen.insert(m.id, (m.hurt_time, dead, swing));
         }
@@ -4598,7 +4597,7 @@ mod mob_swing_sync_tests {
     use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
     /// A server with one placed guest beside the mobs.
-    fn guest_at(game: &mut Game<'_>, at: [f64; 3]) -> mpsc::Receiver<Out> {
+    pub(super) fn guest_at(game: &mut Game<'_>, at: [f64; 3]) -> mpsc::Receiver<Out> {
         game.lan_host(
             LanSettings {
                 port: 0,
@@ -4646,7 +4645,7 @@ mod mob_swing_sync_tests {
         rx
     }
 
-    fn swings(rx: &mpsc::Receiver<Out>) -> Vec<play::SwingAnimation> {
+    pub(super) fn swings(rx: &mpsc::Receiver<Out>) -> Vec<play::SwingAnimation> {
         rx.try_iter()
             .flat_map(|out| match out {
                 Out::Packet(body) => vec![body],

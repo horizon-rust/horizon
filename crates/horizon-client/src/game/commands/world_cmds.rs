@@ -3,6 +3,7 @@
 use super::{Arg, Context, Game, R, Target, err, wrap_degrees};
 use crate::game::minecarts::CartHit;
 use horizon_client::{
+    first_person::SwingAnimation,
     mobs::{Damage, DamageKind, MobEvent, Who, finalize},
     scoreboard_cmd::{Holder, Tracker},
     settings::SOUND_SOURCES,
@@ -590,8 +591,9 @@ impl Game<'_> {
                 Target::Player => self.swing_arm(),
                 Target::Mob(id) => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                        m.ai.swinging = true;
-                        m.ai.swing_time = -1;
+                        // `LivingEntity.swing(hand, animation, true)` of the
+                        // command's default: `startIfAble` may refuse it.
+                        m.swing_hand_modified(false, SwingAnimation::DEFAULT);
                     }
                 }
                 // An armor stand is a LivingEntity: it swings (invisibly).
@@ -2235,6 +2237,10 @@ pub(super) fn look_at(from: [f64; 3], to: [f64; 3]) -> [f32; 2] {
 #[cfg(test)]
 #[path = "attribute_missing_tests.rs"]
 mod attribute_missing_tests;
+
+#[cfg(test)]
+#[path = "swing_command_tests.rs"]
+mod swing_command_tests;
 
 #[cfg(test)]
 mod allay_owner_damage_tests {

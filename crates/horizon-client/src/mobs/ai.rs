@@ -21,6 +21,7 @@ use super::{
     undead,
 };
 use crate::blocks::Fluid;
+use crate::first_person::SwingAnimation;
 use crate::powder_snow::particle_velocity as powder_snow_particle_velocity;
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
@@ -146,7 +147,7 @@ impl Mob {
     }
     /// `SwingState.startIfAble`: a swing past the first half of the current
     /// one restarts it.
-    fn start_swing(&mut self, duration: i32) -> bool {
+    fn start_swing(&mut self, animation: SwingAnimation, duration: i32) -> bool {
         let half = self.swing_duration() / 2;
         if self.ai.swinging && self.ai.swing_time >= 0 && self.ai.swing_time < half {
             return false;
@@ -154,11 +155,12 @@ impl Mob {
         self.ai.swing_time = -1;
         self.ai.swinging = true;
         self.ai.swing_duration = duration.max(1);
+        self.anim.swing_animation = animation;
         true
     }
     /// LivingEntity.swing
     pub fn swing(&mut self) {
-        if self.start_swing(6) {
+        if self.start_swing(SwingAnimation::DEFAULT, 6) {
             self.extra.swing_right_arm = None;
             self.extra.swing_stab = false;
         }
@@ -166,7 +168,7 @@ impl Mob {
     /// `LivingEntity.swing(hand, animation, false)` for a swing of `duration`
     /// ticks (`getModifiedSwingDuration`): the arm is `hand.asArm(mainArm)`.
     pub fn swing_hand(&mut self, off_hand: bool, duration: i32) {
-        if self.start_swing(duration) {
+        if self.start_swing(SwingAnimation::DEFAULT, duration) {
             self.extra.swing_right_arm = Some(!off_hand != self.main_arm_left());
             self.extra.swing_stab = false;
         }
@@ -174,16 +176,12 @@ impl Mob {
     /// `swing_hand` for a swing of `animation`, lengthened or shortened by
     /// this mob's haste, conduit power or mining fatigue
     /// (`LivingEntity.getModifiedSwingDuration`).
-    pub fn swing_hand_modified(
-        &mut self,
-        off_hand: bool,
-        animation: crate::first_person::SwingAnimation,
-    ) {
+    pub fn swing_hand_modified(&mut self, off_hand: bool, animation: SwingAnimation) {
         let amplifier = |id: &str| self.extra.effects.iter().find(|e| e.0 == id).map(|e| e.2);
         let dig_speed = amplifier("minecraft:haste").max(amplifier("minecraft:conduit_power"));
         let fatigue = amplifier("minecraft:mining_fatigue");
         let duration = crate::first_person::swing_duration(animation, dig_speed, fatigue);
-        if self.start_swing(duration) {
+        if self.start_swing(animation, duration) {
             self.extra.swing_right_arm = Some(!off_hand != self.main_arm_left());
             self.extra.swing_stab = animation.kind == 2;
         }

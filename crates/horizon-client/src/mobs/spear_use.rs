@@ -12,12 +12,37 @@ use super::{
     gear,
     goals::{Cx, Goal, LOOK, MOVE, goal_clone, reduced},
 };
+use crate::first_person::SwingAnimation;
 use crate::spear::{Kinetic, REACH, hits_in_reach};
 use horizon_core::geometry::{Aabb, Vec3, trig::Mth};
+
+#[cfg(test)]
+#[path = "swing_tests.rs"]
+mod swing_tests;
 
 /// The kinetic weapon in the main hand (`getMainHandItem().get(KINETIC_WEAPON)`).
 pub fn main_hand_kinetic(m: &Mob) -> Option<Kinetic> {
     m.extra.main_hand.as_deref().and_then(Kinetic::of)
+}
+
+impl Mob {
+    /// `Mob.swingForAttack(hand)`: the animation is the held stack's
+    /// `attack_animation` (`ItemStack.getAttackAnimation`, the default for
+    /// everything but a spear) and the length its `getModifiedSwingDuration`.
+    pub fn swing_for_attack(&mut self, off_hand: bool) {
+        let held = if off_hand {
+            &self.extra.off_hand
+        } else {
+            &self.extra.main_hand
+        };
+        let animation = held
+            .as_deref()
+            .and_then(Kinetic::of)
+            .map_or(SwingAnimation::DEFAULT, |kinetic| {
+                kinetic.attack_animation()
+            });
+        self.swing_hand_modified(off_hand, animation);
+    }
 }
 
 /// `LivingEntity.isUsingItem`. A piglin admiring what it holds in its off
