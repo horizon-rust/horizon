@@ -3223,7 +3223,7 @@ impl Game<'_> {
     /// eye. A boat, minecart, armor stand, item frame or painting is aimed at
     /// the point the client hit (the interact packet's location) when that
     /// is on it, else at its centre.
-    fn look_at_entity(
+    pub(super) fn look_at_entity(
         &mut self,
         host: &mut LanHost,
         gi: usize,

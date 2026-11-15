@@ -107,6 +107,9 @@ impl Game<'_> {
             }
             return;
         }
+        if self.queue_crystal_strike(host, conn, id) {
+            return;
+        }
         let (old_yaw, old_pitch) = (host.hub.guests[gi].yaw, host.hub.guests[gi].pitch);
         let boat = self.boats.iter().position(|boat| boat.id as i32 == id);
         // A packet names its target already. Keep the attacker's actual yaw
