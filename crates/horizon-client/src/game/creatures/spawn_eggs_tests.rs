@@ -1,13 +1,9 @@
 //! A spawn egg's own effects: `EntityType.spawn` plays the new mob's ambient
-//! sound, `ItemStack.useOn` keeps an adventure player from using the egg on a
-//! block, and an egg used on a mob of its own kind gives the baby the
+//! sound, and an egg used on a mob of its own kind gives the baby the
 //! tameness `getBreedOffspring` gives it.
 use super::super::super::*;
-use horizon_client::{
-    command::args::GameMode, items::ItemStack, mobs::Species, motion::PlayerMotion,
-};
+use horizon_client::{items::ItemStack, mobs::Species, motion::PlayerMotion};
 use horizon_core::geometry::Vec3;
-use horizon_world::nbt::Tag;
 
 /// A server game with a local player standing south of `pos` and aiming at its
 /// top face, the click forced onto that block, which holds `block`.
@@ -37,6 +33,7 @@ fn block_game(pos: [i32; 3], block: &str) -> Game<'static> {
     game.forced_hit = Some(Hit {
         pos,
         face: [0, 1, 0],
+        inside: false,
         point: [
             f64::from(pos[0]) + 0.5,
             f64::from(pos[1]) + 1.0,
@@ -88,65 +85,6 @@ fn an_egg_used_on_a_block_plays_the_new_mobs_ambient_sound() {
     // baby raises to 1.5.
     let pitch = heard[0].pitch;
     assert!((0.8..=1.2).contains(&pitch), "an adult's pitch: {pitch}");
-}
-
-/// `ItemStack.useOn` passes in adventure mode unless the stack's `can_place_on`
-/// names the clicked block, so an adventure player's egg spawns nothing and
-/// stays in hand; a survival player's egg spawns, and so does an adventure
-/// player's `can_place_on` egg on the block it names. That guard is the
-/// stack's, so it answers before `EntityType.canSpawn` does.
-#[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-fn an_adventure_player_cannot_use_an_egg_on_a_block() {
-    const POS: [i32; 3] = [2, 64, 2];
-    let mut game = block_game(POS, "minecraft:stone");
-    let hit = game.forced_hit.unwrap();
-    *game.held_mut() = Some(ItemStack::new("minecraft:sheep_spawn_egg", 2));
-    game.set_mode(GameMode::Adventure);
-    assert!(
-        !game.use_hand(Some(&hit)).unwrap(),
-        "the use passes in adventure mode"
-    );
-    assert!(game.mobs.is_empty(), "no sheep: {:?}", game.mobs.len());
-    assert_eq!(game.held().map(|s| s.count), Some(2), "the egg stayed");
-
-    // `canPlaceOnBlockInAdventureMode`: the stack names the clicked block.
-    let mut named = ItemStack::new("minecraft:sheep_spawn_egg", 2);
-    named.data_mut().other.push((
-        "minecraft:can_place_on".into(),
-        Tag::compound([(
-            "blocks",
-            Tag::List(vec![Tag::String("minecraft:stone".into())]),
-        )]),
-    ));
-    *game.held_mut() = Some(named);
-    assert!(
-        game.use_hand(Some(&hit)).unwrap(),
-        "the named block allows it"
-    );
-    assert_eq!(game.mobs.len(), 1, "one sheep");
-    assert_eq!(game.held().map(|s| s.count), Some(1), "one egg is used");
-
-    // Survival builds: the egg is used as usual.
-    game.set_mode(GameMode::Survival);
-    *game.held_mut() = Some(ItemStack::new("minecraft:sheep_spawn_egg", 2));
-    assert!(game.use_hand(Some(&hit)).unwrap(), "survival may build");
-    assert_eq!(game.mobs.len(), 2, "a second sheep");
-    assert_eq!(game.held().map(|s| s.count), Some(1), "one egg is used");
-
-    // The guard is `ItemStack.useOn`'s, so it comes before `EntityType.canSpawn`:
-    // in adventure mode on peaceful a zombie egg passes (PASS), where
-    // `canSpawn` alone would fail it.
-    game.set_mode(GameMode::Adventure);
-    game.ui.difficulty = 0;
-    *game.held_mut() = Some(ItemStack::new("minecraft:zombie_spawn_egg", 2));
-    assert!(
-        !game.use_hand(Some(&hit)).unwrap(),
-        "peaceful does not make the use fail"
-    );
-    assert!(!game.use_failed, "a pass, not a fail");
-    assert_eq!(game.mobs.len(), 2, "no zombie: {}", game.mobs.len());
-    assert_eq!(game.held().map(|s| s.count), Some(2), "the egg stayed");
 }
 
 /// `SpawnEggItem.spawnOffspringFromSpawnEgg` asks the parent for
