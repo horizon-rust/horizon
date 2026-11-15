@@ -24,6 +24,7 @@ pub mod perf;
 pub mod players;
 mod registry;
 pub mod settings;
+pub mod share;
 pub mod tunnel;
 
 use registry::Registry;
@@ -95,6 +96,14 @@ pub trait Hooks: Sync {
         None
     }
 
+    /// Once a client tick (20 a second, also while the game is paused or on the title screen),
+    /// with the window's world ([`share`]). Only the window's own player calls it.
+    fn share(&self, _world: &mut dyn share::ShareView) {}
+
+    /// The window's world stopped being open to LAN: Open to LAN's stop, or the player left the
+    /// world. Called at that moment, by the window's own player only.
+    fn lan_closed(&self) {}
+
     /// A game window opened: once, before the first frame, for every run that has a window,
     /// automated ones included ([`Client::automated`]); never for a dedicated server.
     fn client_started(&self, _client: &Client) {}
@@ -108,6 +117,23 @@ pub trait Hooks: Sync {
     /// used; with none, the screen says how to prepare the files and opens no page. Asked once,
     /// before that screen's window opens.
     fn get_the_game(&self) -> Option<GetTheGame> {
+        None
+    }
+
+    /// The `horizon-ctl` commands this crate answers in the game: their group, as `hello` lists
+    /// it, and the lines `help` adds for them.
+    fn control_commands(&self) -> Option<(&'static str, &'static [&'static str])> {
+        None
+    }
+
+    /// A `horizon-ctl` command (its words) on the window's game: `Some` with the answer as JSON
+    /// text, or why it failed, when it is this crate's. The first hook that answers wins; the
+    /// hooks are asked before most of the engine's own commands.
+    fn control(
+        &self,
+        _words: &[&str],
+        _world: &mut dyn share::ShareView,
+    ) -> Option<Result<String, String>> {
         None
     }
 }
@@ -218,6 +244,15 @@ pub fn register(hooks: &'static dyn Hooks) -> Result<(), TooLate> {
 }
 
 /// The registered hooks, sealing the list on the first call.
+/// The game's translations, which it installs at start ([`engine::set_language`]).
+static LANGUAGE: std::sync::OnceLock<fn(&str) -> Option<String>> = std::sync::OnceLock::new();
+
+/// The text of a translation key in the player's language, if the game has it. For text a crate
+/// makes outside a view, such as a page's rows. None before the game installs its languages.
+pub fn tr(key: &str) -> Option<String> {
+    LANGUAGE.get().and_then(|language| language(key))
+}
+
 fn all() -> &'static [&'static dyn Hooks] {
     HOOKS.all()
 }
@@ -251,6 +286,11 @@ pub mod engine {
         crate::pages::engine::all();
         crate::hud::engine::all();
         crate::lang::all();
+    }
+
+    /// Where [`crate::tr`] reads translations from; the first call wins.
+    pub fn set_language(language: fn(&str) -> Option<String>) {
+        let _ = LANGUAGE.set(language);
     }
 
     /// [`Hooks::started`].
@@ -304,6 +344,20 @@ pub mod engine {
     pub fn shutdown() {
         for hooks in all() {
             hooks.shutdown();
+        }
+    }
+
+    /// [`Hooks::share`].
+    pub fn share(world: &mut dyn share::ShareView) {
+        for hooks in all() {
+            hooks.share(world);
+        }
+    }
+
+    /// [`Hooks::lan_closed`].
+    pub fn lan_closed() {
+        for hooks in all() {
+            hooks.lan_closed();
         }
     }
 
@@ -361,6 +415,19 @@ pub mod engine {
     /// [`Hooks::captures`]: the first registered hook's.
     pub fn captures() -> Option<&'static dyn perf::Captures> {
         all().iter().find_map(|hooks| hooks.captures())
+    }
+
+    /// [`Hooks::control`]: the first hook's answer.
+    pub fn control(
+        words: &[&str],
+        world: &mut dyn share::ShareView,
+    ) -> Option<Result<String, String>> {
+        all().iter().find_map(|hooks| hooks.control(words, world))
+    }
+
+    /// [`Hooks::control_commands`] of every hook, in registration order.
+    pub fn control_commands() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
+        all().iter().filter_map(|hooks| hooks.control_commands())
     }
 
     /// [`Hooks::tunnel`]: the first registered hook's resolver.
