@@ -4,3 +4,4 @@ Branch: test
 Requested per-launch timestamped logs and full Horizon log forwarding.
 Requested independent X/Y button sizes up to 300 percent.
 Fix virtual keyboard delete, dismissal, F3 and menu Escape routing.
+Snap touch layout buttons to neighboring edges on drag release.

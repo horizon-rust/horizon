@@ -48,10 +48,19 @@ struct NovaTouchLayoutEditor: View {
                         guard let index = layout.controls.firstIndex(where: { $0.id == control.id }) else {
                             return
                         }
+                        let canvas = geometry.size
+                        let proposed = CGPoint(
+                            x: control.x * canvas.width + translation.width,
+                            y: control.y * canvas.height + translation.height
+                        )
+                        let snapped = NovaButtonSnap.position(
+                            for: control, at: proposed,
+                            among: layout.controls, canvas: canvas
+                        )
                         layout.controls[index].x = min(0.98, max(0.02,
-                            control.x + translation.width / max(1, geometry.size.width)))
+                            snapped.x / max(1, canvas.width)))
                         layout.controls[index].y = min(0.98, max(0.02,
-                            control.y + translation.height / max(1, geometry.size.height)))
+                            snapped.y / max(1, canvas.height)))
                     }
                     .position(x: control.x * geometry.size.width,
                               y: control.y * geometry.size.height)
@@ -159,6 +168,75 @@ struct NovaTouchLayoutEditor: View {
                 }
             }
         }
+    }
+}
+
+/// Lightweight edge snapping performed once at drag end, never per frame.
+/// Works for different button widths/heights and all four neighboring sides.
+private enum NovaButtonSnap {
+    static func size(_ control: NovaTouchControl) -> CGSize {
+        CGSize(
+            width: control.kind == "joystick" ? max(100, control.buttonWidth) : control.buttonWidth,
+            height: control.kind == "joystick" ? max(100, control.buttonHeight) : control.buttonHeight
+        )
+    }
+
+    static func position(for moving: NovaTouchControl, at point: CGPoint,
+                         among controls: [NovaTouchControl], canvas: CGSize) -> CGPoint {
+        let movingSize = size(moving)
+        let threshold: CGFloat = 20
+        let alignment: CGFloat = 16
+        var best: (point: CGPoint, score: CGFloat)?
+
+        for neighbor in controls where neighbor.id != moving.id {
+            let otherSize = size(neighbor)
+            let center = CGPoint(x: neighbor.x * canvas.width, y: neighbor.y * canvas.height)
+            let halfWidth = (movingSize.width + otherSize.width) / 2
+            let halfHeight = (movingSize.height + otherSize.height) / 2
+            let dx = point.x - center.x
+            let dy = point.y - center.y
+
+            // A significant intentional overlap is not snapped away.
+            // The orthogonal axis must overlap for these to be neighbors.
+            let horizontalGap = abs(dx) - halfWidth
+            if horizontalGap >= -6 && horizontalGap <= threshold
+                && abs(dy) < halfHeight {
+                let edgeY = [
+                    center.y,
+                    center.y + (otherSize.height - movingSize.height) / 2,
+                    center.y - (otherSize.height - movingSize.height) / 2
+                ]
+                let alignedY = edgeY.min(by: { abs($0 - point.y) < abs($1 - point.y) })!
+                let newY = abs(alignedY - point.y) <= alignment ? alignedY : point.y
+                let candidate = CGPoint(
+                    x: center.x + (dx >= 0 ? halfWidth : -halfWidth), y: newY
+                )
+                let score = abs(horizontalGap) + abs(newY - point.y) * 0.3
+                if best == nil || score < best!.score {
+                    best = (candidate, score)
+                }
+            }
+
+            let verticalGap = abs(dy) - halfHeight
+            if verticalGap >= -6 && verticalGap <= threshold
+                && abs(dx) < halfWidth {
+                let edgeX = [
+                    center.x,
+                    center.x + (otherSize.width - movingSize.width) / 2,
+                    center.x - (otherSize.width - movingSize.width) / 2
+                ]
+                let alignedX = edgeX.min(by: { abs($0 - point.x) < abs($1 - point.x) })!
+                let newX = abs(alignedX - point.x) <= alignment ? alignedX : point.x
+                let candidate = CGPoint(
+                    x: newX, y: center.y + (dy >= 0 ? halfHeight : -halfHeight)
+                )
+                let score = abs(verticalGap) + abs(newX - point.x) * 0.3
+                if best == nil || score < best!.score {
+                    best = (candidate, score)
+                }
+            }
+        }
+        return best?.point ?? point
     }
 }
 
