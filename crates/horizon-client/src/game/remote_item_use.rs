@@ -3,6 +3,7 @@
 use super::super::Game;
 use horizon_client::first_person::Hand;
 use horizon_client::items::ItemStack;
+use horizon_core::geometry::{Aabb, Vec3};
 
 impl Game<'_> {
     /// `FlintAndSteelItem.useOn` / `FireChargeItem.useOn` on this client's level:
@@ -164,6 +165,69 @@ impl Game<'_> {
         } else {
             false
         }
+    }
+
+    /// `Item.useOn` on this client's level, whichever item is held: `None`
+    /// when no predicted item's `useOn` runs here (the click goes on to
+    /// `Item.use`), else whether this hand swings. The end crystal's refusals
+    /// are a FAIL: they end the click without a swing or a spent crystal.
+    pub(in crate::game) fn predict_use_on(
+        &mut self,
+        stack: &ItemStack,
+        hit: &super::super::Hit,
+        hand: Hand,
+    ) -> Option<bool> {
+        if let Some(placed) = self.predict_end_crystal(stack, hit, hand) {
+            return Some(placed);
+        }
+        let success =
+            self.predict_item_on_block(stack, hit, hand) || self.predict_map_on_banner(stack, hit);
+        success.then_some(true)
+    }
+
+    /// `EndCrystalItem.useOn` on this client's level: `Some(true)` once the
+    /// clicked block is obsidian or bedrock with a cell above it holding no
+    /// entity (SUCCESS: the crystal is spent and this hand swings), `Some(false)`
+    /// for its FAIL, and `None` for another item or a use the player may not
+    /// make here (`ItemStack.useOn`'s PASS).
+    pub(in crate::game) fn predict_end_crystal(
+        &mut self,
+        stack: &ItemStack,
+        hit: &super::super::Hit,
+        hand: Hand,
+    ) -> Option<bool> {
+        if &*stack.item != "minecraft:end_crystal"
+            || !self.with_hand(hand, |g| g.may_use_on(hit.pos))
+        {
+            return None;
+        }
+        if !matches!(
+            &*self.block_name(hit.pos),
+            "minecraft:obsidian" | "minecraft:bedrock"
+        ) {
+            return Some(false);
+        }
+        let above = [hit.pos[0], hit.pos[1] + 1, hit.pos[2]];
+        if !self
+            .res
+            .facts()
+            .is_air(self.world.block(above[0], above[1], above[2]))
+        {
+            return Some(false);
+        }
+        let (x, y, z) = (
+            f64::from(above[0]),
+            f64::from(above[1]),
+            f64::from(above[2]),
+        );
+        if self.entity_in(Aabb::new(
+            Vec3::new(x, y, z),
+            Vec3::new(x + 1.0, y + 2.0, z + 1.0),
+        )) {
+            return Some(false);
+        }
+        self.with_hand(hand, Game::consume_held);
+        Some(true)
     }
 
     /// `MapItem.useOn` on this client: a map used on a banner is SUCCESS

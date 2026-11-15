@@ -8016,7 +8016,7 @@ impl Game<'_> {
     /// `Minecraft.startUseItem`'s block turn for `hand`: a use that swung drops
     /// the hand (`LocalPlayer.itemUsed`) when it spent the held item or the
     /// player has infinite materials.
-    fn remote_use_block(&mut self, hand: Hand) -> bool {
+    pub(in crate::game) fn remote_use_block(&mut self, hand: Hand) -> bool {
         let before = self.with_hand(hand, |g| g.held().map(|s| s.count));
         let swings = self.swings_started;
         let done = self.remote_use_item_on(hand);
@@ -8256,13 +8256,13 @@ impl Game<'_> {
                 }
                 return true;
             } else if let Some(stack) = held.as_ref()
-                && (self.predict_item_on_block(stack, &hit, hand)
-                    || self.predict_map_on_banner(stack, &hit))
+                && let Some(swing) = self.predict_use_on(stack, &hit, hand)
             {
-                // Item.useOn succeeded here (InteractionResult.SUCCESS):
-                // this hand swings and the click ends, so the other hand
-                // (a shield, a torch) is never tried.
-                self.with_hand(hand, Game::swing_arm);
+                // Item.useOn here ended the click: SUCCESS swings this hand, a
+                // FAIL (the end crystal's refusals) does not; no other hand.
+                if swing {
+                    self.with_hand(hand, Game::swing_arm);
+                }
                 return true;
             }
             if held_block {
