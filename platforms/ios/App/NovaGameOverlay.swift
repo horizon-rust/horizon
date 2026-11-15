@@ -243,14 +243,24 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
             y: min(overlay.bounds.maxY - 8, max(0, prev.y + dy))
         )
         redrawCursor()
-        let scale = Double(window.screen.scale)
-        let point = cursorPoint ?? prev
-        nova_ios_input_cursor(Double(point.x) * scale, Double(point.y) * scale)
-        nova_ios_input_motion(Double(dx) * scale, Double(dy) * scale)
+        if (nova_ios_pointer_state() & 1) != 0 {
+            // First-person look uses RELATIVE motion only. Sending a cursor
+            // event too caused unnecessary UI event processing every frame.
+            // Touch deltas are already in points, not retina-scaled pixels.
+            nova_ios_input_motion(Double(dx), Double(dy))
+        } else {
+            // GUI menus need an absolute cursor in the Metal surface's pixels.
+            let scale = Double(window.screen.scale)
+            let point = cursorPoint ?? prev
+            nova_ios_input_cursor(Double(point.x) * scale, Double(point.y) * scale)
+        }
     }
 
     private func tapGameSurface(at location: CGPoint) {
-        guard !isInMenu, (nova_ios_pointer_state() & 1) == 0 else { return }
+        let touchGesturesEnabled =
+            UserDefaults.standard.object(forKey: "nova.touch.gestures") as? Bool ?? true
+        guard !isInMenu, touchGesturesEnabled,
+              (nova_ios_pointer_state() & 1) == 0 else { return }
         // Preserve direct menu taps. Never trigger attack in first-person
         // merely because a finger landed on the screen.
         cursorPoint = CGPoint(
