@@ -21,8 +21,8 @@ static IN_WORLD: AtomicBool = AtomicBool::new(false);
 static POINTER_STATE: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Low bit indicates first-person gameplay, high bits identify a new screen.
-/// This lets UIKit reset the cursor when inventory/options/other menus open.
+/// Low bit indicates first-person gameplay, high bits identify a transition
+/// out of first-person. Navigation between menus must preserve cursor position.
 pub fn publish_pointer_mode(in_world: bool, changed_screen: bool) {
     let previous = POINTER_STATE.load(Ordering::Relaxed);
     let epoch = (previous >> 1).wrapping_add(u64::from(changed_screen));
@@ -49,6 +49,30 @@ pub fn overlay_active() -> bool {
     OVERLAY_ACTIVE.load(Ordering::Acquire)
 }""")
 
+# Avoid sending hundreds of individual move events into the expensive
+# game event handler. Preserve relative deltas and button/key ordering.
+change(queue,
+       "            inputs.push(event);",
+       """            match event {
+                Input::Motion(dx, dy) => {
+                    if let Some(Input::Motion(x, y)) = inputs.last_mut() {
+                        *x += dx;
+                        *y += dy;
+                    } else {
+                        inputs.push(Input::Motion(dx, dy));
+                    }
+                }
+                Input::Cursor(x, y) => {
+                    if let Some(Input::Cursor(old_x, old_y)) = inputs.last_mut() {
+                        *old_x = x;
+                        *old_y = y;
+                    } else {
+                        inputs.push(Input::Cursor(x, y));
+                    }
+                }
+                other => inputs.push(other),
+            }""")
+
 loading = "crates/horizon-client/src/game/loading_screen.rs"
 change(loading,
        """    fn ios_drain_inputs(&mut self, event_loop: &ActiveEventLoop) {
@@ -58,25 +82,16 @@ change(loading,
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
         static WAS_MODAL: AtomicBool = AtomicBool::new(false);
         let modal = ios_input::overlay_active();
-        // The title may use Screen::Playing as its base screen.
-        // It is still a GUI, and prompts can cover first-person gameplay.
-        let signature = match self {
-            App::Loading(_) => (None, false, false),
-            App::Ready(game) => (
-                Some(game.host.screen),
-                game.host.title.is_some(),
-                game.host.screen_over_playing(),
-            ),
-        };
-        let in_world = matches!(signature,
-            (Some(Screen::Playing), false, false));
-        static LAST_SCREEN: std::sync::Mutex<Option<(Option<Screen>, bool, bool)>> =
-            std::sync::Mutex::new(None);
-        let changed = LAST_SCREEN.lock().map(|mut previous| {
-            let changed = *previous != Some(signature);
-            *previous = Some(signature);
-            changed
-        }).unwrap_or(false);
+        // Only recenter on the transition from grabbed gameplay back
+        // into a GUI, e.g. opening inventory or pause. Options opened
+        // from the main menu preserves the existing cursor position.
+        let in_world = matches!(self, App::Ready(game)
+            if game.host.screen == Screen::Playing
+                && game.host.title.is_none()
+                && !game.host.screen_over_playing());
+        static WAS_IN_WORLD: AtomicBool = AtomicBool::new(false);
+        let was_in_world = WAS_IN_WORLD.swap(in_world, AtomicOrdering::Relaxed);
+        let changed = was_in_world && !in_world;
         ios_input::set_playing(in_world);
         ios_input::publish_pointer_mode(in_world, changed);
         let was_modal = WAS_MODAL.swap(modal, AtomicOrdering::Relaxed);
@@ -117,6 +132,13 @@ change(loading,
             {
                 self.ios_touch_mouse(event_loop, id, touch);
             }""")
+
+# A touchscreen is not a desktop keyboard: focusing chat, a sign or
+# another field must not summon the iOS keyboard automatically. Nova's
+# explicit Type control remains the only keyboard activation path.
+change("crates/horizon-client/src/game/ime.rs",
+       "        let want = self.text_field_focused();",
+       '        let want = self.text_field_focused() && !cfg!(target_os = "ios");')
 
 capture = "crates/horizon-client/src/game/pointer_capture.rs"
 change(capture,
