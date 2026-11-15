@@ -271,6 +271,13 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
 
 ## Changelog
 
+- 2026-11-15: API 0.2 (additions, experimental): `[material] reads` (#16011 item 4): the terrain reads kept
+  resources, `x` for this frame's version of a texture a `[[before_world]]` pass writes (in the same frame),
+  `x_previous` for last frame's, and buffers; their declarations join the material's module at the passes'
+  bindings. The check refuses `x` of a texture only `[[post]]` passes write (they run after the terrain draws),
+  `writes` on `[material]`, `reads` on the other stages, and `displacement` or a `[vertex]` file reaching a kept
+  resource, as both also draw the shadow map. The kept resources' frame (the versions' swap and the clears) now starts
+  before the world draws in every pack that keeps them. A material without `reads` composes as before, a test holds.
 - 2026-11-15: API 0.2 (experimental): `frame.light_direction` is the sun by day and the moon by night also for a pack
   without a `[shadow]` stage, where it now equals the frame's `sun_direction` or `moon_direction`; it read straight up
   (0, 1, 0) at every time of day until now, so a pack that traced its shadows along it got them straight down. Packs
