@@ -708,7 +708,7 @@ pub const FRIEND: &str = tunnel::PREFIX;
 /// An address of the form `tailcat:mcl1_...` joins a world shared through
 /// Tailcat: the helper opens a loopback listener and everything after is a
 /// plain join. The prefix is Horizon's; the invitation is the helper's.
-pub const TAILCAT: &str = "tailcat:";
+pub const TAILCAT: &str = crate::tailcat::ADDRESS_PREFIX;
 
 /// Whether `code` is an invite code; with `full`, only a full one (a short
 /// relay code could also be a host name). Without a resolver nothing is one.

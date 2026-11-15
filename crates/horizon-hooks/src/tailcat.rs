@@ -29,6 +29,8 @@ use std::time::{Duration, Instant};
 
 /// Every invitation starts with this (`tailcat-for-minecraft`'s format).
 pub const INVITE_PREFIX: &str = "mcl1_";
+/// Horizon's address prefix for a join through the helper (`tailcat:mcl1_...`).
+pub const ADDRESS_PREFIX: &str = "tailcat:";
 /// The only port the helper proxies: the server's port on the tunnel.
 pub const PORT: u16 = 25565;
 /// How long a helper may take to pick a DERP region and start listening.

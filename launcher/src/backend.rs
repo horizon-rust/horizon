@@ -3087,12 +3087,33 @@ pub fn client(tag: &str) -> Result<Command, String> {
 /// What the command line adds to a refusal to play for want of an account.
 pub const SIGN_IN_HINT: &str = "Sign in with `horizon-launcher account sign-in`.";
 
-/// Start the game straight into a friend's world: `--server friend:CODE`.
-pub fn join_friend(cmd: &mut Command, code: &str) -> Result<(), String> {
-    horizon_friends::invite::parse_detailed(code).map_err(|e| e.to_string())?;
+/// Whether a pasted invite joins a friend's world: a Play with Friends code
+/// or a Tailcat `mcl1_...` invitation.
+pub fn invite_is_valid(code: &str) -> bool {
+    invite_address(code).is_ok()
+}
+
+/// The `--server` address a pasted invite joins: `tailcat:` for a Tailcat
+/// invitation (the helper checks the rest), the friends prefix otherwise.
+fn invite_address(code: &str) -> Result<String, String> {
     let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
-    cmd.arg("--server")
-        .arg(format!("{}{code}", horizon_friends::ADDRESS_PREFIX));
+    if let Some(invite) = code.strip_prefix(horizon_platform::hooks::tailcat::INVITE_PREFIX) {
+        if invite.is_empty() {
+            return Err("a Tailcat invitation is `mcl1_` and more".into());
+        }
+        return Ok(format!(
+            "{}{code}",
+            horizon_platform::hooks::tailcat::ADDRESS_PREFIX
+        ));
+    }
+    horizon_friends::invite::parse_detailed(&code).map_err(|e| e.to_string())?;
+    Ok(format!("{}{code}", horizon_friends::ADDRESS_PREFIX))
+}
+
+/// Start the game straight into a friend's world: `--server friend:CODE`, or
+/// `--server tailcat:INVITE` for a Tailcat invitation.
+pub fn join_friend(cmd: &mut Command, code: &str) -> Result<(), String> {
+    cmd.arg("--server").arg(invite_address(code)?);
     Ok(())
 }
 
@@ -4450,6 +4471,17 @@ mod tests {
                 .try_into()
                 .ok()?,
         ))
+    }
+
+    #[test]
+    fn a_tailcat_invite_joins_through_the_helper() {
+        let code = " mcl1_abc\n123 ";
+        assert!(invite_is_valid(code));
+        let mut cmd = Command::new("horizon-client");
+        join_friend(&mut cmd, code).unwrap();
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args, ["--server", "tailcat:mcl1_abc123"]);
+        assert!(!invite_is_valid(" mcl1_ "));
     }
 
     #[test]

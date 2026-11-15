@@ -1119,7 +1119,7 @@ impl Launcher {
                 cx.notify();
             }));
         let field = line_edit::mouse(field, cx, |this| &mut this.friend_code);
-        let valid = horizon_friends::invite::parse(self.friend_code.text()).is_some();
+        let valid = backend::invite_is_valid(self.friend_code.text());
         let can = valid && (tag.is_empty() || self.can_start(tag));
         let join = ui::quiet("join-friend", join_label, 40., &t);
         let join = if can {
