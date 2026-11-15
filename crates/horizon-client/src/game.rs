@@ -2720,6 +2720,9 @@ struct Game<'a> {
     cart_models: minecarts::CartModels,
     /// The boat the player rides.
     riding: Option<u32>,
+    /// When the player last got into its vehicle (from `Hub.seat_order` when host,
+    /// or 0 in single player).
+    pub(super) vehicle_order: u64,
     /// Vehicles that gained a rider this tick whose `START_RIDING_TRIGGER` was
     /// not fired yet (`game/boarding.rs`), for a guest's turn.
     started_riding: Vec<u32>,
@@ -11697,6 +11700,7 @@ impl<'a> Game<'a> {
             trim_slots: Default::default(),
             cart_models: prepared.cart_models,
             riding: None,
+            vehicle_order: 0,
             started_riding: Vec::new(),
             rotation_forced: false,
             posed_rider: None,

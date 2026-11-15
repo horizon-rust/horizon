@@ -163,6 +163,11 @@ impl Game<'_> {
             for &passenger in passengers {
                 r.passenger_vehicles.insert(passenger as u32, vehicle_id);
             }
+            if passengers.is_empty() {
+                r.vehicle_passengers.remove(&vehicle_id);
+            } else {
+                r.vehicle_passengers.insert(vehicle_id, passengers.to_vec());
+            }
         }
         self.remote_seat_passengers(vehicle_id, passengers);
         let player_controls = passengers.first().is_some_and(|&id| {
@@ -278,7 +283,20 @@ impl Game<'_> {
     /// AbstractBoat.getControllingPassenger: only the first player steers a boat.
     /// A non-remote world retains its existing local movement ownership.
     pub(super) fn controls_boat(&self, id: u32) -> bool {
-        self.riding == Some(id) && self.remote.as_ref().is_none_or(|r| r.first_passenger)
+        if self.riding != Some(id) {
+            return false;
+        }
+        if let Some(r) = self.remote.as_ref() {
+            return r.first_passenger;
+        }
+        if let Some(host) = self.lan.as_ref() {
+            return !host
+                .hub
+                .guests
+                .iter()
+                .any(|g| g.vehicle == Some(id) && g.vehicle_order < self.vehicle_order);
+        }
+        true
     }
 
     /// The local player's tick in its vehicle, in place of its own movement:

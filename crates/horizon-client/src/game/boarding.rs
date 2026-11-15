@@ -29,6 +29,10 @@ impl Game<'_> {
     /// vehicle carries.
     pub(super) fn start_riding(&mut self, vehicle: u32) {
         self.riding = Some(vehicle);
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.seat_order += 1;
+            self.vehicle_order = host.hub.seat_order;
+        }
         self.note_started_riding(vehicle);
     }
 

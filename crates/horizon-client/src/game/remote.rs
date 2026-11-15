@@ -643,6 +643,8 @@ pub(super) struct Remote {
     tick_water_fx: Vec<horizon_client::mobs::MobEvent>,
     /// Complete network riding graph, including invisible plugin seat entities.
     pub(super) passenger_vehicles: HashMap<u32, u32>,
+    /// Ordered passengers per vehicle from `SetPassengers`.
+    pub(super) vehicle_passengers: HashMap<u32, Vec<i32>>,
     lerps: HashMap<i32, Lerp>,
     /// The minecarts the server moves with `ClientboundMoveMinecartPacket`
     /// (`NewMinecartBehavior`), which have no interpolation handler.
@@ -1215,6 +1217,7 @@ impl Game<'_> {
             tick_standings: Vec::new(),
             tick_water_fx: Vec::new(),
             passenger_vehicles: HashMap::new(),
+            vehicle_passengers: HashMap::new(),
             lerps: HashMap::new(),
             cart_lerps: HashMap::new(),
             stepped: HashMap::new(),
@@ -1443,6 +1446,7 @@ impl Game<'_> {
             tick_standings: Vec::new(),
             tick_water_fx: Vec::new(),
             passenger_vehicles: HashMap::new(),
+            vehicle_passengers: HashMap::new(),
             lerps: HashMap::new(),
             cart_lerps: HashMap::new(),
             stepped: HashMap::new(),
@@ -2315,6 +2319,7 @@ impl Game<'_> {
             if let Some(r) = self.remote.as_mut() {
                 r.entities.clear();
                 r.passenger_vehicles.clear();
+                r.vehicle_passengers.clear();
                 r.lerps.clear();
                 r.cart_lerps.clear();
                 r.stepped.clear();

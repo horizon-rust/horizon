@@ -313,7 +313,7 @@ impl Game<'_> {
         }
         // Getting out goes through leave_guest, which tells the client and
         // teleports it (ServerPlayer.dismountTo).
-        let seat = self.as_guest(host, conn, |game| {
+        let seat = self.as_guest_with_host(host, conn, |game, host| {
             // A cushion does not move: the rider sits on it until it sneaks
             // (`Cushion.removePassenger` plays the get-up sound).
             if game.cushions.iter().any(|c| Some(c.id) == game.riding) {
@@ -336,7 +336,17 @@ impl Game<'_> {
                     game.dismount(i);
                     return None;
                 }
-                let p = game.player_boat_seat(i);
+                let vehicle = game.riding.unwrap();
+                let seat_index = game.guest_seat_index(host, conn, vehicle);
+                let b = &game.boats[i];
+                let count = game.boat_players(b.id).max(1) + game.boat_mobs(b.id).len();
+                let p = b.seat(
+                    seat_index,
+                    count,
+                    false,
+                    super::boat_passengers::PLAYER_RIDING_OFFSET,
+                    false,
+                );
                 return Some([p.x, p.y, p.z]);
             }
             // The minecart moves with the rider's input, and lets it out when
@@ -369,16 +379,38 @@ impl Game<'_> {
         if before == Some(vehicle) {
             return;
         }
-        // The host in the window rides it already.
-        if self.riding == Some(vehicle) {
+        // The host in the window rides it already, and the vehicle has no room.
+        let no_room = if self.riding == Some(vehicle) {
+            self.boats
+                .iter()
+                .position(|b| b.id == vehicle)
+                .is_none_or(|i| !self.boat_has_room(i))
+        } else {
+            false
+        };
+        if no_room {
             host.hub.guests[gi].vehicle = before;
             return;
         }
+        let seat_index = self.guest_seat_index(host, conn, vehicle);
         let at = self
             .boats
             .iter()
             .position(|b| b.id == vehicle)
-            .map(|i| (self.boats[i].position, self.player_boat_seat(i)))
+            .map(|i| {
+                let b = &self.boats[i];
+                let count = self.boat_players(b.id).max(1) + self.boat_mobs(b.id).len();
+                (
+                    b.position,
+                    b.seat(
+                        seat_index,
+                        count,
+                        false,
+                        super::boat_passengers::PLAYER_RIDING_OFFSET,
+                        false,
+                    ),
+                )
+            })
             .or_else(|| {
                 self.carts
                     .iter()
@@ -674,26 +706,51 @@ impl Game<'_> {
             self.boat_fall(&self.boats[i], resolved.y)
         };
         self.boats[i].fall_distance = fall;
-        let seat = self.player_boat_seat(i);
+        let count =
+            self.boat_players(self.boats[i].id).max(1) + self.boat_mobs(self.boats[i].id).len();
+        let seat_index = self.guest_seat_index(host, conn, self.boats[i].id);
+        let seat = self.boats[i].seat(
+            seat_index,
+            count,
+            false,
+            super::boat_passengers::PLAYER_RIDING_OFFSET,
+            false,
+        );
         let g = &mut host.hub.guests[gi];
         g.previous_position = g.position;
         g.position = [seat.x, seat.y, seat.z];
     }
 
+    /// The seat index of guest `conn` in `vehicle`: 0 for the controlling rider,
+    /// 1 for the passenger seated behind it.
+    pub(super) fn guest_seat_index(&self, host: &LanHost, conn: u32, vehicle: u32) -> usize {
+        let Some(g) = host.hub.guests.iter().find(|g| g.conn == conn) else {
+            return 0;
+        };
+        let host_before =
+            usize::from(self.riding == Some(vehicle) && self.vehicle_order < g.vehicle_order);
+        let guests_before = host
+            .hub
+            .guests
+            .iter()
+            .filter(|other| {
+                other.conn != conn
+                    && other.vehicle == Some(vehicle)
+                    && other.vehicle_order < g.vehicle_order
+            })
+            .count();
+        host_before + guests_before
+    }
+
     /// `Entity.getControllingPassenger` of a vehicle a server player rides: a
     /// boat has two seats, and only its first player passenger drives it. The
-    /// window player sits first when it rides; of the server's players it is
-    /// the one that got in first.
+    /// rider that got in first sits first (seat 0).
     pub(super) fn guest_controls_vehicle(&self, host: &LanHost, conn: u32, vehicle: u32) -> bool {
-        if self.riding == Some(vehicle) {
-            return false;
-        }
         host.hub
             .guests
             .iter()
-            .filter(|g| g.vehicle == Some(vehicle))
-            .min_by_key(|g| g.vehicle_order)
-            .is_some_and(|g| g.conn == conn)
+            .any(|g| g.conn == conn && g.vehicle == Some(vehicle))
+            && self.guest_seat_index(host, conn, vehicle) == 0
     }
 
     /// `handlePaddleBoat`: the paddles of the boat the player controls
@@ -954,6 +1011,50 @@ mod controller_tests {
         assert_eq!(
             game.boats[0].fall_distance, 0.0,
             "a cobweb resets the fall of a boat its guest drives"
+        );
+
+        // Put the host in the boat too, and verify seating order:
+        game.riding = Some(boat);
+
+        // Host boards after the guest (order 3 vs guest 1): guest remains driver (seat 0).
+        game.vehicle_order = 3;
+        let host_ref = game.lan.as_ref().unwrap();
+        assert_eq!(game.guest_seat_index(host_ref, 3, boat), 0);
+        assert!(game.guest_controls_vehicle(host_ref, 3, boat));
+        assert_eq!(game.guest_seat_index(host_ref, 2, boat), 1);
+        assert!(!game.guest_controls_vehicle(host_ref, 2, boat));
+        assert!(
+            !game.controls_boat(boat),
+            "host is not driver when guest boarded first"
+        );
+
+        // Host boards before the guests (order 0 vs guests 1 and 2): host is driver (seat 0).
+        game.vehicle_order = 0;
+        let host_ref = game.lan.as_ref().unwrap();
+        assert_eq!(game.guest_seat_index(host_ref, 3, boat), 1);
+        assert!(!game.guest_controls_vehicle(host_ref, 3, boat));
+        assert_eq!(game.guest_seat_index(host_ref, 2, boat), 2);
+        assert!(!game.guest_controls_vehicle(host_ref, 2, boat));
+        assert!(
+            game.controls_boat(boat),
+            "host is driver when host boarded first"
+        );
+
+        let mut host = game.lan.take().unwrap();
+        let host_entity_id = game.player.as_ref().unwrap().entity_id;
+        game.lan_riding(&host.hub.guests, &mut host.hub.riding);
+        assert_eq!(
+            host.hub.riding.passengers(boat as i32),
+            [host_entity_id, driver_id, passenger_id],
+            "host sits first when host boarded first"
+        );
+
+        game.vehicle_order = 10;
+        game.lan_riding(&host.hub.guests, &mut host.hub.riding);
+        assert_eq!(
+            host.hub.riding.passengers(boat as i32),
+            [driver_id, passenger_id, host_entity_id],
+            "host sits last when host boarded after guests"
         );
     }
 

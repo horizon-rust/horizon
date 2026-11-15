@@ -1058,8 +1058,14 @@ impl Game<'_> {
     fn boat_can_simulate_movement(&self, id: u32) -> bool {
         if self.remote.is_some() {
             self.controls_boat(id)
+        } else if let Some(host) = self.lan.as_ref() {
+            !host
+                .hub
+                .guests
+                .iter()
+                .any(|g| g.vehicle == Some(id) && self.guest_controls_vehicle(host, g.conn, id))
         } else {
-            !self.guest_vehicles().contains(&id)
+            true
         }
     }
     /// `AbstractBoat.tick`: `status = getStatus()` for a boat this window
@@ -1493,6 +1499,7 @@ impl Game<'_> {
             return;
         }
         self.riding = None;
+        self.vehicle_order = 0;
         // `AbstractBoat.tick`'s non-authoritative branch: the copy of a boat
         // that no player of this side drives drops its cached motion
         // (`setDeltaMovement(Vec3.ZERO)`, `deltaRotation = 0`) and is not
@@ -1676,7 +1683,6 @@ impl Game<'_> {
         if sneaking
             || self.boats[i].out_of_control >= 60.0
             || self.riding.is_some()
-            || self.ridden_by_guest(self.boats[i].id)
             || !self.boat_has_room(i)
         {
             return false;

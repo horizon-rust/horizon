@@ -212,6 +212,7 @@ pub(super) struct GuestSwap {
     left: bool,
     right: bool,
     riding: Option<u32>,
+    vehicle_order: u64,
     host_station: Option<super::stations::Station>,
     sleeping: Option<[i32; 3]>,
     sleep_timer: u32,
@@ -618,6 +619,7 @@ impl Game<'_> {
         self.right = play.using.is_some() || self.using.is_some();
         // The guest's vehicle (Entity.vehicle) for its turn.
         let riding = std::mem::replace(&mut self.riding, g.vehicle);
+        let vehicle_order = std::mem::replace(&mut self.vehicle_order, g.vehicle_order);
         // `Entity.isPassenger()` for that turn, from the same vehicle: the
         // guest's body keeps no swim (`Entity.updateSwimming` needs it false).
         // Taken from `g.vehicle` each turn, so boarding and getting out land.
@@ -743,6 +745,7 @@ impl Game<'_> {
             left,
             right,
             riding,
+            vehicle_order,
             host_station,
             sleeping,
             sleep_timer,
@@ -844,6 +847,7 @@ impl Game<'_> {
             left,
             right,
             riding,
+            vehicle_order,
             host_station,
             sleeping,
             sleep_timer,
@@ -986,6 +990,7 @@ impl Game<'_> {
         // ServerPlayer.displayClientMessage(_, true): the guest's action bar.
         let guest_message = std::mem::replace(&mut self.message, message);
         let guest_vehicle = std::mem::replace(&mut self.riding, riding);
+        let guest_vehicle_order = std::mem::replace(&mut self.vehicle_order, vehicle_order);
         self.left = left;
         self.right = right;
         play.mining = std::mem::replace(&mut self.mining, mining);
@@ -1034,10 +1039,13 @@ impl Game<'_> {
         let left_vehicle = g.vehicle.filter(|_| guest_vehicle.is_none());
         if guest_vehicle.is_none() {
             g.vehicle_good = None;
+            g.vehicle_order = 0;
         }
         g.vehicle = guest_vehicle;
         if let Some(order) = seat_order {
             g.vehicle_order = order;
+        } else if guest_vehicle.is_some() {
+            g.vehicle_order = guest_vehicle_order;
         }
         let fell_asleep = bed.is_some() && g.bed.is_none();
         (g.bed, g.sleep_timer, g.spawn) = (bed, guest_sleep_timer, guest_spawn);

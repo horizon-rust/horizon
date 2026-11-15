@@ -164,6 +164,11 @@ impl Game<'_> {
             .iter()
             .filter_map(|g| Some((g.vehicle_order, g.vehicle?, g.entity_id)))
             .collect();
+        if let Some(vehicle) = self.riding
+            && let Some(p) = self.player.as_ref()
+        {
+            seated.push((self.vehicle_order, vehicle, p.entity_id));
+        }
         seated.sort_by_key(|&(order, ..)| order);
         for (_, vehicle, guest) in seated {
             riding.add(vehicle as i32, guest);
