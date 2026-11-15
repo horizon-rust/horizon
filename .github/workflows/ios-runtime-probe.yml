@@ -347,10 +347,8 @@ jobs:
           }
 
           pub(super) fn loading_renderer(''')
-          patch(loading_window, '''    loading_screen::nova_diag("loading_renderer.future.boxed");
-              let mut renderer = pollster::block_on(future)?;''',
-                '''    loading_screen::nova_diag("loading_renderer.future.boxed");
-              loading_screen::nova_diag("loading_renderer.poll.begin");
+          patch(loading_window, "let mut renderer = pollster::block_on(future)?;",
+                '''loading_screen::nova_diag("loading_renderer.poll.begin");
               let mut renderer = nova_ios_poll_renderer(future)?;
               loading_screen::nova_diag("loading_renderer.poll.completed");''')
 
