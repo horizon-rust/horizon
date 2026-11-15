@@ -8,6 +8,7 @@ struct LauncherView: View {
     @State private var showArchivePicker = false
     @State private var showMetalDiagnostic = false
     @State private var showDiagnostics = false
+    @State private var showTouchEditor = false
     @State private var displayedDiagnostics = ""
     @State private var archiveName: String? = NovaGameFiles.stagedArchiveName()
     @State private var archiveMessage: String?
@@ -17,8 +18,8 @@ struct LauncherView: View {
 
     @State private var nextBootMessage: String?
 
-    // This does NOT mean Horizon's rendering has been tested on-device.
-    // It only enables a one-shot cold-start experiment for integrated builds.
+    // First resource import uses SwiftUI; subsequent game-ready launches show
+    // Nova's UI inside the same winit-owned UIKit window.
     private var canTestHorizonBoot: Bool {
         resourcesInstalled && horizon_ios_host_api_version() >= 2
     }
@@ -39,12 +40,12 @@ struct LauncherView: View {
                         .font(.headline)
                         .foregroundStyle(.white.opacity(0.75))
 
-                    Button("Try Horizon (next launch)") {
+                    Button("Finish setup — launch on next opening") {
                         // A second UIApplicationMain inside SwiftUI is illegal.
                         // Save a one-shot request and show explicit restart steps.
                         NovaDiagnostics.record("launcher.game-boot-armed")
                         UserDefaults.standard.set(true, forKey: "nova.launchHorizonOnce")
-                        nextBootMessage = "Close Nova completely using the app switcher, then reopen it to test the original Horizon game. The launcher will open again on the following launch."
+                        nextBootMessage = "Close Nova using the app switcher and reopen it once after setup. On future launches, Play opens the already running game without another restart."
                     }
                     .font(.headline)
                     .frame(minWidth: 180, minHeight: 48)
@@ -58,11 +59,16 @@ struct LauncherView: View {
                             .multilineTextAlignment(.center)
                     } else {
                         Text(canTestHorizonBoot
-                             ? "Resources installed. The experimental game entry runs on the next cold launch, not inside the existing SwiftUI lifecycle."
+                             ? "After the first setup, reopen Nova once to start Horizon. Future Play presses use the in-game Nova launcher without restarting."
                              : "Prepare your game files to enable the experimental Horizon startup test. The full game build is required.")
                             .foregroundStyle(.white.opacity(0.75))
                             .multilineTextAlignment(.center)
                     }
+
+                    Button("Touch Layout") {
+                        showTouchEditor = true
+                    }
+                    .buttonStyle(.bordered)
 
                     Button("View Logs") {
                         displayedDiagnostics = NovaDiagnostics.tail()
@@ -153,6 +159,13 @@ struct LauncherView: View {
                 .padding(28)
                 .frame(maxWidth: .infinity)
             }
+        }
+        .fullScreenCover(isPresented: $showTouchEditor) {
+            NovaTouchLayoutEditor(onDone: {
+                showTouchEditor = false
+            }, onSave: { layout in
+                NovaDiagnostics.record("touch.layout.saved; buttons=\(layout.controls.count)")
+            })
         }
         .sheet(isPresented: $showDiagnostics) {
             VStack(spacing: 12) {

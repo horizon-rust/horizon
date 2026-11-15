@@ -117,7 +117,8 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
             if control.kind == "virtualMouse" {
                 let pointer = UIImage(named: "NovaPointer")
                     ?? UIImage(systemName: "cursorarrow")
-                button.setImage(pointer?.withRenderingMode(.alwaysTemplate), for: .normal)
+                // Preserve the uploaded arrow's black outline and white pixels.
+                button.setImage(pointer, for: .normal)
                 button.tintColor = .white
                 button.setTitle(nil, for: .normal)
                 let pan = UIPanGestureRecognizer(target: self, action: #selector(movePointer(_:)))

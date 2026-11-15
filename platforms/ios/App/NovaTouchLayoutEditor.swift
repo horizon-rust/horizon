@@ -42,14 +42,14 @@ struct NovaTouchLayoutEditor: View {
                     NovaEditingButton(control: control) {
                         selectedID = control.id
                         controlOptions = true
-                    } onMove: { translation in
+                    } onMove: { start, translation in
                         guard let index = layout.controls.firstIndex(where: { $0.id == control.id }) else {
                             return
                         }
                         layout.controls[index].x = min(0.98, max(0.02,
-                            control.x + translation.width / max(1, geometry.size.width)))
+                            start.x + translation.width / max(1, geometry.size.width)))
                         layout.controls[index].y = min(0.98, max(0.02,
-                            control.y + translation.height / max(1, geometry.size.height)))
+                            start.y + translation.height / max(1, geometry.size.height)))
                     }
                     .position(x: control.x * geometry.size.width,
                               y: control.y * geometry.size.height)
@@ -163,7 +163,8 @@ struct NovaTouchLayoutEditor: View {
 private struct NovaEditingButton: View {
     let control: NovaTouchControl
     let onTap: () -> Void
-    let onMove: (CGSize) -> Void
+    let onMove: (CGPoint, CGSize) -> Void
+    @State private var dragOrigin: CGPoint?
 
     var body: some View {
         Text(control.name)
@@ -176,7 +177,14 @@ private struct NovaEditingButton: View {
                 .strokeBorder(.white.opacity(0.85), lineWidth: 1.5))
             .onTapGesture(perform: onTap)
             .gesture(DragGesture(minimumDistance: 6)
-                .onChanged { onMove($0.translation) })
+                .onChanged { value in
+                    if dragOrigin == nil {
+                        dragOrigin = CGPoint(x: control.x, y: control.y)
+                    }
+                    onMove(dragOrigin ?? CGPoint(x: control.x, y: control.y),
+                           value.translation)
+                }
+                .onEnded { _ in dragOrigin = nil })
     }
 }
 
