@@ -206,7 +206,6 @@ private struct NovaControlOptions: View {
                     Text("Keyboard key").tag("keyboard")
                     Text("Mouse left").tag("mouseLeft")
                     Text("Mouse right").tag("mouseRight")
-                    Text("Mouse trackpad").tag("virtualMouse")
                     Text("Movement joystick").tag("joystick")
                     Text("Virtual keyboard").tag("virtualKeyboard")
                     Text("Menu").tag("menu")

@@ -12,7 +12,7 @@ struct NovaTouchControl: Identifiable, Codable, Equatable {
     var opacity: Double = 0.7
 
     static let kinds = ["keyboard", "mouseLeft", "mouseRight",
-                        "virtualMouse", "virtualKeyboard", "joystick", "menu"]
+                        "virtualKeyboard", "joystick", "menu"]
 
     var symbol: String {
         switch kind {
@@ -44,8 +44,6 @@ struct NovaTouchLayout: Codable {
             key("E", "E", 0.90, 0.58),
             NovaTouchControl(name: "Attack", kind: "mouseLeft", x: 0.75, y: 0.79),
             NovaTouchControl(name: "Use", kind: "mouseRight", x: 0.79, y: 0.63),
-            NovaTouchControl(name: "Look", kind: "virtualMouse",
-                             x: 0.56, y: 0.73, size: 150, opacity: 0.55),
             NovaTouchControl(name: "Type", kind: "virtualKeyboard",
                              x: 0.93, y: 0.14),
             NovaTouchControl(name: "Menu", kind: "menu",
@@ -105,6 +103,8 @@ enum NovaTouchLayouts {
     static func save(_ value: NovaTouchLayout) throws {
         var layout = value
         layout.name = String(value.name.prefix(64))
+        // Obsolete fixed trackpad pads must not reappear after saving.
+        layout.controls.removeAll { $0.kind == "virtualMouse" }
         let data = try JSONEncoder.pretty.encode(layout)
         try data.write(to: file(layout.name), options: [.atomic])
         UserDefaults.standard.set(layout.name, forKey: currentKey)
@@ -124,7 +124,9 @@ enum NovaTouchLayouts {
         guard let url = try? file(name), let data = try? Data(contentsOf: url),
               let layout = try? JSONDecoder().decode(NovaTouchLayout.self, from: data),
               layout.version == 1 else { return nil }
-        return layout
+        var normalized = layout
+        normalized.controls.removeAll { $0.kind == "virtualMouse" }
+        return normalized
     }
 
     static func current() -> NovaTouchLayout {
@@ -137,7 +139,7 @@ enum NovaTouchLayouts {
                 ("S", 0.14, 0.76), ("D", 0.21, 0.76)
             ]
             let isOldStarter = selected.name == "default"
-                && selected.controls.count == 10
+                && selected.controls.count == 9
                 && zip(selected.controls.prefix(4), oldCoordinates).allSatisfy { pair in
                     let (button, expected) = pair
                     return button.name == expected.0
