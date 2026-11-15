@@ -1887,6 +1887,7 @@ dependencies = [
  "horizon-official-servers",
  "horizon-perf-share",
  "horizon-platform",
+ "horizon-reconnect",
  "log",
  "winresource",
 ]
@@ -2014,6 +2015,15 @@ dependencies = [
  "sha1",
  "sha2",
  "socket2 0.5.10",
+]
+
+[[package]]
+name = "horizon-reconnect"
+version = "0.1.0"
+dependencies = [
+ "horizon-client-core",
+ "horizon-hooks",
+ "horizon-platform",
 ]
 
 [[package]]

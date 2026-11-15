@@ -14,7 +14,7 @@ again restores vanilla's behaviour completely.
 | Dynamic lights: item glow, nearest sources | `crates/horizon-client-render/src/dynamic_light.rs` (unit tested), `game/dynamic_lights.rs`, `terrain.wgsl` and `entity.wgsl` (`dynamic_block_light`) |
 | HUD drawing (a native mod's minimap, corner stacking) | `crates/horizon-client/src/extras_hud.rs` |
 | Minimap colours, tiles and image (for the Minimap native mod) | `crates/horizon-client-render/src/minimap.rs` |
-| Reconnect policy and backoff | `crates/horizon-client/src/reconnect.rs`; its game glue (connect, join, leave, the countdown) in `game/extras/reconnect.rs` |
+| Auto-reconnect: policy, backoff, its setting and row | crate `horizon-reconnect` (Horizon layer), registered by `horizon-official`: a hook on the engine's connection lifecycle (`connecting`, `joined`, `left`, `ended`), a settings store for `autoReconnect` and an Extras section (`horizon_hooks::pages::Place::Extras`); the engine shows and runs the attempt it plans (`last_server.rs`, `game/world_session.rs`) |
 | Game glue (input hooks, per-frame update) | `crates/horizon-client/src/game/extras.rs`; each extra's own glue in a child module, `game/extras/` |
 | Mouse Tweaks-style controls, sort buttons | `crates/horizon-client/src/game/extras/mouse_tweaks.rs`, `game/extras/sorting.rs` |
 | Sort order and its clicks | `crates/horizon-client/src/inv_sort.rs` (pure, unit tested) |
@@ -111,6 +111,7 @@ The game still draws the minimap, for the native mod (`native_minimap` in `nativ
   nothing is sent (`game.rs`, `destroy_particles` and `crack_particle`).
 
 ### Auto-reconnect (`autoReconnect`, default off)
+In the official build (`horizon-official`); horizon-client's own executable has no row for it.
 - On the "Connection lost" screen after a multiplayer connection drops, a
   countdown "Reconnecting in N s" with a Cancel button, then a new connection
   to the same address.
