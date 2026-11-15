@@ -468,7 +468,14 @@ impl super::Renderer {
             .frame_gen
             .world(&self.device, &self.world_post, &self.config, format);
         let timing = self.own_timing.as_mut();
-        self.world_post.finish(&self.queue, encoder, &world, timing);
+        self.world_post.finish(
+            &self.device,
+            &self.queue,
+            encoder,
+            &world,
+            self.output.frame.linear_light,
+            timing,
+        );
         let peak = self
             .hdr
             .as_ref()

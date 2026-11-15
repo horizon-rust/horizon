@@ -11124,9 +11124,11 @@ impl Renderer {
             fg_made = self.draw_generated(&mut encoder, frame, &camera, &overlay, onto);
         } else if scaled.is_some() {
             self.world_post.finish(
+                &self.device,
                 &self.queue,
                 &mut encoder,
                 &view_target,
+                self.output.frame.linear_light,
                 self.own_timing.as_mut(),
             );
         }
