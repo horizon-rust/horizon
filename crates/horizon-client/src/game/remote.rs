@@ -587,7 +587,7 @@ pub(super) struct Remote {
     /// `BlockStatePredictionHandler.lastTeleportSequence`: the sequence of the last
     /// teleport, so a prediction made before it keeps its block but not its snap.
     last_teleport_sequence: i32,
-    pub(super) position_sender: horizon_client::player_sync::PositionSender,
+    position_sender: horizon_client::player_sync::PositionSender,
     last_input: u8,
     was_sprinting: bool,
     /// The slot the server last heard (`MultiPlayerGameMode.carriedIndex`): a cell, so `send` can
@@ -9377,11 +9377,10 @@ impl Game<'_> {
         instant
     }
 
-    /// A spear jab on a remote server (`MultiPlayerGameMode.piercingAttack`): synchronizes
-    /// look rotation before sending action 8, reports PvP reach and combo tracking if a mob
-    /// is within range, and executes the jab.
+    /// A spear jab on a remote server (`MultiPlayerGameMode.piercingAttack`): sends action 8
+    /// and nothing else. No movement packet goes out here; the server uses the rotation the
+    /// tick's own position packet carried, as for vanilla.
     fn remote_spear_attack(&mut self, kinetic: horizon_client::spear::Kinetic) -> bool {
-        self.remote_sync_look();
         if let Some((i, distance, _)) = self.mob_hit()
             && self.before_block(distance)
             && self.held_range_allows(distance)
