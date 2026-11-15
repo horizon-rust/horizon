@@ -32,9 +32,9 @@ pub enum StageKind {
     /// block entities through it so far.
     Entity,
     /// 0.2: a dispatch in the post chain (`[[post]] compute = true`), which reads what a post
-    /// pass does. Checked, not yet run; not in `ALL`, since each pass's entry is its own.
+    /// pass does. Not in `ALL`, since each pass's entry is its own.
     Compute,
-    /// 0.2: a dispatch before the world draws (`[[before_world]]`). Checked, not yet run.
+    /// 0.2: a dispatch before the world draws (`[[before_world]]`).
     BeforeWorld,
 }
 
@@ -487,11 +487,12 @@ pub enum Tracing {
 pub const RAY_SCENE_BINDING: u32 = 48;
 /// Every traced section's quads as the mesher's vertices (six words each, four a quad).
 pub const RAY_STORE_BINDING: u32 = 49;
-/// `horizon_RaySpace`, 32 bytes: the camera in the scene's space (three floats), how many
-/// layers a sprite array holds (a `u32`), how many of the scene's instances, its first ones,
-/// are solid terrain's (a `u32`), where the translucent terrain's end (a `u32`: the entity
-/// layer's instance is the next), then the first quad of each of that instance's two
-/// geometries (two `u32`).
+/// `horizon_RaySpace`: the camera in the scene's space (three floats), how many layers a sprite
+/// array holds (a `u32`), how many of the scene's instances, its first ones, are solid
+/// terrain's (a `u32`), where the translucent terrain's end (a `u32`: the entity layer's
+/// instance is the next), where the retained block entities' instances start (a `u32`, after
+/// the stream's), then at byte 32 the first quad of each of the stream instance's three
+/// geometries (three `u32`), 48 bytes in all.
 pub const RAY_SPACE_BINDING: u32 = 50;
 /// Two words per sprite layer: the pack's `[[materials]]` id, then its `[[tags]]` bits.
 pub const RAY_LAYERS_BINDING: u32 = 51;
@@ -502,13 +503,17 @@ pub const RAY_SPRITE_ARRAYS: u32 = 8;
 /// mask, which the renderer gives the layer's instances as their mask.
 pub const RAY_SOLID: u32 = 1;
 pub const RAY_TRANSLUCENT: u32 = 2;
-/// The entities the camera draws, only for a pack whose files name it (`names_ray_entity`).
+/// The entities within the scene's reach, those the camera draws and those it doesn't, only for
+/// a pack whose files name it (`names_ray_entity`).
 pub const RAY_ENTITY: u32 = 4;
 /// What the scene holds besides for such a pack: the entity stream's vertices (`Vertex`,
 /// eleven words each, four a quad), its texture atlas, and a sampler as the entities'.
 pub const RAY_ENTITY_STORE_BINDING: u32 = 60;
 pub const RAY_ENTITY_ATLAS_BINDING: u32 = 61;
 pub const RAY_ENTITY_SAMPLER_BINDING: u32 = 62;
+/// And the block entities the renderer keeps on the GPU (a closed chest), the quads of the
+/// layer's, in the stream's layout and atlas: the last of the layer's bindings.
+pub const RAY_ENTITY_RETAINED_BINDING: u32 = 63;
 /// The bit of an entity vertex's layer that puts its quad in the entity layer, above the
 /// renderer's kind bits: a quad without it lets every ray through.
 pub const RAY_ENTITY_QUAD: u32 = 1 << 28;
@@ -534,8 +539,8 @@ const RAY_LAYERS: &str = "\
 // (cut-outs too), and what the translucent pass draws (water, stained glass, ice).
 const RAY_SOLID: u32 = 1u;
 const RAY_TRANSLUCENT: u32 = 2u;
-+|// The entities the camera draws: mobs, players, armour stands, item frames, vehicles, and the
-+|// block entities drawn with them (a chest while it opens).
++|// The entities within the scene's reach, in view or not: mobs, players, armour stands, item
++|// frames, vehicles, and block entities (a chest at rest, and one the camera draws opening).
 +|const RAY_ENTITY: u32 = 4u;
 // The nearest solid surface from the camera-relative `origin` along the unit vector `direction`,
 // within `max_distance` blocks; `distance` is negative where there is none.
@@ -613,11 +618,12 @@ pub const PBR_SPECULAR_BINDING: u32 = 13;
 pub const PBR_MAPS_TERRAIN: &str =
     pbr_maps!("horizon_terrain_sprite_sampler", "horizon_terrain_sprites");
 
-/// A traced post pass's, against the scene: its `nearest_sampler` (at full size, the one mip
-/// level a hit reads, as the terrain's sampler there) and the scene's first sprite array.
+/// A traced post, compute or before-world pass's, against the scene: its `nearest_sampler` (at
+/// full size, the one mip level a hit reads, as the terrain's sampler there) and the scene's
+/// first sprite array.
 const PBR_MAPS_POST: &str = pbr_maps!("nearest_sampler", "horizon_ray_sprites_0");
 
-/// A traced post pass's `block_pbr_maps`, as the material prelude's.
+/// A traced post, compute or before-world pass's `block_pbr_maps`, as the material prelude's.
 const POST_PBR: &str = "\
 // LabPBR: whether the resource packs ship normal (`_n`) or specular (`_s`) maps beside their
 // block textures. Without them `hit_normal_map` and `hit_specular_map` give their defaults.
@@ -674,8 +680,11 @@ struct horizon_RaySpace {
     solid_instances: u32,
 +|    // Where translucent terrain's instances end: the entity layer's is the next.
 +|    translucent_instances: u32,
-+|    // The first quad of each of the entity layer's two geometries in `horizon_ray_entities`.
-+|    entity_bases: vec2<u32>,
++|    // The first instance of the block entities kept on the GPU, after the stream's: their quads
++|    // are in `horizon_ray_retained`.
++|    retained_instances: u32,
++|    // The first quad of each of the entity layer's three geometries in `horizon_ray_entities`.
++|    entity_bases: vec3<u32>,
 }
 @group(3) @binding(48) var horizon_ray_scene: acceleration_structure;
 // Every traced section's quads as `TerrainVertex` (six words: the position, the uv's two u16,
@@ -876,7 +885,15 @@ const RAY_ENTITY_SCENE: &str = "\
 @group(3) @binding(60) var<storage, read> horizon_ray_entities: array<u32>;
 @group(3) @binding(61) var horizon_ray_entity_atlas: texture_2d<f32>;
 @group(3) @binding(62) var horizon_ray_entity_sampler: sampler;
+// The block entities kept on the GPU (a closed chest), the quads of the layer's, in the same
+// layout and atlas: a retained instance's custom data is its section's first quad here.
+@group(3) @binding(63) var<storage, read> horizon_ray_retained: array<u32>;
+// Added to a retained vertex's index: the vertex is in `horizon_ray_retained`.
+const horizon_ray_retained_vertex: u32 = 0x80000000u;
 fn horizon_ray_entity_word(vertex: u32, i: u32) -> u32 {
+    if vertex >= horizon_ray_retained_vertex {
+        return horizon_ray_retained[(vertex - horizon_ray_retained_vertex) * 11u + i];
+    }
     return horizon_ray_entities[vertex * 11u + i];
 }
 fn horizon_ray_entity_corner(vertex: u32) -> vec3<f32> {
@@ -901,9 +918,15 @@ fn horizon_ray_entity_color(t: horizon_RayTriangle) -> vec4<f32> {
 fn horizon_ray_entity_texel(uv: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(horizon_ray_entity_atlas, horizon_ray_entity_sampler, uv, 0.0);
 }
-// The triangle of an entity layer hit: its geometry's first quad, plus two triangles a quad.
+// The triangle of an entity layer hit: its geometry's first quad, plus two triangles a quad;
+// on a retained instance, its custom data's.
 fn horizon_ray_entity_triangle(c: RayIntersection) -> horizon_RayTriangle {
-    let first = horizon_ray_space.entity_bases[min(c.geometry_index, 1u)];
+    if c.instance_index >= horizon_ray_space.retained_instances {
+        var t = horizon_ray_triangle(c.instance_custom_data, c.primitive_index, c.barycentrics);
+        t.corners += vec3<u32>(horizon_ray_retained_vertex);
+        return t;
+    }
+    let first = horizon_ray_space.entity_bases[min(c.geometry_index, 2u)];
     return horizon_ray_triangle(first, c.primitive_index, c.barycentrics);
 }
 // Whether entity.wgsl draws the pixel of a quad whose layer word is `layer`, where its texel's
@@ -1264,18 +1287,22 @@ impl StageKind {
     }
 
     /// `prelude` with what `tracing` holds of the scene: in every stage the frame's two fields
-    /// for it, and in the post and material stages `RayHit`, `trace`, `trace_any`, their
-    /// `_layers` forms with `RAY_SOLID` and `RAY_TRANSLUCENT`, `hit_normal_map` and
-    /// `hit_specular_map` (and in the post stage `block_pbr_maps`).
+    /// for it, and in the post, material, compute and before-world stages `RayHit`, `trace`,
+    /// `trace_any`, their `_layers` forms with `RAY_SOLID` and `RAY_TRANSLUCENT`,
+    /// `hit_normal_map` and `hit_specular_map`, and outside the material stage, which has its
+    /// own, `block_pbr_maps`.
     pub fn prelude_traced(self, tracing: Tracing) -> String {
-        let rays = matches!(self, StageKind::Post | StageKind::Material);
+        let rays = matches!(
+            self,
+            StageKind::Post | StageKind::Material | StageKind::Compute | StageKind::BeforeWorld
+        );
         self.prelude_rays(tracing, rays, false, false)
     }
 
-    /// `prelude_traced`, with the ray names only where `rays`: a material stage that calls
-    /// none of the trace functions is built as it was before them. `kept`: the frame's epochs,
-    /// for a pack with `[[resource]]`. With `entities` (the pack's files name `RAY_ENTITY`) the
-    /// trace functions have the entity layer too.
+    /// `prelude_traced`, with the ray names only where `rays`: a material, compute or
+    /// before-world stage that calls none of the trace functions is built as it was before
+    /// them. `kept`: the frame's epochs, for a pack with `[[resource]]`. With `entities` (the
+    /// pack's files name `RAY_ENTITY`) the trace functions have the entity layer too.
     fn prelude_rays(self, tracing: Tracing, rays: bool, kept: bool, entities: bool) -> String {
         let rays = rays && tracing != Tracing::None;
         let mut out = match tracing {
@@ -1335,7 +1362,7 @@ impl StageKind {
             }
             out += &layered(RAY_LAYERS, entities);
             // The material stage's renderer, or the check's stand-in, reads the LabPBR maps.
-            if self == StageKind::Post {
+            if self != StageKind::Material {
                 out += match tracing {
                     Tracing::Scene => PBR_MAPS_POST,
                     _ => PBR_STUB,
@@ -1595,7 +1622,8 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
 }
 
 /// `compose` for a pack with `[ray_tracing]` where the renderer binds the scene: its post
-/// stage traces it, and its material stage where that calls a trace function (`TRACE_NAMES`).
+/// stage traces it, and its material, compute and before-world stages where they call a trace
+/// function (`TRACE_NAMES`).
 /// Such a module needs a device with ray queries.
 pub fn compose_scene(pack: &Pack, kind: StageKind, file: &str) -> Composed {
     compose_traced(pack, kind, file, None, true)
@@ -1745,7 +1773,9 @@ pub(crate) fn compose_traced(
     let source = |f: &&str| pack.source(f).unwrap_or_default();
     let rays = match kind {
         StageKind::Post => true,
-        StageKind::Material => tracing != Tracing::None && traces(files.iter().map(source)),
+        StageKind::Material | StageKind::Compute | StageKind::BeforeWorld => {
+            tracing != Tracing::None && traces(files.iter().map(source))
+        }
         _ => false,
     };
     let kept = !m.kept.resources.is_empty();

@@ -1294,6 +1294,21 @@ impl Game<'_> {
             );
         }
     }
+    /// `Entity.clearFire` for a cart. The only fire a cart has here is the
+    /// `Fire` it was loaded with, which its save writes back.
+    fn clear_cart_fire(&mut self, id: u32) {
+        if let Some(horizon_world::nbt::Tag::Compound(map)) = self.persist.raw.get_mut(&id) {
+            map.remove(&"Fire".into());
+        }
+    }
+    fn cart_loaded_on_fire(&self, id: u32) -> bool {
+        self.persist
+            .raw
+            .get(&id)
+            .and_then(|raw| raw.get("Fire"))
+            .and_then(horizon_client::nbt_path::int_value)
+            .is_some_and(|fire| fire > 0)
+    }
     /// Runs `push_from_cart` for the cart being ticked (`c` is a copy of the
     /// stored one, kept at `slot`): the stored cart is replaced by `c` for the
     /// push and `c` takes back what the push changed. The rolled loot stays
@@ -1400,6 +1415,13 @@ impl Game<'_> {
         // updateFluidInteraction: being in water resets the fall distance.
         if c.in_water {
             c.fall_distance = 0.0;
+        }
+        // Entity.move: water (WaterFluid.entityInside) and rain put a burning
+        // entity out. (Powder snow and a water cauldron do too; not here yet.)
+        if self.cart_loaded_on_fire(c.id)
+            && (c.in_water || self.in_rain(c.position, c.position.y + HEIGHT))
+        {
+            self.clear_cart_fire(c.id);
         }
         // Entity.checkInsideBlocks runs once after the cart tick, sweeping every
         // movement through powder snow. PowderSnowBlock uses getKnownMovement,
@@ -2684,6 +2706,10 @@ impl Game<'_> {
             };
             // LevelExtractor.isEntityVisible: the cart the player rides always draws.
             let mut shown = None;
+            let mut sight = super::entity_culling::Sight {
+                camera: true,
+                rays: false,
+            };
             if self.riding != Some(c.id) {
                 let d = glam::DVec3::new(c.position.x, c.position.y, c.position.z) - camera;
                 if d.length_squared() >= range * range {
@@ -2694,19 +2720,18 @@ impl Game<'_> {
                 // EntityRenderer.shouldRender: the interpolated box grown by 0.5;
                 // AbstractMinecartRenderer.getBoundingBoxForCulling stretches it
                 // up by the display block's offset.
-                if let Some(view) = &self.view_frustum {
-                    let top = HEIGHT
-                        + if shown.flatten().is_none() {
-                            0.0
-                        } else {
-                            display_offset(c) * 0.75 / 16.0
-                        };
-                    let p = glam::DVec3::new(x, y, z) - camera;
-                    let lo = p - glam::DVec3::new(WIDTH / 2.0 + 0.5, 0.5, WIDTH / 2.0 + 0.5);
-                    let hi = p + glam::DVec3::new(WIDTH / 2.0 + 0.5, top + 0.5, WIDTH / 2.0 + 0.5);
-                    if !view.intersects(lo.as_vec3(), hi.as_vec3()) {
-                        continue;
-                    }
+                let top = HEIGHT
+                    + if shown.flatten().is_none() {
+                        0.0
+                    } else {
+                        display_offset(c) * 0.75 / 16.0
+                    };
+                let p = glam::DVec3::new(x, y, z) - camera;
+                let lo = p - glam::DVec3::new(WIDTH / 2.0 + 0.5, 0.5, WIDTH / 2.0 + 0.5);
+                let hi = p + glam::DVec3::new(WIDTH / 2.0 + 0.5, top + 0.5, WIDTH / 2.0 + 0.5);
+                match self.sight(lo.as_vec3(), hi.as_vec3()) {
+                    Some(seen) => sight = seen,
+                    None => continue,
                 }
             }
             let mut yaw =
@@ -2732,10 +2757,12 @@ impl Game<'_> {
             let render_position = Vec3::new(x + offset.x, y + offset.y, z + offset.z);
             let has_display = shown.as_ref().is_some_and(Option::is_some)
                 || (shown.is_none() && self.display_state(c).is_some());
-            let culling = self.entity_cull_decision_in_bounds(
-                c,
-                cart_render_bounds(render_position, display_offset(c), has_display),
-            );
+            let culling = self.sighted_decision(sight, || {
+                self.entity_cull_decision_in_bounds(
+                    c,
+                    cart_render_bounds(render_position, display_offset(c), has_display),
+                )
+            });
             if culling.hides_entity() {
                 continue;
             }
@@ -2817,7 +2844,7 @@ impl Game<'_> {
             let m = base * glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0));
             let poses = Poses::new(model);
             horizon_client::mobs::render::draw(model, m, &poses, uv, 0xFFFF_FFFF, packed, 0, out);
-            self.finish_entity_occlusion(culling, c, out, entity_start);
+            self.finish_lit_entity(culling, c, out, entity_start);
         }
     }
     /// The model of a block drawn by its block-entity renderer, as a chest

@@ -7280,6 +7280,33 @@ def end_crystal_saved_motion():
 
 TAG_CRYSTAL = 15995  # UUIDs of end_crystal_saved_motion's crystals
 
+def armor_stand_air_refills():
+    """#16823: an armor stand is a `LivingEntity`, so `LivingEntity.baseTick` refills its air by 4 a
+    tick up to 300 (`increaseAirSupply`), a marker's too, and in water as well: `armor_stand` is in
+    the `can_breathe_under_water` tag. Read after summoning and after 1, 2 and 22 ticks."""
+    x0, y0, z0 = 3456, 260, 3648
+    chunk = [[x0 >> 4, z0 >> 4]]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False),
+           cmd(f'/fill {x0 + 13} {y0} {z0 + 8} {x0 + 13} {y0 + 1} {z0 + 8} water', False)]
+    uuids = []
+    subjects = (('-1s', ''), ('100s', ''), ('298s', ''), ('-1s', ',Marker:1b'), ('-1s', ',NoGravity:1b'),
+                ('100s', None))
+    for n, (air, extra) in enumerate(subjects, 1):
+        uuids.append(f'000041b7-0000-0000-0000-{n:04x}00000001')
+        x = x0 + 13 if extra is None else x0 + 2 * n
+        ops.append(cmd(f'/summon armor_stand {x}.5 {y0} {z0 + 8}.5 '
+                       f'{{UUID:[I;16823,0,{n},1],Air:{air}{extra or ""}}}', expect_result=1))
+    for wait in (0, 1, 1, 20):
+        if wait:
+            ops.append({'op': 'tick', 'n': wait})
+        for uuid in uuids:
+            ops.append(cmd(f'/data get entity {uuid} Air'))
+    return ops + setup(*[f'/kill {uuid}' for uuid in uuids],
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 1} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def end_crystal_saved_fall():
     """#14671: `Entity.load` reads `OnGround` (`getBooleanOr`) and `fall_distance`, and `saveWithoutId` writes them
     back; `EndCrystal.tick` never moves the crystal nor runs `baseTick`, so both keep what was loaded, through a save
@@ -7490,6 +7517,42 @@ def loaded_dragon_health_above_max():
             cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
     reads()
     return ops + setup('/tick unfreeze', *[f'/kill {uuid}' for uuid in uuids], f'/forceload remove {x0} {z0}')
+
+
+def loaded_minecart_fire():
+    """#16736: a minecart has no `baseTick`, so nothing counts its fire ticks down, and `Entity.move`
+    resets them only on an entity that is not on fire: a cart loaded with `Fire` above 0 keeps it.
+    Read after summoning, after a tick, and after an unload and reload (frozen, so only the save
+    and the load count). Water puts a burning cart out (`WaterFluid.entityInside`)."""
+    x0, y0, z0 = 3648, 260, 3776
+    chunk = [[x0 >> 4, z0 >> 4]]
+    subjects = [('minecart', 'Fire:100s'), ('chest_minecart', 'Fire:100s'), ('hopper_minecart', 'Fire:1s'),
+                ('minecart', 'Fire:0s'), ('minecart', 'Fire:100s')]
+    # The last cart stands in water.
+    wet = f'{x0 + 3 * len(subjects)} {y0} {z0 + 8}'
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False),
+           cmd(f'/setblock {wet} water', False)]
+    uuids = []
+    for n, (kind, fields) in enumerate(subjects, 1):
+        uuids.append(f'00004160-0000-0000-0000-{n:04x}00000001')
+        ops.append(cmd(f'/summon {kind} {x0 + 3 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;16736,0,{n},1],{fields}}}',
+                       expect_result=1))
+
+    def reads():
+        for uuid in uuids:
+            ops.append(cmd(f'/data get entity {uuid} Fire'))
+
+    reads()
+    ops.append({'op': 'tick', 'n': 1})
+    reads()
+    ops += [cmd('/tick freeze', False), cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
+    reads()
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
 
 
 def loaded_dead_mob():
@@ -8765,6 +8828,7 @@ def groups():
         ('animal signed InLove', animal_signed_in_love()),
         ('mob fire resistance damage', mob_fire_resistance_damage()),
         ('armor stand climbing', armor_stand_climbing()),
+        ('armor stand air refills', armor_stand_air_refills()),
         ('painting saved ground', painting_saved_ground()),
         ('mob armor damage', mob_armor_damage()),
         ('mob max health bounds', mob_max_health_bounds()),
@@ -8798,6 +8862,7 @@ def groups():
         ('loaded health above max', loaded_health_above_max()),
         ('loaded wolf taming', loaded_wolf_taming()),
         ('loaded dragon health above max', loaded_dragon_health_above_max()),
+        ('loaded minecart fire', loaded_minecart_fire()),
         ('falling block fall float', falling_block_fall_float()),
         ('explosion infested blocks', explosion_infested_blocks()),
         ('jigsaw default joint', jigsaw_default_joint()),
