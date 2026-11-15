@@ -15,7 +15,6 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     horizon_threads::configure_allocator();
     // The platform's features the dedicated server loads from server.toml, through the engine's hooks.
     horizon_chat_filter::install();
-    crate::horizon_look::give();
     // OptiFine's and Polytone's pack formats (platform, docs/layers.md), before any pack loads.
     horizon_client::pack_formats::install();
     // horizon-extras (docs/forking.md): without the feature, no Horizon Settings or Mods page.

@@ -19,6 +19,8 @@
 //! The platform's own parts register here, in [`main`], as they leave the engine (layer plan M6).
 #![forbid(unsafe_code)]
 
+mod look;
+
 /// The game's allocator (mimalloc, with its thread tags), for the executable's
 /// `#[global_allocator]`.
 pub use horizon_threads::{ALLOCATOR, Allocator};
@@ -28,8 +30,16 @@ pub use horizon_threads::{ALLOCATOR, Allocator};
 /// `main` reads, so the linker keeps it.
 pub const MOD_API_LEVEL: [u8; horizon_mods::api_level::MARK.len()] = horizon_mods::api_level::MARK;
 
+/// Gives the windows an icon (a PNG). Call it before [`main`]; without it the windows keep the
+/// system's default icon. The icon is branding, so the executable gives it, not the platform.
+pub fn set_icon_png(png: &'static [u8]) {
+    horizon_client::window::set_icon_png(png);
+}
+
 /// Runs the game with the hooks registered so far, and returns when it ends. Register hooks
-/// (`horizon_platform::hooks::register`) before calling it.
+/// (`horizon_platform::hooks::register`) before calling it. The menus get the platform's look
+/// (tokens and fonts of `horizon-theme`) first; the engine alone draws vanilla's neutral one.
 pub fn main() {
+    look::give_menus();
     horizon_client::entry::main();
 }

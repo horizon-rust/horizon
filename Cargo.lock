@@ -1770,6 +1770,7 @@ version = "0.1.0"
 dependencies = [
  "horizon-client",
  "horizon-mods",
+ "horizon-theme",
  "horizon-threads",
 ]
 
@@ -1888,6 +1889,7 @@ dependencies = [
  "horizon-official-servers",
  "horizon-perf-share",
  "horizon-platform",
+ "horizon-theme",
  "log",
  "winresource",
 ]
