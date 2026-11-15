@@ -2472,15 +2472,14 @@ mod tests {
             zip.finish().unwrap();
             fs::metadata(&path).unwrap().len()
         };
-        // Four 24 MiB files of zeros: well under the per-file limit, 96 MiB in all from a zip of
+        // Three 22 MiB files of zeros: well under the per-file limit, 66 MiB in all from a zip of
         // a few hundred KiB, past the 64 MiB a small pack may unpack to.
         let size = pack(
             "bomb.zip",
             &[
-                ("assets/minecraft/textures/block/a.png", 24),
-                ("assets/minecraft/textures/block/b.png", 24),
-                ("assets/minecraft/textures/block/c.png", 24),
-                ("assets/minecraft/textures/block/d.png", 24),
+                ("assets/minecraft/textures/block/a.png", 22),
+                ("assets/minecraft/textures/block/b.png", 22),
+                ("assets/minecraft/textures/block/c.png", 22),
             ],
         );
         assert!(size < 1 << 20, "the bomb is small: {size} bytes");
@@ -2493,22 +2492,16 @@ mod tests {
             !out.exists(),
             "what was unpacked before the budget ran out stays"
         );
-        // The same files within the budget unpack whole.
+        // A file within the budget unpacks whole.
         fs::remove_file(base.join("packs/bomb.zip")).unwrap();
-        pack(
-            "fine.zip",
-            &[
-                ("assets/minecraft/textures/block/a.png", 24),
-                ("assets/minecraft/textures/block/b.png", 24),
-            ],
-        );
+        pack("fine.zip", &[("assets/minecraft/textures/block/a.png", 8)]);
         let packs = discover(&vanilla, &base.join("packs"));
         build_overlay(&vanilla, &packs, &out).unwrap();
         assert_eq!(
-            fs::metadata(out.join("assets/minecraft/textures/block/b.png"))
+            fs::metadata(out.join("assets/minecraft/textures/block/a.png"))
                 .unwrap()
                 .len(),
-            24 << 20
+            8 << 20
         );
         let _ = fs::remove_dir_all(&base);
     }

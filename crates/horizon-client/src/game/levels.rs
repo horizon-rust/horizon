@@ -1001,7 +1001,7 @@ impl Game<'_> {
                 .iter()
                 .filter(|g| h.hub.here(g))
                 .filter(|g| !g.fake) // fake players hold small forced tickets below
-                .map(|g| (g.chunk(), g.spectator()))
+                .map(|g| (g.ticket_chunk(), g.spectator()))
                 .collect()
         });
         if let Some(p) = &self.player {

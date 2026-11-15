@@ -305,6 +305,7 @@ pub fn hurt_server(m: &mut Mob, d: &Damage) {
                 | DamageKind::MaceSmash
                 | DamageKind::Spear
                 | DamageKind::MobAttack
+                | DamageKind::MobAttackNoAggro
                 | DamageKind::Sting
                 | DamageKind::SonicBoom
         )

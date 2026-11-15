@@ -32,8 +32,10 @@ mod cells;
 mod hit;
 mod index;
 mod nbt;
+mod seat;
 pub(super) use hit::CartHit;
 pub(super) use index::{CartIndex, cart_at};
+use seat::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum CartKind {
@@ -222,8 +224,6 @@ fn push_along(push: Vec3, movement: Vec3) -> Vec3 {
         push
     }
 }
-/// AbstractMinecart passenger attachment Y (EntityAttachments).
-const PASSENGER_Y: f64 = 0.1875;
 /// The minecart's passenger attachment minus Player.DEFAULT_VEHICLE_ATTACHMENT.
 pub(super) const SEAT: f64 = PASSENGER_Y - 0.6;
 /// The placeholder container key under which an open cart's items live.
@@ -255,10 +255,10 @@ fn can_ride_cart(species: Species, boarding_cooldown: i32) -> bool {
     boarding_cooldown <= 0 && !matches!(species, Species::Warden | Species::Wither)
 }
 
-/// `Entity.positionRider` on an `AbstractMinecart`: passenger attachment less
-/// the rider's own vehicle attachment.
-fn cart_seat(cart: Vec3, rider_offset: f64) -> Vec3 {
-    Vec3::new(cart.x, cart.y + PASSENGER_Y - rider_offset, cart.z)
+/// `Entity.positionRider` on an `AbstractMinecart`: the seat offset
+/// (`cart_seat_offset`) above the cart.
+fn cart_seat(cart: Vec3, seat_offset: f64) -> Vec3 {
+    Vec3::new(cart.x, cart.y + seat_offset, cart.z)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1881,14 +1881,18 @@ impl Game<'_> {
             };
             let (pos, prev) = (self.carts[i].position, self.carts[i].previous);
             let cart_box = self.carts[i].bounds();
-            let seats: Vec<(usize, f64)> = js
+            let seats: Vec<(usize, f64, f64)> = js
                 .iter()
-                // Minecart's box is 0.98 wide.
-                .map(|&j| (j, riders::vehicle_attachment(&self.mobs[j], 0.98)))
+                .map(|&j| {
+                    let m = &self.mobs[j];
+                    // Minecart's box is 0.98 wide.
+                    let attachment = riders::vehicle_attachment(m, 0.98);
+                    (j, attachment, cart_seat_offset(m.species(), attachment))
+                })
                 .collect();
-            for (j, offset) in seats {
+            for (j, attachment, offset) in seats {
                 let m = &mut self.mobs[j];
-                m.seated(id, offset, cart_box);
+                m.seated(id, attachment, cart_box);
                 m.position = cart_seat(pos, offset);
                 m.previous = cart_seat(prev, offset);
                 m.velocity = Vec3::ZERO;
@@ -2113,7 +2117,8 @@ impl Game<'_> {
         }
         true
     }
-    /// `getDismountLocationForPassenger`: beside the cart (across its facing), else on top.
+    /// `getDismountLocationForPassenger`: beside the cart's motion direction,
+    /// else on top.
     pub(super) fn dismount_cart(&mut self, i: usize) {
         let id = self.carts[i].id;
         if self.riding == Some(id) && !self.native_may_leave(id) {
@@ -2130,25 +2135,9 @@ impl Game<'_> {
             c.position.z.floor() as i32,
         );
         let mut target = None;
-        // DismountHelper.offsetsForDirection of the cart's facing
-        // (Direction.fromYRot of its yaw): right, left, back right, back left,
-        // forward right, forward left, back, forward.
-        let step = |q: i32| [(0, 1), (-1, 0), (0, -1), (1, 0)][(q & 3) as usize];
-        let facing = (f64::from(c.yaw) / 90.0 + 0.5).floor() as i32;
-        let (fx, fz) = step(facing);
-        let (rx, rz) = (-fz, fx);
-        let offsets = [
-            (rx, rz),
-            (-rx, -rz),
-            (rx - fx, rz - fz),
-            (-rx - fx, -rz - fz),
-            (fx + rx, fz + rz),
-            (fx - rx, fz - rz),
-            (-fx, -fz),
-            (fx, fz),
-        ];
+        let face = cart_motion_face(c.yaw, c.flipped, self.minecart_improvements());
         'search: for dy in [0, 1, -1] {
-            for (dx, dz) in offsets {
+            for (dx, dz) in dismount_offsets(face) {
                 let (x, y, z) = (bx + dx, by + dy, bz + dz);
                 let below = self.res.facts().get(self.world.block(x, y - 1, z));
                 let here = self.res.facts().get(self.world.block(x, y, z));
@@ -3386,8 +3375,8 @@ mod tests {
     #[test]
     fn a_cart_seat_matches_the_player_offset() {
         let at = Vec3::new(1.0, 10.0, 2.0);
-        assert!((cart_seat(at, 0.0).y - 10.1875).abs() < 1e-12);
-        assert!((cart_seat(at, 0.6).y - (10.0 + SEAT)).abs() < 1e-12);
+        assert!((cart_seat(at, PASSENGER_Y).y - 10.1875).abs() < 1e-12);
+        assert!((cart_seat(at, SEAT).y - (10.0 + SEAT)).abs() < 1e-12);
         assert_eq!(cart_seat(at, 0.0).x, 1.0);
         assert_eq!(cart_seat(at, 0.0).z, 2.0);
     }
@@ -4097,3 +4086,7 @@ mod cart_cost_bench {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "minecart_riders_tests.rs"]
+mod minecart_riders_tests;

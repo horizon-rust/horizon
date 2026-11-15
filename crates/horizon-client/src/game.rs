@@ -184,6 +184,7 @@ mod golems;
 mod growth;
 mod hand;
 mod headless;
+mod hit;
 mod hud_editor;
 mod hud_room;
 mod ime;
@@ -502,6 +503,7 @@ mod zombie_reinforcements;
 mod zombie_villagers;
 use event_loop::EventLoopCtl;
 use hand::interact_location;
+pub(crate) use hit::Hit;
 use horizon_client::random_source;
 // `Action` here is the title screen's buttons (`title::Action`).
 pub use advancements::AdvancementDisplay;
@@ -720,22 +722,6 @@ struct Mining {
     /// The latest destroy-speed query, reused for server crack feedback.
     per_tick: f32,
     ticks: u32,
-}
-#[derive(Clone, Copy)]
-pub(crate) struct Hit {
-    pub(crate) pos: [i32; 3],
-    pub(crate) face: [i32; 3],
-    pub(crate) point: [f64; 3],
-}
-impl Hit {
-    /// The block the clicked face leads to (`pos.relative(direction)`).
-    fn beside(&self) -> [i32; 3] {
-        [
-            self.pos[0] + self.face[0],
-            self.pos[1] + self.face[1],
-            self.pos[2] + self.face[2],
-        ]
-    }
 }
 /// What a falling block's tick did (`FallingBlockEntity.tick`).
 enum FallStep {
@@ -2287,10 +2273,12 @@ struct Game<'a> {
     /// accounts), in place of the process's (P1's) for its connections and skin.
     split_auth: Option<std::sync::Arc<horizon_client::auth::AuthSession>>,
     focused: bool,
-    /// The visible window of a game an agent started, until a person focuses it: it opened
-    /// without the focus, and its pointer grab stays inside the game as `--offscreen`'s does,
-    /// so the person's pointer is never taken, hidden or moved.
+    /// The visible window of a game an agent started, until a person clicks into it: its
+    /// pointer grab stays inside the game as `--offscreen`'s does, so the person's pointer is
+    /// never taken, hidden or moved, and their keys and mouse don't reach the game.
     unclaimed_window: bool,
+    /// The modifiers the person last held at it, applied at the claim (`held_modifiers`).
+    unclaimed_modifiers: Option<winit::event::Modifiers>,
     /// The window's last focus change during a scripted run, applied once the run ends.
     focus_after_run: Option<bool>,
     /// Whether the window currently accepts input method events.
@@ -3531,11 +3519,7 @@ impl Game<'_> {
             end,
             BlockPos::new(pos[0], pos[1], pos[2]),
         )?;
-        Some(Hit {
-            pos,
-            face: hit.direction.normal(),
-            point: [hit.location.x, hit.location.y, hit.location.z],
-        })
+        Some(Hit::from_block_hit(pos, &hit))
     }
     /// Voxel traversal against non-air, non-fluid blocks, clipped against
     /// each block's outline shape (`BlockGetter.clip` with `ClipContext.Block.OUTLINE`).
@@ -7645,6 +7629,7 @@ impl Game<'_> {
                             pos: b,
                             face,
                             point: p,
+                            inside: false,
                         });
                     }
                     let above = self.world.block(b[0], b[1] + 1, b[2]);
@@ -7656,6 +7641,7 @@ impl Game<'_> {
                             pos: b,
                             face,
                             point,
+                            inside: false,
                         });
                     }
                 } else if !first && !self.res.facts().is_air(state) && f.fluid == Fluid::None {
@@ -8047,10 +8033,10 @@ impl Game<'_> {
             self.bucket_emptied(&stack.item);
             return Ok(UseResult::Success { swing: true });
         }
-        if self.use_block_transformer(stack, hit.pos, hit.face)? {
+        if self.may_use_on(hit.pos) && self.use_block_transformer(stack, hit.pos, hit.face)? {
             return Ok(UseResult::Success { swing: true });
         }
-        if item == "honeycomb" {
+        if self.may_use_on(hit.pos) && item == "honeycomb" {
             let registry = self.pack.assets.registry;
             let old = registry.state(clicked);
             if let Some(waxed) = old.and_then(|old| self.res.transformers().waxed(registry, old))
@@ -10138,12 +10124,6 @@ impl Game<'_> {
                     self.focused = focused;
                     self.focus_lost = (!focused).then(Instant::now);
                     if focused {
-                        if std::mem::take(&mut self.unclaimed_window) {
-                            // A person clicked into the agent's window: from now on it is a
-                            // window like any other, and their click takes the pointer
-                            // (`MouseHandler.onPress`) instead of attacking.
-                            self.captured = false;
-                        }
                         self.regrab_on_refocus();
                     } else {
                         // A held pointer goes with the focus, wherever the
@@ -11393,6 +11373,7 @@ impl<'a> Game<'a> {
             split_auth: None,
             focused: true,
             unclaimed_window: false,
+            unclaimed_modifiers: None,
             focus_after_run: None,
             ime_allowed: false,
             ime_area: None,
@@ -12362,6 +12343,7 @@ fn outline_stop(
         pos,
         face,
         point: std::array::from_fn(|i| origin[i] + dir[i] * t),
+        inside: false,
     })
 }
 /// `VoxelShape.clip` of a fluid source's shape for a ray that starts in the

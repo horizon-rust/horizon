@@ -114,6 +114,7 @@ const REAPPLICATION_DELAY: i32 = 20;
 mod cloud_nbt;
 mod cloud_particle;
 pub(in crate::game) use cloud_nbt::{potion_cloud_from_nbt, potion_cloud_to_nbt};
+pub(in crate::game) use cloud_particle::particle_options;
 /// An entity a cloud has affected (`AreaEffectCloud.victims`).
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Victim {
@@ -263,17 +264,18 @@ fn splash_distance_sqr(at: Vec3, age: u32, bounds: Aabb) -> Option<f64> {
 impl Game<'_> {
     /// `LivingEntity.triggerOnDeathMobEffects` (`onMobRemoved` with the reason
     /// KILLED) for what Oozing, Weaving and Wind Charged do when their bearer
-    /// dies. `bearer` is the dying mob's id, `player` whether it is a player,
-    /// `random` the dying mob's own (`mob.getRandom()`; the world's for the
-    /// player).
+    /// dies. `bearer` is the dying mob's id, none when a player dies; `silent`
+    /// whether that source is heard, and `random` the dying mob's own
+    /// (`mob.getRandom()`; the world's for the player).
     pub(super) fn effects_on_death(
         &mut self,
         effects: &[&str],
         bounds: Aabb,
-        player: bool,
+        silent: bool,
         bearer: Option<u32>,
         mut random: Option<&mut LegacyRandom>,
     ) {
+        let player = bearer.is_none();
         let feet = bounds.bottom_center();
         if effects.contains(&"oozing") {
             // OozingMobEffect.numberOfSlimesToSpawn: two, fewer when the
@@ -315,11 +317,7 @@ impl Game<'_> {
             );
         }
         if effects.contains(&"wind_charged") {
-            // A burst centred at half the height, radius 3 to 5.
-            let center = [feet.x, feet.y + bounds.size().y / 2.0, feet.z];
-            let r = random.unwrap_or(&mut self.world.random);
-            let radius = 3.0 + r.next_float() * 2.0;
-            let _ = self.wind_burst(center, radius, 1.0, false, false);
+            let _ = self.wind_charged_burst(bounds, player, silent, random);
         }
     }
     /// `WeavingMobEffect.spawnCobwebsRandomlyAround`: two or three cobwebs in
@@ -995,7 +993,7 @@ impl Game<'_> {
             let ids: Vec<&'static str> = self.potions.effects.list.iter().map(|e| e.id).collect();
             self.potions.effects.clear();
             if !ids.is_empty() {
-                self.effects_on_death(&ids, bounds, true, None, None);
+                self.effects_on_death(&ids, bounds, self.player_silent(), None, None);
             }
         }
         // The omens act from inside the effect tick (BadOmenMobEffect,

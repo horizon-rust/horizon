@@ -6,6 +6,10 @@ use super::{Game, commands::Target};
 #[cfg(test)]
 use super::commands;
 #[cfg(test)]
+#[path = "infested_roll_tests.rs"]
+mod infested_roll_tests;
+
+#[cfg(test)]
 #[path = "bee_sting_tests.rs"]
 mod bee_sting_tests;
 #[cfg(test)]
@@ -379,6 +383,13 @@ impl Game<'_> {
     pub(super) fn record_combat(&mut self, events: &[MotionEvent]) {
         self.recheck_combat();
         for e in events {
+            // `LivingEntity.hurtServer` ends with the effects' `onMobHurt`,
+            // whatever `actuallyHurt` made of the hit: a hit absorption or
+            // armor takes whole still rolls the Infested chance.
+            if matches!(e, MotionEvent::Health(HealthEvent::MobHurt)) {
+                self.player_infested();
+                continue;
+            }
             let (name, amount) = match e {
                 // LivingEntity.getDamageAfterMagicAbsorb (Resistance) and
                 // Player.actuallyHurt (absorption hearts) and
@@ -452,10 +463,6 @@ impl Game<'_> {
                 direct,
             });
             self.combat.last_damage = now;
-            // InfestedMobEffect.onMobHurt.
-            if self.potions.effects.get("infested").is_some() {
-                self.player_infested();
-            }
         }
         self.combat.pending.clear();
         self.combat.pending_direct.clear();
@@ -830,6 +837,24 @@ fn fall_location_of(name: &str, trapdoor: bool) -> &'static str {
         "minecraft:scaffolding" => "scaffolding",
         _ => "other_climbable",
     }
+}
+
+/// Whether the causing entity deals `kind` itself, so it is the source's direct
+/// entity too: a melee hit (`DamageSources.mobAttack`, `playerAttack`, a mace's
+/// or a spear's, a ram's no-aggro blow), a sting, a sonic boom, thorns.
+pub(super) fn melee(kind: horizon_client::mobs::DamageKind) -> bool {
+    use horizon_client::mobs::DamageKind as K;
+    matches!(
+        kind,
+        K::PlayerAttack
+            | K::MaceSmash
+            | K::Spear
+            | K::MobAttack
+            | K::MobAttackNoAggro
+            | K::Sting
+            | K::SonicBoom
+            | K::Thorns
+    )
 }
 
 #[cfg(test)]

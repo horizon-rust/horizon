@@ -221,7 +221,8 @@ pub fn resolve_holders(
             if tracked.is_empty() {
                 return Err(err("argument.scoreHolder.empty", &[]));
             }
-            return Ok(tracked.iter().map(|n| env.named(n)).collect());
+            // `Scoreboard.getTrackedPlayers`: name-only holders (`ScoreHolder.forNameOnly`), no display name.
+            return Ok(tracked.iter().map(|n| Holder::named(n)).collect());
         }
         ScoreHolderArg::Name(n) => vec![env.named(n)],
         ScoreHolderArg::Selector(s) => env.select(s),
@@ -927,8 +928,13 @@ fn team(id: &str, ctx: &Context, env: &mut dyn Env) -> CmdResult<i32> {
             let mut tracker = Tracker::default();
             for m in &members {
                 let joined = env.sb_mut().add_to_team(&m.name, &name);
-                // The message reads the display name after the change.
-                tracker.track(&env.named(&m.name), i32::from(joined));
+                // The message reads the display name after the change; a name-only holder has none.
+                let shown = if m.display.is_some() {
+                    env.named(&m.name)
+                } else {
+                    Holder::named(&m.name)
+                };
+                tracker.track(&shown, i32::from(joined));
             }
             let shown = formatted(env, &name);
             tracker.send(
@@ -954,7 +960,12 @@ fn team(id: &str, ctx: &Context, env: &mut dyn Env) -> CmdResult<i32> {
             let mut tracker = Tracker::default();
             for m in &members {
                 let left = env.sb_mut().remove_from_team(&m.name);
-                tracker.track(&env.named(&m.name), i32::from(left));
+                let shown = if m.display.is_some() {
+                    env.named(&m.name)
+                } else {
+                    Holder::named(&m.name)
+                };
+                tracker.track(&shown, i32::from(left));
             }
             tracker.send(
                 env,

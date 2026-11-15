@@ -250,8 +250,15 @@ impl Game<'_> {
     }
     /// The entity with the given scoreboard name.
     fn target_of_holder(&self, name: &str) -> Option<Target> {
-        if name == self.acting_player_name() {
+        // `PlayerList.getPlayerByName` (any case); a mod's nicknames are not scoreboard names.
+        if self.player.is_some() && name.eq_ignore_ascii_case(self.acting_player_name()) {
             return Some(Target::Player);
+        }
+        if let Some(g) = self
+            .command_players()
+            .find(|g| g.name.eq_ignore_ascii_case(name))
+        {
+            return Some(Target::Guest(g.conn));
         }
         let uuid = uuid_from_text(name).filter(|_| name.len() == 36)?;
         self.target_with_uuid(uuid)
@@ -1008,6 +1015,20 @@ fn feedback_name(display: Text, scoreboard_name: &str) -> Text {
     display.with_component(component)
 }
 
+/// `TriggerCommand.suggestObjectives`: the trigger objectives `holder` has an
+/// unlocked score in.
+pub(super) fn trigger_objectives_for(board: &Scoreboard, holder: &str) -> Vec<String> {
+    let mut names: Vec<String> = board
+        .objectives
+        .iter()
+        .filter(|o| o.criteria == "trigger")
+        .filter(|o| board.score(holder, &o.name).is_some_and(|s| !s.locked))
+        .map(|o| o.name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
 /// The commands' view of the game.
 struct GameEnv<'a, 'b> {
     g: &'a mut Game<'b>,
@@ -1269,6 +1290,9 @@ mod criterion_tests;
 mod empty_tag_tests;
 #[cfg(test)]
 mod guest_advancement_tests;
+
+#[cfg(test)]
+mod source_holder_tests;
 
 #[cfg(test)]
 mod selector_option_tests;
