@@ -241,9 +241,9 @@ pub(super) trait Entity: EntityRules {
         PushReaction::PushPull
     }
     /// Width and height of the box a portal sweep follows, or None for a kind
-    /// the game does not carry through portals (so far armor stands and
-    /// falling blocks; fishing hooks are off the walk, and
-    /// `FishingHook.canUsePortal` is false in vanilla).
+    /// the game does not carry through portals (so far falling blocks; fishing
+    /// hooks are off the walk, and `FishingHook.canUsePortal` is false in
+    /// vanilla).
     fn portal_size(&self) -> Option<(f32, f32)> {
         None
     }
@@ -554,7 +554,9 @@ mod render_bounds_tests {
             invisible: false,
             check_interval: 0,
             custom_name: None,
-            random: horizon_core::random::LegacyRandom::new(0),
+            random: horizon_core::random::EntityRandom::own(
+                horizon_core::random::LegacyRandom::new(0),
+            ),
         };
         let bounds = frame.render_bounds(1.0);
         assert!(bounds.min_position().x <= -0.71875);
@@ -988,14 +990,6 @@ impl Game<'_> {
     fn loads_as_boat(&self, kind: &str) -> bool {
         super::boats::any_boat_wood(kind)
             .is_some_and(|(wood, chest)| self.boat_models.has(wood, chest))
-    }
-    /// Whether `load_listed` loads `kind` as a vehicle that takes its mob
-    /// riders (`take_mob_passengers`): a mob, boat, minecart or primed TNT.
-    pub(super) fn listed_kind_takes_riders(&self, kind: &str) -> bool {
-        self.loads_as_mob(kind)
-            || self.loads_as_boat(kind)
-            || loads_as_cart(kind)
-            || loads_as_tnt(kind)
     }
     /// Loads a saved entity as the first kind in `entity_lists!` that claims
     /// its type id: `Err` hands the compound back when none does.
@@ -1566,9 +1560,11 @@ impl Entity for ArmorStand {
     }
     /// A NoGravity stand is not swept for the blocks it stands in (plates,
     /// fire): measured beside the real server, it never presses a plate nor
-    /// catches fire, and does again once `NoGravity` is cleared.
+    /// catches fire, and does again once `NoGravity` is cleared. A marker is
+    /// not either: `ArmorStand.hasPhysics` is false for it too, so
+    /// `noPhysics` keeps it out of `applyEffectsFromBlocks`.
     fn sweeps_blocks_inside(&self) -> bool {
-        !self.no_gravity
+        !self.marker && !self.no_gravity
     }
     fn pushed_by_explosion(&self) -> bool {
         false
@@ -1580,6 +1576,18 @@ impl Entity for ArmorStand {
         } else {
             PushReaction::PushPull
         }
+    }
+    /// `ArmorStand.getDefaultDimensions`: the box a portal sweep follows, and
+    /// the size its exit is placed by. `ArmorStand.readAdditionalSaveData`
+    /// makes a stand without `hasPhysics` (a marker or a `NoGravity` one)
+    /// `noPhysics`, so `Entity.isAffectedByBlocks` never runs its sweep and it
+    /// enters no portal; a marker's box is `MARKER_DIMENSIONS`, 0 by 0, too.
+    fn portal_size(&self) -> Option<(f32, f32)> {
+        if self.marker || self.no_gravity {
+            return None;
+        }
+        let (width, height) = armor_stand_size(self);
+        Some((width as f32, height as f32))
     }
 }
 
@@ -2065,6 +2073,7 @@ mod no_gravity_stand_tests {
         assert!(!stand.sweeps_blocks_inside());
         stand.no_gravity = false;
         stand.marker = true;
+        assert!(!stand.sweeps_blocks_inside());
         assert!(!stand.triggers_blocks());
     }
 }
@@ -2290,6 +2299,7 @@ mod set_rotation_tests {
             air: 300,
             rotation: [0.0, 0.0],
             following: None,
+            fire_ticks: 0,
         };
         orb.set_rotation([90.0, 10.0]);
         assert_eq!(orb.rotation(), [90.0, 10.0]);

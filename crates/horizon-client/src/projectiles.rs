@@ -14,7 +14,7 @@ use horizon_core::{
 /// `AbstractArrow.startFalling`'s per-axis random velocity damping.
 pub fn start_falling_velocity(
     velocity: Vec3,
-    random: &mut horizon_core::random::LegacyRandom,
+    random: &mut horizon_core::random::EntityRandom,
 ) -> Vec3 {
     let x = f64::from(random.next_float() * 0.2);
     let y = f64::from(random.next_float() * 0.2);
@@ -276,8 +276,10 @@ pub struct Projectile {
     /// `Entity.DATA_SHARED_FLAGS_ID`'s fire bit, set by the server's base tick.
     pub synced_fire: bool,
     /// `Fireball.DATA_ITEM_STACK`: the item a fireball is drawn as, a fire
-    /// charge until [`Projectile::set_item`] gives it another. None for the
-    /// kinds that are no `Fireball` (a wither skull, a wind charge).
+    /// charge until [`Projectile::set_item`] gives it another. For a thrown
+    /// item (`ThrowableItemProjectile.DATA_ITEM_STACK`) the stack it was
+    /// thrown or loaded as, None for its kind's own item. None for the other
+    /// kinds (a wither skull, a wind charge).
     pub item: Option<crate::items::ItemStack>,
     /// `ThrownEgg`'s item `CHICKEN_VARIANT` component, as the chicken variant
     /// index its hatchlings get; None when no item was recorded.
@@ -290,8 +292,8 @@ pub struct Projectile {
 }
 /// A new projectile's own random (`Entity.random`) and the UUID its first two
 /// draws make (`Mth.createInsecureUUID`).
-pub fn new_own_random() -> (horizon_core::random::LegacyRandom, [i32; 4]) {
-    let mut random = crate::random_source::entity();
+pub fn new_own_random() -> (horizon_core::random::EntityRandom, [i32; 4]) {
+    let mut random = horizon_core::random::EntityRandom::own(crate::random_source::entity());
     let uuid = crate::save::insecure_uuid(&mut random);
     (random, uuid)
 }
@@ -568,7 +570,7 @@ impl Projectile {
         self.bounds()
     }
     /// The arrow's own random from now on (`Entity.random`).
-    pub fn with_arrow_random(mut self, random: horizon_core::random::LegacyRandom) -> Self {
+    pub fn with_arrow_random(mut self, random: horizon_core::random::EntityRandom) -> Self {
         if let Some(a) = self.arrow.as_mut() {
             a.random = random;
         }
@@ -748,9 +750,11 @@ impl Projectile {
             self.kind.id()
         }
     }
-    /// `Arrow.ID_EFFECT_COLOR` (`updateColor`): the opaque colour of the
-    /// potion the arrow carries, from its tipped pickup item or the effect a
-    /// stray, bogged or parched adds; -1 for none.
+    /// `Arrow.ID_EFFECT_COLOR` (`updateColor`): `PotionContents.getColor` of
+    /// the contents the arrow carries, from its pickup item, or the effect a
+    /// stray, bogged or parched adds; -1 while they are
+    /// `PotionContents.EMPTY` (a colour and a custom effect alone make them
+    /// nonempty, with no potion id at all).
     pub fn arrow_effect_color(&self) -> i32 {
         let ProjectileKind::Arrow { effect, .. } = &self.kind else {
             return -1;
@@ -758,15 +762,17 @@ impl Projectile {
         if self.is_spectral_arrow() {
             return -1;
         }
-        let rgb = match (effect, &self.arrow) {
-            (Some((id, _)), _) => crate::brewing::effect(id).map(|e| e.shown_color()),
-            (None, Some(a)) if &*a.pickup_item.item == "minecraft:tipped_arrow" => a
-                .pickup_item
-                .potion()
-                .map(|p| crate::brewing::potion_color(Some(p))),
+        let color = match (effect, &self.arrow) {
+            // One added effect is one custom effect: its own colour, opaque.
+            (Some((id, _)), _) => crate::brewing::effect(id).map(|e| e.shown_color() | 0xFF00_0000),
+            // `PotionContents.getColor` already carries the alpha a
+            // `custom_color` was given, as vanilla syncs it. Any arrow item's
+            // contents count, as `updateColor` reads the pickup stack.
+            (None, Some(a)) => (!crate::brewing::contents_empty(&a.pickup_item))
+                .then(|| crate::brewing::contents_color(&a.pickup_item)),
             _ => None,
         };
-        rgb.map_or(-1, |rgb| (rgb | 0xFF00_0000) as i32)
+        color.map_or(-1, |color| color as i32)
     }
     pub fn is_fireball(&self) -> bool {
         matches!(
@@ -838,7 +844,7 @@ impl Projectile {
     /// Projectile.shoot: normalized direction plus triangular noise, times speed.
     pub fn shoot(
         &mut self,
-        random: &mut impl RandomSource,
+        random: &mut horizon_core::random::EntityRandom,
         dir: [f64; 3],
         speed: f32,
         uncertainty: f32,
@@ -934,7 +940,15 @@ impl Projectile {
     pub fn set_egg_item(&mut self, stack: &crate::items::ItemStack) {
         if self.kind == ProjectileKind::Egg {
             self.egg_variant = Some(egg_chicken_variant(stack));
+            self.set_thrown_item(stack);
         }
+    }
+    /// `ThrowableItemProjectile.setItem`: one of the stack, which the save
+    /// writes back as `Item`.
+    pub fn set_thrown_item(&mut self, stack: &crate::items::ItemStack) {
+        let mut stack = stack.clone();
+        stack.count = 1;
+        self.item = Some(stack);
     }
     pub fn set_item(&mut self, stack: crate::items::ItemStack) {
         if !self.kind.is_item_fireball() {
@@ -2988,6 +3002,63 @@ mod render_light_tests {
         let mut snowball = Projectile::new(ProjectileKind::Snowball, Vec3::ZERO, None);
         snowball.set_egg_item(&ItemStack::new("minecraft:blue_egg", 1));
         assert_eq!(snowball.egg_variant, None);
+    }
+}
+
+#[cfg(test)]
+mod arrow_color_tests {
+    use super::*;
+    use crate::items::ItemStack;
+    use horizon_core::random::LegacyRandom;
+    use horizon_world::nbt::Tag;
+
+    /// `Arrow.updateColor`: `ID_EFFECT_COLOR` is -1 only while the pickup
+    /// item's contents are `PotionContents.EMPTY`, and otherwise
+    /// `PotionContents.getColor` — so a tipped arrow whose contents have a
+    /// `custom_color` or only custom effects, with no potion id at all, still
+    /// syncs a colour.
+    #[test]
+    fn a_tipped_arrows_synced_colour_is_its_whole_contents() {
+        let color = |stack: &ItemStack| {
+            let kind = ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            };
+            let mut p = Projectile::new(kind, Vec3::new(0.5, 64.0, 0.5), None);
+            let mut arrow = crate::arrows::ArrowState::new(
+                horizon_core::random::EntityRandom::own(LegacyRandom::new(0)),
+            );
+            arrow.set_item(stack);
+            p.arrow = Some(Box::new(arrow));
+            p.arrow_effect_color()
+        };
+        let tipped = || ItemStack::new("minecraft:tipped_arrow", 1);
+        assert_eq!(color(&tipped()), -1, "PotionContents.EMPTY has no colour");
+        // `PotionContents.getColor`: an explicit `custom_color` wins, as given.
+        let mut custom_color = tipped();
+        custom_color
+            .data_mut()
+            .potion_extra
+            .push(("custom_color".into(), Tag::Int(0x8012_3456u32 as i32)));
+        assert_eq!(color(&custom_color), 0x8012_3456u32 as i32);
+        // Else the mix of the visible effects: poison's own colour (0x87A363).
+        let mut custom_effect = tipped();
+        custom_effect.data_mut().potion_extra.push((
+            "custom_effects".into(),
+            Tag::List(vec![Tag::compound([
+                ("id", Tag::String("minecraft:poison".into())),
+                ("duration", Tag::Int(900)),
+            ])]),
+        ));
+        assert_eq!(color(&custom_effect), 0xFF87_A363u32 as i32);
+        // `updateColor` reads the pickup stack, whatever arrow item it is.
+        let mut plain = ItemStack::new("minecraft:arrow", 1);
+        plain
+            .data_mut()
+            .potion_extra
+            .push(("custom_color".into(), Tag::Int(0x8012_3456u32 as i32)));
+        assert_eq!(color(&plain), 0x8012_3456u32 as i32);
     }
 }
 crate::impl_joined!(Projectile);

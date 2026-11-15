@@ -6,7 +6,7 @@
 //! on a log, stone or ore. Both are one goal here. The long jump activity is
 //! the frog's goal (frog.rs) with the goat's numbers.
 use super::{
-    Damage, Mob, MobEvent, MobWorld, Who,
+    Damage, DamageKind, Mob, MobEvent, MobWorld, Who,
     goals::{Cx, Goal, LOOK, MOVE, goal_clone},
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
@@ -423,7 +423,11 @@ fn ram_tick(m: &mut Mob, cx: &mut Cx) {
             Who::Mob(id) => cx.events.push(MobEvent::AttackMob {
                 target: id,
                 amount,
-                source: Damage::mob(m.id, from),
+                // The same `noAggroMobAttack`: a ram angers no mob.
+                source: Damage {
+                    kind: DamageKind::MobAttackNoAggro,
+                    ..Damage::mob(m.id, from)
+                },
             }),
         }
         let level = |effect: &str| {
@@ -722,7 +726,7 @@ mod ram_tests {
         partner.extra.in_love = 600;
         let others = [partner.seen(None)];
         let ran = with_test_world(&others, |w, _| {
-            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut lr = crate::mobs::world::level_random(0);
             let mut events = Vec::new();
             let mut goat = Mob::new(7, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
             let mut due = |goat: &mut Mob, w: &MobWorld| {
@@ -768,7 +772,7 @@ mod ram_tests {
             goat.attrs.attack_damage = 2.0;
             goat.ai.speed = 3.0;
             goat.extra.goat.ram_direction = Vec3::new(0.0, 0.0, 1.0);
-            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut lr = crate::mobs::world::level_random(0);
             let mut events = Vec::new();
             ram_tick(
                 &mut goat,
@@ -807,3 +811,7 @@ mod ram_tests {
         let _ = ran;
     }
 }
+
+#[cfg(test)]
+#[path = "goat_ram_tests.rs"]
+mod goat_ram_tests;

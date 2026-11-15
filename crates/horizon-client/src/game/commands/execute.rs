@@ -1,12 +1,13 @@
 //! `/execute` (ExecuteCommand): walk the parsed redirect chain, forking and
 //! filtering command sources, then run the final command once per source,
 //! reporting each result to the `store` callbacks of its source.
-use super::{Arg, Context, Dim, Game, R, Target, data::DataRef, err};
+use super::{Arg, Context, Dim, Game, R, Target, data::DataRef, err, wrap_degrees};
 use horizon_client::{
     command::{CommandError, vanilla},
     nbt_path::NbtPath,
     text::Text,
 };
+use horizon_core::geometry::trig;
 use horizon_world::{dimension_type::DimensionFacts, nbt::Tag};
 
 /// `CommandSourceStack` fields Horizon models: the executing entity (None for
@@ -266,6 +267,9 @@ impl Game<'_> {
         let outcome = match (&result, custom) {
             (_, Some(c)) => c,
             (Ok(v), None) => Some((true, *v)),
+            // `ContextChain.runExecutable` reports a `CommandSyntaxException`
+            // to the result consumer; any other exception skips it.
+            (Err(e), None) if e.unexpected => None,
             (Err(_), None) => Some((false, 0)),
         };
         if let Some((success, value)) = outcome {
@@ -377,7 +381,16 @@ impl Game<'_> {
                         };
                         match result {
                             Ok(n) => total += n,
-                            Err(_) if forked => {}
+                            // `handleError` with `forked` silences a command
+                            // syntax error.
+                            Err(e) if forked && !e.unexpected => {}
+                            // Not a `CommandSyntaxException`: it escapes to
+                            // `Commands.performCommand`'s catch, once, and the
+                            // chain stops there.
+                            Err(e) if e.unexpected => {
+                                failure = Some(e);
+                                break;
+                            }
                             // Several sources: report each failure and carry on.
                             Err(e) if many => self.command_failure(e.message),
                             Err(e) => failure = Some(e),
@@ -400,7 +413,15 @@ impl Game<'_> {
                     forked = true;
                     let mut kept = Vec::new();
                     for s in sources {
-                        let (keep, _) = self.with_source(s, |g| g.condition(c, want))?;
+                        // `BuildContexts`: an error in a fork modifier is
+                        // silent and drops its source (`handleError` with
+                        // `forked`); one that is not a `CommandSyntaxException`
+                        // still reaches `Commands.performCommand`.
+                        let (keep, _) = match self.with_source(s, |g| g.condition(c, want)) {
+                            Ok(v) => v,
+                            Err(e) if !e.unexpected => continue,
+                            Err(e) => return Err(e),
+                        };
                         if kept.len() + usize::from(keep) >= fork_limit {
                             return fork_limit_reached(forked, fork_limit);
                         }
@@ -674,10 +695,7 @@ impl Game<'_> {
                 let Some(Arg::Resource(kind)) = c.get("entity").cloned() else {
                     return Ok(vec![s]);
                 };
-                let target = self.summon_with_nbt(&kind, s.pos, "{}")?;
-                let Some(t) = target else {
-                    return Err(err("commands.summon.failed", &[]));
-                };
+                let t = self.summon_for_execute(&kind, s.pos)?;
                 vec![Source {
                     entity: Some(t),
                     ..s
@@ -807,17 +825,14 @@ impl Game<'_> {
                     .collect(),
                 _ => Vec::new(),
             },
-            Some("vehicle") => self.ride_vehicle(entity).into_iter().collect(),
+            Some("vehicle") => self.passenger_vehicle_target(entity).into_iter().collect(),
             Some("passengers") => {
                 let mut passengers = self.player_passengers(entity);
-                // Direct runtime children only. Complete mount insertion order is
-                // not modeled; retain the existing mob collection order here.
-                if let Target::Mob(id) | Target::Boat(id) = entity {
+                if let Some(id) = super::super::native_entities::target_id(entity) {
                     passengers.extend(
-                        self.mobs
-                            .iter()
-                            .filter(|m| m.extra.mount == Some(id) && m.alive() && !m.removed)
-                            .map(|m| Target::Mob(m.id)),
+                        self.ordered_live_passengers(id)
+                            .into_iter()
+                            .filter_map(|id| self.level_entity(id as i32)),
                     );
                 }
                 passengers
@@ -919,12 +934,15 @@ impl Game<'_> {
     /// The highest block of a heightmap type at a column (`Level.getHeight`).
     fn heightmap_at(&self, kind: &str, x: i32, z: i32) -> i32 {
         let top = self.world.top_y();
+        let facts = self.res.facts();
         for y in (self.world.bottom_y()..top).rev() {
             let state = self.world.block(x, y, z);
-            if state == self.world.air {
+            // `Heightmap.NOT_AIR` is `!state.isAir()`, so cave air and void
+            // air are skipped as well as air.
+            if facts.is_air(state) {
                 continue;
             }
-            let facts = self.res.facts().get(state);
+            let facts = facts.get(state);
             let blocks = facts.legacy_solid || facts.fluid != horizon_client::blocks::Fluid::None;
             let leaves = self
                 .pack
@@ -1004,10 +1022,13 @@ impl Game<'_> {
         let from = self.anchor_position(&s);
         let (dx, dy, dz) = (to[0] - from[0], to[1] - from[1], to[2] - from[2]);
         let horizontal = (dx * dx + dz * dz).sqrt();
-        let pitch = (-(dy.atan2(horizontal).to_degrees())) as f32;
-        let yaw = (dz.atan2(dx).to_degrees() - 90.0) as f32;
+        // `CommandSourceStack.facing`: `Mth.atan2` times the folded
+        // `Mth.RAD_TO_DEG`, cast to float, then `Mth.wrapDegrees`. The yaw
+        // stays in -180..180, so a south-east target is -135 and not 225.
+        let pitch = wrap_degrees(-trig::atan2_degrees(dy, horizontal));
+        let yaw = wrap_degrees(trig::atan2_degrees(dz, dx) - 90.0);
         Source {
-            rot: [yaw.rem_euclid(360.0), pitch],
+            rot: [yaw, pitch],
             ..s
         }
     }
@@ -1106,7 +1127,7 @@ impl Game<'_> {
         if c.has("blocks") {
             return self.condition_blocks(c);
         }
-        if c.has("range") && c.has("id") {
+        if c.has("stopwatch") {
             return self.condition_stopwatch(c).map(flag);
         }
         if c.has("predicate") {
@@ -1137,15 +1158,15 @@ impl Game<'_> {
         if self.score.board.objective(&to).is_none() {
             return Err(err("arguments.objective.notFound", &[&to]));
         }
-        let Some(a) = target
-            .first()
-            .and_then(|t| self.score.board.score(t, &to))
-            .map(|s| s.value)
-        else {
-            return Ok(false);
-        };
         if c.has("matches") {
             let Some(Arg::IntRange((lo, hi))) = c.get("range") else {
+                return Ok(false);
+            };
+            let Some(a) = target
+                .first()
+                .and_then(|t| self.score.board.score(t, &to))
+                .map(|s| s.value)
+            else {
                 return Ok(false);
             };
             return Ok(lo.is_none_or(|l| a >= l) && hi.is_none_or(|h| a <= h));
@@ -1157,6 +1178,13 @@ impl Game<'_> {
         if self.score.board.objective(&so).is_none() {
             return Err(err("arguments.objective.notFound", &[&so]));
         }
+        let Some(a) = target
+            .first()
+            .and_then(|t| self.score.board.score(t, &to))
+            .map(|s| s.value)
+        else {
+            return Ok(false);
+        };
         let Some(b) = source
             .first()
             .and_then(|t| self.score.board.score(t, &so))
@@ -1266,6 +1294,10 @@ fn is_player_in_place(
         None => Some(uuid) == level_player,
     }
 }
+
+#[cfg(test)]
+#[path = "execute_facing_tests.rs"]
+mod execute_facing_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1631,5 +1663,126 @@ mod terminal_fork_tests {
         );
         assert!(empty.0.is_empty() && empty.1.is_empty());
         assert_eq!(game.world.game_time, time);
+    }
+}
+
+#[cfg(test)]
+mod score_condition_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+
+    fn game() -> Game<'static> {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game
+    }
+
+    fn say(game: &mut Game<'_>, command: &str) -> (bool, Vec<String>) {
+        game.chat_capture = Some(Vec::new());
+        let ok = game.run_command(command);
+        let said = game.chat_capture.take().unwrap_or_default();
+        (
+            ok,
+            said.iter().map(horizon_client::text::Text::plain).collect(),
+        )
+    }
+
+    /// `checkScore` resolves the source holder and objective before it reads
+    /// the target's score, so a terminal condition names the bad objective
+    /// even when the target has no score at all.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn an_unknown_source_objective_fails_a_terminal_condition() {
+        let mut game = game();
+        assert!(game.run_command("scoreboard objectives add a dummy"));
+        for sign in ["if", "unless"] {
+            let (ok, said) = say(
+                &mut game,
+                &format!("execute {sign} score zero a = zero nope"),
+            );
+            assert!(!ok, "{sign}: {said:?}");
+            assert!(
+                said.iter().any(|m| m.contains("nope")),
+                "{sign}: the source objective is named: {said:?}"
+            );
+        }
+    }
+
+    /// A non-terminal `if`/`unless` is a fork: its error is silent and its
+    /// source is dropped (`CommandSourceStack.handleError` with `forked`), so
+    /// `unless` does not run the branch either.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn an_unknown_source_objective_drops_a_forked_condition_silently() {
+        let mut game = game();
+        assert!(game.run_command("scoreboard objectives add a dummy"));
+        for sign in ["if", "unless"] {
+            let (ok, said) = say(
+                &mut game,
+                &format!("execute {sign} score zero a = zero nope run say hi"),
+            );
+            assert!(ok, "{sign}: {said:?}");
+            assert!(said.is_empty(), "{sign}: {said:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod stopwatch_condition_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+
+    fn game() -> Game<'static> {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game
+    }
+
+    fn say(game: &mut Game<'_>, command: &str) -> (bool, Vec<String>) {
+        game.chat_capture = Some(Vec::new());
+        let ok = game.run_command(command);
+        let said = game.chat_capture.take().unwrap_or_default();
+        (
+            ok,
+            said.iter().map(horizon_client::text::Text::plain).collect(),
+        )
+    }
+
+    /// `ExecuteCommand.checkStopwatch` reads the id, throws when the stopwatch
+    /// is missing and tests the elapsed seconds against the range. The
+    /// condition is recognised by its `stopwatch` literal, not by the argument
+    /// names `id` and `range`.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn an_existing_stopwatch_matches_its_range_and_a_missing_one_errors() {
+        let mut game = game();
+        assert!(game.run_command("stopwatch create foo"));
+        let (ok, said) = say(&mut game, "execute if stopwatch foo 0.. run say in-range");
+        assert!(
+            ok && said.len() == 1 && said[0].ends_with("in-range"),
+            "{said:?}"
+        );
+        let (ok, said) = say(
+            &mut game,
+            "execute unless stopwatch foo 0.. run say not-range",
+        );
+        assert!(ok && said.is_empty(), "{said:?}");
+        // The range is read too: a minute has not passed since the creation.
+        let (ok, said) = say(&mut game, "execute if stopwatch foo 60.. run say early");
+        assert!(ok && said.is_empty(), "{said:?}");
+        // A terminal condition throws; a fork drops its source silently.
+        let (ok, said) = say(&mut game, "execute if stopwatch nope 0..");
+        assert!(!ok, "a missing stopwatch is an error: {said:?}");
+        assert!(said.iter().any(|m| m.contains("nope")), "{said:?}");
+        for sign in ["if", "unless"] {
+            let (ok, said) = say(
+                &mut game,
+                &format!("execute {sign} stopwatch nope 0.. run say hi"),
+            );
+            assert!(ok, "{sign}: {said:?}");
+            assert!(said.is_empty(), "{sign}: {said:?}");
+        }
     }
 }

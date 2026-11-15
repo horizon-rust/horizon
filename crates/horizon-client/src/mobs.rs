@@ -56,6 +56,7 @@ pub mod hostile;
 mod hurt_by;
 pub mod illager;
 pub mod illusioner;
+pub mod invulnerable;
 pub mod item_break;
 pub mod keyframes;
 pub mod landing;
@@ -118,7 +119,7 @@ pub mod wither;
 #[cfg(test)]
 mod invisible_follow_tests;
 mod world;
-pub use world::{TargetInfo, single_player_pos, visual_clip};
+pub use world::{TargetInfo, VisualShape, single_player_pos, visual_clip, visual_shape};
 pub mod dragon_contacts;
 pub mod zombie_villager;
 
@@ -126,7 +127,7 @@ use crate::{blocks::BlockFacts, mesher::Vertex, world::World};
 pub use data::MobData;
 use horizon_core::{
     geometry::{Aabb, Vec3},
-    random::{EntityRandom, LegacyRandom, RandomSource},
+    random::{EntityRandom, LegacyRandom, LevelRandom, RandomSource},
 };
 use horizon_world::block_collision::BlockCollisionRegistry;
 use serde_json::Value;
@@ -559,6 +560,8 @@ pub enum DamageKind {
     /// `spear`: a stab of a spear (the player attack tags too).
     Spear,
     MobAttack,
+    /// `mob_attack_no_aggro`: a goat's ram, the one type in `#no_anger`.
+    MobAttackNoAggro,
     Arrow,
     Thrown,
     Fireball,
@@ -767,6 +770,8 @@ impl Damage {
                 | DamageKind::Stalagmite
                 | DamageKind::Starve
                 | DamageKind::Campfire
+                // `mob_attack` panics; its no-aggro twin is not in the tag.
+                | DamageKind::MobAttackNoAggro
         )
     }
     /// DamageTypeTags.BYPASSES_ARMOR
@@ -1069,7 +1074,7 @@ pub struct Extra {
     /// horse still rearing then goes on with the rider's keys until the rear
     /// ends (`tick` clears it).
     pub stand_sliding: bool,
-    /// Species scratch values (the wither's head targets and clocks).
+    /// Species scratch values (the wither's head targets and clocks, a ghast's power).
     pub ints: [i32; 6],
     pub counter: i32,
     /// Nautilus ATTACK_TARGET_COOLDOWN saved slot: None is absent,
@@ -1370,6 +1375,10 @@ pub struct Mob {
     /// direction and feet, which `SulfurCube.knockback` turns the launch by. Set by whoever deals
     /// the blow (`Game::attacker_aim`) and cleared once it is dealt.
     pub attacker_aim: Option<Aim>,
+    /// `DamageSource.isCreativePlayer()` of the blow being dealt: its causing entity is a
+    /// player in creative mode, whose hits `Entity.isInvulnerableToBase` lets through. Set by
+    /// whoever deals the blow (`Game::hurt_by_player`) and cleared once it is dealt.
+    pub creative_attacker: bool,
     /// The horizontal motion `(x, z)` of the projectile that is the direct entity of the blow
     /// being dealt (`Projectile.calculateHorizontalHurtKnockbackDirection`): the knock goes the
     /// way it was travelling. None for any other direct entity.
@@ -1694,16 +1703,16 @@ pub enum MobEvent {
         state: horizon_world::registry::BlockStateId,
     },
     AttackPlayer(f32, [f64; 3]),
-    /// `Bee.doHurtTarget` on a player: a sting that lands leaves its stinger
-    /// in them and poisons them for `poison_ticks` (none on easy).
-    StingPlayer {
+    /// `Bee.doHurtTarget`: a sting that lands leaves its stinger and poisons.
+    Sting {
+        target: Who,
         amount: f32,
-        from: [f64; 3],
         poison_ticks: i32,
+        source: Damage,
     },
     /// A melee hit whose effect comes only if the hit lands (husk hunger,
-    /// cave spider poison, wither skeleton wither, bee and pufferfish
-    /// poison): a shield-blocked hit gives nothing.
+    /// cave spider poison, wither skeleton wither): a shield-blocked hit gives
+    /// nothing.
     AttackPlayerWithEffect {
         amount: f32,
         from: [f64; 3],
@@ -1931,12 +1940,12 @@ pub enum MobEvent {
         setup: SpawnSetup,
     },
     /// `Mob.convertTo` with `ConversionType.SINGLE` ([`conversion::single`]):
-    /// a new mob of `kind` takes the place of `from` (already removed) and
-    /// keeps its gear, name and flags.
+    /// `from` (already removed) becomes `kind` with its gear, name and flags, then `after`.
     Convert {
         from: Box<Mob>,
         kind: &'static str,
         params: conversion::Params,
+        after: conversion::After,
     },
     DropItem {
         mob: u32,
@@ -2240,11 +2249,12 @@ pub enum MobEvent {
         at: [f64; 3],
         pitch: f32,
     },
-    /// A lead snaps or loses its holder: the lead item drops when asked.
+    /// A lead snaps or loses its holder: the lead drops when asked, at `at` or else the mob.
     LeashBreak {
         mob: u32,
         drop: bool,
         sound: bool,
+        at: Option<[f64; 3]>,
     },
     /// `Leashable.whenLeashedTo`: the holder is told a quad-leashed mob hangs
     /// on it (`HappyGhast.notifyLeashHolder`).
@@ -2326,146 +2336,12 @@ pub struct SpawnSetup {
     /// Whether to skip `finalizeSpawn`'s rolls (e.g. conversions or EntityType.create).
     pub skip_finalize: bool,
 }
-/// A snapshot of another entity mobs can see this tick.
-#[derive(Clone, Debug)]
-pub struct Seen {
-    pub in_water: bool,
-    pub playing_dead: bool,
-    pub last_damage: Option<Damage>,
-    pub id: u32,
-    pub species: Species,
-    pub position: Vec3,
-    pub bounds: Aabb,
-    pub eye_y: f64,
-    pub alive: bool,
-    pub baby: bool,
-    pub in_love: bool,
-    pub tame: bool,
-    /// `AbstractHorse.isBred`: the `Bred` flag (`followMommy` reads it).
-    pub bred: bool,
-    /// A tamed animal's owner (`getOwner`).
-    pub owner: Option<[i32; 4]>,
-    /// `instanceof Enemy` (what the golems' target predicates test).
-    pub hostile: bool,
-    pub target: Option<Who>,
-    pub health: f32,
-    pub variant: u8,
-    /// A slime's or magma cube's size.
-    pub size: i32,
-    /// Dye colour (sheep).
-    pub color: u8,
-    /// A villager's claimed job site and bed.
-    pub job: Option<[i32; 3]>,
-    pub bed: Option<[i32; 3]>,
-    pub yaw: f32,
-    pub velocity: Vec3,
-    /// `Entity.getKnownSpeed`: what it moved in its last tick.
-    pub known_speed: Vec3,
-    /// Who holds this mob's lead.
-    pub leash: Option<leash::Holder>,
-    /// A llama's caravan head (its id plus one, 0 when not in a caravan).
-    pub caravan: u32,
-    /// A schooling fish's leader and how many fish follow it.
-    pub school: (Option<u32>, i32),
-    /// `MobExtra::section` and `section_seq`.
-    pub section: ([i32; 3], u64),
-    /// A wandering trader's despawn delay.
-    pub delay: i32,
-    /// `getLastHurtByMob` and its timestamp.
-    pub hurt_by: Option<(Who, i32)>,
-    /// `Entity.isInvisible`: the flag, or the invisibility effect.
-    pub invisible: bool,
-    /// `PathfinderMob.isPanicking`: a running panic goal or the brain's
-    /// `IS_PANICKING` memory.
-    pub panicking: bool,
-    /// A raider in an active raid.
-    pub active_raid: bool,
-    /// A copper golem's `openedChestPos` (`ContainerUser.hasContainerOpen`).
-    pub opened_chest: Option<[i32; 3]>,
-    /// `isPassenger`.
-    pub passenger: bool,
-    /// The vehicle it rides (`getVehicle`): a mob's or a boat's id.
-    pub vehicle: Option<u32>,
-    /// `LivingEntity.getHitbox`: the box, cut below the seat when riding.
-    pub hitbox: Aabb,
-    /// `isPushable` and pushed by others (`Entity.push(Entity)` moves it).
-    pub pushable: bool,
-    /// A sleeping villager, wandering trader or fox vetoes its own `push(Entity)`.
-    pub sleeping: bool,
-    /// A cold strider (`Strider.isSuffocating`).
-    pub cold_strider: bool,
-    /// `MobCategory` (`monster`, `creature`, ...).
-    pub category: &'static str,
-    /// A villager's `POTENTIAL_JOB_SITE` and `MEETING_POINT`.
-    pub potential_job: Option<[i32; 3]>,
-    pub meeting: Option<[i32; 3]>,
-    /// `variant2`: a villager's profession (index into
-    /// `render::PROFESSIONS`), a llama's strength. And a villager's experience.
-    pub profession: u8,
-    pub xp: i32,
-    /// What other villagers read of a villager's state and brain.
-    pub villager: Option<Arc<villager::Seen>>,
-    /// `MAX_HEALTH`, `JUMP_STRENGTH` and `MOVEMENT_SPEED` base values (a
-    /// horse's breeding stock).
-    pub stats: [f64; 3],
-    /// `Wolf.isInSittingPose`.
-    pub sitting: bool,
-    /// `Entity.isSilent`.
-    pub silent: bool,
-    /// `Cat.isLying` or `isRelaxStateOne`.
-    pub lying: bool,
-    /// `Entity.isVehicle` or `isPassenger`.
-    pub ridden: bool,
-    pub is_vehicle: bool,
-    /// `Attributes.KNOCKBACK_RESISTANCE`.
-    pub knockback_resistance: f64,
-    /// The active effects, without namespace (`slowness`, `poison`...).
-    pub effects: Vec<&'static str>,
-    /// A piglin's `HUNTED_RECENTLY` memory.
-    pub hunted_recently: bool,
-    /// A piglin's `HURT_BY` memory.
-    pub hurt_recently: bool,
-    /// `Hoglin.canBeHunted`: an adult hoglin without `CannotBeHunted`.
-    pub huntable: bool,
-    /// A happy ghast's `isOnStillTimeout` (a player on its back holds it).
-    pub still: bool,
-    /// `Entity.isVehicle`: something rides it.
-    pub carrying: bool,
-    /// Pushes given or taken so far this tick, while the collision cap is on.
-    pub collisions: u32,
-}
-impl Seen {
-    /// Whether `canBeCollidedWith` can ever hold for this kind: the slots
-    /// [`MobWorld::others_solid`] lists.
-    pub fn may_block_mobs(&self) -> bool {
-        matches!(self.species, Species::Shulker | Species::HappyGhast)
-    }
-    /// `canBeCollidedWith(mover)` for a mob of species `mover` moving into
-    /// it (`EntityGetter.getEntityCollisions`): a living shulker
-    /// (`Shulker`), or an adult happy ghast held still, or carrying someone
-    /// when the mover is a happy ghast too (`HappyGhast`). Every other mob
-    /// keeps `Entity`'s false.
-    pub fn blocks_mob(&self, mover: Species) -> bool {
-        match self.species {
-            Species::Shulker => self.alive,
-            Species::HappyGhast => {
-                self.alive
-                    && !self.baby
-                    && (self.still || (self.carrying && mover == Species::HappyGhast))
-            }
-            _ => false,
-        }
-    }
-    /// `LivingEntity.hasEffect`, by id without namespace.
-    pub fn has_effect(&self, effect: &str) -> bool {
-        self.effects.contains(&effect)
-    }
-}
+pub use seen::Seen;
 impl Mob {
-    /// The name used by command replies: CustomName takes precedence over the type.
+    /// The name used by command replies: CustomName, style and all, comes before the type.
     pub fn command_name(&self) -> crate::text::Text {
-        if let Some(name) = &self.custom_name {
-            return crate::text::Text::literal(name);
+        if let Some(name) = self.display_custom_name() {
+            return name;
         }
         // Villager.getTypeName returns its registered profession's name.
         if self.species() == Species::Villager {
@@ -2663,8 +2539,7 @@ pub fn apply_brain_events<M: MobSlot>(mobs: &mut [M], events: &mut Vec<MobEvent>
                 events.remove(i);
             }
             MobEvent::StartRiding { rider, vehicle } => {
-                riders::start_riding(mobs, rider, vehicle);
-                events.remove(i);
+                i = riders::start_riding_event(mobs, events, i, rider, vehicle);
             }
             MobEvent::StartFollowing { fish, leader } => {
                 aquatic::start_following(mobs, fish, leader);
@@ -2792,8 +2667,7 @@ pub struct PlayerView {
     pub effects: Vec<&'static str>,
     /// The player's UUID (villagers' gossip is keyed by it).
     pub uuid: [i32; 4],
-    /// The mobs on the player's team (`isAlliedTo`): combat targeting
-    /// leaves the player alone.
+    /// The mobs on the player's team (`isAlliedTo`): combat targeting leaves the player alone.
     pub allies: std::sync::Arc<std::collections::HashSet<u32>>,
     /// A LAN guest: its own client moves it, and touching mobs push it there
     /// (`EntitySelector.pushableBy` on the client).
@@ -2986,7 +2860,7 @@ impl<'a> Teams<'a> {
 /// (`mob.getRandom()`): a 10% chance of one or two silverfish, each thrown
 /// along `look` (`spawnSilverfish`). Their velocities; none when the chance
 /// fails.
-pub fn infested_silverfish(random: &mut LegacyRandom, look: [f64; 3]) -> Vec<Vec3> {
+pub fn infested_silverfish(random: &mut impl RandomSource, look: [f64; 3]) -> Vec<Vec3> {
     if random.next_float() > 0.1 {
         return Vec::new();
     }
@@ -3096,6 +2970,7 @@ impl Mob {
             silent: false,
             invulnerable_flag: false,
             attacker_aim: None,
+            creative_attacker: false,
             projectile_motion: None,
             climbing: false,
             on_climbable: false,
@@ -3280,7 +3155,7 @@ impl Mob {
         &mut self,
         amount: f32,
         from: Option<[f64; 3]>,
-        _random: &mut LegacyRandom,
+        _random: &mut impl RandomSource,
     ) -> bool {
         let source = match from {
             Some(f) => Damage::player(f),
@@ -3336,14 +3211,6 @@ impl Mob {
     pub fn damage(&mut self, amount: f32, source: Damage) -> bool {
         self.damage_with(amount, source, None)
     }
-    /// `LivingEntity.isInvulnerableTo` and dead or removed: only #bypasses_invulnerability gets
-    /// past the flag. The guard every damage hook runs after (`LivingIncomingDamageEvent`).
-    pub fn refuses_damage(&self, source: &Damage) -> bool {
-        self.extra.client_side
-            || !self.alive()
-            || self.removed
-            || (self.is_invulnerable() && !source.kind.bypasses_invulnerability())
-    }
     /// `Entity.isInvulnerable`: `Invulnerable`, or `invulnerable_time` left.
     pub fn is_invulnerable(&self) -> bool {
         self.invulnerable_flag || self.invulnerable_time > 0
@@ -3379,12 +3246,9 @@ impl Mob {
         armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
         player_uuid: Option<[i32; 4]>,
     ) -> bool {
-        // Enderman.hurtServer: past `isInvulnerableTo`, the teleport draw
-        // follows `super.hurtServer` whatever it answered (a hurt cooldown, a
-        // dead enderman), its hurt sound's pitch included.
-        let enderman = self.species() == Species::Enderman
-            && !self.removed
-            && !(self.is_invulnerable() && !source.kind.bypasses_invulnerability());
+        // `Guardian.hurtServer`'s spikes answer its attacker before
+        // `super.hurtServer`'s guards; the enderman's teleport waits for after.
+        let enderman = hurt_by::before_hurt(self, &source);
         let hurt = self.hurt_server(amount, source, armor_effectiveness, player_uuid);
         if enderman {
             enderman::after_hurt(self, &source);
@@ -3599,12 +3463,7 @@ impl Mob {
         }
         self.last_damage = Some((source, i64::from(self.age)));
         self.last_direct = None;
-        if let Some(who) = source.attacker {
-            self.ai.hurt_by(who, self.age as i32);
-            if who == Who::Player {
-                self.ai.last_hurt_by_player = 100;
-            }
-        }
+        hurt_by::resolve(self, &source);
         // dealDefaultKnockback, unless the damage type is tagged no_knockback;
         // a source without a position knocks in a random direction.
         if knock && !source.no_knockback() {
@@ -3712,7 +3571,7 @@ impl Mob {
         let cloud = self.species() == Species::Enderman
             && direct == "minecraft:area_effect_cloud"
             && !self.removed
-            && !(self.is_invulnerable() && !source.kind.bypasses_invulnerability());
+            && !self.is_invulnerable_to(&source);
         let hurt = self.damage(amount, source);
         if cloud {
             enderman::teleport_chance(self, &source);
@@ -3848,7 +3707,7 @@ impl Mob {
     pub fn tick(
         &mut self,
         w: &MobWorld,
-        level_random: &mut LegacyRandom,
+        level_random: &mut LevelRandom,
         events: &mut Vec<MobEvent>,
     ) -> bool {
         self.track_section();
@@ -6331,7 +6190,6 @@ mod hurt_cooldown_incoming_tests;
 mod hidden_speed_mob_tick_tests {
     use super::*;
     fn full_tick_promotes(no_ai: bool) {
-        use horizon_core::random::LegacyRandom;
         let admitted = crate::mobs::world::with_built_test_world(
             &[],
             |world, registry| {
@@ -6353,7 +6211,7 @@ mod hidden_speed_mob_tick_tests {
                 assert!(m.add_effect_with("minecraft:speed", 200, 0, false, true));
                 assert!(m.add_effect_with("minecraft:speed", 40, 1, false, true));
                 assert_eq!(m.extra.effects, [("minecraft:speed", 40, 1)]);
-                let mut random = LegacyRandom::new(202);
+                let mut random = world::level_random(202);
                 let mut events = Vec::new();
                 for _ in 0..39 {
                     assert!(m.tick(w, &mut random, &mut events));
@@ -6536,3 +6394,5 @@ mod hidden_speed_mob_tick_tests {
         );
     }
 }
+#[cfg(test)]
+mod guardian_tests;

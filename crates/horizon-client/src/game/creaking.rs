@@ -15,7 +15,7 @@ use horizon_client::{
 use horizon_core::{
     geometry::Vec3,
     position::BlockPos,
-    random::{LegacyRandom, RandomSource},
+    random::{LevelRandom, RandomSource},
 };
 use horizon_world::registry::BlockStateId;
 use std::{collections::HashMap, sync::Arc};
@@ -118,7 +118,7 @@ impl Game<'_> {
         f: impl FnOnce(
             &mut CreakingHeart,
             Option<&horizon_client::mobs::MobWorld>,
-            &mut LegacyRandom,
+            &mut LevelRandom,
             &mut Host,
             &mut Vec<HeartEvent>,
         ),
@@ -177,6 +177,9 @@ impl Game<'_> {
                     [0.0; 3],
                 ),
                 HeartEvent::OutputChanged(at) => self.container_changed((at[0], at[1], at[2])),
+                HeartEvent::BlockGameEvent(event, at, state) => {
+                    self.post_block_game_event(event, at, None, Some(state))
+                }
                 HeartEvent::Mob(event) => mob_events.push(event),
             }
         }
@@ -467,6 +470,10 @@ impl CreakingState {
         self.revision = Some(revision);
     }
 }
+
+#[cfg(test)]
+#[path = "creaking_heart_events_tests.rs"]
+mod creaking_heart_events_tests;
 
 #[cfg(test)]
 mod tests {

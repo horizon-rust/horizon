@@ -10,14 +10,15 @@ use super::{
     entity::{
         Entity as _, EntityHandle, ThunderHit, entity_lists_of, for_each_entity, with_entity,
     },
+    minecarts::CartHit,
 };
 use horizon_client::advancements::EntityView;
-use horizon_client::mobs::{Damage, DamageKind, MobEvent, SpawnSetup, Species};
+use horizon_client::mobs::{Damage, DamageKind, MobEvent, Species, conversion};
 use horizon_client::random_source;
 use horizon_core::{
     geometry::{Aabb, Vec3},
     position::BlockPos,
-    random::{LegacyRandom, RandomSource},
+    random::{EntityRandom, RandomSource},
 };
 use horizon_world::level::Ticks;
 
@@ -30,7 +31,7 @@ pub(super) struct Bolt {
     seed: i64,
     /// The bolt's own random (`Entity.random`): its seed, flashes, flash
     /// timing, fire spots and thunder pitch draw from it, never the level's.
-    random: LegacyRandom,
+    random: EntityRandom,
     visual_only: bool,
     /// Mooshrooms and copper golems change once per bolt.
     converted: Vec<u32>,
@@ -47,17 +48,6 @@ pub(super) struct Bolt {
     /// the host, `Some(Some(conn))` for a guest.
     pub cause: Option<Option<u32>>,
 }
-/// `Pig.thunderHit`: `SpawnSetup` for mobs converted by lightning, preserving baby state.
-fn thunder_mob_spawn_setup(m: &horizon_client::mobs::Mob) -> SpawnSetup {
-    SpawnSetup {
-        baby: m.is_baby(),
-        yaw: m.yaw,
-        persistent: true,
-        skip_finalize: true,
-        ..Default::default()
-    }
-}
-
 /// The box `LightningBolt.tick` collects the `LightningStrikeTrigger` bystanders from: 15 blocks
 /// around the bolt, 15 down and `6 + 15` up.
 fn in_viewer_box(bolt: [f64; 3], p: [f64; 3]) -> bool {
@@ -259,7 +249,7 @@ impl Game<'_> {
             self.post_game_event("minecraft:lightning_strike", at, ctx);
         }
         // The LightningBolt constructor: `seed`, then `flashes`.
-        let mut random = random_source::entity();
+        let mut random = EntityRandom::own(random_source::entity());
         let seed = random.next_long();
         let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
@@ -295,7 +285,7 @@ impl Game<'_> {
     pub(super) fn spawn_remote_bolt(&mut self, id: u32, at: [f64; 3]) {
         self.bolts.retain(|b| b.id != id);
         // The client's own copy, constructed as on the server.
-        let mut random = random_source::entity();
+        let mut random = EntityRandom::own(random_source::entity());
         let seed = random.next_long();
         let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
@@ -319,7 +309,7 @@ impl Game<'_> {
     /// (from the bolt's own `random`), wherever `BaseFireBlock.getState` fire
     /// can survive, when a player is within the fire-spread radius. Returns how
     /// many blocks it set on fire.
-    fn bolt_fire(&mut self, at: [f64; 3], extra: i32, random: &mut LegacyRandom) -> i32 {
+    fn bolt_fire(&mut self, at: [f64; 3], extra: i32, random: &mut EntityRandom) -> i32 {
         let mut set = 0;
         let base = [
             at[0].floor() as i32,
@@ -609,29 +599,35 @@ impl Game<'_> {
             }
             let m = &mut self.mobs[i];
             b.hit.push(m.id);
-            let setup = thunder_mob_spawn_setup;
             let at = [m.position.x, m.position.y, m.position.z];
             match m.species() {
+                // `Pig.thunderHit`: `convertTo(ZOMBIFIED_PIGLIN,
+                // single(this, false, true), ..)`, whose step rolls the gear
+                // off the pig's own random and keeps the new mob.
                 Species::Pig if !peaceful && !keep => {
+                    let from = Box::new(m.clone());
                     m.removed = true;
-                    events.push(MobEvent::SpawnKind {
-                        kind: "minecraft:zombified_piglin".into(),
-                        at,
-                        setup: setup(m),
+                    events.push(MobEvent::Convert {
+                        from,
+                        kind: "minecraft:zombified_piglin",
+                        params: conversion::Params {
+                            keep_equipment: false,
+                            preserve_can_pick_up_loot: true,
+                        },
+                        after: conversion::After::ZombifiedPiglinGear,
                     });
                     continue;
                 }
+                // `Villager.thunderHit`: `single(this, false, false)`, then
+                // `finalizeSpawn(CONVERSION)` and persistence.
                 Species::Villager if !peaceful && !keep => {
+                    let from = Box::new(m.clone());
                     m.removed = true;
-                    events.push(MobEvent::SpawnKind {
-                        kind: "minecraft:witch".into(),
-                        at,
-                        // Villager.thunderHit: the witch's convertTo runs
-                        // finalizeSpawn(CONVERSION); the zombified piglin's does not.
-                        setup: SpawnSetup {
-                            skip_finalize: false,
-                            ..setup(m)
-                        },
+                    events.push(MobEvent::Convert {
+                        from,
+                        kind: "minecraft:witch",
+                        params: conversion::Params::NONE,
+                        after: conversion::After::Witch,
                     });
                     continue;
                 }
@@ -713,7 +709,7 @@ impl Game<'_> {
                 EntityHandle::Boat(i) => {
                     self.hurt_boat(i, 5.0, false);
                 }
-                EntityHandle::Cart(i) => self.hurt_cart(i, 5.0, false, false),
+                EntityHandle::Cart(i) => self.hurt_cart(i, 5.0, false, false, CartHit::default()),
                 EntityHandle::Orb(i) if self.orbs[i].hurt(5.0) => {
                     self.orbs.remove(i);
                 }
@@ -800,9 +796,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_client::mobs::{Anim, Brain, Mob, MobType, Part, Species};
-    use horizon_core::geometry::Vec3;
-    use std::sync::Arc;
+    use horizon_core::random::LegacyRandom;
 
     /// `LightningBolt.spawnFire` places nothing, and draws no extra sources,
     /// unless `canSpreadFireAround` passes at the bolt (#11376).
@@ -839,7 +833,7 @@ mod tests {
                 .unwrap(),
             );
             let random = game.world.random.clone();
-            let mut bolt_random = LegacyRandom::new(0);
+            let mut bolt_random = EntityRandom::own(LegacyRandom::new(0));
             let set = game.bolt_fire(bolt, 4, &mut bolt_random);
             let burning = game.world.block(8, 65, 8) != air;
             assert_eq!((set > 0, burning), (fires, fires), "radius {radius}");
@@ -915,86 +909,9 @@ mod tests {
             assert_eq!(thunder_strike_column(&mut ticks, cx, cz), expected);
         }
     }
-
-    /// `Pig.thunderHit`: striking a pig with lightning converts it to a zombified
-    /// piglin while preserving age (#7510).
-    #[test]
-    fn a_baby_pig_hit_by_lightning_becomes_a_baby_zombified_piglin() {
-        let make_pig = |baby: bool| {
-            let kind = Arc::new(MobType {
-                id: "minecraft:pig".into(),
-                species: Species::Pig,
-                width: 0.9,
-                height: 0.9,
-                eye_height: 0.85,
-                category: "creature".into(),
-                max_health: 10.0,
-                speed: 0.25,
-                flying_speed: 0.02,
-                attack_damage: 0.0,
-                attack_knockback: 0.0,
-                follow_range: 16.0,
-                step_height: 0.6,
-                armor: 0.0,
-                armor_toughness: 0.0,
-                knockback_resistance: 0.0,
-                jump_strength: 0.42,
-                attributes: Default::default(),
-                item_stack_limits: Default::default(),
-                gravity: 0.08,
-                safe_fall_distance: 3.0,
-                fall_damage_multiplier: 1.0,
-                water_efficiency: 0.0,
-                water_slowdown: 0.8,
-                air_speed: 0.02,
-                baby_scale: 0.5,
-                head_rot_speed: 10.0,
-                max_head_x_rot: 40.0,
-                max_head_y_rot: 75.0,
-                ambient_interval: 80,
-                flags: Default::default(),
-                model: Arc::new(Part {
-                    name: "root".into(),
-                    pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-                    polygons: Vec::new(),
-                    children: Vec::new(),
-                }),
-                layers: Default::default(),
-                texture: String::new(),
-                brain: Brain::Passive,
-                anim: Anim::Quadruped,
-                sounds: ["", "", ""],
-                step_sound: None,
-                food: Default::default(),
-                tempt: Default::default(),
-            });
-            let mut pig = Mob::new(1, kind, Vec3::ZERO, 45.0);
-            if baby {
-                pig.extra.age = -24000;
-            }
-            pig
-        };
-
-        let adult_pig = make_pig(false);
-        assert!(!adult_pig.is_baby());
-        let adult_setup = thunder_mob_spawn_setup(&adult_pig);
-        assert!(!adult_setup.baby);
-        assert_eq!(adult_setup.yaw, 45.0);
-        assert!(adult_setup.persistent);
-
-        let baby_pig = make_pig(true);
-        assert!(baby_pig.is_baby());
-        let baby_setup = thunder_mob_spawn_setup(&baby_pig);
-        assert!(baby_setup.baby);
-        assert_eq!(baby_setup.yaw, 45.0);
-        assert!(baby_setup.persistent);
-
-        // When setup.baby is true, apply_setup sets m.extra.age = -24000,
-        // resulting in a baby mob (is_baby() == true).
-        let mut zombified = Mob::new(2, adult_pig.kind.clone(), Vec3::ZERO, 0.0);
-        if baby_setup.baby {
-            zombified.extra.age = -24000;
-        }
-        assert!(zombified.is_baby());
-    }
 }
+
+// A conversion keeps the old mob's state; lives here for the lightning's.
+#[cfg(test)]
+#[path = "mob_conversion_state_tests.rs"]
+mod mob_conversion_state_tests;

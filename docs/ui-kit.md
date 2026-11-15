@@ -414,7 +414,7 @@ frame round any content).
 The radial menu follows the same switch (`graphics_style::vanilla_surfaces()`). On vanilla's surfaces
 every slot is an advancement task frame with its item: the picked one in the obtained (gold) frame under
 a container's hover glow, one that can't run dimmed, an empty one faded. The hub is a tooltip with one
-short line (the item's name, or a toggle's state), the pages are Create World's tabs, and there are no
+short line (the item's name), the pages are Create World's tabs, and there are no
 state chips. A view too tight for the frames takes vanilla's 18 px inventory slots before the HUD's rows
 are covered (`radial_overlay/vanilla.rs`).
 

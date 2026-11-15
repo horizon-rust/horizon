@@ -25,7 +25,7 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::{Aabb, Axis, Direction, Vec3},
-    random::{LegacyRandom, RandomSource},
+    random::{EntityRandom, LegacyRandom, RandomSource},
 };
 use horizon_world::nbt::Tag;
 
@@ -74,7 +74,7 @@ pub(super) struct ThrownPotion {
     last_deflected_by: Option<u32>,
     /// `Entity.random`: `ProjectileDeflection.REVERSE` draws from the
     /// projectile's own source, not the level's.
-    random: LegacyRandom,
+    random: EntityRandom,
 }
 /// The player (not one of `skip`, the thrower and who rides with them before
 /// it has left them) whose box, grown by `margin` (`ProjectileUtil.computeMargin`),
@@ -114,6 +114,7 @@ const REAPPLICATION_DELAY: i32 = 20;
 mod cloud_nbt;
 mod cloud_particle;
 pub(in crate::game) use cloud_nbt::{potion_cloud_from_nbt, potion_cloud_to_nbt};
+pub(in crate::game) use cloud_particle::particle_options;
 /// An entity a cloud has affected (`AreaEffectCloud.victims`).
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Victim {
@@ -263,17 +264,18 @@ fn splash_distance_sqr(at: Vec3, age: u32, bounds: Aabb) -> Option<f64> {
 impl Game<'_> {
     /// `LivingEntity.triggerOnDeathMobEffects` (`onMobRemoved` with the reason
     /// KILLED) for what Oozing, Weaving and Wind Charged do when their bearer
-    /// dies. `bearer` is the dying mob's id, `player` whether it is a player,
-    /// `random` the dying mob's own (`mob.getRandom()`; the world's for the
-    /// player).
+    /// dies. `bearer` is the dying mob's id, none when a player dies; `silent`
+    /// whether that source is heard, and `random` the dying mob's own
+    /// (`mob.getRandom()`; the world's for the player).
     pub(super) fn effects_on_death(
         &mut self,
         effects: &[&str],
         bounds: Aabb,
-        player: bool,
+        silent: bool,
         bearer: Option<u32>,
         mut random: Option<&mut LegacyRandom>,
     ) {
+        let player = bearer.is_none();
         let feet = bounds.bottom_center();
         if effects.contains(&"oozing") {
             // OozingMobEffect.numberOfSlimesToSpawn: two, fewer when the
@@ -315,11 +317,7 @@ impl Game<'_> {
             );
         }
         if effects.contains(&"wind_charged") {
-            // A burst centred at half the height, radius 3 to 5.
-            let center = [feet.x, feet.y + bounds.size().y / 2.0, feet.z];
-            let r = random.unwrap_or(&mut self.world.random);
-            let radius = 3.0 + r.next_float() * 2.0;
-            let _ = self.wind_burst(center, radius, 1.0, false, false);
+            let _ = self.wind_charged_burst(bounds, player, silent, random);
         }
     }
     /// `WeavingMobEffect.spawnCobwebsRandomlyAround`: two or three cobwebs in
@@ -483,7 +481,7 @@ impl PotionState {
             guest: None,
             left_owner: false,
             last_deflected_by: None,
-            random: LegacyRandom::new(i64::from(id)),
+            random: EntityRandom::own(LegacyRandom::new(i64::from(id))),
         });
     }
     /// ThrowableItemProjectile.DATA_ITEM_STACK: the potion it shows.
@@ -995,7 +993,7 @@ impl Game<'_> {
             let ids: Vec<&'static str> = self.potions.effects.list.iter().map(|e| e.id).collect();
             self.potions.effects.clear();
             if !ids.is_empty() {
-                self.effects_on_death(&ids, bounds, true, None, None);
+                self.effects_on_death(&ids, bounds, self.player_silent(), None, None);
             }
         }
         // The omens act from inside the effect tick (BadOmenMobEffect,
@@ -1822,13 +1820,15 @@ impl Game<'_> {
         };
         self.apply_effect_action(a);
     }
-    /// A splash potion's effects on the player in place, by their distance.
+    /// A splash potion's effects on the player in place, by their distance,
+    /// for the stack's `potion_duration_scale`.
     fn splash_on_player(
         &mut self,
-        effects: &'static [(&'static str, i32, i32)],
+        effects: &[(&'static str, i32, i32)],
         at: Vec3,
         age: u32,
         owner: &PotionOwner,
+        duration_scale: f64,
     ) {
         if let Some(p) = self.player.as_ref() {
             let w = f64::from(p.dimensions.width) / 2.0;
@@ -1849,7 +1849,7 @@ impl Game<'_> {
                             self.apply_indirect_effect_action(a, owner);
                         }
                     } else {
-                        let d = (intensity * f64::from(*duration) + 0.5) as i32;
+                        let d = (intensity * f64::from(*duration) * duration_scale + 0.5) as i32;
                         if d > 20
                             && let Some(e) = brewing::effect(id)
                         {
@@ -1937,79 +1937,59 @@ impl Game<'_> {
                 .iter()
                 .any(|(id, ..)| brewing::effect(id).is_some_and(|e| e.instant))
         });
-        let color = brewing::potion_color(stack.potion());
+        // `PotionContents.getColor`: an explicit `custom_color` wins over the
+        // amplifier-weighted mix of the potion's and the stack's custom effects.
+        let color = brewing::contents_color(stack);
         self.level_event_at(if instant { 2007 } else { 2002 }, block, color as i32);
         if !silent {
             self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
         }
-        // AbstractThrownPotion.affectEntitiesAround: a water potion (the only
-        // #rehydrates_axolotls) refills the air of the axolotls in the
-        // projectile's box inflated by 4, 2 and 4 (Axolotl.rehydrate, 1800).
-        if stack.potion() == Some("minecraft:water") {
-            let (lo, hi) = (
-                [at.x - 0.125 - 4.0, at.y - 2.0, at.z - 0.125 - 4.0],
-                [at.x + 0.125 + 4.0, at.y + 0.25 + 2.0, at.z + 0.125 + 4.0],
-            );
-            for m in self
-                .mobs
-                .iter_mut()
-                .filter(|m| m.species() == horizon_client::mobs::Species::Axolotl && !m.removed)
-            {
-                let (w, h, _) = m.dims();
-                let half = w / 2.0;
-                let (x, y, z) = (m.position.x, m.position.y, m.position.z);
-                if x - half < hi[0]
-                    && x + half > lo[0]
-                    && y < hi[1]
-                    && y + h > lo[1]
-                    && z - half < hi[2]
-                    && z + half > lo[2]
-                {
-                    m.air = (m.air + 1800).min(horizon_client::mobs::axolotl::MAX_AIR);
-                }
-            }
-        }
-        let Some(def) = potion else {
+        // `PotionContents.hasEffects`: the potion's effects and the stack's
+        // custom ones; without either `onHitAsPotion` is not called at all.
+        let effects = brewing::contents_effects(stack);
+        if effects.is_empty() {
             return;
-        };
+        }
         if lingering {
             // The cloud sits at the mob it hit (its feet), else the impact;
-            // radius 3, wait 10, 600 ticks, shrinking to nothing, and a
-            // potion with no effects leaves none.
-            if !def.effects.is_empty() {
-                let at = mob.unwrap_or(at);
-                let id = self.take_entity_id();
-                self.breath_clouds.push(Breath {
-                    id,
-                    at: [at.x, at.y, at.z],
-                    motion: [0.0; 3],
-                    radius: 3.0,
-                    age: 0,
-                    duration: 600,
-                    from_dragon: false,
+            // radius 3, wait 10, 600 ticks, shrinking to nothing, with the
+            // stack's `potion_contents` and `potion_duration_scale`.
+            let at = mob.unwrap_or(at);
+            let id = self.take_entity_id();
+            self.breath_clouds.push(Breath {
+                id,
+                at: [at.x, at.y, at.z],
+                motion: [0.0; 3],
+                radius: 3.0,
+                age: 0,
+                duration: 600,
+                from_dragon: false,
+                victims: Vec::new(),
+                potion: Some(PotionCloud {
+                    settings: CloudSettings {
+                        duration_scale: stack.potion_duration_scale(),
+                        ..CloudSettings::lingering()
+                    },
+                    effects,
+                    hidden: Vec::new(),
+                    ambient: Vec::new(),
+                    radius_per_tick: -3.0 / 600.0,
+                    color,
+                    custom_particle: None,
                     victims: Vec::new(),
-                    potion: Some(PotionCloud {
-                        settings: CloudSettings::lingering(),
-                        effects: def.effects.to_vec(),
-                        hidden: Vec::new(),
-                        ambient: Vec::new(),
-                        radius_per_tick: -3.0 / 600.0,
-                        color,
-                        custom_particle: None,
-                        victims: Vec::new(),
-                        source: owner.name.clone().unwrap_or_else(|| {
-                            Text::translate("entity.minecraft.area_effect_cloud", &[])
-                        }),
-                        owner: owner.who(),
-                        guest: owner.guest,
+                    source: owner.name.clone().unwrap_or_else(|| {
+                        Text::translate("entity.minecraft.area_effect_cloud", &[])
                     }),
-                });
-            }
+                    owner: owner.who(),
+                    guest: owner.guest,
+                }),
+            });
             return;
         }
+        let duration_scale = f64::from(stack.potion_duration_scale());
         // Every player in range (`ThrownSplashPotion.applySplash` over
         // `LivingEntity`s, the players among them).
-        self.for_each_player(|g| g.splash_on_player(def.effects, at, age, owner));
+        self.for_each_player(|g| g.splash_on_player(&effects, at, age, owner, duration_scale));
         // Mobs take the instant effects (undead invert healing and harming).
         let undead = &self.stations().enchantments.entity_tags;
         let mut hits = Vec::new();
@@ -2024,14 +2004,14 @@ impl Game<'_> {
             }
         }
         for (i, intensity, inverted) in hits {
-            for (id, duration, amp) in def.effects {
+            for (id, duration, amp) in &effects {
                 let harm = match *id {
                     "instant_damage" => !inverted,
                     "instant_health" => inverted,
                     _ => {
                         // `Potion.applySplash`: timed effects last in
                         // proportion to how close the mob was.
-                        let d = (intensity * f64::from(*duration) + 0.5) as i32;
+                        let d = (intensity * f64::from(*duration) * duration_scale + 0.5) as i32;
                         if d > 20
                             && let Some(name) = mob_effect_id(id)
                         {
@@ -2585,6 +2565,10 @@ mod sound_on_added_tests {
 mod xp_bottle_tests;
 
 #[cfg(test)]
+#[path = "potion_contents_tests.rs"]
+mod potion_contents_tests;
+
+#[cfg(test)]
 mod mob_absorption_max_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
     use horizon_client::{chunk::Chunk, motion::PlayerMotion};
@@ -2930,10 +2914,11 @@ mod mob_health_boost_tests {
         });
     }
 
-    /// Existing-behavior preservation, not parity: a sulfur cube's size and a
-    /// tame wolf write their maximum straight into the cache, outside the
-    /// attribute model. Health Boost leaves those caches (and Health) as they
-    /// are; the attribute model's own refresh never replaces them.
+    /// Existing-behavior preservation, not parity: a sulfur cube's size
+    /// writes its maximum straight into the cache, outside the attribute
+    /// model, and a tame wolf's cache is kept apart from Health Boost too
+    /// (`finalize::health_boost_changed`). Health Boost leaves those caches
+    /// (and Health) as they are.
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
     fn health_boost_keeps_a_size_or_tame_maximum_owned_outside_the_attributes() {
@@ -2944,9 +2929,9 @@ mod mob_health_boost_tests {
                 ("h205_cube", 20, "sulfur_cube 4.5 200 8.5 {Size:2", 1),
                 // size 5: cache 20 = the model's 20 by coincidence
                 ("h205_cube_equal", 22, "sulfur_cube 6.5 200 8.5 {Size:4", 1),
-                // tame: cache 40, model 8; Health Boost II
+                // tame: cache 40, the model's base 40; Health Boost II
                 ("h205_wolf", 21, "wolf 8.5 200 8.5 {", 1),
-                // tame: Health Boost VIII (+32) makes the model 40 = the cache
+                // tame: Health Boost VIII (+32) makes the model 72
                 ("h205_wolf_equal", 23, "wolf 10.5 200 8.5 {", 7),
             ];
             let mut ids = Vec::new();
@@ -2983,8 +2968,8 @@ mod mob_health_boost_tests {
             }
             assert_eq!(
                 horizon_client::mobs::finalize::max_health(&game.mobs[ids[3]]),
-                40.0,
-                "the coincidence: the boosted model equals the tame cache"
+                72.0,
+                "the boosted model is above the tame cache"
             );
             assert_eq!(
                 state(game),
