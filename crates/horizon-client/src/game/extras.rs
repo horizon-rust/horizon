@@ -223,7 +223,7 @@ impl Game<'_> {
     /// (`Hud.extractEffects`: beneficial at y 1, harmful at y 26).
     fn effect_rows_height(&self) -> f32 {
         let effects = &self.potions.effects.list;
-        if effects.is_empty() || self.screen != Screen::Playing || self.pvp_effects_shown() {
+        if effects.is_empty() || self.screen != Screen::Playing || self.effect_icons_hidden() {
             return 0.0;
         }
         let harmful = effects.iter().any(|e| {
