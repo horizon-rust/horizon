@@ -3255,7 +3255,7 @@ impl Launcher {
             )
             .child(text(theme::CAPTION).text_color(t.muted).child(tr(
                 "Everything has a default: tick the EULA and Create makes a friends-only survival \
-                 world. You can change all of it later.",
+                world. You can change all of it later, from the server's Settings tab.",
             )))
             .child(row(
                 "Name",
