@@ -1159,10 +1159,9 @@ impl Dispatcher {
             if self.nodes[child].permission > permission {
                 continue;
             }
-            ask |= matches!(
-                self.nodes[child].suggests,
-                Some(Suggests::AskServer | Suggests::EntityTags)
-            );
+            // EntityTags is a server-side provider; only a received
+            // AskServer node can send a request from the client tree.
+            ask |= matches!(self.nodes[child].suggests, Some(Suggests::AskServer));
             let mut builder = SuggestionsBuilder::new(truncated, start);
             match &self.nodes[child].kind {
                 NodeKind::Literal(l) => {
