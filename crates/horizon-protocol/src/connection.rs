@@ -471,9 +471,36 @@ impl Connection {
     }
 }
 
+/// A packet read off a frame: (id, payload, the frame's contents when it was
+/// compressed and they were asked for).
+type Packet = (i32, Vec<u8>, Option<Vec<u8>>);
+
+/// A packet with the frame it came in ([`ConnReader::recv_framed`]): a proxy
+/// whose two sides use the same threshold can send `compressed` on as it is
+/// ([`ConnWriter::send_contents`]) instead of compressing `payload` again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Framed {
+    pub id: i32,
+    pub payload: Vec<u8>,
+    /// The frame's contents as they arrived (the data length, then the zlib
+    /// stream) when it was compressed, copied for the caller; None when it was
+    /// not, or when a version adapter or an older client's renumbering changed
+    /// the packet.
+    pub compressed: Option<Vec<u8>>,
+}
+impl From<Packet> for Framed {
+    fn from((id, payload, compressed): Packet) -> Self {
+        Self {
+            id,
+            payload,
+            compressed,
+        }
+    }
+}
+
 /// The next frame in a reader's buffer.
 enum Next {
-    Packet((i32, Vec<u8>)),
+    Packet(Packet),
     /// A frame with no packet in it.
     Empty,
     /// No whole frame yet: the bytes it needs, once its length is known (0 before).
@@ -488,25 +515,40 @@ impl ConnReader {
     }
     /// Block until a whole packet arrives: (id, payload).
     pub fn recv(&mut self) -> Result<(i32, Vec<u8>)> {
-        if let Some(packet) = self.adapter.as_ref().and_then(|a| a.next_incoming()) {
-            return Ok(packet);
+        self.recv_with(false).map(|(id, payload, _)| (id, payload))
+    }
+    /// [`Self::recv`], with the frame: read, inflated and checked as `recv`
+    /// does, and counted the same.
+    pub fn recv_framed(&mut self) -> Result<Framed> {
+        self.recv_with(true).map(Framed::from)
+    }
+    /// [`Self::buffered`], with the frame.
+    pub fn buffered_framed(&mut self) -> Result<Option<Framed>> {
+        Ok(self.buffered_with(true)?.map(Framed::from))
+    }
+    /// [`Self::recv`], keeping a compressed frame's contents when `keep_frame`
+    /// is set and no adapter renumbers what arrives.
+    fn recv_with(&mut self, keep_frame: bool) -> Result<Packet> {
+        if let Some((id, payload)) = self.adapter.as_ref().and_then(|a| a.next_incoming()) {
+            return Ok((id, payload, None));
         }
+        let keep_frame = keep_frame && self.adapter.is_none() && self.older_client.is_none();
         loop {
-            match self.next()? {
-                Next::Packet((id, payload)) if self.older_client.is_some() => {
+            match self.next(keep_frame)? {
+                Next::Packet((id, payload, _)) if self.older_client.is_some() => {
                     let client = self.older_client.as_ref().expect("checked");
-                    if let Some(packet) = client.serverbound(id, payload)? {
-                        return Ok(packet);
+                    if let Some((id, payload)) = client.serverbound(id, payload)? {
+                        return Ok((id, payload, None));
                     }
                 }
                 Next::Packet(packet) => match &self.adapter {
                     None => return Ok(packet),
                     Some(a) => {
-                        if let Some(packet) = a.clientbound(packet.0, packet.1)? {
-                            return Ok(packet);
+                        if let Some((id, payload)) = a.clientbound(packet.0, packet.1)? {
+                            return Ok((id, payload, None));
                         }
-                        if let Some(packet) = a.next_incoming() {
-                            return Ok(packet);
+                        if let Some((id, payload)) = a.next_incoming() {
+                            return Ok((id, payload, None));
                         }
                     }
                 },
@@ -519,12 +561,20 @@ impl ConnReader {
     /// more: for a detached reader, after [`Self::read_from`]. Only an older
     /// client's renumbering applies (a server's connection has no other).
     pub fn buffered(&mut self) -> Result<Option<(i32, Vec<u8>)>> {
+        Ok(self
+            .buffered_with(false)?
+            .map(|(id, payload, _)| (id, payload)))
+    }
+    /// [`Self::buffered`], keeping a compressed frame's contents when
+    /// `keep_frame` is set and no older client's renumbering applies.
+    fn buffered_with(&mut self, keep_frame: bool) -> Result<Option<Packet>> {
+        let keep_frame = keep_frame && self.older_client.is_none();
         loop {
-            match self.next()? {
-                Next::Packet((id, payload)) if self.older_client.is_some() => {
+            match self.next(keep_frame)? {
+                Next::Packet((id, payload, _)) if self.older_client.is_some() => {
                     let client = self.older_client.as_ref().expect("checked");
-                    if let Some(packet) = client.serverbound(id, payload)? {
-                        return Ok(Some(packet));
+                    if let Some((id, payload)) = client.serverbound(id, payload)? {
+                        return Ok(Some((id, payload, None)));
                     }
                 }
                 Next::Packet(packet) => return Ok(Some(packet)),
@@ -547,8 +597,9 @@ impl ConnReader {
     fn next_header(&self) -> Result<Option<(usize, usize)>> {
         frame::header(&self.buffer[self.start..self.end])
     }
-    /// Take the next frame off the buffer, if it is whole.
-    fn next(&mut self) -> Result<Next> {
+    /// Take the next frame off the buffer, if it is whole; with `keep_frame`, a
+    /// compressed frame's contents come out with its packet.
+    fn next(&mut self, keep_frame: bool) -> Result<Next> {
         // Read the VarInt21 length once; the same prefix is used to locate
         // the payload and to determine whether the full frame is available.
         let Some((prefix, len)) = self.next_header()? else {
@@ -560,7 +611,7 @@ impl ConnReader {
         }
         let frame = self.start + prefix..self.start + wanted;
         self.start = frame.end;
-        Ok(match self.packet(frame)? {
+        Ok(match self.packet(frame, keep_frame)? {
             Some(packet) => {
                 self.counters.received.fetch_add(1, Ordering::Relaxed);
                 Next::Packet(packet)
@@ -570,8 +621,14 @@ impl ConnReader {
     }
     /// The packet in `buffer[frame]`, or `None` for a frame with no packet in it:
     /// vanilla's PacketDecoder only decodes a packet from a readable buffer, so an
-    /// empty compressed frame is skipped and the connection stays up.
-    fn packet(&mut self, frame: std::ops::Range<usize>) -> Result<Option<(i32, Vec<u8>)>> {
+    /// empty compressed frame is skipped and the connection stays up. With
+    /// `keep_frame`, a compressed frame's contents (the data length, then the
+    /// zlib stream) come with the packet, copied.
+    fn packet(
+        &mut self,
+        frame: std::ops::Range<usize>,
+        keep_frame: bool,
+    ) -> Result<Option<Packet>> {
         let frame = &self.buffer[frame];
         match frame::body(frame, self.threshold, &mut self.inflater)? {
             frame::Body::Plain(at) => {
@@ -581,14 +638,14 @@ impl ConnReader {
                 }
                 let mut r = Reader::new(body);
                 let id = r.varint()?;
-                Ok(Some((id, body[r.position()..].to_vec())))
+                Ok(Some((id, body[r.position()..].to_vec(), None)))
             }
             frame::Body::Inflated(mut body) => {
                 let mut r = Reader::new(&body);
                 let id = r.varint()?;
                 let at = r.position();
                 body.drain(..at);
-                Ok(Some((id, body)))
+                Ok(Some((id, body, keep_frame.then(|| frame.to_vec()))))
             }
         }
     }
@@ -1138,6 +1195,339 @@ mod tests {
         let (id, payload) = c.recv().unwrap();
         assert_eq!((id, payload.as_slice()), (3, &b"after"[..]));
         server.join().unwrap();
+    }
+
+    /// A body of `len` bytes (its id first) that does not compress to nothing.
+    fn body_of(id: u8, len: usize) -> Vec<u8> {
+        let mut body = vec![id];
+        body.extend((1..len).map(|i| (i * 31 % 251) as u8));
+        body
+    }
+
+    /// The frame a framed read gives is, byte for byte, the frame's contents
+    /// the sender wrote, for bodies around the threshold and far past it, with
+    /// encryption on; a body under the threshold has none.
+    #[test]
+    fn a_framed_read_gives_the_frame_as_it_was_sent() {
+        let (a, b) = Pipe::pair();
+        let lens = [1, 2, 63, 64, 65, 300, 4000, 70_000, 200_000];
+        let mut sender = Connection::local(b);
+        sender.set_compression(64);
+        sender.enable_encryption(&[5; 16]);
+        let mut c = Connection::local(a);
+        c.set_compression(64);
+        c.enable_encryption(&[5; 16]);
+        for (i, &len) in lens.iter().enumerate() {
+            let body = body_of(i as u8 + 1, len);
+            let sent = frame::contents(&body, Some(64)).unwrap();
+            sender.writer.send_contents(&sent).unwrap();
+            let got = c.reader.recv_framed().unwrap();
+            assert_eq!((got.id, &got.payload[..]), (i32::from(body[0]), &body[1..]));
+            let expected = (len >= 64).then_some(sent);
+            assert_eq!(got.compressed, expected, "body of {len} bytes");
+        }
+        assert_eq!(
+            c.reader.counters.received.load(Ordering::Relaxed),
+            lens.len() as i64
+        );
+    }
+
+    /// With compression off no frame is compressed, so none is given.
+    #[test]
+    fn no_frame_with_compression_off() {
+        let (a, b) = Pipe::pair();
+        let mut sender = Connection::local(b);
+        let mut c = Connection::local(a);
+        for len in [1, 300, 70_000] {
+            let body = body_of(4, len);
+            sender.send(&body).unwrap();
+            let got = c.reader.recv_framed().unwrap();
+            assert_eq!(
+                got,
+                Framed {
+                    id: 4,
+                    payload: body[1..].to_vec(),
+                    compressed: None
+                }
+            );
+        }
+    }
+
+    /// Framed and plain reads mixed on one stream that arrives 7 bytes at a
+    /// time, compressed and encrypted, with empty frames between the packets:
+    /// each read gives the next packet, the framed ones with their frame, and
+    /// the empty frames are skipped and not counted.
+    #[test]
+    fn framed_and_plain_reads_mix_on_a_stream_cut_in_pieces() {
+        let (a, b) = Pipe::pair();
+        let mut sender = Connection::local(b);
+        sender.set_compression(64);
+        sender.enable_encryption(&[9; 16]);
+        let bodies: Vec<Vec<u8>> = [3, 70, 64, 500, 1, 63, 9000, 65]
+            .iter()
+            .enumerate()
+            .map(|(i, &len)| body_of(i as u8 + 1, len))
+            .collect();
+        let mut stream = Vec::new();
+        let mut sent = Vec::new();
+        for body in &bodies {
+            sender.writer.frame_into(&[0], &mut stream);
+            let contents = frame::contents(body, Some(64)).unwrap();
+            sender.writer.frame_into(&contents, &mut stream);
+            sent.push(contents);
+        }
+        let mut c = Connection::local(a);
+        c.set_compression(64);
+        c.enable_encryption(&[9; 16]);
+        let mut got = Vec::new();
+        for piece in stream.chunks(7) {
+            assert_eq!(c.reader.read_from(&mut &piece[..]).unwrap(), piece.len());
+            loop {
+                let next = if got.len() % 2 == 0 {
+                    c.reader.buffered_framed().unwrap()
+                } else {
+                    let plain = c.reader.buffered().unwrap();
+                    plain.map(|(id, payload)| Framed {
+                        id,
+                        payload,
+                        compressed: None,
+                    })
+                };
+                match next {
+                    Some(packet) => got.push(packet),
+                    None => break,
+                }
+            }
+        }
+        assert_eq!(got.len(), bodies.len());
+        for (i, ((packet, body), contents)) in got.iter().zip(&bodies).zip(&sent).enumerate() {
+            assert_eq!(
+                (packet.id, &packet.payload[..]),
+                (i32::from(body[0]), &body[1..])
+            );
+            let framed = i % 2 == 0 && body.len() >= 64;
+            assert_eq!(
+                packet.compressed.as_ref(),
+                framed.then_some(contents),
+                "packet {i}"
+            );
+        }
+        assert_eq!(
+            c.reader.counters.received.load(Ordering::Relaxed),
+            bodies.len() as i64
+        );
+    }
+
+    /// A detached reader fed with `read_from`: the frame the caller holds is
+    /// its own copy, unchanged while the reader's buffer is moved, grown and
+    /// refilled for the next packets.
+    #[test]
+    fn a_held_frame_outlives_the_buffer_moving() {
+        let (a, b) = Pipe::pair();
+        let mut sender = Connection::local(b);
+        sender.set_compression(64);
+        let mut c = Connection::local(a);
+        c.set_compression(64);
+        let (_socket, mut reader, _writer) = c.detach();
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut noise = |len: usize| -> Vec<u8> {
+            (0..len)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed as u8
+                })
+                .collect()
+        };
+        let first = [vec![1], noise(1000)].concat();
+        let second = [vec![2], noise(300_000)].concat();
+        let first_sent = frame::contents(&first, Some(64)).unwrap();
+        let mut stream = Vec::new();
+        sender.writer.frame_into(&first_sent, &mut stream);
+        let second_at = stream.len();
+        let second_sent = frame::contents(&second, Some(64)).unwrap();
+        sender.writer.frame_into(&second_sent, &mut stream);
+
+        // The first frame and 3 bytes of the second: the reader keeps those 3
+        // at the end of its buffer.
+        let mut input = &stream[..second_at + 3];
+        while !input.is_empty() {
+            reader.read_from(&mut input).unwrap();
+        }
+        let held = reader.buffered_framed().unwrap().expect("the first packet");
+        assert!(reader.buffered_framed().unwrap().is_none());
+        // The rest is far larger than the buffer: it is moved to the front and grown.
+        let mut input = &stream[second_at + 3..];
+        while !input.is_empty() {
+            reader.read_from(&mut input).unwrap();
+        }
+        let next = reader
+            .buffered_framed()
+            .unwrap()
+            .expect("the second packet");
+        assert_eq!((next.id, &next.payload[..]), (2, &second[1..]));
+        assert_eq!(next.compressed, Some(second_sent));
+        assert_eq!((held.id, &held.payload[..]), (1, &first[1..]));
+        assert_eq!(held.compressed, Some(first_sent));
+    }
+
+    /// Frames that lie about their size, or declare one under the threshold,
+    /// are refused by the framed reads with the error `recv` and `buffered`
+    /// give, and counted as they are.
+    #[test]
+    fn framed_reads_refuse_what_recv_refuses() {
+        let body = body_of(1, 200);
+        let sent = frame::contents(&body, Some(64)).unwrap();
+        let mut size_bytes = Vec::new();
+        crate::buf::write_varint(&mut size_bytes, body.len() as i32);
+        let stream = &sent[size_bytes.len()..];
+        let declaring = |size: i32| {
+            let mut contents = Vec::new();
+            crate::buf::write_varint(&mut contents, size);
+            contents.extend_from_slice(stream);
+            contents
+        };
+        let small = frame::contents(&body_of(1, 10), Some(1)).unwrap();
+        let cases = [
+            (declaring(150), "Badly compressed packet"),
+            (declaring(250), "Badly compressed packet"),
+            (
+                declaring(frame::MAX_UNCOMPRESSED as i32 + 1),
+                "protocol maximum",
+            ),
+            (small, "below server threshold of 64"),
+        ];
+        for (contents, message) in cases {
+            let refusals: Vec<(String, i64)> = (0..4)
+                .map(|how| {
+                    let (a, b) = Pipe::pair();
+                    let mut sender = Connection::local(b);
+                    sender.set_compression(64);
+                    sender.writer.send_contents(&contents).unwrap();
+                    let mut c = Connection::local(a);
+                    c.set_compression(64);
+                    let counters = c.reader.counters.clone();
+                    let error = match how {
+                        0 => c.reader.recv().unwrap_err(),
+                        1 => c.reader.recv_framed().unwrap_err(),
+                        _ => {
+                            let mut bytes = Vec::new();
+                            sender.writer.frame_into(&contents, &mut bytes);
+                            let (_, mut reader, _) = c.detach();
+                            reader.read_from(&mut &bytes[..]).unwrap();
+                            if how == 2 {
+                                reader.buffered().unwrap_err()
+                            } else {
+                                reader.buffered_framed().unwrap_err()
+                            }
+                        }
+                    };
+                    let received = counters.received.load(Ordering::Relaxed);
+                    (error.to_string(), received)
+                })
+                .collect();
+            assert!(refusals[0].0.contains(message), "{}", refusals[0].0);
+            assert!(refusals.iter().all(|r| *r == refusals[0]), "{refusals:?}");
+        }
+    }
+
+    /// A login disconnect (id 0) whose text is long enough to be compressed.
+    fn login_disconnect() -> Vec<u8> {
+        let mut w = crate::buf::Writer::new();
+        w.varint(crate::ids::login::clientbound::LOGIN_DISCONNECT);
+        w.string(&format!(
+            "{{\"text\":\"{}\"}}",
+            "closed for the night ".repeat(8)
+        ));
+        w.data
+    }
+    /// A login hello (id 0) from a player.
+    fn login_hello() -> Vec<u8> {
+        let mut w = crate::buf::Writer::new();
+        w.varint(crate::ids::login::serverbound::HELLO);
+        w.string("Kim_the_long_one");
+        w.data.extend_from_slice(&[7; 16]);
+        w.data
+    }
+    /// A connection to a server of an older release, past its handshake (in login), and the
+    /// server's end of the pipe.
+    fn adapted() -> (Connection, Connection) {
+        let (a, b) = Pipe::pair();
+        let mut c = Connection::local(a);
+        c.adapt(crate::adapter::ServerVersion::V26_2);
+        let mut intention = crate::buf::Writer::new();
+        intention.varint(crate::ids::handshake::serverbound::INTENTION);
+        intention.varint(crate::PROTOCOL_VERSION);
+        intention.string("localhost");
+        intention.u16(25565);
+        intention.varint(2);
+        c.send(&intention.data).unwrap();
+        c.set_compression(16);
+        let mut server = Connection::local(b);
+        assert_eq!(server.recv().unwrap().0, 0, "the handshake");
+        server.set_compression(16);
+        (c, server)
+    }
+
+    /// `recv_framed` on a connection that renumbers what arrives gives no frame, a version
+    /// adapter's packet or an older client's: the packet it returns is not the frame's.
+    #[test]
+    fn recv_framed_gives_no_frame_for_a_renumbered_packet() {
+        let (mut c, mut server) = adapted();
+        server.send(&login_disconnect()).unwrap();
+        let got = c.reader.recv_framed().unwrap();
+        assert_eq!(got.id, crate::ids::login::clientbound::LOGIN_DISCONNECT);
+        assert_eq!(got.compressed, None, "a version adapter's packet");
+
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(b);
+        client.set_compression(16);
+        let mut c = Connection::local(a);
+        c.serve_older(crate::adapter::ServerVersion::V26_2);
+        c.set_compression(16);
+        client.send(&login_hello()).unwrap();
+        let got = c.reader.recv_framed().unwrap();
+        assert_eq!(got.id, crate::ids::login::serverbound::HELLO);
+        assert_eq!(got.compressed, None, "an older client's packet");
+    }
+
+    /// `buffered_framed` follows `buffered`: an older client's packet (renumbered) has no frame;
+    /// with a version adapter, which `buffered` does not apply, the packet comes as it arrived and
+    /// so does its frame.
+    #[test]
+    fn buffered_framed_gives_a_frame_only_for_a_packet_as_it_arrived() {
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(b);
+        client.set_compression(16);
+        let mut c = Connection::local(a);
+        c.serve_older(crate::adapter::ServerVersion::V26_2);
+        c.set_compression(16);
+        let mut bytes = Vec::new();
+        let hello = login_hello();
+        client
+            .writer
+            .frame_into(&frame::contents(&hello, Some(16)).unwrap(), &mut bytes);
+        let (_, mut reader, _) = c.detach();
+        reader.read_from(&mut &bytes[..]).unwrap();
+        let got = reader.buffered_framed().unwrap().expect("the hello");
+        assert_eq!(got.id, crate::ids::login::serverbound::HELLO);
+        assert_eq!(got.compressed, None, "an older client's packet");
+
+        let (c, mut server) = adapted();
+        let disconnect = login_disconnect();
+        let sent = frame::contents(&disconnect, Some(16)).unwrap();
+        let mut bytes = Vec::new();
+        server.writer.frame_into(&sent, &mut bytes);
+        let (_, mut reader, _) = c.detach();
+        reader.read_from(&mut &bytes[..]).unwrap();
+        let got = reader.buffered_framed().unwrap().expect("the disconnect");
+        assert_eq!((got.id, &got.payload[..]), (0, &disconnect[1..]));
+        assert_eq!(
+            got.compressed,
+            Some(sent),
+            "a version adapter's packet, unchanged"
+        );
     }
 
     #[test]
