@@ -260,6 +260,23 @@ impl Game<'_> {
     pub(super) fn pick_tick_targets(&mut self) {
         self.tick_hit = Some(self.pick());
         self.tick_mob = None;
+        // GameRenderer.pick: the entity ray runs to the block hit (out to the larger range), and
+        // filterHitResult turns an entity past the entity range into a miss. An entity between
+        // the crosshair and a block in reach but out of reach itself hides that block: the
+        // click neither uses nor mines it.
+        if matches!(self.tick_hit, Some(Some(_))) && self.block_reach > self.entity_reach {
+            let reach = self.entity_reach;
+            self.entity_reach = self.block_reach;
+            let far = [true, false]
+                .into_iter()
+                .filter_map(|attacking| self.crosshair_entity(attacking))
+                .map(|p| p.distance)
+                .reduce(f64::min);
+            self.entity_reach = reach;
+            if far.is_some_and(|d| d > reach) {
+                self.tick_hit = Some(None);
+            }
+        }
         let mob = match self.active_attack_range() {
             Some(range) => self.attack_range_pick(&range),
             None => None,
@@ -488,17 +505,9 @@ impl Game<'_> {
     /// Whether an attack would hit an entity rather than the block behind
     /// it: the crosshair's `EntityHitResult`.
     pub(super) fn entity_targeted(&self) -> bool {
-        let before = |d: Option<f64>| d.is_some_and(|d| self.before_block(d));
-        before(self.painting_hit().map(|h| h.1))
-            || before(self.frame_hit().map(|h| h.1))
-            || before(self.armor_stand_hit().map(|h| h.1))
-            || before(self.cushion_hit().map(|h| h.1))
-            || before(self.boat_hit().map(|h| h.1))
-            || before(self.cart_hit().map(|h| h.1))
-            || before(self.interaction_hit().map(|h| h.1))
-            || before(self.dragon_hit().map(|h| h.1))
-            || before(self.mob_hit().map(|h| h.1))
-            || before(self.redirectable_hit().map(|h| h.1))
+        // The local world's dragon (`dragon_hit`) is not among the server's entities.
+        self.crosshair_entity(true).is_some()
+            || self.dragon_hit().is_some_and(|h| self.before_block(h.1))
     }
     /// `LocalPlayer.isHandsBusy`: paddling a boat.
     pub(super) fn hands_busy(&self) -> bool {
