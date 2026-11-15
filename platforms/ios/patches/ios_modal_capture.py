@@ -17,6 +17,15 @@ change(queue,
        "static TOUCH_GESTURES: AtomicBool = AtomicBool::new(true);",
        """static TOUCH_GESTURES: AtomicBool = AtomicBool::new(true);
 static OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
+static IN_WORLD: AtomicBool = AtomicBool::new(false);
+
+pub fn set_playing(value: bool) {
+    IN_WORLD.store(value, Ordering::Relaxed);
+}
+
+pub fn playing() -> bool {
+    IN_WORLD.load(Ordering::Relaxed)
+}
 
 pub fn set_overlay_active(value: bool) {
     OVERLAY_ACTIVE.store(value, Ordering::Release);
@@ -35,6 +44,8 @@ change(loading,
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
         static WAS_MODAL: AtomicBool = AtomicBool::new(false);
         let modal = ios_input::overlay_active();
+        ios_input::set_playing(matches!(self, App::Ready(game)
+            if game.host.screen == Screen::Playing));
         let was_modal = WAS_MODAL.swap(modal, AtomicOrdering::Relaxed);
         if modal && !was_modal {
             if let App::Ready(game) = self {

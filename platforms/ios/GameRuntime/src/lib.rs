@@ -191,3 +191,8 @@ pub extern "C" fn nova_ios_set_touch_gestures(enabled: bool) {
 pub extern "C" fn nova_ios_set_overlay_active(active: bool) {
     horizon_client_input::ios_input::set_overlay_active(active);
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nova_ios_is_playing() -> bool {
+    horizon_client_input::ios_input::playing()
+}

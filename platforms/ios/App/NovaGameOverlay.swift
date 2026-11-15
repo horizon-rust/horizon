@@ -44,6 +44,7 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     private let cursorView = UIImageView(image: UIImage(named: "NovaPointer")
                                         ?? UIImage(systemName: "cursorarrow"))
     private var cursorPoint: CGPoint?
+    private var cursorVisibilityTimer: Timer?
     private var layout: NovaTouchLayout = NovaTouchLayouts.current()
     private let textField = UITextField(frame: CGRect(x: 0, y: 0, width: 2, height: 2))
     private var isEditingLayout = false
@@ -100,6 +101,10 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         nova_ios_set_touch_gestures(enabled)
         applyLayout()
         showMenu()
+        cursorVisibilityTimer = Timer.scheduledTimer(withTimeInterval: 0.15,
+                                                     repeats: true) { [weak self] _ in
+            self?.updateCursorVisibility()
+        }
         NovaDiagnostics.record("overlay.install.succeeded; layout=\(layout.name)")
     }
 
@@ -183,7 +188,13 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         // Image is the provided pointer PNG, with its click hotspot at top left.
         cursorView.frame = CGRect(x: location.x, y: location.y,
                                   width: 24 * factor, height: 36 * factor)
-        cursorView.isHidden = isInMenu
+        updateCursorVisibility()
+    }
+
+    private func updateCursorVisibility() {
+        // Desktop-style cursor in menus, hidden while the game has its mouse
+        // captured for first-person looking; Horizon draws the crosshair.
+        cursorView.isHidden = isInMenu || nova_ios_is_playing()
     }
 
     private func moveCursor(by delta: CGPoint) {
