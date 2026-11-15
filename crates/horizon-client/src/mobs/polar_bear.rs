@@ -88,13 +88,11 @@ impl Goal for PolarBearPanic {
         self.0.stop(m, cx)
     }
 }
-/// `DamageTypeTags.PANIC_ENVIRONMENTAL_CAUSES` (`armadillo::environmental`), or
-/// burning.
+/// `DamageTypeTags.PANIC_ENVIRONMENTAL_CAUSES` (`armadillo::environmental`):
+/// burning picks the water, it does not start the panic.
 fn environmental_panic(m: &Mob) -> bool {
-    m.fire_ticks > 0 && !m.kind.flags.fire_immune
-        || m.last_damage.is_some_and(|(d, t)| {
-            super::armadillo::environmental(d.kind) && i64::from(m.age) - t <= 40
-        })
+    m.last_damage
+        .is_some_and(|(d, t)| super::armadillo::environmental(d.kind) && i64::from(m.age) - t <= 40)
 }
 
 /// `PolarBear.setStanding`.

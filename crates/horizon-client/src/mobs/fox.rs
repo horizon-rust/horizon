@@ -277,7 +277,11 @@ pub fn register(m: &mut Mob) {
     g.add(0, Wrap::new(Float).on_start(clear_states));
     g.add(0, ClimbOnTopOfPowderSnow);
     g.add(1, Faceplant { countdown: 0 });
-    g.add(2, Panic::new(2.2));
+    // FoxPanicGoal.shouldPanic: !isDefending() && super.shouldPanic().
+    g.add(
+        2,
+        Wrap::new(Panic::new(2.2)).when(|m| !flag(m, DEFENDING), false),
+    );
     g.add(3, Wrap::new(Breed::new(1.0)).on_start(clear_states));
     // AVOID_PLAYERS: not a sneaking player.
     g.add(
@@ -1995,3 +1999,7 @@ mod defend_tests {
         let _ = ran;
     }
 }
+
+#[cfg(test)]
+#[path = "panic_tests.rs"]
+mod panic_tests;

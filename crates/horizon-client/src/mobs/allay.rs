@@ -708,11 +708,19 @@ mod allay_parity_tests {
         mob.no_ai = false;
         set_jukebox_playing(&mut mob, [0, 64, 0], true);
         assert!(mob.extra.flag, "AI");
-        // A burning allay panics: it does not start dancing.
+        // A panicking allay does not start dancing. Burning is not a panic:
+        // `isOnFire` only picks the water a panicking mob runs to.
         let mut burning = test_allay();
         burning.fire_ticks = 20;
         set_jukebox_playing(&mut burning, [0, 64, 0], true);
-        assert!(!burning.extra.flag);
+        assert!(burning.extra.flag, "burning is not panicking");
+        let mut panicking = test_allay();
+        panicking.last_damage = Some((
+            crate::mobs::Damage::of(crate::mobs::DamageKind::MobAttack),
+            i64::from(panicking.age),
+        ));
+        set_jukebox_playing(&mut panicking, [0, 64, 0], true);
+        assert!(!panicking.extra.flag, "panicking");
     }
 
     fn test_allay() -> Mob {

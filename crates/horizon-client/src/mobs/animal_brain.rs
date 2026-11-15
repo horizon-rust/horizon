@@ -20,6 +20,8 @@ use horizon_core::{
     random::{LegacyRandom, LevelRandom, RandomSource},
 };
 
+mod panic_water;
+
 /// `MemorySlot.NEVER_EXPIRE`.
 const NEVER: i64 = i64::MAX;
 
@@ -1498,7 +1500,7 @@ impl B {
                     return;
                 }
                 if m.ai.nav.is_done() {
-                    let pos = panic_pos(m, cx.w, *fly);
+                    let pos = panic_water::panic_pos(m, cx.w, *fly);
                     if let Some(p) = pos {
                         mem(m).walk_target.set(WalkTarget::point(p, *speed, 0));
                     }
@@ -1931,17 +1933,6 @@ fn compute_path(
         }
     }
     false
-}
-/// `AnimalPanic.getPanicPos`: on land 5 blocks out and 4 up or down, or
-/// for a flyer the air and water around it ahead (water first when burning
-/// is not reproduced: no fire reaches these scenarios).
-fn panic_pos(m: &mut Mob, w: &MobWorld, fly: bool) -> Option<[f64; 3]> {
-    if fly {
-        let view = m.view_vector();
-        m.air_and_water_random_pos(w, 5, 4, 0, view[0], view[2])
-    } else {
-        m.land_random_pos(w, 5, 4)
-    }
 }
 /// `BehaviorUtils.lockGazeAndWalkToEachOther` (this mob's half; the
 /// partner's comes with the breed-target event).
