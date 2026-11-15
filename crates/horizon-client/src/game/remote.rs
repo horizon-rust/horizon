@@ -8255,6 +8255,18 @@ impl Game<'_> {
                     self.with_hand(hand, Game::swing_arm);
                 }
                 return true;
+            } else if held
+                .as_ref()
+                .is_some_and(|s| &*s.item == "minecraft:end_crystal")
+                && may_use_on
+            {
+                // EndCrystalItem.useOn on a client level: SUCCESS on a valid base
+                // (this hand swings), else FAIL (no swing). Either way the click
+                // ends: no UseItem follows and the off hand is not tried.
+                if self.end_crystal_fits(&hit) {
+                    self.with_hand(hand, Game::swing_arm);
+                }
+                return true;
             } else if let Some(stack) = held.as_ref()
                 && (self.predict_item_on_block(stack, &hit, hand)
                     || self.predict_map_on_banner(stack, &hit))
