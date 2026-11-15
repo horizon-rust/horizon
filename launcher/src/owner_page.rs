@@ -148,6 +148,7 @@ impl Launcher {
                         .child(
                             div()
                                 .flex()
+                                .flex_wrap()
                                 .gap(px(8.))
                                 .child(if microsoft::has_private_window() {
                                     shell::action("owner-private", shell::Action::Quiet, &t)
@@ -237,7 +238,7 @@ impl Launcher {
         .flex_col()
         .gap(px(8.))
         // A set width: text measured at it wraps where it is drawn.
-        .w(px(520.))
+        .w(px(560.))
         .max_w_full()
         .p(px(32.))
         .child(body)
@@ -287,7 +288,7 @@ impl Launcher {
             .flex()
             .flex_col()
             // A set width: text measured at it wraps where it is drawn.
-            .w(px(520.))
+            .w(px(560.))
             .max_w_full()
             .p(px(32.))
             .child(ui::text(13., FontWeight::MEDIUM, ink::QUIET).child(tr("Microsoft account")))
@@ -365,8 +366,11 @@ impl Launcher {
                             )))
                         })
                         .child(
+                            // Flush with the code's panel: the buttons share its width.
                             div()
+                                .w_full()
                                 .flex()
+                                .flex_wrap()
                                 .gap(px(8.))
                                 .child(if microsoft::has_private_window() {
                                     ui::quiet(
@@ -375,18 +379,19 @@ impl Launcher {
                                         32.,
                                         &t,
                                     )
+                                    .flex_grow_1()
                                     .on_click(
                                         move |_, _, cx| microsoft::open_private(&private_uri, cx),
                                     )
                                 } else {
-                                    ui::quiet("owner-copy-link", tr("Copy link"), 32., &t).on_click(
-                                        move |_, _, cx| {
+                                    ui::quiet("owner-copy-link", tr("Copy link"), 32., &t)
+                                        .flex_grow_1()
+                                        .on_click(move |_, _, cx| {
                                             copy_to_clipboard(
                                                 cx,
                                                 gpui::ClipboardItem::new_string(link_uri.clone()),
                                             )
-                                        },
-                                    )
+                                        })
                                 })
                                 .child(
                                     ui::quiet(
@@ -395,6 +400,7 @@ impl Launcher {
                                         32.,
                                         &t,
                                     )
+                                    .flex_grow_1()
                                     .on_click(
                                         move |_, _, cx| {
                                             microsoft::use_different_account(&other_uri, cx)
