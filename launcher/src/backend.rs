@@ -1935,18 +1935,17 @@ pub fn complete_assets(tag: &str) {
     });
 }
 
-/// Horizon's own download (an owner's) may have stopped before the sounds and the languages,
-/// and the copies of `complete_assets` read them from its store: asked again, once per run, through
-/// the same owner gate as any download from Mojang (`download_for_owner`), which keeps the files
-/// already whole. Called where a download is expected (`reuse_prepared_everywhere`), never on Play.
+/// Horizon's own download (an owner's) may have stopped before the extras (such as fonts, sounds,
+/// or languages), and the copies of `complete_assets` read them from its store: asked again, once per
+/// run, through the same owner gate as any download from Mojang (`download_for_owner`), which keeps
+/// the files already whole. Called where a download is expected (`reuse_prepared_everywhere`), never
+/// on Play.
 fn refill_own_store(tag: &str) {
     static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let own = data_dir().join("minecraft");
     let resources = resources_at(&versions_dir().join(tag));
     if !own.join("assets/indexes").is_dir()
-        || !prepare::missing_extras(&resources)
-            .iter()
-            .any(|(kind, _)| matches!(*kind, "languages" | "sounds"))
+        || prepare::missing_extras(&resources).is_empty()
         || ASKED.swap(true, std::sync::atomic::Ordering::Relaxed)
     {
         return;
