@@ -359,9 +359,8 @@ impl Game<'_> {
         }
         if r.on_ground {
             if r.fall_distance > 0.0 {
-                // Block.fallOn (farmland's random draw, honey's slide) is not
-                // run for a rocket yet, nor for the other entities that are
-                // not living.
+                // Block.fallOn, then HIT_GROUND.
+                self.non_living_fall_on(r.id, r.position, r.bounds(), r.fall_distance);
                 let p = r.position;
                 let state = self.landing_state(p, r.bounds());
                 let at = [p.x, p.y, p.z];
@@ -1052,6 +1051,10 @@ fn use_on_passes(fall_flying: bool) -> bool {
 #[cfg(test)]
 #[path = "fireworks_events_tests.rs"]
 mod events_tests;
+
+#[cfg(test)]
+#[path = "own_rocket_spark_tests.rs"]
+mod own_spark_tests;
 
 #[cfg(test)]
 mod tests {
