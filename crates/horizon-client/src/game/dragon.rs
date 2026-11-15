@@ -3803,6 +3803,7 @@ impl Game<'_> {
             head_yaw: d.yaw,
             on_ground: false,
             velocity: [d.velocity.x, d.velocity.y, d.velocity.z],
+            acceleration_power: None,
             minecart_steps: None,
             data: 0,
             meta,
@@ -3817,10 +3818,7 @@ impl Game<'_> {
             stepped: true,
             idle: false,
             bare: false,
-            leash: None,
-            spectator: false,
-            watching: false,
-            hidden: None,
+            ..Default::default()
         })
     }
 }
