@@ -450,9 +450,10 @@ material stage runs inside terrain's own draws, so it has no time of its own: co
 without the pack.
 
 With F3 shut, offscreen or from a script, `horizon-ctl gpu-passes on` times the same passes: `horizon-ctl bench 5`
-then replies with `shader_passes`, the pack's passes by their `name`, beside `gpu_passes`, Horizon's own, and with
-`gpu_ms`, the whole frame (`gpu-passes off` stops it). `horizon-client --benchmark` records them as
-`shader_pass.<scene>.<pass>_ms`, and `horizon-ctl profile client start --gpu` into a capture (`horizon-perf query gpu`).
+then replies with `shader_passes`, the pack's passes by the names F3 shows, beside `gpu_passes`, Horizon's own, and
+with `gpu`, the whole frame's percentiles (`gpu_ms`, every frame, with `bench 5 raw`; `gpu-passes off` stops it).
+`horizon-client --benchmark` records them as `shader_pass.<scene>.<pass>_ms`, and `horizon-ctl profile client start
+--gpu` into a capture (`horizon-perf query gpu`).
 
 ## Next
 
