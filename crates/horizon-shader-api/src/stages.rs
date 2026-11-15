@@ -3,8 +3,8 @@
 //! pack's files to build a stage: the prelude before (the inputs and the
 //! resources), the entry points after.
 use crate::inputs::{
-    DISPLACEMENT_INPUT, Frame, MATERIAL_INPUT, POST_INPUT, SKY_INPUT, SURFACE, Struct,
-    TONEMAP_INPUT, VERTEX_INPUT, WEATHER_INPUT,
+    DISPLACEMENT_INPUT, ENTITY_INPUT, Frame, MATERIAL_INPUT, POST_INPUT, RAY_HIT, SKY_INPUT,
+    SURFACE, Struct, TONEMAP_INPUT, VERTEX_INPUT, WEATHER_INPUT,
 };
 use crate::manifest::Api;
 use crate::package::Pack;
@@ -28,6 +28,9 @@ pub enum StageKind {
     /// 0.2: the picture for an output (the display), once per pixel of it after the post chain,
     /// before the camera overlays and the HUD.
     Tonemap,
+    /// 0.2: the colour of surfaces that are no block terrain (entities, block entities, items,
+    /// particles), before the alpha test, the glint and fog. Checked, not yet drawn.
+    Entity,
 }
 
 /// A resource a stage reads, declared by its prelude.
@@ -191,6 +194,38 @@ const POST_RESOURCES: [Resource; 12] = [
     },
 ];
 
+const BLOCK_LIGHT_COLORS: Resource = Resource {
+    binding: 9,
+    name: "block_light_colors",
+    ty: "var block_light_colors: texture_3d<f32>",
+    doc: "The colour of the block light around the camera, from the `[[lights]]` of the light sources nearby: rgb their colours averaged by how near each is, over 4; a how strongly they reach the cell. Read it through `block_light_color`.",
+};
+
+const BLOCK_LIGHT_GRID: Resource = Resource {
+    binding: 10,
+    name: "block_light_grid",
+    ty: "var<uniform> block_light_grid: vec4<f32>",
+    doc: "Where `block_light_colors` lies: xyz its corner, camera-relative, w the side of one of its cells in blocks.",
+};
+
+/// The entity stage's resources: the material stage's shadow maps and coloured-light grid, at
+/// the material stage's bindings, so one bind group serves both.
+const ENTITY_RESOURCES: [Resource; 8] = [
+    FRAME,
+    Resource {
+        binding: 2,
+        name: "block_light_sampler",
+        ty: "var block_light_sampler: sampler",
+        doc: "Bilinear filtering, clamped to the edges: what `block_light_color` reads `block_light_colors` with.",
+    },
+    shadow_map(3),
+    shadow_sampler(4),
+    shadow_map_translucent(7),
+    shadow_color(8),
+    BLOCK_LIGHT_COLORS,
+    BLOCK_LIGHT_GRID,
+];
+
 /// The material stage's resources: the frame, and the world as it was before translucent
 /// terrain drew (for water and glass to see what lies behind them).
 const MATERIAL_RESOURCES: [Resource; 11] = [
@@ -217,18 +252,8 @@ const MATERIAL_RESOURCES: [Resource; 11] = [
         ty: "var opaque_depth: texture_depth_2d",
         doc: "The world's depth before translucent terrain (reversed, like `scene_depth`), for the translucent pass: `textureLoad(opaque_depth, vec2<i32>(input.screen * frame.resolution), 0)` is what lies behind water or glass. Stale while solid terrain draws.",
     },
-    Resource {
-        binding: 9,
-        name: "block_light_colors",
-        ty: "var block_light_colors: texture_3d<f32>",
-        doc: "The colour of the block light around the camera, from the `[[lights]]` of the light sources nearby: rgb their colours averaged by how near each is, over 4; a how strongly they reach the cell. Read it through `block_light_color`.",
-    },
-    Resource {
-        binding: 10,
-        name: "block_light_grid",
-        ty: "var<uniform> block_light_grid: vec4<f32>",
-        doc: "Where `block_light_colors` lies: xyz its corner, camera-relative, w the side of one of its cells in blocks.",
-    },
+    BLOCK_LIGHT_COLORS,
+    BLOCK_LIGHT_GRID,
     Resource {
         binding: 11,
         name: "opaque_color",
@@ -253,12 +278,10 @@ fn view_position(uv: vec2<f32>, depth: f32) -> vec3<f32> {
 }
 ";
 
-/// What the material entries (the checker's below and the renderer's) share: the
-/// surface's normal and tangent from the derivatives of its position and uv. The arguments are
-/// the line's return statements of `block_light_color`, `block_texture` and
-/// `block_texture_level`, the helpers that read colour.
-macro_rules! material_helpers {
-    ($light:literal, $texture:literal, $texture_level:literal) => {
+/// `block_light_color` of the material and entity preludes: the arguments are the sampler the
+/// stage has for it and the line's return statement.
+macro_rules! block_light_color {
+    ($sampler:literal, $light:literal) => {
         concat!(
             "\
 // The colour of the block light at the camera-relative `position` (rgb, from the `[[lights]]`
@@ -270,10 +293,41 @@ fn block_light_color(position: vec3<f32>) -> vec4<f32> {
     if any(uvw < vec3<f32>(0.0)) || any(uvw > vec3<f32>(1.0)) {
         return vec4<f32>(0.0);
     }
-    let c = textureSampleLevel(block_light_colors, reflection_sampler, uvw, 0.0);
+    let c = textureSampleLevel(block_light_colors, ",
+            $sampler,
+            ", uvw, 0.0);
 ",
             $light,
             "}
+"
+        )
+    };
+}
+
+/// The entity prelude's helpers: the coloured-light grid, and the normal its entries give.
+const ENTITY_HELPERS: &str = concat!(
+    block_light_color!(
+        "block_light_sampler",
+        "    return vec4<f32>(horizon_decode(c.rgb * 4.0), c.a);\n"
+    ),
+    "\
+// The surface's normal from the derivatives of its position, turned toward the camera.
+fn horizon_entity_normal(position: vec3<f32>) -> vec3<f32> {
+    let n = normalize(cross(dpdx(position), dpdy(position)));
+    return select(n, -n, dot(n, position) > 0.0);
+}
+"
+);
+
+/// What the material entries (the checker's below and the renderer's) share: the
+/// surface's normal and tangent from the derivatives of its position and uv. The arguments are
+/// the line's return statements of `block_light_color`, `block_texture` and
+/// `block_texture_level`, the helpers that read colour, and the two sums of the tangent.
+macro_rules! material_helpers {
+    ($light:literal, $texture:literal, $texture_level:literal, $tangent:literal) => {
+        concat!(
+            block_light_color!("reflection_sampler", $light),
+            "\
 // What the post stage's `surface_at` reads for this point of solid terrain: its `normal` (a
 // unit vector in world axes), `smoothness` (0..1, say for reflections) and `data`, a value of
 // the pack's own passed through. Unset, the point keeps the face's own normal and 0 for both;
@@ -365,9 +419,9 @@ fn horizon_material_tangent(position: vec3<f32>, uv: vec2<f32>, normal: vec3<f32
     let duv2 = dpdy(uv);
     let dp2perp = cross(dp2, normal);
     let dp1perp = cross(normal, dp1);
-    let t = dp2perp * duv1.x + dp1perp * duv2.x;
-    let b = dp2perp * duv1.y + dp1perp * duv2.y;
-    if length(t) < 1e-12 {
+",
+            $tangent,
+            "    if length(t) < 1e-12 {
         return vec4<f32>(1.0, 0.0, 0.0, 1.0);
     }
     let tangent = normalize(t - normal * dot(normal, t));
@@ -381,14 +435,22 @@ fn horizon_material_tangent(position: vec3<f32>, uv: vec2<f32>, normal: vec3<f32
 const MATERIAL_HELPERS: &str = material_helpers!(
     "    return vec4<f32>(c.rgb * 4.0, c.a);\n",
     "    return horizon_block_sample(uv, horizon_block_layer, horizon_block_lod);\n",
-    "    return horizon_block_sample(uv, horizon_block_layer, lod);\n"
+    "    return horizon_block_sample(uv, horizon_block_layer, lod);\n",
+    // 0.1's WGSL is frozen: its tangent points where `uv.x` shrinks (#16082).
+    "    let t = dp2perp * duv1.x + dp1perp * duv2.x;\n    \
+     let b = dp2perp * duv1.y + dp1perp * duv2.y;\n"
 );
 
 /// 0.2's: the `[[lights]]` colours and the block texture decoded (the LabPBR maps are data).
 const MATERIAL_HELPERS_0_2: &str = material_helpers!(
     "    return vec4<f32>(horizon_decode(c.rgb * 4.0), c.a);\n",
     "    return horizon_decode_rgba(horizon_block_sample(uv, horizon_block_layer, horizon_block_lod));\n",
-    "    return horizon_decode_rgba(horizon_block_sample(uv, horizon_block_layer, lod));\n"
+    "    return horizon_decode_rgba(horizon_block_sample(uv, horizon_block_layer, lod));\n",
+    // Both sums carry the sign of the screen's handedness against `normal`, negative for a
+    // normal that faces the camera (the framebuffer's y points down).
+    "    let side = select(-1.0, 1.0, dot(dp1, dp2perp) >= 0.0);\n    \
+     let t = (dp2perp * duv1.x + dp1perp * duv2.x) * side;\n    \
+     let b = (dp2perp * duv1.y + dp1perp * duv2.y) * side;\n"
 );
 
 /// The post prelude's `surface_at`, for the post helpers' end.
@@ -418,6 +480,198 @@ fn surface_at(texel: vec2<i32>) -> SurfaceData {
     }
     return SurfaceData(present, select(vec3<f32>(0.0), normalize(n), present),
         select(0.0, s.y, present), select(0.0, s.z, present));
+}
+";
+
+/// What a pack's prelude holds of the scene rays are traced through (`[ray_tracing]`, 0.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tracing {
+    /// The pack didn't ask: none of it.
+    None,
+    /// The pack asked and the scene isn't there (a GPU without ray queries, ray tracing off):
+    /// `trace` and `trace_any` that miss, and nothing a device without ray queries refuses.
+    Stub,
+    /// The pack asked and the renderer binds the scene.
+    Scene,
+}
+
+/// The scene in the post stage's group 3, for a pack with `[ray_tracing]` while the renderer
+/// has it: the acceleration structure first.
+pub const RAY_SCENE_BINDING: u32 = 48;
+/// Every traced section's quads as the mesher's vertices (six words each, four a quad).
+pub const RAY_STORE_BINDING: u32 = 49;
+/// `horizon_RaySpace`, 16 bytes: the camera in the scene's space (three floats), then how many
+/// layers a sprite array holds (a `u32`).
+pub const RAY_SPACE_BINDING: u32 = 50;
+/// Two words per sprite layer: the pack's `[[materials]]` id, then its `[[tags]]` bits.
+pub const RAY_LAYERS_BINDING: u32 = 51;
+/// The first of the `RAY_SPRITE_ARRAYS` block sprite arrays, the others after.
+pub const RAY_SPRITES_BINDING: u32 = 52;
+pub const RAY_SPRITE_ARRAYS: u32 = 8;
+
+/// The directive the scene's prelude starts with: WGSL takes it before any declaration.
+const RAY_ENABLE: &str = "enable wgpu_ray_query;\n";
+
+/// `trace` and `trace_any` without the scene: every ray misses.
+const RAY_STUB: &str = "\
+// The nearest surface from the camera-relative `origin` along the unit vector `direction`,
+// within `max_distance` blocks. The scene isn't there (`frame.has_ray_tracing` is 0): a miss.
+fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayHit {
+    return RayHit(-1.0, vec3<f32>(0.0), vec3<f32>(0.0), vec2<f32>(0.0), vec4<f32>(0.0),
+        vec4<f32>(0.0), vec2<f32>(0.0), 0u, 0u);
+}
+// Whether anything lies within `max_distance` blocks of `origin` along `direction`.
+fn trace_any(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> bool {
+    return false;
+}
+";
+
+/// `trace` and `trace_any` through the scene the renderer binds (gfx/ray_scene.rs): a hit is a
+/// triangle of a quad in the store, read as terrain.wgsl reads the mesher's vertices.
+const RAY_SCENE: &str = "\
+struct horizon_RaySpace {
+    // The camera in the scene's space: from the corner of the scene's anchor column, in blocks.
+    camera: vec3<f32>,
+    // The layers one sprite array holds (terrain.wgsl's `SPRITE_SPLIT`).
+    sprite_split: u32,
+}
+@group(3) @binding(48) var horizon_ray_scene: acceleration_structure;
+// Every traced section's quads as `TerrainVertex` (six words: the position, the uv's two u16,
+// the layer and the light, the RGBA8 colour), four to a quad; an instance's custom data is
+// its section's first quad.
+@group(3) @binding(49) var<storage, read> horizon_ray_store: array<u32>;
+@group(3) @binding(50) var<uniform> horizon_ray_space: horizon_RaySpace;
+// Two words a sprite layer: the pack's material id, then its tags.
+@group(3) @binding(51) var<storage, read> horizon_ray_layers: array<u32>;
+@group(3) @binding(52) var horizon_ray_sprites_0: texture_2d_array<f32>;
+@group(3) @binding(53) var horizon_ray_sprites_1: texture_2d_array<f32>;
+@group(3) @binding(54) var horizon_ray_sprites_2: texture_2d_array<f32>;
+@group(3) @binding(55) var horizon_ray_sprites_3: texture_2d_array<f32>;
+@group(3) @binding(56) var horizon_ray_sprites_4: texture_2d_array<f32>;
+@group(3) @binding(57) var horizon_ray_sprites_5: texture_2d_array<f32>;
+@group(3) @binding(58) var horizon_ray_sprites_6: texture_2d_array<f32>;
+@group(3) @binding(59) var horizon_ray_sprites_7: texture_2d_array<f32>;
+// A sprite's texel at full size (mip level 0), from whichever array holds `layer`, as stored.
+fn horizon_ray_texel(layer: u32, uv: vec2<f32>) -> vec4<f32> {
+    let l = i32(layer % horizon_ray_space.sprite_split);
+    let array = layer / horizon_ray_space.sprite_split;
+    var size: vec2<u32>;
+    switch array {
+        case 0u: { size = textureDimensions(horizon_ray_sprites_0); }
+        case 1u: { size = textureDimensions(horizon_ray_sprites_1); }
+        case 2u: { size = textureDimensions(horizon_ray_sprites_2); }
+        case 3u: { size = textureDimensions(horizon_ray_sprites_3); }
+        case 4u: { size = textureDimensions(horizon_ray_sprites_4); }
+        case 5u: { size = textureDimensions(horizon_ray_sprites_5); }
+        case 6u: { size = textureDimensions(horizon_ray_sprites_6); }
+        default: { size = textureDimensions(horizon_ray_sprites_7); }
+    }
+    // terrain.wgsl's `tile_uv`: a sprite's own uv, 1 included, stays inside it.
+    let inside = uv - max(ceil(uv) - 1.0, vec2<f32>(0.0));
+    let t = clamp(vec2<i32>(inside * vec2<f32>(size)), vec2<i32>(0), vec2<i32>(size) - 1);
+    switch array {
+        case 0u: { return textureLoad(horizon_ray_sprites_0, t, l, 0); }
+        case 1u: { return textureLoad(horizon_ray_sprites_1, t, l, 0); }
+        case 2u: { return textureLoad(horizon_ray_sprites_2, t, l, 0); }
+        case 3u: { return textureLoad(horizon_ray_sprites_3, t, l, 0); }
+        case 4u: { return textureLoad(horizon_ray_sprites_4, t, l, 0); }
+        case 5u: { return textureLoad(horizon_ray_sprites_5, t, l, 0); }
+        case 6u: { return textureLoad(horizon_ray_sprites_6, t, l, 0); }
+        default: { return textureLoad(horizon_ray_sprites_7, t, l, 0); }
+    }
+}
+fn horizon_ray_word(vertex: u32, i: u32) -> u32 {
+    return horizon_ray_store[vertex * 6u + i];
+}
+// A corner's position, relative to its section.
+fn horizon_ray_corner(vertex: u32) -> vec3<f32> {
+    return vec3<f32>(bitcast<f32>(horizon_ray_word(vertex, 0u)),
+        bitcast<f32>(horizon_ray_word(vertex, 1u)), bitcast<f32>(horizon_ray_word(vertex, 2u)));
+}
+// A corner's uv in its sprite: 32768 steps a unit (terrain.wgsl's `terrain_uv`).
+fn horizon_ray_corner_uv(vertex: u32) -> vec2<f32> {
+    let w = horizon_ray_word(vertex, 3u);
+    return vec2<f32>(f32(w & 0xffffu), f32(w >> 16u)) / 32768.0;
+}
+// A triangle's three corners in the store and the point's weight on each. A quad's
+// triangles are its corners (0, 1, 2) and (0, 2, 3).
+struct horizon_RayTriangle {
+    corners: vec3<u32>,
+    weights: vec3<f32>,
+}
+fn horizon_ray_triangle(quad: u32, primitive: u32, barycentrics: vec2<f32>) -> horizon_RayTriangle {
+    let first = (quad + primitive / 2u) * 4u;
+    let second = (primitive & 1u) == 1u;
+    return horizon_RayTriangle(
+        vec3<u32>(first, first + select(1u, 2u, second), first + select(2u, 3u, second)),
+        vec3<f32>(1.0 - barycentrics.x - barycentrics.y, barycentrics.x, barycentrics.y));
+}
+fn horizon_ray_uv(t: horizon_RayTriangle) -> vec2<f32> {
+    return horizon_ray_corner_uv(t.corners.x) * t.weights.x
+        + horizon_ray_corner_uv(t.corners.y) * t.weights.y
+        + horizon_ray_corner_uv(t.corners.z) * t.weights.z;
+}
+// Whether a triangle stops the ray where it crosses it: terrain's cutout test. Bit 15 of the
+// layer marks a quad over opaque texels; another stops it where its texel's alpha is 0.5 or more.
+fn horizon_ray_stops(c: RayIntersection) -> bool {
+    let t = horizon_ray_triangle(c.instance_custom_data, c.primitive_index, c.barycentrics);
+    let layer = horizon_ray_word(t.corners.x, 4u) & 0xffffu;
+    if (layer & 0x8000u) != 0u {
+        return true;
+    }
+    return horizon_ray_texel(layer, horizon_ray_uv(t)).a >= 0.5;
+}
+// The nearest triangle that stops the ray, or with `first` any of them.
+fn horizon_ray_cast(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, first: bool) -> RayIntersection {
+    var query: ray_query;
+    let flags = select(RAY_FLAG_NONE, RAY_FLAG_TERMINATE_ON_FIRST_HIT, first);
+    rayQueryInitialize(&query, horizon_ray_scene, RayDesc(flags, 0xffu, 0.0,
+        max(max_distance, 0.0), origin + horizon_ray_space.camera, direction));
+    while rayQueryProceed(&query) {
+        if horizon_ray_stops(rayQueryGetCandidateIntersection(&query)) {
+            rayQueryConfirmIntersection(&query);
+        }
+    }
+    return rayQueryGetCommittedIntersection(&query);
+}
+// The nearest surface from the camera-relative `origin` along the unit vector `direction`,
+// within `max_distance` blocks; `distance` is negative where there is none.
+fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayHit {
+    let hit = horizon_ray_cast(origin, direction, max_distance, false);
+    if hit.kind == RAY_QUERY_INTERSECTION_NONE {
+        return RayHit(-1.0, vec3<f32>(0.0), vec3<f32>(0.0), vec2<f32>(0.0), vec4<f32>(0.0),
+            vec4<f32>(0.0), vec2<f32>(0.0), 0u, 0u);
+    }
+    let t = horizon_ray_triangle(hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
+    let a = horizon_ray_corner(t.corners.x);
+    var normal = normalize(cross(horizon_ray_corner(t.corners.y) - a, horizon_ray_corner(t.corners.z) - a));
+    if dot(normal, direction) > 0.0 {
+        normal = -normal;
+    }
+    let words = vec3<u32>(horizon_ray_word(t.corners.x, 4u), horizon_ray_word(t.corners.y, 4u),
+        horizon_ray_word(t.corners.z, 4u));
+    let layer = words.x & 0x7fffu;
+    let uv = horizon_ray_uv(t);
+    let color = unpack4x8unorm(horizon_ray_word(t.corners.x, 5u)) * t.weights.x
+        + unpack4x8unorm(horizon_ray_word(t.corners.y, 5u)) * t.weights.y
+        + unpack4x8unorm(horizon_ray_word(t.corners.z, 5u)) * t.weights.z;
+    // The light's 16 steps a level: sky in the low byte, block in the high one.
+    let sky = dot(vec3<f32>((words >> vec3<u32>(16u)) & vec3<u32>(0xffu)), t.weights);
+    let block = dot(vec3<f32>(words >> vec3<u32>(24u)), t.weights);
+    var material = 0u;
+    var tags = 0u;
+    if layer * 2u + 1u < arrayLength(&horizon_ray_layers) {
+        material = horizon_ray_layers[layer * 2u];
+        tags = horizon_ray_layers[layer * 2u + 1u];
+    }
+    return RayHit(hit.t, origin + direction * hit.t, normal, uv,
+        horizon_decode_rgba(horizon_ray_texel(layer, uv)), vec4<f32>(horizon_decode(color.rgb), 1.0),
+        min(vec2<f32>(block, sky) / 240.0, vec2<f32>(1.0)), material, tags);
+}
+// Whether anything lies within `max_distance` blocks of `origin` along `direction`: a shadow
+// ray, which stops at the first surface it finds.
+fn trace_any(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> bool {
+    return horizon_ray_cast(origin, direction, max_distance, true).kind != RAY_QUERY_INTERSECTION_NONE;
 }
 ";
 
@@ -648,6 +902,33 @@ struct HorizonTonemapOut {
 }
 ";
 
+/// An entry point with the entity stage's inputs, for the check: the renderer will call
+/// `entity` from its own entity shader in the same way, decoding the colours on the way in and
+/// encoding the result for a frame that stores gamma.
+const ENTITY_ENTRIES: &str = "\
+struct HorizonEntityIn {
+    @builtin(position) position: vec4<f32>,
+    @location(0) albedo: vec4<f32>,
+    @location(1) tint: vec4<f32>,
+    @location(2) overlay: vec4<f32>,
+    @location(3) lightmap: vec3<f32>,
+    @location(4) shade: f32,
+    @location(5) world: vec3<f32>,
+    @location(6) light: vec2<f32>,
+    @location(7) uv: vec2<f32>,
+    @location(8) @interpolate(flat) emission: f32,
+    @location(9) @interpolate(flat) kind: u32,
+    @location(10) @interpolate(flat) translucent: u32,
+}
+@fragment fn horizon_fs_entity(in: HorizonEntityIn) -> @location(0) vec4<f32> {
+    let input = EntityInput(horizon_decode_rgba(in.albedo), horizon_decode_rgba(in.tint),
+        horizon_decode_rgba(in.overlay), horizon_decode(in.lightmap), horizon_decode(vec3<f32>(in.shade)).x,
+        in.world, in.emission, horizon_entity_normal(in.world), in.kind, vec3<f32>(0.0),
+        in.translucent != 0u, in.light, in.uv, in.position.xy / frame.resolution);
+    return horizon_encode_rgba(entity(input).color);
+}
+";
+
 impl Api {
     /// The stages the line has, in `StageKind::ALL`'s order.
     pub fn stages(self) -> &'static [StageKind] {
@@ -659,17 +940,18 @@ impl Api {
 }
 
 impl StageKind {
-    pub const ALL: [StageKind; 6] = [
+    pub const ALL: [StageKind; 7] = [
         StageKind::Sky,
         StageKind::Vertex,
         StageKind::Material,
         StageKind::Weather,
         StageKind::Post,
         StageKind::Tonemap,
+        StageKind::Entity,
     ];
 
     /// The manifest's name for the stage (`[sky]`, `[vertex]`, `[material]`, `[weather]`,
-    /// `[[post]]`, `[tonemap]`).
+    /// `[[post]]`, `[tonemap]`, `[entity]`).
     pub fn name(self) -> &'static str {
         match self {
             StageKind::Sky => "sky",
@@ -678,6 +960,7 @@ impl StageKind {
             StageKind::Weather => "weather",
             StageKind::Post => "post",
             StageKind::Tonemap => "tonemap",
+            StageKind::Entity => "entity",
         }
     }
 
@@ -694,13 +977,14 @@ impl StageKind {
             StageKind::Weather => &WEATHER_INPUT,
             StageKind::Post => &POST_INPUT,
             StageKind::Tonemap => &TONEMAP_INPUT,
+            StageKind::Entity => &ENTITY_INPUT,
         }
     }
 
     /// The type the function returns.
     pub fn output(self) -> &'static str {
         match self {
-            StageKind::Material => SURFACE.name,
+            StageKind::Material | StageKind::Entity => SURFACE.name,
             StageKind::Vertex | StageKind::Tonemap => "vec3<f32>",
             StageKind::Sky | StageKind::Weather | StageKind::Post => "vec4<f32>",
         }
@@ -722,23 +1006,33 @@ impl StageKind {
             StageKind::Sky | StageKind::Vertex | StageKind::Weather => std::slice::from_ref(&FRAME),
             StageKind::Material => &MATERIAL_RESOURCES,
             StageKind::Tonemap => &TONEMAP_RESOURCES,
+            StageKind::Entity => &ENTITY_RESOURCES,
         }
     }
 
-    /// Everything the pack's files may use under the line `api`, declared before them.
+    /// Everything the pack's files may use under the line `api`, declared before them, for a
+    /// pack without `[ray_tracing]`.
     pub fn prelude(self, api: Api) -> String {
-        let mut out = match api {
-            Api::V0_1 => {
-                String::from("// Horizon shader API prelude (docs/api/shaders-reference.md)\n")
-            }
-            Api::V0_2 => String::from(
-                "// Horizon shader API 0.2 prelude (docs/api/shaders-reference-0.2.md)\n",
-            ),
+        self.prelude_traced(api, Tracing::None)
+    }
+
+    /// `prelude` with what `tracing` holds of the scene: in every stage the frame's two fields
+    /// for it, and in the post stage `RayHit`, `trace` and `trace_any`.
+    pub fn prelude_traced(self, api: Api, tracing: Tracing) -> String {
+        let mut out = match tracing {
+            Tracing::Scene if self == StageKind::Post => String::from(RAY_ENABLE),
+            _ => String::new(),
         };
-        out += &Frame::line(api).wgsl();
+        out += match api {
+            Api::V0_1 => "// Horizon shader API prelude (docs/api/shaders-reference.md)\n",
+            Api::V0_2 => "// Horizon shader API 0.2 prelude (docs/api/shaders-reference-0.2.md)\n",
+        };
+        out += &Frame::declared(api, tracing != Tracing::None).wgsl();
         out += &self.input().wgsl();
-        if self == StageKind::Material {
+        if matches!(self, StageKind::Material | StageKind::Entity) {
             out += &SURFACE.wgsl();
+        }
+        if self == StageKind::Material {
             // The vertex stage's file joins the material's module (`compose`).
             out += &VERTEX_INPUT.wgsl();
             out += &DISPLACEMENT_INPUT.wgsl();
@@ -754,6 +1048,13 @@ impl StageKind {
                 out += POST_HELPERS;
                 out += POST_SURFACE;
                 out += SHADOW_HELPERS;
+                if tracing != Tracing::None {
+                    out += &RAY_HIT.wgsl();
+                    out += match tracing {
+                        Tracing::Scene => RAY_SCENE,
+                        _ => RAY_STUB,
+                    };
+                }
             }
             StageKind::Material => {
                 out += match api {
@@ -763,6 +1064,10 @@ impl StageKind {
                 out += SHADOW_HELPERS;
             }
             StageKind::Vertex => out += SHADOW_HELPERS,
+            StageKind::Entity => {
+                out += ENTITY_HELPERS;
+                out += SHADOW_HELPERS;
+            }
             StageKind::Sky | StageKind::Weather | StageKind::Tonemap => {}
         }
         out
@@ -781,8 +1086,9 @@ impl StageKind {
             (Api::V0_2, StageKind::Vertex) => VERTEX_ENTRIES_0_2,
             (Api::V0_2, StageKind::Weather) => WEATHER_ENTRIES_0_2,
             (Api::V0_2, StageKind::Post) => POST_ENTRIES_0_2,
-            // 0.1 has no tonemap stage: a manifest with one is refused before it is built.
+            // 0.1 has no tonemap or entity stage: a manifest with one is refused before it is built.
             (_, StageKind::Tonemap) => TONEMAP_ENTRIES,
+            (_, StageKind::Entity) => ENTITY_ENTRIES,
         }
     }
 }
@@ -850,10 +1156,85 @@ pub fn post_target_declarations(manifest: &crate::manifest::Manifest) -> String 
         .collect()
 }
 
+/// The motion guide's binding in group 3, in the 0.2 post passes of a pack with `[motion]`.
+pub const MOTION_BINDING: u32 = 14;
+
+/// The motion guide's declarations, at `MOTION_BINDING`. The raw texture holds the engine's
+/// objects (`frame_gen/motion.wgsl`): z 1 a matched one with xy its delta, w 1 one with nothing
+/// to match. At depth 0 the engine writes the sky's camera motion from its unposed view (no bob
+/// or spin, as the sky is drawn): xy the delta, w 1 behind last frame's view. `motion_at` adds
+/// the camera's motion for the rest.
+const MOTION: &str = "\
+// The engine's objects' motion this frame (read it through `motion_at`).
+@group(3) @binding(14) var scene_motion: texture_2d<f32>;
+const MOTION_CAMERA: u32 = 0u;
+const MOTION_OBJECT: u32 = 1u;
+const MOTION_NEW: u32 = 2u;
+const MOTION_NO_HISTORY: u32 = 3u;
+struct MotionData {
+    // Where the surface was last frame less where it is: top-left UV of the world's picture.
+    delta: vec2<f32>,
+    // A MOTION_ constant: how far to trust `delta`.
+    kind: u32,
+}
+// How the surface `scene_depth` holds at `texel` moved since last frame.
+fn motion_at(texel: vec2<i32>) -> MotionData {
+    if frame.delta_time == 0.0 {
+        return MotionData(vec2<f32>(0.0), MOTION_NO_HISTORY);
+    }
+    let size = vec2<i32>(textureDimensions(scene_depth));
+    let t = clamp(texel, vec2<i32>(0), size - 1);
+    let objects = vec2<i32>(textureDimensions(scene_motion));
+    let object = textureLoad(scene_motion, clamp(t, vec2<i32>(0), objects - 1), 0);
+    if object.z > 0.5 {
+        return MotionData(object.xy, MOTION_OBJECT);
+    }
+    let depth = textureLoad(scene_depth, t, 0);
+    // The sky, drawn without the view bob: the engine wrote its motion, w 1 behind last frame's view.
+    if depth == 0.0 {
+        if object.w > 0.5 {
+            return MotionData(vec2<f32>(0.0), MOTION_NO_HISTORY);
+        }
+        return MotionData(object.xy, MOTION_CAMERA);
+    }
+    if object.w > 0.5 {
+        return MotionData(vec2<f32>(0.0), MOTION_NEW);
+    }
+    // Still geometry, moved by the camera alone.
+    let uv = (vec2<f32>(t) + 0.5) / vec2<f32>(size);
+    let view = frame.projection_inverse * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    let point = (frame.view_inverse * vec4<f32>(view.xyz / view.w, 0.0)).xyz + frame.camera_motion;
+    let clip = frame.previous_view_projection * vec4<f32>(point, 1.0);
+    // Behind last frame's camera: nothing there to reproject from.
+    if clip.w <= 0.0 {
+        return MotionData(vec2<f32>(0.0), MOTION_NO_HISTORY);
+    }
+    let then = vec2<f32>(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+    return MotionData(then - uv, MOTION_CAMERA);
+}
+";
+
 /// The WGSL of the stage `kind` whose own file is `file`: the prelude, the
-/// pack's shared files in order, the file, then the entry points, all of the pack's line.
+/// pack's shared files in order, the file, then the entry points, all of the pack's line. A
+/// pack with `[ray_tracing]` gets `trace` without the scene (`Tracing::Stub`), which every
+/// device takes.
 pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
+    compose_traced(pack, kind, file, false)
+}
+
+/// `compose` for a pack with `[ray_tracing]` where the renderer binds the scene: its post
+/// stage traces it. The module needs a device with ray queries.
+pub fn compose_scene(pack: &Pack, kind: StageKind, file: &str) -> Composed {
+    compose_traced(pack, kind, file, true)
+}
+
+fn compose_traced(pack: &Pack, kind: StageKind, file: &str, scene: bool) -> Composed {
     let api = pack.manifest.api;
+    let tracing = match (&pack.manifest.ray_tracing, scene) {
+        (None, _) => Tracing::None,
+        (Some(_), false) => Tracing::Stub,
+        (Some(_), true) => Tracing::Scene,
+    };
     let mut composed = Composed {
         text: String::new(),
         parts: Vec::new(),
@@ -868,9 +1249,13 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
             .parts
             .push((name.to_owned(), start..composed.text.len()));
     };
-    let mut prelude = kind.prelude(api) + &texture_declarations(&pack.manifest.textures);
+    let mut prelude =
+        kind.prelude_traced(api, tracing) + &texture_declarations(&pack.manifest.textures);
     if kind == StageKind::Post {
         prelude += &post_target_declarations(&pack.manifest);
+        if api == Api::V0_2 && pack.manifest.motion.is_some() {
+            prelude += MOTION;
+        }
     }
     push("<prelude>", &prelude);
     for shared in pack.manifest.shared.iter().filter(|s| *s != file) {
@@ -885,6 +1270,7 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
         StageKind::Weather => m.weather.as_ref(),
         StageKind::Post => m.post.iter().find(|s| s.file == file),
         StageKind::Tonemap => m.tonemap.as_ref(),
+        StageKind::Entity => m.entity.as_ref(),
     };
     for extra in stage.into_iter().flat_map(|s| &s.files) {
         if extra != file && !m.shared.contains(extra) {

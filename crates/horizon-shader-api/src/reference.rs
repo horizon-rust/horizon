@@ -1,10 +1,12 @@
 //! docs/api/shaders-reference.md (0.1) and shaders-reference-0.2.md, generated from the stages
 //! and inputs this crate defines (`tests/reference.rs` fails when a file drifts).
 use crate::check::{MAX_EXPRESSIONS, MAX_TEXTURE_READS};
-use crate::inputs::{DISPLACEMENT_INPUT, Frame, SURFACE, Struct};
+use crate::inputs::{DISPLACEMENT_INPUT, Frame, RAY_HIT, SURFACE, Struct};
 use crate::manifest::{Api, MAX_GPU_MS, MAX_OPTIONS, MAX_POST_PASSES};
 use crate::package::{MAX_TOTAL, MAX_WGSL};
-use crate::stages::{GROUP, StageKind};
+use crate::stages::{
+    GROUP, MOTION_BINDING, RAY_SCENE_BINDING, RAY_SPRITE_ARRAYS, RAY_SPRITES_BINDING, StageKind,
+};
 
 fn table(s: &Struct, offsets: Option<&[usize]>) -> String {
     let mut out = format!("### `{}`\n\n{}\n\n", s.name, one_line(s.doc));
@@ -53,8 +55,8 @@ the frame stores gamma (`[frame] blend`, below).
 
 - **Linear:** `MaterialInput` `albedo`, `tint`, `lightmap` and `colored_light`; `VertexInput.tint`; `SkyInput.color`;
   `WeatherInput.color`; `Frame` `sky_color` and `fog_color`; `block_texture`, `block_texture_level` and
-  `block_light_color`; every colour texture a stage samples (`scene_color`, `previous`, `history`, the pack's targets,
-  `opaque_color`, `reflection`, `shadow_color`).
+  `block_light_color`; `RayHit` `albedo` and `tint`; every colour texture a stage samples (`scene_color`, `previous`,
+  `history`, the pack's targets, `opaque_color`, `reflection`, `shadow_color`).
 - **Data, as in 0.1:** depth, normals, `light` levels, `emission`, every channel of the LabPBR maps, and the pack's
   `[[textures]]`.
 - **`[[lights]]` and `[[particle_lights]]` colours** are written as in 0.1, in vanilla's gamma, and Horizon decodes
@@ -65,9 +67,10 @@ the frame stores gamma (`[frame] blend`, below).
 ## Room to grow
 
 `Frame`, the stage inputs (`SkyInput`, `VertexInput`, `MaterialInput`, `DisplacementInput`, `WeatherInput`,
-`PostInput`, `TonemapInput`) and `surface_at`'s `SurfaceData` may gain fields in later releases. Read their fields and
-pass them along, but don't construct them: `horizon-shader check` refuses `PostInput(...)` and the like. `Surface` is
-yours to construct and keeps its one field; later material outputs come as helpers.
+`PostInput`, `TonemapInput`, `EntityInput`), `surface_at`'s `SurfaceData` and `trace`'s `RayHit` may gain fields in later
+releases. Read their fields and pass them along, but don't construct them: `horizon-shader check` refuses
+`PostInput(...)` and the like. `Surface` is yours to construct and keeps its one field; later material outputs come as
+helpers.
 
 **New names reach a stage only if the pack asked for them.** A later release puts a new name before your files (a
 helper, a struct, a resource, a constant) only under a manifest key the pack sets, or in a stage added later, whose
@@ -105,11 +108,118 @@ space the pack's colours are in, and `frame.luminance` holds that space's lumina
 
 ";
 
+/// 0.2's `[ray_tracing]`, at the end of the post stage.
+fn ray_tracing() -> String {
+    let mut out = String::from(
+        "### Ray tracing\n\n\
+         With `[ray_tracing]` in the manifest (it has no keys, and needs a `[[post]]` pass) the post stage's prelude also\n\
+         has `RayHit`, `trace` and `trace_any`, and the `Frame` of every stage of the pack has `has_ray_tracing` and\n\
+         `ray_distance`. A pack without the key has none of them.\n\n\
+         - `fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayHit`: the nearest surface from\n  \
+         `origin` (camera-relative, in blocks, as `view_position` gives it) along the unit vector `direction`, within\n  \
+         `max_distance` blocks.\n\
+         - `fn trace_any(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> bool`: whether any surface is in\n  \
+         the way: a shadow ray, which stops at the first it finds and reads nothing of it.\n\n\
+         A ray starts at `origin` itself, so move a point off its own surface before tracing from it. It passes through\n\
+         the clear texels of a cut-out texture (leaves, plants), as terrain's alpha test does: a texel stops it from alpha\n\
+         0.5 up. The scene is Horizon's: the solid terrain around the camera, out to `frame.ray_distance` at least. While\n\
+         the game doesn't trace (`frame.has_ray_tracing` is 0) the pack is built and runs all the same, and every ray\n\
+         misses. Your files name no ray query of their own (`ray_query`, `acceleration_structure`, `RayDesc`,\n\
+         `RayIntersection`, a `rayQuery` function, `enable wgpu_ray_query`): the check refuses them, and an `output`\n\
+         called `trace` or `trace_any`.\n\n",
+    );
+    out += &table(&RAY_HIT, None);
+    out += &format!(
+        "Bindings {RAY_SCENE_BINDING} to {} of group {GROUP} hold the scene while the game traces. They are Horizon's, as their\n\
+         `horizon_` names say, and change with the renderer.\n\n",
+        RAY_SPRITES_BINDING + RAY_SPRITE_ARRAYS - 1
+    );
+    out
+}
+
+/// 0.2's `[material] coverage`, after the paragraph on what a stage is.
+const COVERAGE_0_2: &str = "\
+## `[material] coverage`
+
+Which points of terrain are drawn is the engine's unless the pack says otherwise. Under `coverage = \"engine\"` (the
+default) solid and cutout terrain keep Horizon's alpha test on the texture's own alpha (cut below 0.5, except the
+leaves Horizon draws opaque), and the alpha `material` returns is ignored there; translucent terrain is cut where the
+texture's alpha is below 0.01, and the returned alpha is its opacity, so water and glass still set how see-through
+they are. `material`, and every function it calls, may not `discard`: the check refuses it. A pack that cuts its own
+holes sets `coverage = \"pack\"`: the returned alpha then drives the alpha test (below 0.5 on solid and cutout
+terrain, below 0.01 on translucent) and the stage may `discard`. Normal and parallax shading that keeps the
+silhouette needs no `\"pack\"`, and neither do `[vertex]` and `[displacement]`, which move geometry, not coverage.
+The stage writes no depth of its own either way.
+
+";
+
+/// The entity stage's notes, after its input: what it returns, and vanilla's own.
+const ENTITY_NOTES: &str = "\
+`entity` lights what is no block terrain: `input.kind` says which. It returns the same `Surface` as `material` (rgb
+linear light, 0 or more and unbounded; alpha its coverage), so a pack writes its lighting once and calls it from both
+stages. Around it Horizon keeps vanilla's order: the alpha test on the returned alpha, then the enchantment glint
+added on top, then fog. `horizon-shader check` takes the stage; **the game doesn't draw it yet** and refuses a pack
+that has it. A pack without `[entity]` is drawn as before, and sees none of this stage's names. Until the game draws
+the stage its prelude may still gain names; from then on the rule for new names holds for it too.
+
+Vanilla's own, the picture a pack without the stage gets:
+
+```wgsl
+fn entity(input: EntityInput) -> Surface {
+    let base = input.albedo.rgb * input.tint.rgb * input.shade;
+    // Vanilla lays the flash over the surface in its gamma (the 2.2 power), before the light.
+    let gamma = vec3<f32>(1.0 / 2.2);
+    let flashed = pow(mix(pow(base, gamma), pow(input.overlay.rgb, gamma), input.overlay.a), vec3<f32>(2.2));
+    return Surface(vec4<f32>(flashed * input.lightmap, input.albedo.a * input.tint.a));
+}
+```
+
+Without a flash (`overlay.a` 0) that is `albedo * tint * shade * lightmap`. In linear light alone,
+`mix(base, input.overlay.rgb, input.overlay.a) * input.lightmap` is the same flash a little brighter. The shade and
+the light act on rgb only. `lightmap` holds no coloured light: where `colored_light` is above 0, Horizon's own draw
+adds it to the light colour, and the expression above leaves it out.
+
+";
+
+/// The post stage's motion guide under 0.2: `{binding}` stands for `MOTION_BINDING`.
+const MOTION_NOTES: &str = "\
+### Motion guide
+
+How each pixel's surface moved since last frame, for temporal passes (TAA, denoisers, light caches) that reproject
+`history` or a target of their own. With `[motion]` in the manifest (it has no keys, and needs a `[[post]]` pass)
+every post pass's prelude also has the names below; a pack without the key has none of them, and no other stage does.
+`horizon-shader check` takes it; **the game doesn't draw it yet** and refuses a pack with `[motion]`.
+
+- `var scene_motion: texture_2d<f32>` (binding {binding}): the engine's objects (z 1 matched, xy the delta; w 1
+  nothing to match), and at depth 0 the sky's motion (xy; w 1 behind last frame's view). Read it through `motion_at`.
+- `fn motion_at(texel: vec2<i32>) -> MotionData`: the motion at a pixel of the world's picture, as `scene_depth` holds it.
+- `struct MotionData { delta: vec2<f32>, kind: u32 }`. `delta` is where the surface was last frame less where it is
+  now, in top-left UV of the world's picture (`frame.resolution`): `uv + delta` is its place in last frame's picture.
+  `kind` says how far to trust it:
+  - `MOTION_CAMERA` (0): everything that isn't one of the engine's objects (terrain, still block entities, the sky),
+    moved by the camera alone, through `scene_depth`, `frame.previous_view_projection` and `frame.camera_motion`. The
+    sky (depth 0) is drawn without the view bob, so Horizon writes its motion into `scene_motion` itself, from the
+    unbobbed views. It assumes still geometry: terrain a `[vertex]` stage animates, drifting clouds and
+    moving water are wrong here. Mark such surfaces with `set_surface`'s `data` and treat them as reactive.
+  - `MOTION_OBJECT` (1): one of the engine's objects matched to last frame's, vertex by vertex, limbs and spin
+    included: mobs, dropped items, boats, carts, item frames and their items, armour stands, piston blocks, animated
+    block entities, the player in third person.
+  - `MOTION_NEW` (2): one of the engine's objects with no usable last frame (new, changed shape, or unmarked, such as
+    an opaque particle). `delta` is 0: reject history there.
+  - `MOTION_NO_HISTORY` (3): every pixel on the first frame and after a gap (`frame.delta_time` 0), and a point last
+    frame's camera had behind it. `delta` is 0.
+- The vectors come from the unjittered projections, so they line up with `scene_depth`.
+- Not covered: the first-person hand (drawn after the pack's tone map), translucent surfaces that write no depth
+  (translucent items, most particles, weather), and terrain moved by a `[vertex]` stage, whose last place Horizon
+  doesn't know.
+
+";
+
 /// The line's reference.
 pub fn markdown(api: Api) -> String {
     let mut out = format!(
         "# Shader API reference ({api})\n\n\
-         Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test reference`\n\
+         Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test it reference::`\n\
          rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).\n\n"
     );
     if api == Api::V0_2 {
@@ -117,8 +227,11 @@ pub fn markdown(api: Api) -> String {
     }
     out += "A stage is a function your WGSL defines, with the signature below; Horizon puts the prelude (these structs, the\n\
             resources and helpers) before your files and calls the function from its own pass. Your files declare no\n\
-            bindings and no entry points, and no names starting with `horizon_`.\n\n\
-            ## Stages\n\n\
+            bindings and no entry points, and no names starting with `horizon_`.\n\n";
+    if api == Api::V0_2 {
+        out += COVERAGE_0_2;
+    }
+    out += "## Stages\n\n\
             | Stage | In `horizon-shaders.toml` | Your function |\n| --- | --- | --- |\n";
     for &kind in api.stages() {
         let key = match kind {
@@ -128,6 +241,7 @@ pub fn markdown(api: Api) -> String {
             StageKind::Vertex => "[vertex]",
             StageKind::Weather => "[weather]",
             StageKind::Tonemap => "[tonemap]",
+            StageKind::Entity => "[entity]",
         };
         out += &format!("| {} | `{key}` | `{}` |\n", kind.name(), kind.signature());
     }
@@ -135,16 +249,26 @@ pub fn markdown(api: Api) -> String {
     for &kind in api.stages() {
         out += &format!("## {}\n\n`{}`\n\n", kind.name(), kind.signature());
         out += &table(kind.input(), None);
+        if kind == StageKind::Entity {
+            out += ENTITY_NOTES;
+        }
         if kind == StageKind::Material {
             let surface = table(&SURFACE, None);
             // 0.2's lit colour is linear light and may pass white; 0.1's reference keeps its text.
             out += &match api {
                 Api::V0_1 => surface,
-                Api::V0_2 => surface.replace(
-                    "The lit colour, 0..1, with its alpha.",
-                    "The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than \
-                     white); alpha its coverage.",
-                ),
+                Api::V0_2 => surface
+                    .replace(
+                        "The lit colour, 0..1, with its alpha.",
+                        "The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter \
+                         than white); alpha translucent terrain's opacity, and what the alpha test reads under \
+                         `[material] coverage = \"pack\"`.",
+                    )
+                    .replace(
+                        "Horizon then applies the alpha test (cutout and translucent) and fog.",
+                        "Horizon then applies the alpha test (cutout and translucent; on the texture's alpha \
+                         unless `[material] coverage = \"pack\"`) and fog.",
+                    ),
             };
             out += "Under `[displacement]` the stage also defines \
                     `fn displacement(input: DisplacementInput) -> f32`, called for each corner of the grid the \
@@ -201,6 +325,10 @@ pub fn markdown(api: Api) -> String {
                     - `fn set_surface(normal: vec3<f32>, smoothness: f32, data: f32)`: what the post stage's \
                     `surface_at` reads for this point of solid terrain (`data` the pack's own; the face's normal and 0, 0 unset).\n";
         }
+        if kind == StageKind::Entity {
+            out += "- `fn block_light_color(position: vec3<f32>) -> vec4<f32>`: the colour of the block light at the \
+                    camera-relative `position` (rgb) and how strongly it reaches it (a), as the material stage's.\n";
+        }
         if kind != StageKind::Sky {
             out += "- `fn shadow_position(position: vec3<f32>) -> vec3<f32>`: where the camera-relative point `position` is\n  \
                     stored in the shadow map, for `textureSampleCompareLevel`.\n\
@@ -211,10 +339,15 @@ pub fn markdown(api: Api) -> String {
                     world's size (1, 0.5 or 0.25), instead of the next pass's `previous`; the prelude of every pass declares\n\
                     `var <name>: texture_2d<f32>` (group 3 from binding 32), which holds last frame's until written again (a\n\
                     pass reads a blank one in place of the target it writes).\n\n";
+            if api == Api::V0_2 {
+                out += &ray_tracing();
+                out += &MOTION_NOTES.replace("{binding}", &MOTION_BINDING.to_string());
+            }
         }
     }
     out += "## The frame\n\n";
-    let frame = Frame::line(api);
+    // Every field of the line: 0.2's with the two only a `[ray_tracing]` pack declares.
+    let frame = Frame::declared(api, true);
     out += &table(&frame, Some(&Frame::OFFSETS[..frame.fields.len()]));
     out += "## Anti-aliasing\n\n\
             While a pack's `[[post]]` chain draws the frame, the player's anti-aliasing settings do not run: `taa`, `fxaa`\n\

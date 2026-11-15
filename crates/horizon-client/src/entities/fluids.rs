@@ -159,19 +159,29 @@ impl ItemEntity {
 }
 impl ExperienceOrb {
     /// `Entity.updateFluidInteraction`: refreshes fluid immersion over the
-    /// orb's box and pushes its velocity by any water or lava current.
-    /// Answers `isEyeInFluid(FluidTags.WATER)` for the eye the scan reads,
-    /// `0.425` above the orb's feet.
-    pub fn update_fluids(&mut self, world: &World, fluids: &FluidResources) -> bool {
-        update_entity_fluids(
+    /// orb's box and pushes its velocity by any water or lava current; water
+    /// resets its fall, and `Entity.baseTick` halves it in lava (`isInLava`
+    /// is false on the orb's first tick, `Entity.firstTick`). Answers
+    /// `isEyeInFluid(FluidTags.WATER)` for the eye the scan reads, `0.425`
+    /// above the orb's feet, `isInWater`, and `isInLava` (before
+    /// `Entity.firstTick` is taken into account).
+    pub fn update_fluids(&mut self, world: &World, fluids: &FluidResources) -> (bool, bool, bool) {
+        let (water, lava, eye) = update_entity_fluids(
             self.bounds(),
             self.position,
             self.position.y + f64::from(0.425f32),
             &mut self.velocity,
             world,
             fluids,
-        )
-        .2
+        );
+        if water > 0.0 {
+            self.fall_distance = 0.0;
+        }
+        // `tick_among` counts this tick first: `tickCount` is 1 on the first.
+        if lava > 0.0 && self.ticks > 1 {
+            self.fall_distance *= 0.5;
+        }
+        (eye, water > 0.0, lava > 0.0)
     }
 }
 impl ArmorStand {
@@ -471,6 +481,7 @@ mod tests {
         }
         let at = Vec3::new(20.5, 4.0, 20.5);
         let orb = ExperienceOrb {
+            fall_distance: 0.0,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -486,6 +497,7 @@ mod tests {
             health: 5,
             air: 300,
             following: None,
+            fire_ticks: 0,
         };
         let mut still = orb.clone();
         assert!(still.tick(
@@ -562,6 +574,7 @@ mod tests {
         }
         let at = Vec3::new(20.5, 4.6, 20.5);
         let mut orb = ExperienceOrb {
+            fall_distance: 0.0,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -577,6 +590,7 @@ mod tests {
             health: 5,
             air: 300,
             following: None,
+            fire_ticks: 0,
         };
         assert!(orb.tick(
             &world,

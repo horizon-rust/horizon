@@ -1,6 +1,6 @@
 # Shader API reference (0.2)
 
-Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test reference`
+Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test it reference::`
 rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).
 
 **Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, the game draws them only
@@ -17,8 +17,8 @@ the frame stores gamma (`[frame] blend`, below).
 
 - **Linear:** `MaterialInput` `albedo`, `tint`, `lightmap` and `colored_light`; `VertexInput.tint`; `SkyInput.color`;
   `WeatherInput.color`; `Frame` `sky_color` and `fog_color`; `block_texture`, `block_texture_level` and
-  `block_light_color`; every colour texture a stage samples (`scene_color`, `previous`, `history`, the pack's targets,
-  `opaque_color`, `reflection`, `shadow_color`).
+  `block_light_color`; `RayHit` `albedo` and `tint`; every colour texture a stage samples (`scene_color`, `previous`,
+  `history`, the pack's targets, `opaque_color`, `reflection`, `shadow_color`).
 - **Data, as in 0.1:** depth, normals, `light` levels, `emission`, every channel of the LabPBR maps, and the pack's
   `[[textures]]`.
 - **`[[lights]]` and `[[particle_lights]]` colours** are written as in 0.1, in vanilla's gamma, and Horizon decodes
@@ -29,9 +29,10 @@ the frame stores gamma (`[frame] blend`, below).
 ## Room to grow
 
 `Frame`, the stage inputs (`SkyInput`, `VertexInput`, `MaterialInput`, `DisplacementInput`, `WeatherInput`,
-`PostInput`, `TonemapInput`) and `surface_at`'s `SurfaceData` may gain fields in later releases. Read their fields and
-pass them along, but don't construct them: `horizon-shader check` refuses `PostInput(...)` and the like. `Surface` is
-yours to construct and keeps its one field; later material outputs come as helpers.
+`PostInput`, `TonemapInput`, `EntityInput`), `surface_at`'s `SurfaceData` and `trace`'s `RayHit` may gain fields in later
+releases. Read their fields and pass them along, but don't construct them: `horizon-shader check` refuses
+`PostInput(...)` and the like. `Surface` is yours to construct and keeps its one field; later material outputs come as
+helpers.
 
 **New names reach a stage only if the pack asked for them.** A later release puts a new name before your files (a
 helper, a struct, a resource, a constant) only under a manifest key the pack sets, or in a stage added later, whose
@@ -71,6 +72,18 @@ A stage is a function your WGSL defines, with the signature below; Horizon puts 
 resources and helpers) before your files and calls the function from its own pass. Your files declare no
 bindings and no entry points, and no names starting with `horizon_`.
 
+## `[material] coverage`
+
+Which points of terrain are drawn is the engine's unless the pack says otherwise. Under `coverage = "engine"` (the
+default) solid and cutout terrain keep Horizon's alpha test on the texture's own alpha (cut below 0.5, except the
+leaves Horizon draws opaque), and the alpha `material` returns is ignored there; translucent terrain is cut where the
+texture's alpha is below 0.01, and the returned alpha is its opacity, so water and glass still set how see-through
+they are. `material`, and every function it calls, may not `discard`: the check refuses it. A pack that cuts its own
+holes sets `coverage = "pack"`: the returned alpha then drives the alpha test (below 0.5 on solid and cutout
+terrain, below 0.01 on translucent) and the stage may `discard`. Normal and parallax shading that keeps the
+silhouette needs no `"pack"`, and neither do `[vertex]` and `[displacement]`, which move geometry, not coverage.
+The stage writes no depth of its own either way.
+
 ## Stages
 
 | Stage | In `horizon-shaders.toml` | Your function |
@@ -81,6 +94,7 @@ bindings and no entry points, and no names starting with `horizon_`.
 | weather | `[weather]` | `fn weather(input: WeatherInput) -> vec4<f32>` |
 | post | `[[post]]` | `fn post(input: PostInput) -> vec4<f32>` |
 | tonemap | `[tonemap]` | `fn tonemap(input: TonemapInput) -> vec3<f32>` |
+| entity | `[entity]` | `fn entity(input: EntityInput) -> Surface` |
 
 ## sky
 
@@ -161,11 +175,11 @@ One point of a block's surface, for `fn material(input: MaterialInput) -> Surfac
 
 ### `Surface`
 
-What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; Horizon then applies the alpha test (cutout and translucent) and fog.
+What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; Horizon then applies the alpha test (cutout and translucent; on the texture's alpha unless `[material] coverage = "pack"`) and fog.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `color` | `vec4<f32>` | The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than white); alpha its coverage. |
+| `color` | `vec4<f32>` | The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than white); alpha translucent terrain's opacity, and what the alpha test reads under `[material] coverage = "pack"`. |
 
 Under `[displacement]` the stage also defines `fn displacement(input: DisplacementInput) -> f32`, called for each corner of the grid the faces near the camera are cut into; the corner moves along the face's normal by the depth it gives at the point's height less the depth at the texture's mean height, pinned at the face's edges and easing out over the last quarter of the distance.
 
@@ -287,6 +301,75 @@ world's size (1, 0.5 or 0.25), instead of the next pass's `previous`; the prelud
 `var <name>: texture_2d<f32>` (group 3 from binding 32), which holds last frame's until written again (a
 pass reads a blank one in place of the target it writes).
 
+### Ray tracing
+
+With `[ray_tracing]` in the manifest (it has no keys, and needs a `[[post]]` pass) the post stage's prelude also
+has `RayHit`, `trace` and `trace_any`, and the `Frame` of every stage of the pack has `has_ray_tracing` and
+`ray_distance`. A pack without the key has none of them.
+
+- `fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayHit`: the nearest surface from
+  `origin` (camera-relative, in blocks, as `view_position` gives it) along the unit vector `direction`, within
+  `max_distance` blocks.
+- `fn trace_any(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> bool`: whether any surface is in
+  the way: a shadow ray, which stops at the first it finds and reads nothing of it.
+
+A ray starts at `origin` itself, so move a point off its own surface before tracing from it. It passes through
+the clear texels of a cut-out texture (leaves, plants), as terrain's alpha test does: a texel stops it from alpha
+0.5 up. The scene is Horizon's: the solid terrain around the camera, out to `frame.ray_distance` at least. While
+the game doesn't trace (`frame.has_ray_tracing` is 0) the pack is built and runs all the same, and every ray
+misses. Your files name no ray query of their own (`ray_query`, `acceleration_structure`, `RayDesc`,
+`RayIntersection`, a `rayQuery` function, `enable wgpu_ray_query`): the check refuses them, and an `output`
+called `trace` or `trace_any`.
+
+### `RayHit`
+
+The nearest surface along a ray, from `trace`. Its `albedo`, `tint`, `light`, `uv`, `material` and `tags` are what `MaterialInput` gives the material stage for the same point, so one function can shade both. On a miss `distance` is negative and every other field is 0.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `distance` | `f32` | How far along the ray the surface is, in blocks; negative on a miss. |
+| `position` | `vec3<f32>` | The point, camera-relative, in blocks (as `view_position`). |
+| `normal` | `vec3<f32>` | The face's normal, a unit vector in world axes, turned toward the ray's origin. |
+| `uv` | `vec2<f32>` | The texture coordinate inside the block's sprite (as `MaterialInput.uv`). |
+| `albedo` | `vec4<f32>` | The block texture's colour at the point, at full size (mip level 0), linear light; alpha the texture's. |
+| `tint` | `vec4<f32>` | The vertex colour: biome tint, face shade and ambient occlusion, linear light; alpha 1. |
+| `light` | `vec2<f32>` | Block and sky light, 0..1, smoothed over the face. |
+| `material` | `u32` | The `[[materials]]` id of the surface's sprite (0 when no entry names it). |
+| `tags` | `u32` | The pack's sprite tags the surface's sprite has: bit i for the manifest's i-th `[[tags]]`. |
+
+Bindings 48 to 59 of group 3 hold the scene while the game traces. They are Horizon's, as their
+`horizon_` names say, and change with the renderer.
+
+### Motion guide
+
+How each pixel's surface moved since last frame, for temporal passes (TAA, denoisers, light caches) that reproject
+`history` or a target of their own. With `[motion]` in the manifest (it has no keys, and needs a `[[post]]` pass)
+every post pass's prelude also has the names below; a pack without the key has none of them, and no other stage does.
+`horizon-shader check` takes it; **the game doesn't draw it yet** and refuses a pack with `[motion]`.
+
+- `var scene_motion: texture_2d<f32>` (binding 14): the engine's objects (z 1 matched, xy the delta; w 1
+  nothing to match), and at depth 0 the sky's motion (xy; w 1 behind last frame's view). Read it through `motion_at`.
+- `fn motion_at(texel: vec2<i32>) -> MotionData`: the motion at a pixel of the world's picture, as `scene_depth` holds it.
+- `struct MotionData { delta: vec2<f32>, kind: u32 }`. `delta` is where the surface was last frame less where it is
+  now, in top-left UV of the world's picture (`frame.resolution`): `uv + delta` is its place in last frame's picture.
+  `kind` says how far to trust it:
+  - `MOTION_CAMERA` (0): everything that isn't one of the engine's objects (terrain, still block entities, the sky),
+    moved by the camera alone, through `scene_depth`, `frame.previous_view_projection` and `frame.camera_motion`. The
+    sky (depth 0) is drawn without the view bob, so Horizon writes its motion into `scene_motion` itself, from the
+    unbobbed views. It assumes still geometry: terrain a `[vertex]` stage animates, drifting clouds and
+    moving water are wrong here. Mark such surfaces with `set_surface`'s `data` and treat them as reactive.
+  - `MOTION_OBJECT` (1): one of the engine's objects matched to last frame's, vertex by vertex, limbs and spin
+    included: mobs, dropped items, boats, carts, item frames and their items, armour stands, piston blocks, animated
+    block entities, the player in third person.
+  - `MOTION_NEW` (2): one of the engine's objects with no usable last frame (new, changed shape, or unmarked, such as
+    an opaque particle). `delta` is 0: reject history there.
+  - `MOTION_NO_HISTORY` (3): every pixel on the first frame and after a gap (`frame.delta_time` 0), and a point last
+    frame's camera had behind it. `delta` is 0.
+- The vectors come from the unjittered projections, so they line up with `scene_depth`.
+- Not covered: the first-person hand (drawn after the pack's tone map), translucent surfaces that write no depth
+  (translucent items, most particles, weather), and terrain moved by a `[vertex]` stage, whose last place Horizon
+  doesn't know.
+
 ## tonemap
 
 `fn tonemap(input: TonemapInput) -> vec3<f32>`
@@ -319,6 +402,75 @@ Horizon's: a clip at white in SDR, and in HDR the curve Horizon uses without a p
 to 60% of the peak as it is and rolls it off into the peak above. Either runs once: Horizon doesn't map a pack's
 result again. Horizon holds the result to 0 to `frame.headroom`, then lifts the shadows onto
 `frame.black_level`.
+
+## entity
+
+`fn entity(input: EntityInput) -> Surface`
+
+### `EntityInput`
+
+One point of the surface of an entity, a block entity, an item or a particle, for `fn entity(input: EntityInput) -> Surface`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `albedo` | `vec4<f32>` | The texture's colour here. |
+| `tint` | `vec4<f32>` | The vertex colour without vanilla's directional shade (dyes, particle colours, fades). |
+| `overlay` | `vec4<f32>` | The flash vanilla lays over the surface (hurt, TNT, a creeper's swelling): rgb its colour, alpha how much of the surface it replaces. Alpha 0 without one. |
+| `lightmap` | `vec3<f32>` | Vanilla's light colour for `light` this frame. |
+| `shade` | `f32` | Vanilla's directional shade for this face as a factor on linear light, 0..1 (vanilla's value decoded with the 2.2 power, as every 0.2 colour is). 1 where vanilla applies none. |
+| `position` | `vec3<f32>` | The point, camera-relative, in blocks. |
+| `emission` | `f32` | 1 on a layer vanilla draws at full brightness (spider and enderman eyes, the warden's glow), else 0. There `lightmap` is full light; `shade` stays vanilla's, which shades the warden's glow and not the eyes. |
+| `normal` | `vec3<f32>` | The surface's geometric normal, a unit vector in world axes, facing the camera, from the position's screen derivatives (as `MaterialInput.normal`, without its snap to the axes). |
+| `kind` | `u32` | What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, signs, banners, beds), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle. |
+| `colored_light` | `vec3<f32>` | As `MaterialInput.colored_light`: the frame's coloured lights at this point, 0..1; 0 where none reaches. |
+| `translucent` | `bool` | Drawn with blending. |
+| `light` | `vec2<f32>` | Block and sky light, 0..1. |
+| `uv` | `vec2<f32>` | The texture coordinate. |
+| `screen` | `vec2<f32>` | Where the point is on the screen, 0..1 from the top left (as `MaterialInput.screen`). |
+
+`entity` lights what is no block terrain: `input.kind` says which. It returns the same `Surface` as `material` (rgb
+linear light, 0 or more and unbounded; alpha its coverage), so a pack writes its lighting once and calls it from both
+stages. Around it Horizon keeps vanilla's order: the alpha test on the returned alpha, then the enchantment glint
+added on top, then fog. `horizon-shader check` takes the stage; **the game doesn't draw it yet** and refuses a pack
+that has it. A pack without `[entity]` is drawn as before, and sees none of this stage's names. Until the game draws
+the stage its prelude may still gain names; from then on the rule for new names holds for it too.
+
+Vanilla's own, the picture a pack without the stage gets:
+
+```wgsl
+fn entity(input: EntityInput) -> Surface {
+    let base = input.albedo.rgb * input.tint.rgb * input.shade;
+    // Vanilla lays the flash over the surface in its gamma (the 2.2 power), before the light.
+    let gamma = vec3<f32>(1.0 / 2.2);
+    let flashed = pow(mix(pow(base, gamma), pow(input.overlay.rgb, gamma), input.overlay.a), vec3<f32>(2.2));
+    return Surface(vec4<f32>(flashed * input.lightmap, input.albedo.a * input.tint.a));
+}
+```
+
+Without a flash (`overlay.a` 0) that is `albedo * tint * shade * lightmap`. In linear light alone,
+`mix(base, input.overlay.rgb, input.overlay.a) * input.lightmap` is the same flash a little brighter. The shade and
+the light act on rgb only. `lightmap` holds no coloured light: where `colored_light` is above 0, Horizon's own draw
+adds it to the light colour, and the expression above leaves it out.
+
+Resources (bind group 3):
+
+| Binding | Declaration | Meaning |
+| --- | --- | --- |
+| 0 | `var<uniform> frame: Frame` | The frame (`Frame`). |
+| 2 | `var block_light_sampler: sampler` | Bilinear filtering, clamped to the edges: what `block_light_color` reads `block_light_colors` with. |
+| 3 | `var shadow_map: texture_depth_2d` | This frame's shadow map: the depth of the solid terrain and entities the light sees, 0 at the light, 1 away from it (and where nothing is), stored at `shadow_position`'s mapping. Valid while `frame.has_shadow` is 1 (the pack asks for it with `[shadow]`), else a 1×1 map that lights everything. |
+| 4 | `var shadow_sampler: sampler_comparison` | Depth comparison, bilinear (2×2 percentage-closer filtering): `textureSampleCompareLevel(shadow_map, shadow_sampler, p.xy, p.z)` is 1 where the point is lit, 0 in shadow. |
+| 7 | `var shadow_map_translucent: texture_depth_2d` | `shadow_map` with the translucent terrain (water, stained glass, ice) the light passes through drawn in too, read with `shadow_sampler` the same way: a point lit in `shadow_map` but not here lies under such a surface, which `shadow_color` gives the colour of. |
+| 8 | `var shadow_color: texture_2d<f32>` | The texture colour times the vertex colour (rgb: the tint, the face's directional shade and ambient occlusion) of the nearest translucent surface the light passes through at each texel of `shadow_map_translucent`, white where there is none; alpha is 1 on a fluid (water) and the texture's alpha, at most 0.99, on anything else. Read it with `textureLoad` at `shadow_position`'s xy times `textureDimensions(shadow_color)`. |
+| 9 | `var block_light_colors: texture_3d<f32>` | The colour of the block light around the camera, from the `[[lights]]` of the light sources nearby: rgb their colours averaged by how near each is, over 4; a how strongly they reach the cell. Read it through `block_light_color`. |
+| 10 | `var<uniform> block_light_grid: vec4<f32>` | Where `block_light_colors` lies: xyz its corner, camera-relative, w the side of one of its cells in blocks. |
+
+Helpers:
+
+- `fn block_light_color(position: vec3<f32>) -> vec4<f32>`: the colour of the block light at the camera-relative `position` (rgb) and how strongly it reaches it (a), as the material stage's.
+- `fn shadow_position(position: vec3<f32>) -> vec3<f32>`: where the camera-relative point `position` is
+  stored in the shadow map, for `textureSampleCompareLevel`.
+- `fn shadow_distort(xy: vec2<f32>) -> vec2<f32>`: the map's distortion of a point at shadow clip `xy`.
 
 ## The frame
 
@@ -383,6 +535,8 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `peak` | `f32` | 764 | The peak brightness in nits; a nominal 80 in SDR, as `paper_white`. |
 | `black_level` | `f32` | 768 | The display's black in nits (HDR's Black Level); 0 in SDR. |
 | `primaries` | `u32` | 772 | The primaries of this pack's colours (`[frame] primaries`): 0 BT.709, 1 BT.2020. |
+| `has_ray_tracing` | `u32` | 776 | 1 while `trace` and `trace_any` read this frame's scene, else 0 (a GPU without ray queries, ray tracing off, no world): every ray then misses. Only a pack with `[ray_tracing]` has this field. |
+| `ray_distance` | `f32` | 780 | How far from the camera along x and along z, in blocks, the scene is sure to reach; 0 while `has_ray_tracing` is 0. Only a pack with `[ray_tracing]` has this field. |
 | `luminance` | `vec3<f32>` | 784 | The weights that give a colour's luminance in those primaries, `dot(c, frame.luminance)`: (0.2126, 0.7152, 0.0722) for BT.709, (0.2627, 0.6780, 0.0593) for BT.2020. |
 
 ## Anti-aliasing

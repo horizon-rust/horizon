@@ -75,7 +75,7 @@ pub(super) fn build_renderer(
         previous,
         api,
         translucent_batching,
-        shader_pack.draws_flat,
+        (shader_pack.draws_flat, shader_pack.starts_wide),
         settings,
         shader_pack.frame(),
         display,
@@ -155,7 +155,7 @@ pub(super) fn loading_renderer(
         api,
         // It draws no terrain.
         false,
-        false,
+        (false, false),
         // An 8-bit frame, which HDR output takes as well: HDR off until the settings apply.
         &horizon_client::graphics::Graphics::default(),
         Default::default(),
@@ -339,6 +339,8 @@ pub(super) fn start_game<'a>(
                 fps_cap: None,
                 offscreen: game.options.offscreen,
                 game_dir: std::env::current_dir()?,
+                set: game.options.benchmark_set.clone(),
+                profile: game.options.benchmark_profile,
             },
         );
     }

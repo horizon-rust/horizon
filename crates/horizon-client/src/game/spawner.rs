@@ -141,8 +141,10 @@ impl Game<'_> {
         let mut planned: Vec<Planned> = Vec::new();
         {
             let level = self.natural_level();
-            let mut spawn = |l: &super::natural_spawning::GameLevel, r: &SpawnerSpawn| {
-                l.game.plan_spawner_mob(l, r, &mut planned)
+            let mut spawn = |l: &super::natural_spawning::GameLevel,
+                             random: &mut LevelRandom,
+                             r: &SpawnerSpawn| {
+                l.game.plan_spawner_mob(l, r, random, &mut planned)
             };
             spawner.server_tick(&level, &mut random, pos, &mut spawn, &mut events);
         }
@@ -188,6 +190,7 @@ impl Game<'_> {
         &self,
         l: &super::natural_spawning::GameLevel,
         r: &SpawnerSpawn,
+        random: &mut LevelRandom,
         planned: &mut Vec<Planned>,
     ) -> Option<SpawnerAdded> {
         let kind = self.res.mob_types().get(r.id)?.clone();
@@ -197,7 +200,7 @@ impl Game<'_> {
             let mut mob = Mob::new(0, kind, at, r.yaw);
             let facts = self.biome_facts(x.floor() as i32, y.floor() as i32, z.floor() as i32);
             let difficulty = self.local_difficulty(r.position);
-            spawning::finalize(&mut mob, &facts, &difficulty);
+            spawning::finalize(&mut mob, &facts, &difficulty, random);
             // TrialSpawner.spawnMob: setPersistenceRequired.
             mob.persistent = r.trial;
             horizon_client::mobs::raider::finalize(
@@ -483,6 +486,37 @@ impl Game<'_> {
         self.lan_acting_permission
             .unwrap_or(self.ui.registries.permission)
             > 0
+    }
+    /// `EntityType.createDefaultStackConfig` on an entity an item made (a
+    /// vehicle, a hanging entity, an armor stand): the item's custom name and
+    /// custom data (`applyComponentsFromItemStack`:
+    /// `Entity.applyImplicitComponent`'s two, saved as `CustomName` and
+    /// `data`), then its `minecraft:entity_data` merged over the entity's own
+    /// compound and loaded (`updateCustomEntityTag`) when it names this type.
+    /// An op-only type (command block and spawner minecarts) takes it from an
+    /// op player only, never from a dispenser (`by_player` false).
+    pub(super) fn apply_item_stack_config(
+        &mut self,
+        target: super::commands::Target,
+        kind: &str,
+        stack: &horizon_client::items::ItemStack,
+        by_player: bool,
+    ) {
+        let op = by_player && self.acting_player_is_op();
+        let configures = stack
+            .data()
+            .is_some_and(|d| d.custom_name.is_some() || d.other("minecraft:custom_data").is_some())
+            || horizon_client::block_entity_item::spawn_egg_entity_data(stack, kind, op).is_some();
+        if !configures {
+            return;
+        }
+        let Some(own) = self.entity_nbt(target) else {
+            return;
+        };
+        let tag =
+            horizon_client::block_entity_item::stack_configured_entity_by(stack, kind, &own, op);
+        // The entity's own compound, its name and data merged in: it loads back.
+        let _ = self.apply_entity_nbt(target, tag);
     }
     /// Ticks spawners, trial spawners and vaults near the player on a remote
     /// client (`tick_remote`).

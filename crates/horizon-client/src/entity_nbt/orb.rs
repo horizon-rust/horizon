@@ -1,7 +1,9 @@
 //! Experience orbs: `ExperienceOrb` save data.
-use super::{Base, ExperienceOrb, Tag, flag, int_value, motion, number, position, put, rotation};
+use super::{
+    Base, ExperienceOrb, Tag, flag, float, int_value, motion, number, position, put, rotation,
+};
 
-/// `ExperienceOrb`: Health, Age, Value, Count.
+/// `ExperienceOrb`: Fire, Health, Age, Value, Count.
 pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
     let base = Base {
         id: "minecraft:experience_orb",
@@ -10,10 +12,11 @@ pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
         motion: o.velocity,
         rotation: o.rotation,
         on_ground: o.on_ground,
-        fall_distance: 0.0,
+        fall_distance: o.fall_distance,
     };
     let mut tag = base.tag(None);
     for (key, value) in [
+        ("Fire", Tag::Short(o.fire_ticks as i16)),
         ("Health", Tag::Short(o.health as i16)),
         ("Air", Tag::Short(o.air as i16)),
         ("Age", Tag::Short(o.age.min(i16::MAX as u32) as i16)),
@@ -35,6 +38,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
     };
     let count = number(tag.get("Count")).unwrap_or(1).max(1) as u32;
     let orb = ExperienceOrb {
+        fall_distance: float(tag.get("fall_distance")).unwrap_or(0.0),
         rotation: rotation(tag),
         join: Default::default(),
         no_gravity: flag(tag, "NoGravity"),
@@ -53,6 +57,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         // ExperienceOrb's followingPlayer is transient: never saved, so a
         // loaded orb starts without one.
         following: None,
+        fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i16 as i32,
     };
     vec![orb]
 }
