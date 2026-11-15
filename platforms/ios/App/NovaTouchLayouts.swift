@@ -126,7 +126,11 @@ enum NovaTouchLayouts {
 
     static func current() -> NovaTouchLayout {
         let name = UserDefaults.standard.string(forKey: currentKey) ?? "default"
-        return load(name) ?? load("default") ?? .starter
+        if let selected = load(name) ?? load("default") { return selected }
+        let starter = NovaTouchLayout.starter
+        // Put default.json in the Files-visible folder from the first launch.
+        try? save(starter)
+        return starter
     }
 
     enum LayoutError: LocalizedError {
