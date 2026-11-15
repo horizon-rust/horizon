@@ -168,10 +168,11 @@ impl Game<'_> {
             1.0
         }
     }
-    /// What far terrain should plan for a zoomed view, or `None` when the
-    /// `lodZoomDetail` extra is off or nothing is zooming (`lod::ZoomAim`).
+    /// What far terrain should plan for a zoomed view, or `None` when no hook
+    /// asks for it (`horizon_hooks::Hooks::far_terrain_zoom_detail`, the
+    /// `lodZoomDetail` extra) or nothing is zooming (`lod::ZoomAim`).
     pub(super) fn lod_aim(&self, camera: [f64; 3]) -> Option<horizon_client::lod::ZoomAim> {
-        if !self.settings.extras.lod_zoom_detail {
+        if !horizon_hooks::engine::far_terrain_zoom_detail() {
             return None;
         }
         horizon_client::lod::ZoomAim::new(

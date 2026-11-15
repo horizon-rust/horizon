@@ -110,6 +110,29 @@ pub trait Hooks: Sync {
     fn get_the_game(&self) -> Option<GetTheGame> {
         None
     }
+
+    /// Whether the player whose turn it is sees their own name over their head in third person,
+    /// as other players see it (Horizon's own name tag). Asked each frame name tags are drawn;
+    /// the engine shows it when any hook says so, and still never in first person, asleep, as a
+    /// spectator or while invisible.
+    fn own_name_tag(&self) -> bool {
+        false
+    }
+
+    /// Whether this window's own worlds (single-player and hosted LAN) offer `/pregen`, with its
+    /// cheat and permission checks (Horizon's chunk pregeneration). Asked when such a world opens
+    /// and after the player changes a setting; `--pregen` offers it for the whole run anyway.
+    fn pregen_command(&self) -> bool {
+        false
+    }
+
+    /// Whether far terrain a zoom magnifies (a spyglass, the zoom key) is planned finer for the
+    /// player whose turn it is, so it doesn't show the coarse cells of an unzoomed screen. Asked
+    /// each frame far terrain is planned; does nothing unless far terrain is on and the view is
+    /// zoomed. Costs far tiles while the zoom is held and gives them back after.
+    fn far_terrain_zoom_detail(&self) -> bool {
+        false
+    }
 }
 
 /// What [`Hooks::get_the_game`] answers. The texts are translation keys of the game's own strings
@@ -371,6 +394,21 @@ pub mod engine {
     /// [`Hooks::get_the_game`]: the first registered hook's answer.
     pub fn get_the_game() -> Option<GetTheGame> {
         all().iter().find_map(|hooks| hooks.get_the_game())
+    }
+
+    /// [`Hooks::own_name_tag`]: whether any hook says so.
+    pub fn own_name_tag() -> bool {
+        all().iter().any(|hooks| hooks.own_name_tag())
+    }
+
+    /// [`Hooks::pregen_command`]: whether any hook says so.
+    pub fn pregen_command() -> bool {
+        all().iter().any(|hooks| hooks.pregen_command())
+    }
+
+    /// [`Hooks::far_terrain_zoom_detail`]: whether any hook says so.
+    pub fn far_terrain_zoom_detail() -> bool {
+        all().iter().any(|hooks| hooks.far_terrain_zoom_detail())
     }
 }
 

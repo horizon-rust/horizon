@@ -233,6 +233,9 @@ impl Screen for ExtrasScreen {
             }
         }
         add_sections(&mut groups);
+        // A heading whose rows all come from sections (Third person's own name tag) shows only
+        // when a section fills it: the plain executable registers none.
+        groups.retain(|g| !g.rows.is_empty());
         vec![Sheet::new((), lang::get(TITLE), lang::get(ABOUT), groups)]
     }
     fn press(&mut self, s: &mut Settings, row: ExtraRow, back: bool) -> Vec<Output> {
@@ -398,7 +401,7 @@ mod tests {
         let size = (batch.width, batch.height);
         let cols = Columns::of(size.0, size.1).with_note_lines(NOTE_LINES);
         // The Mods group's note can't take the focus: the first item can.
-        let first = ExtraRow::Item(Item::OwnNameTag);
+        let first = ExtraRow::Item(Item::MouseTweaks);
         let at = shell.point_at(&s, size, first);
         let [x, y, w, h] = crate::widgets::linked_step(cols.search(), true).unwrap();
         assert!(ui::hovered(at, x, y, w, h));
