@@ -537,20 +537,6 @@ impl AnvilResult {
 
 // ---------------------------------------------------------------- grindstone
 
-/// `ItemStack.getMaxStackSize`: the stack's `MAX_STACK_SIZE` component (a
-/// removed one is vanilla's default of 1), else the item's default.
-fn max_stack_size(items: &Items, stack: &ItemStack) -> u32 {
-    let data = stack.data();
-    if data.is_some_and(|d| d.other("!minecraft:max_stack_size").is_some()) {
-        return 1;
-    }
-    if let Some(tag) = data.and_then(|d| d.other("minecraft:max_stack_size")) {
-        return component_int(tag)
-            .filter(|v| *v >= 1)
-            .map_or(1, |v| v as u32);
-    }
-    items.get(&stack.item).map_or(64, |i| i.max_stack)
-}
 /// `GrindstoneMenu` slot filter: damageable or enchanted.
 pub fn grindstone_accepts(items: &Items, stack: &ItemStack) -> bool {
     is_damageable(items, stack) || stack.has_any_enchantments()
@@ -606,7 +592,7 @@ pub fn grindstone_result(
                 + durability * 5 / 100;
             let mut count = 1;
             if !is_damageable(items, a) {
-                let stack_max = max_stack_size(items, a);
+                let stack_max = a.max_stack_size(items);
                 if stack_max < 2 || a != b {
                     return None;
                 }

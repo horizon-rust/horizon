@@ -15,6 +15,15 @@ use crate::{
 pub trait Rules {
     fn items(&self) -> &Items;
     fn max_stack(&self, item: &str) -> u32;
+    /// `ItemStack.getMaxStackSize`: the stack's own `max_stack_size`
+    /// component, or vanilla's `getOrDefault` default of 1 when it is removed
+    /// (`!minecraft:max_stack_size`), else `max_stack`'s item size.
+    fn max_stack_of(&self, stack: &ItemStack) -> u32 {
+        stack
+            .own_max_stack_size()
+            .unwrap_or_else(|| self.max_stack(&stack.item))
+            .max(1)
+    }
     /// The armor slot (0 head .. 3 feet) an item can be worn in.
     fn armor_index(&self, item: &str) -> Option<usize>;
     /// `ItemStack.getEquipmentSlot`: the `minecraft:equippable` component's
@@ -535,7 +544,7 @@ impl View<'_> {
         if self.container.is_none() && (5..=8).contains(&i) {
             return 1;
         }
-        rules.max_stack(&stack.item).max(1)
+        rules.max_stack_of(stack)
     }
     /// `Slot.mayPickup`: whether menu slot `i` gives its stack up. The
     /// armour slots refuse while a survival player wears a binding curse
@@ -759,7 +768,7 @@ pub fn click(
                     && let Ok(i) = usize::try_from(slot)
                     && let Some(stack) = view.get(i)
                 {
-                    let max = rules.max_stack(&stack.item).max(1);
+                    let max = rules.max_stack_of(&stack);
                     view.guest.carried = Some(ItemStack {
                         count: max,
                         ..stack
@@ -855,7 +864,7 @@ fn pickup(view: &mut View, slot: i32, button: i32, rules: &dyn Rules) {
                 // A slot that takes nothing gives onto the same carried item,
                 // as far as the hand holds (`tryRemove`).
                 if s.same_item_same_components(&c) {
-                    let max = rules.max_stack(&c.item).max(1);
+                    let max = rules.max_stack_of(&c);
                     let moved = s.count.min(max.saturating_sub(c.count));
                     s.count -= moved;
                     c.count += moved;
@@ -1025,7 +1034,7 @@ fn pickup_all(view: &mut View, slot: i32, button: i32, rules: &dyn Rules) {
     if view.get(i).is_some() && view.may_pickup(i, rules) {
         return;
     }
-    let max = rules.max_stack(&carried.item).max(1);
+    let max = rules.max_stack_of(&carried);
     // Button 0 walks the slots from the first, button 1 from the last.
     let order: Vec<usize> = if button == 0 {
         (0..view.len()).collect()
@@ -1115,7 +1124,7 @@ fn quick_craft(
             let each = match kind {
                 0 => carried.count / slots.len() as u32,
                 1 => 1,
-                _ => rules.max_stack(&carried.item).max(1),
+                _ => rules.max_stack_of(&carried),
             };
             for i in slots {
                 if carried.count == 0 {
@@ -1251,6 +1260,55 @@ mod tests {
         assert_eq!(view.get(0).map(|s| s.count), Some(4));
         assert_eq!(view.get(1).map(|s| s.count), Some(4));
         assert_eq!(view.guest.carried.as_ref().map(|s| s.count), Some(64));
+    }
+
+    /// Stone with its own `max_stack_size`, or with the component removed
+    /// (`!minecraft:max_stack_size`, which vanilla reads as `getOrDefault`'s
+    /// default of one).
+    fn stone(size: Option<i32>, count: u32) -> ItemStack {
+        let mut stack = ItemStack::new("minecraft:stone", count);
+        let data = stack.data_mut();
+        match size {
+            Some(n) => data.set_other(
+                "minecraft:max_stack_size",
+                Some(horizon_world::nbt::Tag::Int(n)),
+            ),
+            None => data.set_other(
+                "!minecraft:max_stack_size",
+                Some(horizon_world::nbt::Tag::Compound(Default::default())),
+            ),
+        };
+        stack.tidy();
+        stack
+    }
+
+    /// `Slot.getMaxStackSize(stack)` in a guest's window is
+    /// `min(container, ItemStack.getMaxStackSize)`: a stack's own
+    /// `max_stack_size` caps the merge, and a removed one leaves one per slot.
+    #[test]
+    fn guest_slot_merges_stop_at_the_stacks_own_size() {
+        let Some(rules) = rules() else {
+            return;
+        };
+        let mut g = guest();
+        let mut chest = vec![Some(stone(Some(4), 2)), Some(stone(None, 1))];
+        let mut drag = None;
+        let mut view = View {
+            guest: &mut g,
+            container: Some(&mut chest),
+            shulker: false,
+            hidden: &[],
+        };
+        // The slot takes four, two are there: two of the five in hand go in.
+        view.guest.carried = Some(stone(Some(4), 5));
+        click(&mut view, &mut drag, 0, 0, input::PICKUP, &rules);
+        assert_eq!(view.get(0).map(|s| s.count), Some(4));
+        assert_eq!(view.guest.carried.as_ref().map(|s| s.count), Some(3));
+        // A removed component holds one, so nothing merges into it.
+        view.guest.carried = Some(stone(None, 1));
+        click(&mut view, &mut drag, 1, 0, input::PICKUP, &rules);
+        assert_eq!(view.get(1).map(|s| s.count), Some(1));
+        assert_eq!(view.guest.carried.as_ref().map(|s| s.count), Some(1));
     }
 
     /// A guest's chest clicks run `BundleItem`'s overrides: a carried

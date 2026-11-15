@@ -4,6 +4,10 @@ use super::*;
 
 mod ahead;
 
+#[cfg(test)]
+#[path = "item_merge_tests.rs"]
+mod item_merge_tests;
+
 /// A dropped item's `bobOffs` (its bob and spin phase) from its random's draw `drawn`, or under
 /// `HORIZON_STILL` from a random seeded by its position alone: a client seeds an item's random
 /// with the server's entity id, which follows the order chunks load in and differs between
