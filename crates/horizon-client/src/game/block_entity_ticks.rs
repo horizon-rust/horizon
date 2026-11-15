@@ -38,6 +38,63 @@ fn ticker_name(entity: &BlockEntity) -> &'static str {
 }
 
 impl Game<'_> {
+    /// The geysers whose ticker pushes entities this tick
+    /// (`PotentSulfurBlockEntity.LAUNCH_ENTITY_TICKER`: erupting or
+    /// continuous), in list order, each with when its ticker joined the list
+    /// (`BlockEntities::joined`). `tick_moving_pistons` runs them between the
+    /// moving pistons by that number, as `Level.tickBlockEntities` runs its
+    /// one list in join order: a geyser loaded with its chunk pushes before a
+    /// piston that started moving since, a geyser placed after a piston
+    /// started pushes after it.
+    pub(super) fn geyser_launchers(&mut self) -> Vec<((Pos, u32), u64)> {
+        if !self.world.block_entities.has_states() {
+            return Vec::new();
+        }
+        let tickers = self.world.block_entity_tickers();
+        tickers
+            .iter()
+            .copied()
+            .filter(|slot| {
+                matches!(
+                    self.world.block_entities.get(&slot.0),
+                    Some(BlockEntity::PotentSulfur(_))
+                ) && self.launches(slot.0)
+            })
+            .filter_map(|slot| Some((slot, self.world.block_entities.joined(&slot.0)?)))
+            .collect()
+    }
+    /// `ServerLevel.tick`'s `tickBlockEntities`, frozen or not: the moving
+    /// pistons (and the geysers' pushes among them), the other block
+    /// entities, then sculk. On a frozen tick the pending tickers still join
+    /// the list and the removed ones leave it, though none ticks, so a block
+    /// entity placed while frozen is in the list before a piston that starts
+    /// moving at the next step.
+    pub(super) fn tick_level_block_entities(&mut self, running: bool) -> Result<()> {
+        if !running {
+            if self.world.block_entities.has_states() {
+                self.world.block_entity_tickers();
+            }
+            return Ok(());
+        }
+        horizon_client::spans::time("tick_moving_pistons", || self.tick_moving_pistons())?;
+        horizon_client::spans::time("tick_block_entities", || self.tick_block_entities())?;
+        horizon_client::spans::time("tick_sculk_entities", || self.tick_sculk_entities());
+        horizon_client::spans::time("tick_sculk_blocks", || self.tick_sculk_blocks())
+    }
+    /// The push of the geyser in ticker `slot`, unless a tick before it this
+    /// pass removed it (`TickingBlockEntity.isRemoved`) or it stands where
+    /// block entities do not tick.
+    pub(super) fn launch_geyser(&mut self, slot: (Pos, u32)) {
+        let pos = slot.0;
+        if self.world.block_entities.is_asleep(&pos)
+            || !self.world.block_entities.is_live(slot)
+            || !(self.block_ticking_area())(pos.0, pos.2)
+            || !self.border.contains(f64::from(pos.0), f64::from(pos.2))
+        {
+            return;
+        }
+        self.launch_potent_sulfur(pos);
+    }
     pub(super) fn tick_block_entities(&mut self) -> Result<()> {
         self.tick_mount_menu();
         self.tick_craft_table();

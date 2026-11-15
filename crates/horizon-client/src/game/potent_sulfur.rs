@@ -151,25 +151,40 @@ impl Game<'_> {
     /// `PotentSulfurBlock.getTicker` on the server, for the block entity at
     /// `pos`: a wet block gives nausea; a dormant one counts down, then gives
     /// nausea; an erupting one pushes entities, then counts down; a continuous
-    /// one pushes entities. A dry block has no ticker.
+    /// one pushes entities. A dry block has no ticker. The push itself runs
+    /// earlier in the tick, among the moving pistons (`launch_potent_sulfur`).
     pub(super) fn tick_potent_sulfur(&mut self, pos: Pos) -> Result<()> {
         let Some((state, geyser)) = self.potent_sulfur_state(pos) else {
             return Ok(());
         };
         match geyser {
-            Geyser::Dry => {}
+            Geyser::Dry | Geyser::Continuous => {}
             Geyser::Wet => self.server_nausea_effect_ticker(pos),
             Geyser::Dormant => {
                 self.server_waiting_countdown_ticker(pos, state, geyser)?;
                 self.server_nausea_effect_ticker(pos);
             }
-            Geyser::Erupting => {
-                self.launch_entity_ticker(pos);
-                self.server_waiting_countdown_ticker(pos, state, geyser)?;
-            }
-            Geyser::Continuous => self.launch_entity_ticker(pos),
+            Geyser::Erupting => self.server_waiting_countdown_ticker(pos, state, geyser)?,
         }
         Ok(())
+    }
+
+    /// Whether the geyser at `pos` has the push in its ticker
+    /// (`LAUNCH_ENTITY_TICKER`): erupting or continuous.
+    pub(super) fn launches(&self, pos: Pos) -> bool {
+        matches!(
+            self.potent_sulfur_state(pos),
+            Some((_, Geyser::Erupting | Geyser::Continuous))
+        )
+    }
+
+    /// The push of an erupting or continuous geyser at `pos`
+    /// (`LAUNCH_ENTITY_TICKER`), which `tick_moving_pistons` runs among the
+    /// tick's moving pistons, in join order.
+    pub(super) fn launch_potent_sulfur(&mut self, pos: Pos) {
+        if self.launches(pos) {
+            self.launch_entity_ticker(pos);
+        }
     }
 
     /// `PotentSulfurBlockEntity.SERVER_NAUSEA_EFFECT_TICKER`: every 10 ticks,
