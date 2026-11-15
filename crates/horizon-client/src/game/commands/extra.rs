@@ -781,32 +781,12 @@ impl Game<'_> {
 
     // ---- /kick ----------------------------------------------------------
 
-    /// `KickCommand.kickPlayers`: only guests of a published world can be
-    /// kicked; the owner never.
+    /// `KickCommand.kickPlayers`: the players the selector finds, only on a
+    /// published world, and the owner never.
     pub(super) fn cmd_kick(&mut self, ctx: &Context) -> R<i32> {
-        let selector = match ctx.get("targets") {
-            Some(Arg::Entity(s)) => Some(s.clone()),
-            _ => None,
-        };
-        // EntityArgument.getPlayers runs before the published check.
-        let host = self.entities(ctx, "targets", true).unwrap_or_default();
-        let guests: Vec<(u32, String)> = match (&self.lan, &selector) {
-            (Some(lan), Some(s)) => lan
-                .hub
-                .guests
-                .iter()
-                .filter(|g| lan.hub.singleplayer_owner != Some(g.uuid))
-                .filter(|g| match &s.player_name {
-                    Some(name) => g.name.eq_ignore_ascii_case(name),
-                    None => s.kind == 'a' || s.kind == 'e',
-                })
-                .map(|g| (g.conn, g.name.clone()))
-                .collect(),
-            _ => Vec::new(),
-        };
-        if host.is_empty() && guests.is_empty() {
-            return Err(err("argument.entity.notfound.player", &[]));
-        }
+        // EntityArgument.getPlayers, and its not-found error, run before the
+        // published check.
+        let targets = self.entities(ctx, "targets", true)?;
         if self.lan.is_none() || (self.serving() && self.published_port().is_none()) {
             return Err(err("commands.kick.singleplayer.failed", &[]));
         }
@@ -826,7 +806,29 @@ impl Game<'_> {
             )]),
         };
         let mut count = 0;
-        for (conn, name) in guests {
+        for target in targets {
+            // A target is a guest of the hub: the one whose turn it is for the
+            // player in place, and none while the host's own player is in
+            // place (a LAN world's is the singleplayer owner).
+            let conn = match target {
+                Target::Guest(conn) => Some(conn),
+                Target::Player => self.lan_acting,
+                _ => None,
+            };
+            let Some(conn) = conn else { continue };
+            let Some((name, uuid)) = self.command_guest(conn).map(|g| (g.name.clone(), g.uuid))
+            else {
+                continue;
+            };
+            // KickCommand.kickPlayers: `isSingleplayerOwner` is never kicked,
+            // and a selector that found only them fails as if it found nobody.
+            if self
+                .lan
+                .as_ref()
+                .is_some_and(|l| l.hub.singleplayer_owner == Some(uuid))
+            {
+                continue;
+            }
             if let Some(lan) = self.lan.as_mut() {
                 lan.hub.kick(conn, tag.clone());
             }
@@ -1440,3 +1442,6 @@ mod waypoint_icon_save_tests {
         assert_eq!(WaypointIcon::from_saved(Some(&no_style)), None);
     }
 }
+
+#[cfg(test)]
+mod kick_selector_tests;

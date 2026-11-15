@@ -2183,11 +2183,10 @@ impl Game<'_> {
                     }
                 }
             }
-            "kick" if !rest.is_empty() => {
-                let Some(user) = self.online_player(rest[0]) else {
-                    self.console_reply(Text::translate("argument.entity.notfound.player", &[]));
-                    return;
-                };
+            // A selector's players are the dispatcher's
+            // (`EntityArgument.getPlayers`): this arm is a single online name.
+            "kick" if !rest.is_empty() && self.online_player(rest[0]).is_some() => {
+                let user = self.online_player(rest[0]).expect("the guard found them");
                 let reason = if rest.len() > 1 {
                     Tag::String(JavaString::from(rest[1..].join(" ").as_str()))
                 } else {
