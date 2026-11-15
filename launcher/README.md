@@ -19,6 +19,12 @@ The opening, then Play ([clip](docs/opening.webm)):
   built on your fork's Actions, or the zip holding it) and installs it as `imported-<date>-<sha>`:
   a copy of the selected release or Nightly's folder, game files included, with that program as the
   game. Imported builds are listed apart as unsigned, and no update replaces them.
+- **Removing native builds**: explicitly removing a native version also clears the shared
+  `fast`/`release` compiler outputs, even below the `native-cache-gib` limit or when its automatic
+  limit is disabled. Other installed games stay playable; the next changed build recompiles.
+  Removal refuses while a native build or cleanup holds the cache, or if cache paths are unsafe.
+  Automatic pruning keeps its existing cache policy. Source downloads, patched workspaces and
+  incomplete installs are separate from this compiler cache.
 - **Move data to another drive**: Settings → Data folder → Move… copies the launcher's
   installations, downloads and account files, the game's worlds and instances, and managed native
   build data to an empty folder. Close games and servers and wait for active jobs first. The launcher

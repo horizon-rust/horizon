@@ -549,7 +549,7 @@ fn logged<T>(build: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 
 pub const DEFAULT_CACHE_GIB: u64 = 30;
 
-fn cache_error(error: crate::native_cache::Error) -> String {
+pub(crate) fn cache_error(error: crate::native_cache::Error) -> String {
     match error {
         crate::native_cache::Error::Busy => {
             tr("A native build or cache cleanup is running. Try again when it finishes.").into()
