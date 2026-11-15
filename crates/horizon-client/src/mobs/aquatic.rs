@@ -595,18 +595,24 @@ fn squid_step(m: &mut Mob, client: bool) {
     }
 }
 /// Species travel overrides. Returns true when handled.
-pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
+pub fn travel(
+    m: &mut Mob,
+    w: &MobWorld,
+    input: Vec3,
+    events: &mut Vec<MobEvent>,
+    level_random: &mut horizon_core::random::LevelRandom,
+) -> bool {
     use Species as S;
     match m.species() {
         // Squid.travel: move by the current velocity only.
         S::Squid | S::GlowSquid => {
-            m.do_move(w, events);
+            m.do_move(w, events, level_random);
             true
         }
         // Axolotl.travelInWater: no fish sinking or generic water gravity.
         S::Axolotl if m.fluids.in_water => {
             m.move_relative(m.ai.speed, input);
-            m.do_move(w, events);
+            m.do_move(w, events, level_random);
             m.velocity = Vec3::new(m.velocity.x * 0.9, m.velocity.y * 0.9, m.velocity.z * 0.9);
             true
         }
@@ -620,7 +626,7 @@ pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>
                 0.01
             };
             m.move_relative(speed, input);
-            m.do_move(w, events);
+            m.do_move(w, events, level_random);
             m.velocity = Vec3::new(m.velocity.x * 0.9, m.velocity.y * 0.9, m.velocity.z * 0.9);
             if m.ai.target.is_none() {
                 // `Vec3.add(0.0, -0.005, 0.0)`: adding 0.0 turns a -0.0 into 0.0.

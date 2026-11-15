@@ -165,13 +165,19 @@ fn sound(m: &Mob, name: &'static str, events: &mut Vec<MobEvent>) {
     events.push(MobEvent::Sound(name, m.center(), 1.0, 1.0));
 }
 /// `AbstractNautilus.travelInWater`: its own speed, no fluid drag but 0.9.
-pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
+pub fn travel(
+    m: &mut Mob,
+    w: &MobWorld,
+    input: Vec3,
+    events: &mut Vec<MobEvent>,
+    level_random: &mut horizon_core::random::LevelRandom,
+) -> bool {
     if !m.fluids.in_water {
         return false;
     }
     let speed = m.ai.speed;
     m.move_relative(speed, input);
-    m.do_move(w, events);
+    m.do_move(w, events, level_random);
     m.velocity = Vec3::new(m.velocity.x * 0.9, m.velocity.y * 0.9, m.velocity.z * 0.9);
     true
 }

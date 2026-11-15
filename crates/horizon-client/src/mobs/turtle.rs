@@ -154,12 +154,18 @@ pub fn move_control(m: &mut Mob) {
 /// `Turtle.travelInWater`: swims at 0.1 move speed with 0.9 drag, and sinks
 /// slowly unless it has a target or is going home and near its home. On
 /// land the usual travel.
-pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
+pub fn travel(
+    m: &mut Mob,
+    w: &MobWorld,
+    input: Vec3,
+    events: &mut Vec<MobEvent>,
+    level_random: &mut horizon_core::random::LevelRandom,
+) -> bool {
     if !m.fluids.in_water {
         return false;
     }
     m.move_relative(0.1, input);
-    m.do_move(w, events);
+    m.do_move(w, events, level_random);
     m.velocity = m.velocity.scale(0.9);
     if m.ai.target.is_none() && (!going_home(m) || !close_to_home(m, 20.0)) {
         m.velocity.y -= 0.005;

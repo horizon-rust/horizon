@@ -167,12 +167,18 @@ pub fn tick(m: &mut Mob) {
 /// `Frog.travelInWater`: `moveRelative(getSpeed(), input)`, the move, then
 /// the motion scaled by 0.9. `getSpeed` is the speed the move control stored.
 /// Out of water the usual travel runs.
-pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
+pub fn travel(
+    m: &mut Mob,
+    w: &MobWorld,
+    input: Vec3,
+    events: &mut Vec<MobEvent>,
+    level_random: &mut horizon_core::random::LevelRandom,
+) -> bool {
     if !m.fluids.in_water {
         return false;
     }
     m.move_relative(m.ai.speed, input);
-    m.do_move(w, events);
+    m.do_move(w, events, level_random);
     m.velocity = m.velocity.scale(0.9);
     true
 }
@@ -1021,13 +1027,19 @@ mod tests {
                 &mut m,
                 w,
                 Vec3::new(0.0, 0.0, 1.0),
-                &mut Vec::new()
+                &mut Vec::new(),
+                &mut crate::mobs::world::level_random(0)
             ));
             assert_eq!(m.velocity, kept);
 
             m.fluids.in_water = true;
             m.position = Vec3::new(0.5, 80.0, 0.5);
-            m.travel(w, Vec3::new(0.0, 0.0, 1.0), &mut Vec::new());
+            m.travel(
+                w,
+                Vec3::new(0.0, 0.0, 1.0),
+                &mut Vec::new(),
+                &mut crate::mobs::world::level_random(0),
+            );
             // (1, -0.5, 0.125) + (0, 0, getSpeed 0.25) = (1, -0.5, 0.375),
             // then * 0.9 = (0.9, -0.45, 0.3375).
             assert!((m.velocity.x - 0.9).abs() < 1.0e-9, "{}", m.velocity.x);

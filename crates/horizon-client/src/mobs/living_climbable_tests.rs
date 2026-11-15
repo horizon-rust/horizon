@@ -160,7 +160,12 @@ fn a_horse_falls_through_vines_at_full_speed() {
             let mut drops = Vec::new();
             while !m.on_ground && drops.len() < 200 {
                 let before = m.position.y;
-                m.travel(w, Vec3::ZERO, &mut Vec::new());
+                m.travel(
+                    w,
+                    Vec3::ZERO,
+                    &mut Vec::new(),
+                    &mut crate::mobs::world::level_random(0),
+                );
                 drops.push(before - m.position.y);
             }
             out = Some(drops);
@@ -208,7 +213,12 @@ fn a_horse_pressed_into_a_ladder_gains_no_height() {
                 let start = m.position.y;
                 let mut pressed = false;
                 for _ in 0..10 {
-                    m.travel(w, Vec3::new(0.0, 0.0, 1.0), &mut Vec::new());
+                    m.travel(
+                        w,
+                        Vec3::new(0.0, 0.0, 1.0),
+                        &mut Vec::new(),
+                        &mut crate::mobs::world::level_random(0),
+                    );
                     pressed |= m.horizontal_collision;
                 }
                 (pressed, m.position.y - start)

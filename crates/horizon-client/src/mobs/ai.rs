@@ -1688,7 +1688,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LevelRandom, events: &m
         m.velocity = Vec3::ZERO;
     } else if !(m.species() == Species::Mannequin && m.extra.immovable) {
         // Mannequin.isEffectiveAi: an immovable one never travels.
-        m.travel(w, input, events);
+        m.travel(w, input, events, level_random);
         // A fall's hurt (checkFallDamage) teleports at once.
         hurt_teleports(m, w, events);
     }
@@ -2795,24 +2795,24 @@ pub fn forgive_dead_player(m: &mut Mob) {
     }
 }
 /// Species-specific travel (fish, squid, dolphins swim with their own rules).
-pub fn custom_travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
-    if m.species() == Species::Drowned {
-        return undead::drowned_travel(m, w, input, events);
-    }
-    if m.species() == Species::Turtle {
-        return super::turtle::travel(m, w, input, events);
-    }
-    if m.species() == Species::Frog {
-        return super::frog::travel(m, w, input, events);
-    }
-    match family(m.species()) {
-        Family::Aquatic => aquatic::travel(m, w, input, events),
-        Family::Guardian => super::guardian::travel(m, w, input, events),
+pub fn custom_travel(
+    m: &mut Mob,
+    w: &MobWorld,
+    input: Vec3,
+    events: &mut Vec<MobEvent>,
+    lr: &mut LevelRandom,
+) -> bool {
+    match (m.species(), family(m.species())) {
+        (Species::Drowned, _) => undead::drowned_travel(m, w, input, events, lr),
+        (Species::Turtle, _) => super::turtle::travel(m, w, input, events, lr),
+        (Species::Frog, _) => super::frog::travel(m, w, input, events, lr),
+        (_, Family::Aquatic) => aquatic::travel(m, w, input, events, lr),
+        (_, Family::Guardian) => super::guardian::travel(m, w, input, events, lr),
         // Shulkers never move on their own.
-        Family::Shulker => true,
-        Family::Allay => super::allay::travel(m, w, input, events),
-        Family::Vex => super::vex::travel(m),
-        Family::Nautilus => super::nautilus::travel(m, w, input, events),
+        (_, Family::Shulker) => true,
+        (_, Family::Allay) => super::allay::travel(m, w, input, events, lr),
+        (_, Family::Vex) => super::vex::travel(m),
+        (_, Family::Nautilus) => super::nautilus::travel(m, w, input, events, lr),
         _ => false,
     }
 }
