@@ -152,6 +152,19 @@ impl NativePack {
         }
     }
 
+    /// Makes this pack's kept resources again, as zeros, after the pack that was to replace it
+    /// had no room for its own (`Renderer::replace_native`), at R `size`: it sees a load.
+    pub(in crate::gfx) fn reload_kept(
+        &mut self,
+        device: &wgpu::Device,
+        size: [u32; 2],
+    ) -> Result<(), String> {
+        if let Some(epochs) = &mut self.frame.epochs {
+            epochs.note(horizon_shader_api::kept::REASON_LOAD);
+        }
+        super::native_post::kept::install(device, Some(&mut self.post), None, size)
+    }
+
     /// Joins the frame's group with this frame's `scene` from `camera` for a material stage
     /// that traces: after the frame's group changed for this frame, before the terrain draws.
     pub(in crate::gfx) fn bind_scene(

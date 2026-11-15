@@ -6782,7 +6782,7 @@ impl Renderer {
         });
         self.pack_post = Some((dimension, post));
         if self.pack_post.as_ref().is_some_and(|p| p.1.is_some()) {
-            self.replace_native(None);
+            self.drop_native();
         }
         Ok(report)
     }
@@ -6981,7 +6981,7 @@ impl Renderer {
     pub fn drop_shader_packs(&mut self) {
         self.pack_loading = None;
         self.pack_post = None;
-        self.replace_native(None);
+        self.drop_native();
         self.pack_atlas = None;
         self.separate_ao = false;
     }
@@ -7022,7 +7022,7 @@ impl Renderer {
             );
         }
         let Some((report, constants, sprite_tags, sprite_materials, lights)) = pack else {
-            self.replace_native(None);
+            self.drop_native();
             return Ok(Vec::new());
         };
         let terrain = native_material::TerrainShape {
@@ -7047,7 +7047,7 @@ impl Renderer {
             &constants,
             lights,
         )?;
-        self.replace_native(Some(pack));
+        self.replace_native(Some(pack))?;
         self.pack_post = None;
         self.pack_atlas = None;
         self.pack_material_atlases = None;

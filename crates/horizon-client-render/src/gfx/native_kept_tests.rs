@@ -604,7 +604,7 @@ impl Chain {
             tonemap,
         )
         .unwrap();
-        install(device, Some(&mut post), None);
+        install(device, Some(&mut post), None, [1, 1]).unwrap();
         post
     }
 
@@ -924,7 +924,7 @@ fn through_pack(manifest: &str, files: &[(&str, &str)], wants: &[f32]) {
         Default::default(),
     );
     let (mut pack, _) = built.unwrap();
-    install(&device, Some(&mut pack.post), None);
+    install(&device, Some(&mut pack.post), None, [1, 1]).unwrap();
     let screen = Screen::new(&device);
     let hud = crate::hud::HudBatch::new([4, 4]);
     let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
@@ -1256,19 +1256,19 @@ fn a_reload_never_holds_two_stores() {
     assert_eq!(delta(before), Some(made));
     // Installed: the buffer and the texture's two versions.
     let built = count().unwrap();
-    install(&device, Some(&mut first), None);
+    install(&device, Some(&mut first), None, [1, 1]).unwrap();
     assert_eq!(delta(built), Some([1, 2]));
     // A reload with another file: the first store goes, then the second is made.
     let mut second = post(BUFFERS, "input.color * 0.5");
     let built = count().unwrap();
-    install(&device, Some(&mut second), Some(&mut first));
+    install(&device, Some(&mut second), Some(&mut first), [1, 1]).unwrap();
     assert_eq!(delta(built), Some([0, 0]));
     assert!(first.kept.as_ref().is_some_and(|k| k.held.is_empty()));
     // A carried store stays: nothing destroyed, nothing made.
     let mut third = post(BUFFERS, "input.color * 0.5");
     third.carry(&mut second);
     let built = count().unwrap();
-    install(&device, Some(&mut third), Some(&mut second));
+    install(&device, Some(&mut third), Some(&mut second), [1, 1]).unwrap();
     assert_eq!(delta(built), Some([0, 0]));
     assert_eq!(third.kept.as_ref().map(|k| k.held.len()), Some(2));
     // A device that can't make `wide`'s r32float so (`PROBE_EXTRA` stands in for one): refused
@@ -1285,4 +1285,172 @@ fn a_reload_never_holds_two_stores() {
     assert_eq!(delta(built), Some([0, 0]));
     assert!(pollster::block_on(scope.pop()).is_none());
     assert_eq!(third.kept.as_ref().map(|k| k.held.len()), Some(2));
+}
+
+/// The video memory the refusal names: buffers as declared, textures both versions, an
+/// R-relative one at R.
+#[test]
+fn a_store_s_size_counts_both_versions_of_a_texture() {
+    use horizon_shader_api::kept::Element;
+    let buffer = Shape::Buffer {
+        bytes: 1024,
+        element: Element::U32,
+    };
+    let fixed = Shape::Fixed {
+        format: Format::R32Float,
+        size: [64, 32],
+    };
+    let scaled = Shape::Scaled {
+        format: Format::Rgba32Float,
+        scale: 1.0,
+    };
+    assert_eq!(bytes(buffer, [3840, 2160]), 1024);
+    assert_eq!(bytes(fixed, [3840, 2160]), 2 * 64 * 32 * 4);
+    assert_eq!(bytes(scaled, [3840, 2160]), 2 * 3840 * 2160 * 16);
+}
+
+/// A pack whose kept resources don't fit in video memory (`NO_ROOM` stands in for a device
+/// without it: an out-of-memory error raised outside a scope panics the game) is refused at
+/// install with what it asked for, and holds nothing; the running pack's store, freed first,
+/// is made again (`NativePack::reload_kept`) and draws, fresh. Run with `WGPU_BACKEND=vulkan`
+/// and `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn a_store_without_room_is_refused_and_the_running_one_made_again() {
+    let Some((instance, device, queue)) = counted() else {
+        return;
+    };
+    let count = || {
+        let hub = instance.generate_report()?.hub;
+        Some([hub.buffers.num_allocated, hub.textures.num_allocated])
+    };
+    let frame = Chain::frame(&device, &queue);
+    let post = Chain::post(&device, &frame, KEPT_CHAIN, &KEPT_FILES);
+    let mut chain = Chain::new(&device, frame, post);
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let near = |got: [u8; 4], want: [f32; 3]| {
+        let shown = want.map(|v| (v.powf(1.0 / 2.2) * 255.0).round() as u8);
+        got.iter().zip(shown).all(|(g, w)| g.abs_diff(w) <= 1)
+    };
+    for want in [[0.0, 0.25, 0.6], [0.25, 0.5, 0.6]] {
+        let got = chain.next(&device, &queue, [1, 1], [4, 4]);
+        assert!(near(got, want), "{got:?}, {want:?} expected");
+    }
+    // Another pack, built, not installed.
+    let manifest = format!("{KEPT_CHAIN}[tonemap]\nfile = \"t.wgsl\"\n");
+    let report = report(
+        &manifest,
+        &[&KEPT_FILES[..], &[("t.wgsl", IDENTITY)]].concat(),
+    );
+    let (passes, others): (Vec<_>, Vec<_>) =
+        (report.stages.into_iter()).partition(|s| s.kind != StageKind::Tonemap);
+    let tonemap = others.iter().find(|s| s.kind == StageKind::Tonemap);
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut other = NativePost::new(
+        &device,
+        passes,
+        &report.manifest,
+        &[],
+        format,
+        &chain.frame,
+        tonemap,
+    )
+    .unwrap();
+    let before = count();
+    NO_ROOM.set(true);
+    let refused = install(&device, Some(&mut other), Some(&mut chain.post), [4, 4]);
+    NO_ROOM.set(false);
+    assert_eq!(
+        refused,
+        Err("its kept resources (1 MiB) don't fit in video memory (no room (test))".into())
+    );
+    assert!(other.kept.as_ref().is_some_and(|k| k.held.is_empty()));
+    assert!(chain.post.kept.as_ref().is_some_and(|k| k.held.is_empty()));
+    // What was made for it is gone, as is the running store: its buffer-free textures, two
+    // versions of each of two.
+    if let (Some(before), Some(after)) = (before, count()) {
+        assert_eq!([before[0] - after[0], before[1] - after[1]], [0, 4]);
+    }
+    // Made again, as at a load, at the frame's R: zeros, both epochs moved, nothing remade in
+    // the frame.
+    install(&device, Some(&mut chain.post), None, [4, 4]).unwrap();
+    let store = chain.post.kept.as_ref().unwrap();
+    let Held::Pair(hist) = &store.held[0] else {
+        unreachable!()
+    };
+    let texture = hist[0].texture();
+    assert_eq!([texture.width(), texture.height()], [4, 4]);
+    assert!(!chain.post.kept.as_mut().unwrap().fit(&device, [4, 4]));
+    let got = chain.next(&device, &queue, [2, 2], [4, 4]);
+    assert!(near(got, [0.0, 0.25, 0.6]), "{got:?} after the refusal");
+    // With room, the other pack's store, declared before any frame, is made at the frame's R.
+    install(&device, Some(&mut other), Some(&mut chain.post), [4, 4]).unwrap();
+    let Held::Pair(hist) = &other.kept.as_ref().unwrap().held[0] else {
+        unreachable!()
+    };
+    let texture = hist[0].texture();
+    assert_eq!([texture.width(), texture.height()], [4, 4]);
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
+}
+
+/// Without the video memory for the R-relative textures at a larger R, they stay at the old
+/// one, the passes reading and writing them at the new R without a validation error, the log
+/// says so once, and that R isn't tried again every frame; it is after the old R comes back
+/// (a window toggled to fullscreen and back), and a later R is. Run with `WGPU_BACKEND=vulkan`
+/// and `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn scaled_textures_without_room_at_a_new_r_stay_at_the_old_one() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let frame = Chain::frame(&device, &queue);
+    let post = Chain::post(&device, &frame, KEPT_CHAIN, &KEPT_FILES);
+    let mut chain = Chain::new(&device, frame, post);
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let near = |got: [u8; 4], want: [f32; 3]| {
+        let shown = want.map(|v| (v.powf(1.0 / 2.2) * 255.0).round() as u8);
+        got.iter().zip(shown).all(|(g, w)| g.abs_diff(w) <= 1)
+    };
+    let hist = |chain: &Chain| match &chain.post.kept.as_ref().unwrap().held[0] {
+        Held::Pair(v) => [v[0].texture().width(), v[0].texture().height()],
+        Held::Buffer(_) => unreachable!(),
+    };
+    let refused = |chain: &Chain| {
+        let store = chain.post.kept.as_ref().unwrap();
+        (store.size, store.refused)
+    };
+    for want in [[0.0, 0.25, 0.6], [0.25, 0.5, 0.6]] {
+        let got = chain.next(&device, &queue, [1, 1], [2, 2]);
+        assert!(near(got, want), "{got:?}, {want:?} expected");
+    }
+    NO_ROOM.set(true);
+    let got = chain.next(&device, &queue, [1, 1], [4, 4]);
+    NO_ROOM.set(false);
+    assert!(near(got, [0.5, 0.75, 0.6]), "{got:?} without room");
+    assert_eq!(
+        (hist(&chain), refused(&chain)),
+        ([2, 2], ([2, 2], Some([4, 4])))
+    );
+    // The same R, with room now: not tried again.
+    let got = chain.next(&device, &queue, [1, 1], [4, 4]);
+    assert!(near(got, [0.75, 1.0, 0.6]), "{got:?} at the refused R");
+    assert_eq!(
+        (hist(&chain), refused(&chain)),
+        ([2, 2], ([2, 2], Some([4, 4])))
+    );
+    // The old R again, then the refused one: tried, and made, as zeros.
+    let got = chain.next(&device, &queue, [2, 1], [2, 2]);
+    assert!(
+        near(got, [0.0, 0.25, 0.6]),
+        "{got:?} back at the old R, reset"
+    );
+    assert_eq!((hist(&chain), refused(&chain)), ([2, 2], ([2, 2], None)));
+    let got = chain.next(&device, &queue, [2, 1], [4, 4]);
+    assert!(
+        near(got, [0.0, 0.25, 0.6]),
+        "{got:?} at the R refused before"
+    );
+    assert_eq!(hist(&chain), [4, 4]);
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
 }
