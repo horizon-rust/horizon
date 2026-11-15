@@ -302,14 +302,14 @@ pub(super) fn run_loading(
     narrator::stop();
     match &mut app {
         // Ready: splitscreen around P1's game.
-        App::Ready(split) => leave_fullscreen_after(&result, &mut split.host.settings),
+        App::Ready(split) => leave_fullscreen_after(&result, &mut split.game().settings),
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
     }
     result?;
     match app {
         App::Ready(mut split) => {
-            write_report(&split.host)?;
-            if let Some(e) = split.host.error.take() {
+            write_report(split.game())?;
+            if let Some(e) = split.game().error.take() {
                 return Err(e);
             }
         }
