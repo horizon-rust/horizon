@@ -5276,6 +5276,7 @@ impl Game<'_> {
                         if hurt && p.arrow.as_ref().is_some_and(|a| a.pierce == 0) {
                             self.combat.stuck.add_arrow();
                         }
+                        self.combat.arrow_hurt_player |= hurt;
                         hurt
                     }
                     Who::Mob(id) => {
