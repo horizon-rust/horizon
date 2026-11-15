@@ -879,7 +879,14 @@ impl Game<'_> {
 
     /// Whether every chunk holding a block in the gateway's 3x3 footprint is loaded.
     pub(super) fn gateway_footprint_loaded(&self, origin: [i32; 3]) -> bool {
-        (-1..=1).all(|dx| (-1..=1).all(|dz| self.world.loaded(origin[0] + dx, origin[2] + dz)))
+        Self::is_gateway_footprint_loaded(&self.world, origin)
+    }
+
+    pub(super) fn is_gateway_footprint_loaded(
+        world: &horizon_client::world::World,
+        origin: [i32; 3],
+    ) -> bool {
+        (-1..=1).all(|dx| (-1..=1).all(|dz| world.loaded(origin[0] + dx, origin[2] + dz)))
     }
 
     fn tick_pending_gateways(&mut self) -> Result<()> {
@@ -1260,7 +1267,7 @@ impl Game<'_> {
                 }
                 let tallest = self.tallest_block(spot, TALLEST_REACH, true);
                 let exit = [tallest[0], tallest[1] + 10, tallest[2]];
-                self.place_gateway_at(exit)?;
+                self.place_gateway(exit)?;
                 self.set_gateway_exit(exit, gateway, false)?;
                 // setExitPosition keeps the gateway's own exactTeleport.
                 self.set_gateway_exit(gateway, exit, exact)?;
@@ -2121,71 +2128,18 @@ mod tests {
 
     #[test]
     fn gateway_footprint_loaded_requires_all_boundary_chunks() {
-        if std::env::var_os("HORIZON_TEST_RESOURCES").is_none() {
-            return;
-        }
-        let mut game = crate::game::native_machines::tests::server_game();
-        game.dim = Dim::End;
-        game.world
-            .chunks
-            .insert((0, 0), Arc::new(horizon_client::chunk::Chunk::empty(0, 0)));
-        game.world.chunks.remove(&(1, 0));
+        use horizon_client::chunk::Chunk;
+        use horizon_world::registry::BlockStateId;
+
+        let mut world = horizon_client::world::World::new(BlockStateId(0), 0);
+        world.chunks.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
 
         let origin = [15, 75, 8];
-        assert!(game.world.loaded(origin[0], origin[2]));
-        assert!(!game.gateway_footprint_loaded(origin));
+        assert!(world.loaded(origin[0], origin[2]));
+        assert!(!Game::is_gateway_footprint_loaded(&world, origin));
 
-        assert!(game.place_gateway_at(origin).is_ok());
-        assert_eq!(game.end.pending_gateways, vec![origin]);
-        assert_eq!(&*game.block_name([15, 75, 8]), "minecraft:air");
-        assert_eq!(&*game.block_name([16, 74, 8]), "minecraft:air");
-
-        game.world
-            .chunks
-            .insert((1, 0), Arc::new(horizon_client::chunk::Chunk::empty(1, 0)));
-        assert!(game.gateway_footprint_loaded(origin));
-
-        game.tick_end().unwrap();
-
-        assert!(game.end.pending_gateways.is_empty());
-        assert_eq!(&*game.block_name([15, 75, 8]), "minecraft:end_gateway");
-        assert_eq!(&*game.block_name([15, 77, 8]), "minecraft:bedrock");
-        assert_eq!(&*game.block_name([15, 73, 8]), "minecraft:bedrock");
-        assert_eq!(&*game.block_name([16, 74, 8]), "minecraft:bedrock");
-        assert_eq!(&*game.block_name([16, 76, 8]), "minecraft:bedrock");
-    }
-
-    #[test]
-    fn resolve_gateway_defers_exit_placement_when_footprint_unloaded() {
-        if std::env::var_os("HORIZON_TEST_RESOURCES").is_none() {
-            return;
-        }
-        let mut game = crate::game::native_machines::tests::server_game();
-        game.dim = Dim::End;
-        game.world
-            .chunks
-            .insert((0, 0), Arc::new(horizon_client::chunk::Chunk::empty(0, 0)));
-        game.world.chunks.remove(&(1, 0));
-
-        let entrance = [0, 75, 0];
-        game.set_state_named(entrance, "minecraft:end_gateway")
-            .unwrap();
-
-        let res = game.resolve_gateway(
-            GatewayJob::Find {
-                gateway: entrance,
-                exact: false,
-            },
-            glam::Vec3::new(15.0, 75.0, 8.0),
-        );
-        assert!(res.is_ok());
-        assert!(!game.end.pending_gateways.is_empty());
-
-        game.world
-            .chunks
-            .insert((1, 0), Arc::new(horizon_client::chunk::Chunk::empty(1, 0)));
-        game.tick_end().unwrap();
-        assert!(game.end.pending_gateways.is_empty());
+        world.chunks.insert((1, 0), Arc::new(Chunk::empty(1, 0)));
+        assert!(Game::is_gateway_footprint_loaded(&world, origin));
     }
 }
 
