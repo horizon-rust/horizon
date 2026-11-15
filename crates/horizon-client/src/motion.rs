@@ -175,7 +175,7 @@ pub enum MotionEvent {
         enabled: bool,
     },
     Health(crate::health::HealthEvent),
-    /// `LivingEntity.handleDamageEvent`: the hurt sound the player hears.
+    /// `LivingEntity.makeSound`'s hurt or death sound: the others hear it, not this player.
     HurtSound(&'static str),
     Fall(crate::landing::FallEvent),
     Recorded {
@@ -4283,7 +4283,7 @@ mod tests {
                 .count(),
             1
         );
-        // A fatal hit plays the death sound rather than a hurt sound (#4570).
+        // A fatal hit plays the death sound, not a hurt one (#4570): hurtServer's makeSound.
         let mut dying = PlayerMotion::new(resources, Vec3::new(20.5, 4.0, 20.5)).unwrap();
         assert!(
             dying
@@ -4291,14 +4291,13 @@ mod tests {
                 .unwrap()
         );
         assert!(dying.health.dead_or_dying());
-        assert!(
-            !dying
-                .events
-                .iter()
-                .any(|e| matches!(e, MotionEvent::HurtSound(_)))
-        );
-        // A shield that takes the whole arrow: onBlocked's sound, no damage
-        // event, so the player hears no hurt sound.
+        let heard = dying
+            .events
+            .iter()
+            .filter(|e| matches!(e, MotionEvent::HurtSound("minecraft:entity.player.death")));
+        assert_eq!(heard.count(), 1);
+        // A shield that takes the whole arrow: onBlocked's sound and no damage
+        // event, but `hurtServer` still plays the hurt sound on the blocked hit.
         use horizon_world::blocking_rules::{BlockingRules, DamageReduction, ItemDamageFunction};
         let mut player = PlayerMotion::new(resources, Vec3::new(20.5, 4.0, 20.5)).unwrap();
         let source = resources.health.damage.id("minecraft:arrow").unwrap();
@@ -4341,10 +4340,11 @@ mod tests {
             "a fully blocked arrow must not animate hurt"
         );
         assert!(
-            !player
+            player
                 .events
                 .iter()
-                .any(|e| matches!(e, MotionEvent::HurtSound(_)))
+                .any(|e| matches!(e, MotionEvent::HurtSound("minecraft:entity.player.hurt"))),
+            "a fully blocked hit still plays the hurt sound"
         );
         // An unblocked hit after the shield block must still animate normally.
         for _ in 0..20 {

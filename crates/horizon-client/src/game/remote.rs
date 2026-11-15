@@ -163,16 +163,6 @@ fn own_hurt_attacker(
     (attacker, player)
 }
 
-/// `Player.getVoicePitch`: a constant 1.0
-/// (`javap -p -c -constants net.minecraft.world.entity.player.Player`:
-/// `0: fconst_1  1: freturn`), so a player's own hurt and death sounds are
-/// neither raised for a baby nor jittered - `LivingEntity.getVoicePitch`, which
-/// the mobs port, does both. It takes no random, so it draws nothing from the
-/// level random either.
-pub(super) fn player_voice_pitch() -> f32 {
-    1.0
-}
-
 /// The hurt sound of a `ClientboundDamageEventPacket`'s damage type, by its
 /// synchronized registry id: `Player.getHurtSound` picks the type's effects.
 fn hurt_sound_for(
@@ -4134,9 +4124,10 @@ impl Game<'_> {
             // jolts the walk animation and restarts the hurt flash, and the
             // hurt player's own client plays its hurt sound (`Player.getHurtSound`:
             // the damage type's effects) at `getSoundVolume` and
-            // `Player.getVoicePitch`, which is 1.0 for every player. The
-            // server's sound packet reaches every other player around, never
-            // this one (#4149), and that copy is played at 1.0.
+            // `(random.nextFloat() - random.nextFloat()) * 0.2F + 1.0F` from
+            // the entity's own random, not `getVoicePitch`. The server's sound
+            // packet reaches every other player around, never this one (#4149),
+            // and that copy is played at `getVoicePitch`, 1.0.
             // This player's own hurt tilt and flash come from the server too
             // (sent to the player itself): its own moves never hurt it.
             C::DamageEvent(p) => {
@@ -4170,9 +4161,12 @@ impl Game<'_> {
                     if let Some(pl) = self.player.as_mut() {
                         pl.health.animate_hurt();
                     }
-                    if let Some(at) = at {
+                    if let Some(at) = at
+                        && let Some(pl) = self.player.as_mut()
+                    {
+                        // handleDamageEvent's own random: the player's, not the level's.
+                        let pitch = horizon_client::health::sound_pitch(&mut pl.random);
                         let sound = self.remote_hurt_sound(p.source_type);
-                        let pitch = player_voice_pitch();
                         self.audio.play_on(
                             horizon_client::settings::sound_source(sound),
                             sound,
@@ -4304,15 +4298,16 @@ impl Game<'_> {
                     m.health = 0.0;
                 }
                 // LivingEntity.handleEntityEvent 3 on this player: its death
-                // sound, which Player.playSound plays for this client alone
-                // (the server's goes to everyone else).
+                // sound at `(nextFloat() - nextFloat()) * 0.2F + 1.0F` from
+                // the entity's own random, on this client alone (the server's
+                // `makeSound` copy goes to everyone else).
                 if p.event == 3
                     && self.remote.as_ref().is_some_and(|r| r.entity_id == p.id)
-                    && let Some(pl) = self.player.as_ref()
+                    && let Some(pl) = self.player.as_mut()
                 {
                     let at = [pl.position.x, pl.position.y, pl.position.z];
+                    let pitch = horizon_client::health::sound_pitch(&mut pl.random);
                     let sound = "minecraft:entity.player.death";
-                    let pitch = player_voice_pitch();
                     self.audio.play_on(
                         horizon_client::settings::sound_source(sound),
                         sound,

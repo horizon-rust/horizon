@@ -264,6 +264,13 @@ pub fn hurt_sound(effects: &str) -> &'static str {
         _ => "minecraft:entity.player.hurt",
     }
 }
+/// `LivingEntity.handleDamageEvent` and `handleEntityEvent` 3: the pitch a hurt
+/// or death sound plays at, `(nextFloat() - nextFloat()) * 0.2F + 1.0F` from the
+/// entity's own random, so the same hit does not always sound the same.
+pub fn sound_pitch(random: &mut horizon_core::random::EntityRandom) -> f32 {
+    use horizon_core::random::RandomSource;
+    (random.next_float() - random.next_float()) * 0.2 + 1.0
+}
 #[derive(Clone, Copy, Debug)]
 pub enum HealthEvent {
     /// `FoodData.tick` calling `hurtServer` with starvation. Only a hit that
@@ -979,7 +986,7 @@ impl HurtWorld for Environment<'_> {
     type Source = DamageTypeId;
     type UseItem = ();
     type Blocking = ();
-    type Sound = ();
+    type Sound = &'static str;
     fn source(&self) -> DamageTypeId {
         self.source.type_id()
     }
@@ -1076,10 +1083,15 @@ impl HurtWorld for Environment<'_> {
         self.totem_fired = true;
         Ok(true)
     }
-    fn death_sound(&mut self, _: &mut State) -> io::Result<()> {
-        Ok(())
+    /// `Player.getDeathSound`: `LivingEntity.hurtServer` plays it through
+    /// `makeSound` on the killing blow, at the voice pitch.
+    fn death_sound(&mut self, _: &mut State) -> io::Result<&'static str> {
+        Ok("minecraft:entity.player.death")
     }
-    fn make_sound(&mut self, _: &mut State, _: ()) -> io::Result<()> {
+    /// `Player.playSound` leaves the player itself out: the players around the
+    /// dying one hear this.
+    fn make_sound(&mut self, _: &mut State, sound: &'static str) -> io::Result<()> {
+        self.events.push(MotionEvent::HurtSound(sound));
         self.phase("death-sound")
     }
     fn secondary_sound(&mut self, _: &mut State) -> io::Result<()> {
@@ -1093,11 +1105,10 @@ impl HurtWorld for Environment<'_> {
         self.phase("death-request")
     }
     /// `Player.playSound` leaves the player itself out: others hear this one.
+    /// `hurtServer` plays it whether or not the item blocking stopped the hit.
     fn hurt_sound(&mut self, _: &mut State) -> io::Result<()> {
-        if !self.block_sound {
-            let sound = hurt_sound(&self.source.definition().effects);
-            self.events.push(MotionEvent::HurtSound(sound));
-        }
+        let sound = hurt_sound(&self.source.definition().effects);
+        self.events.push(MotionEvent::HurtSound(sound));
         self.phase("hurt-sound")
     }
     fn game_time(&mut self, _: &mut State) -> io::Result<i64> {
@@ -1844,3 +1855,7 @@ mod tests {
         assert_eq!((record.armor, record.toughness), (7.0, 7.0));
     }
 }
+
+#[cfg(test)]
+#[path = "health/sound_tests.rs"]
+mod sound_tests;

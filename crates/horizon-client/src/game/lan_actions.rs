@@ -1265,16 +1265,16 @@ impl Game<'_> {
         host.hub.damage_event(id, kind, None, None, at);
     }
 
-    /// `LivingEntity.playHurtSound` for a guest: the server's `Entity.playSound`
-    /// reaches every player around but the hurt one, whose own client plays it
-    /// from `handleDamageEvent` (#4149).
+    /// `Player.playSound` excludes the guest; its client plays its own sound.
     fn guest_hurt_sound(&mut self, host: &mut LanHost, conn: u32, sound: &str) {
         let Some(g) = host.hub.guest(conn) else {
             return;
         };
         let at = g.position;
         let source = horizon_client::settings::sound_source(sound) as i32;
-        self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
+        if g.entity_id != self.own_entity_id() {
+            self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
+        }
         host.hub.sound(sound, at, 1.0, 1.0, source, Some(conn));
     }
 
