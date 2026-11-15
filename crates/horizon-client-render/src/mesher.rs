@@ -11,7 +11,7 @@ mod sides;
 #[cfg(test)]
 #[path = "mesher/source_tests.rs"]
 mod source_tests;
-use crate::connected::{Pick, TileLayer};
+use crate::connected::{ConnectedTextures, NoConnected, Pick, TileLayer};
 use crate::{
     assets::{Assets, RenderAssets},
     biome::{Biomes, GrassModifier},
@@ -22,7 +22,6 @@ use crate::{
 };
 use horizon_assets::model::Direction as ModelDirection;
 use horizon_core::{biome::BiomeZoom, geometry::Direction, position::BlockPos};
-use horizon_optifine::ctm::connect::{Axes as CtmAxes, Face as CtmFace};
 use horizon_world::{
     block_render::FaceVisibility,
     fluid::{FluidKind, FluidState},
@@ -1871,9 +1870,25 @@ impl Mesher<'_> {
         )
     }
     /// The meshing workers' path: `out`'s buffers and `scratch` are reused
-    /// rather than allocated per section.
+    /// rather than allocated per section. A pack's connected textures mesh through their
+    /// format's entry point ([`crate::connected::Connected::mesh`]).
     pub fn mesh_reusing(
         &mut self,
+        region: &[[Option<&Chunk>; 3]; 3],
+        sy: i32,
+        out: SectionMesh,
+        scratch: &mut MeshScratch,
+    ) -> SectionMesh {
+        let render = self.render;
+        match &render.connected {
+            Some(connected) => (connected.mesh)(self, &*connected.rules, region, sy, out, scratch),
+            None => self.mesh_with(&NoConnected, region, sy, out, scratch),
+        }
+    }
+    /// [`Self::mesh_reusing`] with the connected textures `connected`.
+    pub fn mesh_with<C: ConnectedTextures>(
+        &mut self,
+        connected: &C,
         region: &[[Option<&Chunk>; 3]; 3],
         sy: i32,
         mut out: SectionMesh,
@@ -2020,7 +2035,6 @@ impl Mesher<'_> {
                                 )
                                 .unwrap_or(true);
                     }
-                    let connected = &self.render.connected;
                     let start = [out.solid.len(), out.translucent.len()];
                     for model in &models {
                         for face in &model.faces {
@@ -2051,6 +2065,7 @@ impl Mesher<'_> {
                                 }
                             }
                             self.face(
+                                connected,
                                 pad,
                                 &mut tints,
                                 &mut out,
@@ -2101,8 +2116,9 @@ impl Mesher<'_> {
         })
     }
     #[allow(clippy::too_many_arguments)]
-    fn face(
+    fn face<C: ConnectedTextures>(
         &self,
+        connected: &C,
         pad: &Padded,
         tints: &mut Tints,
         out: &mut SectionMesh,
@@ -2162,55 +2178,40 @@ impl Mesher<'_> {
             }
             None => tint,
         };
-        // Fusion's and then OptiFine's connected textures: another sprite, or one per quarter,
-        // and the overlays drawn over it (a few per face at most; more are dropped).
-        let (fusion, connected) = (&self.render.fusion, &self.render.connected);
+        // Connected textures: another sprite, or one per quarter, and the overlays drawn over it
+        // (a few per face at most; more are dropped).
         let mut overlays = [None; 8];
         let mut count = 0;
-        let mut push = |overlay| {
-            if let Some(slot) = overlays.get_mut(count) {
-                *slot = Some(overlay);
-                count += 1;
-            }
-        };
-        let neighbour = |n: [i32; 3]| pad.blocks[(cell as isize + step_index(n)) as usize];
-        let fused = face.fusion.and_then(|rule| {
-            fusion.pick(
-                rule,
-                id,
-                CtmFace::ALL[q.facing as usize],
-                q.tint_index,
-                neighbour,
+        let pick = if connected.is_empty() {
+            Pick::Keep
+        } else {
+            let mut push = |overlay| {
+                if let Some(slot) = overlays.get_mut(count) {
+                    *slot = Some(overlay);
+                    count += 1;
+                }
+            };
+            let tints = &*tints;
+            connected.pick(
+                &crate::connected::Face {
+                    state: id,
+                    layer: face.layer as u16,
+                    facing: q.facing as u8,
+                    pos: [world.x, world.y, world.z],
+                    positions: &q.positions,
+                    uv: &q.uv,
+                    pane: state.pane,
+                    tint_index: q.tint_index,
+                    rule: face.fusion,
+                },
+                |n: [i32; 3]| pad.blocks[(cell as isize + step_index(n)) as usize],
                 |s| {
                     self.tables
                         .info
                         .get(s as usize)
                         .is_some_and(|i| i.opaque_cube)
                 },
-                &mut push,
-            )
-        });
-        let pick = if let Some(pick) = fused {
-            pick
-        } else if connected.is_empty() {
-            Pick::Keep
-        } else {
-            let tints = &*tints;
-            connected.pick(
-                id,
-                face.layer as u16,
-                CtmFace::ALL[q.facing as usize],
-                [world.x, world.y, world.z],
-                neighbour,
                 || Some(tints.biome(pos[0], pos[1], pos[2])),
-                // A pane's tiles are drawn with the cube's UVs (below), so that is its texture.
-                || {
-                    if state.pane {
-                        Some(CtmAxes::cube(CtmFace::ALL[q.facing as usize]))
-                    } else {
-                        CtmAxes::texture(&q.positions, &q.uv)
-                    }
-                },
                 &mut push,
             )
         };

@@ -1,4 +1,4 @@
-//! OptiFine Custom Item Textures on item models: the layer of a stack a `type=item` rule matches
+//! Custom item textures on item models: the layer of a stack an item rule (`Kind::Item`) matches
 //! draws the rule's model, or its own model with the rule's textures in some slots. The rules'
 //! JSON models join the model library, their textures the atlas (`cit_assets`).
 
@@ -105,7 +105,7 @@ pub(super) fn load(
 ) -> (Arc<ModelLibrary>, Option<CitModels>) {
     let rules = CitRules::load(root);
     // A `cit.properties` alone can still turn vanilla's glint off.
-    if rules.is_empty() && rules.global.use_glint {
+    if rules.is_empty() && rules.use_glint {
         return (library, None);
     }
     let extra = cit_assets::load_models(root, &rules.rules);
@@ -387,6 +387,7 @@ mod tests {
 
     /// A stick, a bow's frames and a potion; with `cit`, rules over them.
     fn root(name: &str, cit: bool) -> PathBuf {
+        crate::pack_formats::install();
         let root = std::env::temp_dir().join(format!("horizon-cit-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let write = |rel: &str, text: &str| {
@@ -719,11 +720,8 @@ mod tests {
     }
 
     fn armor_rules(text: &str) -> CitRules {
-        let props = horizon_optifine::Properties::parse_equals_first(text);
         let path = "assets/minecraft/optifine/cit/worn.properties";
-        CitRules::new(vec![
-            crate::cit::Rule::parse(path, &props, |_| true).unwrap(),
-        ])
+        crate::pack_formats::cit::parse_rules(&[(path, text)], "")
     }
 
     #[test]

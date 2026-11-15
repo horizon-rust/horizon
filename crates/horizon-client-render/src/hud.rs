@@ -435,7 +435,7 @@ fn cit_sprites(
     packed: &[PackedImage],
 ) -> Vec<(PackedImage, Option<TextureFlags>, bool)> {
     let have: HashSet<&str> = packed.iter().map(|i| i.0.as_str()).collect();
-    let rules = crate::cit::load_rules(root);
+    let rules = crate::cit::CitRules::load(root).rules;
     let mut ids = crate::cit_assets::item_sprites(&rules);
     if !rules.is_empty() {
         let models = crate::cit_assets::load_models(root, &rules);
@@ -3884,6 +3884,7 @@ mod tests {
     }
     /// A resource root with one plain item texture and these CIT files (relative path, contents).
     fn cit_root(name: &str, files: &[(&str, &str)]) -> PathBuf {
+        crate::pack_formats::install();
         let root =
             std::env::temp_dir().join(format!("horizon-atlas-cit-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -3973,7 +3974,7 @@ mod tests {
         );
         let cit = root.join("assets/minecraft/optifine/cit");
         write_strip(&cit.join("a.png"), 64, 32, &[[1, 2, 3, 255]], None);
-        let rules = crate::cit::load_rules(&root);
+        let rules = crate::cit::CitRules::load(&root).rules;
         assert_eq!(rules.len(), 1);
         let atlas = HudAtlas::build(&root).unwrap();
         let _ = fs::remove_dir_all(&root);

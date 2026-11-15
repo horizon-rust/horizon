@@ -104,10 +104,8 @@ pub struct RenderAssets {
     pub pbr_normals: Vec<u8>,
     pub pbr_specular: Vec<u8>,
     pub pbr_size: u32,
-    /// OptiFine connected textures (empty without `optifine/ctm` files).
-    pub connected: crate::connected::ConnectedTextures,
-    /// Fusion connected textures (empty without Fusion's connecting textures and models).
-    pub fusion: crate::fusion::FusionTextures,
+    /// The packs' connected textures (OptiFine's, Fusion's), when they have some.
+    pub connected: Option<crate::connected::Connected>,
     /// Counts up each time resources load, from 1: a native mod asks again where blocks'
     /// sprites are when it changes (`native_block_sprites_version`).
     pub generation: u64,
@@ -344,14 +342,11 @@ impl RenderAssets {
         };
         // Connected-texture rules find their faces by sprite layer: what they match by name keeps a
         // layer of its own, decided before the models insert their textures.
-        let ctm_rules = if draws {
-            horizon_optifine::ctm::load(root)
+        let connected_rules = if draws {
+            crate::pack_hooks::formats().prepare_connected_textures(root, &mut sprites)
         } else {
-            Vec::new()
+            None
         };
-        sprites.keep_apart(crate::connected::ConnectedTextures::matched_sprites(
-            &ctm_rules,
-        ));
         let mut models = if draws {
             let _step = crate::spans::startup::step("core.models_bake");
             crate::models::prepare_with_models(root, registry, &mut sprites, &parsed)?
@@ -377,41 +372,28 @@ impl RenderAssets {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
             sprites.insert(root, &format!("minecraft:block/destroy_oit_stage_{stage}"))?;
         }
-        let fusion = if draws {
-            let _step = crate::spans::startup::step("core.fusion");
-            crate::fusion::FusionTextures::load(root, registry, &mut sprites, &mut models.catalog)
-        } else {
-            Default::default()
-        };
         let mut emissive = Vec::new();
         let connected = if draws {
-            crate::native_emissive::load(root, &mut sprites);
-            // A side's sprite, for rules that connect by tile: the first quad facing it.
-            let catalog = &models.catalog;
-            let mut found = Vec::new();
-            crate::connected::ConnectedTextures::load(
+            // Native mods' emissive textures go where the pack format puts them (after its
+            // models' tiles, before its rules' tiles), else after both.
+            let mut native_loaded = false;
+            let mut native = |sprites: &mut crate::sprites::Sprites| {
+                if !std::mem::replace(&mut native_loaded, true) {
+                    crate::native_emissive::load(root, sprites);
+                }
+            };
+            let connected = crate::pack_hooks::formats().connected_textures(
                 root,
-                ctm_rules,
+                connected_rules,
                 registry,
                 &mut sprites,
-                |state, face| {
-                    let side = horizon_assets::model::Direction::ALL[face as usize];
-                    catalog
-                        .models_at(
-                            state,
-                            horizon_core::position::BlockPos::new(0, 0, 0),
-                            &mut found,
-                        )
-                        .ok()?;
-                    found
-                        .iter()
-                        .flat_map(|m| &m.faces)
-                        .find(|f| f.quad.facing == side)
-                        .map(|f| f.layer)
-                },
-            )
+                &mut models.catalog,
+                &mut native,
+            );
+            native(&mut sprites);
+            connected
         } else {
-            Default::default()
+            None
         };
         // After the connected tiles: a tile identical to a block shares its layer, and the
         // overlays skip shared layers.
@@ -444,7 +426,6 @@ impl RenderAssets {
             pbr_specular: sprites.specular,
             pbr_size: sprites.pbr_size,
             connected,
-            fusion,
             generation: GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
         })
     }
