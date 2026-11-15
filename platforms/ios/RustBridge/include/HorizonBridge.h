@@ -33,5 +33,6 @@ void nova_ios_input_motion(double dx, double dy);
 void nova_ios_input_text(const char *utf8);
 void nova_ios_input_close(void);
 void nova_ios_set_touch_gestures(bool enabled);
+void nova_ios_set_overlay_active(bool active);
 
 #endif

@@ -82,3 +82,6 @@ pub extern "C" fn nova_ios_input_text(_: *const std::ffi::c_char) {}
 pub extern "C" fn nova_ios_input_close() {}
 #[no_mangle]
 pub extern "C" fn nova_ios_set_touch_gestures(_: bool) {}
+
+#[no_mangle]
+pub extern "C" fn nova_ios_set_overlay_active(_: bool) {}

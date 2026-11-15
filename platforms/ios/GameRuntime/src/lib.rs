@@ -186,3 +186,8 @@ pub extern "C" fn nova_ios_input_close() {
 pub extern "C" fn nova_ios_set_touch_gestures(enabled: bool) {
     horizon_client_input::ios_input::set_touch_gestures(enabled);
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nova_ios_set_overlay_active(active: bool) {
+    horizon_client_input::ios_input::set_overlay_active(active);
+}
