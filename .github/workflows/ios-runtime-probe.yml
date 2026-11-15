@@ -7,6 +7,7 @@ on:
       - 'platforms/ios/GameRuntime/**'
       - 'platforms/ios/App/**'
       - 'platforms/ios/project.yml'
+      - 'platforms/ios/patches/**'
       - '.github/workflows/ios-runtime-probe.yml'
       - 'crates/**'
       - 'Cargo.toml'
@@ -394,6 +395,13 @@ jobs:
             crates/horizon-client/src/game/resource_loader.rs \
             crates/horizon-client/src/game/loading_window.rs \
             crates/horizon-client-render/src/gfx.rs
+
+      - name: Reduce iOS renderer async poll stack usage
+        shell: bash
+        run: |
+          python3 platforms/ios/patches/split_renderer_stack.py
+          git diff --check
+          git diff --stat -- crates/horizon-client-render/src/gfx.rs
 
       - name: Trace desktop Wayland dependency on iOS
         shell: bash

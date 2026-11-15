@@ -355,3 +355,22 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
   creation/Box::pin transformation. Restored both original iOS-only
   transformations before the new noinline poll helper. The workflow's
   sequential patch asserts each expected upstream shape exactly once.
+
+2026-11-15: NATIVE CRASH REPORT CONFIRMS MAIN-THREAD STACK GUARD
+- Inspected the actual user-provided Nova-2026-11-15-000256(1).ips crash
+  report: EXC_BAD_ACCESS SIGSEGV KERN_PROTECTION_FAILURE, Thread 0,
+  invalid sp=0x16f637d40 in 16 KB stack guard just below ~1008 KB stack.
+  Frame 0 is horizon-client-render::gfx::Renderer::new, near entry.
+  This report is earlier than the newest device reproductions, so it is
+  strong but not definitive evidence the new crashes are the same cause.
+- Renderer::new has only one await (opening/reusing device), followed by
+  ~2,500 lines of synchronous renderer and pipeline construction. This
+  keeps a large synchronous stack frame inside the async future's poll.
+- New iOS-only CI checkout patch platforms/ios/patches/split_renderer_stack.py
+  keeps the original public async API and exact device selection logic,
+  moving post-await renderer construction into #[inline(never)]
+  Renderer::nova_ios_finish_new. No thread transfers, unsafe, asset bundling,
+  gameplay changes, or upstream tracked source edits. Diagnostics mark
+  renderer.async.device-opened and renderer.finish.enter.
+- Compile in CI and verify on physical device. For independent confirmation
+  request an iOS system crash report from the newest Nova build as well.
