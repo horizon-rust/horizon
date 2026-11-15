@@ -154,13 +154,13 @@ impl Form {
     pub fn buttons(&self, w: f32, h: f32) -> Vec<ButtonSpec> {
         let rows = self.rows();
         let cx = half(w);
-        let mut y = quarter(h) + 114.0;
+        let list = Self::buttons_of(&rows, self.page.back());
+        // Join a Friend's place, a quarter of the height + 114; higher when a form with more rows
+        // of buttons would run off the bottom of the screen.
+        let mut y = (quarter(h) + 114.0).min(h - 24.0 * button_lines(&list) as f32);
         let mut beside = false;
         let mut out = Vec::new();
-        for (k, b) in Self::buttons_of(&rows, self.page.back())
-            .into_iter()
-            .enumerate()
-        {
+        for (k, b) in list.into_iter().enumerate() {
             let id = match b.row {
                 Some(_) => FIRST + k as u8,
                 None => self.back_id(),
@@ -348,6 +348,21 @@ impl Form {
     }
 }
 
+/// The lines the buttons take: a half-width one joins the half-width one before it.
+fn button_lines(buttons: &[Button]) -> usize {
+    let mut lines = 0;
+    let mut beside = false;
+    for b in buttons {
+        if b.half && beside {
+            beside = false;
+        } else {
+            beside = b.half;
+            lines += 1;
+        }
+    }
+    lines
+}
+
 /// The rows that are fields, in order.
 fn field_rows(rows: &[Row]) -> impl Iterator<Item = usize> + '_ {
     rows.iter()
@@ -457,6 +472,21 @@ mod tests {
             ]
         );
         assert!(matches!(form.click(Some(57), 0.0, 0.0), Outcome::Back));
+    }
+
+    #[test]
+    fn half_width_buttons_share_a_line() {
+        let button = |half| Button {
+            row: Some(0),
+            label: "",
+            active: true,
+            half,
+        };
+        // Two halves, two halves, the leave button: three lines; Join a Friend's two stay two.
+        let report = [true, true, true, true, false].map(button);
+        assert_eq!(button_lines(&report), 3);
+        assert_eq!(button_lines(&[button(false), button(false)]), 2);
+        assert_eq!(button_lines(&[button(true), button(false)]), 2);
     }
 
     #[test]
