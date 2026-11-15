@@ -2,3 +2,4 @@ Build request: integrated Nova iOS IPA
 Requested after cursor, drag-anywhere, and menu-centering fixes.
 Branch: test
 Requested per-launch timestamped logs and full Horizon log forwarding.
+Requested independent X/Y button sizes up to 300 percent.

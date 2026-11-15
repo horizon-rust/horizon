@@ -180,13 +180,11 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         let bounds = overlay.bounds
         guard bounds.width > 10, bounds.height > 10 else { return }
         for (view, control) in activeControls {
-            let side: CGFloat
-            if control.kind == "joystick" {
-                side = max(110, CGFloat(control.size))
-            } else {
-                side = CGFloat(control.size)
-            }
-            view.bounds = CGRect(x: 0, y: 0, width: side, height: side)
+            let width = control.kind == "joystick"
+                ? max(110, CGFloat(control.buttonWidth)) : CGFloat(control.buttonWidth)
+            let height = control.kind == "joystick"
+                ? max(110, CGFloat(control.buttonHeight)) : CGFloat(control.buttonHeight)
+            view.bounds = CGRect(x: 0, y: 0, width: width, height: height)
             view.center = CGPoint(x: bounds.width * control.x,
                                   y: bounds.height * control.y)
         }

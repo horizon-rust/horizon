@@ -9,6 +9,12 @@ struct NovaTouchControl: Identifiable, Codable, Equatable {
     var x: Double = 0.5
     var y: Double = 0.5
     var size: Double = 64
+    // Independent width/height percentages. Optional for existing saved JSON.
+    var sizeX: Double? = nil
+    var sizeY: Double? = nil
+
+    var buttonWidth: Double { size * min(300, max(30, sizeX ?? 100)) / 100 }
+    var buttonHeight: Double { size * min(300, max(30, sizeY ?? 100)) / 100 }
     var opacity: Double = 0.7
 
     static let kinds = ["keyboard", "mouseLeft", "mouseRight",

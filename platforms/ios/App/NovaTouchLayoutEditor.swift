@@ -174,9 +174,9 @@ private struct NovaEditingButton: View {
             .foregroundStyle(.white)
             .lineLimit(1)
             .frame(width: control.kind == "joystick"
-                            ? max(100, control.size) : control.size,
+                            ? max(100, control.buttonWidth) : control.buttonWidth,
                    height: control.kind == "joystick"
-                            ? max(100, control.size) : control.size)
+                            ? max(100, control.buttonHeight) : control.buttonHeight)
             .background(.black.opacity(control.opacity), in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(.white.opacity(0.85), lineWidth: 1.5))
@@ -221,9 +221,33 @@ private struct NovaControlOptions: View {
                     Text("Opacity: \(Int(control.opacity * 100))%")
                     Slider(value: $control.opacity, in: 0.1...1.0)
                 }
-                VStack(alignment: .leading) {
-                    Text("Size: \(Int(control.size))")
-                    Slider(value: $control.size, in: 28...160)
+                Section("Button Size") {
+                    Text("Set width (X) and height (Y) independently, from 30% to 300%.")
+                        .font(.footnote)
+                    HStack {
+                        Text("X width (%)")
+                        Spacer()
+                        TextField("100", value: Binding(
+                            get: { control.sizeX ?? 100 },
+                            set: { control.sizeX = min(300, max(30, $0)) }
+                        ), format: .number)
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 80)
+                    }
+                    HStack {
+                        Text("Y height (%)")
+                        Spacer()
+                        TextField("100", value: Binding(
+                            get: { control.sizeY ?? 100 },
+                            set: { control.sizeY = min(300, max(30, $0)) }
+                        ), format: .number)
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 80)
+                    }
+                    Text("100% keeps the original size (\(Int(control.size)) pt).")
+                        .font(.footnote)
                 }
             }
             .navigationTitle("Button Options")
