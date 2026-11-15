@@ -4638,11 +4638,22 @@ impl Game<'_> {
     }
     /// `projectile_hit` for a projectile the guest `conn` shot, run as them;
     /// as the host's when they have left.
-    fn guest_projectile_hit(&mut self, conn: u32, p: &Projectile, hit: Hit) -> Result<()> {
+    pub(super) fn guest_projectile_hit(
+        &mut self,
+        conn: u32,
+        p: &Projectile,
+        hit: Hit,
+    ) -> Result<()> {
         let Some(mut host) = self.lan.take() else {
             return self.projectile_hit(p, hit);
         };
-        let result = self.as_guest(&mut host, conn, |g| g.projectile_hit(p, hit));
+        // A pearl takes its owner from their own level (ThrownEnderpearl.onHit).
+        let pearl = matches!(p.kind, ProjectileKind::EnderPearl);
+        let level =
+            (host.hub.guest(conn).filter(|_| pearl)).map(|g| super::Dim::from_id(&g.dimension));
+        let result = super::server_travel::pearl_owner::with_owner_level(level, || {
+            self.as_guest(&mut host, conn, |g| g.projectile_hit(p, hit))
+        });
         // The mob hit now answers to the guest (LivingEntity.lastHurtByPlayer).
         if result.is_some()
             && let Hit::Entity {
@@ -5602,28 +5613,7 @@ impl Game<'_> {
                         let from = pl.position;
                         self.spawn_mob_raw("minecraft:endermite", [from.x, from.y, from.z], false);
                     }
-                    // ServerPlayer.teleport: removeVehicle before the placement.
-                    self.stop_riding();
-                    if let Some(pl) = self.player.as_mut() {
-                        pl.position = to;
-                        pl.velocity = Vec3::ZERO;
-                        pl.fall_distance = 0.0;
-                        pl.impulse.reset();
-                        pl.teleported = true;
-                    }
-                    if self.lan_acting.is_some() {
-                        horizon_client::lan::hub::teleport_cause(Some("ender_pearl"));
-                    }
-                    self.previous_position = to;
-                    if damage > 0.0 {
-                        self.hurt_player_by("minecraft:ender_pearl", damage);
-                    }
-                    self.audio.play(
-                        "minecraft:entity.player.teleport",
-                        Some([to.x, to.y, to.z]),
-                        1.0,
-                        1.0,
-                    );
+                    self.pearl_takes_owner(to, damage);
                 }
             }
             (ProjectileKind::SmallFireball, hit) => match hit {

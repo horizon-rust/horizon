@@ -1608,3 +1608,6 @@ mod credits_respawn_tests {
 
 #[cfg(test)]
 mod hold_tests;
+pub(super) mod pearl_owner;
+#[cfg(test)]
+mod pearl_owner_tests;
