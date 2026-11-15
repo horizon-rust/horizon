@@ -42,14 +42,16 @@ struct NovaTouchLayoutEditor: View {
                     NovaEditingButton(control: control) {
                         selectedID = control.id
                         controlOptions = true
-                    } onMove: { start, translation in
+                    } onMove: { translation in
+                        // Save one final position. Dragging itself only changes
+                        // the local button view: no full-layout diff per frame.
                         guard let index = layout.controls.firstIndex(where: { $0.id == control.id }) else {
                             return
                         }
                         layout.controls[index].x = min(0.98, max(0.02,
-                            start.x + translation.width / max(1, geometry.size.width)))
+                            control.x + translation.width / max(1, geometry.size.width)))
                         layout.controls[index].y = min(0.98, max(0.02,
-                            start.y + translation.height / max(1, geometry.size.height)))
+                            control.y + translation.height / max(1, geometry.size.height)))
                     }
                     .position(x: control.x * geometry.size.width,
                               y: control.y * geometry.size.height)
@@ -163,28 +165,30 @@ struct NovaTouchLayoutEditor: View {
 private struct NovaEditingButton: View {
     let control: NovaTouchControl
     let onTap: () -> Void
-    let onMove: (CGPoint, CGSize) -> Void
-    @State private var dragOrigin: CGPoint?
+    let onMove: (CGSize) -> Void
+    @GestureState private var dragOffset = CGSize.zero
 
     var body: some View {
         Text(control.name)
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.white)
             .lineLimit(1)
-            .frame(width: control.size, height: control.size)
+            .frame(width: control.kind == "joystick"
+                            ? max(100, control.size) : control.size,
+                   height: control.kind == "joystick"
+                            ? max(100, control.size) : control.size)
             .background(.black.opacity(control.opacity), in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(.white.opacity(0.85), lineWidth: 1.5))
+            .offset(dragOffset)
             .onTapGesture(perform: onTap)
-            .gesture(DragGesture(minimumDistance: 6)
-                .onChanged { value in
-                    if dragOrigin == nil {
-                        dragOrigin = CGPoint(x: control.x, y: control.y)
-                    }
-                    onMove(dragOrigin ?? CGPoint(x: control.x, y: control.y),
-                           value.translation)
+            .gesture(DragGesture(minimumDistance: 5)
+                .updating($dragOffset) { value, state, _ in
+                    state = value.translation
                 }
-                .onEnded { _ in dragOrigin = nil })
+                .onEnded { value in
+                    onMove(value.translation)
+                })
     }
 }
 
@@ -202,7 +206,8 @@ private struct NovaControlOptions: View {
                     Text("Keyboard key").tag("keyboard")
                     Text("Mouse left").tag("mouseLeft")
                     Text("Mouse right").tag("mouseRight")
-                    Text("Virtual mouse").tag("virtualMouse")
+                    Text("Mouse trackpad").tag("virtualMouse")
+                    Text("Movement joystick").tag("joystick")
                     Text("Virtual keyboard").tag("virtualKeyboard")
                     Text("Menu").tag("menu")
                 }

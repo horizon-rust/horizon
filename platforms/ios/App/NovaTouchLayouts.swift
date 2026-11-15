@@ -138,8 +138,9 @@ enum NovaTouchLayouts {
             ]
             let isOldStarter = selected.name == "default"
                 && selected.controls.count == 10
-                && zip(selected.controls.prefix(4), oldCoordinates).allSatisfy { button, expected in
-                    button.name == expected.0
+                && zip(selected.controls.prefix(4), oldCoordinates).allSatisfy { pair in
+                    let (button, expected) = pair
+                    return button.name == expected.0
                         && abs(button.x - expected.1) < 0.001
                         && abs(button.y - expected.2) < 0.001
                 }
