@@ -109,8 +109,10 @@ The launcher reads the count when it opens and every minute after, and shows "N 
 
 ## Bug reports from the game
 
-The pause menu's Report Bugs opens Horizon's report screen instead of Mojang's bug tracker (the screen comes in a
-later pull request; this is the server's side). It is not data collection: nothing is kept on the machine or sent
+The pause menu's Report Bugs opens Horizon's report screen (`crates/horizon-report`) instead of Mojang's bug tracker.
+The screen sends the build, the machine, the graphics adapter and the render settings the game already knows; the
+measurement, the log, the last seconds, `outdated`, `name` and `capture` come with later pull requests, so until the
+measurement does, the screen sends bug reports only. It is not data collection: nothing is kept on the machine or sent
 in the background, and no switch above covers it. The player picks "Something works wrong" or "Performance",
 writes a sentence, sees the whole issue as it will be posted, and clicking Send is the consent for that one report.
 

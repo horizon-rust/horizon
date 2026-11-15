@@ -1887,6 +1887,7 @@ dependencies = [
  "horizon-official-servers",
  "horizon-perf-share",
  "horizon-platform",
+ "horizon-report",
  "log",
  "winresource",
 ]
@@ -2031,6 +2032,17 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "ring",
+]
+
+[[package]]
+name = "horizon-report"
+version = "0.1.0"
+dependencies = [
+ "horizon-platform",
+ "horizon-telemetry",
+ "log",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

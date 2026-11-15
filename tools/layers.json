@@ -62,6 +62,7 @@
     "horizon-perf-share": "horizon",
     "horizon-relay": "horizon",
     "horizon-release-sign": "horizon",
+    "horizon-report": "horizon",
     "horizon-server": "horizon",
     "horizon-telemetry": "horizon",
     "horizon-telemetry-server": "horizon",
