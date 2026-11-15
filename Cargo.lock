@@ -1576,6 +1576,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "horizon-client-core",
+ "horizon-hooks",
  "horizon-theme",
  "png",
  "winit",
