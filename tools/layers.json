@@ -59,6 +59,7 @@
     "horizon-mod-registry": "horizon",
     "horizon-official": "horizon",
     "horizon-official-servers": "horizon",
+    "horizon-inventory-tweaks": "horizon",
     "horizon-perf-share": "horizon",
     "horizon-relay": "horizon",
     "horizon-release-sign": "horizon",

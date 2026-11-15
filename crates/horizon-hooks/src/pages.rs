@@ -16,8 +16,7 @@ pub enum Place {
     Pause,
     /// A section of Horizon Settings' Extras page, with no entry: its rows join the page's group
     /// its title names when the page has one (`horizon.extras.header.multiplayer`), else they
-    /// start a group of their own after the page's. A [`Row::Heading`] starts another group. A
-    /// [`Row::Key`] shows its key there, without changing it: give a page of its own to a key.
+    /// start a group of their own after the page's. A [`Row::Heading`] starts another group.
     Extras,
     /// The title screen's Friends icon slot (vanilla's `CommonButtons.friends`, beside Language
     /// and Accessibility): with a page registered here the icon opens the first one as a form of
@@ -49,6 +48,12 @@ pub trait Page: Sync {
     /// translation key, `gui.done` by default (`gui.cancel` for a form that does something).
     fn back(&self) -> &'static str {
         "gui.done"
+    }
+
+    /// Whether row `row` does anything now: a setting under a switch that is off is greyed out,
+    /// and still takes acts. True by default.
+    fn live(&self, _row: usize) -> bool {
+        true
     }
 }
 

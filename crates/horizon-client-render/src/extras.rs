@@ -6,8 +6,6 @@
 use std::{collections::VecDeque, fs, path::Path};
 
 pub const FILE: &str = "horizon-extras.txt";
-/// The name the options screen uses while the sort key waits for a key.
-pub const SORT_KEY: &str = "horizon.sort";
 /// The 3D skin layers line, here and in the `options.txt` that held it first.
 const SKIN_LAYERS_KEY: &str = "threeDSkinLayers";
 /// The emote wheel's key, here and in the `key_key.emote` line #10092 wrote to `options.txt`.
@@ -121,14 +119,6 @@ pub struct Extras {
     pub own_name_tag: bool,
     /// No particles from breaking or mining a block (other particles stay).
     pub hide_block_particles: bool,
-    /// Mouse Tweaks-style drags in the inventory and storage containers.
-    pub mouse_tweaks: bool,
-    /// With them, the wheel over a slot moves its items one at a time.
-    pub mouse_tweaks_wheel: bool,
-    /// Sort buttons on the inventory and chest-like containers.
-    pub sort: bool,
-    /// A vanilla key name: sorts the part under the cursor.
-    pub sort_key: String,
     /// The emote wheel's key (`key.emote`), as the game last saved it. The live binding is
     /// `Settings::keys`, bound in Controls with the vanilla ones; it is only kept in this file
     /// so that `options.txt` stays vanilla's (`Settings::load` hands it over, `save` takes it back).
@@ -203,10 +193,6 @@ impl Default for Extras {
             ui_sound_reserve: false,
             own_name_tag: false,
             hide_block_particles: false,
-            mouse_tweaks: false,
-            mouse_tweaks_wheel: true,
-            sort: false,
-            sort_key: "key.keyboard.unknown".into(),
             emote_key: crate::keybinds::KeyBinds::default_of("key.emote").into(),
             chat_animation: false,
             chat_indicator: true,
@@ -295,10 +281,6 @@ impl Extras {
                 "uiSoundReserve" => e.ui_sound_reserve = flag(e.ui_sound_reserve),
                 "ownNameTag" => e.own_name_tag = flag(e.own_name_tag),
                 "hideBlockParticles" => e.hide_block_particles = flag(e.hide_block_particles),
-                "mouseTweaks" => e.mouse_tweaks = flag(e.mouse_tweaks),
-                "mouseTweaksWheel" => e.mouse_tweaks_wheel = flag(e.mouse_tweaks_wheel),
-                "sort" => e.sort = flag(e.sort),
-                "sortKey" if value.starts_with("key.") => e.sort_key = value.to_owned(),
                 EMOTE_KEY if value.starts_with("key.") => e.emote_key = value.to_owned(),
                 "chatAnimation" => e.chat_animation = flag(e.chat_animation),
                 "chatIndicator" => e.chat_indicator = flag(e.chat_indicator),
@@ -333,7 +315,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\n{}:{}\n",
+            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\n{}:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.pregen),
             bool_text(self.fullbright),
@@ -365,10 +347,6 @@ impl Extras {
             bool_text(self.ui_sound_reserve),
             bool_text(self.own_name_tag),
             bool_text(self.hide_block_particles),
-            bool_text(self.mouse_tweaks),
-            bool_text(self.mouse_tweaks_wheel),
-            bool_text(self.sort),
-            self.sort_key,
             bool_text(self.chat_animation),
             bool_text(self.chat_indicator),
             horizon_core::no_ai::KEY,
@@ -417,11 +395,10 @@ impl Extras {
             self.emote_key = value.to_owned();
         }
     }
-    /// Binds the extra key `name` (`SORT_KEY`); false for
-    /// another name (a vanilla mapping).
+    /// Binds the extra key `name` (`pvp::HUD_EDITOR_KEY`); false for another name (a vanilla
+    /// mapping).
     pub fn set_key(&mut self, name: &str, value: String) -> bool {
         match name {
-            SORT_KEY => self.sort_key = value,
             crate::pvp::HUD_EDITOR_KEY => self.pvp.editor_key = value,
             _ => return false,
         }
@@ -548,10 +525,6 @@ pub enum Item {
     UiSoundReserve,
     /// The Music... page on Music & Sounds (`Music page`).
     MusicPage,
-    MouseTweaks,
-    MouseTweaksWheel,
-    Sort,
-    SortKey,
     /// A new chat line slides in and fades in (`Chat::layout`).
     ChatAnimation,
     /// The coloured bar at the left of a chat line.
@@ -580,11 +553,8 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
     vec![
         Err("horizon.extras.header.third_person"),
         Ok(OwnNameTag),
+        // Mouse Tweaks and sorting's rows (`horizon-inventory-tweaks`) join it.
         Err("horizon.extras.header.inventory"),
-        Ok(MouseTweaks),
-        Ok(MouseTweaksWheel),
-        Ok(Sort),
-        Ok(SortKey),
         Err("horizon.extras.header.chat"),
         Ok(ChatAnimation),
         Ok(ChatIndicator),
@@ -611,10 +581,6 @@ impl Item {
             Item::AutoReconnect => "horizon.extras.auto_reconnect",
             Item::UiSoundReserve => "horizon.extras.ui_sound_reserve",
             Item::MusicPage => "horizon.extras.music_page",
-            Item::MouseTweaks => "horizon.extras.mouse_tweaks",
-            Item::MouseTweaksWheel => "horizon.extras.mouse_tweaks_wheel",
-            Item::Sort => "horizon.extras.sort",
-            Item::SortKey => "horizon.extras.sort_key",
             Item::NoAi => "horizon.extras.no_ai",
             Item::AgentControl => "horizon.extras.agent_control",
             Item::ReproKeys => "horizon.extras.repro_keys",
@@ -637,10 +603,6 @@ impl Item {
             Item::AutoReconnect => "horizon.extras.auto_reconnect.tooltip",
             Item::UiSoundReserve => "horizon.extras.ui_sound_reserve.tooltip",
             Item::MusicPage => "horizon.extras.music_page.tooltip",
-            Item::MouseTweaks => "horizon.extras.mouse_tweaks.tooltip",
-            Item::MouseTweaksWheel => "horizon.extras.mouse_tweaks_wheel.tooltip",
-            Item::Sort => "horizon.extras.sort.tooltip",
-            Item::SortKey => "horizon.extras.sort_key.tooltip",
             Item::NoAi => "horizon.extras.no_ai.tooltip",
             Item::AgentControl => "horizon.extras.agent_control.tooltip",
             Item::ReproKeys => "horizon.extras.repro_keys.tooltip",
@@ -672,10 +634,6 @@ impl Item {
             Item::AutoReconnect => "Auto-reconnect",
             Item::UiSoundReserve => "Keep channels for UI sounds",
             Item::MusicPage => "Music page",
-            Item::MouseTweaks => "Mouse Tweaks controls",
-            Item::MouseTweaksWheel => "Scroll wheel moves items",
-            Item::Sort => "Sort buttons",
-            Item::SortKey => "Sort key",
             Item::ChatAnimation => "Smooth chat",
             Item::ChatIndicator => "Message indicator",
             Item::NoAi => "No AI",
@@ -693,13 +651,11 @@ impl Item {
         use Item::*;
         Some(match self {
             UiSoundReserve => return None,
-            MouseTweaksWheel => MouseTweaks,
-            SortKey => Sort,
             ChatIndicator => ChatAnimation,
             Pvp(o) => return o.parent().map(Pvp),
-            Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
-            | AutoReconnect | NoAi | AgentControl | ReproKeys | Splitscreen | ChatAnimation
-            | WheelCyclesSettings | MusicPage | PackBrowser | Pregen => {
+            Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | AutoReconnect | NoAi
+            | AgentControl | ReproKeys | Splitscreen | ChatAnimation | WheelCyclesSettings
+            | MusicPage | PackBrowser | Pregen => {
                 return None;
             }
         })
@@ -728,18 +684,6 @@ impl Item {
             }
             Item::MusicPage => {
                 "Music & Sounds gets a Music... page: play any built-in track now, or turn one off so the game stops picking it. Nothing changes until you turn a track off."
-            }
-            Item::MouseTweaks => {
-                "Right-drag places one per slot, left-drag gathers the held item, Shift + left-drag moves every slot."
-            }
-            Item::MouseTweaksWheel => {
-                "Down sends one item of the slot to the other side, up brings one back."
-            }
-            Item::Sort => {
-                "Sorts the inventory, chests, barrels, ender chests and shulker boxes in creative tab order, merging stacks."
-            }
-            Item::SortKey => {
-                "Sorts the part under the cursor. Click, then press a key; Escape unbinds it."
             }
             Item::ChatAnimation => {
                 "A new chat line slides in from the left while it fades in, instead of appearing whole."
@@ -778,8 +722,6 @@ impl Item {
             Item::OwnNameTag
             | Item::HideBlockParticles
             | Item::AutoReconnect
-            | Item::MouseTweaks
-            | Item::Sort
             | Item::Splitscreen
             | Item::WheelCyclesSettings
             | Item::PackBrowser => Some(Cost::None),
@@ -796,9 +738,6 @@ impl Item {
             Item::AutoReconnect => e.auto_reconnect,
             Item::UiSoundReserve => e.ui_sound_reserve,
             Item::MusicPage => e.music_page,
-            Item::MouseTweaks => e.mouse_tweaks,
-            Item::MouseTweaksWheel => e.mouse_tweaks_wheel,
-            Item::Sort => e.sort,
             Item::ChatAnimation => e.chat_animation,
             Item::ChatIndicator => e.chat_indicator,
             Item::NoAi => e.no_ai,
@@ -809,13 +748,11 @@ impl Item {
             Item::PackBrowser => e.pack_browser,
             Item::Pregen => e.pregen,
             Item::Pvp(o) => return o.switch(&e.pvp),
-            _ => return None,
         })
     }
     /// The value of the other items, as their button shows it.
     pub fn value(self, e: &Extras) -> String {
         match self {
-            Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
             Item::Pvp(o) if o.switch(&e.pvp).is_none() => o.value(&e.pvp).unwrap_or_default(),
             other => match other.switch(e) {
                 Some(true) => crate::lang::get_or("On", "On"),
@@ -824,7 +761,7 @@ impl Item {
         }
     }
     /// A click (`back` for the right button: a PvP & HUD choice steps back; a switch flips
-    /// either way). The sort key binds instead.
+    /// either way).
     pub fn cycle(self, e: &mut Extras, back: bool) {
         match self {
             Item::Fullbright => e.fullbright = !e.fullbright,
@@ -834,9 +771,6 @@ impl Item {
             Item::AutoReconnect => e.auto_reconnect = !e.auto_reconnect,
             Item::UiSoundReserve => e.ui_sound_reserve = !e.ui_sound_reserve,
             Item::MusicPage => e.music_page = !e.music_page,
-            Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
-            Item::MouseTweaksWheel => e.mouse_tweaks_wheel = !e.mouse_tweaks_wheel,
-            Item::Sort => e.sort = !e.sort,
             Item::ChatAnimation => e.chat_animation = !e.chat_animation,
             Item::ChatIndicator => e.chat_indicator = !e.chat_indicator,
             Item::NoAi => e.no_ai = !e.no_ai,
@@ -847,13 +781,11 @@ impl Item {
             Item::PackBrowser => e.pack_browser = !e.pack_browser,
             Item::Pregen => e.pregen = !e.pregen,
             Item::Pvp(o) => o.cycle(&mut e.pvp, back),
-            Item::SortKey => {}
         }
     }
     /// The key name the options screen waits on for a key item.
     pub fn key_name(self) -> Option<&'static str> {
         match self {
-            Item::SortKey => Some(SORT_KEY),
             Item::Pvp(crate::pvp::Opt::HudEditorKey) => Some(crate::pvp::HUD_EDITOR_KEY),
             _ => None,
         }
@@ -879,7 +811,7 @@ mod tests {
         let d = Extras::default();
         assert!(!d.fullbright && !d.dynamic_lights);
         assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
-        assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag && !d.ui_sound_reserve);
+        assert!(!d.own_name_tag && !d.ui_sound_reserve);
         assert!(!d.hide_block_particles && !d.pregen);
         assert!(!d.music_page && d.music_off.is_empty());
         assert!(!d.wheel_cycles_settings);
@@ -915,10 +847,6 @@ mod tests {
         assert_eq!(Item::HideBlockParticles.switch(&e), Some(true));
         let only = Extras::parse("hideBlockParticles:true\n");
         assert!(only.hide_block_particles && !only.own_name_tag);
-        e.mouse_tweaks = true;
-        e.mouse_tweaks_wheel = false;
-        e.sort = true;
-        e.sort_key = "key.keyboard.r".into();
         e.chat_animation = true;
         e.chat_indicator = false;
         assert!(!e.splitscreen);
@@ -1023,8 +951,8 @@ mod tests {
     #[test]
     fn items_cycle_through_their_values() {
         let mut e = Extras::default();
-        Item::Sort.cycle(&mut e, true);
-        assert_eq!(Item::Sort.value(&e), "On");
+        Item::OwnNameTag.cycle(&mut e, true);
+        assert_eq!(Item::OwnNameTag.value(&e), "On");
         // The minimap's old keys still parse, for the move to its mod.
         assert_eq!(
             Extras::parse("minimapSize:7\nminimapZoom:3").minimap_zoom,

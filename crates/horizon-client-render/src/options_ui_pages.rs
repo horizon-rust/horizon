@@ -286,6 +286,29 @@ impl OptionsUi {
         rows
     }
 
+    /// A shell screen's binding row waits: a key, a controller button, or a registered page's key
+    /// row (an Extras section's), which [`Self::bind_native_key`] then binds.
+    pub(super) fn wait_for(&mut self, capture: crate::settings_shell::Capture) {
+        use crate::settings_shell::Capture;
+        match capture {
+            Capture::Key(name) => self.selected_key = Some(name),
+            Capture::Pad(action) => self.selected_pad_action = Some(action),
+            Capture::Page(page, row) => {
+                self.selected_key = Some(PAGE_KEY);
+                self.selected_native_key = Some((page, row));
+            }
+        }
+    }
+
+    /// The key the screen waits for, as a shell screen's binding row names it.
+    pub(super) fn waiting_key(&self) -> Option<crate::settings_shell::Capture> {
+        use crate::settings_shell::Capture;
+        match (self.selected_key?, self.selected_native_key) {
+            (PAGE_KEY, Some((page, row))) => Some(Capture::Page(page, row)),
+            (name, _) => Some(Capture::Key(name)),
+        }
+    }
+
     /// A native mod's key waits for the next key or button pressed.
     pub(super) fn wait_native_key(&mut self, i: usize, k: usize) {
         self.selected_key = Some(NATIVE_KEY);

@@ -189,6 +189,52 @@ impl hud::Canvas for Canvas<'_> {
     }
 }
 
+/// Draws on an open container screen (`horizon_hooks::containers`): `draw` gets a canvas whose
+/// (0, 0) is the panel's top left corner, at `origin` on the screen. It has no corners: `place`
+/// answers `None`.
+pub fn draw_on_panel(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    origin: (f32, f32),
+    draw: impl FnOnce(&mut dyn hud::Canvas),
+) {
+    draw(&mut Panel {
+        batch,
+        atlas,
+        origin,
+    });
+}
+
+struct Panel<'a> {
+    batch: &'a mut HudBatch,
+    atlas: &'a HudAtlas,
+    origin: (f32, f32),
+}
+
+impl hud::Canvas for Panel<'_> {
+    fn size(&self) -> (f32, f32) {
+        (self.batch.width, self.batch.height)
+    }
+    fn tr(&self, key: &str) -> String {
+        crate::lang::get(key)
+    }
+    fn text_width(&self, text: &str) -> f32 {
+        HudBatch::text_width(self.atlas, text)
+    }
+    fn text(&mut self, x: f32, y: f32, text: &str, argb: u32, shadow: bool) {
+        let (x, y) = (self.origin.0 + x, self.origin.1 + y);
+        self.batch
+            .text(self.atlas, text, x, y, argb_color(argb), shadow);
+    }
+    fn fill(&mut self, x: f32, y: f32, w: f32, h: f32, argb: u32) {
+        let (x, y) = (self.origin.0 + x, self.origin.1 + y);
+        self.batch.fill(self.atlas, x, y, w, h, argb_color(argb));
+    }
+    fn place(&mut self, _: hud::Corner, _: f32, _: f32) -> Option<(f32, f32)> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
