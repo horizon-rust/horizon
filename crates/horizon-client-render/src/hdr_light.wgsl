@@ -27,31 +27,18 @@ struct Lit {
     lifted: bool,
 };
 
+// `settings`: x the peak, z whether the world shows lifted (HDR Lighting on, a world drawn), w debug;
+// y is unused. Alpha from 0.75 up lifts nothing: lit surfaces and the sky stay at their SDR light.
 // `lifts`, per tier: how much its fully lifted pixels gain over their own light (their gain - 1).
 fn hdr_mark_light(f: vec3<f32>, a: f32, shows: bool, eased: bool, settings: vec4<f32>, lifts: vec4<f32>) -> Lit {
     var lifted = false;
     // Light over 1 (a float frame's) shows only where the world does and carries
     // no mark (alpha 1), up to the peak: light written as light. Marked pixels clip
-    // at white before their lift, as on a unorm frame, so light sources, the sun and
-    // HDR lighting look as they do there; so do the HUD, menus and HDR Lighting off.
+    // at white before their lift, as on a unorm frame, so light sources and the sun
+    // look as they do there; so do the HUD, menus and HDR Lighting off.
     let c = select(min(f, vec3(1.0)), f, shows && a == 1.0);
     // Gamma 2.2, as SDR displays and the compositors' SDR paths decode it.
     var light = pow(c, vec3(2.2));
-    // HDR lighting: alpha between 0.76 and 1 is how much of it the surface gets. Vanilla's
-    // light is albedo times lightmap, so this is the lightmap going past 1. It eases into the
-    // peak from 60% of it, so bright textures keep their detail. Unmarked light (alpha 1)
-    // gets no gain and no knee: the clamp to the peak below is all it needs here.
-    if shows && a >= 0.75 && a < 1.0 {
-        let top = max(light.r, max(light.g, light.b));
-        let gain = 1.0 + (settings.y - 1.0) * (1.0 - a) / 0.24;
-        let v = top * gain;
-        let knee = max(0.6 * settings.x, 1.0);
-        var out = v;
-        if eased && v > knee && settings.x > knee {
-            out = knee + (settings.x - knee) * (1.0 - exp(-(v - knee) / (settings.x - knee)));
-        }
-        light *= select(gain, out / max(top, 1e-4), eased && v > knee);
-    }
     // The world's alpha is below 0.75 on light sources, the sun and the moon
     // (terrain.wgsl, entity.wgsl): its band of 0.175 is the tier, the lower the
     // brighter, and where in the band how much (hdr_mark).
@@ -82,6 +69,19 @@ fn hdr_mark_light(f: vec3<f32>, a: f32, shows: bool, eased: bool, settings: vec4
         light = min(light, vec3(settings.x));
     }
     return Lit(light, lifted);
+}
+
+// A light source's own light doesn't depend on the light that falls on it. What to scale a lit
+// texel's colour by, so that as its `lift` rises to 1 the `shade` it was multiplied by (face
+// shading, ambient occlusion, the lightmap at its light level) loses its darkening: its brightest
+// channel goes to `full`, the lightmap's brightest channel at full light. That is 1 unless
+// something dims all light (the Darkness effect, a wither's bar), and a light source keeps that.
+// A fully lifted texel then shines the same on every face and at every light level; an unlifted
+// one is scaled by exactly 1. The hue stays the shade's on purpose: it is the hue SDR shows for
+// that face, and this changes brightness only. Never below 1: coloured lights add past the
+// lightmap, so a shade can be brighter than `full`, and lifting doesn't darken.
+fn hdr_unshade(shade: vec3<f32>, lift: f32, full: f32) -> f32 {
+    return mix(1.0, max(full / max(max(shade.r, max(shade.g, shade.b)), 1e-4), 1.0), lift);
 }
 
 // Marks are decoded at the precision of the original 8-bit frame, even in a float target.

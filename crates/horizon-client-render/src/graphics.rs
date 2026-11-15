@@ -902,8 +902,9 @@ pub struct Graphics {
     /// HDR brightness of the HUD and menus, in nits; 0 is Auto: at paper white
     /// ([`Graphics::ui_nits`]). The first-person hand stays at the world's.
     pub hdr_ui_nits: u32,
-    /// HDR Lighting: Horizon's own HDR look, light sources, the sun and sunlight above paper
-    /// white. Off, HDR output shows the same picture as SDR, for shader packs or the vanilla look.
+    /// HDR Lighting: Horizon's lift of light sources and the sun above paper white; lit surfaces
+    /// stay at it. Off, HDR output shows the same picture as SDR, for shader packs or the vanilla
+    /// look.
     pub hdr_lighting: bool,
     /// The graphics driver whose last start ended before HDR output showed a frame (the
     /// marker found, [`HDR_MARKER`]): a window on it stays SDR whatever the mode, until the
@@ -927,10 +928,10 @@ pub struct Graphics {
     /// `batchTranslucent`: `translucentBatching`, which every save wrote as false while it was
     /// off by default and had no switch, stays ignored.
     pub translucent_batching: bool,
-    /// Smooth Gradients (HDR page, on by default): with HDR output on, the frame is drawn in
-    /// 16 bits, so dark gradients don't band (`Renderer::frame_format`). Read when a renderer
-    /// is made (start, resource-pack reload), like `translucent_batching`, where the renderer's
-    /// device draws it (`EffectiveOutput::wide_frame_supported`).
+    /// Smooth Gradients (HDR page, on by default): with HDR output on under a 0.1 or
+    /// `shaders/` pack, the compatibility frame is drawn in 16 bits, so dark gradients don't
+    /// band (`Renderer::frame_format`), where the renderer's device draws it
+    /// (`EffectiveOutput::wide_frame_supported`). The layered float frame has no use for it.
     pub hdr_smooth_gradients: bool,
     /// The native `horizon:<manifest-id>` or classic filename picked in `shaderpacks/`; empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays

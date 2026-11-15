@@ -132,7 +132,7 @@ impl NativeSky {
         let present = present_constants(&module, constants);
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(&stage.label),
+            label: Some(&super::dx12_compiler::module_label(&stage.label)),
             source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
         });
         let pipeline = pipeline(
@@ -157,6 +157,84 @@ impl NativeSky {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(GROUP, &frame.group, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+/// What the renderer hands the pack for its sky's pass of its own (`NativePack::draw_sky_pass`).
+pub struct SkyPass<'a> {
+    pub device: &'a wgpu::Device,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// The world's colour and depth, and the colour's format.
+    pub target: super::timing::Target<'a>,
+    pub depth: &'a wgpu::TextureView,
+    /// The world's clear colour.
+    pub clear: wgpu::Color,
+    /// The terrain's group 0.
+    pub globals: &'a wgpu::BindGroup,
+}
+
+impl super::native_pack::NativePack {
+    /// In a timed frame (`start_frame` said so), the pack's sky in a pass of its own, which
+    /// clears the world's colour and depth first so that the world pass loads them.
+    pub fn draw_sky_pass(&mut self, sky_pass: SkyPass<'_>) {
+        let SkyPass {
+            device,
+            encoder,
+            target: (view, format),
+            depth,
+            clear,
+            globals,
+        } = sky_pass;
+        let Some(sky) = &self.sky else {
+            return;
+        };
+        if let Some(t) = &mut self.timing {
+            t.mark(device, encoder, (view, format));
+        }
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(&sky.label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(clear),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: self.timing.as_mut().and_then(|t| t.writes(&sky.label)),
+            ..Default::default()
+        });
+        pass.set_bind_group(0, globals, &[]);
+        sky.draw(&mut pass, &self.frame);
+    }
+
+    /// The pack's sky inside the world pass, whose group 0 is the terrain's. False when the
+    /// pack has no sky stage, for the renderer's own.
+    pub fn draw_sky(&self, pass: &mut wgpu::RenderPass<'_>) -> bool {
+        let Some(sky) = &self.sky else {
+            return false;
+        };
+        sky.draw(pass, &self.frame);
+        true
+    }
+
+    /// The pack's sky stage draws the sun itself, so the renderer leaves out vanilla's.
+    pub fn hides_sun(&self) -> bool {
+        self.sky.is_some() && !self.vanilla_sun
+    }
+
+    /// The pack's sky stage draws the stars itself, so the renderer leaves out vanilla's.
+    pub fn hides_stars(&self) -> bool {
+        self.sky.is_some() && !self.vanilla_stars
     }
 }
 
@@ -211,18 +289,9 @@ mod tests {
         .unwrap();
     }
 
-    /// Vanilla's sky and two packs over the same globals: one that returns its input draws
-    /// vanilla's pixels, one that inverts them draws the inverse (and stays opaque).
-    #[test]
-    fn a_pack_gets_vanilla_s_colour_and_draws_opaque() {
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
-            return;
-        };
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
-        let format = wgpu::TextureFormat::Rgba8Unorm;
-        let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    /// The terrain's group 0, the globals a sky reads.
+    fn globals_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -234,7 +303,83 @@ mod tests {
                 },
                 count: None,
             }],
-        });
+        })
+    }
+
+    fn frame(device: &wgpu::Device) -> NativeFrame {
+        NativeFrame::new(
+            device,
+            None,
+            Vec::new(),
+            Default::default(),
+            None,
+            (horizon_shader_api::Api::V0_1, false),
+        )
+    }
+
+    /// A pack names its stages, and the module's label comes from that name: one with a
+    /// colon, or one starting like a command-line option, still compiles on Vulkan and on
+    /// DirectX 12 with both its compilers (#16258). DXC needs `dxcompiler.dll` beside the
+    /// test or on `PATH`; a device this machine lacks is skipped.
+    #[test]
+    fn a_stage_s_name_does_not_stop_it_compiling() {
+        for (backends, compiler, name) in [
+            (wgpu::Backends::VULKAN, Default::default(), "Vulkan"),
+            (
+                wgpu::Backends::DX12,
+                wgpu::Dx12Compiler::Fxc,
+                "DirectX 12, FXC",
+            ),
+            (
+                wgpu::Backends::DX12,
+                wgpu::Dx12Compiler::default_dynamic_dxc(),
+                "DirectX 12, DXC",
+            ),
+        ] {
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            desc.backends = backends;
+            desc.backend_options.dx12.shader_compiler = compiler;
+            let instance = wgpu::Instance::new(desc);
+            let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default()))
+            else {
+                eprintln!("{name}: skipped");
+                continue;
+            };
+            let (device, _) =
+                pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+            let (globals, frame) = (globals_layout(&device), frame(&device));
+            for (i, label) in ["Sky: dusk", "-dusk", "/E"].into_iter().enumerate() {
+                // A shader of its own each: a device compiles the same shader only once.
+                let mut stage = stage(&format!(
+                    "fn sky(input: SkyInput) -> vec4<f32> {{ return input.color * {i}.0; }}\n"
+                ));
+                stage.label = label.to_owned();
+                let format = wgpu::TextureFormat::Rgba8Unorm;
+                let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+                let sky = NativeSky::new(&device, &globals, &frame, &stage, &[], format);
+                let internal = pollster::block_on(internal.pop());
+                assert!(
+                    sky.is_ok() && internal.is_none(),
+                    "{name}, {label:?}: {internal:?}"
+                );
+                assert_eq!(sky.unwrap().label, label);
+            }
+            eprintln!("{name}: compiled");
+        }
+    }
+
+    /// Vanilla's sky and two packs over the same globals: one that returns its input draws
+    /// vanilla's pixels, one that inverts them draws the inverse (and stays opaque).
+    #[test]
+    fn a_pack_gets_vanilla_s_colour_and_draws_opaque() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let globals_layout = globals_layout(&device);
         let mut globals: super::super::Globals = bytemuck::Zeroable::zeroed();
         globals.inverse_view = glam::Mat4::IDENTITY.to_cols_array_2d();
         globals.misc = [0.0, 0.0, 1.0, 1.0];
@@ -256,14 +401,7 @@ mod tests {
                 resource: globals_buffer.as_entire_binding(),
             }],
         });
-        let frame = NativeFrame::new(
-            &device,
-            None,
-            Vec::new(),
-            Default::default(),
-            None,
-            (horizon_shader_api::Api::V0_1, false),
-        );
+        let frame = frame(&device);
         queue.write_buffer(
             &frame.buffer,
             0,

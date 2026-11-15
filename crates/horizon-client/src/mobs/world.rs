@@ -7,7 +7,7 @@ use crate::{
     collisions::SceneCollisions,
 };
 use horizon_core::{
-    geometry::{Aabb, Vec3, VoxelShape, block_floor_height, traverse_blocks},
+    geometry::{Aabb, ShapeOp, Vec3, VoxelShape, block_floor_height, traverse_blocks},
     position::BlockPos,
 };
 use horizon_world::{
@@ -529,6 +529,30 @@ impl MobWorld<'_> {
             .ok()?
             .bounds()
     }
+    /// `Block.isFaceFull(state.getCollisionShape(level, pos), Direction.UP)`:
+    /// the state at `p` covers its whole top face, as a full block does, as a
+    /// top slab and upside-down stairs do, and as a 14/16 snow layer does not.
+    pub fn top_face_full(&self, p: [i32; 3]) -> bool {
+        let state = self.world.block(p[0], p[1], p[2]);
+        if self.facts.get(state).full_collision {
+            return true;
+        }
+        let mut scene = SceneCollisions {
+            world: self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        let Ok(shape) = self.collision.collision_shape(&mut scene, state, p) else {
+            return false;
+        };
+        shape
+            .face_shape(horizon_core::geometry::Direction::Up)
+            .is_ok_and(|face| {
+                VoxelShape::block()
+                    .join_is_not_empty(&face, ShapeOp::XOR)
+                    .is_ok_and(|differs| !differs)
+            })
+    }
     /// LivingEntity.hasLineOfSight: eye to eye within 128 blocks.
     pub fn line_of_sight(&self, from_eye: Vec3, to: Vec3) -> bool {
         self.line_of_sight_for(None, from_eye, to)
@@ -773,6 +797,11 @@ pub(crate) fn with_test_world(
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
     with_built_test_world(others, |_, _| {}, f)
+}
+/// A test's level random (`Level.random`), seeded.
+#[cfg(test)]
+pub(crate) fn level_random(seed: i64) -> horizon_core::random::LevelRandom {
+    horizon_core::random::LevelRandom::for_level(horizon_core::random::LegacyRandom::new(seed))
 }
 /// `with_test_world` with `build` placing blocks first.
 #[cfg(test)]
