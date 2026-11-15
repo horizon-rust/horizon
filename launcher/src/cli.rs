@@ -1184,6 +1184,28 @@ fn progress(label: String) -> impl Fn(f32) {
     }
 }
 
+/// A native build's steps, a line each with the time since `started`, written to `out`. A step
+/// whose line would say the same again is left out: Rust's download reports every chunk it gets,
+/// and one first build printed the same percentage about 1,900 times (62,648 lines in all).
+fn build_steps(started: std::time::Instant, out: impl Write) -> impl Fn(native_mods::Step) {
+    let out = std::cell::RefCell::new(out);
+    let said = std::cell::RefCell::new(String::new());
+    move |step| {
+        let label = step.label();
+        if *said.borrow() == label {
+            return;
+        }
+        let secs = started.elapsed().as_secs();
+        let _ = writeln!(
+            out.borrow_mut(),
+            "[{:>2}:{:02}] {label}",
+            secs / 60,
+            secs % 60
+        );
+        *said.borrow_mut() = label;
+    }
+}
+
 fn json(value: serde_json::Value) {
     println!("{}", serde_json::to_string_pretty(&value).unwrap());
 }
@@ -1307,10 +1329,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 Some(profile) => profile,
                 None => native_mods::Profile::chosen(&backend::Settings::load()),
             };
-            let steps = |step: native_mods::Step| {
-                let secs = started.elapsed().as_secs();
-                eprintln!("[{:>2}:{:02}] {}", secs / 60, secs % 60, step.label())
-            };
+            let steps = build_steps(started, std::io::stderr());
             if let Some(output) = server_output {
                 // Export mode: a standalone server engine in `output`. No instance is read
                 // or changed, and no launcher config is written; `folder` is required (clap).
@@ -1380,7 +1399,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                     allow_version_mismatch,
                     ignore_pins,
                     profile,
-                    steps,
+                    &steps,
                 )
                 .map_err(|e| match e.starts_with(native_mods::MISMATCH) {
                     true => {
@@ -3652,6 +3671,41 @@ fn modpack(action: ModpackCmd, as_json: bool) -> Result<(), String> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    /// A native build reports Rust's download for every chunk it gets: each line is said once.
+    #[test]
+    fn a_native_build_says_each_step_once() {
+        use native_mods::Step;
+        let mut out = Vec::new();
+        {
+            let steps = build_steps(std::time::Instant::now(), &mut out);
+            for step in [
+                Step::Rust(0.910),
+                Step::Rust(0.912),
+                Step::Rust(0.92),
+                Step::Rust(0.921),
+                Step::Tool,
+                Step::Rust(0.92),
+            ] {
+                steps(step);
+            }
+        }
+        let text = String::from_utf8(out).unwrap();
+        let said: Vec<&str> = text
+            .lines()
+            .map(|l| l.split_once("] ").unwrap().1)
+            .collect();
+        let label = |step: Step| step.label();
+        assert_eq!(
+            said,
+            [
+                label(Step::Rust(0.91)),
+                label(Step::Rust(0.92)),
+                label(Step::Tool),
+                label(Step::Rust(0.92)),
+            ]
+        );
+    }
 
     #[test]
     fn completions_cover_each_shell_and_nested_commands() {
