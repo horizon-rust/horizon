@@ -74,10 +74,8 @@ pub fn layers_from_nbt(tag: Option<&Tag>) -> Vec<BannerLayer> {
     let Some(Tag::List(list)) = tag else {
         return Vec::new();
     };
-    // `BannerPatternLayers.CODEC` is `Layer.CODEC.listOf()`: one layer the codec
-    // rejects (a missing field, an unknown dye name) fails the whole list, and
-    // `BannerBlockEntity.loadAdditional` then falls back to
-    // `BannerPatternLayers.EMPTY`.
+    // The list codec's partial value keeps layers that decoded successfully;
+    // `TagValueInput.read` returns that partial value on an error.
     let layer = |e: &Tag| -> Option<BannerLayer> {
         let text = |k: &str| match e.get(k) {
             Some(Tag::String(s)) => Some(s.to_string_lossy()),
@@ -96,8 +94,7 @@ pub fn layers_from_nbt(tag: Option<&Tag>) -> Vec<BannerLayer> {
                     Some(Tag::String(s)) => Some(s.to_string_lossy()),
                     _ => None,
                 };
-                // `Identifier.CODEC` rejects an invalid `asset_id`, which fails
-                // the layer and with it the list.
+                // `Identifier.CODEC` rejects an invalid `asset_id`.
                 let asset = horizon_client_core::identifier::normalize_id(&field("asset_id")?)?;
                 PatternRef::Inline {
                     asset: Arc::from(asset.as_str()),
@@ -118,14 +115,7 @@ pub fn layers_from_nbt(tag: Option<&Tag>) -> Vec<BannerLayer> {
             color: Arc::from(color.as_str()),
         })
     };
-    let mut layers = Vec::with_capacity(list.len());
-    for e in list {
-        match layer(e) {
-            Some(layer) => layers.push(layer),
-            None => return Vec::new(),
-        }
-    }
-    layers
+    list.iter().filter_map(layer).collect()
 }
 
 #[cfg(test)]
@@ -139,29 +129,25 @@ mod tests {
         ])
     }
 
-    /// `BannerPatternLayers.CODEC` is a list codec: one layer it rejects (an
-    /// unknown dye name, a missing field) fails the whole list, and
-    /// `BannerBlockEntity.loadAdditional` keeps `BannerPatternLayers.EMPTY`, so
-    /// the valid layer before it is dropped too.
     #[test]
-    fn an_invalid_layer_clears_the_saved_layers() {
-        let mixed = Tag::List(vec![layer("brick", "red"), layer("brick", "not_a_color")]);
-        assert!(
-            layers_from_nbt(Some(&mixed)).is_empty(),
-            "one rejected layer means no layers"
+    fn invalid_layers_are_dropped_from_saved_layers() {
+        let mixed = Tag::List(vec![
+            layer("brick", "red"),
+            layer("brick", "not_a_color"),
+            Tag::compound([("pattern", Tag::String("brick".into()))]),
+            layer("globe", "blue"),
+        ]);
+        assert_eq!(
+            layers_from_nbt(Some(&mixed)),
+            vec![
+                BannerLayer::new("minecraft:brick", "red"),
+                BannerLayer::new("minecraft:globe", "blue")
+            ]
         );
-        // The same list without the bad layer survives, so this is not an empty
-        // answer to every list.
         let valid = Tag::List(vec![layer("brick", "red"), layer("globe", "blue")]);
         let layers = layers_from_nbt(Some(&valid));
         assert_eq!(layers.len(), 2, "both valid layers are kept");
         assert_eq!(layers[0], BannerLayer::new("minecraft:brick", "red"));
-        // A layer missing its colour fails the list as well.
-        let missing = Tag::List(vec![
-            layer("brick", "red"),
-            Tag::compound([("pattern", Tag::String("brick".into()))]),
-        ]);
-        assert!(layers_from_nbt(Some(&missing)).is_empty());
         // And the round trip of a valid list is unchanged.
         assert_eq!(layers_from_nbt(Some(&layers_to_nbt(&layers))), layers);
     }

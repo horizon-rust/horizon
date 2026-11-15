@@ -85,7 +85,7 @@ fn a_banner_keeps_an_inline_pattern() {
         banners.layer_key(&banner.layers[0]),
         "block.minecraft.banner.brick.red"
     );
-    // A direct holder needs both fields: one missing fails the whole list.
+    // A direct holder needs both fields; a bad layer leaves the valid one.
     let broken = Tag::List(vec![
         Tag::compound([("pattern", pattern), ("color", Tag::String("red".into()))]),
         Tag::compound([
@@ -99,7 +99,7 @@ fn a_banner_keeps_an_inline_pattern() {
     let tag = banner_tag(vec![("patterns", broken)]);
     let (_, entity) = save::decode_block_entity(&tag).expect("banner");
     assert!(
-        matches!(&entity, BlockEntity::Banner(b) if b.layers.is_empty()),
-        "a layer without a translation key empties the list"
+        matches!(&entity, BlockEntity::Banner(b) if b.layers == banner.layers),
+        "a layer without a translation key is dropped"
     );
 }
