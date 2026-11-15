@@ -4,6 +4,8 @@ mod cave_air_tests;
 mod effect_meta_tests;
 #[path = "hub/far_tests.rs"]
 mod far_tests;
+#[path = "hub/tests/impulse_grace_tests.rs"]
+mod impulse_grace_tests;
 #[path = "hub/tests/sound_tests.rs"]
 mod sound_tests;
 use super::*;

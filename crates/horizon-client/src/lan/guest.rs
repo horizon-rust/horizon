@@ -820,6 +820,18 @@ impl Guest {
     pub fn spectator(&self) -> bool {
         self.game_mode == SPECTATOR
     }
+    /// Whether handlePlayerPositionChange's moved-wrongly check applies (the
+    /// spectators and sleepers aside): not in creative, and not in the
+    /// server body's `LivingEntity.isInPostImpulseGraceTime` (the 40 ticks
+    /// after a wind charge's push, `ServerPlayer.onExplosionHit`, or a mace's
+    /// smash).
+    pub fn checks_wrong_moves(&self) -> bool {
+        !self.creative()
+            && !self
+                .motion
+                .as_ref()
+                .is_some_and(|m| m.impulse.is_in_grace_time())
+    }
     /// `Abilities.mayBuild`: survival or creative.
     pub fn may_build(&self) -> bool {
         matches!(self.game_mode, SURVIVAL | CREATIVE)

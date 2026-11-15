@@ -4582,7 +4582,7 @@ impl Hub {
                 CollisionContext::position(g.position[1]).with_descending(g.sneaking),
             )
             .ok();
-        let fail = !g.creative()
+        let fail = g.checks_wrong_moves()
             && done.is_some_and(|done| {
                 let (dx, dz) = (movement.x - done.x, movement.z - done.z);
                 dx * dx + dz * dz > 0.0625
