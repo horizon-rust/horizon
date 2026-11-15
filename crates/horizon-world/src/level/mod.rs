@@ -135,6 +135,8 @@ mod weather;
 #[cfg(test)]
 mod growth_tests;
 #[cfg(test)]
+mod sculk_vein_water_tests;
+#[cfg(test)]
 mod tests;
 
 pub use bonemeal::TemplateSettings;
@@ -145,7 +147,7 @@ pub use interact::{InteractionResult, PlayerContext, PlayerEffect, UseBranch, hi
 pub use pistons::{BlockEventData, MovingPiston};
 pub use place::{PlaceContext, PlaceOutcome, PlacementContext};
 pub use states::{BlockId, PropKey, StateTable};
-pub use tick::{Precipitation, PrecipitationKind, RandomTickMask};
+pub use tick::{Precipitation, PrecipitationKind, RandomTickMask, RandomTickMaskUpdate};
 pub use ticks::Ticks;
 
 /// `Block.UPDATE_*` flags accepted by [`Behaviours::set_block`].

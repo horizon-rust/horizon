@@ -8,6 +8,7 @@ pub mod animate_tick;
 pub mod arrows;
 pub mod bed_geometry;
 pub mod block_contact;
+pub mod packet_source;
 pub mod parallel;
 pub mod powder_snow;
 pub use horizon_client_render::{
@@ -59,6 +60,7 @@ pub mod debug_entries;
 pub mod debug_keys;
 pub mod debug_overlay;
 pub mod debugworld;
+pub mod desktop;
 pub mod dialog;
 pub mod dialog_screen;
 pub mod end_crystal;

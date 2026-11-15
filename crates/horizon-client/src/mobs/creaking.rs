@@ -120,6 +120,7 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage) -> bool {
             | DamageKind::MaceSmash
             | DamageKind::Spear
             | DamageKind::MobAttack
+            | DamageKind::MobAttackNoAggro
             | DamageKind::Arrow
             | DamageKind::Thrown
             | DamageKind::Fireball
@@ -407,6 +408,13 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses, animations: &HashMap<String, Anim
 /// The creaking species exists in the species table.
 pub fn is_creaking(m: &Mob) -> bool {
     m.species() == Species::Creaking
+}
+/// The part of `Entity.canUsePortal` a mob's own state decides: it is alive,
+/// it is not a boss that never travels, and — over `Monster.canUsePortal` —
+/// it is not a creaking bound to a heart (`Creaking.canUsePortal`). The
+/// rides and the players a side carries are the caller's half.
+pub fn mob_can_use_portal(m: &Mob) -> bool {
+    m.alive() && m.species() != Species::Wither && can_use_portal(m)
 }
 /// `Creaking.canUsePortal`: a creaking bound to a heart never travels through
 /// a portal, since its heart stays behind; one without a heart goes through
