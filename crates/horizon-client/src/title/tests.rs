@@ -1722,6 +1722,7 @@ fn world_list_names_every_game_mode_and_hardcore_in_red() {
                 "Data",
                 Tag::compound([
                     ("LevelName", Tag::String(folder.into())),
+                    ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
                     ("GameType", Tag::Int(game_type)),
                     (
                         "difficulty_settings",
@@ -1755,6 +1756,39 @@ fn world_list_names_every_game_mode_and_hardcore_in_red() {
     let creative = info("Creative");
     assert_eq!(creative.plain(), "Creative Mode, Commands, Version: 26.3");
     assert!(creative.spans.iter().all(|s| s.style.color.is_none()));
+}
+
+#[test]
+fn a_world_from_before_difficulty_settings_still_shows_hardcore() {
+    let f = Fixture::new();
+    // A 1.21 world: level.dat has the legacy Difficulty, hardcore and
+    // DifficultyLocked keys and no difficulty_settings yet (LevelDatDifficultyFix
+    // makes them, under the summary's LIGHTWEIGHT_LEVEL datafix).
+    crate::save::write_dat(
+        &f.title.saves.join("Legacy").join("level.dat"),
+        Tag::compound([(
+            "Data",
+            Tag::compound([
+                ("LevelName", Tag::String("Legacy".into())),
+                ("DataVersion", Tag::Int(3955)),
+                ("GameType", Tag::Int(0)),
+                ("Difficulty", Tag::Byte(3)),
+                ("DifficultyLocked", Tag::Byte(0)),
+                ("hardcore", Tag::Byte(1)),
+                (
+                    "Version",
+                    Tag::compound([("Name", Tag::String("1.21".into()))]),
+                ),
+            ]),
+        )]),
+    )
+    .unwrap();
+    let worlds = list_worlds(&f.title.saves);
+    let legacy = worlds.iter().find(|w| w.folder == "Legacy").unwrap();
+    let info = world_info(legacy);
+    assert_eq!(info.plain(), "Hardcore Mode, Version: 1.21");
+    assert_eq!(info.spans[0].style.color, Some(0xFF0000));
+    assert!(legacy.hardcore, "the legacy world is hardcore");
 }
 
 #[test]

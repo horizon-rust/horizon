@@ -3842,10 +3842,10 @@ impl Level {
     pub fn read(dir: &Path) -> Option<Self> {
         Self::read_root(dir, read_level_dat(dir)?)
     }
-    /// `read` from level.dat alone, without the level.dat_old fallback: what
-    /// `LevelStorageSource.readLevelSummary` reads for the world list.
+    /// `read` from level.dat alone, without the level.dat_old fallback: what the world list reads.
     pub fn read_summary(dir: &Path) -> Option<Self> {
-        Self::read_root(dir, read_dat(&dir.join("level.dat"))?)
+        let root = read_dat(&dir.join("level.dat"))?;
+        Self::read_root(dir, horizon_world::datafix::summary(root))
     }
     fn read_root(dir: &Path, root: Tag) -> Option<Self> {
         let data = root.get("Data")?;

@@ -350,6 +350,22 @@ pub fn update_region_tag_to(root: Ty, tag: &mut Tag, to: i32) {
     dynamic::set(tag, "DataVersion", Tag::Int(to));
 }
 
+/// `DataFixTypes.LEVEL_SUMMARY.updateToCurrentVersion` over a level.dat root: the world
+/// list reads the summary from the tag its datafix made, so a world from before
+/// `difficulty_settings` gets it from its legacy `Difficulty`, `hardcore` and
+/// `DifficultyLocked` keys (`LevelDatDifficultyFix`).
+pub fn summary(mut root: Tag) -> Tag {
+    if let Some(data) = root.get_mut("Data") {
+        let version = dynamic::as_int(data.get("DataVersion"), -1);
+        // Data from before 1.13 needs the data fixers' tables of the prepared resources;
+        // without them it stays as it is, as everywhere else.
+        if version >= FLATTENING || tables_available() {
+            update(Ty::LightweightLevel, data, version, CURRENT);
+        }
+    }
+    root
+}
+
 /// `PlayerDataStorage.load`: the DataVersion field stays as loaded.
 pub fn update_player(tag: &mut Tag) {
     let version = dynamic::as_int(tag.get("DataVersion"), -1);

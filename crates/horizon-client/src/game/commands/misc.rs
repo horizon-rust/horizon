@@ -365,4 +365,7 @@ impl Game<'_> {
 mod tick_status_broadcast_tests;
 
 #[cfg(test)]
+mod difficulty_hardcore_tests;
+
+#[cfg(test)]
 mod random_command_tests;

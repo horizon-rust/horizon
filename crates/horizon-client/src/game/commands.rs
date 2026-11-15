@@ -3541,12 +3541,12 @@ impl Game<'_> {
         self.feedback(Text::translate("commands.difficulty.success", &[name(i)]));
         Ok(0)
     }
-    /// `MinecraftServer.setDifficulty(difficulty, true)`.
+    /// `MinecraftServer.setDifficulty(difficulty, true)`: a hardcore world is always hard.
     pub(super) fn set_difficulty_forced(&mut self, i: u8) {
+        let i = if self.level.hardcore { 3 } else { i };
         let from = self.ui.difficulty;
         self.ui.difficulty = i;
-        // The level data holds the world's difficulty: it survives the
-        // reopen, so it follows the command.
+        // The level data holds the world's difficulty: it survives the reopen.
         self.level.set_difficulty(i);
         self.sync_rules();
         // MinecraftServer.setDifficulty: every player, guests included, is
