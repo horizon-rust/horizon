@@ -287,7 +287,10 @@ build pays nothing.
 
 The hooks today: `started` (once, when someone plays: not a dedicated server, a benchmark or an automated run),
 `published` (the world opened to or closed from LAN or friends, on change), `shutdown` (the window closed, the
-world saved) and `tunnel` (the resolver of `friend:` addresses, Play with Friends') and `captures` (Open and Share for saved performance captures, `horizon-perf-share`: with none registered the game offers neither). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
+world saved), `tunnel` (the resolver of `friend:` addresses, Play with Friends'), `captures` (Open and Share for saved
+performance captures, `horizon-perf-share`: with none registered the game offers neither), `share` (each client tick,
+the window's world through `share::ShareView`: open it to LAN, its players, chat, the clipboard) and `lan_closed` (it
+stopped being open to LAN). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
 `horizon_hooks::engine` that the engine calls where vanilla does the matching thing; give it plain data or a type
 the engine owns, never one from above. A hook that needs engine types the platform doesn't expose yet (a draw
 context for HUD and chat overlays, a settings page) comes with that type's platform API (M6). An extension point
@@ -363,7 +366,7 @@ pub trait Store: Sync {
 A page lives in the options screen's shell, and its entry sits on one of the game's menus.
 
 ```rust
-pub enum Place { HorizonSettings, Pause, Extras, Title }
+pub enum Place { HorizonSettings, Pause, Extras, Title, PauseFriends }
 pub trait Page: Sync {
     fn id(&self) -> &'static str;            // stable, for horizon-ctl and the page stack
     fn title(&self) -> &'static str;         // translation key
@@ -394,6 +397,9 @@ pub fn connect(address: impl Into<String>);                   // from a Title pa
   button on the title screen or the pause menu that opens the page. These buttons exist only when something
   registered, so the vanilla menus keep vanilla's look. The page is drawn with the same widgets, tooltips,
   narration, controller focus and `horizon-ctl` ids as the engine's pages.
+- `PauseFriends`: what the pause menu's vanilla Friends icon opens. The icon is active while a page is registered
+  there and the world can be shared; the page is drawn as its own screen over the paused world (title, rows down the
+  middle, footer buttons beside Done), the way Play with Friends' screen always looked.
 - `Button` and `Text` are built with `Row::button` and `Row::text` and their options: `.active(false)` greys a
   button, `.half()` puts two side by side, `.footer()` sets one beside Done on a page drawn as its own screen,
   `.quiet()` greys text, `.groups()` breaks it only between `-`-separated groups (an invite code). In the options
