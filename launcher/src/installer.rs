@@ -527,6 +527,9 @@ pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<
         let location = moved_location();
         // Only a folder the launcher made: `HORIZON_LAUNCHER_HOME` may point anywhere.
         if made_by_launcher(&data, location.as_ref()) {
+            // Before the build folder goes: whether its drive takes Cargo's file times is asked
+            // of a file in it.
+            let cargo = crate::rust_toolchain::cargo_home();
             remove_all(&data, &mut left);
             // A profile whose name isn't ASCII keeps the build folder in %ProgramData%
             // (`backend::build_dir`); it is the launcher's too. Already gone with `data` otherwise.
@@ -538,6 +541,14 @@ pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<
                     "{} (not the launcher's own folder)",
                     builds.display()
                 ));
+            }
+            // A build folder on FAT32 or exFAT keeps its Cargo home in %ProgramData%
+            // (`rust_toolchain::cargo_home`, #16702), and its folder there is then empty.
+            if !cargo.starts_with(&builds) {
+                remove_all(&cargo, &mut left);
+                if let Some(folder) = cargo.parent() {
+                    let _ = fs::remove_dir(folder);
+                }
             }
         } else {
             left.push(format!(

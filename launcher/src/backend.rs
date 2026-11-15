@@ -998,9 +998,10 @@ fn windows_build_dir(real: &Path) -> PathBuf {
 
 /// The build folder for a data folder `real` whose path isn't [`ascii`]: in `program_data`
 /// (`%ProgramData%`, `C:\ProgramData` when unset, relative or not ASCII), which every user may
-/// create folders in, named for `real` so each user's is their own.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn ascii_build_dir(real: &Path, program_data: Option<PathBuf>) -> PathBuf {
+/// create folders in, named for `real` so each user's is their own. Also where a build folder
+/// `real` on a drive that can't take Cargo's file times keeps its Cargo home
+/// (`rust_toolchain::cargo_home`, #16702).
+pub(crate) fn ascii_build_dir(real: &Path, program_data: Option<PathBuf>) -> PathBuf {
     use sha2::{Digest, Sha256};
     let public = program_data
         .filter(|p| p.is_absolute() && tool_safe(p))

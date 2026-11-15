@@ -2468,6 +2468,13 @@ and only when that can't be created the data folder's short (8.3) name. A short 
 linker. A data folder that is itself a junction to a drive with an ASCII path resolves to that and needs
 neither.
 
+The Cargo home alone moves when the build folder is on a drive formatted FAT32 or exFAT, as portable drives
+often are (#16702). Cargo unpacks the files it writes into a crate (`Cargo.toml`, `.cargo_vcs_info.json`) with
+a time in 1970, which those file systems can't store: Windows refuses it ("The parameter is incorrect", os
+error 87) and no crate unpacks. The launcher sets such a time on a scratch file in the build folder; when that
+fails on Windows, the Cargo home is `horizon-launcher-<id>\cargo` under `ProgramData`, named for the build
+folder, and uninstalling removes it with the data.
+
 ## Install from GitHub
 
 An author can ship a native mod without a registry pull request per version: the player installs it from a

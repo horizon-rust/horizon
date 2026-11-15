@@ -441,9 +441,45 @@ pub fn root() -> PathBuf {
     backend::build_dir().join("rust")
 }
 
-/// The Cargo home of native builds (downloaded crates, horizon-mixins), never the player's own.
+/// The Cargo home of native builds (downloaded crates, horizon-mixins), never the player's own:
+/// `<build dir>/cargo`, unless files there can't take the times Cargo unpacks crates with
+/// ([`takes_cargo_times`]), which only Windows refuses.
 pub fn cargo_home() -> PathBuf {
-    backend::build_dir().join("cargo")
+    let build = backend::build_dir();
+    let takes_times = !cfg!(windows) || takes_cargo_times(&build);
+    cargo_home_in(
+        &build,
+        takes_times,
+        std::env::var_os("ProgramData").map(PathBuf::from),
+    )
+}
+
+/// [`cargo_home`] for the build folder `build`. One that can't take Cargo's times keeps its
+/// crates in a folder of ProgramData's named for it (`backend::ascii_build_dir`, as for a build
+/// folder the tools can't read), on the system drive, which takes them.
+fn cargo_home_in(build: &Path, takes_times: bool, program_data: Option<PathBuf>) -> PathBuf {
+    if takes_times {
+        return build.join("cargo");
+    }
+    backend::ascii_build_dir(build, program_data).join("cargo")
+}
+
+/// Whether files in `dir` take the time Cargo gives the files it writes into a crate it unpacks
+/// (`Cargo.toml`, `.cargo_vcs_info.json`: 1970-01-01, one second in). FAT32's and exFAT's times
+/// start in 1980, and Windows refuses an earlier one ("The parameter is incorrect", os error 87),
+/// so no crate unpacks on a drive formatted so, as portable drives often are (#16702). Asked of a
+/// scratch file in `dir`; a folder where none can be made is taken to take it.
+fn takes_cargo_times(dir: &Path) -> bool {
+    let probe = dir.join(format!(".cargo-time-probe-{}", std::process::id()));
+    let Ok(file) = fs::File::create(&probe) else {
+        return true;
+    };
+    let taken = file
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
+        .is_ok();
+    drop(file);
+    let _ = fs::remove_file(&probe);
+    taken
 }
 
 fn dir_for(host: &Host) -> PathBuf {
@@ -1115,6 +1151,44 @@ mod tests {
             Some(toolchain.dir.join("bin"))
         );
         assert!(get("CARGO_HOME").flatten().unwrap().ends_with("cargo"));
+    }
+
+    /// #16702: a build folder on FAT32 or exFAT, as on many portable drives, can't take the 1970
+    /// file times crates unpack with (Windows refuses them: os error 87), so its crates go to a
+    /// folder of ProgramData's of its own, on the system drive.
+    #[test]
+    fn a_build_folder_that_cant_take_cargos_file_times_keeps_its_crates_elsewhere() {
+        let build = Path::new(r"E:\Games\Horizon-data\launcher");
+        let public = PathBuf::from(if cfg!(windows) {
+            r"C:\ProgramData"
+        } else {
+            "/data"
+        });
+        assert_eq!(
+            cargo_home_in(build, true, Some(public.clone())),
+            build.join("cargo")
+        );
+        let home = cargo_home_in(build, false, Some(public.clone()));
+        assert_eq!(home.parent().and_then(Path::parent), Some(public.as_path()));
+        assert!(home.ends_with("cargo"), "{}", home.display());
+        let other = Path::new(r"F:\Horizon\launcher");
+        assert_ne!(
+            home,
+            cargo_home_in(other, false, Some(public)),
+            "one per folder"
+        );
+    }
+
+    /// An ordinary drive takes Cargo's file times, so its crates stay in the build folder, and
+    /// asking leaves the folder as it was.
+    #[test]
+    fn a_folder_on_an_ordinary_drive_takes_cargos_file_times() {
+        let dir = std::env::temp_dir().join(format!("horizon-cargo-times-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(takes_cargo_times(&dir));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "the probe is gone");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The tools' scratch dir is the build's own (#5189): MinGW-w64's gcc, as and ld can't
