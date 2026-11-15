@@ -26,6 +26,7 @@ pub struct StationData {
 }
 impl StationData {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
+        crate::mobs::villager_professions::load(root);
         let defaults = horizon_world::item_defaults::shared(root).ok();
         Self {
             enchantments: std::sync::Arc::clone(&items.enchantments),
@@ -43,6 +44,7 @@ impl StationData {
         defaults: Option<&horizon_world::item_defaults::Defaults>,
         sources: &[(String, Value)],
     ) -> Self {
+        crate::mobs::villager_professions::load(root);
         let owned_defaults = if defaults.is_none() {
             horizon_world::item_defaults::shared(root).ok()
         } else {

@@ -468,14 +468,26 @@ pub struct Trades {
 }
 /// The `.json` files under `dir` as `minecraft:<path>` ids, through `json_folder` (from the
 /// prepared data file when there is one); a file that doesn't parse is left out.
-fn walk(dir: &Path, out: &mut HashMap<String, Value>) {
+fn walk(dir: &Path, namespace: &str, out: &mut HashMap<String, Value>) {
     let Ok(folder) = horizon_world::json_folder::read(dir) else {
         return;
     };
     for file in &folder.files {
         if let Ok(value) = serde_json::from_slice(file.bytes().unwrap_or_default()) {
-            out.insert(format!("minecraft:{}", file.name), value);
+            out.insert(format!("{namespace}:{}", file.name), value);
         }
+    }
+}
+
+/// Every namespace's files of one data folder (`data/<ns>/<kind>/`), as
+/// `ns:path` ids. A content mod's trades and sets live in its own namespace.
+fn walk_kind(root: &Path, kind: &str, out: &mut HashMap<String, Value>) {
+    let Ok(entries) = std::fs::read_dir(root.join("data")) else {
+        return;
+    };
+    for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+        let namespace = entry.file_name().to_string_lossy().into_owned();
+        walk(&entry.path().join(kind), &namespace, out);
     }
 }
 impl Trades {
@@ -483,13 +495,12 @@ impl Trades {
     /// content files) merges over it, the way a pack stack layers
     /// (`SimpleJsonResourceReloadListener`, `TagLoader`).
     pub fn load(root: &Path, overlay: &horizon_world::loot::PackOverlay) -> Self {
-        let data = root.join("data/minecraft");
         let (mut trades, mut raw_tags, mut sets) = (HashMap::new(), HashMap::new(), HashMap::new());
-        walk(&data.join("villager_trade"), &mut trades);
-        walk(&data.join("tags/villager_trade"), &mut raw_tags);
-        walk(&data.join("trade_set"), &mut sets);
+        walk_kind(root, "villager_trade", &mut trades);
+        walk_kind(root, "tags/villager_trade", &mut raw_tags);
+        walk_kind(root, "trade_set", &mut sets);
         let mut raw_potions = HashMap::new();
-        walk(&data.join("tags/potion"), &mut raw_potions);
+        walk_kind(root, "tags/potion", &mut raw_potions);
         // The packs' trade files: a trade or set's top pack file replaces
         // the game's own (`SimpleJsonResourceReloadListener` sees one
         // resource per id), a tag's entries join in pack order with a
@@ -593,10 +604,12 @@ impl Trades {
     }
     /// `VillagerProfession.getTrades(level)`.
     pub fn set_for(profession: &str, level: i32) -> String {
-        format!(
-            "minecraft:{}/level_{level}",
-            profession.trim_start_matches("minecraft:")
-        )
+        let id = if profession.contains(':') {
+            profession.to_owned()
+        } else {
+            format!("minecraft:{profession}")
+        };
+        format!("{id}/level_{level}")
     }
     fn trade_list(&self, spec: &Value) -> Vec<String> {
         match spec {
@@ -1234,6 +1247,38 @@ mod tests {
                 .iter()
                 .all(|o| o.max_uses == 12 && (o.price_multiplier - 0.2).abs() < 1e-6)
         );
+    }
+
+    #[test]
+    fn trades_load_from_a_mods_namespace() {
+        let dir = std::env::temp_dir().join(format!("horizon-trades-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let set = dir.join("data/morevillagers/trade_set/oceanographer/level_1.json");
+        let trade = dir.join("data/morevillagers/villager_trade/oceanographer/1/trade_0.json");
+        std::fs::create_dir_all(set.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(trade.parent().unwrap()).unwrap();
+        std::fs::write(
+            &set,
+            r#"{"amount":1,"random_sequence":"morevillagers:oceanographer/level_1","trades":["morevillagers:oceanographer/1/trade_0"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &trade,
+            r#"{"gives":{"id":"minecraft:emerald"},"wants":{"id":"minecraft:prismarine","count":14}}"#,
+        )
+        .unwrap();
+        let t = Trades::load(&dir, &horizon_world::loot::PackOverlay::NONE);
+        assert!(t.sets.contains_key("morevillagers:oceanographer/level_1"));
+        assert!(
+            t.trades
+                .contains_key("morevillagers:oceanographer/1/trade_0")
+        );
+        assert_eq!(
+            Trades::set_for("morevillagers:oceanographer", 1),
+            "morevillagers:oceanographer/level_1"
+        );
+        assert_eq!(Trades::set_for("farmer", 1), "minecraft:farmer/level_1");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
