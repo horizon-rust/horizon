@@ -110,6 +110,12 @@ special = {
 for number, key in special.items():
     rows.append(f"            {number} => KeyCode::{key},")
 keymap = keymap.replace("KEY_MAP", "\n".join(rows))
+# Keep the original implementation, only widen its visibility for the iOS
+# application handler (which lives in a sibling module).
+change("crates/horizon-client/src/game/startup_menu.rs",
+       "    fn menu_key_focus(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {",
+       "    pub(super) fn menu_key_focus(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {")
+
 change("crates/horizon-client/src/game/loading_screen.rs",
        "impl App {\n", "impl App {\n" + keymap)
 
