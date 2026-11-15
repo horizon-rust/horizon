@@ -2248,7 +2248,9 @@ async fn open_device(
                     log::warn!(
                         "Horizon renderer: chosen {b_name} adapter is CPU software ({cpu_name}); trying OpenGL on a real GPU first"
                     );
-                    match open_device_with(window, offscreen, &[wgpu::Backends::GL], layers, false).await {
+                    match open_device_with(window, offscreen, &[wgpu::Backends::GL], layers, false)
+                        .await
+                    {
                         Ok(gl_opened) if !is_software(gl_opened.adapter.get_info().device_type) => {
                             let gl_name = gl_opened.adapter.get_info().name.clone();
                             log::warn!(
@@ -2256,7 +2258,9 @@ async fn open_device(
                             );
                             crate::crash::set_detail(
                                 "graphics fallback",
-                                format!("OpenGL GPU ({gl_name}) instead of CPU {b_name} ({cpu_name})"),
+                                format!(
+                                    "OpenGL GPU ({gl_name}) instead of CPU {b_name} ({cpu_name})"
+                                ),
                             );
                             return Ok(gl_opened);
                         }
