@@ -785,7 +785,7 @@ impl Game<'_> {
         });
         let mut host = self.lan.take().expect("an attack puts the hub back");
         self.leave_guest(&mut host, swap);
-        self.send_guest_motion(&mut host, conn, sent);
+        self.send_guest_motion(&host, conn, sent);
         if let Some(g) = host.hub.guest_mut(conn) {
             g.yaw = old_yaw;
             g.pitch = old_pitch;
