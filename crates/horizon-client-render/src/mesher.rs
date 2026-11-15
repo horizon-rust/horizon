@@ -3,6 +3,8 @@
 //! `ModelBlockRenderer`/`BlockModelLighter` (smooth light, ambient occlusion,
 //! cardinal shading, tint sources, block offsets; see `lighting`). Fluids
 //! follow `FluidRenderer` (see `fluid`).
+mod block_layers;
+pub use block_layers::BlockLayerTable;
 mod fluid;
 mod leaf_culling;
 mod lighting;

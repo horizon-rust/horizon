@@ -246,6 +246,7 @@ struct MeshSettings {
     cutout_leaves: bool,
     opaque_ice: bool,
     translucent_layers: Arc<[bool]>,
+    block_layers: Arc<crate::mesher::BlockLayerTable>,
     leaf_culling: LeafCullingMode,
 }
 enum Job {
@@ -545,6 +546,8 @@ pub struct Streaming {
     /// Sprite layers a shader pack draws in the translucent pass (`[[materials]]
     /// translucent`), by layer; empty without one.
     pub translucent_layers: Arc<[bool]>,
+    /// Per-state shader-pack model/fluid layer overrides; empty without a pack.
+    pub block_layers: Arc<crate::mesher::BlockLayerTable>,
     /// What the mesher does with leaf faces inside a canopy (`LeafCullingMode`).
     pub leaf_culling: LeafCullingMode,
     /// Incremental relighting of block edits on lit chunks (see `light::relight`).
@@ -1024,6 +1027,9 @@ impl<G: ChunkGenerator> Jobs<G> {
                 };
                 let recycled = shared.meshes.lock().unwrap().take();
                 let mut mesh = mesher.mesh_reusing(&borrow(&region), sy, recycled, mesh_scratch);
+                if settings.shader_pack {
+                    mesh.apply_block_layers(&settings.block_layers, &context.tables);
+                }
                 mesh.sort_solid();
                 *faces = Some((context.tables.clone(), mesher.visibility));
                 Done::Meshed(x, sy, z, mesh, seq)
@@ -1143,6 +1149,7 @@ impl Streaming {
             cutout_leaves: true,
             opaque_ice: false,
             translucent_layers: Arc::from([]),
+            block_layers: Arc::default(),
             leaf_culling: LeafCullingMode::Off,
             light_tables,
             light_log: Vec::new(),
@@ -2111,6 +2118,7 @@ impl Streaming {
                             cutout_leaves: self.cutout_leaves,
                             opaque_ice: self.opaque_ice,
                             translucent_layers: self.translucent_layers.clone(),
+                            block_layers: self.block_layers.clone(),
                             leaf_culling: self.leaf_culling,
                         },
                     ),
