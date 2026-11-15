@@ -3066,7 +3066,7 @@ impl Launcher {
         let (mode, difficulty, max_players) = (c.mode, c.difficulty, c.max_players);
         let (friends_only, eula, eula_missing) = (c.friends_only, c.eula, c.eula_missing);
         let creating = self.servers.creating;
-        let row = |label: &'static str, control: AnyElement| {
+        let row = |label: &str, control: AnyElement| {
             div()
                 .flex()
                 .flex_col()
@@ -3104,7 +3104,7 @@ impl Launcher {
         } else if worlds.is_empty() {
             text(theme::CAPTION)
                 .text_color(t.muted)
-                .child("You have no single-player world yet: play one first, or choose New world.")
+                .child(tr("You have no single-player world yet: play one first, or choose New world."))
                 .into_any_element()
         } else {
             let mut list = div().flex().flex_col().gap(px(2.));
@@ -3146,7 +3146,7 @@ impl Launcher {
                 .child(
                     text(theme::CAPTION)
                         .text_color(t.muted)
-                        .child("The server gets a copy: your single-player world stays as it is."),
+                        .child(tr("The server gets a copy: your single-player world stays as it is.")),
                 )
                 .into_any_element()
         };
@@ -3225,7 +3225,7 @@ impl Launcher {
             .child(
                 text(theme::UI)
                     .text_color(if eula_missing { t.danger } else { t.ink })
-                    .child("I agree to the Minecraft EULA"),
+                    .child(tr("I agree to the Minecraft EULA")),
             )
             .child(
                 div()
@@ -3234,7 +3234,7 @@ impl Launcher {
                     .text_color(t.accent)
                     .cursor_pointer()
                     .hover(|s| s.opacity(0.8))
-                    .child("Read it")
+                    .child(tr("Read it"))
                     .on_click(|_, _, cx| cx.open_url(servers::EULA_URL)),
             );
         let body = div()
@@ -3247,23 +3247,23 @@ impl Launcher {
             .pt(px(28.))
             .pb(px(20.))
             .overflow_y_scroll()
-            .child(caps("New server").text_color(t.muted))
+            .child(caps(tr("New server")).text_color(t.muted))
             .child(
                 text(theme::HEADING)
                     .text_color(t.ink)
-                    .child("Create a server"),
+                    .child(tr("Create a server")),
             )
-            .child(text(theme::CAPTION).text_color(t.muted).child(
+            .child(text(theme::CAPTION).text_color(t.muted).child(tr(
                 "Everything has a default: tick the EULA and Create makes a friends-only survival \
                  world. You can change all of it later.",
-            ))
+            )))
             .child(row(
-                "Name",
+                tr("Name"),
                 self.field(Field::Name, "My server", 400., cx)
                     .into_any_element(),
             ))
             .child(row(
-                "World",
+                tr("World"),
                 div()
                     .flex()
                     .flex_col()
@@ -3273,16 +3273,16 @@ impl Launcher {
                     .into_any_element(),
             ))
             .child(row(
-                "Game mode",
+                tr("Game mode"),
                 div().flex().child(modes).into_any_element(),
             ))
             .child(row(
-                "Difficulty",
+                tr("Difficulty"),
                 div().flex().child(difficulties).into_any_element(),
             ))
-            .child(row("Most players at once", players.into_any_element()))
+            .child(row(tr("Most players at once"), players.into_any_element()))
             .child(row(
-                "Who can join",
+                tr("Who can join"),
                 div()
                     .flex()
                     .flex_col()
@@ -3295,9 +3295,9 @@ impl Launcher {
                             480.,
                             cx,
                         ))
-                        .child(text(theme::CAPTION).text_color(t.muted).child(
+                        .child(text(theme::CAPTION).text_color(t.muted).child(tr(
                             "The first one becomes an operator. Add more later on the Players tab.",
-                        ))
+                        )))
                     })
                     .into_any_element(),
             ))
@@ -3319,7 +3319,7 @@ impl Launcher {
                     .min_w_0()
                     .text_color(t.muted)
                     .truncate()
-                    .child(format!("Creating… {last}")),
+                    .child(format!("{} {}", tr("Creating…"), last)),
             );
         } else if let Some(p) = &self.servers.problem {
             foot = foot.child(
@@ -3344,7 +3344,7 @@ impl Launcher {
                 text(theme::CAPTION)
                     .flex_1()
                     .text_color(t.danger)
-                    .child("Tick the EULA box to create the server."),
+                    .child(tr("Tick the EULA box to create the server.")),
             );
         }
         let cancel = button("create-cancel", "Cancel", Kind::Secondary, &t);

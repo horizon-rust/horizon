@@ -259,7 +259,7 @@ impl Launcher {
             (true, Ok(typed)) => typed.unwrap_or(instances::DEFAULT_MEMORY_MB),
             _ => memory,
         };
-        let unit = text(theme::LABEL).text_color(t.ink_soft).child("MB");
+        let unit = text(theme::LABEL).text_color(t.ink_soft).child(tr("MB"));
         let input = self.field(Field::MemoryLimit, "4096", 120., cx);
         let about = "How much memory Java may use (-Xmx). Set it too low and the game can crash.";
         let track = div()
@@ -429,7 +429,7 @@ impl Launcher {
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_memory(cx)),
             );
-        let unit = ui::text(13., FontWeight::NORMAL, 0.6).child("MB");
+        let unit = ui::text(13., FontWeight::NORMAL, 0.6).child(tr("MB"));
         let input = self.field(Field::MemoryLimit, "4096", 96., cx);
         let result = self.memory_slider.saved.as_ref().map(|s| match s {
             MemorySaved::Ok(mb) => div().child(trf(
