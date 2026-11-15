@@ -360,7 +360,28 @@ jobs:
               ));
               let future = Box::pin(future);
               loading_screen::nova_diag("loading_renderer.future.boxed");
-              let mut renderer = pollster::block_on(future)?;
+              // DIAGNOSTIC ONLY: poll the complex future on a larger stack.
+              // iOS UIKit/Metal layer calls may require the main thread, so
+              // this cannot be considered the production handoff until
+              // validated on a physical device.
+              loading_screen::nova_diag("loading_renderer.large-stack.spawn.begin");
+              let result = std::thread::scope(|scope| {
+                  let thread = std::thread::Builder::new()
+                      .name("nova-render-boot".to_owned())
+                      .stack_size(16 * 1024 * 1024)
+                      .spawn_scoped(scope, move || {
+                          loading_screen::nova_diag("loading_renderer.large-stack.worker.enter");
+                          let result = pollster::block_on(future)
+                              .map_err(|error| error.to_string());
+                          loading_screen::nova_diag("loading_renderer.large-stack.worker.returned");
+                          result
+                      })
+                      .expect("Nova: could not start larger-stack renderer worker");
+                  loading_screen::nova_diag("loading_renderer.large-stack.spawned");
+                  thread.join().expect("Nova: renderer worker panicked")
+              });
+              loading_screen::nova_diag("loading_renderer.large-stack.joined");
+              let mut renderer = result.map_err(std::io::Error::other)?;
               loading_screen::nova_diag("loading_renderer.renderer-new.done");''')
 
           loader = Path("crates/horizon-client/src/game/resource_loader.rs")

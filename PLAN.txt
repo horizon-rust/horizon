@@ -322,3 +322,18 @@ FURTHER iOS PLATFORM BUILD WORK (2026-11-14)
 - This tests potential UIKit main-thread stack exhaustion (NOT proven).
   Check the new log checkpoints plus OS crash report / JetsamEvent. Keep
   the upstream renderer and game source unchanged in the committed git tree.
+
+2026-11-15: IOS LARGE-STACK RENDERER EXPERIMENT
+- The installed 8b219dc4 game-linked build reports future.created bytes=2952
+  and future.boxed, then the process terminates before renderer.new.entry.
+- Only the temporary iOS runner patch changes the first loading_renderer
+  call to pollster::block_on on a 16 MiB std::thread::Builder worker stack.
+  It converts the non-Send Box<dyn Error> to String *inside* the worker,
+  then converts the text to io::Error on the main thread. The original
+  game renderer source remains unchanged in the git repo.
+- This is a DIAGNOSTIC experiment, not accepted architecture: UIKit and
+  CAMetalLayer may require main-thread access. Check worker.enter and
+  renderer.new.entry markers; if a native UI thread affinity failure
+  occurs, revert this experiment and use an OS crash report. After device
+  validation, evaluate a correct main-thread surface and larger-stack
+  resource preparation architecture that keeps UIKit on the main thread.
