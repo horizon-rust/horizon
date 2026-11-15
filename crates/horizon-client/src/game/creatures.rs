@@ -191,11 +191,11 @@ fn pickable_projectile_hitboxes_into(
     );
 }
 
-/// `ServerLevel.getCurrentDifficultyAt`, reading only the world: also on the mob tick's helper
-/// threads.
-pub(super) fn difficulty_reader(
-    world: &horizon_client::world::World,
-) -> impl Fn([f64; 3]) -> spawning::LocalDifficulty + Sync + '_ {
+/// `ServerLevel.getCurrentDifficultyAt`: the world and dimension only, so helper threads run it.
+pub(super) fn difficulty_reader<'a>(
+    world: &'a horizon_client::world::World,
+    dimension: &'a horizon_world::dimension_type::DimensionFacts,
+) -> impl Fn([f64; 3]) -> spawning::LocalDifficulty + Sync + 'a {
     move |at| {
         use horizon_world::food::Difficulty;
         let base = match world.health_rules.difficulty {
@@ -206,10 +206,9 @@ pub(super) fn difficulty_reader(
         };
         let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
         let (inhabited, moon) = if world.chunks.contains_key(&key) {
-            let phase = world.day_time.div_euclid(24000).rem_euclid(8) as usize;
             (
                 world.inhabited.get(&key).copied().unwrap_or(0),
-                spawning::MOON_BRIGHTNESS[phase],
+                dimension.moon_brightness(world.day_time),
             )
         } else {
             (0, 0.0)
@@ -489,6 +488,7 @@ impl Game<'_> {
             &self.world,
             world_biomes!(self),
             self.res.mob_data(),
+            self.dimension_type(),
             x,
             y,
             z,
@@ -1082,7 +1082,7 @@ impl Game<'_> {
     }
     /// `ServerLevel.getCurrentDifficultyAt`.
     pub(super) fn local_difficulty(&self, at: [f64; 3]) -> spawning::LocalDifficulty {
-        difficulty_reader(&self.world)(at)
+        difficulty_reader(&self.world, self.dimension_type())(at)
     }
     /// Generation's animals for the chunks generated since, once lit: chunk
     /// generation places them whether the level ticks or not.
@@ -1237,7 +1237,7 @@ impl Game<'_> {
                 ticked,
                 targets,
             };
-            let difficulty = difficulty_reader(&self.world);
+            let difficulty = difficulty_reader(&self.world, self.dimension_type());
             let mut turns = mob_group::Turns {
                 base: &base,
                 despawn: base.despawn_view(),

@@ -637,3 +637,6 @@ mod play_ping_tests;
 
 #[path = "dragon_boss_bar_name_tests.rs"]
 mod dragon_boss_bar_name_tests;
+
+#[path = "moon_phase_tests.rs"]
+mod moon_phase_tests;

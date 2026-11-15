@@ -598,8 +598,13 @@ impl SpawnLevel for super::MobWorld<'_> {
         self.dimension_type
     }
     fn surface_slime_chance(&self, _: i32, _: i32, _: i32) -> f32 {
-        let phase = self.day_time.div_euclid(24000).rem_euclid(8) as usize;
-        0.5 * super::spawning::MOON_BRIGHTNESS[phase]
+        // `gameplay/surface_slime_spawn_chance`: the `minecraft:moon` timeline's
+        // `MAXIMUM` track, `0.5 * brightness` over a default of 0.0, so 0.0 where
+        // the dimension has no moon (the Nether and the End).
+        if !self.dimension_type.has_timeline("minecraft:moon") {
+            return 0.0;
+        }
+        0.5 * self.dimension_type.moon_brightness(self.day_time)
     }
     fn world_seed(&self) -> i64 {
         self.world_seed

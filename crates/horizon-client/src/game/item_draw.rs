@@ -299,7 +299,7 @@ impl Game<'_> {
             dimension: dimension.to_owned(),
             game_time: self.world.game_time,
             sun_angle: sky.sun_angle,
-            moon_phase: (self.world.day_time.div_euclid(24_000)).rem_euclid(8) as i32,
+            moon_phase: self.dimension_type().moon_phase(self.world.day_time) as i32,
             respawn: self.spawn.map(|s| GlobalPos {
                 dimension: "minecraft:overworld".to_owned(),
                 pos: [s.x.floor() as i32, s.y.floor() as i32, s.z.floor() as i32],

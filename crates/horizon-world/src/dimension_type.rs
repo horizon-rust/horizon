@@ -90,6 +90,9 @@ impl BedRule {
     }
 }
 
+/// `DimensionType.MOON_BRIGHTNESS_PER_PHASE`, by `MoonPhase.index()`.
+pub const MOON_BRIGHTNESS_PER_PHASE: [f32; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
+
 /// A dimension type, with the gameplay attributes `EnvironmentAttributes` defaults fill in.
 #[derive(Clone, Debug)]
 pub struct DimensionFacts {
@@ -358,6 +361,22 @@ impl DimensionFacts {
         self.timelines.iter().any(|t| t == id)
     }
 
+    /// `EnvironmentAttributes.MOON_PHASE`'s index at the overworld clock's `total`
+    /// ticks: the `minecraft:moon` timeline's keyframes (`MoonPhase.startTick`), or
+    /// `FULL_MOON` where the dimension's timelines do not have it, as in the Nether
+    /// and the End, where the attribute keeps its default.
+    pub fn moon_phase(&self, total: i64) -> usize {
+        if !self.has_timeline("minecraft:moon") {
+            return 0;
+        }
+        total.div_euclid(24_000).rem_euclid(8) as usize
+    }
+
+    /// `ServerLevel.getMoonBrightness`.
+    pub fn moon_brightness(&self, total: i64) -> f32 {
+        MOON_BRIGHTNESS_PER_PHASE[self.moon_phase(total)]
+    }
+
     /// `DimensionType.getTeleportationScale`.
     pub fn teleportation_scale(from: &Self, to: &Self) -> f64 {
         from.coordinate_scale / to.coordinate_scale
@@ -443,6 +462,28 @@ mod tests {
             "minecraft:overworld"
         );
         assert!(DimensionFacts::vanilla("example:sky").is_none());
+    }
+
+    #[test]
+    fn only_the_overworld_timelines_carry_a_moon() {
+        let facts = |id: &str| DimensionFacts::vanilla(id).expect(id);
+        // The `minecraft:moon` timeline's keyframes: `MoonPhase.startTick`, every
+        // 24000 ticks of the overworld clock, over a period of eight phases.
+        let overworld = facts("minecraft:overworld");
+        assert_eq!(overworld.moon_phase(0), 0);
+        assert_eq!(overworld.moon_phase(24_000), 1);
+        assert_eq!(overworld.moon_phase(102_000), 4);
+        assert_eq!(overworld.moon_phase(191_999), 7);
+        assert_eq!(overworld.moon_phase(192_000), 0);
+        assert_eq!(overworld.moon_brightness(102_000), 0.0);
+        // `#minecraft:in_nether` and `#minecraft:in_end` hold only
+        // `#minecraft:universal`: `visual/moon_phase` keeps its `FULL_MOON` default.
+        for id in ["minecraft:the_nether", "minecraft:the_end"] {
+            for total in [0, 102_000, 4 * 24_000 + 1] {
+                assert_eq!(facts(id).moon_phase(total), 0, "{id} at {total}");
+                assert_eq!(facts(id).moon_brightness(total), 1.0, "{id} at {total}");
+            }
+        }
     }
 
     #[test]

@@ -441,8 +441,16 @@ impl<H: LevelHost> Level<'_, H> {
         let [x, y, z] = r.position;
         let mut mob = Mob::new(0, kind, Vec3::new(x, y, z), r.yaw);
         let (bx, by, bz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
-        let facts = biome_facts_in(self.w.world, self.w.biomes, self.w.data, bx, by, bz);
-        let difficulty = difficulty_reader(self.w.world)(r.position);
+        let facts = biome_facts_in(
+            self.w.world,
+            self.w.biomes,
+            self.w.data,
+            self.w.dimension_type,
+            bx,
+            by,
+            bz,
+        );
+        let difficulty = difficulty_reader(self.w.world, self.w.dimension_type)(r.position);
         // Natural packs still finalize on the mob's own random until #11574 ports them.
         horizon_client::mobs::spawning::finalize_on_own_random(&mut mob, &facts, &difficulty);
         horizon_client::mobs::raider::finalize(
