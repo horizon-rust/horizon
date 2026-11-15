@@ -55,7 +55,7 @@ impl Game<'_> {
     /// changes"): when HDR or the pick (unless refused) call for another frame than the
     /// renderer's, it is made again before this frame draws.
     pub(super) fn follow_frame(&mut self) {
-        if self.options.paced_by_split || self.options.split_guest {
+        if self.options.role.paced() || self.options.role.is_guest() {
             return;
         }
         let picked = shader_packs::picked_pack(&self.settings);

@@ -1,6 +1,7 @@
 //! Players coming and going: joining (P1's world through memory, or P1's server) as a profile
 //! it picks (`split_profiles`), dropping out.
 use super::*;
+use crate::game::role::Role;
 use horizon_client::{
     controller_notice::{Notice, NoticeId, Priority},
     gamepad::PadState,
@@ -125,7 +126,7 @@ impl Split<'_> {
         }
         // Until it has a profile, a scratch options file: never P1's.
         let options = Self::folder()?.join(".joining/options.txt");
-        OPTIONS.set(Some(options.clone()));
+        crate::game::turn::set_options(Some(options.clone()));
         horizon_hooks::engine::set_seat(seat - 1);
         let mut settings = self.host.settings.clone();
         if pad.is_some() {
@@ -135,13 +136,16 @@ impl Split<'_> {
             settings.controller.enabled = true;
         }
         let game = self.start_guest(seat, &options, settings);
-        OPTIONS.set(None);
+        crate::game::turn::set_options(None);
         horizon_hooks::engine::set_seat(0);
         let mut game = game?;
         if let Some(pad) = pad {
             // The press that joined it doesn't act in its game.
             self.fresh.push(pad);
         }
+        // Its turns run on its own options file and seat.
+        game.turn.options = Some(options);
+        game.turn.seat = seat;
         // Over its title screen: Cancel leaves (`pick_profiles`).
         game.open_options_at(true, Page::SplitProfiles);
         let i = self.guests.len() + 1;
@@ -149,10 +153,8 @@ impl Split<'_> {
             game,
             name: None,
             seat,
-            options,
             pad,
             window: 1,
-            widgets: Default::default(),
             entered: false,
             bumpers: [false; 2],
         });
@@ -295,7 +297,11 @@ impl Split<'_> {
             .iter()
             .find(|a| a.name.eq_ignore_ascii_case(&name))
             .cloned();
-        self.guests[i].game.split_auth = account.clone();
+        self.guests[i]
+            .game
+            .options
+            .role
+            .set_guest_auth(account.clone());
         if account.is_none() && horizon_client::split_profiles::valid_name(&name) {
             horizon_client::split_profiles::store::restore(&profiles, &name)?;
         }
@@ -335,7 +341,7 @@ impl Split<'_> {
                 .ok_or("P1's world does not let players in")?),
             None => Err(self.p1_server().ok_or("P1 is not in a world")?),
         };
-        self.guests[i].options = options;
+        self.guests[i].game.turn.options = Some(options);
         self.turn(i + 1);
         let guest = &mut self.guests[i];
         // Its profile page closes as it goes in.
@@ -473,9 +479,11 @@ impl Split<'_> {
         // P1's frame-limited test runs end the process; a player's game doesn't.
         options.frames = None;
         options.world_frames = None;
-        options.split_guest = true;
+        options.role = Role::Guest {
+            window: host.options.role.in_window(),
+            auth: None,
+        };
         options.offscreen = true;
-        options.paced_by_split = true;
         // P1's socket (`--control` or Agent Control) + the seat: every game in this process
         // would otherwise take the one default endpoint, P1's.
         options.control = host.control.as_ref().map(|c| {
@@ -534,7 +542,6 @@ impl Split<'_> {
         guest.window = Some(window);
         guest.world_renderer_ready = true;
         guest.keyboard_mouse = false;
-        guest.split_window = host.split_window;
         guest.apply_settings();
         // Its pad comes from the split (`route_pads`): it never opens the controllers itself.
         guest.pad.feed = Some(PadState::default());

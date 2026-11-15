@@ -13,11 +13,8 @@ pub(super) struct Options {
     /// `--pregen`: enable the command even when the saved Extras switch is off.
     pub(super) pregen: bool,
     pub(super) frames: Option<u64>,
-    /// A splitscreen player: the split window paces every player's frames, not each its own.
-    pub(super) paced_by_split: bool,
-    /// A splitscreen player other than P1: its windows are the split's (P1 alone decides
-    /// fullscreen; this game neither asks for it nor adopts it into its options).
-    pub(super) split_guest: bool,
+    /// What this game is to splitscreen: alone, P1 of a split, or another player.
+    pub(super) role: Role,
     /// A splitscreen guest drawn in Window 1, the game's own window: its F11 leaves that
     /// window to P1.
     pub(super) split_in_main_window: bool,
@@ -193,8 +190,7 @@ impl Options {
             test_terrain: false,
             pregen: false,
             frames: None,
-            paced_by_split: false,
-            split_guest: false,
+            role: Role::Alone,
             split_in_main_window: false,
             world_frames: None,
             screenshot_after: None,

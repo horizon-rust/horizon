@@ -138,7 +138,7 @@ pub(super) fn lost_prompt(name: &str) -> Prompt {
 impl Game<'_> {
     /// P1 opens Setup; another player opens profiles to switch identity.
     pub(in crate::game) fn open_split_settings(&mut self) {
-        let page = if self.options.split_guest {
+        let page = if self.options.role.is_guest() {
             horizon_client::options_ui::Page::SplitProfiles
         } else {
             horizon_client::options_ui::Page::SplitSetup
