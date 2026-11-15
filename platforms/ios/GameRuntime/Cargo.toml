@@ -13,6 +13,7 @@ crate-type = ["staticlib"]
 [dependencies]
 horizon-official = { path = "../../../crates/horizon-official" }
 horizon-game = { path = "../../../crates/horizon-game" }
+horizon-client-input = { path = "../../../crates/horizon-client-input" }
 nova-asset-importer = { path = "../AssetImporter" }
 
 [workspace]

@@ -132,3 +132,57 @@ pub extern "C" fn horizon_ios_start_original_game(
     diagnostics::trace("rust.start.horizon-returned");
     0
 }
+
+/// Send virtual key, mouse, pointer and text events to Horizon's normal input
+/// mappings. Enqueued from UIKit; consumed on the game's event-loop thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn nova_ios_input_key(code: u32, down: bool) {
+    horizon_client_input::ios_input::push(
+        horizon_client_input::ios_input::Input::Key(code, down)
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nova_ios_input_mouse(button: u32, down: bool) {
+    horizon_client_input::ios_input::push(
+        horizon_client_input::ios_input::Input::Mouse(button, down)
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nova_ios_input_cursor(x: f64, y: f64) {
+    horizon_client_input::ios_input::push(
+        horizon_client_input::ios_input::Input::Cursor(x, y)
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nova_ios_input_motion(x: f64, y: f64) {
+    horizon_client_input::ios_input::push(
+        horizon_client_input::ios_input::Input::Motion(x, y)
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nova_ios_input_text(text: *const std::ffi::c_char) {
+    if text.is_null() { return }
+    // SAFETY: UIKit passes a live NUL-terminated UTF-8 string.
+    if let Ok(text) = unsafe { std::ffi::CStr::from_ptr(text) }.to_str() {
+        let clipped = text.chars().take(512).collect::<String>();
+        horizon_client_input::ios_input::push(
+            horizon_client_input::ios_input::Input::Text(clipped)
+        );
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nova_ios_input_close() {
+    horizon_client_input::ios_input::push(
+        horizon_client_input::ios_input::Input::Close
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nova_ios_set_touch_gestures(enabled: bool) {
+    horizon_client_input::ios_input::set_touch_gestures(enabled);
+}

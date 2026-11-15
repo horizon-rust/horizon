@@ -66,3 +66,19 @@ pub extern "C" fn horizon_ios_start_original_game(
 ) -> i32 {
     -1
 }
+
+// Standalone launcher has no running Horizon event loop.
+#[no_mangle]
+pub extern "C" fn nova_ios_input_key(_: u32, _: bool) {}
+#[no_mangle]
+pub extern "C" fn nova_ios_input_mouse(_: u32, _: bool) {}
+#[no_mangle]
+pub extern "C" fn nova_ios_input_cursor(_: f64, _: f64) {}
+#[no_mangle]
+pub extern "C" fn nova_ios_input_motion(_: f64, _: f64) {}
+#[no_mangle]
+pub extern "C" fn nova_ios_input_text(_: *const std::ffi::c_char) {}
+#[no_mangle]
+pub extern "C" fn nova_ios_input_close() {}
+#[no_mangle]
+pub extern "C" fn nova_ios_set_touch_gestures(_: bool) {}

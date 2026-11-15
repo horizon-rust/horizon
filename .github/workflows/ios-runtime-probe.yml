@@ -417,6 +417,12 @@ jobs:
           git diff --check
           git diff --stat -- crates/horizon-client/src/game/loading_screen.rs crates/horizon-client/src/game/window_handler.rs
 
+      - name: Bridge iOS overlay buttons to Horizon input mappings
+        shell: bash
+        run: |
+          python3 platforms/ios/patches/ios_input_queue.py
+          git diff --check
+
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
         run: |

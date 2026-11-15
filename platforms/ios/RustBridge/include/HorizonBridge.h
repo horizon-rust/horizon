@@ -24,4 +24,14 @@ int32_t nova_ios_install_resources_zip(const char *zip_path,
                                        uintptr_t error_capacity);
 bool nova_ios_resources_present(const char *destination_path);
 
+
+// In-game UIKit overlay input; every control acts through Horizon's bindings.
+void nova_ios_input_key(uint32_t code, bool down);
+void nova_ios_input_mouse(uint32_t button, bool down);
+void nova_ios_input_cursor(double x, double y);
+void nova_ios_input_motion(double dx, double dy);
+void nova_ios_input_text(const char *utf8);
+void nova_ios_input_close(void);
+void nova_ios_set_touch_gestures(bool enabled);
+
 #endif
