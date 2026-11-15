@@ -2623,3 +2623,6 @@ mod non_tame_tests {
 #[cfg(test)]
 #[path = "pet_pose_tests.rs"]
 mod pet_pose_tests;
+#[cfg(test)]
+#[path = "wolf_whine_tests.rs"]
+mod wolf_whine_tests;
