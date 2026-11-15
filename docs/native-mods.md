@@ -2458,6 +2458,10 @@ would read the player's `~/.cargo/config.toml`, whose `[profile]`, `[build]` and
 workspace and the environment; no switch turns that search off. The source's own `.cargo/config.toml`, if it
 has one, is passed with `--config`.
 
+Cargo downloads the crates and horizon-mixins itself, so the launcher hands it the proxy set on the Settings
+page as `CARGO_HTTP_PROXY`, spelled as curl reads it (SOCKS5 as `socks5h://`); without one, Cargo reads
+`HTTPS_PROXY` from the environment as the launcher does (#16718).
+
 Every path the build's tools see — the toolchain, the Cargo home, `native/` and the tools' temp dir (TMPDIR,
 TMP and TEMP, where gcc, the assembler, `ld` and `cargo install` put their scratch files) — comes from
 `backend::build_dir`: the launcher's data folder, resolved (never through a link, which horizon-mixins
