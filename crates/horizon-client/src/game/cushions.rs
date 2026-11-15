@@ -179,11 +179,7 @@ impl Game<'_> {
     pub(super) fn cushion_spawn(&self, hit: &Hit) -> Option<(Vec3, Aabb)> {
         // CushionItem.recalculateContextForSpecialCollisionShapes: open containers
         // (cauldrons, hoppers and composters) use the collision ray's actual height.
-        let mut adjusted = Hit {
-            pos: hit.pos,
-            face: hit.face,
-            point: hit.point,
-        };
+        let mut adjusted = *hit;
         let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
         if self.items().block_in_tag(
             "minecraft:cushion_uses_collision_shape",
@@ -278,7 +274,9 @@ impl Game<'_> {
             yaw: snap_yaw(self.yaw),
             color,
             check_interval: 0,
-            custom_name: None,
+            // `EntityType.createDefaultStackConfig`: `Entity.applyImplicitComponents`
+            // copies the stack's `CUSTOM_NAME` onto the placed cushion.
+            custom_name: stack.data().and_then(|d| d.custom_name.clone()),
         });
         self.world
             .modified
@@ -378,8 +376,8 @@ impl Game<'_> {
         true
     }
 
-    /// `Cushion.dropItem`: the break sound and particles, then the coloured
-    /// item unless drops are off or the breaker has infinite materials.
+    /// `BlockAttachedEntity.hurtServer`: `kill` (the `entity_die` event), then
+    /// `Cushion.dropItem`.
     pub(super) fn break_cushion(&mut self, index: usize, by_player: bool) {
         self.break_cushion_by(index, by_player.then_some(super::commands::Target::Player))
     }
@@ -388,14 +386,31 @@ impl Game<'_> {
         index: usize,
         source: Option<super::commands::Target>,
     ) {
+        self.remove_cushion(index, source, true);
+    }
+    /// `BlockAttachedEntity.tick` on lost support: `discard()` and then
+    /// `dropItem(level, null)`, which posts no game event.
+    pub(super) fn discard_cushion(&mut self, index: usize) {
+        self.remove_cushion(index, None, false);
+    }
+    /// The removal both paths share; `killed` posts `BlockAttachedEntity.kill`'s
+    /// `entity_die` event before `dropItem`'s sound and drop.
+    fn remove_cushion(
+        &mut self,
+        index: usize,
+        source: Option<super::commands::Target>,
+        killed: bool,
+    ) {
         let c = self.cushions.remove(index);
         let p = c.position;
         self.world.modified.insert((c.pos[0] >> 4, c.pos[2] >> 4));
         if self.riding == Some(c.id) {
             self.dismount_removed_vehicle(p.y);
         }
-        // BlockAttachedEntity.kill, before dropItem.
-        self.entity_killed_event_by([p.x, p.y, p.z], source);
+        if killed {
+            // BlockAttachedEntity.kill, before dropItem.
+            self.entity_killed_event_by([p.x, p.y, p.z], source);
+        }
         self.audio.play(
             "minecraft:entity.cushion.break",
             Some([p.x, p.y, p.z]),
@@ -403,6 +418,7 @@ impl Game<'_> {
             1.0,
         );
         self.cushion_break_particles(&c);
+        // `Cushion.dropItem` suppresses drops for a player with infinite materials.
         if !self.ui.rules.bool("entity_drops") || self.causing_abilities(source).0 {
             return;
         }
@@ -499,8 +515,15 @@ impl Game<'_> {
                 return true;
             }
         }
-        if self.cushion_in_fire(&c) || !self.cushion_survives(&c) {
+        // `destroyIfInFire` hurts the cushion (`kill`), so it is removed before
+        // the survive check below.
+        if self.cushion_in_fire(&c) {
             self.break_cushion(i, false);
+            return true;
+        }
+        // BlockAttachedEntity.tick: `discard()` then `dropItem(level, null)`.
+        if !self.cushion_survives(&c) {
+            self.discard_cushion(i);
             return true;
         }
         false
@@ -748,3 +771,7 @@ mod tests {
         assert!(c.item_stack_with_data().data().is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "cushion_drop_tests.rs"]
+mod cushion_drop_tests;
