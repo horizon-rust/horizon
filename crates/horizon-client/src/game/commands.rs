@@ -5,7 +5,7 @@ pub(super) mod compute;
 mod data;
 mod display_names;
 mod target_position;
-pub(super) use data::place_summoned;
+pub(super) use data::{place_summoned, strip_finalize_tree};
 mod effects;
 pub(super) mod execute;
 pub(super) mod extra;
@@ -1838,7 +1838,7 @@ impl Game<'_> {
             Ok(false) => {}
             Err(error) => {
                 log::error!("entity teleport into {}: {error}", level.id());
-                return Err(err("commands.generic.exception", &[]));
+                return Err(err("command.failed", &[]));
             }
         }
         let conn = match t {
@@ -2427,9 +2427,7 @@ impl Game<'_> {
                 Some(target) => self.target_name(target),
                 // Spawned as a kind no command target stands for (primed
                 // TNT, falling blocks, projectiles): its type's name.
-                None if self.spawned_mark() != before => {
-                    Text::translate(&entity_name_key(&kind), &[])
-                }
+                None if self.spawned_mark() != before => data::summon_type_name(&kind),
                 None => return Err(err("commands.summon.failed", &[])),
             };
             self.feedback(Text::translate("commands.summon.success", &[name]));
@@ -2445,15 +2443,11 @@ impl Game<'_> {
             name = self.target_name(Target::Mob(id));
         } else {
             match short.as_str() {
-                "item" => {
-                    // An item entity needs an item; vanilla spawns an empty one that despawns.
-                    return Err(err("commands.summon.failed", &[]));
-                }
                 "experience_orb" => {
-                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck like any orb spawn.
-                    let at = self.unstuck_orb(pos);
+                    // `EntityType`'s factory, `new ExperienceOrb(EntityType, Level)`,
+                    // which only `snapTo`s: the position is kept, even in a block.
                     self.next_entity += 1;
-                    let at = Vec3::new(at[0], at[1], at[2]);
+                    let at = Vec3::new(pos[0], pos[1], pos[2]);
                     let orb = horizon_client::entities::ExperienceOrb::new(
                         self.next_entity,
                         at,
@@ -2525,9 +2519,7 @@ impl Game<'_> {
                         Some(target) => self.target_name(target),
                         // Spawned as a kind no command target stands for
                         // (primed TNT, falling blocks, projectiles).
-                        None if self.spawned_mark() != before => {
-                            Text::translate(&entity_name_key(&kind), &[])
-                        }
+                        None if self.spawned_mark() != before => data::summon_type_name(&kind),
                         None => return Err(err("commands.summon.failed", &[])),
                     };
                 }
@@ -4539,6 +4531,10 @@ mod difficulty_tests {
         assert_eq!(difficulty_names(7, 4), ("hard", "peaceful"));
     }
 }
+
+#[cfg(test)]
+#[path = "summon_item_orb_tests.rs"]
+mod summon_item_orb_tests;
 
 #[cfg(test)]
 mod summon_tests {

@@ -463,7 +463,7 @@ impl Game<'_> {
             clicked_pos: BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
             face,
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
-            inside: false,
+            inside: hit.inside,
             yaw: self.yaw,
             pitch: self.pitch,
             sneaking: self.keys.held(Mapping::Sneak),
@@ -791,6 +791,10 @@ mod bow_enchantment_tests;
 #[cfg(test)]
 #[path = "sign_chain_tests.rs"]
 mod sign_chain_tests;
+
+#[cfg(test)]
+#[path = "scaffolding_inside_tests.rs"]
+mod scaffolding_inside_tests;
 
 #[cfg(test)]
 #[path = "adventure_use_on_tests.rs"]

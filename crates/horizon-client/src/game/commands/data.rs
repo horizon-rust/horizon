@@ -29,6 +29,17 @@ fn set_key(tag: &mut Tag, key: &str, value: Tag) {
         c.insert(JavaString::from(key), value);
     }
 }
+/// `SummonCommand.spawnEntity`'s name for a kind no command target stands for:
+/// its entity type's. An item is the exception: `EntityType`'s factory leaves
+/// `ItemStack.EMPTY`, which `ItemEntity.readAdditionalSaveData` discards, and
+/// `ItemEntity.getName` reads that empty stack's `getItemName` — an empty
+/// component, not the type's name.
+pub(super) fn summon_type_name(kind: &str) -> Text {
+    if kind.trim_start_matches("minecraft:") == "item" {
+        return Text::empty();
+    }
+    Text::translate(&super::entity_name_key(kind), &[])
+}
 /// `EntityType.loadEntityRecursive` snaps every entity of the stack,
 /// passengers included, to the position (`/summon`, `native_summon`).
 pub(in crate::game) fn place_summoned(tag: &mut Tag, pos: [f64; 3]) {
@@ -372,6 +383,11 @@ impl Game<'_> {
     /// `TypedEntityData.loadInto` is: a spawn egg's data on the mob it spawned.
     pub(in crate::game) fn apply_entity_nbt(&mut self, t: Target, mut tag: Tag) -> R<()> {
         let stale = || err("commands.data.merge.failed", &[]);
+        // `Entity.load` keeps only the fields it reads, so vanilla drops a key it
+        // does not know on `EntityDataAccessor.setData` (and on
+        // `TypedEntityData.loadInto`). `horizon:finalize` is worldgen's, and
+        // `Game::load_mob` would run the finalize it asks for on the next load.
+        strip_finalize_tree(&mut tag);
         // Entity.load does not read Passengers: the riders stay, and so do the
         // passengers the load kept raw (none, when it kept none).
         let kept_passengers = match t {
@@ -425,6 +441,14 @@ impl Game<'_> {
                     // random (Entity.random) goes on, as a spawn egg's entity
                     // data finds it.
                     slot.random = old.random.clone();
+                    // LivingEntity.readAdditionalSaveData makes a saved Brain
+                    // again from that random: an armadillo's sensors are delayed
+                    // anew (the merged tag always has one).
+                    if slot.species() == horizon_client::mobs::Species::Armadillo
+                        && tag.get("Brain").is_some()
+                    {
+                        horizon_client::mobs::armadillo::delay_sensors(slot);
+                    }
                     // Entity.load keeps the unsaved Allay.jukeboxPos and
                     // DATA_DANCING of the entity it loads into.
                     if slot.species() == horizon_client::mobs::Species::Allay {
@@ -905,6 +929,13 @@ impl Game<'_> {
                 let f = self.falling.iter_mut().find(|f| f.id == id)?;
                 Some(&mut f.saved.get_or_insert_with(|| Box::new((uuid, empty()))).1)
             }
+            // `tags_of` reads a spawner's compound, and its chunk saves it
+            // (`ominous_item_spawner_to_nbt`); without this arm `/tag` wrote
+            // nothing and still reported success.
+            Target::Spawner(id) => {
+                let s = self.ominous_spawners.iter_mut().find(|s| s.id == id)?;
+                Some(&mut **s.raw.get_or_insert_with(|| Box::new(empty())))
+            }
             _ => None,
         }
     }
@@ -914,6 +945,14 @@ impl Game<'_> {
         let Some(raw) = self.raw_mut(t) else {
             return false;
         };
+        // `Entity.saveWithoutId` writes `Tags` only for a nonempty live set:
+        // removing the last tag leaves no key.
+        if tags.is_empty() {
+            if let Tag::Compound(map) = raw {
+                map.remove(&"Tags".into());
+            }
+            return true;
+        }
         let list = tags
             .iter()
             .map(|s| Tag::String(s.as_str().into()))
@@ -1545,9 +1584,12 @@ impl Game<'_> {
                                 .collect(),
                         )
                     };
+                    // `TagCommand.listTags` tracks each entity's tag count and
+                    // sends with `sendFeedback`'s default element type, NON_ZERO:
+                    // the single form names the one entity that has tags.
                     tracker
                         .message(
-                            true,
+                            false,
                             None,
                             |h, _| {
                                 Text::translate(
@@ -1564,7 +1606,9 @@ impl Game<'_> {
                         )?
                         .0
                 };
-                self.feedback(message);
+                // `TagCommand.listTags` reports with `sendFeedback(source, false, …)`:
+                // the operators are not told, unlike `addTag`/`removeTag` (`true`).
+                self.feedback_unbroadcast(message);
                 return Ok(count as i32);
             }
         }?;
@@ -1645,6 +1689,11 @@ impl Game<'_> {
         if !matches!(tag, Tag::Compound(_)) {
             return Err(err("argument.nbt.expected.compound", &[]));
         }
+        // SummonCommand.createEntity with an NBT argument passes
+        // `finalize = false`: the mob is what its compound says, and the
+        // `horizon:finalize` marker worldgen leaves on a structure mob is not
+        // the player's to set.
+        strip_finalize_tree(&mut tag);
         set_key(&mut tag, "id", Tag::String(kind.into()));
         // Turtle.readAdditionalSaveData chooses its home before SummonCommand's snapTo.
         // Preserve that load-stage default while the shared loader receives the final Pos.
@@ -1677,6 +1726,22 @@ impl Game<'_> {
             return Err(err("commands.summon.failed.uuid", &[]));
         }
         Ok(target)
+    }
+}
+
+/// `horizon:finalize` off `tag` and off the riders under its `Passengers`:
+/// only worldgen leaves it, for a structure mob the game finishes when its
+/// chunk loads (`Game::load_mob`), never for a player to ask for. Taken off the
+/// compounds a player's NBT arrives in: `/summon`'s argument, `/data`'s and the
+/// `minecraft:entity_data` component's (`Game::apply_entity_nbt`), and
+/// `native_summon`, which takes `/summon`'s argument.
+pub(in crate::game) fn strip_finalize_tree(tag: &mut Tag) {
+    let Tag::Compound(c) = tag else { return };
+    c.remove(&"horizon:finalize".into());
+    if let Some(Tag::List(passengers)) = c.get_mut(&"Passengers".into()) {
+        for passenger in passengers {
+            strip_finalize_tree(passenger);
+        }
     }
 }
 
@@ -2899,3 +2964,7 @@ mod vehicle_container_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../finalize_marker_tests.rs"]
+mod finalize_marker_tests;

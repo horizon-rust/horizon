@@ -1767,8 +1767,7 @@ impl Game<'_> {
         // `RideCommand.mount` forces the ride (`startRiding(vehicle, true, true)`),
         // which skips `canRide` and `canAddPassenger`: a boat under water still
         // takes the rider. Horizon's boats seat at most `max_passengers`, so a
-        // full boat still refuses. Minecarts carry only players here: Horizon's
-        // carts have no mob passengers yet.
+        // full boat still refuses.
         match vehicle {
             Target::Boat(id) => {
                 let Some(i) = self.boats.iter().position(|b| b.id == id) else {
@@ -1785,8 +1784,8 @@ impl Game<'_> {
                     if !self.native_may_board(id) {
                         return Err(generic());
                     }
-                    self.yaw = self.boats[i].yaw;
-                    // ServerPlayer.startRiding seats the player immediately.
+                    // ServerPlayer.startRiding seats the player immediately,
+                    // keeping its rotation (`Relative.ROTATION`).
                     let at = self.player_boat_seat(i);
                     if let Some(player) = self.player.as_mut() {
                         player.position = at;
@@ -1800,17 +1799,23 @@ impl Game<'_> {
                 return Ok(());
             }
             Target::Cart(id) => {
-                if target != Target::Player
-                    || self.ridden_by_guest(id)
-                    || !self.native_may_board(id)
-                {
+                if let Some(rider) = rider {
+                    // A cart carries any mob the forced ride puts in it
+                    // (`Entity.positionRider` seats it, game/minecarts.rs).
+                    if !self.try_mount_mob(rider, id) {
+                        return Err(generic());
+                    }
+                    return Ok(());
+                }
+                if self.ridden_by_guest(id) || !self.native_may_board(id) {
                     return Err(generic());
                 }
                 self.start_riding(id);
                 return Ok(());
             }
-            // An armor stand, a display, a marker, an interaction or any entity Horizon keeps as its
+            // An armor stand, a display, an interaction or any entity Horizon keeps as its
             // compound: the forced ride takes it too, and the rider sits on its passenger point.
+            // A marker takes no rider at all (`Marker.couldAcceptPassenger`).
             Target::Stand(id) | Target::Other(id) => {
                 let Some(seat) = self.seat(id) else {
                     return Err(generic());
@@ -1849,7 +1854,6 @@ impl Game<'_> {
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob_id) {
             m.extra.flag = false;
             m.extra.counter = 0;
-            self.yaw = m.yaw;
         }
         self.mount.jump_ticks = 0;
         self.mount.jump_scale = 0.0;

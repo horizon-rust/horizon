@@ -614,7 +614,7 @@ impl Game<'_> {
                 at[2].floor() as i32,
             );
             let difficulty = self.local_difficulty(at);
-            spawning::finalize(&mut mob, &facts, &difficulty);
+            spawning::finalize(&mut mob, &facts, &difficulty, &mut self.world.random);
             if !scripted {
                 let reason = if persistent {
                     horizon_client::mobs::raider::Reason::Other
@@ -826,7 +826,7 @@ impl Game<'_> {
         );
         let difficulty = self.local_difficulty([at.x, at.y, at.z]);
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-            spawning::finalize(m, &facts, &difficulty);
+            spawning::finalize(m, &facts, &difficulty, &mut self.world.random);
             // `Raider.finalizeSpawn`, which the witch's conversion reaches too.
             horizon_client::mobs::raider::finalize(m, horizon_client::mobs::raider::Reason::Other);
             m.persistent = true;
@@ -2284,10 +2284,9 @@ impl Game<'_> {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);
                     self.post_game_event(event, at, ctx);
                 }
-                // A mob's own `gameEvent(..)` calls: Armadillo.rollUp/rollOut's
-                // ENTITY_ACTION, Creeper.tick's PRIME_FUSE, Mob.ate's EAT, a fox's
-                // DRINK, the shulker's lid, an evoker's vexes (ENTITY_PLACE),
-                // Enderman.teleport's TELEPORT, onEquipItem's EQUIP/UNEQUIP.
+                // A mob's own `gameEvent(..)` calls: Armadillo.rollUp/rollOut's ENTITY_ACTION,
+                // PRIME_FUSE, EAT, a fox's DRINK, the shulker's lid, an evoker's vexes
+                // (ENTITY_PLACE), TELEPORT, EQUIP/UNEQUIP, updateFallFlying's ELYTRA_GLIDE.
                 MobEvent::GameEvent {
                     event, at, source, ..
                 } if matches!(
@@ -2302,6 +2301,7 @@ impl Game<'_> {
                         | "minecraft:teleport"
                         | "minecraft:equip"
                         | "minecraft:unequip"
+                        | "minecraft:elytra_glide"
                 ) =>
                 {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);

@@ -7965,6 +7965,30 @@ def vehicle_fall_clip():
                        f'/forceload remove {x0} {z0}')
 
 
+def armadillo_scute_time():
+    """#15784: `Armadillo`'s constructor draws `scuteTime = pickNextScuteDropTime()` (`random.nextInt(6000) + 6000`)
+    from the entity's own random, and `readAdditionalSaveData` replaces it only when the tag has `scute_time`. An
+    armadillo summoned without the key keeps the constructor's draw; one with it keeps the saved value. Both engines'
+    randoms are synced before each summon; NoAI keeps `customServerAiStep` from counting it down.
+    """
+    x0, y0, z0 = 5568, 250, 5568
+    # Entities tick once every chunk within 2 columns is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + dx, (z0 >> 4) + dz] for dx in range(-2, 3) for dz in range(-2, 3)]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    for n, extra in enumerate(('', ',scute_time:4321'), 1):
+        ops.append({'op': 'sync_randoms', 'uniquifier': 15784 + n, 'entity_id': 15_784_000 + 1000 * n,
+                    'level_seed': 15784})
+        ops.append(cmd(f'/summon armadillo {x0 + 4 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;15784,0,{n},1],NoAI:1b,'
+                       f'Silent:1b,PersistenceRequired:1b{extra}}}', expect_result=1))
+        ops.append(cmd(f'/data get entity 00003da8-0000-0000-0000-{n:04x}00000001 scute_time'))
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd(f'/data get entity 00003da8-0000-0000-0000-{n:04x}00000001 scute_time'))
+    return ops + setup(f'/kill @e[x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16,type=!player]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 4} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def mob_fall_clip():
     """Entity.move on a mob: a move of a block or more casts along it (FALLDAMAGE_RESETTING as a full
     block, WATER) and a hit resets the fall before the move's own drop counts. Pigs and husks fall
@@ -8577,6 +8601,7 @@ def groups():
         ('teleport lands', teleport_lands()),
         ('rocket data merge', rocket_data_merge()),
         ('mob fall clip', mob_fall_clip()),
+        ('armadillo scute time', armadillo_scute_time()),
         ('orb fall distance', orb_fall_distance()),
         ('rocket fall distance', rocket_fall_distance()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
