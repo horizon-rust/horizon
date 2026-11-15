@@ -75,7 +75,9 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         overlay.backgroundColor = .clear
         overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         overlay.onResize = { [weak self] in self?.layoutButtons() }
-        window.addSubview(overlay)
+        // Keep the overlay in the winit view-controller hierarchy, above its
+        // Metal-backed view, so SwiftUI sheets and alerts can be presented.
+        window.rootViewController?.view.addSubview(overlay)
 
         let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swipedLeft))
         swipe.direction = .left
@@ -182,22 +184,34 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     }
 
     private func hidePanel() {
-        panelController?.view.removeFromSuperview()
-        panelController = nil
+        removePanel()
         isInMenu = false
         isEditingLayout = false
         setControlsVisible(true)
         refreshSwipe()
     }
 
-    private func present<V: View>(_ view: V) {
-        panelController?.view.removeFromSuperview()
+    private func removePanel() {
+        guard let controller = panelController else { return }
+        controller.willMove(toParent: nil)
+        controller.view.removeFromSuperview()
+        controller.removeFromParent()
         panelController = nil
+    }
+
+    private func present<V: View>(_ view: V) {
+        removePanel()
         let controller = UIHostingController(rootView: view)
         controller.view.backgroundColor = .clear
         controller.view.frame = overlay.bounds
         controller.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        overlay.addSubview(controller.view)
+        if let parent = gameWindow?.rootViewController {
+            parent.addChild(controller)
+            overlay.addSubview(controller.view)
+            controller.didMove(toParent: parent)
+        } else {
+            overlay.addSubview(controller.view)
+        }
         panelController = controller
     }
 
