@@ -12,13 +12,14 @@ struct NovaTouchControl: Identifiable, Codable, Equatable {
     var opacity: Double = 0.7
 
     static let kinds = ["keyboard", "mouseLeft", "mouseRight",
-                        "virtualMouse", "virtualKeyboard", "menu"]
+                        "virtualMouse", "virtualKeyboard", "joystick", "menu"]
 
     var symbol: String {
         switch kind {
         case "mouseLeft": return "cursorarrow.click"
         case "mouseRight": return "cursorarrow.rays"
-        case "virtualMouse": return "cursorarrow"
+        case "virtualMouse": return "hand.draw"
+        case "joystick": return "circle.dotted.circle"
         case "virtualKeyboard": return "keyboard"
         case "menu": return "line.3.horizontal"
         default: return "keyboard"
@@ -37,16 +38,18 @@ struct NovaTouchLayout: Codable {
                              x: x, y: y, size: 58, opacity: 0.6)
         }
         return NovaTouchLayout(controls: [
-            key("W", "W", 0.14, 0.64),
-            key("A", "A", 0.07, 0.76),
-            key("S", "S", 0.14, 0.76),
-            key("D", "D", 0.21, 0.76),
-            key("Jump", "Space", 0.88, 0.73),
-            key("E", "E", 0.89, 0.57),
-            NovaTouchControl(name: "Attack", kind: "mouseLeft", x: 0.73, y: 0.76),
-            NovaTouchControl(name: "Use", kind: "mouseRight", x: 0.8, y: 0.63),
-            NovaTouchControl(name: "Mouse", kind: "virtualMouse", x: 0.55, y: 0.66),
-            NovaTouchControl(name: "Type", kind: "virtualKeyboard", x: 0.93, y: 0.14)
+            NovaTouchControl(name: "Move", kind: "joystick",
+                             x: 0.16, y: 0.73, size: 130, opacity: 0.65),
+            key("Jump", "Space", 0.88, 0.77),
+            key("E", "E", 0.90, 0.58),
+            NovaTouchControl(name: "Attack", kind: "mouseLeft", x: 0.75, y: 0.79),
+            NovaTouchControl(name: "Use", kind: "mouseRight", x: 0.79, y: 0.63),
+            NovaTouchControl(name: "Look", kind: "virtualMouse",
+                             x: 0.56, y: 0.73, size: 150, opacity: 0.55),
+            NovaTouchControl(name: "Type", kind: "virtualKeyboard",
+                             x: 0.93, y: 0.14),
+            NovaTouchControl(name: "Menu", kind: "menu",
+                             x: 0.07, y: 0.12, size: 50)
         ])
     }
 }
@@ -126,7 +129,27 @@ enum NovaTouchLayouts {
 
     static func current() -> NovaTouchLayout {
         let name = UserDefaults.standard.string(forKey: currentKey) ?? "default"
-        if let selected = load(name) ?? load("default") { return selected }
+        if let selected = load(name) ?? load("default") {
+            // Upgrade only an unchanged, automatically created v1 default.
+            // Never overwrite a custom layout or a rearranged control.
+            let oldCoordinates: [(String, Double, Double)] = [
+                ("W", 0.14, 0.64), ("A", 0.07, 0.76),
+                ("S", 0.14, 0.76), ("D", 0.21, 0.76)
+            ]
+            let isOldStarter = selected.name == "default"
+                && selected.controls.count == 10
+                && zip(selected.controls.prefix(4), oldCoordinates).allSatisfy { button, expected in
+                    button.name == expected.0
+                        && abs(button.x - expected.1) < 0.001
+                        && abs(button.y - expected.2) < 0.001
+                }
+            if isOldStarter {
+                let upgraded = NovaTouchLayout.starter
+                try? save(upgraded)
+                return upgraded
+            }
+            return selected
+        }
         let starter = NovaTouchLayout.starter
         // Put default.json in the Files-visible folder from the first launch.
         try? save(starter)
