@@ -1,11 +1,12 @@
 //! One of Horizon's own shader packs while it runs (docs/shaders.md): the frame its stages
-//! read, its sky, material and post stages, and the timer of their passes.
+//! read, its sky, material, entity and post stages, and the timer of their passes.
 
 use horizon_shader_api::check::CheckedStage;
 use horizon_shader_api::{Report, StageKind};
 
 use super::displace::Displacement;
 use super::external::Capabilities;
+use super::native_entity::NativeEntity;
 use super::native_material::{DisplacedShape, MaterialPipelines, NativeMaterial, TerrainShape};
 use super::native_post::{NativeFrame, NativePost};
 use super::native_shadow::{NativeShadow, ShadowGrid};
@@ -17,9 +18,12 @@ use super::{Frame, SectionKey};
 use crate::fast_hash::FxHashMap;
 
 pub struct NativePack {
+    /// The manifest's `name`.
+    pub name: String,
     pub frame: NativeFrame,
     pub sky: Option<NativeSky>,
     pub material: Option<NativeMaterial>,
+    pub entity: Option<NativeEntity>,
     /// The post chain (none without `[[post]]`), the decode before it and the tonemap after.
     pub post: NativePost,
     /// With a sky stage, what of Minecraft's sky still draws over it (`[sky]`).
@@ -164,6 +168,13 @@ impl NativePack {
         }
     }
 
+    /// Whether the pack's rays read the scene's entity layer: its files name `RAY_ENTITY`, and
+    /// its stages trace on this device.
+    pub(in crate::gfx) fn traces_entities(&self) -> bool {
+        let material = self.material.as_ref().and_then(|m| m.scene.as_ref());
+        self.post.traces_entities() || material.is_some_and(|t| t.traces_entities())
+    }
+
     /// The pipelines the pack's terrain draws with this frame, and its group 3.
     pub(in crate::gfx) fn terrain(&self) -> Option<(&MaterialPipelines, &wgpu::BindGroup)> {
         Some(self.material.as_ref()?.drawn(&self.frame.group))
@@ -285,7 +296,7 @@ impl NativePack {
             && option_on(constants, option);
         frame.reads_opaque = reads_opaque(&report.stages);
         let fog = report.material_fog;
-        let coverage = report.manifest.coverage;
+        let coverage = report.manifest.material_coverage;
         let keeps = |key: fn(&horizon_shader_api::Stage) -> Option<bool>| {
             report.sky.as_ref().and_then(key).unwrap_or(true)
         };
@@ -314,10 +325,12 @@ impl NativePack {
             .find(|s| s.kind == StageKind::Weather)
             .map(|s| s.label.clone());
         let has_vertex = report.stages.iter().any(|s| s.kind == StageKind::Vertex);
-        let (mut post, others): (Vec<_>, Vec<_>) = report
-            .stages
-            .into_iter()
-            .partition(|s| s.kind == StageKind::Post);
+        let (mut post, others): (Vec<_>, Vec<_>) = report.stages.into_iter().partition(|s| {
+            matches!(
+                s.kind,
+                StageKind::Post | StageKind::Compute | StageKind::BeforeWorld
+            )
+        });
         let sky = others
             .iter()
             .find(|s| s.kind == StageKind::Sky)
@@ -346,9 +359,19 @@ impl NativePack {
                 )
             })
             .transpose()?;
+        let entity = others
+            .iter()
+            .find(|s| s.kind == StageKind::Entity)
+            .map(|stage| {
+                let groups = [terrain.entities, terrain.retained_entities];
+                let coverage = report.manifest.entity_coverage;
+                NativeEntity::new(device, format, groups, &frame, stage, constants, coverage)
+            })
+            .transpose()?;
         // The decode and the tonemap run without a chain too.
         let tonemap = others.iter().find(|s| s.kind == StageKind::Tonemap);
         // A `[ray_tracing]` pack's passes as the check built them against the scene.
+        let entities = post.iter().any(CheckedStage::traces_entities);
         let scenes: Vec<(String, naga::Module)> = post
             .iter_mut()
             .filter_map(|s| Some((s.label.clone(), s.scene.take()?)))
@@ -363,7 +386,7 @@ impl NativePack {
             && super::surface_setup::ray_query::on(device)
             && !material.as_ref().is_some_and(traced);
         if !scenes.is_empty() && !refused {
-            let shape = super::native_post::trace::TraceShape::of(terrain);
+            let shape = super::native_post::trace::TraceShape::of(terrain, entities);
             if !post.trace_scene(device, scenes, constants, &shape, &frame.pbr)
                 && let Some(m) = material.as_mut()
             {
@@ -374,12 +397,16 @@ impl NativePack {
         labels.extend(
             others
                 .iter()
-                .filter(|s| material.is_some() && s.kind == StageKind::Material)
+                .filter(|s| match s.kind {
+                    StageKind::Material => material.is_some(),
+                    kind => kind == StageKind::Entity,
+                })
                 .map(|s| s.label.clone()),
         );
         labels.extend(weather_label);
         labels.extend(post.labels().into_iter().map(str::to_owned));
         let pack = Self {
+            name: report.manifest.name.clone(),
             particle_lights: report.manifest.particle_lights.clone(),
             light_colors: report.manifest.lights.clone(),
             traces: report.manifest.ray_tracing.is_some(),
@@ -387,6 +414,7 @@ impl NativePack {
             frame,
             sky,
             material,
+            entity,
             post,
             vanilla_clouds,
             vanilla_sun,
@@ -591,7 +619,7 @@ pub struct WorldTargets<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::gfx) mod tests {
     use super::{Capabilities, NativePack, TerrainShape, chosen_shadow, reads_opaque};
     use horizon_shader_api::manifest::{OptionKind, PackOption, Shadow};
 
@@ -769,7 +797,9 @@ file = \"material.wgsl\"
 
     /// The terrain's group 0 as the renderer makes it (`Renderer::new`), and an empty layout
     /// for the other groups.
-    fn terrain_layouts(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout) {
+    pub(in crate::gfx) fn terrain_layouts(
+        device: &wgpu::Device,
+    ) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout) {
         // Its uniform, the 10 sampled textures (_terrain.wgsl_'s 8 sprite arrays, the
         // lightmap and the emission thresholds) and two samplers.
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
@@ -814,7 +844,7 @@ file = \"material.wgsl\"
         (globals, empty)
     }
 
-    fn terrain_shape<'a>(
+    pub(in crate::gfx) fn terrain_shape<'a>(
         globals: &'a wgpu::BindGroupLayout,
         empty: &'a wgpu::BindGroupLayout,
     ) -> TerrainShape<'a> {
@@ -828,6 +858,7 @@ file = \"material.wgsl\"
             sprite_tags: &[],
             sprite_materials: &[],
             entities: empty,
+            retained_entities: empty,
             weather_groups: [empty, empty],
             pbr: None,
         }

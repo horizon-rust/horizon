@@ -603,8 +603,9 @@ macro_rules! stored_motion {
 }
 
 impl Game<'_> {
-    /// Tick an item owned by the caller. The two results are ordinary survival
-    /// and explicit consumption by a block-contact handler. `escape_speed`:
+    /// Tick an item owned by the caller. The results are ordinary survival,
+    /// explicit consumption by a block-contact handler, and the fall it landed
+    /// with on a server (its block's `fallOn` is the caller's). `escape_speed`:
     /// the item is inside a block and moves without physics this tick, pushed
     /// out at this speed.
     pub(super) fn tick_item_with_block_contacts(
@@ -614,11 +615,12 @@ impl Game<'_> {
         entity_boxes: &[Aabb],
         client: bool,
         splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
-    ) -> (bool, bool) {
+    ) -> (bool, bool, super::item_entities::ahead::Landed) {
         let no_physics = escape_speed.is_some();
-        let step = self
+        let (step, landed) = self
             .item_tables()
             .move_item(item, escape_speed, entity_boxes, splash);
+        let landed = landed.filter(|_| !client);
         if let Some(pos) = step.vertical_contact {
             let state = self.world.block(pos.x, pos.y, pos.z);
             let position = item.position;
@@ -634,13 +636,13 @@ impl Game<'_> {
                 &mut discarded,
             );
             if discarded || item.stack.count == 0 {
-                return (false, true);
+                return (false, true, landed);
             }
         }
         let alive = self
             .item_tables()
             .settle_item(item, no_physics, step, splash);
-        (alive, false)
+        (alive, false, landed)
     }
 
     /// Keep new joins after the active batch, so they tick next time.
@@ -991,14 +993,6 @@ impl Game<'_> {
         super::boats::any_boat_wood(kind)
             .is_some_and(|(wood, chest)| self.boat_models.has(wood, chest))
     }
-    /// Whether `load_listed` loads `kind` as a vehicle that takes its mob
-    /// riders (`take_mob_passengers`): a mob, boat, minecart or primed TNT.
-    pub(super) fn listed_kind_takes_riders(&self, kind: &str) -> bool {
-        self.loads_as_mob(kind)
-            || self.loads_as_boat(kind)
-            || loads_as_cart(kind)
-            || loads_as_tnt(kind)
-    }
     /// Loads a saved entity as the first kind in `entity_lists!` that claims
     /// its type id: `Err` hands the compound back when none does.
     pub(super) fn load_listed(
@@ -1105,9 +1099,10 @@ impl Entity for Mob {
         game.mob_can_use_portal(self)
     }
     /// `PersistentEntitySectionManager.Callback.onRemove`: discard stops
-    /// section enumeration immediately, before the entity list is swept.
+    /// section enumeration immediately, before the entity list is swept; and
+    /// `EntitySelectorParser`'s `Entity::isAlive` drops a dying mob at once.
     fn selector_target(&self) -> Option<Target> {
-        (!self.removed && self.death_time == 0).then_some(Target::Mob(self.id))
+        (!self.removed && self.alive()).then_some(Target::Mob(self.id))
     }
     fn bounds(&self) -> Aabb {
         Mob::bounds(self)

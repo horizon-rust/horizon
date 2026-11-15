@@ -291,8 +291,10 @@ pub struct TerrainShape<'a> {
     /// The pack's material id of each sprite layer with one, as `(layer, id)`
     /// (`Manifest::sprite_materials`).
     pub sprite_materials: &'a [(u32, u32)],
-    /// The entities' group 0 (their atlas), for the shadow pass's entity draw.
+    /// The entities' group 0 (their atlas), for the shadow pass's entity draw and the entity
+    /// stage, and the retained block entities' group 1 (their place), for that stage.
     pub entities: &'a wgpu::BindGroupLayout,
+    pub retained_entities: &'a wgpu::BindGroupLayout,
     /// The weather's groups 0 and 1 (the entities' atlas, the fall clock), for the weather
     /// stage.
     pub weather_groups: [&'a wgpu::BindGroupLayout; 2],
@@ -482,7 +484,8 @@ impl NativeMaterial {
         }
         let pipelines = built?;
         let scene = stage.scene_source.as_deref().and_then(|source| {
-            TerrainTrace::new(device, frame, shape, |group| build(source, group))
+            let terrain = (shape, stage.traces_entities());
+            TerrainTrace::new(device, frame, terrain, |group| build(source, group))
         });
         Ok(Self {
             pipelines,

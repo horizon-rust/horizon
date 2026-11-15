@@ -228,6 +228,16 @@ impl Game<'_> {
         self.command_source = previous;
         out
     }
+    /// `CommandSourceStack.getLevel`: the source's own level (`execute in`,
+    /// which `with_source` puts in place), the console's Overworld, or the
+    /// acting body's level.
+    pub(super) fn source_level(&self) -> Dim {
+        match self.command_source.and_then(|s| s.level) {
+            Some(level) => level,
+            None if self.source_entity().is_none() => Dim::Overworld,
+            None => self.dim,
+        }
+    }
 
     // ---- running commands -----------------------------------------------
 
@@ -695,10 +705,7 @@ impl Game<'_> {
                 let Some(Arg::Resource(kind)) = c.get("entity").cloned() else {
                     return Ok(vec![s]);
                 };
-                let target = self.summon_with_nbt(&kind, s.pos, "{}")?;
-                let Some(t) = target else {
-                    return Err(err("commands.summon.failed", &[]));
-                };
+                let t = self.summon_for_execute(&kind, s.pos)?;
                 vec![Source {
                     entity: Some(t),
                     ..s
@@ -828,17 +835,14 @@ impl Game<'_> {
                     .collect(),
                 _ => Vec::new(),
             },
-            Some("vehicle") => self.ride_vehicle(entity).into_iter().collect(),
+            Some("vehicle") => self.passenger_vehicle_target(entity).into_iter().collect(),
             Some("passengers") => {
                 let mut passengers = self.player_passengers(entity);
-                // Direct runtime children only. Complete mount insertion order is
-                // not modeled; retain the existing mob collection order here.
-                if let Target::Mob(id) | Target::Boat(id) = entity {
+                if let Some(id) = super::super::native_entities::target_id(entity) {
                     passengers.extend(
-                        self.mobs
-                            .iter()
-                            .filter(|m| m.extra.mount == Some(id) && m.alive() && !m.removed)
-                            .map(|m| Target::Mob(m.id)),
+                        self.ordered_live_passengers(id)
+                            .into_iter()
+                            .filter_map(|id| self.level_entity(id as i32)),
                     );
                 }
                 passengers

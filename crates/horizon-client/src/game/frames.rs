@@ -377,6 +377,12 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
+        // BlockAttachedEntity.skipAttackInteraction: `mayInteract` refuses the
+        // hit before the frame is asked, fixed or not.
+        let at = self.item_frames[i].pos;
+        if !self.may_interact_at(BlockPos::new(at[0], at[1], at[2])) {
+            return true;
+        }
         if self.item_frames[i].fixed {
             // A fixed frame refuses the hit of a player who isn't in creative
             // (canHurtWhenFixed), so skipAttackInteraction is false and
@@ -747,6 +753,8 @@ impl Game<'_> {
                 }
             }
             self.finish_entity_occlusion(culling, f, out, entity_start);
+            // The frame; what it shows is an item or a map, Horizon's to light.
+            self.lit_entity(entity_start..out.len());
             let cull_contents = culling.checks_vertices();
             if let Some(stack) = &f.item {
                 let mut canceled = false;

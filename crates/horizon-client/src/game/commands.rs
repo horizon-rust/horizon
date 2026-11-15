@@ -19,6 +19,7 @@ pub(super) mod pregen;
 mod profiles;
 mod raid;
 mod selector_bounds;
+mod summon;
 mod terrain_cmds;
 mod test_locate;
 mod test_runs;
@@ -1198,8 +1199,7 @@ impl Game<'_> {
             "locate.poi" => self.cmd_locate_poi(ctx),
             "warden_spawn_tracker.clear" | "warden_spawn_tracker.set" => {
                 let level = Self::int(ctx, "warning_level");
-                self.cmd_warden_spawn_tracker(level);
-                Ok(1)
+                self.cmd_warden_spawn_tracker(level)
             }
             "say" | "me" | "msg" => self.cmd_say(id, ctx),
             "list" => self.cmd_list(ctx),
@@ -1266,7 +1266,7 @@ impl Game<'_> {
         let targets = if ctx.get("target").is_some() {
             self.entities(ctx, "target", true)?
         } else {
-            vec![self.implied_player()]
+            vec![self.implied(true)?]
         };
         let mut count = 0;
         for t in targets {
@@ -1582,9 +1582,8 @@ impl Game<'_> {
             Target::Player => {
                 // ServerPlayer.teleport: removeVehicle before placing the player.
                 self.stop_riding();
-                // A server's player teleported within their level is placed
-                // there at once: the arrival they were waiting for elsewhere
-                // in it (whose chunks lose their tickets) is abandoned.
+                // A server's player teleported within their level is placed at once;
+                // its pending arrival (whose chunks lose their tickets) is abandoned.
                 if let Some(conn) = self.lan_acting {
                     horizon_client::lan::hub::teleport_cause(Some("command"));
                     self.hold_for_chunks(conn, v);
@@ -1598,6 +1597,7 @@ impl Game<'_> {
                     p.velocity = Vec3::new(0.0, 0.0, 0.0);
                     p.fall_distance = 0.0;
                     p.ground.on_ground = false;
+                    p.teleported = true;
                 }
                 self.previous_position = v;
                 if let Some([yaw, pitch]) = rotation {
@@ -2005,11 +2005,7 @@ impl Game<'_> {
         // A server's player in another level than the source's (`execute
         // in`, the console's Overworld) moves there (ServerPlayer.teleport
         // into another level), after the command.
-        let source_level = match self.command_source.and_then(|s| s.level) {
-            Some(level) => level,
-            None if self.source_entity().is_none() => super::Dim::Overworld,
-            None => self.dim,
-        };
+        let source_level = self.source_level();
         let target_name = (targets.len() == 1).then(|| {
             self.in_target_level(targets[0], |game| game.target_name(targets[0]))
                 .unwrap_or_else(Text::empty)
@@ -2254,7 +2250,7 @@ impl Game<'_> {
         // removed, then ENTITY_DIE by the entity itself. Mobs post theirs as
         // they die, the dragon on its own path, and EndCrystal.kill posts it
         // after onDestroyedBy. The source is captured before the removal: an
-        // armor stand is living (wardens can't target it), and a dropped item
+        // armor stand is living (wardens can't target it) and its UUID is the source, and a dropped item
         // keeps its stack's ItemEntity.dampensVibrations.
         let died = (!matches!(
             t,
@@ -2268,6 +2264,9 @@ impl Game<'_> {
         .flatten();
         let mut context = self.who_context(None, None);
         context.living = matches!(t, Target::Stand(_));
+        if let Target::Stand(id) = t {
+            context.source_uuid = Some(self.uuid_for(id));
+        }
         if let Target::Item(id) = t {
             context.dampens = self.dropped.iter().find(|i| i.id == id).is_some_and(|i| {
                 self.res
@@ -2300,9 +2299,6 @@ impl Game<'_> {
                         );
                     }
                     m.health = 0.0;
-                    if m.death_time == 0 {
-                        m.death_time = 1;
-                    }
                     killed = alive.then(|| m.clone());
                 }
                 // The hit runs LivingEntity.die before the command returns:
@@ -2371,7 +2367,7 @@ impl Game<'_> {
         let targets = if ctx.get("targets").is_some() {
             without_knots(self.entities(ctx, "targets", false)?)?
         } else {
-            vec![self.implied_player()]
+            vec![self.implied(false)?]
         };
         let mut names: Vec<Text> = Vec::new();
         for &t in &targets {
@@ -2399,26 +2395,11 @@ impl Game<'_> {
         let Some(Arg::Resource(kind)) = ctx.get("entity").cloned() else {
             return Ok(0);
         };
-        // ResourceArgument.getSummonableEntityType.
-        if matches!(
-            kind.as_str(),
-            "minecraft:player" | "minecraft:fishing_bobber"
-        ) {
-            return Err(err("entity.not_summonable", &[&kind]));
-        }
+        summon::summonable(&kind)?;
         let pos = self
             .position_arg(ctx, "pos")
             .unwrap_or(self.source_position());
-        let block_y = pos[1].floor() as i32;
-        if !(-30_000_000.0..30_000_000.0).contains(&pos[0])
-            || !(-20_000_000..20_000_000).contains(&block_y)
-            || !(-30_000_000.0..30_000_000.0).contains(&pos[2])
-        {
-            return Err(err("commands.summon.invalidPosition", &[]));
-        }
-        if self.ui.difficulty == 0 && !horizon_client::mobs::finalize::allowed_in_peaceful(&kind) {
-            return Err(err("commands.summon.failed.peaceful", &[]));
-        }
+        self.summon_checks(&kind, pos)?;
         let short = kind.trim_start_matches("minecraft:").to_owned();
         if let Some(Arg::Str(nbt)) = ctx.get("nbt").cloned() {
             // With an NBT argument the entity is built from it, unfinalized.
@@ -3567,7 +3548,7 @@ impl Game<'_> {
         let targets = if ctx.get("targets").is_some() {
             self.entities(ctx, "targets", true)?
         } else {
-            vec![Target::Player]
+            vec![self.implied(true)?]
         };
         let pos = if ctx.get("pos").is_some() {
             self.spawnable_pos_arg(ctx, "pos")?
@@ -3646,11 +3627,15 @@ impl Game<'_> {
         };
         // SetWorldSpawnCommand uses RespawnData.of before storing or comparing.
         let rot = [wrap_degrees(rot[0]), rot[1].clamp(-90.0, 90.0)];
+        // `source.getLevel()`: the spawn, and the dimension it belongs to
+        // (`RespawnData.of(level.dimension(), pos, yaw, pitch)`).
+        let level = self.source_level();
         // LevelData.setRespawnData: the world's spawn (level.dat `spawn`).
         let previous_point = self.world_spawn_position().map(|v| v.floor() as i32);
         let old = self.level.world_spawn.replace(pos);
         let old_angle = self.level.world_spawn_angle;
         self.level.world_spawn_angle = rot;
+        self.level.world_spawn_dimension = Some(level.id().to_string());
         if previous_point != pos || old_angle.map(f32::to_bits) != rot.map(f32::to_bits) {
             self.lan_broadcast_world_spawn();
         }
@@ -3672,7 +3657,7 @@ impl Game<'_> {
             Text::literal(pos[2].to_string()),
             Text::literal(java_float(f64::from(rot[0]))),
             Text::literal(java_float(f64::from(rot[1]))),
-            Text::literal(self.dim.id()),
+            Text::literal(level.id()),
         ];
         self.feedback(Text::translate("commands.setworldspawn.success", &args));
         Ok(1)
@@ -3830,7 +3815,7 @@ impl Game<'_> {
         let targets = if ctx.get("targets").is_some() {
             self.entities(ctx, "targets", true)?
         } else {
-            vec![Target::Player]
+            vec![self.implied(true)?]
         };
         let predicate = match ctx.get("item") {
             Some(Arg::Item(i)) => i.clone(),
@@ -4308,7 +4293,6 @@ impl Game<'_> {
         out
     }
 }
-
 /// Split at a separator outside brackets, braces and quotes.
 fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut out = Vec::new();
@@ -4501,6 +4485,23 @@ mod teleport_pitch_tests {
             )));
             assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
         }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn teleport_to_the_current_position_marks_the_player_for_sync() {
+        use super::Target;
+        use crate::game::native_machines::tests::server_game;
+        use crate::motion::PlayerMotion;
+        use horizon_core::geometry::Vec3;
+
+        let mut game = server_game();
+        let at = Vec3::new(0.5, 64.0, 0.5);
+        game.player = Some(PlayerMotion::new(game.motion, at).unwrap());
+
+        game.teleport_to_in_level(Target::Player, [at.x, at.y, at.z], None, false);
+
+        assert!(game.player.as_ref().is_some_and(|p| p.teleported));
     }
 
     #[test]

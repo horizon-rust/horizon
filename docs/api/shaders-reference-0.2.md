@@ -84,6 +84,16 @@ terrain, below 0.01 on translucent) and the stage may `discard`. Normal and para
 silhouette needs no `"pack"`, and neither do `[vertex]` and `[displacement]`, which move geometry, not coverage.
 The stage writes no depth of its own either way.
 
+## `[entity] coverage`
+
+The same rule for what the entity stage draws, without translucent terrain's exception. Under `coverage = "engine"`
+(the default) Horizon keeps its own coverage of each entity: the texture's alpha times the layer's opacity (the
+vertex alpha: a mob's translucent layer, a fading warden) is cut below 0.1 and is the alpha the layer blends by;
+dissolve masks, back-face culling and the rest of Horizon's cuts stay Horizon's. The alpha `entity` returns is
+ignored, and `entity`, and every function it calls, may not `discard`: the check refuses it. A pack that cuts or
+fades entities itself sets `coverage = "pack"`: the returned alpha is then cut below 0.1 and blends, and the stage
+may `discard`. Horizon's own cuts run under either.
+
 ## Stages
 
 | Stage | In `horizon-shaders.toml` | Your function |
@@ -322,6 +332,12 @@ asks for ray queries and keeps the scene with any pack or none; any other value 
 - `const RAY_SOLID: u32`, `const RAY_TRANSLUCENT: u32`: the scene's two layers, bits to OR together. Solid
   terrain, with cut-outs (leaves, plants) and lava; and what the translucent pass draws: water, glass, stained
   glass, ice, slime and honey blocks, any block whose texture has partly see-through texels.
+- `const RAY_ENTITY: u32`: a third layer, only in a pack whose files name it, anywhere outside a comment (dead
+  code too): the entities the camera draws, which are mobs, players, armour stands, item frames, vehicles,
+  projectiles, falling blocks, block displays and the block entities drawn with them (a chest while it opens). Such
+  a pack's `RayHit` also has `entity`. Not in it: particles, text, the hand, the camera's own body in first person,
+  translucent items, additive glows, beams and portals, entities the camera doesn't draw (behind it, hidden), and
+  block entities at rest (a closed chest). `trace` and `trace_any` never read it.
 - `fn trace_layers(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, layers: u32) -> RayHit` and
   `fn trace_any_layers(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, layers: u32) -> bool`: `trace`
   and `trace_any` over the layers `layers` names; `trace(o, d, m)` is `trace_layers(o, d, m, RAY_SOLID)`. With no
@@ -336,10 +352,12 @@ A ray starts at `origin` itself, so move a point off its own surface before trac
 the surface's own pass draws. In the solid layer it passes through the clear texels of a cut-out texture (leaves,
 plants), as terrain's alpha test does: a texel stops it from alpha 0.5 up. In the translucent layer every texel
 stops it, however faint, except a clear one (alpha below 0.01), which the translucent pass doesn't draw either;
-the hit's `albedo.a` is the texel's alpha and its `translucent` is true. A ray over both layers stops at the
-nearest surface of either: to go on through a translucent one, trace again from just behind the hit. The scene is
-Horizon's: the terrain around the camera, out to `frame.ray_distance` at least, without entities, particles,
-clouds or distant terrain. While
+the hit's `albedo.a` is the texel's alpha and its `translucent` is true. In the entity layer a texel stops it where
+vanilla's entity alpha test keeps the pixel, `(texel * tint).a` 0.1 or more (on the dying dragon's dissolve,
+vanilla's mask decides), from either side of the face. A ray over several layers stops at the nearest surface of
+any: to go on through a translucent one, trace again from just behind the hit. The scene is Horizon's: the
+terrain around the camera, out to `frame.ray_distance` at least, without particles, clouds or distant terrain,
+and with entities only in `RAY_ENTITY`. While
 the game doesn't trace (`frame.has_ray_tracing` is 0) the pack is built and runs all the same, and every ray
 misses. Your files name no ray query of their own (`ray_query`, `acceleration_structure`, `RayDesc`,
 `RayIntersection`, a `rayQuery` function, `enable wgpu_ray_query`): the check refuses them, and an `output`
@@ -368,12 +386,14 @@ The nearest surface along a ray, from `trace` or `trace_layers`. Its `albedo`, `
 | `emission` | `f32` | How strongly the block itself shines, 0..1, by its kind of light: a redstone torch or a candle 7/15, a torch or lava 14/15, glowstone 1; 0 for most blocks (as `MaterialInput.emission`). |
 | `fluid` | `u32` | 0 not a fluid, 1 water, 2 lava (as `MaterialInput.fluid`). Water is in the `RAY_TRANSLUCENT` layer, lava in `RAY_SOLID`. |
 | `translucent` | `bool` | A surface of the translucent pass (water, stained glass, ice), as `MaterialInput.translucent`: a hit in the `RAY_TRANSLUCENT` layer, so false for every hit of `trace`. |
+| `entity` | `bool` | Only in a pack whose files name `RAY_ENTITY`: a hit in that layer, an entity's surface. Its `albedo` is the entity texture's texel and `tint`, `light` and `uv` are its vertices' (the colour vanilla multiplies in, alpha included; the atlas position); `material`, `tags`, `emission` and `fluid` are 0, `hit_normal_map` and `hit_specular_map` give their defaults. |
 | `tangent` | `vec4<f32>` | The surface's tangent, as `MaterialInput.tangent`: xyz the unit direction in world axes along which `uv.x` grows, w the sign (1 or -1) that makes `cross(normal, tangent.xyz) * tangent.w` the direction `uv.y` grows along (down the texture). It follows `normal`, which faces the ray's origin. With `normal` it turns `hit_normal_map`'s normals into world axes. |
 | `horizon_sprite` | `u32` | Horizon's own: where the hit's sprite is kept, for `hit_normal_map` and `hit_specular_map`. Not for packs to read; it changes with the renderer. |
 
-Bindings 48 to 59 of group 3 hold the scene while the game traces, and in a post pass bindings
-12 and 13 the LabPBR maps (the material stage has them there already). They are Horizon's, as their
-`horizon_` names say, and change with the renderer.
+Bindings 48 to 59 of group 3 hold the scene while the game traces (60 to
+62 the entity layer, for a pack that names it), and in a post pass bindings 12 and 13 the LabPBR maps (the
+material stage has them there already). They are Horizon's, as their `horizon_` names say, and change with the
+renderer.
 
 ## Kept resources and compute passes
 
@@ -458,7 +478,7 @@ says the world changed, not the camera's distance or `frame_index`.
 
 Limits: 8 resources, 4 `[[before_world]]` entries, 8 compute
 `[[post]]` entries; 32 MiB of buffers and 1024 KiB of fixed-size textures, both versions counted; each R-relative
-kept texture takes two of the post targets `output`s share; a workgroup of up to [256, 256, 64] and
+kept texture takes 2 of the post targets' budget (Limits); a workgroup of up to [256, 256, 64] and
 256 invocations; 33554432 invocations a dispatch and 67108864 a frame over every
 compute pass, `[[before_world]]` and `[[post]]` together, counted as whole workgroups, a `"pixels"` dispatch as 3840×2160 (R isn't known at load).
 
@@ -543,7 +563,7 @@ One point of the surface of an entity, a block entity, an item or a particle, fo
 | `position` | `vec3<f32>` | The point, camera-relative, in blocks. |
 | `emission` | `f32` | 1 on a layer vanilla draws at full brightness (spider and enderman eyes, the warden's glow), else 0. There `lightmap` is full light; `shade` stays vanilla's, which shades the warden's glow and not the eyes. |
 | `normal` | `vec3<f32>` | The surface's geometric normal, a unit vector in world axes, facing the camera, from the position's screen derivatives (as `MaterialInput.normal`, without its snap to the axes). |
-| `kind` | `u32` | What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, signs, banners, beds), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle. |
+| `kind` | `u32` | What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, banners, bells, shulker boxes), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle. |
 | `colored_light` | `vec3<f32>` | As `MaterialInput.colored_light`: the frame's coloured lights at this point, 0..1; 0 where none reaches. |
 | `translucent` | `bool` | Drawn with blending. |
 | `light` | `vec2<f32>` | Block and sky light, 0..1. |
@@ -551,11 +571,25 @@ One point of the surface of an entity, a block entity, an item or a particle, fo
 | `screen` | `vec2<f32>` | Where the point is on the screen, 0..1 from the top left (as `MaterialInput.screen`). |
 
 `entity` lights what is no block terrain: `input.kind` says which. It returns the same `Surface` as `material` (rgb
-linear light, 0 or more and unbounded; alpha its coverage), so a pack writes its lighting once and calls it from both
-stages. Around it Horizon keeps vanilla's order: the alpha test on the returned alpha, then the enchantment glint
-added on top, then fog. `horizon-shader check` takes the stage; **the game doesn't draw it yet** and refuses a pack
-that has it. A pack without `[entity]` is drawn as before, and sees none of this stage's names. Until the game draws
-the stage its prelude may still gain names; from then on the rule for new names holds for it too.
+linear light, 0 or more and unbounded; its alpha read only under `[entity] coverage = "pack"`), so a pack writes
+its lighting once and calls it from both stages. Around it Horizon keeps vanilla's order: the alpha test (on the
+texture and the layer's opacity, or under `"pack"` on the returned alpha), then the enchantment glint added on top,
+then fog. A pack without `[entity]` is drawn as before, and sees none of this stage's names; the rule
+for new names holds for the stage as for the others.
+
+**What the game draws through the stage so far: entities and block entities** (`kind` 0 and 1). Until a later
+release brings them in, Horizon lights the rest itself, exactly as without the stage: dropped and framed items and
+what a block or a display entity shows of one (`kind` 2), what flies as its item (a snowball, a potion, a fireball,
+an eye of ender), firework rockets, particles (`kind` 4), the fire on a burning entity, a guardian's beam, a lead's
+rope, name tags and text, and the first-person hand. Some draws stay Horizon's for good: beacon beams, the beams of
+End crystals, End portals and gateways, breaking cracks, energy swirls, lightning and other additive glows.
+
+An item an entity holds or wears as its model (a sword in a hand, a block on a head) reaches the stage with the
+entity, unless its texture has see-through pixels (stained glass, ice, a slime block): that one is drawn with the
+translucent items, and stays Horizon's until items draw through the stage. A block drawn as an entity (a falling
+block, primed TNT, a block display) or as a block entity (a block a piston moves) reaches the stage too. These have
+vanilla's shade already in `tint`, and `shade` 1: their vertices carry the two as one colour so far. A sign's board
+and a bed are block terrain, the material stage's.
 
 Vanilla's own, the picture a pack without the stage gets:
 
@@ -692,6 +726,9 @@ Each `[[options]]` entry sets the WGSL `override` of the same name when the pipe
 ## Limits
 
 - 12 post passes, 64 options, `budget.gpu_ms` up to 16.
+- Post targets: 16 `output`s, and 6 render-size `rgba16float` textures of memory with the
+  R-relative kept textures: an `output` takes its `scale`² (1, 0.25 or 0.0625), an R-relative kept texture 2 (its
+  two versions, at any format and scale).
 - 256 KiB per WGSL file, 8 MiB per pack.
 - Per stage: 20000 naga expressions over all its functions, 64 texture reads (samples,
   gathers and loads, the prelude's included).
