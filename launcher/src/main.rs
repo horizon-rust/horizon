@@ -4807,7 +4807,11 @@ impl Launcher {
                 .gap(px(10.))
                 .w(px(180.))
                 .child(progress_bar(None, &t))
-                .child(text(theme::MICRO).text_color(t.muted).child("Removing…"))
+                .child(
+                    text(theme::MICRO)
+                        .text_color(t.muted)
+                        .child(tr("Removing…")),
+                )
         } else {
             self.version_actions(tag, selected, cx)
         };
@@ -5077,7 +5081,11 @@ impl Launcher {
                         .gap(px(10.))
                         .w(px(180.))
                         .child(progress_bar(None, &t))
-                        .child(text(theme::MICRO).text_color(t.muted).child("Removing…"))
+                        .child(
+                            text(theme::MICRO)
+                                .text_color(t.muted)
+                                .child(tr("Removing…")),
+                        )
                         .into_any_element()
                 } else if installed && backend::needs_game_architecture_install(&tag, &release) {
                     let mut b = button(
