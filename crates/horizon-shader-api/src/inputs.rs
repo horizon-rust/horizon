@@ -182,11 +182,12 @@ uniform! {
         /// The size of `reflection`, in pixels: half the world's picture.
         reflection_resolution: [f32; 2],
         /// Eight values a native mod hands its own pack each frame (`native_shader_params`,
-        /// docs/native-mods.md): what they mean is that mod's, such as where and when
+        /// docs/modding/src/how-to/native-mods.md): what they mean is that mod's, such as where and when
         /// something happened in the world. All 0 when no mod sets them.
         mods: [[f32; 4]; 8],
         /// Unit vector toward the body casting this frame's shadows: the sun by day, the moon
-        /// by night.
+        /// by night, as `sun_direction` and `moon_direction` have them, also without a
+        /// `[shadow]` stage.
         light_direction: [f32; 3],
         /// 1 while `shadow_map` holds this frame's shadow map, else 0.
         has_shadow: u32,
@@ -364,7 +365,7 @@ pub const ENTITY_INPUT: Struct = Struct {
         position: "vec3<f32>" = "The point, camera-relative, in blocks.",
         emission: "f32" = "1 on a layer vanilla draws at full brightness (spider and enderman eyes, the warden's glow), else 0. There `lightmap` is full light; `shade` stays vanilla's, which shades the warden's glow and not the eyes.",
         normal: "vec3<f32>" = "The surface's geometric normal, a unit vector in world axes, facing the camera, from the position's screen derivatives (as `MaterialInput.normal`, without its snap to the axes).",
-        kind: "u32" = "What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, signs, banners, beds), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle.",
+        kind: "u32" = "What is drawn: 0 an entity (mobs, players, armour, vehicles), 1 a block entity (chests, banners, bells, shulker boxes), 2 a dropped or framed item, 3 reserved for the first-person hand, 4 a particle.",
         colored_light: "vec3<f32>" = "As `MaterialInput.colored_light`: the frame's coloured lights at this point, 0..1; 0 where none reaches.",
         translucent: "bool" = "Drawn with blending.",
         light: "vec2<f32>" = "Block and sky light, 0..1.",
@@ -442,10 +443,36 @@ pub const RAY_HIT: Struct = Struct {
         emission: "f32" = "How strongly the block itself shines, 0..1, by its kind of light: a redstone torch or a candle 7/15, a torch or lava 14/15, glowstone 1; 0 for most blocks (as `MaterialInput.emission`).",
         fluid: "u32" = "0 not a fluid, 1 water, 2 lava (as `MaterialInput.fluid`). Water is in the `RAY_TRANSLUCENT` layer, lava in `RAY_SOLID`.",
         translucent: "bool" = "A surface of the translucent pass (water, stained glass, ice), as `MaterialInput.translucent`: a hit in the `RAY_TRANSLUCENT` layer, so false for every hit of `trace`.",
+        entity: "bool" = "Only in a pack whose files name `RAY_ENTITY`: a hit in that layer, an entity's surface. Its `albedo` is the entity texture's texel and `tint`, `light` and `uv` are its vertices' (the colour vanilla multiplies in, alpha included; the atlas position); `material`, `tags`, `emission` and `fluid` are 0, `hit_normal_map` and `hit_specular_map` give their defaults.",
         tangent: "vec4<f32>" = "The surface's tangent, as `MaterialInput.tangent`: xyz the unit direction in world axes along which `uv.x` grows, w the sign (1 or -1) that makes `cross(normal, tangent.xyz) * tangent.w` the direction `uv.y` grows along (down the texture). It follows `normal`, which faces the ray's origin. With `normal` it turns `hit_normal_map`'s normals into world axes.",
         horizon_sprite: "u32" = "Horizon's own: where the hit's sprite is kept, for `hit_normal_map` and `hit_specular_map`. Not for packs to read; it changes with the renderer.",
     },
 };
+
+/// Where `RayHit.entity` is: a pack that doesn't name `RAY_ENTITY` has `RayHit` without it.
+const RAY_HIT_ENTITY: usize = 12;
+
+/// `RAY_HIT` without `entity`.
+const RAY_HIT_PLAIN: [Field; 14] = {
+    let all = RAY_HIT.fields;
+    let mut out = [all[0]; 14];
+    let mut i = 0;
+    while i < out.len() {
+        out[i] = all[i + (i >= RAY_HIT_ENTITY) as usize];
+        i += 1;
+    }
+    out
+};
+
+/// `RayHit` as the prelude declares it, for a pack whose files name `RAY_ENTITY` (`entities`)
+/// or not.
+pub fn ray_hit(entities: bool) -> Struct {
+    let fields: &'static [Field] = match entities {
+        false => &RAY_HIT_PLAIN,
+        true => RAY_HIT.fields,
+    };
+    Struct { fields, ..RAY_HIT }
+}
 
 /// The tonemap stage's input: one pixel of the window.
 pub const TONEMAP_INPUT: Struct = Struct {
