@@ -12,7 +12,7 @@ use super::native_shadow::{NativeShadow, ShadowGrid};
 use super::native_sky::NativeSky;
 use super::output::EffectiveOutput;
 use super::pack_timing::PassTiming;
-use super::surface_setup::ray_query::ray_scene::RayScene;
+use super::surface_setup::ray_query::ray_scene::{RayScene, Traced};
 use super::{Frame, SectionKey};
 use crate::fast_hash::FxHashMap;
 
@@ -117,19 +117,18 @@ fn chosen_shadow(
 
 impl NativePack {
     /// Writes this frame's inputs (`NativeFrame::write`), and for a `[ray_tracing]` pack where
-    /// its post passes and material stage trace `scene` from, once it is built.
+    /// its passes and material stage trace this frame's `scene` from, once it is built.
     pub(in crate::gfx) fn write(
         &mut self,
         queue: &wgpu::Queue,
         frame: &super::Frame,
         size: [u32; 2],
         display: super::output::DisplayValues,
-        scene: Option<&RayScene>,
+        scene: Option<&Traced<'_>>,
     ) {
-        let scene = scene.and_then(|s| s.traced(frame.camera));
-        let post = self.post.trace(queue, scene.as_ref());
+        let post = self.post.trace(queue, scene);
         let material = self.material.as_ref();
-        let terrain = material.and_then(|m| m.trace(queue, scene.as_ref()));
+        let terrain = material.and_then(|m| m.trace(queue, scene));
         self.frame.ray_distance = post.or(terrain);
         self.frame.write(queue, frame, size, display);
         if let Some(epochs) = &self.frame.epochs {
@@ -369,10 +368,12 @@ impl NativePack {
             .transpose()?;
         // The decode and the tonemap run without a chain too.
         let tonemap = others.iter().find(|s| s.kind == StageKind::Tonemap);
-        // A `[ray_tracing]` pack's passes as the check built them against the scene.
+        // A `[ray_tracing]` pack's post passes as the check built them against the scene; its
+        // compute passes keep theirs (`ComputePass::scene`). Whether any of them, compute and
+        // before-world passes included, reads the entity layer.
         let entities = post.iter().any(CheckedStage::traces_entities);
-        let scenes: Vec<(String, naga::Module)> = post
-            .iter_mut()
+        let scenes: Vec<(String, naga::Module)> = (post.iter_mut())
+            .filter(|s| s.kind == StageKind::Post)
             .filter_map(|s| Some((s.label.clone(), s.scene.take()?)))
             .collect();
         let manifest = &report.manifest;
@@ -384,7 +385,8 @@ impl NativePack {
         let refused = others.iter().any(wanted)
             && super::surface_setup::ray_query::on(device)
             && !material.as_ref().is_some_and(traced);
-        if !scenes.is_empty() && !refused {
+        let computes = post.computes_trace();
+        if (!scenes.is_empty() || computes) && !refused {
             let shape = super::native_post::trace::TraceShape::of(terrain, entities);
             if !post.trace_scene(device, scenes, constants, &shape, &frame.pbr)
                 && let Some(m) = material.as_mut()
@@ -441,7 +443,8 @@ impl NativePack {
             sky_visible,
             scene,
         } = start;
-        self.write(queue, frame, size, output.display(), scene);
+        let scene = scene.and_then(|s| s.traced(frame.camera));
+        self.write(queue, frame, size, output.display(), scene.as_ref());
         self.frame
             .block_light
             .update(queue, frame.camera, lights, light_revision);
@@ -510,6 +513,7 @@ impl NativePack {
             scene,
         } = post;
         let history_reset = self.frame.take_history_reset();
+        let scene = scene.and_then(|(scene, camera)| scene.traced(camera));
         self.post.run(
             device,
             encoder,
@@ -518,7 +522,7 @@ impl NativePack {
             size,
             history_reset,
             self.timing.as_mut(),
-            scene,
+            scene.as_ref(),
         );
     }
 
@@ -613,6 +617,7 @@ pub(in crate::gfx) mod tests {
     /// functions it calls, or its `displacement`, reads `opaque_depth` or `opaque_color` (#16124).
     #[test]
     fn the_opaque_copies_are_made_only_for_a_pack_that_reads_them() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use horizon_shader_api::{MANIFEST, Pack, check};
         let reads = |material: &str, displacement: &str| {
             let manifest = "schema = 1
@@ -661,6 +666,7 @@ file = \"material.wgsl\"
     /// a validation panic (#10095).
     #[test]
     fn a_pack_the_backend_refuses_is_an_error_not_a_panic() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;
@@ -802,6 +808,7 @@ file = \"material.wgsl\"
 
     #[test]
     fn the_shadow_map_follows_its_options() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let options = [
             option("shadows", OptionKind::Bool { default: true }),
             option(

@@ -88,7 +88,7 @@ impl Msaa {
     /// The targets at the size of `depth`, the scaled world's (the seed samples its colour,
     /// which the swapchain can't be), with a surface target where a native pack writes one
     /// (`surface`). `None`, or video memory running out, draws this frame single-sampled; `None`
-    /// lets the targets go too (the title screen, a classic shader pack, a world warp).
+    /// lets the targets go too (the title screen, a classic shader pack).
     pub(super) fn fit(
         &mut self,
         device: &wgpu::Device,
