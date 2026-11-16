@@ -101,6 +101,7 @@ fn frame(
 /// validation error.
 #[test]
 fn the_entity_and_sky_stages_read_what_before_world_wrote_this_frame() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((_, device, queue)) = device() else {
         return;
     };
@@ -136,6 +137,7 @@ fn the_entity_and_sky_stages_read_what_before_world_wrote_this_frame() {
 /// is refused at load, saying why. The counts each stage's fragment shader binds are printed.
 #[test]
 fn a_pack_reads_eight_resources_in_its_material_entities_and_sky() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let mut kept = String::new();
     for i in 0..4 {
         kept += &format!(
@@ -281,6 +283,7 @@ fn a_pack_reads_eight_resources_in_its_material_entities_and_sky() {
 /// pack make none: they draw with the frame's group, as before.
 #[test]
 fn the_entity_and_sky_stages_make_their_kept_groups_once() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((instance, device, queue)) = device() else {
         return;
     };
