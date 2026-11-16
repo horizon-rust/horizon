@@ -10028,7 +10028,8 @@ impl Renderer {
                         let lifted = hdr_gain
                             && self.hdr.as_ref().is_some_and(|h| h.lighting)
                             && !self.core_sky.as_ref().is_some_and(|c| c.draws_disc());
-                        let bodies = celestial::bodies(celestial_vertices, own_sun, own_moon);
+                        let quads = &frame.celestial[..celestial_vertices];
+                        let bodies = celestial::bodies(quads, own_sun, own_moon);
                         pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
                         self.celestial.draw_bodies(&mut pass, lifted, bodies);
                     }

@@ -128,13 +128,29 @@ impl Celestial {
     }
 }
 
-/// The indices of `vertices` of `Game::celestial_geometry`'s quads the celestial pass draws:
-/// all but the sun's, the first, where a pack's sky draws its own sun (`own_sun`), and the
-/// moon's, the last, where it draws its own moon.
-pub(super) fn bodies(vertices: usize, own_sun: bool, own_moon: bool) -> std::ops::Range<u32> {
-    let start = if own_sun { 6 } else { 0 };
-    let end = (vertices as u32 / 4) * 6;
-    let end = if own_moon { end.saturating_sub(6) } else { end };
+/// The indices of `celestial`, `Game::celestial_geometry`'s quads, the celestial pass draws: all
+/// of them, but the sun's where a pack's sky draws its own sun (`own_sun`) and the moon's where
+/// it draws its own moon. The sun's quad comes first and the moon's last, each only where its
+/// sprite loaded; the moon's is the one at the low tier (`mesher::LOW`), the sun's isn't.
+pub(super) fn bodies(
+    celestial: &[crate::mesher::Vertex],
+    own_sun: bool,
+    own_moon: bool,
+) -> std::ops::Range<u32> {
+    let quads = celestial.len() as u32 / 4;
+    let moon = |quad: u32| {
+        (celestial[quad as usize * 4].layer >> 16) & 0xff == u32::from(crate::mesher::LOW)
+    };
+    let start = if own_sun && quads > 0 && !moon(0) {
+        6
+    } else {
+        0
+    };
+    let end = if own_moon && quads > 0 && moon(quads - 1) {
+        (quads - 1) * 6
+    } else {
+        quads * 6
+    };
     start..end.max(start)
 }
 
