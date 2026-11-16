@@ -827,6 +827,9 @@ impl SecretStore for Bounded {
 /// process. The keychain takes its secrets back at the first start it answers ([`Layered`]).
 pub struct FileStore {
     path: PathBuf,
+    /// Whether the key takes this computer's identity ([`machine_id`]). A portable install's
+    /// file doesn't, so it opens on whichever computer the install moves to (#17377).
+    machine_bound: bool,
 }
 
 /// The secrets file's name in the launcher's data folder.
@@ -834,12 +837,38 @@ pub const SECRETS_FILE: &str = "account-secrets.json";
 
 impl FileStore {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            machine_bound: true,
+        }
+    }
+
+    /// A file sealed without this computer's identity: a portable install's, read on any computer.
+    pub fn portable(path: PathBuf) -> Self {
+        Self {
+            path,
+            machine_bound: false,
+        }
     }
 
     /// The launcher's own: [`SECRETS_FILE`] in its data folder.
     pub fn launcher() -> Self {
-        Self::new(crate::backend::data_dir().join(SECRETS_FILE))
+        let path = crate::backend::data_dir().join(SECRETS_FILE);
+        if crate::portable::is_on() {
+            Self::portable(path)
+        } else {
+            Self::new(path)
+        }
+    }
+
+    /// The key [`Self::seal`] seals under, with this install's secret.
+    fn key(&self, install_secret: &[u8; 32]) -> chacha20poly1305::Key {
+        let id = if self.machine_bound {
+            machine_id().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        file_key(&id, install_secret)
     }
 
     fn shown(&self, e: std::io::Error) -> String {
@@ -1018,7 +1047,7 @@ impl FileStore {
     /// `json` sealed for the file ([`SEALED`]), under [`file_key`] with this install's secret.
     fn seal(&self, json: &[u8]) -> Result<Vec<u8>, String> {
         use chacha20poly1305::{aead::Aead, KeyInit};
-        let key = file_key(&self.install_secret(true)?.expect("made"));
+        let key = self.key(&self.install_secret(true)?.expect("made"));
         let mut nonce = [0u8; 12];
         getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
         let sealed = chacha20poly1305::ChaCha20Poly1305::new(&key)
@@ -1036,7 +1065,7 @@ impl FileStore {
             let Some(secret) = self.install_secret(false)? else {
                 return Ok(None);
             };
-            (file_key(&secret), false, rest)
+            (self.key(&secret), false, rest)
         } else if let Some(rest) = bytes.strip_prefix(SEALED_V1) {
             (file_key_v1(), true, rest)
         } else {
@@ -1068,19 +1097,19 @@ fn machine_id() -> Option<Vec<u8>> {
         .map(|id| id.trim_ascii().to_vec())
 }
 
-/// The secrets file's key: a constant of the launcher's, this computer's identity and the install's
-/// own random secret (`account-secrets.key`, 0600). The tokens are never on disk in plain text,
+/// The secrets file's key: a constant of the launcher's, this computer's identity `id` (empty for a
+/// portable install, or where there is none) and the install's own random secret
+/// (`account-secrets.key`, 0600). The tokens are never on disk in plain text,
 /// and the key is never something every local user can work out (the machine id is readable by
 /// all, and some systems have none): it takes the install secret, which only the player can read.
 /// The file's mode (0600) is still what keeps other users out; the secret means a copy of the file
 /// alone, or one left readable by others while the secret wasn't, can't be read either.
-fn file_key(install_secret: &[u8; 32]) -> chacha20poly1305::Key {
+fn file_key(id: &[u8], install_secret: &[u8; 32]) -> chacha20poly1305::Key {
     use sha2::Digest;
     let mut hash = sha2::Sha256::new();
     hash.update(b"horizon-launcher account-secrets v2");
-    let id = machine_id().unwrap_or_default();
     hash.update((id.len() as u64).to_le_bytes());
-    hash.update(&id);
+    hash.update(id);
     hash.update(install_secret);
     hash.finalize()
 }
@@ -1693,11 +1722,14 @@ fn keychain_or_why() -> Result<Box<dyn SecretStore>, String> {
 /// Microsoft sign-ins. Linux and FreeBSD: the Secret Service with the secrets file beside it
 /// ([`Layered`], #5095). macOS and Windows: the keychain if it answers. Memory with
 /// `HORIZON_NO_KEYCHAIN` (the launcher's own tests) or no keychain on macOS and Windows (said in the
-/// UI with [`no_keychain`]).
+/// UI with [`no_keychain`]). A portable install: the secrets file alone, never the keychain (#17377).
 pub fn store() -> &'static dyn SecretStore {
     static STORE: OnceLock<Box<dyn SecretStore>> = OnceLock::new();
     STORE
         .get_or_init(|| {
+            if crate::portable::is_on() {
+                return Box::new(FileStore::launcher());
+            }
             #[cfg(all(not(test), any(target_os = "linux", target_os = "freebsd")))]
             if std::env::var_os("HORIZON_NO_KEYCHAIN").is_none() {
                 return Box::new(Layered::new(
@@ -1715,8 +1747,13 @@ pub fn store() -> &'static dyn SecretStore {
 
 /// Secrets never written to a file of the launcher's own, the Tailscale access token (it
 /// administers the player's whole tailnet): the keychain if it answers, else memory for this run.
-/// [`store`] itself on macOS and Windows, where that is what it is.
+/// [`store`] itself on macOS and Windows, where that is what it is. A portable install never uses
+/// the keychain: memory for this run (#17377).
 pub fn keychain() -> &'static dyn SecretStore {
+    if crate::portable::is_on() {
+        static MEMORY: OnceLock<MemoryStore> = OnceLock::new();
+        return MEMORY.get_or_init(MemoryStore::default);
+    }
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
         static KEYCHAIN: OnceLock<Box<dyn SecretStore>> = OnceLock::new();

@@ -641,6 +641,9 @@ fn menus() -> Vec<Menu> {
 mod startup;
 
 fn main() {
+    // Before any thread starts or any launcher path is read: a `portable` file beside the
+    // launcher moves every folder into `data` beside it (#17377).
+    horizon_launcher::portable::apply();
     startup::run();
 }
 

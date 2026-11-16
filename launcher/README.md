@@ -32,6 +32,15 @@ The opening, then Play ([clip](docs/opening.webm)):
   absolute pointer file for portable installations. Nonempty `HORIZON_LAUNCHER_HOME` and `HORIZON_HOME`
   still override their respective roots; remove these overrides before using Move. A missing destination
   fails explicitly instead of silently creating empty data in the default location.
+- **Portable mode**: put an empty file named `portable` beside the launcher's executable (the
+  folder you unpacked the ZIP to) and everything the launcher and the game write goes to `data/`
+  beside it: `data/launcher` for the launcher's installations, downloads and accounts, `data/game`
+  for worlds, options and logs. Nothing goes to the system's own folders or the registry, so the
+  folder runs from a USB drive or another disk. Microsoft sign-ins stay in
+  `data/launcher/account-secrets.json` instead of the system keychain, sealed so they open on any
+  computer the folder moves to: keep the folder as safe as the account. The Tailscale access token
+  lasts until the launcher closes. To move a portable install, move its whole folder; Move… is off.
+  `HORIZON_LAUNCHER_HOME` and `HORIZON_HOME`, when set, still win.
 - **Play**: prepares resources as `PLAY.txt` describes (your launcher's 26.3 install, the
   26.3 server jar from that version's own json, and Java 25) and copies its sounds from your
   launcher's asset store (`horizon-prepare sounds`; a launcher install without them only

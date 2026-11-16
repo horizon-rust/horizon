@@ -68,7 +68,9 @@ impl Launcher {
     }
 
     fn location_blocked(&self) -> Option<String> {
-        if environment_blocked() {
+        if horizon_launcher::portable::is_on() {
+            Some(tr("This launcher is portable: its data stays in the data folder beside it. Move the launcher's whole folder instead.").into())
+        } else if environment_blocked() {
             Some(tr("Data folders are set by HORIZON_LAUNCHER_HOME or HORIZON_HOME. Remove these environment overrides and restart the launcher before moving data here.").into())
         } else if self.location_busy() {
             Some(tr("Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.").into())

@@ -551,8 +551,11 @@ pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<
 }
 
 /// After a self-update: the Uninstall entry names the new version and size. Only for the install
-/// this launcher runs from; a launcher unpacked from the ZIP touches nothing.
+/// this launcher runs from; a launcher unpacked from the ZIP, or a portable one, touches nothing.
 pub fn after_update(version: &str) {
+    if crate::portable::is_on() {
+        return;
+    }
     let Some(registered) = registered() else {
         return;
     };
