@@ -363,10 +363,12 @@ mod tests {
         pinned.versions[0].api = "0.1".into();
         let packs = dir.join("horizon-packs");
         let fetched = std::sync::Mutex::new(Vec::new());
-        let e = install_in(&index, true, "cozy", &packs, &|line, _| {
-            fetched.lock().unwrap().push(line.to_owned())
-        })
-        .unwrap_err();
+        let install = || {
+            install_in(&index, true, "cozy", &packs, &|line, _| {
+                fetched.lock().unwrap().push(line.to_owned())
+            })
+        };
+        let e = crate::game_shader_api::tests::with_game(&["0.2"], install).unwrap_err();
         assert_eq!(
             e,
             "Coordinates HUD needs shader API 0.1; this Horizon serves 0.2."

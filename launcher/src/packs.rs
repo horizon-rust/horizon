@@ -207,7 +207,11 @@ fn read(path: &Path, kind: Kind, on: &[String]) -> Option<Pack> {
             unsupported = manifest
                 .as_ref()
                 .and_then(|t| t.get("api")?.as_str())
-                .filter(|api| *api != horizon_shader_api::API)
+                .filter(|api| {
+                    !crate::game_shader_api::served()
+                        .iter()
+                        .any(|line| line == api)
+                })
                 .map(crate::browser::horizon::made_for_other_shader_api);
             (
                 name.unwrap_or_else(|| file.clone()),

@@ -15,7 +15,7 @@
 //! `mod-browser/replaced/` until the next start: an update cut short (a crash between moving the
 //! file and saving the list) is rolled back from it then.
 use super::{install_version_guarded, Index};
-use crate::browser::{installed, Kind, SourceId, GAME};
+use crate::browser::{installed, Kind, SourceId};
 use crate::i18n::trf;
 use horizon_platform::mod_package::index;
 use serde::{Deserialize, Serialize};
@@ -84,7 +84,7 @@ pub fn decide<'a>(index: &'a Index, entry: &installed::Entry, ctx: &Context) -> 
     let Some(p) = index.project(&entry.project) else {
         return Decision::Skip;
     };
-    let Some(target) = index.installable(p, GAME) else {
+    let Some(target) = super::installable(index, p) else {
         return Decision::Skip;
     };
     // Versions are newest first: only forward, from a version the index still lists.

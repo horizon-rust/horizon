@@ -33,6 +33,14 @@ pub struct Pack {
     pub files: BTreeMap<String, Vec<u8>>,
 }
 
+/// What a manifest says of its pack before anything checks it ([`Pack::declared`]).
+#[derive(Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Declared {
+    pub id: String,
+    pub version: String,
+    pub api: String,
+}
+
 /// A relative path made of plain parts: no root, `..`, `\`, empty or
 /// hidden parts.
 pub fn plain_path(path: &str) -> bool {
@@ -99,6 +107,29 @@ impl Pack {
         .ok()?;
         let declared: Declared = toml::from_str(&text).ok()?;
         Some(declared.id)
+    }
+
+    /// What the manifest of the `.hshader` at `path` declares, whether or not this build takes
+    /// the manifest: for a pack made for an API line another build serves, which only that build
+    /// can check. The package's own shape is still held: its file count and plain paths.
+    pub fn declared(path: &Path) -> Result<Declared, String> {
+        let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut zip = zip::ZipArchive::new(file)
+            .map_err(|e| format!("{}: not a .{EXTENSION} (zip): {e}", path.display()))?;
+        if zip.len() > MAX_ENTRIES {
+            return Err(format!("over {MAX_ENTRIES} files in the package"));
+        }
+        for i in 0..zip.len() {
+            let entry = zip.by_index(i).map_err(|e| e.to_string())?;
+            let name = entry.name().map_err(|e| e.to_string())?;
+            if !entry.is_dir() && !plain_path(&name) {
+                return Err(format!("{name:?} is not a plain path"));
+            }
+        }
+        let manifest = zip
+            .by_name(MANIFEST)
+            .map_err(|_| format!("{MANIFEST}: missing at the pack's root"))?;
+        toml::from_str(&manifest_text(manifest)?).map_err(|e| format!("{MANIFEST}: {e}"))
     }
 
     /// Reads the manifest from an already-open ZIP, using the same size limit as a folder.
