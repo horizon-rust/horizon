@@ -140,7 +140,8 @@ fn unopened_loot_tags_round_trip_exactly() {
         let expected = |p: &PendingContainerLoot| {
             let mut map = Compound::new();
             map.insert("LootTable".into(), p.table.clone());
-            if let Some(seed) = &p.seed {
+            // trySaveLootTable leaves out a zero seed.
+            if let Some(seed) = p.seed.as_ref().filter(|_| p.seed_value() != Some(0)) {
                 map.insert("LootTableSeed".into(), seed.clone());
             }
             nbt::write_named(
