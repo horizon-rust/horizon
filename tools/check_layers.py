@@ -10,6 +10,7 @@ optional (behind a feature), for the layer and the portable check alike. The che
 - a normal, build or optional dependency on a layer its crate's layer may not use that `allowed` doesn't list,
   and that isn't an optional dependency listed in `optional`;
 - an `optional` entry whose dependency is no longer optional;
+- a registry dependency that a workspace `[patch.*]` table resolves to a local crate of another layer;
 - with --base, an `allowed` or `optional` entry the branch added from a crate that already had a layer on the base;
 - a shipped crate depending on a tool;
 - a portable crate depending on a crate of the repository that isn't portable, or on a `forbidden` library.
@@ -25,6 +26,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / "tools" / "layers.json"
@@ -61,28 +63,66 @@ def metadata(manifest):
     return json.loads(out)["packages"]
 
 
-def edges(packages):
-    """{crate: {dependency, ...}} for normal and build dependencies on other local crates (path dependencies)."""
+def patches(manifest):
+    """{registry crate: local manifest} for the `[patch.*]` entries of one workspace that point at a path.
+
+    A patched registry declaration still reads as `fixture = "0.1"` with no path in `metadata --no-deps`, but Cargo
+    builds the local crate it names there and not the registry one, so the gate has to follow the patch.
+    """
+    with open(manifest, "rb") as f:
+        table = tomllib.load(f)
+    root = Path(manifest).parent
+    out = {}
+    for source in table.get("patch", {}).values():
+        for name, spec in source.items():
+            path = spec.get("path") if isinstance(spec, dict) else None
+            if path:
+                out[name] = (root / path / "Cargo.toml").resolve()
+    return out
+
+
+def local_crates(packages):
+    """{manifest path: crate name} for the packages of one workspace."""
+    return {Path(package["manifest_path"]).resolve(): package["name"]
+            for package in packages if package.get("manifest_path")}
+
+
+def edges(packages, patches=None):
+    """{crate: {dependency, ...}} for normal and build dependencies on other local crates: path dependencies, and
+    registry declarations a `[patch]` table resolves to one of these packages."""
+    patches = patches or {}
+    local = local_crates(packages)
     graph = {}
     for package in packages:
         deps = graph.setdefault(package["name"], set())
         for dep in package["dependencies"]:
-            if dep.get("path") and dep.get("kind") != "dev":
+            if dep.get("kind") == "dev":
+                continue
+            if dep.get("path"):
                 deps.add(dep["name"])
+            elif dep["name"] in patches and patches[dep["name"]] in local:
+                # The patched crate is a local crate: Cargo builds it, so it is an edge like any path dependency.
+                deps.add(local[patches[dep["name"]]])
     return graph
 
 
-def optional_edges(packages):
-    """The path dependencies, as 'crate -> dependency', that are optional everywhere they are declared (normal and
+def optional_edges(packages, patches=None):
+    """The local dependencies, as 'crate -> dependency', that are optional everywhere they are declared (normal and
     build, every target): one mandatory declaration makes the edge mandatory."""
+    patches = patches or {}
+    local = local_crates(packages)
     declared, mandatory = set(), set()
     for package in packages:
         for dep in package["dependencies"]:
-            if dep.get("path") and dep.get("kind") != "dev":
-                edge = f"{package['name']} -> {dep['name']}"
-                declared.add(edge)
-                if not dep.get("optional"):
-                    mandatory.add(edge)
+            if dep.get("kind") == "dev":
+                continue
+            target = dep["name"] if dep.get("path") else local.get(patches.get(dep["name"]))
+            if target is None:
+                continue
+            edge = f"{package['name']} -> {target}"
+            declared.add(edge)
+            if not dep.get("optional"):
+                mandatory.add(edge)
     return declared - mandatory
 
 
@@ -188,8 +228,18 @@ def portable(config, packages):
     return sorted(problems)
 
 
-def workspace_packages(config):
-    return [package for manifest in config["workspaces"] for package in metadata(ROOT / manifest)]
+def workspace_graph(config):
+    """(dependency graph, optional edges, packages) of every workspace, each one resolving its own `[patch.*]`
+    table."""
+    graph, optional, packages = {}, set(), []
+    for manifest in config["workspaces"]:
+        found = metadata(ROOT / manifest)
+        overrides = patches(ROOT / manifest)
+        packages += found
+        for crate, deps in edges(found, overrides).items():
+            graph.setdefault(crate, set()).update(deps)
+        optional |= optional_edges(found, overrides)
+    return graph, optional, packages
 
 
 def main(argv=None):
@@ -208,8 +258,7 @@ def main(argv=None):
             print(f"Layer check failed: {error}")
             return 1
     config = load_config()
-    packages = workspace_packages(config)
-    graph = edges(packages)
+    graph, optional, packages = workspace_graph(config)
     if args.list:
         for crate in sorted(graph):
             print(f"{config['crates'].get(crate, '?'):<9} {crate}")
@@ -219,7 +268,6 @@ def main(argv=None):
             print(f"  {edge}")
         return 0
     base = base_config(args.base) if args.base else None
-    optional = optional_edges(packages)
     problems, notes = check(config, graph, base, optional)
     if args.base and (problems or config != base):
         # Only a violation, or an inventory that differs from the base's, can need what a verified sync restored:

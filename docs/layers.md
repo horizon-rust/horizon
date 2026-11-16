@@ -582,7 +582,8 @@ four workspaces `tools/layers.json` lists (the game, `launcher/`, `crates/horizo
 gives every crate its layer. It fails when:
 
 - a crate has no layer;
-- a dependency goes up a layer and neither `allowed` lists it nor `optional` lists it as an optional dependency;
+- a dependency goes up a layer — declared by `path`, or a registry version a workspace's `[patch.*]` table points at a
+  local crate — and neither `allowed` lists it nor `optional` lists it as an optional dependency;
 - an `optional` entry's dependency is no longer optional (one mandatory declaration, for any target or as a build
   dependency, is enough);
 - a pull request adds an entry to `allowed` or `optional` for a crate that already had a layer (a crate newly split

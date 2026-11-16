@@ -199,6 +199,47 @@ class CheckLayersTests(unittest.TestCase):
         pkg = {"name": "game", "dependencies": [{"name": "cosmetics", "kind": None, "path": None}]}
         self.assertEqual(check_layers.edges([pkg]), {"game": set()})
 
+    def test_a_patch_table_makes_a_registry_declaration_a_local_edge(self):
+        # #17307: `[patch.crates-io]` builds the local crate, but `metadata --no-deps` keeps the registry form.
+        horizon = dict(package("horizon-fixture"), manifest_path="/x/horizon/Cargo.toml")
+        engine = {"name": "engine-fixture", "dependencies": [
+            {"name": "horizon-fixture", "kind": None, "path": None}]}
+        overrides = {"horizon-fixture": Path("/x/horizon/Cargo.toml")}
+        graph = check_layers.edges([engine, horizon], overrides)
+        self.assertEqual(graph, {"engine-fixture": {"horizon-fixture"}, "horizon-fixture": set()})
+        config = dict(CONFIG, crates=dict(CONFIG["crates"], **{"engine-fixture": "engine",
+                                                               "horizon-fixture": "horizon"}))
+        problems, _ = check_layers.check(
+            config, graph, None, check_layers.optional_edges([engine, horizon], overrides))
+        self.assertIn("engine-fixture -> horizon-fixture: engine may not depend on horizon", problems[0])
+
+    def test_a_patch_to_a_crate_outside_the_workspace_is_not_an_edge(self):
+        # The repository patches wgpu-hal, naga and libmimalloc-sys to third_party/, which are not layer crates.
+        pkg = {"name": "game", "dependencies": [{"name": "naga", "kind": None, "path": None}]}
+        self.assertEqual(check_layers.edges([pkg], {"naga": Path("/x/third_party/naga/Cargo.toml")}),
+                         {"game": set()})
+
+    def test_a_patched_optional_dependency_is_still_optional(self):
+        horizon = dict(package("horizon-fixture"), manifest_path="/x/horizon/Cargo.toml")
+        engine = {"name": "engine-fixture", "dependencies": [
+            {"name": "horizon-fixture", "kind": None, "path": None, "optional": True}]}
+        overrides = {"horizon-fixture": Path("/x/horizon/Cargo.toml")}
+        self.assertEqual(check_layers.optional_edges([engine, horizon], overrides),
+                         {"engine-fixture -> horizon-fixture"})
+
+    def test_patches_reads_every_patch_source_that_names_a_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text(
+                "[workspace]\nmembers = []\n"
+                "[patch.crates-io]\nlocal-fork = { path = \"vendor/local-fork\" }\n"
+                "[patch.\"https://github.com/example/remote\"]\nfrom-git = { git = \"https://example.invalid/r\" }\n"
+                "[patch.crates-io.table-form]\npath = \"vendor/table-form\"\n", encoding="utf-8")
+            self.assertEqual(check_layers.patches(root / "Cargo.toml"), {
+                "local-fork": (root / "vendor/local-fork/Cargo.toml").resolve(),
+                "table-form": (root / "vendor/table-form/Cargo.toml").resolve(),
+            })
+
 
 class UpstreamLayerRestorationTests(unittest.TestCase):
     def setUp(self):
@@ -253,7 +294,8 @@ class UpstreamLayerRestorationTests(unittest.TestCase):
         config = dict(self.config, allowed=allowed)
         with mock.patch.object(check_layers, "load_config", return_value=config), \
                 mock.patch.object(check_layers, "base_config", return_value=self.base_config), \
-                mock.patch.object(check_layers, "workspace_packages", return_value=packages), \
+                mock.patch.object(check_layers, "workspace_graph", return_value=(
+                    check_layers.edges(packages), check_layers.optional_edges(packages), packages)), \
                 mock.patch.object(merge_base, "verified_sync_config", wraps=merge_base.verified_sync_config) as spy, \
                 mock.patch("sys.stdout", new_callable=io.StringIO):
             return check_layers.main(["--base", self.base]), spy
@@ -267,7 +309,8 @@ class UpstreamLayerRestorationTests(unittest.TestCase):
         packages = [{"name": "game", "dependencies": []}]
         with mock.patch.object(check_layers, "load_config", return_value=self.base_config), \
                 mock.patch.object(check_layers, "base_config", return_value=self.base_config), \
-                mock.patch.object(check_layers, "workspace_packages", return_value=packages), \
+                mock.patch.object(check_layers, "workspace_graph", return_value=(
+                    check_layers.edges(packages), check_layers.optional_edges(packages), packages)), \
                 mock.patch.object(merge_base, "fetch_upstream_main", side_effect=AssertionError("network")), \
                 mock.patch("sys.stdout", new_callable=io.StringIO):
             self.assertEqual(check_layers.main(["--base", self.base]), 0)
