@@ -110,7 +110,7 @@ fn capped_lanes(requested: usize, hardware: Option<usize>) -> usize {
 
 /// The threads the loop may run on, capped at the machine's available parallelism.
 fn lanes() -> usize {
-    let hardware = std::thread::available_parallelism().ok().map(usize::from);
+    let hardware = horizon_threads::available_parallelism().ok().map(usize::from);
     #[cfg(test)]
     if let Some(lanes) = LANES.with(Cell::get) {
         return capped_lanes(lanes, hardware);

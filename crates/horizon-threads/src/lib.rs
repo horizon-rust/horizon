@@ -18,6 +18,7 @@ pub mod process_memory;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod sampler;
+pub mod server_core;
 pub mod stack_dump;
 /// Alt+Space and a bare Alt never open the window's system menu, as in GLFW.
 #[cfg(target_os = "windows")]
@@ -42,8 +43,16 @@ pub fn worker_count() -> usize {
     static COUNT: OnceLock<usize> = OnceLock::new();
     *COUNT.get_or_init(|| {
         parse_worker_count(std::env::var("HORIZON_WORKER_THREADS").ok())
-            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+            .unwrap_or_else(|| available_parallelism().map_or(1, |n| n.get()))
     })
+}
+
+/// The CPUs this process may use, for sizing a pool: `std::thread::available_parallelism`,
+/// except while the server thread holds a core of its own ([`server_core`]), when the calling
+/// thread's own mask is narrower than the process's (the server thread's is that core alone,
+/// the threads moved off it have the rest): then the whole set the reservation was taken from.
+pub fn available_parallelism() -> std::io::Result<std::num::NonZeroUsize> {
+    server_core::whole_set().map_or_else(std::thread::available_parallelism, Ok)
 }
 
 /// `HORIZON_SERIAL_TICK=all`: every [`par_chunks_mut`] keeps its chunks on the
@@ -98,7 +107,10 @@ pub fn par_chunks_mut_with<T: Send>(
         let threads: Vec<_> = (0..helpers)
             .filter_map(|_| {
                 horizon_guest_stack::builder()
-                    .spawn_scoped(scope, work)
+                    .spawn_scoped(scope, || {
+                        server_core::leave_reserved();
+                        work()
+                    })
                     .ok()
             })
             .collect();
@@ -250,7 +262,7 @@ fn parse_worker_count(value: Option<String>) -> Option<usize> {
 /// unprivileged thread lower its priority but not raise it (and the JVM
 /// leaves it there too). Whether the OS took it.
 pub fn favour_current() -> bool {
-    if std::thread::available_parallelism().map_or(1, |n| n.get()) <= 4 {
+    if available_parallelism().map_or(1, |n| n.get()) <= 4 {
         return false;
     }
     favour()
@@ -365,6 +377,8 @@ pub fn put_helpers_behind() {
 /// wants its core. A tick or a frame then gets a core when it starts instead
 /// of waiting behind them. Nothing elsewhere. Whether the OS took it.
 pub fn behind_server() -> bool {
+    // Avoid the server core when this thread's existing selection permits it.
+    server_core::leave_reserved();
     HELPERS_BEHIND.load(Ordering::Relaxed) && behind()
 }
 
@@ -776,6 +790,7 @@ mod tests {
     /// Without `HORIZON_WORKER_THREADS`, the count is the machine's.
     #[test]
     fn worker_count_defaults_to_the_machine() {
+        let _test = super::server_core::RESERVATION_TEST.lock().unwrap();
         if std::env::var_os("HORIZON_WORKER_THREADS").is_some() {
             return;
         }

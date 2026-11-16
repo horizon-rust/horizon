@@ -314,7 +314,7 @@ struct Pool {
 /// The pool, started the first time: one thread per two cores.
 fn pool() -> Result<&'static Pool, String> {
     static POOL: OnceLock<Result<Pool, String>> = OnceLock::new();
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get().div_ceil(2));
+    let threads = horizon_threads::available_parallelism().map_or(1, |n| n.get().div_ceil(2));
     POOL.get_or_init(|| start(threads).map_err(|e| format!("network threads: {e}")))
         .as_ref()
         .map_err(Clone::clone)
