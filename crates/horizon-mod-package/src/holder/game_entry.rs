@@ -507,6 +507,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "daily"]
     fn standalone_entry_resolves_data_root_ancestors_but_rejects_a_linked_root() {
         if crate::runtime_leases::isolated_test() {
             return;
