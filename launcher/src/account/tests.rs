@@ -2583,3 +2583,90 @@ fn a_launch_saving_late_keeps_sign_ins_and_outs_made_meanwhile() {
     assert_eq!(names, [std::ffi::OsString::from("accounts.json")]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The UUID an offline name gets: the game's own derivation, so the same name is the same
+/// player in the saves, here and everywhere else.
+#[test]
+fn offline_uuids_follow_the_games_own_derivation() {
+    assert_eq!(offline_uuid("Notch"), "b50ad385829d3141a2167e7d7539ba7f");
+    assert_eq!(offline_uuid("Steve"), "5627dd98e6be3c21b8a8e92344183641");
+    assert_eq!(offline_uuid("Alice_1"), "5516357ffd4133f991d24e78b5c41054");
+}
+
+/// Which names can be offline names.
+#[test]
+fn offline_names_are_3_to_16_letters_digits_or_underscores() {
+    assert!(valid_offline_name("Steve"));
+    assert!(valid_offline_name("a".repeat(16).as_str()));
+    assert!(!valid_offline_name("a".repeat(17).as_str()));
+    assert!(!valid_offline_name("ab"));
+    assert!(!valid_offline_name("Stève"));
+    assert!(!valid_offline_name("St eve"));
+    assert!(!valid_offline_name(""));
+}
+
+/// An offline account is kept by name only, and forgotten whole: no secrets ever.
+#[test]
+fn offline_accounts_are_kept_by_name_only() {
+    let store = MemoryStore::default();
+    let mut accounts = Accounts::default();
+    accounts.add_offline("Steve").unwrap();
+    // The same name again: the same account, kept once.
+    accounts.add_offline("Steve").unwrap();
+    assert_eq!(accounts.accounts.len(), 1);
+    assert_eq!(accounts.selected().unwrap().name, "Steve");
+    // A name that can't be one says so, and keeps nothing.
+    assert!(accounts.add_offline("no!").is_err());
+    assert_eq!(accounts.accounts.len(), 1);
+    // Nothing in the keychain: there are no secrets to keep.
+    assert_eq!(store.get(&offline_uuid("Steve")).unwrap(), None);
+    // Forgotten: gone from the list, and nothing selected.
+    accounts.forget_offline(&offline_uuid("Steve"));
+    assert!(accounts.accounts.is_empty());
+    assert!(accounts.selected().is_none());
+}
+
+/// An offline account needs no owner: it never reaches the services.
+#[test]
+fn an_offline_account_needs_no_owner() {
+    let store = MemoryStore::default();
+    let mut accounts = Accounts::default();
+    assert!(!accounts.has_owner(&store));
+    accounts.add_offline("Steve").unwrap();
+    assert!(accounts.has_owner(&store));
+    // Another account still has to own the game.
+    accounts.selected = None;
+    assert!(!accounts.has_owner(&store));
+}
+
+/// An offline account plays solo with no sign-in at all: the gate passes with no session, and
+/// the game starts as the name and the UUID that name derives, with no token.
+#[test]
+fn an_offline_account_plays_without_any_sign_in() {
+    let store = MemoryStore::default();
+    let ep = offline();
+    let mut accounts = Accounts::default();
+    accounts.add_offline("Steve_1").unwrap();
+    let pass = launch_for_game(&ep, Some("test-client"), &store, &mut accounts).unwrap();
+    assert!(pass.session.is_none());
+    assert!(pass.offline.as_deref().unwrap().contains("Steve_1"));
+    let player = java_player_with(&ep, Some("test-client"), &store, &mut accounts).unwrap();
+    assert_eq!(player.name, "Steve_1");
+    assert_eq!(player.uuid, offline_uuid("Steve_1"));
+    assert_eq!(player.token, "0");
+    assert_eq!(player.xuid, "");
+    // A Microsoft account beside it changes nothing: the offline one plays.
+    accounts
+        .add(&store, notch(), &secrets("mc-token", true))
+        .unwrap();
+    accounts.play_as(&offline_uuid("Steve_1")).unwrap();
+    let pass = launch_for_game(&ep, Some("test-client"), &store, &mut accounts).unwrap();
+    assert!(pass.session.is_none());
+    // Back to Notch, who doesn't own the game: the usual gate blocks at once.
+    accounts.remove(&store, UUID).unwrap();
+    accounts
+        .add(&store, notch(), &secrets("mc-token", false))
+        .unwrap();
+    accounts.play_as(UUID).unwrap();
+    assert!(launch_for_game(&ep, Some("test-client"), &store, &mut accounts).is_err());
+}

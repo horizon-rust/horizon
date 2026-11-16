@@ -37,6 +37,32 @@ const SIGN_IN_AGAIN: &str = "Your Microsoft sign-in expired. Sign in again.";
 /// The Minecraft token is renewed when it has less than this left.
 const RENEW_BEFORE: u64 = 3600;
 
+/// What an offline account is, in the account list and on its row.
+pub const OFFLINE_NOTE: &str = "Offline account · single-player only";
+
+/// The UUID offline players get: the name-based MD5 UUID (version 3) of `OfflinePlayer:<name>`,
+/// as the game's own offline mode derives it. Deterministic, so the same name is the same
+/// player's UUID every time, here and in the game's saves.
+pub fn offline_uuid(name: &str) -> String {
+    use md5::{Digest, Md5};
+    let mut hash = Md5::new();
+    hash.update(b"OfflinePlayer:");
+    hash.update(name.as_bytes());
+    let bytes = hash.finalize();
+    let mut uuid = [0u8; 16];
+    uuid.copy_from_slice(&bytes);
+    uuid[6] = (uuid[6] & 0x0f) | 0x30;
+    uuid[8] = (uuid[8] & 0x3f) | 0x80;
+    let hex: String = uuid.iter().map(|b| format!("{b:02x}")).collect();
+    hex
+}
+
+/// Whether `name` can be an offline name: 3 to 16 letters, digits or `_`, as account names are.
+pub fn valid_offline_name(name: &str) -> bool {
+    (3..=16).contains(&name.chars().count())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// The configured Azure app, if any: the run-time variable wins over the build-time one, and an
 /// empty value means none.
 pub fn client_id() -> Option<String> {
@@ -542,6 +568,25 @@ fn owned_at_sign_in() -> bool {
 impl std::fmt::Debug for Secrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Secrets(<hidden>)")
+    }
+}
+
+impl Account {
+    /// Whether this is an offline account: its UUID is the one its name derives, and it has no
+    /// Microsoft sign-in at all. It plays solo only.
+    pub fn is_offline(&self) -> bool {
+        self.uuid == offline_uuid(&self.name)
+    }
+
+    /// The player the game starts as under this offline account: no token, no Xbox id. The
+    /// single-player game never asks the services, so nothing is sent or stored.
+    pub fn offline_player(&self) -> crate::java_launch::Player {
+        crate::java_launch::Player {
+            name: self.name.clone(),
+            uuid: self.uuid.clone(),
+            token: "0".into(),
+            xuid: String::new(),
+        }
     }
 }
 
@@ -1864,9 +1909,44 @@ impl Accounts {
         }
         Ok(())
     }
+    /// Keeps an offline account: the name only, its UUID derived from it. No sign-in is asked
+    /// for, and nothing goes to the keychain — there are no secrets to keep.
+    pub fn add_offline(&mut self, name: &str) -> Result<(), String> {
+        if !valid_offline_name(name) {
+            return Err(crate::i18n::trf(
+                "{name}: an offline name is 3 to 16 letters, digits or _",
+                &[("name", name)],
+            ));
+        }
+        let uuid = offline_uuid(name);
+        self.selected = Some(uuid.clone());
+        match self.accounts.iter_mut().find(|a| a.uuid == uuid) {
+            Some(a) => a.name = name.to_string(),
+            None => self.accounts.push(Account {
+                uuid,
+                name: name.to_string(),
+                skin: None,
+                cape: None,
+            }),
+        }
+        Ok(())
+    }
+
+    /// Removes an offline account: it has no secrets, so only the list changes.
+    pub fn forget_offline(&mut self, uuid: &str) {
+        self.accounts.retain(|a| a.uuid != uuid);
+        if self.selected.as_deref() == Some(uuid) {
+            self.selected = None;
+        }
+    }
+
     /// Whether an account here owned the game at its last check (the keychain's answer, no
-    /// request): what Play needs.
+    /// request): what Play needs. An offline account needs no owner: it never reaches the
+    /// services.
     pub fn has_owner(&self, store: &dyn SecretStore) -> bool {
+        if self.selected().is_some_and(Account::is_offline) {
+            return true;
+        }
         // The selected account first: it owning the game ends the search after one account's
         // item — every account's item read can ask for the keychain (macOS, #4912).
         self.selected()
@@ -2065,6 +2145,21 @@ pub fn launch_for_game(
     store: &dyn SecretStore,
     accounts: &mut Accounts,
 ) -> Result<Launch, NoOwner> {
+    // An offline account plays solo with no sign-in at all: no session file, the game not
+    // reaching the services (it plays offline, under the name and UUID it was given).
+    if accounts.selected().is_some_and(Account::is_offline) {
+        let name = accounts
+            .selected()
+            .map(|a| a.name.clone())
+            .unwrap_or_default();
+        return Ok(Launch {
+            offline: Some(crate::i18n::trf(
+                "Playing offline as {name} (single-player only)",
+                &[("name", &name)],
+            )),
+            ..Launch::default()
+        });
+    }
     if accounts.selected().is_none() {
         accounts.selected = accounts.accounts.first().map(|a| a.uuid.clone());
     }
@@ -2561,6 +2656,11 @@ fn java_player_with(
     store: &dyn SecretStore,
     accounts: &mut Accounts,
 ) -> Result<crate::java_launch::Player, String> {
+    // An offline account needs no sign-in: the game starts as the name its player chose, with
+    // the UUID that name derives.
+    if let Some(offline) = accounts.selected().filter(|a| a.is_offline()).cloned() {
+        return Ok(offline.offline_player());
+    }
     let pass = launch(ep, client_id, store, accounts).map_err(|e| e.to_string())?;
     let kept = || {
         let order = accounts.selected().into_iter().chain(&accounts.accounts);

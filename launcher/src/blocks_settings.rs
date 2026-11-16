@@ -256,6 +256,7 @@ impl Launcher {
                     .child(group("Game", "gamepad"))
                     .child(self.game_architecture_row(n + 5, cx))
                     .child(self.game_args_row(n + 6, cx))
+                    .child(self.minecraft_dir_row(n + 7, cx))
                     .child(group("AI", "terminal"))
                     .child(self.no_ai_row(n + 6, cx))
                     .child(group("About", "info-box"))
@@ -572,6 +573,118 @@ impl Launcher {
         )
     }
 
+    /// Settings' Minecraft folder: the install whose files a preparation reuses (versions,
+    /// libraries, assets), and where an offline account's game files come from.
+    pub(crate) fn minecraft_dir_row(&mut self, n: usize, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let detail = match &self.settings.minecraft_dir {
+            Some(dir) => div()
+                .font_family(theme::MONO)
+                .child(short(dir))
+                .into_any_element(),
+            None => div()
+                .child(tr(
+                    "Not chosen: preparations and offline play then need a version already \
+                     downloaded here.",
+                ))
+                .into_any_element(),
+        };
+        if glass_ui::flat() {
+            return glass_ui::setting_row_stacked(
+                tr("Minecraft folder"),
+                Some(detail),
+                button("choose-mc-settings", "Choose…", Kind::Ghost, &t)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.choose_folder(cx)))
+                    .into_any_element(),
+            );
+        }
+        index_row(
+            n,
+            tr("Minecraft folder"),
+            Some(detail),
+            Some(
+                button("choose-mc-settings", "Choose…", Kind::Ghost, &t)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.choose_folder(cx)))
+                    .into_any_element(),
+            ),
+            &t,
+        )
+    }
+
+    /// The offline account's name field, shared by Settings' row and the glass look's Account
+    /// card.
+    pub(crate) fn offline_field(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let t = self.theme;
+        let focused = self.offline_focused;
+        let field = div()
+            .id("offline-name")
+            .track_focus(&self.offline_focus)
+            .flex()
+            .items_center()
+            .w(px(300.))
+            .h(px(30.))
+            .px(px(12.))
+            .overflow_hidden()
+            .border_2()
+            .border_color(if focused { t.accent } else { t.outline })
+            .bg(t.well)
+            .font_family(theme::MONO)
+            .text_size(px(12.))
+            .cursor_text()
+            .child(line_edit::content(
+                &self.offline_input,
+                &t,
+                focused,
+                false,
+                false,
+                tr("For example Steve"),
+            ))
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                window.focus(&this.offline_focus, cx);
+                cx.notify();
+            }))
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                match line_edit::handle(&mut this.offline_input, ev, cx) {
+                    line_edit::Key::Pass => return,
+                    line_edit::Key::Escape => window.blur(cx),
+                    line_edit::Key::Edited => {
+                        let name = this.offline_input.text().trim().to_owned();
+                        this.offline_error = (!name.is_empty()
+                            && !account::valid_offline_name(&name))
+                        .then(|| tr("An offline name is 3 to 16 letters, digits or _").to_string());
+                    }
+                    _ => {}
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }));
+        line_edit::mouse(field, cx, |this| &mut this.offline_input)
+    }
+
+    /// The button that keeps the typed name as an offline account.
+    pub(crate) fn offline_add_button(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let t = self.theme;
+        button("add-offline", "Add offline account", Kind::Secondary, &t).on_click(cx.listener(
+            |this, _: &ClickEvent, _, cx| {
+                let name = this.offline_input.text().trim().to_owned();
+                if name.is_empty() {
+                    return;
+                }
+                let mut accounts = Accounts::load();
+                let added = accounts.add_offline(&name).and_then(|()| accounts.save());
+                match added {
+                    Ok(()) => {
+                        this.accounts = accounts;
+                        this.offline_input = line_edit::LineEdit::new(String::new(), 16, 44);
+                        this.offline_error = None;
+                    }
+                    Err(e) => this.offline_error = Some(e),
+                }
+                cx.notify();
+            },
+        ))
+    }
+
     /// Keeps the Proxy field in `settings.json`, and tells the parts that build their own agents
     /// (`horizon-port-pack`) which proxy to use.
     pub(crate) fn save_proxy(&mut self) {
@@ -595,7 +708,58 @@ impl Launcher {
             action,
             &t,
         ));
+        n += 1;
+        rows = rows.child(self.offline_row(n, cx));
         (rows, n)
+    }
+
+    /// Settings' offline account: the name to play solo under, its UUID derived from it. No
+    /// sign-in is asked for and nothing is kept but the name.
+    pub(crate) fn offline_row(&mut self, n: usize, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let field = self.offline_field(cx);
+        let add = self.offline_add_button(cx);
+        let detail = match &self.offline_error {
+            Some(e) => div()
+                .text_color(t.danger)
+                .child(e.clone())
+                .into_any_element(),
+            None => div()
+                .child(tr(
+                    "Plays solo under this name, with no Microsoft sign-in: nothing is asked \
+                     for or kept but the name. Online servers need a Microsoft account that \
+                     owns the game.",
+                ))
+                .into_any_element(),
+        };
+        if glass_ui::flat() {
+            return glass_ui::setting_row_stacked(
+                tr("Offline account"),
+                Some(detail),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(field)
+                    .child(add)
+                    .into_any_element(),
+            );
+        }
+        index_row(
+            n,
+            tr("Offline account"),
+            Some(detail),
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(field)
+                    .child(add)
+                    .into_any_element(),
+            ),
+            &t,
+        )
     }
 
     /// The Microsoft accounts signed in here: each one's head, name and state, Play as,
@@ -607,6 +771,46 @@ impl Launcher {
         let selected = self.accounts.selected.clone();
         for (i, a) in self.accounts.accounts.clone().into_iter().enumerate() {
             let plays = selected.as_ref() == Some(&a.uuid);
+            // An offline account: no sign-in to refresh or end, only the name to keep or drop.
+            if a.is_offline() {
+                let forget_uuid = a.uuid.clone();
+                let forget = button(format!("forget-{i}"), "Forget", Kind::Ghost, &t).on_click(
+                    cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        let mut accounts = Accounts::load();
+                        accounts.forget_offline(&forget_uuid);
+                        if accounts.save().is_ok() {
+                            this.accounts = accounts;
+                            this.owner = Some(this.accounts.has_owner(account::store()));
+                        }
+                        cx.notify();
+                    }),
+                );
+                let mut actions = div().flex().gap(px(4.));
+                if plays {
+                    actions = actions.child(forget);
+                } else {
+                    let uuid = a.uuid.clone();
+                    actions = actions
+                        .child(
+                            button(format!("select-{i}"), "Play as", Kind::Secondary, &t).on_click(
+                                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    this.play_as(&uuid);
+                                    cx.notify();
+                                }),
+                            ),
+                        )
+                        .child(forget);
+                }
+                n += 1;
+                rows = rows.child(account_row(
+                    Some(self.profile_heads.draw(Some(&a.uuid), 32., self.scale, &t)),
+                    a.name.clone(),
+                    Some(div().child(tr(account::OFFLINE_NOTE)).into_any_element()),
+                    actions,
+                    &t,
+                ));
+                continue;
+            }
             let uuid = a.uuid.clone();
             let mut actions = div().flex().gap(px(4.));
             if plays {

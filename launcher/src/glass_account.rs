@@ -201,5 +201,44 @@ impl Launcher {
                         )),
                 )
             })
+            .child(self.glass_offline(cx))
+    }
+
+    /// The card's offline part: a name to play solo under, with no Microsoft sign-in. Its UUID
+    /// comes from the name; nothing else is asked for or kept.
+    fn glass_offline(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let field = self.offline_field(cx);
+        let add = self.offline_add_button(cx);
+        div()
+            .mt(px(20.))
+            .pt(px(16.))
+            .border_t_1()
+            .border_color(white(ui::edge::REST))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(ui::text(13., FontWeight::SEMIBOLD, 0.65).child(tr("Offline account")))
+            .child(
+                ui::text(12., FontWeight::NORMAL, 0.45)
+                    .line_height(px(18.))
+                    .child(tr(
+                        "Play solo under a name of your own, with no Microsoft sign-in: nothing \
+                         is asked for or kept but the name.",
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(field)
+                    .child(add),
+            )
+            .children(self.offline_error.clone().map(|e| {
+                ui::text(12., FontWeight::NORMAL, 0.65)
+                    .text_color(t.danger)
+                    .child(e)
+            }))
     }
 }

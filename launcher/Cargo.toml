@@ -24,6 +24,8 @@ serde_json = "1"
 syn = { version = "2", features = ["full", "visit"] }
 # Match generated helpers to the compiler's byte spans, without depending on formatting.
 proc-macro2 = { version = "1", features = ["span-locations"] }
+# An offline account's UUID: the game's own name-based MD5 UUID of `OfflinePlayer:<name>` (account.rs).
+md-5 = "0.10"
 quote = "1"
 # Checks the client jar and the version file found in other launchers' folders (sources.rs).
 sha1 = "0.10"

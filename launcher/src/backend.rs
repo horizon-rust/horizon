@@ -2045,7 +2045,25 @@ pub fn java_game(
         )
     })?;
     let player = account::java_player()?;
-    let minecraft = data_dir().join("minecraft");
+    // An offline account downloads nothing from Mojang (the download needs an owner): its game
+    // files come from the player's own install instead, when that install has this version and
+    // no loader is on top of it (a loader profile installs beside the downloaded versions).
+    let mut minecraft = data_dir().join("minecraft");
+    let offline = account::Accounts::load()
+        .selected()
+        .is_some_and(account::Account::is_offline);
+    let loaderless = instance.java.as_ref().is_some_and(|g| g.loader.is_none());
+    if offline && loaderless {
+        if let Some(install) = Settings::load().minecraft_dir {
+            let version_file = install
+                .join("versions")
+                .join(mojang::relative(&game.minecraft)?)
+                .join(format!("{}.json", game.minecraft));
+            if version_file.is_file() {
+                minecraft = install;
+            }
+        }
+    }
     let id = mojang::relative(&game.minecraft)?;
     let natives = minecraft.join("natives").join(&id);
     // Each version and loader profile is fetched once; it then starts offline too.
