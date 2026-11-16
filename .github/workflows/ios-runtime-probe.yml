@@ -291,8 +291,8 @@ jobs:
                 '                startup_step(format_args!("renderer.new.open_device.begin"));\n                let _step = crate::spans::startup::step("renderer.open_device");')
           patch(gfx, '    let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();',
                 '    startup_step(format_args!("gpu.open_device.begin"));\n    let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();')
-          patch(gfx, '        match open_device_with(window, offscreen, &order, layers, allow_cpu).await {',
-                '        startup_step(format_args!("gpu.open_device.try backends={order:?}"));\n        match open_device_with(window, offscreen, &order, layers, allow_cpu).await {')
+          patch(gfx, '        match open_device_with(window, offscreen, &order, needs, allow_cpu).await {',
+                '        startup_step(format_args!("gpu.open_device.try backends={order:?}"));\n        match open_device_with(window, offscreen, &order, needs, allow_cpu).await {')
 
           # The device log reached renderer.boot.begin but no gpu or Rust
           # panic checkpoint. Trace the synchronous loading_renderer wrapper
