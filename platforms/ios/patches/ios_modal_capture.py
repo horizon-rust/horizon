@@ -99,8 +99,9 @@ change(loading,
             if let App::Ready(game) = self {
                 let held: Vec<KeyCode> = game.host.physical_keys.iter().copied().collect();
                 for key in held {
-                    let _ = game.host.mapped_key_event(key, false, false);
-                    game.host.physical_keys.remove(&key);
+                    // Release keys through the same iOS path so Shift/Ctrl
+                    // modifier bits cannot remain stuck while Nova is open.
+                    game.host.ios_virtual_key(event_loop, key, false);
                 }
             }
             let id = match self {
