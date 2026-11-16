@@ -57,11 +57,13 @@ pub(super) fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duratio
                 .and_then(|t| t.elapsed().ok())
         };
         let stale = match is_root {
-            // Its build (the stamp) or its last reuse, whichever is newer.
+            // Its build (the stamp) or its last reuse, whichever is newer. A root with neither
+            // is being built (pruning runs beside builds): its folder's own time.
             true => [age(path.join(STAMP)), age(used_path(&path))]
                 .into_iter()
                 .flatten()
                 .min()
+                .or_else(|| age(path.clone()))
                 .is_none_or(|age| age > keep),
             // The old single root's files and folders.
             false => old_layout,

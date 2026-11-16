@@ -575,6 +575,14 @@ pub fn resource_root_with_conditions(
         overlay.write(GENERATED_FILES, b"[]")?;
     }
     fs::write(out.join(STAMP), stamp)?;
-    prune_roots(&roots, &out, KEEP_ROOTS);
+    // Old roots go on a thread of their own: removing one linked file by file takes seconds, and
+    // the start would wait for each.
+    let current = out.clone();
+    let spawned = std::thread::Builder::new()
+        .name("mod-content-prune".into())
+        .spawn(move || prune_roots(&roots, &current, KEEP_ROOTS));
+    if spawned.is_err() {
+        log::warn!("Horizon: old mod content roots are left for the next start");
+    }
     Ok(out)
 }

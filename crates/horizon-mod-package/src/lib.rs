@@ -11,6 +11,8 @@ pub mod game_identity;
 ))]
 pub mod holder;
 pub mod icon;
+#[cfg(all(windows, feature = "junction"))]
+pub mod junction;
 #[cfg(feature = "index")]
 pub mod index;
 pub mod install_lock;
