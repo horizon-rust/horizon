@@ -857,6 +857,7 @@ fn install_from(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Vec<installed::Entry>, String> {
+    let _game = crate::game_shader_api::for_home(home);
     let p = index
         .project(&project.id)
         .ok_or_else(|| format!("{} isn't in Horizon's registry.", project.title))?;

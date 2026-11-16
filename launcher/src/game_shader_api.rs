@@ -1,53 +1,137 @@
 //! The shader API lines the installed game serves, as the game says itself: `horizon-client
 //! --launch-api`, `content.shader.api` (docs/api/launch.md). The launcher and the game it
-//! installed are separate builds, so a registry shader pack is offered, checked and marked by
-//! the game's lines, never by the line this launcher was built with (#17527).
+//! installed are separate builds, and instances can play different games, so a registry shader
+//! pack is offered, checked and marked by the lines of the game it is for, never by the line
+//! this launcher was built with (#17527).
+use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::process::Stdio;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 /// A game's answer by its version folder and the time its install finished (a developer build
 /// is installed again under the same name); None when it gave no answer.
 type Asked = BTreeMap<(PathBuf, Option<SystemTime>), Option<Vec<String>>>;
 static ASKED: Mutex<Asked> = Mutex::new(BTreeMap::new());
 
-/// The shader API lines served by the game the selected instance plays. With no game installed
-/// yet, or one that doesn't say, the line this launcher's own build serves.
-pub fn served() -> Vec<String> {
-    #[cfg(test)]
-    if let Some(lines) = tests::GAME.with(|game| game.borrow().clone()) {
-        return lines;
-    }
-    asked().unwrap_or_else(|| vec![horizon_shader_api::API.to_owned()])
+/// How long a game may take to answer; the Nightly of 2026-11-13 takes a tenth of a second.
+const PATIENCE: Duration = Duration::from_secs(5);
+
+thread_local! {
+    /// The lines of the game the operation running on this thread is for ([`for_home`]).
+    static OPERATION: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
 }
 
-fn asked() -> Option<Vec<String>> {
-    // A test never starts a game.
+/// One operation on a game folder (a search, an install, an update, a list of its packs): the
+/// lines of the game that folder's instance plays, found once and the same for everything the
+/// operation picks, checks and marks, whatever is selected or installed meanwhile.
+#[must_use = "the operation lasts as long as this value"]
+pub struct Operation {
+    outermost: bool,
+}
+
+impl Drop for Operation {
+    fn drop(&mut self) {
+        if self.outermost {
+            OPERATION.with(|lines| *lines.borrow_mut() = None);
+        }
+    }
+}
+
+/// Begins an operation on the game folder `home`. Inside another operation it changes nothing:
+/// the outer one's game stands.
+pub fn for_home(home: &Path) -> Operation {
+    if OPERATION.with(|lines| lines.borrow().is_some()) {
+        return Operation { outermost: false };
+    }
+    begin(of_game(version_of(home)))
+}
+
+fn begin(lines: Vec<String>) -> Operation {
+    OPERATION.with(|operation| *operation.borrow_mut() = Some(lines));
+    Operation { outermost: true }
+}
+
+/// The shader API lines served by the game the running operation is for ([`for_home`]); outside
+/// one, by the game the selected instance plays. With no game installed yet, or one that
+/// doesn't say, the line this launcher's own build serves.
+pub fn served() -> Vec<String> {
+    if let Some(lines) = OPERATION.with(|lines| lines.borrow().clone()) {
+        return lines;
+    }
+    of_game(crate::instances::selected().resolve_version(None).ok())
+}
+
+/// The installed version the instance playing in `home` plays. A folder no instance plays in
+/// yet (a modpack's profile being installed) gets the launcher's version, as a new instance
+/// does.
+fn version_of(home: &Path) -> Option<String> {
+    match crate::instances::list()
+        .into_iter()
+        .find(|i| i.home == home)
+    {
+        Some(instance) => instance.resolve_version(None).ok(),
+        None => crate::backend::resolve_version(None).ok(),
+    }
+}
+
+fn of_game(tag: Option<String>) -> Vec<String> {
+    tag.and_then(|tag| asked(&tag))
+        .unwrap_or_else(|| vec![horizon_shader_api::API.to_owned()])
+}
+
+fn asked(tag: &str) -> Option<Vec<String>> {
+    let dir = crate::backend::version_dir(tag);
+    let installed = std::fs::metadata(dir.join(".installed")).and_then(|m| m.modified());
+    let key = (dir, installed.ok());
+    let known = || ASKED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(answer) = known().get(&key) {
+        return answer.clone();
+    }
+    // A test never starts a game: it says what one answers (`tests::answers`).
     if cfg!(test) {
         return None;
     }
-    let tag = crate::instances::selected().resolve_version(None).ok()?;
-    let dir = crate::backend::version_dir(&tag);
-    let installed = std::fs::metadata(dir.join(".installed")).and_then(|m| m.modified());
-    // Held while the game answers: everyone who asks meanwhile waits for the one answer.
-    let mut asked = ASKED.lock().unwrap_or_else(|e| e.into_inner());
-    asked
-        .entry((dir, installed.ok()))
-        .or_insert_with(|| ask(&tag))
-        .clone()
+    // Not held while the game answers: a game that hangs holds up nobody else's question.
+    let mut game = crate::process::command(crate::backend::client_program(tag));
+    game.arg("--launch-api");
+    let answer = reply(game, PATIENCE).and_then(|reply| lines_of(&reply));
+    known().entry(key).or_insert(answer).clone()
 }
 
-/// Asks the installed game `tag`. It prints the reply and ends before it opens a log or a
-/// window.
-fn ask(tag: &str) -> Option<Vec<String>> {
-    let output = crate::process::command(crate::backend::client_program(tag))
-        .arg("--launch-api")
+/// What `program` prints when it ends well within `patience`. One that takes longer is stopped
+/// and gives no answer.
+fn reply(mut program: Command, patience: Duration) -> Option<Vec<u8>> {
+    let mut child = program
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    output.status.success().then(|| lines_of(&output.stdout))?
+    let mut stdout = child.stdout.take()?;
+    // Read beside the wait: a reply larger than the pipe would otherwise never end.
+    let read = std::thread::spawn(move || {
+        let mut reply = Vec::new();
+        stdout.read_to_end(&mut reply).map(|_| reply)
+    });
+    let deadline = Instant::now() + patience;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let reply = read.join().ok()?.ok()?;
+    status?.success().then_some(reply)
 }
 
 /// `content.shader.api` of a `--launch-api` reply.
@@ -71,19 +155,24 @@ fn lines_of(reply: &[u8]) -> Option<Vec<String>> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use std::cell::RefCell;
 
-    thread_local! {
-        pub(super) static GAME: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    /// Runs `run` as an operation on a game that serves the shader API lines `lines`.
+    pub fn with_game<T>(lines: &[&str], run: impl FnOnce() -> T) -> T {
+        let _game = begin(lines.iter().map(|line| (*line).to_owned()).collect());
+        run()
     }
 
-    /// Runs `run` as if the installed game served the shader API lines `lines`.
-    pub fn with_game<T>(lines: &[&str], run: impl FnOnce() -> T) -> T {
+    /// Installs a game as version `tag` that answers `--launch-api` with the lines `lines`.
+    pub fn answers(tag: &str, lines: &[&str]) {
+        let dir = crate::backend::version_dir(tag);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".installed"), "").unwrap();
+        let installed = std::fs::metadata(dir.join(".installed")).and_then(|m| m.modified());
         let lines = lines.iter().map(|line| (*line).to_owned()).collect();
-        GAME.with(|game| *game.borrow_mut() = Some(lines));
-        let out = run();
-        GAME.with(|game| *game.borrow_mut() = None);
-        out
+        ASKED
+            .lock()
+            .unwrap()
+            .insert((dir, installed.ok()), Some(lines));
     }
 
     #[test]
@@ -109,5 +198,40 @@ pub mod tests {
         // Without an installed game that answers, the launcher's own line stands in.
         assert_eq!(served(), [horizon_shader_api::API]);
         assert_eq!(with_game(&["0.1"], served), ["0.1"]);
+        // An operation inside another keeps the outer one's game.
+        let inner = with_game(&["0.1"], || {
+            let _inner = for_home(Path::new("another folder"));
+            served()
+        });
+        assert_eq!(inner, ["0.1"]);
+        assert_eq!(served(), [horizon_shader_api::API]);
+    }
+
+    /// A game that hangs is stopped after the wait and gives no answer; one that answers is
+    /// read whole.
+    #[test]
+    fn a_game_that_does_not_answer_in_time_is_stopped() {
+        const HANG: &str = "HORIZON_TEST_GAME_HANGS";
+        match std::env::var(HANG).as_deref() {
+            Ok("hang") => std::thread::sleep(Duration::from_secs(120)),
+            Ok(_) => print!("{}", "reply ".repeat(20_000)),
+            Err(_) => {
+                let game = |hangs: &str| {
+                    let mut game = Command::new(std::env::current_exe().unwrap());
+                    game.args([
+                        "--exact",
+                        "game_shader_api::tests::a_game_that_does_not_answer_in_time_is_stopped",
+                        "--nocapture",
+                    ])
+                    .env(HANG, hangs);
+                    game
+                };
+                let started = Instant::now();
+                assert_eq!(reply(game("hang"), Duration::from_millis(300)), None);
+                assert!(started.elapsed() < Duration::from_secs(30));
+                let whole = reply(game("answer"), Duration::from_secs(60)).unwrap();
+                assert!(whole.len() > 120_000, "{}", whole.len());
+            }
+        }
     }
 }

@@ -85,8 +85,9 @@ fn install_in(
     if p.kind != idx::Kind::Modpack {
         return Err(format!("{} is a {}, not a modpack.", p.name, p.kind.name()));
     }
-    let v = newest(index, p)?;
     let work = dir.join(&p.id);
+    let _game = crate::game_shader_api::for_home(&home(&work));
+    let v = newest(index, p)?;
     let fresh = !work.exists();
     let result = install_version_in(index, local, p, v, &work, progress);
     if result.is_err() && fresh {

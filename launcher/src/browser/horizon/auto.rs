@@ -287,6 +287,7 @@ pub(super) fn run_with(
     ctx: &Context,
     progress: &dyn Fn(&str, f32),
 ) -> Report {
+    let _game = crate::game_shader_api::for_home(home);
     let _lock = match crate::browser::lock_home(home) {
         Ok(guard) => guard,
         Err(e) => {

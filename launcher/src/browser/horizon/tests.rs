@@ -776,6 +776,85 @@ fn shader_packs_are_offered_for_the_shader_api_the_installed_game_serves() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Two instances playing different games: what is installed into one, updated in it and marked
+/// in its pack list goes by the game that instance plays, not by the selected instance's
+/// (#17527). In its own launcher folders, since it installs versions and makes an instance.
+#[test]
+fn a_shader_pack_goes_by_the_game_of_the_instance_it_is_for() {
+    const CHILD: &str = "HORIZON_TEST_TWO_GAMES";
+    let Some(root) = std::env::var_os(CHILD).map(PathBuf::from) else {
+        let root = scratch("two-games");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "browser::horizon::tests::a_shader_pack_goes_by_the_game_of_the_instance_it_is_for",
+                "--nocapture",
+            ])
+            .env(CHILD, &root)
+            .env("HORIZON_LAUNCHER_HOME", root.join("launcher"))
+            .env("HORIZON_HOME", root.join("game"))
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_DATA_HOME", root.join("data"))
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{said}");
+        fs::remove_dir_all(&root).unwrap();
+        return;
+    };
+    use crate::game_shader_api::tests::answers;
+    // The selected instance plays the launcher's version, the newest: a game from main. The
+    // other one keeps the Nightly of 2026-11-13.
+    answers("nightly-2026-11-13-9f42064", &["0.1"]);
+    answers("nightly-2026-11-16-aaaaaaa", &["0.2"]);
+    let selected = crate::instances::selected();
+    crate::instances::create("Kept", None).unwrap();
+    let kept = crate::instances::edit("Kept", |meta| {
+        meta.version = Some("nightly-2026-11-13-9f42064".into());
+    })
+    .unwrap();
+    assert_ne!(kept.home, selected.home);
+    assert_eq!(crate::game_shader_api::served(), ["0.2"]);
+
+    let for_0_2 = sample();
+    let mut for_0_1 = sample();
+    glow_for_0_1(&mut for_0_1, &root, true);
+    let install = |index: &Index, home: &Path| {
+        let project = project_of(index, index.project("glow").unwrap()).unwrap();
+        let done = install_from(index, true, &project, home, &|_, _| {});
+        done.map(|done| done[0].version.clone())
+    };
+    assert_eq!(
+        install(&for_0_2, &kept.home).unwrap_err(),
+        "Soft Glow needs shader API 0.2; this Horizon serves 0.1."
+    );
+    assert_eq!(install(&for_0_1, &kept.home).unwrap(), "0.9.0");
+    assert_eq!(
+        install(&for_0_1, &selected.home).unwrap_err(),
+        "Soft Glow needs shader API 0.1; this Horizon serves 0.2."
+    );
+    assert_eq!(install(&for_0_2, &selected.home).unwrap(), "1.0.0");
+
+    // A newer version for 0.2 comes out: the instance on the Nightly stays on its 0.1 version.
+    let mut newer = sample();
+    glow_for_0_1(&mut newer, &root, false);
+    newer
+        .projects
+        .iter_mut()
+        .find(|p| p.id == "glow")
+        .unwrap()
+        .versions
+        .swap(0, 1);
+    let play = auto::Context { in_pack: false };
+    let report = auto::run_with(&newer, true, &kept.home, &play, &|_, _| {});
+    assert_eq!(report, auto::Report::default());
+    assert!(kept.home.join("shaderpacks/glow-0.9.0.hshader").is_file());
+    // Its pack list doesn't mark the pack its game runs.
+    let listed = crate::packs::list(&kept.home, crate::packs::Kind::Shader);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].unsupported, None);
+}
+
 /// A shader pack for this build's shader API, and a shaders/-folder pack (which names none), are
 /// left as they were.
 #[test]
