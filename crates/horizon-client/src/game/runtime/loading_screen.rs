@@ -240,6 +240,11 @@ impl Loading {
         ) {
             Ok(r) => {
                 self.renderer = Some(r);
+                // The GPU holds the atlas now: keep its copy compressed until the world
+                // renderer reads it at the handoff, as the game does after its first frame.
+                if let Some(gui) = &mut self.gui {
+                    gui.atlas.pack_pixels();
+                }
             }
             Err(e) => self.error = Some(e),
         }
