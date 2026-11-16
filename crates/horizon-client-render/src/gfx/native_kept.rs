@@ -822,9 +822,9 @@ thread_local! {
     /// that can't make a format so.
     pub(super) static PROBE_EXTRA: std::cell::Cell<wgpu::TextureUsages> =
         const { std::cell::Cell::new(wgpu::TextureUsages::empty()) };
-    /// Whether the store's allocations report no room for them (`made`): a test's stand-in
-    /// for a device out of video memory, which no test can make safely on a shared GPU.
-    pub(super) static NO_ROOM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How many of the store's next allocations (`made`) report no room for them: a test's
+    /// stand-in for a device out of video memory, which no test can make safely on a shared GPU.
+    pub(super) static NO_ROOM: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// The first kept texture whose format the device can't make with `TEXTURE_USAGES` (OpenGL ES
@@ -898,7 +898,11 @@ fn made<'a>(
     let error = pollster::block_on(memory.pop()).or(pollster::block_on(validation.pop()));
     let error = error.map(|e| e.to_string());
     #[cfg(test)]
-    let error = error.or_else(|| NO_ROOM.get().then(|| "no room (test)".to_owned()));
+    let error = error.or_else(|| {
+        let left = NO_ROOM.get().checked_sub(1)?;
+        NO_ROOM.set(left);
+        Some("no room (test)".to_owned())
+    });
     match error {
         None => Ok(held),
         Some(e) => Err(e),

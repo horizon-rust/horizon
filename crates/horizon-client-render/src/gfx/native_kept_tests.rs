@@ -588,13 +588,25 @@ impl Chain {
         manifest: &str,
         files: &[(&str, &str)],
     ) -> super::super::NativePost {
+        let mut post = Self::built(device, frame, manifest, files);
+        install(device, Some(&mut post), None, [1, 1]).unwrap();
+        post
+    }
+
+    /// `post`'s, not installed: its store holds nothing yet.
+    fn built(
+        device: &wgpu::Device,
+        frame: &super::super::NativeFrame,
+        manifest: &str,
+        files: &[(&str, &str)],
+    ) -> super::super::NativePost {
         let manifest = format!("{manifest}[tonemap]\nfile = \"t.wgsl\"\n");
         let report = report(&manifest, &[files, &[("t.wgsl", IDENTITY)]].concat());
         let (passes, others): (Vec<_>, Vec<_>) =
             (report.stages.into_iter()).partition(|s| s.kind != StageKind::Tonemap);
         let tonemap = others.iter().find(|s| s.kind == StageKind::Tonemap);
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut post = super::super::NativePost::new(
+        super::super::NativePost::new(
             device,
             passes,
             &report.manifest,
@@ -603,9 +615,7 @@ impl Chain {
             frame,
             tonemap,
         )
-        .unwrap();
-        install(device, Some(&mut post), None, [1, 1]).unwrap();
-        post
+        .unwrap()
     }
 
     fn new(device: &wgpu::Device, frame: super::super::NativeFrame, post: NativePost) -> Self {
@@ -707,6 +717,54 @@ fn a_kept_texture_ping_pongs_and_starts_over_on_a_reset_and_a_new_size() {
     assert!(near(reset, [0.0, 0.25, 0.6]), "{reset:?} after the reset");
     let resized = next(&mut chain, [2, 1], [2, 2]);
     assert!(near(resized, [0.0, 0.25, 0.6]), "{resized:?} at a new R");
+    // Without the video memory for them at a larger R (`NO_ROOM` stands in for a device out of
+    // it: an out-of-memory error raised outside a scope panics the game), the R-relative pair
+    // stays at the old R while the passes run at the new one. That R isn't tried every frame,
+    // but is after the old R comes back (a window going fullscreen, back, and again).
+    let held = |chain: &Chain| {
+        let k = chain.post.kept.as_ref().unwrap();
+        let Held::Pair(hist) = &k.held[0] else {
+            unreachable!("`hist` is a texture")
+        };
+        let texture = hist[0].texture();
+        ([texture.width(), texture.height()], k.size, k.refused)
+    };
+    NO_ROOM.set(1);
+    let kept = next(&mut chain, [2, 1], [4, 4]);
+    assert!(near(kept, [0.25, 0.5, 0.6]), "{kept:?} without room");
+    assert_eq!(held(&chain), ([2, 2], [2, 2], Some([4, 4])));
+    let kept = next(&mut chain, [2, 1], [4, 4]);
+    assert!(near(kept, [0.5, 0.75, 0.6]), "{kept:?} at the refused R");
+    assert_eq!(held(&chain), ([2, 2], [2, 2], Some([4, 4])));
+    next(&mut chain, [2, 1], [2, 2]);
+    assert_eq!(held(&chain), ([2, 2], [2, 2], None));
+    let grown = next(&mut chain, [2, 1], [4, 4]);
+    assert!(
+        near(grown, [0.0, 0.25, 0.6]),
+        "{grown:?} at the R refused before"
+    );
+    assert_eq!(held(&chain), ([4, 4], [4, 4], None));
+    // A pack without room for its store is refused at install (`a_reload_never_holds_two_stores`
+    // counts what it leaves). The running store, freed first, is made again at the R of its
+    // last frame (`NativePack::reload_kept`), where its groups would be kept but bind the freed
+    // textures, and draws a fresh frame.
+    let mut other = Chain::built(&device, &chain.frame, KEPT_CHAIN, &KEPT_FILES);
+    NO_ROOM.set(1);
+    let refused = install(&device, Some(&mut other), Some(&mut chain.post), [4, 4]);
+    assert!(refused.is_err());
+    install(&device, Some(&mut chain.post), None, [4, 4]).unwrap();
+    assert_eq!(held(&chain), ([4, 4], [4, 4], None));
+    let fresh = next(&mut chain, [3, 2], [4, 4]);
+    assert!(near(fresh, [0.0, 0.25, 0.6]), "{fresh:?} made again");
+    // With room, a store declared before any frame (at 1×1) is made at the frame's R.
+    install(&device, Some(&mut other), Some(&mut chain.post), [4, 4]).unwrap();
+    chain.post = other;
+    assert_eq!(held(&chain), ([4, 4], [4, 4], None));
+    let first = next(&mut chain, [4, 3], [4, 4]);
+    assert!(
+        near(first, [0.0, 0.25, 0.6]),
+        "{first:?} the other pack's first frame"
+    );
     let error = pollster::block_on(scope.pop());
     assert!(error.is_none(), "{error:?}");
 }
@@ -942,6 +1000,51 @@ fn through_pack(manifest: &str, files: &[(&str, &str)], wants: &[f32]) {
         let got = screen.show((&device, &queue), post, &pack.frame.surface_view, [4, 4]);
         assert!(shows(got, [want, 0.0, 0.0]), "{got:?}, {want} expected");
     }
+    // The same pack again, on a device without the video memory for its store (`NO_ROOM`):
+    // refused (`install_kept`), and this one keeps running, its store made again and its
+    // frames counting from a load.
+    let again = self::report(&manifest, &[files, &[("t.wgsl", IDENTITY)]].concat());
+    let built = crate::gfx::native_pack::NativePack::new(
+        &device,
+        &queue,
+        &terrain,
+        again,
+        &[],
+        Default::default(),
+    );
+    let (mut other, _) = built.unwrap();
+    NO_ROOM.set(1);
+    let install = crate::gfx::native_pack::install_kept;
+    let refused = install(&device, Some(&mut other), Some(&mut pack), [4, 4]);
+    assert!(matches!(refused, Err((_, true))), "{refused:?}");
+    let epochs = pack.frame.epochs.as_ref().unwrap();
+    assert_ne!(epochs.reasons & horizon_shader_api::kept::REASON_LOAD, 0);
+    let timing = crate::gfx::pack_uniforms::FrameTiming::nth(wants.len() as u32 + 1, 50.0);
+    frame.pack.frame_timing = Some(timing);
+    pack.write(
+        &queue,
+        &frame,
+        [4, 4],
+        crate::gfx::output::DisplayValues::SDR,
+        None,
+    );
+    let mut encoder = device.create_command_encoder(&Default::default());
+    pack.before_world(&device, &mut encoder, None);
+    queue.submit([encoder.finish()]);
+    let got = screen.show(
+        (&device, &queue),
+        &mut pack.post,
+        &pack.frame.surface_view,
+        [4, 4],
+    );
+    assert!(
+        shows(got, [wants[0], 0.0, 0.0]),
+        "{got:?} after the refusal"
+    );
+    // Without room for either store, the running pack can't keep running.
+    NO_ROOM.set(2);
+    let refused = install(&device, Some(&mut other), Some(&mut pack), [4, 4]);
+    assert!(matches!(refused, Err((_, false))), "{refused:?}");
     let error = pollster::block_on(scope.pop());
     assert!(error.is_none(), "{error:?}");
 }
@@ -1285,6 +1388,20 @@ fn a_reload_never_holds_two_stores() {
     assert_eq!(delta(built), Some([0, 0]));
     assert!(pollster::block_on(scope.pop()).is_none());
     assert_eq!(third.kept.as_ref().map(|k| k.held.len()), Some(2));
+    // A device without the video memory for a pack's store (`NO_ROOM` stands in for one):
+    // refused at install with what it asks for, nothing of it left made, and the running store,
+    // freed first, made again (`NativePack::reload_kept`).
+    let mut fourth = post(BUFFERS, "input.color * 0.25");
+    let built = count().unwrap();
+    NO_ROOM.set(1);
+    let refused = install(&device, Some(&mut fourth), Some(&mut third), [4, 4]);
+    let why = "its kept resources (1 MiB) don't fit in video memory (no room (test))";
+    assert_eq!(refused, Err(why.into()));
+    assert!(fourth.kept.as_ref().is_some_and(|k| k.held.is_empty()));
+    let freed = count().map(|c| [built[0] - c[0], built[1] - c[1]]);
+    assert_eq!(freed, Some([1, 2]));
+    install(&device, Some(&mut third), None, [4, 4]).unwrap();
+    assert_eq!(delta(built), Some([0, 0]));
 }
 
 /// The video memory the refusal names: buffers as declared, textures both versions, an
@@ -1307,150 +1424,4 @@ fn a_store_s_size_counts_both_versions_of_a_texture() {
     assert_eq!(bytes(buffer, [3840, 2160]), 1024);
     assert_eq!(bytes(fixed, [3840, 2160]), 2 * 64 * 32 * 4);
     assert_eq!(bytes(scaled, [3840, 2160]), 2 * 3840 * 2160 * 16);
-}
-
-/// A pack whose kept resources don't fit in video memory (`NO_ROOM` stands in for a device
-/// without it: an out-of-memory error raised outside a scope panics the game) is refused at
-/// install with what it asked for, and holds nothing; the running pack's store, freed first,
-/// is made again (`NativePack::reload_kept`) and draws, fresh. Run with `WGPU_BACKEND=vulkan`
-/// and `WGPU_BACKEND=dx12` for each backend.
-#[test]
-fn a_store_without_room_is_refused_and_the_running_one_made_again() {
-    let Some((instance, device, queue)) = counted() else {
-        return;
-    };
-    let count = || {
-        let hub = instance.generate_report()?.hub;
-        Some([hub.buffers.num_allocated, hub.textures.num_allocated])
-    };
-    let frame = Chain::frame(&device, &queue);
-    let post = Chain::post(&device, &frame, KEPT_CHAIN, &KEPT_FILES);
-    let mut chain = Chain::new(&device, frame, post);
-    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let near = |got: [u8; 4], want: [f32; 3]| {
-        let shown = want.map(|v| (v.powf(1.0 / 2.2) * 255.0).round() as u8);
-        got.iter().zip(shown).all(|(g, w)| g.abs_diff(w) <= 1)
-    };
-    for want in [[0.0, 0.25, 0.6], [0.25, 0.5, 0.6]] {
-        let got = chain.next(&device, &queue, [1, 1], [4, 4]);
-        assert!(near(got, want), "{got:?}, {want:?} expected");
-    }
-    // Another pack, built, not installed.
-    let manifest = format!("{KEPT_CHAIN}[tonemap]\nfile = \"t.wgsl\"\n");
-    let report = report(
-        &manifest,
-        &[&KEPT_FILES[..], &[("t.wgsl", IDENTITY)]].concat(),
-    );
-    let (passes, others): (Vec<_>, Vec<_>) =
-        (report.stages.into_iter()).partition(|s| s.kind != StageKind::Tonemap);
-    let tonemap = others.iter().find(|s| s.kind == StageKind::Tonemap);
-    let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut other = NativePost::new(
-        &device,
-        passes,
-        &report.manifest,
-        &[],
-        format,
-        &chain.frame,
-        tonemap,
-    )
-    .unwrap();
-    let before = count();
-    NO_ROOM.set(true);
-    let refused = install(&device, Some(&mut other), Some(&mut chain.post), [4, 4]);
-    NO_ROOM.set(false);
-    assert_eq!(
-        refused,
-        Err("its kept resources (1 MiB) don't fit in video memory (no room (test))".into())
-    );
-    assert!(other.kept.as_ref().is_some_and(|k| k.held.is_empty()));
-    assert!(chain.post.kept.as_ref().is_some_and(|k| k.held.is_empty()));
-    // What was made for it is gone, as is the running store: its buffer-free textures, two
-    // versions of each of two.
-    if let (Some(before), Some(after)) = (before, count()) {
-        assert_eq!([before[0] - after[0], before[1] - after[1]], [0, 4]);
-    }
-    // Made again, as at a load, at the frame's R: zeros, both epochs moved, nothing remade in
-    // the frame.
-    install(&device, Some(&mut chain.post), None, [4, 4]).unwrap();
-    let store = chain.post.kept.as_ref().unwrap();
-    let Held::Pair(hist) = &store.held[0] else {
-        unreachable!()
-    };
-    let texture = hist[0].texture();
-    assert_eq!([texture.width(), texture.height()], [4, 4]);
-    assert!(!chain.post.kept.as_mut().unwrap().fit(&device, [4, 4]));
-    let got = chain.next(&device, &queue, [2, 2], [4, 4]);
-    assert!(near(got, [0.0, 0.25, 0.6]), "{got:?} after the refusal");
-    // With room, the other pack's store, declared before any frame, is made at the frame's R.
-    install(&device, Some(&mut other), Some(&mut chain.post), [4, 4]).unwrap();
-    let Held::Pair(hist) = &other.kept.as_ref().unwrap().held[0] else {
-        unreachable!()
-    };
-    let texture = hist[0].texture();
-    assert_eq!([texture.width(), texture.height()], [4, 4]);
-    let error = pollster::block_on(scope.pop());
-    assert!(error.is_none(), "{error:?}");
-}
-
-/// Without the video memory for the R-relative textures at a larger R, they stay at the old
-/// one, the passes reading and writing them at the new R without a validation error, the log
-/// says so once, and that R isn't tried again every frame; it is after the old R comes back
-/// (a window toggled to fullscreen and back), and a later R is. Run with `WGPU_BACKEND=vulkan`
-/// and `WGPU_BACKEND=dx12` for each backend.
-#[test]
-fn scaled_textures_without_room_at_a_new_r_stay_at_the_old_one() {
-    let Some((device, queue)) = device() else {
-        return;
-    };
-    let frame = Chain::frame(&device, &queue);
-    let post = Chain::post(&device, &frame, KEPT_CHAIN, &KEPT_FILES);
-    let mut chain = Chain::new(&device, frame, post);
-    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let near = |got: [u8; 4], want: [f32; 3]| {
-        let shown = want.map(|v| (v.powf(1.0 / 2.2) * 255.0).round() as u8);
-        got.iter().zip(shown).all(|(g, w)| g.abs_diff(w) <= 1)
-    };
-    let hist = |chain: &Chain| match &chain.post.kept.as_ref().unwrap().held[0] {
-        Held::Pair(v) => [v[0].texture().width(), v[0].texture().height()],
-        Held::Buffer(_) => unreachable!(),
-    };
-    let refused = |chain: &Chain| {
-        let store = chain.post.kept.as_ref().unwrap();
-        (store.size, store.refused)
-    };
-    for want in [[0.0, 0.25, 0.6], [0.25, 0.5, 0.6]] {
-        let got = chain.next(&device, &queue, [1, 1], [2, 2]);
-        assert!(near(got, want), "{got:?}, {want:?} expected");
-    }
-    NO_ROOM.set(true);
-    let got = chain.next(&device, &queue, [1, 1], [4, 4]);
-    NO_ROOM.set(false);
-    assert!(near(got, [0.5, 0.75, 0.6]), "{got:?} without room");
-    assert_eq!(
-        (hist(&chain), refused(&chain)),
-        ([2, 2], ([2, 2], Some([4, 4])))
-    );
-    // The same R, with room now: not tried again.
-    let got = chain.next(&device, &queue, [1, 1], [4, 4]);
-    assert!(near(got, [0.75, 1.0, 0.6]), "{got:?} at the refused R");
-    assert_eq!(
-        (hist(&chain), refused(&chain)),
-        ([2, 2], ([2, 2], Some([4, 4])))
-    );
-    // The old R again, then the refused one: tried, and made, as zeros.
-    let got = chain.next(&device, &queue, [2, 1], [2, 2]);
-    assert!(
-        near(got, [0.0, 0.25, 0.6]),
-        "{got:?} back at the old R, reset"
-    );
-    assert_eq!((hist(&chain), refused(&chain)), ([2, 2], ([2, 2], None)));
-    let got = chain.next(&device, &queue, [2, 1], [4, 4]);
-    assert!(
-        near(got, [0.0, 0.25, 0.6]),
-        "{got:?} at the R refused before"
-    );
-    assert_eq!(hist(&chain), [4, 4]);
-    let error = pollster::block_on(scope.pop());
-    assert!(error.is_none(), "{error:?}");
 }
