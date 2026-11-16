@@ -145,7 +145,13 @@ fn frame(
     scene: Option<&Traced<'_>>,
     world: Option<&World>,
 ) -> [f32; 4] {
-    let hud = crate::hud::HudBatch::new([4, 4]);
+    let hud = crate::hud::HudBatch::new(
+        [4, 4],
+        crate::hud::GuiScale {
+            requested: 0,
+            unicode: false,
+        },
+    );
     let mut inputs = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
     inputs.pack.frame_timing = Some(crate::gfx::pack_uniforms::FrameTiming::nth(n, 50.0));
     let display = crate::gfx::output::DisplayValues::SDR;
@@ -514,7 +520,13 @@ fn the_material_makes_its_kept_groups_once() {
         let (mut pack, _, _) = build(&device, &queue, None, &manifest(reads), &files).unwrap();
         counts.push(count()?);
         for n in 1..=6 {
-            let hud = crate::hud::HudBatch::new([4, 4]);
+            let hud = crate::hud::HudBatch::new(
+                [4, 4],
+                crate::hud::GuiScale {
+                    requested: 0,
+                    unicode: false,
+                },
+            );
             let mut inputs = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
             inputs.pack.frame_timing = Some(crate::gfx::pack_uniforms::FrameTiming::nth(n, 50.0));
             let size = if n < 5 { [4, 4] } else { [8, 8] };
