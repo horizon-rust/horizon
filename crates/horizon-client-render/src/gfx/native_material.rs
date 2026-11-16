@@ -359,7 +359,7 @@ pub(super) fn terrain_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
 /// every name it declares prefixed.
 fn vanilla_terrain() -> String {
     prefixed(
-        &(include_str!("../hdr_light.wgsl").to_owned()
+        &(super::wgsl_prefix::HDR_LIGHT.to_owned()
             + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")),
         PREFIX,
     )
@@ -1129,6 +1129,7 @@ mod tests {
     /// product of the gamma colours within an 8-bit step.
     #[test]
     fn an_identity_material_is_vanilla_s_within_an_8_bit_step() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;
@@ -1140,8 +1141,8 @@ mod tests {
         // The entries' call of `material`, with a 16×16 grid of colours.
         let entry = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0, 0.0, 1.0);
-}
-@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    }
+    @fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let c = floor(p.xy) / 15.0;
     let albedo = vec4(c.x, c.y, 1.0 - c.x, 1.0);
     let tint = vec4(0.9, 1.0 - 0.5 * c.y, 0.7, 1.0);
@@ -1151,8 +1152,8 @@ mod tests {
         vec3(0.0), vec2(0.0), false, 0u, 0u, vec2(0.0), 0u, 0u, 0.0, vec3(0.0, 1.0, 0.0),
         vec4(1.0, 0.0, 0.0, 1.0), horizon_line_in(vec3(0.0)), 0.0)).color;
     return vec4(horizon_line_out(out.rgb), out.a);
-}
-";
+    }
+    ";
         let vanilla = "fn material(input: MaterialInput) -> Surface {\n    \
             return Surface(input.albedo * input.tint * vec4(input.lightmap, 1.0));\n}\n";
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -1312,7 +1313,7 @@ mod tests {
 "
             )
         };
-        let engine = include_str!("../hdr_light.wgsl").to_owned()
+        let engine = super::super::wgsl_prefix::HDR_LIGHT.to_owned()
             + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")
             + &entries("");
         let stage = stage(

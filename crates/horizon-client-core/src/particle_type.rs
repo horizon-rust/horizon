@@ -195,8 +195,8 @@ impl ParticleType {
     /// `SingleQuadParticle.Layer.translucent`: types whose vanilla particle class
     /// hardcodes the translucent layer, drawn after translucent terrain.
     /// `TerrainParticle`, `BreakingItemParticle` and `BlockMarker` resolve their
-    /// layer from the sprite instead (`Layer.bySprite`); see the `translucent`
-    /// sprite set on the engine.
+    /// layer from the sprite instead (`SingleQuadParticle.Layer.bySprite`); see
+    /// the `translucent` sprite set on the engine.
     pub fn translucent_layer(self) -> bool {
         match self {
             // CampfireSmokeParticle.
@@ -222,5 +222,20 @@ impl ParticleType {
             | Self::VaultConnection => true,
             _ => false,
         }
+    }
+}
+
+/// A particle type as its registry name.
+impl From<&ParticleType> for String {
+    fn from(particle: &ParticleType) -> Self {
+        particle.name().to_owned()
+    }
+}
+
+/// The particle type of a registry name; an unknown name is refused as itself.
+impl TryFrom<String> for ParticleType {
+    type Error = String;
+    fn try_from(name: String) -> Result<Self, String> {
+        Self::from_name(&name).ok_or(name)
     }
 }

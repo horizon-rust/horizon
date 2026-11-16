@@ -347,7 +347,7 @@ fn frame_events_move_the_epochs_they_reset() {
     let Some((device, _)) = device() else {
         return;
     };
-    let hud = crate::hud::HudBatch::new([4, 4]);
+    let hud = crate::hud::HudBatch::scratch([4, 4]);
     let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
     let mut native =
         super::super::NativeFrame::new(&device, None, Vec::new(), Default::default(), None, false);
@@ -639,7 +639,7 @@ impl Chain {
     /// screen's first pixel.
     fn run(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, size: [u32; 2]) -> [u8; 4] {
         let mut encoder = device.create_command_encoder(&Default::default());
-        self.post.before_world(device, &mut encoder);
+        self.post.before_world(device, &mut encoder, None);
         queue.submit([encoder.finish()]);
         let surface = &self.frame.surface_view;
         (self.screen).show((device, queue), &mut self.post, surface, size)
@@ -807,6 +807,38 @@ fn a_compute_pass_writes_a_kept_texture_a_later_pass_shows() {
     computes(manifest, &files, &frames);
 }
 
+/// A 1024×1024 fixed-size kept texture (16 MiB with both versions, past the old 1 MiB budget)
+/// builds, installs and is written as a pass's `output` at its own size, adding to `_previous`;
+/// the last pass reads it at the screen's pixel and at its far corner, and a reset clears it.
+/// Run with `WGPU_BACKEND=vulkan` and `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn a_large_fixed_size_kept_texture_is_written_read_and_cleared() {
+    let manifest = "[[resource]]\nname = \"trail\"\nformat = \"rgba16float\"\nsize = [1024, 1024]\n\
+                    keep = \"view\"\n[[post]]\nfile = \"w.wgsl\"\noutput = \"trail\"\n\
+                    reads = [\"trail_previous\"]\n[[post]]\nfile = \"l.wgsl\"\nreads = [\"trail\"]\n";
+    let files = [
+        (
+            "w.wgsl",
+            "fn post(input: PostInput) -> vec4<f32> {\n    \
+             let last = textureLoad(trail_previous, vec2<i32>(input.pixel), 0);\n    \
+             return last + vec4<f32>(0.25, 0.125, 0.0, 0.0);\n}\n",
+        ),
+        (
+            "l.wgsl",
+            "fn post(input: PostInput) -> vec4<f32> {\n    \
+             let here = textureLoad(trail, vec2<i32>(input.pixel), 0);\n    \
+             let corner = textureLoad(trail, vec2<i32>(1023, 1023), 0);\n    \
+             return vec4<f32>(here.r, corner.g, 0.0, 1.0);\n}\n",
+        ),
+    ];
+    let frames = [
+        ([1, 1], [4, 4], [0.25, 0.125, 0.0]),
+        ([1, 1], [4, 4], [0.5, 0.25, 0.0]),
+        ([2, 1], [4, 4], [0.25, 0.125, 0.0]),
+    ];
+    computes(manifest, &files, &frames);
+}
+
 /// A compute pass adding one to the kept buffer `sum` each frame, and the last pass showing it
 /// ×0.25 in red.
 const SUMMING: (&str, [(&str, &str); 2]) = (
@@ -894,7 +926,7 @@ fn through_pack(manifest: &str, files: &[(&str, &str)], wants: &[f32]) {
     let (mut pack, _) = built.unwrap();
     install(&device, Some(&mut pack.post), None);
     let screen = Screen::new(&device);
-    let hud = crate::hud::HudBatch::new([4, 4]);
+    let hud = crate::hud::HudBatch::scratch([4, 4]);
     let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     for (n, &want) in (1..).zip(wants) {
@@ -904,7 +936,7 @@ fn through_pack(manifest: &str, files: &[(&str, &str)], wants: &[f32]) {
         let display = crate::gfx::output::DisplayValues::SDR;
         pack.write(&queue, &frame, [4, 4], display, None);
         let mut encoder = device.create_command_encoder(&Default::default());
-        pack.before_world(&device, &mut encoder);
+        pack.before_world(&device, &mut encoder, None);
         queue.submit([encoder.finish()]);
         let post = &mut pack.post;
         let got = screen.show((&device, &queue), post, &pack.frame.surface_view, [4, 4]);

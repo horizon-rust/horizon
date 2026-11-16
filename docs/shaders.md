@@ -20,7 +20,7 @@ Horizon's own format.
 | Templates | `crates/horizon-shader-api/templates/` | post, sky, material |
 | Example pack | `crates/horizon-shader-api/packs/golden_hour` | a warm sky and two post passes |
 | In the game: every stage | Options > Video Settings > Shaders > Shader Packs | sky, material, post passes, hot reload |
-| The registry and the launcher | `shader` kind ([api/mod-index.md](api/mod-index.md)); the Mods page's Shader packs tab | checked, then installed into `shaderpacks/` |
+| The registry and the launcher | `shader` kind ([modding/src/reference/registry-index.md](modding/src/reference/registry-index.md)); the Mods page's Shader packs tab | checked, then installed into `shaderpacks/` |
 
 ## Quick start
 
@@ -215,9 +215,10 @@ changes, from at most 2048 sources, the nearest first.
 
 ## Ray tracing
 
-A pack of API 0.2 can trace rays through the world from its post passes and its material stage. It asks with an empty
-`[ray_tracing]` table (the pack needs a `[[post]]` pass or a `[material]` stage), and its post stage gets the trace
-functions, as does its material stage where its files call one ([the reference](api/shaders-reference-0.2.md#ray-tracing) has
+A pack of API 0.2 can trace rays through the world from its post passes, its material stage and its compute passes. It
+asks with an empty `[ray_tracing]` table (the pack needs a `[[post]]` pass, a `[[before_world]]` pass or a `[material]`
+stage), and its post stage gets the trace functions, as do its material stage and its compute and `[[before_world]]`
+passes where their files call one ([the reference](api/shaders-reference-0.2.md#ray-tracing) has
 `RayHit`'s fields):
 
 ```toml
@@ -249,8 +250,8 @@ and the check refuses a pack that names one itself.
 
 | | |
 | --- | --- |
-| In the scene today | Terrain within 8 chunks of the camera, in two layers: solid terrain (cut-outs and lava included), which `trace` reads, and translucent terrain (water, stained glass, ice), which [`trace_layers`](#layers) reads; `frame.ray_distance` is how far it surely reaches. For a pack that names `RAY_ENTITY`, a third layer: [the entities the camera draws](#entities) |
-| Not in it yet | Entities the camera doesn't draw, block entities at rest (a closed chest), the hand, distant terrain tiles |
+| In the scene today | Terrain within 8 chunks of the camera, in two layers: solid terrain (cut-outs and lava included), which `trace` reads, and translucent terrain (water, stained glass, ice), which [`trace_layers`](#layers) reads; `frame.ray_distance` is how far it surely reaches. For a pack that names `RAY_ENTITY`, a third layer: [the entities within that reach](#entities), in view or not |
+| Not in it yet | Block entities at rest (a closed chest) or out of view, the hand, distant terrain tiles |
 | Turning it on | Pick the pack and start the game with it, on a GPU and graphics API with hardware ray queries: the device needs them from its creation, so in a game started without them a pack picked while it runs traces from the next start, and the shader pack screen says so. `HORIZON_RAY_TRACING=1` asks for ray queries and keeps the scene with any pack or none; any other value of it turns ray tracing off |
 | Without it | The pack loads and runs as it is: `frame.has_ray_tracing` is 0, `trace` misses and `trace_any` is false. Branch on `has_ray_tracing` and keep a look that works without rays. It is also 0 in a pack none of whose stages calls a trace function |
 | Graphics APIs | Vulkan; DirectX 12 where it compiles shaders with DXC (integrated GPUs, or `WGPU_DX12_COMPILER=dxc`), as FXC has no ray queries; Metal on macOS 15 and later where the GPU traces rays from render passes (untested). OpenGL has none |
@@ -286,7 +287,7 @@ The scene has two layers, three for a pack that names `RAY_ENTITY`, and a ray re
 | --- | --- | --- |
 | `RAY_SOLID` | What the solid pass draws: opaque blocks, cut-outs (leaves, plants), lava | At an opaque texel, or a cut-out's texel of alpha 0.5 or more: the solid pass's alpha test |
 | `RAY_TRANSLUCENT` | What the translucent pass draws: water, glass and panes, ice, slime and honey blocks; any block whose texture has partly see-through texels | At any texel the translucent pass draws, however faint: only a clear one (alpha below 0.01) lets it through |
-| `RAY_ENTITY` | Only for a pack whose files name it: [the entities the camera draws](#entities) | Where vanilla's entity alpha test keeps the pixel: `(texel * tint).a` of 0.1 or more |
+| `RAY_ENTITY` | Only for a pack whose files name it: [the entities within the scene's reach](#entities) | Where vanilla's entity alpha test keeps the pixel: `(texel * tint).a` of 0.1 or more |
 
 A hit in the translucent layer has `translucent` true, `fluid` 1 on water, and its `albedo.a` is the texture's alpha
 there, so a pack decides what the surface does to the ray: a ray over both layers stops at the nearest surface of
@@ -318,11 +319,11 @@ Every other pack is built and runs as without it.
 
 | | |
 | --- | --- |
-| In it | What the camera draws this frame of mobs, players (third person, and the others), armour stands, item frames, projectiles, vehicles, falling blocks, block displays, and the block entities drawn with them (a chest while it opens) |
-| Not in it | Particles, world text and name tags, the hand, the camera's own body in first person, items Horizon draws itself (a dropped item, a framed one), translucent items, breaking cracks, entity shadows, energy swirls, beams, portals, lightning, glowing outlines, additive glows; entities the camera doesn't draw (behind it, or hidden), so they cast no traced shadow and show in no reflection yet; block entities at rest (a closed chest) |
+| In it | Within the scene's reach, mobs, players (third person, and the others), armour stands, item frames, paintings, projectiles, vehicles, falling blocks and block displays, whether the camera draws them this frame or not (behind it, beside it, hidden behind terrain), so turning the camera changes nothing; the block entities at rest that the block entity cache keeps (on in every graphics preset: closed chests, shulker boxes, bells, decorated pots, banners, within vanilla's 64 blocks), in view or not; and the other block entities the camera draws (a chest while it opens) |
+| Not in it | Particles, world text and name tags, the hand, the camera's own body in first person, items Horizon draws itself (a dropped item, a framed one), translucent items, breaking cracks, entity shadows, energy swirls, beams, portals, lightning, glowing outlines, additive glows; other block entities out of view (a chest opening behind the camera) |
 | A hit | `entity` true. `albedo` the entity texture's texel in linear light, `tint`, `light` and `uv` its vertices' (the colour vanilla multiplies in, alpha included; block and sky light; the atlas position), `normal` the face's against the ray, `tangent` from its uvs; `material`, `tags`, `emission` and `fluid` 0, `translucent` false, and `hit_normal_map` and `hit_specular_map` give their defaults |
 | A ray stops | Where vanilla's alpha test keeps the entity's pixel, `(texel * tint).a` 0.1 or more, from either side of the face (on the dying dragon's dissolve, where vanilla's mask keeps it). A pack's own `[entity]` alpha is not the layer's: the scene runs no pack code |
-| Cost | One BLAS of the frame's entity quads and the TLAS built again every frame, for a pack that names the layer |
+| Cost | For a pack that names the layer: the models of the entities within reach that the camera doesn't draw, posed on the CPU every frame, and one BLAS of the frame's entity quads and the TLAS built again every frame. The cached block entities have a BLAS a section, built again only when that section's change (a chest opens or closes, one is placed or broken) |
 
 A mob's traced shadow on what a post pass lights, starting off the surface as from terrain:
 
@@ -350,8 +351,9 @@ if input.translucent && frame.has_ray_tracing == 1u {
   reflection, wrong for what lies behind a waterfall. Name the layer to find it: `trace_layers(..., RAY_SOLID |
   RAY_TRANSLUCENT)`, from a point off the surface (`input.position + input.normal * 0.01`), which is in that layer
   itself.
-- **Only a stage that calls them pays.** A material stage whose files name no trace function is built as without
-  `[ray_tracing]`; one that does is built twice, the terrain drawing with the rays in frames that have the scene.
+- **Only a stage that calls them pays.** A material, compute or `[[before_world]]` stage whose files name no trace
+  function is built as without `[ray_tracing]`; one that does is built twice, the one with the rays drawing in frames
+  that have the scene.
 
 `crates/horizon-shader-api/packs/traced_water` is the smallest pack that traces from `material`: water that mixes in
 what a reflected ray hits.
@@ -361,12 +363,13 @@ what a reflected ray hits.
 Shader API 0.2 has the keys for storage a pack keeps between frames and for compute passes: `[[resource]]` (buffers,
 and textures with this frame's and last frame's versions), `[kept] reach`, `[[before_world]]`, `[[post]]` entries
 with `compute = true`, and an option's `resets`. A compute file defines `fn compute(input: ComputeInput)`.
-`horizon-shader check` takes them now, but **they run in a later Horizon**: this game refuses a pack that declares a
-resource or a compute pass. The keys, their limits and the WGSL each pass sees are in the
+The game runs them. The keys, their limits and the WGSL each pass sees are in the
 [reference](api/shaders-reference-0.2.md#kept-resources-and-compute-passes).
 
-Two parts come in later steps, not with these keys: a compute or `[[before_world]]` file doesn't get `trace` or the
-other ray functions under `[ray_tracing]`, and `[material]` can't read kept resources.
+Under `[ray_tracing]` a compute or `[[before_world]]` file that calls a trace function gets them, as a post pass does;
+a `[[before_world]]` pass traces this frame's scene. The four trace names are found by name, as in the material
+stage, so under `[ray_tracing]` don't give them to anything of the pack's own. One part comes in a later step: `[material]` can't read kept
+resources.
 
 ## Options
 
