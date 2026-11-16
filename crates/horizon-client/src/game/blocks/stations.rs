@@ -48,6 +48,7 @@ use horizon_client::{
     stations::{self, AnvilResult, EnchantOffers},
     text::Text,
 };
+use horizon_core::identifier::Identifier;
 use horizon_core::random::{LegacyRandom, RandomSource};
 use mod_api::{TooltipElement, TooltipImage};
 
@@ -2175,7 +2176,12 @@ impl Game<'_> {
             &mut border_top,
             &mut border_bottom,
         );
-        if let Some(style) = &texture {
+        // `AbstractContainerScreen`: without a mod's style, the stack's own
+        // `minecraft:tooltip_style` component names it.
+        let component_style = stack
+            .and_then(|stack| stack.tooltip_style())
+            .and_then(|style| Identifier::parse(&style).ok());
+        if let Some(style) = texture.as_ref().or(component_style.as_ref()) {
             let [background, frame] =
                 horizon_client::ui::tooltip_style_sprites(style.namespace(), style.path());
             let sprites = [background.as_str(), frame.as_str()];
