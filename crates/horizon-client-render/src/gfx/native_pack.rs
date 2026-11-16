@@ -712,6 +712,7 @@ file = \"material.wgsl\"
     /// the renderer's resources give it.
     #[test]
     fn a_pack_tells_the_renderer_what_it_draws_in_its_place() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;
