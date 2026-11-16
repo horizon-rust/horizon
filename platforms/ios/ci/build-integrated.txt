@@ -8,3 +8,4 @@ Snap touch layout buttons to neighboring edges on drag release.
 Fix winit private KeyEvent compile failure.
 Fix loading menu key focus signature for iOS compile.
 Expose keyboard close bridge function to Swift header.
+Route iOS virtual keys through native screen and debug handlers.
