@@ -44,8 +44,11 @@ jobs:
           old = "std::ffi::CStr::from_ptr(raw)"
           new = "std::ffi::CStr::from_ptr(raw.cast())"
           source = path.read_text()
-          assert source.count(old) == 1, "Upstream allocator changed; review patch before applying"
-          path.write_text(source.replace(old, new, 1))
+          if source.count(old) == 1:
+              path.write_text(source.replace(old, new, 1))
+          else:
+              # Newer upstream already casts its mimalloc pointer correctly.
+              assert source.count(new) == 1, "Upstream allocator changed; review patch"
           PY
           # All modifications stay in the ephemeral runner checkout.
           git diff -- crates/horizon-threads/src/allocator_stats.rs
@@ -163,12 +166,12 @@ jobs:
                   }
               }
           }''')
-          patch(entry, "pub fn main_with(mods: crate::mod_api::Mods) {",
-                '''pub fn main_with(mods: crate::mod_api::Mods) {
-              nova_entry_trace("main_with.begin");''')
-          patch(entry, "    if let Err(error) = game::run_with() {",
+          patch(entry, "    let _ = CODE_RUNTIME.set(code);",
+                '''    nova_entry_trace("main_with.begin");
+              let _ = CODE_RUNTIME.set(code);''')
+          patch(entry, "    if let Err(error) = game::run_with(options, native) {",
                 '''    nova_entry_trace("game.run_with.begin");
-              if let Err(error) = game::run_with() {
+              if let Err(error) = game::run_with(options, native) {
                   nova_entry_trace(&format!("game.run_with.error: {error}"));''')
 
           loading = Path("crates/horizon-client/src/game/runtime/loading_screen.rs")
