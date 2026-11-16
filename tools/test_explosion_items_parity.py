@@ -51,7 +51,7 @@ def main():
         'crates/horizon-client/src/entities.rs',
         'crates/horizon-client/src/game/entities/explosion.rs',
         'crates/horizon-client/src/game.rs',
-        'crates/horizon-client/src/game/modding/native_machines.rs',
+        'crates/horizon-client/src/game/modding/native_entity_refs.rs',
         'mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java',
         'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaVehicleContainerOracle.java',
         'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaExplosionItemsOracle.java',
