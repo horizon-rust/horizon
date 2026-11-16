@@ -736,7 +736,21 @@ fn a_kept_texture_ping_pongs_and_starts_over_on_a_reset_and_a_new_size() {
     let kept = next(&mut chain, [2, 1], [4, 4]);
     assert!(near(kept, [0.5, 0.75, 0.6]), "{kept:?} at the refused R");
     assert_eq!(held(&chain), ([2, 2], [2, 2], Some([4, 4])));
-    next(&mut chain, [2, 1], [2, 2]);
+    // A pack without room for its store is refused at install (`a_reload_never_holds_two_stores`
+    // counts what it leaves). The running store, freed first, is made again
+    // (`NativePack::reload_kept`) at the R it was last made at, not the frame's: at the refused
+    // R the store would have room for neither, and the running pack would stop. That R still
+    // isn't tried every frame.
+    let mut other = Chain::built(&device, &chain.frame, KEPT_CHAIN, &KEPT_FILES);
+    NO_ROOM.set(1);
+    let refused = install(&device, Some(&mut other), Some(&mut chain.post), [4, 4]);
+    assert!(refused.is_err());
+    reinstall(&device, &mut chain.post).unwrap();
+    assert_eq!(held(&chain), ([2, 2], [2, 2], Some([4, 4])));
+    let fresh = next(&mut chain, [3, 2], [4, 4]);
+    assert!(near(fresh, [0.0, 0.25, 0.6]), "{fresh:?} made again");
+    assert_eq!(held(&chain), ([2, 2], [2, 2], Some([4, 4])));
+    next(&mut chain, [3, 2], [2, 2]);
     assert_eq!(held(&chain), ([2, 2], [2, 2], None));
     let grown = next(&mut chain, [2, 1], [4, 4]);
     assert!(
@@ -744,23 +758,20 @@ fn a_kept_texture_ping_pongs_and_starts_over_on_a_reset_and_a_new_size() {
         "{grown:?} at the R refused before"
     );
     assert_eq!(held(&chain), ([4, 4], [4, 4], None));
-    // A pack without room for its store is refused at install (`a_reload_never_holds_two_stores`
-    // counts what it leaves). The running store, freed first, is made again at the R of its
-    // last frame (`NativePack::reload_kept`), where its groups would be kept but bind the freed
-    // textures, and draws a fresh frame.
-    let mut other = Chain::built(&device, &chain.frame, KEPT_CHAIN, &KEPT_FILES);
+    // Refused where the store was last made at the frame's R: its groups would be kept but bind
+    // the freed textures.
     NO_ROOM.set(1);
     let refused = install(&device, Some(&mut other), Some(&mut chain.post), [4, 4]);
     assert!(refused.is_err());
-    install(&device, Some(&mut chain.post), None, [4, 4]).unwrap();
+    reinstall(&device, &mut chain.post).unwrap();
     assert_eq!(held(&chain), ([4, 4], [4, 4], None));
-    let fresh = next(&mut chain, [3, 2], [4, 4]);
+    let fresh = next(&mut chain, [4, 3], [4, 4]);
     assert!(near(fresh, [0.0, 0.25, 0.6]), "{fresh:?} made again");
     // With room, a store declared before any frame (at 1×1) is made at the frame's R.
     install(&device, Some(&mut other), Some(&mut chain.post), [4, 4]).unwrap();
     chain.post = other;
     assert_eq!(held(&chain), ([4, 4], [4, 4], None));
-    let first = next(&mut chain, [4, 3], [4, 4]);
+    let first = next(&mut chain, [5, 4], [4, 4]);
     assert!(
         near(first, [0.0, 0.25, 0.6]),
         "{first:?} the other pack's first frame"

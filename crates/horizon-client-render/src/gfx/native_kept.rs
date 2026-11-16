@@ -500,13 +500,27 @@ pub(in crate::gfx) fn install(
     if let Some(store) = old.and_then(|p| p.kept.as_mut()) {
         store.free();
     }
-    if let Some(post) = new
-        && let Some(store) = &mut post.kept
-    {
-        // Its passes' groups bind the store's views: a store made again needs new ones.
-        post.groups = None;
+    if let Some(store) = new.and_then(|p| p.kept.as_mut()) {
         return store.allocate(device, size);
     }
+    Ok(())
+}
+
+/// Makes `post`'s store again, as zeros, after `install` freed it for a pack that was refused:
+/// at the R its textures were last made at, not this frame's, and still not trying an R they
+/// had no room for (`KeptStore::fit`).
+pub(in crate::gfx) fn reinstall(
+    device: &wgpu::Device,
+    post: &mut NativePost,
+) -> Result<(), String> {
+    let Some(store) = &mut post.kept else {
+        return Ok(());
+    };
+    // Its passes' groups bind the freed views.
+    post.groups = None;
+    let (size, refused) = (store.size, store.refused);
+    store.allocate(device, size)?;
+    store.refused = refused;
     Ok(())
 }
 

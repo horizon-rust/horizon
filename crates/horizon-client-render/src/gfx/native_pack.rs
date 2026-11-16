@@ -133,7 +133,7 @@ pub(in crate::gfx) fn install_kept(
         return Ok(());
     };
     let runs = old.is_none_or(|old| {
-        let made = old.reload_kept(device, size);
+        let made = old.reload_kept(device);
         if let Err(e) = &made {
             log::warn!("Horizon shader pack: the running pack stops: {e}");
         }
@@ -181,11 +181,11 @@ impl NativePack {
 
     /// Makes this pack's kept resources again, as zeros, after the pack that was to replace it
     /// had no room for its own (`install_kept`), at R `size`: it sees a load.
-    fn reload_kept(&mut self, device: &wgpu::Device, size: [u32; 2]) -> Result<(), String> {
+    fn reload_kept(&mut self, device: &wgpu::Device) -> Result<(), String> {
         if let Some(epochs) = &mut self.frame.epochs {
             epochs.note(horizon_shader_api::kept::REASON_LOAD);
         }
-        super::native_post::kept::install(device, Some(&mut self.post), None, size)
+        super::native_post::kept::reinstall(device, &mut self.post)
     }
 
     /// Joins the frame's group with this frame's `scene` from `camera` for a material stage
