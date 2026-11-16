@@ -121,21 +121,21 @@ for number, key in special.items():
 keymap = keymap.replace("KEY_MAP", "\n".join(rows))
 # Keep the original implementation, only widen its visibility for the iOS
 # application handler (which lives in a sibling module).
-change("crates/horizon-client/src/game/startup_menu.rs",
+change("crates/horizon-client/src/game/interface/startup_menu.rs",
        "    fn menu_key_focus(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {",
        "    pub(super) fn menu_key_focus(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {")
 
-change("crates/horizon-client/src/game/loading_screen.rs",
+change("crates/horizon-client/src/game/runtime/loading_screen.rs",
        "impl App {\n", "impl App {\n" + keymap)
 
-change("crates/horizon-client/src/game/loading_screen.rs",
+change("crates/horizon-client/src/game/runtime/loading_screen.rs",
        """    fn about_to_wait_here(&mut self, event_loop: &ActiveEventLoop) {
 """,
        """    fn about_to_wait_here(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(target_os = "ios")]
         self.ios_drain_inputs(event_loop);
 """)
-change("crates/horizon-client/src/game/loading_screen.rs",
+change("crates/horizon-client/src/game/runtime/loading_screen.rs",
        """        if let WindowEvent::Touch(touch) = &event {
             self.ios_touch_mouse(event_loop, id, touch);
             return;
@@ -185,6 +185,24 @@ impl Game<'_> {
             self.last_input = Instant::now();
         } else {
             self.physical_keys.remove(&key);
+        }
+
+        // winit normally emits both KeyboardInput and ModifiersChanged.
+        // Nova's touch keys have no OS modifier callback, so update Horizon's
+        // modifier word as well as its physical-key set. Sneak and sprint
+        // check this word every frame and otherwise cancel a held Shift/Ctrl.
+        // Reuse the upstream helper to preserve other held modifier keys.
+        if matches!(
+            key,
+            KeyCode::ShiftLeft | KeyCode::ShiftRight
+                | KeyCode::ControlLeft | KeyCode::ControlRight
+                | KeyCode::AltLeft | KeyCode::AltRight
+                | KeyCode::SuperLeft | KeyCode::SuperRight
+        ) {
+            horizon_client_input::modifiers::set_key(
+                &mut self.modifiers, &mut self.physical_keys, key, pressed,
+            );
+            self.update_modifiers(self.modifiers);
         }
 
         // Desktop keyboard events reach debug handling before screens and
@@ -306,8 +324,14 @@ impl Game<'_> {
     }
 }
 ''')
-change("crates/horizon-client/src/game.rs",
-       "mod key_codes;\n",
-       'mod key_codes;\n#[cfg(target_os = "ios")]\nmod ios_keyboard;\n')
+game_root = "crates/horizon-client/src/game.rs"
+root_text = Path(game_root).read_text()
+ios_module = '#[cfg(target_os = "ios")]\nmod ios_keyboard;\n'
+if "mod key_codes;\n" in root_text:
+    change(game_root, "mod key_codes;\n", "mod key_codes;\n" + ios_module)
+else:
+    # Newer Horizon generates the module declarations at build time.
+    generated = 'include!(concat!(env!("OUT_DIR"), "/game_modules.rs"));\n'
+    change(game_root, generated, generated + ios_module)
 
 print("Nova: injected iOS-only input queue and key/mouse dispatch")

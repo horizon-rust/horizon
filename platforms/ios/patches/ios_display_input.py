@@ -36,12 +36,12 @@ attributes_anchor = """        let attributes =
 """
 for name in ("loading_screen.rs", "window_handler.rs"):
     change(
-        f"crates/horizon-client/src/game/{name}",
+        f"crates/horizon-client/src/game/runtime/{name}",
         attributes_anchor,
         attributes_anchor + window_attributes,
     )
 
-loading = "crates/horizon-client/src/game/loading_screen.rs"
+loading = "crates/horizon-client/src/game/runtime/loading_screen.rs"
 change(
     loading,
     """        let window = match event_loop.create_window(
@@ -76,7 +76,7 @@ change(
         ));""",
 )
 
-game = "crates/horizon-client/src/game/window_handler.rs"
+game = "crates/horizon-client/src/game/runtime/window_handler.rs"
 change(
     game,
     """        let window = match event_loop.create_window(

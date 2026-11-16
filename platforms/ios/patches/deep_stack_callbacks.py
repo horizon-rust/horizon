@@ -30,7 +30,7 @@ manifest.write_text(
     encoding="utf-8",
 )
 
-path = Path("crates/horizon-client/src/game/loading_screen.rs")
+path = Path("crates/horizon-client/src/game/runtime/loading_screen.rs")
 source = path.read_text(encoding="utf-8")
 start_token = "impl ApplicationHandler for App {\n"
 end_token = "\n}\n\n/// Every launch reads the prepared game files"

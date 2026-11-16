@@ -73,7 +73,7 @@ change(queue,
                 other => inputs.push(other),
             }""")
 
-loading = "crates/horizon-client/src/game/loading_screen.rs"
+loading = "crates/horizon-client/src/game/runtime/loading_screen.rs"
 change(loading,
        """    fn ios_drain_inputs(&mut self, event_loop: &ActiveEventLoop) {
         use horizon_client_input::ios_input::Input;""",
@@ -169,11 +169,11 @@ change(loading,
 # A touchscreen is not a desktop keyboard: focusing chat, a sign or
 # another field must not summon the iOS keyboard automatically. Nova's
 # explicit Type control remains the only keyboard activation path.
-change("crates/horizon-client/src/game/ime.rs",
+change("crates/horizon-client/src/game/interface/ime.rs",
        "        let want = self.text_field_focused();",
        '        let want = self.text_field_focused() && !cfg!(target_os = "ios");')
 
-capture = "crates/horizon-client/src/game/pointer_capture.rs"
+capture = "crates/horizon-client/src/game/interface/pointer_capture.rs"
 change(capture,
        "if self.internal_grab() {",
        'if self.internal_grab() || cfg!(target_os = "ios") {')
@@ -198,7 +198,7 @@ change("crates/horizon-client/src/game.rs",
                                 }
                             }""")
 
-handler = "crates/horizon-client/src/game/window_handler.rs"
+handler = "crates/horizon-client/src/game/runtime/window_handler.rs"
 change(handler,
        '            && self.captured\n            && self.focused\n',
        '            && self.captured\n            && (self.focused || cfg!(target_os = "ios"))\n')

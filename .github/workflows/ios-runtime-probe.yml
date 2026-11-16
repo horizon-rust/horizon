@@ -106,7 +106,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          path = Path("crates/horizon-client/src/game/launch_options.rs")
+          path = Path("crates/horizon-client/src/game/runtime/launch_options.rs")
           source = path.read_text()
           old = '            resources: if sibling.join("horizon-resources.json").exists() {'
           new = '''            resources: if cfg!(target_os = "ios") {
@@ -118,7 +118,7 @@ jobs:
           assert source.count(old) == 1, "Upstream resource path parser changed"
           path.write_text(source.replace(old, new, 1))
           PY
-          git diff -- crates/horizon-client/src/game/launch_options.rs
+          git diff -- crates/horizon-client/src/game/runtime/launch_options.rs
       - name: Select Metal as Horizon's only iOS graphics backend
         shell: bash
         run: |
@@ -171,7 +171,7 @@ jobs:
               if let Err(error) = game::run_with() {
                   nova_entry_trace(&format!("game.run_with.error: {error}"));''')
 
-          loading = Path("crates/horizon-client/src/game/loading_screen.rs")
+          loading = Path("crates/horizon-client/src/game/runtime/loading_screen.rs")
           patch(loading, "pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {",
               '''pub(super) fn nova_diag(stage: &str) {
               use std::io::Write as _;
@@ -294,7 +294,7 @@ jobs:
           # The device log reached renderer.boot.begin but no gpu or Rust
           # panic checkpoint. Trace the synchronous loading_renderer wrapper
           # before Renderer::new (which may fail or abort first).
-          loading_window = Path("crates/horizon-client/src/game/loading_window.rs")
+          loading_window = Path("crates/horizon-client/src/game/runtime/loading_window.rs")
           patch(loading_window, "    static FORCEFIELD: [u8; 4] = [0; 4];",
                 '    loading_screen::nova_diag("loading_renderer.entry");\n    static FORCEFIELD: [u8; 4] = [0; 4];')
           patch(loading_window, "    let panorama = panorama\n        .cloned()",
@@ -385,16 +385,16 @@ jobs:
               let mut renderer = nova_ios_poll_renderer(future)?;
               loading_screen::nova_diag("loading_renderer.poll.completed");''')
 
-          loader = Path("crates/horizon-client/src/game/resource_loader.rs")
+          loader = Path("crates/horizon-client/src/game/runtime/resource_loader.rs")
           patch(loader, "    let progress = Progress::new();",
                 "    loading_screen::nova_diag(\"resources.loading.begin\");\n    let progress = Progress::new();")
           patch(loader, "    let result = EventLoop::new()?.run_app(&mut app);",
                 "    loading_screen::nova_diag(\"winit.event-loop.begin\");\n    let event_loop = EventLoop::new()?;\n    loading_screen::nova_diag(\"winit.event-loop.created\");\n    let result = event_loop.run_app(&mut app);\n    loading_screen::nova_diag(\"winit.run-app.returned\");")
           PY
           git diff --stat -- crates/horizon-client/src/entry.rs \
-            crates/horizon-client/src/game/loading_screen.rs \
-            crates/horizon-client/src/game/resource_loader.rs \
-            crates/horizon-client/src/game/loading_window.rs \
+            crates/horizon-client/src/game/runtime/loading_screen.rs \
+            crates/horizon-client/src/game/runtime/resource_loader.rs \
+            crates/horizon-client/src/game/runtime/loading_window.rs \
             crates/horizon-client-render/src/gfx.rs
 
       - name: Reduce iOS renderer async poll stack usage
@@ -409,14 +409,14 @@ jobs:
         run: |
           python3 platforms/ios/patches/deep_stack_callbacks.py
           git diff --check
-          git diff --stat -- crates/horizon-client/src/game/loading_screen.rs crates/horizon-client/Cargo.toml
+          git diff --stat -- crates/horizon-client/src/game/runtime/loading_screen.rs crates/horizon-client/Cargo.toml
 
       - name: Apply iOS native viewport and touch pointer adaptation
         shell: bash
         run: |
           python3 platforms/ios/patches/ios_display_input.py
           git diff --check
-          git diff --stat -- crates/horizon-client/src/game/loading_screen.rs crates/horizon-client/src/game/window_handler.rs
+          git diff --stat -- crates/horizon-client/src/game/runtime/loading_screen.rs crates/horizon-client/src/game/runtime/window_handler.rs
 
       - name: Bridge iOS overlay buttons to Horizon input mappings
         shell: bash

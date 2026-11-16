@@ -10,3 +10,4 @@ Fix loading menu key focus signature for iOS compile.
 Expose keyboard close bridge function to Swift header.
 Route iOS virtual keys through native screen and debug handlers.
 Build after upstream Horizon PR #3 integration.
+Fix iOS virtual Shift/Control modifier state for Sneak/Sprint; follow updated upstream module locations.
