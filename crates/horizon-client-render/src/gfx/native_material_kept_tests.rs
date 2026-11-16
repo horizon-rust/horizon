@@ -339,6 +339,7 @@ pub(super) const SHOWS_COUNT: &str = "fn shown() -> vec4<f32> {\n    \
 /// error.
 #[test]
 fn the_material_reads_what_before_world_wrote_this_frame() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((_, device, queue)) = device() else {
         return;
     };
@@ -370,6 +371,7 @@ fn the_material_reads_what_before_world_wrote_this_frame() {
 /// frame before.
 #[test]
 fn the_material_reads_last_frame_s_chain_as_previous() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((_, device, queue)) = device() else {
         return;
     };
@@ -410,6 +412,7 @@ fn the_material_reads_last_frame_s_chain_as_previous() {
 /// stage), the same material is refused at load, saying why.
 #[test]
 fn a_material_reads_eight_resources_within_the_device_s_limits() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let mut manifest = String::new();
     for i in 0..4 {
         manifest += &format!(
@@ -480,6 +483,7 @@ fn a_material_reads_eight_resources_within_the_device_s_limits() {
 /// its rays miss and it still reads them.
 #[test]
 fn a_traced_material_reads_kept_resources() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((_, device, queue)) = ray_device() else {
         return;
     };
@@ -527,6 +531,7 @@ fn a_traced_material_reads_kept_resources() {
 /// `reads` in the same pack makes none: it draws with the frame's group.
 #[test]
 fn the_material_makes_its_kept_groups_once() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((instance, device, queue)) = device() else {
         return;
     };
@@ -612,6 +617,7 @@ fn the_material_makes_its_kept_groups_once() {
 /// and its terrain reads as before, with no validation error.
 #[test]
 fn a_material_that_reads_loads_with_its_shadow_and_relief() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((_, device, queue)) = device() else {
         return;
     };
