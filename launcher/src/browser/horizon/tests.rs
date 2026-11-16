@@ -828,7 +828,23 @@ fn a_shader_pack_goes_by_the_game_of_the_instance_it_is_for() {
         install(&for_0_2, &kept.home).unwrap_err(),
         "Soft Glow needs shader API 0.2; this Horizon serves 0.1."
     );
-    assert_eq!(install(&for_0_1, &kept.home).unwrap(), "0.9.0");
+    {
+        // An operation on one folder that reaches into another (an instance's command that
+        // installs into another profile): each folder goes by its own game, and the outer
+        // one's comes back.
+        use crate::game_shader_api::{for_home, served};
+        let _outer = for_home(&selected.home);
+        assert_eq!(served(), ["0.2"]);
+        assert_eq!(install(&for_0_1, &kept.home).unwrap(), "0.9.0");
+        assert_eq!(served(), ["0.2"]);
+        let inner = for_home(&kept.home);
+        let same = for_home(&kept.home);
+        assert_eq!(served(), ["0.1"]);
+        drop(same);
+        assert_eq!(served(), ["0.1"]);
+        drop(inner);
+        assert_eq!(served(), ["0.2"]);
+    }
     assert_eq!(
         install(&for_0_1, &selected.home).unwrap_err(),
         "Soft Glow needs shader API 0.1; this Horizon serves 0.2."

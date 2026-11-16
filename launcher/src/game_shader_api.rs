@@ -19,9 +19,13 @@ static ASKED: Mutex<Asked> = Mutex::new(BTreeMap::new());
 /// How long a game may take to answer; the Nightly of 2026-11-13 takes a tenth of a second.
 const PATIENCE: Duration = Duration::from_secs(5);
 
+/// The game folder an operation is on and the lines of that folder's game. No folder: every
+/// folder's operations go by these lines (a test's game).
+type Current = (Option<PathBuf>, Vec<String>);
+
 thread_local! {
-    /// The lines of the game the operation running on this thread is for ([`for_home`]).
-    static OPERATION: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    /// What the operation running on this thread is for ([`for_home`]).
+    static OPERATION: RefCell<Option<Current>> = const { RefCell::new(None) };
 }
 
 /// One operation on a game folder (a search, an install, an update, a list of its packs): the
@@ -29,36 +33,45 @@ thread_local! {
 /// operation picks, checks and marks, whatever is selected or installed meanwhile.
 #[must_use = "the operation lasts as long as this value"]
 pub struct Operation {
-    outermost: bool,
+    /// What ran around this operation, back when it ends; None when it changed nothing.
+    outer: Option<Option<Current>>,
 }
 
 impl Drop for Operation {
     fn drop(&mut self) {
-        if self.outermost {
-            OPERATION.with(|lines| *lines.borrow_mut() = None);
+        if let Some(outer) = self.outer.take() {
+            OPERATION.with(|current| *current.borrow_mut() = outer);
         }
     }
 }
 
-/// Begins an operation on the game folder `home`. Inside another operation it changes nothing:
-/// the outer one's game stands.
+/// Begins an operation on the game folder `home`. Inside an operation on the same folder it
+/// changes nothing. Inside one on another folder (an instance's command that installs a
+/// modpack into its own profile) it goes by its own folder's game until it ends, and the outer
+/// one's game comes back.
 pub fn for_home(home: &Path) -> Operation {
-    if OPERATION.with(|lines| lines.borrow().is_some()) {
-        return Operation { outermost: false };
+    let same = OPERATION.with(|current| {
+        let current = current.borrow();
+        current
+            .as_ref()
+            .is_some_and(|(folder, _)| folder.as_deref().is_none_or(|folder| folder == home))
+    });
+    if same {
+        return Operation { outer: None };
     }
-    begin(of_game(version_of(home)))
+    begin((Some(home.to_owned()), of_game(version_of(home))))
 }
 
-fn begin(lines: Vec<String>) -> Operation {
-    OPERATION.with(|operation| *operation.borrow_mut() = Some(lines));
-    Operation { outermost: true }
+fn begin(operation: Current) -> Operation {
+    let outer = OPERATION.with(|current| current.borrow_mut().replace(operation));
+    Operation { outer: Some(outer) }
 }
 
 /// The shader API lines served by the game the running operation is for ([`for_home`]); outside
 /// one, by the game the selected instance plays. With no game installed yet, or one that
 /// doesn't say, the line this launcher's own build serves.
 pub fn served() -> Vec<String> {
-    if let Some(lines) = OPERATION.with(|lines| lines.borrow().clone()) {
+    if let Some((_, lines)) = OPERATION.with(|current| current.borrow().clone()) {
         return lines;
     }
     of_game(crate::instances::selected().resolve_version(None).ok())
@@ -158,7 +171,7 @@ pub mod tests {
 
     /// Runs `run` as an operation on a game that serves the shader API lines `lines`.
     pub fn with_game<T>(lines: &[&str], run: impl FnOnce() -> T) -> T {
-        let _game = begin(lines.iter().map(|line| (*line).to_owned()).collect());
+        let _game = begin((None, lines.iter().map(|line| (*line).to_owned()).collect()));
         run()
     }
 
@@ -198,7 +211,7 @@ pub mod tests {
         // Without an installed game that answers, the launcher's own line stands in.
         assert_eq!(served(), [horizon_shader_api::API]);
         assert_eq!(with_game(&["0.1"], served), ["0.1"]);
-        // An operation inside another keeps the outer one's game.
+        // A test's game stands for every folder's operation inside it.
         let inner = with_game(&["0.1"], || {
             let _inner = for_home(Path::new("another folder"));
             served()
