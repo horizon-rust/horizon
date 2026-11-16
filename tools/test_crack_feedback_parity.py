@@ -35,6 +35,9 @@ def main():
     (build / 'rust.json').unlink(missing_ok=True)
     sources = [lab.ROOT / path for path in (
         'crates/horizon-client/src/game/network/lan_actions/mod.rs',
+        'crates/horizon-client/src/game/network/lan_actions/mining.rs',
+        'crates/horizon-client/src/game/network/lan_actions/packets.rs',
+        'crates/horizon-client/src/game/network/lan_actions/shared.rs',
         'crates/horizon-client/src/game/network/lan_actions/tests/crack_feedback_tests.rs',
         'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCrackFeedbackOracle.java',
         'tools/test_crack_feedback_parity.py')]

@@ -41,6 +41,9 @@ def main():
     sources = [Path(__file__), source, lab.ROOT / 'Cargo.lock',
                lab.ROOT / 'crates/horizon-client/src/game/administration/commands/mod.rs',
                lab.ROOT / 'crates/horizon-client/src/game/network/lan_actions/mod.rs',
+               lab.ROOT / 'crates/horizon-client/src/game/network/lan_actions/packets.rs',
+               lab.ROOT / 'crates/horizon-client/src/game/network/lan_actions/respawn.rs',
+               lab.ROOT / 'crates/horizon-client/src/game/network/lan_actions/shared.rs',
                lab.ROOT / 'crates/horizon-client/src/lan/hub.rs',
                lab.ROOT / 'crates/horizon-client/src/game/network/lan/mod.rs',
                lab.ROOT / 'crates/horizon-client/src/game/world/server_travel.rs']
