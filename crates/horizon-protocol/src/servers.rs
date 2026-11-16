@@ -226,7 +226,11 @@ fn write(path: &Path, root: &NamedTag) -> std::io::Result<()> {
 
 /// ServerAddress.parseString: `host`, `host:port` or `[v6]:port`; default 25565.
 pub fn parse_address(text: &str) -> Option<(String, u16)> {
-    let text = text.trim();
+    let (host, port) = parse_address_parts(text)?;
+    Some((idn_to_ascii(&host).unwrap_or(host), port))
+}
+
+fn parse_address_parts(text: &str) -> Option<(String, u16)> {
     if text.is_empty() {
         return None;
     }
@@ -258,22 +262,62 @@ pub fn parse_address(text: &str) -> Option<(String, u16)> {
 
 /// ServerAddress.isValidAddress, which the Add/Edit Server screen's Done button
 /// and the Direct Connection screen's Join Server button ask: the text parses as
-/// a host (and port) and `java.net.IDN.toASCII` accepts the host. Only a host
-/// made of ASCII is checked here (an empty label other than the last one, or a
-/// label over 63 characters, is refused); a host with a non-ASCII character is
-/// taken as valid, because the nameprep and punycode steps are not ported.
+/// a host (and port) and `java.net.IDN.toASCII` accepts the host.
 pub fn is_valid_address(text: &str) -> bool {
-    parse_address(text).is_some_and(|(host, _)| idn_accepts(&host))
+    parse_address_parts(text).is_some_and(|(host, _)| idn_to_ascii(&host).is_some())
 }
 
 /// The ASCII half of `java.net.IDN.toASCII`: one trailing dot is allowed (a lone
 /// dot too), every other label must be 1 to 63 characters long.
 fn idn_accepts(host: &str) -> bool {
-    if !host.is_ascii() {
-        return true;
-    }
     let labels = host.strip_suffix('.').unwrap_or(host);
     labels.is_empty() || labels.split('.').all(|l| (1..=63).contains(&l.len()))
+}
+
+/// `java.net.IDN.toASCII` with its default (non-STD3) rules. The transitional
+/// UTS 46 mapping matches Java's IDNA-2003 handling of characters such as ß and
+/// final sigma; ASCII labels stay untouched so their case and permissive
+/// default-rule characters are preserved.
+#[allow(deprecated)]
+fn idn_to_ascii(host: &str) -> Option<String> {
+    if host.is_ascii() {
+        return idn_accepts(host).then(|| host.to_owned());
+    }
+    let mapped: String = host
+        .chars()
+        .map(|c| match c {
+            '\u{3002}' | '\u{ff0e}' | '\u{ff61}' => '.',
+            c => c,
+        })
+        .collect();
+    if mapped.is_ascii() {
+        return idn_accepts(&mapped).then_some(mapped);
+    }
+    let trailing_dot = mapped.ends_with('.');
+    let labels = mapped.strip_suffix('.').unwrap_or(&mapped);
+    if labels.is_empty() || labels.split('.').any(str::is_empty) {
+        return None;
+    }
+    let config = idna::Config::default().transitional_processing(true);
+    let mut ascii = String::with_capacity(mapped.len());
+    for label in labels.split('.') {
+        let converted = if label.is_ascii() {
+            (1..=63).contains(&label.len()).then(|| label.to_owned())?
+        } else {
+            config.to_ascii(label).ok()?
+        };
+        if converted.is_empty() || converted.len() > 63 {
+            return None;
+        }
+        if !ascii.is_empty() {
+            ascii.push('.');
+        }
+        ascii.push_str(&converted);
+    }
+    if trailing_dot {
+        ascii.push('.');
+    }
+    Some(ascii)
 }
 
 /// HostAndPort uses the default for an empty port, refuses a leading plus,
@@ -371,10 +415,11 @@ mod tests {
             ("127.0.0.1:", "127.0.0.1"),
             ("[::1]:", "::1"),
             ("[2001:db8::1]:", "2001:db8::1"),
-            (" \t[::1]:\r\n", "::1"),
         ] {
             assert_eq!(parse_address(input), Some((host.into(), 25565)), "{input}");
         }
+        assert_eq!(parse_address(" host:25565"), Some((" host".into(), 25565)));
+        assert_eq!(parse_address("host:25565 "), None);
     }
 
     #[test]
@@ -440,7 +485,19 @@ mod tests {
         // What parse_address refuses stays refused.
         assert!(!is_valid_address(""));
         assert!(!is_valid_address("host:notaport"));
-        // A non-ASCII host is not checked here.
-        assert!(is_valid_address("m\u{fc}nchen.de"));
+        for (input, host) in [
+            ("münchen.de", "xn--mnchen-3ya.de"),
+            ("straße.de", "strasse.de"),
+            ("ς.example", "xn--4xa.example"),
+            ("EXAMPLE.é", "EXAMPLE.xn--9ca"),
+            ("é.EXAMPLE", "xn--9ca.EXAMPLE"),
+            ("a。b", "a.b"),
+        ] {
+            assert!(is_valid_address(input), "{input}");
+            assert_eq!(parse_address(input), Some((host.into(), 25565)), "{input}");
+        }
+        assert!(!is_valid_address("\u{200d}.invalid"));
+        let long_unicode_label = "é".repeat(64);
+        assert!(!is_valid_address(&format!("{long_unicode_label}.example")));
     }
 }

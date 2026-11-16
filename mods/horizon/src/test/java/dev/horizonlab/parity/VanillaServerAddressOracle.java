@@ -22,9 +22,7 @@ public final class VanillaServerAddressOracle {
             JsonArray output = new JsonArray();
             try (var reader = Files.newBufferedReader(Path.of(args[0]))) {
                 for (var input : JsonParser.parseReader(reader).getAsJsonArray()) {
-                    // Preserve Horizon's existing outer ASCII whitespace trim;
-                    // this corpus compares host/port syntax, not IDN mapping.
-                    String text = input.getAsString().trim();
+                    String text = input.getAsString();
                     if (!ServerAddress.isValidAddress(text)) {
                         output.add(JsonNull.INSTANCE);
                     } else {

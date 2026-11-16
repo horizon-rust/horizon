@@ -2677,6 +2677,7 @@ dependencies = [
  "horizon-mod-runtime",
  "horizon-threads",
  "horizon-world",
+ "idna",
  "ipconfig",
  "log",
  "serde_json",
