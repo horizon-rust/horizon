@@ -13,3 +13,4 @@ Build after upstream Horizon PR #3 integration.
 Fix iOS virtual Shift/Control modifier state for Sneak/Sprint; follow updated upstream module locations.
 Refresh iOS workflow for upstream allocator and entry startup API.
 Release virtual modifier state when opening Nova overlay.
+Retry integrated Nova iOS build after fixing upstream renderer device needs diagnostics patch (2026-11-16).
