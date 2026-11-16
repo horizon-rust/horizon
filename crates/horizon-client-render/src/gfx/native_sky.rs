@@ -232,6 +232,11 @@ impl super::native_pack::NativePack {
         self.sky.is_some() && !self.vanilla_sun
     }
 
+    /// The pack's sky stage draws the moon itself, so the renderer leaves out vanilla's.
+    pub fn hides_moon(&self) -> bool {
+        self.sky.is_some() && !self.vanilla_moon
+    }
+
     /// The pack's sky stage draws the stars itself, so the renderer leaves out vanilla's.
     pub fn hides_stars(&self) -> bool {
         self.sky.is_some() && !self.vanilla_stars

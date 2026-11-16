@@ -28,6 +28,7 @@ pub struct NativePack {
     /// With a sky stage, what of Minecraft's sky still draws over it (`[sky]`).
     pub vanilla_clouds: bool,
     pub vanilla_sun: bool,
+    pub vanilla_moon: bool,
     pub vanilla_stars: bool,
     pub weather: Option<wgpu::RenderPipeline>,
     /// The draw of the shadow map the stages read, if the pack asks for one.
@@ -300,6 +301,7 @@ impl NativePack {
         };
         let vanilla_clouds = keeps(|s| s.clouds);
         let vanilla_sun = keeps(|s| s.sun);
+        let vanilla_moon = keeps(|s| s.moon);
         let vanilla_stars = keeps(|s| s.stars);
         let weather = report
             .stages
@@ -419,6 +421,7 @@ impl NativePack {
             post,
             vanilla_clouds,
             vanilla_sun,
+            vanilla_moon,
             vanilla_stars,
             weather,
             shadow,

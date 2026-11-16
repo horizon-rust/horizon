@@ -428,9 +428,13 @@ pub struct Stage {
     #[serde(default)]
     pub clouds: Option<bool>,
     /// The sky stage only: whether Minecraft's sun still draws over the sky (true when absent);
-    /// false for a pack whose sky draws its own. The moon stays.
+    /// false for a pack whose sky draws its own.
     #[serde(default)]
     pub sun: Option<bool>,
+    /// The sky stage only: whether Minecraft's moon still draws over the sky (true when absent);
+    /// false for a pack whose sky draws its own.
+    #[serde(default)]
+    pub moon: Option<bool>,
     /// The sky stage only: whether Minecraft's stars still draw over the sky (true when absent);
     /// false for a pack whose sky draws its own.
     #[serde(default)]
@@ -941,7 +945,9 @@ impl Manifest {
                 return Err(err(format!("{file:?} is not a plain path to a .wgsl file")));
             }
         }
-        let sky_only = |s: &Stage| s.clouds.is_some() || s.sun.is_some() || s.stars.is_some();
+        let sky_only = |s: &Stage| {
+            s.clouds.is_some() || s.sun.is_some() || s.moon.is_some() || s.stars.is_some()
+        };
         if raw
             .material
             .iter()
@@ -952,7 +958,7 @@ impl Manifest {
             .any(sky_only)
         {
             return Err(err(
-                "`clouds`, `sun` and `stars` are keys of [sky] only".into()
+                "`clouds`, `sun`, `moon` and `stars` are keys of [sky] only".into(),
             ));
         }
         if raw.options.len() > MAX_OPTIONS {

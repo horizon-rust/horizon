@@ -128,6 +128,16 @@ impl Celestial {
     }
 }
 
+/// The indices of `vertices` of `Game::celestial_geometry`'s quads the celestial pass draws:
+/// all but the sun's, the first, where a pack's sky draws its own sun (`own_sun`), and the
+/// moon's, the last, where it draws its own moon.
+pub(super) fn bodies(vertices: usize, own_sun: bool, own_moon: bool) -> std::ops::Range<u32> {
+    let start = if own_sun { 6 } else { 0 };
+    let end = (vertices as u32 / 4) * 6;
+    let end = if own_moon { end.saturating_sub(6) } else { end };
+    start..end.max(start)
+}
+
 #[cfg(test)]
 #[path = "celestial_tests.rs"]
 mod tests;

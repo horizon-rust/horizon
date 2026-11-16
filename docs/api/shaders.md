@@ -53,7 +53,8 @@ shared = ["common.wgsl"]   # optional: WGSL put before every stage's file, in or
 [sky]                      # each stage is optional, but a pack has at least one
 file = "sky.wgsl"
 clouds = true              # optional: false when the pack draws its own clouds
-sun = true                 # optional: false when the pack draws its own sun (the moon stays)
+sun = true                 # optional: false when the pack draws its own sun
+moon = true                # optional: false when the pack draws its own moon
 stars = true               # optional: false when the pack draws its own stars
 
 [material]
@@ -277,6 +278,10 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
 
 ## Changelog
 
+- 2026-11-16: API 0.2 (additions, experimental): `[sky] moon = false` leaves out Minecraft's moon, as `sun = false`
+  its sun, for a sky that draws its own; and `frame.moon_phase`, the phase of the moon Horizon draws (0 full to 7
+  waxing gibbous), declared only for a pack whose files name `moon_phase`, at the end of `Frame`. A pack that sets
+  neither is built from the same WGSL and drawn as before.
 - 2026-11-15: API 0.2 (addition, experimental): `[frame] fog = "pack"` turns Horizon's fog off on what the material
   and entity stages return, and gives every stage `fn vanilla_fog(position: vec3<f32>) -> f32` and the frame's
   `fog_environment` and `fog_render`, the two distances vanilla's fog takes the larger of, which `fog_start` and

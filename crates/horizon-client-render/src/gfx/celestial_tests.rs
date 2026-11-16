@@ -364,3 +364,15 @@ fn on_a_brighter_display_only_the_disc_follows_its_peak() {
         );
     }
 }
+
+/// The sun's quad and the moon's (8 vertices, 12 indices): a pack's sky that draws one of them
+/// leaves out its six indices, the sun's first and the moon's last, and one that draws neither
+/// leaves all of them in.
+#[test]
+fn a_pack_sky_leaves_out_the_sun_or_the_moon_it_draws() {
+    use super::bodies;
+    assert_eq!(bodies(8, false, false), 0..12);
+    assert_eq!(bodies(8, true, false), 6..12);
+    assert_eq!(bodies(8, false, true), 0..6);
+    assert!(bodies(8, true, true).is_empty());
+}

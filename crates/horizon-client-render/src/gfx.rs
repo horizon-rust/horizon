@@ -10016,20 +10016,19 @@ impl Renderer {
                         }
                     }
                     if celestial_vertices > 0 && !pack_draws_celestial {
-                        // The Overworld's bodies start with the sun's quad
-                        // (`Game::celestial_geometry`): a pack sky drawing its own skips it.
-                        let own_sun = !frame.end_sky
-                            && self
-                                .native
-                                .as_ref()
-                                .is_some_and(native_pack::NativePack::hides_sun);
-                        let first = if own_sun { 6 } else { 0 };
+                        // The Overworld's bodies are the sun's quad and the moon's
+                        // (`Game::celestial_geometry`): a pack sky drawing its own skips one.
+                        let own = |hides: fn(&native_pack::NativePack) -> bool| {
+                            !frame.end_sky && self.native.as_ref().is_some_and(hides)
+                        };
+                        let own_sun = own(native_pack::NativePack::hides_sun);
+                        let own_moon = own(native_pack::NativePack::hides_moon);
                         // A resource pack's core/sky isn't vanilla's sky times the sky's
                         // lift, which the sun's disc pass assumes: today's add there.
                         let lifted = hdr_gain
                             && self.hdr.as_ref().is_some_and(|h| h.lighting)
                             && !self.core_sky.as_ref().is_some_and(|c| c.draws_disc());
-                        let bodies = first..(celestial_vertices as u32 / 4) * 6;
+                        let bodies = celestial::bodies(celestial_vertices, own_sun, own_moon);
                         pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
                         self.celestial.draw_bodies(&mut pass, lifted, bodies);
                     }
