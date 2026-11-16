@@ -1,5 +1,5 @@
 //! `horizon-mod-registry`: the submission form's service at
-//! `playhorizon.dev/api/mods/*` (docs/modding/src/reference/registry-index.md). A creator signs in
+//! `playhorizon.dev/api/mods/*` (docs/api/mod-index.md). A creator signs in
 //! with GitHub, sends a file and its page; the service runs the file's own
 //! checks, uploads it to the registry's `staging` release and opens a pull
 //! request with the entry. Reviewers decide; merging publishes. Signed-in
@@ -24,7 +24,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use github::GitHub;
 use hmac::{Hmac, Mac};
-use horizon_platform::mod_package::index::{
+use horizon_mods::index::{
     self, Kind,
     registry::{self, Entry, EntryVersion, Sources},
 };
@@ -165,6 +165,7 @@ impl App {
 pub fn router(app: App) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/api/mods/version", get(version))
         .route("/api/mods/auth/login", get(login))
         .route("/api/mods/auth/callback", get(callback))
         .route("/api/mods/auth/logout", post(logout))
@@ -184,6 +185,45 @@ pub fn router(app: App) -> Router {
             post(request_native_build).get(get_native_build),
         )
         .with_state(app)
+}
+
+/// The shader API version this build's file checks serve (`horizon_shader_api::API`),
+/// exported so the startup log and `/api/mods/version` name the same constant.
+pub const SHADER_API: &str = horizon_shader_api::API;
+
+/// The commit the running service was built from: `REGISTRY_BUILD_COMMIT`
+/// (what a deploy bakes in) or `RAILWAY_GIT_COMMIT_SHA` (what Railway injects
+/// for a git deploy), else `unknown`. This is what a form refusal gets
+/// compared against: a refusal a current build doesn't produce points at a
+/// stale deployment (#17395).
+pub fn build_commit() -> String {
+    build_commit_from(|name| std::env::var(name).ok())
+}
+
+fn build_commit_from(getenv: impl Fn(&str) -> Option<String>) -> String {
+    ["REGISTRY_BUILD_COMMIT", "RAILWAY_GIT_COMMIT_SHA"]
+        .iter()
+        .find_map(|name| {
+            getenv(name)
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+        })
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn version_json(commit: &str) -> serde_json::Value {
+    json!({
+        "commit": commit,
+        "shader_api": SHADER_API,
+    })
+}
+
+/// `GET /api/mods/version`: which commit the deployed service runs and which
+/// shader API its checks serve. Read-only, no sign-in, so "the form refused
+/// my 0.2 pack" can be answered by anyone with the address, without the
+/// deploy logs (#17395).
+async fn version() -> Json<serde_json::Value> {
+    Json(version_json(&build_commit()))
 }
 
 /// An error players read in the form.
@@ -933,7 +973,6 @@ pub fn publish(
     let sha256 = index::sha256_file(file).map_err(bad)?;
     let extension = kind.extension().unwrap_or("zip");
     let version = EntryVersion {
-        native_binaries: Vec::new(),
         version: form.version.trim().to_owned(),
         published: date(now()),
         game: form.game.trim().to_owned(),
@@ -947,6 +986,8 @@ pub fn publish(
     if is_new {
         page::check_new(form, images).map_err(bad)?;
     }
+    let turns_native =
+        kind == Kind::NativeMod && existing.as_ref().is_some_and(|(e, _)| e.kind == Kind::Mod);
     // An owner update: an owner's new version and nothing else of the entry
     // changes (key and owners included).
     let mut owner_update = false;
@@ -995,7 +1036,19 @@ pub fn publish(
                     ),
                 ));
             }
-            index::registry::check_kind(&form.id, &entry.kind, &kind).map_err(bad)?;
+            // A mod may turn native once, never back (`registry::review`,
+            // docs/native-mods.md): its `.hmod` versions stay published.
+            if entry.kind != kind {
+                if (&entry.kind, &kind) != (&Kind::Mod, &Kind::NativeMod) {
+                    return Err(bad(format!(
+                        "{} is a {}, not a {}: a project's kind never changes (only a mod may turn native-mod, once)",
+                        form.id,
+                        entry.kind.name(),
+                        kind.name()
+                    )));
+                }
+                entry.kind = kind.clone();
+            }
             if entry.versions.iter().any(|v| v.version == version.version) {
                 return Err(Refusal::new(
                     StatusCode::CONFLICT,
@@ -1024,15 +1077,13 @@ pub fn publish(
             let (mut a, mut b) = (entry.clone(), before);
             a.versions.clear();
             b.versions.clear();
+            // A mod turning native is reviewed by hand, never an owner update.
             // Only an owner known by ID publishes on their own: a login match alone
             // could be someone who claimed the login after a rename.
             owner_update = matched == Ownership::ById
                 && a == b
                 && images.is_empty()
-                && form
-                    .screenshots
-                    .as_ref()
-                    .is_none_or(|screenshots| screenshots == &entry.screenshots)
+                && !turns_native
                 && (entry.key.is_none() || version.signature.is_some())
                 && version
                     .version
@@ -1122,7 +1173,6 @@ pub fn publish(
     let v = &project.versions[0];
     let capabilities: Vec<String> = v
         .capabilities
-        .known()
         .iter()
         .map(|c| format!("- may {}", c.describe()))
         .collect();
@@ -1144,7 +1194,13 @@ pub fn publish(
             .map_or(config.public_url.as_str(), |(_, host)| host),
         id = form.id,
         kind = kind.name(),
-        new = if is_new { "new" } else { "update" },
+        new = if is_new {
+            "new"
+        } else if turns_native {
+            "update: turns native, its `.hmod` versions stay published"
+        } else {
+            "update"
+        },
         version = v.version,
         game = v.game,
         file = v.file.name,
@@ -1650,5 +1706,34 @@ mod tests {
         assert!(is_target_triple("x86_64-pc-windows-gnu"));
         assert!(is_target_triple("aarch64-apple-darwin"));
         assert!(!is_target_triple("riscv64gc-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn version_names_the_commit_and_the_served_shader_api() {
+        assert_eq!(
+            version_json("abc123"),
+            json!({"commit": "abc123", "shader_api": SHADER_API})
+        );
+        // No environment: "unknown", not a crash — the route always answers.
+        assert_eq!(build_commit_from(|_| None), "unknown");
+        // The deploy's own variable is taken, and a blank one doesn't count.
+        assert_eq!(
+            build_commit_from(|name| (name == "RAILWAY_GIT_COMMIT_SHA").then(|| "railway".into())),
+            "railway"
+        );
+        assert_eq!(
+            build_commit_from(|name| match name {
+                "REGISTRY_BUILD_COMMIT" => Some("   ".into()),
+                "RAILWAY_GIT_COMMIT_SHA" => Some("railway".into()),
+                _ => None,
+            }),
+            "railway"
+        );
+        assert_eq!(
+            build_commit_from(
+                |name| (name == "REGISTRY_BUILD_COMMIT").then(|| "  built  ".into())
+            ),
+            "built"
+        );
     }
 }
