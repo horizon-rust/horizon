@@ -97,7 +97,7 @@ fn the_design_s_resources_read_as_declared() {
     );
     assert_eq!(k.resets, [("bounces".to_owned(), Keep::World)]);
     assert!(m.computes());
-    // The kept output is no post target of its own: the two R-relative textures take all four.
+    // The kept output is no post target of its own.
     assert!(m.post_targets().is_empty());
     assert!(!parse("").unwrap().computes());
 }
@@ -253,31 +253,100 @@ fn counts_and_memory_are_bounded() {
         &format!("{}{}", many(2, half), resource("more", small)),
         "buffers take 33554436 bytes",
     );
-    // 1 MiB of fixed textures, both versions counted: two 128² of 16-byte texels, not one 256².
+    // 32 MiB of fixed textures, both versions counted, as buffers. What 1 MiB took still passes
+    // (two 128² of 16-byte texels), and so do a 512² trail or height map, a 1024² `rgba16float`
+    // (16 MiB) and two of those, but not a texel more.
     for format in ["rgba32float", "rgba32uint"] {
         parse(&many(
             2,
             &format!("format = \"{format}\"\nsize = [128, 128]"),
         ))
         .unwrap();
-        refused(
-            &many(1, &format!("format = \"{format}\"\nsize = [256, 256]")),
-            "fixed-size [[resource]] textures take 2097152 bytes",
-        );
     }
-    // R-relative textures take two of the four post targets each.
+    parse(&many(1, "format = \"r32float\"\nsize = [512, 512]")).unwrap();
+    let large = "format = \"rgba16float\"\nsize = [1024, 1024]";
+    parse(&many(1, large)).unwrap();
+    parse(&many(2, large)).unwrap();
+    let texel = resource("more", "format = \"r32float\"\nsize = [1, 1]");
+    refused(
+        &format!("{}{texel}", many(2, large)),
+        "fixed-size [[resource]] textures take 33554440 bytes with both versions; a pack may \
+         keep 33554432",
+    );
+    // An R-relative texture takes 2 of the 6 render-size textures post targets may use, at
+    // any scale.
     let scaled = "format = \"rgba16float\"\nscale = 0.5";
-    parse(&many(2, scaled)).unwrap();
+    parse(&many(3, scaled)).unwrap();
     refused(
-        &many(3, scaled),
-        "and 6 for R-relative [[resource]] textures",
+        &many(4, scaled),
+        "post targets take 8 render-size rgba16float textures (an `output` its scale², an \
+         R-relative [[resource]] texture 2); a pack may use 6; largest: r0 2, r1 2, r2 2",
     );
-    let output = "[[post]]\nfile = \"a.wgsl\"\noutput = \"glow\"\nscale = 0.5\n";
+}
+
+/// `[[post]] output`s at `scale`s (1 when `None`), each its own pass.
+fn outputs(scales: &[Option<f32>]) -> String {
+    (scales.iter().enumerate())
+        .map(|(i, scale)| {
+            let scale = scale.map_or(String::new(), |s| format!("scale = {s}\n"));
+            format!("[[post]]\nfile = \"o{i}.wgsl\"\noutput = \"o{i}\"\n{scale}")
+        })
+        .collect()
+}
+
+/// A ray-traced GI pack's two histories leave room for a bloom pyramid and a full-size target:
+/// 2 + 2 + 1/4 + 1/16 + 1 of 6.
+#[test]
+fn post_targets_are_counted_by_memory() {
+    let histories = format!(
+        "{}{}",
+        resource("gi", "format = \"rgba16float\"\nscale = 1.0"),
+        resource("gi_moments", "format = \"rgba16float\"\nscale = 1.0")
+    );
+    let m = parse(&format!(
+        "{histories}{}",
+        outputs(&[Some(0.5), Some(0.25), None])
+    ))
+    .unwrap();
+    assert_eq!(m.post_targets(), [("o0", 0.5), ("o1", 0.25), ("o2", 1.0)]);
     refused(
-        &format!("{}{output}", many(2, scaled)),
-        "1 [[post]] outputs and 4 for R-relative",
+        &format!("{histories}{}", outputs(&[None, None, Some(0.5)])),
+        "post targets take 6.25 render-size rgba16float textures (an `output` its scale², an \
+         R-relative [[resource]] texture 2); a pack may use 6; largest: gi 2, gi_moments 2, o0 1",
     );
-    parse(&format!("{}{output}", many(1, scaled))).unwrap();
+}
+
+/// Every pack the count of 4 took (an output 1, an R-relative kept texture 2, of any format and
+/// scale) still passes.
+#[test]
+fn what_four_targets_took_still_passes() {
+    for format in Format::ALL {
+        for scale in [1.0, 0.5, 0.25] {
+            let shape = format!("format = \"{}\"\nscale = {scale}", format.wgsl());
+            for kept in 0..=2 {
+                let resources: String = (0..kept)
+                    .map(|i| resource(&format!("r{i}"), &shape))
+                    .collect();
+                parse(&format!(
+                    "{resources}{}",
+                    outputs(&vec![None; 4 - 2 * kept])
+                ))
+                .unwrap();
+            }
+        }
+    }
+}
+
+/// 16 outputs at most, the bindings below the scene's, whatever they take: 17 at 0.25 are
+/// 17/16 of a texture. (Today the 12 post passes allow 11.)
+#[test]
+fn post_outputs_are_at_most_sixteen() {
+    let e = parse(&outputs(&[Some(0.25); 16])).unwrap_err();
+    assert!(e.contains("post passes; a pack may chain 12"), "{e}");
+    refused(
+        &outputs(&[Some(0.25); 17]),
+        "17 [[post]] outputs; a pack may write 16",
+    );
 }
 
 /// Sizes past `u64` are refused as over budget, never wrapped or panicking.
