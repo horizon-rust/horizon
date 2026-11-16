@@ -236,7 +236,7 @@ fn frame(
     n: u32,
     scene: Option<&Traced<'_>>,
 ) -> [u8; 4] {
-    let hud = crate::hud::HudBatch::new([4, 4]);
+    let hud = crate::hud::HudBatch::scratch([4, 4]);
     let mut inputs = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
     inputs.pack.frame_timing = Some(crate::gfx::pack_uniforms::FrameTiming::nth(n, 50.0));
     pack.write(
@@ -650,7 +650,7 @@ impl EntityLayer {
 /// A pack whose `[[before_world]]`, compute and post passes trace with `RAY_ENTITY` in the mask
 /// and read `RayHit::entity`: every pass's layout has the entity layer's bindings beside its kept
 /// ones, compute and fragment alike, and each finds the terrain quad (not an entity), with no
-/// validation error. The layer's own hits are #16254's (`ray_entity_tests`), the same WGSL.
+/// validation error. The layer's own hits are #16254's (`rt/entity_tests.rs`), the same WGSL.
 #[test]
 fn passes_that_name_the_entity_layer_trace_beside_kept_resources() {
     let Some((_, device, queue)) = ray_device() else {
