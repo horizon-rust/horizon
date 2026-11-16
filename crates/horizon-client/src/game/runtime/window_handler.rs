@@ -103,6 +103,24 @@ fn held_modifiers(
     }
 }
 
+/// Whether `idle` runs the frame itself instead of waiting for the window to be drawn.
+/// Offscreen always does (the window is a prop). A normal window does when its last
+/// request drew nothing: an occluded or minimised window's compositor can stop
+/// delivering redraws altogether, and waiting would stop the ticks too — vanilla's
+/// loop runs a frame every iteration while the window is hidden, throttled by
+/// `FramerateLimitTracker`, so its move-packet stream never stops, and returning to
+/// the window has no backlog to burst into one frame (#16735). Splitscreen paces
+/// frames through the p1 game, and a scripted run counts the frames it asked for,
+/// so neither synthesizes one.
+fn synthesizes_the_frame(
+    offscreen: bool,
+    paced_by_split: bool,
+    scripted: bool,
+    drew: bool,
+) -> bool {
+    offscreen || (!paced_by_split && !scripted && !drew)
+}
+
 impl Game<'_> {
     /// winit's `window_event`. The control socket and the pad menu call it too, with the
     /// input they make up.
@@ -326,9 +344,16 @@ impl Game<'_> {
             return;
         }
         if let Some(w) = &self.window {
-            if self.options.offscreen {
+            if synthesizes_the_frame(
+                self.options.offscreen,
+                self.options.paced_by_split,
+                self.scripted_run(),
+                self.frame_drawn,
+            ) {
                 // Offscreen frames don't wait for the window to be drawn: an
                 // occluded window (a locked macOS session) gets no redraws.
+                // A hidden window's own frames come from here too (`limit_frame`
+                // paces them, as vanilla's iconified throttle does).
                 let id = w.id();
                 self.handle_window_event(
                     event_loop,
@@ -560,6 +585,26 @@ mod tests {
                 "{event:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_loop_frames_a_window_whose_redraws_stopped() {
+        // An occluded or minimised window's compositor can stop delivering
+        // redraws altogether; vanilla's loop keeps running frames regardless,
+        // so the ticks and the move packets never stop (#16735).
+        assert!(
+            synthesizes_the_frame(false, false, false, false),
+            "the last request drew nothing"
+        );
+        // A window whose frames are coming asks the window, as before.
+        assert!(!synthesizes_the_frame(false, false, false, true));
+        // Offscreen always frames the loop itself.
+        assert!(synthesizes_the_frame(true, false, false, false));
+        assert!(synthesizes_the_frame(true, false, false, true));
+        // Splitscreen paces through the p1 game; a scripted run counts the
+        // frames it asked for.
+        assert!(!synthesizes_the_frame(false, true, false, false));
+        assert!(!synthesizes_the_frame(false, false, true, false));
     }
 
     #[test]

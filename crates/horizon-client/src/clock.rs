@@ -765,4 +765,23 @@ mod tests {
             "the integrated loop runs at the rate"
         );
     }
+
+    /// While a window is hidden, the loop's own frames keep coming at the
+    /// limiter's pace (`FramerateLimitTracker`'s 10 when minimised): the ticks
+    /// stay even, and returning to the window has no backlog to burst into one
+    /// frame's move packets (#16735's kick for running too fast).
+    #[test]
+    fn paced_frames_while_hidden_keep_the_tick_stream_even() {
+        let mut clock = FixedStep::default();
+        let mut total = 0u32;
+        let mut widest = 0u32;
+        // Five seconds of minimised play: a 10 FPS frame every 100 ms.
+        for _ in 0..50 {
+            let got = clock.advance(std::time::Duration::from_millis(100));
+            widest = widest.max(got);
+            total += got;
+        }
+        assert_eq!(total, 100, "five seconds at 20 ticks a second");
+        assert_eq!(widest, 2, "a paced frame never bursts the backlog");
+    }
 }
