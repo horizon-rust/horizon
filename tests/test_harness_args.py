@@ -5,6 +5,7 @@ The harnesses append a default scratch directory when the caller named none.
 last `--work-dir` wins, so an extra pair appended after `--work-dir=/tmp/x`
 would send the run somewhere the caller did not ask for.
 """
+import argparse
 import contextlib
 import importlib.util
 import io
@@ -52,6 +53,37 @@ class EnsureWorkDirTest(unittest.TestCase):
     def test_the_last_one_wins_as_in_argparse(self):
         argv = ['harness.py', '--work-dir', '/tmp/first', '--work-dir=/tmp/second']
         self.assertEqual(harness_args.ensure_work_dir(DEFAULT, argv), Path('/tmp/second'))
+
+
+class SeparatorTest(unittest.TestCase):
+    @staticmethod
+    def parsed(args):
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--work-dir')
+        parser.add_argument('rest', nargs='*')
+        return parser.parse_args(args)
+
+    def test_work_dir_after_the_separator_is_not_named(self):
+        argv = ['harness.py', '--', '--work-dir', '/tmp/positional']
+        self.assertIsNone(harness_args.named_work_dir(argv))
+        self.assertIsNone(self.parsed(argv[1:]).work_dir)
+
+    def test_work_dir_before_the_separator_is_named(self):
+        argv = ['harness.py', '--work-dir=/tmp/x', '--', '--work-dir', '/tmp/y']
+        self.assertEqual(harness_args.named_work_dir(argv), '/tmp/x')
+
+    def test_default_goes_before_the_separator(self):
+        argv = ['harness.py', '--', 'positional']
+        self.assertEqual(harness_args.ensure_work_dir(DEFAULT, argv), DEFAULT)
+        self.assertEqual(argv, ['harness.py', '--work-dir', str(DEFAULT), '--', 'positional'])
+        seen = self.parsed(argv[1:])
+        self.assertEqual((seen.work_dir, seen.rest), (str(DEFAULT), ['positional']))
+
+    def test_default_goes_before_the_separator_after_other_options(self):
+        argv = ['harness.py', '--full-diagnostic', '--', '--work-dir', '/tmp/positional']
+        harness_args.ensure_work_dir(DEFAULT, argv)
+        self.assertEqual(argv, ['harness.py', '--full-diagnostic', '--work-dir', str(DEFAULT),
+                                '--', '--work-dir', '/tmp/positional'])
 
 
 class FreshCaptureHarnessTest(unittest.TestCase):

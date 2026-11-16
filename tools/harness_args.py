@@ -22,6 +22,8 @@ def named_work_dir(argv) -> str | None:
     one given wins, like argparse's."""
     chosen = None
     for index, argument in enumerate(argv[1:], start=1):
+        if argument == '--':
+            break  # argparse: everything after a bare `--` is positional
         if argument == '--work-dir' and index + 1 < len(argv):
             chosen = argv[index + 1]
         elif argument.startswith('--work-dir='):
@@ -30,12 +32,14 @@ def named_work_dir(argv) -> str | None:
 
 
 def ensure_work_dir(default: Path, argv=None) -> Path:
-    """Append `--work-dir default` unless the caller named one, either way, and return the directory the
-    run will use (argparse's: the last one given)."""
+    """Add `--work-dir default` (before any bare `--`) unless the caller named one, either way, and return the
+    directory the run will use (argparse's: the last one given)."""
     argv = sys.argv if argv is None else argv
     chosen = named_work_dir(argv)
     if chosen is None:
-        argv += ['--work-dir', str(default)]
+        # Before a bare `--`, where argparse still reads options; at the end when there is none.
+        at = argv.index('--', 1) if '--' in argv[1:] else len(argv)
+        argv[at:at] = ['--work-dir', str(default)]
         chosen = str(default)
     return Path(chosen)
 
