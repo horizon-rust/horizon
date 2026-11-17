@@ -393,8 +393,10 @@ Horizon clients can get their far terrain (Video Settings → LOD Distance) from
 tiles each player's client asks for out to there. It is off (0) by default: far tiles show the world's terrain
 far past the view distance, which helps players find the seed. A player's own LOD Distance applies when it is
 shorter. Each player may have 8 tiles waiting and ask for 64 a second on average, and background threads
-sample them for everyone in turn at the lowest priority (they run only on cores nothing else wants), so far
-terrain never slows the server down: one thread up to 8 cores, then one for each 8 cores, 4 at most, the ones
+sample them for everyone in turn at the lowest priority, so the ticks come first. They still share the
+machine's cores, memory and caches with the ticks, and can slow them some where the cores are few: a laptop
+serving 8 players far apart measured 28 to 33 ms a tick with far terrain, 26 to 29 ms without. There is one
+thread up to 8 cores, then one for each 8 cores, 4 at most, the ones
 past the first sampling only once a tile has waited longer than a client can wait and keep up (62 ms);
 `horizon-lod-threads` under `[properties]` sets how many (0, the default, sizes them from the machine; 16 at
 most). A tile past the distance or over a player's limits is refused, and a client that keeps breaking the
