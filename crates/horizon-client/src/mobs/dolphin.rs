@@ -267,7 +267,8 @@ impl Goal for Jump {
             // `Math.atan2(-vy, horizontalDistance) * 57.2957763671875`.
             let horizontal = (v.x * v.x + v.z * v.z).sqrt();
             m.head_pitch = (horizon_core::jmath::atan2(-v.y, horizontal)
-                * f64::from(horizon_core::geometry::trig::RAD_TO_DEG)) as f32;
+                * f64::from(horizon_core::geometry::trig::RAD_TO_DEG))
+                as f32;
         }
     }
 }
