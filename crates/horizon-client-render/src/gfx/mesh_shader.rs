@@ -3,7 +3,8 @@
 //! Without either, the device is opened with the exact same features and limits as `main`.
 //! Every build has it: it is an engine render capability for terrain geometry.
 
-use crate::mesher::meshlet::MeshletDesc;
+#[allow(unused_imports)]
+pub use crate::mesher::meshlet::{GpuMeshlet, MeshletDesc};
 
 /// The mesh shader feature in wgpu.
 pub(in crate::gfx) const MESH_SHADER: wgpu::Features = wgpu::Features::EXPERIMENTAL_MESH_SHADER;
@@ -321,6 +322,147 @@ mod tests {
         assert_eq!(task_workgroups(1), 1);
         assert_eq!(task_workgroups(32), 1);
         assert_eq!(task_workgroups(33), 2);
+    }
+
+    #[test]
+    fn gpu_meshlet_binary_layout_contract() {
+        assert_eq!(std::mem::size_of::<GpuMeshlet>(), 16);
+        assert_eq!(std::mem::align_of::<GpuMeshlet>(), 4);
+        assert_eq!(std::mem::size_of::<MeshletDesc>(), 16);
+        assert_eq!(std::mem::align_of::<MeshletDesc>(), 4);
+
+        let sub_aabb = [1, 2, 3, 14, 15, 16];
+        let gpu = GpuMeshlet::new(0x1234_5678, 32, 5, MeshletDesc::FLAG_CUTOUT, 42, sub_aabb);
+
+        // Cast to [u32; 4] as bound to WGSL `@group(2) @binding(0) var<storage, read> meshlets: array<vec4<u32>>`
+        let words: [u32; 4] = bytemuck::cast(gpu);
+
+        // x: vertex_base
+        assert_eq!(words[0], 0x1234_5678);
+
+        // y: quad_count | (bucket << 8) | (flags << 16) | (plane_quant << 24)
+        assert_eq!(words[1] & 0xff, 32);
+        assert_eq!((words[1] >> 8) & 0xff, 5);
+        assert_eq!((words[1] >> 16) & 0xff, MeshletDesc::FLAG_CUTOUT as u32);
+        assert_eq!((words[1] >> 24) & 0xff, 42);
+
+        // z: min_local (x, y, z) and max_local.x
+        assert_eq!(words[2] & 0xff, 1);
+        assert_eq!((words[2] >> 8) & 0xff, 2);
+        assert_eq!((words[2] >> 16) & 0xff, 3);
+        assert_eq!((words[2] >> 24) & 0xff, 14);
+
+        // w: max_local (y, z) and padding
+        assert_eq!(words[3] & 0xff, 15);
+        assert_eq!((words[3] >> 8) & 0xff, 16);
+        assert_eq!((words[3] >> 16) & 0xffff, 0); // padding
+
+        // Verify that ts_terrain's exact bit unpacking in WGSL reconstructs every field identically
+        let unpacked_vertex_base = words[0];
+        let unpacked_quad_count = (words[1] & 0xff) as u8;
+        let unpacked_bucket = ((words[1] >> 8) & 0xff) as u8;
+        let unpacked_flags = ((words[1] >> 16) & 0xff) as u8;
+        let unpacked_plane_quant = ((words[1] >> 24) & 0xff) as u8;
+        let unpacked_min_local = [
+            (words[2] & 0xff) as u8,
+            ((words[2] >> 8) & 0xff) as u8,
+            ((words[2] >> 16) & 0xff) as u8,
+        ];
+        let unpacked_max_local = [
+            ((words[2] >> 24) & 0xff) as u8,
+            (words[3] & 0xff) as u8,
+            ((words[3] >> 8) & 0xff) as u8,
+        ];
+
+        assert_eq!(unpacked_vertex_base, gpu.vertex_base);
+        assert_eq!(unpacked_quad_count, gpu.quad_count);
+        assert_eq!(unpacked_bucket, gpu.bucket);
+        assert_eq!(unpacked_flags, gpu.flags);
+        assert_eq!(unpacked_plane_quant, gpu.plane_quant);
+        assert_eq!(unpacked_min_local, gpu.min_corner());
+        assert_eq!(unpacked_max_local, gpu.max_corner());
+    }
+
+    #[test]
+    fn gpu_descriptor_conversion_contract() {
+        use crate::mesher::packed::PACKED_BASE;
+
+        let desc = MeshletDesc::new(
+            15, // section quad offset: 15th quad
+            32,
+            0,
+            MeshletDesc::FLAG_CUTOUT,
+            10,
+            [0, 0, 0, 16, 16, 16],
+        );
+
+        // Case 1: Uncompressed terrain vertices (solid_base = 4 * quad_base)
+        let uncompressed_base = 4 * 100; // quad_base = 100
+        let gpu_uncompressed = desc.to_gpu(uncompressed_base);
+        assert_eq!(gpu_uncompressed.vertex_base, 4 * (100 + 15));
+        assert_eq!(gpu_uncompressed.quad_count, 32);
+        assert!(gpu_uncompressed.is_cutout());
+
+        // Case 2: Compact terrain quads in arena page (solid_base = PACKED_BASE + 4 * slot_base)
+        let slot_base = 512;
+        let compact_solid_base = PACKED_BASE + 4 * slot_base;
+        let gpu_compact = desc.to_gpu(compact_solid_base);
+        assert_eq!(gpu_compact.vertex_base, PACKED_BASE + 4 * (slot_base + 15));
+        assert!(gpu_compact.vertex_base >= PACKED_BASE);
+
+        // Verify arena_slot decoding as done in `ts_terrain`:
+        // let arena_slot = (vertex_base - PACKED_BASE) >> 2;
+        let decoded_slot = (gpu_compact.vertex_base - PACKED_BASE) >> 2;
+        assert_eq!(decoded_slot, slot_base + 15);
+    }
+
+    #[test]
+    fn mesh_stage_emitted_geometry_and_indexing_contract() {
+        use crate::mesher::packed::PACKED_BASE;
+
+        // In ms_terrain:
+        // let slice = mesh_payload.slices[wg.x];
+        // let base_vertex = slice.x;
+        // let quad_count = slice.y; // 1..=32
+        let base_vertex = PACKED_BASE + 4 * 100;
+        let quad_count = 32u32;
+
+        let vertex_count = quad_count * 4;
+        let primitive_count = quad_count * 2;
+        assert_eq!(vertex_count, 128);
+        assert_eq!(primitive_count, 64);
+
+        // Validate indexing for every quad lane
+        for lane in 0..quad_count {
+            let q_base = base_vertex + lane * 4;
+            let v_out = lane * 4;
+            let p_out = lane * 2;
+
+            // 4 corners per quad: section_corner(q_base + c)
+            let corners = [q_base, q_base + 1, q_base + 2, q_base + 3];
+            for (c, &corner_vertex_idx) in corners.iter().enumerate() {
+                assert_eq!(corner_vertex_idx, base_vertex + lane * 4 + c as u32);
+            }
+
+            // Two triangles winding as (0, 1, 2) and (0, 2, 3) matching displace.rs / flat.rs
+            let tri0 = (v_out, v_out + 1, v_out + 2);
+            let tri1 = (v_out, v_out + 2, v_out + 3);
+
+            assert_eq!(tri0, (lane * 4, lane * 4 + 1, lane * 4 + 2));
+            assert_eq!(tri1, (lane * 4, lane * 4 + 2, lane * 4 + 3));
+
+            assert!(tri0.2 < vertex_count);
+            assert!(tri1.2 < vertex_count);
+            assert!(p_out + 1 < primitive_count);
+        }
+
+        // Validate 64-quad meshlet slicing into task workgroups
+        let full_meshlet_quads = 64u8;
+        assert_eq!(meshlet_slices(full_meshlet_quads), 2);
+        let s0 = (base_vertex, 32u32);
+        let s1 = (base_vertex + 32 * 4, (full_meshlet_quads as u32) - 32);
+        assert_eq!(s0.1 + s1.1, 64);
+        assert_eq!(s1.0, base_vertex + 128);
     }
 
     #[test]

@@ -8,6 +8,11 @@ struct MeshCullParams {
     // x: meshlet count, y: pass_kind (0 = all, 1 = opaque, 2 = cutout), z, w: reserved.
     counts: vec4<u32>,
 }
+// Array of 16-byte `GpuMeshlet` descriptors (rebased via `MeshletDesc::to_gpu(solid_base)`):
+// - x: vertex_base (PACKED_BASE + 4 * slot or uncompressed full-vertex index)
+// - y: quad_count (bits 0..7) | bucket (bits 8..15) | flags (bits 16..23) | plane_quant (bits 24..31)
+// - z: min_x (bits 0..7) | min_y (bits 8..15) | min_z (bits 16..23) | max_x (bits 24..31)
+// - w: max_y (bits 0..7) | max_z (bits 8..15) | padding (bits 16..31)
 @group(2) @binding(0) var<storage, read> meshlets: array<vec4<u32>>;
 @group(2) @binding(1) var<uniform> mesh_cull: MeshCullParams;
 
