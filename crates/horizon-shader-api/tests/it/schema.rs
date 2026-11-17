@@ -592,6 +592,11 @@ fn a_pack_texture_is_declared_for_every_stage_and_decoded() {
     };
     refused(&texture.replace("noise.png", "noise.jpg"), ".png");
     refused(&format!("{texture}{texture}"), "declared twice");
+    // A word WGSL reserves: refused in the manifest, not at a line of the stages' prelude.
+    refused(
+        &texture.replace("\"noise\"", "\"from\""),
+        "texture id \"from\"",
+    );
     refused(&texture.replace("clamp", "mirror"), "repeat or clamp");
     refused(
         &format!("{texture}filter = \"cubic\"\n"),
@@ -766,7 +771,7 @@ const SMALLEST: &str = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\na
 
 #[test]
 fn the_frame_tonemap_and_entity_keys_are_read() {
-    use horizon_shader_api::{Blend, Coverage, Primaries};
+    use horizon_shader_api::{Blend, Coverage, Fog, Primaries};
     let m = Manifest::parse(SMALLEST).unwrap();
     assert_eq!((m.blend, m.tonemap.is_none()), (Blend::Gamma, true));
     assert_eq!(m.primaries, Primaries::Bt709);
@@ -782,16 +787,37 @@ fn the_frame_tonemap_and_entity_keys_are_read() {
     for p in [Primaries::Bt709, Primaries::Bt2020] {
         assert!((p.luminance().iter().sum::<f32>() - 1.0).abs() < 1e-6);
     }
-    // The material keeps the engine's coverage unless it says otherwise.
-    let material = format!("{SMALLEST}[material]\nfile = \"m.wgsl\"\n");
+    // The material and the entity stage keep the engine's coverage unless each says otherwise.
+    let coverage = |text: &str| {
+        let m = Manifest::parse(text).unwrap();
+        (m.material_coverage, m.entity_coverage)
+    };
+    let both = format!("{SMALLEST}[material]\nfile = \"m.wgsl\"\n[entity]\nfile = \"e.wgsl\"\n");
+    assert_eq!(coverage(&both), (Coverage::Engine, Coverage::Engine));
+    let section = |stage: &str, value: &str| {
+        both.replace(
+            &format!("file = \"{stage}.wgsl\"\n"),
+            &format!("file = \"{stage}.wgsl\"\ncoverage = \"{value}\"\n"),
+        )
+    };
     assert_eq!(
-        Manifest::parse(&material).unwrap().coverage,
-        Coverage::Engine
+        coverage(&section("m", "pack")),
+        (Coverage::Pack, Coverage::Engine)
     );
-    let own = format!("{material}coverage = \"pack\"\n");
-    assert_eq!(Manifest::parse(&own).unwrap().coverage, Coverage::Pack);
-    let engine = format!("{material}coverage = \"engine\"\n");
-    assert_eq!(Manifest::parse(&engine).unwrap().coverage, Coverage::Engine);
+    assert_eq!(
+        coverage(&section("e", "pack")),
+        (Coverage::Engine, Coverage::Pack)
+    );
+    assert_eq!(
+        coverage(&section("e", "engine")),
+        (Coverage::Engine, Coverage::Engine)
+    );
+    // Horizon fogs what the stages draw unless the pack says it does.
+    assert_eq!(Manifest::parse(&both).unwrap().fog, Fog::Engine);
+    let own = format!("{both}[frame]\nfog = \"pack\"\n");
+    assert_eq!(Manifest::parse(&own).unwrap().fog, Fog::Pack);
+    let engine = format!("{both}[frame]\nfog = \"engine\"\n");
+    assert_eq!(Manifest::parse(&engine).unwrap().fog, Fog::Engine);
     let tonemap = format!("{SMALLEST}[tonemap]\nfile = \"t.wgsl\"\nname = \"Curve\"\n");
     let m = Manifest::parse(&tonemap).unwrap();
     assert_eq!(m.tonemap.as_ref().unwrap().name.as_deref(), Some("Curve"));
@@ -837,8 +863,22 @@ fn the_frame_tonemap_and_entity_keys_are_checked() {
             "material.coverage \"texture\": engine or pack",
         ),
         (
-            format!("{SMALLEST}[entity]\nfile = \"e.wgsl\"\ncoverage = \"pack\"\n"),
-            "`coverage` is a key of [material] only",
+            format!("{SMALLEST}[entity]\nfile = \"e.wgsl\"\ncoverage = \"cutout\"\n"),
+            "entity.coverage \"cutout\": engine or pack",
+        ),
+        (
+            format!("{SMALLEST}[tonemap]\nfile = \"t.wgsl\"\ncoverage = \"pack\"\n"),
+            "`coverage` is a key of [material] and [entity] only",
+        ),
+        (
+            format!("{SMALLEST}[frame]\nfog = \"none\"\n"),
+            "frame.fog \"none\": engine or pack",
+        ),
+        (
+            format!(
+                "{SMALLEST}[material]\nfile = \"m.wgsl\"\nfog = false\n[frame]\nfog = \"pack\"\n"
+            ),
+            "[material] fog and [frame] fog both set: keep [frame] fog",
         ),
         (
             format!("{SMALLEST}[entity]\nfile = \"e.wgsl\"\nfog = false\n"),
@@ -871,7 +911,7 @@ fn the_frame_tonemap_and_entity_keys_are_checked() {
         ),
         (
             "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n".into(),
-            "or a [tonemap]",
+            "an [entity] or a [tonemap]",
         ),
     ];
     for (text, needle) in cases {
@@ -919,7 +959,7 @@ fn ray_tracing_is_a_key_for_a_pack_with_a_post_pass_or_a_material_stage() {
     let cases = [
         (
             SMALLEST.replace("[[post]]", "[sky]") + "[ray_tracing]\n",
-            "[ray_tracing] needs a [[post]] pass or a [material] stage",
+            "[ray_tracing] needs a [[post]] pass, a [[before_world]] pass or a [material] stage",
         ),
         (
             format!("{SMALLEST}[ray_tracing]\nbounces = 2\n"),
