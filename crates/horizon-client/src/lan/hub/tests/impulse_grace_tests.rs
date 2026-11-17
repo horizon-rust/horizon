@@ -50,17 +50,18 @@ fn a_wind_charged_guest_is_not_sent_back_for_moving_wrongly() {
     let to = [2.5, 64.0, 0.5];
     let moved = |grace: i32| {
         let (mut hub, _rx) = hub_with_a_guest();
-        let g = &mut hub.guests[0];
-        g.position = start;
         let mut body = crate::motion::PlayerMotion::new(
             &resources,
             horizon_core::geometry::Vec3::new(0.5, 64.0, 0.5),
         )
         .unwrap();
         body.impulse.apply_grace_time(grace);
-        g.motion = Some(Box::new(body));
+        hub.guests.update(0, |g| {
+            g.position = start;
+            g.motion = Some(Box::new(body));
+        });
         let mut events = Vec::new();
-        hub.position_change(0, to, (0.0, 0.0), 0, &ctx, &mut events);
+        hub.position_change(0, to, (0.0, 0.0), 0, Hearing::Heard, &ctx, &mut events);
         let wrongly = events
             .iter()
             .any(|e| matches!(e, HostEvent::Warn(line) if line.contains("moved wrongly")));
