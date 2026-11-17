@@ -36,7 +36,8 @@ single-player paths, a LAN guest, a screenshot for anything visible. The list is
 A pull request that touches a CODEOWNERS path needs a code owner's approving review: GitHub keeps its merge button
 locked until then. Leave it open and say in the thread that it waits for a code owner.
 
-Pull requests opened by the maintainer's agents (author `ludovic111`, body starting "Opened by Ludovic's AI agent")
+Pull requests opened by the maintainer's agents (author `ludovic111`, body starting "Opened by Ludovic's AI agent"
+or ending with a "🤖 Agent:" line)
 are ordinary pull requests: review and merge them like any other, or close them if they went stale. Closing keeps
 the branch.
 
@@ -46,7 +47,8 @@ Everything below runs by itself on GitHub; you only step in when something is wr
 
 - **The Nightly** is the only build players get. The train (`release.yml`, every 10 minutes) starts one after 5
   player-facing merges, or when the oldest has waited 6 hours, or at once for a pull request labelled
-  `release-now`. Only a commit where both `checks` and `parity-main` passed ships. Who may add `release-now` is the
+  `release-now`. Only a commit where both `checks` and `parity-main` passed ships. Its build also builds and
+  publishes the mod SDK of that commit ([release-flow](release-flow.md#mod-sdk)). Who may add `release-now` is the
   council's choice; until it decides, leave the label to the maintainer.
 - **Stopping Nightlies:** open an issue about the problem and label it `release-blocker`. Nothing is published
   while it is open, forced builds included. Close it when the fix is on main.

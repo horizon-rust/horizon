@@ -3,11 +3,11 @@
 //! without asking the profile service again. Each entry expires a month after
 //! it was added; the file keeps the 1000 most recently used.
 use crate::{
-    java_properties::{civil_from_days, days_from_civil, now_millis},
     json::{self, Json},
     profiles::valid_player_name,
     user_lists::{NameAndId, format_date, parse_date, read_utf8},
 };
+use horizon_java_properties::{civil_from_days, days_from_civil, now_millis};
 use std::{collections::HashMap, path::PathBuf};
 
 const MRU_LIMIT: usize = 1000;
@@ -19,7 +19,7 @@ struct Info {
     last_access: u64,
 }
 
-/// `Calendar.add(MONTH, 1)` on a UTC time: the same day and time a month
+/// Adding one month on a UTC time: the same day and time a month
 /// later, the day clamped to the end of a shorter month.
 pub fn one_month_later(millis: i64) -> i64 {
     let days = millis.div_euclid(86_400_000);

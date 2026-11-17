@@ -74,9 +74,9 @@ class Failed(Exception):
 
 
 def game_env(screen, home=None):
-    """The environment of a game: lab.game_env with HORIZON_HOME `home` (a scratch folder when None), no live-count
-    ping, and on Linux the virtual screen `screen` (macOS and Windows have none)."""
-    extra = {'HORIZON_TELEMETRY_URL': 'off'}  # no live-count ping from test games
+    """The environment of a game: lab.game_env with HORIZON_HOME `home` (a scratch folder when None),
+    and on Linux the virtual screen `screen` (macOS and Windows have none)."""
+    extra = {}
     if home is not None:
         extra['HORIZON_HOME'] = home
     if sys.platform in ('darwin', 'win32'):
@@ -1024,7 +1024,7 @@ def no_ai_check(mode, ctl, resources):
                 reply = json.loads(r.stdout.strip().splitlines()[-1])
                 log(mode, words, reply)
                 assert r.returncode == 4 and reply == {'error': REFUSAL, 'kind': 'denied'}, (r.returncode, reply)
-            client = ctl.with_name('horizon-client')
+            client = lab.binary(ctl.parent, 'horizon-client')
             args = [str(client), '--control-socket', str(socket), '--world', 'NoAi', '--world-frames', '30']
             if sys.platform == 'darwin' or os.environ.get('HORIZON_E2E_HEADLESS'):
                 args.append('--offscreen')
@@ -1066,7 +1066,7 @@ def setting_check(mode, ctl, out, resources):
     socket = work / 'c.sock'
     env['HORIZON_CONTROL'] = str(socket)  # the default endpoint, this home's
     (work / 'horizon-extras.txt').write_text('agentControl:true\n')
-    args = [str(ctl.with_name('horizon-client'))]
+    args = [str(lab.binary(ctl.parent, 'horizon-client'))]
     if sys.platform == 'darwin':
         args.append('--offscreen')
     game = subprocess.Popen(args, cwd=work, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1161,7 +1161,7 @@ def main():
     if args.bin_dir:
         bins = Path(args.bin_dir).resolve()
     else:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '-p', 'horizon-client-lib', '--bins'],
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-game', '-p', 'horizon-client-lib', '--bins'],
                        cwd=ROOT, check=True)
         meta = json.loads(subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT,
                                          capture_output=True, text=True, check=True).stdout)
@@ -1173,7 +1173,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     modes = ['cli', 'mcp'] if args.mode == 'both' else [args.mode]
     scenarios = [*SCENARIOS, 'no-ai', 'setting'] if args.scenario == 'all' else [args.scenario]
-    results = {f'{m}/{s}': run(m, bins / 'horizon-ctl', out, resources, s) for m in modes for s in scenarios}
+    results = {f'{m}/{s}': run(m, lab.binary(bins, 'horizon-ctl'), out, resources, s) for m in modes for s in scenarios}
     print(json.dumps(results))
     sys.exit(0 if all(results.values()) else 1)
 

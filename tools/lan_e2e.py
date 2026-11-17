@@ -1272,11 +1272,16 @@ def check_damage(host, guest, out):
     guest.wait(10)
     before = remote(guest)['health']
     x, y, z = pos_of(guest)
+    guest('command', command=f'setblock {int(x // 1)} {int(y // 1) - 1} {int(z // 1)} minecraft:stone')
+    fall_sound = 'minecraft:block.stone.fall'
+    heard_before = {p.name: heard(p, fall_sound) for p in (host, guest)}
     guest('command', command=f'tp @s {x:.2f} {y + 12:.2f} {z:.2f}')
     guest.wait(50)
     after = remote(guest)['health']
     guest.shot(out, 'damage')
     assert after < before, f'health {before} -> {after} after a 12-block fall'
+    for p in (host, guest):
+        assert heard(p, fall_sound) - heard_before[p.name] == 1, f'{p.name}: expected one stone fall sound'
     # Into water: the fall does no damage.
     x, y, z = pos_of(guest)
     guest('command', command=f'setblock {int(x // 1)} {int(y // 1)} {int(z // 1)} minecraft:water')
@@ -3949,6 +3954,12 @@ def bed_at(game, foot):
     return [x + 1, y, z]
 
 
+def clock_gap(a, b):
+    """Ticks between two day times, the short way round the 24000-tick day."""
+    gap = abs(a - b) % 24000
+    return min(gap, 24000 - gap)
+
+
 def check_sleep(host, guest, out):
     for g in (host, guest):
         g('command', command='gamemode survival')
@@ -3971,6 +3982,8 @@ def check_sleep(host, guest, out):
     # Alone in bed: still night 120 ticks later (everyone must sleep).
     guest.wait(120)
     night = host('state')['time']['time_of_day']
+    # The guest's own clock while it is in bed (#16656).
+    night_guest = guest('state')['time']['time_of_day']
     # Escape gets the guest up (InBedChatScreen), then back to bed.
     guest.raw('key', 'esc', 'tap')
     guest.wait(10)
@@ -3982,18 +3995,37 @@ def check_sleep(host, guest, out):
     lying['guest'] = bool(remote(guest)['lying_players'])
     host.wait(125)
     after = {'guest': guest('state').get('sleeping'), 'host': host('state').get('sleeping'),
-             'time': host('state')['time']['time_of_day']}
+             'time': host('state')['time']['time_of_day'],
+             'time_guest': guest('state')['time']['time_of_day']}
     lying['after'] = bool(remote(guest)['lying_players'])
     guest.shot(out, 'sleep-morning')
     for at in (guest_bed, host_bed):
         guest('command', command=f'fill {at[0] - 1} {at[1]} {at[2]} {at[0]} {at[1]} {at[2]} minecraft:air')
     host('command', command='time set day')
-    detail = {'asleep': asleep, 'night': night, 'up': up, 'after': after, 'lying': lying}
+    detail = {'asleep': asleep, 'night': night, 'night_guest': night_guest, 'up': up, 'after': after,
+              'lying': lying}
     assert asleep['guest'] == guest_bed and asleep['server'] == guest_bed, f'the guest is not in its bed: {detail}'
     assert asleep['host'] is None, f'the guest\'s bed put the host to sleep: {detail}'
     assert 13000 < night < 23000, f'one of two players asleep ended the night: {detail}'
     assert up is None, f'Escape did not get the guest up: {detail}'
     assert after['guest'] is None and after['host'] is None and after['time'] < 1000, f'no morning: {detail}'
+    # ClientClockManager takes the skipped night from the SetTime the hub
+    # broadcasts (ServerClockManager.modifyClock): the guest's day time stays
+    # the world's, in bed and woken (#16656).
+    #
+    # The two day times are two RPCs into two processes, with the guest's own
+    # clock ticking in between, so one read trails the other by however long the
+    # round trips take: a loaded machine spends that much between two socket
+    # reads, and 10 ticks (half a second at 20 ticks a second) is the slack.
+    # A guest that missed the sync is not off by ticks: the world jumps from
+    # 18000 to dawn while the guest's clock runs on, so the unsynced read is
+    # still past 18000 against a world the assert above holds under 1000, and
+    # the short way round the 24000-tick day is about 5700-6000 ticks -- near
+    # six hundred times this tolerance. A guest that never took a SetTime is
+    # wherever its own clock ran to; only RPC noise fits the slack.
+    slack = 10
+    assert clock_gap(night_guest, night) <= slack, f'the guest clock left the world clock: {detail}'
+    assert clock_gap(after['time_guest'], after['time']) <= slack, f'the woken guest kept the night: {detail}'
     assert lying['host'] and lying['guest'], f'a sleeping player is drawn standing: {detail}'
     assert not lying['after'], f'a player up again is still drawn lying: {detail}'
     return detail
@@ -7443,7 +7475,7 @@ def main():
     if args.bin_dir:
         bins = Path(args.bin_dir).resolve()
     else:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '-p', 'horizon-client-lib',
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-game', '-p', 'horizon-client-lib',
                         '--bin', 'horizon-client', '--bin', 'horizon-ctl'],
                        cwd=ROOT, check=True)
         meta = json.loads(subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT,
@@ -7460,7 +7492,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     # Recipes is an opt-in native mod; this check requires a game built with it.
     checks = args.check or [name for name in CHECKS if name != 'recipes-hmod']
-    results = run(bins / 'horizon-ctl', out, resources, checks)
+    results = run(lab.binary(bins, 'horizon-ctl'), out, resources, checks)
     (out / 'results.json').write_text(json.dumps({'checks': results}, indent=2) + '\n')
     print(json.dumps(results, indent=1))
     sys.exit(0 if results and all(r['pass'] for r in results.values()) else 1)
@@ -14221,7 +14253,9 @@ def check_ride_seats(host, guest, out):
     """RideCommand.mount forces the ride (startRiding(vehicle, true, true)), so an item display, an
     armor stand or a marker takes a rider: the guest sits on the vehicle's passenger point (its box
     height, less the player's 0.6 vehicle attachment), follows it when it is moved, and gets off on top
-    of it on sneak (Entity.getDismountLocationForPassenger); a mob rides a marker the same way."""
+    of it on sneak (Entity.getDismountLocationForPassenger). A marker is the exception:
+    Marker.couldAcceptPassenger() is false and Entity.startRiding checks it before `force`, so a mob
+    cannot ride one."""
     x, y, z = (int(v // 1) for v in pos_of(host))
     x, z = x + 4, z + 4
     host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 6} {y - 1} {z + 2} minecraft:stone')
@@ -14271,7 +14305,7 @@ def check_ride_seats(host, guest, out):
         assert abs(r['followed']) < 0.01, f'the guest follows the moved {kind}: {seen}'
         # Off on top of the vehicle, then falling to the floor below like any player (10 ticks later).
         assert r['off'] and -0.01 <= r['off_y'] <= r['expected'][1] + 0.01, f'the guest gets off the {kind}: {seen}'
-    assert any('started riding' in line for line in seen['zombie on marker'] or []), f'a mob rides a marker: {seen}'
+    assert any("couldn't start riding" in line for line in seen['zombie on marker'] or []), f'a marker refuses a mob: {seen}'
     return seen
 
 

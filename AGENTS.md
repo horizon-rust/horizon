@@ -17,16 +17,19 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
   `--game-dir` pointing at it, or they land in the repo root, hidden by `.gitignore`. For the
   launcher, `HORIZON_LAUNCHER_TRASH`, `HORIZON_LAUNCHER_CLIPBOARD` and `HORIZON_LAUNCHER_DESKTOP` pointing into the scratch home. Never write to
   `~/.local/share/{applications,horizon,horizon-launcher}` or `~/.local/bin`.
-- **Mark what an agent posts.** A PR body starts with a line naming the person whose agent opened it and
-  the tool: `> 🤖 Opened by <login>'s AI agent (<tool, model>), not by <login> personally.`, where `<login>`
-  is the GitHub account the PR is opened from (`gh api user --jq .login`). Issues say "Filed by", reviews
-  "Review by". Every comment starts with `🤖 Agent:`. Write only as the person you work for: the lines on
-  this page that name Ludovic are for his own agents (account `ludovic111`), never for anyone else's.
-- **Attribution.** Commits end with a `Co-Authored-By:` line for the agent that wrote them, and PR bodies
-  with that agent's own "Generated with" line. Example, Ludovic's agents (Claude Code on `ludovic111`):
-  first line `> 🤖 Opened by Ludovic's AI agent (Claude), not by Ludovic himself.`, commits
-  `Co-Authored-By: Claude <model> <noreply@anthropic.com>`, last line
-  `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+- **Mark what an agent posts, once.** One mark, `🤖 Agent:`, in one place per post:
+  - An issue, a comment and a review **start** with it: `🤖 Agent: <text>`. `/claim` and `/unclaim` follow it
+    (`🤖 Agent: /claim`). `/nightly` and the triage commands are read from a comment's first line only, so
+    there the command is the first line and `🤖 Agent:` starts the second.
+  - A PR body **ends** with it, naming the model and the tool that did the work and what each did, one sentence
+    per model: `🤖 Agent: Claude Fable 5.2 via Claude Code: implementation. GPT 6.1 Sol via Codex: review.`
+
+  Nothing else is needed: no first line, no "Generated with" line, no `Co-Authored-By:` line for the agent in
+  commits (main gets one squashed commit per PR, and the PR says who did the work; a co-author line for a person
+  who wrote part of it stays). The person an agent works for is the account it
+  posts from; write only as that person. Posts in the earlier form (a first line "Opened by <login>'s AI
+  agent …", "Filed by" on issues, a last line "Generated with …") stay valid: don't rewrite them, and don't ask
+  anyone to.
 - **Layers** ([docs/layers.md](docs/layers.md)): engine uses engine; platform uses engine and platform; Horizon (its extras,
   cosmetics, shop, telemetry, launcher) uses platform and Horizon only, never the engine: it moves to its own repository
   later. `tools/check_layers.py` checks it. New Horizon code goes behind `horizon-extras`; built-in addresses go in
@@ -108,7 +111,7 @@ Game workspace (root `Cargo.toml`); `launcher/` and `crates/horizon-telemetry-se
 | `horizon-system` | The machine the game runs on (OS, CPU, memory, drive, power, GPU maker and memory), for the crash report, the renderer's GPU info and telemetry |
 | `horizon-platform` | The platform's public API: what the Horizon layer may use of the engine ([docs/layers.md](docs/layers.md)); re-exports `horizon-system` today |
 | `horizon-hooks`, `horizon-game`, `horizon-official`, `horizon-heartbeat` | The layer seam: the engine's hooks for crates above it, the game an executable starts, the official executable (shipped as `horizon-client`) that registers Horizon's in-game parts, the first of them ([docs/layers.md](docs/layers.md#how-a-horizon-crate-plugs-in)) |
-| `horizon-dualsense`, `horizon-threads`, `horizon-release-sign`, `horizon-bots`, `xtask` | DualSense output, thread priorities, signed release checksums, load-test bots, repo tasks |
+| `horizon-dualsense`, `horizon-threads`, `horizon-release-sign`, `horizon-bots`, `xtask` | DualSense and Xbox One output, thread priorities, signed release checksums, load-test bots, repo tasks |
 | `launcher/` | GPUI launcher: `main.rs` (UI), `backend.rs` (installs, updates), `cli.rs`, `mcp.rs`, `*_page.rs` |
 
 Other top-level folders: `tools/` (harnesses and dev scripts), `tests/` (Python unit tests: `python3 -m
@@ -134,7 +137,7 @@ python3 tools/pr_ready.py                  # the self-check: fmt, clippy -D warn
 python3 tools/pr_ready.py --harnesses      # also the affected harnesses (by default only when you change a harness, oracle, probe or the runner, as in CI)
 cargo test -p horizon-client -p horizon-client-lib --lib --bins --tests   # skips the examples (pr_ready does this); `--doc` separately
 cargo test -p horizon-client-lib --lib mod_content::tests:: -- --ignored   # the slow content-root tests, #[ignore]d; pr_ready runs them when mod content, assets, blocks or items change
-cargo build --profile fast -p horizon-client        # optimized, quick to link: use it to play or run lan_e2e
+cargo build --profile fast -p horizon-game          # optimized, quick to link: use it to play or run lan_e2e
 python3 tools/parity.py --changed origin/main       # the harnesses your branch can affect (CI's parity job)
 python3 tools/parity.py --changed-files paths.txt --list   # which harnesses cover these files, without running them
 python3 tools/parity.py mob_ai sculk       # named harnesses
@@ -248,7 +251,7 @@ When you change how the server and its clients talk (packets, tracking, guests, 
 it there. Other gameplay fixes are covered by their own harness and CI's parity job:
 
 ```sh
-cargo run --profile fast -p horizon-client -- --resources .local/horizon-client/26.3 --world T               # server thread
+cargo run --profile fast -p horizon-game -- --resources .local/horizon-client/26.3 --world T                 # server thread
 python3 tools/lan_e2e.py --check <name>                  # host on its server thread, guest is a server client
 python3 tools/parity.py dedicated_server server_entities server_player_damage
 ```
