@@ -8,11 +8,7 @@
 /// `handleFill` (the fill particles and `playLocalSound`). A call that names
 /// the player still excludes them. `collateral_break` is a later 2001 from
 /// `destroyBlock` with no player, after the breaker's own `playerWillDestroy`.
-pub fn level_event_except(
-    id: i32,
-    acting: Option<u32>,
-    collateral_break: bool,
-) -> Option<u32> {
+pub fn level_event_except(id: i32, acting: Option<u32>, collateral_break: bool) -> Option<u32> {
     if matches!(
         id,
         2015 | 1500
