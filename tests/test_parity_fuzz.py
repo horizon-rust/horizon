@@ -40,10 +40,21 @@ class KnownTests(unittest.TestCase):
                           (r'persist\|pig\|reloaded\|Fire', 99999)]
             groups = {'persist|trident|live|damage': [('a', {})],
                       'persist|pig|live|Air': [('b', {})]}
-            known, new, fixed = fuzz.classify(groups)
+            known, new, not_observed = fuzz.classify(groups)
             self.assertEqual(known, {14823: ['persist|trident|live|damage']})
             self.assertEqual(new, {'persist|pig|live|Air': [('b', {})]})
-            self.assertEqual(fixed, [(99999, r'persist\|pig\|reloaded\|Fire')])
+            self.assertEqual(not_observed, [(99999, r'persist\|pig\|reloaded\|Fire')])
+        finally:
+            fuzz.KNOWN = old
+
+    def test_two_patterns_for_one_issue_are_each_tracked(self):
+        old = fuzz.KNOWN
+        try:
+            fuzz.KNOWN = [(r'one', 123), (r'two', 123)]
+            known, new, not_observed = fuzz.classify({'one': [('a', {})]})
+            self.assertEqual(known, {123: ['one']})
+            self.assertEqual(new, {})
+            self.assertEqual(not_observed, [(123, 'two')])
         finally:
             fuzz.KNOWN = old
 
@@ -66,6 +77,14 @@ class SnbtDiffTests(unittest.TestCase):
         missing = {'cmd': '/data get entity @s', 'messages': [[['No entity was found', None]]], 'results': [[False, 0]]}
         self.assertEqual(fuzz.compare(renamed, missing)[0][0], '<result>')
         self.assertEqual(fuzz.normalise('Items[3].components[0].id'), 'Items[].components[].id')
+
+    def test_absolute_game_times_compare_only_whether_they_are_set(self):
+        vanilla = record('Villager has the following entity data: {LastGossipDecay: 6612L}')
+        self.assertEqual(fuzz.compare(vanilla, record('Villager has the following entity data: {LastGossipDecay: 1294L}')), [])
+        self.assertEqual(fuzz.compare(vanilla, record('Villager has the following entity data: {LastGossipDecay: 0L}')),
+                         [('LastGossipDecay', '6612L', '0L')])
+        self.assertEqual(fuzz.compare(vanilla, record('Villager has the following entity data: {}')),
+                         [('LastGossipDecay', '6612L', None)])
 
     def test_attributes_compare_in_any_order_but_by_value(self):
         a = {'attributes': [{'id': 'b', 'base': '1.0d'}, {'id': 'a', 'base': '2.0d'}]}
