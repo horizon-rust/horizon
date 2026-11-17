@@ -13,9 +13,16 @@ import hashlib
 import json
 import os
 import statistics
+import sys
 import subprocess
 import tempfile
 from pathlib import Path
+
+try:
+    from . import lab
+except ImportError:  # run as a script: its folder holds lab.py
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import lab
 
 
 def run(binary, resources, mode):
@@ -51,7 +58,7 @@ def percentile(values, percent):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=Path("target/release/examples/shared_json_startup_profile"))
-    parser.add_argument("--resources", type=Path, default=Path(".local/horizon-client/26.3"))
+    parser.add_argument("--resources", type=Path, default=lab.RESOURCES)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--reference-binary", type=Path, help="Legacy comparison to cf837118")
     parser.add_argument("--baseline-binary", type=Path, help="Optional original main build; expects baseline mode")
