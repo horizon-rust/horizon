@@ -160,6 +160,8 @@ it (edited on every push, never repeated): talk to its author in the thread befo
   (`#[cfg(test)]` modules) don't count, and neither do lines moved unchanged (same text, whitespace ignored, runs of
   3 or more lines), so a refactor that moves code can be far bigger than 3000 lines.
   pr_ready counts it the same way and warns when a pull request is over.
+- **Small fixes of one kind are one change.** The same defect in several tools, or several small fixes to one tool
+  or harness, go in one pull request that lists each issue it fixes (`Fixes #1, Fixes #2`).
 - **Fill in the template**: what and why, the vanilla reference, the pr_ready block, screenshots for anything you
   can see.
 - **Tick "Allow edits by maintainers".** When something small is left (a lint, a rebase, a nit) we push the fixup
@@ -175,7 +177,9 @@ it (edited on every push, never repeated): talk to its author in the thread befo
 - **Tick its kind** in the template: `parity` (Horizon now does what vanilla does), `bug` (a crash or breakage),
   `perf`, `feature` (new for players), `extra` (Horizon-only, off by default), `tooling` or `docs`. A workflow sets
   that label from the box, else from the title, and area labels (`launcher`, `mobs`, `worldgen`, `rendering`...)
-  from the title and the paths you change.
+  from the title and the paths you change. A size label (`size: XS` up to 50 lines, `S` 150, `M` 500, `L` 3000,
+  `XL` over) counts the lines GitHub shows as added and removed outside Markdown and test files: what counts above,
+  but with moved lines and inline tests, which the label can't tell apart.
   `label:parity` is the list of real progress toward vanilla.
 - **Release labels** (we set them if you can't): `feature` also puts it under "New" in the release notes,
   `skip-release` when players see no change (tooling, docs, tests), nothing for a fix. `release-now` is for crash
