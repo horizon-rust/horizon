@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Horizon version-specific model and resource decoding"
 
 [dependencies]
+horizon-client-core = { path = "../horizon-client-core" }
 horizon-core = { path = "../horizon-core" }
 log = "0.4"
 serde = "1.0.229"

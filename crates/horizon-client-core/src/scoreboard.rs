@@ -1338,7 +1338,7 @@ fn decompose(c: &Comp) -> (serde_json::Map<String, Value>, Vec<Comp>) {
                     "bold" | "italic" | "underlined" | "strikethrough" | "obfuscated" => {
                         let b = match v {
                             Value::Bool(b) => *b,
-                            Value::Number(n) => n.as_f64().is_some_and(|f| f as i8 != 0),
+                            Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
                             _ => continue,
                         };
                         node.insert(k.clone(), Value::Bool(b));

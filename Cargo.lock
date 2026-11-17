@@ -1463,6 +1463,7 @@ dependencies = [
 name = "horizon-assets"
 version = "0.1.0"
 dependencies = [
+ "horizon-client-core",
  "horizon-core",
  "log",
  "png",
