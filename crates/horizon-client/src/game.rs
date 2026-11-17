@@ -5670,18 +5670,13 @@ impl Game<'_> {
             let view = self.view_frustum;
             // Beams and structure outlines reach far outside their block
             // (BlockEntityRenderer.shouldRenderOffScreen): never culled.
+            // Both flags are one byte per state, worked out once (`block_entity_reach`): a frame
+            // asks them of every block entity within 256 blocks.
+            let reach = block_entity_reach(self.res.facts());
             let off_screen = |state: u32| {
-                let name = &*self.res.facts().get(BlockStateId(state)).name;
-                matches!(
-                    name,
-                    "minecraft:beacon"
-                        | "minecraft:end_gateway"
-                        | "minecraft:structure_block"
-                        | "minecraft:test_instance_block"
-                )
-            };
-            let long_range = |state: u32| {
-                &*self.res.facts().get(BlockStateId(state)).name == "minecraft:end_gateway"
+                reach
+                    .get(state as usize)
+                    .is_some_and(|flags| flags & 1 != 0)
             };
             let in_view = |p: &[i32; 3]| {
                 view.is_none_or(|v| {
@@ -5692,13 +5687,7 @@ impl Game<'_> {
                 })
             };
             let camera_list: Vec<&([i32; 3], u32)> = r
-                .visible_block_entities_in_frustum(
-                    self.settings.chunk_fade,
-                    camera,
-                    view,
-                    &off_screen,
-                    long_range,
-                )
+                .visible_block_entities_in_frustum(self.settings.chunk_fade, camera, view, &reach)
                 .filter(|(block, section_inside)| {
                     let (pos, state) = **block;
                     self.live_block_entity_render(pos, state)
@@ -5818,13 +5807,7 @@ impl Game<'_> {
                     );
             } else {
                 let cache_candidates = r
-                    .visible_block_entities_in_frustum(
-                        self.settings.chunk_fade,
-                        camera,
-                        None,
-                        |_| false,
-                        |_| false,
-                    )
+                    .visible_block_entities_in_frustum(self.settings.chunk_fade, camera, None, &[])
                     .filter(|(block, _)| self.live_block_entity_render(block.0, block.1))
                     .map(|(block, _)| block);
                 (
@@ -11734,3 +11717,34 @@ mod sign_chain_tests;
 #[cfg(test)]
 #[path = "game/interface/tests/sign_use_tests.rs"]
 mod sign_use_tests;
+
+/// For each block state, whether its block entity draws off screen (1: beacons, end gateways,
+/// structure and test instance blocks, `BlockEntityRenderer.shouldRenderOffScreen`) and far
+/// (2: end gateways), by its name. Worked out once for these facts and reused while they live.
+fn block_entity_reach(facts: &horizon_client::blocks::BlockFacts) -> std::rc::Rc<[u8]> {
+    thread_local! {
+        static REACH: std::cell::RefCell<Option<(usize, usize, std::rc::Rc<[u8]>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let key = (facts.states.as_ptr() as usize, facts.states.len());
+    REACH.with_borrow_mut(|reach| {
+        if let Some((ptr, len, flags)) = reach.as_ref()
+            && (*ptr, *len) == key
+        {
+            return flags.clone();
+        }
+        let flags: std::rc::Rc<[u8]> = facts
+            .states
+            .iter()
+            .map(|state| match &*state.name {
+                "minecraft:end_gateway" => 3,
+                "minecraft:beacon"
+                | "minecraft:structure_block"
+                | "minecraft:test_instance_block" => 1,
+                _ => 0,
+            })
+            .collect();
+        *reach = Some((key.0, key.1, flags.clone()));
+        flags
+    })
+}
