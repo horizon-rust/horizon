@@ -8,5 +8,6 @@ pub mod interaction_shapes;
 pub mod item_areas;
 pub mod lan;
 pub mod mob_index;
+pub mod stats;
 pub mod tick_profile;
 pub mod wandering_trader;

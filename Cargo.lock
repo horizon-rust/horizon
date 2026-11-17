@@ -2171,6 +2171,9 @@ dependencies = [
  "horizon-client-lib",
  "horizon-core",
  "horizon-threads",
+ "horizon-world",
+ "log",
+ "serde_json",
 ]
 
 [[package]]
