@@ -44,10 +44,10 @@ per part, side by side, each on a size that fits it:
 | Job | Runner | Merge queue |
 | --- | --- | --- |
 | `verify (tree and Python tests)` (`verify-tree`) | 8 vCPU: the Python tests run one module per process (`tools/ci/unittest_parallel.py`) | yes |
-| `verify (format and lint)` (`verify-lint`) | 32 vCPU | no |
+| `verify (format and lint)` (`verify-lint`) | 16 vCPU | no |
 | `verify (server build lint)` (`verify-server`) | 16 vCPU | no |
 | `verify (launcher)` (`verify-launcher`), when `tools/ci/rust_changes.py --launcher` says the change reaches it | 16 vCPU | no |
-| `verify (Rust tests)` (`verify-test`) | 32 vCPU | yes |
+| `verify (Rust tests)` (`verify-test`) | 16 vCPU | yes |
 
 Only `verify`, which waits for them all, is a required check; `tests/test_ci_runners.py` pins that the parts share one
 `runs-on` choice. `SELF_HOSTED_CI=all` sends them all to our checks runners.
