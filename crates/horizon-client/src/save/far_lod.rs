@@ -100,6 +100,9 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
         self.inner.request_detail(&missing, center);
     }
     fn drain_details(&mut self) -> Vec<crate::streaming::LodDetail> {
+        // A chunk saved since it was asked for: read again below, not taken
+        // from the "not saved" kept when it was asked for.
+        self.catch_up();
         let mut details = std::mem::take(&mut self.details);
         for (key, generated) in self.inner.drain_details() {
             // A generation batch also returns neighbouring, unrequested chunks.
@@ -286,19 +289,44 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_saved_tile_skips_the_generator_and_shows_a_build_once_saved() {
-        let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
-            return;
-        };
-        let root = PathBuf::from(root);
+    /// A generator that answers every chunk asked for in detail with
+    /// columns of nothing.
+    #[derive(Default)]
+    struct Empty(Vec<(i32, i32)>);
+    impl LodSampler for Empty {
+        fn sample(&mut self, _: i32, _: i32) -> Option<crate::lod::Surface> {
+            None
+        }
+        fn request_detail(&mut self, chunks: &[(i32, i32)], _: [i32; 2]) {
+            self.0.extend_from_slice(chunks);
+        }
+        fn drain_details(&mut self) -> Vec<crate::streaming::LodDetail> {
+            let empty: LodSurfaces = Arc::new(std::array::from_fn(|_| Default::default()));
+            self.0.drain(..).map(|key| (key, empty.clone())).collect()
+        }
+    }
+
+    /// The test resources, a save in a fresh folder named `name`, and a
+    /// chunk at 0 0 of stone at y 60, with a tower up to y 199 at 3 5 when
+    /// `tower`.
+    #[allow(clippy::type_complexity)]
+    fn fixture(
+        name: &str,
+    ) -> Option<(
+        crate::assets::Assets,
+        Biomes,
+        PathBuf,
+        Arc<SaveDir>,
+        impl Fn(&crate::assets::Assets, &Biomes, bool) -> NamedTag,
+    )> {
+        let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES")?);
         let assets = crate::assets::Assets::load(&root).expect("assets");
         let biomes = Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
             root.clone(),
         ))
         .expect("biomes");
-        let stone = assets.registry.default_state("minecraft:stone").unwrap();
-        let chunk = |tower: bool| {
+        let chunk = |assets: &crate::assets::Assets, biomes: &Biomes, tower: bool| {
+            let stone = assets.registry.default_state("minecraft:stone").unwrap();
             let mut chunk = Chunk::empty(0, 0);
             for i in 0..256i32 {
                 chunk.set(i & 15, 60, i >> 4, stone.0);
@@ -309,30 +337,72 @@ mod tests {
                 }
             }
             chunk.lit = true;
-            encode(&chunk, assets.registry, &biomes)
+            encode(&chunk, assets.registry, biomes)
         };
-        let dir = std::env::temp_dir().join(format!("horizon-far-lod-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("horizon-far-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let (flat, tower) = (chunk(false), chunk(true));
         let save = Arc::new(SaveDir::new(dir.clone(), LevelShape::OVERWORLD));
-        save.write_records("region", vec![((0, 0), Some(flat))], true)
-            .unwrap();
-        let inner = Arc::new(crate::testgen::TestTerrain::new(assets.registry, &biomes).unwrap());
-        let mut sampler = SavedLodSampler {
+        Some((assets, biomes, dir, save, chunk))
+    }
+
+    fn sampler(
+        assets: crate::assets::Assets,
+        biomes: Biomes,
+        dir: &Path,
+        save: &Arc<SaveDir>,
+        inner: Box<dyn LodSampler>,
+    ) -> SavedLodSampler<crate::testgen::TestTerrain> {
+        let terrain = Arc::new(crate::testgen::TestTerrain::new(assets.registry, &biomes).unwrap());
+        SavedLodSampler {
             seen: save.far_changes().end(),
             generator: Arc::new(Persistent {
-                inner,
+                inner: terrain,
                 save: save.clone(),
                 registry: Arc::new(assets),
                 biomes: Arc::new(biomes),
             }),
-            inner: Box::new(Unasked),
+            inner,
             cache: Default::default(),
             details: Vec::new(),
             approximate: false,
             generated: Arc::new(crate::lod::cache::DiskCache::new(dir.join("far"), 1)),
             bake: None,
+        }
+    }
+
+    #[test]
+    fn a_chunk_saved_while_it_is_generated_in_detail_answers_as_saved() {
+        let Some((assets, biomes, dir, save, chunk)) = fixture("detail") else {
+            return;
         };
+        let tower = chunk(&assets, &biomes, true);
+        let mut sampler = sampler(assets, biomes, &dir, &save, Box::<Empty>::default());
+        // Not saved when asked for: the generator makes it.
+        sampler.request_detail(&[(0, 0)], [0, 0]);
+        save.write_records("region", vec![((0, 0), Some(tower))], false)
+            .unwrap();
+        let details = sampler.drain_details();
+        assert_eq!(details.len(), 1);
+        let top = details[0].1[5 * 16 + 3].surface.map(|s| s.height);
+        assert_eq!(top, Some(200));
+        save.flush().unwrap();
+        drop(sampler);
+        drop(save);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_saved_tile_skips_the_generator_and_shows_a_build_once_saved() {
+        let Some((assets, biomes, dir, save, chunk)) = fixture("lod") else {
+            return;
+        };
+        let (flat, tower) = (
+            chunk(&assets, &biomes, false),
+            chunk(&assets, &biomes, true),
+        );
+        save.write_records("region", vec![((0, 0), Some(flat))], true)
+            .unwrap();
+        let mut sampler = sampler(assets, biomes, &dir, &save, Box::new(Unasked));
         let height = |columns: &[crate::lod::Column], i: usize| columns[i].surface.unwrap().height;
         let before = sampler.grid(0, 0, 1, 16);
         assert_eq!(height(&before, 5 * 16 + 3), 61);
