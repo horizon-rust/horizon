@@ -392,6 +392,7 @@ horizon-client-lib motion::tests::a_passenger_stops_swimming_and_stands lib dail
 horizon-client-lib motion::tests::a_player_lands_on_a_block_a_piston_is_moving lib daily resources
 horizon-client-lib motion::tests::a_riding_guest_keeps_no_swim_in_the_fluid_phase lib daily resources
 horizon-client-lib motion::tests::a_riptide_spin_lies_flat_and_ends_on_the_first_entity_it_touches lib daily resources
+horizon-client-lib motion::tests::a_second_jump_starts_flight_while_swimming lib daily resources
 horizon-client-lib motion::tests::a_server_client_glides_until_the_servers_flag_clears lib daily resources
 horizon-client-lib motion::tests::a_server_copy_of_a_riptide_spin_counts_down_and_stands_again lib daily resources
 horizon-client-lib motion::tests::a_server_copy_takes_its_new_scale_box_the_next_tick lib daily resources
