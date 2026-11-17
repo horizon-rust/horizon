@@ -31,8 +31,9 @@
 
 <!-- Only for a pull request that moves gameplay code out of horizon-client (#18047). Name the placement: below
      horizon-client (it still recompiles when the moved code changes) or beside it (it does not). Paste the output of
-     `python3 tools/build_times.py run --only incremental --crates <new crate> --file <crate>=<moved file> --profiles dev`
-     before and after. Delete this section otherwise. -->
+     `python3 tools/build_times.py run --only incremental --crates <crate> --file <crate>=<file> --profiles dev`
+     twice: before, on the base, with the crate and file the code is in there; after, on this branch, with the new
+     crate and the moved file. Delete this section otherwise. -->
 
 ## Vanilla reference
 
