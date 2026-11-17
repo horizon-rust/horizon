@@ -235,6 +235,26 @@ pub struct Installed {
     pub icon: Result<Option<Arc<horizon_platform::mod_package::icon::Icon>>, String>,
 }
 
+impl Installed {
+    /// A `.hnmod` launchers before 0.2.70 installed (#17934). It can't load: its row offers only
+    /// Remove, since its on/off key is its file name and could switch an installed mod of that id.
+    pub fn retired(&self) -> bool {
+        self.file.ends_with(".hnmod")
+    }
+
+    /// Why the file can't load, shown instead of where it came from.
+    pub fn note(&self) -> Option<&'static str> {
+        self.retired().then(|| {
+            crate::i18n::tr("Old format (.hnmod): ask its author to republish it as .hmod")
+        })
+    }
+}
+
+/// Whether `files` hold a native mod the build card is for; a retired file is not one.
+pub fn asks_for_build<'a>(files: impl IntoIterator<Item = &'a Installed>) -> bool {
+    files.into_iter().any(|file| !file.retired())
+}
+
 /// Discover the actual files, not just GitHub sidecars. Registry files already have a row.
 pub fn untracked(home: &Path) -> Vec<Installed> {
     let tracked = crate::browser::installed::Installed::load(home);
@@ -715,6 +735,71 @@ mod tests {
         }
         assert!(enabled(home.path()).is_empty(), "nothing to build");
         assert!(bundles_on(home.path()).is_empty());
+    }
+
+    #[test]
+    fn a_retired_hnmod_offers_only_remove_and_asks_for_no_build() {
+        use std::io::Write;
+        let home = tempfile::tempdir().unwrap();
+        let folder = home.path().join(native_mods::INSTALLED);
+        fs::create_dir_all(&folder).unwrap();
+        let mut zip = zip::ZipWriter::new(fs::File::create(folder.join("zoom.hnmod")).unwrap());
+        zip.start_file(
+            "horizon-native.json",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"{\"schema\": 1}").unwrap();
+        zip.finish().unwrap();
+        let files = untracked(home.path());
+        assert!(files[0].retired());
+        assert_eq!(
+            files[0].note(),
+            Some("Old format (.hnmod): ask its author to republish it as .hmod"),
+            "the row says why, not the package reader's refusal"
+        );
+        assert!(!asks_for_build(&files), "no build card for it alone");
+
+        // A supported mod with the id the retired file's name gives: only it has a switch, so
+        // switching the retired row can't turn `zoom` on or off.
+        let pin = "a".repeat(40);
+        let mut zip = zip::ZipWriter::new(fs::File::create(folder.join("zoom.hmod")).unwrap());
+        let manifest = format!(
+            "id = 'zoom'\nname = 'zoom'\nversion = '1.0'\napi = '0.2'\ncapabilities = ['registries']\n[native]\ngame = '26.3'\nhorizon = '{pin}'\nmixins = '{pin}'\n"
+        );
+        for (name, bytes) in [
+            ("horizon-mod.toml", manifest.as_str()),
+            (
+                "Cargo.toml",
+                "[package]\nname = 'zoom'\nversion = '1.0.0'\n",
+            ),
+            ("src/lib.rs", "pub fn hooks() {}\n"),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        let files = untracked(home.path());
+        let rows: Vec<_> = files
+            .iter()
+            .map(|f| {
+                (
+                    f.file.as_str(),
+                    f.id.as_str(),
+                    f.retired(),
+                    f.note().is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("horizon-native-mods/zoom.hmod", "zoom", false, false),
+                ("horizon-native-mods/zoom.hnmod", "zoom", true, true)
+            ]
+        );
+        assert!(asks_for_build(&files));
     }
 
     #[test]
