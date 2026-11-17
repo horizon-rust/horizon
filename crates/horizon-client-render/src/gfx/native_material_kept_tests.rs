@@ -129,7 +129,7 @@ fn build(
         ..crate::gfx::native_pack::tests::terrain_shape(&globals, &empty)
     };
     let (mut pack, _) = NativePack::new(device, queue, &terrain, report, &[], Default::default())?;
-    install(device, Some(&mut pack.post), None);
+    install(device, Some(&mut pack.post), None, [1, 1])?;
     Ok((pack, sources.0, sources.1))
 }
 
