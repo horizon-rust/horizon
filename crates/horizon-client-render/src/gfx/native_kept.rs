@@ -387,6 +387,7 @@ pub(super) fn dispatch(
     (groups, traced): (&[wgpu::BindGroup], Option<&[Option<wgpu::ComputePipeline>]>),
     at: usize,
     size: [u32; 2],
+    mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
 ) {
     let Some(k) = kept.as_ref().filter(|k| k.started) else {
         return;
@@ -395,17 +396,20 @@ pub(super) fn dispatch(
     for (c, p) in k.computes.iter().enumerate() {
         if p.at == Some(at) {
             let pipeline = traced.and_then(|t| t[c].as_ref()).unwrap_or(&p.pipeline);
-            record(p, encoder, (&groups[ordinary + c], pipeline), size);
+            let timing = timing.as_deref_mut();
+            record(p, encoder, (&groups[ordinary + c], pipeline), size, timing);
         }
     }
 }
 
-/// Records compute pass `p` in `encoder` with its `group` and `pipeline` at R `size`.
+/// Records compute pass `p` in `encoder` with its `group` and `pipeline` at R `size`, timed
+/// under its name in a timed frame.
 fn record(
     p: &ComputePass,
     encoder: &mut wgpu::CommandEncoder,
     (group, pipeline): (&wgpu::BindGroup, &wgpu::ComputePipeline),
     size: [u32; 2],
+    timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
 ) {
     let cells = match p.dispatch {
         Dispatch::Cells(cells) => cells,
@@ -414,7 +418,7 @@ fn record(
     let [x, y, z] = [0, 1, 2].map(|i| cells[i].div_ceil(p.workgroup[i]));
     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some(&p.label),
-        timestamp_writes: None,
+        timestamp_writes: timing.and_then(|t| t.compute_writes(&p.label)),
     });
     pass.set_pipeline(pipeline);
     pass.set_bind_group(GROUP, group, &[]);
@@ -606,12 +610,13 @@ impl NativePost {
     /// dispatches the `[[before_world]]` passes, once a frame (the first call after
     /// `kept_frame`), before the world draws: the terrain (`[material] reads`) and the passes
     /// after read what they wrote as this frame's. With `scene`, this frame's (built
-    /// before them), the passes that trace run against it.
+    /// before them), the passes that trace run against it. With `timing`, each is timed.
     pub(in crate::gfx) fn before_world(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         scene: Option<&super::trace::Traced<'_>>,
+        mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) {
         let Some(k) = &mut self.kept else {
             return;
@@ -650,7 +655,13 @@ impl NativePost {
         for (w, p) in k.computes[first..].iter().enumerate() {
             let pipeline = pipelines.and_then(|t| t[w].as_ref()).unwrap_or(&p.pipeline);
             let group = &k.worlds[k.parity * worlds + w];
-            record(p, encoder, (group, pipeline), k.next.1);
+            record(
+                p,
+                encoder,
+                (group, pipeline),
+                k.next.1,
+                timing.as_deref_mut(),
+            );
         }
     }
 
@@ -718,7 +729,8 @@ impl super::super::native_pack::NativePack {
         encoder: &mut wgpu::CommandEncoder,
         scene: Option<&super::trace::Traced<'_>>,
     ) {
-        self.post.before_world(device, encoder, scene);
+        self.post
+            .before_world(device, encoder, scene, self.timing.as_mut());
         // The sky may draw next, in a pass of its own (`draw_sky_pass`).
         self.bind_kept(device);
     }
