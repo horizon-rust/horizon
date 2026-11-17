@@ -10882,6 +10882,7 @@ mod pearl_tests {
             others_index: None,
             passenger_objects: &[],
             others_villagers: None,
+            village: None,
             others_solid: None,
             daylight: true,
             monsters_burn: false,

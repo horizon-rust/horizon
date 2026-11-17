@@ -42,6 +42,7 @@ pub(super) struct Group<M: MobSlot> {
     /// The first slot of each id, as a scan would find it.
     index: FxHashMap<u32, u32>,
     villager_slots: Vec<u32>,
+    village: horizon_client::mobs::village_index::VillageIndex,
     solid_slots: Vec<u32>,
     pub pushes: PendingPushes,
     pub events: Vec<MobEvent>,
@@ -140,6 +141,7 @@ impl<M: MobSlot> Group<M> {
             grid,
             index,
             villager_slots,
+            village: Default::default(),
             solid_slots,
             pushes: PendingPushes::default(),
             events: start.events,
@@ -340,6 +342,7 @@ impl<M: MobSlot> Group<M> {
             others_grid: Some(&self.grid),
             others_index: Some(&self.index),
             others_villagers: Some(&self.villager_slots),
+ village: Some(&self.village),
             others_solid: Some(&self.solid_slots),
             difficulty,
             nearest_player,
@@ -475,7 +478,9 @@ impl<M: MobSlot> Group<M> {
         // ServerLevel ticks entities one after another: the ones
         // after this mob see it as it is now.
         let collisions = self.snapshot[i].collisions;
-        self.snapshot[i] = seen(m, shared.uuid);
+        let fresh = seen(m, shared.uuid);
+        self.village.mark(i, &self.snapshot[i], &fresh);
+        self.snapshot[i] = fresh;
         self.snapshot[i].collisions = collisions;
         self.snapshot[i].alive &= kept;
         // The server's collision cap (`mobs::max_collisions`): each mob `m` pushed in its turn

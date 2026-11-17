@@ -114,6 +114,7 @@ pub mod trial_spawner;
 pub mod turtle;
 pub mod undead;
 pub mod vex;
+pub mod village_index;
 pub mod villager;
 pub mod villager_brain;
 pub mod villager_hats;
@@ -3243,6 +3244,8 @@ pub struct MobWorld<'a> {
     /// keeps them (the mob ticks: a slot keeps its mob, and its species, all
     /// tick). Each zombie looking for a village read every slot.
     pub others_villagers: Option<&'a [u32]>,
+    /// The villagers' village sections of `others`, when the caller keeps them up to date.
+    pub village: Option<&'a village_index::VillageIndex>,
     /// The slots of `others` that may stop a moving mob
     /// ([`Seen::may_block_mobs`]), when the caller keeps them; None: any.
     pub others_solid: Option<&'a [u32]>,
