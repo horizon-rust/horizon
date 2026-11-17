@@ -590,146 +590,151 @@ impl NativeMaterial {
             constants.push(("horizon_displace_cells", f64::from(d.cells)));
             constants.push(("horizon_displace_steps", f64::from(u8::from(d.steps))));
         }
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(&super::dx12_compiler::module_label(&stage.label)),
-            source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
-        });
-        let layout = |flat: Option<&wgpu::BindGroupLayout>| {
-            let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] =
-                Default::default();
-            groups[0] = Some(shape.globals);
-            groups[1] = flat;
-            groups[GROUP as usize] = Some(frame_group);
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Native shader pack terrain"),
-                bind_group_layouts: &groups,
-                ..Default::default()
-            })
-        };
-        let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
-        let vertices = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<super::TerrainVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &super::TERRAIN_ATTRIBUTES,
-        };
-        let instances = wgpu::VertexBufferLayout {
-            array_stride: 16,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &instance_attributes,
-        };
-        // As the renderer's terrain pipelines (gfx.rs): back faces culled, reversed depth.
-        let pipeline = |layout: &wgpu::PipelineLayout,
-                        vertex: &str,
-                        buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
-                        fragment: &str,
-                        blend: Option<wgpu::BlendState>| {
-            let options = wgpu::PipelineCompilationOptions {
-                constants: &constants,
-                ..Default::default()
-            };
-            let solid_targets = [
-                Some(wgpu::ColorTargetState {
-                    format: shape.format,
-                    blend,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
-                    format: SURFACE_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-            ];
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(&stage.label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some(vertex),
-                    compilation_options: options.clone(),
-                    buffers,
-                },
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: Some(wgpu::Face::Back),
+        let (solid, translucent, flat, displaced) = super::native_pack::checked(device, || {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(&super::dx12_compiler::module_label(&stage.label)),
+                source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+            });
+            let layout = |flat: Option<&wgpu::BindGroupLayout>| {
+                let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] =
+                    Default::default();
+                groups[0] = Some(shape.globals);
+                groups[1] = flat;
+                groups[GROUP as usize] = Some(frame_group);
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Native shader pack terrain"),
+                    bind_group_layouts: &groups,
                     ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some(fragment),
-                    compilation_options: options,
-                    targets: if fragment != "horizon_material_fs_translucent" && writes_surface {
-                        &solid_targets
-                    } else {
-                        &solid_targets[..1]
+                })
+            };
+            let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
+            let vertices = wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<super::TerrainVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &super::TERRAIN_ATTRIBUTES,
+            };
+            let instances = wgpu::VertexBufferLayout {
+                array_stride: 16,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &instance_attributes,
+            };
+            // As the renderer's terrain pipelines (gfx.rs): back faces culled, reversed depth.
+            let pipeline = |layout: &wgpu::PipelineLayout,
+                            vertex: &str,
+                            buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                            fragment: &str,
+                            blend: Option<wgpu::BlendState>| {
+                let options = wgpu::PipelineCompilationOptions {
+                    constants: &constants,
+                    ..Default::default()
+                };
+                let solid_targets = [
+                    Some(wgpu::ColorTargetState {
+                        format: shape.format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: SURFACE_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ];
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(&stage.label),
+                    layout: Some(layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some(vertex),
+                        compilation_options: options.clone(),
+                        buffers,
                     },
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let blend = Some(wgpu::BlendState::ALPHA_BLENDING);
-        let instanced = layout(None);
-        let buffers = [Some(vertices.clone()), Some(instances.clone())];
-        let fs_solid = "horizon_material_fs_solid";
-        // With flat draws' page groups the solid draws read the page themselves
-        // (`SECTION_CORNER`), in either layout of the solid quads, as the renderer's do.
-        let paged = shape.flat.map(|group| layout(Some(group)));
-        let solid = match &paged {
-            Some(paged) => {
-                let origins = [None, Some(instances)];
+                    primitive: wgpu::PrimitiveState {
+                        cull_mode: Some(wgpu::Face::Back),
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some(fragment),
+                        compilation_options: options,
+                        targets: if fragment != "horizon_material_fs_translucent" && writes_surface
+                        {
+                            &solid_targets
+                        } else {
+                            &solid_targets[..1]
+                        },
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+            let blend = Some(wgpu::BlendState::ALPHA_BLENDING);
+            let instanced = layout(None);
+            let buffers = [Some(vertices.clone()), Some(instances.clone())];
+            let fs_solid = "horizon_material_fs_solid";
+            // With flat draws' page groups the solid draws read the page themselves
+            // (`SECTION_CORNER`), in either layout of the solid quads, as the renderer's do.
+            let paged = shape.flat.map(|group| layout(Some(group)));
+            let solid = match &paged {
+                Some(paged) => {
+                    let origins = [None, Some(instances)];
+                    pipeline(
+                        paged,
+                        "horizon_material_vs_section",
+                        &origins,
+                        fs_solid,
+                        None,
+                    )
+                }
+                None => pipeline(&instanced, "horizon_material_vs", &buffers, fs_solid, None),
+            };
+            let translucent = pipeline(
+                &instanced,
+                "horizon_material_vs",
+                &buffers,
+                "horizon_material_fs_translucent",
+                blend,
+            );
+            let flat = paged.map(|layout| {
+                let buffers = [Some(vertices.clone())];
+                (
+                    pipeline(
+                        &layout,
+                        "horizon_material_vs_section_flat",
+                        &[],
+                        fs_solid,
+                        None,
+                    ),
+                    pipeline(
+                        &layout,
+                        "horizon_material_vs_flat",
+                        &buffers,
+                        "horizon_material_fs_translucent",
+                        blend,
+                    ),
+                )
+            });
+            // The grid's corners come from its group 1, not from vertex buffers.
+            let displaced = displaced.map(|d| {
                 pipeline(
-                    paged,
-                    "horizon_material_vs_section",
-                    &origins,
-                    fs_solid,
+                    &layout(Some(d.layout)),
+                    "horizon_material_vs_displaced",
+                    &[],
+                    "horizon_material_fs_displaced",
                     None,
                 )
-            }
-            None => pipeline(&instanced, "horizon_material_vs", &buffers, fs_solid, None),
-        };
-        let translucent = pipeline(
-            &instanced,
-            "horizon_material_vs",
-            &buffers,
-            "horizon_material_fs_translucent",
-            blend,
-        );
-        let flat = paged.map(|layout| {
-            let buffers = [Some(vertices.clone())];
-            (
-                pipeline(
-                    &layout,
-                    "horizon_material_vs_section_flat",
-                    &[],
-                    fs_solid,
-                    None,
-                ),
-                pipeline(
-                    &layout,
-                    "horizon_material_vs_flat",
-                    &buffers,
-                    "horizon_material_fs_translucent",
-                    blend,
-                ),
-            )
-        });
-        // The grid's corners come from its group 1, not from vertex buffers.
-        let displaced = displaced.map(|d| {
-            pipeline(
-                &layout(Some(d.layout)),
-                "horizon_material_vs_displaced",
-                &[],
-                "horizon_material_fs_displaced",
-                None,
-            )
-        });
+            });
+            (solid, translucent, flat, displaced)
+        })
+        .map_err(|e| format!("{}: {e}", stage.file))?;
         Ok(MaterialPipelines {
             solid,
             translucent,

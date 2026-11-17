@@ -113,11 +113,13 @@ fn build(
     let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
     groups[0] = Some(globals);
     groups[GROUP as usize] = Some(kept.map_or(&frame.layout, |k| &k.layout));
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Native shader pack sky"),
-        bind_group_layouts: &groups,
-        ..Default::default()
-    });
+    let layout = super::native_pack::checked(device, || {
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Native shader pack sky"),
+            bind_group_layouts: &groups,
+            ..Default::default()
+        })
+    })?;
     Ok((module, layout))
 }
 
@@ -140,22 +142,21 @@ impl NativeSky {
         }
         let (module, layout) = build(device, globals, (frame, kept.as_ref()), stage)?;
         let present = present_constants(&module, constants);
-        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(&super::dx12_compiler::module_label(&stage.label)),
-            source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
-        });
-        let pipeline = pipeline(
-            device,
-            &layout,
-            &module,
-            "horizon_sky_fs_pack",
-            &present,
-            format,
-        );
-        if let Some(e) = pollster::block_on(scope.pop()) {
-            return Err(format!("{}: {e}", stage.file));
-        }
+        let pipeline = super::native_pack::checked(device, || {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(&super::dx12_compiler::module_label(&stage.label)),
+                source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+            });
+            pipeline(
+                device,
+                &layout,
+                &module,
+                "horizon_sky_fs_pack",
+                &present,
+                format,
+            )
+        })
+        .map_err(|e| format!("{}: {e}", stage.file))?;
         Ok(Self {
             pipeline,
             label: stage.label.clone(),

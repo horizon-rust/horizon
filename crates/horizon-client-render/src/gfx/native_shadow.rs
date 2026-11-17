@@ -559,7 +559,8 @@ impl NativeShadow {
                 ("horizon_displace_steps", f64::from(u8::from(g.steps))),
             ]);
         }
-        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (solid, flat, translucent, flat_translucent, entity, displaced, group) =
+            super::native_pack::checked(device, || {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Native shader pack shadow"),
             source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
@@ -736,9 +737,9 @@ impl NativeShadow {
                 "horizon_shadow_fs_displaced",
             )
         });
-        if let Some(e) = pollster::block_on(scope.pop()) {
-            return Err(format!("shadow pass: {e}"));
-        }
+                (solid, flat, translucent, flat_translucent, entity, displaced, group)
+            })
+            .map_err(|e| format!("shadow pass: {e}"))?;
         Ok(Self {
             solid,
             flat,
