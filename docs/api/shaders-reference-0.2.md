@@ -754,3 +754,11 @@ In a material, vertex or entity stage, the game can refuse some uses of a `let` 
 struct whose components a later statement reads (`let named = TABLE[1];`, then `max(named.x, named.y)`) when it builds
 the pipeline ("... can't be introduced - it's already in scope"). It is a naga limitation (gfx-rs/wgpu#7793, #9002)
 that may go away. Write `const named = TABLE[1];` or `var named = TABLE[1];` instead, or read `TABLE[1].x` in place.
+
+## Written ray calls
+
+On Vulkan, a driver can build the ray traversal anew for every place a stage's code calls a function that traces
+(`trace` and its kin, or a function of yours that calls them), and each such place then costs time on every
+pixel, whether the pixel takes it or not: measured on one card, about 0.13 ms a frame at 2560x1440 for each, and
+0.3 to 0.5 ms for one inside a loop. Write the call once and choose its arguments before it (the origin, the
+direction, the layers, the distance) instead of writing it in each branch.
