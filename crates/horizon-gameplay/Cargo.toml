@@ -9,6 +9,7 @@ description = "Vanilla's logical side: the gameplay the server jar holds, common
 [dependencies]
 horizon-client-lib = { path = "../horizon-client-lib", default-features = false }
 horizon-core = { path = "../horizon-core" }
+horizon-mod-runtime = { path = "../horizon-mod-runtime" }
 horizon-threads = { path = "../horizon-threads" }
 horizon-world = { path = "../horizon-world" }
 log = "0.4"
