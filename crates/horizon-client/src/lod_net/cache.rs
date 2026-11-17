@@ -8,7 +8,7 @@
 //! far terrain source: a level opened again (another source: its generator
 //! and saves read anew) drops its tiles. The oldest used go first past
 //! [`MAX_BYTES`].
-use super::Request;
+use super::{MAX_REPLY, Request, refusal};
 use crate::streaming::LodSource;
 use horizon_protocol::buf::Writer;
 use std::{
@@ -19,6 +19,19 @@ use std::{
 /// What the kept tiles may weigh, replies' bytes: about 4,000 tiles of a
 /// mean 8 KiB (`docs/hosting.md`).
 pub const MAX_BYTES: usize = 32 << 20;
+/// A kept reply's `body` as the answer to request `id`: refused, as
+/// [`super::encode_reply`] refuses it, where a longer id takes it past
+/// [`MAX_REPLY`].
+fn answer(id: u32, body: &[u8]) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.varint(id as i32);
+    if w.data.len() + body.len() > MAX_REPLY {
+        return refusal(id);
+    }
+    w.data.extend_from_slice(body);
+    w.data
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct Key {
     level: u32,
@@ -127,10 +140,7 @@ impl TileCache {
         self.order.remove(&kept.used);
         kept.used = self.clock;
         self.order.insert(self.clock, key);
-        let mut w = Writer::new();
-        w.varint(request.id as i32);
-        w.data.extend_from_slice(&kept.body);
-        Some(w.data)
+        Some(answer(request.id, &kept.body))
     }
 
     /// Keep `reply`, a fresh sample's answer to `request`.
@@ -205,6 +215,23 @@ mod tests {
             stride: 1,
             approximate: false,
         }
+    }
+
+    #[test]
+    fn a_kept_reply_a_longer_id_takes_past_the_limit_is_refused() {
+        let source: Arc<dyn LodSource> = Arc::new(Flat);
+        let mut cache = TileCache::new(4 * MAX_REPLY);
+        // As long as a reply may be under a one-byte id.
+        let mut reply = vec![0];
+        reply.resize(MAX_REPLY, 7);
+        cache.put("o", &source, &request(0, 0), &reply);
+        reply[0] = 5;
+        assert_eq!(cache.get("o", &source, &request(5, 0)), Some(reply));
+        let long = 1 << 20;
+        assert_eq!(
+            cache.get("o", &source, &request(long, 0)),
+            Some(refusal(long))
+        );
     }
 
     #[test]
