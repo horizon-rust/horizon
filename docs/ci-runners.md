@@ -18,6 +18,10 @@ ludodesktop (the maintainer's desktop) runs no Horizon CI since 2026-11-17 (his 
 playhorizon's runners are installed by `tools/ci/checks-runners.sh`. Every persistent checkout (playhorizon's, the Mac
 mini's) is kept small by [`tools/ci/git-slim.sh`](../tools/ci/git-slim.sh) before a job or while the runner is idle.
 
+Blacksmith's runners (outside GitHub's 20-job pool) took over from GitHub's on 2026-11-17 for jobs that hold no
+secret and neither publish nor release: `checks`' `verify` ([below](#verify-on-blacksmith)), `perf-wasm`,
+`cargo-horizon-mod`'s `plan`, `needs-info`, and the bots whenever `SELF_HOSTED_CI=off` sends them away from ours.
+
 ## What stays on GitHub, and why
 
 - **Every job that holds a secret, or whose token can push, tag, publish or start workflows** (`contents: write`,
@@ -67,7 +71,7 @@ for):
 | unset (default) | ours | `verify`: Blacksmith's; the rest ours, forks' pull requests excepted |
 | `all` | ours | ours, every pull request, `verify` included |
 | `light` | ours | Blacksmith's |
-| `off` | GitHub's | Blacksmith's |
+| `off` | Blacksmith's | Blacksmith's |
 
 ```sh
 gh variable set SELF_HOSTED_CI --body light --repo horizon-rust/horizon   # or all, off

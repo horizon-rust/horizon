@@ -509,7 +509,7 @@ jobs:
   parity-scope:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     # A git diff of this repository's own branch: one of our small runners (horizon-light, docs/ci-runners.md).
-    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "horizon-light"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "horizon-light"]') || 'blacksmith-2vcpu-ubuntu-2404' }}
     outputs:
       run: ${{ steps.scope.outputs.run }}
     steps:
