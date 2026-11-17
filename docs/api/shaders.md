@@ -280,6 +280,11 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
 
 ## Changelog
 
+- 2026-11-17: API 0.2 (experimental, #18023): an R-relative kept texture takes its two versions at their size of the
+  post targets' budget, `2 × scale² × bytes a texel / 8` render-size `rgba16float` textures, instead of 2 at any
+  format and scale: `rgba16float` at scale 0.5 takes 0.5, `r32uint` at scale 1 takes 1. Packs that keep small
+  textures fit where they were refused. A `rgba32float` or `rgba32uint` one at scale 1 takes 4 where it took 2, so a
+  pack whose post targets took more than 4 with one of those, or two of them, is now refused; no WGSL name changes.
 - 2026-11-16: API 0.2 (additions, experimental): `[sky] moon = false` leaves out Minecraft's moon, as `sun = false`
   its sun, for a sky that draws its own; and `frame.moon_phase`, the phase of the moon Horizon draws (0 full to 7
   waxing gibbous), declared only for a pack whose files name `moon_phase`, at the end of `Frame`. A pack that sets
