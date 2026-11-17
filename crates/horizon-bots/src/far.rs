@@ -102,6 +102,8 @@ struct State {
     planned: usize,
     latency_ms: Vec<u64>,
     dump: Option<std::io::BufWriter<std::fs::File>>,
+    /// A dump couldn't be created or written: it misses tiles the counts include.
+    dump_failed: bool,
 }
 
 /// One bot's far terrain.
@@ -124,11 +126,12 @@ impl Far {
         s.planned = s.todo.len();
         s.started = Some(Instant::now());
         s.tokens = PER_SECOND;
-        s.dump = dump.and_then(|path| {
-            std::fs::File::create(path)
-                .ok()
-                .map(std::io::BufWriter::new)
-        });
+        if let Some(path) = dump {
+            match std::fs::File::create(path) {
+                Ok(file) => s.dump = Some(std::io::BufWriter::new(file)),
+                Err(_) => s.dump_failed = true,
+            }
+        }
     }
 
     /// The requests to send now (custom payload data).
@@ -184,19 +187,25 @@ impl Far {
         }
         s.served += 1;
         let body = &data[data.len() - r.remaining()..];
-        if let Some(dump) = &mut s.dump {
+        let failed = s.dump.as_mut().is_some_and(|dump| {
             let mut head = Vec::with_capacity(16);
             for v in [tile.x, tile.z, tile.stride, body.len() as i32] {
                 head.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = dump.write_all(&head).and_then(|()| dump.write_all(body));
-        }
+            dump.write_all(&head)
+                .and_then(|()| dump.write_all(body))
+                .is_err()
+        });
+        s.dump_failed |= failed;
     }
 
     pub fn report(&self) -> serde_json::Value {
         let mut s = self.0.lock().unwrap();
-        if let Some(dump) = &mut s.dump {
-            let _ = dump.flush();
+        // The dump ends here: a reply read after the report would be in the dump and not in its counts.
+        if let Some(mut dump) = s.dump.take()
+            && dump.flush().is_err()
+        {
+            s.dump_failed = true;
         }
         s.latency_ms.sort_unstable();
         let p = |q: usize| {
@@ -213,6 +222,7 @@ impl Far {
             "seconds": s.finished.map(|d| d.as_secs_f64()),
             "latency_ms_p50": p(50),
             "latency_ms_p95": p(95),
+            "dump_failed": s.dump_failed,
         })
     }
 }
@@ -236,5 +246,18 @@ mod tests {
             }
         }
         assert!(tiles.iter().all(|t| t.stride <= 256));
+    }
+
+    #[test]
+    fn a_dump_that_cannot_be_written_is_reported_and_the_counts_stay() {
+        let far = Far::default();
+        // A directory can't be created as a file, on every system.
+        far.start([8.0, 64.0, 8.0], 4, 8, Some(std::env::temp_dir()));
+        assert!(!far.requests().is_empty());
+        // Request 0 served (status 0), with a three-byte body.
+        far.reply(&[0, 0, 1, 2, 3]);
+        let report = far.report();
+        assert_eq!(report["served"], 1);
+        assert_eq!(report["dump_failed"], true);
     }
 }

@@ -70,7 +70,11 @@ def server(binary, folder, out, name, extra):
     (folder / 'eula.txt').write_text('eula=true\n')
     command = [binary / f'horizon-client{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     s = Server(command, folder, out / f'{name}.log')
-    s.wait_for(DONE, 600)
+    try:
+        s.wait_for(DONE, 600)
+    except BaseException:
+        s.stop()
+        raise
     return s, int(props['server-port'])
 
 
@@ -116,10 +120,11 @@ def run(binary, label, bots, layout, distance, world, scratch, out, dump, bots_b
             t = tick_query(s)
             if t:
                 ticks.append(t)
-            far1, cpu1 = thread_cpu(pid, 'Far terrain')
-            t1 = time.time()
             time.sleep(4)
         bots_proc.wait()
+        # After the bots: the CPU then covers every tile they counted.
+        far1, cpu1 = thread_cpu(pid, 'Far terrain')
+        t1 = time.time()
     finally:
         s.stop()
         shutil.rmtree(folder, ignore_errors=True)
@@ -135,12 +140,14 @@ def run(binary, label, bots, layout, distance, world, scratch, out, dump, bots_b
         'complete': window is not None,
         'plan_seconds': {'max': window, 'mean': statistics.mean(plan_seconds) if plan_seconds else None},
         'tiles_per_second': served / window if window else None,
-        'bytes_per_second_per_player': statistics.mean(
-            p['bytes'] / p['seconds'] for p in per if p['seconds']) if plan_seconds else None,
+        # Like tiles/s: only when every bot finished its plan (an unfinished one has no plan time).
+        'bytes_per_second_per_player': statistics.mean(p['bytes'] / p['seconds'] for p in per) if window else None,
         'mean_tile_bytes': sum(p['bytes'] for p in per) / max(1, served),
         'far_cpu_seconds': far1 - far0, 'server_cpu_seconds': cpu1 - cpu0, 'measured_seconds': t1 - t0,
         'mspt': {k: statistics.mean(t[k] for t in ticks) for k in ('average', 'p95')} if ticks else None,
-        'latency_ms_p50': statistics.median(p['latency_ms_p50'] for p in per if p['latency_ms_p50'] is not None),
+        'latency_ms_p50': statistics.median(lat) if (lat := [p['latency_ms_p50'] for p in per
+                                                              if p['latency_ms_p50'] is not None]) else None,
+        'dump_failed': any(p.get('dump_failed') for p in per),
         'tiles': str(dump_dir) if dump_dir else None,
     }
 
