@@ -32,6 +32,22 @@ class DispenserSyncTests(unittest.TestCase):
         self.assertEqual(sum(op['op'] == 'sync_randoms' for op in fuzz.render(quiet, 0)), 1)
 
 
+class KnownTests(unittest.TestCase):
+    def test_known_signatures_are_listed_under_their_issue_and_only_new_ones_are_new(self):
+        old = fuzz.KNOWN
+        try:
+            fuzz.KNOWN = [(r'persist\|trident\|live\|damage', 14823),
+                          (r'persist\|pig\|reloaded\|Fire', 99999)]
+            groups = {'persist|trident|live|damage': [('a', {})],
+                      'persist|pig|live|Air': [('b', {})]}
+            known, new, fixed = fuzz.classify(groups)
+            self.assertEqual(known, {14823: ['persist|trident|live|damage']})
+            self.assertEqual(new, {'persist|pig|live|Air': [('b', {})]})
+            self.assertEqual(fixed, [(99999, r'persist\|pig\|reloaded\|Fire')])
+        finally:
+            fuzz.KNOWN = old
+
+
 class SnbtDiffTests(unittest.TestCase):
     def test_a_difference_names_its_field_and_key_order_is_not_one(self):
         vanilla = record('Pig has the following entity data: {Motion: [0.0d, 0.1d, 0.0d], Tags: ["a b"], '

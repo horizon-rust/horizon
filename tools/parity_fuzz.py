@@ -44,6 +44,17 @@ ALLOWED = [
     (r'next_weather_age', 'absolute game time'),
 ]
 
+# Differences already filed, by signature (family|subject|live/reloaded|first field). A pattern matches
+# the whole signature; the report lists a match under its issue, and only the rest as new. An entry that
+# matches nothing is reported as fixed, so the table does not rot.
+KNOWN = [
+    # The issue's own example, and the shape a table entry takes. Add the other filed groups
+    # (#16100 freezing twice, #16128 crystal Rotation, the reload timing family) from a report's
+    # signatures; each entry is a whole-signature regex, and an entry that matches nothing is
+    # reported as fixed.
+    (r'persist\|trident\|live\|damage', 14823),
+]
+
 
 def area(slot):
     return AREA_X + 48 * slot, FLOOR_Y, AREA_Z
@@ -330,6 +341,29 @@ def signatures(result):
         return ['crash']
     return [] if result['invalid'] else list(dict.fromkeys(failure[0] for failure in result['failures']))
 
+def known_issue(signature):
+    """The issue a KNOWN pattern attributes this signature to, or None."""
+    for pattern, issue in KNOWN:
+        if re.fullmatch(pattern, signature):
+            return issue
+    return None
+
+
+def classify(groups):
+    """(known, new, fixed): signatures by known issue, the groups no entry names, and entries matching nothing.
+
+    `groups` is {signature: members}; the result reuses the members so the caller can shrink only new ones.
+    """
+    known, new = {}, {}
+    for signature, members in groups.items():
+        issue = known_issue(signature)
+        if issue is None:
+            new[signature] = members
+        else:
+            known.setdefault(issue, []).append(signature)
+    fixed = [(issue, pattern) for pattern, issue in KNOWN if issue not in known]
+    return known, new, fixed
+
 
 # ---------------------------------------------------------------------------------------------------------------
 # Shrinking: drop steps, NBT keys and ticks while the same divergence stays.
@@ -443,11 +477,14 @@ def main():
     for scenario, result in failing:
         for sig in signatures(result):
             groups.setdefault(sig, []).append((scenario, result))
-    # One bug, one shrink: each group's smallest scenario stands for it.
-    shrunk = shrink(runner, {sig: min(members, key=lambda m: len(json.dumps(m[0]))) for sig, members in groups.items()},
-                    args.shrink_rounds)
-    report = {'scenarios': len(scenarios), 'invalid': invalid, 'diverging': len(failing), 'groups': []}
-    for sig, members in sorted(groups.items(), key=lambda g: -len(g[1])):
+    known, new_groups, fixed = classify(groups)
+    # One bug, one shrink: each new group's smallest scenario stands for it.
+    shrunk = shrink(runner, {sig: min(members, key=lambda m: len(json.dumps(m[0])))
+                             for sig, members in new_groups.items()}, args.shrink_rounds)
+    report = {'scenarios': len(scenarios), 'invalid': invalid, 'diverging': len(failing),
+              'known': [{'issue': issue, 'signatures': signatures} for issue, signatures in sorted(known.items())],
+              'fixed': [{'issue': issue, 'pattern': pattern} for issue, pattern in fixed], 'groups': []}
+    for sig, members in sorted(new_groups.items(), key=lambda g: -len(g[1])):
         scenario, result = shrunk[sig]
         report['groups'].append({
             'signature': sig, 'seeds': [s['seed'] for s, _ in members], 'scenario': scenario,
@@ -456,6 +493,10 @@ def main():
             'differences': result.get('crash') or [[cmd, d[:8]] for s, cmd, d in result['failures'] if s == sig][:3]})
     lab.write_json(work / 'report.json', report)
     print(f'{len(failing)} diverging scenarios in {len(groups)} groups ({runner.batches} harness runs):')
+    for entry in report['known']:
+        print(f'  known  #{entry["issue"]}: {", ".join(entry["signatures"])}')
+    for entry in report['fixed']:
+        print(f'  fixed, remove from KNOWN: #{entry["issue"]} ({entry["pattern"]})')
     for group in report['groups']:
         print(f'  {len(group["seeds"]):3d}  {group["signature"]}')
     print(f'report: {work / "report.json"}')
