@@ -400,6 +400,44 @@ mod tests {
     }
 
     #[test]
+    fn only_a_proto_chunk_read_writes_a_summary_of_no_columns() {
+        let Some((assets, biomes)) = resources() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-far-summaries-proto-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        save.keep_far_summaries(&assets, &biomes);
+        let summaries = save.outstanding.summaries.get().unwrap().clone();
+        let record = |x: i32, status: &str| NamedTag {
+            name: "".into(),
+            tag: Tag::compound([
+                ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+                ("xPos", Tag::Int(x)),
+                ("zPos", Tag::Int(0)),
+                ("Status", Tag::String(status.into())),
+            ]),
+        };
+        // A proto chunk, and a full one whose sections can't be decoded.
+        let records = vec![
+            ((0, 0), Some(record(0, "minecraft:noise"))),
+            ((1, 0), Some(record(1, "minecraft:full"))),
+        ];
+        save.write_records("region", records, true).unwrap();
+        for x in [0, 1] {
+            assert!(save.lod_saved(x, 0, false, &assets, &biomes).is_none());
+        }
+        let summary = |x| summaries.read(x, 0, save.far_timestamp(x, 0).unwrap());
+        assert!(matches!(summary(0), Summary::Columns(None)));
+        assert!(matches!(summary(1), Summary::Missing));
+        drop(save);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_summary_of_another_state_table_or_layout_reads_as_missing() {
         let Some((assets, biomes)) = resources() else {
             return;

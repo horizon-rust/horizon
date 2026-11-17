@@ -233,6 +233,9 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
     }
 }
 
+/// A saved chunk whose record couldn't be read or decoded.
+struct Unread;
+
 impl SaveDir {
     /// The chunks queued to this level's region files (`queue`).
     pub fn far_changes(&self) -> &far_changes::FarChanges {
@@ -325,14 +328,17 @@ impl SaveDir {
             if let far_summaries::Summary::Columns(reduced) = summaries.read(x, z, timestamp) {
                 return reduced.map(SavedFar::Reduced);
             }
-            let columns = self.lod_surfaces(x, z, assets, biomes);
-            if self.far_timestamp(x, z) == Some(timestamp)
+            let read = self.far_columns(x, z, assets, biomes);
+            // A record that couldn't be read or decoded writes no summary:
+            // the next read tries again.
+            if let Ok(columns) = &read
+                && self.far_timestamp(x, z) == Some(timestamp)
                 && !self.far_changes().changed_since(before, (x, z))
             {
                 let reduced = columns.as_deref().map(far_summaries::Reduced::of);
                 summaries.write(x, z, timestamp, reduced.as_ref());
             }
-            return columns.map(SavedFar::Columns);
+            return read.ok().flatten().map(SavedFar::Columns);
         }
         self.lod_surfaces(x, z, assets, biomes)
             .map(SavedFar::Columns)
@@ -344,20 +350,32 @@ impl SaveDir {
         assets: &crate::assets::Assets,
         biomes: &Biomes,
     ) -> Option<LodSurfaces> {
-        let root = self.far_record(x, z)?;
+        self.far_columns(x, z, assets, biomes).ok().flatten()
+    }
+    /// A saved chunk's far columns, None for a proto chunk (it has none), or
+    /// `Unread` where its record couldn't be read or decoded.
+    fn far_columns(
+        &self,
+        x: i32,
+        z: i32,
+        assets: &crate::assets::Assets,
+        biomes: &Biomes,
+    ) -> std::result::Result<Option<LodSurfaces>, Unread> {
+        let root = self.far_record(x, z).ok_or(Unread)?;
         // Proto saves may still be missing decoration from their neighbors.
         if text(root.tag.get("Status"))
             .is_some_and(|status| status != "minecraft:full" && status != "full")
         {
-            return None;
+            return Ok(None);
         }
-        decode_lod_surfaces(
+        let columns = decode_lod_surfaces(
             &root,
             assets,
             biomes,
             self.shape.column(),
             self.shape.sky_light,
-        )
+        );
+        columns.map(Some).ok_or(Unread)
     }
 }
 
