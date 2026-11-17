@@ -451,7 +451,7 @@ fn an_empty_or_unavailable_slot_is_faded_in_frames_and_inventory_slots_alike() {
             let mut available = ALL;
             available[blocked] = false;
             let d = dial(&pages, &room, seen, available);
-            let mut batch = HudBatch::new(size);
+            let mut batch = HudBatch::scratch(size);
             let clock = Clock::new(Instant::now(), true);
             draw_overlay(&mut batch, &atlas, &NoItems, &d, &shown(seen), clock);
             let tints = |slot| colours_in(&batch, look::cell_rect(&lay, slot));

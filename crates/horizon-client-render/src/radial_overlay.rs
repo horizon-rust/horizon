@@ -1189,7 +1189,10 @@ mod tests {
     pub(super) const ALL: [bool; SLOTS] = [true; SLOTS];
 
     pub(super) fn atlas() -> HudAtlas {
-        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+        HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            "/nonexistent/horizon-test-assets".into(),
+        ))
+        .unwrap()
     }
 
     pub(super) fn rooms(w: f32, h: f32) -> Vec<Room> {
@@ -1348,7 +1351,7 @@ mod tests {
     }
 
     pub(super) fn draw(size: [u32; 2], dial: &Dial, look: &Look) -> HudBatch {
-        let mut batch = HudBatch::new(size);
+        let mut batch = HudBatch::scratch(size);
         let clock = Clock::new(Instant::now(), true);
         draw_overlay(&mut batch, &atlas(), &NoItems, dial, look, clock);
         batch
@@ -1581,7 +1584,7 @@ mod tests {
                     *key = None;
                 }
             }
-            let mut batch = HudBatch::new([427, 240]);
+            let mut batch = HudBatch::scratch([427, 240]);
             draw_header(
                 &mut batch,
                 &atlas,
@@ -1704,6 +1707,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn every_action_has_an_icon_and_every_string_a_horizon_key() {
         let english = lang::Language::load(&[], "en_us");
         let ((), missed) = lang::scoped(english, || {
