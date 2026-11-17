@@ -28,6 +28,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -98,38 +99,52 @@ def run(binary, label, bots, layout, distance, world, scratch, out, dump, bots_b
     folder.mkdir(parents=True)
     if world:
         shutil.copytree(world, folder / 'world')
-    s, port = server(binary, folder, out, name, {'horizon-lod-distance': str(distance)})
     report = out / f'{name}-bots.json'
     dump_dir = None
     if dump:
         dump_dir = out / 'tiles' / name
         dump_dir.mkdir(parents=True)
+    s, port = server(binary, folder, out, name, {'horizon-lod-distance': str(distance)})
     command = [bots_bin, '--server', f'127.0.0.1:{port}', '--bots', bots, '--behaviour', 'idle',
                '--brand', 'horizon', '--far', distance, '--far-after', FAR_AFTER, '--join-every', 0.25,
                '--view-distance', 4, '--seconds', seconds + FAR_AFTER, '--report', report, '--name', 'Bot']
     if dump_dir:
         command += ['--far-dump', dump_dir]
     try:
-        bots_proc = subprocess.Popen([str(c) for c in command], stdout=subprocess.DEVNULL,
+        # The far threads do nothing before the bots ask: their CPU from here is every tile's.
+        far0, _ = thread_cpu(s.process.pid, 'Far terrain')
+        bots_proc = subprocess.Popen([str(c) for c in command], stdout=subprocess.PIPE, text=True,
                                      stderr=open(out / f'{name}-bots.err', 'w'))
+        done = threading.Event()
+
+        def watch():
+            # The bots print a line a second; far_done counts the bots whose pass is over.
+            for line in bots_proc.stdout:
+                try:
+                    if json.loads(line).get('far_done') == bots:
+                        done.set()
+                except ValueError:
+                    pass
+
+        threading.Thread(target=watch, daemon=True).start()
         s.wait_for(rf'Bot{bots - 1} joined the game', 120)
         if layout == 'apart':
             for i in range(bots):
                 s.console(f'tp Bot{i} {i * 10000} 200 0')
         time.sleep(FAR_AFTER - 1)
         pid = s.process.pid
-        far0, cpu0 = thread_cpu(pid, 'Far terrain')
+        _, cpu0 = thread_cpu(pid, 'Far terrain')
         t0 = time.time()
         ticks = []
-        while bots_proc.poll() is None:
+        # Until every bot's pass is over (or the bots stop at --seconds): MSPT and CPU while tiles are served.
+        while bots_proc.poll() is None and not done.is_set():
             t = tick_query(s)
             if t:
                 ticks.append(t)
-            time.sleep(4)
-        bots_proc.wait()
-        # After the bots: the CPU then covers every tile they counted.
+            done.wait(4)
         far1, cpu1 = thread_cpu(pid, 'Far terrain')
         t1 = time.time()
+        bots_proc.wait()
     finally:
         s.stop()
         shutil.rmtree(folder, ignore_errors=True)

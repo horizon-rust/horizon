@@ -134,6 +134,11 @@ impl Far {
         }
     }
 
+    /// Every tile of the plan asked for and answered.
+    pub fn is_finished(&self) -> bool {
+        self.0.lock().unwrap().finished.is_some()
+    }
+
     /// The requests to send now (custom payload data).
     pub fn requests(&self) -> Vec<Vec<u8>> {
         let mut s = self.0.lock().unwrap();
@@ -246,6 +251,13 @@ mod tests {
             }
         }
         assert!(tiles.iter().all(|t| t.stride <= 256));
+    }
+
+    #[test]
+    fn the_farthest_plan_a_server_offers_is_finite() {
+        let tiles = plan([0, 0], 4, 1024);
+        assert!(!tiles.is_empty());
+        assert!(tiles.iter().all(|t| t.stride <= 1024));
     }
 
     #[test]

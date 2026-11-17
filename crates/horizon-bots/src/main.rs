@@ -100,10 +100,11 @@ horizon-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
                          ground (give them swords); for PvP benches (crit and sweep particles)
   --name PREFIX          bot names: PREFIX0, PREFIX1...; default Bot
   --brand B              the client brand sent in configuration (minecraft:brand); default none
-  --far D                ask the server for far terrain out to D chunks (horizon:lod, needs --brand horizon
-                         and a server with horizon-lod-distance), as a Horizon client with LOD Distance D
-                         does: one pass of its plan, nearest first; the report gives each bot's tiles, bytes
-                         and seconds (src/far.rs)
+  --far D                ask the server for far terrain out to D chunks, 1024 at most (horizon:lod, needs
+                         --brand horizon and a server with horizon-lod-distance), as a Horizon client with
+                         LOD Distance D does: one pass of its plan, nearest first; the report gives each
+                         bot's tiles, bytes and seconds (src/far.rs), and each second's line how many bots
+                         finished their pass (far_done)
   --far-after S          start asking S seconds after joining (after a /tp to spread the bots); default 3
   --far-dump DIR         keep every tile each bot got in DIR/<name>.tiles, to compare servers byte for byte
   --height H             blocks above spawn the bots fly at (walk, explore, idle); default 24
@@ -314,9 +315,10 @@ fn options() -> Result<Options, String> {
             "--brand" => o.brand = Some(value),
             "--far" => {
                 o.far = value.parse().map_err(|_| number("chunks"))?;
-                // The plan counts blocks in an i32: 16 a chunk.
-                if o.far > i32::MAX as u32 / 16 {
-                    return Err(format!("--far {value}: at most {} chunks", i32::MAX / 16));
+                // A server offers at most this far (`lod_net::MAX_DISTANCE`), and the plan's
+                // coverage loop stays far inside an i32 there.
+                if o.far > FAR_MAX {
+                    return Err(format!("--far {value}: at most {FAR_MAX} chunks"));
                 }
             }
             "--far-after" => o.far_after = value.parse().map_err(|_| number("seconds"))?,
@@ -503,6 +505,9 @@ impl Random {
 }
 
 /// Vanilla's bare-hand attack speed is 4 a second: a full-strength swing every 20 / 4 ticks.
+/// The farthest `--far`: what a server offers at most (`horizon-lod-distance`, 1024 chunks).
+const FAR_MAX: u32 = 1024;
+
 const ATTACK_COOLDOWN_TICKS: u32 = 5;
 /// How far, in blocks, a fight bot strikes (the survival entity interaction range is 3).
 const ATTACK_REACH: f64 = 2.5;
@@ -1625,6 +1630,8 @@ fn main() {
                 "pulled_back": total(|b| &b.pulled_back),
                 "waited_ticks": total(|b| &b.waited),
                 "attacks": total(|b| &b.attacks),
+                // Bots whose far plan is done: every tile asked for and answered.
+                "far_done": bots.iter().filter(|b| b.far.is_finished()).count(),
             })
         );
         previous_chunks = chunks;
