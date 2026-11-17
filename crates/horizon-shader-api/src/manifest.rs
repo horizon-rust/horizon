@@ -956,6 +956,8 @@ impl Manifest {
         if raw
             .material
             .iter()
+            .chain(&raw.vertex)
+            .chain(&raw.weather)
             .chain(&raw.post)
             .chain(&raw.tonemap)
             .chain(&raw.entity)

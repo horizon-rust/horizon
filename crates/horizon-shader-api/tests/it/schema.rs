@@ -466,8 +466,17 @@ fn a_sky_can_keep_or_replace_minecrafts_clouds_sun_moon_and_stars() {
     let sky = m.sky.unwrap();
     assert_eq!((sky.sun, sky.moon), (None, None));
     for key in ["clouds", "sun", "moon", "stars"] {
-        let e = manifest(&format!("[material]\nfile = \"m.wgsl\"\n{key} = false\n"));
-        assert!(e.unwrap_err().to_string().contains("keys of [sky] only"));
+        for stages in [
+            format!("[material]\nfile = \"m.wgsl\"\n{key} = false\n"),
+            format!("[weather]\nfile = \"w.wgsl\"\n{key} = false\n"),
+            format!("[material]\nfile = \"m.wgsl\"\n[vertex]\nfile = \"v.wgsl\"\n{key} = false\n"),
+        ] {
+            let e = manifest(&stages);
+            assert!(
+                e.unwrap_err().to_string().contains("keys of [sky] only"),
+                "{stages}"
+            );
+        }
     }
 }
 
