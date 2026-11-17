@@ -25,7 +25,7 @@ jobs:
       group: pr-vouch
       queue: max
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30  # the first sweep spaces ~550 label changes 4 s apart per 5
     steps:
       # The trust list comes from the default branch API. No pull request code is loaded.
       - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
@@ -119,10 +119,24 @@ jobs:
               }
             }
 
-            // Batch independent mutations to keep the initial sweep under GitHub's request limits.
-            const batchSize = 25;
+            // Small batches, spaced to stay under GitHub's ~80 content changes a minute: the first sweep's batches of
+            // 25 got a 502 Bad Gateway (run 44189766134). A batch that fails with a server error or a rate limit is
+            // sent again (adding or removing a label twice changes nothing).
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const batchSize = 5;
             for (let start = 0; start < changes.length; start += batchSize) {
-              if (start) await new Promise((resolve) => setTimeout(resolve, 1000));
-              await github.graphql(`mutation { ${changes.slice(start, start + batchSize).join("\n")} }`);
+              if (start) await sleep(4000);
+              const mutation = `mutation { ${changes.slice(start, start + batchSize).join("\n")} }`;
+              for (let attempt = 1; ; attempt++) {
+                try {
+                  await github.graphql(mutation);
+                  break;
+                } catch (error) {
+                  const status = error.status ?? error.response?.status;
+                  if (attempt >= 4 || !(status >= 500 || status === 403 || status === 429)) throw error;
+                  core.warning(`Label batch ${start / batchSize + 1} failed (${status}); trying again.`);
+                  await sleep(10000 * 2 ** (attempt - 1));
+                }
+              }
             }
             core.info(`Checked ${pulls.length} open PRs and applied ${changes.length} label updates.`);
