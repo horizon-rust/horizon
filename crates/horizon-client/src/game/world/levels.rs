@@ -1272,8 +1272,6 @@ impl Game<'_> {
                         self.tick_server_first()
                     } else {
                         let running = running.unwrap_or_else(|| self.clock.world_runs());
-                        // ClientLevel.tick: the sky flash fades in a frozen level too.
-                        self.tick_weather_effects();
                         self.tick_world(running)
                     }
                 },
@@ -1442,8 +1440,6 @@ impl Game<'_> {
             // stepping the world (and its mobs) through the fade.
             self.world.weather.settle_levels();
         }
-        // ClientLevel.tick: the sky flash fades in a frozen level too.
-        self.tick_weather_effects();
         let _ = span("player_autosaves", || self.finish_player_autosaves(false));
         // MinecraftServer.tickServer's countdown, then autoSave: three
         // hundred seconds of ticks at the rate the server runs at now.

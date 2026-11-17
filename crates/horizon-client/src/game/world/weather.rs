@@ -84,11 +84,4 @@ impl Game<'_> {
     pub(super) fn rain_height(&self, x: i32, z: i32) -> i32 {
         render_tick::motion_blocking_height(&self.world, &self.pack.assets.properties, x, z)
     }
-
-    pub(super) fn tick_weather_effects(&mut self) {
-        if self.flash > 0 {
-            self.flash -= 1;
-        }
-        // The rain sounds come with the rain splashes (`tick_particles`).
-    }
 }

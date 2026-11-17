@@ -69,6 +69,14 @@ impl ParticleEngine {
             self.pending.push(PendingParticle::Ordinary(particle));
         }
     }
+
+    /// A server never ages the engine, so it drops everything its code pushed in.
+    pub fn discard(&mut self) {
+        self.clear();
+        self.starters.clear();
+        self.tracked_explosions.clear();
+        self.sounds.clear();
+    }
 }
 
 /// `Mth.nextDouble(random, min, max)`.
