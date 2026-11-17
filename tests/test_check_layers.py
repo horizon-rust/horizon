@@ -222,6 +222,18 @@ class CheckLayersTests(unittest.TestCase):
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("game -> cosmetics: added to portable.pending", problems[0])
 
+    def test_a_portable_crate_does_not_become_pending(self):
+        base = dict(CONFIG, portable={"crates": ["core", "game"], "forbidden": []})
+        config = dict(CONFIG, portable={"crates": ["core"], "pending": {"game": ["mod-api"]}, "forbidden": []})
+        problems = check_layers.portable(config, [], base)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("game: portable on the base", problems[0])
+
+    def test_a_crate_new_to_pending_may_take_its_first_entry(self):
+        base = dict(CONFIG, portable={"crates": ["core"], "forbidden": []})
+        config = dict(CONFIG, portable={"crates": ["core"], "pending": {"game": ["mod-api"]}, "forbidden": []})
+        self.assertEqual(check_layers.portable(config, [], base), [])
+
     def test_registry_dependencies_are_not_edges(self):
         pkg = {"name": "game", "dependencies": [{"name": "cosmetics", "kind": None, "path": None}]}
         self.assertEqual(check_layers.edges([pkg]), {"game": set()})

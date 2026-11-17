@@ -176,7 +176,11 @@ def portable(config, packages, base=None):
     problems |= {f"{crate}: in both portable.crates and portable.pending of {CONFIG_PATH}"
                  for crate in crates & set(pending)}
     base_pending = (base or {}).get("portable", {}).get("pending", {})
+    base_portable = set((base or {}).get("portable", {}).get("crates", []))
     for crate, deps in pending.items():
+        if crate in base_portable and crate not in base_pending and deps:
+            problems.add(f"{crate}: portable on the base, now in portable.pending of {CONFIG_PATH} with "
+                         f"{', '.join(sorted(deps))}. A portable crate stays portable")
         if crate in base_pending:
             for dep in sorted(deps - set(base_pending[crate])):
                 problems.add(f"{crate} -> {dep}: added to portable.pending in {CONFIG_PATH}. "
