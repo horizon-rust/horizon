@@ -88,9 +88,9 @@ def temp_folder(prefix):
                 break
             except FileNotFoundError:
                 break
-            except OSError:
+            except OSError as error:
                 if attempt == 9:
-                    shutil.rmtree(path, ignore_errors=True)
+                    print(f"Could not remove scratch folder {path}: {error}", file=sys.stderr)
                 else:
                     time.sleep(0.5)
 
