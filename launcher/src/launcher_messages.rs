@@ -101,15 +101,7 @@ impl Launcher {
                             self.client_error = account::take_unsaved();
                             self.step_aside(cx);
                         }
-                        Err(e) => {
-                            if e == account::NoOwner::default().to_string() {
-                                self.owner = Some(false);
-                                self.owner_screen_open = true;
-                                self.client_error = Some(account::NoOwner::default().in_window());
-                            } else {
-                                self.client_error = Some(e);
-                            }
-                        }
+                        Err(e) => self.client_error = Some(e),
                     }
                 }
                 Msg::Session(session) => self.handle_game_session(session),
@@ -453,14 +445,9 @@ impl Launcher {
                     self.accounts = Accounts::load();
                     self.load_profile_heads();
                     self.load_auth_statuses(false);
-                    // Sign-in refuses accounts that don't own the game.
+                    // Sign-in only accepts accounts that own the game, so one is now an owner.
                     self.owner = Some(true);
-                    self.owner_screen_open = false;
                     self.client_error = None;
-                    if !self.settings.owner_notice_seen {
-                        self.settings.owner_notice_seen = true;
-                        self.save_settings();
-                    }
                 }
                 changed = true;
             }

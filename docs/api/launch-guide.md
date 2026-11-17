@@ -5,12 +5,13 @@ ATLauncher, Modrinth App, HMCL or your own). The contract it relies on is the [L
 are in [launch-reference.md](launch-reference.md). `horizon-launcher` does all of this and is the reference
 implementation.
 
-## 0. Only for an owner
+## 0. The player's own game files
 
-Horizon contains none of Minecraft's code, textures or sounds: it prepares them from the player's own copy. So
-every step below is for a player signed in with a Microsoft account that **owns Minecraft: Java Edition**, the
-same gate `horizon-launcher` applies before every start. Horizon never downloads Mojang's files; when your
-launcher downloads them (step 3), it does so only for that owner, as it would for vanilla.
+Horizon contains none of Minecraft's code, textures or sounds: it prepares them from the player's own copy.
+So every step below needs a player who **owns Minecraft: Java Edition** and has its files, or points your
+launcher at them. Horizon never downloads Mojang's files; when your launcher downloads them (step 3), it
+does so only for an account that owns the game, as it would for vanilla. Playing itself needs no Microsoft
+account: without a session the game plays offline under its own name, exactly as with `horizon-launcher`.
 
 ## 1. Pick a build
 
@@ -49,7 +50,7 @@ From `horizon-prepare`'s reply take `minecraft` (the Minecraft version whose fil
 Java it runs) and the `options` it accepts; from `horizon-client`'s, the `options` it accepts. Pass only listed
 options: any other is refused with exit code 2. Readers ignore fields they don't know.
 
-## 3. Have the owner's game files and a Java
+## 3. Have the player's game files and a Java
 
 Preparing reads, for the `minecraft` version above:
 
@@ -93,7 +94,7 @@ makes older resources fail the check.
 
 ## 6. Start the game
 
-One folder per instance, and the owner's session on standard input:
+One folder per instance, and the signed-in account's session on standard input:
 
 ```sh
 horizon-client --resources PREPARED --game-dir INSTANCE --home INSTANCE --width 1280 --height 720 --session-stdin
@@ -102,6 +103,9 @@ horizon-client --resources PREPARED --game-dir INSTANCE --home INSTANCE --width 
 - Write the [session JSON](launch.md#the-session-json) (`name`, `uuid`, `access_token`, `user_type: "msa"`,
   `xuid` optional) to the game's standard input and close it. Never put a token on the command line, where other programs
   can read it. `--session-file` is the alternative: the game reads the file once and deletes it.
+- No session to hand over, no `--session-stdin`: the game plays offline under its own name, which it keeps in
+  `horizon-player.txt` in the game folder. `--name` or `HORIZON_PLAYER_NAME` gives it one. Online-mode servers
+  refuse such a player, offline-mode ones take anyone.
 - `--game-dir` holds saves, `options.txt`, resource packs, mods and screenshots; `--home` holds `logs/latest.log`
   and `crash-reports/`. `--quickPlaySingleplayer WORLD` or `--quickPlayMultiplayer HOST[:PORT]` opens a world or a
   server at once.

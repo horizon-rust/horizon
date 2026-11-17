@@ -91,7 +91,7 @@ MCP: `prepare`.
 
 ## `horizon-launcher play`
 
-Start the client (needs a signed-in Microsoft account that owns Minecraft: Java Edition).
+Start the client (with no signed-in account the game plays offline, under the Settings' Player name).
 
     horizon-launcher play
 
@@ -190,7 +190,7 @@ MCP: `account_list`.
 
 ## `horizon-launcher account sign-in`
 
-Sign in with a Microsoft account in your browser (device code). Play needs one that owns Minecraft: Java Edition.
+Sign in with a Microsoft account in your browser (device code). Optional: playing works without one; an account brings online-mode servers, Realms and Mojang's download.
 
     horizon-launcher account sign-in
 
@@ -244,7 +244,7 @@ Show the launcher's settings, or set one (the Settings page): selected-version T
 
     horizon-launcher settings [KEY] [VALUE]
 
-- `KEY` (selected-version, minecraft-dir, server-dir, install-new-versions, prune-old-versions, keep-versions, opening-animation, game-architecture, proxy, while-playing, language, accent, background, cache-limit-gib)
+- `KEY` (selected-version, minecraft-dir, server-dir, install-new-versions, prune-old-versions, keep-versions, opening-animation, game-architecture, proxy, player-name, while-playing, language, accent, background, cache-limit-gib)
 - `VALUE`: The new value (with KEY)
 
 MCP: `settings`.

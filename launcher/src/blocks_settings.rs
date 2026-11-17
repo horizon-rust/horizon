@@ -256,6 +256,7 @@ impl Launcher {
                     .child(group("Game", "gamepad"))
                     .child(self.game_architecture_row(n + 5, cx))
                     .child(self.game_args_row(n + 6, cx))
+                    .child(self.player_name_row(n + 6, cx))
                     .child(group("AI", "terminal"))
                     .child(self.no_ai_row(n + 6, cx))
                     .child(group("About", "info-box"))
@@ -581,6 +582,87 @@ impl Launcher {
         horizon_launcher::proxy::announce(self.settings.proxy.clone());
     }
 
+    /// Settings' Player name row: the name the game plays under when no Microsoft account
+    /// plays, kept in `settings.json` and given to the game as `HORIZON_PLAYER_NAME`.
+    pub(crate) fn player_name_row(&self, n: usize, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let focused = self.name_focused;
+        let field = div()
+            .id("player-name")
+            .track_focus(&self.name_focus)
+            .flex()
+            .items_center()
+            .w(px(300.))
+            .h(px(30.))
+            .px(px(12.))
+            .overflow_hidden()
+            .border_2()
+            .border_color(if focused { t.accent } else { t.outline })
+            .bg(t.well)
+            .font_family(theme::MONO)
+            .text_size(px(12.))
+            .cursor_text()
+            .child(line_edit::content(
+                &self.name_input,
+                &t,
+                focused,
+                false,
+                false,
+                tr("For example Notch"),
+            ))
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                window.focus(&this.name_focus, cx);
+                cx.notify();
+            }))
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                match line_edit::handle(&mut this.name_input, ev, cx) {
+                    line_edit::Key::Pass => return,
+                    line_edit::Key::Escape => window.blur(cx),
+                    line_edit::Key::Edited => this.save_player_name(),
+                    _ => {}
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }));
+        let field = line_edit::mouse(field, cx, |this| &mut this.name_input);
+        // Half-typed is no reason to complain; what is left behind must be a name the game takes.
+        let detail = match (focused, player_name::refuse(self.name_input.text())) {
+            (false, Some(why)) => div().text_color(t.danger).child(why).into_any_element(),
+            _ => div()
+                .child(tr(
+                    "The name others see when you play without a Microsoft account. 3 to 16 \
+                     letters, digits or underscores. Leave it empty and the game keeps the name \
+                     it made for itself. A signed-in account always plays with its own name.",
+                ))
+                .into_any_element(),
+        };
+        if glass_ui::flat() {
+            return glass_ui::setting_row_stacked(
+                tr("Player name"),
+                Some(detail),
+                glass_ui::wide_field(field, focused).into_any_element(),
+            );
+        }
+        index_row(
+            n,
+            tr("Player name"),
+            Some(detail),
+            Some(field.into_any_element()),
+            &t,
+        )
+    }
+
+    /// Keeps the Player name field in `settings.json`: only a name Minecraft accepts, or
+    /// nothing at all, is saved; what is half-typed stays in the field.
+    pub(crate) fn save_player_name(&mut self) {
+        let text = self.name_input.text().trim().to_owned();
+        if !text.is_empty() && !player_name::valid(&text) {
+            return;
+        }
+        self.settings.player_name = (!text.is_empty()).then_some(text);
+        self.save_settings();
+    }
+
     /// Settings' Microsoft accounts: who is signed in and plays, the sign-in with its code. The
     /// rows are numbered from 01; returns them and how many there are.
     pub(crate) fn account_rows(&mut self, cx: &mut Context<Self>) -> (Div, usize) {
@@ -756,7 +838,9 @@ impl Launcher {
                         .child(code.user_code.clone()),
                 )
                 .when(!microsoft::has_private_window(), |col| {
-                    col.child(tr("Open this link in a private window to pick another account."))
+                    col.child(tr(
+                        "Open this link in a private window to pick another account.",
+                    ))
                 })
                 .child({
                     let uri = code.verification_uri.clone();
@@ -775,7 +859,9 @@ impl Launcher {
             }
             Some(SignInState::Done(Err(e))) => div().text_color(t.danger).child(e.clone()),
             None if self.accounts.accounts.is_empty() => div().child(tr(
-                "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers. It also plays online servers with your name and skin.",
+                "Optional. Playing by yourself and on your local network need no account. Sign in \
+                 to play online servers that check accounts, to join Realms, to wear your cape and \
+                 skin, and to download Minecraft's own game files.",
             )),
             None => div().child(tr("Add another account.")),
         };

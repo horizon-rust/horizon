@@ -128,14 +128,6 @@ pub fn validate(cmd: &Command) -> Result<(), String> {
     Ok(())
 }
 
-pub fn selected() -> bool {
-    let instance = crate::instances::selected();
-    instance.java.is_none()
-        && instance
-            .resolve_version(None)
-            .is_ok_and(|tag| enabled(&tag))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,13 +143,21 @@ mod tests {
         assert!(!startup_failure(&"界".repeat(500)).ends_with('…'));
     }
 
+    /// What stays without the opt-in is the restriction, not an account gate: an unsigned
+    /// checkout plays offline like any other install, and never gets the single-player flag.
     #[test]
-    fn account_gate_is_preserved_without_opt_in_and_for_signed_lineage() {
+    fn offline_stays_opt_in_and_the_normal_path_asks_for_no_account() {
         if let Ok(tag) = std::env::var("OFFLINE_GATE_TEST_TAG") {
             assert!(!enabled(&tag));
+            // The normal path: the only refusal is this version not being prepared. Playing
+            // itself asks for no account, so no sign-in wording is ever part of it.
             let error = crate::backend::client_as(&tag, None).unwrap_err();
             assert!(
-                error.contains(crate::i18n::tr(crate::backend::SIGN_IN_HINT)),
+                !error.contains(crate::i18n::tr(crate::backend::SIGN_IN_HINT)),
+                "{error}"
+            );
+            assert!(
+                !error.contains(crate::i18n::tr(crate::account::NEEDS_OWNER)),
                 "{error}"
             );
             return;

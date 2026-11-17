@@ -668,6 +668,7 @@ impl Launcher {
         let game = section(4)
             .child(self.game_architecture_row(n, cx))
             .child(self.game_args_row(n + 1, cx))
+            .child(self.player_name_row(n + 1, cx))
             .child(self.mods_auto_update_row(cx));
         let ai = section(8)
             .child(self.no_ai_row(n, cx))

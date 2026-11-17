@@ -50,11 +50,10 @@ The opening, then Play ([clip](docs/opening.webm)):
   Mojang lists. The Play page shows how far it is and has Cancel; files already whole are kept,
   so the next try goes on from there. **From my install** prepares from the player's own launcher
   instead, and an install that lacks the version falls back to the download. **Play** on a version
-  not prepared yet does it all for an owner, as the official launcher does: it prepares from the
-  install when there is one, else downloads (with Mojang's Java when no Java 25 is installed), then
-  starts the game. With no install on the computer the Play page offers the download alone and the
-  Minecraft folder row says none is needed. Without an owner,
-  the Play page asks to sign in first. `horizon-launcher prepare --download`.
+  not prepared yet does what it can, as the official launcher does: it prepares from the
+  install when there is one, else downloads for a signed-in owner (with Mojang's Java when no Java 25 is
+  installed), then starts the game. With no install on the computer and no owner the Play page keeps the
+  install path and the Minecraft folder row says none is needed. `horizon-launcher prepare --download`.
 - **Mods**: tabs for Mods, Modpacks, Resource packs, Shader packs and Data packs. Mods, Modpacks,
   Resource packs and Data packs (into the world picked there) search Horizon's own registry, with
   its categories as filters, or Modrinth (CurseForge support is coming soon); Shader packs search
@@ -259,6 +258,11 @@ page `servers.json` (the list), `servers/<name>/` (the servers created there) an
   launcher's own arguments, kept as `game_args` in `settings.json`, and apply the next time the
   game starts. `horizon-launcher game-args "<line>"` sets them too, and `play --arg <ARG>` passes
   one for a single run.
+- **Player name**: the name the game plays under when no Microsoft account does (a signed-in
+  account always plays with its own name). 3 to 16 letters, digits or underscores; empty keeps the
+  name the game made for itself in `horizon-player.txt`. Kept as `player_name` in `settings.json`,
+  given to the game as `HORIZON_PLAYER_NAME` when no session goes with it, and
+  `horizon-launcher settings player-name Steve` sets it too ("default" gives the name back to the game).
 - **Wasm compile budget** (game runtime, not a launcher preference):
   `wasm.compile_timeout_secs:120` in the client's `options.txt` (the resolved
   `--player-dir` when supplied, otherwise the selected instance) allows 120 seconds
@@ -497,15 +501,15 @@ The window, the command line and the MCP server all call the same core, `src/bac
 
 ## Microsoft accounts
 
-The launcher starts the game only while a Microsoft account that owns Minecraft: Java Edition is
-signed in, as other launchers do: without one, Play (Home, instances, `horizon-launcher play`, the
-MCP's `play`) says "Sign in with a Microsoft account that owns Minecraft: Java Edition to play"
-and starts nothing. Settings → Accounts signs in: the launcher shows a code, you enter it at
-microsoft.com/link, and the launcher checks that the account owns the game. It asks again at every
-Play, with the token renewal; with no network the last answer stands, and a "doesn't own" blocks
-at once. The account that plays must own the game itself, and it plays online-mode servers under
+Playing needs no account: with none signed in the launcher starts the game offline, under the Player
+name in Settings (or the name the game made for itself). A Microsoft account is what brings the rest:
+online-mode servers, Realms, your own name and skin, and Mojang's own download ("Download and prepare");
+playing a Java Edition instance needs one too, since real Minecraft authenticates. Settings → Accounts
+signs in: the launcher shows a code, you enter it at microsoft.com/link, and the launcher checks that the
+account owns the game. It asks again at every Play, with the token renewal; with no network the last
+answer stands. The account that plays must own the game itself, and it plays online-mode servers under
 your own name and skin, LAN and offline-mode servers too. The game binary started directly (`horizon-client`,
-`horizon-ctl launch`), the harnesses and the servers don't go through this check. Tokens live in the system keychain (Keychain,
+`horizon-ctl launch`), the harnesses and the servers never needed any of this. Tokens live in the system keychain (Keychain,
 Credential Manager, or the Secret Service on Linux), never in a log or the command line;
 `accounts.json` in the data folder keeps only names and UUIDs. On Linux without a keychain they go
 to `account-secrets.json` in the data folder, encrypted and readable by you only, and back to the keychain once it
