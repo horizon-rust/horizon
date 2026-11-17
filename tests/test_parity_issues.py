@@ -24,6 +24,23 @@ class ParityIssuesTests(unittest.TestCase):
         # The first audit only records: it compares the results with themselves.
         self.assertEqual(issues.plan(now, now, {}), [])
 
+    def test_mass_failure_issues_are_one_and_closed_when_the_failure_ends(self):
+        listed = [{"number": 5, "title": "Parity regression: x"},
+                  {"number": 9, "title": "Nightly audit: 21 harnesses newly fail"}]
+        self.assertEqual(issues.mass_number(listed), 9)
+        self.assertIsNone(issues.mass_number(listed[:1]))
+        calls = []
+
+        def call(*arguments, dry_run=False):
+            calls.append(arguments)
+
+        issues.report_mass(["a", "b"], None, call, "c" * 12, "run", "body")
+        issues.report_mass(["a", "b"], 9, call, "c" * 12, "run", "body")
+        issues.report_mass([], 9, call, "c" * 12, "run", "body")
+        self.assertEqual(len([c for c in calls if "create" in c]), 1)
+        self.assertEqual(len([c for c in calls if "comment" in c and "9" in c]), 1)
+        self.assertEqual(len([c for c in calls if "close" in c and "9" in c]), 1)
+
     def test_many_new_failures_at_once_are_one_report(self):
         many = [("open", f"h{i}") for i in range(issues.MASS_FAILURE + 1)]
         self.assertEqual(issues.mass_failure(many + [("comment", "x"), ("close", "y")]),
