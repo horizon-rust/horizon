@@ -777,7 +777,7 @@ mod tests {
         let mut widest = 0u32;
         // Five seconds of minimised play: a 10 FPS frame every 100 ms.
         for _ in 0..50 {
-            let got = clock.advance(std::time::Duration::from_millis(100));
+            let got = clock.advance(std::time::Duration::from_millis(100), 50.0);
             widest = widest.max(got);
             total += got;
         }
