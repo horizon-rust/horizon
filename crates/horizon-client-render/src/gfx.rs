@@ -42,9 +42,7 @@ fn terrain_shader() -> String {
     wgsl_prefix::HDR_LIGHT.to_owned() + include_str!("terrain.wgsl")
 }
 
-fn border_shader() -> String {
-    wgsl_prefix::HDR_LIGHT.to_owned() + include_str!("border.wgsl")
-}
+pub(super) use border::border_shader;
 
 fn entity_binding_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
     let vf = wgpu::ShaderStages::VERTEX_FRAGMENT;
@@ -203,8 +201,28 @@ fn static_entity_shader() -> String {
     entity_shader() + include_str!("static_entity.wgsl")
 }
 
+pub mod border;
 #[cfg(test)]
 mod crumbling_tests;
+mod gpu_checks;
+mod section_gpu;
+mod section_lists;
+mod static_entity;
+
+pub(crate) use section_gpu::collect_animated_layers;
+use section_gpu::{
+    Part, SectionGpu, begin_shrink, decide_fade, forget_records, hold_fading, mark_fades,
+};
+use section_lists::{SectionLists, flat_vertices, translucent_batchable};
+use static_entity::{GpuStaticEntitySection, StaticEntityUniform};
+pub mod outline;
+mod overlay;
+pub use border::BorderDraw;
+use border::BorderUniform;
+use gpu_checks::GpuChecks;
+use outline::{debug_line_opaque, debug_lines_opaque_first, outline_vertices_into};
+pub use outline::{outline_params, outline_vertices, outline_width};
+use overlay::Overlay;
 mod entity_batch;
 mod entity_outline;
 #[cfg(any(test, feature = "test-support"))]
@@ -252,149 +270,6 @@ use section_fade::{
     section_visibility,
 };
 pub use view::{View, ViewSet};
-
-/// Window.getAppropriateLineWidth, in framebuffer pixels.
-pub fn outline_width(width: u32) -> f32 {
-    2.5f32.max(width as f32 / 1920.0 * 2.5)
-}
-
-/// ScreenSize, stroke width and ProjectionType.PERSPECTIVE layering.
-pub fn outline_params(width: u32, height: u32) -> [f32; 4] {
-    [
-        width as f32,
-        height.max(1) as f32,
-        outline_width(width),
-        1.0 - 1.0 / 4096.0,
-    ]
-}
-
-/// Camera-relative segment endpoints; no shape expansion in vanilla 26.3.
-pub fn outline_vertices(edges: &[[f64; 6]], camera: glam::DVec3) -> Vec<[f32; 6]> {
-    let mut out = Vec::with_capacity(edges.len());
-    outline_vertices_into(edges, camera, &mut out);
-    out
-}
-
-fn outline_vertices_into(edges: &[[f64; 6]], camera: glam::DVec3, out: &mut Vec<[f32; 6]>) {
-    let camera = camera.to_array();
-    out.clear();
-    out.extend(
-        edges
-            .iter()
-            .map(|e| std::array::from_fn(|i| (e[i] - camera[i % 3]) as f32)),
-    );
-}
-
-/// `DrawableGizmoPrimitives.getGroup`: a line whose ARGB alpha is 255 joins the
-/// opaque group, drawn with `RenderTypes.lines` (depth written); the rest
-/// with `RenderTypes.linesTranslucentNoDepthWrite`.
-fn debug_line_opaque(line: &[f32; 8]) -> bool {
-    line[6].to_bits() >> 24 == 0xFF
-}
-
-/// The depth-tested gizmo lines in their upload order: the opaque group first,
-/// then the translucent one, each in submission order.
-fn debug_lines_opaque_first(lines: &[[f32; 8]]) -> impl Iterator<Item = &[f32; 8]> {
-    let opaque = lines.iter().filter(|l| debug_line_opaque(l));
-    opaque.chain(lines.iter().filter(|l| !debug_line_opaque(l)))
-}
-
-/// Whether Translucent Batching is offered (`graphics::offer_translucent_batching`): where
-/// indirect multi-draws (`multi_draw`) take its batches, but not OpenGL's, which loop over
-/// their entries on the CPU (and without them every section is a call of its own anyway).
-/// Frames drawn flat (Metal, Intel Gen11/Gen12's Vulkan driver) take it too: their
-/// translucent calls then come one per page of its arena rather than about one per section.
-fn translucent_batchable(info: &wgpu::AdapterInfo, multi_draw: bool) -> bool {
-    multi_draw && info.backend != wgpu::Backend::Gl
-}
-
-/// The vertices flat draws bind for a call's page key: a page of the section arena, or of
-/// the translucent arena up to its last range in use (`flat::TRANSLUCENT_KEYS`).
-fn flat_vertices<'a>(
-    arena: &'a arena::Arena,
-    translucent: Option<&'a arena::Arena>,
-) -> impl Fn(u32) -> wgpu::BufferSlice<'a> + Copy {
-    move |key| match (translucent, key.checked_sub(flat::TRANSLUCENT_KEYS)) {
-        (Some(translucent), Some(page)) => translucent.binding(page),
-        _ => arena.buffer(key).slice(..),
-    }
-}
-
-/// The world's section lists and the arena pages they draw from, borrowed apart from the rest
-/// of the renderer: a shader pack's shadow passes draw the light's lists through them.
-#[derive(Clone, Copy)]
-pub(super) struct SectionLists<'a> {
-    draws: &'a [[u32; 5]],
-    pages: &'a [(u32, Option<u32>)],
-    arena: &'a arena::Arena,
-    translucent_arena: Option<&'a arena::Arena>,
-    sorted_indices: &'a arena::Arena,
-    /// The quad indices.
-    pub indices: &'a wgpu::Buffer,
-    /// The flat draws' lists, where they are made.
-    pub flat: Option<&'a flat::Flat>,
-    multi_draw: bool,
-}
-
-impl<'a> SectionLists<'a> {
-    /// `Renderer::draw_sections_from`.
-    pub(super) fn draw(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        indirect: &wgpu::Buffer,
-        base: u32,
-        first: u32,
-        count: u32,
-        pulled: bool,
-    ) {
-        let (draws, pages) = (self.draws, self.pages);
-        let (mut i, end) = (first as usize, (first + count) as usize);
-        while i < end {
-            let (page, index_page) = pages[i];
-            let run = pages[i..end]
-                .iter()
-                .take_while(|&&p| p == (page, index_page))
-                .count();
-            // Translucent draws, and only they, have sorted indices; split, their large
-            // pages are bound up to their last range in use (`Arena::binding`).
-            let (vertices, indices) = match (self.translucent_arena, index_page) {
-                (Some(arena), Some(p)) => (arena.binding(page), self.sorted_indices.binding(p)),
-                (_, p) => (
-                    self.arena.buffer(page).slice(..),
-                    p.map_or(self.indices, |p| self.sorted_indices.buffer(p))
-                        .slice(..),
-                ),
-            };
-            pass.set_vertex_buffer(0, vertices);
-            if pulled
-                && index_page.is_none()
-                && let Some(group) = self.flat.and_then(|f| f.page_group(page))
-            {
-                pass.set_bind_group(1, group, &[]);
-            }
-            pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
-            if self.multi_draw {
-                let offset = (i - base as usize) as u64 * 20;
-                pass.multi_draw_indexed_indirect(indirect, offset, run as u32);
-            } else {
-                for d in &draws[i..i + run] {
-                    pass.draw_indexed(d[2]..d[2] + d[0], d[3] as i32, d[4]..d[4] + 1);
-                }
-            }
-            i += run;
-        }
-        if pages[first as usize..end]
-            .iter()
-            .any(|(_, sorted)| sorted.is_some())
-        {
-            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        }
-    }
-    /// `flat_vertices` of these arenas.
-    pub(super) fn flat_vertices(&self) -> impl Fn(u32) -> wgpu::BufferSlice<'a> + Copy {
-        flat_vertices(self.arena, self.translucent_arena)
-    }
-}
 
 /// Bytes of `texture` with every mip level of every layer.
 pub(crate) fn texture_bytes(texture: &wgpu::Texture) -> u64 {
@@ -583,51 +458,6 @@ fn end_fog_sky(frame: &Frame) -> bool {
     !frame.title && frame.end_sky && frame.boss_world_fog
 }
 
-/// The world pass's part that draws a shader pack's solid terrain: the world's colour and
-/// depth loaded, and its `surface` target, cleared on the first of these passes.
-fn surface_pass<'e>(
-    encoder: &'e mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
-    surface: &wgpu::TextureView,
-    depth: &wgpu::TextureView,
-    clear: bool,
-) -> wgpu::RenderPass<'e> {
-    let keep = |load| wgpu::Operations {
-        load,
-        store: wgpu::StoreOp::Store,
-    };
-    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Horizon world, pack terrain"),
-        color_attachments: &[
-            Some(wgpu::RenderPassColorAttachment {
-                view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: keep(wgpu::LoadOp::Load),
-            }),
-            Some(wgpu::RenderPassColorAttachment {
-                view: surface,
-                resolve_target: None,
-                depth_slice: None,
-                ops: keep(if clear {
-                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
-                } else {
-                    wgpu::LoadOp::Load
-                }),
-            }),
-        ],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: depth,
-            depth_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            }),
-            stencil_ops: None,
-        }),
-        ..Default::default()
-    })
-}
-/// The point a `shaders/` pack's terrain is drawn relative to: the camera with the fraction of
 /// each coordinate rounded to the nearest 1/65536 block. Read back with a probe pack of ours,
 /// Iris 1.11.7's terrain `gl_Vertex` is the block's position minus this, for cameras from 13
 /// to 40000 blocks out (#8464); `cameraPosition` and the matrices keep the exact camera. Off by
@@ -687,20 +517,6 @@ struct Globals {
     /// mirrored, else 1; y the clip-space depth its entities come forward; z 1 with a clip plane.
     world_view: [f32; 4],
 }
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct StaticEntityUniform {
-    camera_block: [i32; 4],
-    camera_fraction: [f32; 4],
-}
-struct GpuStaticEntitySection {
-    buffer: wgpu::Buffer,
-    origin_buffer: wgpu::Buffer,
-    origin: [i32; 3],
-    capacity: u64,
-    revision: u64,
-    vertices: u32,
-}
 pub type SectionKey = (i32, i32, i32);
 /// What a section's mesh brings with it besides its quads (`Renderer::upload`): placed with
 /// the mesh.
@@ -733,319 +549,6 @@ struct MirrorTarget {
     color: wgpu::TextureView,
     depth: wgpu::TextureView,
 }
-struct SectionGpu {
-    /// Arena page and first vertex of its solid quads, and after them its
-    /// translucent quads unless those have an arena of their own; (0, 0),
-    /// unused, when that leaves it no quads in `arena`.
-    page: u32,
-    start: u64,
-    /// The page and first vertex of its translucent quads: in
-    /// `translucent_arena` when there is one, else after the solid quads.
-    /// Unused without translucent quads.
-    translucent_at: (u32, u64),
-    solid: u32,
-    /// Slots its solid quads take in `arena`: four vertices each, or in the compact layout
-    /// (`packed`, `mesher::packed`) a record each and the vertices of those without one.
-    solid_slots: u64,
-    packed: bool,
-    /// Its records are a far tile's (`lod::packed`), not a section's: the two
-    /// layouts are told apart by the base vertex its draws use.
-    packed_far: bool,
-    /// Where the solid quads' buckets by facing side end (`mesher::Sides`).
-    sides: Sides,
-    translucent: u32,
-    sort: translucency::SortState,
-    sorted_indices: Option<(u32, u64)>,
-    /// Its id for flat draws (`flat::Flat::add`), when they are on.
-    flat_id: Option<u32>,
-    /// Its record's id in GPU culling's table (`gpu_culling::Records`), while
-    /// that is on and it has solid quads.
-    gpu_id: Option<u32>,
-    /// Its record is `FADING` (GPU culling on): the CPU draws its solid quads
-    /// while its instance carries a fade (`drawn_faded`), and GPU culling's
-    /// pass leaves it out.
-    gpu_fading: bool,
-    /// When it came in over the far terrain it replaces (drawn whole at once,
-    /// `fade`): a section new where far tiles are drawn, which skips vanilla's
-    /// fade-in. Meshed again, it stays as it was.
-    fading: Option<std::time::Instant>,
-    /// When it began to fade out, its column gone over far terrain that
-    /// stays behind it (`Renderer::leave_section`); released once it has.
-    leaving: Option<std::time::Instant>,
-    /// Animated sprite layers present in this section.
-    animated_layers: Box<[u16]>,
-}
-/// Extracts the animated sprite layers present in a section mesh. Meshing
-/// records the distinct layers, so uploading does not rescan every vertex.
-pub(crate) fn collect_animated_layers(
-    mesh: &SectionMesh,
-    is_animated: impl Fn(u16) -> bool,
-) -> Box<[u16]> {
-    mesh.sprite_layers
-        .iter()
-        .copied()
-        .filter(|&layer| is_animated(layer))
-        .collect()
-}
-
-impl SectionGpu {
-    /// Its fade code this frame: 0, drawn whole, or `lod::HELD` (whole, in
-    /// front of far terrain) while it leaves (`leaving`) or its column has left
-    /// the render distance and far terrain is coming in under it (`retiring`).
-    /// A near section never dithers over far terrain: the holes of its pattern
-    /// showed its own inside (cave walls, the stone under the grass), nearer
-    /// than the tile behind, an x-ray of each column coming in or going out.
-    /// It comes in whole over the tile it replaces, which stays behind it until
-    /// `fading` is `lod::FADE` old, and leaves whole after as long.
-    fn fade(&self, retiring: bool) -> u32 {
-        if self.leaving.is_some() || retiring {
-            lod::HELD
-        } else {
-            0
-        }
-    }
-    /// Its vertices in `arena`, and in `translucent_arena` when `split` (there
-    /// is one): (page, first vertex, vertices) of each.
-    fn vertex_ranges(&self, split: bool) -> (Option<(u32, u64, u64)>, Option<(u32, u64, u64)>) {
-        if !split {
-            let vertices = self.solid_slots + u64::from(self.translucent) * 4;
-            return (Some((self.page, self.start, vertices)), None);
-        }
-        let (page, start) = self.translucent_at;
-        (
-            (self.solid > 0).then_some((self.page, self.start, self.solid_slots)),
-            (self.translucent > 0).then(|| (page, start, u64::from(self.translucent) * 4)),
-        )
-    }
-    /// Whether GPU culling keeps a record of it at `key` while it is on (`gpu_id`):
-    /// it has solid quads, in one of the level's `sections`, which the pass's
-    /// tables span.
-    fn gpu_recorded(&self, key: SectionKey, sections: usize) -> bool {
-        self.solid > 0 && (0..sections as i32).contains(&key.1)
-    }
-    /// The base vertex of its solid draws: quad `q`'s corners are `base + 4 * q` on (the
-    /// quad indices). In a compact layout they name its record's slot past
-    /// `PACKED_BASE`, or past `FAR_BASE` for a far tile's records, which is how
-    /// terrain.wgsl's `section_corner` tells the two apart.
-    fn solid_base(&self) -> u32 {
-        if !self.packed {
-            return self.start as u32;
-        }
-        let base = if self.packed_far {
-            crate::lod::packed::FAR_BASE
-        } else {
-            packed::PACKED_BASE
-        };
-        base + 4 * self.start as u32
-    }
-    /// GPU culling's record of it at `key`, its quads within `bounds`
-    /// (`SectionMesh::bounds`) and in their buckets by facing side (`sides`),
-    /// `FADING` while it fades (`gpu_fading`).
-    fn record(&self, key: SectionKey, bounds: Option<[Vec3; 2]>) -> gpu_culling::Record {
-        let boxed = gpu_culling::rounded_box(bounds);
-        gpu_culling::Record::new(
-            key,
-            self.page,
-            u64::from(self.solid_base()),
-            self.solid,
-            boxed,
-        )
-        .facing(&self.sides)
-        .fading(self.gpu_fading)
-    }
-    /// Whether GPU frames' walk lists it within the render distance
-    /// (`Resident::walk`): its mark. Its translucent quads are the CPU's, or
-    /// GPU culling can have no record of it, which holds whether GPU culling is
-    /// on or not; or, while it is, its solid quads are the CPU's while it fades
-    /// (`gpu_fading`).
-    fn listed(&self, key: SectionKey, sections: usize) -> bool {
-        self.translucent > 0 || !self.gpu_recorded(key, sections) || self.gpu_fading
-    }
-    /// Whether GPU culling draws its solid quads in a GPU frame, `near`: its
-    /// column within the render distance.
-    fn gpu_draws_solid(&self, near: bool) -> bool {
-        near && self.gpu_id.is_some() && !self.gpu_fading
-    }
-    /// Whether frames draw it faded at `f.now`: its instance, as the instance
-    /// loop makes it (`section_instance` with its `fade` and its vanilla
-    /// visibility), is not a whole section's. As time goes on a fade only ends:
-    /// once false, this stays false until the section is meshed again, leaves,
-    /// is held (`lod_retiring`), or the chunk fade-in time changes.
-    fn drawn_faded(&self, key: SectionKey, f: FadeInputs<'_>) -> bool {
-        let fade = self.fade(f.retiring.contains(&key));
-        let visibility = section_visibility(f.uploaded.get(&key), f.fade_ms, f.now);
-        section_instance([0.0; 3], fade, visibility)[3].to_bits()
-            != section_instance([0.0; 3], 0, 1.0)[3].to_bits()
-    }
-    /// When its fade is over at the latest (`drawn_faded`): the end of
-    /// vanilla's fade-in (its first upload and `f.fade_ms`; one coming in over
-    /// far terrain is whole at once, `fade`). None while it leaves or is held,
-    /// which ends only when it goes or is meshed again, and without a fade-in.
-    fn fade_end(&self, key: SectionKey, f: FadeInputs<'_>) -> Option<Instant> {
-        if self.leaving.is_some() || f.retiring.contains(&key) {
-            return None;
-        }
-        let vanilla = f.uploaded.get(&key).filter(|_| f.fade_ms > 0);
-        vanilla.map(|&t| t + std::time::Duration::from_millis(f.fade_ms))
-    }
-}
-/// Which of a mesh's ranges `move_off_page` moves: what it holds in the section
-/// arena (`split`: its solid quads alone, `SectionGpu::vertex_ranges`), its
-/// translucent quads in `translucent_arena`, or its sorted indices.
-#[derive(Clone, Copy)]
-enum Part {
-    Section { split: bool },
-    Translucent,
-    Indices,
-}
-impl Part {
-    /// (page, first vertex or index, count), as the release paths free it.
-    fn of(self, s: &SectionGpu) -> Option<(u32, u64, u64)> {
-        match self {
-            Self::Section { split } => s.vertex_ranges(split).0,
-            Self::Translucent => s.vertex_ranges(true).1,
-            Self::Indices => s
-                .sorted_indices
-                .map(|(page, at)| (page, at, u64::from(s.translucent) * 6)),
-        }
-    }
-    /// Points the mesh where its range moved.
-    fn set(self, s: &mut SectionGpu, to: (u32, u64)) {
-        match self {
-            Self::Section { split } => {
-                (s.page, s.start) = to;
-                if !split {
-                    // Its translucent quads came along, after the solid ones.
-                    s.translucent_at = (to.0, to.1 + s.solid_slots);
-                }
-            }
-            Self::Translucent => s.translucent_at = to,
-            Self::Indices => s.sorted_indices = Some(to),
-        }
-    }
-}
-/// Starts moving a page of a large arena far larger than its ranges in use
-/// (`Arena::oversized`) into a new page of the size they get (`Arena::open_page`),
-/// for `Renderer::shrink_translucent`: the page closes and `move_off_page` empties
-/// it. None: no page to shrink. False, and nothing changes: no video memory for
-/// the new page, or a range there without its mesh in `meshes`, which would keep
-/// the page from ever emptying.
-fn begin_shrink<'a>(
-    arena: &mut arena::Arena,
-    device: &wgpu::Device,
-    meshes: impl Iterator<Item = &'a mut SectionGpu>,
-    part: Part,
-) -> Option<bool> {
-    let (page, capacity) = arena.oversized()?;
-    let held: u64 = meshes
-        .filter_map(|s| part.of(s).filter(|r| r.0 == page))
-        .map(|(.., n)| arena::Arena::span(n))
-        .sum();
-    debug_assert_eq!(held, arena.used(page), "a range in use without its mesh");
-    if held != arena.used(page) || !arena.open_page(device, capacity) {
-        return Some(false);
-    }
-    arena.close(page);
-    Some(true)
-}
-/// GPU culling's flag (`SectionGpu::gpu_fading`) for its recorded section `s`
-/// at `key`, decided at `f.now`: whether it draws faded (`drawn_faded`), and if
-/// time ends that, its end waited for in `fades` (`fade_end`).
-fn decide_fade(
-    s: &SectionGpu,
-    key: SectionKey,
-    fades: &mut gpu_culling::Fades,
-    f: FadeInputs<'_>,
-) -> bool {
-    let fading = s.drawn_faded(key, f);
-    if let Some(end) = s.fade_end(key, f).filter(|_| fading) {
-        fades.push(end, key);
-    }
-    fading
-}
-/// GPU culling: the section at `key` began to fade out over far terrain
-/// (`Renderer::leave_section`), or is held while far terrain comes in
-/// (`Renderer::lod_retiring`). It draws faded until it goes or is meshed again,
-/// so its record is flagged and the CPU draws it, with no end to wait for.
-fn hold_fading(
-    sections: &mut resident::Resident<SectionGpu>,
-    records: &mut gpu_culling::Records,
-    key: SectionKey,
-) {
-    let Some(s) = sections.find_mut(key).filter(|s| !s.gpu_fading) else {
-        return;
-    };
-    let Some(id) = s.gpu_id else {
-        return;
-    };
-    s.gpu_fading = true;
-    records.set_fading(id, true);
-    sections.set_marked(key, true);
-}
-/// GPU culling switched off (`Renderer::set_gpu_culling`): no section keeps a
-/// record or a flag, and those it flagged get back the walk marks they have
-/// while it is off (`SectionGpu::listed`). `rows`: the level's sections.
-fn forget_records(sections: &mut resident::Resident<SectionGpu>, rows: usize) {
-    let mut marks = Vec::new();
-    for (key, s, _) in sections.iter_mut() {
-        s.gpu_id = None;
-        if std::mem::take(&mut s.gpu_fading) {
-            marks.push((key, s.listed(key, rows)));
-        }
-    }
-    for (key, marked) in marks {
-        sections.set_marked(key, marked);
-    }
-}
-/// GPU culling's fading sections brought up to `f.now`, before a frame's gate
-/// and `prepare`: every recorded section anew when the flags were decided with
-/// another chunk fade-in time (GPU culling just switched on, or Video Settings
-/// changed it), else those whose fade was due to end, handed back to the GPU if
-/// whole by then. A section's record (`FADING`) and its walk mark follow its
-/// `gpu_fading`. `rows`: the level's sections.
-fn mark_fades(
-    sections: &mut resident::Resident<SectionGpu>,
-    records: &mut gpu_culling::Records,
-    fades: &mut gpu_culling::Fades,
-    rows: usize,
-    f: FadeInputs<'_>,
-) {
-    let mut marks = Vec::new();
-    if fades.fade_ms != Some(f.fade_ms) {
-        fades.clear();
-        fades.fade_ms = Some(f.fade_ms);
-        for (key, s, _) in sections.iter_mut() {
-            let Some(id) = s.gpu_id else {
-                continue;
-            };
-            let fading = decide_fade(s, key, fades, f);
-            if fading != s.gpu_fading {
-                s.gpu_fading = fading;
-                records.set_fading(id, fading);
-                marks.push((key, s.listed(key, rows)));
-            }
-        }
-    } else {
-        while let Some(key) = fades.pop_due(f.now) {
-            // Gone since, or no longer flagged.
-            let Some(s) = sections.find_mut(key).filter(|s| s.gpu_fading) else {
-                continue;
-            };
-            // Still fading: meshed again since, with its own end waited for
-            // (`decide_fade`), or leaving or held, with none.
-            if s.drawn_faded(key, f) {
-                continue;
-            }
-            s.gpu_fading = false;
-            records.set_fading(s.gpu_id.expect("flagged sections have records"), false);
-            marks.push((key, s.listed(key, rows)));
-        }
-    }
-    for (key, marked) in marks {
-        sections.set_marked(key, marked);
-    }
-}
-/// Line segments the hit outline can hold.
 const MAX_OUTLINE_EDGES: u64 = 256;
 /// Staging buffer size for section meshes: a frame of uploads while
 /// exploring fits in a few.
@@ -1254,22 +757,6 @@ pub struct Frame<'a> {
     /// `GameRenderer.requestedPostEffects`: the chains that run over the world.
     pub post_effects: crate::post_chain::Request<'a>,
 }
-/// One frame of the world border wall (`WorldBorderRenderer.render`).
-#[derive(Clone, Debug)]
-pub struct BorderDraw {
-    /// The cached wall buffer; uploaded only when `rebuilt`.
-    pub vertices: [crate::border_render::BorderVertex; 16],
-    pub rebuilt: bool,
-    pub transforms: crate::border_render::BorderTransforms,
-    /// Walls to draw (indices of four-vertex quads), nearest first.
-    pub sides: Vec<usize>,
-}
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct BorderUniform {
-    color: [f32; 4],
-    offset: [f32; 4],
-}
 /// A frame to save as a PNG: F2's screenshot, an agent's `game_screenshot`,
 /// or the icon the Select World list shows.
 pub struct ScreenshotRequest {
@@ -1284,25 +771,6 @@ pub struct ScreenshotRequest {
     /// `Renderer::screenshot_result` for the owning thread's hook before encoding.
     pub background: bool,
 }
-/// A solid terrain pipeline without HDR output's lighting (terrain.wgsl's `HDR_LIGHTING`),
-/// for the frames HDR is off, and with it where the display offers HDR output: the
-/// lighting's code, even never run, slows the shader on Apple GPUs (~15% of the solid
-/// pass at Retina sizes).
-pub struct SolidPipeline {
-    plain: wgpu::RenderPipeline,
-    hdr: Option<wgpu::RenderPipeline>,
-}
-
-impl SolidPipeline {
-    /// The pipeline for a frame with HDR output on (`hdr`) or off.
-    pub fn get(&self, hdr: bool) -> &wgpu::RenderPipeline {
-        match &self.hdr {
-            Some(lit) if hdr => lit,
-            _ => &self.plain,
-        }
-    }
-}
-
 pub struct Renderer {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -1972,199 +1440,10 @@ fn terrain_group(
         ],
     })
 }
-/// CPU texture uploads prepared by the resource worker. Consumed by renderer
-/// construction so the temporary mip chains are released after GPU upload.
-pub struct PreparedTextures {
-    sprites: Vec<(Vec<u8>, u32)>,
-    /// The sprite layers per array `sprites` is cut by.
-    split: u32,
-    forcefield: (Vec<u8>, u32),
-    /// The LabPBR maps' mip chains (normals, specular), their levels, layers and size.
-    pbr: Option<(Vec<u8>, Vec<u8>, u32, u32, u32)>,
-}
-/// Every level of `layers` square RGBA layers of `size`, each the mean of four texels of the
-/// one above, layer major: the LabPBR maps' mips (their channels are data, not colour).
-fn box_mip_chain(pixels: &[u8], size: u32, layers: u32) -> Vec<u8> {
-    let layer_bytes = (size * size * 4) as usize;
-    let mut out = Vec::new();
-    for layer in pixels.chunks_exact(layer_bytes).take(layers as usize) {
-        let mut level = layer.to_vec();
-        let mut side = size as usize;
-        out.extend_from_slice(&level);
-        while side > 1 {
-            let half = side / 2;
-            let mut next = Vec::with_capacity(half * half * 4);
-            for y in 0..half {
-                for x in 0..half {
-                    for c in 0..4 {
-                        let at = |dx: usize, dy: usize| {
-                            u32::from(level[((2 * y + dy) * side + 2 * x + dx) * 4 + c])
-                        };
-                        next.push(((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1) + 2) / 4) as u8);
-                    }
-                }
-            }
-            out.extend_from_slice(&next);
-            level = next;
-            side = half;
-        }
-    }
-    out
-}
-impl PreparedTextures {
-    pub fn new(
-        pixels: &[u8],
-        size: u32,
-        layers: u32,
-        settings: &[crate::mipmap::Settings],
-        forcefield: (&[u8], u32),
-    ) -> Self {
-        Self::with_split(pixels, size, layers, settings, forcefield, sprite_split())
-    }
-
-    fn with_split(
-        pixels: &[u8],
-        size: u32,
-        layers: u32,
-        settings: &[crate::mipmap::Settings],
-        forcefield: (&[u8], u32),
-        split: u32,
-    ) -> Self {
-        let layer_bytes = (size * size * 4) as usize;
-        Self {
-            sprites: (0..layers.div_ceil(split).max(1))
-                .map(|array| {
-                    let first = array * split;
-                    let count = layers.saturating_sub(first).clamp(1, split);
-                    let start = (first as usize * layer_bytes).min(pixels.len());
-                    mip_chain(&pixels[start..], size, settings, first, count)
-                })
-                .collect(),
-            split,
-            forcefield: mip_chain(forcefield.0, forcefield.1, &[], 0, 1),
-            pbr: None,
-        }
-    }
-
-    /// With the resource packs' LabPBR `normals` and `specular` maps (`layers` layers of
-    /// `size`, as `RenderAssets` holds them; nothing when empty).
-    pub fn with_pbr(mut self, normals: &[u8], specular: &[u8], size: u32, layers: u32) -> Self {
-        if !normals.is_empty() {
-            self.pbr = Some((
-                box_mip_chain(normals, size, layers),
-                box_mip_chain(specular, size, layers),
-                size.trailing_zeros() + 1,
-                layers,
-                size,
-            ));
-        }
-        self
-    }
-
-    /// The same mip chains cut by `split` layers per array: chains made before
-    /// the adapter was known, for a GPU with fewer layers per array.
-    fn resplit(mut self, layers: u32, split: u32) -> Self {
-        if self.split == split || layers <= split.min(self.split) {
-            self.split = split;
-            return self;
-        }
-        let levels = self.sprites[0].1;
-        let all: Vec<u8> = self
-            .sprites
-            .drain(..)
-            .flat_map(|(bytes, _)| bytes)
-            .collect();
-        // Every layer's mip levels are contiguous (layer major).
-        let layer_bytes = all.len() / layers as usize;
-        self.sprites = all
-            .chunks(layer_bytes * split as usize)
-            .map(|chunk| (chunk.to_vec(), levels))
-            .collect();
-        self.split = split;
-        self
-    }
-}
-
-fn mip_chain(
-    pixels: &[u8],
-    size: u32,
-    settings: &[crate::mipmap::Settings],
-    first: u32,
-    layers: u32,
-) -> (Vec<u8>, u32) {
-    let levels = size.trailing_zeros() + 1;
-    let layer_bytes = (size * size * 4) as usize;
-    // Exactly the chain's size: cached animation frames count their capacity.
-    let chain_bytes: usize = (0..levels).map(|l| layer_bytes >> (2 * l)).sum();
-    let mut out = Vec::with_capacity(chain_bytes * layers as usize);
-    // Every layer makes its own mips from its own pixels, and a pack's array holds
-    // thousands of them: the layers run on every thread, in chunks so a worker
-    // allocates one chain per chunk rather than one per layer. The chunks are
-    // appended in order, so the chain stays layer major.
-    const LAYERS_PER_CHUNK: u32 = 16;
-    let chunks: Vec<(u32, u32)> = (0..layers)
-        .step_by(LAYERS_PER_CHUNK as usize)
-        .map(|start| (start, (layers - start).min(LAYERS_PER_CHUNK)))
-        .collect();
-    let parts = crate::par::par_map(&chunks, |&(start, count)| {
-        mip_chain_layers(
-            &pixels[start as usize * layer_bytes..],
-            size,
-            settings,
-            first + start,
-            count,
-            levels - 1,
-            layer_bytes,
-        )
-    });
-    for part in parts {
-        out.extend_from_slice(&part);
-    }
-    debug_assert_eq!(out.len(), chain_bytes * layers as usize);
-    (out, levels)
-}
-
-/// The mip chain of `layers` layers from `pixels` that start at layer `first`:
-/// `layers`' base levels followed by their reductions, layer major.
-fn mip_chain_layers(
-    pixels: &[u8],
-    size: u32,
-    settings: &[crate::mipmap::Settings],
-    first: u32,
-    layers: u32,
-    levels: u32,
-    layer_bytes: usize,
-) -> Vec<u8> {
-    let mut out = Vec::with_capacity(
-        (0..=levels).map(|l| layer_bytes >> (2 * l)).sum::<usize>() * layers as usize,
-    );
-    for layer in 0..layers as usize {
-        let base = crate::mipmap::Image {
-            width: size,
-            height: size,
-            pixels: pixels[layer * layer_bytes..(layer + 1) * layer_bytes]
-                .as_chunks::<4>()
-                .0
-                .to_vec(),
-        };
-        let s = settings
-            .get(first as usize + layer)
-            .copied()
-            .unwrap_or_default();
-        let has_transparent = s.has_transparent || base.pixels.iter().any(|p| p[3] == 0);
-        for image in crate::mipmap::generate(
-            base,
-            levels,
-            crate::mipmap::Settings {
-                has_transparent,
-                ..s
-            },
-        ) {
-            out.extend(image.pixels.iter().flatten());
-        }
-    }
-    out
-}
+mod prepared_textures;
+pub use prepared_textures::*;
+mod solid_pipeline;
+pub use solid_pipeline::*;
 /// The wgpu instance options, without wgpu's validation of indirect draws
 /// in release builds. That validation (meant for untrusted WebGPU content)
 /// copies every indirect draw through a compute pass before the render pass
@@ -11724,23 +11003,6 @@ impl Renderer {
         readback
     }
 }
-/// Out-of-memory and validation error scopes, popped together: the first error either caught.
-struct GpuChecks {
-    memory: wgpu::ErrorScopeGuard,
-    validation: wgpu::ErrorScopeGuard,
-}
-impl GpuChecks {
-    fn push(device: &wgpu::Device) -> Self {
-        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        Self { memory, validation }
-    }
-    fn pop(self) -> Option<wgpu::Error> {
-        let validation = pollster::block_on(self.validation.pop());
-        let memory = pollster::block_on(self.memory.pop());
-        memory.or(validation)
-    }
-}
 /// How many times the window's size a scaled screenshot is: the Resolution Scale
 /// `world_scale` when above 1, times `quality`, as far as a side fits in
 /// `max_side` pixels and the readback in `max_buffer` bytes.
@@ -11869,24 +11131,6 @@ fn camera_section(camera: DVec3, min_y: i32) -> SectionKey {
 
 /// The near plane of the world's projection, in blocks.
 const NEAR_PLANE: f32 = 0.05;
-
-/// Counts and offsets `Renderer::draw_overlay` draws from this frame's buffers.
-struct Overlay {
-    /// Zero when a shader pack draws the hand.
-    hand_quads: u32,
-    first_hand_vertex: i32,
-    crosshair: u32,
-    first_crosshair: u32,
-    /// The world drew into `depth` (post effects may read it), not a scaled target's.
-    world_depth: bool,
-    /// The real frame, not frame generation's made one: the world icon grabs it.
-    real: bool,
-    /// The game drew the first-person hand, in its own pass or at the end of the world's
-    /// (`hand_in_world`), not a shader pack.
-    hand_drawn: bool,
-    /// Camera-relative world to clip space for the hand: its own field of view and the bob.
-    hand_view_proj: Mat4,
-}
 
 pub(crate) fn world_projection(fov_degrees: f32, aspect: f32, far: f32) -> Mat4 {
     Mat4::perspective_rh(fov_degrees.to_radians(), aspect, far, NEAR_PLANE)
