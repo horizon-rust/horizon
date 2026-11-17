@@ -54,6 +54,17 @@ impl Coverage {
     }
 }
 
+/// `[frame] fog`: who fogs what the pack's stages draw.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Fog {
+    /// Horizon mixes vanilla's fog over the material and entity stages' results.
+    #[default]
+    Engine,
+    /// The pack fogs them itself: Horizon skips its fog there, and every stage's prelude has
+    /// `vanilla_fog` and the frame's `fog_environment` and `fog_render`.
+    Pack,
+}
+
 impl Primaries {
     /// `Frame.luminance`: the weights that give a colour's luminance in these primaries.
     pub const fn luminance(self) -> [f32; 3] {
@@ -117,6 +128,8 @@ pub struct Manifest {
     pub material_coverage: Coverage,
     /// `[entity] coverage`.
     pub entity_coverage: Coverage,
+    /// `[frame] fog`.
+    pub fog: Fog,
     pub options: Vec<PackOption>,
     /// How the settings page lays the options out; the first page is the one it opens on.
     /// Empty: one page with every option.
@@ -592,6 +605,7 @@ struct RawOption {
 struct RawFrame {
     blend: Option<String>,
     primaries: Option<String>,
+    fog: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -770,6 +784,19 @@ impl Manifest {
         };
         let material_coverage = Coverage::parse(raw.material.as_ref(), "material").map_err(err)?;
         let entity_coverage = Coverage::parse(raw.entity.as_ref(), "entity").map_err(err)?;
+        let fog = match raw.frame.as_ref().and_then(|f| f.fog.as_deref()) {
+            None | Some("engine") => Fog::Engine,
+            Some("pack") => Fog::Pack,
+            Some(f) => return Err(err(format!("frame.fog {f:?}: engine or pack"))),
+        };
+        if raw.frame.as_ref().is_some_and(|f| f.fog.is_some())
+            && raw.material.as_ref().is_some_and(|m| m.fog.is_some())
+        {
+            return Err(err(
+                "[material] fog and [frame] fog both set: keep [frame] fog, which covers every stage"
+                    .into(),
+            ));
+        }
         let id_ok = (1..=64).contains(&raw.id.len())
             && raw
                 .id
@@ -835,27 +862,26 @@ impl Manifest {
         {
             return Err(err("`scale` and `output` are keys of [[post]] only".into()));
         }
-        // Compute keys: `[[post]]` and `[[before_world]]` only, which `kept::check` reads.
+        // Compute keys: `[[post]]` and `[[before_world]]` only, and `reads` `[material]`'s too,
+        // which `kept::check` reads.
         let computes = |s: &Stage| {
-            s.compute
-                || s.dispatch.is_some()
-                || s.workgroup.is_some()
-                || !s.reads.is_empty()
-                || !s.writes.is_empty()
+            s.compute || s.dispatch.is_some() || s.workgroup.is_some() || !s.writes.is_empty()
         };
+        let reads = |s: &Stage| computes(s) || !s.reads.is_empty();
         if raw
             .sky
             .iter()
-            .chain(&raw.material)
             .chain(&raw.vertex)
             .chain(&raw.weather)
             .chain(&raw.tonemap)
             .chain(&raw.entity)
-            .any(computes)
+            .any(reads)
+            || raw.material.iter().any(computes)
         {
             return Err(err(
                 "`compute`, `dispatch`, `workgroup`, `reads` and `writes` are keys of [[post]] \
-                 and [[before_world]]"
+                 and [[before_world]], and `reads` of [material]: the terrain reads kept \
+                 resources, compute passes write them"
                     .into(),
             ));
         }
@@ -874,6 +900,9 @@ impl Manifest {
             resets,
         )
         .map_err(err)?;
+        if let Some(m) = &raw.material {
+            crate::kept::material(m, &kept).map_err(err)?;
+        }
         check_post_targets(&raw.post, traced, moving, &kept.resources).map_err(err)?;
         let tracer =
             !raw.post.is_empty() || raw.material.is_some() || !kept.before_world.is_empty();
@@ -1016,7 +1045,10 @@ impl Manifest {
         }
         let mut textures: Vec<PackTexture> = Vec::new();
         for t in raw.textures {
-            if !pack_identifier(&t.id) || textures.iter().any(|o| o.id == t.id) {
+            // The id is declared in every stage's prelude: a word WGSL reserves would be refused
+            // there, at a line of the prelude rather than of the pack.
+            let reserved = naga::keywords::wgsl::RESERVED.contains(&t.id.as_str());
+            if !pack_identifier(&t.id) || reserved || textures.iter().any(|o| o.id == t.id) {
                 return Err(err(format!(
                     "texture id {:?} is not a WGSL identifier, or is declared twice",
                     t.id
@@ -1237,6 +1269,7 @@ impl Manifest {
             primaries,
             material_coverage,
             entity_coverage,
+            fog,
             options,
             pages,
             tags: raw.tags,

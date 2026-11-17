@@ -91,6 +91,9 @@ impl Renderer {
         &mut self,
         mut pack: Option<Box<dyn crate::gfx::external::ExternalPipeline>>,
     ) -> Option<String> {
+        // A frame still on the submit thread binds the kept resources `take_over` or `retire`
+        // destroys: its submission would fail on them.
+        self.land_frame();
         // The size the pack's frames draw at (`NativePack::start_frame`), before its first.
         let size = (self.world_post).pack_render_size([self.config.width, self.config.height]);
         let taken = match (&mut pack, &mut self.external) {

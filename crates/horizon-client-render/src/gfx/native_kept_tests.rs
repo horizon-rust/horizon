@@ -649,7 +649,7 @@ impl Chain {
     /// screen's first pixel.
     fn run(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, size: [u32; 2]) -> [u8; 4] {
         let mut encoder = device.create_command_encoder(&Default::default());
-        self.post.before_world(device, &mut encoder, None);
+        self.post.before_world(device, &mut encoder, None, None);
         queue.submit([encoder.finish()]);
         let surface = &self.frame.surface_view;
         (self.screen).show((device, queue), &mut self.post, surface, size)
@@ -967,6 +967,38 @@ fn a_compute_pass_writes_an_rgba32uint_texture_a_post_pass_loads() {
     let frames = [
         ([1, 1], [4, 4], [0.125, 0.25, 0.0]),
         ([1, 1], [4, 4], [0.25, 0.5, 0.0]),
+    ];
+    computes(manifest, &files, &frames);
+}
+
+/// A compute pass writes an `r32uint` kept texture (adding 3 to `_previous` in every channel),
+/// which a post pass loads: red the count / 8, green the second channel, which `r32uint` doesn't
+/// keep (it reads 0). A reset clears it. Run with `WGPU_BACKEND=vulkan` and
+/// `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn a_compute_pass_writes_an_r32uint_texture_a_post_pass_loads() {
+    let manifest = "[[resource]]\nname = \"ints\"\nformat = \"r32uint\"\nsize = [4, 4]\n\
+                    keep = \"view\"\n[[post]]\nfile = \"c.wgsl\"\ncompute = true\n\
+                    dispatch = [4, 4, 1]\nworkgroup = [4, 4, 1]\nreads = [\"ints_previous\"]\n\
+                    writes = [\"ints\"]\n[[post]]\nfile = \"l.wgsl\"\nreads = [\"ints\"]\n";
+    let files = [
+        (
+            "c.wgsl",
+            "fn compute(input: ComputeInput) {\n    \
+             let last = textureLoad(ints_previous, input.cell.xy, 0);\n    \
+             textureStore(ints, input.cell.xy, last + vec4<u32>(3u));\n}\n",
+        ),
+        (
+            "l.wgsl",
+            "fn post(input: PostInput) -> vec4<f32> {\n    \
+             let n = textureLoad(ints, vec2<i32>(input.pixel), 0);\n    \
+             return vec4<f32>(vec2<f32>(n.xy) * 0.125, 0.0, 1.0);\n}\n",
+        ),
+    ];
+    let frames = [
+        ([1, 1], [4, 4], [0.375, 0.0, 0.0]),
+        ([1, 1], [4, 4], [0.75, 0.0, 0.0]),
+        ([2, 1], [4, 4], [0.375, 0.0, 0.0]),
     ];
     computes(manifest, &files, &frames);
 }
@@ -1497,4 +1529,73 @@ fn a_store_s_size_counts_both_versions_of_a_texture() {
     assert_eq!(bytes(buffer, [3840, 2160]), 1024);
     assert_eq!(bytes(fixed, [3840, 2160]), 2 * 64 * 32 * 4);
     assert_eq!(bytes(scaled, [3840, 2160]), 2 * 3840 * 2160 * 16);
+}
+
+/// A timed frame times each compute pass under its `name`, a `[[before_world]]` one and a
+/// compute `[[post]]` one: before, neither had timestamps, so a profile couldn't see them. Run
+/// with `WGPU_BACKEND=vulkan` and `WGPU_BACKEND=dx12` for each backend.
+#[test]
+fn a_timed_frame_times_each_compute_pass_under_its_name() {
+    use crate::gfx::pack_timing::PassTiming;
+    let _gpu = crate::gfx::test_gpu::lock();
+    let instance = crate::gfx::test_gpu::instance();
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        return;
+    };
+    let wanted = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+    if !adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+        eprintln!("no timestamps on {:?}: skipped", adapter.get_info().backend);
+        return;
+    }
+    let desc = wgpu::DeviceDescriptor {
+        required_features: adapter.features() & wanted,
+        ..Default::default()
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&desc)).unwrap();
+    let manifest = "[[resource]]\nname = \"sum\"\nbuffer = 16\nelement = \"u32\"\nkeep = \"view\"\n\
+                    [[before_world]]\nfile = \"w.wgsl\"\nname = \"World sum\"\n\
+                    dispatch = [1, 1, 1]\nworkgroup = [1, 1, 1]\nwrites = [\"sum\"]\n\
+                    [[post]]\nfile = \"c.wgsl\"\nname = \"Chain sum\"\ncompute = true\n\
+                    dispatch = [1, 1, 1]\nworkgroup = [1, 1, 1]\nwrites = [\"sum\"]\n\
+                    [[post]]\nfile = \"l.wgsl\"\nreads = [\"sum\"]\n";
+    let files = [
+        (
+            "w.wgsl",
+            "fn compute(input: ComputeInput) { sum[0] = sum[0] + 1u; }\n",
+        ),
+        (
+            "c.wgsl",
+            "fn compute(input: ComputeInput) { sum[1] = sum[1] + 1u; }\n",
+        ),
+        ("l.wgsl", SUMMING.1[1].1),
+    ];
+    let frame = Chain::frame(&device, &queue);
+    let mut post = Chain::post(&device, &frame, manifest, &files);
+    let screen = Screen::new(&device);
+    let mut timing = PassTiming::new(&device, &queue).unwrap();
+    for _ in 0..6 {
+        timing.begin(&device, &queue);
+        post.kept_frame([1, 1], [4, 4]);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        post.before_world(&device, &mut encoder, None, Some(&mut timing));
+        let world = (&screen.color, &screen.depth, &frame.surface_view);
+        let view = screen.screen.create_view(&Default::default());
+        post.run(
+            &device,
+            &mut encoder,
+            world,
+            &view,
+            [4, 4],
+            false,
+            Some(&mut timing),
+            None,
+        );
+        queue.submit([encoder.finish()]);
+        timing.submitted(&queue);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    }
+    let names: Vec<_> = timing.medians().into_iter().map(|(n, _)| n).collect();
+    for name in ["World sum", "Chain sum"] {
+        assert!(names.iter().any(|n| n == name), "{name} not in {names:?}");
+    }
 }
