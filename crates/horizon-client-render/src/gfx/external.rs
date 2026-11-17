@@ -38,7 +38,8 @@ pub struct FrameState<'a> {
 /// and reset. Every method has a default that leaves vanilla's way in place.
 pub trait ExternalPipeline: Send + std::any::Any {
     /// What it does in the engine's place, asked once, when it is installed. None: it draws
-    /// nothing of the world, and the renderer runs as without a shader pack.
+    /// nothing of the world, and the renderer runs as without a shader pack. Some: it also
+    /// presents the world, in `run_post`, which then runs in place of the engine's finish.
     fn capabilities(&self) -> Option<Capabilities> {
         None
     }
@@ -138,7 +139,9 @@ pub trait ExternalPipeline: Send + std::any::Any {
     ) -> bool {
         false
     }
-    /// Its post passes in place of the engine's finish of the world.
+    /// Its post passes in place of the engine's finish of the world: a pipeline whose
+    /// `capabilities` are Some writes the frame to `post.screen` here, since the renderer then
+    /// doesn't. The default writes nothing, for pipelines whose `capabilities` are None.
     fn run_post(&mut self, _post: WorldPost<'_>) {}
 }
 
