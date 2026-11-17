@@ -31,9 +31,10 @@ that fails runs once more from scratch instead, and a pass then counts. Every
 retry is printed as a RETRIED line in the summary and in the CI job's summary.
 Fix the cause, then take the harness off the list: nothing else gets this retry.
 
-A harness listed in parity_hosts.json's "known_failing" ("#issue: what differs")
-runs and reports as usual, but its failure doesn't fail the run: parity-main and
-the Nightly stop only for new failures (docs/parity-workflow.md).
+A harness or shard (datafix#2) listed in parity_hosts.json's "known_failing"
+("#issue: what differs") runs and reports as usual, but its failure, of any kind,
+doesn't fail the run: parity-main and the Nightly stop only for new failures
+(docs/parity-workflow.md).
 
 Harness probes build into .local/parity-target with release optimisations but
 without LTO and with 16 codegen units (`PROFILE` below), which builds in
@@ -1607,24 +1608,30 @@ def known_failing(config):
     return dict(config.get("known_failing", {}))
 
 
+def known_entry(name, known):
+    """The known_failing entry covering a harness or shard: the shard's own (datafix#2), else its harness's (datafix,
+    every shard), else None."""
+    return name if name in known else base_name(name) if base_name(name) in known else None
+
+
 def split_known_failing(results, known):
-    """(failures that fail the run, known failing harnesses that failed again, known failing harnesses that passed).
-    A shard counts under its harness (datafix#2 -> datafix)."""
+    """(failures that fail the run, known failing harnesses that failed again, known failing entries all of whose
+    harnesses or shards that ran here passed)."""
     failed = sorted(name for name, record in results.items() if record["status"] != "pass")
-    blocking = [name for name in failed if base_name(name) not in known]
-    again = [name for name in failed if base_name(name) in known]
-    passed = sorted({base_name(name) for name, record in results.items()
-                     if record["status"] == "pass" and base_name(name) in known}
-                    - {base_name(name) for name in again})
+    blocking = [name for name in failed if known_entry(name, known) is None]
+    again = [name for name in failed if known_entry(name, known) is not None]
+    passed = sorted({known_entry(name, known) for name, record in results.items()
+                     if record["status"] == "pass" and known_entry(name, known) is not None}
+                    - {known_entry(name, known) for name in again})
     return blocking, again, passed
 
 
 def report_known_failing(again, passed, known):
-    """Say which known failing harnesses failed again, and which pass now and should come off the list, here and in
-    the CI job's summary."""
-    lines = [f"KNOWN FAILING {name}: failed again, not counted ({known[base_name(name)]})" for name in again]
-    lines += [f"KNOWN FAILING {name} passes now: take it off tools/parity_hosts.json's known_failing "
-              f"({known[name]})" for name in passed]
+    """Say which known failing harnesses failed again, and which passed here, here and in the CI job's summary."""
+    lines = [f"KNOWN FAILING {name}: failed again, not counted ({known[known_entry(name, known)]})" for name in again]
+    # A run of some shards only can pass an entry whose other shards still fail: parity-main's full run decides.
+    lines += [f"KNOWN FAILING {name} passed here: once parity-main passes it too, take it off "
+              f"tools/parity_hosts.json's known_failing ({known[name]})" for name in passed]
     for line in lines:
         print(line, flush=True)
     if lines and os.environ.get("GITHUB_STEP_SUMMARY"):

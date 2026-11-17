@@ -255,6 +255,10 @@ class ParityRunnerTests(unittest.TestCase):
         self.assertEqual(again, ["crafter", "datafix#1"])  # a failing shard counts under its harness
         self.assertEqual(passed, ["sculk"])  # passes now: datafix doesn't, as one of its shards failed
         self.assertEqual(parity.split_known_failing({"crafter": {"status": "fail"}}, known)[0], [])
+        # A listed shard covers only itself.
+        self.assertEqual(parity.split_known_failing(results, {"datafix#1": "#2: paths"})[:2],
+                         (["crafter", "mace"], ["datafix#1"]))
+        self.assertEqual(parity.split_known_failing(results, {"datafix#2": "#2: paths"})[2], ["datafix#2"])
         self.assertEqual(parity.known_failing({}), {})
 
     def test_named_only_harnesses_are_listed_from_the_host_config(self):

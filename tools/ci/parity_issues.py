@@ -131,8 +131,9 @@ def main():
         umbrella = mass_issue(listed)
         if umbrella:
             print(f"comment: #{umbrella}, {len(mass)} harnesses that newly fail at once")
-            gh("issue", "comment", str(umbrella), "--body", f"The audit of `{commit[:12]}` ({run}) still finds "
-               f"{len(mass)} harnesses failing that passed in the last recorded audit.\n\n{listing}",
+            gh("issue", "comment", str(umbrella), "--body", f"The audit of `{commit[:12]}` ({run}) finds "
+               f"{len(mass)} harnesses failing that passed in the last recorded audit, or are new: the same mass "
+               f"failure or another one.\n\n{listing}",
                dry_run=args.dry_run)
         else:
             print(f"open: one issue for {len(mass)} harnesses that newly fail at once")
