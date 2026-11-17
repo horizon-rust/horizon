@@ -120,13 +120,17 @@ def workspace_targets():
 
 
 def workspace_dependencies():
-    """Each workspace member's dependency names (its manifest's dependencies and dev-dependencies)."""
+    """Each workspace member's dependency names, including target-scoped build dependencies."""
     dependencies = {}
     for manifest in sorted((ROOT / "crates").glob("*/Cargo.toml")):
         table = tomllib.loads(manifest.read_text())
         names = set()
-        for section in ("dependencies", "dev-dependencies"):
+        sections = ("dependencies", "dev-dependencies", "build-dependencies")
+        for section in sections:
             names.update(table.get(section, {}))
+        for target in table.get("target", {}).values():
+            for section in sections:
+                names.update(target.get(section, {}))
         dependencies[table["package"]["name"]] = names
     return dependencies
 
