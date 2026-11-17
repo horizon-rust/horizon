@@ -165,6 +165,8 @@ names an exact filesystem path; `shaders/` packs still use filenames.
 0.2 is the line this build serves, the line for linear light and HDR
 ([hdr-linear-light.md](../design/hdr-linear-light.md)): `horizon-shader check` and `pack` take it, the game draws it
 and the registry lists it. A pack for another line is refused (`needs shader API 0.1; this Horizon serves 0.2`).
+The launcher goes by the game it installed, not by its own build: it asks that game for its lines
+(`--launch-api`, `content.shader.api`) and offers and installs a registry pack made for one of them.
 A pack draws the world
 into a float frame where the device can (else the 8-bit one): the frame follows the picked pack,
 rebuilding the renderer and remeshing the world when needed. A refused or missing pack, or one whose owner mod is off,
@@ -211,6 +213,11 @@ keeps drawing. What a pack works with:
   coverage: the texture's alpha times the layer's opacity is cut below 0.1 and blends, the returned alpha is ignored,
   and the check refuses a `discard` reachable from `entity`. Under `"pack"` the returned alpha is cut and blends, and
   the stage may `discard`. Dissolve masks and culling are Horizon's under either.
+- **`[frame] fog`**: `"engine"` (the default) or `"pack"`, which fogs what its stages draw itself. Under `"pack"`
+  Horizon skips its fog on what `material` and `entity` return, and every stage gets `vanilla_fog(position)`,
+  vanilla's fog at a point, with the frame's two fog distances it reads (`fog_environment`, `fog_render`), so a pack
+  can start from vanilla's fog and change it. What Horizon draws itself (items, particles, clouds, the hand) keeps
+  vanilla's fog.
 
 ```toml
 [tonemap]                  # optional: the pack's own tone curve
@@ -227,6 +234,7 @@ coverage = "engine"        # optional: engine (default) or pack, when the stage 
 [frame]
 blend = "gamma"            # optional: gamma (default) or linear
 primaries = "bt709"        # optional: bt709 (default) or bt2020, which needs blend = "linear"
+fog = "engine"             # optional: engine (default) or pack, when the pack fogs what its stages draw
 
 [ray_tracing]              # optional, needs [[post]] or [material], no keys: the post stage gets `trace` and `trace_any`, the material stage where it calls them
 [motion]                   # optional, needs [[post]]: the post stage's motion guide (not drawn yet)
@@ -278,6 +286,11 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
   `writes` on `[material]`, `reads` on the other stages, and `displacement` or a `[vertex]` file reaching a kept
   resource, as both also draw the shadow map. The kept resources' frame (the versions' swap and the clears) now starts
   before the world draws in every pack that keeps them. A material without `reads` composes as before, a test holds.
+- 2026-11-15: API 0.2 (addition, experimental): `[frame] fog = "pack"` turns Horizon's fog off on what the material
+  and entity stages return, and gives every stage `fn vanilla_fog(position: vec3<f32>) -> f32` and the frame's
+  `fog_environment` and `fog_render`, the two distances vanilla's fog takes the larger of, which `fog_start` and
+  `fog_end` merge. The enchantment glint Horizon adds after `entity` fades by `vanilla_fog`. A pack without the key
+  is drawn and checked as before, and `[material] fog = false` stays as it was; a manifest sets one of the two.
 - 2026-11-15: API 0.2 (experimental): `frame.light_direction` is the sun by day and the moon by night also for a pack
   without a `[shadow]` stage, where it now equals the frame's `sun_direction` or `moon_direction`; it read straight up
   (0, 1, 0) at every time of day until now, so a pack that traced its shadows along it got them straight down. Packs
