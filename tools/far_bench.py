@@ -311,11 +311,19 @@ def tower(binary, world, scratch, out, bots_bin):
         s.console('execute at R0x0 run fill ~32 70 ~32 ~47 190 ~47 minecraft:gold_block')
         time.sleep(15)
     before, after = solo(binary, world, scratch, out, bots_bin, 'tower', 16, 25, during=build)
+    names = block_names()
+
+    def gold_top(column):
+        # The tower's top: gold at y 191, as the surface (fine tiles) or the highest span (coarse ones).
+        surface, _ = column
+        tops = [t for t in (surface and (surface[0], surface[1]), top(column)) if t]
+        return any(h == 191 and names[state] == 'minecraft:gold_block' for h, state in tops)
+
     changed = {}
     for key in before.keys() & after.keys():
         a, b = columns(before[key]), columns(after[key])
         if a and b:
-            n = sum(1 for (sa, _), (sb, _) in zip(a, b) if sb and sb[0] == 191 and sa != sb)
+            n = sum(1 for ca, cb in zip(a, b) if gold_top(cb) and not gold_top(ca))
             if n:
                 changed[str(key)] = n
     return changed
