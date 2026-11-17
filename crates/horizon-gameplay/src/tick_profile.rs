@@ -55,7 +55,8 @@ pub fn want_spans(user: u8, on: bool) {
     horizon_client::spans::enable(users != 0);
 }
 
-#[cfg(test)]
+/// Whether `user` has spans on (for horizon-client's tests, which now sit in another crate).
+#[doc(hidden)]
 pub fn wanted(user: u8) -> bool {
     SPAN_USERS.load(Ordering::Relaxed) & user != 0
 }
