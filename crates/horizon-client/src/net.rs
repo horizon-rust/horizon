@@ -1428,12 +1428,11 @@ fn configure(
                 };
                 // Horizon servers use the client brand to negotiate their extensions.
                 // Announce those only after the server identifies itself as Horizon.
+                // Velocity appends " (Velocity)" to the brand the server announced.
                 if p.channel == "minecraft:brand"
                     && horizon_protocol::buf::Reader::new(&p.data)
                         .string(32767)
-                        .ok()
-                        .as_deref()
-                        == Some("horizon")
+                        .is_ok_and(|brand| horizon_server_brand(&brand))
                 {
                     if let Some(control) = negotiation.require_protocol() {
                         reply(cfg::Serverbound::CustomPayload(cfg::CustomPayload {
@@ -1552,6 +1551,13 @@ fn configure(
             _ => {}
         }
     }
+}
+
+/// A server brand this client negotiates Horizon's protocol with. Velocity
+/// appends ` (Velocity)` to the brand the server sent, so an exact `horizon`
+/// would leave a proxied Horizon server looking like vanilla.
+fn horizon_server_brand(brand: &str) -> bool {
+    brand == "horizon" || brand.starts_with("horizon (")
 }
 
 #[horizon_mod_api_macros::replaceable]
@@ -1856,7 +1862,7 @@ mod tests {
 
     #[test]
     fn configuration_keeps_mod_lists_private_until_the_server_identifies_as_horizon() {
-        for server_brand in ["vanilla", "horizon"] {
+        for server_brand in ["vanilla", "horizon", "horizon (Velocity)"] {
             let (root, data) = empty_item_data(&format!("mod-list-{server_brand}"));
             let (client, server) = horizon_protocol::connection::Pipe::pair();
             let (mut reader, writer) = Connection::local(client).split();
@@ -1916,7 +1922,7 @@ mod tests {
                     .encode(),
                 )
                 .unwrap();
-            if server_brand == "horizon" {
+            if horizon_server_brand(server_brand) {
                 use horizon_protocol::payload_negotiation::{CHANNEL, Control};
                 server
                     .send(
@@ -1966,8 +1972,8 @@ mod tests {
                     _ => {}
                 }
             }
-            assert_eq!(declared_mods, server_brand == "horizon");
-            assert_eq!(saw_offer, server_brand == "horizon");
+            assert_eq!(declared_mods, horizon_server_brand(server_brand));
+            assert_eq!(saw_offer, horizon_server_brand(server_brand));
             server
                 .send(&cfg::Clientbound::FinishConfiguration(Empty).encode())
                 .unwrap();
@@ -2068,6 +2074,16 @@ mod tests {
         // Data the server sent stays; an entry the client has no file for stays empty.
         assert_eq!(r.entries[1].data, Some(sent));
         assert_eq!(r.entries[2].data, None);
+    }
+
+    #[test]
+    fn a_velocity_suffix_is_still_a_horizon_server() {
+        assert!(horizon_server_brand("horizon"));
+        assert!(horizon_server_brand("horizon (Velocity)"));
+        assert!(!horizon_server_brand("vanilla"));
+        assert!(!horizon_server_brand("horizonx"));
+        assert!(!horizon_server_brand("horizon("));
+        assert!(!horizon_server_brand(""));
     }
 
     /// Launchers find the last server joined in `latest.log` by vanilla's line.
