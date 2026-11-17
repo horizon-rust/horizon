@@ -6,7 +6,7 @@
 //! draw lists (`ShadowView`) serve both; the map's texels are distorted toward the camera as the
 //! prelude's `shadow_position` undoes.
 
-use horizon_shader_api::{Api, Frame as FrameInputs, manifest::Shadow as Settings, stages::GROUP};
+use horizon_shader_api::{Frame as FrameInputs, manifest::Shadow as Settings, stages::GROUP};
 use horizon_shaders::Shadow;
 
 use super::native_material::TerrainShape;
@@ -164,13 +164,8 @@ pub struct ShadowGrid<'a> {
     pub normals: &'a wgpu::TextureView,
 }
 
-/// `shadow_color`'s format: under 0.2 it holds linear light, which 8 bits would band.
-fn shadow_color(api: Api) -> wgpu::TextureFormat {
-    match api {
-        Api::V0_1 => wgpu::TextureFormat::Rgba8Unorm,
-        Api::V0_2 => super::native_post::INTERMEDIATE,
-    }
-}
+/// `shadow_color`'s format: it holds linear light, which 8 bits would band.
+const SHADOW_COLOR: wgpu::TextureFormat = super::native_post::INTERMEDIATE;
 
 /// The shader pack's shadow camera for `settings`: orthographic over `distance` each side,
 /// staying put while the camera walks a `SNAP`-block cell. The map is distorted about its
@@ -235,7 +230,7 @@ pub struct ShadowMap {
 }
 
 impl ShadowMap {
-    pub fn new(device: &wgpu::Device, settings: Option<&Settings>, api: Api) -> Self {
+    pub fn new(device: &wgpu::Device, settings: Option<&Settings>) -> Self {
         let size = settings.map_or(1, |s| s.resolution);
         let texture = |label, format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -267,7 +262,7 @@ impl ShadowMap {
         );
         let color = texture(
             "Native shader pack shadow colour",
-            shadow_color(api),
+            SHADOW_COLOR,
             wgpu::TextureUsages::empty(),
         );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -394,11 +389,12 @@ pub struct NativeShadow {
     pub displaced: Option<wgpu::RenderPipeline>,
 }
 
-/// The entity draw's shader.
+/// The entity draw's shader. Like the terrain's (`shader_source`), it declares `Frame` without
+/// the fields only a `[frame] fog = "pack"` prelude has.
 fn entity_source() -> String {
     format!(
         "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n{}{ENTITY_ENTRIES}",
-        FrameInputs::WGSL.wgsl(),
+        FrameInputs::declared_wgsl(true, true, false),
         horizon_shader_api::stages::SHADOW_HELPERS,
     )
 }
@@ -491,7 +487,6 @@ fn shader_source(
     vertex: Option<&str>,
     materials: &[(u32, u32)],
     grid: Option<&str>,
-    api: Api,
 ) -> String {
     let table = super::native_material::layer_table("horizon_sprite_material", materials);
     let (head, displace) = match (grid, vertex) {
@@ -515,7 +510,7 @@ fn shader_source(
         (None, None) => (
             format!(
                 "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n{}{UNTAKEN}",
-                FrameInputs::WGSL.wgsl(),
+                FrameInputs::declared_wgsl(true, true, false),
                 horizon_shader_api::stages::SHADOW_HELPERS,
             ),
             super::native_material::DISPLACE_VANILLA,
@@ -524,11 +519,11 @@ fn shader_source(
     format!(
         "{head}// Horizon's terrain (terrain.wgsl)\n{}{solid}{}{displace}{}{ENTRIES}",
         prefixed(
-            &(include_str!("../hdr_light.wgsl").to_owned()
+            &(super::wgsl_prefix::HDR_LIGHT.to_owned()
                 + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")),
             PREFIX
         ),
-        super::native_post::line_helpers(api, false),
+        super::native_post::line_helpers(false),
         super::native_material::SECTION_CORNER,
     )
 }
@@ -548,7 +543,6 @@ impl NativeShadow {
             vertex.map(|s| s.source.as_str()),
             shape.sprite_materials,
             grid.as_ref().map(|g| g.material.source.as_str()),
-            frame.api,
         );
         let module = naga::front::wgsl::parse_str(&text)
             .map_err(|e| format!("shadow pass: {}", e.emit_to_string(&text)))?;
@@ -635,7 +629,7 @@ impl NativeShadow {
             attributes: &instance_attributes,
         };
         let color_target = [Some(wgpu::ColorTargetState {
-            format: shadow_color(frame.api),
+            format: SHADOW_COLOR,
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
         })];
@@ -882,9 +876,8 @@ mod tests {
 
     #[test]
     fn the_shadow_shader_validates() {
-        let lines = [Api::V0_1, Api::V0_2];
-        for (materials, api) in [&[][..], &[(3, 7), (4, 8), (9, 7)][..]].iter().zip(lines) {
-            let text = shader_source(&shadow_solid(materials, &[7]), None, materials, None, api);
+        for materials in [&[][..], &[(3, 7), (4, 8), (9, 7)][..]] {
+            let text = shader_source(&shadow_solid(materials, &[7]), None, materials, None);
             let module = naga::front::wgsl::parse_str(&text).unwrap();
             naga::valid::Validator::new(
                 naga::valid::ValidationFlags::all(),
@@ -895,10 +888,25 @@ mod tests {
         }
     }
 
+    /// The shadow shaders declare the frame as before `[frame] fog`, whose fields no shadow
+    /// reads: the SHA-256 of `Frame` then, so every pack's shadow pass is the same WGSL.
+    #[test]
+    fn the_shadow_shaders_declare_the_frame_as_before() {
+        use sha2::{Digest, Sha256};
+        let frame = FrameInputs::declared_wgsl(true, true, false);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&frame)),
+            "9218b8f0da2c1af28ace7bc402e44701448011acee478c9cef34277b2ab5e034"
+        );
+        assert!(entity_source().starts_with(&frame));
+        let solid = shader_source(&shadow_solid(&[], &[7]), None, &[], None);
+        assert!(solid.starts_with(&frame));
+    }
+
     #[test]
     fn the_shadow_shader_with_the_displaced_grid_validates() {
         use horizon_shader_api::{MANIFEST, Pack, StageKind, check};
-        let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.1\"\n\
+        let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\n\
             [material]\nfile = \"material.wgsl\"\n[shadow]\n[displacement]\n";
         let material = "fn material(input: MaterialInput) -> Surface {\n    \
                 return Surface(input.albedo);\n}\n\
@@ -919,7 +927,6 @@ mod tests {
             None,
             &materials,
             Some(&stage.source),
-            Api::V0_1,
         );
         let module = naga::front::wgsl::parse_str(&text)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));

@@ -319,8 +319,8 @@ fn displacement_is_checked_with_its_signature() {
     );
 }
 
-/// A 0.2 pack of a post pass and a tonemap stage, with `extra` appended to the manifest.
-fn pack_0_2(
+/// A pack of a post pass and a tonemap stage, with `extra` appended to the manifest.
+fn post_pack(
     post: &str,
     tonemap: &str,
     extra: &str,
@@ -344,23 +344,23 @@ const TONEMAP: &str =
     "fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color / frame.headroom; }\n";
 
 #[test]
-fn a_0_2_pack_is_checked_against_its_own_line() {
-    let report = pack_0_2(POST, TONEMAP, "[frame]\nblend = \"linear\"\n").unwrap();
+fn the_tonemap_stage_is_checked() {
+    let report = post_pack(POST, TONEMAP, "[frame]\nblend = \"linear\"\n").unwrap();
     let kinds: Vec<_> = report.stages.iter().map(|s| s.kind).collect();
     assert_eq!(kinds, [StageKind::Post, StageKind::Tonemap]);
     // A wide-gamut pack passes the check (the game refuses it for now), and reads its space.
     let wide = "fn tonemap(input: TonemapInput) -> vec3<f32> {\n    \
                 return vec3<f32>(dot(input.color, frame.luminance)) * f32(frame.primaries);\n}\n";
     let frame = "[frame]\nblend = \"linear\"\nprimaries = \"bt2020\"\n";
-    let report = pack_0_2(POST, wide, frame).unwrap();
+    let report = post_pack(POST, wide, frame).unwrap();
     assert_eq!(
         report.manifest.primaries,
         horizon_shader_api::Primaries::Bt2020
     );
-    // The 0.2 prelude's display fields and colour boundary are there to use.
+    // The prelude's display fields and colour boundary are there to use.
     let source = &report.stages[1].source;
     assert!(source.contains("    black_level: f32,\n") && source.contains("fn horizon_decode("));
-    let wrong = pack_0_2(
+    let wrong = post_pack(
         POST,
         "fn tonemap(input: TonemapInput) -> vec4<f32> { return vec4<f32>(input.color, 1.0); }\n",
         "",
@@ -372,7 +372,7 @@ fn a_0_2_pack_is_checked_against_its_own_line() {
         )),
         "{wrong:#?}"
     );
-    let named = pack_0_2(
+    let named = post_pack(
         POST,
         &format!("fn horizon_decode_mine(c: vec3<f32>) -> vec3<f32> {{ return c; }}\n{TONEMAP}"),
         "",
@@ -386,8 +386,8 @@ fn a_0_2_pack_is_checked_against_its_own_line() {
     );
 }
 
-/// A 0.2 pack of a material, a post pass and a tonemap stage.
-fn pack_0_2_with_material(
+/// A pack of a material, a post pass and a tonemap stage.
+fn post_pack_with_material(
     material: &str,
     post: &str,
     tonemap: &str,
@@ -408,6 +408,7 @@ fn pack_0_2_with_material(
 
 const MATERIAL: &str =
     "fn material(input: MaterialInput) -> Surface { return Surface(input.albedo); }\n";
+const ENTITY: &str = "fn entity(input: EntityInput) -> Surface { return Surface(input.albedo); }\n";
 
 fn refused(problems: &[Problem], name: &str) -> Vec<(String, usize)> {
     let needle = format!("constructs `{name}`: it is Horizon's and may gain fields");
@@ -419,11 +420,11 @@ fn refused(problems: &[Problem], name: &str) -> Vec<(String, usize)> {
 }
 
 #[test]
-fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
+fn a_pack_constructs_no_struct_horizon_hands_it() {
     let post = "fn post(input: PostInput) -> vec4<f32> {\n    \
                 let moved = PostInput(input.uv * 0.5, input.pixel, input.color, input.depth);\n    \
                 return moved.color;\n}\n";
-    let p = pack_0_2(post, TONEMAP, "").expect_err("should fail");
+    let p = post_pack(post, TONEMAP, "").expect_err("should fail");
     assert_eq!(
         refused(&p, "PostInput"),
         [("post.wgsl".into(), 2)],
@@ -434,7 +435,7 @@ fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
     let tonemap = "fn darker(c: vec3<f32>) -> TonemapInput {\n    \
                    return TonemapInput(vec2<f32>(0.0), vec2<f32>(0.0), c * 0.5);\n}\n\
                    fn tonemap(input: TonemapInput) -> vec3<f32> { return darker(input.color).color; }\n";
-    let p = pack_0_2(POST, tonemap, "").expect_err("should fail");
+    let p = post_pack(POST, tonemap, "").expect_err("should fail");
     assert_eq!(
         refused(&p, "TonemapInput"),
         [("tonemap.wgsl".into(), 2)],
@@ -450,7 +451,7 @@ fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
          fn tonemap(input: TonemapInput) -> vec3<f32> {{ return input.color * still.headroom; }}\n",
         fields.join(", ")
     );
-    let p = pack_0_2(POST, &tonemap, "").expect_err("should fail");
+    let p = post_pack(POST, &tonemap, "").expect_err("should fail");
     assert_eq!(refused(&p, "Frame"), [("tonemap.wgsl".into(), 1)], "{p:#?}");
 
     let material = "fn material(input: MaterialInput) -> Surface {\n    \
@@ -459,7 +460,7 @@ fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
                     input.face, input.fluid, input.emission, input.normal, input.tangent, input.colored_light, \
                     input.displaced);\n    \
                     return Surface(again.albedo);\n}\n";
-    let p = pack_0_2_with_material(material, POST, TONEMAP).expect_err("should fail");
+    let p = post_pack_with_material(material, POST, TONEMAP).expect_err("should fail");
     assert_eq!(
         refused(&p, "MaterialInput"),
         [("material.wgsl".into(), 2)],
@@ -470,7 +471,7 @@ fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
     let post = "fn post(input: PostInput) -> vec4<f32> {\n    \
                 let s = SurfaceData(true, vec3<f32>(0.0, 1.0, 0.0), 0.5, 0.0);\n    \
                 return input.color * s.smoothness * surface_at(vec2<i32>(input.pixel)).smoothness;\n}\n";
-    let p = pack_0_2(post, TONEMAP, "").expect_err("should fail");
+    let p = post_pack(post, TONEMAP, "").expect_err("should fail");
     assert_eq!(
         refused(&p, "SurfaceData"),
         [("post.wgsl".into(), 2)],
@@ -479,7 +480,7 @@ fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
 }
 
 #[test]
-fn a_0_2_pack_reads_horizon_s_structs_passes_them_along_and_builds_its_surface() {
+fn a_pack_reads_horizon_s_structs_passes_them_along_and_builds_its_surface() {
     // A name that merely contains a struct's, a comment and a field read are no construction.
     let post = "// PostInput(input.uv) would be refused\n\
                 struct MyPostInput { color: vec4<f32> }\n\
@@ -487,18 +488,46 @@ fn a_0_2_pack_reads_horizon_s_structs_passes_them_along_and_builds_its_surface()
                 fn post(input: PostInput) -> vec4<f32> { return graded(input).color; }\n";
     let tonemap = "fn curve(input: TonemapInput) -> vec3<f32> { return input.color / (input.color + 1.0); }\n\
                    fn tonemap(input: TonemapInput) -> vec3<f32> { return curve(input); }\n";
-    pack_0_2_with_material(MATERIAL, post, tonemap).unwrap();
+    post_pack_with_material(MATERIAL, post, tonemap).unwrap();
     // The tonemap prelude has no `SurfaceData`: one of the pack's own is the pack's to build.
     let tonemap = "struct SurfaceData { gain: f32 }\n\
                    fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color * SurfaceData(0.5).gain; }\n";
-    pack_0_2_with_material(MATERIAL, POST, tonemap).unwrap();
+    post_pack_with_material(MATERIAL, POST, tonemap).unwrap();
     // Nor is an alias of the pack's own by that name.
     let tonemap = "alias SurfaceData = vec3<f32>;\n\
                    fn tonemap(input: TonemapInput) -> vec3<f32> { return SurfaceData(input.color.r, 0.0, 0.0); }\n";
-    pack_0_2_with_material(MATERIAL, POST, tonemap).unwrap();
+    post_pack_with_material(MATERIAL, POST, tonemap).unwrap();
 }
 
-/// A 0.2 pack of the entity stage alone.
+/// The entity stage's fixture, which the frame identity test draws with
+/// (tools/test_frame_identity_parity.py).
+#[test]
+fn the_entity_fixture_passes() {
+    let pack = Pack::read(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/samples/entity-stage"
+    )))
+    .unwrap();
+    let report = check(&pack).unwrap();
+    let kinds: Vec<_> = report.stages.iter().map(|s| s.kind).collect();
+    assert_eq!(kinds, [StageKind::Sky, StageKind::Entity]);
+}
+
+/// The fixture of a pack that fogs its stages itself, as vanilla does.
+#[test]
+fn the_own_fog_fixture_passes() {
+    let pack = Pack::read(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/samples/own-fog"
+    )))
+    .unwrap();
+    let report = check(&pack).unwrap();
+    let kinds: Vec<_> = report.stages.iter().map(|s| s.kind).collect();
+    assert_eq!(kinds, [StageKind::Material, StageKind::Entity]);
+    assert!(!report.material_fog);
+}
+
+/// A pack of the entity stage alone.
 fn entity_pack(entity: &str) -> Result<horizon_shader_api::Report, Vec<Problem>> {
     let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
                     [entity]\nfile = \"entity.wgsl\"\nname = \"Mobs\"\n";
@@ -587,31 +616,9 @@ fn the_entity_stage_is_checked_like_the_material_s() {
     );
 }
 
-#[test]
-fn a_0_1_pack_may_still_construct_its_inputs() {
-    let mut files = sample().files;
-    files.insert(
-        GRADE.into(),
-        b"override saturation: f32 = 1.1;\noverride tonemap: u32 = 1u;\n\
-          fn post(input: PostInput) -> vec4<f32> { return PostInput(input.uv, input.pixel, input.color, input.depth).color; }\n"
-            .to_vec(),
-    );
-    check(&Pack::from_files(files).unwrap()).unwrap();
-}
-
-#[test]
-fn a_0_1_pack_doesn_t_see_0_2_s_names() {
-    let p = one(
-        GRADE,
-        "override saturation: f32 = 1.1;\noverride tonemap: u32 = 1u;\nfn post(input: PostInput) -> vec4<f32> { return input.color * frame.headroom; }\n",
-        "headroom",
-    );
-    assert_eq!(p.file, GRADE, "{p}");
-}
-
-/// A 0.2 pack with `[ray_tracing]` whose post pass is `post`.
+/// A pack with `[ray_tracing]` whose post pass is `post`.
 fn traced(post: &str) -> Result<horizon_shader_api::Report, Vec<Problem>> {
-    pack_0_2(post, TONEMAP, "[ray_tracing]\n")
+    post_pack(post, TONEMAP, "[ray_tracing]\n")
 }
 
 /// Every name `[ray_tracing]` brings, used.
@@ -663,12 +670,12 @@ fn a_traced_post_stage_is_checked_without_the_scene_and_with_it() {
     assert!(!valid(scene, plain));
     assert!(report.stages[1].scene.is_none(), "the tonemap stage");
     // The budgets count the scene's sprite reads.
-    let untraced = pack_0_2(POST, TONEMAP, "").unwrap();
+    let untraced = post_pack(POST, TONEMAP, "").unwrap();
     assert!(untraced.stages[0].scene.is_none());
     let reads = traced(POST).unwrap().stages[0].texture_reads;
     assert!(reads > untraced.stages[0].texture_reads, "{reads}");
     // A pack that didn't ask has none of the names.
-    let problems = pack_0_2(SHADOWED, TONEMAP, "").unwrap_err();
+    let problems = post_pack(SHADOWED, TONEMAP, "").unwrap_err();
     assert_eq!(
         (problems[0].file.as_str(), problems[0].line),
         ("post.wgsl", 3)
@@ -690,7 +697,7 @@ fn post(input: PostInput) -> vec4<f32> {
 ";
     let option = "[ray_tracing]\n[[options]]\nid = \"rt_shadows\"\nname = \"Ray traced shadows\"\n\
                   type = \"bool\"\ndefault = true\n";
-    let report = pack_0_2(post, TONEMAP, option).unwrap();
+    let report = post_pack(post, TONEMAP, option).unwrap();
     let stage = &report.stages[0];
     let plain = naga::valid::Capabilities::default();
     let scene = (stage.scene.as_ref()).map(|m| (m, plain | naga::valid::Capabilities::RAY_QUERY));
@@ -757,7 +764,7 @@ fn post(input: PostInput) -> vec4<f32> {
     // The tonemap stage's files are the pack's too.
     let tonemap = "alias Scene = acceleration_structure;\n\
                    fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color; }\n";
-    let problems = pack_0_2(POST, tonemap, "[ray_tracing]\n").unwrap_err();
+    let problems = post_pack(POST, tonemap, "[ray_tracing]\n").unwrap_err();
     assert!(
         problems[0]
             .to_string()
@@ -775,20 +782,23 @@ fn post(input: PostInput) -> vec4<f32> {
     assert_eq!(refused(&problems, "RayHit"), [("post.wgsl".to_owned(), 2)]);
 }
 
-/// A 0.2 material pack: `[material]` with `keys`, its `material.wgsl` and a shared `helpers.wgsl`.
+/// A 0.2 pack with one stage, `[{stage}]` with `keys`: its `{stage}.wgsl` holds `body`, and a
+/// shared `helpers.wgsl`.
 fn coverage_pack(
+    stage: &str,
     keys: &str,
-    material: &str,
+    body: &str,
     helpers: &str,
 ) -> Result<horizon_shader_api::Report, Vec<Problem>> {
     let manifest = format!(
         "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
-         shared = [\"helpers.wgsl\"]\n[material]\nfile = \"material.wgsl\"\n{keys}"
+         shared = [\"helpers.wgsl\"]\n[{stage}]\nfile = \"{stage}.wgsl\"\n{keys}"
     );
+    let file = format!("{stage}.wgsl");
     let files = [
         (MANIFEST, manifest.as_str()),
         ("helpers.wgsl", helpers),
-        ("material.wgsl", material),
+        (&file, body),
     ]
     .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
     .into();
@@ -796,39 +806,52 @@ fn coverage_pack(
 }
 
 #[test]
-fn a_discard_reachable_from_material_needs_pack_coverage() {
-    let direct = "fn material(input: MaterialInput) -> Surface {\n    \
-                  if input.albedo.a < 0.3 {\n        discard;\n    }\n    \
-                  return Surface(input.albedo);\n}\n";
+fn a_discard_reachable_from_material_or_entity_needs_pack_coverage() {
     // Through a shared helper, two calls deep, inside a loop.
     let helpers = "fn cut(a: f32) {\n    for (var i = 0; i < 2; i++) {\n        \
                    if a < 0.3 {\n            discard;\n        }\n    }\n}\n\
                    fn holes(a: f32) -> f32 {\n    cut(a);\n    return a;\n}\n";
-    let through = "fn material(input: MaterialInput) -> Surface {\n    \
-                   return Surface(vec4(input.albedo.rgb, holes(input.albedo.a)));\n}\n";
-    let refused = |keys: &str, material: &str, helpers: &str| {
-        let p = coverage_pack(keys, material, helpers).expect_err("should fail");
-        let p: Vec<_> = p
-            .into_iter()
-            .filter(|p| p.message.contains("`discard` reachable from `material`"))
-            .collect();
-        assert_eq!(p.len(), 1, "{p:#?}");
-        assert!(p[0].message.contains("coverage = \"pack\""), "{p:#?}");
-        (p[0].file.clone(), p[0].line)
-    };
     let none = "fn unused() {}\n";
-    assert_eq!(refused("", direct, none), ("material.wgsl".into(), 3));
-    assert_eq!(refused("", through, helpers), ("helpers.wgsl".into(), 4));
-    let engine = "coverage = \"engine\"\n";
-    assert_eq!(
-        refused(engine, through, helpers),
-        ("helpers.wgsl".into(), 4)
-    );
-    let own = "coverage = \"pack\"\n";
-    coverage_pack(own, direct, none).unwrap();
-    coverage_pack(own, through, helpers).unwrap();
-    // A helper with a discard that `material` never calls cuts no hole.
-    coverage_pack("", MATERIAL, helpers).unwrap();
+    for (stage, input, plain) in [
+        ("material", "MaterialInput", MATERIAL),
+        ("entity", "EntityInput", ENTITY),
+    ] {
+        let direct = format!(
+            "fn {stage}(input: {input}) -> Surface {{\n    \
+             if input.albedo.a < 0.3 {{\n        discard;\n    }}\n    \
+             return Surface(input.albedo);\n}}\n"
+        );
+        let through = format!(
+            "fn {stage}(input: {input}) -> Surface {{\n    \
+             return Surface(vec4(input.albedo.rgb, holes(input.albedo.a)));\n}}\n"
+        );
+        let refused = |keys: &str, body: &str, helpers: &str| {
+            let p = coverage_pack(stage, keys, body, helpers).expect_err("should fail");
+            let p: Vec<_> = p
+                .into_iter()
+                .filter(|p| {
+                    p.message
+                        .contains(&format!("`discard` reachable from `{stage}`"))
+                })
+                .collect();
+            assert_eq!(p.len(), 1, "{p:#?}");
+            assert!(p[0].message.contains("coverage = \"pack\""), "{p:#?}");
+            (p[0].file.clone(), p[0].line)
+        };
+        let own_file = format!("{stage}.wgsl");
+        assert_eq!(refused("", &direct, none), (own_file, 3));
+        assert_eq!(refused("", &through, helpers), ("helpers.wgsl".into(), 4));
+        let engine = "coverage = \"engine\"\n";
+        assert_eq!(
+            refused(engine, &through, helpers),
+            ("helpers.wgsl".into(), 4)
+        );
+        let own = "coverage = \"pack\"\n";
+        coverage_pack(stage, own, &direct, none).unwrap();
+        coverage_pack(stage, own, &through, helpers).unwrap();
+        // A helper with a discard that the stage never calls cuts no hole.
+        coverage_pack(stage, "", plain, helpers).unwrap();
+    }
 }
 
 #[test]
@@ -837,6 +860,7 @@ fn a_traced_pack_s_own_hit_helper_is_refused_as_its_own_trace_is() {
         "trace_any",
         "trace_layers",
         "RAY_TRANSLUCENT",
+        "RAY_ENTITY",
         "hit_normal_map",
         "block_pbr_maps",
     ];
@@ -859,7 +883,7 @@ fn a_traced_pack_s_own_hit_helper_is_refused_as_its_own_trace_is() {
             "{problems:#?}"
         );
         // Without the key the name is the pack's.
-        pack_0_2(&own, TONEMAP, "").unwrap();
+        post_pack(&own, TONEMAP, "").unwrap();
     }
     // In a material stage that traces, as its `trace` is; one that doesn't keeps the name.
     let own = "fn hit_specular_map(c: vec4<f32>) -> vec4<f32> { return c; }
@@ -876,7 +900,7 @@ fn a_traced_pack_s_own_hit_helper_is_refused_as_its_own_trace_is() {
     );
 }
 
-/// A 0.2 pack with `[ray_tracing]` and the material stage `material` (no post pass), its
+/// A pack with `[ray_tracing]` and the material stage `material` (no post pass), its
 /// manifest's other `keys` and `files` added.
 fn traced_material(
     material: &str,
@@ -940,6 +964,36 @@ fn a_traced_material_stage_is_checked_without_the_scene_and_with_it() {
     assert!(!layered.contains("trace(") && !layered.contains("trace_any("));
     let report = traced_material(&layered, "", &[]).unwrap();
     assert!(report.stages[0].scene.is_some());
+}
+
+/// Ordinary `[[post]]` entries sharing a file are built from the first entry's, `files` and all,
+/// as before compute passes: only compute entries are built per entry.
+#[test]
+fn ordinary_post_entries_sharing_a_file_build_as_the_first() {
+    let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
+                    [[post]]\nfile = \"post.wgsl\"\nfiles = [\"first.wgsl\"]\n\
+                    [[post]]\nfile = \"post.wgsl\"\nfiles = [\"second.wgsl\"]\n";
+    let post = "fn post(input: PostInput) -> vec4<f32> { return input.color * tint(); }\n";
+    let files = [
+        (MANIFEST, manifest),
+        ("post.wgsl", post),
+        (
+            "first.wgsl",
+            "fn tint() -> vec4<f32> { return vec4<f32>(1.0); }\n",
+        ),
+        ("second.wgsl", "fn shade() -> f32 { return 0.5; }\n"),
+    ]
+    .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+    .into();
+    let pack = Pack::from_files(files).unwrap();
+    // The second entry's `files` would leave `tint` undefined.
+    let report = check(&pack).unwrap();
+    let [a, b] = &report.stages[..] else {
+        panic!("two stages")
+    };
+    assert_eq!(format!("{:?}", a.module), format!("{:?}", b.module));
+    let composed = horizon_shader_api::compose(&pack, StageKind::Post, "post.wgsl").text;
+    assert!(composed.contains("fn tint") && !composed.contains("fn shade"));
 }
 
 #[test]
@@ -1027,6 +1081,23 @@ fn a_ray_from_a_vertex_shader_is_refused() {
         [("material.wgsl".to_owned(), 3)],
         "{problems:#?}"
     );
+    // Nor is the entity layer, in either function.
+    let entities = displaced.replace("8.0)", "8.0, RAY_ENTITY)");
+    let entities = entities.replace("trace_any(", "trace_any_layers(");
+    let problems = traced_material(&entities, "[displacement]\n", &[]).unwrap_err();
+    assert_eq!(
+        reached(&problems, "displacement"),
+        [("material.wgsl".to_owned(), 3)],
+        "{problems:#?}"
+    );
+    let entities = vertex.replace("8.0)", "8.0, RAY_ENTITY)");
+    let entities = entities.replace("trace(", "trace_layers(");
+    let problems = traced_material(MATERIAL, keys, &[("vertex.wgsl", &entities)]).unwrap_err();
+    assert_eq!(
+        reached(&problems, "vertex"),
+        [("vertex.wgsl".to_owned(), 1)],
+        "{problems:#?}"
+    );
     // The material's own rays beside both are its to trace.
     let both = format!(
         "{REFLECTING}fn displacement(input: DisplacementInput) -> f32 {{ return input.height; }}\n"
@@ -1034,4 +1105,105 @@ fn a_ray_from_a_vertex_shader_is_refused() {
     let plain = "fn vertex(input: VertexInput) -> vec3<f32> { return input.position; }\n";
     let keys = format!("{keys}[displacement]\n");
     traced_material(&both, &keys, &[("vertex.wgsl", plain)]).unwrap();
+}
+
+/// A post pass that reads the entity layer: what of an entity the sun's ray meets first.
+const ENTITY_SHADOWED: &str = "fn post(input: PostInput) -> vec4<f32> {
+    let p = view_position(input.uv, input.depth);
+    let hit = trace_layers(p, frame.sun_direction, 64.0, RAY_SOLID | RAY_ENTITY);
+    let mob = select(0.0, 1.0, hit.entity);
+    let shadowed = f32(trace_any_layers(p, frame.sun_direction, 64.0, RAY_ENTITY));
+    return vec4<f32>(hit.albedo.rgb * mob + hit_normal_map(hit).rgb * shadowed, 1.0);
+}
+";
+
+/// The entity layer is only a pack's whose files name `RAY_ENTITY`, anywhere outside a comment:
+/// its post pass is checked without the scene and with it (each translated to SPIR-V, HLSL and
+/// Metal), and has `RayHit.entity`; another pack's has neither.
+#[test]
+fn the_entity_layer_is_the_pack_s_that_names_it() {
+    let report = traced(ENTITY_SHADOWED).unwrap();
+    let post = &report.stages[0];
+    assert!(post.traces_entities());
+    let plain = naga::valid::Capabilities::default();
+    assert!(!ray_queries(&post.module) && valid(&post.module, plain));
+    let scene = post.scene.as_ref().unwrap();
+    assert!(valid(scene, plain | naga::valid::Capabilities::RAY_QUERY));
+    // Dead code names it as well.
+    let dead = format!("fn unused() -> u32 {{ return RAY_ENTITY; }}\n{SHADOWED}");
+    assert!(traced(&dead).unwrap().stages[0].traces_entities());
+    // A comment doesn't; nor does a pack without `[ray_tracing]`, which has no layers at all.
+    let commented = format!("// RAY_ENTITY\n{SHADOWED}");
+    assert!(!traced(&commented).unwrap().stages[0].traces_entities());
+    assert!(post_pack(ENTITY_SHADOWED, TONEMAP, "").is_err());
+    // `entity` is a field only where the layer is.
+    let reads = SHADOWED.replace("hit.material + hit.tags", "u32(hit.entity)");
+    let problems = traced(&reads).unwrap_err();
+    assert!(problems[0].message.contains("entity"), "{problems:#?}");
+    let named = format!("const LAYERS: u32 = RAY_ENTITY;\n{reads}");
+    assert!(traced(&named).unwrap().stages[0].traces_entities());
+}
+
+/// A traced pack whose files don't name `RAY_ENTITY` composes as it did before the entity layer,
+/// byte for byte, with the scene and without it: the hashes are those of its post and material
+/// stages composed before.
+#[test]
+fn a_traced_pack_that_doesn_t_name_ray_entity_composes_as_before() {
+    let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
+                    [material]\nfile = \"material.wgsl\"\n[[post]]\nfile = \"post.wgsl\"\n\
+                    [tonemap]\nfile = \"tonemap.wgsl\"\n[ray_tracing]\n";
+    let files = [
+        (MANIFEST, manifest),
+        ("material.wgsl", REFLECTING),
+        ("post.wgsl", SHADOWED),
+        ("tonemap.wgsl", TONEMAP),
+    ]
+    .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+    .into();
+    let pack = Pack::from_files(files).unwrap();
+    let stages = [
+        (StageKind::Post, "post.wgsl"),
+        (StageKind::Material, "material.wgsl"),
+    ];
+    let hashes: Vec<String> = stages
+        .into_iter()
+        .flat_map(|(kind, file)| {
+            use horizon_shader_api::{compose, compose_scene};
+            [compose(&pack, kind, file), compose_scene(&pack, kind, file)]
+        })
+        .map(|c| horizon_shader_api::package::sha256_hex(c.text.as_bytes()))
+        .collect();
+    assert_eq!(
+        hashes,
+        [
+            "98798d371e540aa157b5e297d13f4cb26d033cd20fa4d7e0d4812532a3929da1",
+            "38e22f3422efecd68b09c7156406fbbe2a44c11962bc012740bba3b418453505",
+            "97d863f6ab2d52d7b3d7acf56804fc84762007df473b0a9217ae1a52722e0756",
+            "3d90723593cdcf680d2cc479b8eedaafd394a7acdbfc58a9c4c5c4761692e876",
+        ]
+    );
+}
+
+/// The entity layer's bindings against the scene, the retained block entities' store the last of
+/// them (`RAY_ENTITY_RETAINED_BINDING`), are the naming pack's alone: another traced pack's scene
+/// has none of them.
+#[test]
+fn the_retained_block_entities_store_is_the_layer_s_last_binding() {
+    use horizon_shader_api::stages::{
+        GROUP, RAY_ENTITY_RETAINED_BINDING, RAY_ENTITY_STORE_BINDING,
+    };
+    let bindings = |post: &str| -> Vec<u32> {
+        let report = traced(post).unwrap();
+        let scene = report.stages[0].scene.clone().unwrap();
+        let mut found: Vec<u32> = (scene.global_variables.iter())
+            .filter_map(|(_, g)| g.binding.as_ref())
+            .filter(|b| b.group == GROUP && b.binding >= RAY_ENTITY_STORE_BINDING)
+            .map(|b| b.binding)
+            .collect();
+        found.sort_unstable();
+        found
+    };
+    assert_eq!(RAY_ENTITY_RETAINED_BINDING, 63);
+    assert_eq!(bindings(ENTITY_SHADOWED), [60, 61, 62, 63]);
+    assert_eq!(bindings(SHADOWED), [0u32; 0]);
 }
