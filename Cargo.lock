@@ -1905,8 +1905,8 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "horizon-client-lib",
- "horizon-world",
  "horizon-core",
+ "horizon-world",
  "serde_json",
 ]
 
