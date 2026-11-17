@@ -2,3 +2,4 @@
 #![forbid(unsafe_code)]
 extern crate horizon_client_lib as horizon_client;
 pub mod transient_blocks;
+pub mod occlusion_culling;
