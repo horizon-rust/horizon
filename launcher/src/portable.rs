@@ -18,7 +18,7 @@ pub const MARKER: &str = "portable";
 /// The folder beside the launcher's executable that holds a portable install's data.
 pub const DATA: &str = "data";
 
-/// Set to `1` in a portable launcher's process, and so in every process it starts.
+/// A portable launcher's data folder, set in its process and so in every process it starts.
 pub const ENV: &str = "HORIZON_LAUNCHER_PORTABLE";
 
 /// Where a launcher at `exe` keeps its data when it is portable: `None` without the marker.
@@ -31,18 +31,65 @@ pub fn folder_for(exe: &Path) -> Option<PathBuf> {
 /// AppImage's own mount (`APPDIR`), as self-updates check it ([`crate::backend::appimage_path`]),
 /// so the marker sits beside the AppImage; `exe` otherwise. An `APPIMAGE` inherited from another
 /// AppImage (a file manager or terminal packaged as one) names someone else's folder: ignored.
+/// On macOS it is the `.app` bundle: a self-update replaces the bundle whole and checks its
+/// signature, so the marker and `data` sit beside the bundle, never inside it.
 pub fn launcher_file(
     appimage: Option<&std::ffi::OsStr>,
     appdir: Option<&std::ffi::OsStr>,
     exe: PathBuf,
 ) -> PathBuf {
-    crate::backend::appimage_path_in(appimage, appdir, &exe).unwrap_or(exe)
+    if let Some(appimage) = crate::backend::appimage_path_in(appimage, appdir, &exe) {
+        return appimage;
+    }
+    app_bundle(&exe).unwrap_or(exe)
+}
+
+/// The `.app` bundle `exe` runs from (`X.app/Contents/MacOS/horizon-launcher`), if it does.
+fn app_bundle(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app")
+        .then(|| app.to_path_buf())
+}
+
+/// The variables among `vars` (name, value) that name a folder outside the portable `data`
+/// folder: the player's own, which moving the launcher's folder leaves behind.
+pub fn outside<'a>(data: &Path, vars: &[(&'a str, Option<PathBuf>)]) -> Vec<(&'a str, PathBuf)> {
+    vars.iter()
+        .filter_map(|(name, value)| {
+            let value = value.as_ref()?;
+            (!value.starts_with(data)).then(|| (*name, value.clone()))
+        })
+        .collect()
+}
+
+/// This portable launcher's folders that the player set outside its data folder with
+/// `HORIZON_LAUNCHER_HOME` or `HORIZON_HOME`. Empty when it isn't portable.
+pub fn folders_outside() -> Vec<(&'static str, PathBuf)> {
+    let Some(data) = data_folder() else {
+        return Vec::new();
+    };
+    let var = |name: &str| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    outside(
+        &data,
+        &[
+            ("HORIZON_LAUNCHER_HOME", var("HORIZON_LAUNCHER_HOME")),
+            ("HORIZON_HOME", var("HORIZON_HOME")),
+        ],
+    )
 }
 
 /// The environment a portable install at `data` sets: the launcher's and the game's folders inside
 /// it, and [`ENV`]. A folder the player already set with its variable stays theirs.
 pub fn environment(data: &Path, set: impl Fn(&str) -> bool) -> Vec<(&'static str, PathBuf)> {
-    let mut vars = vec![(ENV, PathBuf::from("1"))];
+    let mut vars = vec![(ENV, data.to_path_buf())];
     for (name, folder) in [
         ("HORIZON_LAUNCHER_HOME", "launcher"),
         ("HORIZON_HOME", "game"),
@@ -79,7 +126,14 @@ pub fn apply() {
 
 /// Whether this process is a portable launcher's (or one it started).
 pub fn is_on() -> bool {
-    std::env::var_os(ENV).is_some_and(|v| v == "1")
+    data_folder().is_some()
+}
+
+/// A portable launcher's data folder: [`ENV`]'s value.
+pub fn data_folder() -> Option<PathBuf> {
+    std::env::var_os(ENV)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -126,13 +180,49 @@ mod tests {
     }
 
     #[test]
+    fn a_mac_app_keeps_its_portable_files_beside_the_bundle_a_self_update_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Horizon Launcher.app");
+        let exe = app.join("Contents/MacOS/horizon-launcher");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, "").unwrap();
+        // Beside the bundle: kept when an update swaps the bundle, and outside its signature.
+        std::fs::write(dir.path().join(MARKER), "").unwrap();
+        let file = launcher_file(None, None, exe.clone());
+        assert_eq!(file, app);
+        assert_eq!(folder_for(&file), Some(dir.path().join("data")));
+        // A marker inside the bundle would go with the old bundle: it doesn't count.
+        std::fs::remove_file(dir.path().join(MARKER)).unwrap();
+        std::fs::write(exe.parent().unwrap().join(MARKER), "").unwrap();
+        assert_eq!(folder_for(&launcher_file(None, None, exe)), None);
+        // Any other executable is its own file.
+        let plain = dir.path().join("horizon-launcher");
+        assert_eq!(launcher_file(None, None, plain.clone()), plain);
+    }
+
+    #[test]
+    fn folders_the_player_set_outside_the_portable_folder_are_named() {
+        let data = Path::new("/usb/HZ/data");
+        let vars = [
+            ("HORIZON_LAUNCHER_HOME", Some(data.join("launcher"))),
+            ("HORIZON_HOME", Some(PathBuf::from("/home/me/saves"))),
+        ];
+        assert_eq!(
+            outside(data, &vars),
+            vec![("HORIZON_HOME", PathBuf::from("/home/me/saves"))]
+        );
+        assert!(outside(data, &[("HORIZON_HOME", Some(data.join("game")))]).is_empty());
+        assert!(outside(data, &[("HORIZON_HOME", None)]).is_empty());
+    }
+
+    #[test]
     fn portable_folders_sit_in_the_data_folder_unless_the_player_set_their_own() {
         let data = Path::new("/usb/horizon/data");
         let all = environment(data, |_| false);
         assert_eq!(
             all,
             vec![
-                ("HORIZON_LAUNCHER_PORTABLE", PathBuf::from("1")),
+                ("HORIZON_LAUNCHER_PORTABLE", data.to_path_buf()),
                 ("HORIZON_LAUNCHER_HOME", data.join("launcher")),
                 ("HORIZON_HOME", data.join("game")),
             ]
@@ -141,7 +231,7 @@ mod tests {
         assert_eq!(
             theirs,
             vec![
-                ("HORIZON_LAUNCHER_PORTABLE", PathBuf::from("1")),
+                ("HORIZON_LAUNCHER_PORTABLE", data.to_path_buf()),
                 ("HORIZON_LAUNCHER_HOME", data.join("launcher")),
             ]
         );

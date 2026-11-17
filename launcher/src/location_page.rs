@@ -69,7 +69,16 @@ impl Launcher {
 
     fn location_blocked(&self) -> Option<String> {
         if horizon_launcher::portable::is_on() {
-            Some(tr("This launcher is portable: its data stays in the data folder beside it. Move the launcher's whole folder instead.").into())
+            let outside = horizon_launcher::portable::folders_outside();
+            if outside.is_empty() {
+                return Some(tr("This launcher is portable: its data stays in the data folder beside it. Move the launcher's whole folder instead.").into());
+            }
+            let folders = outside
+                .iter()
+                .map(|(name, path)| format!("{name} ({})", path.display()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(trf("This launcher is portable: its data stays in the data folder beside it, except what {folders} points to outside it. Move the launcher's whole folder; it doesn't take those folders along. Move them yourself and point the variable at their new place, or the launcher starts without that data.", &[("folders", &folders)]))
         } else if environment_blocked() {
             Some(tr("Data folders are set by HORIZON_LAUNCHER_HOME or HORIZON_HOME. Remove these environment overrides and restart the launcher before moving data here.").into())
         } else if self.location_busy() {

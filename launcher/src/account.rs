@@ -1153,6 +1153,17 @@ impl SecretStore for FileStore {
     fn persistent(&self) -> bool {
         true
     }
+    /// A portable install's own store (#17377): the session lock the keychain's stores take,
+    /// so sign-ins renewed by several launcher and CLI processes don't race. Beside [`Layered`]
+    /// the keychain's lock already covers it.
+    fn lock_file(&self) -> Option<PathBuf> {
+        if self.machine_bound {
+            return None;
+        }
+        self.path
+            .parent()
+            .map(|dir| dir.join("account-session.lock"))
+    }
 }
 
 /// The Secret Service (GNOME Keyring, KWallet) through oo7, as gpui itself uses it.

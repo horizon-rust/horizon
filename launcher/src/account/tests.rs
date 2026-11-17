@@ -1404,6 +1404,23 @@ fn a_portable_secrets_file_opens_on_another_computer() {
     remove_secrets_dir(&moved);
 }
 
+#[test]
+fn a_portable_secrets_file_takes_the_shared_session_lock() {
+    // Several launcher and CLI processes of one portable install renew sign-ins through the same
+    // file: they take the session lock the keychain's stores use, in the data folder.
+    let path = secrets_file("portable-lock");
+    let lock = path.parent().unwrap().join("account-session.lock");
+    assert_eq!(FileStore::portable(path.clone()).lock_file(), Some(lock));
+    // The file beside the keychain (Layered) keeps the keychain's lock alone.
+    assert_eq!(FileStore::new(path.clone()).lock_file(), None);
+    let store = FileStore::portable(path.clone());
+    let held = session::lock(&store).unwrap();
+    assert!(session::lock_within(&store, Some(Duration::from_millis(100))).is_err());
+    drop(held);
+    assert!(session::lock_within(&store, Some(Duration::from_millis(100))).is_ok());
+    remove_secrets_dir(&path);
+}
+
 const WRITER: &str = "HORIZON_TEST_SECRETS_WRITER";
 
 /// One of the processes [`processes_sharing_the_secrets_file_lose_nothing`] starts: does nothing
