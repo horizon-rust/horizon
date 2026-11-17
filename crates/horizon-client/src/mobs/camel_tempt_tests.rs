@@ -38,11 +38,11 @@ fn tempted(kind: &str, hand: &str, age: i32, distance: f64) -> Option<(bool, boo
             m.extra.age = age;
             register(&mut m);
             m.on_ground = true;
-            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut lr = crate::health::TestLevel::new(0);
             let mut events = Vec::new();
             let mut cx = Cx {
                 w: &world,
-                lr: &mut lr,
+                level: &mut lr.level(),
                 events: &mut events,
             };
             let mut goals = std::mem::take(&mut m.ai.goals);
