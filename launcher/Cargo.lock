@@ -3193,6 +3193,7 @@ dependencies = [
  "horizon-core",
  "horizon-mod-runtime",
  "horizon-world",
+ "idna",
  "ipconfig",
  "log",
  "serde_json",
