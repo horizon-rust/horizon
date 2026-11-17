@@ -403,7 +403,15 @@ where it has them, so what players built shows, and from the generator only wher
 tile of saved chunks alone costs no generation at all. Coarser tiles are the generator's. A chunk saved again
 drops the tiles made from it, so a build shows in far terrain once its chunk is saved: a changed chunk that stays
 loaded is saved about 10 seconds after its last save (vanilla's eager chunk saving), so far terrain lags the world
-by about that much; it reads saves, not the live chunks the ticks are changing. Vanilla clients never hear of it.
+by about that much; it reads saves, not the live chunks the ticks are changing. The first time far terrain reads
+a saved chunk for a tile coarser than a block a column, it also writes the chunk's far summary in
+`data/horizon_far_summaries/` of the level's folder (vanilla never reads it): the chunk's columns as the tiles of
+2, 4, 8 and 16 blocks a column draw them, so the next read is one small record instead of a whole chunk to
+decode. A summary is written again when its chunk was saved since, and ignored when the game's version or the
+world's block states (its mods) changed. Summaries take about 4.3 MB on disk per 1,000 chunks, half of what the
+chunks themselves take (about 9 MB); deleting the folder only makes them be written again, and frees the space
+older summaries kept (a world that had them from an earlier Horizon keeps their files' size until then).
+Vanilla clients never hear of it.
 
 `horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600) into
 `reports/profile-<time>Z.hzperf`, a capture the performance tools read ([perf-platform.md](perf-platform.md)), and

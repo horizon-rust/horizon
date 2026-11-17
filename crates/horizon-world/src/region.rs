@@ -482,6 +482,12 @@ impl RegionHeader {
             timestamps,
         })
     }
+    /// When the chunk's record was written (seconds since 1970), None for a
+    /// chunk the file doesn't hold.
+    pub fn timestamp(&self, chunk: ChunkPos) -> Option<u32> {
+        let i = slot(self.position, chunk).ok()?;
+        (self.offsets[i] != 0).then_some(self.timestamps[i])
+    }
     /// `RegionFile::read` at the place this header gives the chunk, with the
     /// file opened for this one record.
     pub fn read_chunk(&self, chunk: ChunkPos) -> io::Result<Option<ChunkRecord>> {

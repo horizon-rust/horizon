@@ -21,6 +21,8 @@ pub(super) struct Outstanding {
     portals: saved_portals::SavedPortals,
     /// And far terrain made from saved chunks (`far_lod`).
     pub(super) far: super::far_changes::FarChanges,
+    /// Far summaries of the chunks far terrain read (`far_summaries`).
+    pub(super) summaries: OnceLock<Arc<super::far_summaries::FarSummaries>>,
 }
 
 impl SaveDir {

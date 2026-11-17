@@ -21,6 +21,7 @@ pub mod block_entity_encode;
 mod block_entity_order;
 pub mod far_changes;
 mod far_lod;
+mod far_summaries;
 use far_lod::{LodDecoded, SavedLodSampler};
 mod far_regions;
 pub mod level_mods;
@@ -4699,6 +4700,7 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             self.biomes.list.len(),
         )
         .map(Arc::new);
+        self.save.keep_far_summaries(&self.registry, &self.biomes);
         Box::new(SavedLodSampler {
             seen: self.save.far_changes().end(),
             generator: self,
@@ -9586,8 +9588,10 @@ mod far_census {
                 let columns = sampler.grid(x, z, width, 18);
                 let all_saved = width <= far_lod::SAVED_LOD_STRIDE
                     && (x.div_euclid(16)..=(x + 18 * width - 1).div_euclid(16)).all(|cx| {
-                        (z.div_euclid(16)..=(z + 18 * width - 1).div_euclid(16))
-                            .all(|cz| save.lod_surfaces_shared(cx, cz, &assets, &biomes).is_some())
+                        (z.div_euclid(16)..=(z + 18 * width - 1).div_euclid(16)).all(|cz| {
+                            save.lod_saved_shared(cx, cz, false, &assets, &biomes)
+                                .is_some()
+                        })
                     });
                 let out = if all_saved { &mut saved } else { &mut seeded };
                 out.tiles += 1;

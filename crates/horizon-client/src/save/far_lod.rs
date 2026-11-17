@@ -6,13 +6,37 @@
 use super::*;
 use far_changes::Changed;
 
+/// A saved chunk's far columns as read: decoded from its record, or its
+/// far summary (`far_summaries`), which has every tile stride but one.
+#[derive(Clone)]
+pub(super) enum SavedFar {
+    Columns(LodSurfaces),
+    Reduced(Arc<far_summaries::Reduced>),
+}
+impl SavedFar {
+    /// The column `width` blocks wide from `x z` in the chunk
+    /// (`Column::reduced`); None when only the decoded chunk has it.
+    fn reduced(&self, x: usize, z: usize, width: usize) -> Option<crate::lod::Column> {
+        match self {
+            Self::Columns(columns) => Some(crate::lod::Column::reduced(columns, x, z, width)),
+            Self::Reduced(reduced) => reduced.column(x, z, width).cloned(),
+        }
+    }
+    fn columns(&self) -> Option<&LodSurfaces> {
+        match self {
+            Self::Columns(columns) => Some(columns),
+            Self::Reduced(_) => None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct LodDecoded {
-    chunks: crate::fast_hash::FxHashMap<(i32, i32), (std::time::Instant, LodSurfaces)>,
+    chunks: crate::fast_hash::FxHashMap<(i32, i32), (std::time::Instant, SavedFar)>,
     order: std::collections::VecDeque<(i32, i32)>,
 }
-/// Saved chunks kept decoded for far terrain (each tens of kilobytes), and
-/// for how long: edits saved later show after it.
+/// Saved chunks kept read for far terrain (each up to tens of kilobytes),
+/// and for how long: edits saved later show after it.
 const LOD_DECODED: usize = 1024;
 const LOD_DECODED_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -23,7 +47,7 @@ const SAVED_LOD_STRIDE_REDUCED: i32 = 4;
 pub(super) struct SavedLodSampler<G: ChunkGenerator> {
     pub(super) generator: Arc<Persistent<G>>,
     pub(super) inner: Box<dyn crate::streaming::LodSampler>,
-    pub(super) cache: std::collections::VecDeque<((i32, i32), Option<LodSurfaces>)>,
+    pub(super) cache: std::collections::VecDeque<((i32, i32), Option<SavedFar>)>,
     pub(super) details: Vec<crate::streaming::LodDetail>,
     /// Reduced far detail: saved chunks only in tiles up to
     /// `SAVED_LOD_STRIDE_REDUCED` blocks a column.
@@ -45,23 +69,54 @@ impl<G: ChunkGenerator> SavedLodSampler<G> {
             Changed::All => self.cache.clear(),
         }
     }
-    fn saved_columns(&mut self, key: (i32, i32)) -> Option<LodSurfaces> {
-        let cached = match self.cache.iter().position(|(at, _)| *at == key) {
-            Some(index) => self.cache.remove(index).unwrap(),
-            None => (
+    /// Chunk `key`'s saved far columns, decoded (`full`) or as its summary
+    /// has them where it has one; None where it isn't saved.
+    fn saved(&mut self, key: (i32, i32), full: bool) -> Option<SavedFar> {
+        let index = self.cache.iter().position(|(at, _)| *at == key);
+        let cached = match index.map(|index| self.cache.remove(index).unwrap()) {
+            Some((_, Some(SavedFar::Reduced(_)))) | None if full => (
                 key,
-                self.generator.save.lod_surfaces_shared(
+                self.generator.save.lod_saved_shared(
                     key.0,
                     key.1,
+                    true,
+                    &self.generator.registry,
+                    &self.generator.biomes,
+                ),
+            ),
+            Some(cached) => cached,
+            None => (
+                key,
+                self.generator.save.lod_saved_shared(
+                    key.0,
+                    key.1,
+                    false,
                     &self.generator.registry,
                     &self.generator.biomes,
                 ),
             ),
         };
-        let columns = cached.1.clone();
+        let saved = cached.1.clone();
         self.cache.push_front(cached);
         self.cache.truncate(128);
-        columns
+        saved
+    }
+    fn saved_columns(&mut self, key: (i32, i32)) -> Option<LodSurfaces> {
+        self.saved(key, true)?.columns().cloned()
+    }
+    /// The saved column `width` blocks wide from block `x z`, None where its
+    /// chunk isn't saved.
+    fn saved_column(&mut self, x: i32, z: i32, width: i32) -> Option<crate::lod::Column> {
+        let key = (x >> 4, z >> 4);
+        let (cx, cz, width) = ((x & 15) as usize, (z & 15) as usize, width as usize);
+        // One block a column: only the chunk itself has it.
+        if width > 1
+            && let Some(column) = self.saved(key, false)?.reduced(cx, cz, width)
+        {
+            return Some(column);
+        }
+        let columns = self.saved_columns(key)?;
+        Some(crate::lod::Column::reduced(&columns, cx, cz, width))
     }
 }
 impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
@@ -135,14 +190,7 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
             (0..side * side)
                 .map(|index| {
                     let (wx, wz) = cell(index);
-                    self.saved_columns((wx >> 4, wz >> 4)).map(|saved| {
-                        crate::lod::Column::reduced(
-                            &saved,
-                            (wx & 15) as usize,
-                            (wz & 15) as usize,
-                            stride as usize,
-                        )
-                    })
+                    self.saved_column(wx, wz, stride)
                 })
                 .collect()
         } else {
@@ -177,14 +225,9 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
     fn reduced_column(&mut self, x: i32, z: i32, width: i32) -> crate::lod::Column {
         self.catch_up();
         if width <= 16
-            && let Some(columns) = self.saved_columns((x >> 4, z >> 4))
+            && let Some(column) = self.saved_column(x, z, width)
         {
-            return crate::lod::Column::reduced(
-                &columns,
-                (x & 15) as usize,
-                (z & 15) as usize,
-                width as usize,
-            );
+            return column;
         }
         self.inner.reduced_column(x, z, width)
     }
@@ -212,22 +255,24 @@ impl SaveDir {
         let records = chunks.iter().map(|&key| (key, None)).collect();
         self.write_records("region", records, true)
     }
-    /// `lod_surfaces`, decoded once for all far sampling threads: each saved
+    /// `lod_saved`, read once for all far sampling threads: each saved
     /// chunk lies under far tiles of several levels, sampled on any thread.
-    pub(super) fn lod_surfaces_shared(
+    pub(super) fn lod_saved_shared(
         &self,
         x: i32,
         z: i32,
+        full: bool,
         assets: &crate::assets::Assets,
         biomes: &Biomes,
-    ) -> Option<LodSurfaces> {
+    ) -> Option<SavedFar> {
         if let Some((at, columns)) = self.lod_decoded.lock().unwrap().chunks.get(&(x, z))
             && at.elapsed() < LOD_DECODED_TTL
+            && (!full || matches!(columns, SavedFar::Columns(_)))
         {
             return Some(columns.clone());
         }
         let before = self.far_changes().end();
-        let columns = self.lod_surfaces(x, z, assets, biomes)?;
+        let columns = self.lod_saved(x, z, full, assets, biomes)?;
         let mut decoded = self.lod_decoded.lock().unwrap();
         // Queued to be saved again while it was read: what was read may be
         // the old save, not kept (`far_saved` logs the change before it
@@ -245,6 +290,52 @@ impl SaveDir {
             }
         }
         Some(columns)
+    }
+    /// Read far summaries of this level's chunks, and write them where they
+    /// are missing (`far_summaries`): far terrain reads this level.
+    pub(super) fn keep_far_summaries(&self, assets: &crate::assets::Assets, biomes: &Biomes) {
+        (self.outstanding.summaries)
+            .get_or_init(|| Arc::new(far_summaries::FarSummaries::new(&self.root, assets, biomes)));
+    }
+    /// A saved chunk's far columns: unless `full` is asked for, its summary
+    /// where one was written from its record as saved now; else decoded from
+    /// the record (and the summary written where it was missing, unless the
+    /// chunk was saved again meanwhile).
+    pub(super) fn lod_saved(
+        &self,
+        x: i32,
+        z: i32,
+        full: bool,
+        assets: &crate::assets::Assets,
+        biomes: &Biomes,
+    ) -> Option<SavedFar> {
+        // A save queues the chunk (`pending`), then logs it: a save that
+        // raced this read is in the log since `before`, or still pending.
+        let before = self.far_changes().end();
+        let pending = (self.pending.lock().ok()?).contains_key(&(Folder::Region, x, z));
+        let summaries = self
+            .outstanding
+            .summaries
+            .get()
+            .filter(|_| !pending && !full);
+        // No timestamp while the region is being written: decoded below.
+        if let Some(summaries) = summaries
+            && let Some(timestamp) = self.far_timestamp(x, z)
+        {
+            if let far_summaries::Summary::Columns(reduced) = summaries.read(x, z, timestamp) {
+                return reduced.map(SavedFar::Reduced);
+            }
+            let columns = self.lod_surfaces(x, z, assets, biomes);
+            if self.far_timestamp(x, z) == Some(timestamp)
+                && !self.far_changes().changed_since(before, (x, z))
+            {
+                let reduced = columns.as_deref().map(far_summaries::Reduced::of);
+                summaries.write(x, z, timestamp, reduced.as_ref());
+            }
+            return columns.map(SavedFar::Columns);
+        }
+        self.lod_surfaces(x, z, assets, biomes)
+            .map(SavedFar::Columns)
     }
     pub(super) fn lod_surfaces(
         &self,

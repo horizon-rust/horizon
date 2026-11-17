@@ -69,7 +69,17 @@ impl FarRegions {
         path: impl FnOnce() -> PathBuf,
     ) -> Option<ChunkRecord> {
         let region = (chunk.x >> 5, chunk.z >> 5);
-        let header = {
+        self.header(region, written, path)?.read_chunk(chunk).ok()?
+    }
+
+    /// The region's kept header, read again as `read` says.
+    fn header(
+        &self,
+        region: (i32, i32),
+        written: u64,
+        path: impl FnOnce() -> PathBuf,
+    ) -> Option<Arc<RegionHeader>> {
+        {
             let mut regions = self.0.lock().unwrap();
             match regions.get(&region) {
                 Some(kept) if kept.written == written && kept.checked.elapsed() < HEADER_TTL => {
@@ -89,8 +99,7 @@ impl FarRegions {
                     header
                 }
             }
-        };
-        header?.read_chunk(chunk).ok()?
+        }
     }
 }
 
@@ -111,6 +120,26 @@ impl SaveDir {
         let mut root = self.far_region_record(x, z)?;
         self.upgrade_record(Folder::Region, &mut root).ok()?;
         Some(root)
+    }
+
+    /// When chunk `x z`'s region record was written, as a far read finds it;
+    /// None while its region is being written, or for a chunk not saved.
+    pub(super) fn far_timestamp(&self, x: i32, z: i32) -> Option<u32> {
+        let region = (x >> 5, z >> 5);
+        let stamp = || {
+            let cache = self.regions.lock().ok()?;
+            Some(cache.written.get(&region).copied().unwrap_or(0))
+        };
+        let before = stamp()?;
+        if before & 1 == 1 {
+            return None;
+        }
+        let path = || self.region_path("region", region.0, region.1);
+        let timestamp = self
+            .far_regions
+            .header(region, before, path)?
+            .timestamp(ChunkPos::new(x, z));
+        (stamp()? == before).then_some(timestamp).flatten()
     }
 
     fn far_region_record(&self, x: i32, z: i32) -> Option<NamedTag> {
