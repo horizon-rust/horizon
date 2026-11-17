@@ -1269,7 +1269,7 @@ impl Game<'_> {
                         self.tick_lan(true);
                         Ok(())
                     } else if k == 0 {
-                        self.tick()
+                        self.tick_server_first()
                     } else {
                         let running = running.unwrap_or_else(|| self.clock.world_runs());
                         // ClientLevel.tick: the sky flash fades in a frozen level too.
@@ -1394,6 +1394,17 @@ impl Game<'_> {
             raw,
         });
         result
+    }
+
+    /// `tick` for a server's first level, without the window's lead.
+    pub(super) fn tick_server_first(&mut self) -> Result<()> {
+        self.expire_client_cracks();
+        if self.agent.hold_server {
+            return Ok(());
+        }
+        self.abort_open_transactions();
+        self.update_interaction_ranges();
+        self.tick_first_level()
     }
 
     /// What `Game::tick` runs for a server's first level, after the window's lead.

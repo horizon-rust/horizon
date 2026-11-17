@@ -4489,10 +4489,7 @@ impl Game<'_> {
             return Ok(());
         }
         self.abort_open_transactions();
-        // `Player.entityInteractionRange`/`blockInteractionRange` for the tick's
-        // picks: the attribute carries creative's and a server's modifiers.
-        self.entity_reach = self.interaction_range("minecraft:entity_interaction_range", 3.0, 5.0);
-        self.block_reach = self.interaction_range("minecraft:block_interaction_range", 4.5, 5.0);
+        self.update_interaction_ranges();
         self.tick_client_lead()?;
         if self.remote.is_some() {
             return self.with_residency_tick(Self::tick_remote);
