@@ -240,6 +240,16 @@ in its summary and in the CI job's summary (PR parity and parity-main), so the
 flake stays visible. No other harness gets this retry. Fix the cause, then take
 the harness off the list.
 
+`known_failing` in `tools/parity_hosts.json` lists harnesses that fail on main
+until an open issue is fixed, each as `"#issue: what differs"`. They still run
+and report (a `KNOWN FAILING` line in the summary and the CI job's summary), but
+their failure doesn't fail the run, so parity-main, and the Nightly it gates,
+stop only for new failures. Without the list, one regression kept every later
+parity-main red: each run rechecked every merge since the last green one, and no
+Nightly could ship (2026-11-15 to 11-17). A harness on the list that passes gets
+a line asking to take it off. Add a harness only with its issue and only when the
+difference doesn't harm players (crashes, saves, multiplayer): those block.
+
 The game-binary fixture audit keeps these complementary direct rule tests:
 
 - `command_harness.rs`: command feedback, styled spans and result callbacks,
