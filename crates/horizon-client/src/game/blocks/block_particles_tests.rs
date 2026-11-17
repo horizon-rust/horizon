@@ -83,7 +83,7 @@ fn heard(game: &Game<'_>, event: &str) -> u32 {
 /// `Blocks.BARRIER` and `Blocks.STRUCTURE_VOID` call `.noTerrainParticles()`;
 /// every other block keeps `Properties`' default of true.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn only_the_barrier_and_the_structure_void_spawn_no_terrain_particles() {
     let game = server();
     let facts = game.res.facts();
@@ -106,7 +106,7 @@ fn only_the_barrier_and_the_structure_void_spawn_no_terrain_particles() {
 /// `shouldSpawnTerrainParticles` holds — a stone cube leaves its 64 crumbs,
 /// the two blocks leave none.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_2001_event_sprays_nothing_for_a_barrier_or_a_structure_void() {
     let mut game = server();
     let pos = [4, 64, 4];
@@ -133,7 +133,7 @@ fn a_2001_event_sprays_nothing_for_a_barrier_or_a_structure_void() {
 /// for a visible render shape that spawns terrain particles. Both blocks are
 /// `INVISIBLE`, so mining them shows nothing.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn mining_a_barrier_or_a_structure_void_shows_no_crumb() {
     let mut game = server();
     let pos = [4, 64, 4];

@@ -1,0 +1,7 @@
+# Prepared-resource daily test: PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
+horizon-client game::block_particles::block_particles_tests::a_2001_event_sprays_nothing_for_a_barrier_or_a_structure_void lib daily resources
+horizon-client game::block_particles::block_particles_tests::mining_a_barrier_or_a_structure_void_shows_no_crumb lib daily resources
+horizon-client game::block_particles::block_particles_tests::only_the_barrier_and_the_structure_void_spawn_no_terrain_particles lib daily resources
+horizon-client game::block_particles_tests::a_2001_event_sprays_nothing_for_a_barrier_or_a_structure_void lib daily resources
+horizon-client game::block_particles_tests::mining_a_barrier_or_a_structure_void_shows_no_crumb lib daily resources
+horizon-client game::block_particles_tests::only_the_barrier_and_the_structure_void_spawn_no_terrain_particles lib daily resources
