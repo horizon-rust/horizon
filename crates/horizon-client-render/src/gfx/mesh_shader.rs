@@ -1,4 +1,4 @@
-//! Hardware mesh shaders, only on request (#17243): when the player or setting enables
+//! Hardware mesh shaders, only on request (#17243 step 2): when the player or setting enables
 //! `HORIZON_MESH_SHADER=1` and the GPU supports `EXPERIMENTAL_MESH_SHADER`.
 //! Without either, the device is opened with the exact same features and limits as `main`.
 //! Every build has it: it is an engine render capability for terrain geometry.
