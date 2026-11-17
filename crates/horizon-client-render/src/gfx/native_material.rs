@@ -10,6 +10,7 @@
 
 use horizon_shader_api::{check::CheckedStage, stages::GROUP};
 
+use super::displace::{Displacement, MAX_SECTIONS, Near};
 use super::native_post::trace::{TerrainTrace, Traced};
 use super::native_post::{NativeFrame, present_constants};
 use super::wgsl_prefix::{TERRAIN, prefixed, section};
@@ -290,8 +291,10 @@ pub struct TerrainShape<'a> {
     /// The pack's material id of each sprite layer with one, as `(layer, id)`
     /// (`Manifest::sprite_materials`).
     pub sprite_materials: &'a [(u32, u32)],
-    /// The entities' group 0 (their atlas), for the shadow pass's entity draw.
+    /// The entities' group 0 (their atlas), for the shadow pass's entity draw and the entity
+    /// stage, and the retained block entities' group 1 (their place), for that stage.
     pub entities: &'a wgpu::BindGroupLayout,
+    pub retained_entities: &'a wgpu::BindGroupLayout,
     /// The weather's groups 0 and 1 (the entities' atlas, the fall clock), for the weather
     /// stage.
     pub weather_groups: [&'a wgpu::BindGroupLayout; 2],
@@ -356,7 +359,7 @@ pub(super) fn terrain_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
 /// every name it declares prefixed.
 fn vanilla_terrain() -> String {
     prefixed(
-        &(include_str!("../hdr_light.wgsl").to_owned()
+        &(super::wgsl_prefix::HDR_LIGHT.to_owned()
             + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")),
         PREFIX,
     )
@@ -481,7 +484,8 @@ impl NativeMaterial {
         }
         let pipelines = built?;
         let scene = stage.scene_source.as_deref().and_then(|source| {
-            TerrainTrace::new(device, frame, shape, |group| build(source, group))
+            let terrain = (shape, stage.traces_entities());
+            TerrainTrace::new(device, frame, terrain, |group| build(source, group))
         });
         Ok(Self {
             pipelines,
@@ -769,6 +773,78 @@ impl super::native_pack::NativePack {
         if let Some(color) = color {
             self.frame.copy_opaque(device, encoder, color);
         }
+    }
+
+    /// Whether `[displacement]`'s grid takes its quads from the frame's visible sections, which
+    /// GPU culling doesn't list.
+    pub fn displaces(&self) -> bool {
+        self.displacement.is_some()
+    }
+
+    /// Writes out the solid quads of the sections `[displacement]` reaches and picks this
+    /// frame's grid (none on the title screen, where the renderer hands over no sections).
+    pub fn prepare_displacement<'s>(
+        &mut self,
+        prepare: DisplacementPrepare<'_, impl Iterator<Item = Near<'s>>>,
+    ) {
+        let Some(d) = &mut self.displacement else {
+            return;
+        };
+        let near: smallvec::SmallVec<[Near<'_>; MAX_SECTIONS]> = prepare
+            .sections
+            .filter(|n| {
+                let o = glam::Vec3::from(n.origin);
+                let closest = glam::Vec3::ZERO.clamp(o, o + 16.0);
+                closest.length() < d.distance
+            })
+            .collect();
+        let DisplacementPrepare {
+            device,
+            queue,
+            encoder,
+            view_proj,
+            ..
+        } = prepare;
+        d.prepare(device, queue, encoder, &near, view_proj);
+    }
+
+    /// `[displacement]`'s grid, drawn by `layers`' displaced layer; none without either.
+    pub fn displaced_grid<'a>(&'a self, layers: TerrainLayers<'a>) -> Option<DisplacedGrid<'a>> {
+        Some(DisplacedGrid {
+            displacement: self.displacement.as_ref()?,
+            pipeline: layers.displaced?,
+            layers,
+        })
+    }
+}
+
+/// What the renderer hands `[displacement]` once a frame, after the visibility walk
+/// (`NativePack::prepare_displacement`).
+pub struct DisplacementPrepare<'a, I> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// The visible sections with solid quads, nearest first.
+    pub sections: I,
+    pub view_proj: glam::Mat4,
+}
+
+/// `[displacement]`'s grid of the solid terrain near the camera and the layer that draws it
+/// (`NativePack::displaced_grid`).
+#[derive(Clone, Copy)]
+pub struct DisplacedGrid<'a> {
+    displacement: &'a Displacement,
+    pipeline: &'a wgpu::RenderPipeline,
+    layers: TerrainLayers<'a>,
+}
+
+impl DisplacedGrid<'_> {
+    /// Draws the grid over the flat quads it took over, writing its depth, in a terrain pass
+    /// with the renderer's group 0 bound.
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.layers.bind(pass);
+        let d = self.displacement;
+        d.draw(pass, &d.view, self.pipeline);
     }
 }
 
@@ -1059,6 +1135,7 @@ mod tests {
     /// product of the gamma colours within an 8-bit step.
     #[test]
     fn an_identity_material_is_vanilla_s_within_an_8_bit_step() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;
@@ -1070,8 +1147,8 @@ mod tests {
         // The entries' call of `material`, with a 16×16 grid of colours.
         let entry = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0, 0.0, 1.0);
-}
-@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    }
+    @fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let c = floor(p.xy) / 15.0;
     let albedo = vec4(c.x, c.y, 1.0 - c.x, 1.0);
     let tint = vec4(0.9, 1.0 - 0.5 * c.y, 0.7, 1.0);
@@ -1081,8 +1158,8 @@ mod tests {
         vec3(0.0), vec2(0.0), false, 0u, 0u, vec2(0.0), 0u, 0u, 0.0, vec3(0.0, 1.0, 0.0),
         vec4(1.0, 0.0, 0.0, 1.0), horizon_line_in(vec3(0.0)), 0.0)).color;
     return vec4(horizon_line_out(out.rgb), out.a);
-}
-";
+    }
+    ";
         let vanilla = "fn material(input: MaterialInput) -> Surface {\n    \
             return Surface(input.albedo * input.tint * vec4(input.lightmap, 1.0));\n}\n";
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -1242,7 +1319,7 @@ mod tests {
 "
             )
         };
-        let engine = include_str!("../hdr_light.wgsl").to_owned()
+        let engine = super::super::wgsl_prefix::HDR_LIGHT.to_owned()
             + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")
             + &entries("");
         let stage = stage(
