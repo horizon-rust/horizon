@@ -1990,7 +1990,7 @@ impl Streaming {
         commit: StreamingCommit,
     ) -> (Vec<((i32, i32, i32), SectionMesh)>, Vec<Arc<Chunk>>) {
         let StreamingCommit {
-            uploads,
+            mut uploads,
             removed,
             paused,
         } = commit;
@@ -2282,14 +2282,36 @@ impl Streaming {
         // them until the system swapped.
         let room = (self.workers * 32).saturating_sub(self.meshing.len() + self.upload_backlog);
         nearest_first(&mut candidates, room);
+        // An all-air section meshes to nothing unless a mod adds geometry to
+        // it (`Mesher::mesh_reusing`): most of a new column's sections are
+        // air, and as jobs they took the capacity above from the terrain
+        // around them (#17408).
+        let air_is_empty = !crate::mesher::has_section_geometry();
         for (_, x, z, sections) in candidates.drain(..) {
             let Some(region) = Self::region(world, x, z) else {
                 continue;
             };
+            let center = region[1][1].clone();
             world.dirty_sections.take_column(x, z);
             for sy in sections.iter().map(|sy| sy as i32) {
                 let first = self.meshed.insert((x, z));
                 self.sequence += 1;
+                if air_is_empty
+                    && center
+                        .as_ref()
+                        .and_then(|c| c.sections.get(sy as usize))
+                        .is_some_and(|s| s.is_uniform(0))
+                {
+                    // What a worker would send back (`Done::Meshed`), here:
+                    // a job still in flight for it is now stale.
+                    self.meshing.remove(&(x, sy, z));
+                    self.compile_started.insert((x, sy, z), self.sequence);
+                    self.meshed_total += 1;
+                    let mut mesh = SectionMesh::default();
+                    mesh.sort_solid();
+                    uploads.push(((x, sy, z), mesh));
+                    continue;
+                }
                 self.meshing.insert((x, sy, z), self.sequence);
                 self.submit(
                     Some((x, z)),
