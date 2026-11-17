@@ -1,0 +1,2 @@
+# Prepared-resource death drop position test.
+horizon-client game::item_entities::death_drop_position_tests::a_dead_mobs_drops_and_orbs_start_at_its_feet lib daily resources

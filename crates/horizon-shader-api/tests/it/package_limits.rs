@@ -24,6 +24,7 @@ fn scratch(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_package_over_the_total_is_refused_while_it_is_read() {
     let dir = scratch("total");
     let path = dir.join("big.hshader");
@@ -41,6 +42,25 @@ fn one_file_over_its_cap_is_named() {
     let path = dir.join("one.hshader");
     zeros(&path, 1, (1 << 20) + 1);
     assert_eq!(Pack::read(&path).unwrap_err(), "f0.png is over 1024 KiB");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A pack made for a line this build doesn't serve is read without its manifest being taken
+/// (`Pack::declared`), under the same caps.
+#[test]
+fn a_pack_for_another_line_is_read_under_the_same_caps() {
+    let dir = scratch("declared");
+    let path = dir.join("one.hshader");
+    zeros(&path, 1, (1 << 20) + 1);
+    assert_eq!(
+        Pack::declared(&path).unwrap_err(),
+        "f0.png is over 1024 KiB"
+    );
+    zeros(&path, 9, 1 << 20);
+    assert_eq!(
+        Pack::declared(&path).unwrap_err(),
+        format!("the pack is over {} MiB", MAX_TOTAL >> 20)
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
