@@ -62,7 +62,7 @@ jobs:
       github.event_name == 'pull_request' &&
       endsWith(format('{0}', github.event.pull_request.number), '0') ||
       github.event_name == 'merge_group') &&
-      fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'blacksmith-32vcpu-ubuntu-2404' }}
+      fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'blacksmith-16vcpu-ubuntu-2404' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -275,7 +275,7 @@ jobs:
       github.event_name == 'pull_request' &&
       endsWith(format('{0}', github.event.pull_request.number), '0') ||
       github.event_name == 'merge_group') &&
-      fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'blacksmith-32vcpu-ubuntu-2404' }}
+      fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'blacksmith-16vcpu-ubuntu-2404' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
