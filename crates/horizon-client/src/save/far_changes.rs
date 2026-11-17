@@ -67,12 +67,15 @@ impl FarChanges {
     }
     /// Whether `chunk` changed since `cursor`.
     pub fn changed_since(&self, cursor: u64, chunk: (i32, i32)) -> bool {
+        self.changed_in(cursor, chunk, chunk)
+    }
+    /// Whether a chunk from `min` to `max` (both included) changed since
+    /// `cursor`.
+    pub fn changed_in(&self, cursor: u64, min: (i32, i32), max: (i32, i32)) -> bool {
         let log = self.log();
         cursor < log.first
-            || log
-                .chunks
-                .range((cursor - log.first) as usize..)
-                .any(|c| *c == chunk)
+            || (log.chunks.range((cursor - log.first) as usize..))
+                .any(|c| (min.0..=max.0).contains(&c.0) && (min.1..=max.1).contains(&c.1))
     }
 }
 

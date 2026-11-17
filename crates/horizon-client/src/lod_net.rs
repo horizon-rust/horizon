@@ -11,9 +11,10 @@
 //! `lod::Lod` samples them) and the server answers each with the tile's
 //! columns, or a refusal. The offer carries the server's limits, which the
 //! client keeps to: requests in flight and tiles a second. The server checks
-//! them again, with the tile's distance from the player, and samples on one
-//! background thread for every player in turn (`server`), so far terrain
-//! never takes more than that thread's time from the ticks.
+//! them again, with the tile's distance from the player, and samples on
+//! background threads for every player in turn (`server`: one, up to 4 on a
+//! big machine, at the lowest priority), so far terrain never takes time
+//! from the ticks.
 //!
 //! It is off unless the owner sets the key: far tiles show the generator's
 //! terrain far beyond view distance, which helps crack a world's seed.
@@ -29,13 +30,19 @@ mod cache;
 mod client;
 mod server;
 pub use client::{Inbox, RemoteSource};
-pub use server::{Delivery, Job, Service, Verdict};
+pub use server::{Delivery, Job, Service, Verdict, auto_threads};
 
 /// The custom payload channel, both ways.
 pub const CHANNEL: &str = "horizon:lod";
 /// The server.properties key (Horizon's own): the farthest a player's far
 /// terrain may reach, in chunks; 0 turns serving it off.
 pub const PROPERTY: &str = "horizon-lod-distance";
+/// The server.properties key (Horizon's own) for how many threads sample
+/// far tiles: 0, the default, sizes them from the machine
+/// ([`server::auto_threads`]).
+pub const THREADS_PROPERTY: &str = "horizon-lod-threads";
+/// The most threads [`THREADS_PROPERTY`] may ask for.
+pub const MAX_THREADS: u32 = 16;
 /// [`PROPERTY`] when the file doesn't set it: off.
 pub const DEFAULT_DISTANCE: u32 = 0;
 /// The protocol's version, first in an [`Offer`]: a client serves itself
@@ -72,6 +79,20 @@ pub fn distance_property(value: Option<&str>) -> u32 {
         .and_then(|v| v.trim().parse::<u32>().ok())
         .unwrap_or(DEFAULT_DISTANCE)
         .min(MAX_DISTANCE)
+}
+
+/// [`PROPERTY`]'s value in server.properties (`get` reads a key).
+pub fn distance_in<'a>(get: impl Fn(&str) -> Option<&'a str>) -> u32 {
+    distance_property(get(PROPERTY))
+}
+
+/// [`THREADS_PROPERTY`]'s value in server.properties: 0 (auto) when absent
+/// or unreadable, at most [`MAX_THREADS`].
+pub fn threads_in<'a>(get: impl Fn(&str) -> Option<&'a str>) -> u32 {
+    get(THREADS_PROPERTY)
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+        .min(MAX_THREADS)
 }
 
 /// What the server serves, as it tells a Horizon client while it configures.

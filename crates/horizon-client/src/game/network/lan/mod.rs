@@ -1296,8 +1296,7 @@ impl Game<'_> {
                 .clone(),
         );
         self.lan_update_tag_sources(&mut encoder);
-        let far = (net.lod_distance > 0)
-            .then(|| horizon_client::lod_net::Service::new(net.lod_distance, biome_names.clone()));
+        let far = horizon_client::lod_net::Service::serving(&net, &biome_names);
         let lan = Lan::start_with(sync.clone(), net)?;
         let mut hub = Hub::new(lan, sync, encoder, config, self.loop_context.clone());
         self.bind_guest_residency(&mut hub);

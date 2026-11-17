@@ -1270,9 +1270,8 @@ impl Game<'_> {
                 .get(horizon_client::lan::ACCEPT_OLDER_CLIENTS)
                 .is_some_and(|v| v.trim().eq_ignore_ascii_case("true")),
             older_clients_play: false,
-            lod_distance: horizon_client::lod_net::distance_property(
-                props.raw.get(horizon_client::lod_net::PROPERTY),
-            ),
+            lod_distance: horizon_client::lod_net::distance_in(|k| props.raw.get(k)),
+            lod_threads: horizon_client::lod_net::threads_in(|k| props.raw.get(k)),
             server_links: if props.bug_report_link.is_empty() {
                 Vec::new()
             } else if super::server_links::valid_untrusted_uri(&props.bug_report_link) {
@@ -1423,9 +1422,7 @@ impl Game<'_> {
                 } else {
                     0
                 },
-                horizon_client::lod_net::distance_property(
-                    props.raw.get(horizon_client::lod_net::PROPERTY),
-                ),
+                horizon_client::lod_net::distance_in(|k| props.raw.get(k)),
                 anticheat_on,
             ),
             compression: props.network_compression_threshold,

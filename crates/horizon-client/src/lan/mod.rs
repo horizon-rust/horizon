@@ -316,6 +316,9 @@ pub struct NetConfig {
     /// far, in chunks, the server samples far terrain for Horizon clients
     /// (`lod_net`); 0 serves none.
     pub lod_distance: u32,
+    /// `horizon-lod-threads` (Horizon's own, 0): the threads that sample far
+    /// terrain, 0 to size them from the machine (`lod_net::auto_threads`).
+    pub lod_threads: u32,
     /// The shapes of the world's levels: their dimension types go to
     /// clients when the world's data packs changed them.
     pub levels: crate::chunk::LevelShapes,
@@ -363,6 +366,7 @@ impl NetConfig {
             accept_older_clients: false,
             older_clients_play: false,
             lod_distance: crate::lod_net::DEFAULT_DISTANCE,
+            lod_threads: 0,
             levels: crate::chunk::LevelShapes::VANILLA,
             owner_profile: None,
             singleplayer_profile: None,

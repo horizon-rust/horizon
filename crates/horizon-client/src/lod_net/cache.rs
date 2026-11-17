@@ -31,6 +31,30 @@ pub const MAX_BYTES: usize = 32 << 20;
 /// The strides whose tiles read saved chunks (`save::far_lod`: up to 16
 /// blocks a column): coarser ones are the generator's alone.
 pub const SAVED_STRIDES: [i32; 5] = [1, 2, 4, 8, 16];
+
+/// `reply`, the answer to request `from`, as the answer to request `to`.
+pub fn with_id(reply: &[u8], from: u32, to: u32) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.varint(from as i32);
+    let body = reply.strip_prefix(&w.data[..]).unwrap_or(reply);
+    let mut w = Writer::new();
+    w.varint(to as i32);
+    w.data.extend_from_slice(body);
+    w.data
+}
+
+/// Whether `save` queued a chunk under the tile `request` asks for since
+/// `cursor`, for a tile that reads saved chunks.
+pub fn changed_under(save: &SaveDir, cursor: u64, request: &Request) -> bool {
+    if !SAVED_STRIDES.contains(&request.stride) {
+        return false;
+    }
+    let size = request.stride * super::SIDE as i32;
+    let min = (request.x >> 4, request.z >> 4);
+    let max = ((request.x + size - 1) >> 4, (request.z + size - 1) >> 4);
+    save.far_changes().changed_in(cursor, min, max)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct Key {
     level: u32,
