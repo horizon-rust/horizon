@@ -1095,7 +1095,10 @@ impl MotionWorld<'_, '_, '_> {
             // flying state independently supplied by the server's abilities.
             if self.player.jump_trigger_time == 0 {
                 self.player.jump_trigger_time = 7;
-            } else if !self.player.swimming {
+            } else {
+                // LocalPlayer.aiStep toggles flight from the second jump even while
+                // swimming; the guard that ignored it here kept a swimming player
+                // from starting to fly (#17506).
                 self.player.flying = !self.player.flying;
                 if self.player.flying && self.player.ground.on_ground {
                     self.jump_from_ground()?;
@@ -6165,6 +6168,41 @@ mod tests {
     /// Vanilla `Player.getFlyingSpeed`: a flying player moves at the ability
     /// speed, doubled while the sprint state holds. The sprint key starts the
     /// state; releasing it does not change the speed.
+    #[test]
+    #[ignore = "daily"]
+    fn a_second_jump_starts_flight_while_swimming() {
+        let Some(v) = crate::test_fixtures::vanilla() else {
+            return;
+        };
+        let (assets, render, binding, resources) = (&v.assets, &v.render, &v.collision, &v.motion);
+        let mut scene = World::test_scene(assets, render, 3).unwrap();
+        let mut player = PlayerMotion::new(resources, Vec3::new(20.5, 20.0, 20.5)).unwrap();
+        player.may_fly = true;
+        let mut w = MotionWorld {
+            tag_items: None,
+            block_registries: None,
+            loop_context: crate::test_resources::server_loop_context(),
+            damage_hooks: &crate::health::DamageHooks::NONE,
+            entities: &[],
+            player: &mut player,
+            scene: &mut scene,
+            assets,
+            collision_binding: binding,
+            resources,
+            health: &resources.health,
+        };
+        // LocalPlayer.aiStep's two taps: the first arms the trigger, the second
+        // toggles flight. Swimming must not suppress the second (vanilla has no
+        // such guard; #17506).
+        w.player.swimming = true;
+        w.player_movement_tick([0.0, 0.0], true).unwrap();
+        w.player.swimming = true;
+        w.player_movement_tick([0.0, 0.0], false).unwrap();
+        w.player.swimming = true;
+        w.player_movement_tick([0.0, 0.0], true).unwrap();
+        assert!(w.player.flying, "the second jump starts creative flight in water");
+    }
+
     #[test]
     #[ignore = "daily"]
     fn the_flight_speed_follows_the_sprint_state_not_the_sprint_key() {
