@@ -3,12 +3,7 @@
 use horizon_client::{containers::BlockEntity, fast_hash::FxHashSet, ticket_levels::Levels};
 
 /// Shared decision for a borrowed position read and an owned tick-phase snapshot.
-pub fn block_ticking_at(
-    levels: &Levels,
-    pending: &FxHashSet<(i32, i32)>,
-    x: i32,
-    z: i32,
-) -> bool {
+pub fn block_ticking_at(levels: &Levels, pending: &FxHashSet<(i32, i32)>, x: i32, z: i32) -> bool {
     levels.block_ticking_at(x, z) && !pending.contains(&(x >> 4, z >> 4))
 }
 

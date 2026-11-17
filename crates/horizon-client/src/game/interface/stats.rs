@@ -422,8 +422,6 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     #[ignore = "daily"]
     fn fake_players_do_not_advance_phantom_rng() {
