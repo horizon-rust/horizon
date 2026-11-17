@@ -428,9 +428,13 @@ pub struct Stage {
     #[serde(default)]
     pub clouds: Option<bool>,
     /// The sky stage only: whether Minecraft's sun still draws over the sky (true when absent);
-    /// false for a pack whose sky draws its own. The moon stays.
+    /// false for a pack whose sky draws its own.
     #[serde(default)]
     pub sun: Option<bool>,
+    /// The sky stage only: whether Minecraft's moon still draws over the sky (true when absent);
+    /// false for a pack whose sky draws its own.
+    #[serde(default)]
+    pub moon: Option<bool>,
     /// The sky stage only: whether Minecraft's stars still draw over the sky (true when absent);
     /// false for a pack whose sky draws its own.
     #[serde(default)]
@@ -466,7 +470,8 @@ pub const POST_SCALES: [f32; 3] = [1.0, 0.5, 0.25];
 /// The most `[[post]] output`s a pack may write: bindings 32 to 47, below the scene's.
 pub const MAX_POST_TARGETS: usize = 16;
 /// The memory a pack's post targets may take, in render-size `rgba16float` textures: an
-/// `output` takes its `scale`², an R-relative kept texture 2 (its two versions, any format).
+/// `output` takes its `scale`², an R-relative kept texture its two versions at their size,
+/// `2 × scale² × bytes a texel / 8`.
 pub const POST_TARGET_BUDGET: u32 = 6;
 
 /// An option the player can change: a WGSL `override` constant of the
@@ -723,7 +728,9 @@ fn check_post_targets(
             targets.len()
         ));
     }
-    // In sixteenths of a render-size texture, exact: a scale's square is 16, 4 or 1 of them.
+    // In sixteenths of a render-size `rgba16float` texture, exact: a scale's square is 16, 4 or 1
+    // of them, and a kept texture's two versions take that times its 4, 8 or 16 bytes a texel
+    // over 4, at least 1.
     let sixteenths = |scale: f32| {
         [16, 4, 1][POST_SCALES
             .iter()
@@ -731,7 +738,10 @@ fn check_post_targets(
             .expect("a checked scale")]
     };
     let mut costs: Vec<(&str, u32)> = targets.iter().map(|&(n, s)| (n, sixteenths(s))).collect();
-    costs.extend(kept_targets.into_iter().map(|n| (n, 32)));
+    costs.extend(kept_targets.into_iter().map(|(n, format, scale)| {
+        let bytes = u32::try_from(format.bytes()).expect("a texel's few bytes");
+        (n, sixteenths(scale) * bytes / 4)
+    }));
     let used: u32 = costs.iter().map(|c| c.1).sum();
     if used > 16 * POST_TARGET_BUDGET {
         costs.sort_by_key(|c| std::cmp::Reverse(c.1));
@@ -740,7 +750,8 @@ fn check_post_targets(
             .collect();
         return Err(format!(
             "post targets take {} render-size rgba16float textures (an `output` its scale², an \
-             R-relative [[resource]] texture 2); a pack may use {POST_TARGET_BUDGET}; largest: {}",
+             R-relative [[resource]] texture 2 × scale² × bytes a texel / 8); a pack may use \
+             {POST_TARGET_BUDGET}; largest: {}",
             f64::from(used) / 16.0,
             largest.join(", ")
         ));
@@ -946,10 +957,14 @@ impl Manifest {
                 return Err(err(format!("{file:?} is not a plain path to a .wgsl file")));
             }
         }
-        let sky_only = |s: &Stage| s.clouds.is_some() || s.sun.is_some() || s.stars.is_some();
+        let sky_only = |s: &Stage| {
+            s.clouds.is_some() || s.sun.is_some() || s.moon.is_some() || s.stars.is_some()
+        };
         if raw
             .material
             .iter()
+            .chain(&raw.vertex)
+            .chain(&raw.weather)
             .chain(&raw.post)
             .chain(&raw.tonemap)
             .chain(&raw.entity)
@@ -957,7 +972,7 @@ impl Manifest {
             .any(sky_only)
         {
             return Err(err(
-                "`clouds`, `sun` and `stars` are keys of [sky] only".into()
+                "`clouds`, `sun`, `moon` and `stars` are keys of [sky] only".into(),
             ));
         }
         if raw.options.len() > MAX_OPTIONS {

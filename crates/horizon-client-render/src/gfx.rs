@@ -13,7 +13,12 @@ use crate::{
 #[cfg(any(test, feature = "test-support"))]
 use glam::Vec4;
 use glam::{DVec3, Mat4, Vec3};
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 // RenderPipelines.CRUMBLING: dst * src + src * dst, alpha replaced.
@@ -511,6 +516,8 @@ mod sunrise_fan;
 mod timing;
 pub mod translucency;
 pub(crate) mod upload;
+mod upload_retry;
+use upload_retry::UploadRetries;
 mod view;
 mod view_sections;
 mod visbuffer;
@@ -1594,6 +1601,8 @@ pub struct Renderer {
     detail_columns: FxHashMap<(i32, i32), SectionMask>,
     /// Bumped whenever a column becomes or stops being complete.
     detail_revision: u64,
+    /// Sections whose mesh the arena refused (`upload`), waiting to be meshed again.
+    upload_retries: UploadRetries,
     arena: arena::Arena,
     /// Translucent quads' own arena, with large pages, while the layout is split
     /// (`translucent_split`): the back-to-front list then stays in one page (and
@@ -2436,14 +2445,14 @@ impl Renderer {
             &device,
             Some(&layout),
             &shader,
-            config.format.remove_srgb_suffix(),
+            (frame_format, linear_light),
             &sprite_constants,
         );
         let terrain_model_pipelines = terrain_model::pipelines(
             &device,
             Some(&layout),
             &shader,
-            config.format.remove_srgb_suffix(),
+            (frame_format, linear_light),
             &sprite_constants,
         );
         let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
@@ -4218,13 +4227,13 @@ impl Renderer {
                 Ok("shader") => cull::DepthTest::InShader,
                 _ => depth_test,
             })
-            .map(|depth_test| {
-                let mut cull = cull::Cull::new(&device, frame_format, depth_test);
+            .and_then(|depth_test| {
+                let mut cull = cull::Cull::new(&device, frame_format, depth_test)?;
                 cull.always = cull_env.as_deref() == Ok("all");
                 if !cull.always && adapter_info.backend == wgpu::Backend::Metal {
                     cull.min_sections = cull::TILED_MIN_SECTIONS;
                 }
-                cull
+                Some(cull)
             });
         let depth = Self::depth(&device, &config);
         let world_post = world_post::Post::new(&device, frame_format);
@@ -4453,6 +4462,7 @@ impl Renderer {
             lod_pending: None,
             detail_columns: Default::default(),
             detail_revision: 0,
+            upload_retries: UploadRetries::default(),
             arena,
             translucent_arena,
             translucent_batching,
@@ -5063,14 +5073,37 @@ impl Renderer {
     ) -> Option<bool> {
         self.occlusion.visible_for_camera(key, camera_section)
     }
-    pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
+    /// Section `key`'s quads in, from `mesh`; whether the section has them now, a section
+    /// with no quads counting (there is nothing to draw). False when the arena had no room
+    /// for them: the mesh is gone once the game frees it, so the section is remembered here
+    /// (`queue_upload_retries`) and meshed again once memory allows.
+    pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) -> bool {
         if let Some(copies) = &mut self.capture_copies {
             copies.section(key, mesh);
         }
         let facts = MeshFacts::of(mesh);
         let fading = self.before_mesh(key, &facts);
         let section = self.upload_mesh(mesh);
+        let drawn = section.is_some() || facts.empty;
+        if drawn {
+            self.upload_retries.uploaded(key);
+        } else {
+            let quads = ((mesh.solid.len() + mesh.translucent.len()) / 4) as u32;
+            self.upload_retries.refused(key, Instant::now(), quads);
+        }
         self.after_mesh(key, &facts, section, fading);
+        drawn
+    }
+    /// Puts the sections whose retry is due (`upload`) back in the mesh queue `dirty`
+    /// (`World::dirty_sections`), as an edit puts a changed section there: the game meshes
+    /// them again, and the next upload of them finds out whether the arena takes their
+    /// quads. How many went back.
+    pub fn queue_upload_retries(
+        &mut self,
+        dirty: &mut crate::world::DirtySections,
+        now: Instant,
+    ) -> usize {
+        self.upload_retries.queue_due(dirty, now)
     }
     /// Section `key`'s new mesh drawn from now on, its quads uploaded (`section`: none when it
     /// has none, or the arena had no room).
@@ -5642,6 +5675,7 @@ impl Renderer {
         self.lod_pending = None;
         self.detail_columns.clear();
         self.detail_revision += 1;
+        self.upload_retries.clear();
         // A dimension change drops every page at once: freed later, off this thread.
         self.graveyard.add(self.arena.clear());
         if let Some(gpu) = &mut self.gpu_culling {
@@ -5828,6 +5862,13 @@ impl Renderer {
         let columns: Vec<(i32, i32)> = columns.into_iter().collect();
         if let Some(copies) = &mut self.capture_copies {
             copies.remove_columns(&columns);
+        }
+        if !self.upload_retries.is_empty() && !columns.is_empty() {
+            // Nothing meshes a section of a column that left the view: the retry would
+            // only fill the queue for a chunk that is gone.
+            let dropped: crate::fast_hash::FxHashSet<_> = columns.iter().copied().collect();
+            self.upload_retries
+                .retain_columns(|x, z| !dropped.contains(&(x, z)));
         }
         // Most of the view at once (a teleport at render distance 32 drops some 3700
         // columns): a pass over each store instead of a lookup per section key, which
@@ -7278,7 +7319,15 @@ impl Renderer {
                 views.primary().aspect,
                 views.primary().tan_half_fov,
             ],
-            inverse_view: view.inverse().to_cols_array_2d(),
+            // The sky turns with the view bob and the nausea spin, as the world,
+            // the sun and the clouds do. `GameRenderer.renderLevel` puts both into
+            // the projection the sky is drawn with; without them the sky stands
+            // still while everything else sways.
+            inverse_view: views
+                .primary()
+                .posed_view(pose)
+                .inverse()
+                .to_cols_array_2d(),
             sunrise: frame.sky.sunrise_color,
             sun: [sun.x, sun.y, sun.z, frame.sky.star_brightness],
             fog_ends: [
@@ -7358,11 +7407,11 @@ impl Renderer {
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
         // The sunrise fan as sixteen triangles. Its clip positions use the sky's
-        // own view (no TAA jitter, bob or spin: `fs_sky`'s `view_ray` has none),
+        // own view (no TAA jitter; the bob and the spin, as `fs_sky`'s `view_ray`),
         // and its apex weight interpolates the barycentric the shader used to
         // compute for every sky pixel.
         if frame.sky.sunrise_color[3] > 0.001 && !frame.title && frame.skybox {
-            let sky_view_proj = views.primary().view_proj(Mat4::IDENTITY);
+            let sky_view_proj = views.primary().view_proj(pose);
             let mut mesh = [[0.0f32; 5]; sunrise_fan::VERTICES];
             for (to, from) in mesh
                 .iter_mut()
@@ -9407,16 +9456,20 @@ impl Renderer {
                         }
                     }
                     if celestial_vertices > 0 && !pack_draws_celestial {
-                        // The Overworld's bodies start with the sun's quad
-                        // (`Game::celestial_geometry`): a pack sky drawing its own skips it.
-                        let own_sun = !frame.end_sky && self.executor.is_some_and(|c| c.hides_sun);
-                        let first = if own_sun { 6 } else { 0 };
+                        // The Overworld's bodies are the sun's quad and the moon's
+                        // (`Game::celestial_geometry`): a pack sky drawing its own skips one.
+                        let own = |hides: fn(&external::Capabilities) -> bool| {
+                            !frame.end_sky && self.executor.as_ref().is_some_and(hides)
+                        };
+                        let own_sun = own(|c| c.hides_sun);
+                        let own_moon = own(|c| c.hides_moon);
                         // A resource pack's core/sky isn't vanilla's sky times the sky's
                         // lift, which the sun's disc pass assumes: today's add there.
                         let lifted = hdr_gain
                             && self.hdr.as_ref().is_some_and(|h| h.lighting)
                             && !self.core_sky.as_ref().is_some_and(|c| c.draws_disc());
-                        let bodies = first..(celestial_vertices as u32 / 4) * 6;
+                        let quads = &frame.celestial[..celestial_vertices];
+                        let bodies = celestial::bodies(quads, own_sun, own_moon);
                         pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
                         self.celestial.draw_bodies(&mut pass, lifted, bodies);
                     }
@@ -11338,6 +11391,125 @@ mod frame_policy_tests;
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    /// #16769: a graphics driver that never answers the device search must end the
+    /// start with a message, not hold it on the boot screen forever.
+    #[test]
+    fn an_unanswered_device_search_fires_the_watchdog() {
+        let (fired, fired_back) = std::sync::mpsc::channel();
+        let searched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _armed = super::arm_search_watchdog(
+            Duration::from_millis(20),
+            Duration::from_millis(0),
+            searched,
+            || {},
+            move || {
+                let _ = fired.send(());
+            },
+        );
+        fired_back
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the watchdog fired at the timeout");
+    }
+
+    /// The disarm itself proves it: the watchdog thread is joined, not slept past.
+    #[test]
+    fn a_disarmed_watchdog_does_not_fire() {
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let also = fired.clone();
+        let searched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (disarm, watchdog) = super::arm_search_watchdog(
+            Duration::from_millis(20),
+            Duration::from_millis(0),
+            searched,
+            || {},
+            move || {
+                also.store(true, std::sync::atomic::Ordering::Relaxed);
+            },
+        );
+        disarm.send(()).expect("the watchdog was there to disarm");
+        watchdog
+            .expect("the watchdog thread started")
+            .join()
+            .expect("the watchdog thread ends on its disarm");
+        assert!(
+            !fired.load(std::sync::atomic::Ordering::Relaxed),
+            "a finished search is not reported as a hung driver"
+        );
+    }
+
+    /// A search that answers inside the grace window was slow, not hung: it must not end
+    /// the start it had just finished (#16769).
+    #[test]
+    fn a_search_that_answers_inside_the_grace_runs_on() {
+        let (timeout_tx, timeout_rx) = std::sync::mpsc::channel();
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let also = fired.clone();
+        let searched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (disarm, watchdog) = super::arm_search_watchdog(
+            Duration::from_millis(20),
+            Duration::from_millis(400),
+            searched.clone(),
+            move || {
+                timeout_tx.send(()).unwrap();
+            },
+            move || {
+                also.store(true, std::sync::atomic::Ordering::Relaxed);
+            },
+        );
+        // Past the timeout, inside the grace: this is the window the grace exists for.
+        timeout_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("timeout reported before grace");
+        assert!(!fired.load(std::sync::atomic::Ordering::Relaxed));
+        searched.store(true, std::sync::atomic::Ordering::Release);
+        drop(disarm);
+        watchdog
+            .expect("the watchdog thread started")
+            .join()
+            .expect("the watchdog thread ends");
+        assert!(
+            !fired.load(std::sync::atomic::Ordering::Relaxed),
+            "a slow search that answered is not a hung driver"
+        );
+    }
+
+    #[test]
+    fn the_timeout_message_names_the_stuck_api_and_the_remedy() {
+        let message = super::device_search_timed_out(Duration::from_secs(30));
+        assert!(message.contains("Horizon renderer:"), "{message}");
+        assert!(message.contains("HORIZON_GRAPHICS_API"), "{message}");
+    }
+
+    /// A machine whose driver is slow but alive can be talked out of the default.
+    #[test]
+    fn the_timeout_can_be_raised_and_ignores_what_is_not_a_positive_whole_number() {
+        use super::parse_device_open_timeout;
+        use std::time::Duration;
+        assert_eq!(
+            parse_device_open_timeout(Some("90")),
+            Duration::from_secs(90)
+        );
+        assert_eq!(
+            parse_device_open_timeout(Some(" 45 ")),
+            Duration::from_secs(45)
+        );
+        for bad in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("-5"),
+            Some("30s"),
+            Some("soon"),
+        ] {
+            assert_eq!(
+                parse_device_open_timeout(bad),
+                super::DEVICE_OPEN_TIMEOUT,
+                "{bad:?} keeps the default"
+            );
+        }
+    }
+
     #[test]
     fn taa_culling_covers_jittered_view_edges_but_still_rejects_behind_the_camera() {
         use super::*;
