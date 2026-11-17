@@ -13,7 +13,7 @@ reopened; labels never start it):
 
 | Job | Runs on | What | Time |
 | --- | --- | --- | --- |
-| `verify` | Our checks runners (label `horizon-checks`, the CI VPS's) for pull requests whose number ends in 0, approved forks' included; GitHub `ubuntu-latest` for the others and main's pushes. `SELF_HOSTED_CI` moves this repository's own: `all` all to ours, `light` or `off` all to GitHub. Forks' pull requests see no repository variable, so no switch moves them ([CI runners](ci-runners.md)) | Two jobs side by side: the public-tree check, Python tests, rustfmt, clippy with warnings denied and the launcher's checks (`verify (tree, lint and launcher)`), and the Rust tests (`verify (Rust tests)`); `verify` waits for them and passes when each passed or had nothing to do. Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (ours) | ~8 min |
+| `verify` | Blacksmith's runners for every pull request (approved forks' included), the merge queue and main's pushes. `SELF_HOSTED_CI=all` sends this repository's own to our checks runners (label `horizon-checks`, the CI VPS's); forks' pull requests see no repository variable, so no switch moves them ([CI runners](ci-runners.md)) | One job per part, side by side: the public-tree check and the Python tests (`verify (tree and Python tests)`), rustfmt and clippy with warnings denied (`verify (format and lint)`), clippy of the server build (`verify (server build lint)`), the launcher's checks (`verify (launcher)`) and the Rust tests (`verify (Rust tests)`); `verify` waits for them and passes when each passed or had nothing to do. Each Rust part keeps its build folder between runs (a sticky disk on Blacksmith's, the runner's own on ours) | ~8 min |
 | `parity / parity` | A runner with the label `horizon-game`: the Mac mini's and playhorizon's (below) | Only for a change to a harness, an oracle, a probe or the runner (or the `run-parity` label): the vanilla harnesses the change can affect (`tools/parity.py --changed <base>`). Other pull requests skip it: [parity-main](#parity-on-main) checks them on main | seconds when nothing is affected; minutes per affected harness |
 
 Pushes to main run `verify` only; the nightly audit covers main's harnesses.
@@ -655,6 +655,9 @@ Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and for Ludovic, with 
   than 60 actions per reviewer in 24 hours (counted from the workflow's own comments).
 - **Safety.** Same as `/nightly`: main's copy of the workflow runs, no pull request's code is checked out or run,
   the comment reaches the script as env vars, and the token has `issues` and `pull-requests` write only.
+- **`needs-info`.** `/label needs-info` on an issue asks its author for more. A person's comment takes it off
+  (bots' don't count); with no answer in 7 days, `.github/workflows/needs-info.yml` (`tools/ci/needs_info.py`)
+  closes the issue as not planned. It can be reopened once the details are there.
 - **The council stays in charge.** A one-line pull request removing a reviewer's line revokes it as soon as it merges
   (the council reviews the file under CODEOWNERS). A line `paused` stops `/nightly`, the triage commands and the
   reviewers' claim powers for every reviewer; the council's own still work.
