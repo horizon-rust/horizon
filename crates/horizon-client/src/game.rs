@@ -4635,7 +4635,6 @@ impl Game<'_> {
             log.extend(held);
         }
         span("tick_friends", || self.tick_friends());
-        horizon_client::spans::time("tick_hand", || self.tick_hand());
         horizon_client::spans::time("tick_sleep", || self.tick_sleep());
         span("sleep_status", || self.announce_sleep_status());
         span("sleep_status", || self.free_left_beds());
@@ -4683,18 +4682,6 @@ impl Game<'_> {
         }
         // ServerBossEvent broadcasts, after this level's entities have ticked.
         span("publish_boss_bars", || self.publish_boss_bars());
-        // Minecraft.handleKeybinds: held use repeats only while no item is in
-        // use (a raised shield or a drawn bow places and uses nothing).
-        if self.right
-            && self.use_delay == 0
-            && self.using.is_none()
-            && self.screen == Screen::Playing
-            && !self.dialog_open()
-            && self.sleeping.is_none()
-        {
-            self.use_with_hand()?;
-            self.use_delay = 4;
-        }
         if running {
             horizon_client::spans::time("lan_note_joined", || self.lan_note_joined());
         }

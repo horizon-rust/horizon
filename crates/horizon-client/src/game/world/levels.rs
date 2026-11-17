@@ -1460,9 +1460,6 @@ impl Game<'_> {
             // `ServerLevel.tickTime`, once the clock has moved on.
             span("scheduled_functions", || self.run_scheduled_functions());
         }
-        if self.use_delay > 0 {
-            self.use_delay -= 1;
-        }
         self.tick_totem();
         self.update_totem_ready();
         span("tick_command_extras", || self.tick_command_extras());
