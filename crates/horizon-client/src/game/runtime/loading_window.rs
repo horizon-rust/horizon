@@ -137,8 +137,9 @@ pub(super) fn loading_renderer(
     let panorama = panorama
         .cloned()
         .unwrap_or_else(|| Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])));
-    let (pixels, width, height) = atlas.map_or((EMPTY_HUD.as_slice(), 1, 1), |a| {
-        (a.pixels.as_slice(), a.width, a.height)
+    // `pixels()`: the loading screen keeps them compressed once its renderer has them.
+    let (pixels, width, height) = atlas.map_or((EMPTY_HUD.as_slice().into(), 1, 1), |a| {
+        (a.pixels(), a.width, a.height)
     });
     let (glint_pixels, glint_width, glint_height) = atlas
         .map_or((EMPTY_GLINT.as_slice(), 1, 1), |a| {
@@ -159,7 +160,7 @@ pub(super) fn loading_renderer(
         1,
         &[],
         &[],
-        (pixels, width, height),
+        (&pixels, width, height),
         (glint_pixels, glint_width, glint_height),
         (glint_pixels, glint_width, glint_height),
         (&FORCEFIELD[..], 1),
@@ -407,7 +408,7 @@ pub(super) fn start_game<'a>(
     // per process, here in `run`, after the initial load applied.
     // A dedicated server has no client and returned above; a splitscreen guest's `run` is
     // another local player of the same process.
-    game.publish_initial_client_models();
+    game.publish_initial_client_models()?;
     // Finish Setup -> Config -> World before any screen, connection, input or tick hooks.
     game.native_configs_client_start();
     if let Some(error) = pack_error {
