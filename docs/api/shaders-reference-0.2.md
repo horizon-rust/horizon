@@ -367,7 +367,8 @@ asks for ray queries and keeps the scene with any pack or none; any other value 
 - `fn trace_layers(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, layers: u32) -> RayHit` and
   `fn trace_any_layers(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, layers: u32) -> bool`: `trace`
   and `trace_any` over the layers `layers` names; `trace(o, d, m)` is `trace_layers(o, d, m, RAY_SOLID)`. With no
-  layer named every ray misses.
+  layer named every ray misses. Several layers cost one traversal: the layers are the ray query's mask, not a
+  query each.
 - `fn hit_normal_map(hit: RayHit) -> vec4<f32>`, `fn hit_specular_map(hit: RayHit) -> vec4<f32>`: the resource
   packs' LabPBR maps at the hit, its sprite's texel at `hit.uv` at full size, as `block_normal_map_level(uv, 0.0)`
   and `block_specular_map_level(uv, 0.0)` read a drawn surface's; their defaults without maps, and on a miss.
@@ -381,7 +382,9 @@ stops it, however faint, except a clear one (alpha below 0.01), which the transl
 the hit's `albedo.a` is the texel's alpha and its `translucent` is true. In the entity layer a texel stops it where
 vanilla's entity alpha test keeps the pixel, `(texel * tint).a` 0.1 or more (on the dying dragon's dissolve,
 vanilla's mask decides), from either side of the face. A ray over several layers stops at the nearest surface of
-any: to go on through a translucent one, trace again from just behind the hit. The scene is Horizon's: the
+any: to go on through a translucent one, trace again from just behind the hit. No face is culled, and
+`hit.normal` is turned toward the ray's origin, so a hit doesn't say which side of a face it struck: a ray that
+starts inside a full block hits that block's drawn faces from behind. The scene is Horizon's: the
 terrain around the camera, out to `frame.ray_distance` at least, without particles, clouds or distant terrain,
 and with entities only in `RAY_ENTITY`. While
 the game doesn't trace (`frame.has_ray_tracing` is 0) the pack is built and runs all the same, and every ray
@@ -391,8 +394,11 @@ named as one of these functions.
 
 In the material stage only `material` traces: `displacement` and the vertex stage's `vertex`, whose files share
 its module, run in vertex shaders, and the check refuses a pack where either reaches a trace function.
-`material` runs for every terrain fragment drawn, so a ray costs more there than in a post pass: keep its rays for
-translucent surfaces (`input.translucent`), which leave no surface for a post pass to light.
+A ray in `material` is paid for every terrain fragment drawn, overdraw included; a ray in a post pass once a
+pixel. But a post pass knows only the solid terrain's surface (`surface_at` isn't `present` behind water,
+glass or entities) and has no albedo, so direct light that must be right there is traced in `material`. With
+`[material] reads`, a pack can also trace in a compute or `[[before_world]]` pass and apply the result in
+`material`.
 
 ### `RayHit`
 
@@ -449,7 +455,13 @@ reductions stay uniform: one beyond the dispatch has `in_bounds` false and touch
 the frame, the samplers and the shadow maps (bindings below) with `shadow_position`. Under `[ray_tracing]` either
 may trace (see Ray tracing); a `[[before_world]]` pass traces this frame's scene, built before it runs.
 
-**Not yet, in a later step:** `[material]` can't read kept resources.
+`[material] reads` lists the kept resources the terrain reads (no `writes`): `x` for this frame's version of a
+texture a `[[before_world]]` pass writes, which the terrain sees in the same frame, `x_previous` for last
+frame's, and a buffer as it is. A texture only `[[post]]` passes write is written after the terrain draws, so
+the check refuses its `x` there: read `x_previous`. Its declarations are in the material's module at the same
+bindings, for `material`'s fragments only: the check refuses `displacement` reaching one, and the `[vertex]`
+file naming one, as both also draw the shadow map, which gets no kept resources. On a frame that clears a
+resource the terrain reads zeros, or what a `[[before_world]]` pass wrote since.
 
 ### `ComputeInput`
 
@@ -765,3 +777,25 @@ installs one, the registry's CI): each stage is parsed and validated by naga, ch
 the rules above, and translated for Vulkan (SPIR-V), Metal and DirectX 12 (HLSL) with its options at their
 defaults, minimums and maximums. Every option must be an `override` of its type in some stage; an `override`
 that is no option needs a default.
+
+## Tables and constants
+
+On Vulkan, a read of a module-level `const` array with an index known only at run time first stores the whole array
+to a temporary, again on each turn of a loop, which can cost milliseconds a frame. Declare such a table
+`var<private> NAME: array<T, N> = array<T, N>(...);`, above all where a loop reads it; a constant index avoids the
+store either way.
+
+In a material, vertex or entity stage, the game can refuse some uses of a `let` bound to a constant vector, matrix or
+struct whose components a later statement reads (`let named = TABLE[1];`, then `max(named.x, named.y)`) when it builds
+the pipeline ("... can't be introduced - it's already in scope"). It is a naga limitation (gfx-rs/wgpu#7793, #9002)
+that may go away. Write `const named = TABLE[1];` or `var named = TABLE[1];` instead, or read `TABLE[1].x` in place.
+
+## Written ray calls
+
+On Vulkan, a driver can build the ray traversal anew for every place a stage's code calls a function that traces
+(`trace` and its kin, or a function of yours that calls them), and each such place can then cost time on every
+pixel, whether the pixel takes it or not. On an RTX 5070 Ti at 2560x1440, twelve more written calls that no
+pixel took added 0.6 to 1.5 ms a frame, more the more the called function traces (0.05 to 0.13 ms a call), and
+putting the one ray call inside a loop that ran once added 0.3 to 0.5 ms over the bare call. Write the call once
+and choose its arguments before it (the origin, the direction, the layers, the distance) instead of writing it
+in each branch.
