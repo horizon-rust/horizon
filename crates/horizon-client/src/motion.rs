@@ -6200,7 +6200,10 @@ mod tests {
         w.player_movement_tick([0.0, 0.0], false).unwrap();
         w.player.swimming = true;
         w.player_movement_tick([0.0, 0.0], true).unwrap();
-        assert!(w.player.flying, "the second jump starts creative flight in water");
+        assert!(
+            w.player.flying,
+            "the second jump starts creative flight in water"
+        );
     }
 
     #[test]
