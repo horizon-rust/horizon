@@ -15,15 +15,25 @@ fn entity(input: EntityInput) -> Surface {
 
 /// A pack's entity shader whose stage is `entity`.
 pub fn shader(entity: &str) -> String {
+    shader_with(entity, "")
+}
+
+/// `shader` for a manifest that ends with `more`.
+fn shader_with(entity: &str, more: &str) -> String {
     use horizon_shader_api::{MANIFEST, Pack, check};
     let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\n\
-        [entity]\nfile = \"entity.wgsl\"\n";
-    let files = [(MANIFEST, manifest), ("entity.wgsl", entity)]
+        [entity]\nfile = \"entity.wgsl\"\n"
+        .to_owned()
+        + more;
+    let files = [(MANIFEST, &*manifest), ("entity.wgsl", entity)]
         .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
         .into();
     let report = check(&Pack::from_files(files).unwrap()).unwrap();
-    shader_source(&report.stages[0].source)
+    shader_source(&report.stages[0].source, report.manifest.fog)
 }
+
+/// A stage that fogs its own surfaces, as vanilla would, under `[frame] fog = "pack"`.
+const OWN_FOG: &str = "[frame]\nfog = \"pack\"\n";
 
 /// Every name a pack's code could take that Horizon's entity shaders or the entries around
 /// the stage have had, in any case: a pack's own are checked only against lowercase `horizon_`.
@@ -77,8 +87,9 @@ fn the_renderers_names_are_reserved() {
 /// pipelines' entries, whatever names the pack's own code takes: Horizon's are prefixed.
 #[test]
 fn the_packs_entity_shader_validates() {
-    for entity in [VANILLA.to_owned(), OWN_NAMES.to_owned() + VANILLA] {
-        let source = shader(&entity);
+    let entities = [VANILLA.to_owned(), OWN_NAMES.to_owned() + VANILLA];
+    for (entity, more) in entities.iter().flat_map(|e| [(e, ""), (e, OWN_FOG)]) {
+        let source = shader_with(entity, more);
         let module = naga::front::wgsl::parse_str(&source)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
         naga::valid::Validator::new(
@@ -96,6 +107,28 @@ fn the_packs_entity_shader_validates() {
             assert!(entries.contains(&entry), "{entry} in {entries:?}");
         }
     }
+}
+
+/// What Horizon writes around the stage of a pack that leaves fog to it, after its prefixed
+/// entity.wgsl (which changes with the engine): the SHA-256 it had before `[frame] fog`, so
+/// such a pack's entity shader is the same WGSL. Under the key only the glint's fade differs.
+#[test]
+fn the_entries_around_a_stage_horizon_fogs_are_unchanged() {
+    use sha2::{Digest, Sha256};
+    let entries = |more| {
+        let source = shader_with(VANILLA, more).replace('\r', "");
+        let at = source.find("const horizon_entity_kind_shift").unwrap();
+        source[at..].to_owned()
+    };
+    let engine = entries("");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&engine)),
+        "7d86c6ceaae8c0b0625105a16c3b0ea43d3ce34c8edb6d1afdbb8f78059d6f76"
+    );
+    assert!(!engine.contains("vanilla_fog"));
+    let own = entries(OWN_FOG);
+    assert!(own.contains("    let f = vanilla_fog(position);\n"));
+    assert!(!own.contains("horizon_vanilla_globals.fog"));
 }
 
 /// The kind is written above every bit the entity shaders read of a layer (the overlay, the
@@ -135,7 +168,7 @@ fn quads_take_the_kind_of_their_run() {
     let kinds = |batch: &mut super::super::entity_batch::EntityBatch| -> Vec<u32> {
         batch.update(&vertices, &[], &[], &[], false);
         let quads = batch.combined.chunks(4);
-        quads.map(|q| q[3].layer >> super::KIND_SHIFT).collect()
+        quads.map(|q| q[3].layer >> super::KIND_SHIFT & 7).collect()
     };
     // The ordinary quads lead the batch: 0, 1, 3, 4 and 5, then quad 2. Quad 4 follows the
     // block entity's run and is in none.
@@ -143,6 +176,49 @@ fn quads_take_the_kind_of_their_run() {
     assert_eq!(batch.combined[4].layer & 0xffff, 5);
     assert_eq!(batch.combined[20].layer, 32);
     assert_eq!(kinds(&mut batch), [0; 6]);
+}
+
+/// The ray scene's entity layer takes the quads the runs name, of the ordinary material and of
+/// improved transparency's, wherever the batch sorts them, and nothing else: not a particle
+/// drawn between two mobs, nor an additive quad, nor another material's quad in a run. Its two
+/// ranges are where the batch put each material.
+#[test]
+fn the_entity_layer_s_quads_are_the_runs_through_the_sorting() {
+    use super::super::entity_batch::{EntityBatch, OIT_ENTITY};
+    use horizon_shader_api::stages::RAY_ENTITY_QUAD;
+    // A mob (quads 0 and 1, one of improved transparency's), a particle (2), a translucent
+    // item the mob holds (3), a block entity (4, improved transparency's), a particle (5).
+    let layers = [0, OIT_ENTITY, 0, 32, OIT_ENTITY, 0];
+    let vertices: Vec<Vertex> = layers.into_iter().flat_map(quad).collect();
+    let additive: Vec<Vertex> = quad(2 | OIT_ENTITY).into();
+    let mut batch = EntityBatch::default();
+    batch.kinds.push(0..8, EntityKind::Entity);
+    batch.kinds.push(12..20, EntityKind::Entity);
+    batch.kinds.push(16..20, EntityKind::BlockEntity);
+    batch.update(&vertices, &additive, &[], &[], true);
+    // Sorted: the ordinary quads 0, 2, 5, the item 3, improved transparency's 1, 4 and the
+    // additive quad it took.
+    let marked: Vec<bool> = (batch.combined.chunks(4))
+        .map(|q| q.iter().all(|v| v.layer & RAY_ENTITY_QUAD != 0))
+        .collect();
+    assert_eq!(marked, [true, false, false, false, true, true, false]);
+    assert_eq!(batch.combined[12].layer & 0xffff, 32);
+    assert_eq!(batch.ray_ranges, [(0, 3), (4, 3), (7, 0)]);
+    // The bit keeps clear of the kind and of every bit the entity shaders read.
+    let kind = batch.combined[20].layer >> super::KIND_SHIFT & 7;
+    assert_eq!(kind, EntityKind::BlockEntity as u32 + 1);
+    assert_eq!(
+        RAY_ENTITY_QUAD & (7 << super::KIND_SHIFT | (OIT_ENTITY * 2 - 1)),
+        0
+    );
+    // Without runs nothing is marked.
+    batch.update(&vertices, &additive, &[], &[], true);
+    assert!(
+        batch
+            .combined
+            .iter()
+            .all(|v| v.layer & RAY_ENTITY_QUAD == 0)
+    );
 }
 
 /// A run has its end, and one named where geometry was cut back replaces what was named
