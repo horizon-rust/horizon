@@ -91,6 +91,21 @@ class StageToolTests(unittest.TestCase):
 
 
 class SyncUnchangedTests(unittest.TestCase):
+    def test_source_paths_can_change_between_files_and_directories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, dest = root / "source", root / "dest"
+            (source / "file_to_dir").mkdir(parents=True)
+            (source / "file_to_dir" / "new.rs").write_bytes(b"new nested file")
+            (source / "dir_to_file").write_bytes(b"new flat file")
+            (dest / "dir_to_file").mkdir(parents=True)
+            (dest / "dir_to_file" / "old.rs").write_bytes(b"old nested file")
+            (dest / "file_to_dir").write_bytes(b"old flat file")
+
+            self.assertEqual(prebuilt_game.sync_unchanged(source, dest), (2, 2, 0))
+            self.assertEqual((dest / "file_to_dir" / "new.rs").read_bytes(), b"new nested file")
+            self.assertEqual((dest / "dir_to_file").read_bytes(), b"new flat file")
+
     def test_an_unchanged_file_keeps_its_mtime_and_a_changed_one_is_written(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

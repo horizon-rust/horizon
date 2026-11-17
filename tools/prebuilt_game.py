@@ -187,26 +187,37 @@ def sync_unchanged(source: Path, destination: Path) -> tuple[int, int, int]:
     """Make `destination` hold exactly `source`'s files, writing only those whose bytes differ, so an
     unchanged file keeps its modification time (and Cargo its compiled crate). A top-level `target`
     directory is left alone. Returns `(written, removed, unchanged)`."""
-    wanted = {path.relative_to(source) for path in source.rglob("*") if path.is_file()}
+    wanted = {Path(folder).relative_to(source) / name
+              for folder, _, files in os.walk(source) for name in files}
+    # Clear stale paths first: a tracked path may become a directory, or vice versa.
+    removed = 0
+    if destination.exists():
+        for folder, directories, files in os.walk(destination, topdown=False):
+            relative = Path(folder).relative_to(destination)
+            if "target" in relative.parts[:1]:
+                continue
+            for name in files:
+                if relative / name not in wanted:
+                    (Path(folder) / name).unlink()
+                    removed += 1
+            for name in directories:
+                if relative == Path(".") and name == "target":
+                    continue
+                path = Path(folder) / name
+                if not any(path.iterdir()):
+                    path.rmdir()
     written = 0
     for name in wanted:
         data = (source / name).read_bytes()
         target = destination / name
-        if not target.is_file() or target.read_bytes() != data:
+        try:
+            previous = target.read_bytes()
+        except FileNotFoundError:
+            previous = None
+        if previous != data:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
             written += 1
-    removed = 0
-    if destination.exists():
-        for path in sorted(destination.rglob("*"), reverse=True):
-            name = path.relative_to(destination)
-            if "target" in name.parts[:1]:
-                continue
-            if path.is_file() and name not in wanted:
-                path.unlink()
-                removed += 1
-            elif path.is_dir() and not any(path.iterdir()):
-                path.rmdir()
     unchanged = len(wanted) - written
     print(f"stage_sync written={written} removed={removed} unchanged={unchanged}", flush=True)
     return written, removed, unchanged
