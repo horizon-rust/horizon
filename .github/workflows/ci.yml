@@ -110,8 +110,9 @@ jobs:
       # toolchain, our runners' own rustup homes may not), and the GPU tests find no adapter there, so they return
       # early. Ours have Mesa's software Vulkan for parity; a backend Linux lacks keeps the tests from it, so a pull
       # request's verify doesn't depend on which pool took it (#8627: a GPU test that flakes on lavapipe).
+      # Blacksmith's runners too: their image has Mesa's llvmpipe, and the GPU tests fail on its GL backend.
       - name: Our runners as GitHub's (a default Rust toolchain, no GPU)
-        if: (runner.environment != 'github-hosted' && !startsWith(runner.name, 'blacksmith-'))
+        if: runner.environment != 'github-hosted'
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
@@ -308,7 +309,7 @@ jobs:
         run: python3 tools/ci/rust_changes.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
       # As in verify-static: a default toolchain and no GPU, so a part doesn't depend on which pool took it.
       - name: Our runners as GitHub's (a default Rust toolchain, no GPU)
-        if: (runner.environment != 'github-hosted' && !startsWith(runner.name, 'blacksmith-'))
+        if: runner.environment != 'github-hosted'
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
