@@ -53,7 +53,8 @@ shared = ["common.wgsl"]   # optional: WGSL put before every stage's file, in or
 [sky]                      # each stage is optional, but a pack has at least one
 file = "sky.wgsl"
 clouds = true              # optional: false when the pack draws its own clouds
-sun = true                 # optional: false when the pack draws its own sun (the moon stays)
+sun = true                 # optional: false when the pack draws its own sun
+moon = true                # optional: false when the pack draws its own moon
 stars = true               # optional: false when the pack draws its own stars
 
 [material]
@@ -165,6 +166,8 @@ names an exact filesystem path; `shaders/` packs still use filenames.
 0.2 is the line this build serves, the line for linear light and HDR
 ([hdr-linear-light.md](../design/hdr-linear-light.md)): `horizon-shader check` and `pack` take it, the game draws it
 and the registry lists it. A pack for another line is refused (`needs shader API 0.1; this Horizon serves 0.2`).
+The launcher goes by the game it installed, not by its own build: it asks that game for its lines
+(`--launch-api`, `content.shader.api`) and offers and installs a registry pack made for one of them.
 A pack draws the world
 into a float frame where the device can (else the 8-bit one): the frame follows the picked pack,
 rebuilding the renderer and remeshing the world when needed. A refused or missing pack, or one whose owner mod is off,
@@ -211,6 +214,11 @@ keeps drawing. What a pack works with:
   coverage: the texture's alpha times the layer's opacity is cut below 0.1 and blends, the returned alpha is ignored,
   and the check refuses a `discard` reachable from `entity`. Under `"pack"` the returned alpha is cut and blends, and
   the stage may `discard`. Dissolve masks and culling are Horizon's under either.
+- **`[frame] fog`**: `"engine"` (the default) or `"pack"`, which fogs what its stages draw itself. Under `"pack"`
+  Horizon skips its fog on what `material` and `entity` return, and every stage gets `vanilla_fog(position)`,
+  vanilla's fog at a point, with the frame's two fog distances it reads (`fog_environment`, `fog_render`), so a pack
+  can start from vanilla's fog and change it. What Horizon draws itself (items, particles, clouds, the hand) keeps
+  vanilla's fog.
 
 ```toml
 [tonemap]                  # optional: the pack's own tone curve
@@ -227,6 +235,7 @@ coverage = "engine"        # optional: engine (default) or pack, when the stage 
 [frame]
 blend = "gamma"            # optional: gamma (default) or linear
 primaries = "bt709"        # optional: bt709 (default) or bt2020, which needs blend = "linear"
+fog = "engine"             # optional: engine (default) or pack, when the pack fogs what its stages draw
 
 [ray_tracing]              # optional, needs [[post]] or [material], no keys: the post stage gets `trace` and `trace_any`, the material stage where it calls them
 [motion]                   # optional, needs [[post]]: the post stage's motion guide (not drawn yet)
@@ -271,6 +280,33 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
 
 ## Changelog
 
+- 2026-11-17: API 0.2 (experimental, #18023): an R-relative kept texture takes its two versions at their size of the
+  post targets' budget, `2 × scale² × bytes a texel / 8` render-size `rgba16float` textures, instead of 2 at any
+  format and scale: `rgba16float` at scale 0.5 takes 0.5, `r32uint` at scale 1 takes 1. Packs that keep small
+  textures fit where they were refused. A `rgba32float` or `rgba32uint` one at scale 1 takes 4 where it took 2, so a
+  pack whose post targets took more than 4 with one of those, or two of them, is now refused; no WGSL name changes.
+- 2026-11-16: API 0.2 (additions, experimental): `[sky] moon = false` leaves out Minecraft's moon, as `sun = false`
+  its sun, for a sky that draws its own; and `frame.moon_phase`, the phase of the moon Horizon draws (0 full to 7
+  waxing gibbous), declared only for a pack whose files name `moon_phase`, at the end of `Frame`. A pack that sets
+  neither is built from the same WGSL and drawn as before.
+- 2026-11-16: API 0.2 (additions, experimental): `[entity] reads` and `[sky] reads` (#16011 item 4): the entity and
+  sky stages read kept resources by `[material] reads`' rules: `x` for this frame's version of a texture a
+  `[[before_world]]` pass writes, `x_previous` for last frame's, and buffers, in their fragments only. The check
+  refuses `x` of a texture only `[[post]]` passes write, and `writes` on either stage. An entity or sky stage without
+  `reads` composes and draws as before, a test holds. The reference now says that a compute pass may call
+  `storageBarrier()`.
+- 2026-11-15: API 0.2 (additions, experimental): `[material] reads` (#16011 item 4): the terrain reads kept
+  resources, `x` for this frame's version of a texture a `[[before_world]]` pass writes (in the same frame),
+  `x_previous` for last frame's, and buffers; their declarations join the material's module at the passes'
+  bindings. The check refuses `x` of a texture only `[[post]]` passes write (they run after the terrain draws),
+  `writes` on `[material]`, `reads` on the other stages, and `displacement` or a `[vertex]` file reaching a kept
+  resource, as both also draw the shadow map. The kept resources' frame (the versions' swap and the clears) now starts
+  before the world draws in every pack that keeps them. A material without `reads` composes as before, a test holds.
+- 2026-11-15: API 0.2 (addition, experimental): `[frame] fog = "pack"` turns Horizon's fog off on what the material
+  and entity stages return, and gives every stage `fn vanilla_fog(position: vec3<f32>) -> f32` and the frame's
+  `fog_environment` and `fog_render`, the two distances vanilla's fog takes the larger of, which `fog_start` and
+  `fog_end` merge. The enchantment glint Horizon adds after `entity` fades by `vanilla_fog`. A pack without the key
+  is drawn and checked as before, and `[material] fog = false` stays as it was; a manifest sets one of the two.
 - 2026-11-15: API 0.2 (experimental): `frame.light_direction` is the sun by day and the moon by night also for a pack
   without a `[shadow]` stage, where it now equals the frame's `sun_direction` or `moon_direction`; it read straight up
   (0, 1, 0) at every time of day until now, so a pack that traced its shadows along it got them straight down. Packs

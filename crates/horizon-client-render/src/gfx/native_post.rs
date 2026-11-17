@@ -788,6 +788,11 @@ impl NativeFrame {
         }
     }
 
+    /// Group 3's layout entries (`layout`), which a material stage's own layouts start with.
+    pub(in crate::gfx) fn entries(&self) -> &[wgpu::BindGroupLayoutEntry] {
+        &self.entries
+    }
+
     fn regroup(&mut self, device: &wgpu::Device) {
         self.group = Self::group(
             device,
@@ -1472,7 +1477,8 @@ impl NativePost {
         for (i, ((label, pipeline), group)) in self.passes.iter().zip(passes).enumerate() {
             let computes = self.trace.as_ref().filter(|_| self.traced.is_some());
             let traced = computes.map(|t| t.computes.as_slice());
-            kept::dispatch(&self.kept, encoder, (passes, traced), i, size);
+            let timed = timing.as_deref_mut();
+            kept::dispatch(&self.kept, encoder, (passes, traced), i, size, timed);
             let view = match (self.plan[i].writes, &self.targets, &self.named, &d.picture) {
                 (Writes::Chain(slot), Some((_, t)), _, _) => &t[slot],
                 (Writes::Target(j), _, Some((_, n)), _) => &n[j],
@@ -1580,6 +1586,8 @@ pub fn frame_inputs(
         ),
         None => (frame.sky.fog_color, frame.distance * 0.9, frame.distance),
     };
+    // The two terms terrain.wgsl's `apply_fog` takes the larger of, as the renderer has them.
+    let (_, fog) = super::fog_uniform(frame);
     let pack = &frame.pack;
     let level = |l: i32| l as f32 / 15.0;
     let m = |m: Mat4| m.to_cols_array_2d();
@@ -1667,7 +1675,10 @@ pub fn frame_inputs(
         view_epoch: 0,
         world_epoch: 0,
         reset_reasons: 0,
-        padding: [0; 2],
+        fog_environment: [fog[0], fog[1]],
+        fog_render: [fog[2], fog[3]],
+        moon_phase: frame.sky.moon_phase,
+        padding: [0; 1],
     }
 }
 

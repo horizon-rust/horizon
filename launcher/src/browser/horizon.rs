@@ -414,12 +414,33 @@ enum Blocked {
     EarlierSystem,
     /// They were taken down, for this reason.
     TakenDown(String),
+    /// Shader packs made for this shader API, which the installed game doesn't serve.
+    OtherShaderApi(String),
+}
+
+/// Whether version `v` of `p` is a shader pack made for a shader API line the installed game
+/// doesn't serve ([`crate::game_shader_api::served`]).
+fn needs_other_shader_api(p: &index::Project, v: &index::Version) -> bool {
+    p.kind == index::Kind::Shader
+        && index::needs_other_shader_api(p, v, &crate::game_shader_api::served())
+}
+
+/// A project's newest version the installed game may get (`Index::installable`); a shader
+/// pack's, for a shader API line that game serves.
+fn installable<'a>(index: &Index, p: &'a index::Project) -> Option<&'a index::Version> {
+    match p.kind {
+        index::Kind::Shader => index.installable_for(p, GAME, &crate::game_shader_api::served()),
+        _ => index.installable(p, GAME),
+    }
 }
 
 fn blocked(index: &Index, p: &index::Project) -> Option<Blocked> {
     let for_game: Vec<&index::Version> = p.versions.iter().filter(|v| v.game == GAME).collect();
-    if for_game.is_empty() || index.installable(p, GAME).is_some() {
+    if for_game.is_empty() || installable(index, p).is_some() {
         return None;
+    }
+    if for_game.iter().all(|v| needs_other_shader_api(p, v)) {
+        return Some(Blocked::OtherShaderApi(for_game[0].api.clone()));
     }
     let revoked = for_game
         .iter()
@@ -443,6 +464,7 @@ fn project_of(index: &Index, p: &index::Project) -> Option<Project> {
         Blocked::EarlierSystem => {
             tr("Made for Horizon's earlier mod system: it can't be installed yet.").to_string()
         }
+        Blocked::OtherShaderApi(api) => made_for_other_shader_api(&api),
     });
     Some(Project {
         source: SourceId::Horizon,
@@ -483,7 +505,8 @@ fn version_of(index: &Index, p: &index::Project, v: &index::Version) -> Version 
         blocked: index
             .revoked(&p.id, &v.file.sha256)
             .map(|r| format!("taken down: {}", r.reason))
-            .or_else(|| unsupported_capabilities(&v.capabilities)),
+            .or_else(|| unsupported_capabilities(&v.capabilities))
+            .or_else(|| needs_other_shader_api(p, v).then(|| other_shader_api(&v.api))),
     }
 }
 
@@ -834,6 +857,7 @@ fn install_from(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Vec<installed::Entry>, String> {
+    let _game = crate::game_shader_api::for_home(home);
     let p = index
         .project(&project.id)
         .ok_or_else(|| format!("{} isn't in Horizon's registry.", project.title))?;
@@ -872,20 +896,42 @@ fn fetch_datapack_from(
     Ok((path, v.version.clone()))
 }
 
-/// A project's newest version for this game that wasn't taken down.
+/// A project's newest version for this game that wasn't taken down and, for a shader pack, is
+/// for a shader API line the installed game serves.
 fn newest<'a>(index: &Index, p: &'a index::Project) -> Result<&'a index::Version, String> {
-    let mut taken_down = None;
+    let (mut taken_down, mut other_api) = (None, None);
     for v in p.versions.iter().filter(|v| v.game == GAME) {
         if let Some(r) = index.revoked(&p.id, &v.file.sha256) {
             taken_down.get_or_insert(r);
+        } else if needs_other_shader_api(p, v) {
+            other_api.get_or_insert(v.api.as_str());
         } else {
             return Ok(v);
         }
     }
-    Err(match taken_down {
-        Some(r) => format!("{} was taken down: {}", p.name, r.reason),
-        None => format!("{} has no version for {GAME} to install.", p.name),
+    Err(match (taken_down, other_api) {
+        (_, Some(api)) => format!("{} {}.", p.name, other_shader_api(api)),
+        (Some(r), None) => format!("{} was taken down: {}", p.name, r.reason),
+        (None, None) => format!("{} has no version for {GAME} to install.", p.name),
     })
+}
+
+/// What the browser and the installed packs say of a shader pack made for shader API `api`,
+/// which the installed game doesn't serve.
+pub fn made_for_other_shader_api(api: &str) -> String {
+    format!(
+        "Made for shader API {api}: this Horizon serves {}.",
+        crate::game_shader_api::served().join(", ")
+    )
+}
+
+/// Why a shader pack made for shader API `api` doesn't run: the game's own words for it
+/// (`horizon_shader_api::Manifest::parse`).
+fn other_shader_api(api: &str) -> String {
+    format!(
+        "needs shader API {api}; this Horizon serves {}",
+        crate::game_shader_api::served().join(", ")
+    )
 }
 
 /// Installs version `v` of the registry's mod, resource pack or shader pack `p` into the game
@@ -924,6 +970,10 @@ fn install_version_guarded(
         project_of(index, p).ok_or_else(|| format!("{} can't be installed here.", p.name))?;
     if let Some(r) = index.revoked(&p.id, &v.file.sha256) {
         return Err(format!("{} was taken down: {}", p.name, r.reason));
+    }
+    // Every install comes here, a modpack's pinned ones too: refused before the download.
+    if needs_other_shader_api(p, v) {
+        return Err(format!("{} {}.", p.name, other_shader_api(&v.api)));
     }
     let native = p.kind == index::Kind::NativeMod;
     let relative = match native {
@@ -981,7 +1031,12 @@ fn install_version_guarded(
     let file = &version_of(index, p, v).files[0];
     let staging = home.join("mod-browser/downloads");
     let path = fetch(file, &staging, local, &|f| progress(&line, f))?;
-    let checked = index::check_file(index, p, v, &path).and_then(|trust| {
+    // A shader pack for a line the game serves and this launcher doesn't: the game checks it.
+    let served = match p.kind {
+        index::Kind::Shader => crate::game_shader_api::served(),
+        _ => vec![horizon_shader_api::API.to_owned()],
+    };
+    let checked = index::check_file_for(index, p, v, &path, &served).and_then(|trust| {
         // Only Rust and TOML sources, for the mod the index names: nothing in it runs here.
         match native {
             true => index::native::Bundle::read(&path).and_then(|b| match b.manifest.id == p.id {

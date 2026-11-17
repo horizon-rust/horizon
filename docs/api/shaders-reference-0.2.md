@@ -68,6 +68,30 @@ It needs `blend = "linear"`, since a change of primaries is only right in linear
 space the pack's colours are in, and `frame.luminance` holds that space's luminance weights: compute luminance as
 `dot(color, frame.luminance)` and it is right in either. `"bt2020"` passes the check; the game doesn't serve it yet.
 
+## `[frame] fog`
+
+`fog = "engine"` (the default): Horizon mixes vanilla's fog over what the material and entity stages return. With
+`fog = "pack"` the pack fogs what its stages draw: Horizon skips its fog there, and scales the enchantment glint it
+adds after `entity` by `1 - vanilla_fog(position)`, as vanilla's fog over it would. What Horizon draws itself keeps
+vanilla's fog: items, particles, clouds, the sun and moon, the hand, block outlines, beams, the water mirror's terrain,
+and the fade of newly loaded terrain toward `frame.fog_color`. The sky, weather and post stages get no fog from Horizon
+either way. A pack with the key also has, in every stage, `frame.fog_environment` and `frame.fog_render` (below) and:
+
+- `fn vanilla_fog(position: vec3<f32>) -> f32`: how much of `frame.fog_color` vanilla mixes over a surface at the
+  camera-relative `position`, 0..1, under water, lava, powder snow, blindness and darkness too: the larger of
+  the environment's fog along `length(position)` and the render distance's along
+  `max(length(position.xz), abs(position.y))`, each 0 before its start, 1 from its end and linear between. With the
+  Fog option off it is 0, except under water, lava, powder snow, those effects and a boss's fog.
+
+Vanilla mixes in its gamma, under either `[frame] blend`:
+`pow(mix(pow(c, vec3(1.0 / 2.2)), pow(frame.fog_color, vec3(1.0 / 2.2)), vanilla_fog(input.position)), vec3(2.2))` on
+the lit rgb, alpha kept. Horizon's own takes the distance at each corner and interpolates it, `vanilla_fog` at each
+point, so a pack's copy may round a step apart on large faces. Mixing the linear values instead is fog as light
+scatters, a little denser in the middle tones. A post pass fogs what the stages don't draw from `scene_depth`
+(`vanilla_fog(view_position(uv, depth))`), and traced hits from `hit.position`, which Horizon never fogs.
+`[material] fog = false`, from before, turns off the material's fog alone and brings none of these names; a manifest
+sets one of the two keys.
+
 A stage is a function your WGSL defines, with the signature below; Horizon puts the prelude (these structs, the
 resources and helpers) before your files and calls the function from its own pass. Your files declare no
 bindings and no entry points, and no names starting with `horizon_`.
@@ -185,7 +209,7 @@ One point of a block's surface, for `fn material(input: MaterialInput) -> Surfac
 
 ### `Surface`
 
-What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; Horizon then applies the alpha test (cutout and translucent; on the texture's alpha unless `[material] coverage = "pack"`) and fog.
+What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; Horizon then applies the alpha test (cutout and translucent; on the texture's alpha unless `[material] coverage = "pack"`) and fog (unless `[frame] fog = "pack"`).
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -343,7 +367,8 @@ asks for ray queries and keeps the scene with any pack or none; any other value 
 - `fn trace_layers(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, layers: u32) -> RayHit` and
   `fn trace_any_layers(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, layers: u32) -> bool`: `trace`
   and `trace_any` over the layers `layers` names; `trace(o, d, m)` is `trace_layers(o, d, m, RAY_SOLID)`. With no
-  layer named every ray misses.
+  layer named every ray misses. Several layers cost one traversal: the layers are the ray query's mask, not a
+  query each.
 - `fn hit_normal_map(hit: RayHit) -> vec4<f32>`, `fn hit_specular_map(hit: RayHit) -> vec4<f32>`: the resource
   packs' LabPBR maps at the hit, its sprite's texel at `hit.uv` at full size, as `block_normal_map_level(uv, 0.0)`
   and `block_specular_map_level(uv, 0.0)` read a drawn surface's; their defaults without maps, and on a miss.
@@ -357,7 +382,9 @@ stops it, however faint, except a clear one (alpha below 0.01), which the transl
 the hit's `albedo.a` is the texel's alpha and its `translucent` is true. In the entity layer a texel stops it where
 vanilla's entity alpha test keeps the pixel, `(texel * tint).a` 0.1 or more (on the dying dragon's dissolve,
 vanilla's mask decides), from either side of the face. A ray over several layers stops at the nearest surface of
-any: to go on through a translucent one, trace again from just behind the hit. The scene is Horizon's: the
+any: to go on through a translucent one, trace again from just behind the hit. No face is culled, and
+`hit.normal` is turned toward the ray's origin, so a hit doesn't say which side of a face it struck: a ray that
+starts inside a full block hits that block's drawn faces from behind. The scene is Horizon's: the
 terrain around the camera, out to `frame.ray_distance` at least, without particles, clouds or distant terrain,
 and with entities only in `RAY_ENTITY`. While
 the game doesn't trace (`frame.has_ray_tracing` is 0) the pack is built and runs all the same, and every ray
@@ -367,8 +394,11 @@ named as one of these functions.
 
 In the material stage only `material` traces: `displacement` and the vertex stage's `vertex`, whose files share
 its module, run in vertex shaders, and the check refuses a pack where either reaches a trace function.
-`material` runs for every terrain fragment drawn, so a ray costs more there than in a post pass: keep its rays for
-translucent surfaces (`input.translucent`), which leave no surface for a post pass to light.
+A ray in `material` is paid for every terrain fragment drawn, overdraw included; a ray in a post pass once a
+pixel. But a post pass knows only the solid terrain's surface (`surface_at` isn't `present` behind water,
+glass or entities) and has no albedo, so direct light that must be right there is traced in `material`. With
+`[material] reads`, a pack can also trace in a compute or `[[before_world]]` pass and apply the result in
+`material`.
 
 ### `RayHit`
 
@@ -400,7 +430,7 @@ Bindings 48 to 59 of group 3 hold the scene while the game traces (60 to
 ## Kept resources and compute passes
 
 - `[[resource]]`: `name`; `buffer` (bytes) with `element` (`u32`, `atomic<u32>`, `f32`, `vec4<u32>`, `vec4<f32>`), or `format`
-  (`rgba16float`, `r32float`, `rgba32float`, `rgba32uint`) with `size = [w, h]` texels or `scale` (1, 0.5 or 0.25 of the render size); `keep`, `"view"`
+  (`rgba16float`, `r32float`, `rgba32float`, `rgba32uint`, `r32uint`) with `size = [w, h]` texels or `scale` (1, 0.5 or 0.25 of the render size); `keep`, `"view"`
   (screen history) or `"world"` (a cache, fixed `size` only, which needs `[kept] reach`: a teleport further, in
   blocks, clears it). A texture has this frame's version, `<name>`, and last frame's, `<name>_previous`; a buffer
   has one. Both names are free WGSL names, as an `output`'s, and no word WGSL reserves.
@@ -420,12 +450,25 @@ own `output`.
 
 A compute file defines `fn compute(input: ComputeInput)`, and Horizon adds the `@compute` entry with the pass's
 workgroup size. Every invocation of every workgroup runs it, so `var<workgroup>` and `workgroupBarrier()`
-reductions stay uniform: one beyond the dispatch has `in_bounds` false and touches no resource. A compute
+reductions stay uniform: one beyond the dispatch has `in_bounds` false and touches no resource. WGSL's
+`storageBarrier()` is allowed too: it orders one workgroup's accesses to its kept buffers, as
+`workgroupBarrier()` does `var<workgroup>`; neither orders different workgroups, and the next pass sees all of a
+pass's writes. A compute
 `[[post]]` pass's prelude is the post stage's with `ComputeInput` for `PostInput`; a `[[before_world]]` pass has
 the frame, the samplers and the shadow maps (bindings below) with `shadow_position`. Under `[ray_tracing]` either
 may trace (see Ray tracing); a `[[before_world]]` pass traces this frame's scene, built before it runs.
 
-**Not yet, in a later step:** `[material]` can't read kept resources.
+`[material] reads` lists the kept resources the terrain reads (no `writes`): `x` for this frame's version of a
+texture a `[[before_world]]` pass writes, which the terrain sees in the same frame, `x_previous` for last
+frame's, and a buffer as it is. A texture only `[[post]]` passes write is written after the terrain draws, so
+the check refuses its `x` there: read `x_previous`. Its declarations are in the material's module at the same
+bindings, for `material`'s fragments only: the check refuses `displacement` reaching one, and the `[vertex]`
+file naming one, as both also draw the shadow map, which gets no kept resources. On a frame that clears a
+resource the terrain reads zeros, or what a `[[before_world]]` pass wrote since.
+
+`[entity] reads` and `[sky] reads` follow the same rules: the entities and the sky draw after `[[before_world]]`
+and before `[[post]]`, as the terrain does, and read the same versions. Their declarations are in the stage's
+module, for its fragments only; the shadow map's entities are Horizon's own draw and read none.
 
 ### `ComputeInput`
 
@@ -442,8 +485,8 @@ A pass's prelude declares the resources it lists, the pack's resource i at bindi
 3 and its `_previous` at 65 + 2i: a buffer `var<storage, read_write> x: array<element>` where written,
 `var<storage, read>` where only read (an `atomic<u32>` buffer then reads as `array<u32>`); a texture
 `texture_storage_2d<format, write>` where written, else `texture_2d<f32>` (`texture_2d<u32>` for
-`rgba32uint`, which only a compute pass writes). An `r32float`, `rgba32float` or `rgba32uint` texture is read
-with `textureLoad` only: the check refuses sampling or gathering one, also through a function's argument. Data is data: Horizon doesn't decode, clamp or force the alpha of a kept resource.
+`rgba32uint` and `r32uint`, which only a compute pass writes). An `r32float`, `rgba32float`, `rgba32uint` or
+`r32uint` texture is read with `textureLoad` only: the check refuses sampling or gathering one, also through a function's argument. Data is data: Horizon doesn't decode, clamp or force the alpha of a kept resource.
 
 `[[before_world]]` resources (bind group 3):
 
@@ -477,7 +520,7 @@ says the world changed, not the camera's distance or `frame_index`.
 
 Limits: 8 resources, 4 `[[before_world]]` entries, 8 compute
 `[[post]]` entries; 32 MiB of buffers and 32 MiB of fixed-size textures, both versions counted; each R-relative
-kept texture takes 2 of the post targets' budget (Limits); a workgroup of up to [256, 256, 64] and
+kept texture takes its two versions' size of the post targets' budget (Limits); a workgroup of up to [256, 256, 64] and
 256 invocations; 33554432 invocations a dispatch and 67108864 a frame over every
 compute pass, `[[before_world]]` and `[[post]]` together, counted as whole workgroups, a `"pixels"` dispatch as 3840×2160 (R isn't known at load).
 
@@ -573,8 +616,8 @@ One point of the surface of an entity, a block entity, an item or a particle, fo
 linear light, 0 or more and unbounded; its alpha read only under `[entity] coverage = "pack"`), so a pack writes
 its lighting once and calls it from both stages. Around it Horizon keeps vanilla's order: the alpha test (on the
 texture and the layer's opacity, or under `"pack"` on the returned alpha), then the enchantment glint added on top,
-then fog. A pack without `[entity]` is drawn as before, and sees none of this stage's names; the rule
-for new names holds for the stage as for the others.
+then fog (the pack's own under `[frame] fog = "pack"`). A pack without `[entity]` is drawn as before, and sees
+none of this stage's names; the rule for new names holds for the stage as for the others.
 
 **What the game draws through the stage so far: entities and block entities** (`kind` 0 and 1). Until a later
 release brings them in, Horizon lights the rest itself, exactly as without the stage: dropped and framed items and
@@ -696,6 +739,9 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `view_epoch` | `u32` | 796 | Changes when the pack's `keep = "view"` resources are cleared, to zeros (`reset_reasons` says why), and is never 0. Only a pack with `[[resource]]` has this field. |
 | `world_epoch` | `u32` | 800 | The same for its `keep = "world"` resources. `view_epoch` changes with it: what clears the world's clears the view's too. Only a pack with `[[resource]]` has this field. |
 | `reset_reasons` | `u32` | 804 | Why an epoch changed this frame: the prelude's `REASON_*` bits ("Kept resources"); 0 when neither did. Only a pack with `[[resource]]` has this field. |
+| `fog_environment` | `vec2<f32>` | 808 | Where the fog of where the camera is starts and where it is full (x, y), in blocks along the straight line from the camera: the dimension's and the biome's, thickened by rain, or that of water, lava, powder snow, blindness, darkness or a boss. Only a pack with `[frame] fog = "pack"` has this field. |
+| `fog_render` | `vec2<f32>` | 816 | Where the render distance's fog starts and where it is full (x, y), in blocks along the larger of the horizontal distance and the height difference from the camera. Only a pack with `[frame] fog = "pack"` has this field. |
+| `moon_phase` | `u32` | 824 | The moon's phase, as Horizon draws the moon: 0 full, 1 waning gibbous, 2 third quarter, 3 waning crescent, 4 new, 5 waxing crescent, 6 first quarter, 7 waxing gibbous. It moves on by one each day. Only a pack whose files name `moon_phase` has this field. |
 
 ## Anti-aliasing
 
@@ -726,8 +772,9 @@ Each `[[options]]` entry sets the WGSL `override` of the same name when the pipe
 
 - 12 post passes, 64 options, `budget.gpu_ms` up to 16.
 - Post targets: 16 `output`s, and 6 render-size `rgba16float` textures of memory with the
-  R-relative kept textures: an `output` takes its `scale`² (1, 0.25 or 0.0625), an R-relative kept texture 2 (its
-  two versions, at any format and scale).
+  R-relative kept textures: an `output` takes its `scale`² (1, 0.25 or 0.0625), an R-relative kept texture its two
+  versions at their size, `2 × scale² × bytes a texel / 8` (`rgba16float` at scale 0.5 takes 0.5, `r32uint` at
+  scale 1 takes 1, `rgba32float` at scale 1 takes 4).
 - 256 KiB per WGSL file, 8 MiB per pack.
 - Per stage: 20000 naga expressions over all its functions, 64 texture reads (samples,
   gathers and loads, the prelude's included).
@@ -739,3 +786,25 @@ installs one, the registry's CI): each stage is parsed and validated by naga, ch
 the rules above, and translated for Vulkan (SPIR-V), Metal and DirectX 12 (HLSL) with its options at their
 defaults, minimums and maximums. Every option must be an `override` of its type in some stage; an `override`
 that is no option needs a default.
+
+## Tables and constants
+
+On Vulkan, a read of a module-level `const` array with an index known only at run time first stores the whole array
+to a temporary, again on each turn of a loop, which can cost milliseconds a frame. Declare such a table
+`var<private> NAME: array<T, N> = array<T, N>(...);`, above all where a loop reads it; a constant index avoids the
+store either way.
+
+In a material, vertex or entity stage, the game can refuse some uses of a `let` bound to a constant vector, matrix or
+struct whose components a later statement reads (`let named = TABLE[1];`, then `max(named.x, named.y)`) when it builds
+the pipeline ("... can't be introduced - it's already in scope"). It is a naga limitation (gfx-rs/wgpu#7793, #9002)
+that may go away. Write `const named = TABLE[1];` or `var named = TABLE[1];` instead, or read `TABLE[1].x` in place.
+
+## Written ray calls
+
+On Vulkan, a driver can build the ray traversal anew for every place a stage's code calls a function that traces
+(`trace` and its kin, or a function of yours that calls them), and each such place can then cost time on every
+pixel, whether the pixel takes it or not. On an RTX 5070 Ti at 2560x1440, twelve more written calls that no
+pixel took added 0.6 to 1.5 ms a frame, more the more the called function traces (0.05 to 0.13 ms a call), and
+putting the one ray call inside a loop that ran once added 0.3 to 0.5 ms over the bare call. Write the call once
+and choose its arguments before it (the origin, the direction, the layers, the distance) instead of writing it
+in each branch.

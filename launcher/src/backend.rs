@@ -2224,6 +2224,8 @@ fn java(
         .map_err(|e| {
         format!("{missing}\n  • Horizon also tried to download Minecraft's own Java from Mojang, but: {e}")
     })?;
+    // On macOS the download's Java home is inside its jre.bundle (#17894).
+    let home = prepare::java::runtime_home(&home).unwrap_or(home);
     find(major, &[home]).map(|jdk| jdk.home())
 }
 
@@ -4008,7 +4010,8 @@ pub use crate::run_leases::control::startup_cleanup;
 
 pub fn prepare_command(cmd: Command) -> Result<(Command, RuntimeGuard), String> {
     crate::developer_offline::validate(&cmd)?;
-    let leases = crate::run_leases::shared(&cmd).map_err(crate::native_mods::cache_error)?;
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut leases = crate::run_leases::shared(&cmd).map_err(crate::native_mods::cache_error)?;
     #[cfg(windows)]
     let cmd = crate::windows_runtime::redirect(cmd);
     #[cfg(windows)]
@@ -4021,6 +4024,9 @@ pub fn prepare_command(cmd: Command) -> Result<(Command, RuntimeGuard), String> 
             ],
         )
     })?;
+    // The staged copy is a new unit: the game can lease it only once it is registered.
+    #[cfg(windows)]
+    leases.extend(crate::windows_runtime::leases(&cmd).map_err(crate::native_mods::cache_error)?);
     Ok((
         cmd,
         RuntimeGuard {

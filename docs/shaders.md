@@ -341,10 +341,11 @@ if input.translucent && frame.has_ray_tracing == 1u {
 }
 ```
 
-- **It costs more per ray.** `material` runs for every terrain fragment drawn, hidden ones included where the depth
-  test hasn't rejected them yet, so a ray there costs more than the same ray in a post pass, which runs once a pixel.
-  Light solid terrain in a post pass (`view_position`, `surface_at`) and keep the material stage's rays for translucent
-  surfaces (`input.translucent`).
+- **Where a ray is paid.** A ray in `material` is paid for every terrain fragment drawn, hidden ones included where
+  the depth test hasn't rejected them yet; a ray in a post pass once a pixel. But a post pass knows only the solid
+  terrain's surface (`surface_at` isn't `present` behind water, glass or entities) and has no albedo, so direct light
+  that must be right there is traced in `material`. With `[material] reads`, a pack can also trace in a compute or
+  `[[before_world]]` pass and apply the result in `material`.
 - **Only `material` itself traces.** `displacement` and the `[vertex]` file run in vertex shaders: the check refuses a
   pack whose `displacement` or `vertex` reaches a trace function.
 - **`trace` passes through water.** A ray from a water surface passes through other water: right for the shore's
@@ -366,10 +367,42 @@ with `compute = true`, and an option's `resets`. A compute file defines `fn comp
 The game runs them. The keys, their limits and the WGSL each pass sees are in the
 [reference](api/shaders-reference-0.2.md#kept-resources-and-compute-passes).
 
+A pack whose kept resources don't fit in video memory is refused when it loads ("its kept resources (N MiB) don't fit
+in video memory"), and the pack that ran keeps running, its resources made again as at a load. R-relative textures
+that don't fit at a new render size stay at the old one, which the log says once, until the size changes again.
+
 Under `[ray_tracing]` a compute or `[[before_world]]` file that calls a trace function gets them, as a post pass does;
 a `[[before_world]]` pass traces this frame's scene. The four trace names are found by name, as in the material
-stage, so under `[ray_tracing]` don't give them to anything of the pack's own. One part comes in a later step: `[material]` can't read kept
-resources.
+stage, so under `[ray_tracing]` don't give them to anything of the pack's own.
+
+`[material] reads` lists the kept resources the terrain reads, as a pass's `reads` does: `x` for this frame's version
+of a texture a `[[before_world]]` pass writes (it runs before the world draws, so the terrain sees what it wrote this
+frame), `x_previous` for last frame's, and a buffer as it is. A `[[post]]` pass writes after the terrain draws, so
+for a texture only it writes, the terrain reads `x_previous`: the check refuses `x`. The material writes none, and
+only `material`'s fragments read them: `displacement` and the `[vertex]` file also draw the shadow map, which gets
+no kept resources, so the check refuses them there. On a frame that clears a resource the terrain reads zeros, or
+what a `[[before_world]]` pass wrote since.
+
+`[entity] reads` and `[sky] reads` work the same way, so mobs, block entities and the sky can use the light the
+terrain gets. The entities and the sky draw after `[[before_world]]` and before `[[post]]`, as the terrain does, and
+read the same versions. Only their fragments read them: the shadow map's entities are Horizon's own draw, with no
+kept resources.
+
+```toml
+[[before_world]]
+file = "light_cache.wgsl"
+dispatch = [65536, 1, 1]
+workgroup = [64, 1, 1]
+writes = ["cache"]
+
+[material]
+file = "material.wgsl"
+reads = ["cache", "trail_previous"]
+
+[entity]
+file = "entity.wgsl"
+reads = ["cache"]
+```
 
 ## Options
 
@@ -448,6 +481,12 @@ open, each pass is timed on the GPU and the overlay shows the pack's total and i
 stage draws in a pass of its own (it shares the world's pass otherwise), so its time includes clearing the picture. The
 material stage runs inside terrain's own draws, so it has no time of its own: compare the frame's GPU time with and
 without the pack.
+
+With F3 shut, offscreen or from a script, `horizon-ctl gpu-passes on` times the same passes: `horizon-ctl bench 5`
+then replies with `shader_passes`, the pack's passes by the names F3 shows, beside `gpu_passes`, Horizon's own, and
+with `gpu`, the whole frame's percentiles (`gpu_ms`, every frame, with `bench 5 raw`; `gpu-passes off` stops it).
+`horizon-client --benchmark` records them as `shader_pass.<scene>.<pass>_ms`, and `horizon-ctl profile client start
+--gpu` into a capture (`horizon-perf query gpu`).
 
 ## Next
 
