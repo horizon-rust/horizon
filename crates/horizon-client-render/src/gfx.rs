@@ -497,6 +497,7 @@ pub mod panorama;
 mod readback;
 mod resident;
 mod reuse;
+mod rt;
 mod screenshot;
 pub use screenshot::{PendingScreenshot, ScreenshotSave};
 mod screenshot_readback;
@@ -1367,8 +1368,8 @@ pub struct Renderer {
     /// Sections upload their solid quads in the compact layout (`mesher::packed`): the solid
     /// passes read the arena themselves (`flat`) and no shader pack reads it as vertices.
     packed_quads: bool,
-    /// The terrain's acceleration structures, with ray tracing on (`ray_scene`).
-    ray_scene: Option<surface_setup::ray_query::ray_scene::RayScene>,
+    /// The terrain's acceleration structures, with ray tracing on (`rt::scene`).
+    ray_scene: Option<rt::scene::RayScene>,
     /// The compact layout is allowed (`HORIZON_PACKED_QUADS`, `set_packed_layout`).
     packed_on: bool,
     /// The visibility buffer for flat frames' solid terrain (`visbuffer`,
@@ -4289,7 +4290,7 @@ impl Renderer {
             last_wait: std::time::Duration::ZERO,
             last_encode: std::time::Duration::ZERO,
             window,
-            ray_scene: surface_setup::ray_query::ray_scene::RayScene::forced(&device),
+            ray_scene: rt::scene::RayScene::forced(&device),
             device,
             reuse,
             queue: submit::Queue::new(queue, submit::wanted()),
@@ -4665,7 +4666,7 @@ impl Renderer {
         pass.draw(0..4, first..first + edges);
     }
     fn quad_indices(device: &wgpu::Device, quads: u32) -> wgpu::Buffer {
-        surface_setup::ray_query::quad_indices(device, quads)
+        rt::query::quad_indices(device, quads)
     }
     fn offscreen_target(
         device: &wgpu::Device,
@@ -7277,7 +7278,15 @@ impl Renderer {
                 views.primary().aspect,
                 views.primary().tan_half_fov,
             ],
-            inverse_view: view.inverse().to_cols_array_2d(),
+            // The sky turns with the view bob and the nausea spin, as the world,
+            // the sun and the clouds do. `GameRenderer.renderLevel` puts both into
+            // the projection the sky is drawn with; without them the sky stands
+            // still while everything else sways.
+            inverse_view: views
+                .primary()
+                .posed_view(pose)
+                .inverse()
+                .to_cols_array_2d(),
             sunrise: frame.sky.sunrise_color,
             sun: [sun.x, sun.y, sun.z, frame.sky.star_brightness],
             fog_ends: [
@@ -7357,11 +7366,11 @@ impl Renderer {
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
         // The sunrise fan as sixteen triangles. Its clip positions use the sky's
-        // own view (no TAA jitter, bob or spin: `fs_sky`'s `view_ray` has none),
+        // own view (no TAA jitter; the bob and the spin, as `fs_sky`'s `view_ray`),
         // and its apex weight interpolates the barycentric the shader used to
         // compute for every sky pixel.
         if frame.sky.sunrise_color[3] > 0.001 && !frame.title && frame.skybox {
-            let sky_view_proj = views.primary().view_proj(Mat4::IDENTITY);
+            let sky_view_proj = views.primary().view_proj(pose);
             let mut mesh = [[0.0f32; 5]; sunrise_fan::VERTICES];
             for (to, from) in mesh
                 .iter_mut()
@@ -9260,7 +9269,7 @@ impl Renderer {
         // its layers, and the entities with its pipelines, which read the pack's frame at group 3.
         let native = self.native.as_ref().filter(|_| !frame.title);
         let material = native.and_then(native_pack::NativePack::terrain_layers);
-        let entity_stage = native.and_then(|n| Some((n.entity.as_ref()?, &n.frame.group)));
+        let entity_stage = native.and_then(|n| n.entities());
         // Without HDR output, the solid shaders without its lighting (`SolidPipeline`).
         let hdr = self.hdr.is_some();
         let solid_pipeline = material.map_or(self.solid.get(hdr), |m| m.solid);
@@ -9406,16 +9415,20 @@ impl Renderer {
                         }
                     }
                     if celestial_vertices > 0 && !pack_draws_celestial {
-                        // The Overworld's bodies start with the sun's quad
-                        // (`Game::celestial_geometry`): a pack sky drawing its own skips it.
-                        let own_sun = !frame.end_sky && self.executor.is_some_and(|c| c.hides_sun);
-                        let first = if own_sun { 6 } else { 0 };
+                        // The Overworld's bodies are the sun's quad and the moon's
+                        // (`Game::celestial_geometry`): a pack sky drawing its own skips one.
+                        let own = |hides: fn(&external::Capabilities) -> bool| {
+                            !frame.end_sky && self.executor.as_ref().is_some_and(hides)
+                        };
+                        let own_sun = own(|c| c.hides_sun);
+                        let own_moon = own(|c| c.hides_moon);
                         // A resource pack's core/sky isn't vanilla's sky times the sky's
                         // lift, which the sun's disc pass assumes: today's add there.
                         let lifted = hdr_gain
                             && self.hdr.as_ref().is_some_and(|h| h.lighting)
                             && !self.core_sky.as_ref().is_some_and(|c| c.draws_disc());
-                        let bodies = first..(celestial_vertices as u32 / 4) * 6;
+                        let quads = &frame.celestial[..celestial_vertices];
+                        let bodies = celestial::bodies(quads, own_sun, own_moon);
                         pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
                         self.celestial.draw_bodies(&mut pass, lifted, bodies);
                     }
@@ -12071,7 +12084,7 @@ mod tests {
                 // occlusion test is appended to gpu_culling.wgsl, on Vulkan alone.
                 continue;
             } else if name == "rt_unpack.wgsl" {
-                // Appended to terrain.wgsl (`ray_scene`'s `Unpacker`), on ray tracing devices.
+                // Appended to terrain.wgsl (`rt::scene`'s `Unpacker`), on ray tracing devices.
                 continue;
             } else if name == "terrain.wgsl"
                 || name == "entity.wgsl"

@@ -72,6 +72,9 @@ waiting in loops, and work someone else had already done. Tests were a small par
   harness where vanilla has nothing to compare (Horizon's own features, performance work).
 - **A red check isn't always yours.** When `verify` fails in a test your change can't reach, say so in the pull
   request and move on; don't hunt it.
+- **Bot reviews are advice.** CodeRabbit is often right and sometimes wrong. Check each finding against the code,
+  the vanilla game and these rules; fix the real ones, answer a wrong one once with the reason, and resolve the
+  thread. A missing or rate-limited bot review blocks nothing.
 - **Unsure about a rule? Finish the work.** Take the reading that lets you finish, and say in the pull request
   which one you took. Don't stop, and don't change direction halfway.
 
@@ -126,6 +129,8 @@ reads `README.md`, `launcher/links.json`, `docs/api/`, `roadmap/roadmap.json` an
 - Test outcomes, not only calls to stubs. Use mocks to isolate behavior, not as the behavior itself.
 - Skip tests of trivial constants, derives and getters, or behavior already covered by another test.
 - One test per changed behaviour is enough. A refactor or a move that changes no behaviour gets no new test.
+- In review, ask for a missing test only when it would catch a real regression, and flag a new test that breaks
+  these rules.
 - Avoid pinning implementation details; a harmless refactor should not break a behavior test.
 - Make slow tests faster without removing cases or weakening their coverage.
 - Never delete parity harnesses or tests that pin vanilla behaviour: they are the spec.
@@ -137,7 +142,7 @@ python3 tools/pr_ready.py                  # the self-check: fmt, clippy -D warn
 python3 tools/pr_ready.py --harnesses      # also the affected harnesses (by default only when you change a harness, oracle, probe or the runner, as in CI)
 cargo test -p horizon-client -p horizon-client-lib --lib --bins --tests   # skips the examples (pr_ready does this); `--doc` separately
 cargo test -p horizon-client-lib --lib mod_content::tests:: -- --ignored   # the slow content-root tests, #[ignore]d; pr_ready runs them when mod content, assets, blocks or items change
-cargo build --profile fast -p horizon-client        # optimized, quick to link: use it to play or run lan_e2e
+cargo build --profile fast -p horizon-game          # optimized, quick to link: use it to play or run lan_e2e
 python3 tools/parity.py --changed origin/main       # the harnesses your branch can affect (CI's parity job)
 python3 tools/parity.py --changed-files paths.txt --list   # which harnesses cover these files, without running them
 python3 tools/parity.py mob_ai sculk       # named harnesses
@@ -251,7 +256,7 @@ When you change how the server and its clients talk (packets, tracking, guests, 
 it there. Other gameplay fixes are covered by their own harness and CI's parity job:
 
 ```sh
-cargo run --profile fast -p horizon-client -- --resources .local/horizon-client/26.3 --world T               # server thread
+cargo run --profile fast -p horizon-game -- --resources .local/horizon-client/26.3 --world T                 # server thread
 python3 tools/lan_e2e.py --check <name>                  # host on its server thread, guest is a server client
 python3 tools/parity.py dedicated_server server_entities server_player_damage
 ```
