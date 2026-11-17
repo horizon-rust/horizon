@@ -3369,7 +3369,7 @@ pub fn appimage_path() -> Option<PathBuf> {
 /// `$APPIMAGE`, if it names a file still there and this binary runs from inside `$APPDIR`. Both
 /// variables reach every child of an AppImage: a launcher a different AppImage's program started
 /// must never take that program's file for its own (an update would overwrite it).
-fn appimage_path_in(
+pub(crate) fn appimage_path_in(
     appimage: Option<&std::ffi::OsStr>,
     appdir: Option<&std::ffi::OsStr>,
     exe: &Path,

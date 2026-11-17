@@ -27,6 +27,18 @@ pub fn folder_for(exe: &Path) -> Option<PathBuf> {
     dir.join(MARKER).is_file().then(|| dir.join(DATA))
 }
 
+/// The file the player started: the AppImage when this launcher (`exe`) runs inside that
+/// AppImage's own mount (`APPDIR`), as self-updates check it ([`crate::backend::appimage_path`]),
+/// so the marker sits beside the AppImage; `exe` otherwise. An `APPIMAGE` inherited from another
+/// AppImage (a file manager or terminal packaged as one) names someone else's folder: ignored.
+pub fn launcher_file(
+    appimage: Option<&std::ffi::OsStr>,
+    appdir: Option<&std::ffi::OsStr>,
+    exe: PathBuf,
+) -> PathBuf {
+    crate::backend::appimage_path_in(appimage, appdir, &exe).unwrap_or(exe)
+}
+
 /// The environment a portable install at `data` sets: the launcher's and the game's folders inside
 /// it, and [`ENV`]. A folder the player already set with its variable stays theirs.
 pub fn environment(data: &Path, set: impl Fn(&str) -> bool) -> Vec<(&'static str, PathBuf)> {
@@ -48,12 +60,15 @@ pub fn apply() {
     if is_on() {
         return;
     }
-    // An AppImage runs a copy inside its read-only mount: the marker sits beside the AppImage.
-    let exe = std::env::var_os("APPIMAGE")
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_exe().ok());
-    let Some(data) = exe.and_then(|exe| folder_for(&exe)) else {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let file = launcher_file(
+        std::env::var_os("APPIMAGE").as_deref(),
+        std::env::var_os("APPDIR").as_deref(),
+        exe,
+    );
+    let Some(data) = folder_for(&file) else {
         return;
     };
     let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
@@ -82,6 +97,32 @@ mod tests {
         std::fs::remove_dir(dir.path().join(MARKER)).unwrap();
         std::fs::write(dir.path().join(MARKER), "").unwrap();
         assert_eq!(folder_for(&exe), Some(dir.path().join("data")));
+    }
+
+    #[test]
+    fn only_the_appimage_the_launcher_runs_from_can_make_it_portable() {
+        let dir = tempfile::tempdir().unwrap();
+        let usb = dir.path().join("usb");
+        std::fs::create_dir(&usb).unwrap();
+        let appimage = usb.join("horizon-launcher.AppImage");
+        std::fs::write(&appimage, "").unwrap();
+        std::fs::write(usb.join(MARKER), "").unwrap();
+        let ours = dir.path().join("mount_ours");
+        let exe = ours.join("usr/bin/horizon-launcher");
+        // Started from that AppImage: its mount holds the launcher, so the marker beside it counts.
+        let file = launcher_file(Some(appimage.as_os_str()), Some(ours.as_os_str()), exe);
+        assert_eq!(folder_for(&file), Some(usb.join("data")));
+        // A launcher installed elsewhere, started from another AppImage (a file manager packaged
+        // as one) that set APPIMAGE and APPDIR for its own mount: never portable through it.
+        let installed = dir.path().join("home/bin/horizon-launcher");
+        let other_mount = dir.path().join("mount_files");
+        let file = launcher_file(
+            Some(appimage.as_os_str()),
+            Some(other_mount.as_os_str()),
+            installed.clone(),
+        );
+        assert_eq!(file, installed);
+        assert_eq!(folder_for(&file), None);
     }
 
     #[test]
