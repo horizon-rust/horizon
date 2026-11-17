@@ -215,11 +215,17 @@ struct WorkerShared {
     wake: Condvar,
     /// Replies sampled, for [`Service::deliver`].
     done: Mutex<Vec<(u32, Vec<u8>)>>,
-    tiles: Mutex<TileCache>,
+    tiles: Mutex<Tiles>,
+    biome_names: Arc<Vec<String>>,
+}
+/// The tiles kept and the ones being sampled, under one lock: a request
+/// either finds the tile kept or joins its sampling, and a tile's changes
+/// are checked as it is kept.
+struct Tiles {
+    kept: TileCache,
     /// The tiles being sampled, with the players who asked for one of them
     /// meanwhile (connection and request id): they get its reply too.
-    sampling: Mutex<HashMap<Sampling, Vec<(u32, u32)>>>,
-    biome_names: Arc<Vec<String>>,
+    sampling: HashMap<Sampling, Vec<(u32, u32)>>,
 }
 /// A tile being sampled: its level, its source's address and the request's
 /// shape.
@@ -236,8 +242,10 @@ impl Worker {
             queue: Mutex::default(),
             wake: Condvar::new(),
             done: Mutex::default(),
-            tiles: Mutex::new(TileCache::new(cache::MAX_BYTES)),
-            sampling: Mutex::default(),
+            tiles: Mutex::new(Tiles {
+                kept: TileCache::new(cache::MAX_BYTES),
+                sampling: HashMap::new(),
+            }),
             biome_names,
         });
         let threads = (0..threads.max(1))
@@ -271,17 +279,6 @@ impl WorkerShared {
             HashMap::new();
         while let Some(job) = self.next(helper) {
             let r = job.request;
-            let kept = {
-                let mut tiles = lock(&self.tiles);
-                if let Some(save) = &job.save {
-                    tiles.follow(&job.level, &job.source, save);
-                }
-                tiles.get(&job.level, &job.source, &r)
-            };
-            if let Some(reply) = kept {
-                lock(&self.done).push((job.conn, reply));
-                continue;
-            }
             let key: Sampling = (
                 job.level.clone(),
                 Arc::as_ptr(&job.source) as *const () as usize,
@@ -290,14 +287,25 @@ impl WorkerShared {
                 r.stride,
                 r.approximate,
             );
-            match lock(&self.sampling).entry(key.clone()) {
-                // Another thread samples it: its reply answers this one too.
-                std::collections::hash_map::Entry::Occupied(mut waiting) => {
-                    waiting.get_mut().push((job.conn, r.id));
+            {
+                let mut tiles = lock(&self.tiles);
+                if let Some(save) = &job.save {
+                    tiles.kept.follow(&job.level, &job.source, save);
+                }
+                if let Some(reply) = tiles.kept.get(&job.level, &job.source, &r) {
+                    drop(tiles);
+                    lock(&self.done).push((job.conn, reply));
                     continue;
                 }
-                std::collections::hash_map::Entry::Vacant(free) => {
-                    free.insert(Vec::new());
+                match tiles.sampling.entry(key.clone()) {
+                    // Another thread samples it: its reply answers this one too.
+                    std::collections::hash_map::Entry::Occupied(mut waiting) => {
+                        waiting.get_mut().push((job.conn, r.id));
+                        continue;
+                    }
+                    std::collections::hash_map::Entry::Vacant(free) => {
+                        free.insert(Vec::new());
+                    }
                 }
             }
             // The save's changes from here: one over the tile while it is
@@ -330,12 +338,18 @@ impl WorkerShared {
                 samplers.remove(&job.level);
                 refusal(r.id)
             });
-            let changed = (job.save.as_ref().zip(start))
-                .is_some_and(|(save, start)| cache::changed_under(save, start, &r));
-            if sampled && !changed {
-                lock(&self.tiles).put(&job.level, &job.source, &r, &reply);
-            }
-            let waiting = lock(&self.sampling).remove(&key).unwrap_or_default();
+            let waiting = {
+                let mut tiles = lock(&self.tiles);
+                // Under the lock `follow` takes: a change it hasn't taken
+                // off the kept tiles is either seen here or comes after the
+                // tile is kept, and the next `follow` takes it off.
+                let changed = (job.save.as_ref().zip(start))
+                    .is_some_and(|(save, start)| cache::changed_under(save, start, &r));
+                if sampled && !changed {
+                    tiles.kept.put(&job.level, &job.source, &r, &reply);
+                }
+                tiles.sampling.remove(&key).unwrap_or_default()
+            };
             let mut done = lock(&self.done);
             for (conn, id) in waiting {
                 done.push((conn, cache::with_id(&reply, r.id, id)));
