@@ -715,11 +715,23 @@ mod tests {
         }
     }
 
+    /// Opens its gate when dropped: a failed assertion doesn't leave the
+    /// worker's threads blocked in `Gated` while the service joins them.
+    struct Opens(Arc<Gate>);
+    impl Drop for Opens {
+        fn drop(&mut self) {
+            lock(&self.0.state).0 = true;
+            self.0.changed.notify_all();
+        }
+    }
+
     #[test]
     fn a_second_thread_samples_only_once_a_tile_waited_too_long() {
         let now = Instant::now();
         let mut service = Service::new(64, 2, Vec::new());
         let gate = Arc::new(Gate::default());
+        // Dropped before the service, also as a failed assertion unwinds.
+        let opens = Opens(gate.clone());
         let source: Arc<dyn LodSource> = Arc::new(Gated(gate.clone()));
         let push = |service: &mut Service, id: u32| {
             let Verdict::Serve(request) =
@@ -755,8 +767,7 @@ mod tests {
         // The second thread takes it, but only once it has waited too long.
         assert_eq!(sampling(2), 2);
         assert!(pushed.elapsed() >= BEHIND);
-        lock(&gate.state).0 = true;
-        gate.changed.notify_all();
+        drop(opens);
         assert_eq!(replies(&mut service, 2).len(), 2);
     }
 
