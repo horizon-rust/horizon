@@ -5,18 +5,18 @@
 //! a flat third each. The float itself is drawn whenever the scale is below
 //! 2, whatever the multiplier (vanilla's `&&` tests it after the `nextInt`),
 //! and never at scale 2.
-use super::super::spawning::{self, BiomeFacts, LocalDifficulty};
+use super::super::spawning::{LocalDifficulty, tests::run_finalize};
 use super::super::world::with_test_world;
 use super::super::{Mob, MobTypes};
 use horizon_core::{
     geometry::Vec3,
-    random::{EntityRandom, LegacyRandom, RandomSource},
+    random::{LegacyRandom, RandomSource},
 };
 use std::sync::Arc;
 
 fn cube(types: &MobTypes, id: &str, seed: i64) -> Mob {
     let mut m = Mob::new(1, Arc::new(types.types[id].clone()), Vec3::ZERO, 0.0);
-    m.random = EntityRandom::own(LegacyRandom::new(seed));
+    m.random = horizon_core::random::EntityRandom::own(LegacyRandom::new(seed));
     m
 }
 /// Hard, a long-played area, full moon: `calculateDifficulty` gives
@@ -30,6 +30,7 @@ fn none() -> LocalDifficulty {
 }
 
 #[test]
+#[ignore = "daily"]
 fn the_difficulty_bonus_makes_bigger_slimes_and_magma_cubes() {
     let ran = with_test_world(&[], |_w, types| {
         assert_eq!(full().special(), 1.0);
@@ -39,7 +40,7 @@ fn the_difficulty_bonus_makes_bigger_slimes_and_magma_cubes() {
             let trials = 3000;
             for seed in 0..i64::from(trials) {
                 let mut m = cube(types, id, seed);
-                spawning::finalize(&mut m, &BiomeFacts::default(), &full());
+                run_finalize(&mut m, full());
                 match m.extra.size {
                     1 => one += 1,
                     2 => two += 1,
@@ -61,7 +62,7 @@ fn the_difficulty_bonus_makes_bigger_slimes_and_magma_cubes() {
             let (mut one, mut two, mut four) = (0, 0, 0);
             for seed in 0..i64::from(trials) {
                 let mut m = cube(types, id, seed);
-                spawning::finalize(&mut m, &BiomeFacts::default(), &none());
+                run_finalize(&mut m, none());
                 match m.extra.size {
                     1 => one += 1,
                     2 => two += 1,
@@ -78,10 +79,11 @@ fn the_difficulty_bonus_makes_bigger_slimes_and_magma_cubes() {
             }
         }
     });
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }
 
 #[test]
+#[ignore = "daily"]
 fn the_bonus_float_is_drawn_once_at_the_end_and_only_below_scale_two() {
     let ran = with_test_world(&[], |_w, types| {
         let mut bumped = 0;
@@ -93,10 +95,12 @@ fn the_bonus_float_is_drawn_once_at_the_end_and_only_below_scale_two() {
                 let mut reference = LegacyRandom::new(seed);
                 let scale = reference.next_int_bound(3).unwrap();
                 let roll = (scale < 2).then(|| reference.next_float());
+                // `setSpawnSize` draws from the level's random.
                 let mut m = cube(types, "minecraft:slime", seed);
-                super::finalize(&mut m, multiplier);
+                let mut level = LegacyRandom::new(seed);
+                super::finalize(&mut m, multiplier, &mut level);
                 assert_eq!(
-                    m.random.state(),
+                    level.state(),
                     reference.state(),
                     "seed {seed}, multiplier {multiplier}"
                 );
@@ -116,5 +120,5 @@ fn the_bonus_float_is_drawn_once_at_the_end_and_only_below_scale_two() {
         }
         assert!((8..32).contains(&bumped), "bumped {bumped} of 64");
     });
-    let _ = ran;
+    assert!(ran, "vanilla data is missing");
 }

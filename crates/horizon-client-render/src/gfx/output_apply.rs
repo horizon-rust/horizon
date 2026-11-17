@@ -89,7 +89,8 @@ fn name(encoding: Option<hdr::Output>) -> &'static str {
 }
 
 /// The swapchain's configuration for `encoding`: `config` (what every pipeline draws in), or
-/// HDR10 or scRGB.
+/// HDR10 or scRGB, which HDR output's last pass draws, or frame generation's present thread
+/// copies to where the surface takes copies.
 pub(super) fn surface_config(
     config: &wgpu::SurfaceConfiguration,
     encoding: Option<hdr::Output>,
@@ -99,7 +100,8 @@ pub(super) fn surface_config(
         config.format = output.format();
         config.view_formats = vec![output.format()];
         config.color_space = output.color_space();
-        config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        config.usage =
+            wgpu::TextureUsages::RENDER_ATTACHMENT | config.usage & wgpu::TextureUsages::COPY_DST;
     }
     config
 }
@@ -235,17 +237,19 @@ impl Present for Applying<'_> {
             _ => None,
         };
         if let Some(surface) = &r.surface {
-            r.frame_gen.stop();
+            r.frame_gen.stop_to_configure();
             // The submit thread may still present to the old swapchain.
             r.queue.wait();
             let hdr = built.as_ref().or(r.hdr.as_ref());
-            Renderer::configure(
+            let configured = Renderer::configure(
                 &r.device,
                 surface,
                 &surface_config(&r.config, output.encoding),
                 hdr.filter(|_| output.encoding.is_some()),
                 &r.device_lost,
-            )?;
+            );
+            r.frame_gen.refused = configured.is_err();
+            configured?;
             r.surface_unconfigured = false;
         }
         if output.encoding.is_none() {
@@ -261,7 +265,7 @@ impl Present for Applying<'_> {
         r.hdr = None;
         r.mark_hdr_start(false, self.marker);
         if let Some(surface) = &r.surface {
-            r.frame_gen.stop();
+            r.frame_gen.stop_to_configure();
             r.queue.wait();
             r.surface_unconfigured =
                 Renderer::configure(&r.device, surface, &r.config, None, &r.device_lost).is_err();
@@ -386,8 +390,8 @@ impl Renderer {
     }
 
     /// Whether this renderer's frame is the one a renderer made now would draw in
-    /// (`requested_frame`). Under `HORIZON_HDR_FRAME=float` the game makes the renderer again
-    /// when it isn't (docs/design/hdr-linear-light.md, "When it changes"), and the new one
+    /// (`requested_frame`). The game makes the renderer again when it
+    /// isn't (docs/design/hdr-linear-light.md, "When it changes"), and the new one
     /// takes this one's world (`take_world`).
     pub fn frame_follows(
         &self,
@@ -488,7 +492,8 @@ mod tests {
     const NO_PACK: FrameRequest = FrameRequest {
         linear_pack: false,
         linear_blend: false,
-        hdr_float: true,
+        ray_tracing: false,
+        shaders_pack: false,
     };
     fn on() -> Graphics {
         Graphics {
@@ -691,7 +696,7 @@ mod tests {
         /// What the system reports when it is read, and when (ms) it was.
         report: DisplayReading,
         reads: Vec<u64>,
-        /// The game follows the frame (`HORIZON_HDR_FRAME=float`): the frames it made the
+        /// The game follows the frame: the frames it made the
         /// renderer again for. `None`: the renderer keeps the frame it was made with.
         made: Option<Vec<output::FrameConfiguration>>,
     }

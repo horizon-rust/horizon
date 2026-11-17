@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The crates a pull request's `cargo test` must cover, for GITHUB_OUTPUT.
+"""The crates a branch's `cargo test` must cover (tools/check_changed.py; CI's verify tests the whole workspace).
 
 Prints `packages=-p a -p b ...`, or `packages=` when the whole workspace must run (main and nightly never call this).
 A package is selected when a changed file is in its directory, when it depends (normal, dev or build) on a selected one,
@@ -10,6 +10,7 @@ A change outside every package directory, such as Cargo.lock, .github/ or tools/
 import argparse
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -25,18 +26,32 @@ from tools.ci.rust_changes import changed_paths  # noqa: E402
 # tests/test_ci_test_scope.py scans crates/ and xtask/ and fails on a read missing here. Entries outside every package
 # directory only document the read: a change there selects the whole workspace.
 HORIZON_CLIENT = [
-    # The build script's generator and native_hooks_tests read the hook targets' sources and the catalog.
+    # The build script and the native hook tests read the hook targets' sources.
     "crates/horizon-client-render/src", "crates/horizon-world/src", "crates/horizon-items/src",
-    "docs/api/launch-reference.md", "docs/horizon-ctl-commands.md", "docs/parity/random-chance-seeded.jsonl",
-    "native-hooks.json", "tools/native-hook-fragments", "packaging/windows/exe.rs", "research-lock.json",
-    "tests/fixtures",
+    "crates/horizon-guest-stack/src/guest_stack_constants.rs", "crates/horizon-mod-wasm/tests/fixture/src",
+    "docs/api/launch-reference.md", "docs/horizon-ctl-commands.md", "docs/modding/examples/src/worldgen.rs",
+    "docs/parity/random-chance-seeded.jsonl", "packaging/executable_link.rs", "packaging/windows/exe.rs",
+    "research-lock.json", "tests/fixture_support/item_resource_properties.rs", "tests/fixtures",
+    # shader_packs.rs tests load the sample pack.
+    "crates/horizon-shader-api/packs/traced_shadows",
+    # The registered slot-source test loads its pack and program.
+    "tools/fixtures/registered_slot_sources",
 ]
+# The generator scans these to write the mod API, the points and the host boundary: its own sources, the vocabulary, the
+# engine crates holding hook targets and their manifests.
 MOD_API_GEN = [
-    "native-hooks.json", "tools/native-hook-fragments",
-    "crates/horizon-client/src", "crates/horizon-client-render/src", "crates/horizon-world/src",
+    "Cargo.lock", "crates/horizon-assets/src", "crates/horizon-client", "crates/horizon-client-core/src",
+    "crates/horizon-client-render", "crates/horizon-core/src", "crates/horizon-engine-slots", "crates/horizon-items",
+    "crates/horizon-mod-api", "crates/horizon-mod-api-macros/src/lib.rs", "crates/horizon-mod-package/src",
+    "crates/horizon-mod-render", "crates/horizon-mod-runtime/src", "crates/horizon-mod-vocab/behaviours",
+    "crates/horizon-mod-vocab/src", "crates/horizon-world", "packaging/executable_link.rs",
+    "tools/layering/mod_vocab_state.json",
 ]
 READERS = {
-    "cargo-horizon-mod": ["crates/horizon-mods/tests/index"],
+    "cargo-horizon-mod": [
+        "Cargo.lock", "crates/horizon-mod-api", "crates/horizon-mod-package/src/sdk/fixture.tar.xz",
+        "crates/horizon-mod-package/tests/index", "docs/modding/src/how-to/native-mods.md", "tools/ci/rust-version",
+    ],
     "horizon-client": HORIZON_CLIENT,
     # Shares horizon-client's sources, so its unit tests run the same reads.
     "horizon-client-lib": HORIZON_CLIENT,
@@ -45,29 +60,58 @@ READERS = {
     "horizon-client-render": [
         "crates/horizon-client/assets/horizon/lang", "crates/horizon-client/assets/horizon/textures/gui",
     ],
+    # The daily Character comparator reads the original public-JDK API helper.
+    "horizon-core": ["tools/JavaCharacterTables.java"],
+    # The build scripts hand the repository root to the generator.
+    "horizon-engine-slots": MOD_API_GEN,
+    "horizon-game": ["packaging/windows/exe.rs"],
+    # Shared source-only module discovery reads the game's declarations and vocabulary export fragments.
+    "horizon-game-discovery": ["crates/horizon-client/src", "crates/horizon-mod-vocab/src"],
+    # The shared guest-stack tests read the sources that use its constants, and the jobs they wait on.
+    "horizon-guest-stack": ["crates/horizon-client/src", "crates/horizon-threads/src"],
+    "horizon-mod-api": MOD_API_GEN,
     "horizon-mod-api-gen": MOD_API_GEN,
     "horizon-mod-api-gen-tests": MOD_API_GEN,
+    "horizon-mod-package": [
+        "Cargo.lock", "docs/modding/src/how-to/native-mods/07-local-developer-builds.md",
+        "tools/mixins/narrow-reference-rule.patch",
+    ],
+    "horizon-mod-points": MOD_API_GEN,
+    "horizon-mod-render": MOD_API_GEN,
+    "horizon-mod-wasm": [*MOD_API_GEN, "crates/horizon-guest-stack/src/guest_stack_constants.rs"],
+    "horizon-mod-wasm-wire-loopback": [
+        *MOD_API_GEN, "crates/horizon-guest-stack/src/guest_stack_constants.rs", "crates/horizon-mod-wasm/src/prepared.rs",
+        "crates/horizon-mod-wasm/tests/fixture/src", "crates/horizon-mod-wasm/tests/support",
+    ],
     "horizon-official": ["packaging/windows/exe.rs"],
     "horizon-perf": ["crates/horizon-perf-format/tests/fixtures", "tests/fixtures/pacing_slow_frames.hzperf"],
-    "horizon-port-pack": ["docs/modpacks/atm10-mods.csv", "native-hooks.json"],
+    "horizon-port-pack": ["docs/modpacks/atm10-mods.csv"],
     "horizon-prepare": [
-        "crates/horizon-client/src/game/launch_api.rs", "mods/horizon/src/test/java", "research-lock.json",
+        "crates/horizon-client/src/game/runtime/launch_api.rs", "mods/horizon/src/test/java", "research-lock.json",
     ],
     "horizon-release-sign": ["tools/ci/sign_native_build.sh", "tools/ci/sign_release.sh"],
-    "horizon-server": ["crates/horizon-theme/fonts", "crates/horizon-theme/icons", "docs/api/server-reference.md"],
-    "horizon-shader-api": ["docs/api/shaders-reference.md", "docs/api/shaders-reference-0.2.md"],
+    "horizon-server": [
+        "crates/horizon-theme/fonts", "crates/horizon-theme/icons", "docs/api/server-reference.md",
+        "packaging/executable_link.rs",
+    ],
+    "horizon-shader-api": ["docs/api/shaders-reference-0.2.md"],
     "horizon-world": ["crates/horizon-core", "Cargo.lock"],
     # Commands (tokens, icons, package), not tests: listed so the scan finds nothing unexplained.
     "xtask": [
-        "crates/horizon-perf/web", "crates/horizon-prepare", "crates/horizon-theme", "docs/media/brand",
-        "mods/horizon/src/test/java", "native-hooks.json", "packaging", "research-lock.json", "tools",
+        "crates/horizon-client/src", "crates/horizon-mod-vocab/src/hooks", "crates/horizon-perf/web",
+        "crates/horizon-prepare", "crates/horizon-theme", "docs/media/brand", "mods/horizon/src/test/java", "packaging",
+        "research-lock.json", "tools",
     ],
 }
 # What a package's tests only read at run time and nothing else uses: the package is selected, its dependents are not.
 # horizon-client-core's lang.rs tests read the sources of every crate for the language keys the code names.
 SCANNED = {"horizon-client-core": ["crates"]}
 # Literals the scan takes for a walk up to crates/ that are not one (a ".." among path-traversal checks).
-NOT_READS = {"horizon-client": {"crates"}, "horizon-client-lib": {"crates"}, "horizon-prepare": {"crates"}}
+# "machines/.." in a test's sample paths, "mods/" in an instance's file names: no read either.
+NOT_READS = {
+    "horizon-client": {"crates"}, "horizon-client-lib": {"crates"}, "horizon-mod-package": {"crates"},
+    "horizon-mod-vocab": {"."}, "horizon-port-pack": {"mods"}, "horizon-prepare": {"crates"},
+}
 
 
 def under(path, folder):
@@ -79,7 +123,8 @@ class Workspace:
         root = metadata["workspace_root"]
 
         def relative(path):
-            return os.path.relpath(os.path.normpath(path), root)
+            # Repository paths in `/` form on every platform, as git and under() name them.
+            return Path(os.path.relpath(os.path.normpath(path), root)).as_posix()
 
         names = [package["name"] for package in metadata["packages"]]
         home = {p["name"]: relative(os.path.dirname(p["manifest_path"])) for p in metadata["packages"]}
@@ -89,7 +134,7 @@ class Workspace:
                 source = relative(target["src_path"])
                 # horizon-client-lib builds horizon-client's files: all of that package's folder counts.
                 folder = max((d for d in home.values() if under(source, d)), key=len, default=None)
-                self.dirs[package["name"]].add(folder or os.path.dirname(source))
+                self.dirs[package["name"]].add(folder or posixpath.dirname(source))
         self.home = home
         self.dependents = {name: set() for name in names}
         for package in metadata["packages"]:
@@ -145,7 +190,7 @@ def reads(workspace):
     "../.." in a file with CARGO_MANIFEST_DIR is the repository root or crates/, reported as "." or "crates".
     """
     tracked = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
-    known = {"."} | {t for path in tracked if path for t in [path, *map(str, Path(path).parents)]}
+    known = {"."} | {t for path in tracked if path for t in [path, *(p.as_posix() for p in Path(path).parents)]}
     found = {}
     for file in tracked:
         owners = workspace.owners(file) if file.endswith(".rs") else ()
@@ -161,12 +206,12 @@ def reads(workspace):
                     continue
                 if ROOT_JOIN.match(literal):
                     # A walk up from the manifest folder: the repository root, or crates/ for its siblings.
-                    candidates = {os.path.normpath(os.path.join(home, stripped))} & {".", "crates"} if manifest else set()
+                    candidates = {posixpath.normpath(posixpath.join(home, stripped))} & {".", "crates"} if manifest else set()
                     candidates = {c for c in candidates if c != home}
                 elif stripped.strip("./"):
-                    candidates = {os.path.normpath(os.path.join(base, stripped)) for base in (home, os.path.dirname(file))}
+                    candidates = {posixpath.normpath(posixpath.join(base, stripped)) for base in (home, posixpath.dirname(file))}
                     if "/" in literal and not literal.startswith(".") or literal in ROOT_FILES:
-                        candidates.add(os.path.normpath(stripped))
+                        candidates.add(posixpath.normpath(stripped))
                     candidates = {c for c in candidates if c in known and not c.startswith("..")
                                   and not any(under(c, d) or under(d, c) for d in workspace.dirs[name])}
                 else:
