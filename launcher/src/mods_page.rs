@@ -299,7 +299,11 @@ impl Mods {
 /// The indices of `results` to list: with Show everything off, what doesn't run in Horizon
 /// stays out. A Modrinth mod's verdict comes from its jar check after the search, so the search
 /// alone can't leave these out; `results` keeps every row, as paging counts on it.
-fn shown(results: &[Project], everything: bool, support: impl Fn(&Project) -> Support) -> Vec<usize> {
+fn shown(
+    results: &[Project],
+    everything: bool,
+    support: impl Fn(&Project) -> Support,
+) -> Vec<usize> {
     (0..results.len())
         .filter(|&i| everything || support(&results[i]).installable())
         .collect()
