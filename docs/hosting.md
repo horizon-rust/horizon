@@ -417,6 +417,11 @@ chunks themselves take (about 9 MB); deleting the folder only makes them be writ
 older summaries kept (a world that had them from an earlier Horizon keeps their files' size until then).
 Vanilla clients never hear of it.
 
+A world opened to LAN can do the same for its Horizon guests: turn on Options → Horizon Extras → World → Far
+terrain for LAN guests (off by default, for the same seed reason) before opening the world. Guests then get
+their far terrain from it out to the host's own LOD Distance (128 chunks when the host's is off), with the
+limits above.
+
 `horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600) into
 `reports/profile-<time>Z.hzperf`, a capture the performance tools read ([perf-platform.md](perf-platform.md)), and
 prints a short summary (TPS, MSPT, CPU, memory, players and the heaviest tick phases) and where it went. On the console it is `horizon-report [SECONDS]`; `horizon-report stop` ends it now and

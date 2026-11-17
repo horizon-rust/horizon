@@ -1002,6 +1002,12 @@ impl Game<'_> {
                 .then(|| translatable("multiplayer.disconnect.not_whitelisted", &[]))
             })),
             levels: self.level_shapes,
+            // Horizon guests' far terrain, once it is open to LAN: off unless
+            // the host turned it on (it shows land that helps find the seed).
+            lod_distance: horizon_client::lod_net::lan_distance(
+                self.settings.extras.lan_far_terrain,
+                self.settings.horizon.lod_distance,
+            ),
             owner_profile: launch.owner_profile.clone(),
             // `IntegratedServer.getSingleplayerProfile`: the window's own player logs in
             // through memory as the account's profile, whatever the hello says.

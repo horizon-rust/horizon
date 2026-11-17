@@ -11,6 +11,8 @@
   "horizon.extras.header.world": "World",
   "horizon.extras.pregen": "Chunk pregeneration",
   "horizon.extras.pregen.tooltip": "Enables /pregen in your single-player and LAN worlds. With cheats enabled, use /pregen start to generate an area before exploring it. Does not enable the command on servers you join.",
+  "horizon.extras.lan_far_terrain": "Far terrain for LAN guests",
+  "horizon.extras.lan_far_terrain.tooltip": "Horizon players who join your world once it is open to LAN get their far terrain from it, out to your own LOD Distance (128 chunks when yours is off). Far terrain shows your world's land far past the view distance, which helps them find its seed. Applies to worlds opened after you turn it on.",
   "horizon.options.controller": "Controller",
   "horizon.options.three_d_skin_layers": "3D Skin Layers",
   "horizon.options.vibration": "Vibration",

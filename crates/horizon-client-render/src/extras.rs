@@ -29,6 +29,10 @@ pub struct Extras {
     pub pack_browser: bool,
     /// Make /pregen available in single-player and hosted LAN worlds.
     pub pregen: bool,
+    /// Offer far terrain to Horizon guests of a world opened to LAN
+    /// (`lod_net`), read when a world opens. Off: it shows the world's land
+    /// far past the view distance, which helps find the seed.
+    pub lan_far_terrain: bool,
     pub fullbright: bool,
     /// Held, dropped and burning light sources light their surroundings (`dynamic_light`).
     pub dynamic_lights: bool,
@@ -140,6 +144,7 @@ impl Default for Extras {
         Self {
             pack_browser: false,
             pregen: false,
+            lan_far_terrain: false,
             fullbright: false,
             dynamic_lights: false,
             zoom: false,
@@ -212,6 +217,7 @@ impl Extras {
             match key.trim() {
                 "packBrowser" => e.pack_browser = flag(e.pack_browser),
                 "pregen" => e.pregen = flag(e.pregen),
+                "lanFarTerrain" => e.lan_far_terrain = flag(e.lan_far_terrain),
                 "fullbright" => e.fullbright = flag(e.fullbright),
                 "dynamicLights" => e.dynamic_lights = flag(e.dynamic_lights),
                 "zoom" => e.zoom = flag(e.zoom),
@@ -300,9 +306,10 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nskipModdedSplashesIfVanillaModified:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\n{}:{}\n",
+            "packBrowser:{}\npregen:{}\nlanFarTerrain:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nskipModdedSplashesIfVanillaModified:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\n{}:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.pregen),
+            bool_text(self.lan_far_terrain),
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -535,6 +542,8 @@ pub enum Item {
     /// The Select Resource Packs screen's Add button (Modrinth).
     PackBrowser,
     Pregen,
+    /// Far terrain for the guests of a world opened to LAN.
+    LanFarTerrain,
     /// On the PvP & HUD page (`pvp::rows`).
     Pvp(crate::pvp::Opt),
 }
@@ -558,6 +567,7 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(ChatIndicator),
         Err("horizon.extras.header.world"),
         Ok(Pregen),
+        Ok(LanFarTerrain),
         Err("horizon.extras.header.multiplayer"),
         Ok(AutoReconnect),
         Err("horizon.extras.header.sound"),
@@ -592,6 +602,7 @@ impl Item {
             Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_settings",
             Item::PackBrowser => "horizon.extras.pack_browser",
             Item::Pregen => "horizon.extras.pregen",
+            Item::LanFarTerrain => "horizon.extras.lan_far_terrain",
             Item::Pvp(o) => o.caption_key(),
         }
     }
@@ -618,6 +629,7 @@ impl Item {
             Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_list_settings.tooltip",
             Item::PackBrowser => "horizon.extras.pack_browser.tooltip",
             Item::Pregen => "horizon.extras.pregen.tooltip",
+            Item::LanFarTerrain => "horizon.extras.lan_far_terrain.tooltip",
             Item::Pvp(o) => o.description_key(),
         }
     }
@@ -653,6 +665,7 @@ impl Item {
             Item::WheelCyclesSettings => "Scroll wheel changes settings",
             Item::PackBrowser => "Resource pack browser",
             Item::Pregen => "Chunk pregeneration",
+            Item::LanFarTerrain => "Far terrain for LAN guests",
             Item::Pvp(o) => o.caption(),
         }
     }
@@ -667,7 +680,7 @@ impl Item {
             Pvp(o) => return o.parent().map(Pvp),
             Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
             | AutoReconnect | NoAi | AgentControl | ReproKeys | Splitscreen | ChatAnimation
-            | WheelCyclesSettings | MusicPage | PackBrowser | Pregen => {
+            | WheelCyclesSettings | MusicPage | PackBrowser | Pregen | LanFarTerrain => {
                 return None;
             }
         })
@@ -677,6 +690,9 @@ impl Item {
         match self {
             Item::Pregen => {
                 "Enables /pregen in your single-player and LAN worlds. With cheats enabled, use /pregen start to generate an area before exploring it. Does not enable the command on servers you join."
+            }
+            Item::LanFarTerrain => {
+                "Horizon players who join your world once it is open to LAN get their far terrain from it, out to your own LOD Distance (128 chunks when yours is off). Far terrain shows your world's land far past the view distance, which helps them find its seed. Applies to worlds opened after you turn it on."
             }
             Item::Fullbright => "Show blocks and entities at full light, even in dark areas.",
             Item::DynamicLights => {
@@ -776,6 +792,7 @@ impl Item {
             Item::WheelCyclesSettings => e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser,
             Item::Pregen => e.pregen,
+            Item::LanFarTerrain => e.lan_far_terrain,
             Item::Pvp(o) => return o.switch(&e.pvp),
             _ => return None,
         })
@@ -814,6 +831,7 @@ impl Item {
             Item::WheelCyclesSettings => e.wheel_cycles_settings = !e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser = !e.pack_browser,
             Item::Pregen => e.pregen = !e.pregen,
+            Item::LanFarTerrain => e.lan_far_terrain = !e.lan_far_terrain,
             Item::Pvp(o) => o.cycle(&mut e.pvp, back),
             Item::SortKey => {}
         }
