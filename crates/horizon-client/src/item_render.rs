@@ -863,6 +863,25 @@ impl ItemRenderer {
             cit,
         })
     }
+    /// Bakes ahead every model a pack's own item definitions (outside the `minecraft` namespace) name
+    /// directly, with its corners: vanilla bakes every model when it loads a pack, so the first time
+    /// one shows nothing stops to bake it (a server's large models, its railway's, took seconds).
+    pub fn bake_pack_models(&self) {
+        let names: Vec<String> = self
+            .models
+            .definitions
+            .iter()
+            .filter(|(id, _)| !id.starts_with("minecraft:"))
+            .filter_map(|(_, item)| match &item.model {
+                horizon_assets::item_model::ItemModelNode::Model(leaf) => Some(leaf.model.clone()),
+                _ => None,
+            })
+            .collect();
+        for name in names {
+            let baked = self.bake(&name);
+            self.quad_extents(&name, &baked);
+        }
+    }
     /// `ModelBakery` item baking, cached per model.
     pub fn bake(&self, model: &str) -> Arc<BakedItemModel> {
         self.baked_with(model, || {
@@ -1422,6 +1441,51 @@ mod tests {
         };
         assert_eq!(models("loadtest:item/a"), ["loadtest:item/a"]);
         assert_eq!(models("loadtest:item/b"), ["loadtest:item/b"]);
+    }
+
+    /// A pack's own item models are baked with their corners before anything draws them, as
+    /// vanilla bakes every model when it loads the pack; the `minecraft` namespace's aren't.
+    #[test]
+    fn a_packs_own_item_models_are_baked_ahead() {
+        let root = std::env::temp_dir().join(format!("horizon-bake-ahead-{}", std::process::id()));
+        let write = |name: &str, data: &str| {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, data).unwrap();
+        };
+        write("items.json", "{}");
+        write(
+            "assets/minecraft/atlases/items.json",
+            r#"{"sources":[{"type":"single","resource":"track:item/rail"}]}"#,
+        );
+        super::glint_tests::png(
+            &root.join("assets/track/textures/item/rail.png"),
+            16,
+            16,
+            [90, 90, 90, 255],
+        );
+        write(
+            "assets/track/items/rail.json",
+            r#"{"model":{"type":"minecraft:model","model":"track:item/rail"}}"#,
+        );
+        write(
+            "assets/track/models/item/rail.json",
+            r##"{"textures":{"all":"track:item/rail"},"elements":[{"from":[0,0,0],"to":[16,2,16],
+                "faces":{"up":{"uv":[0,0,16,16],"texture":"#all"}}}]}"##,
+        );
+        write(
+            "assets/minecraft/items/stick.json",
+            r#"{"model":{"type":"minecraft:model","model":"minecraft:item/stick"}}"#,
+        );
+        let data = crate::test_resources::item_data(&root, DataLoadOrigin::ClientPreload).unwrap();
+        let renderer = ItemRenderer::load(&ResourceRoot::directory(root.clone()), &data).unwrap();
+        renderer.bake_pack_models();
+        let baked = renderer.baked.lock().unwrap();
+        assert_eq!(baked["track:item/rail"].quads.len(), 1);
+        assert!(!baked.contains_key("minecraft:item/stick"));
+        assert_eq!(renderer.extents.lock().unwrap()["track:item/rail"].len(), 4);
+        drop(baked);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
