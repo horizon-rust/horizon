@@ -173,7 +173,7 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-#[path = "block_particles_tests.rs"]
+#[path = "tests/block_particles_tests.rs"]
 mod block_particles_tests;
 
 impl Game<'_> {
