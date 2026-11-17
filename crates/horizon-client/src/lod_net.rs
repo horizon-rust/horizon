@@ -25,6 +25,7 @@ use horizon_protocol::{
 use horizon_world::registry::BlockStateId;
 use std::{collections::HashMap, time::Instant};
 
+mod cache;
 mod client;
 mod server;
 pub use client::{Inbox, RemoteSource};
