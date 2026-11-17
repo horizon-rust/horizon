@@ -28,9 +28,13 @@ use super::pack_sky::PackSky;
 use super::pack_textures;
 use super::pack_uniforms::{self, FrameUniforms, PackInputs};
 
+mod indirect;
 mod packed;
 
 mod flip_carry;
+
+#[cfg(test)]
+mod indirect_tests;
 
 #[cfg(test)]
 mod history_reset_tests;
@@ -83,6 +87,9 @@ mod custom_type_tests;
 
 #[cfg(test)]
 mod sky_depth_tests;
+
+#[cfg(test)]
+mod depth_copy_tests;
 
 #[cfg(test)]
 mod end_fan_tests;
@@ -324,6 +331,7 @@ const SINK: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 #[derive(Clone, Copy)]
 struct Gpu {
     compute: bool,
+    indirect: bool,
     /// Images and storage buffers written by fragment shaders.
     fragment_storage: bool,
     /// Storage read and written by vertex shaders (a geometry stage).
@@ -339,6 +347,7 @@ impl Gpu {
         let flags = adapter.get_downlevel_capabilities().flags;
         let mut gpu = Gpu {
             compute: flags.contains(D::COMPUTE_SHADERS),
+            indirect: flags.contains(D::INDIRECT_EXECUTION),
             fragment_storage: flags.contains(D::FRAGMENT_WRITABLE_STORAGE),
             vertex_storage: flags.contains(D::VERTEX_STORAGE)
                 && features.contains(wgpu::Features::VERTEX_WRITABLE_STORAGE),
@@ -346,12 +355,13 @@ impl Gpu {
             adapter_formats: features
                 .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
         };
-        // `HORIZON_SHADER_PACK_WITHOUT=compute,fragment-storage,vertex-storage,clear` tries the
+        // `HORIZON_SHADER_PACK_WITHOUT=compute,indirect,fragment-storage,vertex-storage,clear` tries the
         // fallbacks on a device that has it all.
         let without = std::env::var("HORIZON_SHADER_PACK_WITHOUT").unwrap_or_default();
         for w in without.split(',') {
             match w.trim() {
                 "compute" => gpu.compute = false,
+                "indirect" => gpu.indirect = false,
                 "fragment-storage" => gpu.fragment_storage = false,
                 "vertex-storage" => gpu.vertex_storage = false,
                 "clear" => gpu.clear = false,
@@ -404,6 +414,7 @@ enum Pipeline {
         groups: Option<[u32; 3]>,
         render: [f32; 2],
         local: [u32; 3],
+        indirect: Option<indirect::Dispatch>,
     },
 }
 
@@ -614,6 +625,8 @@ pub struct PackPost {
     passes: Vec<Pass>,
     /// Shadow cache for temporal reprojection.
     shadow_cache: ShadowCache,
+    /// Immutable eligibility of the finalized shadow programs for temporal reuse.
+    shadow_cache_eligible: bool,
     /// What draws terrain (`gbuffers_terrain` or its fallback), between `prepare` and `deferred`;
     /// when the pack draws terrain in two parts, solid terrain only (`gbuffers_terrain_solid` or
     /// its fallback).
@@ -2179,6 +2192,21 @@ fn build_compute(
     custom: &[(String, String)],
     pack: &Resources<'_>,
 ) -> Option<Pass> {
+    if let Some(request) = c.indirect {
+        if !pack.gpu.indirect {
+            notes.push(format!(
+                "{name}: skipped: this GPU cannot dispatch indirect compute"
+            ));
+            return None;
+        }
+        if !pack.buffers.has(request.buffer) {
+            notes.push(format!(
+                "{name}: skipped: indirect buffer {} has no `bufferObject.{}`",
+                request.buffer, request.buffer
+            ));
+            return None;
+        }
+    }
     let index = |name: &str, ty: &str| {
         pack_uniforms::index(name).or_else(|| custom_index(custom, name, ty))
     };
@@ -2224,9 +2252,10 @@ fn build_compute(
             layout: pipeline_layout,
             module,
         };
-        (layout, pack.compute_pipeline(device, job))
+        let indirect = c.indirect.map(|r| indirect::Dispatch::new(device, r));
+        (layout, pack.compute_pipeline(device, job), indirect)
     });
-    let (layout, pipeline) = match created {
+    let (layout, pipeline, indirect) = match created {
         Ok(created) => created,
         Err(e) => {
             notes.push(format!("{name}: skipped: {e}"));
@@ -2257,6 +2286,7 @@ fn build_compute(
             groups: c.work_groups,
             render: c.work_groups_render,
             local,
+            indirect,
         },
         sky_parts: None,
         water_mask: None,
@@ -3273,6 +3303,19 @@ impl PackPost {
         let jobs = (pack.jobs.as_ref())
             .map(std::cell::RefCell::take)
             .unwrap_or_default();
+        // Earlier passes may change indirect arguments without changing the light/camera
+        // cache key. Keep those shadowcomp dispatches live; direct-only packs retain caching.
+        let shadow_cache_eligible = !shadow_comp.iter().any(|pass| {
+            std::iter::once(pass).chain(&pass.compute).any(|p| {
+                matches!(
+                    p.pipeline,
+                    Pipeline::Compute {
+                        indirect: Some(_),
+                        ..
+                    }
+                )
+            })
+        });
         let built = Self {
             notes,
             setup_pending: true,
@@ -3446,6 +3489,7 @@ impl PackPost {
                 u
             },
             shadow_cache: Default::default(),
+            shadow_cache_eligible,
         };
         Ok((built, jobs))
     }
@@ -3778,6 +3822,7 @@ impl PackPost {
             groups,
             render,
             local,
+            indirect,
         } = &pass.pipeline
         else {
             return;
@@ -3791,12 +3836,24 @@ impl PackPost {
         // wgpu panics on a dispatch over its limit. The translator reshapes a large
         // `workGroups`; a `workGroupsRender` that large is not run.
         let most = device.limits().max_compute_workgroups_per_dimension;
-        if groups.iter().any(|&n| n > most) {
+        if indirect.is_none() && groups.iter().any(|&n| n > most) {
             log::warn!(
                 "shader pack: {}: {groups:?} work groups is over {most} per dimension; not run",
                 pass.name
             );
             return;
+        }
+        if let Some(indirect) = indirect {
+            let request = indirect.request;
+            let Some(source) = self.buffers.indirect_source(request.buffer, request.offset) else {
+                log::warn!(
+                    "shader pack: {}: indirect argument range is outside buffer {}; not run",
+                    pass.name,
+                    request.buffer
+                );
+                return;
+            };
+            indirect.prepare(encoder, source);
         }
         for image in (0..self.images.len()).filter(|k| pass.snapshots & 1 << k != 0) {
             pack_images::snapshot(encoder, &self.images[image]);
@@ -3816,7 +3873,15 @@ impl PackPost {
         {
             cp.set_bind_group(4, g, &[]);
         }
-        cp.dispatch_workgroups(groups[0], groups[1], groups[2]);
+        if let Pipeline::Compute {
+            indirect: Some(indirect),
+            ..
+        } = &pass.pipeline
+        {
+            cp.dispatch_workgroups_indirect(&indirect.arguments, 0);
+        } else {
+            cp.dispatch_workgroups(groups[0], groups[1], groups[2]);
+        }
         drop(cp);
         self.mips_valid &= !pass.written;
     }
@@ -4999,6 +5064,7 @@ impl PackPost {
         // Custom images are cleared each frame (`pack_images::clear`) before the
         // shadow pass writes them, so a pack with any redraws it too.
         let cache_hit = !has_shadow_entities
+            && self.shadow_cache_eligible
             && self.images.is_empty()
             && self.shadow_cache.key == Some(cache_key)
             && self.shadow_targets.is_some();
@@ -5779,12 +5845,8 @@ mod tests {
     /// and one wgpu refuses comes back by name (the pack is then built a program at a time).
     #[test]
     fn pipelines_compile_together_and_a_refused_one_is_named() {
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
-            return;
-        };
-        let Ok((device, _queue)) = pollster::block_on(adapter.request_device(&Default::default()))
-        else {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((_adapter, device, _queue)) = crate::gfx::test_gpu::optional_device() else {
             return;
         };
         let layout = device.create_pipeline_layout(&Default::default());
@@ -5830,12 +5892,8 @@ mod tests {
     /// made. Such a panic skips the pass, as a validation error does, and the device goes on.
     #[test]
     fn a_shader_compiler_panic_skips_the_pass() {
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
-            return;
-        };
-        let Ok((device, _queue)) = pollster::block_on(adapter.request_device(&Default::default()))
-        else {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((_adapter, device, _queue)) = crate::gfx::test_gpu::optional_device() else {
             return;
         };
         let failed = checked(&device, || -> wgpu::Buffer {
@@ -5863,12 +5921,8 @@ mod tests {
     /// Bliss, SEUS PTGI HRR). Another stage's flips don't release it.
     #[test]
     fn a_custom_texture_over_a_buffer_ends_when_its_stage_flips_it() {
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
-            return;
-        };
-        let Ok((device, _queue)) = pollster::block_on(adapter.request_device(&Default::default()))
-        else {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((adapter, device, _queue)) = crate::gfx::test_gpu::optional_device() else {
             return;
         };
         let textures = [pack_textures::PackTexture {
@@ -5947,12 +6001,8 @@ mod tests {
     /// were bound.
     #[test]
     fn a_png_under_a_name_of_its_own_is_not_bound() {
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
-            return;
-        };
-        let Ok((device, _queue)) = pollster::block_on(adapter.request_device(&Default::default()))
-        else {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((adapter, device, _queue)) = crate::gfx::test_gpu::optional_device() else {
             return;
         };
         let texture = |stage: &str, name: &str, png: bool| pack_textures::PackTexture {
@@ -6043,13 +6093,9 @@ mod tests {
     /// declared format, zero again before each pass even after one stored into it.
     #[test]
     fn an_image_without_an_entry_reads_zero() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use wgpu::TextureViewDimension as D;
-        let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
-            return;
-        };
-        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
-        else {
+        let Some((adapter, device, queue)) = crate::gfx::test_gpu::optional_device() else {
             return;
         };
         let image = |name: &str, ty: &str, format: &str, binding| horizon_shaders::Image {
@@ -6178,6 +6224,7 @@ mod tests {
     /// a source alpha of 0.25 reads 0.625).
     #[test]
     fn a_composite_program_blends_onto_its_buffer() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;

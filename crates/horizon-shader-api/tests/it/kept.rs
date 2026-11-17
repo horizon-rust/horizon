@@ -205,7 +205,13 @@ fn a_resource_has_one_shape() {
         ))
         .unwrap();
     }
-    for format in ["rgba16float", "r32float", "rgba32float", "rgba32uint"] {
+    for format in [
+        "rgba16float",
+        "r32float",
+        "rgba32float",
+        "rgba32uint",
+        "r32uint",
+    ] {
         parse(&resource(
             "r",
             &format!("format = \"{format}\"\nscale = 0.5"),
@@ -253,18 +259,33 @@ fn counts_and_memory_are_bounded() {
         &format!("{}{}", many(2, half), resource("more", small)),
         "buffers take 33554436 bytes",
     );
-    // 1 MiB of fixed textures, both versions counted: two 128² of 16-byte texels, not one 256².
+    // 32 MiB of fixed textures, both versions counted, as buffers. What 1 MiB took still passes
+    // (two 128² of 16-byte texels), and so do a 512² trail or height map, a 1024² `rgba16float`
+    // (16 MiB) and two of those, but not a texel more.
     for format in ["rgba32float", "rgba32uint"] {
         parse(&many(
             2,
             &format!("format = \"{format}\"\nsize = [128, 128]"),
         ))
         .unwrap();
-        refused(
-            &many(1, &format!("format = \"{format}\"\nsize = [256, 256]")),
-            "fixed-size [[resource]] textures take 2097152 bytes",
-        );
     }
+    parse(&many(1, "format = \"r32float\"\nsize = [512, 512]")).unwrap();
+    let large = "format = \"rgba16float\"\nsize = [1024, 1024]";
+    parse(&many(1, large)).unwrap();
+    parse(&many(2, large)).unwrap();
+    let texel = resource("more", "format = \"r32float\"\nsize = [1, 1]");
+    refused(
+        &format!("{}{texel}", many(2, large)),
+        "fixed-size [[resource]] textures take 33554440 bytes with both versions; a pack may \
+         keep 33554432",
+    );
+    // `r32uint` is 4 bytes a texel: 2048² of it with both versions is the whole budget.
+    let words = "format = \"r32uint\"\nsize = [2048, 2048]";
+    parse(&many(1, words)).unwrap();
+    refused(
+        &format!("{}{texel}", many(1, words)),
+        "fixed-size [[resource]] textures take 33554440 bytes with both versions",
+    );
     // An R-relative texture takes 2 of the 6 render-size textures post targets may use, at
     // any scale.
     let scaled = "format = \"rgba16float\"\nscale = 0.5";
@@ -369,11 +390,15 @@ fn an_output_writes_a_kept_texture_at_its_size() {
     parse(&output("output = \"tex\"")).unwrap();
     refused(&output("output = \"tex\"\nscale = 0.5"), "with no `scale`");
     refused(&output("output = \"buf\""), "is a kept buffer");
-    let uint = resource("ints", "format = \"rgba32uint\"\nsize = [4, 4]");
-    refused(
-        &format!("{uint}[[post]]\nfile = \"a.wgsl\"\noutput = \"ints\"\n"),
-        "is an rgba32uint texture: a pass draws floats, so only a compute pass writes one",
-    );
+    for format in ["rgba32uint", "r32uint"] {
+        let uint = resource("ints", &format!("format = \"{format}\"\nsize = [4, 4]"));
+        refused(
+            &format!("{uint}[[post]]\nfile = \"a.wgsl\"\noutput = \"ints\"\n"),
+            &format!(
+                "is an {format} texture: a pass draws floats, so only a compute pass writes one"
+            ),
+        );
+    }
     refused(
         &output("output = \"tex_previous\""),
         "is last frame's: nothing writes it",
