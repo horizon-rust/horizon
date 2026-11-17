@@ -73,6 +73,28 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
+/// [`unpack`] with [`texture_uris`], remembered by the payload. A frame resolves every drawn
+/// mannequin's skin, and decoding each one's base64 JSON again was most of that.
+pub fn unpack_known(value: &str, signature: Signature) -> Textures {
+    thread_local! {
+        static UNPACKED: std::cell::RefCell<std::collections::HashMap<(String, u8), Textures>> =
+            std::cell::RefCell::default();
+    }
+    let key = (value.to_owned(), signature as u8);
+    if let Some(textures) = UNPACKED.with_borrow(|known| known.get(&key).cloned()) {
+        return textures;
+    }
+    let textures = unpack(value, signature, texture_uris());
+    UNPACKED.with_borrow_mut(|known| {
+        // A busy server's worth of profiles; past that, from scratch.
+        if known.len() >= 4096 {
+            known.clear();
+        }
+        known.insert(key, textures.clone());
+    });
+    textures
+}
+
 /// `unpackTextures(property)`: the textures of a `textures` property's
 /// base64 JSON payload.
 pub fn unpack(value: &str, signature: Signature, valid_uris: &[impl AsRef<str>]) -> Textures {
@@ -701,6 +723,26 @@ pub fn cape_location(hash: &str) -> String {
     location("capes/", hash)
 }
 fn location(prefix: &str, hash: &str) -> String {
+    // Remembered: every frame resolves every drawn player's skin, and the SHA-1 and its hex
+    // each time were most of that.
+    thread_local! {
+        static LOCATIONS: std::cell::RefCell<std::collections::HashMap<(String, String), String>> =
+            std::cell::RefCell::default();
+    }
+    let key = (prefix.to_owned(), hash.to_owned());
+    if let Some(known) = LOCATIONS.with_borrow(|known| known.get(&key).cloned()) {
+        return known;
+    }
+    let out = location_of(prefix, hash);
+    LOCATIONS.with_borrow_mut(|known| {
+        if known.len() >= 4096 {
+            known.clear();
+        }
+        known.insert(key, out.clone());
+    });
+    out
+}
+fn location_of(prefix: &str, hash: &str) -> String {
     let units: Vec<u8> = hash.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let digest = sha1(&units);
     let mut out = String::from(prefix);
@@ -1503,6 +1545,70 @@ mod tests {
         assert!(super::read_offline_skin(&file, "slim").is_err());
         assert!(super::read_offline_skin(&dir.join("missing.png"), "").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unpack_known_matches_unpack_and_a_repeat_is_faster() {
+        use super::{Signature, location, skin_location, unpack, unpack_known};
+        use base64::Engine;
+        use std::time::Instant;
+        let json = r#"{"textures":{"SKIN":{"url":"http://textures.minecraft.net/texture/abcdef0123456789","metadata":{"model":"slim"}}}}"#;
+        let value = base64::engine::general_purpose::STANDARD.encode(json);
+        let fresh = unpack(&value, Signature::Unsigned, super::texture_uris());
+        let remembered = unpack_known(&value, Signature::Unsigned);
+        assert_eq!(fresh, remembered);
+        const RUNS: usize = 21;
+        let mut cold = Vec::new();
+        let mut warm = Vec::new();
+        for _ in 0..2 {
+            let _ = unpack(&value, Signature::Unsigned, super::texture_uris());
+            let _ = unpack_known(&value, Signature::Unsigned);
+        }
+        for _ in 0..RUNS {
+            let start = Instant::now();
+            let _ = unpack(&value, Signature::Unsigned, super::texture_uris());
+            cold.push(start.elapsed().as_nanos());
+            let start = Instant::now();
+            assert_eq!(unpack_known(&value, Signature::Unsigned), remembered);
+            warm.push(start.elapsed().as_nanos());
+        }
+        let place = skin_location("abcdef0123456789");
+        assert_eq!(location("skins/", "abcdef0123456789"), place);
+        let mut loc_cold = Vec::new();
+        let mut loc_warm = Vec::new();
+        for _ in 0..RUNS {
+            let hash = format!("abcdef0123456789{RUNS}");
+            let start = Instant::now();
+            let built = super::location_of("skins/", &hash);
+            loc_cold.push(start.elapsed().as_nanos());
+            let start = Instant::now();
+            let _ = location("skins/", "abcdef0123456789");
+            loc_warm.push(start.elapsed().as_nanos());
+            let _ = built;
+        }
+        cold.sort_unstable();
+        warm.sort_unstable();
+        loc_warm.sort_unstable();
+        let med = |s: &[u128]| s[s.len() / 2];
+        let p95 = |s: &[u128]| s[((s.len() as f64) * 0.95).ceil() as usize - 1];
+        let report = format!(
+            "scene one textures payload and one skin hash, runs={RUNS}\n\
+             unpack_ns median={} p95={} worst={}\n\
+             unpack_known_ns median={} p95={} worst={}\n\
+             location_cached_ns median={} p95={} worst={}\n",
+            med(&cold),
+            p95(&cold),
+            cold[cold.len() - 1],
+            med(&warm),
+            p95(&warm),
+            warm[warm.len() - 1],
+            med(&loc_warm),
+            p95(&loc_warm),
+            loc_warm[loc_warm.len() - 1],
+        );
+        std::fs::write(std::env::temp_dir().join("hz-measure-skins.txt"), &report).unwrap();
+        println!("{report}");
+        assert!(med(&warm) < med(&cold));
     }
 
     /// `MinecraftServicesDiscoveryService`: another environment's document
