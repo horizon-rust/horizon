@@ -192,20 +192,22 @@ def sync_unchanged(source: Path, destination: Path) -> tuple[int, int, int]:
     # Clear stale paths first: a tracked path may become a directory, or vice versa.
     removed = 0
     if destination.exists():
-        for folder, directories, files in os.walk(destination, topdown=False):
+        folders = []
+        for folder, directories, files in os.walk(destination):
             relative = Path(folder).relative_to(destination)
-            if "target" in relative.parts[:1]:
-                continue
+            if relative == Path("."):
+                # Pruned before descent, so Cargo's cache is never walked.
+                directories[:] = [name for name in directories if name != "target"]
+            else:
+                folders.append(Path(folder))
             for name in files:
                 if relative / name not in wanted:
                     (Path(folder) / name).unlink()
                     removed += 1
-            for name in directories:
-                if relative == Path(".") and name == "target":
-                    continue
-                path = Path(folder) / name
-                if not any(path.iterdir()):
-                    path.rmdir()
+        # Deepest first, so a folder emptied of its subfolders goes too.
+        for path in reversed(folders):
+            if not any(path.iterdir()):
+                path.rmdir()
     written = 0
     for name in wanted:
         data = (source / name).read_bytes()

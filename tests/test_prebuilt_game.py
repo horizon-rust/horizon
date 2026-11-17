@@ -119,16 +119,21 @@ class SyncUnchangedTests(unittest.TestCase):
             same = dest / "keep" / "same.txt"
             same.write_bytes(b"same")
             (dest / "gone.txt").write_bytes(b"gone")
+            (dest / "old" / "deep").mkdir(parents=True)
+            (dest / "old" / "deep" / "gone.rs").write_bytes(b"gone")
             stamp = time.time() - 120
             os.utime(same, (stamp, stamp))
             before = same.stat().st_mtime_ns
             written, removed, unchanged = prebuilt_game.sync_unchanged(source, dest)
-            self.assertEqual((written, removed, unchanged), (1, 1, 1))
+            self.assertEqual((written, removed, unchanged), (1, 2, 1))
             self.assertEqual(same.stat().st_mtime_ns, before)
             self.assertEqual((dest / "new.txt").read_bytes(), b"new")
             self.assertFalse((dest / "gone.txt").exists())
+            self.assertFalse((dest / "old").exists())
             self.assertEqual((dest / "target" / "stale.o").read_bytes(), b"object")
 
+    # A timing comparison, so it is a measurement rather than a check: a busy runner can reorder it.
+    @unittest.skipUnless(os.environ.get("HORIZON_MEASURE_STAGE") == "1", "set HORIZON_MEASURE_STAGE=1 to measure")
     def test_syncing_unchanged_files_is_faster_than_rewriting_them(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
