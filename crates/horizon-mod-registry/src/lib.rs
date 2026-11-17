@@ -1667,5 +1667,4 @@ mod tests {
         assert!(body.contains(env!("CARGO_PKG_VERSION")), "{body}");
         assert!(body.contains(index::SHADER_API), "{body}");
     }
-
 }
