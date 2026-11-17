@@ -19,7 +19,7 @@ except ImportError:
 def address_cases():
     hosts = ['localhost', 'play.example.org', '127.0.0.1', 'EXAMPLE.COM', '[::1]',
              '[2001:db8::1]', '[foo:bar]', '[example.com]', '[]', '[::1]junk', '',
-             'münchen.de', 'straße.de', 'faß.de', 'ς.example', '\u200d.invalid',
+             'münchen.de', 'straße.de', 'faß.de', 'ς.example', 'ẞ.example', '\u200d.invalid',
              'EXAMPLE.é', 'é.EXAMPLE', 'a。b', 'a..b']
     ports = ['', '0', '1', '25565', '65535', '65536', '-0', '-00', '-1', '+0',
              '+25565', '2147483647', '2147483648', '-2147483648', '-2147483649',

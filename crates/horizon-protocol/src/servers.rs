@@ -280,6 +280,12 @@ fn idn_accepts(host: &str) -> bool {
 /// default-rule characters are preserved.
 #[allow(deprecated)]
 fn idn_to_ascii(host: &str) -> Option<String> {
+    // Java's IDN implementation uses the Unicode 3.2 Nameprep table. U+1E9E
+    // (capital sharp S) was unassigned there, while modern UTS #46 maps it to
+    // `ss`; reject it before asking the newer mapper to normalize the labels.
+    if host.contains('\u{1e9e}') {
+        return None;
+    }
     if host.is_ascii() {
         return idn_accepts(host).then(|| host.to_owned());
     }
@@ -497,6 +503,7 @@ mod tests {
             assert_eq!(parse_address(input), Some((host.into(), 25565)), "{input}");
         }
         assert!(!is_valid_address("\u{200d}.invalid"));
+        assert!(!is_valid_address("\u{1e9e}.example"));
         let long_unicode_label = "é".repeat(64);
         assert!(!is_valid_address(&format!("{long_unicode_label}.example")));
     }
