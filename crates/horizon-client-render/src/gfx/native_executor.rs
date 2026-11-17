@@ -3,11 +3,10 @@
 
 use super::external::{
     Capabilities, DisplacementPrepare, EntityLayers, ExternalPipeline, FrameStart, FrameState,
-    Near, OpaqueCopy, ShadowDraws, ShadowView, SkyPass, TerrainLayers, TimingSetup, WorldPost,
-    WorldTargets,
+    Near, OpaqueCopy, Refused, ShadowDraws, ShadowView, SkyPass, TerrainLayers, TimingSetup,
+    WorldPost, WorldTargets,
 };
-use super::native_pack::NativePack;
-use super::native_post::kept;
+use super::native_pack::{NativePack, install_kept};
 use super::pack_timing::PassTiming;
 use super::surface_setup::ray_query::ray_scene::{RayScene, Traced};
 
@@ -17,17 +16,25 @@ impl ExternalPipeline for NativePack {
     }
 
     /// A rebuild of the pack that ran keeps its kept resources (`NativePack::carry`); else
-    /// they go before this pack's are made.
-    fn take_over(&mut self, device: &wgpu::Device, old: Option<&mut dyn ExternalPipeline>) {
+    /// they go before this pack's are made (`install_kept`), which may find no room for them.
+    fn take_over(
+        &mut self,
+        device: &wgpu::Device,
+        old: Option<&mut dyn ExternalPipeline>,
+        size: [u32; 2],
+    ) -> Result<(), Refused> {
         let mut old = old.and_then(|o| (o as &mut dyn std::any::Any).downcast_mut::<NativePack>());
         if let Some(old) = old.as_deref_mut() {
             self.carry(old);
         }
-        kept::install(device, Some(&mut self.post), old.map(|o| &mut o.post));
+        install_kept(device, Some(self), old, size)
+            .map_err(|(why, old_runs)| Refused { why, old_runs })
     }
 
     fn retire(&mut self, device: &wgpu::Device) {
-        kept::install(device, None, Some(&mut self.post));
+        // Nothing is made, so nothing is refused, whatever the size.
+        let freed = install_kept(device, None, Some(self), [1, 1]);
+        debug_assert!(freed.is_ok(), "{freed:?}");
     }
 
     /// The kept resources start over.

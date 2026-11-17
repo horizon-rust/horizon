@@ -84,14 +84,28 @@ impl Renderer {
     /// one). Called before the pack's first frame, so the scene is there when it gathers what it
     /// traces. A rebuild of the pack that runs keeps what it kept from frame to frame
     /// (`ExternalPipeline::take_over`); else that goes before the new pack's is made.
+    /// Why `pack` was refused, if it was (`take_over` found no room for what it keeps): then
+    /// nothing changes and the pack that ran keeps running with its metadata, unless it can't,
+    /// and then none runs.
     pub(in crate::gfx) fn replace_executor(
         &mut self,
         mut pack: Option<Box<dyn crate::gfx::external::ExternalPipeline>>,
-    ) {
-        match (&mut pack, &mut self.external) {
-            (Some(new), old) => new.take_over(&self.device, old.as_deref_mut()),
-            (None, Some(old)) => old.retire(&self.device),
-            (None, None) => {}
+    ) -> Option<String> {
+        // The size the pack's frames draw at (`NativePack::start_frame`), before its first.
+        let size = (self.world_post).pack_render_size([self.config.width, self.config.height]);
+        let taken = match (&mut pack, &mut self.external) {
+            (Some(new), old) => new.take_over(&self.device, old.as_deref_mut(), size),
+            (None, Some(old)) => {
+                old.retire(&self.device);
+                Ok(())
+            }
+            (None, None) => Ok(()),
+        };
+        if let Err(refused) = taken {
+            if !refused.old_runs {
+                self.replace_executor(None);
+            }
+            return Some(refused.why);
         }
         let capabilities = pack.as_ref().and_then(|p| p.capabilities());
         let traces = capabilities.is_some_and(|c| c.ray_scene);
@@ -103,6 +117,7 @@ impl Renderer {
         self.external = pack;
         self.executor = capabilities;
         self.pack_metadata = None;
+        None
     }
 
     /// Every section is gone (a new world, a new dimension): so are the pack's kept resources.

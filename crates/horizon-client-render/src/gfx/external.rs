@@ -43,8 +43,17 @@ pub trait ExternalPipeline: Send + std::any::Any {
         None
     }
     /// It runs from now on in place of `old` (none: nothing ran), dropped after: a rebuild of
-    /// the same pipeline may take what `old` kept from frame to frame.
-    fn take_over(&mut self, _device: &wgpu::Device, _old: Option<&mut dyn ExternalPipeline>) {}
+    /// the same pipeline may take what `old` kept from frame to frame. What it keeps is made
+    /// here, at `size`, the size its frames draw at. Refused when there is no room for that:
+    /// then it never runs, and `old` either keeps running or, when it can't, stops too.
+    fn take_over(
+        &mut self,
+        _device: &wgpu::Device,
+        _old: Option<&mut dyn ExternalPipeline>,
+        _size: [u32; 2],
+    ) -> Result<(), Refused> {
+        Ok(())
+    }
     /// It stops with nothing in its place: what it kept from frame to frame goes now.
     fn retire(&mut self, _device: &wgpu::Device) {}
     /// Every section is gone (a new world, a new dimension).
@@ -131,6 +140,15 @@ pub trait ExternalPipeline: Send + std::any::Any {
     }
     /// Its post passes in place of the engine's finish of the world.
     fn run_post(&mut self, _post: WorldPost<'_>) {}
+}
+
+/// Why a pipeline couldn't take over (`ExternalPipeline::take_over`), and what that left running.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Refused {
+    /// Why, for the player.
+    pub why: String,
+    /// The pipeline that ran keeps running. False: it can't either, and none runs.
+    pub old_runs: bool,
 }
 
 /// What a shader pack's executor does in the engine's place, fixed from when it is installed

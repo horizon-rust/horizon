@@ -6743,9 +6743,14 @@ impl Renderer {
         }
         Ok(report)
     }
-    /// Sets the external shader pipeline world frames call (`external`), or none.
-    pub fn set_external_pipeline(&mut self, pipeline: Option<Box<dyn external::ExternalPipeline>>) {
-        self.replace_executor(pipeline);
+    /// Sets the external shader pipeline world frames call (`external`), or none. Why it was
+    /// refused, if it was (`ExternalPipeline::take_over`): then the one that ran keeps running,
+    /// unless it can't.
+    pub fn set_external_pipeline(
+        &mut self,
+        pipeline: Option<Box<dyn external::ExternalPipeline>>,
+    ) -> Option<String> {
+        self.replace_executor(pipeline)
     }
     /// Makes the running shader pack, of either kind, forget what it kept from earlier frames:
     /// the next frame draws as a freshly loaded pack's first. Nothing to do without a pack.
@@ -7001,7 +7006,9 @@ impl Renderer {
             &constants,
             lights,
         )?;
-        self.replace_executor(Some(Box::new(pack)));
+        if let Some(refused) = self.replace_executor(Some(Box::new(pack))) {
+            return Err(refused);
+        }
         self.pack_metadata = Some(metadata);
         self.pack_post = None;
         self.pack_atlas = None;
