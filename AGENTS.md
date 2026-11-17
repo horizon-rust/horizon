@@ -24,8 +24,9 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
   - A PR body **ends** with it, naming the model and the tool that did the work and what each did, one sentence
     per model: `🤖 Agent: Claude Fable 5.2 via Claude Code: implementation. GPT 6.1 Sol via Codex: review.`
 
-  Nothing else is needed: no first line, no "Generated with" line, no `Co-Authored-By:` in commits (main gets one
-  squashed commit per PR, and the PR says who did the work). The person an agent works for is the account it
+  Nothing else is needed: no first line, no "Generated with" line, no `Co-Authored-By:` line for the agent in
+  commits (main gets one squashed commit per PR, and the PR says who did the work; a co-author line for a person
+  who wrote part of it stays). The person an agent works for is the account it
   posts from; write only as that person. Posts in the earlier form (a first line "Opened by <login>'s AI
   agent …", "Filed by" on issues, a last line "Generated with …") stay valid: don't rewrite them, and don't ask
   anyone to.
