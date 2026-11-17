@@ -97,10 +97,16 @@ fn material_uploads_skip_static_maps_and_unchanged_selected_frames() {
 
 // Exercise the same upload callback against a real texture, without a window or game.
 fn assert_uploaded_mips(animation: &crate::sprites::SpriteAnimation, expected: &[u8]) {
-    let _gpu = super::test_gpu::lock();
-    let Some((_adapter, device, queue)) = super::test_gpu::optional_device() else {
-        return;
+    let instance = super::test_gpu::instance();
+    let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
+        Ok(adapter) => adapter,
+        // No adapter: CI's Linux runners ask for DirectX 12 so that GPU tests find none.
+        Err(error) => {
+            eprintln!("material mip readback setup skipped: no adapter ({error})");
+            return;
+        }
     };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
     let maps: [_; 2] = std::array::from_fn(|_| {
         device.create_texture(&wgpu::TextureDescriptor {
             label: Some("original material animation control"),
