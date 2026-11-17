@@ -20,9 +20,10 @@ jobs:
     if: >-
       github.event_name != 'issue_comment' ||
       (github.event.issue.pull_request && contains(github.event.comment.body, '/recheck-vouch'))
+    # Serialize sweeps with single-PR updates and keep queued sweeps from being replaced.
     concurrency:
-      group: pr-vouch-${{ github.event.pull_request.number || github.event.issue.number || 'all' }}
-      cancel-in-progress: false
+      group: pr-vouch
+      queue: max
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
