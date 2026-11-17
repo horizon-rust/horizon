@@ -8,7 +8,7 @@ use super::external::{
 };
 use super::native_pack::{NativePack, install_kept};
 use super::pack_timing::PassTiming;
-use super::surface_setup::ray_query::ray_scene::{RayScene, Traced};
+use super::rt::scene::{RayScene, Traced};
 
 impl ExternalPipeline for NativePack {
     fn capabilities(&self) -> Option<Capabilities> {

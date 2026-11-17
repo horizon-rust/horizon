@@ -20,7 +20,7 @@ use horizon_shader_api::stages::GROUP;
 use super::pack_timing::PassTiming;
 // The engine types its points name, reachable where the trait is.
 pub use super::SectionLists;
-pub use super::surface_setup::ray_query::ray_scene::{RayScene, Traced, TracedEntities};
+pub use super::rt::scene::{RayScene, Traced, TracedEntities};
 pub use super::weather::Weather;
 use super::{Cull, EffectiveOutput, Frame, Frustum, SectionKey, Sides, facing_runs, frustum};
 use crate::fast_hash::FxHashMap;
@@ -331,6 +331,8 @@ pub struct DisplacementPrepare<'a, I> {
 pub struct EntityLayers<'a> {
     pub entities: &'a wgpu::RenderPipeline,
     pub retained: &'a wgpu::RenderPipeline,
+    /// Their group 3: the pack's frame, with this frame's version of the kept resources the
+    /// stage reads where it reads any.
     pub frame: &'a wgpu::BindGroup,
 }
 
