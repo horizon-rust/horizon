@@ -1586,7 +1586,7 @@ mod tests {
         a.unload(|p| chunks.contains(&chunk_of(*p)));
         b.unload_chunks(&chunks);
         let keys = |b: &BlockEntities| {
-            let mut v: Vec<Pos> = b.iter().map(|(p, _)| *p).collect();
+            let mut v: Vec<Pos> = b.keys().copied().collect();
             v.sort();
             v
         };
@@ -1743,7 +1743,7 @@ mod tests {
             right.unload_chunks(&unload_chunks);
             unload_index.push(start.elapsed().as_nanos());
             let keys = |ents: &BlockEntities| {
-                let mut v: Vec<Pos> = ents.iter().map(|(pos, _)| *pos).collect();
+                let mut v: Vec<Pos> = ents.keys().copied().collect();
                 v.sort();
                 v
             };
