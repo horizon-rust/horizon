@@ -525,10 +525,12 @@ pub fn markdown() -> String {
          that may go away. Write `const named = TABLE[1];` or `var named = TABLE[1];` instead, or read `TABLE[1].x` in place.\n\n\
          ## Written ray calls\n\n\
          On Vulkan, a driver can build the ray traversal anew for every place a stage's code calls a function that traces\n\
-         (`trace` and its kin, or a function of yours that calls them), and each such place then costs time on every\n\
-         pixel, whether the pixel takes it or not: measured on one card, about 0.13 ms a frame at 2560x1440 for each, and\n\
-         0.3 to 0.5 ms for one inside a loop. Write the call once and choose its arguments before it (the origin, the\n\
-         direction, the layers, the distance) instead of writing it in each branch.\n",
+         (`trace` and its kin, or a function of yours that calls them), and each such place can then cost time on every\n\
+         pixel, whether the pixel takes it or not. On an RTX 5070 Ti at 2560x1440, twelve more written calls that no\n\
+         pixel took added 0.6 to 1.5 ms a frame, more the more the called function traces (0.05 to 0.13 ms a call), and\n\
+         putting the one ray call inside a loop that ran once added 0.3 to 0.5 ms over the bare call. Write the call once\n\
+         and choose its arguments before it (the origin, the direction, the layers, the distance) instead of writing it\n\
+         in each branch.\n",
         MAX_WGSL >> 10,
         MAX_TOTAL >> 20
     );
