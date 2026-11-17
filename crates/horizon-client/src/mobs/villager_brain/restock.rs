@@ -2,7 +2,10 @@
 use super::{Mob, MobEvent, MobWorld};
 
 /// `WorkAtPoi.start`'s restock.
-pub(super) fn restock_if_due(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+pub(in crate::mobs) fn restock_if_due(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    if w.professions.state_index(&m.extra.profession).is_none() {
+        return;
+    }
     let day = w.day_time.div_euclid(24000);
     if let Some(t) = m.extra.trade.as_mut() {
         let before = t.offers.clone();
@@ -26,7 +29,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    #[ignore = "needs prepared entity resources in HORIZON_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn work_site_refreshes_real_restock_and_counter_only_catchup() {
         let root = std::path::PathBuf::from(
             std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
@@ -56,7 +59,7 @@ mod tests {
                     );
                     mob.extra.trade = Some(Box::new(Trader {
                         xp: 20,
-                        offers: crate::entity_nbt::offers_from_nbt(&horizon_world::nbt::parse_snbt(
+                        offers: crate::entity_nbt::offers_from_nbt(&horizon_core::nbt::parse_snbt(
                             &format!(concat!("{{Recipes:[{{buy:{{id:\"minecraft:emerald\",count:4}},",
                                 "sell:{{id:\"minecraft:glass\",count:3}},uses:{uses},maxUses:12,",
                                 "rewardExp:0b,xp:1,priceMultiplier:0.05f,demand:0,specialPrice:0}}]}}"), uses = uses)
