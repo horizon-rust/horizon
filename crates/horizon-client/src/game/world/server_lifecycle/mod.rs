@@ -98,26 +98,36 @@ impl Game<'_> {
         }
     }
 
-    /// A panic can interrupt `as_guest` with the player's current state swapped
-    /// into Game. Keep that player's last saved file rather than an older guest
-    /// record. If the network tick lost the hub, only world state can be saved.
     fn prepare_server_crash(&mut self) {
-        let acting = self.lan_acting;
-        if let (Some(conn), Some(host)) = (acting, self.lan.as_mut()) {
+        if let Some(warning) = self.keep_interrupted_players() {
+            log::warn!("{warning}");
+        }
+    }
+
+    /// Before a crash's save: a player whose turn the panic interrupted keeps their last
+    /// saved file, not the half-done turn. That is the player still swapped in
+    /// (`lan_acting`) or one whose turn wrote its state back on the way out
+    /// (`lan_interrupted_turns`). They are unplaced, so `save_guest` skips them. If the network
+    /// tick lost the hub, only world state can be saved. Returns the warning to log.
+    pub(in crate::game) fn keep_interrupted_players(&mut self) -> Option<&'static str> {
+        let interrupted: Vec<u32> = self
+            .lan_acting
+            .into_iter()
+            .chain(self.lan_interrupted_turns.drain(..))
+            .collect();
+        let Some(host) = self.lan.as_mut() else {
+            return Some(
+                "The panic interrupted the network tick: players are not saved, only the world",
+            );
+        };
+        for &conn in &interrupted {
             let _ = host
                 .hub
                 .guests
                 .update_connection(conn, |guest| guest.placed = false);
         }
-        if self.lan.is_none() {
-            log::warn!(
-                "The panic interrupted the network tick: players are not saved, only the world"
-            );
-        } else if acting.is_some() {
-            log::warn!(
-                "The panic interrupted a player's turn: that player keeps the last saved file"
-            );
-        }
+        (!interrupted.is_empty())
+            .then_some("The panic interrupted a player's turn: that player keeps the last saved file")
     }
 
     /// Complete teardown even if freeing beds or the final save fails. A failed
