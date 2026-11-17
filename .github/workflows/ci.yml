@@ -361,33 +361,28 @@ jobs:
       # type-checks and the parity job builds and runs (they were most of this step's build and link time).
       # cargo test --locked, not nextest: nextest's process per test reloads each binary's shared tables for every test, and on
       # these 4-core runners it was no faster (#4978).
-      # A pull request tests the crates it changes, the crates that depend on them, and the crates whose tests read
-      # its files (tools/ci/test_scope.py); a change outside every crate tests the whole workspace. main's pushes
-      # always test the whole workspace, so a missed crate shows on main.
-      - name: Which crates must the Rust tests cover?
-        if: github.event_name == 'pull_request' && steps.rust.outputs.required != 'false'
-        id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 tools/ci/test_scope.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+      # Every event tests the whole workspace, pull requests included. A pull request used to test only its crates and
+      # their dependents (`-p`, tools/ci/test_scope.py), but Cargo resolves features for the packages selected: `-p
+      # horizon-core` builds libc, serde, syn and proc-macro2 with other features than `--workspace`, so a scoped run
+      # rebuilt its whole selection from the bottom and never reused main's build in the build folder. With the folder
+      # warm, the workspace build costs only what changed; running every test costs ~35 s (#18025's cold run: unit
+      # tests 17 s, content-root 4 s, doc tests 13 s).
       - name: Test Rust core and voxel kernel correctness
         if: steps.rust.outputs.required != 'false'
         env:
-          PACKAGES: ${{ steps.scope.outputs.packages }}
           TESTED: ${{ steps.queued.outputs.tested }}
         run: |
           # A commit the queue already tested is only built, with the same arguments, so the build folder keeps main's build.
           if [ "$TESTED" = true ]; then
-            cargo +stable test --locked ${PACKAGES:---workspace} --lib --bins --tests --no-run
+            cargo +stable test --locked --workspace --lib --bins --tests --no-run
             exit 0
           fi
-          cargo +stable test --locked ${PACKAGES:---workspace} --lib --bins --tests
+          cargo +stable test --locked --workspace --lib --bins --tests
           # The full content-root tests (#[ignore]d: minutes each on a laptop). The same build as above; they need the
           # prepared vanilla data, so without it they pass at once. Keep the target selection identical to avoid
           # recompiling the workspace with a different dependency graph.
-          cargo +stable test --locked ${PACKAGES:---workspace} --lib --bins --tests mod_content::tests:: -- --ignored
-          cargo +stable test --locked ${PACKAGES:---workspace} --doc
+          cargo +stable test --locked --workspace --lib --bins --tests mod_content::tests:: -- --ignored
+          cargo +stable test --locked --workspace --doc
   verify:
     needs: [verify-tree, verify-lint, verify-server, verify-launcher, verify-test]
     if: always()
