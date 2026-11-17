@@ -2248,7 +2248,7 @@ async fn open_device(
                     log::warn!(
                         "Horizon renderer: chosen {b_name} adapter is CPU software ({cpu_name}); trying OpenGL on a real GPU first"
                     );
-                    match open_device_with(window, offscreen, &[wgpu::Backends::GL], layers, false)
+                    match open_device_with(window, offscreen, &[wgpu::Backends::GL], needs, false)
                         .await
                     {
                         Ok(gl_opened) if !is_software(gl_opened.adapter.get_info().device_type) => {
