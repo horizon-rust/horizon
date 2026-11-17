@@ -8,8 +8,17 @@
 //! far terrain source: a level opened again (another source: its generator
 //! and saves read anew) drops its tiles. The oldest used go first past
 //! [`MAX_BYTES`].
+//!
+//! Tiles fine enough to show saved chunks ([`SAVED_STRIDES`]) read the
+//! level's save: the chunks queued to it since ([`TileCache::follow`], the
+//! save's `far_changes`) drop the tiles over them, so a build shows in the
+//! next tile asked for once its chunk is saved (when it unloads, or about 10
+//! seconds after it changed while loaded: vanilla's eager chunk saving).
 use super::Request;
-use crate::streaming::LodSource;
+use crate::{
+    save::{SaveDir, far_changes::Changed},
+    streaming::LodSource,
+};
 use horizon_protocol::buf::Writer;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -19,6 +28,9 @@ use std::{
 /// What the kept tiles may weigh, replies' bytes: about 4,000 tiles of a
 /// mean 8 KiB (`docs/hosting.md`).
 pub const MAX_BYTES: usize = 32 << 20;
+/// The strides whose tiles read saved chunks (`save::far_lod`: up to 16
+/// blocks a column): coarser ones are the generator's alone.
+pub const SAVED_STRIDES: [i32; 5] = [1, 2, 4, 8, 16];
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct Key {
     level: u32,
@@ -39,6 +51,8 @@ struct Kept {
 struct Level {
     name: String,
     source: Weak<dyn LodSource>,
+    /// Its save, and how far its tiles follow the save's changes.
+    save: Option<(Arc<SaveDir>, u64)>,
 }
 
 #[derive(Default)]
@@ -72,13 +86,56 @@ impl TileCache {
             }
             self.forget(at as u32);
             self.levels[at].source = Arc::downgrade(source);
+            self.levels[at].save = None;
             return at as u32;
         }
         self.levels.push(Level {
             name: name.to_owned(),
             source: Arc::downgrade(source),
+            save: None,
         });
         (self.levels.len() - 1) as u32
+    }
+
+    /// Drop the tiles over the chunks `save` had queued since the last
+    /// call for `level`: before a tile is looked up, so none sampled before a
+    /// change answers after it.
+    pub fn follow(&mut self, level: &str, source: &Arc<dyn LodSource>, save: &Arc<SaveDir>) {
+        let at = self.level(level, source);
+        let entry = &mut self.levels[at as usize];
+        let (_, cursor) = entry.save.get_or_insert_with(|| {
+            // Its tiles so far were sampled from what it has now.
+            let end = save.far_changes().end();
+            (save.clone(), end)
+        });
+        match save.far_changes().since(cursor) {
+            Changed::Chunks(chunks) => {
+                for chunk in chunks {
+                    self.changed(at, chunk);
+                }
+            }
+            Changed::All => self.forget(at),
+        }
+    }
+
+    /// The tiles of `level` over chunk `(cx, cz)` that read saved chunks.
+    fn changed(&mut self, level: u32, (cx, cz): (i32, i32)) {
+        for stride in SAVED_STRIDES {
+            let size = stride * super::SIDE as i32;
+            let (x, z) = (
+                (cx * 16).div_euclid(size) * size,
+                (cz * 16).div_euclid(size) * size,
+            );
+            for approximate in [false, true] {
+                self.remove(&Key {
+                    level,
+                    x,
+                    z,
+                    stride,
+                    approximate,
+                });
+            }
+        }
     }
 
     fn forget(&mut self, level: u32) {
@@ -232,5 +289,43 @@ mod tests {
         let reopened: Arc<dyn LodSource> = Arc::new(Flat);
         assert!(cache.get("o", &reopened, &request(1, 0)).is_none());
         assert!(cache.get("n", &source, &request(1, 0)).is_some());
+    }
+
+    #[test]
+    fn a_chunk_queued_to_the_save_drops_the_tiles_that_read_it() {
+        let dir = std::env::temp_dir().join(format!("horizon-far-tiles-{}", std::process::id()));
+        let save = Arc::new(SaveDir::new(
+            dir.clone(),
+            crate::chunk::LevelShape::OVERWORLD,
+        ));
+        let source: Arc<dyn LodSource> = Arc::new(Flat);
+        let mut cache = TileCache::new(1 << 20);
+        let tile = |x: i32, z: i32, stride: i32| Request {
+            id: 1,
+            x,
+            z,
+            stride,
+            approximate: false,
+        };
+        let tiles = [
+            tile(-16, -16, 1),
+            tile(-256, -256, 16),
+            tile(-512, -512, 32),
+            tile(0, 0, 1),
+        ];
+        cache.follow("o", &source, &save);
+        for r in &tiles {
+            cache.put("o", &source, r, &[1, 0, 0]);
+        }
+        // Chunk (-1, -1) is saved: it is in the stride 1 and 16 tiles, not
+        // in the one east of it, and coarser tiles never read saved chunks.
+        save.clear_chunks(&[(-1, -1)]).unwrap();
+        cache.follow("o", &source, &save);
+        let kept: Vec<bool> = (tiles.iter())
+            .map(|r| cache.get("o", &source, r).is_some())
+            .collect();
+        assert_eq!(kept, [false, false, true, true]);
+        drop(save);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -50,6 +50,7 @@ impl Game<'_> {
         let dim = Dim::from_id(&guest.dimension);
         let position = guest.position;
         let source = self.lod_source_in(dim);
+        let save = self.save_in(dim);
         let Some(host) = self.lan.as_mut() else {
             return;
         };
@@ -65,6 +66,7 @@ impl Game<'_> {
                 conn,
                 level: dim.id().to_owned(),
                 source: source.expect("served when open"),
+                save,
                 request,
             }),
             Verdict::Refuse(reply) => send(&guest.sender, reply),

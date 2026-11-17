@@ -397,7 +397,13 @@ samples them for everyone in turn, behind the ticks, so far terrain never slows 
 distance or over a player's limits is refused, and a client that keeps breaking the limits is disconnected.
 A tile is the same for every player in its level, so the server keeps the tiles it sampled in memory (up to
 32 MiB, about 4,000 tiles; the least recently asked for go first) and answers the next player who asks for one
-with it: players looking at the same land cost one sample. Vanilla clients never hear of it.
+with it: players looking at the same land cost one sample. Tiles up to 16 blocks a column (within about 128
+chunks of a player; 4 blocks and about 16 chunks with Reduced far detail) are made from the world's saved chunks
+where it has them, so what players built shows, and from the generator only where a chunk was never saved; a
+tile of saved chunks alone costs no generation at all. Coarser tiles are the generator's. A chunk saved again
+drops the tiles made from it, so a build shows in far terrain once its chunk is saved: a changed chunk that stays
+loaded is saved about 10 seconds after its last save (vanilla's eager chunk saving), so far terrain lags the world
+by about that much; it reads saves, not the live chunks the ticks are changing. Vanilla clients never hear of it.
 
 `horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600) into
 `reports/profile-<time>Z.hzperf`, a capture the performance tools read ([perf-platform.md](perf-platform.md)), and

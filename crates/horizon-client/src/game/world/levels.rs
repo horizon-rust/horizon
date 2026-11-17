@@ -1155,6 +1155,14 @@ impl Game<'_> {
         Some(parked.streaming.lod_source())
     }
 
+    /// The save of `dim`'s level, open in place or parked.
+    pub(super) fn save_in(&self, dim: Dim) -> Option<Arc<SaveDir>> {
+        if dim == self.dim {
+            return Some(self.save.clone());
+        }
+        Some(self.levels.parked.get(&dim)?.save.clone())
+    }
+
     /// Put `dim`'s level in place for a command whose source is there
     /// (`execute in`, `execute at` a player in another level), opening it if
     /// nobody is in it; returns the level to put back afterwards. Only a

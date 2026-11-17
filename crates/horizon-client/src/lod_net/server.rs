@@ -71,6 +71,8 @@ pub struct Job {
     /// The level's id: its sampler is kept.
     pub level: String,
     pub source: Arc<dyn LodSource>,
+    /// The level's save, whose changes drop the tiles made from it.
+    pub save: Option<Arc<crate::save::SaveDir>>,
     pub request: Request,
 }
 impl Service {
@@ -208,7 +210,13 @@ impl Worker {
                     HashMap::new();
                 while let Some(job) = worker.next() {
                     let r = job.request;
-                    let kept = lock(&worker.tiles).get(&job.level, &job.source, &r);
+                    let kept = {
+                        let mut tiles = lock(&worker.tiles);
+                        if let Some(save) = &job.save {
+                            tiles.follow(&job.level, &job.source, save);
+                        }
+                        tiles.get(&job.level, &job.source, &r)
+                    };
                     if let Some(reply) = kept {
                         lock(&worker.done).push((job.conn, reply));
                         continue;
@@ -434,6 +442,7 @@ mod tests {
                 conn,
                 level: "minecraft:overworld".into(),
                 source: source.clone(),
+                save: None,
                 request,
             });
         }
@@ -464,6 +473,7 @@ mod tests {
                 conn: 2,
                 level: level.into(),
                 source: source.clone(),
+                save: None,
                 request,
             });
         }
@@ -489,6 +499,7 @@ mod tests {
                 conn: 1,
                 level: "minecraft:overworld".into(),
                 source: source.clone(),
+                save: None,
                 request,
             });
         }

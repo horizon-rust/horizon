@@ -19,6 +19,9 @@ use backpressure::compress_records;
 pub mod biome_regions;
 pub mod block_entity_encode;
 mod block_entity_order;
+pub mod far_changes;
+mod far_lod;
+use far_lod::{LodDecoded, SavedLodSampler};
 mod far_regions;
 pub mod level_mods;
 mod respawn;
@@ -2387,15 +2390,6 @@ fn is_forced_ticket(ticket: &Tag) -> bool {
 fn is_portal_ticket(ticket: &Tag) -> bool {
     matches!(ticket.get("type"), Some(Tag::String(t)) if *t == JavaString::from("minecraft:portal"))
 }
-#[derive(Default)]
-struct LodDecoded {
-    chunks: crate::fast_hash::FxHashMap<(i32, i32), (std::time::Instant, LodSurfaces)>,
-    order: std::collections::VecDeque<(i32, i32)>,
-}
-/// Saved chunks kept decoded for far terrain (each tens of kilobytes), and
-/// for how long: edits saved later show after it.
-const LOD_DECODED: usize = 1024;
-const LOD_DECODED_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 impl SaveDir {
     /// This dimension's server-owned mod attachments: `data/horizon/attachments.dat`, Horizon's
     /// own namespace. A file that doesn't read is moved aside to `attachments.dat.corrupt`, with
@@ -4449,150 +4443,6 @@ pub struct Persistent<G> {
     pub biomes: Arc<Biomes>,
 }
 type LodSurfaces = Arc<[crate::lod::Column; 256]>;
-/// The coarsest far tile spacing whose columns read saved chunks: 16 blocks
-/// a column, and 4 with Reduced far detail (`LodSampler::set_approximate`).
-const SAVED_LOD_STRIDE: i32 = 16;
-const SAVED_LOD_STRIDE_REDUCED: i32 = 4;
-struct SavedLodSampler<G: ChunkGenerator> {
-    generator: Arc<Persistent<G>>,
-    inner: Box<dyn crate::streaming::LodSampler>,
-    cache: std::collections::VecDeque<((i32, i32), Option<LodSurfaces>)>,
-    details: Vec<crate::streaming::LodDetail>,
-    /// Reduced far detail: saved chunks only in tiles up to
-    /// `SAVED_LOD_STRIDE_REDUCED` blocks a column.
-    approximate: bool,
-    /// Chunks the generator decorated for far terrain alone, kept from
-    /// earlier sessions; saved chunks take precedence over them.
-    generated: Arc<crate::lod::cache::DiskCache>,
-    /// The generator's far samples from earlier sessions (`lod::bake`).
-    bake: Option<Arc<crate::lod::bake::LodBake>>,
-}
-impl<G: ChunkGenerator> SavedLodSampler<G> {
-    fn saved_columns(&mut self, key: (i32, i32)) -> Option<LodSurfaces> {
-        let cached = match self.cache.iter().position(|(at, _)| *at == key) {
-            Some(index) => self.cache.remove(index).unwrap(),
-            None => (
-                key,
-                self.generator.save.lod_surfaces_shared(
-                    key.0,
-                    key.1,
-                    &self.generator.registry,
-                    &self.generator.biomes,
-                ),
-            ),
-        };
-        let columns = cached.1.clone();
-        self.cache.push_front(cached);
-        self.cache.truncate(128);
-        columns
-    }
-}
-impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
-    fn fork(&self) -> Option<Box<dyn crate::streaming::LodSampler>> {
-        Some(Box::new(Self {
-            generator: self.generator.clone(),
-            inner: self.inner.fork()?,
-            cache: Default::default(),
-            details: Vec::new(),
-            approximate: self.approximate,
-            generated: self.generated.clone(),
-            bake: self.bake.clone(),
-        }))
-    }
-    fn set_approximate(&mut self, approximate: bool) {
-        self.approximate = approximate;
-        self.inner.set_approximate(approximate);
-    }
-    fn request_detail(&mut self, chunks: &[(i32, i32)], center: [i32; 2]) {
-        let mut missing = Vec::new();
-        for &key in chunks {
-            // Generated chunks from earlier sessions answer only these
-            // requests: reading them for every sampled cell of a coarse tile
-            // slowed sampling more than it saved.
-            if let Some(columns) = self
-                .saved_columns(key)
-                .or_else(|| self.generated.get(key.0, key.1))
-            {
-                self.details.push((key, columns));
-            } else {
-                missing.push(key);
-            }
-        }
-        self.inner.request_detail(&missing, center);
-    }
-    fn drain_details(&mut self) -> Vec<crate::streaming::LodDetail> {
-        let mut details = std::mem::take(&mut self.details);
-        for (key, generated) in self.inner.drain_details() {
-            // A generation batch also returns neighbouring, unrequested chunks.
-            // Their saved builds must take precedence too.
-            let columns = self.saved_columns(key).unwrap_or_else(|| {
-                self.generated.put(key.0, key.1, &generated);
-                generated
-            });
-            details.push((key, columns));
-        }
-        details
-    }
-    fn grid(&mut self, x: i32, z: i32, stride: i32, side: usize) -> Vec<crate::lod::Column> {
-        let approximate = self.approximate;
-        let baked = (self.bake.as_ref()).and_then(|b| b.grid(approximate, [x, z], stride, side));
-        let mut columns = baked.unwrap_or_else(|| {
-            let columns = self.inner.grid(x, z, stride, side);
-            if let Some(bake) = &self.bake {
-                bake.put_grid(approximate, [x, z], stride, side, &columns);
-            }
-            columns
-        });
-        // Saved chunks show in tiles up to 16 blocks a column. With Reduced far
-        // detail only up to 4 (within about a kilometre): coarser tiles keep
-        // the generator's terrain, which saved chunks were made from, since
-        // decoding up to 256 saved chunks for each of them held the whole far
-        // view back for minutes in large saves. Edits that far away show once
-        // their tiles refine on approach.
-        let limit = if self.approximate {
-            SAVED_LOD_STRIDE_REDUCED
-        } else {
-            SAVED_LOD_STRIDE
-        };
-        if stride <= limit {
-            for (index, column) in columns.iter_mut().enumerate() {
-                let (wx, wz) = (
-                    x + (index % side) as i32 * stride,
-                    z + (index / side) as i32 * stride,
-                );
-                if let Some(saved) = self.saved_columns((wx >> 4, wz >> 4)) {
-                    *column = crate::lod::Column::reduced(
-                        &saved,
-                        (wx & 15) as usize,
-                        (wz & 15) as usize,
-                        stride as usize,
-                    );
-                }
-            }
-        }
-        columns
-    }
-    fn sample(&mut self, x: i32, z: i32) -> Option<crate::lod::Surface> {
-        self.column(x, z).surface
-    }
-    fn column(&mut self, x: i32, z: i32) -> crate::lod::Column {
-        self.reduced_column(x, z, 1)
-    }
-    fn reduced_column(&mut self, x: i32, z: i32, width: i32) -> crate::lod::Column {
-        if width <= 16
-            && let Some(columns) = self.saved_columns((x >> 4, z >> 4))
-        {
-            return crate::lod::Column::reduced(
-                &columns,
-                (x & 15) as usize,
-                (z & 15) as usize,
-                width as usize,
-            );
-        }
-        self.inner.reduced_column(x, z, width)
-    }
-}
-
 /// Unpack a section's paletted container into `out` (4096 blocks or 64 biome
 /// cells): each entry's palette index as stored, unchecked. Returns the
 /// palette's length, `None` for a container vanilla does not write. Once a
@@ -4823,58 +4673,6 @@ fn decode_lod_surfaces(
     Some(Arc::from(columns))
 }
 
-impl SaveDir {
-    /// `lod_surfaces`, decoded once for all far sampling threads: each saved
-    /// chunk lies under far tiles of several levels, sampled on any thread.
-    fn lod_surfaces_shared(
-        &self,
-        x: i32,
-        z: i32,
-        assets: &crate::assets::Assets,
-        biomes: &Biomes,
-    ) -> Option<LodSurfaces> {
-        if let Some((at, columns)) = self.lod_decoded.lock().unwrap().chunks.get(&(x, z))
-            && at.elapsed() < LOD_DECODED_TTL
-        {
-            return Some(columns.clone());
-        }
-        let columns = self.lod_surfaces(x, z, assets, biomes)?;
-        let mut decoded = self.lod_decoded.lock().unwrap();
-        let fresh = (std::time::Instant::now(), columns.clone());
-        if decoded.chunks.insert((x, z), fresh).is_none() {
-            decoded.order.push_back((x, z));
-            while decoded.order.len() > LOD_DECODED {
-                if let Some(old) = decoded.order.pop_front() {
-                    decoded.chunks.remove(&old);
-                }
-            }
-        }
-        Some(columns)
-    }
-    fn lod_surfaces(
-        &self,
-        x: i32,
-        z: i32,
-        assets: &crate::assets::Assets,
-        biomes: &Biomes,
-    ) -> Option<LodSurfaces> {
-        let root = self.far_record(x, z)?;
-        // Proto saves may still be missing decoration from their neighbors.
-        if text(root.tag.get("Status"))
-            .is_some_and(|status| status != "minecraft:full" && status != "full")
-        {
-            return None;
-        }
-        decode_lod_surfaces(
-            &root,
-            assets,
-            biomes,
-            self.shape.column(),
-            self.shape.sky_light,
-        )
-    }
-}
-
 impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     type Worker = G::Worker;
     fn worker(&self) -> G::Worker {
@@ -4902,6 +4700,7 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
         )
         .map(Arc::new);
         Box::new(SavedLodSampler {
+            seen: self.save.far_changes().end(),
             generator: self,
             inner,
             cache: Default::default(),
@@ -6208,6 +6007,7 @@ mod tests {
             approximate: false,
             generated: Arc::new(crate::lod::cache::DiskCache::new(dir.join("far"), 1)),
             bake: None,
+            seen: 0,
         };
         use crate::streaming::LodSampler;
         sampler.request_detail(&[(-2, 3)], [-32, 48]);
@@ -9784,7 +9584,7 @@ mod far_census {
             for &(tx, tz) in tiles.iter().step_by(step) {
                 let (x, z) = (tx * size - width, tz * size - width);
                 let columns = sampler.grid(x, z, width, 18);
-                let all_saved = width <= SAVED_LOD_STRIDE
+                let all_saved = width <= far_lod::SAVED_LOD_STRIDE
                     && (x.div_euclid(16)..=(x + 18 * width - 1).div_euclid(16)).all(|cx| {
                         (z.div_euclid(16)..=(z + 18 * width - 1).div_euclid(16))
                             .all(|cz| save.lod_surfaces_shared(cx, cz, &assets, &biomes).is_some())
