@@ -1496,7 +1496,9 @@ mod tests {
         );
         std::fs::write(std::env::temp_dir().join("hz-measure-markers.txt"), &report).unwrap();
         println!("{report}");
-        assert!(med(&boxes) < med(&scans));
+        // Pin the work avoided, not host scheduling: wall-clock samples remain diagnostics.
+        assert_eq!(entities.iter().count(), CHESTS as usize + tests.len());
+        assert_eq!(entities.boxes().count(), tests.len());
     }
 }
 
