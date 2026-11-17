@@ -199,11 +199,13 @@ impl SaveDir {
         &self.outstanding.far
     }
     /// `chunks` were queued to be saved, readable from the pending writes:
-    /// logged first, then their decoded columns dropped, so a far read that
-    /// raced the save either finds the log or finds them gone.
+    /// logged and their decoded columns dropped under the decoded columns'
+    /// lock (taken before the log's, as `lod_surfaces_shared` takes them), so
+    /// a far read that sees the log can't find the old columns still kept,
+    /// and one that read before the log doesn't keep what it read.
     pub(super) fn far_saved(&self, chunks: impl Iterator<Item = (i32, i32)> + Clone) {
-        self.outstanding.far.push(chunks.clone());
         let mut decoded = self.lod_decoded.lock().unwrap();
+        self.outstanding.far.push(chunks.clone());
         for key in chunks {
             decoded.chunks.remove(&key);
         }
@@ -233,8 +235,8 @@ impl SaveDir {
         let columns = self.lod_surfaces(x, z, assets, biomes)?;
         let mut decoded = self.lod_decoded.lock().unwrap();
         // Queued to be saved again while it was read: what was read may be
-        // the old save, not kept (`far_saved` logs the change before it
-        // drops the decoded columns).
+        // the old save, not kept (`far_saved` logs the change under this
+        // lock).
         if self.far_changes().changed_since(before, (x, z)) {
             return Some(columns);
         }
