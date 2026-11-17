@@ -22,7 +22,8 @@ struct MeshTaskPayload {
     slices: array<vec2<u32>, 64>,
 }
 var<task_payload> mesh_payload: MeshTaskPayload;
-var<workgroup> task_slice_count: atomic<u32>;
+var<workgroup> lane_offsets: array<u32, 32>;
+var<workgroup> total_slices: u32;
 
 const MESHLET_MARGIN: f32 = 1.0 / 16.0;
 
@@ -66,10 +67,9 @@ fn ts_terrain(
     @builtin(local_invocation_index) lane: u32,
     @builtin(workgroup_id) wg: vec3<u32>,
 ) -> @builtin(mesh_task_size) vec3<u32> {
-    if lane == 0u {
-        atomicStore(&task_slice_count, 0u);
-    }
-    workgroupBarrier();
+    var my_slices = 0u;
+    var my_vertex_base = 0u;
+    var my_quad_count = 0u;
 
     let idx = wg.x * 32u + lane;
     if idx < mesh_cull.counts.x {
@@ -111,18 +111,38 @@ fn ts_terrain(
             )
             && meshlet_in_frustum(origin.xyz + min_local, origin.xyz + max_local)
         {
-            let slices = select(1u, 2u, quad_count > 32u);
-            let slot = atomicAdd(&task_slice_count, slices);
-            let first_count = min(quad_count, 32u);
-            mesh_payload.slices[slot] = vec2(vertex_base, first_count);
-            if slices == 2u {
-                mesh_payload.slices[slot + 1u] = vec2(vertex_base + 32u * 4u, quad_count - 32u);
-            }
+            my_slices = select(1u, 2u, quad_count > 32u);
+            my_vertex_base = vertex_base;
+            my_quad_count = quad_count;
+        }
+    }
+
+    lane_offsets[lane] = my_slices;
+    workgroupBarrier();
+
+    // Stable lane-prefix scan preserving original descriptor and overlay order across all 32 lanes
+    if lane == 0u {
+        var sum = 0u;
+        for (var i = 0u; i < 32u; i++) {
+            let count = lane_offsets[i];
+            lane_offsets[i] = sum;
+            sum += count;
+        }
+        total_slices = sum;
+    }
+    workgroupBarrier();
+
+    if my_slices > 0u {
+        let slot = lane_offsets[lane];
+        let first_count = min(my_quad_count, 32u);
+        mesh_payload.slices[slot] = vec2(my_vertex_base, first_count);
+        if my_slices == 2u {
+            mesh_payload.slices[slot + 1u] = vec2(my_vertex_base + 32u * 4u, my_quad_count - 32u);
         }
     }
 
     workgroupBarrier();
-    return vec3(atomicLoad(&task_slice_count), 1u, 1u);
+    return vec3(total_slices, 1u, 1u);
 }
 
 struct MeshPrimitive {
