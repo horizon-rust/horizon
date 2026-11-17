@@ -312,7 +312,13 @@ fn options() -> Result<Options, String> {
             "--report" => o.report = Some(value),
             "--capture" => o.capture = Some(value),
             "--brand" => o.brand = Some(value),
-            "--far" => o.far = value.parse().map_err(|_| number("chunks"))?,
+            "--far" => {
+                o.far = value.parse().map_err(|_| number("chunks"))?;
+                // The plan counts blocks in an i32: 16 a chunk.
+                if o.far > i32::MAX as u32 / 16 {
+                    return Err(format!("--far {value}: at most {} chunks", i32::MAX / 16));
+                }
+            }
             "--far-after" => o.far_after = value.parse().map_err(|_| number("seconds"))?,
             "--far-dump" => o.far_dump = Some(value),
             "--give" => {
