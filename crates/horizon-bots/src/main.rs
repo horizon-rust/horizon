@@ -40,8 +40,10 @@ use horizon_protocol::{
     },
 };
 use serde_json::json;
+mod far;
 use std::{
     collections::{BTreeMap, HashSet},
+    path::PathBuf,
     sync::{
         Arc, LazyLock, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -98,6 +100,12 @@ horizon-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
                          ground (give them swords); for PvP benches (crit and sweep particles)
   --name PREFIX          bot names: PREFIX0, PREFIX1...; default Bot
   --brand B              the client brand sent in configuration (minecraft:brand); default none
+  --far D                ask the server for far terrain out to D chunks (horizon:lod, needs --brand horizon
+                         and a server with horizon-lod-distance), as a Horizon client with LOD Distance D
+                         does: one pass of its plan, nearest first; the report gives each bot's tiles, bytes
+                         and seconds (src/far.rs)
+  --far-after S          start asking S seconds after joining (after a /tp to spread the bots); default 3
+  --far-dump DIR         keep every tile each bot got in DIR/<name>.tiles, to compare servers byte for byte
   --height H             blocks above spawn the bots fly at (walk, explore, idle); default 24
   --ground               claim the ground in every move (with --height 0 on a flat world: walking
                          on it; higher, or over water: a no-fall or jesus cheat, to test an anticheat)
@@ -197,6 +205,10 @@ struct Options {
     capture: Option<String>,
     /// How many times as fast as vanilla's 20 Hz the bots tick (a timer cheat above 1).
     timer: f64,
+    /// --far: far terrain out to this many chunks (0: none), from this long after joining.
+    far: u32,
+    far_after: f64,
+    far_dump: Option<String>,
 }
 
 fn options() -> Result<Options, String> {
@@ -231,6 +243,9 @@ fn options() -> Result<Options, String> {
         capture: None,
         brand: None,
         timer: 1.0,
+        far: 0,
+        far_after: 3.0,
+        far_dump: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -297,6 +312,9 @@ fn options() -> Result<Options, String> {
             "--report" => o.report = Some(value),
             "--capture" => o.capture = Some(value),
             "--brand" => o.brand = Some(value),
+            "--far" => o.far = value.parse().map_err(|_| number("chunks"))?,
+            "--far-after" => o.far_after = value.parse().map_err(|_| number("seconds"))?,
+            "--far-dump" => o.far_dump = Some(value),
             "--give" => {
                 for part in value.split(',') {
                     let n: Vec<&str> = part.split(':').collect();
@@ -416,6 +434,8 @@ struct Bot {
     target: Mutex<Vec<(u128, Option<i32>)>>,
     /// The last SetHealth.
     health: Mutex<Option<f32>>,
+    /// --far: the far terrain it asks for.
+    far: far::Far,
 }
 
 impl Bot {
@@ -1035,6 +1055,12 @@ fn read(
                 *lock(&bot.server_time) = r.i64().ok();
                 Ok(())
             }
+            cb::CUSTOM_PAYLOAD => {
+                if r.string(32767).is_ok_and(|channel| channel == far::CHANNEL) {
+                    bot.far.reply(&body[body.len() - r.remaining()..]);
+                }
+                Ok(())
+            }
             cb::KEEP_ALIVE => match r.i64() {
                 Ok(v) => send(raw(sb::KEEP_ALIVE, |w| w.i64(v))),
                 Err(_) => Ok(()),
@@ -1457,6 +1483,20 @@ fn run_bot(
             }
         }
         tick += 1;
+        if o.far > 0 && joined.elapsed().as_secs_f64() >= o.far_after {
+            let dump =
+                (o.far_dump.as_ref()).map(|dir| PathBuf::from(dir).join(format!("{name}.tiles")));
+            bot.far.start(pos, i32::from(o.view_distance), o.far, dump);
+            for data in bot.far.requests() {
+                send(
+                    play::Serverbound::CustomPayload(configuration::CustomPayload {
+                        channel: far::CHANNEL.into(),
+                        data,
+                    })
+                    .encode(),
+                );
+            }
+        }
         let ok = send(
             play::Serverbound::MovePlayerPos(play::MovePlayerPos {
                 x: pos[0],
@@ -1632,6 +1672,7 @@ fn main() {
             "error": *lock(&b.error),
             "attacks": b.attacks.load(Ordering::Relaxed),
             "health": *lock(&b.health),
+            "far": (o.far > 0).then(|| b.far.report()),
         })).collect::<Vec<_>>(),
     });
     if o.report.as_deref() == Some("-") {
