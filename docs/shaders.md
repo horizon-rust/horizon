@@ -366,6 +366,10 @@ with `compute = true`, and an option's `resets`. A compute file defines `fn comp
 The game runs them. The keys, their limits and the WGSL each pass sees are in the
 [reference](api/shaders-reference-0.2.md#kept-resources-and-compute-passes).
 
+A pack whose kept resources don't fit in video memory is refused when it loads ("its kept resources (N MiB) don't fit
+in video memory"), and the pack that ran keeps running, its resources made again as at a load. R-relative textures
+that don't fit at a new render size stay at the old one, which the log says once, until the size changes again.
+
 Under `[ray_tracing]` a compute or `[[before_world]]` file that calls a trace function gets them, as a post pass does;
 a `[[before_world]]` pass traces this frame's scene. The four trace names are found by name, as in the material
 stage, so under `[ray_tracing]` don't give them to anything of the pack's own. One part comes in a later step: `[material]` can't read kept
@@ -448,6 +452,12 @@ open, each pass is timed on the GPU and the overlay shows the pack's total and i
 stage draws in a pass of its own (it shares the world's pass otherwise), so its time includes clearing the picture. The
 material stage runs inside terrain's own draws, so it has no time of its own: compare the frame's GPU time with and
 without the pack.
+
+With F3 shut, offscreen or from a script, `horizon-ctl gpu-passes on` times the same passes: `horizon-ctl bench 5`
+then replies with `shader_passes`, the pack's passes by the names F3 shows, beside `gpu_passes`, Horizon's own, and
+with `gpu`, the whole frame's percentiles (`gpu_ms`, every frame, with `bench 5 raw`; `gpu-passes off` stops it).
+`horizon-client --benchmark` records them as `shader_pass.<scene>.<pass>_ms`, and `horizon-ctl profile client start
+--gpu` into a capture (`horizon-perf query gpu`).
 
 ## Next
 
