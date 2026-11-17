@@ -2165,6 +2165,7 @@ version = "0.1.0"
 dependencies = [
  "horizon-client-lib",
  "horizon-core",
+ "horizon-threads",
 ]
 
 [[package]]
