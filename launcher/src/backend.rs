@@ -933,7 +933,40 @@ fn ascii(path: &Path) -> bool {
 /// `windres` hands its include folders to the preprocessor unquoted, so a user name with a space
 /// in %APPDATA% splits there ("cc1.exe: fatal error: v\: No such file or directory").
 fn tool_safe(path: &Path) -> bool {
-    ascii(path) && !(cfg!(windows) && path.as_os_str().to_str().is_some_and(|p| p.contains(' ')))
+    tool_safe_on(path, cfg!(windows))
+}
+
+/// [`tool_safe`] on Windows (`windows`) or elsewhere, so tests check Windows' paths on any system.
+fn tool_safe_on(path: &Path, windows: bool) -> bool {
+    ascii(path) && !(windows && path.as_os_str().to_str().is_some_and(|p| p.contains(' ')))
+}
+
+/// Whether builds go in the resolved data folder `real` itself: when every build tool can read
+/// it, and always for a portable launcher, whose builds never leave its folder for the host's
+/// (#17377): where its folder isn't [`tool_safe_on`] Windows, [`portable_build_refusal`] stops
+/// them before anything is downloaded or written. Otherwise Windows builds in a folder of its own
+/// elsewhere ([`windows_build_dir`]).
+fn builds_in_data_folder(real: &Path, portable: bool, windows: bool) -> bool {
+    portable || tool_safe_on(real, windows)
+}
+
+/// Why native mods can't be built for a portable launcher whose build folder `build` Windows'
+/// build tools can't read (a space or a letter outside ASCII), or None when they can.
+fn portable_build_refusal_for(build: &Path, portable: bool, windows: bool) -> Option<String> {
+    (portable && windows && !tool_safe_on(build, windows)).then(|| {
+        crate::i18n::trf(
+            "This portable launcher can't build native mods in {folder}: the build tools can't read a folder whose path has a space or a letter outside A to Z. Move the launcher's folder to a path without them, such as E:\\Horizon.",
+            &[("folder", &build.display().to_string())],
+        )
+    })
+}
+
+/// Why this launcher can't build native mods: [`portable_build_refusal_for`] its build folder.
+pub fn portable_build_refusal() -> Option<String> {
+    if !crate::portable::is_on() {
+        return None;
+    }
+    portable_build_refusal_for(&build_dir(), true, cfg!(windows))
 }
 
 /// Where builds happen — the Rust toolchain, its Cargo home and `native_mods::root` — as a
@@ -952,7 +985,7 @@ pub fn build_dir() -> PathBuf {
     let data = data_dir();
     let _ = fs::create_dir_all(&data);
     let real = data.canonicalize().map(plain).unwrap_or(data);
-    if tool_safe(&real) {
+    if builds_in_data_folder(&real, crate::portable::is_on(), cfg!(windows)) {
         return real;
     }
     #[cfg(windows)]
@@ -4522,6 +4555,27 @@ mod tests {
                     .unwrap_or_else(|_| built.clone())
             );
         }
+    }
+
+    /// A portable launcher (#17377) builds inside its own folder, never in ProgramData, and on
+    /// Windows refuses to build where the tools can't read its path, rather than fail midway.
+    #[test]
+    fn a_portable_launcher_builds_only_inside_its_own_folder() {
+        let spaced = Path::new(r"E:\Horizon Portable\data\launcher");
+        let cyrillic = Path::new(r"E:\Хорайзон\data\launcher");
+        let plain_usb = Path::new(r"E:\Horizon\data\launcher");
+        for unreadable in [spaced, cyrillic] {
+            // An installed launcher on Windows builds elsewhere; a portable one stays put.
+            assert!(!builds_in_data_folder(unreadable, false, true));
+            assert!(builds_in_data_folder(unreadable, true, true));
+            let said = portable_build_refusal_for(unreadable, true, true).expect("refused");
+            assert!(said.contains(&unreadable.display().to_string()), "{said}");
+            // Not portable, or not Windows (only ASCII matters there, and no build moves): no refusal.
+            assert_eq!(portable_build_refusal_for(unreadable, false, true), None);
+        }
+        assert!(builds_in_data_folder(plain_usb, true, true));
+        assert_eq!(portable_build_refusal_for(plain_usb, true, true), None);
+        assert_eq!(portable_build_refusal_for(spaced, true, false), None);
     }
 
     /// [#6009](https://github.com/horizon-rust/horizon/issues/6009): with a Cyrillic user name the

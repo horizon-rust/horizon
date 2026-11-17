@@ -576,6 +576,10 @@ fn save_archive(
 
 /// Downloads, checks and unpacks the pinned toolchain (once); `progress` gets the fraction done.
 pub fn install(progress: impl Fn(f32)) -> Result<Toolchain, String> {
+    // A portable launcher on a path the build tools can't read: refused before any download.
+    if let Some(why) = backend::portable_build_refusal() {
+        return Err(why);
+    }
     if let Some(done) = installed() {
         return Ok(done);
     }
