@@ -447,6 +447,9 @@ mod hdr_start;
 mod hdr_stats;
 pub(crate) mod hud_coverage;
 mod in_flight;
+mod material_animate;
+#[cfg(test)]
+mod material_animation_tests;
 pub use hdr::{Calibration as HdrCalibration, Output as HdrOutput};
 pub use output::{DisplayReading, EffectiveOutput, FrameConfiguration, FrameRequest};
 
@@ -521,6 +524,49 @@ mod world_views;
 /// The world pass again after occlusion culling's test: it loads both
 /// targets (phase 2 draws over phase 1, reading the test's results).
 /// `LevelRenderer.addSkyPass`: fluids and camera effects block the sky pass.
+/// The fog colour and distances of the renderer's `Globals` (`fog_color`; `fog`: the
+/// environment's start and end, the render distance's start and end): what terrain.wgsl's
+/// `apply_fog` mixes, and what a shader pack that fogs its stages itself reads
+/// (`Frame.fog_environment`, `fog_render`).
+pub(crate) fn fog_uniform(frame: &Frame) -> ([f32; 4], [f32; 4]) {
+    if let Some(f) = frame.fog {
+        (
+            f.color,
+            [
+                f.environmental_start,
+                f.environmental_end,
+                f.render_distance_start,
+                f.render_distance_end,
+            ],
+        )
+    } else if frame.underwater {
+        (
+            [
+                frame.water_fog[0],
+                frame.water_fog[1],
+                frame.water_fog[2],
+                1.0,
+            ],
+            [-8.0, 96.0, -8.0, 96.0],
+        )
+    } else {
+        let d = frame.distance;
+        (
+            [
+                frame.sky.fog_color[0],
+                frame.sky.fog_color[1],
+                frame.sky.fog_color[2],
+                1.0,
+            ],
+            // FogRenderer: render-distance fog starts at max(d - 16, 0)... d.
+            {
+                let (start, end) = frame.environment_fog.unwrap_or((f32::MAX, f32::MAX));
+                [start, end, (d - d.min(64.0) * 0.25).max(0.0), d]
+            },
+        )
+    }
+}
+
 fn sky_open(frame: &Frame) -> bool {
     !frame.sky_blocked
 }
@@ -1503,7 +1549,7 @@ pub struct Renderer {
     lightmap_view: wgpu::TextureView,
     lightmap_sampler: wgpu::Sampler,
     animations: animate::SpriteAnimator,
-    material_animations: Vec<SpriteAnimation>,
+    material_animations: material_animate::MaterialAnimations,
     active_animated_layers: Vec<u64>,
     uploads: upload::Uploads,
     /// Section meshes are staged through their own belt into
@@ -3516,11 +3562,7 @@ impl Renderer {
                 )
             })
             .collect();
-        let material_animations = animations
-            .iter()
-            .filter(|a| a.has_materials())
-            .cloned()
-            .collect();
+        let material_animations = material_animate::MaterialAnimations::new(animations);
         let animations = animate::SpriteAnimator::new(
             &device,
             animations,
@@ -7000,7 +7042,9 @@ impl Renderer {
             &constants,
             lights,
         )?;
-        self.replace_native(Some(pack));
+        if let Some(refused) = self.replace_native(Some(pack)) {
+            return Err(refused);
+        }
         self.pack_post = None;
         self.pack_atlas = None;
         self.pack_material_atlases = None;
@@ -7338,51 +7382,49 @@ impl Renderer {
             active,
             self.own_timing.as_mut(),
         );
-        if let Some(arrays) = &self.pbr_maps {
-            for animation in &self.material_animations {
-                if !self.animations.changed().contains(&animation.layer) {
-                    continue;
-                }
-                let Some(pair) = arrays.get((animation.layer / self.sprite_split) as usize) else {
-                    continue;
-                };
-                for kind in 0..2 {
-                    let Some(pixels) = animation.material_pixels(kind, tick) else {
-                        continue;
+        if let Some(arrays) = &self.pbr_maps
+            && let Some(pair) = arrays.first()
+        {
+            let selected = self.animations.changed().iter().filter_map(|&layer| {
+                self.animations
+                    .current_frame(layer)
+                    .map(|frame| (layer, frame))
+            });
+            let size = pair[0].width();
+            let levels = pair[0].mip_level_count();
+            let changed = self.material_animations.animate(
+                selected,
+                size,
+                levels,
+                |layer, kind, level, size, pixels| {
+                    let Some(pair) = arrays.get((layer / self.sprite_split) as usize) else {
+                        return;
                     };
-                    let texture = &pair[kind];
-                    let from = (pixels.len() / 4).isqrt() as u32;
-                    for level in 0..texture.mip_level_count() {
-                        let size = texture.width() >> level;
-                        let pixels = crate::sprites::resample(pixels, from, size);
-                        self.uploads.texture(
-                            encoder,
-                            wgpu::TexelCopyTextureInfo {
-                                texture,
-                                mip_level: level,
-                                origin: wgpu::Origin3d {
-                                    x: 0,
-                                    y: 0,
-                                    z: animation.layer % self.sprite_split,
-                                },
-                                aspect: wgpu::TextureAspect::All,
-                            },
-                            size,
-                            size,
-                            &pixels,
-                        );
-                    }
-                }
-            }
-            if let Some(atlases) = &self.pack_material_atlases {
-                for kind in 0..2 {
-                    let arrays: Vec<_> = arrays.iter().map(|pair| pair[kind].clone()).collect();
-                    atlases[kind].copy(
-                        &self.device,
+                    self.uploads.texture(
                         encoder,
-                        &arrays,
-                        self.animations.changed().iter().copied(),
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &pair[kind],
+                            mip_level: level,
+                            origin: wgpu::Origin3d {
+                                x: 0,
+                                y: 0,
+                                z: layer % self.sprite_split,
+                            },
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        size,
+                        size,
+                        pixels,
                     );
+                },
+            );
+            if let Some(atlases) = &self.pack_material_atlases {
+                for (kind, layers) in changed.into_iter().enumerate() {
+                    if layers.is_empty() {
+                        continue;
+                    }
+                    let arrays: Vec<_> = arrays.iter().map(|pair| pair[kind].clone()).collect();
+                    atlases[kind].copy(&self.device, encoder, &arrays, layers);
                 }
             }
         }
@@ -7794,42 +7836,7 @@ impl Renderer {
         let sun_angle = frame.sky.sun_angle.to_radians();
         // Celestial bodies rotate around the X axis; angle 0 = noon.
         let sun = Vec3::new(0.0, sun_angle.cos(), -sun_angle.sin());
-        let (fog_color, fog) = if let Some(f) = frame.fog {
-            (
-                f.color,
-                [
-                    f.environmental_start,
-                    f.environmental_end,
-                    f.render_distance_start,
-                    f.render_distance_end,
-                ],
-            )
-        } else if frame.underwater {
-            (
-                [
-                    frame.water_fog[0],
-                    frame.water_fog[1],
-                    frame.water_fog[2],
-                    1.0,
-                ],
-                [-8.0, 96.0, -8.0, 96.0],
-            )
-        } else {
-            let d = frame.distance;
-            (
-                [
-                    frame.sky.fog_color[0],
-                    frame.sky.fog_color[1],
-                    frame.sky.fog_color[2],
-                    1.0,
-                ],
-                // FogRenderer: render-distance fog starts at max(d - 16, 0)... d.
-                {
-                    let (start, end) = frame.environment_fog.unwrap_or((f32::MAX, f32::MAX));
-                    [start, end, (d - d.min(64.0) * 0.25).max(0.0), d]
-                },
-            )
-        };
+        let (fog_color, fog) = fog_uniform(frame);
         let globals = Globals {
             view_proj: jittered.to_cols_array_2d(),
             fog_color,

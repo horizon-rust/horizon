@@ -44,6 +44,8 @@ pub(super) struct KeptStore {
     kept: Kept,
     held: Vec<Held>,
     size: [u32; 2],
+    /// An R the scaled textures had no room for (`fit`): not tried again until R changes.
+    refused: Option<[u32; 2]>,
     /// This frame's view and world epochs and R, from frame prep (`NativePack::write`).
     next: ([u32; 2], [u32; 2]),
     /// Each pass's bindings and layouts (`chain`), the ordinary passes' then the compute
@@ -75,7 +77,7 @@ impl KeptStore {
     #[cfg(test)]
     pub(super) fn new(device: &wgpu::Device, kept: &Kept, size: [u32; 2]) -> Self {
         let mut store = Self::declared(kept, size);
-        store.allocate(device);
+        store.allocate(device, size).unwrap();
         store
     }
 
@@ -85,6 +87,7 @@ impl KeptStore {
             kept: kept.clone(),
             held: Vec::new(),
             size,
+            refused: None,
             next: ([1, 1], size),
             passes: Vec::new(),
             computes: Vec::new(),
@@ -99,15 +102,20 @@ impl KeptStore {
         }
     }
 
-    /// Makes every resource, zeros, unless they are made.
-    fn allocate(&mut self, device: &wgpu::Device) {
+    /// Makes every resource, zeros, the R-relative ones at R `size`, unless they are made; or
+    /// none, and why, without the video memory for them.
+    fn allocate(&mut self, device: &wgpu::Device, size: [u32; 2]) -> Result<(), String> {
         if self.held.is_empty() {
+            (self.size, self.refused) = (size, None);
             self.worlds.clear();
             let (resources, size) = (&self.kept.resources, self.size);
-            self.held = (resources.iter())
-                .map(|r| make(device, &r.name, r.shape, size))
-                .collect();
+            self.held = made(device, resources, size).map_err(|e| {
+                let bytes: u64 = resources.iter().map(|r| bytes(r.shape, size)).sum();
+                let mib = bytes.div_ceil(1 << 20);
+                format!("its kept resources ({mib} MiB) don't fit in video memory ({e})")
+            })?;
         }
+        Ok(())
     }
 
     /// Destroys every resource now, not when the GPU is done with the last frame.
@@ -128,17 +136,34 @@ impl KeptStore {
         self.serial = self.serial.wrapping_add(1);
     }
 
-    /// Remakes the R-relative textures, as zeros, when R changes; whether it did.
+    /// Remakes the R-relative textures, as zeros, when R changes; whether it did. Without the
+    /// video memory for all of them at the new R, they stay as they are, at the old one.
     pub(super) fn fit(&mut self, device: &wgpu::Device, size: [u32; 2]) -> bool {
         if size == self.size {
+            // Back where they fit: a refused R may fit when it comes again.
+            self.refused = None;
             return false;
         }
-        self.size = size;
-        self.worlds.clear();
-        for (r, held) in self.kept.resources.iter().zip(&mut self.held) {
-            if matches!(r.shape, Shape::Scaled { .. }) {
-                *held = make(device, &r.name, r.shape, size);
+        if self.refused == Some(size) {
+            return false;
+        }
+        let scaled = |r: &&kept::Resource| matches!(r.shape, Shape::Scaled { .. });
+        let resources = self.kept.resources.iter();
+        let mut remade = match made(device, resources.clone().filter(scaled), size) {
+            Ok(remade) => remade.into_iter(),
+            Err(e) => {
+                let ([w, h], [was_w, was_h]) = (size, self.size);
+                log::warn!(
+                    "Horizon shader pack: no video memory for its kept textures at {w}×{h} ({e}); they stay at {was_w}×{was_h}"
+                );
+                self.refused = Some(size);
+                return false;
             }
+        };
+        (self.size, self.refused) = (size, None);
+        self.worlds.clear();
+        for (_, held) in resources.zip(&mut self.held).filter(|(r, _)| scaled(r)) {
+            *held = remade.next().expect("one remade a scaled resource");
         }
         true
     }
@@ -356,6 +381,7 @@ pub(super) fn dispatch(
     (groups, traced): (&[wgpu::BindGroup], Option<&[Option<wgpu::ComputePipeline>]>),
     at: usize,
     size: [u32; 2],
+    mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
 ) {
     let Some(k) = kept.as_ref().filter(|k| k.started) else {
         return;
@@ -364,17 +390,20 @@ pub(super) fn dispatch(
     for (c, p) in k.computes.iter().enumerate() {
         if p.at == Some(at) {
             let pipeline = traced.and_then(|t| t[c].as_ref()).unwrap_or(&p.pipeline);
-            record(p, encoder, (&groups[ordinary + c], pipeline), size);
+            let timing = timing.as_deref_mut();
+            record(p, encoder, (&groups[ordinary + c], pipeline), size, timing);
         }
     }
 }
 
-/// Records compute pass `p` in `encoder` with its `group` and `pipeline` at R `size`.
+/// Records compute pass `p` in `encoder` with its `group` and `pipeline` at R `size`, timed
+/// under its name in a timed frame.
 fn record(
     p: &ComputePass,
     encoder: &mut wgpu::CommandEncoder,
     (group, pipeline): (&wgpu::BindGroup, &wgpu::ComputePipeline),
     size: [u32; 2],
+    timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
 ) {
     let cells = match p.dispatch {
         Dispatch::Cells(cells) => cells,
@@ -383,7 +412,7 @@ fn record(
     let [x, y, z] = [0, 1, 2].map(|i| cells[i].div_ceil(p.workgroup[i]));
     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some(&p.label),
-        timestamp_writes: None,
+        timestamp_writes: timing.and_then(|t| t.compute_writes(&p.label)),
     });
     pass.set_pipeline(pipeline);
     pass.set_bind_group(GROUP, group, &[]);
@@ -464,18 +493,39 @@ pub(super) fn output(kept: &Option<KeptStore>, r: usize) -> &wgpu::TextureView {
 /// Installs the kept resources of `new`, the post stage of the pack that runs from now on,
 /// where `old`'s ran: a store `new` carried over (`NativePack::carry`, before) stays; else
 /// `old`'s is destroyed before `new`'s is made, so a reload never holds two stores, and a pack
-/// that fails to build never makes one.
+/// that fails to build never makes one. `new`'s R-relative textures are made at R `size`, the
+/// frame's. Why `new`'s couldn't be made, without the video memory for it: then it holds none.
 pub(in crate::gfx) fn install(
     device: &wgpu::Device,
     new: Option<&mut NativePost>,
     old: Option<&mut NativePost>,
-) {
+    size: [u32; 2],
+) -> Result<(), String> {
     if let Some(store) = old.and_then(|p| p.kept.as_mut()) {
         store.free();
     }
     if let Some(store) = new.and_then(|p| p.kept.as_mut()) {
-        store.allocate(device);
+        return store.allocate(device, size);
     }
+    Ok(())
+}
+
+/// Makes `post`'s store again, as zeros, after `install` freed it for a pack that was refused:
+/// at the R its textures were last made at, not this frame's, and still not trying an R they
+/// had no room for (`KeptStore::fit`).
+pub(in crate::gfx) fn reinstall(
+    device: &wgpu::Device,
+    post: &mut NativePost,
+) -> Result<(), String> {
+    let Some(store) = &mut post.kept else {
+        return Ok(());
+    };
+    // Its passes' groups bind the freed views.
+    post.groups = None;
+    let (size, refused) = (store.size, store.refused);
+    store.allocate(device, size)?;
+    store.refused = refused;
+    Ok(())
 }
 
 impl NativePost {
@@ -510,12 +560,13 @@ impl NativePost {
     /// Dispatches the `[[before_world]]` passes, once a frame (the first call after
     /// `kept_frame`): the frame starts there (`KeptStore::begin`, at the frame's R), so the
     /// passes after them read what they wrote as this frame's. With `scene`, this frame's (built
-    /// before them), the passes that trace run against it.
+    /// before them), the passes that trace run against it. With `timing`, each is timed.
     pub(in crate::gfx) fn before_world(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         scene: Option<&super::trace::Traced<'_>>,
+        mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) {
         let Some(k) = &mut self.kept else {
             return;
@@ -551,7 +602,13 @@ impl NativePost {
         for (w, p) in k.computes[first..].iter().enumerate() {
             let pipeline = pipelines.and_then(|t| t[w].as_ref()).unwrap_or(&p.pipeline);
             let group = &k.worlds[k.parity * worlds + w];
-            record(p, encoder, (group, pipeline), k.next.1);
+            record(
+                p,
+                encoder,
+                (group, pipeline),
+                k.next.1,
+                timing.as_deref_mut(),
+            );
         }
     }
 
@@ -619,7 +676,8 @@ impl super::super::native_pack::NativePack {
         encoder: &mut wgpu::CommandEncoder,
         scene: Option<&super::trace::Traced<'_>>,
     ) {
-        self.post.before_world(device, encoder, scene);
+        self.post
+            .before_world(device, encoder, scene, self.timing.as_mut());
     }
 }
 
@@ -775,6 +833,7 @@ fn format(format: Format) -> wgpu::TextureFormat {
         Format::R32Float => wgpu::TextureFormat::R32Float,
         Format::Rgba32Float => wgpu::TextureFormat::Rgba32Float,
         Format::Rgba32Uint => wgpu::TextureFormat::Rgba32Uint,
+        Format::R32Uint => wgpu::TextureFormat::R32Uint,
     }
 }
 
@@ -790,6 +849,9 @@ thread_local! {
     /// that can't make a format so.
     pub(super) static PROBE_EXTRA: std::cell::Cell<wgpu::TextureUsages> =
         const { std::cell::Cell::new(wgpu::TextureUsages::empty()) };
+    /// How many of the store's next allocations (`made`) report no room for them: a test's
+    /// stand-in for a device out of video memory, which no test can make safely on a shared GPU.
+    pub(super) static NO_ROOM: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// The first kept texture whose format the device can't make with `TEXTURE_USAGES` (OpenGL ES
@@ -845,6 +907,46 @@ pub(super) fn unmet(
     refusal(&device.limits(), manifest, stages, shared).or_else(|| unmade(device, &manifest.kept))
 }
 
+/// What `make` makes of each of `resources` at R `size`, or the error that left no room for
+/// them: one raised outside a scope is fatal. A texture that failed is invalid, and so is its
+/// view, so validation errors are caught too (any of `make`'s, reported as no room, with
+/// wgpu's message); all of them are dropped then.
+fn made<'a>(
+    device: &wgpu::Device,
+    resources: impl IntoIterator<Item = &'a kept::Resource>,
+    size: [u32; 2],
+) -> Result<Vec<Held>, String> {
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let held: Vec<_> = (resources.into_iter())
+        .map(|r| make(device, &r.name, r.shape, size))
+        .collect();
+    // Native error scopes resolve at once.
+    let error = pollster::block_on(memory.pop()).or(pollster::block_on(validation.pop()));
+    let error = error.map(|e| e.to_string());
+    #[cfg(test)]
+    let error = error.or_else(|| {
+        let left = NO_ROOM.get().checked_sub(1)?;
+        NO_ROOM.set(left);
+        Some("no room (test)".to_owned())
+    });
+    match error {
+        None => Ok(held),
+        Some(e) => Err(e),
+    }
+}
+
+/// The video memory resource `shape` takes at R `size`: both versions of a texture.
+fn bytes(shape: Shape, size: [u32; 2]) -> u64 {
+    let texels =
+        |format: Format, [w, h]: [u32; 2]| 2 * u64::from(w) * u64::from(h) * format.bytes();
+    match shape {
+        Shape::Buffer { bytes, .. } => bytes,
+        Shape::Fixed { format, size } => texels(format, size),
+        Shape::Scaled { format, scale } => texels(format, super::scaled(size, scale)),
+    }
+}
+
 fn make(device: &wgpu::Device, name: &str, shape: Shape, size: [u32; 2]) -> Held {
     let pair = |f, [width, height]: [u32; 2]| {
         [0, 1].map(|_| {
@@ -881,8 +983,8 @@ fn make(device: &wgpu::Device, name: &str, shape: Shape, size: [u32; 2]) -> Held
 
 /// The layout entries of `bindings` (`kept_bindings`) for `visibility`: a buffer read-only
 /// where the pass doesn't write it, a written texture write-only storage, a read one filterable
-/// only as `rgba16float` (the 32-bit ones are read with `textureLoad`), `rgba32uint` read as
-/// `u32`.
+/// only as `rgba16float` (the 32-bit ones are read with `textureLoad`), the integer ones
+/// (`rgba32uint`, `r32uint`) read as `u32`.
 pub(super) fn layout_entries(
     kept: &Kept,
     bindings: &[KeptBinding],
@@ -906,7 +1008,7 @@ pub(super) fn layout_entries(
                     },
                     _ => wgpu::BindingType::Texture {
                         sample_type: match f {
-                            Format::Rgba32Uint => wgpu::TextureSampleType::Uint,
+                            f if f.is_uint() => wgpu::TextureSampleType::Uint,
                             f => wgpu::TextureSampleType::Float {
                                 filterable: f == Format::Rgba16Float,
                             },
