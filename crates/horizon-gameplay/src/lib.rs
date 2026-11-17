@@ -9,3 +9,5 @@ pub mod tick_profile;
 pub mod item_areas;
 pub mod mob_index;
 
+
+pub mod dedicated;
