@@ -284,6 +284,12 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
   its sun, for a sky that draws its own; and `frame.moon_phase`, the phase of the moon Horizon draws (0 full to 7
   waxing gibbous), declared only for a pack whose files name `moon_phase`, at the end of `Frame`. A pack that sets
   neither is built from the same WGSL and drawn as before.
+- 2026-11-16: API 0.2 (additions, experimental): `[entity] reads` and `[sky] reads` (#16011 item 4): the entity and
+  sky stages read kept resources by `[material] reads`' rules: `x` for this frame's version of a texture a
+  `[[before_world]]` pass writes, `x_previous` for last frame's, and buffers, in their fragments only. The check
+  refuses `x` of a texture only `[[post]]` passes write, and `writes` on either stage. An entity or sky stage without
+  `reads` composes and draws as before, a test holds. The reference now says that a compute pass may call
+  `storageBarrier()`.
 - 2026-11-15: API 0.2 (additions, experimental): `[material] reads` (#16011 item 4): the terrain reads kept
   resources, `x` for this frame's version of a texture a `[[before_world]]` pass writes (in the same frame),
   `x_previous` for last frame's, and buffers; their declarations join the material's module at the passes'
