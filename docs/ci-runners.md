@@ -57,9 +57,10 @@ Each Rust job keeps its Cargo build folder between runs on a Blacksmith sticky d
 set for this repository's own runs, another for forks' pull requests. A checkout dates every file now; the script gives
 each file whose Git object is the one the disk's last job saw that job's date back (`tools/ci/source_mtimes.py`), so
 Cargo rebuilds only what changed, and empties a disk past 50 GB (`MAX_TARGET_GB`). A failed or cancelled job leaves
-its disk as it found it. A fork's copy of the workflow could still name this repository's disks, which is one more
-reason a maintainer approves forks' runs; Blacksmith's branch-protected caches setting (only main's pushes write the
-disks) would close that.
+its disk as it found it. The organisation's branch-protected caches setting is on: only main's pushes write the disks,
+and pull requests and the merge queue build on main's latest and discard what they add ("commit denied ... not a
+trusted trigger" in their logs). So a pull request's disks are warm only once main has pushed since the job's disk
+was created, and a fork's copy of the workflow cannot write this repository's disks.
 
 ## Which jobs, and when
 
