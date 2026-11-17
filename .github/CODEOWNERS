@@ -14,3 +14,9 @@
 /launcher/links.json                     @horizon-rust/council
 /launcher/Cargo.toml                     @horizon-rust/council
 /packaging/                              @horizon-rust/council
+
+# Two paths inside the folders above reach no secret, runner or release: the review of a Horizon Team member past probation is enough
+# (#17630). The last matching line wins, so these stay below the folders. /nightly sets still refuse them
+# (tools/ci/nightly_set.py).
+/.github/pull_request_template.md        @horizon-rust/horizon-team @horizon-rust/council
+/tools/ci/ignored-tests/                 @horizon-rust/horizon-team @horizon-rust/council

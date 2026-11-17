@@ -123,7 +123,7 @@ run there (parity has none). It is also a parity host (`playhorizon` in `tools/p
 Pull requests go through the merge queue, which squashes each one into a single commit titled with the pull
 request's title and number (`kind(area): what changes (#123)`); never `gh pr merge --auto`. Branch protection on main
 requires `verify` for everyone, and a council member's review (team `council`) for the files `.github/CODEOWNERS` lists (what builds, signs
-and ships releases). Branches don't have to be up to date with main: main's own `checks` run catches the rare
+and ships releases; for the pull request template and `tools/ci/ignored-tests/` the review of a Horizon Team member past probation also counts). Branches don't have to be up to date with main: main's own `checks` run catches the rare
 semantic conflict.
 
 **Who merges.** The Horizon Team (GitHub team `horizon-team`: kacpherek, levzzz5154, rdbtCVS, Online5277, dezer-x,
