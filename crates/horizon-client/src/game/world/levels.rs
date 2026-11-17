@@ -1413,17 +1413,11 @@ impl Game<'_> {
         // their turns (`as_guest`), and the window's player is a client of it.
         self.ticks += 1;
         self.repro_tick();
-        self.track_experience_display();
-        self.tick_enchanting_book();
         // `/tick freeze` stops the world but not the player.
         let running = match self.level_pass.running {
             Some(running) => running,
             None => self.clock.world_runs(),
         };
-        // GameRenderer.tick: a wither's bar darkens the world, then fades;
-        // the activated item counts down.
-        self.boss_overlay.tick_darken(running);
-        self.tick_item_activation();
         span("mods_inventory_ticks", || self.native_inventory_ticks());
         if running {
             // `MinecraftServer.tickChildren`: `commandFunctions` runs before
