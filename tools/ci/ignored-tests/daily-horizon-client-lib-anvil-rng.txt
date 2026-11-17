@@ -1,0 +1,4 @@
+# Prepared-resource tests for anvil player RNG.
+# PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
+horizon-client game::lan_stations::anvil_rng_tests::anvil_wear_draws_only_from_the_acting_player lib daily resources
+horizon-client game::stations::anvil_level_rng_tests::anvil_wear_leaves_the_level_random_stream_untouched lib daily resources
