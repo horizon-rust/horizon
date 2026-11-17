@@ -5532,13 +5532,15 @@ impl Renderer {
     ///
     /// `marks` holds each state's flags: 1, drawn off screen (a section holding one is kept
     /// wherever it is); 2, drawn as far as 256 blocks (a section holding one is kept that far).
-    /// States past its end have none. An empty table keeps nothing for either.
+    /// States past its end have none. An empty or absent table keeps nothing for either.
+    /// The cache retains the immutable allocation, so editing with `Arc::make_mut` or replacing
+    /// the table always changes its identity; a dropped table's address cannot be reused.
     pub fn visible_block_entities_in_frustum<'a>(
         &'a self,
         fade_seconds: f32,
         camera: DVec3,
         frustum: Option<JoinedFrusta>,
-        marks: &'a [u8],
+        marks: Option<&'a Arc<[u8]>>,
     ) -> impl Iterator<Item = (&'a ([i32; 3], u32), bool)> + 'a {
         let section_count = self.block_entities.len();
         let marks_cache = &self.block_entity_marks;
@@ -13502,11 +13504,11 @@ impl Drop for CancelOnDrop {
     }
 }
 
-/// `Renderer::block_entity_marks`: the marks table they were worked out for (its address and
-/// length) and each section's (membership revision, marks).
+/// `Renderer::block_entity_marks`: the immutable marks table they were worked out for and each
+/// section's (membership revision, marks). Keeping the allocation alive prevents address reuse.
 #[derive(Default)]
 struct BlockEntityMarks {
-    table: (usize, usize),
+    table: Option<Arc<[u8]>>,
     sections: FxHashMap<SectionKey, (u64, u8)>,
 }
 
@@ -13517,8 +13519,11 @@ fn cached_section_mark(
     section_count: usize,
     key: &SectionKey,
     blocks: &[([i32; 3], u32)],
-    marks: &[u8],
+    marks: Option<&Arc<[u8]>>,
 ) -> u8 {
+    let Some(marks) = marks else {
+        return 0;
+    };
     if marks.is_empty() {
         return 0;
     }
@@ -13531,9 +13536,13 @@ fn cached_section_mark(
         return worked();
     };
     let mut cache = cache.borrow_mut();
-    let table = (marks.as_ptr() as usize, marks.len());
-    if cache.table != table || cache.sections.len() > 2 * section_count + 64 {
-        cache.table = table;
+    if !cache
+        .table
+        .as_ref()
+        .is_some_and(|table| Arc::ptr_eq(table, marks))
+        || cache.sections.len() > 2 * section_count + 64
+    {
+        cache.table = Some(marks.clone());
         cache.sections.clear();
     }
     match cache.sections.get(key) {
@@ -13563,26 +13572,51 @@ mod block_entity_mark_tests {
         let mut revisions = FxHashMap::default();
         let key = (1, 2, 3);
         revisions.insert(key, 7);
-        let marks = vec![0u8, 1, 2, 3];
+        let marks: Arc<[u8]> = Arc::from([0u8, 1, 2, 3]);
         let blocks = vec![([0, 0, 0], 1u32), ([1, 0, 0], 2)];
-        let first = cached_section_mark(&cache, &revisions, 1, &key, &blocks, &marks);
+        let first = cached_section_mark(&cache, &revisions, 1, &key, &blocks, Some(&marks));
         assert_eq!(first, or_scan(&blocks, &marks));
         assert_eq!(first, 3);
         // A second ask with the same revision does not depend on a new walk matching: the stored
         // mark is what comes back even if the caller would now fold something else.
         let stale = vec![([0, 0, 0], 0u32)];
         assert_eq!(
-            cached_section_mark(&cache, &revisions, 1, &key, &stale, &marks),
+            cached_section_mark(&cache, &revisions, 1, &key, &stale, Some(&marks)),
             first
         );
         revisions.insert(key, 8);
         assert_eq!(
-            cached_section_mark(&cache, &revisions, 1, &key, &stale, &marks),
+            cached_section_mark(&cache, &revisions, 1, &key, &stale, Some(&marks)),
             0
         );
         assert_eq!(
-            cached_section_mark(&cache, &revisions, 1, &key, &blocks, &[]),
+            cached_section_mark(&cache, &revisions, 1, &key, &blocks, None),
             0
+        );
+    }
+
+    #[test]
+    fn replacing_or_editing_the_marks_table_invalidates_section_marks() {
+        let cache = std::cell::RefCell::new(BlockEntityMarks::default());
+        let key = (1, 2, 3);
+        let revisions = FxHashMap::from_iter([(key, 7)]);
+        let blocks = [([0, 0, 0], 1u32)];
+        let mut marks: Arc<[u8]> = Arc::from([0u8, 1]);
+        assert_eq!(
+            cached_section_mark(&cache, &revisions, 1, &key, &blocks, Some(&marks)),
+            1
+        );
+        // The retained table makes mutation copy-on-write even when the caller is its only owner.
+        Arc::make_mut(&mut marks)[1] = 2;
+        assert_eq!(
+            cached_section_mark(&cache, &revisions, 1, &key, &blocks, Some(&marks)),
+            2
+        );
+        drop(marks);
+        let replacement: Arc<[u8]> = Arc::from([0u8, 3]);
+        assert_eq!(
+            cached_section_mark(&cache, &revisions, 1, &key, &blocks, Some(&replacement)),
+            3
         );
     }
 
@@ -13591,7 +13625,7 @@ mod block_entity_mark_tests {
         const SECTIONS: usize = 400;
         const BLOCKS: usize = 64;
         const RUNS: usize = 11;
-        let marks: Vec<u8> = (0..20_000).map(|i| if i == 1500 { 2 } else { 0 }).collect();
+        let marks: Arc<[u8]> = (0..20_000).map(|i| if i == 1500 { 2 } else { 0 }).collect();
         let mut revisions = FxHashMap::default();
         let mut sections = Vec::with_capacity(SECTIONS);
         for s in 0..SECTIONS {
@@ -13622,7 +13656,7 @@ mod block_entity_mark_tests {
                     sections.len(),
                     key,
                     blocks,
-                    &marks,
+                    Some(&marks),
                 ));
             }
             (start.elapsed().as_nanos(), n)
