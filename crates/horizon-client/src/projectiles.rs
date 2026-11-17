@@ -698,6 +698,12 @@ impl Projectile {
             self.previous_yaw += rotation;
             self.needs_sync = true;
         }
+        // `ShulkerBullet.tick` turns the bullet (`rotateTowardsMovement(0.5F)`)
+        // after `hitTargetOrDeflectSelf`, so a deflection in its tick is
+        // followed by the turn, from the reversed motion.
+        if !by_attack && matches!(self.kind, ProjectileKind::ShulkerBullet { .. }) {
+            self.rotate_towards_movement(0.5);
+        }
         (self.owner, self.owner_uuid, self.guest) = owner;
         self.owner_vehicle = None;
         self.on_deflection(by_attack);
@@ -1412,7 +1418,9 @@ impl Projectile {
             return (false, Hit::Block { pos, at, face });
         }
         self.position = to;
-        self.update_rotation();
+        // `ProjectileUtil.rotateTowardsMovement(this, 0.5F)` ends every tick,
+        // after the move and after a hit (`deflect` turns a deflected bullet).
+        self.rotate_towards_movement(0.5);
         if let Some(b) = target {
             let (dir, steps) = match self.kind {
                 ProjectileKind::ShulkerBullet { dir, steps, .. } => (dir, steps),
