@@ -3,3 +3,4 @@
 // Listed in portable.pending (tools/layers.json) until the types it needs move to portable crates.
 extern crate horizon_client_lib as horizon_client;
 pub mod interaction_shapes;
+pub mod lan;
