@@ -4829,6 +4829,9 @@ impl Game<'_> {
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         self.input_hud_begin();
         let mut batch = HudBatch::new(size, self.settings.gui_scale_inputs());
+        // The last frame's vertex room, emptied. Grown from nothing each frame, a page's tens of
+        // thousands of vertices were copied over and over.
+        batch.vertices = reused_hud_vertices();
         batch.glint_colour = self.pvp_glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
         batch.game_time = ((self.world.game_time.rem_euclid(24000)) as f32
@@ -8953,6 +8956,7 @@ impl Game<'_> {
         // A frame the surface refused (occluded, lost, timed out) is `Ok(false)`.
         self.frame_drawn = matches!(result, Ok(true));
         // Restore storage even when rendering fails (for example, a lost surface).
+        store_hud_vertices(std::mem::take(&mut hud.vertices));
         self.entity_vertices = entities;
         self.world_geometry = Some(world_geometry);
         *self.entity_spans.get_mut() = entity_spans;
@@ -11734,3 +11738,39 @@ mod sign_chain_tests;
 #[cfg(test)]
 #[path = "game/interface/tests/sign_use_tests.rs"]
 mod sign_use_tests;
+
+thread_local! {
+    /// The last frame's HUD vertices, empty: their allocation is what the next frame starts from.
+    static HUD_VERTICES: std::cell::Cell<Vec<horizon_client::hud::HudVertex>> =
+        const { std::cell::Cell::new(Vec::new()) };
+}
+
+fn reused_hud_vertices() -> Vec<horizon_client::hud::HudVertex> {
+    let mut vertices = HUD_VERTICES.take();
+    vertices.clear();
+    vertices
+}
+
+fn store_hud_vertices(mut vertices: Vec<horizon_client::hud::HudVertex>) {
+    vertices.clear();
+    HUD_VERTICES.set(vertices);
+}
+
+#[cfg(test)]
+mod hud_vertex_tests {
+    use super::{reused_hud_vertices, store_hud_vertices};
+    use bytemuck::Zeroable;
+    use horizon_client::hud::HudVertex;
+
+    #[test]
+    fn the_hud_vertex_room_is_reused() {
+        let mut vertices = reused_hud_vertices();
+        vertices.resize(1000, HudVertex::zeroed());
+        let capacity = vertices.capacity();
+        store_hud_vertices(vertices);
+        let again = reused_hud_vertices();
+        assert!(again.is_empty());
+        assert!(again.capacity() >= capacity);
+        store_hud_vertices(again);
+    }
+}
