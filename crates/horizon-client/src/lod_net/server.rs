@@ -74,6 +74,7 @@ pub struct Service {
     /// Sampling threads, started with the first tile.
     threads: usize,
     worker: Option<Worker>,
+    spawn: Spawn,
     /// Replies the worker finished, waiting for their connection.
     ready: VecDeque<(u32, Vec<u8>)>,
 }
@@ -100,6 +101,7 @@ impl Service {
                 n => n as usize,
             },
             worker: None,
+            spawn,
             ready: VecDeque::new(),
         }
     }
@@ -159,12 +161,17 @@ impl Service {
     pub fn players(&self) -> usize {
         self.players.len()
     }
-    /// Queue a served tile: the worker starts with the first.
+    /// Queue a served tile: the worker starts with the first. Where no
+    /// sampling thread could start, the tile is refused and the next one
+    /// tries again.
     pub fn push(&mut self, job: Job) {
-        let (names, threads) = (self.biome_names.clone(), self.threads);
-        let worker = self
-            .worker
-            .get_or_insert_with(|| Worker::start(names, threads));
+        if self.worker.is_none() {
+            self.worker = Worker::start(self.biome_names.clone(), self.threads, self.spawn);
+        }
+        let Some(worker) = &self.worker else {
+            self.ready.push_back((job.conn, refusal(job.request.id)));
+            return;
+        };
         let mut queue = lock(&worker.shared.queue);
         let waiting = (Instant::now(), job);
         match queue
@@ -236,8 +243,19 @@ struct Queue {
     players: VecDeque<(u32, VecDeque<(Instant, Job)>)>,
     stop: bool,
 }
+/// Starts a sampling thread: [`thread::Builder::spawn`], or a test's.
+type Spawn =
+    fn(thread::Builder, Box<dyn FnOnce() + Send>) -> std::io::Result<thread::JoinHandle<()>>;
+fn spawn(
+    builder: thread::Builder,
+    work: Box<dyn FnOnce() + Send>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    builder.spawn(work)
+}
 impl Worker {
-    fn start(biome_names: Arc<Vec<String>>, threads: usize) -> Self {
+    /// The worker on up to `threads` threads; with fewer where the system
+    /// refuses one, None where it refuses the first.
+    fn start(biome_names: Arc<Vec<String>>, threads: usize, spawn: Spawn) -> Option<Self> {
         let shared = Arc::new(WorkerShared {
             queue: Mutex::default(),
             wake: Condvar::new(),
@@ -248,17 +266,26 @@ impl Worker {
             }),
             biome_names,
         });
-        let threads = (0..threads.max(1))
+        let wanted = threads.max(1);
+        let threads: Vec<_> = (0..wanted)
             .map_while(|index| {
                 let worker = shared.clone();
                 // A thread the system refuses leaves the work to the others.
-                thread::Builder::new()
-                    .name("Far terrain server".into())
-                    .spawn(move || worker.work(index > 0))
-                    .ok()
+                let builder = thread::Builder::new().name("Far terrain server".into());
+                spawn(builder, Box::new(move || worker.work(index > 0))).ok()
             })
             .collect();
-        Self { shared, threads }
+        if threads.is_empty() {
+            log::warn!("Far terrain: no sampling thread could start; tiles refused");
+            return None;
+        }
+        if threads.len() < wanted {
+            log::warn!(
+                "Far terrain: {} of {wanted} sampling threads could start",
+                threads.len()
+            );
+        }
+        Some(Self { shared, threads })
     }
 }
 /// The thread count of [`THREADS_PROPERTY`](super::THREADS_PROPERTY)'s
@@ -731,6 +758,34 @@ mod tests {
         lock(&gate.state).0 = true;
         gate.changed.notify_all();
         assert_eq!(replies(&mut service, 2).len(), 2);
+    }
+
+    #[test]
+    fn a_tile_no_thread_could_start_for_is_refused_and_the_next_one_starts_them() {
+        let now = Instant::now();
+        let mut service = Service::new(64, 2, Vec::new());
+        let source: Arc<dyn LodSource> = Arc::new(Counted(Arc::default()));
+        let push = |service: &mut Service, id: u32| {
+            let Verdict::Serve(request) = service.request(1, &request(id, 0), [0.0; 3], true, now)
+            else {
+                panic!("served");
+            };
+            service.push(Job {
+                conn: 1,
+                level: "minecraft:overworld".into(),
+                source: source.clone(),
+                save: None,
+                request,
+            });
+            replies(service, 1)
+        };
+        service.spawn = |_, _| Err(std::io::Error::other("no threads left"));
+        assert_eq!(push(&mut service, 1), [(1, refusal(1))]);
+        assert_eq!(service.players[&1].in_flight, 0);
+        service.spawn = spawn;
+        let got = push(&mut service, 2);
+        assert_eq!(got.len(), 1);
+        assert_ne!(got[0].1, refusal(2));
     }
 
     #[test]
