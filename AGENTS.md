@@ -19,8 +19,8 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
   `~/.local/share/{applications,horizon,horizon-launcher}` or `~/.local/bin`.
 - **Mark what an agent posts, once.** One mark, `🤖 Agent:`, in one place per post:
   - An issue, a comment and a review **start** with it: `🤖 Agent: <text>`. `/claim` and `/unclaim` follow it
-    (`🤖 Agent: /claim`); `/nightly` and the triage commands are read only at the very start of a comment, so
-    those are sent bare.
+    (`🤖 Agent: /claim`). `/nightly` and the triage commands are read from a comment's first line only, so
+    there the command is the first line and `🤖 Agent:` starts the second.
   - A PR body **ends** with it, naming the model and the tool that did the work and what each did, one sentence
     per model: `🤖 Agent: Claude Fable 5.2 via Claude Code: implementation. GPT 6.1 Sol via Codex: review.`
 
