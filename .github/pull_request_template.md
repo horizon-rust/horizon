@@ -27,6 +27,13 @@
        look are off by default;
      - no new built-in server address outside the Horizon layer. -->
 
+## Build time
+
+<!-- Only for a pull request that moves gameplay code out of horizon-client (#18047). Name the placement: below
+     horizon-client (it still recompiles when the moved code changes) or beside it (it does not). Paste the output of
+     `python3 tools/build_times.py run --only incremental --crates <new crate> --file <crate>=<moved file> --profiles dev`
+     before and after. Delete this section otherwise. -->
+
 ## Vanilla reference
 
 <!-- The vanilla classes and methods this follows (tools/rea_vanilla.py), and the harness that checks it.
