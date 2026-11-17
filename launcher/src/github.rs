@@ -28,6 +28,13 @@ pub const MIRROR: &str = "https://mcp.playhorizon.dev/github/public";
 /// [`backend::CHECK_EVERY`], so a few minutes late at worst.
 pub const FRESH_SECS: u64 = 5 * 60;
 
+/// How long one source may take to answer, body included. The agent's own limits are per
+/// connection and per read, so a source that sends slowly or not at all held a release list for
+/// over two minutes, GitHub's and the mirror's turns one after the other (#18074). The release
+/// list is about 2 MB. Tests wait less.
+const DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(if cfg!(test) { 2 } else { 30 });
+
 /// What one source answered.
 #[derive(Debug)]
 pub(crate) enum Answer {
@@ -137,7 +144,7 @@ fn mirror_base() -> String {
 
 /// GitHub itself, with the saved ETag when there is one.
 fn github(url: &str, etag: Option<&str>) -> Answer {
-    let mut request = backend::agent(url).get(url);
+    let mut request = backend::agent(url).get(url).timeout(DEADLINE);
     // CI runners share addresses and hit GitHub's anonymous rate limit; they pass their own token.
     if let Some(token) = std::env::var("HORIZON_GITHUB_TOKEN")
         .ok()
@@ -162,7 +169,7 @@ fn github(url: &str, etag: Option<&str>) -> Answer {
 }
 
 fn mirror(url: &str) -> Answer {
-    match backend::agent(url).get(url).call() {
+    match backend::agent(url).get(url).timeout(DEADLINE).call() {
         Ok(r) => match r.into_json() {
             Ok(body) => Answer::Fresh(body, None),
             Err(e) => Answer::Failed(e.to_string()),
