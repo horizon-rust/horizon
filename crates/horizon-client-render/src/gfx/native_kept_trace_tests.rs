@@ -183,7 +183,7 @@ fn pack(
     };
     let (mut pack, _) =
         NativePack::new(device, queue, &terrain, report, &[], Default::default()).unwrap();
-    install(device, Some(&mut pack.post), None);
+    install(device, Some(&mut pack.post), None, [1, 1]).unwrap();
     pack
 }
 
@@ -236,7 +236,7 @@ fn frame(
     n: u32,
     scene: Option<&Traced<'_>>,
 ) -> [u8; 4] {
-    let hud = crate::hud::HudBatch::new([4, 4]);
+    let hud = crate::hud::HudBatch::scratch([4, 4]);
     let mut inputs = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
     inputs.pack.frame_timing = Some(crate::gfx::pack_uniforms::FrameTiming::nth(n, 50.0));
     pack.write(

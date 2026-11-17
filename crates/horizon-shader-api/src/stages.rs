@@ -149,8 +149,9 @@ const BEFORE_WORLD_RESOURCES: [Resource; 7] = [
     shadow_color(10),
 ];
 
-/// The colour boundary, in every prelude: vanilla's 2.2 power both ways.
-const COLOR_HELPERS: &str = "\
+/// The colour boundary, in every prelude and in mod pipelines' generated entries:
+/// vanilla's 2.2 power both ways.
+pub const COLOR_HELPERS: &str = "\
 // Negatives and NaN made 0 (a comparison with NaN is false), so no `pow` sees them.
 fn horizon_sanitize(c: vec3<f32>) -> vec3<f32> {
     return select(vec3<f32>(0.0), c, c > vec3<f32>(0.0));
@@ -167,6 +168,23 @@ fn horizon_decode_rgba(c: vec4<f32>) -> vec4<f32> {
 }
 fn horizon_encode_rgba(c: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(horizon_encode(c.rgb), c.a);
+}
+";
+
+/// Vanilla's fog, in every stage's prelude of a pack with `[frame] fog = "pack"`: the factor
+/// terrain.wgsl's `apply_fog` mixes the fog colour by, from the frame's two pairs of distances.
+const FOG_HELPERS: &str = "\
+// How much of `frame.fog_color` vanilla mixes over a surface at the camera-relative `position`,
+// 0..1: the larger of the environment's fog along the straight line and the render distance's
+// along the larger of the horizontal distance and the height difference, each 0 before its
+// start, 1 from its end and linear between.
+fn vanilla_fog(position: vec3<f32>) -> f32 {
+    let d = vec2<f32>(length(position), max(length(position.xz), abs(position.y)));
+    let start = vec2<f32>(frame.fog_environment.x, frame.fog_render.x);
+    let end = vec2<f32>(frame.fog_environment.y, frame.fog_render.y);
+    let ramp = select((d - start) / (end - start), vec2<f32>(1.0), d >= end);
+    let f = select(ramp, vec2<f32>(0.0), d <= start);
+    return max(f.x, f.y);
 }
 ";
 
@@ -1296,14 +1314,22 @@ impl StageKind {
             self,
             StageKind::Post | StageKind::Material | StageKind::Compute | StageKind::BeforeWorld
         );
-        self.prelude_rays(tracing, rays, false, false)
+        self.prelude_rays(tracing, rays, false, false, false)
     }
 
     /// `prelude_traced`, with the ray names only where `rays`: a material, compute or
     /// before-world stage that calls none of the trace functions is built as it was before
     /// them. `kept`: the frame's epochs, for a pack with `[[resource]]`. With `entities` (the
-    /// pack's files name `RAY_ENTITY`) the trace functions have the entity layer too.
-    fn prelude_rays(self, tracing: Tracing, rays: bool, kept: bool, entities: bool) -> String {
+    /// pack's files name `RAY_ENTITY`) the trace functions have the entity layer too. `fog`:
+    /// the frame's fog distances and `vanilla_fog`, for a pack with `[frame] fog = "pack"`.
+    fn prelude_rays(
+        self,
+        tracing: Tracing,
+        rays: bool,
+        kept: bool,
+        entities: bool,
+        fog: bool,
+    ) -> String {
         let rays = rays && tracing != Tracing::None;
         let mut out = match tracing {
             Tracing::Scene if rays => String::from(RAY_ENABLE),
@@ -1314,7 +1340,7 @@ impl StageKind {
             crate::API,
             crate::reference::PATH
         );
-        out += &Frame::declared(tracing != Tracing::None, kept).wgsl();
+        out += &Frame::declared_wgsl(tracing != Tracing::None, kept, fog);
         if kept {
             out += &crate::kept::reasons_wgsl();
         }
@@ -1331,6 +1357,9 @@ impl StageKind {
             out += &format!("@group({GROUP}) @binding({}) {};\n", r.binding, r.ty);
         }
         out += COLOR_HELPERS;
+        if fog {
+            out += FOG_HELPERS;
+        }
         match self {
             StageKind::Post | StageKind::Compute => {
                 out += POST_HELPERS;
@@ -1780,7 +1809,8 @@ pub(crate) fn compose_traced(
     };
     let kept = !m.kept.resources.is_empty();
     let entities = rays && names_ray_entity(pack);
-    let mut prelude = kind.prelude_rays(tracing, rays, kept, entities)
+    let fog = m.fog == crate::Fog::Pack;
+    let mut prelude = kind.prelude_rays(tracing, rays, kept, entities, fog)
         + &texture_declarations(&pack.manifest.textures);
     if matches!(kind, StageKind::Post | StageKind::Compute) {
         prelude += &post_target_declarations(&pack.manifest);
