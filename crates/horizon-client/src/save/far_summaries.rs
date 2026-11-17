@@ -13,7 +13,10 @@
 //! carries, as its record's timestamp, the one of the chunk record it was
 //! made from, and is used only while the level's region file has the chunk
 //! under that timestamp: a chunk saved again, by this game or another
-//! program, makes it stale, and the next read writes it again.
+//! program, makes it stale, and the next read writes it again. The
+//! timestamp is in whole seconds, so a summary is written only of a record
+//! saved before the current second: a later save of the chunk is stamped
+//! with a later second.
 //!
 //! A record holds its columns as bytes (`encode_reduced`): a palette of the
 //! materials (block state, biome, light) its spans use, then each column's
@@ -84,6 +87,14 @@ pub(super) struct FarSummaries {
     tables: i64,
     /// Open region files, `None` for one that doesn't exist.
     regions: Mutex<crate::fast_hash::FxHashMap<(i32, i32), Option<RegionFile>>>,
+    /// Seconds since 1970, as the region writer stamps the records.
+    clock: fn() -> u64,
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 impl FarSummaries {
@@ -92,7 +103,16 @@ impl FarSummaries {
             dir: level.join(FOLDER),
             tables: tables_hash(assets.registry, biomes),
             regions: Default::default(),
+            clock: unix_seconds,
         }
+    }
+
+    /// Whether a summary of a record saved at `timestamp` may be written
+    /// now: the second it names is over, so a save of the chunk from now on
+    /// has another timestamp. One saved again within its second would keep
+    /// the timestamp, and the summary of the first save would pass as its.
+    pub(super) fn settled(&self, timestamp: u32) -> bool {
+        (self.clock)() > u64::from(timestamp)
     }
 
     /// Chunk `x z`'s summary, if one was written for its record saved at
@@ -348,8 +368,12 @@ mod tests {
             std::env::temp_dir().join(format!("horizon-far-summaries-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
-        save.keep_far_summaries(&assets, &biomes);
-        let summaries = save.outstanding.summaries.get().unwrap().clone();
+        // A second on: a record just saved is settled.
+        let summaries = Arc::new(FarSummaries {
+            clock: || unix_seconds() + 1,
+            ..FarSummaries::new(&dir, &assets, &biomes)
+        });
+        assert!(save.outstanding.summaries.set(summaries.clone()).is_ok());
         let coarse = |save: &SaveDir| save.lod_saved(0, 0, false, &assets, &biomes);
         save.write_records("region", vec![((0, 0), Some(chunk(100)))], true)
             .unwrap();
@@ -400,6 +424,51 @@ mod tests {
     }
 
     #[test]
+    fn a_chunk_saved_twice_within_a_second_reads_as_its_second_save() {
+        let Some((assets, biomes)) = resources() else {
+            return;
+        };
+        let stone = assets.registry.default_state("minecraft:stone").unwrap();
+        let chunk = |top: i32| {
+            let mut chunk = Chunk::empty(0, 0);
+            for i in 0..256i32 {
+                chunk.set(i & 15, 60, i >> 4, stone.0);
+            }
+            for y in 61..top {
+                chunk.set(3, y, 5, stone.0);
+            }
+            chunk.lit = true;
+            encode(&chunk, assets.registry, &biomes)
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-far-summaries-second-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        save.keep_far_summaries(&assets, &biomes);
+        // The column 2 blocks wide over the tower, as a coarse read has it.
+        let coarse = |save: &SaveDir| match save.lod_saved(0, 0, false, &assets, &biomes) {
+            Some(far_lod::SavedFar::Columns(columns)) => Column::reduced(&columns, 2, 4, 2),
+            Some(far_lod::SavedFar::Reduced(reduced)) => reduced.column(2, 4, 2).unwrap().clone(),
+            None => panic!("the chunk is saved"),
+        };
+        for height in [100, 200] {
+            save.write_records("region", vec![((0, 0), Some(chunk(height)))], true)
+                .unwrap();
+            let Some(far_lod::SavedFar::Columns(decoded)) =
+                save.lod_saved(0, 0, true, &assets, &biomes)
+            else {
+                panic!("a full read decodes the chunk");
+            };
+            assert_eq!(decoded[5 * 16 + 3].surface.unwrap().height, height);
+            assert_eq!(coarse(&save), Column::reduced(&decoded, 2, 4, 2));
+        }
+        drop(save);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn only_a_proto_chunk_read_writes_a_summary_of_no_columns() {
         let Some((assets, biomes)) = resources() else {
             return;
@@ -410,8 +479,11 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
-        save.keep_far_summaries(&assets, &biomes);
-        let summaries = save.outstanding.summaries.get().unwrap().clone();
+        let summaries = Arc::new(FarSummaries {
+            clock: || unix_seconds() + 1,
+            ..FarSummaries::new(&dir, &assets, &biomes)
+        });
+        assert!(save.outstanding.summaries.set(summaries.clone()).is_ok());
         let record = |x: i32, status: &str| NamedTag {
             name: "".into(),
             tag: Tag::compound([

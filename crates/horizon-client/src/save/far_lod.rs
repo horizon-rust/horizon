@@ -334,6 +334,7 @@ impl SaveDir {
             if let Ok(columns) = &read
                 && self.far_timestamp(x, z) == Some(timestamp)
                 && !self.far_changes().changed_since(before, (x, z))
+                && summaries.settled(timestamp)
             {
                 let reduced = columns.as_deref().map(far_summaries::Reduced::of);
                 summaries.write(x, z, timestamp, reduced.as_ref());
