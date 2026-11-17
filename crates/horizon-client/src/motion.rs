@@ -6176,7 +6176,11 @@ mod tests {
         };
         let (assets, render, binding, resources) = (&v.assets, &v.render, &v.collision, &v.motion);
         let mut scene = World::test_scene(assets, render, 3).unwrap();
-        let mut player = PlayerMotion::new(resources, Vec3::new(20.5, 20.0, 20.5)).unwrap();
+        let water = assets.registry.default_state("minecraft:water").unwrap();
+        for y in 4..=6 {
+            scene.set(20, y, 20, water).unwrap();
+        }
+        let mut player = PlayerMotion::new(resources, Vec3::new(20.5, 4.0, 20.5)).unwrap();
         player.may_fly = true;
         let mut w = MotionWorld {
             tag_items: None,
@@ -6191,15 +6195,21 @@ mod tests {
             resources,
             health: &resources.health,
         };
-        // LocalPlayer.aiStep's two taps: the first arms the trigger, the second
-        // toggles flight. Swimming must not suppress the second (vanilla has no
-        // such guard; #17506).
-        w.player.swimming = true;
-        w.player_movement_tick([0.0, 0.0], true).unwrap();
-        w.player.swimming = true;
-        w.player_movement_tick([0.0, 0.0], false).unwrap();
-        w.player.swimming = true;
-        w.player_movement_tick([0.0, 0.0], true).unwrap();
+        // LocalPlayer.aiStep's two taps through the real fluid tick: moving forward while
+        // sprinting in water keeps `swimming` set, and the second jump toggles flight.
+        let swim = crate::sprint::Keys {
+            forward: true,
+            sprint: true,
+            ..Default::default()
+        };
+        let jump = crate::sprint::Keys { jump: true, ..swim };
+        w.controlled_simulation_tick(jump).unwrap();
+        w.controlled_simulation_tick(swim).unwrap();
+        assert!(
+            w.player.swimming,
+            "the player must be swimming before the second jump"
+        );
+        w.controlled_simulation_tick(jump).unwrap();
         assert!(
             w.player.flying,
             "the second jump starts creative flight in water"
