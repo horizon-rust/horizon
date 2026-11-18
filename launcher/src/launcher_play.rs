@@ -88,6 +88,7 @@ impl Launcher {
                         let _ = tx.send(Msg::StableRetry(next.clone()));
                     }
                 },
+                |tag| backend::installed().iter().any(|t| t == tag),
                 install,
             );
             let _ = tx.send(Msg::Installed(done.tag, result));

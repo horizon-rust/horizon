@@ -289,12 +289,14 @@ pub fn stable_offer(
 
 /// Installs `target`, Home's Stable update, in one press. GitHub's `nightly` may have moved on
 /// since the offer was read, so the download fails its check: then the list is read again from
-/// the network (`fresh`), given to `read` with the new target, and that one is installed once.
-/// Returns the build tried last and how it went.
+/// the network (`fresh`), given to `read` with the new target, and that one is installed once,
+/// unless it is `installed` already (by the command line, say): then nothing is downloaded or
+/// replaced. Returns the build tried last and how it went.
 pub fn install_stable(
     target: Release,
     fresh: impl FnOnce() -> Result<Vec<Release>, String>,
     read: impl FnOnce(Vec<Release>, Option<&Release>),
+    installed: impl FnOnce(&str) -> bool,
     install: impl Fn(&Release) -> Result<(), String>,
 ) -> (Release, Result<(), String>) {
     let Err(error) = install(&target) else {
@@ -306,6 +308,7 @@ pub fn install_stable(
     let next = stable_target(&list).filter(|n| !same_build(n, &target));
     read(list, next.as_ref());
     match next {
+        Some(next) if installed(&next.tag) => (next, Ok(())),
         Some(next) => {
             let result = install(&next);
             (next, result)
@@ -418,17 +421,32 @@ mod tests {
             old.clone(),
             || Ok(vec![new.clone()]),
             |_, next| read = next.map(|n| n.tag.clone()),
+            |_| false,
             install(&["nightly-2026-11-13-aaaaaaa"]),
         );
         assert_eq!((done.tag.as_str(), result), (new.tag.as_str(), Ok(())));
         assert_eq!(read.as_deref(), Some(new.tag.as_str()));
         assert_eq!(*tries.borrow(), [old.tag.clone(), new.tag.clone()]);
+        // The new target already installed (by the command line, say): nothing downloaded.
+        tries.borrow_mut().clear();
+        let mut read = None;
+        let (done, result) = install_stable(
+            old.clone(),
+            || Ok(vec![new.clone()]),
+            |_, next| read = next.map(|n| n.tag.clone()),
+            |tag| tag == new.tag,
+            install(&["nightly-2026-11-13-aaaaaaa"]),
+        );
+        assert_eq!((done.tag.as_str(), result), (new.tag.as_str(), Ok(())));
+        assert_eq!(read.as_deref(), Some(new.tag.as_str()));
+        assert_eq!(*tries.borrow(), std::slice::from_ref(&old.tag));
         // Only once: the retry failing too is the error shown.
         tries.borrow_mut().clear();
         let (done, result) = install_stable(
             old.clone(),
             || Ok(vec![new.clone()]),
             |_, _| {},
+            |_| false,
             install(&["nightly-2026-11-13-aaaaaaa", "nightly-2026-11-13-bbbbbbb"]),
         );
         assert_eq!(done.tag, new.tag);
@@ -441,6 +459,7 @@ mod tests {
                 old.clone(),
                 || fresh,
                 |_, _| {},
+                |_| false,
                 install(&["nightly-2026-11-13-aaaaaaa"]),
             );
             assert_eq!(done.tag, old.tag);
