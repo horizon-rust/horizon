@@ -101,8 +101,7 @@ impl Launcher {
         );
         let native = self.mods.java.is_none()
             && self.instance_mods.list.iter().any(|r| {
-                r.native.is_some()
-                    || matches!(r.kind, Some((ModKind::Native, _)))
+                r.native_id().is_some()
                     || r.entry
                         .as_ref()
                         .is_some_and(|e| native_status::is_native_file(&e.file))
@@ -123,12 +122,7 @@ impl Launcher {
                     .instance_mods
                     .list
                     .iter()
-                    .find(|r| {
-                        r.on && (r.native.as_ref().is_some_and(|n| n.id == left.id)
-                            || r.kind.as_ref().is_some_and(|(kind, id)| {
-                                *kind == ModKind::Native && *id == left.id
-                            }))
-                    })
+                    .find(|r| r.on && r.has_switch() && r.native_id() == Some(left.id.as_str()))
                     .cloned();
                 div()
                     .flex()
@@ -286,7 +280,7 @@ impl Launcher {
                 })),
             })
         } else {
-            div().child(
+            div().children(row.has_switch().then(|| {
                 ui::toggle(
                     SharedString::from(format!("mod-switch-{}", row.file)),
                     row.on,
@@ -300,8 +294,8 @@ impl Launcher {
                         None => this.switch_mod(&switch_row),
                     }
                     cx.notify();
-                })),
-            )
+                }))
+            }))
         };
         ui::list_row(key, hovered, hover, &t)
             .child(icon)
@@ -335,12 +329,7 @@ impl Launcher {
         left_out: &[native_mods::LeftOut],
         cx: &mut Context<Self>,
     ) -> Div {
-        let id = row
-            .kind
-            .as_ref()
-            .filter(|(kind, _)| *kind == ModKind::Native)
-            .map(|(_, id)| id.clone())
-            .or_else(|| row.native.as_ref().map(|n| n.id.clone()));
+        let id = row.native_id().map(str::to_owned);
         let mine = self
             .selected_instance()
             .is_some_and(|i| self.native_for.as_deref() == Some(i.id.as_str()));
@@ -444,9 +433,9 @@ impl Launcher {
         div().relative().child(button).children(menu)
     }
 
-    /// A native mod's switch, with its consent step.
+    /// A local file's switch, with the native consent step for a native one.
     fn switch_native_mod(&mut self, native: &native_status::Installed, on: bool) {
-        if !on && self.settings.native_mods_allowed_at.is_none() {
+        if native.native() && !on && self.settings.native_mods_allowed_at.is_none() {
             self.pending_consent = Some(PendingConsent::Local(native.id.clone()));
             return;
         }
@@ -527,7 +516,7 @@ impl Launcher {
                     cx.notify();
                 })),
             );
-        if row.native.is_some() || matches!(row.kind, Some((ModKind::Native, _))) {
+        if row.native_id().is_some() {
             menu = menu.child(
                 item(
                     "log",
