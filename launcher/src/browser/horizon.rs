@@ -861,6 +861,11 @@ fn install_from(
     let p = index
         .project(&project.id)
         .ok_or_else(|| format!("{} isn't in Horizon's registry.", project.title))?;
+    // Before the version is picked: by the launcher's own line, a pack made only for the
+    // game's line would look like one for another game.
+    if p.kind == index::Kind::Shader {
+        crate::game_shader_api::said().map_err(|e| format!("{}: {e}.", p.name))?;
+    }
     let v = newest(index, p)?;
     install_version(index, local, p, v, home, progress).map(|e| vec![e])
 }

@@ -14,12 +14,19 @@ use std::time::{Duration, Instant, SystemTime};
 /// installed again under the same name; None: not installed).
 type Game = (PathBuf, Option<SystemTime>);
 
-/// A game's answer; None when it gave no answer.
-type Asked = BTreeMap<Game, Option<Vec<String>>>;
+/// A game's answer, or when it last gave none.
+type Asked = BTreeMap<Game, Result<Vec<String>, Instant>>;
 static ASKED: Mutex<Asked> = Mutex::new(BTreeMap::new());
 
 /// How long a game may take to answer; the Nightly of 2026-11-13 takes a tenth of a second.
 const PATIENCE: Duration = Duration::from_secs(5);
+
+/// How long a game that gave no answer is taken at that before it is asked again, outside the
+/// start of an operation ([`for_home`]), which always asks such a game again.
+const RETRY: Duration = Duration::from_secs(60);
+
+/// The most a game's answer may hold; the Nightly's is under 100 bytes. Past it, no answer.
+const MAX_REPLY: usize = 64 * 1024;
 
 /// The game folder an operation is on and the lines of that folder's game. No folder: every
 /// folder's operations go by these lines (a test's game). The last one is an installed game that
@@ -51,7 +58,8 @@ impl Drop for Operation {
 /// Begins an operation on the game folder `home`. Inside an operation on the same folder it
 /// changes nothing. Inside one on another folder (an instance's command that installs a
 /// modpack into its own profile) it goes by its own folder's game until it ends, and the outer
-/// one's game comes back.
+/// one's game comes back. A game that gave no answer before is asked again first (off the
+/// window's thread), so what the operation picks goes by its answer once it gives one.
 pub fn for_home(home: &Path) -> Operation {
     let same = OPERATION.with(|current| {
         let current = current.borrow();
@@ -62,7 +70,7 @@ pub fn for_home(home: &Path) -> Operation {
     if same {
         return Operation { outer: None };
     }
-    let (lines, unsaid) = of_game(version_of(home));
+    let (lines, unsaid) = of_game(version_of(home), true);
     begin((Some(home.to_owned()), lines, unsaid))
 }
 
@@ -79,7 +87,11 @@ pub fn served() -> Vec<String> {
     if let Some((_, lines, _)) = OPERATION.with(|current| current.borrow().clone()) {
         return lines;
     }
-    of_game(crate::instances::selected().resolve_version(None).ok()).0
+    of_game(
+        crate::instances::selected().resolve_version(None).ok(),
+        false,
+    )
+    .0
 }
 
 /// Whether the installed game the running operation is for (outside one, the selected
@@ -88,14 +100,24 @@ pub fn served() -> Vec<String> {
 /// replace one the game runs with one it refuses. The next operation asks that game again.
 pub fn said() -> Result<(), String> {
     let unsaid = OPERATION
-        .with(|current| current.borrow().as_ref().map(|(.., unsaid)| unsaid.clone()))
-        .unwrap_or_else(|| of_game(crate::instances::selected().resolve_version(None).ok()).1);
-    let Some(game) = unsaid else { return Ok(()) };
-    let mut known = known();
-    if known.get(&game) == Some(&None) {
-        known.remove(&game);
+        .with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .map(|(.., unsaid)| unsaid.is_some())
+        })
+        .unwrap_or_else(|| {
+            of_game(
+                crate::instances::selected().resolve_version(None).ok(),
+                false,
+            )
+            .1
+            .is_some()
+        });
+    match unsaid {
+        true => Err("the installed game didn't say which shader API it serves. Try again".into()),
+        false => Ok(()),
     }
-    Err("the installed game didn't say which shader API it serves. Try again".to_owned())
 }
 
 /// The installed version the instance playing in `home` plays. A folder no instance plays in
@@ -111,13 +133,14 @@ fn version_of(home: &Path) -> Option<String> {
     }
 }
 
-/// Version `tag`'s lines, and the game when it is installed but didn't say them.
-fn of_game(tag: Option<String>) -> (Vec<String>, Option<Game>) {
+/// Version `tag`'s lines, and the game when it is installed but didn't say them. `again`: a game
+/// that gave no answer before is asked again now ([`for_home`]).
+fn of_game(tag: Option<String>, again: bool) -> (Vec<String>, Option<Game>) {
     let own = || vec![horizon_shader_api::API.to_owned()];
     let Some(tag) = tag else {
         return (own(), None);
     };
-    match asked(&tag) {
+    match asked_with(&tag, again, ask_game) {
         Some(lines) => (lines, None),
         None => (
             own(),
@@ -157,21 +180,23 @@ pub fn answers() -> u64 {
     ANSWERS.load(std::sync::atomic::Ordering::Acquire)
 }
 
-fn asked(tag: &str) -> Option<Vec<String>> {
-    asked_with(tag, ask_game)
-}
-
-/// [`asked`], with the game's answer to the question for `tag` given by `ask` (tests).
+/// The lines version `tag`'s game said, with its answer to the question given by `ask`. A game
+/// that gave no answer is asked again after [`RETRY`], or at once with `again` off the window's
+/// thread.
 fn asked_with(
     tag: &str,
+    again: bool,
     ask: impl FnOnce(String) -> Option<Vec<String>> + Send + 'static,
 ) -> Option<Vec<String>> {
     let key = game_of(tag);
-    if let Some(answer) = known().get(&key) {
-        return answer.clone();
+    let draws = DRAWS.with(std::cell::Cell::get);
+    match known().get(&key) {
+        Some(Ok(lines)) => return Some(lines.clone()),
+        Some(Err(at)) if at.elapsed() < RETRY && (draws || !again) => return None,
+        _ => {}
     }
     let tag = tag.to_owned();
-    if !DRAWS.with(std::cell::Cell::get) {
+    if !draws {
         // Not held while the game answers: a game that hangs holds up nobody else's question.
         let answer = ask(tag);
         return keep(key, answer);
@@ -200,24 +225,44 @@ fn known() -> std::sync::MutexGuard<'static, Asked> {
 /// back empty never hides it.
 fn keep(game: Game, answer: Option<Vec<String>>) -> Option<Vec<String>> {
     let mut known = known();
-    let kept = known.entry(game).or_insert(None);
-    if answer.is_some() && *kept != answer {
-        *kept = answer;
-        // What the window judged by the launcher's own line meanwhile is judged again.
-        ANSWERS.fetch_add(1, std::sync::atomic::Ordering::Release);
+    match answer {
+        Some(lines) => {
+            if known.get(&game) != Some(&Ok(lines.clone())) {
+                known.insert(game, Ok(lines.clone()));
+                // What the window judged by the launcher's own line meanwhile is judged again.
+                ANSWERS.fetch_add(1, std::sync::atomic::Ordering::Release);
+            }
+            Some(lines)
+        }
+        None => match known.get(&game) {
+            Some(Ok(lines)) => Some(lines.clone()),
+            _ => {
+                known.insert(game, Err(Instant::now()));
+                None
+            }
+        },
     }
-    kept.clone()
 }
 
 /// The shader API lines installed version `tag`'s game says it serves.
 fn ask_game(tag: String) -> Option<Vec<String>> {
-    // A test never starts a game: it says what one answers (`tests::answers`).
+    // A test never starts a game: it says what one answers (`tests::answers`, `tests::will_say`).
     if cfg!(test) {
-        return None;
+        return test_game(&tag);
     }
     let mut game = crate::process::command(crate::backend::client_program(&tag));
     game.arg("--launch-api");
     reply(game, PATIENCE, |reply| lines_of(reply).is_some()).and_then(|reply| lines_of(&reply))
+}
+
+#[cfg(test)]
+fn test_game(tag: &str) -> Option<Vec<String>> {
+    tests::says(tag)
+}
+
+#[cfg(not(test))]
+fn test_game(_: &str) -> Option<Vec<String>> {
+    None
 }
 
 /// What `program` prints when it ends well within `patience`: all of it, or as soon as it ended
@@ -247,9 +292,10 @@ fn reply(
     let mut ended = None;
     loop {
         // Read while the game runs too: a reply larger than the pipe would otherwise never end.
+        // A piece at a time, so output that never stops still meets the deadline and the cap.
         let closed = match output.take(&mut reply) {
-            Ok(closed) => closed,
-            Err(_) => {
+            Ok(closed) if reply.len() <= MAX_REPLY => closed,
+            _ => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -284,6 +330,9 @@ mod output {
     use std::io::Read;
     use std::process::ChildStdout;
 
+    /// The most one read takes, so the asker looks at the clock and the answer between reads.
+    const PIECE: usize = 16 * 1024;
+
     pub struct Ready(ChildStdout);
 
     impl Ready {
@@ -310,14 +359,18 @@ mod output {
             Ok(Self(output))
         }
 
-        /// Adds what is there to read to `to`; true once the output has ended.
+        /// Adds at most [`PIECE`] bytes of what is there to read to `to`; true once the output
+        /// has ended.
         #[cfg(unix)]
         pub fn take(&mut self, to: &mut Vec<u8>) -> std::io::Result<bool> {
-            let mut buf = [0; 64 * 1024];
+            let mut buf = [0; PIECE];
             loop {
                 match self.0.read(&mut buf) {
                     Ok(0) => return Ok(true),
-                    Ok(n) => to.extend_from_slice(&buf[..n]),
+                    Ok(n) => {
+                        to.extend_from_slice(&buf[..n]);
+                        return Ok(false);
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(e) => return Err(e),
@@ -325,43 +378,43 @@ mod output {
             }
         }
 
-        /// Adds what is there to read to `to`; true once the output has ended.
+        /// Adds at most [`PIECE`] bytes of what is there to read to `to`; true once the output
+        /// has ended.
         #[cfg(windows)]
         pub fn take(&mut self, to: &mut Vec<u8>) -> std::io::Result<bool> {
             use std::os::windows::io::AsRawHandle;
             use windows_sys::Win32::Foundation::ERROR_BROKEN_PIPE;
             use windows_sys::Win32::System::Pipes::PeekNamedPipe;
-            let mut buf = [0; 64 * 1024];
-            loop {
-                let mut ready = 0u32;
-                // SAFETY: the handle is this pipe's open read end, and only the count is written.
-                let peeked = unsafe {
-                    PeekNamedPipe(
-                        self.0.as_raw_handle(),
-                        std::ptr::null_mut(),
-                        0,
-                        std::ptr::null_mut(),
-                        &mut ready,
-                        std::ptr::null_mut(),
-                    )
+            let mut buf = [0; PIECE];
+            let mut ready = 0u32;
+            // SAFETY: the handle is this pipe's open read end, and only the count is written.
+            let peeked = unsafe {
+                PeekNamedPipe(
+                    self.0.as_raw_handle(),
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut ready,
+                    std::ptr::null_mut(),
+                )
+            };
+            if peeked == 0 {
+                let e = std::io::Error::last_os_error();
+                return match e.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+                    true => Ok(true),
+                    false => Err(e),
                 };
-                if peeked == 0 {
-                    let e = std::io::Error::last_os_error();
-                    return match e.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
-                        true => Ok(true),
-                        false => Err(e),
-                    };
-                }
-                if ready == 0 {
-                    return Ok(false);
-                }
-                // No more than is there: the read returns at once.
-                let n = self.0.read(&mut buf[..(ready as usize).min(64 * 1024)])?;
-                if n == 0 {
-                    return Ok(true);
-                }
-                to.extend_from_slice(&buf[..n]);
             }
+            if ready == 0 {
+                return Ok(false);
+            }
+            // No more than is there: the read returns at once.
+            let n = self.0.read(&mut buf[..(ready as usize).min(PIECE)])?;
+            if n == 0 {
+                return Ok(true);
+            }
+            to.extend_from_slice(&buf[..n]);
+            Ok(false)
         }
     }
 }
@@ -405,7 +458,20 @@ pub mod tests {
         ASKED
             .lock()
             .unwrap()
-            .insert((dir, installed.ok()), Some(lines));
+            .insert((dir, installed.ok()), Ok(lines));
+    }
+
+    /// What the games of these versions say when asked ([`will_say`]); others say nothing.
+    static SAYS: Mutex<BTreeMap<String, Vec<String>>> = Mutex::new(BTreeMap::new());
+
+    /// Version `tag`'s game answers the lines `lines` from now on, when it is asked.
+    pub fn will_say(tag: &str, lines: &[&str]) {
+        let lines = lines.iter().map(|line| (*line).to_owned()).collect();
+        SAYS.lock().unwrap().insert(tag.to_owned(), lines);
+    }
+
+    pub(super) fn says(tag: &str) -> Option<Vec<String>> {
+        SAYS.lock().unwrap().get(tag).cloned()
     }
 
     #[test]
@@ -453,12 +519,12 @@ pub mod tests {
         std::thread::spawn(move || {
             draws_here();
             let started = Instant::now();
-            assert_eq!(asked_with(tag, slow), None);
+            assert_eq!(asked_with(tag, false, slow), None);
             assert!(started.elapsed() < Duration::from_secs(1));
             // Asked again while the worker waits: not a second question.
             let answered = Instant::now() + Duration::from_secs(30);
             let answer = loop {
-                if let Some(answer) = asked_with(tag, again) {
+                if let Some(answer) = asked_with(tag, false, again) {
                     break answer;
                 }
                 assert!(Instant::now() < answered, "the worker never answered");
@@ -470,38 +536,51 @@ pub mod tests {
         .unwrap();
     }
 
-    /// An installed game with no answer is no game's word: a shader pack isn't installed by the
-    /// launcher's stand-in line, and the game is asked again. One not installed has nothing to
-    /// say. An answer that comes back while an empty one is kept replaces it. (An installed game
-    /// on disk: `a_shader_pack_goes_by_the_game_of_the_instance_it_is_for`, in its own folders.)
+    /// A game that gave no answer is taken at that for a while, but asked again at the start of
+    /// an operation off the window's thread, and anywhere once [`RETRY`] has passed; its later
+    /// answer is kept and the window told. Meanwhile an operation on it installs no shader pack.
     #[test]
-    fn an_installed_game_that_did_not_answer_is_asked_again() {
-        let quiet: Game = ("a quiet game".into(), Some(SystemTime::UNIX_EPOCH));
-        assert_eq!(keep(quiet.clone(), None), None);
+    fn a_game_that_gave_no_answer_is_asked_again() {
+        // Not installed here: no other test asks this version.
+        let tag = "nightly-2026-11-18-quiet";
+        let key = game_of(tag);
+        let says = |line: Option<&'static str>| move |_: String| line.map(|l| vec![l.to_owned()]);
+        let never = |_: String| -> Option<Vec<String>> { panic!("asked again") };
+        assert_eq!(asked_with(tag, false, says(None)), None);
+        assert_eq!(asked_with(tag, false, never), None);
+        std::thread::spawn(move || {
+            draws_here();
+            assert_eq!(asked_with(tag, true, never), None);
+        })
+        .join()
+        .unwrap();
+        let before = super::answers();
+        assert_eq!(asked_with(tag, true, says(Some("0.1"))).unwrap(), ["0.1"]);
+        assert!(super::answers() > before);
+        assert_eq!(asked_with(tag, true, never).unwrap(), ["0.1"]);
+        assert_eq!(keep(key.clone(), None).unwrap(), ["0.1"]);
+        if let Some(long_ago) = Instant::now().checked_sub(RETRY + Duration::from_secs(1)) {
+            known().insert(key.clone(), Err(long_ago));
+            assert_eq!(asked_with(tag, false, says(Some("0.2"))).unwrap(), ["0.2"]);
+        }
+        known().remove(&key);
+
         {
             let lines = vec![horizon_shader_api::API.to_owned()];
-            let _quiet = begin((Some("folder".into()), lines, Some(quiet.clone())));
+            let _quiet = begin((Some("folder".into()), lines, Some(key)));
             assert!(said().is_err());
         }
-        assert_eq!(known().get(&quiet), None);
-        assert_eq!(of_game(Some("nightly-2026-11-18-absent".into())).1, None);
         assert!(with_game(&["0.1"], said).is_ok());
-
-        assert_eq!(keep(quiet.clone(), None), None);
-        let before = super::answers();
         assert_eq!(
-            keep(quiet.clone(), Some(vec!["0.2".into()])).unwrap(),
-            ["0.2"]
+            of_game(Some("nightly-2026-11-18-absent".into()), false).1,
+            None
         );
-        // The window is told, to judge again what it judged by the launcher's line.
-        assert!(super::answers() > before);
-        assert_eq!(keep(quiet, None).unwrap(), ["0.2"]);
     }
 
     /// A game that hangs is stopped after the wait and gives no answer; one that answers is
     /// read whole; one that ends but leaves a process holding its output gives its answer when
     /// that answer is whole, else none in time, instead of holding the asker until that process
-    /// ends (#18074).
+    /// ends; one whose output never stops gives none once it passes [`MAX_REPLY`] (#18074).
     #[test]
     fn a_game_that_does_not_answer_in_time_is_stopped() {
         const HANG: &str = "HORIZON_TEST_GAME_HANGS";
@@ -524,7 +603,12 @@ pub mod tests {
                 std::mem::forget(game("linger").spawn().unwrap());
                 print!("reply");
             }
-            Ok(_) => print!("{}", "reply ".repeat(20_000)),
+            Ok("flood") => {
+                use std::io::Write;
+                let mut out = std::io::stdout().lock();
+                while out.write_all(&[b' '; 4096]).is_ok() {}
+            }
+            Ok(_) => print!("{}", "reply ".repeat(10_000)),
             Err(_) => {
                 // The test harness prints around a stand-in's reply: "whole" finds it inside.
                 let whole = |reply: &[u8]| reply.windows(5).any(|w| w == b"reply");
@@ -532,7 +616,11 @@ pub mod tests {
                 assert_eq!(reply(game("hang"), Duration::from_millis(300), whole), None);
                 assert!(started.elapsed() < Duration::from_secs(30));
                 let all = reply(game("answer"), Duration::from_secs(60), |_| false).unwrap();
-                assert!(all.len() > 120_000, "{}", all.len());
+                assert!(all.len() > 60_000, "{}", all.len());
+                // Output that never stops: no answer, at the cap, long before the deadline.
+                let started = Instant::now();
+                assert_eq!(reply(game("flood"), Duration::from_secs(60), whole), None);
+                assert!(started.elapsed() < Duration::from_secs(20));
                 // Its child lives 20 s: the answer must not wait for it.
                 let started = Instant::now();
                 assert_eq!(
