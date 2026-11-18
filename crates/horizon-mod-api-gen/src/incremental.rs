@@ -584,10 +584,14 @@ mod tests {
         // A symlink back to an ancestor, twice.
         std::os::unix::fs::symlink(&a, a.join("src/up")).unwrap();
         std::os::unix::fs::symlink(&a, a.join("src/again")).unwrap();
-        assert!(tree_digest(&[a.clone()]).unwrap_err().contains("cycle"));
+        assert!(
+            tree_digest(std::slice::from_ref(&a))
+                .unwrap_err()
+                .contains("cycle")
+        );
         fs::remove_file(a.join("src/up")).unwrap();
         fs::remove_file(a.join("src/again")).unwrap();
-        tree_digest(&[a.clone()]).unwrap();
+        tree_digest(std::slice::from_ref(&a)).unwrap();
         // A link that leads nowhere cannot be read.
         std::os::unix::fs::symlink(a.join("nowhere.rs"), a.join("src/old.rs")).unwrap();
         assert!(tree_digest(&[a]).is_err());
