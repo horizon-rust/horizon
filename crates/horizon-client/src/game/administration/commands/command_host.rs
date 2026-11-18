@@ -9,7 +9,7 @@ mod gamerule;
 mod help;
 mod misc;
 mod profiler;
-mod profiles;
+pub(super) mod profiles;
 mod publish;
 mod recipe;
 mod rotate;

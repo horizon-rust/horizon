@@ -10,10 +10,9 @@ use horizon_client::{
 };
 
 /// What these commands need from the game: the lists and switches of a dedicated server.
-/// Every command starts with `require_dedicated`, as `Commands.CommandSelection.DEDICATED`.
+/// The host already holds the lists: the command resolved them once, as
+/// `Commands.CommandSelection.DEDICATED` asks, before it called in here.
 pub trait ProfilesHost: CommandHost {
-    /// An error (`command.unknown.command`) unless this is a dedicated server.
-    fn require_dedicated(&mut self) -> R<()>;
     /// `MinecraftServer.halt`: the server loop ends after this tick.
     fn request_stop(&mut self);
     /// Whether an entity save may run now.
@@ -51,7 +50,6 @@ pub trait ProfilesHost: CommandHost {
 
 /// StopCommand: the server loop ends after this tick.
 pub fn stop(host: &mut dyn ProfilesHost) -> R<i32> {
-    host.require_dedicated()?;
     host.feedback(Text::translate("commands.stop.stopping", &[]));
     host.request_stop();
     Ok(1)
@@ -60,7 +58,6 @@ pub fn stop(host: &mut dyn ProfilesHost) -> R<i32> {
 /// SaveAllCommand. Every save waits for the chunks to be written, so
 /// `flush` changes nothing.
 pub fn save_all(host: &mut dyn ProfilesHost) -> R<i32> {
-    host.require_dedicated()?;
     host.feedback(Text::translate("commands.save.saving", &[]));
     if !host.entity_save_admitted() {
         return Err(host.error("commands.save.failed", &[]));
@@ -82,7 +79,6 @@ pub fn save_all(host: &mut dyn ProfilesHost) -> R<i32> {
 
 /// SaveOffCommand and SaveOnCommand.
 pub fn auto_save(host: &mut dyn ProfilesHost, enabled: bool) -> R<i32> {
-    host.require_dedicated()?;
     if !host.set_auto_save(enabled) {
         let already = if enabled {
             "commands.save.alreadyOn"
@@ -105,7 +101,6 @@ pub fn auto_save(host: &mut dyn ProfilesHost, enabled: bool) -> R<i32> {
 /// never. The reply names the minutes, or says the timeout is off, and the
 /// command's result is the number of minutes.
 pub fn setidle_timeout(host: &mut dyn ProfilesHost, ctx: &Context) -> R<i32> {
-    host.require_dedicated()?;
     let Some(Arg::Int(minutes)) = ctx.get("minutes") else {
         return Ok(0);
     };
@@ -120,7 +115,6 @@ pub fn setidle_timeout(host: &mut dyn ProfilesHost, ctx: &Context) -> R<i32> {
 /// `BanListCommands.showList`: the players' bans then the addresses'
 /// (`banlist`), or one of them; told to the source only.
 pub fn banlist(host: &mut dyn ProfilesHost, id: &str) -> R<i32> {
-    host.require_dedicated()?;
     let lit = |s: &str| Text::literal(s.to_owned());
     let entries = host.ban_entries(id);
     if entries.is_empty() {
@@ -146,7 +140,6 @@ pub fn banlist(host: &mut dyn ProfilesHost, id: &str) -> R<i32> {
 
 /// `WhitelistCommand`: `on`, `off`, `list`, `reload`, `add` and `remove`.
 pub fn whitelist(host: &mut dyn ProfilesHost, id: &str, ctx: &Context) -> R<i32> {
-    host.require_dedicated()?;
     let lit = |s: &str| Text::literal(s.to_owned());
     match id {
         "whitelist.reload" => {

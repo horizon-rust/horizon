@@ -7,7 +7,7 @@
 //! Also `/stop`, `/save-all`, `/save-off` and `/save-on` (StopCommand,
 //! SaveAllCommand, SaveOffCommand, SaveOnCommand), on the switches the lists
 //! share.
-use super::{Arg, Context, Game, R, Target, err};
+use super::{Arg, Context, Game, R, Target, command_host::profiles::ListsTarget, err};
 use horizon_client::{
     server::user_lists::{BanEntry, NameAndId, OpEntry},
     text::Text,
@@ -28,13 +28,15 @@ impl Game<'_> {
 
     /// StopCommand: the server loop (game/interface/dedicated/mod.rs) ends after this tick.
     pub(super) fn cmd_stop(&mut self) -> R<i32> {
-        horizon_gameplay::commands::profiles::stop(self)
+        let lists = self.dedicated_lists()?;
+        horizon_gameplay::commands::profiles::stop(&mut ListsTarget { game: self, lists })
     }
 
     /// SaveAllCommand. Every save waits for the chunks to be written, so
     /// `flush` changes nothing.
     pub(super) fn cmd_save_all(&mut self) -> R<i32> {
-        horizon_gameplay::commands::profiles::save_all(self)
+        let lists = self.dedicated_lists()?;
+        horizon_gameplay::commands::profiles::save_all(&mut ListsTarget { game: self, lists })
     }
 
     /// Save everything; `commands.save.success`, or `commands.save.failed` in red.
@@ -50,7 +52,8 @@ impl Game<'_> {
 
     /// SaveOffCommand and SaveOnCommand.
     pub(super) fn cmd_auto_save(&mut self, enabled: bool) -> R<i32> {
-        horizon_gameplay::commands::profiles::auto_save(self, enabled)
+        let lists = self.dedicated_lists()?;
+        horizon_gameplay::commands::profiles::auto_save(&mut ListsTarget { game: self, lists }, enabled)
     }
 
     /// `NameAndId` of a player target.
@@ -318,7 +321,8 @@ impl Game<'_> {
     /// never. The reply names the minutes, or says the timeout is off, and the
     /// command's result is the number of minutes.
     pub(super) fn cmd_setidle_timeout(&mut self, ctx: &Context) -> R<i32> {
-        horizon_gameplay::commands::profiles::setidle_timeout(self, ctx)
+        let lists = self.dedicated_lists()?;
+        horizon_gameplay::commands::profiles::setidle_timeout(&mut ListsTarget { game: self, lists }, ctx)
     }
 
     /// `TransferCommand.register` and `TransferCommand.transfer`: each target's
@@ -380,7 +384,8 @@ impl Game<'_> {
     /// `BanListCommands.showList`: the players' bans then the addresses'
     /// (`banlist`), or one of them; told to the source only.
     pub(super) fn cmd_banlist(&mut self, id: &str) -> R<i32> {
-        horizon_gameplay::commands::profiles::banlist(self, id)
+        let lists = self.dedicated_lists()?;
+        horizon_gameplay::commands::profiles::banlist(&mut ListsTarget { game: self, lists }, id)
     }
 
     /// `BanListEntry.getReasonMessage`.
@@ -393,6 +398,7 @@ impl Game<'_> {
 
     /// `WhitelistCommand`: `on`, `off`, `list`, `reload`, `add` and `remove`.
     pub(super) fn cmd_whitelist(&mut self, id: &str, ctx: &Context) -> R<i32> {
-        horizon_gameplay::commands::profiles::whitelist(self, id, ctx)
+        let lists = self.dedicated_lists()?;
+        horizon_gameplay::commands::profiles::whitelist(&mut ListsTarget { game: self, lists }, id, ctx)
     }
 }
