@@ -592,17 +592,24 @@ pub(super) struct StableBuild {
     pub(super) week: Option<String>,
 }
 
+/// The last game release before Horizon shipped only Nightlies (docs/release-flow.md, "Nightly
+/// channel"). It and every older tag stay full releases on GitHub, so `releases/latest` keeps
+/// pointing at a game build for servers, but they are too old to be Stable.
+const LAST_BEFORE_NIGHTLIES: &str = "v0.2.97";
+
 /// The Stable channel's builds, newest first: the real (non-Nightly, non-pre-release) releases
-/// when any exist; until then the newest Nightly of each Monday to Sunday week. `releases` is
-/// newest first, as GitHub lists them.
+/// after [`LAST_BEFORE_NIGHTLIES`] when any exist; until then the newest Nightly of each Monday to
+/// Sunday week. `releases` is newest first, as GitHub lists them.
 pub(super) fn stable_builds(releases: &[Release]) -> Vec<StableBuild> {
+    use horizon_launcher::backend::{compare_versions, launcher_version};
     let real: Vec<_> = releases
         .iter()
         .filter(|r| {
             r.nightly.is_none()
                 && r.asset.is_some()
                 && !r.prerelease
-                && horizon_launcher::backend::launcher_version(&r.tag).is_none()
+                && launcher_version(&r.tag).is_none()
+                && compare_versions(&r.tag, LAST_BEFORE_NIGHTLIES).is_gt()
         })
         .map(|r| StableBuild {
             tag: r.tag.clone(),
@@ -1495,6 +1502,11 @@ mod tests {
             release("nightly-2026-11-03-eeeeeee", true, true),
             // No build for this platform: not a candidate.
             release("nightly-2026-11-14-fffffff", true, false),
+            // The releases from before the Nightlies are full releases, but not Stable.
+            release("v0.2.97", false, true),
+            release("v0.2.97.1", false, true),
+            release("v0.2.96", false, true),
+            release("v2026.10.19.15", false, true),
         ];
         let weekly = |tag: &str, week: &str| StableBuild {
             tag: tag.into(),
