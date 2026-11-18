@@ -12,6 +12,8 @@ pub enum Feedback {
     Explosion { distance: f64, radius: f32 },
     /// A totem of undying saved the player.
     Totem,
+    /// The player split a stack into the carried one, as in Bedrock.
+    ItemStackSplit,
 }
 
 /// What the engine offers an input source about the game it drives: read-only, engine terms only.

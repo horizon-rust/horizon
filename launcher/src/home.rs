@@ -240,10 +240,20 @@ impl Launcher {
                     .relative()
                     .child(blocks::icon("play", 20., c(t.night.on_accent))),
             )
-            .child(label(
-                tr(if running { "Running" } else { "Play" }).to_string(),
-            ));
-        match play_press(ready, self.owner, self.preparing || running) {
+            .child(label(match self.play_step.now() {
+                // The step a start is on, once it said one.
+                Some(step) if self.starting_client.is_some() => step.to_owned(),
+                _ => tr(if running { "Running" } else { "Play" }).to_string(),
+            }));
+        match play_press(
+            ready,
+            if horizon_launcher::developer_offline::selected() {
+                Some(true)
+            } else {
+                self.owner
+            },
+            self.preparing || running,
+        ) {
             PlayPress::Nothing => play = disabled(play),
             PlayPress::Play => {
                 play = play.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -255,7 +265,10 @@ impl Launcher {
             PlayPress::PrepareThenPlay => {
                 play = play.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.picker.open = false;
-                    this.play_when_prepared = this.selected().cloned();
+                    this.play_when_prepared = this
+                        .selected()
+                        .cloned()
+                        .zip(this.selected_instance().map(|i| i.id.clone()));
                     this.prepare(backend::MinecraftFrom::Install);
                     cx.notify();
                 }))
