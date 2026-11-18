@@ -216,14 +216,16 @@ impl Rule {
     fn parse(props: &Properties, n: u32) -> Option<Self> {
         // This rule's keys, `<key>.<n>` or `nbt.<n>.<path>` (a path may end in a list index:
         // `nbt.2.Tags.1`): one unknown, or an empty condition (`biomes.1=`), skips the rule. An
-        // empty `weights` is only no weights.
+        // empty `weights` is only no weights. So does an `nbt` test numbered otherwise (`nbt.01.`):
+        // the prefix below would never collect it, and the rule would match every entity.
         let unusable = props.entries.iter().any(|(key, value)| {
             let mut parts = key.splitn(3, '.');
             let (Some(head), Some(index)) = (parts.next(), parts.next()) else {
                 return false;
             };
             index.parse::<u32>() == Ok(n)
-                && (!KEYS.contains(&head)
+                && ((head == "nbt" && index != n.to_string())
+                    || !KEYS.contains(&head)
                     || (value.is_empty() && !matches!(head, "textures" | "skins" | "weights")))
         });
         let get = |key: &str| props.get(&format!("{key}.{n}"));
@@ -234,7 +236,14 @@ impl Rule {
         let nbt = props
             .with_prefix(&format!("nbt.{n}."))
             .map(|(path, value)| {
-                let path: Vec<String> = path.split('.').map(str::to_owned).collect();
+                // `~` is the minecraft namespace where it starts a segment, as in CIT's paths.
+                let path: Vec<String> = path
+                    .split('.')
+                    .map(|s| match s.strip_prefix('~') {
+                        Some(rest) => format!("minecraft:{rest}"),
+                        None => s.to_owned(),
+                    })
+                    .collect();
                 if path.iter().any(String::is_empty) {
                     return None;
                 }
@@ -815,6 +824,8 @@ mod tests {
             "nbt.1.CustomName=",
             "nbt.1..x=1",
             "nbt.1=Bob",
+            // A number that isn't spelt `1` would leave its condition unread.
+            "nbt.01.CustomName=Rex",
             "teams.1=red",
             "seedSource.1=vehicle",
             "biomes.1=",
@@ -881,6 +892,17 @@ mod tests {
         assert_eq!(pick("minecraft:pale", false), None);
         // Without the entity's NBT no nbt rule matches.
         assert_eq!(r.matching(&Facts::default(), 0), None);
+        // `~` names the minecraft namespace, as in CIT: `~home` is `minecraft:home`.
+        let r = rules(
+            "skins.1=2
+nbt.1.Brain.memories.~home=exists:true",
+        );
+        let home = |t: &NbtTest| t.path == ["Brain", "memories", "minecraft:home"];
+        let facts = Facts {
+            nbt: Some(Nbt(&home)),
+            ..Default::default()
+        };
+        assert_eq!(r.matching(&facts, 0), Some(2));
     }
 
     #[test]
