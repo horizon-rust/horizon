@@ -10,6 +10,7 @@ use horizon_client::{
     mobs::{Mob, villager, villager_brain},
 };
 #[cfg(test)]
+use horizon_client::items::ItemStack;
 use horizon_core::geometry::Vec3;
 use horizon_core::position::BlockPos;
 
@@ -41,13 +42,7 @@ impl Game<'_> {
     /// `BehaviorUtils.throwItem`: toss a stack from a villager's hand toward
     /// a point.
     #[allow(dead_code, reason = "a game method; the moved code calls the function")]
-    fn villager_throw(
-        &mut self,
-        from: horizon_core::geometry::Vec3,
-        eye: f64,
-        to: horizon_core::geometry::Vec3,
-        stack: horizon_client::items::ItemStack,
-    ) {
+    fn villager_throw(&mut self, from: Vec3, eye: f64, to: Vec3, stack: ItemStack) {
         horizon_gameplay::villagers::villager_throw(self, from, eye, to, stack);
     }
 
