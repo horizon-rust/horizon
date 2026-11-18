@@ -1302,34 +1302,31 @@ fn receive_application(
     payload: cfg::CustomPayload,
     send: &ingress::Producer<Event>,
 ) -> Result<Option<cfg::CustomPayload>, Reason> {
-    let classified = match crate::raw_payloads::Incoming::classify(
-        endpoint.transport(),
-        phase,
-        payload,
-    ) {
-        Ok(classified) => classified,
-        // A Horizon server from before the negotiation may still send on a channel this
-        // side declares (attachment sync goes to every Horizon-branded client): skip it,
-        // since nothing was negotiated to read it with.
-        Err(failure) => {
-            let silent = endpoint
-                .transport()
-                .epoch()
-                .filter(|epoch| epoch.peer.silent());
-            match (silent, &failure.error) {
-                (Some(epoch), mod_api::PayloadSendError::UnsupportedPeer(_)) => {
-                    if epoch.peer.first_skip() {
-                        log::info!(
-                            "Skipping {} from an older Horizon server: it was not negotiated",
-                            failure.id.0
-                        );
+    let classified =
+        match crate::raw_payloads::Incoming::classify(endpoint.transport(), phase, payload) {
+            Ok(classified) => classified,
+            // A Horizon server from before the negotiation may still send on a channel this
+            // side declares (attachment sync goes to every Horizon-branded client): skip it,
+            // since nothing was negotiated to read it with.
+            Err(failure) => {
+                let silent = endpoint
+                    .transport()
+                    .epoch()
+                    .filter(|epoch| epoch.peer.silent());
+                match (silent, &failure.error) {
+                    (Some(epoch), mod_api::PayloadSendError::UnsupportedPeer(_)) => {
+                        if epoch.peer.first_skip() {
+                            log::info!(
+                                "Skipping {}: the server did not negotiate it",
+                                failure.id.0
+                            );
+                        }
+                        return Ok(None);
                     }
-                    return Ok(None);
+                    _ => return Err(Reason::plain(failure.to_string())),
                 }
-                _ => return Err(Reason::plain(failure.to_string())),
             }
-        }
-    };
+        };
     match classified {
         crate::raw_payloads::Classified::Other(payload) => Ok(Some(payload)),
         crate::raw_payloads::Classified::Application(incoming) => {
@@ -1553,7 +1550,7 @@ fn configure(
                     .map_err(|error| Reason::plain(error.to_string()))?;
                 if silent {
                     log::info!(
-                        "The server runs an older Horizon build: Horizon's negotiated extensions are off"
+                        "The server did not answer horizon:payloads: Horizon's negotiated extensions are off"
                     );
                 }
                 if payloads.epoch().is_none() {
@@ -1912,8 +1909,9 @@ mod tests {
         }
         let epoch = endpoint.transport().epoch().unwrap();
         assert!(epoch.peer.silent());
-        assert!(!crate::raw_payloads::negotiated(
-            endpoint.transport(),
+        // Attachment sync is clientbound: this client must not receive it.
+        assert!(!epoch.peer.engine_receives(
+            horizon_protocol::payload_negotiation::Phase::Play,
             horizon_protocol::attachment_sync::CHANNEL
         ));
         // Such a server still sends attachment sync to Horizon-branded clients: skipped.
