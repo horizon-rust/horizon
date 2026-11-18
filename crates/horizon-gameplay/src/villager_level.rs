@@ -22,7 +22,8 @@ pub trait VillagerLevel: MobLevel {
     fn mob_type(&self, id: &str) -> Option<Arc<MobType>>;
     /// The level as mob rules read it, with `others` as the mobs it has seen.
     fn mob_world_seen<'s>(&'s self, others: &'s [Seen]) -> MobWorld<'s>;
-    /// Sets the id the next entity will take.
+    /// Stores the last id handed out. `MobParts::next_entity` holds the same value, and the next
+    /// entity takes that value plus one (`try_spawn_iron_golem` reads it, adds one and stores the result).
     fn set_next_entity(&mut self, id: u32);
     /// The mod hooks for the mob at `from` having joined the level (`natural`: a natural spawn).
     fn mob_joined(&mut self, from: usize, natural: bool);
@@ -32,9 +33,10 @@ pub trait VillagerLevel: MobLevel {
     fn spawn_mob_raw(&mut self, kind: &str, at: [f64; 3], persistent: bool) -> Option<u32>;
     /// `Level.broadcastEntityEvent` of an event that draws particles about mob `id`.
     fn mob_event_particles(&mut self, id: u32, event: i8);
-    /// The `BonemealEvent` for villager bone meal from `stack` on `pos` and the growth: whether
-    /// the crop grew, and the answer a mod gave in vanilla's place (`Some(successful)`) if it
-    /// canceled the event.
+    /// The `BonemealEvent` for villager bone meal from `stack` on `pos` and the growth. The first
+    /// value is the effective success: the answer a mod gave in vanilla's place when it canceled
+    /// the event, the crop's growth otherwise. The second is that answer (`Some(successful)`) or
+    /// `None` when no mod canceled the event.
     fn bonemeal_grow(&mut self, pos: BlockPos, stack: &mut ItemStack) -> (bool, Option<bool>);
     /// Queues a level event and plays what it asks for.
     fn level_event(&mut self, event: LevelEvent);
