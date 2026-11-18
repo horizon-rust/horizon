@@ -599,6 +599,20 @@ left.
 `python3 tools/check_addresses.py` (horizon-rust/horizon#12990) checks the built-in addresses
 ([below](#built-in-addresses)); it runs in CI's verify job and in `tools/pr_ready.py` too.
 
+### Mod points stay put
+
+Every `&self` or `&mut self` method of `Game` that the point generator admits is a mod injection point. Its name,
+module path and signature are part of the mod API ([agent rules](mod-api/agent-rules.md), rule 7), and a mod's
+`[[inject]]` row names it by that path and a hash of its signature. When you move code out of `impl Game` into a
+lower crate, the `Game` method keeps its name, module path and signature, and only its body changes to call the new
+function. Do not rename it, move it to another module, change a parameter or the return type, or delete it.
+
+`python3 tools/check_mod_points_unchanged.py` checks this. It runs the `hook_snapshot` example of
+`horizon-mod-api-gen` on the base (the merge base with `origin/main`, in a temporary worktree) and on your tree, and
+fails when a point is removed or changed (name, target, signature hash) or the generated API differs. CI runs it,
+with `--allow-added`, on a pull request that touches `crates/horizon-client/src/game/` or the generator crates. A new
+hook on purpose adds points and passes with that flag.
+
 ### Today's exceptions
 
 The current dependency inventory is in `tools/layers.json`, with fork-specific classifications and reasons in

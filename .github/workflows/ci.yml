@@ -393,6 +393,21 @@ jobs:
           # recompiling the workspace with a different dependency graph.
           cargo +stable test --locked --workspace --lib --bins --tests mod_content::tests:: -- --ignored
           cargo +stable test --locked --workspace --doc
+      # docs/layers.md#mod-points-stay-put: every eligible `Game` method is a mod injection point, so a change to `Game`'s
+      # source or to the generator must leave the point catalog and the generated API as they were. Only a pull request
+      # that touches those paths runs it, with --allow-added: a new hook adds points and passes, a removed or changed
+      # point or any other change to the generated API fails. It builds
+      # horizon-mod-api-gen's hook_snapshot example in this build folder, for the pull request's tree (the merge commit)
+      # and for HEAD^1 (main, as in verify-tree), both in the folder the tests above just warmed: the generator's few
+      # crates and their dependencies, not the game.
+      - name: Mod points and the generated API stay as they were
+        if: github.event_name == 'pull_request' && steps.rust.outputs.required != 'false'
+        run: |
+          if git diff --name-only HEAD^1 HEAD | grep -qE '^(crates/horizon-client/src/game/|crates/horizon-mod-(api-gen|api|point-shape|point-emit|surface|source|vocab)/|tools/check_mod_points_unchanged\.py)'; then
+            python3 tools/check_mod_points_unchanged.py --base HEAD^1 --allow-added
+          else
+            echo "No change to Game's source or the mod API generator: nothing to compare."
+          fi
       - name: Upload the cargo build timings
         # Also after a failed test: the build, and so its timings, finished before the tests ran.
         if: "!cancelled() && github.ref == 'refs/heads/main' && steps.rust.outputs.required != 'false'"
