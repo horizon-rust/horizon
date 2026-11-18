@@ -22,7 +22,9 @@ pub fn int(ctx: &Context, name: &str) -> Option<i32> {
 }
 
 /// The feedback calls of a command source. Commands take `&mut dyn` of a trait with this
-/// one as a supertrait, so editing a command does not recompile the game.
+/// one as a supertrait, so a command's code is compiled here, in horizon-gameplay, and not
+/// instantiated in horizon-client: an edit to it still re-checks horizon-client, but
+/// incrementally, without generating the command's code there.
 pub trait CommandHost {
     /// `sendSuccess(message, true)`: the source is told, and the operators when the rules say so.
     fn feedback(&mut self, message: Text);

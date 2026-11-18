@@ -26,8 +26,8 @@ pub trait TimeHost: CommandHost {
     fn set_clock_rate(&mut self, clock: &str, rate: f32);
     /// Drops the partial tick of `clock`.
     fn reset_clock_partial(&mut self, clock: &str);
-    /// A mod's `time_skip` listeners, for the Overworld's clock jumping from `from` to `to` by a
-    /// command: true when one cancels the jump.
+    /// A mod's `time_skip` listeners, for a command jumping the selected clock from `from` to
+    /// `to` (the Overworld's or any other the command names): true when one cancels the jump.
     fn time_skip_canceled(&mut self, from: i64, to: i64) -> bool;
     /// The Overworld clock's time marker `marker` seen from `total`: the time of its next
     /// occurrence, and whether it is occurring now. None for a marker that is unknown or never comes.
