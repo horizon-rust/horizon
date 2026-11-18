@@ -1272,8 +1272,9 @@ mod tests {
                 reserved: vec![original[0]],
                 others: original[1..].to_vec(),
             };
-            let state = os::reserve(&plan).unwrap();
-            WHOLE.store(whole_count(&plan), Ordering::Relaxed);
+            // What std says before the pin, a CPU quota included: never more than the mask.
+            let before = std::thread::available_parallelism().unwrap().get();
+            let core = begin(plan.clone()).unwrap();
             let on_server = crate::available_parallelism().unwrap().get();
             let moved = std::thread::spawn({
                 let others = plan.others.clone();
@@ -1284,17 +1285,15 @@ mod tests {
             })
             .join()
             .unwrap();
-            WHOLE.store(0, Ordering::Relaxed);
+            drop(core);
             let after = crate::available_parallelism().unwrap().get();
-            os::restore(&state);
-            assert_eq!(
-                std::thread::available_parallelism().unwrap().get(),
-                original.len()
-            );
-            assert_eq!(
-                (on_server, moved, after),
-                (original.len(), original.len(), 1)
-            );
+            assert_eq!((on_server, moved, after), (before, before, before));
+            let missing = Plan {
+                reserved: vec![libc::CPU_SETSIZE as usize],
+                others: original.clone(),
+            };
+            assert!(begin(missing).is_none());
+            assert_eq!(whole_set(), None);
         })
         .join()
         .unwrap();
