@@ -175,6 +175,14 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
     if !java_instance {
         rows.extend(native_status::untracked(home).into_iter().map(|native| {
             let icon = mod_icons::load(native.icon.as_ref().map(|i| i.as_deref()));
+            // A hand-copied `.hmod` in `horizon-mods/` is wasm or content: its manifest says which.
+            let kind = if native.native() {
+                Some(ModKind::Native)
+            } else {
+                horizon_platform::mod_package::manifest::Package::read(&home.join(&native.file))
+                    .ok()
+                    .map(|p| ModKind::of(&p.manifest))
+            };
             ModRow {
                 file: native.file.clone(),
                 name: native.id.clone(),
@@ -183,7 +191,7 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
                 entry: None,
                 icon: icon.image,
                 error: native.note().map(String::from).or(icon.error),
-                kind: Some((ModKind::Native, native.id.clone())),
+                kind: kind.map(|kind| (kind, native.id.clone())),
                 internals: native.internals.clone(),
                 native: Some(native),
             }
@@ -818,6 +826,66 @@ mod tests {
             "native mods stay out of Java instances"
         );
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_hmod_copied_by_hand_into_horizon_mods_is_listed_with_its_switch() {
+        use std::io::Write;
+        let scratch = TestHome::new();
+        let home = &scratch.0;
+        let folder = home.join(horizon_platform::mod_package::mod_list::DIR);
+        std::fs::create_dir_all(&folder).unwrap();
+        // The file name isn't the id: the on/off list is keyed by the manifest's.
+        for (file, id) in [("tracked", "tracked"), ("my-build", "handmade")] {
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(folder.join(format!("{file}.hmod"))).unwrap(),
+            );
+            zip.start_file("horizon-mod.toml", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            let manifest = format!(
+                "id = '{id}'\nname = '{id}'\nversion = '1.4'\napi = '0.2'\ncapabilities = ['registries']\n"
+            );
+            zip.write_all(manifest.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let entry: installed::Entry = serde_json::from_value(serde_json::json!({"source":"horizon","project":"tracked","slug":"tracked","title":"Tracked mod","kind":"mod","version":"1","number":"1.4","file":"horizon-mods/tracked.hmod","checksum":"","page":""})).unwrap();
+        installed::Installed {
+            entries: vec![entry],
+        }
+        .save(home)
+        .unwrap();
+        std::fs::write(home.join("horizon-mods.txt"), "mod.handmade:true\n").unwrap();
+        let rows = read(home, false);
+        let seen: Vec<_> = rows
+            .iter()
+            .map(|r| (r.file.as_str(), r.name.as_str(), r.on, r.kind.clone()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (
+                    "horizon-mods/my-build.hmod",
+                    "handmade",
+                    true,
+                    Some((ModKind::Content, "handmade".into()))
+                ),
+                (
+                    "horizon-mods/tracked.hmod",
+                    "Tracked mod",
+                    false,
+                    Some((ModKind::Content, "tracked".into()))
+                ),
+            ]
+        );
+        let local = rows[0]
+            .native
+            .as_ref()
+            .expect("removable like a local native file");
+        assert!(local.origin.is_none());
+        assert!(
+            !native_status::asks_for_build(rows.iter().filter_map(|r| r.native.as_ref())),
+            "a content mod needs no native build"
+        );
     }
 
     #[test]

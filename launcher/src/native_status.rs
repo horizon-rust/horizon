@@ -252,20 +252,37 @@ impl Installed {
             crate::i18n::tr("Old format (.hnmod): ask its author to republish it as .hmod")
         })
     }
+
+    /// Whether the file is in `horizon-native-mods/`; one in `horizon-mods/` is a wasm or
+    /// content mod, which needs no build and no native permission.
+    pub fn native(&self) -> bool {
+        self.file
+            .strip_prefix(native_mods::INSTALLED)
+            .is_some_and(|rest| rest.starts_with('/'))
+    }
 }
 
 /// Whether `files` hold a native mod the build card is for; a retired file is not one.
 pub fn asks_for_build<'a>(files: impl IntoIterator<Item = &'a Installed>) -> bool {
-    files.into_iter().any(|file| !file.retired())
+    files
+        .into_iter()
+        .any(|file| file.native() && !file.retired())
 }
 
 /// Discover the actual files, not just GitHub sidecars. Registry files already have a row.
+/// Besides native files, an `.hmod` copied by hand into `horizon-mods/` is listed too (#18301).
 pub fn untracked(home: &Path) -> Vec<Installed> {
     let tracked = crate::browser::installed::Installed::load(home);
-    listed(home)
+    let native = listed(home)
         .into_iter()
-        .filter_map(|path| {
-            let file = format!("{}/{}", native_mods::INSTALLED, path.file_name()?.to_str()?);
+        .map(|path| (native_mods::INSTALLED, path));
+    let wasm = wasm_hmods(home)
+        .into_iter()
+        .map(|path| (horizon_platform::mod_package::mod_list::DIR, path));
+    native
+        .chain(wasm)
+        .filter_map(|(folder, path)| {
+            let file = format!("{folder}/{}", path.file_name()?.to_str()?);
             if !path.is_file() || tracked.entries.iter().any(|e| e.file == file) {
                 return None;
             }
@@ -275,8 +292,10 @@ pub fn untracked(home: &Path) -> Vec<Installed> {
                 .map(|p| (p.manifest.id.clone(), p.manifest.version.clone()))
                 .unwrap_or_else(|_| (stem(&path), String::new()));
             // A GitHub install's Remove deletes `<id>.hmod`: an old `.hnmod` is removed as a file.
+            // GitHub installs only go into the native folder.
             let hmod = path.extension().is_some_and(|e| e == "hmod");
-            let origin = (hmod && path.file_stem()?.to_str()? == id)
+            let github = folder == native_mods::INSTALLED;
+            let origin = (github && hmod && path.file_stem()?.to_str()? == id)
                 .then(|| crate::github_mods::origin(home, &id))
                 .flatten();
             let internals = package
