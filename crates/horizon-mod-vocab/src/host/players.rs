@@ -161,6 +161,15 @@ pub trait PlayersBackend {
     #[access(WorldOnly)]
     fn player_address(&self, player: PlayerRef) -> Option<String>;
     /// Side: server.
+    /// The host and port the player's client typed to connect (the handshake's address: the
+    /// name a server with several, or a host a mod announces a pack URL under, was reached by),
+    /// where `player_address` gives the IP they connect from. A transfer's is the one the
+    /// transferring server gave. The host is cut at its first NUL, where a proxy appends its own
+    /// data. None for a stale or unavailable player, a player with no connection of their own
+    /// (a fake player, the single-player owner) and a client that typed nothing.
+    #[access(WorldOnly)]
+    fn player_connect_address(&self, player: PlayerRef) -> Option<ConnectAddress>;
+    /// Side: server.
     /// The stable name of a connected or acting player. None for a stale or
     /// unavailable player; displaced online players retain their identity.
     #[access(WorldOnly)]
@@ -1154,4 +1163,15 @@ pub trait PlayersBackendMut {
         player: PlayerRef,
         data: Compound,
     ) -> Result<(), PlayerDataRefusal>;
+    /// Side: server.
+    /// Sets a server player's velocity in blocks a tick and tells their
+    /// client (`Entity.setDeltaMovement` with `hurtMarked`, which sends
+    /// `ClientboundSetEntityMotionPacket` about the player themselves; Paper's
+    /// `Player.setVelocity`). The client owns a player's motion, so it moves
+    /// by the new value from its next tick. `entity_push` adds to the
+    /// velocity instead; `entity_set_velocity` refuses players. False for a
+    /// stale or unavailable player, a displaced outer player, and a value
+    /// that is not finite.
+    #[access(WorldOnly)]
+    fn player_set_velocity(&mut self, player: PlayerRef, velocity: [f64; 3]) -> bool;
 }
