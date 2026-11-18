@@ -1,0 +1,5 @@
+# Spawn-interaction outcomes need HORIZON_TEST_RESOURCES. These are required daily tests, not known failures.
+# PACKAGE TEST TARGET daily REASON
+horizon-client game::extinguish::arrow_spawn_protection_tests::a_guest_without_build_rights_light_nothing_with_a_flaming_arrow lib daily resources
+horizon-client game::extinguish::bottle_spawn_protection_tests::a_guest_without_build_rights_fills_no_bottle_under_spawn_protection lib daily resources
+horizon-client game::lan_actions::guest_body::tests::spawn_protection::a_guest_without_build_rights_tramples_no_farmland_under_spawn_protection lib daily resources

@@ -788,6 +788,11 @@ impl NativeFrame {
         }
     }
 
+    /// Group 3's layout entries (`layout`), which a material stage's own layouts start with.
+    pub(in crate::gfx) fn entries(&self) -> &[wgpu::BindGroupLayoutEntry] {
+        &self.entries
+    }
+
     fn regroup(&mut self, device: &wgpu::Device) {
         self.group = Self::group(
             device,
@@ -1066,9 +1071,10 @@ fn post_pipeline(
 }
 
 impl NativePost {
-    /// Pipelines for `stages` (the pack's `[[post]]` entries in order, the compute ones run by
-    /// the kept store) with the option values `constants`, the last onto `picture`, and
-    /// `tonemap` (else Horizon's) onto a screen of `format`. Errors name the pass wgpu refused.
+    /// Pipelines for `stages` (`[[post]]`'s entries in order, then `[[before_world]]`'s; the kept
+    /// store runs the compute ones) with the option values `constants`, the last onto `picture`,
+    /// and `tonemap` (else Horizon's) onto a screen of `format`. Errors name the pass wgpu
+    /// refused.
     pub fn new(
         device: &wgpu::Device,
         stages: Vec<CheckedStage>,
@@ -1399,15 +1405,14 @@ impl NativePost {
                 }));
             }
             // The passes built against the scene read it too; the tonemap has no `trace`.
-            let layout = match traced.filter(|_| writes.is_some()) {
-                Some((trace, scene)) => {
+            entries.extend(kept::entries(&self.kept, pass, parity));
+            let with_scene = traced.and_then(|(t, scene)| Some((t.layout(pass?)?, t, scene)));
+            let layout = match with_scene {
+                Some((layout, trace, scene)) => {
                     entries.extend(trace.entries(scene));
-                    &trace.layout
+                    layout
                 }
-                None => {
-                    entries.extend(kept::entries(&self.kept, pass, parity));
-                    kept::pass(&self.kept, pass).map_or(&self.layout, |p| &p.layout)
-                }
+                None => kept::pass(&self.kept, pass).map_or(&self.layout, |p| &p.layout),
             };
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Native shader pack post"),
@@ -1452,11 +1457,9 @@ impl NativePost {
         size: [u32; 2],
         history_reset: bool,
         mut timing: Option<&mut super::pack_timing::PassTiming>,
-        scene: Option<(&trace::RayScene, glam::DVec3)>,
+        scene: Option<&trace::Traced<'_>>,
     ) {
         let window = [screen.texture().width(), screen.texture().height()];
-        let scene = scene.and_then(|(scene, camera)| scene.traced(camera));
-        let scene = scene.as_ref();
         self.begin_kept(device, encoder, size);
         self.prepare(device, world, size, window, history_reset, scene);
         if let Some(t) = timing.as_deref_mut() {
@@ -1472,7 +1475,10 @@ impl NativePost {
         };
         d.decoder.run(device, encoder, world.0, scene);
         for (i, ((label, pipeline), group)) in self.passes.iter().zip(passes).enumerate() {
-            kept::dispatch(&self.kept, encoder, passes, i, size);
+            let computes = self.trace.as_ref().filter(|_| self.traced.is_some());
+            let traced = computes.map(|t| t.computes.as_slice());
+            let timed = timing.as_deref_mut();
+            kept::dispatch(&self.kept, encoder, (passes, traced), i, size, timed);
             let view = match (self.plan[i].writes, &self.targets, &self.named, &d.picture) {
                 (Writes::Chain(slot), Some((_, t)), _, _) => &t[slot],
                 (Writes::Target(j), _, Some((_, n)), _) => &n[j],
@@ -1580,6 +1586,8 @@ pub fn frame_inputs(
         ),
         None => (frame.sky.fog_color, frame.distance * 0.9, frame.distance),
     };
+    // The two terms terrain.wgsl's `apply_fog` takes the larger of, as the renderer has them.
+    let (_, fog) = super::fog_uniform(frame);
     let pack = &frame.pack;
     let level = |l: i32| l as f32 / 15.0;
     let m = |m: Mat4| m.to_cols_array_2d();
@@ -1635,7 +1643,7 @@ pub fn frame_inputs(
         mods: pack.mod_params,
         light_direction: match shadow {
             Some(s) => super::pack_uniforms::shadow_light(frame, s),
-            None => Vec3::Y,
+            None => body(super::pack_uniforms::light_angle(frame)),
         }
         .to_array(),
         has_shadow: u32::from(shadow.is_some()),
@@ -1667,7 +1675,10 @@ pub fn frame_inputs(
         view_epoch: 0,
         world_epoch: 0,
         reset_reasons: 0,
-        padding: [0; 2],
+        fog_environment: [fog[0], fog[1]],
+        fog_render: [fog[2], fog[3]],
+        moon_phase: frame.sky.moon_phase,
+        padding: [0; 1],
     }
 }
 
@@ -1804,6 +1815,36 @@ mod tests {
 
     const SDR: DisplayValues = DisplayValues::SDR;
 
+    /// `light_direction` is the sun by day and the moon by night, as the same frame's
+    /// `sun_direction` and `moon_direction` have them, also for a pack without a shadow map; a
+    /// pack with `[shadow]` gets the shadow camera's light as before, to the bit.
+    #[test]
+    fn the_light_is_the_sun_by_day_and_the_moon_by_night_with_or_without_a_shadow_map() {
+        let hud = crate::hud::HudBatch::scratch([4, 4]);
+        let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
+        let shadow = crate::gfx::native_shadow::camera(&Default::default());
+        let light = |frame: &Frame, shadow| {
+            frame_inputs(frame, [4, 4], 0.0, 0, shadow)
+                .light_direction
+                .map(f32::to_bits)
+        };
+        // Morning and night, where the sun, the moon and straight up all differ.
+        for (sun, moon, by_day, shadowed) in [
+            (35.0, 215.0, true, [0xbf12_d5e7, 0x3f51_b3f3, 0xb2d7_5d86]),
+            (200.0, 20.0, false, [0xbeaf_1d43, 0x3f70_8fb3, 0xb280_6bc8]),
+        ] {
+            (frame.sky.sun_angle, frame.sky.moon_angle) = (sun, moon);
+            let inputs = frame_inputs(&frame, [4, 4], 0.0, 0, None);
+            let body = if by_day {
+                inputs.sun_direction
+            } else {
+                inputs.moon_direction
+            };
+            assert_eq!(light(&frame, None), body.map(f32::to_bits), "{sun}");
+            assert_eq!(light(&frame, Some(&shadow)), shadowed, "{sun}");
+        }
+    }
+
     #[test]
     fn wetness_rises_slower_than_it_dries() {
         assert_eq!(wetness(0.0, 1.0, 30.0), 0.5);
@@ -1815,11 +1856,12 @@ mod tests {
     /// delta, and a long wait between its frames is not a gap that starts them over.
     #[test]
     fn a_scripted_clock_drives_time_frame_index_and_eased_values() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use crate::gfx::pack_uniforms::FrameTiming;
-        let Some((device, _)) = device() else {
+        let Some((device, _)) = device(false) else {
             return;
         };
-        let hud = crate::hud::HudBatch::new([4, 4]);
+        let hud = crate::hud::HudBatch::scratch([4, 4]);
         let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
         let mut native =
             NativeFrame::new(&device, None, Vec::new(), Default::default(), None, false);
@@ -1858,11 +1900,18 @@ mod tests {
     /// however the frames before moved the eased values, wetness and the frame count.
     #[test]
     fn a_reset_frame_gives_a_fresh_pack_s_inputs() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use crate::gfx::pack_uniforms::FrameTiming;
-        let Some((device, _)) = device() else {
+        let Some((device, _)) = device(false) else {
             return;
         };
-        let hud = crate::hud::HudBatch::new([4, 4]);
+        let hud = crate::hud::HudBatch::new(
+            [4, 4],
+            crate::hud::GuiScale {
+                requested: 0,
+                unicode: false,
+            },
+        );
         let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
         let new = || NativeFrame::new(&device, None, Vec::new(), Default::default(), None, false);
         let (mut used, mut fresh) = (new(), new());
@@ -1892,7 +1941,8 @@ mod tests {
     /// `fb`, which a pass reads before the pass that writes it, so it holds last frame's.
     #[test]
     fn a_reset_post_reads_its_own_targets_blank() {
-        let Some((device, queue)) = device() else {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device(true) else {
             return;
         };
         let manifest = "schema = 1
@@ -1901,17 +1951,17 @@ name = \"T\"
 version = \"1\"
 api = \"0.2\"
             [[post]]
-file = \"a.wgsl\"
-[[post]]
-file = \"b.wgsl\"
-output = \"fb\"
+    file = \"a.wgsl\"
+    [[post]]
+    file = \"b.wgsl\"
+    output = \"fb\"
             [[post]]
-file = \"c.wgsl\"
-";
+    file = \"c.wgsl\"
+    ";
         let a = "fn post(input: PostInput) -> vec4<f32> { return vec4<f32>(textureLoad(fb, vec2<i32>(input.pixel), 0).rgb + 0.25, 1.0); }
-";
+    ";
         let pass = "fn post(input: PostInput) -> vec4<f32> { return input.color; }
-";
+    ";
         let files = [
             (MANIFEST, manifest),
             ("a.wgsl", a),
@@ -1997,10 +2047,12 @@ file = \"c.wgsl\"
         );
     }
 
-    fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = crate::gfx::test_gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-        pollster::block_on(adapter.request_device(&Default::default())).ok()
+    fn device(needs_depth_load: bool) -> Option<(wgpu::Device, wgpu::Queue)> {
+        let adapter = crate::gfx::test_gpu::adapter()?;
+        if needs_depth_load && !crate::gfx::test_gpu::supports_depth_load(&adapter) {
+            return None;
+        }
+        Some(crate::gfx::test_gpu::device(&adapter))
     }
 
     /// A pack's frame with nothing but an SDR display written (`headroom` 1): the tonemap
@@ -2040,7 +2092,8 @@ file = \"c.wgsl\"
     /// keep it) times an option, the second halves it and writes the depth as blue.
     #[test]
     fn passes_chain_through_half_float_targets_with_options_and_depth() {
-        let Some((device, queue)) = device() else {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device(true) else {
             return;
         };
         let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\n\
@@ -2149,7 +2202,8 @@ file = \"c.wgsl\"
     /// frame before: half of white in linear light, 186 encoded.
     #[test]
     fn the_last_pass_reads_last_frames_input_as_history() {
-        let Some((device, queue)) = device() else {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device(true) else {
             return;
         };
         let manifest = "schema = 1
@@ -2158,14 +2212,14 @@ name = \"T\"
 version = \"1\"
 api = \"0.2\"
             [[post]]
-file = \"a.wgsl\"
-[[post]]
-file = \"b.wgsl\"
-";
+    file = \"a.wgsl\"
+    [[post]]
+    file = \"b.wgsl\"
+    ";
         let a = "fn post(input: PostInput) -> vec4<f32> { return vec4<f32>(input.color.rgb * 0.5, 1.0); }
-";
+    ";
         let b = "fn post(input: PostInput) -> vec4<f32> { return textureLoad(history, vec2<i32>(input.pixel), 0); }
-";
+    ";
         let files = [(MANIFEST, manifest), ("a.wgsl", a), ("b.wgsl", b)]
             .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
             .into();
@@ -2267,11 +2321,12 @@ file = \"b.wgsl\"
     /// is an integer format, and `surface_at` gets the floats back from the stored bits.
     #[test]
     fn the_surface_is_an_integer_target_that_the_post_stage_reads_bit_exact() {
+        let _gpu = crate::gfx::test_gpu::lock();
         assert_eq!(
             super::super::native_material::SURFACE_FORMAT.sample_type(None, None),
             Some(wgpu::TextureSampleType::Uint)
         );
-        let Some((device, queue)) = device() else {
+        let Some((device, queue)) = device(true) else {
             return;
         };
         let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\n\
@@ -2438,7 +2493,8 @@ file = \"b.wgsl\"
     /// signs and denormals included.
     #[test]
     fn the_surface_keeps_every_bit_of_the_floats_written_through_the_material_stage_bitcast() {
-        let Some((device, queue)) = device() else {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device(false) else {
             return;
         };
         let cases: [[u32; 4]; 4] = [
@@ -2573,8 +2629,9 @@ file = \"b.wgsl\"
     /// an 8-bit step), at alpha 1.
     #[test]
     fn the_world_comes_back_through_decode_tonemap_and_encode() {
+        let _gpu = crate::gfx::test_gpu::lock();
         assert!(tonemap_entries(false).contains("horizon_encode(min(horizon_sanitize(out)"));
-        let Some((device, queue)) = device() else {
+        let Some((device, queue)) = device(true) else {
             return;
         };
         let post = "[[post]]\nfile = \"a.wgsl\"\n[[post]]\nfile = \"b.wgsl\"\n";
@@ -2697,10 +2754,11 @@ file = \"b.wgsl\"
     /// without one: `hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `black_level` 0.
     #[test]
     fn the_frame_describes_the_display_it_goes_to() {
-        let Some((device, _)) = device() else {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, _)) = device(false) else {
             return;
         };
-        let hud = crate::hud::HudBatch::new([4, 4]);
+        let hud = crate::hud::HudBatch::scratch([4, 4]);
         let frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
         let mut native =
             NativeFrame::new(&device, None, Vec::new(), Default::default(), None, false);
@@ -2732,7 +2790,8 @@ file = \"b.wgsl\"
     /// to scRGB and back to HDR10 (`Hdr::retargeted`) maps it once all the same.
     #[test]
     fn a_pack_is_tone_mapped_once_by_its_own_curve_or_horizons() {
-        let Some((device, queue)) = device() else {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device(true) else {
             return;
         };
         // Light 8 times paper white, as the world's float frame stores it, in gamma.

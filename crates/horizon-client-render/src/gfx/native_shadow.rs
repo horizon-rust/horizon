@@ -9,6 +9,7 @@
 use horizon_shader_api::{Frame as FrameInputs, manifest::Shadow as Settings, stages::GROUP};
 use horizon_shaders::Shadow;
 
+use super::external::ShadowDraws;
 use super::native_material::TerrainShape;
 use super::wgsl_prefix::{TERRAIN, prefixed, section};
 
@@ -389,11 +390,12 @@ pub struct NativeShadow {
     pub displaced: Option<wgpu::RenderPipeline>,
 }
 
-/// The entity draw's shader.
+/// The entity draw's shader. Like the terrain's (`shader_source`), it declares `Frame` without
+/// the fields only some packs' preludes have (`[frame] fog = "pack"`'s, `moon_phase`).
 fn entity_source() -> String {
     format!(
         "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n{}{ENTITY_ENTRIES}",
-        FrameInputs::WGSL.wgsl(),
+        FrameInputs::declared_wgsl(true, true, false, false),
         horizon_shader_api::stages::SHADOW_HELPERS,
     )
 }
@@ -509,7 +511,7 @@ fn shader_source(
         (None, None) => (
             format!(
                 "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n{}{UNTAKEN}",
-                FrameInputs::WGSL.wgsl(),
+                FrameInputs::declared_wgsl(true, true, false, false),
                 horizon_shader_api::stages::SHADOW_HELPERS,
             ),
             super::native_material::DISPLACE_VANILLA,
@@ -518,7 +520,7 @@ fn shader_source(
     format!(
         "{head}// Horizon's terrain (terrain.wgsl)\n{}{solid}{}{displace}{}{ENTRIES}",
         prefixed(
-            &(include_str!("../hdr_light.wgsl").to_owned()
+            &(super::wgsl_prefix::HDR_LIGHT.to_owned()
                 + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")),
             PREFIX
         ),
@@ -749,35 +751,13 @@ impl NativeShadow {
     }
 }
 
-/// What the renderer hands the shadow passes each frame.
-pub struct ShadowDraws<'a> {
-    pub encoder: &'a mut wgpu::CommandEncoder,
-    pub timing: Option<&'a mut super::pack_timing::PassTiming>,
-    /// What the light sees, when the frame asked for a shadow view.
-    pub lists: Option<ShadowLists<'a>>,
-}
-
-/// The renderer's lists of what the light sees, and what they draw from.
-pub struct ShadowLists<'a> {
-    /// The world's group 0.
-    pub group: &'a wgpu::BindGroup,
-    pub sections: super::SectionLists<'a>,
-    /// The frame draws its terrain flat (`sections.flat`'s shadow calls).
-    pub flat_frame: bool,
-    pub instances: &'a wgpu::Buffer,
-    pub indirect: &'a wgpu::Buffer,
-    /// The light's first draw, its solid draws and its translucent draws after them.
-    pub draws: [u32; 3],
-    /// The entities' group 0 and vertices: `entity_quads` from the start, then
-    /// `shadow_only_quads` before the GPU-posed outlines at `outline_base`.
-    pub entity_group: &'a wgpu::BindGroup,
-    pub entity_vertices: &'a wgpu::Buffer,
-    pub entity_quads: u32,
-    pub shadow_only_quads: u32,
-    pub outline_base: u32,
-}
-
 impl super::native_pack::NativePack {
+    /// The shadow camera's view this frame, for a pack with `[shadow]`.
+    pub fn shadow_request(&self, frame: &super::Frame) -> Option<super::external::ShadowView> {
+        self.shadow.as_ref()?;
+        self.frame.shadow_view(frame)
+    }
+
     /// The pack's shadow passes (`[shadow]`): the solid terrain the light sees into its shadow
     /// map, the translucent over a copy of it, then the entities. A pack without one gets its
     /// 1×1 map cleared to "far" once.
@@ -885,6 +865,21 @@ mod tests {
             .validate(&module)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
         }
+    }
+
+    /// The shadow shaders declare the frame as before `[frame] fog`, whose fields no shadow
+    /// reads: the SHA-256 of `Frame` then, so every pack's shadow pass is the same WGSL.
+    #[test]
+    fn the_shadow_shaders_declare_the_frame_as_before() {
+        use sha2::{Digest, Sha256};
+        let frame = FrameInputs::declared_wgsl(true, true, false, false);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&frame)),
+            "9218b8f0da2c1af28ace7bc402e44701448011acee478c9cef34277b2ab5e034"
+        );
+        assert!(entity_source().starts_with(&frame));
+        let solid = shader_source(&shadow_solid(&[], &[7]), None, &[], None);
+        assert!(solid.starts_with(&frame));
     }
 
     #[test]
