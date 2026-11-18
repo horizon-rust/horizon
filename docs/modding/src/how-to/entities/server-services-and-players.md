@@ -96,6 +96,20 @@ this order: `Client`, `InPlayerHook` (a player's state is swapped in), `Stale` (
 handle), `NoConnection` (a fake player, or the world's own player in a single-player world, which respawns through its
 own screen) and `Alive` (health above 0 and the game not won: the case the button ignores; a player who has won the game and is watching the End poem is respawned even alive, on the next server tick, as the button does).
 
+## Sending packets
+
+`player.send_packets(host, &packets, bundle)` sends one connected player's client a list of clientbound play packets, in
+order, as the server sends its own. A `ClientboundPlayPacket` is a type name (`minecraft:set_entity_data`) and the packet's
+vanilla body without its id, the clientbound side of the `ServerboundPlayPacket` a client mod sends: the game checks the
+name and that the body decodes completely, and no protocol type is part of the API. With `bundle` (and at least two
+packets) the client applies them all in the same frame, between two bundle delimiters. Nothing is applied on the server:
+what the client needs to read a packet (an entity it was sent, a registry entry) is the mod's to keep true. The whole
+list is checked before the first packet goes out, and a refusal sends none: `Client`, `Stale`, `NoConnection`,
+`UnknownPacket` (an unknown name or a type without a body decoder), `InvalidBody`, `ServerOnly` (`bundle_delimiter` and
+`start_configuration`), `ProtectedPayload` (a custom payload on a channel a registered payload or an engine service owns)
+and `BundleTooLong` (over 4096). Prefer the typed
+calls (`tell`, `show_block`, `push_resource_pack`) where one exists.
+
 ## Player rules and sleep
 
 Reads accept `Host`; writes accept `ServerHost`.

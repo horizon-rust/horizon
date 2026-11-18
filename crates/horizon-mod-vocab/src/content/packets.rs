@@ -26,6 +26,83 @@ impl ServerboundPlayPacket {
     }
 }
 
+/// A clientbound play packet encoded in the vanilla protocol, for the server to send a player.
+///
+/// The game resolves the type name and checks the body decodes completely before anything
+/// is sent. It is the clientbound side of [`ServerboundPlayPacket`]: the same envelope, owned
+/// by the mod API, so no protocol type is part of it.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct ClientboundPlayPacket {
+    /// Packet type, for example `minecraft:set_entity_data` or `minecraft:set_time`.
+    pub id: Identifier,
+    /// Vanilla packet body, without the packet id, length prefix or compression framing.
+    pub body: Vec<u8>,
+}
+
+impl ClientboundPlayPacket {
+    /// Construct a packet envelope; the game validates the body when it is sent.
+    pub fn new(id: Identifier, body: Vec<u8>) -> Self {
+        Self { id, body }
+    }
+}
+
+/// Why `player.send_packets` sent nothing: a refusal leaves the whole list unsent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum SendPacketsRefusal {
+    /// The call was made on a client; these are the server's.
+    Client,
+    /// The player handle no longer identifies a player in the server's list.
+    Stale,
+    /// The player has no connection to send to (a fake player).
+    NoConnection,
+    /// The packet at `index` has no modeled clientbound play packet of that type name:
+    /// unknown names and types without a body decoder are both refused.
+    UnknownPacket {
+        /// Its position in the list.
+        index: u32,
+        /// The type name given.
+        id: Identifier,
+    },
+    /// The body of the packet at `index` does not decode completely as the named packet.
+    InvalidBody {
+        /// Its position in the list.
+        index: u32,
+    },
+    /// The packet at `index` is one the server alone sends: `minecraft:bundle_delimiter` (ask
+    /// for a bundle instead) or `minecraft:start_configuration` (it ends the play state, and a
+    /// bundle holding it makes the client throw).
+    ServerOnly {
+        /// Its position in the list.
+        index: u32,
+    },
+    /// The packet at `index` is a custom payload on a channel a registered payload or an engine
+    /// service owns: use the payload or service API.
+    ProtectedPayload {
+        /// Its position in the list.
+        index: u32,
+        /// The protected channel.
+        id: crate::PayloadId,
+    },
+    /// A bundle of more than `limit` packets (`BundlerInfo.BUNDLE_SIZE_LIMIT`) is refused by the
+    /// client.
+    BundleTooLong {
+        /// The number of packets given.
+        len: u32,
+        /// The most a bundle holds.
+        limit: u32,
+    },
+}
+
+impl crate::NoBackend for SendPacketsRefusal {
+    fn no_backend() -> Self {
+        Self::Stale
+    }
+}
+
 /// Why the client could not submit a play packet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]

@@ -1,0 +1,4 @@
+# Sending a player packets needs prepared resources.
+horizon-client game::native_player_packets_tests::packets_go_to_one_player_in_order_and_bundled_on_request lib daily resources
+horizon-client game::native_player_packets_tests::each_send_refusal_has_its_own_name lib daily resources
+horizon-client game::native_player_packets_tests::a_client_cannot_send_packets_to_a_player lib daily resources

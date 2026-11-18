@@ -1036,6 +1036,24 @@ pub trait PlayersBackendMut {
     #[access(WorldOnly)]
     fn player_respawn(&mut self, player: PlayerRef) -> Result<(), RespawnRefusal>;
     /// Side: server.
+    /// Sends that player's client `packets`, in order, as the server would
+    /// (`ServerGamePacketListenerImpl.send`; Paper's `PlayerConnection.send`), at once, or after the
+    /// hook for the acting player. With `bundle` and at least two packets they go between two
+    /// `ClientboundBundleDelimiterPacket`s, so the client applies them all in the same frame (a
+    /// bundle of more than 4096 packets is refused, as the client does). The packets go out as
+    /// given: nothing is applied on the server and what the client needs to read them (an entity
+    /// it was never sent, a registry entry) is the mod's to keep true. Every packet is checked
+    /// before the first is sent; a refusal sends none. An empty list is accepted and sends nothing.
+    /// Refuses with `SendPacketsRefusal`: `Client`, `Stale`, `NoConnection`, `UnknownPacket`,
+    /// `InvalidBody`, `ServerOnly`, `ProtectedPayload` and `BundleTooLong`.
+    #[access(WorldOnly)]
+    fn player_send_packets(
+        &mut self,
+        player: PlayerRef,
+        packets: &[ClientboundPlayPacket],
+        bundle: bool,
+    ) -> Result<(), SendPacketsRefusal>;
+    /// Side: server.
     /// Acknowledges the player's block actions up to `sequence`
     /// (`ServerGamePacketListenerImpl.ackBlockChangesUpTo`), for a mod that handled one itself,
     /// such as an editor's own message: the client's predicted blocks settle on the server's

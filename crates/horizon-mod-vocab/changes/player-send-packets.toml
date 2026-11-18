@@ -1,0 +1,3 @@
+ids = ["handle:PlayerRef::send_packets", "type:ClientboundPlayPacket", "type:SendPacketsRefusal"]
+why = "A mod can send one connected player's client a list of clientbound play packets, optionally as one bundle (PlayerRef::send_packets). ClientboundPlayPacket is the clientbound side of ServerboundPlayPacket: an API-owned envelope of a packet type name and its vanilla body, so no protocol type is exported. The whole list is checked before the first packet goes out and each refusal is named."
+migrate = "Additive. A mod that builds packet bodies owns what the client needs to read them. Rebuild wasm mods only if they match the new enums."
