@@ -14,6 +14,8 @@ pub mod lan;
 pub mod mob_index;
 pub mod mob_level;
 pub mod mob_looting;
+pub mod piglin_level;
+pub mod piglins;
 pub mod stats;
 pub mod tick_profile;
 pub mod trident;
