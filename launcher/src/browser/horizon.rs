@@ -991,16 +991,19 @@ fn install_version_guarded(
     let mut list = installed::Installed::load(home);
     let ours = |e: &installed::Entry| e.source == SourceId::Horizon && e.project == p.id;
     let old = list.entries.iter().find(|e| ours(e)).cloned();
+    // Nothing that loads is left to keep: the entry's file is gone, or it is a native mod in a
+    // format this Horizon retired (`zoom` 2.0.0, before the id came back as a wasm mod). The
+    // install replaces the entry and removes that file, even at the same version.
+    let stale = old.as_ref().is_some_and(|old| {
+        let path = home.join(&old.file);
+        !path.exists()
+            || (!native
+                && Path::new(&old.file).starts_with(crate::native_mods::INSTALLED)
+                && horizon_platform::mod_package::Package::read(&path).is_err())
+    });
     if let Some(old) = &old {
         let mut different = old.kind != project.kind;
         let path = home.join(&old.file);
-        // Nothing that loads is left to keep: the entry's file is gone, or it is a native mod in a
-        // format this Horizon retired (`zoom` 2.0.0, before the id came back as a wasm mod). The
-        // install replaces the entry and removes that file.
-        let stale = !path.exists()
-            || (!native
-                && Path::new(&old.file).starts_with(crate::native_mods::INSTALLED)
-                && horizon_platform::mod_package::Package::read(&path).is_err());
         if !different && !stale && project.kind == Kind::Mod {
             let installed_native = index::native::holds(&path);
             let kind = if installed_native {
@@ -1019,7 +1022,7 @@ fn install_version_guarded(
             ));
         }
     }
-    if old.as_ref().is_some_and(|o| o.version == v.version) {
+    if !stale && old.as_ref().is_some_and(|o| o.version == v.version) {
         return Ok(old.expect("checked"));
     }
     let target = home.join(&relative);

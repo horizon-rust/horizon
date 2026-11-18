@@ -1112,15 +1112,26 @@ fn a_project_is_starred_on_the_repository_its_source_is_in() {
 
 /// An id that was a native mod and came back as a plain mod (`zoom` 3.0.0): the player's
 /// entry from then points into `horizon-native-mods/`, at a file that is gone or in the retired
-/// native format. Installing the mod replaces that entry, so its row reads the new file.
+/// native format. Installing the mod replaces that entry, so its row reads the new file. So does
+/// an entry of the very version installed whose file is gone: it is downloaded again.
 #[test]
 fn a_stale_native_entry_is_replaced_by_the_mod_the_id_became() {
     use std::io::Write;
     let index = sample();
     let p = hud(&index);
-    for retired in [false, true] {
-        let home = scratch(&format!("stale-native-{retired}"));
-        let old = "horizon-native-mods/coords_hud.hmod";
+    let current = &index.project("coords_hud").unwrap().versions[0].version;
+    let native = "horizon-native-mods/coords_hud.hmod";
+    for (case, old, version, retired) in [
+        ("gone", native, "0.0.1", false),
+        ("retired", native, "0.0.1", true),
+        (
+            "same-version-gone",
+            "horizon-mods/coords_hud.hmod",
+            current.as_str(),
+            false,
+        ),
+    ] {
+        let home = scratch(&format!("stale-native-{case}"));
         if retired {
             fs::create_dir_all(home.join("horizon-native-mods")).unwrap();
             let mut zip = zip::ZipWriter::new(fs::File::create(home.join(old)).unwrap());
@@ -1136,7 +1147,7 @@ fn a_stale_native_entry_is_replaced_by_the_mod_the_id_became() {
         }
         let entry = serde_json::json!({
             "source": "horizon", "project": "coords_hud", "slug": "coords_hud",
-            "title": "Coordinates HUD", "kind": "mod", "version": "0.0.1", "number": "0.0.1",
+            "title": "Coordinates HUD", "kind": "mod", "version": version, "number": version,
             "file": old, "checksum": "SHA-256:00", "page": ""
         });
         installed::Installed {
@@ -1152,7 +1163,7 @@ fn a_stale_native_entry_is_replaced_by_the_mod_the_id_became() {
         assert_eq!(list, done);
         let package = horizon_platform::mod_package::Package::read(&home.join(&list[0].file));
         assert_eq!(package.unwrap().manifest.id, "coords_hud");
-        assert!(!home.join(old).exists());
+        assert!(!home.join(native).exists());
         assert!(java::is_enabled(&home, "coords_hud"));
         assert!(crate::native_status::enabled(&home).is_empty());
         fs::remove_dir_all(&home).unwrap();
