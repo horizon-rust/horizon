@@ -85,8 +85,8 @@ game; registry-built native binaries are not used.
 1. Its size and SHA-256 are the ones the entry lists, and it isn't revoked.
 2. With a project key: its signature verifies with that key (minisign's prehashed and legacy signatures both).
 3. What the file says matches the entry: a mod's `horizon-mod.toml` (id, version, API, side, capabilities) and its
-   content's fence ([making a content mod](../how-to/content-mods.md#content-mods-api-02)); for code, the same manifest's `[native]`
-   (game, the exact Horizon and horizon-mixins revisions) and checked root Cargo project; a modpack's manifest (id, version, format, game,
+   content's fence ([making a content mod](../how-to/content-mods.md#content-mods-api-02)); for native code, the same manifest's `[native]`
+   (game, the exact Horizon and horizon-mixins revisions) and checked root Cargo project; for WebAssembly, its `[wasm]` table and `mod.wasm`; a modpack's manifest (id, version, format, game,
    mods); a resource pack's `pack.mcmeta`; a shader pack's `horizon_shader_api::check` and manifest (id, version,
    shader API).
 4. A kind this build can't install is refused with "this Horizon can't install a … yet".
