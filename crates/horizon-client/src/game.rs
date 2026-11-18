@@ -4671,11 +4671,7 @@ impl Game<'_> {
             });
             // A conduit's hurt teleports an enderman now (`Enderman.hurtServer`).
             span("settle_hurt_teleports", || self.settle_hurt_teleports())?;
-            // A server has no window: its pickups are dropped, and its particle engine
-            // runs only while something is in it, so the fireworks' and drips' sounds
-            // still play and reach the guests as before.
-            self.pickups.clear();
-            self.tick_server_particles();
+            horizon_client::spans::time("tick_particles", || self.tick_particles());
         }
         // ServerLevel.tick's `entityManager.tick()`, frozen or not, after every
         // block entity ticker (the bells, conduits and gateways above too): the

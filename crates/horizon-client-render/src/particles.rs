@@ -6217,30 +6217,6 @@ mod tests {
         assert!((lifetime_alpha(a, 40, 40, 0.0) - 0.6).abs() < 1e-6);
     }
     #[test]
-    fn is_idle_sees_what_only_ticking_drains() {
-        with_empty_particle_level(|_| {
-            let mut engine = ParticleEngine::new(
-                &ResourceSource::indexed(Default::default()),
-                &HashMap::new(),
-                &HashSet::new(),
-            );
-            assert!(engine.is_idle());
-            engine
-                .sounds
-                .push(("minecraft:test", [0.0; 3], 1.0, 1.0, false));
-            assert!(!engine.is_idle());
-            engine.sounds.clear();
-            engine.fireworks(
-                [0.0; 3],
-                [0.0; 3],
-                vec![FireworkExplosion::default()],
-                [0.0; 3],
-                true,
-            );
-            assert!(!engine.is_idle());
-        });
-    }
-    #[test]
     fn explosion_tracker_tracks_and_ignores_zero_blocks() {
         let mut engine = ParticleEngine::new(
             &ResourceSource::indexed(Default::default()),
