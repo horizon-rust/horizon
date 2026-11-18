@@ -959,6 +959,65 @@ fn install_version(
     Ok(entry)
 }
 
+/// An installed entry with nothing behind it that loads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Stale {
+    /// Its file isn't there: the install replaces the entry and touches no file.
+    Missing,
+    /// A native mod in the format this Horizon retired (`horizon-native.json`, as `zoom` 2.0.0
+    /// was before the id came back as a wasm mod), where a plain mod now installs. Left in
+    /// `horizon-native-mods/`, it would count as a native mod to build that can't be read.
+    Retired,
+}
+
+/// Whether `old`'s file is gone or retired. Any other error reading it (a file another program
+/// holds, no permission) is none of these: the install inspects it and refuses.
+fn stale_entry(home: &Path, old: &installed::Entry, native: bool) -> Option<Stale> {
+    let path = home.join(&old.file);
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(Stale::Missing),
+        Err(_) => return None,
+        Ok(_) => {}
+    }
+    let retired = !native
+        && Path::new(&old.file).starts_with(crate::native_mods::INSTALLED)
+        && fs::File::open(&path)
+            .ok()
+            .and_then(|f| zip::ZipArchive::new(f).ok())
+            .is_some_and(|zip| zip.index_for_name("horizon-native.json").is_some());
+    retired.then_some(Stale::Retired)
+}
+
+/// Removes `old`'s retired native file, only when it is a plain file (never a link) right in
+/// the instance's `horizon-native-mods/`, and no other entry of the browser's list names it.
+fn remove_retired<'a>(
+    home: &Path,
+    old: &installed::Entry,
+    mut others: impl Iterator<Item = &'a installed::Entry>,
+) -> Result<(), String> {
+    let path = home.join(&old.file);
+    let plain = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file());
+    let folder = fs::canonicalize(home.join(crate::native_mods::INSTALLED)).ok();
+    let canonical = fs::canonicalize(&path).ok();
+    let inside = canonical.as_deref().and_then(Path::parent) == folder.as_deref();
+    let shared = others.any(|e| e.file == old.file);
+    if !plain || folder.is_none() || !inside || shared {
+        return Err(format!(
+            "{}'s old native file {} wasn't removed: it isn't a file of its own in {}. Remove {}, then install it again.",
+            old.title,
+            old.file,
+            crate::native_mods::INSTALLED,
+            old.title
+        ));
+    }
+    fs::remove_file(&path).map_err(|e| {
+        format!(
+            "{}'s old native file {} wasn't removed: {e}. Remove {}, then install it again.",
+            old.title, old.file, old.title
+        )
+    })
+}
+
 /// [`install_version`], with `guard` asked about the downloaded file once it passed the index's
 /// checks and before it replaces anything: its error leaves everything as it was.
 fn install_version_guarded(
@@ -991,20 +1050,11 @@ fn install_version_guarded(
     let mut list = installed::Installed::load(home);
     let ours = |e: &installed::Entry| e.source == SourceId::Horizon && e.project == p.id;
     let old = list.entries.iter().find(|e| ours(e)).cloned();
-    // Nothing that loads is left to keep: the entry's file is gone, or it is a native mod in a
-    // format this Horizon retired (`zoom` 2.0.0, before the id came back as a wasm mod). The
-    // install replaces the entry and removes that file, even at the same version.
-    let stale = old.as_ref().is_some_and(|old| {
-        let path = home.join(&old.file);
-        !path.exists()
-            || (!native
-                && Path::new(&old.file).starts_with(crate::native_mods::INSTALLED)
-                && horizon_platform::mod_package::Package::read(&path).is_err())
-    });
+    let stale = old.as_ref().and_then(|old| stale_entry(home, old, native));
     if let Some(old) = &old {
         let mut different = old.kind != project.kind;
         let path = home.join(&old.file);
-        if !different && !stale && project.kind == Kind::Mod {
+        if !different && stale.is_none() && project.kind == Kind::Mod {
             let installed_native = index::native::holds(&path);
             let kind = if installed_native {
                 index::Kind::NativeMod
@@ -1022,7 +1072,7 @@ fn install_version_guarded(
             ));
         }
     }
-    if !stale && old.as_ref().is_some_and(|o| o.version == v.version) {
+    if stale.is_none() && old.as_ref().is_some_and(|o| o.version == v.version) {
         return Ok(old.expect("checked"));
     }
     let target = home.join(&relative);
@@ -1069,13 +1119,21 @@ fn install_version_guarded(
         .inspect_err(|_| {
             let _ = fs::remove_file(&path);
         })?;
+    // Before the new file goes in: a removal that fails leaves everything as it was, so the
+    // install can be tried again.
+    if let (Some(Stale::Retired), Some(old)) = (stale, &old) {
+        let others = list.entries.iter().filter(|e| !ours(e));
+        remove_retired(home, old, others).inspect_err(|_| {
+            let _ = fs::remove_file(&path);
+        })?;
+    }
     if let Some(dir) = target.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     fs::rename(&path, &target).map_err(|e| format!("{}: {e}", target.display()))?;
     if let Some(old) = old
         .as_ref()
-        .filter(|o| o.file != relative)
+        .filter(|o| stale.is_none() && o.file != relative)
         .and_then(|o| o.path(home))
     {
         let _ = fs::remove_file(old);
@@ -1098,7 +1156,12 @@ fn install_version_guarded(
     };
     list.entries.retain(|e| !ours(e));
     list.entries.push(entry.clone());
-    list.save(home)?;
+    // A stale entry stays listed: without the file the new one would be in its way on a retry.
+    list.save(home).inspect_err(|_| {
+        if stale.is_some() {
+            let _ = fs::remove_file(&target);
+        }
+    })?;
     Ok(entry)
 }
 

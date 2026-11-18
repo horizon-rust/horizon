@@ -1110,13 +1110,43 @@ fn a_project_is_starred_on_the_repository_its_source_is_in() {
     }
 }
 
+/// A zip in the native format this Horizon retired (`horizon-native.json`, as `zoom` 2.0.0 was).
+fn retired_native(path: &Path) {
+    use std::io::Write;
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+    for name in [
+        "horizon-native.json",
+        "mixins/coords_hud/horizon-mixin.toml",
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"{}").unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+/// The browser's list holding `coords_hud` at `version` in `file`, turned on.
+fn old_entry(home: &Path, file: &str, version: &str) -> Vec<installed::Entry> {
+    let entry = serde_json::json!({
+        "source": "horizon", "project": "coords_hud", "slug": "coords_hud",
+        "title": "Coordinates HUD", "kind": "mod", "version": version, "number": version,
+        "file": file, "checksum": "SHA-256:00", "page": ""
+    });
+    let list = installed::Installed {
+        entries: vec![serde_json::from_value(entry).unwrap()],
+    };
+    list.save(home).unwrap();
+    java::set_enabled(home, "coords_hud", true).unwrap();
+    list.entries
+}
+
 /// An id that was a native mod and came back as a plain mod (`zoom` 3.0.0): the player's
 /// entry from then points into `horizon-native-mods/`, at a file that is gone or in the retired
 /// native format. Installing the mod replaces that entry, so its row reads the new file. So does
 /// an entry of the very version installed whose file is gone: it is downloaded again.
 #[test]
 fn a_stale_native_entry_is_replaced_by_the_mod_the_id_became() {
-    use std::io::Write;
     let index = sample();
     let p = hud(&index);
     let current = &index.project("coords_hud").unwrap().versions[0].version;
@@ -1133,29 +1163,9 @@ fn a_stale_native_entry_is_replaced_by_the_mod_the_id_became() {
     ] {
         let home = scratch(&format!("stale-native-{case}"));
         if retired {
-            fs::create_dir_all(home.join("horizon-native-mods")).unwrap();
-            let mut zip = zip::ZipWriter::new(fs::File::create(home.join(old)).unwrap());
-            for name in [
-                "horizon-native.json",
-                "mixins/coords_hud/horizon-mixin.toml",
-            ] {
-                zip.start_file(name, zip::write::SimpleFileOptions::default())
-                    .unwrap();
-                zip.write_all(b"{}").unwrap();
-            }
-            zip.finish().unwrap();
+            retired_native(&home.join(old));
         }
-        let entry = serde_json::json!({
-            "source": "horizon", "project": "coords_hud", "slug": "coords_hud",
-            "title": "Coordinates HUD", "kind": "mod", "version": version, "number": version,
-            "file": old, "checksum": "SHA-256:00", "page": ""
-        });
-        installed::Installed {
-            entries: vec![serde_json::from_value(entry).unwrap()],
-        }
-        .save(&home)
-        .unwrap();
-        java::set_enabled(&home, "coords_hud", true).unwrap();
+        old_entry(&home, old, version);
 
         let done = install_from(&index, true, &p, &home, &|_, _| {}).unwrap();
         assert_eq!(done[0].file, "horizon-mods/coords_hud.hmod");
@@ -1168,4 +1178,89 @@ fn a_stale_native_entry_is_replaced_by_the_mod_the_id_became() {
         assert!(crate::native_status::enabled(&home).is_empty());
         fs::remove_dir_all(&home).unwrap();
     }
+}
+
+/// A retired native file the launcher can't read right now (another program holds it, or no
+/// permission) is not taken for gone or retired: the install refuses, as before, and leaves the
+/// file and the list as they were.
+#[test]
+fn an_old_native_file_that_cannot_be_read_is_left_alone() {
+    let index = sample();
+    let p = hud(&index);
+    let home = scratch("stale-native-unreadable");
+    let old = home.join("horizon-native-mods/coords_hud.hmod");
+    retired_native(&old);
+    let before = fs::read(&old).unwrap();
+    let list = old_entry(&home, "horizon-native-mods/coords_hud.hmod", "0.0.1");
+
+    #[cfg(windows)]
+    let held = {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&old)
+            .unwrap()
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::File::open(&old).is_ok() {
+            eprintln!("skipped: permissions don't stop this user (root?)");
+            fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();
+            fs::remove_dir_all(&home).unwrap();
+            return;
+        }
+    }
+    let e = install_from(&index, true, &p, &home, &|_, _| {}).unwrap_err();
+    #[cfg(windows)]
+    drop(held);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    assert!(e.contains("Cannot inspect installed"), "{e}");
+    assert_eq!(fs::read(&old).unwrap(), before);
+    assert_eq!(installed::Installed::load(&home).entries, list);
+    assert!(!home.join("horizon-mods/coords_hud.hmod").exists());
+    fs::remove_dir_all(&home).unwrap();
+}
+
+/// An old entry whose path is a link to a retired native file elsewhere: the install refuses,
+/// and neither the link nor what it points at is removed.
+#[test]
+fn a_linked_old_native_file_is_left_alone() {
+    let index = sample();
+    let p = hud(&index);
+    let home = scratch("stale-native-link");
+    let real = home.join("elsewhere/coords_hud.hmod");
+    retired_native(&real);
+    let before = fs::read(&real).unwrap();
+    let link = home.join("horizon-native-mods/coords_hud.hmod");
+    fs::create_dir_all(link.parent().unwrap()).unwrap();
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&real, &link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(&real, &link);
+    if let Err(e) = made {
+        eprintln!("skipped: this account can't make links: {e}");
+        fs::remove_dir_all(&home).unwrap();
+        return;
+    }
+    let list = old_entry(&home, "horizon-native-mods/coords_hud.hmod", "0.0.1");
+
+    let e = install_from(&index, true, &p, &home, &|_, _| {}).unwrap_err();
+    assert!(e.contains("wasn't removed"), "{e}");
+    assert_eq!(fs::read(&real).unwrap(), before);
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(installed::Installed::load(&home).entries, list);
+    assert!(!home.join("horizon-mods/coords_hud.hmod").exists());
+    let downloads = home.join("mod-browser/downloads");
+    assert_eq!(fs::read_dir(downloads).map_or(0, |d| d.count()), 0);
+    fs::remove_dir_all(&home).unwrap();
 }
