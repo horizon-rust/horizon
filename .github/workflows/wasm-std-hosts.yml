@@ -9,6 +9,10 @@ on:
       - 'crates/horizon-mod-wasm/**'
       - 'tools/ci/rust-version'
       - 'tools/ci/wasm_names.py'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - '.github/workflows/game-build.yml'
       - '.github/workflows/wasm-std-hosts.yml'
 permissions:
   contents: read

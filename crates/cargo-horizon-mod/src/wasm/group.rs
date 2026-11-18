@@ -566,8 +566,7 @@ pub fn rustc(mut args: Vec<String>) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     let package = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
     let config = &configs[&package];
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let std_unit = std_unit(&args, &manifest_dir);
+    let std_unit = std_unit(&args);
     if std_unit {
         let krate = args
             .windows(2)
@@ -655,13 +654,23 @@ pub fn rustc(mut args: Vec<String>) -> Result<(), String> {
     }
 }
 
-/// A unit of the standard library built from source: a toolchain `library/` crate or one of
-/// its crates.io dependencies.
-fn std_unit(args: &[String], manifest_dir: &str) -> bool {
-    args.iter().any(|a| a == "feature=\"rustc-dep-of-std\"")
-        || manifest_dir
-            .replace('\\', "/")
-            .contains("/lib/rustlib/src/rust/library/")
+/// A unit of the standard library built from source for the wasm target: a toolchain `library/`
+/// crate or one of its crates.io dependencies. Cargo passes `-Z force-unstable-if-unmarked` only
+/// to the units `-Zbuild-std` adds, so an ordinary dependency that enables a `rustc-dep-of-std`
+/// feature stays a mod's own crate. Host units (std's build scripts) don't count: their symbols
+/// never reach a member.
+fn std_unit(args: &[String]) -> bool {
+    let marked = args
+        .windows(2)
+        .any(|a| a[0] == "-Z" && a[1] == "force-unstable-if-unmarked")
+        || args.iter().any(|a| a == "-Zforce-unstable-if-unmarked");
+    let wasm = args
+        .windows(2)
+        .any(|a| a[0] == "--target" && a[1] == super::TARGET)
+        || args
+            .iter()
+            .any(|a| *a == format!("--target={}", super::TARGET));
+    marked && wasm
 }
 
 /// The unit's Cargo features, sorted and comma-joined.
@@ -695,18 +704,8 @@ fn strip_metadata(args: &mut Vec<String>) {
 /// Cargo's disambiguator for a std crate hashes the host's `rustc -vV` (its `host:` line), so
 /// std built on Windows and on Linux had different symbol names
 /// and members built on one host could not link against the other's std (#18261). A std unit
-/// for the wasm target gets one from the pinned toolchain, the package and its features
-/// instead. Host units (std's build scripts) keep Cargo's: their symbols never reach a member.
+/// gets one from the pinned toolchain, the package and its features instead.
 fn std_identity(args: &mut Vec<String>, package: &str, version: &str) {
-    let wasm = args
-        .windows(2)
-        .any(|a| a[0] == "--target" && a[1] == super::TARGET)
-        || args
-            .iter()
-            .any(|a| *a == format!("--target={}", super::TARGET));
-    if !wasm {
-        return;
-    }
     let krate = args
         .windows(2)
         .find(|a| a[0] == "--crate-name")
@@ -730,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn std_identity_ignores_the_host_and_keeps_host_units() {
+    fn std_identity_ignores_the_host() {
         let unit = |metadata: &str, target: &str| {
             let mut args = strings(&[
                 "--crate-name",
@@ -760,8 +759,6 @@ mod tests {
         assert!(ours[0].contains(&format!("{}:alloc@0.0.0:alloc:", crate::wasm::TOOLCHAIN)));
         // Cargo's file names stay: the std-artifact markers and the link step key on them.
         assert!(windows.contains(&"extra-filename=-0b1c".to_owned()));
-        let host = unit("metadata=7d3e9a0c1b2f4e56", "x86_64-pc-windows-msvc");
-        assert!(host.contains(&"metadata=7d3e9a0c1b2f4e56".to_owned()));
 
         let mut joined = strings(&["-Cmetadata=abc", "--target", crate::wasm::TARGET]);
         std_identity(&mut joined, "core", "0.0.0");
@@ -774,16 +771,41 @@ mod tests {
     }
 
     #[test]
-    fn std_units_are_toolchain_library_crates_and_their_dependencies() {
-        assert!(std_unit(
-            &[],
-            r"C:\Users\a\.rustup\toolchains\1.99.1-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\alloc"
-        ));
-        assert!(std_unit(
-            &strings(&["--cfg", "feature=\"rustc-dep-of-std\""]),
-            "/home/runner/.cargo/registry/src/index.crates.io-1/hashbrown-0.15.5"
-        ));
-        assert!(!std_unit(&[], "/home/runner/mods/zoom"));
+    fn std_units_are_the_wasm_units_build_std_marks() {
+        let wasm = crate::wasm::TARGET;
+        let feature = "feature=\"rustc-dep-of-std\"";
+        // What cargo passes a `-Zbuild-std` unit, a crates.io dependency of std included.
+        assert!(std_unit(&strings(&[
+            "--crate-name",
+            "hashbrown",
+            "--cfg",
+            feature,
+            "-Z",
+            "force-unstable-if-unmarked",
+            "--target",
+            wasm,
+        ])));
+        assert!(std_unit(&strings(&[
+            "-Zforce-unstable-if-unmarked",
+            &format!("--target={wasm}"),
+        ])));
+        // A mod's ordinary dependency that enables `rustc-dep-of-std` keeps its own identity and
+        // stays in the mod's link.
+        assert!(!std_unit(&strings(&[
+            "--crate-name",
+            "hashbrown",
+            "--cfg",
+            feature,
+            "--target",
+            wasm,
+        ])));
+        // std's build scripts run on the host.
+        assert!(!std_unit(&strings(&[
+            "--crate-name",
+            "build_script_build",
+            "-Z",
+            "force-unstable-if-unmarked",
+        ])));
     }
 
     #[test]

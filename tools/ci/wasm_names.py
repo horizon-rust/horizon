@@ -34,7 +34,7 @@ def limits(data, pos):
 
 
 def names(path):
-    """{"import module.field", "export name"} of the module at `path`."""
+    """{("import", module, field), ("export", name)} of the module at `path`."""
     data = open(path, "rb").read()
     if data[:4] != b"\0asm":
         sys.exit(f"{path}: not a wasm module")
@@ -44,6 +44,8 @@ def names(path):
         section = data[pos]
         size, pos = leb(data, pos + 1)
         end = pos + size
+        if end > len(data):
+            sys.exit(f"{path}: section {section} ends at byte {end}, past the file's {len(data)}")
         if section in (2, 7):
             count, pos = leb(data, pos)
             for _ in range(count):
@@ -64,23 +66,30 @@ def names(path):
                         _, pos = leb(data, pos + 1)
                     else:
                         sys.exit(f"{path}: import kind {kind}")
-                    found.add(f"import {module}.{field}")
+                    found.add(("import", module, field))
                 else:
                     export, pos = name(data, pos)
                     _, pos = leb(data, pos + 1)
-                    found.add(f"export {export}")
+                    found.add(("export", export))
         pos = end
     return found
+
+
+def show(entry):
+    # The module/field boundary stays visible: either part may contain a dot.
+    if entry[0] == "import":
+        return f"import module={entry[1]!r} field={entry[2]!r}"
+    return f"export {entry[1]!r}"
 
 
 def main(argv):
     if len(argv) != 3:
         sys.exit(__doc__)
     left, right = names(argv[1]), names(argv[2])
-    for line in sorted(left - right):
-        print(f"only in {argv[1]}: {line}")
-    for line in sorted(right - left):
-        print(f"only in {argv[2]}: {line}")
+    for entry in sorted(left - right):
+        print(f"only in {argv[1]}: {show(entry)}")
+    for entry in sorted(right - left):
+        print(f"only in {argv[2]}: {show(entry)}")
     if left != right:
         return 1
     print(f"{len(left)} imported and exported names, the same in both")
