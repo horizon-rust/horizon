@@ -60,6 +60,8 @@ Everything below is in the current release.
 
 "Vanilla + mods" is Sodium, Lithium, FerriteCore and ImmediatelyFast. Horizon reaches the title screen in 2.9–3.2 s against vanilla's 7.5–7.7 s (the modded client's 10.8–11.1 s), loads a scene's chunks 2.9–3.8 times faster, and playing holds a steady working set of 1.1–1.7 GB against 1.9–2.9 GB. Every scene with its confidence interval and the run's load log: [the 2026-10-29 reports](benchmarks/perf/windows-9800x3d-5080-2026-10-29.md). Method, and how to measure your own machine: [docs/benchmark.md](docs/benchmark.md). [playhorizon.dev/benchmarks](https://playhorizon.dev/benchmarks) puts these runs beside a 2016 laptop, a Mac mini and a gaming desktop.
 
+The dedicated server is measured too: in a four-thread server run, Horizon held 20 TPS with 50 bots while vanilla's watchdog stopped its server during warm-up. Horizon used 1.11 GB of RSS at 50 bots, and the full comparison against vanilla, Paper and Fabric + Lithium is in [the server benchmark](docs/performance/server-vs-vanilla.md).
+
 ## Download
 
 Get **the Horizon launcher** from [playhorizon.dev](https://playhorizon.dev), or from [the launcher releases](https://github.com/horizon-rust/horizon/releases?q=launcher&expanded=true):

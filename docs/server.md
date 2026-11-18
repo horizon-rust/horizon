@@ -875,5 +875,6 @@ reproducible by anyone, and show the same gameplay on both sides.
   machine, commit, Java version, settings and every run) and prints a comparison table. Results are
   published like the client benchmark, with the machine, the versions and the exact commands. TPS is derived
   from `/tick query`'s average (20 while it fits in 50 ms), since the command reports times, not the rate.
-- **Results.** The latest comparison (Horizon, Pumpkin and vanilla under the same bots) is
-  [performance/server-vs-pumpkin.md](performance/server-vs-pumpkin.md); `tools/server_bench.py` reruns it.
+- **Results.** The comparison against vanilla, Paper and Fabric + Lithium is
+  [performance/server-vs-vanilla.md](performance/server-vs-vanilla.md); the newer Horizon-versus-Pumpkin run is in
+  [performance/server-vs-pumpkin.md](performance/server-vs-pumpkin.md). `tools/server_bench.py` reruns both.
