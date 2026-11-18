@@ -1,5 +1,5 @@
 //! `/debug start|stop` (the tick profiler) and `/jfr start|stop`.
-use super::host::{CommandHost, R, err};
+use super::host::{CommandHost, R};
 use horizon_client::{
     command::{CommandError, Context},
     text::{Style, Text},
@@ -69,14 +69,14 @@ pub fn debug(host: &mut dyn ProfilerHost, ctx: &Context) -> R<i32> {
     let running = host.profiler_running();
     if ctx.literals.iter().any(|l| l == "start") {
         if running {
-            return Err(err("commands.debug.alreadyRunning", &[]));
+            return Err(host.error("commands.debug.alreadyRunning", &[]));
         }
         host.start_profiler_delayed();
         host.feedback(Text::translate("commands.debug.started", &[]));
         return Ok(0);
     }
     if !running {
-        return Err(err("commands.debug.notRunning", &[]));
+        return Err(host.error("commands.debug.notRunning", &[]));
     }
     let (seconds, ticks) = host.take_profiler_run().unwrap_or((0.0, 0.0));
     let tps = ticks / seconds;
@@ -96,7 +96,7 @@ pub fn debug(host: &mut dyn ProfilerHost, ctx: &Context) -> R<i32> {
 pub fn jfr(host: &mut dyn ProfilerHost, ctx: &Context) -> R<i32> {
     if ctx.literals.iter().any(|l| l == "start") {
         if host.jfr_running() {
-            return Err(err("commands.jfr.start.failed", &[]));
+            return Err(host.error("commands.jfr.start.failed", &[]));
         }
         let stamp = filename_date_time();
         host.start_jfr(stamp);

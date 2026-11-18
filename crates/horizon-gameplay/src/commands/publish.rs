@@ -1,5 +1,5 @@
 //! `/publish` and `/unpublish`.
-use super::host::{CommandHost, R, err};
+use super::host::{CommandHost, R};
 use horizon_client::{
     command::{Arg, Context},
     text::{self, Style, Text},
@@ -35,11 +35,11 @@ pub fn publish(host: &mut dyn PublishHost, ctx: &Context) -> R<i32> {
         .map_or(25564, |a| i32::from(a.port())),
     };
     if let Some(port) = host.lan_port() {
-        return Err(err("commands.publish.alreadyPublished.lan", &[&port]));
+        return Err(host.error("commands.publish.alreadyPublished.lan", &[&port]));
     }
     // A dedicated server is open from the start (`lan_port` above).
     if !host.open_to_lan(port as u16, allow) {
-        return Err(err("commands.publish.failed", &[]));
+        return Err(host.error("commands.publish.failed", &[]));
     }
     let port_text = port.to_string();
     let link = Text::literal(port_text.clone()).with_style(&Style {
@@ -57,7 +57,7 @@ pub fn publish(host: &mut dyn PublishHost, ctx: &Context) -> R<i32> {
 /// `/unpublish`.
 pub fn unpublish(host: &mut dyn PublishHost) -> R<i32> {
     if !host.close_to_lan() {
-        return Err(err("commands.unpublish.notPublished", &[]));
+        return Err(host.error("commands.unpublish.notPublished", &[]));
     }
     host.feedback(Text::translate("commands.unpublish.success", &[]));
     Ok(1)
