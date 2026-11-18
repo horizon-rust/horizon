@@ -131,10 +131,13 @@ pub fn parse_versions(text: &str) -> Result<Vec<Listed>, String> {
 pub fn versions(kind: Kind, minecraft: &str, fetch: Fetch) -> Result<Vec<Listed>, String> {
     let listed = match kind {
         Kind::Forge | Kind::NeoForge => forge::versions(kind, minecraft, fetch)?,
-        _ => {
-            let body = fetch(&format!("{}/versions/loader/{minecraft}", kind.meta()))?;
-            parse_versions(&String::from_utf8_lossy(&body))?
-        }
+        _ => match fetch(&format!("{}/versions/loader/{minecraft}", kind.meta())) {
+            Ok(body) => parse_versions(&String::from_utf8_lossy(&body))?,
+            // A Minecraft version the loader never supported (Fabric starts at 1.14): Fabric's
+            // service answers 400, Quilt's 404.
+            Err(e) if e.ends_with("answered 400") || e.ends_with("answered 404") => Vec::new(),
+            Err(e) => return Err(e),
+        },
     };
     if listed.is_empty() {
         return Err(format!(
