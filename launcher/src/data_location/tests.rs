@@ -320,15 +320,35 @@ fn stale_worker_cannot_commit_after_successful_migration() {
     f.migrated(&roots);
 }
 
+/// #18138: a child process another thread spawns while a migration holds its lock has a copy of
+/// the lock's descriptor until its exec. The lock is released when the migration ends all the
+/// same: closing the file alone left it taken through the copy, and the next migration read
+/// "Cannot lock".
+#[cfg(unix)]
+#[test]
+fn migration_lock_is_released_while_a_copy_of_its_descriptor_is_open() {
+    let f = Fixture::new("build");
+    let lease = MigrationLease::take(&f.bootstrap).unwrap();
+    let copy = lease.0.try_clone().unwrap();
+    assert!(f.refuse(&f.target()).contains("Cannot lock"));
+    drop(lease);
+    let roots = migrate(&f.source, &f.target(), &f.bootstrap, |_| {}).unwrap();
+    f.migrated(&roots);
+    drop(copy);
+}
+
 #[test]
 fn shared_lock_blocks_migration_until_all_readers_release() {
     let f = Fixture::new("build");
     let first = acquire_lock_at(&f.bootstrap).unwrap();
     let second = acquire_lock_at(&f.bootstrap).unwrap();
     assert!(f.refuse(&f.target()).contains("Cannot lock"));
+    // A parallel fork may still hold a pre-exec copy of either descriptor: unlock, not only close.
+    first.unlock().unwrap();
     drop(first);
     assert!(f.refuse(&f.target()).contains("Cannot lock"));
     assert!(!f.target().exists());
+    second.unlock().unwrap();
     drop(second);
     f.old_pointer();
     let roots = migrate(&f.source, &f.target(), &f.bootstrap, |_| {}).unwrap();
@@ -512,4 +532,27 @@ fn unit_tests_never_resolve_the_real_profile() {
             homes[0].display()
         );
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn unsupported_windows_destinations_explain_how_to_retry_without_changing_data() {
+    let f = Fixture::new("build");
+    for name in ["My Games", "Игры"] {
+        let target = f.temp.0.join(name).join("Horizon");
+        let error = f.refuse(&target);
+        assert!(
+            error.contains(&target.join("build").display().to_string()),
+            "{error}"
+        );
+        assert!(error.contains("Windows build tools cannot use the build folder"));
+        assert!(error.contains("spaces, other whitespace, or non-ASCII characters"));
+        assert!(error.contains("English letters, numbers, underscores or hyphens"));
+        assert!(error.contains(r"D:\Horizon_Data"));
+        assert!(error.contains("Check every parent folder too"));
+        assert!(!target.exists(), "rejection must precede copying");
+    }
+    let target = f.temp.0.join("Horizon_Data-2");
+    let roots = migrate(&f.source, &target, &f.bootstrap, |_| {}).unwrap();
+    f.migrated(&roots);
 }

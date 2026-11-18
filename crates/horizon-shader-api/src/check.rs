@@ -9,12 +9,12 @@
 //! defaults, minimums and maximums. A post stage of a pack with `[ray_tracing]`, and its
 //! material stage where that traces, is checked twice: as every device runs it, where `trace`
 //! misses, and against the scene.
-use crate::inputs::{COMPUTE_INPUT, DISPLACEMENT_INPUT, Frame, RAY_HIT};
+use crate::inputs::{COMPUTE_INPUT, DISPLACEMENT_INPUT, Frame, RAY_HIT, SHADED_TINT};
 use crate::manifest::{OptionKind, PackOption};
 use crate::package::Pack;
 use crate::stages::{
-    Composed, GROUP, RAY_ENTITY_RETAINED_BINDING, RAY_ENTITY_STORE_BINDING, RAY_SCENE_BINDING,
-    StageKind, compose_traced, identifiers,
+    Composed, GROUP, KEPT_BINDING, RAY_ENTITY_RETAINED_BINDING, RAY_ENTITY_STORE_BINDING,
+    RAY_SCENE_BINDING, StageKind, compose_traced, identifiers,
 };
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 use std::collections::HashSet;
@@ -96,6 +96,61 @@ impl CheckedStage {
         })
     }
 
+    /// Whether the stage's inputs end with `shaded_tint` (`SHADED_TINT`): its pack's files name
+    /// it (`stages::names_shaded_tint`), so the renderer's constructors of them pass it.
+    pub fn shaded_tint(&self) -> bool {
+        let inputs = ["MaterialInput", "VertexInput", "RayHit"];
+        self.module.types.iter().any(|(_, t)| match &t.inner {
+            naga::TypeInner::Struct { members, .. } => {
+                t.name.as_deref().is_some_and(|n| inputs.contains(&n))
+                    && (members.iter()).any(|m| m.name.as_deref() == Some(SHADED_TINT.name))
+            }
+            _ => false,
+        })
+    }
+
+    /// Whether a function of the stage, called or not, reads one of `LOOK_FIELDS`: where only
+    /// the terrain's quad looks hold the value, not the vertex. A field is read through its
+    /// struct, a copy of it (an argument, a `let`, a `var`) or a pointer to it, in whichever file
+    /// of the pack: every one is a member access on a value or pointer of the struct's type.
+    pub fn reads_looks(&self) -> bool {
+        let m = &self.module;
+        let looked = |ty: naga::Handle<naga::Type>, index: u32| {
+            // Through a pointer (`ptr<function, MaterialInput>`, a `var`): its pointee.
+            let ty = match m.types[ty].inner {
+                naga::TypeInner::Pointer { base, .. } => base,
+                _ => ty,
+            };
+            let t = &m.types[ty];
+            let naga::TypeInner::Struct { members, .. } = &t.inner else {
+                return false;
+            };
+            let field = members.get(index as usize).and_then(|f| f.name.as_deref());
+            LOOK_FIELDS.iter().any(|(name, fields)| {
+                t.name.as_deref() == Some(*name) && field.is_some_and(|f| fields.contains(&f))
+            })
+        };
+        let reads = |f: &naga::Function, info: &naga::valid::FunctionInfo| {
+            f.expressions.iter().any(|(_, e)| {
+                let naga::Expression::AccessIndex { base, index } = *e else {
+                    return false;
+                };
+                // The struct, or a pointer to one, by handle or by value.
+                let ty = match &info[base].ty {
+                    naga::proc::TypeResolution::Handle(ty) => Some(*ty),
+                    naga::proc::TypeResolution::Value(naga::TypeInner::Pointer {
+                        base, ..
+                    }) => Some(*base),
+                    naga::proc::TypeResolution::Value(_) => None,
+                };
+                ty.is_some_and(|ty| looked(ty, index))
+            })
+        };
+        m.functions.iter().any(|(h, f)| reads(f, &self.info[h]))
+            || (m.entry_points.iter().enumerate())
+                .any(|(i, e)| reads(&e.function, self.info.get_entry_point(i)))
+    }
+
     /// Whether the stage's function, or a function it calls, reads the prelude's `global`
     /// (a resource of the stage, such as `reflection`).
     pub fn reads(&self, global: &str) -> bool {
@@ -115,6 +170,17 @@ impl CheckedStage {
     }
 }
 
+/// The fields of the terrain's inputs that only its quads' looks hold, by struct: the vertex
+/// holds their product (`shaded_tint`). `RayHit`'s aren't among them: a terrain hit reads the
+/// ray scene's own store, not the sections' looks.
+const LOOK_FIELDS: [(&str, &[&str]); 2] = [
+    (
+        "MaterialInput",
+        &["tint", "shade", "ao", "face", "emission"],
+    ),
+    ("VertexInput", &["tint", "shade", "ao", "face"]),
+];
+
 #[derive(Debug)]
 pub struct Report {
     pub stages: Vec<CheckedStage>,
@@ -124,13 +190,22 @@ pub struct Report {
     pub reflection: Option<crate::manifest::Reflection>,
     /// The manifest's `[shadow]`.
     pub shadow: Option<crate::manifest::Shadow>,
-    /// Whether Horizon fogs the material's colour: not under `[material] fog = false` or
-    /// `[frame] fog = "pack"`.
+    /// Whether Horizon fogs the material's colour: not under `[frame] fog = "pack"`.
     pub material_fog: bool,
     /// The manifest's `[[textures]]`, and each image decoded, in that order.
     pub textures: Vec<(crate::manifest::PackTexture, Image)>,
     /// The manifest the stages were checked against.
     pub manifest: crate::manifest::Manifest,
+}
+
+impl Report {
+    /// Whether the pack reads the terrain's own inputs, which the vertex doesn't hold: a stage
+    /// reads one of `LOOK_FIELDS` (`CheckedStage::reads_looks`), what needs the renderer's
+    /// sections to carry their quads' looks. Nothing else does: a pack naming none of them pays
+    /// nothing for them.
+    pub fn looks(&self) -> bool {
+        (self.stages.iter()).any(CheckedStage::reads_looks)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -257,8 +332,7 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
             textures,
             reflection: m.reflection.clone(),
             shadow: m.shadow.clone(),
-            material_fog: m.fog == crate::Fog::Engine
-                && m.material.as_ref().and_then(|s| s.fog).unwrap_or(true),
+            material_fog: m.fog == crate::Fog::Engine,
             manifest: m.clone(),
         })
     } else {
@@ -328,7 +402,19 @@ fn check_entry(
     let composed = compose_traced(pack, kind, file, at, false);
     let module = parse(&composed)?;
     let info = validate(&module, &composed, Capabilities::default())?;
-    let problems = sampled_data(&module, &info, &composed, &pack.manifest);
+    let mut problems = sampled_data(&module, &info, &composed, &pack.manifest);
+    if kind == StageKind::Material {
+        let what = "a kept resource: it runs in a vertex shader, which reads none, and casts the \
+                    shadow, which gets none";
+        let kept = KEPT_BINDING..=u32::MAX;
+        problems.extend(vertex_reach(
+            &module,
+            &info,
+            &composed,
+            &pack.manifest,
+            (kept, what),
+        ));
+    }
     if !problems.is_empty() {
         return Err(problems);
     }
@@ -341,7 +427,10 @@ fn check_entry(
             let capabilities = Capabilities::default() | Capabilities::RAY_QUERY;
             let info = validate(&module, &composed, capabilities)?;
             if kind == StageKind::Material {
-                let problems = vertex_rays(&module, &info, &composed, &pack.manifest);
+                let what = "a trace function: it runs in a vertex shader, and only `material` \
+                            traces rays";
+                let scene = (RAY_SCENE_BINDING..=RAY_ENTITY_RETAINED_BINDING, what);
+                let problems = vertex_reach(&module, &info, &composed, &pack.manifest, scene);
                 if !problems.is_empty() {
                     return Err(problems);
                 }
@@ -491,8 +580,16 @@ fn undeclared(mut problems: Vec<Problem>, m: &crate::Manifest, kind: StageKind) 
                         "`{name}` is a kept resource this pass doesn't list in `reads`/`writes`"
                     )
                 }
+                StageKind::Material => {
+                    format!("`{name}` is a kept resource the material doesn't list in `reads`")
+                }
+                StageKind::Entity | StageKind::Sky => format!(
+                    "`{name}` is a kept resource the {} stage doesn't list in `reads`",
+                    kind.name()
+                ),
                 _ => format!(
-                    "`{name}` is a kept resource, which the {} stage can't read yet",
+                    "`{name}` is a kept resource, which the {} stage doesn't read: `material`, \
+                     `entity`, `sky` and the passes do, as their `reads` list",
                     kind.name()
                 ),
             };
@@ -549,22 +646,20 @@ fn sampled_data(
         .collect()
 }
 
-/// Where a material stage built against the scene reaches it from a function that runs in a
-/// vertex shader: `displacement`, and the vertex stage's `vertex`, which shares its module. The
-/// renderer binds the scene for the fragment stage only.
-fn vertex_rays(
+/// Where a material stage reaches group 3's `bindings` (`what` they are and why not) from a
+/// function that runs in a vertex shader: `displacement`, and the vertex stage's `vertex`, which
+/// shares its module. The renderer binds the scene and the kept resources for the fragment
+/// stage only.
+fn vertex_reach(
     module: &naga::Module,
     info: &ModuleInfo,
     composed: &Composed,
     manifest: &crate::manifest::Manifest,
+    (bindings, what): (std::ops::RangeInclusive<u32>, &str),
 ) -> Vec<Problem> {
-    // The entity layer's bindings come last.
     let scene: Vec<_> = (module.global_variables.iter())
         .filter(|(_, g)| {
-            g.binding.as_ref().is_some_and(|b| {
-                let bindings = RAY_SCENE_BINDING..=RAY_ENTITY_RETAINED_BINDING;
-                b.group == GROUP && bindings.contains(&b.binding)
-            })
+            (g.binding.as_ref()).is_some_and(|b| b.group == GROUP && bindings.contains(&b.binding))
         })
         .map(|(handle, _)| handle)
         .collect();
@@ -581,13 +676,7 @@ fn vertex_rays(
                 .get_span(handle)
                 .to_range()
                 .map(|r| r.start);
-            problems.push(located(
-                composed,
-                at,
-                format!(
-                    "`{name}` reaches a trace function: it runs in a vertex shader, and only `material` traces rays"
-                ),
-            ));
+            problems.push(located(composed, at, format!("`{name}` reaches {what}")));
         }
     }
     problems
