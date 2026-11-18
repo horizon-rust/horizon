@@ -214,6 +214,13 @@ fn begin(plan: Plan) -> Option<ServerCore> {
 /// anything back, and [`leave_reserved`] leaves it alone. The way for Horizon's code to pin a
 /// thread, so the keeper knows the mask was chosen (Linux; elsewhere nothing, `false`).
 /// Whether the system took it.
+///
+/// The threads it starts inherit the mask and keep it, through the release too, unless the
+/// mask is exactly the whole set the plan was made from or one a reservation hands out (the
+/// server's core, the other CPUs): a thread born with those bits may as well have inherited
+/// them from the server thread or a thread the keeper moved, Linux keeps no record of which
+/// thread started which, and the keeper takes them for the reservation's (moved, then given
+/// what that mask came from). Children that must keep such a mask pin it themselves.
 pub fn pin_current(cpus: &[usize]) -> bool {
     os::pin(cpus)
 }
@@ -375,7 +382,9 @@ mod os {
     impl Ledger {
         /// What a thread the reservation hasn't moved had without it, when its mask says it
         /// never chose one: the whole set (never narrowed), or a mask the reservation handed
-        /// out, which a thread born since inherited from the thread it was given to.
+        /// out, which a thread born since inherited from the thread it was given to. A thread
+        /// born to a `pin` on one of these masks reads the same (its bits don't say who started
+        /// it): taking it for the reservation's keeps the server's own helpers off its core.
         fn before(&self, id: Id, mask: &[usize]) -> Option<Vec<usize>> {
             if mask == self.whole {
                 return Some(mask.to_vec());
@@ -548,7 +557,9 @@ mod os {
     ///
     /// Horizon's own threads choose a mask only through this module (the server thread's
     /// `reserve`, `leave`, `pin`), which writes each choice down under the keeper's lock, so for
-    /// every thread Horizon starts the reading is exact. What it can't know about a thread other
+    /// every thread Horizon pins the reading is exact, and for the threads those start, but one
+    /// born to a pin on exactly the whole set or a mask the reservation handed out, which reads
+    /// as the reservation's (see `pin_current`). What it can't know about a thread other
     /// code pins with its own `sched_setaffinity` (a driver's, a library's, `taskset -p`): one
     /// that picks, before the keeper first sees it, exactly the whole set or a mask the
     /// reservation handed out looks as if it never chose, is moved and given that mask back at
@@ -1150,6 +1161,12 @@ mod tests {
             let pinned_inside = Probe::start().with(Ask::Pin(vec![o[0]]));
             let pinned_reserved = Probe::start().with(Ask::Pin(plan.reserved.clone()));
             let helper = Probe::start().with(Ask::Leave);
+            // Born to a pin on a mask the reservation never hands out: its creator's choice.
+            let from_pinned = Probe::start()
+                .with(Ask::Pin(vec![o[1], o[2]]))
+                .ask(Ask::Spawn)
+                .1
+                .unwrap();
             inside_before.ask(Ask::Leave);
             os::scan();
             // Started by a thread the keeper moved, after it did: born on the other CPUs.
@@ -1168,6 +1185,7 @@ mod tests {
                 ("pinned_reserved", &pinned_reserved),
                 ("helper", &helper),
                 ("from_moved", &from_moved),
+                ("from_pinned", &from_pinned),
             ];
             let masks = || -> Vec<(&str, Vec<usize>)> {
                 probes.iter().map(|(name, p)| (*name, p.mask())).collect()
@@ -1203,6 +1221,7 @@ mod tests {
                 ("pinned_reserved", reserved.clone()),
                 ("helper", moved.clone()),
                 ("from_moved", moved.clone()),
+                ("from_pinned", vec![o[1], o[2]]),
             ]
         };
         assert_eq!(during, expected(&others));
