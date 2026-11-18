@@ -16,7 +16,7 @@ impl Launcher {
     pub(super) fn glass_instance_mods(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let busy = self.mods.busy.is_some();
-        let updates = self.mods.updates.len();
+        let updates = self.mods_updatable().len();
         let name = self
             .selected_instance()
             .map(|i| i.name.clone())
@@ -74,7 +74,7 @@ impl Launcher {
                 &t,
             )
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.remove_missing_mods();
+                this.forget_missing_mods(None);
                 cx.notify();
             }))
         });
@@ -275,7 +275,7 @@ impl Launcher {
             div().child(match busy {
                 true => chip.opacity(0.4).cursor_default(),
                 false => chip.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.remove_mod_row(&switch_row);
+                    this.forget_missing_mods(Some(&switch_row.file));
                     cx.notify();
                 })),
             })
@@ -567,7 +567,10 @@ impl Launcher {
                 busy,
             )
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                if confirming {
+                if confirming && doomed.missing {
+                    this.forget_missing_mods(Some(&doomed.file));
+                    this.mods.route_open = None;
+                } else if confirming {
                     this.remove_mod_row(&doomed);
                     this.mods.route_open = None;
                 } else {
@@ -590,7 +593,7 @@ impl Launcher {
     }
 
     /// Takes a mod out of the instance, whatever put it there.
-    pub(super) fn remove_mod_row(&mut self, row: &ModRow) {
+    fn remove_mod_row(&mut self, row: &ModRow) {
         let home = self.mods.home();
         let result = match (&row.native, &row.entry) {
             (Some(n), _) if n.origin.is_some() => {

@@ -170,7 +170,7 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
         entries
             .into_iter()
             .map(|e| {
-                let missing = file_missing(home, &e);
+                let missing = installed::file_missing(home, &e);
                 let package =
                     horizon_platform::mod_package::manifest::Package::read(&home.join(&e.file));
                 let icon = mod_icons::load(package.as_ref().map(|p| p.icon.as_ref()));
@@ -226,37 +226,34 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
     rows
 }
 
-/// Whether the browser's entry `e` names a file that is not found. Any other error reading it
-/// is not this: the row shows that error, as a failed mod.
-pub(super) fn file_missing(home: &Path, e: &installed::Entry) -> bool {
-    matches!(
-        std::fs::symlink_metadata(home.join(&e.file)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound
-    )
+/// What a missing-only removal did, for the notice.
+#[derive(Debug, Default, PartialEq)]
+struct Forgotten {
+    dropped: usize,
+    /// Rows whose entry or file changed since the list was read: kept.
+    changed: Vec<String>,
+    first_error: Option<String>,
 }
 
-/// Removes, each through the browser's own Remove, the entries of `rows` whose file is still not
-/// found: only the list changes, as there is no file to touch. An entry no longer listed as the
-/// row read it is left alone. How many went, and the first error.
-fn remove_missing(home: &Path, rows: &[ModRow]) -> (usize, Option<String>) {
-    let (mut removed, mut first_error) = (0, None);
-    for e in rows
+/// Drops the entries of the missing `rows` whose file is still not found, each rechecked under
+/// the lock (`installed::forget_missing`). No file is touched.
+fn forget_missing(home: &Path, rows: &[&ModRow]) -> Forgotten {
+    let mut done = Forgotten::default();
+    for (row, e) in rows
         .iter()
         .filter(|r| r.missing)
-        .filter_map(|r| r.entry.as_ref())
+        .filter_map(|r| Some((r, r.entry.as_ref()?)))
     {
-        let listed = installed::Installed::load(home).lookup(&e.project) == Some(e);
-        if !listed || !file_missing(home, e) {
-            continue;
-        }
-        match installed::remove(home, &e.project) {
-            Ok(_) => removed += 1,
+        match installed::forget_missing(home, e) {
+            Ok(true) => done.dropped += 1,
+            Ok(false) => done.changed.push(row.name.clone()),
             Err(error) => {
-                first_error.get_or_insert(format!("{}: {error}", e.title));
+                done.first_error
+                    .get_or_insert(format!("{}: {error}", row.name));
             }
         }
     }
-    (removed, first_error)
+    done
 }
 
 /// Turns a Java instance's jar on or off by renaming it.
@@ -417,8 +414,10 @@ impl Launcher {
         self.instance_mods.list.iter().filter(|r| r.missing).count()
     }
 
-    /// Remove missing: every row whose file is gone leaves the browser's list.
-    pub(super) fn remove_missing_mods(&mut self) {
+    /// Remove missing, and a missing row's own Remove: the entries of `rows` (all the missing
+    /// ones, or the one) whose file is still gone leave the browser's list. No file is touched;
+    /// a row that changed since the list was read is kept and named.
+    pub(super) fn forget_missing_mods(&mut self, file: Option<&str>) {
         let Some(home) = self.instance_mods.home.clone() else {
             return;
         };
@@ -426,13 +425,22 @@ impl Launcher {
             self.mods.message = Some(Err(tr("Wait for the current operation to finish.").into()));
             return;
         };
-        let (removed, error) = remove_missing(&home, &self.instance_mods.list);
-        self.mods.message = Some(match error {
-            Some(error) => Err(error),
-            None => Ok(trf(
+        let rows: Vec<&ModRow> = (self.instance_mods.list.iter())
+            .filter(|r| file.is_none_or(|f| r.file == f))
+            .collect();
+        let done = forget_missing(&home, &rows);
+        self.mods.message = Some(if let Some(error) = done.first_error {
+            Err(error)
+        } else if !done.changed.is_empty() {
+            Err(trf(
+                "Kept, as its file changed since the list was read: {mods}",
+                &[("mods", &done.changed.join(", "))],
+            ))
+        } else {
+            Ok(trf(
                 "Missing mods removed: {count}",
-                &[("count", &removed.to_string())],
-            )),
+                &[("count", &done.dropped.to_string())],
+            ))
         });
         self.mods.reload_installed();
         self.mods.reset_lists();
@@ -456,7 +464,7 @@ impl Launcher {
         let t = self.theme;
         let n = t.night;
         let busy = self.mods.busy.is_some();
-        let updates = self.mods.updates.len();
+        let updates = self.mods_updatable().len();
         let missing = self.missing_mods();
         let actions = div()
             .flex()
@@ -469,7 +477,7 @@ impl Launcher {
                         &[("count", &missing.to_string())],
                     )))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.remove_missing_mods();
+                        this.forget_missing_mods(None);
                         cx.notify();
                     }))
             }))
@@ -618,7 +626,7 @@ impl Launcher {
             div().child(match busy {
                 true => remove.opacity(theme::DISABLED),
                 false => remove.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.remove_mod_row(&doomed);
+                    this.forget_missing_mods(Some(&doomed.file));
                     cx.notify();
                 })),
             })
@@ -982,6 +990,29 @@ mod tests {
         );
     }
 
+    /// Every path under `home` and each file's bytes, but the list and the lock beside it.
+    fn tree(home: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        let mut seen = Vec::new();
+        let mut todo = vec![home.to_path_buf()];
+        while let Some(dir) = todo.pop() {
+            for f in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = f.path();
+                let name = path.strip_prefix(home).unwrap().to_path_buf();
+                if name == Path::new("mod-browser.json") || name == Path::new(".mod-browser.lock") {
+                    continue;
+                }
+                if path.is_dir() {
+                    todo.push(path);
+                    seen.push((name, None));
+                } else {
+                    seen.push((name, Some(std::fs::read(&path).unwrap())));
+                }
+            }
+        }
+        seen.sort();
+        seen
+    }
+
     #[test]
     fn remove_missing_drops_only_missing_entries_and_touches_no_mod_file() {
         let scratch = TestHome::new();
@@ -990,6 +1021,12 @@ mod tests {
         std::fs::create_dir_all(&mods).unwrap();
         std::fs::write(mods.join("kept.hmod"), b"kept").unwrap();
         std::fs::write(mods.join("stray.hmod"), b"stray").unwrap();
+        std::fs::write(
+            home.join("horizon-mods.txt"),
+            "mod.gone:true
+",
+        )
+        .unwrap();
         let kept = entry("kept", "horizon-mods/kept.hmod");
         let refused = entry("refused", &unreadable_name());
         installed::Installed {
@@ -1002,17 +1039,56 @@ mod tests {
         .save(home)
         .unwrap();
         let rows = read(home, false);
+        let all: Vec<&ModRow> = rows.iter().collect();
+        let before = tree(home);
 
-        assert_eq!(remove_missing(home, &rows), (1, None));
-        assert_eq!(installed::Installed::load(home).entries, [kept, refused]);
-        assert_eq!(std::fs::read(mods.join("kept.hmod")).unwrap(), b"kept");
-        assert_eq!(std::fs::read(mods.join("stray.hmod")).unwrap(), b"stray");
-        assert_eq!(std::fs::read_dir(&mods).unwrap().count(), 2);
+        let done = forget_missing(home, &all);
         assert_eq!(
-            remove_missing(home, &rows),
-            (0, None),
+            (done.dropped, done.changed, done.first_error),
+            (1, vec![], None)
+        );
+        assert_eq!(
+            installed::Installed::load(home).entries,
+            [kept, refused.clone()]
+        );
+        assert_eq!(tree(home), before, "no file is written, moved or deleted");
+        assert_eq!(
+            forget_missing(home, &all),
+            Forgotten {
+                changed: vec!["gone".into()],
+                ..Forgotten::default()
+            },
             "an entry already gone is not removed twice"
         );
+        // Another error than "not found" keeps the entry, whatever the row said.
+        assert_eq!(installed::forget_missing(home, &refused), Ok(false));
+        assert_eq!(installed::Installed::load(home).entries.len(), 2);
+    }
+
+    #[test]
+    fn a_missing_row_whose_file_comes_back_keeps_the_file_and_its_entry() {
+        let scratch = TestHome::new();
+        let home = &scratch.0;
+        let mods = home.join("horizon-mods");
+        std::fs::create_dir_all(&mods).unwrap();
+        let back = entry("back", "horizon-mods/back.hmod");
+        installed::Installed {
+            entries: vec![back.clone()],
+        }
+        .save(home)
+        .unwrap();
+        let rows = read(home, false);
+        assert!(rows[0].missing);
+        // The drive or the file returns between the list's read and the click.
+        std::fs::write(mods.join("back.hmod"), b"back").unwrap();
+
+        let done = forget_missing(home, &[&rows[0]]);
+        assert_eq!(
+            (done.dropped, done.changed, done.first_error),
+            (0, vec!["back".to_string()], None)
+        );
+        assert_eq!(std::fs::read(mods.join("back.hmod")).unwrap(), b"back");
+        assert_eq!(installed::Installed::load(home).entries, [back]);
     }
 
     #[test]
