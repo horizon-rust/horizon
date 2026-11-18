@@ -54,8 +54,10 @@ fn resolve(p: vec2<i32>) -> Resolved {
     }
     rgb *= 0.25;
     if LINEAR {
-        // Each weighted sample stays below 1, so their mean does too.
-        rgb /= max(1.0 - largest(rgb), 1e-5);
+        // Each weighted sample stays below 1, so their mean does too. Near half float's largest
+        // value the inverse can overshoot it, which the target would store as infinity
+        // (docs/hdr-passes.md, rule 5).
+        rgb = min(rgb / max(1.0 - largest(rgb), 1e-5), vec3(65504.0));
     }
     let chosen = kept(p);
     let depth = textureLoad(depths, p, chosen).r;

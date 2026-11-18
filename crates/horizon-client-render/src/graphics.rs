@@ -1990,6 +1990,22 @@ mod tests {
     }
 
     #[test]
+    fn a_preset_picks_one_anti_aliasing_mode() {
+        // 4x MSAA left on beside a preset's FXAA ran both, FXAA blurring the resolved frame.
+        for preset in Preset::ALL {
+            let mut s = crate::settings::Settings::default();
+            s.horizon.msaa4x = true;
+            apply_preset(preset, &mut s);
+            let g = &s.horizon;
+            let modes = [g.fxaa, g.taa, g.msaa4x]
+                .into_iter()
+                .filter(|on| *on)
+                .count();
+            assert!(modes <= 1, "{preset:?} left {modes} anti-aliasing modes on");
+        }
+    }
+
+    #[test]
     fn every_preset_keeps_the_animated_textures_on() {
         // The Performance preset used to turn them off, which froze the fire,
         // the water, the lava and the portals (#2064).

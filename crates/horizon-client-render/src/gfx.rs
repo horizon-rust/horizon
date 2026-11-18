@@ -7497,13 +7497,27 @@ impl Renderer {
             bytemuck::bytes_of(&crosshair_globals),
         );
         // 4x MSAA, unless a classic shader pack runs (a failed or refused one leaves `None`):
-        // it and native displacement keep their single-sample pipelines.
+        // it and native displacement keep their single-sample pipelines, as does a material
+        // whose four-sample layers the driver refused. Nor where its targets ran out of video
+        // memory at this size. Decided before culling is, which it switches off: a frame that
+        // can't draw it keeps culling.
+        let (pack_msaa, pack_surface) = (self.external.as_deref())
+            .and_then(|n| n.terrain_layers())
+            .map_or((true, false), |layers| {
+                (
+                    layers.msaa.is_some() && layers.displaced.is_none(),
+                    layers.surface.is_some(),
+                )
+            });
         let msaa_on = self.msaa.wanted()
             && !frame.title
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
-            && (self.external.as_deref())
-                .and_then(|n| n.terrain_layers())
-                .is_none_or(|layers| layers.displaced.is_none());
+            && pack_msaa
+            && !self.msaa.failed_at(
+                self.world_post
+                    .pack_render_size([self.config.width, self.config.height]),
+                pack_surface,
+            );
         // Frustum culling and camera-relative origins.
         let cull_proj = views.cull().view_proj(pose);
         let view = Frustum {
@@ -9355,13 +9369,10 @@ impl Renderer {
         let entity_stage = native.and_then(|n| n.entity_layers());
         // 4x MSAA's targets, at the size of the scaled world `msaa_on` asked `world_post` for:
         // its seed samples that colour, which the swapchain can't be. Without them (out of video
-        // memory) or the pack's pipelines for it, the terrain draws single-sampled.
+        // memory) the terrain draws single-sampled.
         self.msaa.fit(
             &self.device,
-            scaled
-                .as_ref()
-                .map(|(_, depth)| depth)
-                .filter(|_| msaa_on && material.is_none_or(|m| m.msaa.is_some())),
+            scaled.as_ref().map(|(_, depth)| depth).filter(|_| msaa_on),
             material.is_some_and(|m| m.surface.is_some()),
         );
         let msaa = self.msaa.passes();
@@ -11101,15 +11112,23 @@ impl Renderer {
                 crate::spectator_shaders::chains(),
                 target_texture.format(),
             );
+            // The world's depth: the window's, or the scaled pass's own where it drew at the
+            // window's size (4x MSAA at 100% scale); a smaller one doesn't fit the frame, and a
+            // made frame's world isn't the depth's.
+            let window = [self.config.width, self.config.height];
+            let depth = if overlay.world_depth {
+                Some(&self.depth)
+            } else {
+                self.world_post.depth_at(window).filter(|_| overlay.real)
+            };
             post.apply(
                 &self.device,
                 &self.queue,
                 encoder,
                 target_texture,
                 view_target,
-                [self.config.width, self.config.height],
-                // The scaled world pass drew its own depth buffer.
-                overlay.world_depth.then_some(&self.depth),
+                window,
+                depth,
                 &frame.post_effects,
                 timing.as_mut(),
             );

@@ -23,6 +23,11 @@ fn switching_on_asks_for_its_pipelines_once() {
         off.rebuild,
         "asked again after a switch off and on without the pipelines"
     );
+    off.set(false);
+    assert!(
+        !off.rebuild,
+        "off again before the renderer was made: no rebuild"
+    );
 
     let mut unsupported = msaa(false, false);
     unsupported.set(true);

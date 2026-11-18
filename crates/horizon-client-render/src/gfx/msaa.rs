@@ -99,13 +99,19 @@ impl Msaa {
             (Some(depth), Some(passes)) => {
                 passes.fit(device, [depth.width(), depth.height()], surface)
             }
+            // The targets go; a failure stays, so the next frame at its size doesn't try again.
             (None, Some(passes)) => {
                 passes.targets = None;
-                passes.failed = None;
                 false
             }
             (_, None) => false,
         };
+    }
+
+    /// Its targets ran out of video memory at `size` with `surface` (`fit`): such a frame draws
+    /// single-sampled until the size changes or the setting goes off and on.
+    pub(super) fn failed_at(&self, size: [u32; 2], surface: bool) -> bool {
+        (self.passes.as_ref()).is_some_and(|p| p.failed == Some((size, surface)))
     }
 
     /// The passes, when this frame's terrain draws multisampled (`fit`).
@@ -119,6 +125,8 @@ impl Msaa {
         }
         self.requested = on;
         if !on {
+            // Switched off before the renderer was made again: nothing left to make.
+            self.rebuild = false;
             self.active = false;
             if let Some(passes) = &mut self.passes {
                 passes.targets = None;
