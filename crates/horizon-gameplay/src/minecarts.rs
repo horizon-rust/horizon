@@ -284,7 +284,13 @@ impl CartIndex {
     }
     /// The slots of the carts whose box may meet `area`, for the cart in slot
     /// `i` (just moved); false: scan them all.
-    pub fn carts_near(&mut self, carts: &[Minecart], i: usize, area: Aabb, out: &mut Vec<u32>) -> bool {
+    pub fn carts_near(
+        &mut self,
+        carts: &[Minecart],
+        i: usize,
+        area: Aabb,
+        out: &mut Vec<u32>,
+    ) -> bool {
         if !Self::usable() {
             return false;
         }
@@ -754,10 +760,7 @@ impl Minecart {
         // ValueInput's numeric getters take any NumericTag: getIntOr is its
         // intValue, getShortOr the low 16 bits of it, getBooleanOr
         // `byteValue() != 0` (the low 8), getDoubleOr its doubleValue.
-        let int = |k: &str| {
-            tag.get(k)
-                .and_then(horizon_client::nbt_path::int_value)
-        };
+        let int = |k: &str| tag.get(k).and_then(horizon_client::nbt_path::int_value);
         let flag = |k: &str, default: bool| int(k).map_or(default, |v| v as i8 != 0);
         let double = |k: &str| match tag.get(k) {
             Some(Tag::Byte(v)) => f64::from(*v),
