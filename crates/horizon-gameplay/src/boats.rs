@@ -399,3 +399,5 @@ impl EntityRules for Boat {
         0.04
     }
 }
+horizon_client::impl_joined!(Boat);
+horizon_mod_runtime::impl_attachment_lifetime!(Boat);

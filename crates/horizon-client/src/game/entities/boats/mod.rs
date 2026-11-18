@@ -15,6 +15,7 @@ pub(super) use horizon_gameplay::boats::*;
 
 use super::{Game, InteractTarget, entity::Entity, entity_culling::at, view_vector};
 use horizon_client::actions::Action;
+use horizon_client::entity_rules::EntityRules;
 use horizon_client::{
     blocks::Fluid,
     collisions::{EntityCollisions, SceneCollisions},
@@ -23,7 +24,6 @@ use horizon_client::{
     mobs::anim::Poses,
     motion::{BubbleColumn, RiddenBoat, bubble_column_at},
 };
-use horizon_core::nbt::Tag;
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
     position::BlockPos,
@@ -1784,6 +1784,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_core::nbt::Tag;
 
     fn boat() -> Boat {
         Boat::new(1, Arc::from("oak"), Vec3::ZERO, 0.0)
@@ -2022,8 +2023,6 @@ mod tests {
         );
     }
 }
-horizon_client::impl_joined!(Boat);
-horizon_mod_runtime::impl_attachment_lifetime!(Boat);
 #[cfg(test)]
 mod cobweb_tests {
     use super::Boat;
