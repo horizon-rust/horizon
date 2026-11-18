@@ -2,8 +2,12 @@
 //! Other threads and processes may still use that core. Reservations are planned
 //! anew for each world. The game's own pool threads move themselves; on Linux a keeper
 //! moves the threads that never chose their CPUs: the ones the server thread starts, which
-//! inherit its mask, and the ones free to run anywhere (see `os::Keeper`). A thread that
-//! picked its own mask is never touched.
+//! inherit its mask, and the ones free to run anywhere (see `os::Keeper`). Every thread
+//! moved is written down with the mask it had, and the release gives back exactly those,
+//! to exactly that mask; a thread that changed its mask meanwhile keeps its own.
+//! A thread pinned through [`pin_current`] is never touched. How the keeper tells an
+//! inherited mask from a chosen one, and what it can't know about threads that other
+//! code pins with its own calls: `os::Keeper`.
 //! `HORIZON_SERVER_CORE=0` disables this; dedicated servers require `=1`.
 
 use std::collections::BTreeSet;
@@ -176,10 +180,14 @@ pub fn take() -> Option<ServerCore> {
     let plan = plan(&cores, &allowed)?;
     // A lazily initialized pool must not size itself from the server's temporary pin.
     let _ = crate::worker_count();
+    // What std says before the pin, a CPU quota (cgroup `cpu.max`) included: the sizes asked
+    // while the reservation holds stay what they were without it.
+    let whole = std::thread::available_parallelism()
+        .map_or(whole_count(&plan), |n| n.get().min(whole_count(&plan)));
     let state = os::reserve(&plan)?;
-    let keeper = os::Keeper::start(&plan);
+    let keeper = os::Keeper::start(&plan, &state);
     SERVER.with(|server| server.set(true));
-    WHOLE.store(whole_count(&plan), Ordering::Relaxed);
+    WHOLE.store(whole, Ordering::Relaxed);
     *active = Some(plan.clone());
     GENERATION.fetch_add(1, Ordering::Relaxed);
     Some(ServerCore {
@@ -190,7 +198,19 @@ pub fn take() -> Option<ServerCore> {
     })
 }
 
-/// Reconcile this owned helper's selection with the current reservation.
+/// Pin the calling thread to `cpus` as its own choice: no reservation moves it or gives it
+/// anything back, and [`leave_reserved`] leaves it alone. The way for Horizon's code to pin a
+/// thread, so the keeper knows the mask was chosen (Linux; elsewhere nothing, `false`).
+/// Whether the system took it.
+pub fn pin_current(cpus: &[usize]) -> bool {
+    os::pin(cpus)
+}
+
+/// Reconcile this owned helper's selection with the current reservation: off the server's
+/// core while one is held, the CPUs it had given back once it isn't. A mask inherited from
+/// the pinned server thread is widened to what that thread had before; any other mask is only
+/// narrowed, and one inside the reserved core alone is kept. On Linux the reservation gives the
+/// CPUs back as it ends (its ledger, `os::Keeper`); on Windows the thread does at its next call.
 pub fn leave_reserved() {
     let generation = GENERATION.load(Ordering::Relaxed);
     if SERVER.with(|server| server.get()) {
@@ -224,12 +244,14 @@ fn narrowed(previous: &[usize], reserved: &[usize]) -> Option<Vec<usize>> {
 #[cfg(target_os = "linux")]
 mod os {
     use super::{Core, Plan};
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Mutex;
     use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
     use std::thread::JoinHandle;
     use std::time::Duration;
+
     pub struct State {
-        original: Vec<usize>,
+        pub(super) original: Vec<usize>,
     }
 
     fn read(path: String) -> Option<String> {
@@ -289,38 +311,20 @@ mod os {
         Some((cores, allowed))
     }
 
-    pub fn reserve(plan: &Plan) -> Option<State> {
-        let original = affinity(0)?;
-        if !plan.reserved.iter().all(|cpu| original.contains(cpu))
-            || !set_affinity(0, &plan.reserved)
-        {
-            return None;
-        }
-        Some(State { original })
+    /// A thread: its id and when it started (`starttime` in `/proc`), so that an id the kernel
+    /// hands out again is another thread.
+    type Id = (i32, u64);
+
+    fn tid() -> i32 {
+        // SAFETY: gettid takes nothing and can't fail.
+        unsafe { libc::gettid() }
     }
 
-    pub fn leave(plan: &Plan) -> Option<State> {
-        let mut original = affinity(0)?;
-        // A thread the pinned server thread started (a tick's parallel helpers, a pool it was the
-        // first to use) inherited only the reserved CPUs, as Linux threads start with their
-        // creator's mask. What it would have had without the reservation is the allowed set the
-        // plan was made from: move it to the others and give that set back on release.
-        if original.iter().all(|cpu| plan.reserved.contains(cpu)) {
-            original = plan
-                .others
-                .iter()
-                .chain(&plan.reserved)
-                .copied()
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect();
-        }
-        let remaining = super::narrowed(&original, &plan.reserved)?;
-        set_affinity(0, &remaining).then_some(State { original })
-    }
-
-    pub fn restore(state: &State) {
-        set_affinity(0, &state.original);
+    fn id(tid: i32) -> Option<Id> {
+        let stat = read(format!("/proc/self/task/{tid}/stat"))?;
+        // The name before them is in parentheses and may hold anything: count from the last ')'.
+        let start = stat.rsplit_once(')')?.1.split_whitespace().nth(19)?;
+        Some((tid, start.parse().ok()?))
     }
 
     fn threads() -> Vec<i32> {
@@ -331,6 +335,181 @@ mod os {
             .collect()
     }
 
+    /// A thread Horizon moved off the reserved core: the mask it had, and the one it was given.
+    struct Moved {
+        id: Id,
+        before: Vec<usize>,
+        given: Vec<usize>,
+    }
+
+    /// What one reservation changed, so that its release gives back exactly that.
+    struct Ledger {
+        reserved: Vec<usize>,
+        /// The CPUs the plan was made from: a thread with this mask never chose its own.
+        whole: Vec<usize>,
+        server: i32,
+        keeper: Option<i32>,
+        /// The threads alive when the reservation began, which inherited nothing from it.
+        born_before: BTreeSet<Id>,
+        /// Every mask the reservation gave a thread (the server's core included), with the mask
+        /// that thread had before: what a thread born with one of them would have had.
+        handed_out: Vec<(Vec<usize>, Vec<usize>)>,
+        moved: BTreeMap<i32, Moved>,
+        /// Threads whose mask the reservation can't account for: chosen by them (or their
+        /// creator), never touched.
+        theirs: BTreeSet<Id>,
+    }
+
+    impl Ledger {
+        /// What a thread the reservation hasn't moved had without it, when its mask says it
+        /// never chose one: the whole set (never narrowed), or a mask the reservation handed
+        /// out, which a thread born since inherited from the thread it was given to.
+        fn before(&self, id: Id, mask: &[usize]) -> Option<Vec<usize>> {
+            if mask == self.whole {
+                return Some(mask.to_vec());
+            }
+            if self.born_before.contains(&id) {
+                return None;
+            }
+            self.handed_out
+                .iter()
+                .find(|(given, _)| given == mask)
+                .map(|(_, before)| before.clone())
+        }
+
+        fn record(&mut self, id: Id, before: Vec<usize>, given: Vec<usize>) {
+            if !self.handed_out.iter().any(|(g, _)| *g == given) {
+                self.handed_out.push((given.clone(), before.clone()));
+            }
+            self.moved.insert(id.0, Moved { id, before, given });
+        }
+
+        /// Move `id` (now on `mask`) off the reserved core if the reservation may, and write
+        /// it down; otherwise it is the thread's own.
+        fn take_over(&mut self, id: Id, mask: Vec<usize>) {
+            let target = self
+                .before(id, &mask)
+                .and_then(|before| Some((super::narrowed(&before, &self.reserved)?, before)));
+            match target {
+                Some((given, before)) if given == mask || set_affinity(id.0, &given) => {
+                    self.record(id, before, given)
+                }
+                Some(_) => {}
+                None => {
+                    self.theirs.insert(id);
+                }
+            }
+        }
+    }
+
+    struct Book {
+        /// Threads pinned through `pin`: no reservation moves them or gives them anything.
+        pinned: BTreeSet<Id>,
+        /// The reservation held, if any.
+        ledger: Option<Ledger>,
+    }
+
+    /// Every change of mask Horizon makes happens under this lock, so none of its own pins can
+    /// land between the keeper reading a thread's mask and setting it.
+    static BOOK: Mutex<Book> = Mutex::new(Book {
+        pinned: BTreeSet::new(),
+        ledger: None,
+    });
+
+    fn book() -> std::sync::MutexGuard<'static, Book> {
+        BOOK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn pin(cpus: &[usize]) -> bool {
+        let Some(id) = id(tid()) else {
+            return false;
+        };
+        let mut book = book();
+        if !set_affinity(0, cpus) {
+            return false;
+        }
+        book.pinned.insert(id);
+        if let Some(ledger) = &mut book.ledger {
+            ledger.moved.remove(&id.0);
+        }
+        true
+    }
+
+    pub fn reserve(plan: &Plan) -> Option<State> {
+        let original = affinity(0)?;
+        if !plan.reserved.iter().all(|cpu| original.contains(cpu))
+            || !set_affinity(0, &plan.reserved)
+        {
+            return None;
+        }
+        Some(State { original })
+    }
+
+    /// The calling thread asks to leave the reserved core: its mask narrowed, or, when it was
+    /// born with a mask the reservation handed out (the server's core, for a helper the server
+    /// thread started), the mask that came from narrowed. The ledger gives it back, so there is
+    /// no state for the thread to keep.
+    pub fn leave(_plan: &Plan) -> Option<State> {
+        let id = id(tid())?;
+        let mut book = book();
+        let Book { pinned, ledger } = &mut *book;
+        let ledger = ledger.as_mut()?;
+        if pinned.contains(&id) || ledger.moved.get(&id.0).is_some_and(|m| m.id == id) {
+            return None;
+        }
+        let mask = affinity(0)?;
+        let before = ledger.before(id, &mask).unwrap_or_else(|| mask.clone());
+        let given = super::narrowed(&before, &ledger.reserved)?;
+        if given == mask || set_affinity(0, &given) {
+            ledger.theirs.remove(&id);
+            ledger.record(id, before, given);
+        }
+        None
+    }
+
+    pub fn restore(state: &State) {
+        set_affinity(0, &state.original);
+    }
+
+    /// Look at every thread once: move the ones that never chose their CPUs, and note the ones
+    /// that chose since they were moved.
+    pub(super) fn scan() {
+        let mut book = book();
+        let Book { pinned, ledger } = &mut *book;
+        let Some(ledger) = ledger else {
+            return;
+        };
+        let alive: BTreeSet<i32> = threads().into_iter().collect();
+        ledger.moved.retain(|tid, _| alive.contains(tid));
+        pinned.retain(|(tid, _)| alive.contains(tid));
+        for &tid in &alive {
+            if tid == ledger.server || Some(tid) == ledger.keeper {
+                continue;
+            }
+            let (Some(id), Some(mask)) = (id(tid), affinity(tid)) else {
+                continue;
+            };
+            if pinned.contains(&id) || ledger.theirs.contains(&id) {
+                continue;
+            }
+            match ledger.moved.get(&tid) {
+                Some(moved) if moved.id == id => {
+                    // It set a mask of its own since: from now on that is its choice.
+                    if mask != moved.given {
+                        ledger.moved.remove(&tid);
+                        ledger.theirs.insert(id);
+                    }
+                    continue;
+                }
+                Some(_) => {
+                    ledger.moved.remove(&tid);
+                }
+                None => {}
+            }
+            ledger.take_over(id, mask);
+        }
+    }
+
     /// Two kinds of thread would undo the reservation, measured on a 16-core/32-thread laptop:
     /// - threads the pinned server thread starts (chunk encoders, save compressors, a network
     ///   thread...) begin on its CPUs only, as Linux threads inherit their creator's mask: with
@@ -339,24 +518,38 @@ mod os {
     ///   reserved core once the workers have left it, as it is then the machine's idlest:
     ///   one run in three took three times as long, the other two gained a third of the win.
     ///
-    /// Once a second the keeper moves every thread whose mask is exactly the reserved CPUs or
-    /// exactly the whole allowed set (masks nobody chose but by inheriting or never choosing)
-    /// to the others; a thread that chose any other mask is left alone. When the world closes it
-    /// gives every thread still on exactly the others the whole allowed set back: the ones it
-    /// moved, and the ones a moved thread started meanwhile, which inherited the others.
+    /// Once a second the keeper looks at every thread. It moves to the other CPUs only the ones
+    /// whose mask shows they never chose one: the whole allowed set, or, for a thread born after
+    /// the reservation began, a mask the reservation itself handed out (the server's core, the
+    /// other CPUs), which such a thread can only have inherited from the thread it was given to.
+    /// Each thread it moves goes in the ledger with the mask it had: for an inherited mask,
+    /// what the thread it came from had. Any other mask is the thread's own (or its creator's
+    /// own, inherited), and so is a mask a moved thread sets later: never touched again. When
+    /// the world closes the keeper looks once more, then gives each thread in the ledger that
+    /// still has the mask it was given back the one it had; a thread that changed it keeps its.
+    ///
+    /// Horizon's own threads choose a mask only through this module (the server thread's
+    /// `reserve`, `leave`, `pin`), which writes each choice down under the keeper's lock, so for
+    /// every thread Horizon starts the reading is exact. What it can't know about a thread other
+    /// code pins with its own `sched_setaffinity` (a driver's, a library's, `taskset -p`): one
+    /// that picks, before the keeper first sees it, exactly the whole set or a mask the
+    /// reservation handed out looks as if it never chose, is moved and given that mask back at
+    /// the end; and a pin that lands between the keeper reading a mask and setting it is lost
+    /// until the world closes, as the kernel has no compare-and-set for a mask. Any other pin,
+    /// at any time, is kept.
     pub struct Keeper {
         stop: Option<Sender<()>>,
         thread: Option<JoinHandle<()>>,
-        others: Vec<usize>,
-        allowed: Vec<usize>,
     }
 
+    /// How often the keeper looks.
+    const EVERY: Duration = Duration::from_secs(1);
+
     impl Keeper {
-        pub fn start(plan: &Plan) -> Keeper {
-            // SAFETY: gettid takes nothing and can't fail.
-            let server = unsafe { libc::gettid() };
-            let (stop, stopped) = channel::<()>();
-            let allowed: Vec<usize> = plan
+        /// Opens the reservation's ledger (on the server thread, pinned by `server`) and starts
+        /// the keeper.
+        pub fn start(plan: &Plan, server: &State) -> Keeper {
+            let whole: Vec<usize> = plan
                 .others
                 .iter()
                 .chain(&plan.reserved)
@@ -364,25 +557,28 @@ mod os {
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect();
-            let (reserved, others, whole) =
-                (plan.reserved.clone(), plan.others.clone(), allowed.clone());
+            book().ledger = Some(Ledger {
+                reserved: plan.reserved.clone(),
+                whole,
+                server: tid(),
+                keeper: None,
+                born_before: threads().into_iter().filter_map(id).collect(),
+                handed_out: vec![(plan.reserved.clone(), server.original.clone())],
+                moved: BTreeMap::new(),
+                theirs: BTreeSet::new(),
+            });
+            let (stop, stopped) = channel::<()>();
+            let others = plan.others.clone();
             let thread = std::thread::Builder::new()
                 .name("Server core keeper".into())
                 .spawn(move || {
+                    if let Some(ledger) = &mut book().ledger {
+                        ledger.keeper = Some(tid());
+                    }
                     set_affinity(0, &others);
                     loop {
-                        for tid in threads().into_iter().filter(|&t| t != server) {
-                            let mask = affinity(tid);
-                            if mask.as_deref() == Some(&reserved[..])
-                                || mask.as_deref() == Some(&whole[..])
-                            {
-                                set_affinity(tid, &others);
-                            }
-                        }
-                        if !matches!(
-                            stopped.recv_timeout(Duration::from_secs(1)),
-                            Err(RecvTimeoutError::Timeout)
-                        ) {
+                        scan();
+                        if !matches!(stopped.recv_timeout(EVERY), Err(RecvTimeoutError::Timeout)) {
                             return;
                         }
                     }
@@ -391,19 +587,26 @@ mod os {
             Keeper {
                 stop: Some(stop),
                 thread,
-                others: plan.others.clone(),
-                allowed,
             }
         }
 
+        /// Stops the keeper and gives back what the reservation moved.
         pub fn stop(&mut self) {
             self.stop.take();
-            if self.thread.take().is_none_or(|t| t.join().is_err()) {
-                return;
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
             }
-            for tid in threads() {
-                if affinity(tid).as_deref() == Some(&self.others[..]) {
-                    set_affinity(tid, &self.allowed);
+            // The threads born since the last look (the server's newest helpers) are moved
+            // here only to be given back their mask with the rest.
+            scan();
+            let mut book = book();
+            let Some(ledger) = book.ledger.take() else {
+                return;
+            };
+            for moved in ledger.moved.values() {
+                let tid = moved.id.0;
+                if id(tid) == Some(moved.id) && affinity(tid).as_ref() == Some(&moved.given) {
+                    set_affinity(tid, &moved.before);
                 }
             }
         }
@@ -578,10 +781,15 @@ mod os {
         let mask = thread_mask()?;
         select(&super::narrowed(&mask, &plan.reserved)?)
     }
+    /// Not on Windows yet.
+    pub fn pin(_cpus: &[usize]) -> bool {
+        false
+    }
+
     /// A Windows thread doesn't inherit its creator's CPU set, so nothing needs moving back.
     pub struct Keeper;
     impl Keeper {
-        pub fn start(_plan: &Plan) -> Keeper {
+        pub fn start(_plan: &Plan, _server: &State) -> Keeper {
             Keeper
         }
         pub fn stop(&mut self) {}
@@ -617,10 +825,13 @@ mod os {
         None
     }
     pub fn restore(_state: &State) {}
+    pub fn pin(_cpus: &[usize]) -> bool {
+        false
+    }
 
     pub struct Keeper;
     impl Keeper {
-        pub fn start(_plan: &Plan) -> Keeper {
+        pub fn start(_plan: &Plan, _server: &State) -> Keeper {
             Keeper
         }
         pub fn stop(&mut self) {}
@@ -760,12 +971,21 @@ mod tests {
                 send.send(os::affinity(0).unwrap()).unwrap();
             }
         });
-        let publish = |reserved: Option<usize>| {
+        // This thread stands in for the server: the reservation opens and ends here.
+        let server = os::State {
+            original: original.clone(),
+        };
+        let mut keeper: Option<os::Keeper> = None;
+        let mut publish = |reserved: Option<usize>| {
             let mut active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(mut keeper) = keeper.take() {
+                keeper.stop();
+            }
             *active = reserved.map(|cpu| Plan {
                 reserved: vec![cpu],
                 others: original.iter().copied().filter(|c| *c != cpu).collect(),
             });
+            keeper = active.as_ref().map(|plan| os::Keeper::start(plan, &server));
             GENERATION.fetch_add(1, Ordering::Relaxed);
         };
         publish(Some(original[0]));
@@ -789,121 +1009,165 @@ mod tests {
         thread.join().unwrap();
     }
 
+    /// A thread that does what it is told and answers with its mask.
     #[cfg(target_os = "linux")]
-    #[test]
-    fn a_helper_started_by_the_pinned_server_leaves_its_core() {
-        let _test = RESERVATION_TEST.lock().unwrap();
-        // The count is kept from its first ask: make that before this test narrows any thread.
-        let _ = crate::worker_count();
-        let original = os::affinity(0).unwrap();
-        if original.len() < 3 {
-            return;
-        }
-        let plan = Plan {
-            reserved: vec![original[0]],
-            others: original[1..].to_vec(),
-        };
-        let server_plan = plan.clone();
-        let (helper_while, helper_after) = std::thread::spawn(move || {
-            let state = os::reserve(&server_plan).unwrap();
-            *ACTIVE.lock().unwrap() = Some(server_plan.clone());
-            GENERATION.fetch_add(1, Ordering::Relaxed);
-            // Started on the pinned thread, so it begins with the reserved CPUs only.
-            let (release, released) = std::sync::mpsc::channel::<()>();
-            let helper = std::thread::spawn(move || {
-                leave_reserved();
-                let during = os::affinity(0).unwrap();
-                released.recv().unwrap();
-                leave_reserved();
-                (during, os::affinity(0).unwrap())
-            });
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            *ACTIVE.lock().unwrap() = None;
-            GENERATION.fetch_add(1, Ordering::Relaxed);
-            release.send(()).unwrap();
-            let result = helper.join().unwrap();
-            os::restore(&state);
-            result
-        })
-        .join()
-        .unwrap();
-        assert_eq!(helper_while, plan.others);
-        assert_eq!(helper_after, original);
+    struct Probe {
+        ask: std::sync::mpsc::Sender<Ask>,
+        answer: std::sync::mpsc::Receiver<(Vec<usize>, Option<Probe>)>,
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn the_keeper_moves_threads_that_never_chose_their_cpus() {
-        use std::sync::mpsc::{Receiver, Sender, channel};
-        // A thread that never moves itself and reports its mask when asked; `own` is a mask it
-        // picks for itself first.
-        fn probe(own: Option<Vec<usize>>) -> (Sender<()>, Receiver<Vec<usize>>) {
-            let (ask, asked) = channel::<()>();
-            let (answer, answers) = channel();
+    enum Ask {
+        Mask,
+        /// Set its own mask with its own call, as code outside Horizon would.
+        Set(Vec<usize>),
+        Pin(Vec<usize>),
+        Leave,
+        /// Start a probe of its own, which inherits its mask.
+        Spawn,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Probe {
+        fn start() -> Probe {
+            let (ask, asked) = std::sync::mpsc::channel();
+            let (answer, answers) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                if let Some(own) = own {
-                    os::set_affinity(0, &own);
-                }
-                while asked.recv().is_ok() {
-                    answer.send(os::affinity(0).unwrap()).unwrap();
+                while let Ok(what) = asked.recv() {
+                    let child = match what {
+                        Ask::Mask => None,
+                        Ask::Set(cpus) => {
+                            assert!(os::set_affinity(0, &cpus));
+                            None
+                        }
+                        Ask::Pin(cpus) => {
+                            assert!(pin_current(&cpus));
+                            None
+                        }
+                        Ask::Leave => {
+                            leave_reserved();
+                            None
+                        }
+                        Ask::Spawn => Some(Probe::start()),
+                    };
+                    answer.send((os::affinity(0).unwrap(), child)).unwrap();
                 }
             });
-            (ask, answers)
+            Probe {
+                ask,
+                answer: answers,
+            }
         }
-        fn mask(probe: &(Sender<()>, Receiver<Vec<usize>>)) -> Vec<usize> {
-            probe.0.send(()).unwrap();
-            probe.1.recv().unwrap()
+
+        fn ask(&self, what: Ask) -> (Vec<usize>, Option<Probe>) {
+            self.ask.send(what).unwrap();
+            self.answer.recv().unwrap()
         }
+
+        fn mask(&self) -> Vec<usize> {
+            self.ask(Ask::Mask).0
+        }
+
+        fn with(self, what: Ask) -> Probe {
+            self.ask(what);
+            self
+        }
+    }
+
+    /// The keeper and the release touch only what the reservation moved, and give back to each
+    /// exactly what it had; a mask a thread chose, before or during the reservation, is kept,
+    /// whether it is the other CPUs, inside the reserved core or anything else.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_reservation_gives_back_only_what_it_moved() {
         let _test = RESERVATION_TEST.lock().unwrap();
         // The count is kept from its first ask: make that before this test narrows any thread.
         let _ = crate::worker_count();
-        let original = os::affinity(0).unwrap();
-        if original.len() < 3 {
-            return;
-        }
-        let plan = Plan {
-            reserved: vec![original[0]],
-            others: original[1..].to_vec(),
-        };
-        let chosen_mask = original[..2].to_vec();
-        let server_plan = plan.clone();
-        let seen = std::thread::spawn(move || {
-            let free = probe(None);
-            let chosen = probe(Some(chosen_mask));
-            mask(&chosen);
-            let state = os::reserve(&server_plan).unwrap();
-            let mut keeper = os::Keeper::start(&server_plan);
-            let inherited = probe(None);
-            // Started by a thread the keeper had moved: it inherits the others.
-            let born_moved = probe(Some(server_plan.others.clone()));
-            let at_start = [mask(&inherited), mask(&free), mask(&chosen)];
-            std::thread::sleep(std::time::Duration::from_millis(2500));
-            let during = [mask(&inherited), mask(&free), mask(&chosen)];
-            keeper.stop();
-            let after = [
-                mask(&inherited),
-                mask(&free),
-                mask(&chosen),
-                mask(&born_moved),
+        let seen = std::thread::spawn(|| {
+            let original = os::affinity(0).unwrap();
+            if original.len() < 4 {
+                return None;
+            }
+            let (o, plan) = (
+                original.clone(),
+                Plan {
+                    reserved: original[..2].to_vec(),
+                    others: original[2..].to_vec(),
+                },
+            );
+            // Born before the reservation.
+            let free = Probe::start();
+            let changes_mind = Probe::start();
+            let chose_before = Probe::start().with(Ask::Set(vec![o[1], o[2]]));
+            let inside_before = Probe::start().with(Ask::Set(vec![o[0]]));
+            let state = os::reserve(&plan).unwrap();
+            let mut keeper = os::Keeper::start(&plan, &state);
+            *ACTIVE.lock().unwrap() = Some(plan.clone());
+            GENERATION.fetch_add(1, Ordering::Relaxed);
+            // Born on the pinned server thread, so on the reserved core.
+            let from_server = Probe::start();
+            let pinned_others = Probe::start().with(Ask::Pin(plan.others.clone()));
+            let pinned_inside = Probe::start().with(Ask::Pin(vec![o[0]]));
+            let pinned_reserved = Probe::start().with(Ask::Pin(plan.reserved.clone()));
+            let helper = Probe::start().with(Ask::Leave);
+            inside_before.ask(Ask::Leave);
+            os::scan();
+            // Started by a thread the keeper moved, after it did: born on the other CPUs.
+            let from_moved = free.ask(Ask::Spawn).1.unwrap();
+            // Seen as moved, then a choice of its own.
+            changes_mind.ask(Ask::Set(vec![o[2]]));
+            os::scan();
+            let probes = [
+                ("free", &free),
+                ("changes_mind", &changes_mind),
+                ("chose_before", &chose_before),
+                ("inside_before", &inside_before),
+                ("from_server", &from_server),
+                ("pinned_others", &pinned_others),
+                ("pinned_inside", &pinned_inside),
+                ("pinned_reserved", &pinned_reserved),
+                ("helper", &helper),
+                ("from_moved", &from_moved),
             ];
+            let masks = || -> Vec<(&str, Vec<usize>)> {
+                probes.iter().map(|(name, p)| (*name, p.mask())).collect()
+            };
+            let during = masks();
+            let server_during = os::affinity(0).unwrap();
+            {
+                let mut active = ACTIVE.lock().unwrap();
+                keeper.stop();
+                *active = None;
+                GENERATION.fetch_add(1, Ordering::Relaxed);
+            }
             os::restore(&state);
-            (at_start, during, after)
+            let after = masks();
+            let server_after = os::affinity(0).unwrap();
+            Some((o, plan, during, after, server_during, server_after))
         })
         .join()
         .unwrap();
-        let chosen = original[..2].to_vec();
-        assert_eq!(
-            seen.0,
-            [plan.reserved.clone(), original.clone(), chosen.clone()]
-        );
-        assert_eq!(
-            seen.1,
-            [plan.others.clone(), plan.others.clone(), chosen.clone()]
-        );
-        assert_eq!(
-            seen.2,
-            [original.clone(), original.clone(), chosen, original.clone()]
-        );
+        let Some((o, plan, during, after, server_during, server_after)) = seen else {
+            return;
+        };
+        let (others, reserved) = (plan.others.clone(), plan.reserved.clone());
+        let expected = |moved: &Vec<usize>| {
+            vec![
+                ("free", moved.clone()),
+                ("changes_mind", vec![o[2]]),
+                ("chose_before", vec![o[1], o[2]]),
+                ("inside_before", vec![o[0]]),
+                ("from_server", moved.clone()),
+                ("pinned_others", others.clone()),
+                ("pinned_inside", vec![o[0]]),
+                ("pinned_reserved", reserved.clone()),
+                ("helper", moved.clone()),
+                ("from_moved", moved.clone()),
+            ]
+        };
+        assert_eq!(during, expected(&others));
+        assert_eq!(after, expected(&o));
+        assert_eq!((server_during, server_after), (reserved, o.clone()));
     }
 
     #[cfg(target_os = "linux")]
@@ -925,7 +1189,7 @@ mod tests {
             assert_eq!(os::affinity(0).unwrap(), plan.reserved);
             *ACTIVE.lock().unwrap() = Some(plan.clone());
             SERVER.with(|server| server.set(true));
-            let keeper = os::Keeper::start(&plan);
+            let keeper = os::Keeper::start(&plan, &state);
             let guard = ServerCore {
                 plan,
                 state,
