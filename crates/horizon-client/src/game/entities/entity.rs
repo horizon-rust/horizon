@@ -2744,7 +2744,6 @@ impl Entity for ThrownTrident {
     }
 }
 
-impl EntityRules for Rocket {}
 impl EntityRules for Boat {
     fn is_no_gravity(&self) -> bool {
         self.no_gravity
@@ -2761,15 +2760,6 @@ impl EntityRules for Minecart {
     /// `AbstractMinecart.getDefaultGravity`.
     fn get_default_gravity(&self) -> f64 {
         if self.in_water { 0.005 } else { 0.04 }
-    }
-}
-impl EntityRules for PrimedTnt {
-    fn is_no_gravity(&self) -> bool {
-        self.no_gravity
-    }
-    /// `PrimedTnt.getDefaultGravity`.
-    fn get_default_gravity(&self) -> f64 {
-        0.04
     }
 }
 impl EntityRules for FallingBlock {
