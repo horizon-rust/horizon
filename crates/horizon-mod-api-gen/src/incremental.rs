@@ -539,8 +539,15 @@ mod tests {
         let first = tree_digest(&roots).unwrap();
         assert_eq!(first, tree_digest(&roots).unwrap());
         fs::write(a.join("target/ignored.rs"), "x").unwrap();
-        fs::write(a.join("src/notes.txt"), "x").unwrap();
         assert_eq!(first, tree_digest(&roots).unwrap());
+        // Any other file counts by its name, since the resolver rejects a stray file among the
+        // trait roles; its content does not.
+        fs::write(a.join("src/notes.txt"), "x").unwrap();
+        let with_notes = tree_digest(&roots).unwrap();
+        assert_ne!(first, with_notes);
+        fs::write(a.join("src/notes.txt"), "y").unwrap();
+        assert_eq!(with_notes, tree_digest(&roots).unwrap());
+        let first = with_notes;
         fs::write(a.join("src/lib.rs"), "fn b() {}").unwrap();
         let changed = tree_digest(&roots).unwrap();
         assert_ne!(first, changed);
