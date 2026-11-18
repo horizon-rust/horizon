@@ -993,8 +993,15 @@ fn install_version_guarded(
     let old = list.entries.iter().find(|e| ours(e)).cloned();
     if let Some(old) = &old {
         let mut different = old.kind != project.kind;
-        if !different && project.kind == Kind::Mod {
-            let path = home.join(&old.file);
+        let path = home.join(&old.file);
+        // Nothing that loads is left to keep: the entry's file is gone, or it is a native mod in a
+        // format this Horizon retired (`zoom` 2.0.0, before the id came back as a wasm mod). The
+        // install replaces the entry and removes that file.
+        let stale = !path.exists()
+            || (!native
+                && Path::new(&old.file).starts_with(crate::native_mods::INSTALLED)
+                && horizon_platform::mod_package::Package::read(&path).is_err());
+        if !different && !stale && project.kind == Kind::Mod {
             let installed_native = index::native::holds(&path);
             let kind = if installed_native {
                 index::Kind::NativeMod

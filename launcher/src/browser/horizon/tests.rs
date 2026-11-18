@@ -1109,3 +1109,52 @@ fn a_project_is_starred_on_the_repository_its_source_is_in() {
         assert_eq!(repo(source), None, "{source:?}");
     }
 }
+
+/// An id that was a native mod and came back as a plain mod (`zoom` 3.0.0): the player's
+/// entry from then points into `horizon-native-mods/`, at a file that is gone or in the retired
+/// native format. Installing the mod replaces that entry, so its row reads the new file.
+#[test]
+fn a_stale_native_entry_is_replaced_by_the_mod_the_id_became() {
+    use std::io::Write;
+    let index = sample();
+    let p = hud(&index);
+    for retired in [false, true] {
+        let home = scratch(&format!("stale-native-{retired}"));
+        let old = "horizon-native-mods/coords_hud.hmod";
+        if retired {
+            fs::create_dir_all(home.join("horizon-native-mods")).unwrap();
+            let mut zip = zip::ZipWriter::new(fs::File::create(home.join(old)).unwrap());
+            for name in [
+                "horizon-native.json",
+                "mixins/coords_hud/horizon-mixin.toml",
+            ] {
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(b"{}").unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        let entry = serde_json::json!({
+            "source": "horizon", "project": "coords_hud", "slug": "coords_hud",
+            "title": "Coordinates HUD", "kind": "mod", "version": "0.0.1", "number": "0.0.1",
+            "file": old, "checksum": "SHA-256:00", "page": ""
+        });
+        installed::Installed {
+            entries: vec![serde_json::from_value(entry).unwrap()],
+        }
+        .save(&home)
+        .unwrap();
+        java::set_enabled(&home, "coords_hud", true).unwrap();
+
+        let done = install_from(&index, true, &p, &home, &|_, _| {}).unwrap();
+        assert_eq!(done[0].file, "horizon-mods/coords_hud.hmod");
+        let list = installed::Installed::load(&home).entries;
+        assert_eq!(list, done);
+        let package = horizon_platform::mod_package::Package::read(&home.join(&list[0].file));
+        assert_eq!(package.unwrap().manifest.id, "coords_hud");
+        assert!(!home.join(old).exists());
+        assert!(java::is_enabled(&home, "coords_hud"));
+        assert!(crate::native_status::enabled(&home).is_empty());
+        fs::remove_dir_all(&home).unwrap();
+    }
+}
