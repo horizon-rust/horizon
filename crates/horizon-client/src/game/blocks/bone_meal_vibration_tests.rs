@@ -53,11 +53,8 @@ fn click(game: &mut Game<'_>) -> Vec<(&'static str, [f64; 3], Option<Who>)> {
 /// The last bone meal is silent even in creative; earlier uses respect the
 /// stack's interaction vibration setting.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn bone_meal_vibrations_respect_remaining_count_and_use_effects() {
-    if std::env::var_os("HORIZON_TEST_RESOURCES").is_none() {
-        return;
-    }
     let finish = [("minecraft:item_interact_finish", PLAYER, Some(Who::Player))];
     let mut game = game();
     // A stack of one is empty when vanilla checks its components.

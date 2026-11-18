@@ -207,10 +207,6 @@ pub(super) fn install_live_features(
 }
 
 #[cfg(test)]
-#[path = "bone_meal_vibration_tests.rs"]
-mod bone_meal_vibration_tests;
-
-#[cfg(test)]
 mod tests {
     use super::{Arc, Game, build_live_features, install_live_features};
     use horizon_client::items::ItemStack;
