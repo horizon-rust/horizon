@@ -262,10 +262,10 @@ pub fn forget_unreadable_display(
 /// unseen, so with mods loaded both scans stay.
 #[derive(Default)]
 pub struct CartIndex {
-    carts: Option<(SeenGrid, Vec<u32>)>,
+    pub carts: Option<(SeenGrid, Vec<u32>)>,
     /// The grid, and the carts a mob rides.
-    mobs: Option<(ListStamp, SeenGrid, FxHashSet<u32>)>,
-    near: Vec<u32>,
+    pub mobs: Option<(ListStamp, SeenGrid, FxHashSet<u32>)>,
+    pub near: Vec<u32>,
 }
 impl CartIndex {
     pub fn usable() -> bool {
