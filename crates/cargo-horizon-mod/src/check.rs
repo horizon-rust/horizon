@@ -1,6 +1,6 @@
 //! `cargo horizon-mod check <file>`: what the registry checks of a submission,
 //! run anywhere: its kind's own checks (docs/modding/src/reference/registry-index.md), its signature
-//! when given a key, and for a `.hmod` that it is content only.
+//! when given a key, and for a `.hmod` whether it is content only or WebAssembly code.
 use horizon_mod_package::index::{self, Facts, Kind};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -11,6 +11,8 @@ pub struct Report {
     pub sha256: String,
     pub size: u64,
     pub signed: bool,
+    /// A `.hmod` with a `[wasm]` section: WebAssembly code, not content only.
+    pub wasm: bool,
 }
 
 impl Report {
@@ -33,6 +35,7 @@ impl Report {
             "sha256": self.sha256,
             "size": self.size,
             "signed": self.signed,
+            "wasm": self.wasm,
         })
     }
 
@@ -73,7 +76,9 @@ impl Report {
         if self.kind == Kind::NativeMod {
             out += "  native source: unsandboxed; not executed by the registry check. Compile and test against the exact pinned Horizon and Mixins revisions before review.\n";
         }
-        if self.kind == Kind::Mod {
+        if self.kind == Kind::Mod && self.wasm {
+            out += "  WebAssembly code: runs sandboxed in the game, with time and memory limits; the registry check doesn't run it\n";
+        } else if self.kind == Kind::Mod {
             out += "  no code: content only, nothing to run\n";
         }
         out
@@ -116,12 +121,18 @@ pub fn check(
         (None, None) => false,
         _ => return Err("--key and --signature go together".into()),
     };
+    let wasm = kind == Kind::Mod
+        && horizon_mod_package::Package::read(path)?
+            .manifest
+            .wasm
+            .is_some();
     Ok(Report {
         kind,
         facts,
         sha256: index::sha256_file(path)?,
         size,
         signed,
+        wasm,
     })
 }
 
@@ -152,7 +163,9 @@ mod tests {
         let key = key.lines().last().unwrap();
         let report = check(&hmod, Kind::Mod, Some(key), Some(&sig)).unwrap();
         assert!(report.signed);
+        assert!(!report.wasm);
         assert!(report.text().contains("no code: content only"));
+        assert_eq!(report.json()["wasm"], false);
         let e = check(
             &hmod,
             Kind::Mod,
@@ -165,5 +178,25 @@ mod tests {
         let e = check(&pack, Kind::Shader, None, None).err().unwrap();
         assert!(e.contains("horizon-shaders.toml"), "{e}");
         assert!(check(&pack, Kind::Mod, None, None).is_err());
+    }
+
+    #[test]
+    fn a_wasm_mod_is_reported_as_code() {
+        let report = Report {
+            kind: Kind::Mod,
+            facts: Facts {
+                id: Some("wasm_hello".into()),
+                version: Some("0.1.0".into()),
+                ..Facts::default()
+            },
+            sha256: "0".repeat(64),
+            size: 1,
+            signed: false,
+            wasm: true,
+        };
+        let text = report.text();
+        assert!(text.contains("WebAssembly code: runs sandboxed"), "{text}");
+        assert!(!text.contains("no code"), "{text}");
+        assert_eq!(report.json()["wasm"], true);
     }
 }
