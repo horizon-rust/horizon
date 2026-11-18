@@ -1,6 +1,7 @@
 //! Calls cross by name (#18253): a mod links each call it makes by its name and signature, and
 //! the game compares the mod's table of calls with its own when it loads.
 use super::*;
+use horizon_mod_runtime::dispatch_failures::dispatch_failure_counter as failure_counter;
 
 const NEXT_LONG: (&str, &str) = ("StructureRandom", "next_long");
 
@@ -179,7 +180,7 @@ fn an_export_added_after_the_mod_was_built_is_answered_as_absent() {
         let bytes = member(&[], &[], &format!("i64.const {refusal}"));
         let module = load(&[("test", &bytes)]).unwrap().remove(0);
         let id = crate::boundary::export_id("Hooks", "server_stopped").unwrap();
-        let failures = horizon_mod_runtime::dispatch_failures::dispatch_failure_counter();
+        let failures = failure_counter();
         let before = failures.get();
         assert_eq!(
             module.call(
