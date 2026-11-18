@@ -2,7 +2,7 @@
 
 Use the registry to distribute content and native mods (`.hmod`), modpacks (`.hpack`),
 resource packs, data packs, shaders-folder packs and Horizon shader packs (`.hshader`).
-Submit your project page and version file through the registry submission form.
+Submit your project page and version file in a pull request on horizon-mods ([Publishing your mod](../how-to/publish.md)).
 Versions are pinned by SHA-256. The launcher and website read schema 1 of `index.json`.
 The format is defined by `horizon_mod_package::index` and `horizon_mod_package::modpack`.
 
@@ -119,8 +119,8 @@ them into the profile's game folder.
 
 ## Submitting a project
 
-Submit through [playhorizon.dev/mods/submit](https://playhorizon.dev/mods/submit) ([Publishing your mod](../how-to/publish.md)); the service opens a pull request on
-[horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods). Your page needs:
+Submit a pull request on [horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods) ([Publishing your mod](../how-to/publish.md)); the
+submission form can't take `.hmod` files made with this SDK yet. Your page needs:
 
 - A description of 50–10,000 characters after trimming.
 - 1–3 categories from your project kind’s list and up to 10 lowercase tags.
