@@ -62,6 +62,22 @@ impl Launcher {
                 cx.notify();
             }))
         });
+        let missing = self.missing_mods();
+        let remove_missing = (missing > 0 && !busy).then(|| {
+            ui::quiet(
+                "instance-mods-remove-missing",
+                trf(
+                    "Remove missing ({count})",
+                    &[("count", &missing.to_string())],
+                ),
+                36.,
+                &t,
+            )
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.remove_missing_mods();
+                cx.notify();
+            }))
+        });
         body = body.child(
             ui::list_head(note).child(
                 div()
@@ -70,6 +86,7 @@ impl Launcher {
                     .gap(px(8.))
                     .child(field)
                     .children(update_all)
+                    .children(remove_missing)
                     .child(
                         ui::quiet_icon(
                             "instance-mods-add",
@@ -206,7 +223,9 @@ impl Launcher {
         } else {
             glass_home_lists::picture(None, "puzzle")
         };
-        let source = if let Some(error) = &row.error {
+        let source = if row.missing {
+            tr("File missing").to_string()
+        } else if let Some(error) = &row.error {
             error.clone()
         } else if let Some(origin) = row.native.as_ref().and_then(|n| n.origin.as_ref()) {
             trf("from GitHub: {source}", &[("source", &origin.label())])
@@ -224,7 +243,7 @@ impl Launcher {
             true => source,
             false => format!("{} · {source}", row.version),
         };
-        let update = row.entry.as_ref().and_then(|e| {
+        let update = row.entry.as_ref().filter(|_| !row.missing).and_then(|e| {
             let key = (e.source, e.project.clone());
             let number = self.mods.updates.get(&key)?.clone();
             let (source, id) = key;
@@ -251,22 +270,39 @@ impl Launcher {
             .map(|origin| self.github_actions(origin, busy || self.github.busy(), cx));
         let menu = self.mod_menu(&row, busy, cx);
         let switch_row = row.clone();
-        let controls = div().child(
-            ui::toggle(
-                SharedString::from(format!("mod-switch-{}", row.file)),
-                row.on,
-                self.look.accent,
-                self.look.on_accent,
+        // A missing file has nothing to switch: its one action is Remove.
+        let controls = if row.missing {
+            let chip = ui::quiet(
+                SharedString::from(format!("mod-remove-missing-{}", row.file)),
+                tr("Remove"),
+                32.,
                 &t,
+            );
+            div().child(match busy {
+                true => chip.opacity(0.4).cursor_default(),
+                false => chip.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.remove_mod_row(&switch_row);
+                    cx.notify();
+                })),
+            })
+        } else {
+            div().child(
+                ui::toggle(
+                    SharedString::from(format!("mod-switch-{}", row.file)),
+                    row.on,
+                    self.look.accent,
+                    self.look.on_accent,
+                    &t,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    match &switch_row.native {
+                        Some(native) => this.switch_native_mod(native, switch_row.on),
+                        None => this.switch_mod(&switch_row),
+                    }
+                    cx.notify();
+                })),
             )
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                match &switch_row.native {
-                    Some(native) => this.switch_native_mod(native, switch_row.on),
-                    None => this.switch_mod(&switch_row),
-                }
-                cx.notify();
-            })),
-        );
+        };
         ui::list_row(key, hovered, hover, &t)
             .child(icon)
             .child(ui::list_text(row.name.clone(), note))
@@ -313,6 +349,7 @@ impl Launcher {
             .as_deref()
             .and_then(|id| left_out.iter().find(|l| l.id == id));
         let (word, color) = match id.as_deref() {
+            _ if row.missing => (tr("File missing"), ui::warn()),
             _ if !row.on => (tr("Off"), white(ink::QUIET)),
             _ if row.error.is_some() => (tr("Failed"), ui::danger()),
             None => (tr("Ready"), ui::live()),
@@ -564,7 +601,7 @@ impl Launcher {
     }
 
     /// Takes a mod out of the instance, whatever put it there.
-    fn remove_mod_row(&mut self, row: &ModRow) {
+    pub(super) fn remove_mod_row(&mut self, row: &ModRow) {
         let home = self.mods.home();
         let result = match (&row.native, &row.entry) {
             (Some(n), _) if n.origin.is_some() => {

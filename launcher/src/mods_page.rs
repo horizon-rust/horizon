@@ -479,9 +479,9 @@ impl Launcher {
                 Event::AutoUpdated(lines) => {
                     if !lines.is_empty() {
                         m.message = Some(Ok(lines.join("\n")));
+                        m.reload_installed();
+                        m.installed_list.reset();
                     }
-                    m.reload_installed();
-                    m.installed_list.reset();
                 }
                 Event::TakenDown(lines) => {
                     m.message = Some(Ok(lines.join("\n")));
@@ -629,8 +629,9 @@ impl Launcher {
         let tx = self.mods.tx.clone();
         std::thread::spawn(move || {
             let lines = auto_update(&list, enabled, &|_| {});
-            // Even with nothing to say: entries whose file was gone may have left the list.
-            let _ = tx.send(Event::AutoUpdated(lines));
+            if !lines.is_empty() {
+                let _ = tx.send(Event::AutoUpdated(lines));
+            }
         });
     }
 
@@ -745,9 +746,15 @@ impl Launcher {
         }
         let tx = self.mods.tx.clone();
         let java = self.mods.java.clone();
+        let home = self.mods.home();
         std::thread::spawn(move || {
             let mut found = HashMap::new();
             for e in entries {
+                // A Horizon row whose file is missing offers Remove, not an update. (A Java
+                // instance's jar turned off is renamed: its recorded file isn't there.)
+                if java.is_none() && instance_mods::file_missing(&home, &e) {
+                    continue;
+                }
                 let Some(source) = browser::source(e.source) else {
                     continue;
                 };

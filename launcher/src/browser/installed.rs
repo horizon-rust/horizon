@@ -341,50 +341,6 @@ pub fn remove(home: &Path, name: &str) -> Result<Entry, String> {
     Ok(entry)
 }
 
-/// At the launcher's start: drops the entries of game folder `home` whose file is not found, as
-/// the registry mods from before the cutover whose files are gone, so their rows don't stand
-/// Failed. Only the list changes, never a file. Nothing is dropped while the game folder or an
-/// entry's folder can't be read (an unplugged drive), nor for any error but "not found".
-pub fn prune_missing(home: &Path) -> Vec<Entry> {
-    // Before the lock, which makes the folder.
-    if fs::read_dir(home).is_err() {
-        return Vec::new();
-    }
-    let Ok(_lock) = super::lock_home(home) else {
-        return Vec::new();
-    };
-    let mut list = Installed::load(home);
-    let (gone, kept): (Vec<Entry>, Vec<Entry>) = list
-        .entries
-        .into_iter()
-        .partition(|e| file_missing(home, e));
-    list.entries = kept;
-    if gone.is_empty() {
-        return gone;
-    }
-    if let Err(e) = list.save(home) {
-        eprintln!("{MANIFEST}: couldn't drop the entries whose files are gone: {e}");
-        return Vec::new();
-    }
-    for e in &gone {
-        eprintln!(
-            "{MANIFEST}: dropped {} {}, whose file {} is gone",
-            e.title, e.number, e.file
-        );
-    }
-    gone
-}
-
-/// Whether `entry`'s file is not found in a folder that reads.
-fn file_missing(home: &Path, entry: &Entry) -> bool {
-    let Some(path) = entry.path(home) else {
-        return false;
-    };
-    let folder_reads = path.parent().is_some_and(|f| fs::read_dir(f).is_ok());
-    folder_reads
-        && matches!(fs::symlink_metadata(&path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
-}
-
 /// The newer version `entry` can be updated to, if any.
 pub fn update_for(source: &dyn Source, entry: &Entry) -> Result<Option<Version>, String> {
     let project = source.project(&entry.project)?;

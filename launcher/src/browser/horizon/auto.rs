@@ -262,8 +262,7 @@ fn keep(home: &Path, entry: &installed::Entry) -> Result<Kept, String> {
 
 /// Updates every installed registry project of game folder `home` that [`decide`] says, by the
 /// index (fetched at most every ten minutes); None when updates are disabled or it can't be read.
-/// An interrupted update is recovered first, and entries whose file is gone are dropped
-/// ([`installed::prune_missing`]), even when updates are disabled or offline.
+/// An interrupted update is recovered first, even when updates are disabled or offline.
 pub fn run(
     home: &Path,
     ctx: &Context,
@@ -274,7 +273,6 @@ pub fn run(
     static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     recover(home);
-    installed::prune_missing(home);
     if !enabled {
         return None;
     }
