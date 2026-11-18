@@ -545,6 +545,9 @@ pub fn resource_root_with_conditions(
     }
     let roots = cache.join("mod-content");
     let out = roots.join(&stamp[..ROOT_NAME]);
+    // Pin before examining the root. If a prune already admitted the old generation, this
+    // waits for it to move that generation aside before looking for its stamp.
+    let _preparing = retain_root(&out);
     if fs::read(out.join(STAMP)).is_ok_and(|s| s == stamp.as_bytes())
         && fs::read(out.join(horizon_mod_package::enabled::MARKER)).is_ok_and(|bytes| {
             serde_json::from_slice::<horizon_mod_package::enabled::EnabledMods>(&bytes)
@@ -556,7 +559,7 @@ pub fn resource_root_with_conditions(
         warnings.lines().for_each(|w| log::warn!("Horizon: {w}"));
         // Used again: kept another day. Marked beside the root, not in it: the pack overlay
         // laid over the root reads its files, and a rewritten one would rebuild it (#12403).
-        let _ = fs::write(used_path(&out), b"");
+        super::root_lifetime::renew_root(&out);
         return Ok(out);
     }
     if has_content {
