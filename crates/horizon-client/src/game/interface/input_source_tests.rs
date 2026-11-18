@@ -1,7 +1,7 @@
 //! Who gets an input source: each player's game its own, a server's game none.
 
 use crate::game::execution_role::ExecutionRole;
-use super::input_source_for;
+use super::play_input::input_source_for;
 use horizon_client::input_source::{Factory, InputHost, InputSource};
 use std::cell::Cell;
 use std::rc::Rc;

@@ -625,9 +625,6 @@ impl InputHost for Game<'_> {
 }
 
 #[cfg(test)]
-mod input_source_tests;
-
-#[cfg(test)]
 mod tests {
     use super::{studio_freecam_movement_key, studio_replay_shortcut};
     use winit::keyboard::KeyCode;
