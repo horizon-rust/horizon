@@ -27,7 +27,7 @@ pub fn item_max_stack(items: &Items, item: &str) -> u32 {
 /// bone meal on `pos`, with level event 1505 and the next crop to work
 /// on when it grew.
 pub fn villager_bonemeal<L: VillagerLevel + ?Sized>(l: &mut L, id: u32, pos: BlockPos) {
-    let Some(i) = villager_index(l, id) else {
+    let Some(i) = l.villager_index(id) else {
         return;
     };
     let p = l.parts();
@@ -45,7 +45,7 @@ pub fn villager_bonemeal<L: VillagerLevel + ?Sized>(l: &mut L, id: u32, pos: Blo
         stack.count = stack.count.saturating_sub(1);
     }
     // The event's host may have moved the villager in `mobs`.
-    let Some(i) = villager_index(l, id) else {
+    let Some(i) = l.villager_index(id) else {
         return;
     };
     let p = l.parts();
@@ -72,20 +72,20 @@ pub fn villager_bonemeal<L: VillagerLevel + ?Sized>(l: &mut L, id: u32, pos: Blo
 /// `WorkAtComposter.useWorkstation`: at a composter the farmer makes
 /// bread, then composts seeds.
 pub fn villager_work_at_composter<L: VillagerLevel + ?Sized>(l: &mut L, id: u32, pos: [i32; 3]) {
-    let Some(i) = villager_index(l, id) else {
+    let Some(i) = l.villager_index(id) else {
         return;
     };
     if l.composter_level(pos).is_none() {
         return;
     }
-    villager_make_bread(l, i);
+    l.villager_make_bread(i);
     l.compost_items(i, pos);
 }
 
 /// `WorkAtComposter.makeBread`: up to three loaves from nine wheat while
 /// the villager holds at most 36 bread; what does not fit drops.
 pub fn villager_make_bread<L: VillagerLevel + ?Sized>(l: &mut L, i: usize) {
-    let max_stack = item_max_stack(l.items(), "minecraft:bread");
+    let max_stack = l.item_max_stack("minecraft:bread");
     let p = l.parts();
     let e = villager::ext_mut(&mut p.mobs[i]);
     if e.count_item("minecraft:bread") > 36 {
@@ -123,7 +123,7 @@ pub fn villager_throw<L: VillagerLevel + ?Sized>(
 /// `TradeWithVillager.tick` for one pair: gossip (at most once in 1200
 /// ticks for both), then surplus food and wanted wares tossed over.
 pub fn villager_meet<L: VillagerLevel + ?Sized>(l: &mut L, a: u32, b: u32) {
-    let (Some(ia), Some(ib)) = (villager_index(l, a), villager_index(l, b)) else {
+    let (Some(ia), Some(ib)) = (l.villager_index(a), l.villager_index(b)) else {
         return;
     };
     let professions = l.stations().professions.clone();
@@ -131,17 +131,17 @@ pub fn villager_meet<L: VillagerLevel + ?Sized>(l: &mut L, a: u32, b: u32) {
     let now = p.world.game_time;
     let meeting = villager::meet(p.mobs, ia, ib, now, p.items, &professions);
     for stack in meeting.thrown {
-        villager_throw(l, meeting.from, meeting.eye, meeting.to, stack);
+        l.villager_throw(meeting.from, meeting.eye, meeting.to, stack);
     }
     if meeting.gossiped {
-        villager_golem_check(l, a, 5);
+        l.villager_golem_check(a, 5);
     }
 }
 
 /// `Villager.spawnGolemIfNeeded`: when enough villagers nearby that
 /// slept recently and saw no golem agree, an iron golem appears.
 pub fn villager_golem_check<L: VillagerLevel + ?Sized>(l: &mut L, id: u32, needed: usize) {
-    let Some(i) = villager_index(l, id) else {
+    let Some(i) = l.villager_index(id) else {
         return;
     };
     let now = l.parts().world.game_time;
@@ -149,7 +149,7 @@ pub fn villager_golem_check<L: VillagerLevel + ?Sized>(l: &mut L, id: u32, neede
         return;
     };
     let start = block_of(l.mobs()[i].position);
-    if try_spawn_iron_golem(l, start) {
+    if l.try_spawn_iron_golem(start) {
         for j in near {
             villager_brain::golem_detected(&mut l.parts().mobs[j], now);
         }
@@ -194,7 +194,7 @@ pub fn villager_birth<L: VillagerLevel + ?Sized>(
     partner: u32,
     child: Option<([i32; 3], Option<u8>)>,
 ) {
-    let (Some(ia), Some(ib)) = (villager_index(l, parent), villager_index(l, partner)) else {
+    let (Some(ia), Some(ib)) = (l.villager_index(parent), l.villager_index(partner)) else {
         return;
     };
     let p = l.parts();
@@ -299,8 +299,7 @@ pub fn villager_item_sense<L: VillagerLevel + ?Sized>(l: &mut L) {
             let wants = villager::food_points(l.items(), item) > 0
                 || picks_up.as_ref().is_some_and(|t| t.contains(&**item))
                 || requested.iter().any(|key| key == &**item);
-            let fits = villager::ext(m)
-                .is_none_or(|x| x.can_add(&e.stack, item_max_stack(l.items(), item)));
+            let fits = villager::ext(m).is_none_or(|x| x.can_add(&e.stack, l.item_max_stack(item)));
             // ItemEntity's eye height is 0.2125.
             let at = Vec3::new(e.position.x, e.position.y + 0.2125, e.position.z);
             if wants && fits && w.line_of_sight(eye, at) {
@@ -371,7 +370,7 @@ pub fn villager_pickups<L: VillagerLevel + ?Sized>(l: &mut L) {
                 j += 1;
                 continue;
             }
-            let max = item_max_stack(l.items(), &item);
+            let max = l.item_max_stack(&item);
             let stack = l.dropped()[j].stack.clone();
             if !villager::ext_mut(&mut l.parts().mobs[i]).can_add(&stack, max) {
                 j += 1;
@@ -472,7 +471,7 @@ pub fn villager_trade_pending<L: VillagerLevel + ?Sized>(l: &mut L, id: u32) {
     let Some(player) = l.player_uuid_of(l.lan_acting()) else {
         return;
     };
-    let Some(i) = villager_index(l, id) else {
+    let Some(i) = l.villager_index(id) else {
         return;
     };
     villager::ext_mut(&mut l.parts().mobs[i]).last_traded_player = Some(player);
@@ -483,12 +482,12 @@ pub fn villager_reputation<L: VillagerLevel + ?Sized>(l: &L, id: u32) -> i32 {
     let Some(uuid) = l.host_uuid() else {
         return 0;
     };
-    villager_reputation_of(l, id, uuid)
+    l.villager_reputation_of(id, uuid)
 }
 
 /// `Villager.getPlayerReputation` of the player `uuid`.
-pub fn villager_reputation_of<L: MobLevel + ?Sized>(l: &L, id: u32, uuid: [i32; 4]) -> i32 {
-    villager_index(l, id)
+pub fn villager_reputation_of<L: VillagerLevel + ?Sized>(l: &L, id: u32, uuid: [i32; 4]) -> i32 {
+    l.villager_index(id)
         .and_then(|i| villager::ext(&l.mobs()[i]))
         .map_or(0, |e| e.gossips.reputation(uuid))
 }

@@ -6,7 +6,7 @@ use horizon_client::{
     mobs::{MobType, MobWorld, Seen, spawning::BiomeFacts},
     stations::StationData,
 };
-use horizon_core::position::BlockPos;
+use horizon_core::{geometry::Vec3, position::BlockPos};
 use horizon_world::level::LevelEvent;
 use std::{collections::HashSet, sync::Arc};
 
@@ -50,4 +50,18 @@ pub trait VillagerLevel: MobLevel {
     fn lan_acting(&self) -> Option<u32>;
     /// `LivingEntity.stopSleeping` for the villager `id`, outside its own tick.
     fn wake_villager(&mut self, id: u32);
+    /// The index of the villager `id` in the level's mobs.
+    fn villager_index(&self, id: u32) -> Option<usize>;
+    /// The largest stack of `item` (64 for an unknown item).
+    fn item_max_stack(&self, item: &str) -> u32;
+    /// `WorkAtComposter.makeBread` for the villager at `i`.
+    fn villager_make_bread(&mut self, i: usize);
+    /// `BehaviorUtils.throwItem`: toss a stack from a villager's hand toward a point.
+    fn villager_throw(&mut self, from: Vec3, eye: f64, to: Vec3, stack: ItemStack);
+    /// `Villager.spawnGolemIfNeeded` for the villager `id`.
+    fn villager_golem_check(&mut self, id: u32, needed: usize);
+    /// `SpawnUtil.trySpawnMob(IRON_GOLEM, ...)` near `start`.
+    fn try_spawn_iron_golem(&mut self, start: [i32; 3]) -> bool;
+    /// `Villager.getPlayerReputation` of the player `uuid`.
+    fn villager_reputation_of(&self, id: u32, uuid: [i32; 4]) -> i32;
 }
