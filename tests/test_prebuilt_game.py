@@ -127,6 +127,7 @@ class SyncUnchangedTests(unittest.TestCase):
             written, removed, unchanged = prebuilt_game.sync_unchanged(source, dest)
             self.assertEqual((written, removed, unchanged), (1, 2, 1))
             self.assertEqual(same.stat().st_mtime_ns, before)
+            self.assertEqual(same.read_bytes(), b"same")
             self.assertEqual((dest / "new.txt").read_bytes(), b"new")
             self.assertFalse((dest / "gone.txt").exists())
             self.assertFalse((dest / "old").exists())
@@ -134,7 +135,7 @@ class SyncUnchangedTests(unittest.TestCase):
 
     # A timing comparison, so it is a measurement rather than a check: a busy runner can reorder it.
     @unittest.skipUnless(os.environ.get("HORIZON_MEASURE_STAGE") == "1", "set HORIZON_MEASURE_STAGE=1 to measure")
-    def test_syncing_unchanged_files_is_faster_than_rewriting_them(self):
+    def test_measure_syncing_unchanged_files_against_rewriting_them(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, dest = root / "source", root / "dest"
@@ -172,7 +173,6 @@ class SyncUnchangedTests(unittest.TestCase):
             )
             Path(os.environ.get("TEMP", "."), "hz-measure-stage.txt").write_text(report)
             print(report)
-            self.assertLess(med(synced), med(copied))
 
 
 class RegistryPatchTests(unittest.TestCase):
