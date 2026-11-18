@@ -168,12 +168,26 @@ class VerdictTests(unittest.TestCase):
     def test_a_strict_file_the_head_dropped_fails_even_when_explained(self):
         self.assertEqual(self.verdict(files_removed=["internals.json"], explained=True, allow_added=True), 1)
 
-    def test_loops_and_internals_are_strict(self):
-        self.assertEqual(self.verdict(diffs=[("loops.json", ["-x"])], explained=True), 1)
-        self.assertEqual(self.verdict(diffs=[("internals.json", ["-x"])], explained=True), 1)
+    def test_loops_are_strict(self):
+        self.assertEqual(self.verdict(diffs=[("loops.json", ["-x"])], explained=True, allow_added=True), 1)
+
+    def test_internals_pass_additions_and_changes_with_the_flag_only(self):
+        added_changed = ([("x", "fn")], [], [("y", "struct")])
+        self.assertEqual(gate.verdict([], {}, {}, [], [], [], False, True, added_changed), 0)
+        self.assertEqual(gate.verdict([], {}, {}, [], [], [], True, False, added_changed), 1)
+        self.assertEqual(gate.verdict([], {}, {}, [], [], [], True, True, ([], [("z", "fn")], [])), 1)
 
 
 NO_LOOPS = json.dumps({"loops": []})
+
+
+def internals(*entries):
+    return json.dumps({"internals": [{"path": path, "kind": kind, "hash": hash_, "signature": path, **extra}
+                                      for path, kind, hash_, extra in entries]})
+
+
+A_FN = ("game::a", "fn", "01", {})
+B_STRUCT = ("game::B", "struct", "02", {})
 
 
 class CompareTests(unittest.TestCase):
@@ -213,7 +227,7 @@ class CompareTests(unittest.TestCase):
         status, text = self.run_compare([point("a")], [point("a"), point("b")], {"internals.json": "{}"}, {"x": "1"},
                                         allow_added=True)
         self.assertEqual(status, 1)
-        self.assertIn("have to match the base exactly", text)
+        self.assertIn("the head has to write it and internals.json", text)
 
     def test_removed_game_method_fails_though_listed(self):
         status, text = self.run_compare([point("a", GAME + "a")], [], accepted={"a": ("#9", "moved")})
@@ -230,6 +244,59 @@ class CompareTests(unittest.TestCase):
     def test_a_loops_json_difference_fails_even_with_an_accepted_removal(self):
         status, _ = self.run_compare([point("b", FREE + "b")], [], {"loops.json": "{}"}, {"loops.json": "{ }"},
                                      accepted={"b": ("#9", "moved")})
+        self.assertEqual(status, 1)
+
+    def test_internals_added_only_pass_with_the_flag(self):
+        status, text = self.run_compare([point("a")], [point("a")], {"internals.json": internals(A_FN)},
+                                        {"internals.json": internals(A_FN, B_STRUCT)}, allow_added=True)
+        self.assertEqual(status, 0)
+        self.assertIn("Internals added (1):", text)
+        self.assertIn("game::B (struct)", text)
+
+    def test_internals_changed_pass_with_the_flag(self):
+        status, text = self.run_compare([point("a")], [point("a")], {"internals.json": internals(A_FN, B_STRUCT)},
+                                        {"internals.json": internals(A_FN, ("game::B", "struct", "03", {}))},
+                                        allow_added=True)
+        self.assertEqual(status, 0)
+        self.assertIn("Internals changed (1):", text)
+
+    def test_an_internals_removal_fails_with_the_flag(self):
+        status, text = self.run_compare([point("a")], [point("a"), point("b")],
+                                        {"internals.json": internals(A_FN, B_STRUCT), "api.rs": "1"},
+                                        {"internals.json": internals(A_FN), "api.rs": "2"}, allow_added=True)
+        self.assertEqual(status, 1)
+        self.assertIn("Internals removed (1):", text)
+        self.assertIn("never remove one", text)
+
+    def test_one_of_two_kinds_on_a_path_removed_fails(self):
+        field, method = ("game::S::x", "field", "01", {}), ("game::S::x", "method", "02", {})
+        status, text = self.run_compare([point("a")], [point("a")], {"internals.json": internals(field, method)},
+                                        {"internals.json": internals(method)}, allow_added=True)
+        self.assertEqual(status, 1)
+        self.assertIn("game::S::x (field)", text)
+
+    def test_one_of_two_cfg_variants_removed_fails(self):
+        on, off = ("game::f", "mod", "01", {"cfg": "feature = \"f\""}), ("game::f", "mod", "01", {"cfg": "not f"})
+        status, _ = self.run_compare([point("a")], [point("a")], {"internals.json": internals(on, off)},
+                                     {"internals.json": internals(on)}, allow_added=True)
+        self.assertEqual(status, 1)
+
+    def test_any_internals_difference_fails_without_the_flag(self):
+        status, text = self.run_compare([point("a")], [point("a")], {"internals.json": internals(A_FN)},
+                                        {"internals.json": internals(A_FN, B_STRUCT)})
+        self.assertEqual(status, 1)
+        self.assertIn("Internals added (1):", text)
+
+    def test_internals_changes_do_not_explain_other_generated_diffs(self):
+        status, text = self.run_compare([point("a")], [point("a")], {"internals.json": internals(A_FN), "api.rs": "1"},
+                                        {"internals.json": internals(A_FN, B_STRUCT), "api.rs": "2"},
+                                        allow_added=True)
+        self.assertEqual(status, 1)
+        self.assertIn("no accepted point change", text)
+
+    def test_a_loops_json_difference_fails_with_the_flag(self):
+        status, _ = self.run_compare([point("a")], [point("a"), point("b")], {"loops.json": NO_LOOPS},
+                                     {"loops.json": json.dumps({"loops": [], "x": 1})}, allow_added=True)
         self.assertEqual(status, 1)
 
     def test_a_strict_file_only_the_head_wrote_is_not_compared(self):
