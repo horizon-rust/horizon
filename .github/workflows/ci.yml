@@ -409,10 +409,10 @@ jobs:
   # pull request's tree (the merge commit) and for HEAD^1 (main, as in verify-tree): the generator's few crates and
   # their dependencies, not the game. It is its own job beside verify-test, with a build folder of its own, so it adds
   # no time to the slowest job (as a step of verify-test it came after the tests and added ~2.5 min to every pull
-  # request that touches game/). It needs the history for HEAD^1, so the checkout is whole, as the other parts'.
+  # request that touches game/). Like verify-test it runs on every event, because only main's pushes and the merge
+  # queue save a build folder's disk: there it only warms the folder (below), and pull requests compare. It needs the history for HEAD^1, so the checkout is whole, as the other parts'.
   verify-mod-points:
     name: verify (mod points)
-    if: github.event_name == 'pull_request'
     runs-on: ${{ vars.SELF_HOSTED_CI == 'all' && fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'blacksmith-16vcpu-ubuntu-2404' }}
     timeout-minutes: 45
     steps:
@@ -421,6 +421,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Does this pull request need Rust checks?
+        if: github.event_name == 'pull_request'
         id: rust
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -453,8 +454,14 @@ jobs:
       - name: Link with mold
         if: steps.rust.outputs.required != 'false' && startsWith(runner.name, 'blacksmith-')
         run: echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C linker-features=-lld -C link-arg=-fuse-ld=mold -Zthreads=8" >> "$GITHUB_ENV"
+      # On main's pushes and in the merge queue, where the build folder's disk is saved (SAVE_BUILD_DISK), the job only
+      # builds what the check builds: the same cargo package, example, profile and features, in this folder, so a pull
+      # request's run finds the generator's crates and dependencies built. A pull request does the comparison.
+      - name: Warm the build folder with the generator
+        if: github.event_name != 'pull_request'
+        run: cargo build --locked -p horizon-mod-api-gen --example hook_snapshot
       - name: Mod points and the generated API stay as they were
-        if: steps.rust.outputs.required != 'false'
+        if: github.event_name == 'pull_request' && steps.rust.outputs.required != 'false'
         run: |
           if git diff --name-only HEAD^1 HEAD | grep -qE '^(crates/horizon-client/src/game/|crates/horizon-mod-(api-gen|api|point-shape|point-emit|surface|source|vocab)/|tools/check_mod_points_unchanged\.py)'; then
             python3 tools/check_mod_points_unchanged.py --base HEAD^1 --allow-added
