@@ -1,8 +1,9 @@
 //! The server's far tiles, kept for every player: a tile is the same for
 //! everyone in its level, so players looking at the same land cost one
-//! sample. A tile is kept as its reply without the request's id
-//! ([`super::encode_reply`] writes the id first and nothing after depends on
-//! it), so a kept tile answers with the bytes a fresh sample would.
+//! sample. A tile is kept as [`super::encode_tile`] makes it, without a
+//! request's id, so a kept tile answers each request with the bytes a fresh
+//! sample would ([`super::reply`]): a refusal too, being the same for every
+//! request.
 //!
 //! Tiles are kept by level, position, stride and detail, under the level's
 //! far terrain source: a level opened again (another source: its generator
@@ -14,12 +15,11 @@
 //! save's `far_changes`) drop the tiles over them, so a build shows in the
 //! next tile asked for once its chunk is saved (when it unloads, or about 10
 //! seconds after it changed while loaded: vanilla's eager chunk saving).
-use super::{MAX_REPLY, Request, refusal};
+use super::{Request, reply};
 use crate::{
     save::{SaveDir, far_changes::Changed},
     streaming::LodSource,
 };
-use horizon_protocol::buf::Writer;
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, Weak},
@@ -31,19 +31,6 @@ pub const MAX_BYTES: usize = 32 << 20;
 /// The strides whose tiles read saved chunks (`save::far_lod`: up to 16
 /// blocks a column): coarser ones are the generator's alone.
 pub const SAVED_STRIDES: [i32; 5] = [1, 2, 4, 8, 16];
-
-/// A kept reply's `body` as the answer to request `id`: refused, as
-/// [`super::encode_reply`] refuses it, where a longer id takes it past
-/// [`MAX_REPLY`].
-fn answer(id: u32, body: &[u8]) -> Vec<u8> {
-    let mut w = Writer::new();
-    w.varint(id as i32);
-    if w.data.len() + body.len() > MAX_REPLY {
-        return refusal(id);
-    }
-    w.data.extend_from_slice(body);
-    w.data
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct Key {
@@ -198,33 +185,28 @@ impl TileCache {
         self.order.remove(&kept.used);
         kept.used = self.clock;
         self.order.insert(self.clock, key);
-        Some(answer(request.id, &kept.body))
+        Some(reply(request.id, &kept.body))
     }
 
-    /// Keep `reply`, a fresh sample's answer to `request`.
+    /// Keep `tile` ([`super::encode_tile`]), sampled for `request`.
     pub fn put(
         &mut self,
         level: &str,
         source: &Arc<dyn LodSource>,
         request: &Request,
-        reply: &[u8],
+        tile: &[u8],
     ) {
-        let mut id = Writer::new();
-        id.varint(request.id as i32);
-        let Some(body) = reply.strip_prefix(&id.data[..]) else {
-            return;
-        };
-        if body.len() > self.max_bytes / 4 {
+        if tile.len() > self.max_bytes / 4 {
             return;
         }
         let key = self.key(level, source, request);
         self.remove(&key);
         self.clock += 1;
-        self.bytes += body.len();
+        self.bytes += tile.len();
         self.tiles.insert(
             key,
             Kept {
-                body: body.into(),
+                body: tile.into(),
                 used: self.clock,
             },
         );
@@ -251,7 +233,10 @@ impl TileCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::streaming::LodSampler;
+    use crate::{
+        lod_net::{MAX_REPLY, refusal},
+        streaming::LodSampler,
+    };
 
     struct Flat;
     impl LodSampler for Flat {
@@ -279,10 +264,10 @@ mod tests {
     fn a_kept_reply_a_longer_id_takes_past_the_limit_is_refused() {
         let source: Arc<dyn LodSource> = Arc::new(Flat);
         let mut cache = TileCache::new(4 * MAX_REPLY);
-        // As long as a reply may be under a one-byte id.
+        // As long as a tile may be under a one-byte id.
         let mut reply = vec![0];
         reply.resize(MAX_REPLY, 7);
-        cache.put("o", &source, &request(0, 0), &reply);
+        cache.put("o", &source, &request(0, 0), &reply[1..]);
         reply[0] = 5;
         assert_eq!(cache.get("o", &source, &request(5, 0)), Some(reply));
         let long = 1 << 20;
@@ -296,24 +281,20 @@ mod tests {
     fn the_oldest_used_tiles_go_first_and_a_new_source_drops_its_level() {
         let source: Arc<dyn LodSource> = Arc::new(Flat);
         let mut cache = TileCache::new(4 * 100);
-        let reply = |id: u32| {
-            let mut w = Writer::new();
-            w.varint(id as i32);
-            w.data.extend_from_slice(&[7; 100]);
-            w.data
-        };
+        let tile = [7; 100];
+        let reply = |id: u32| reply(id, &tile);
         for (i, x) in [0, 16, 32, 48].into_iter().enumerate() {
-            cache.put("o", &source, &request(i as u32, x), &reply(i as u32));
+            cache.put("o", &source, &request(i as u32, x), &tile);
         }
         assert_eq!(cache.bytes(), 400);
         // Used again: the second oldest goes instead.
         assert_eq!(cache.get("o", &source, &request(300, 0)), Some(reply(300)));
-        cache.put("o", &source, &request(9, 64), &reply(9));
+        cache.put("o", &source, &request(9, 64), &tile);
         assert_eq!(cache.len(), 4);
         assert!(cache.get("o", &source, &request(1, 16)).is_none());
         assert!(cache.get("o", &source, &request(1, 0)).is_some());
         // Another level keeps its own; the level opened again loses its tiles.
-        cache.put("n", &source, &request(1, 0), &reply(1));
+        cache.put("n", &source, &request(1, 0), &tile);
         let reopened: Arc<dyn LodSource> = Arc::new(Flat);
         assert!(cache.get("o", &reopened, &request(1, 0)).is_none());
         assert!(cache.get("n", &source, &request(1, 0)).is_some());
