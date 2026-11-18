@@ -98,12 +98,7 @@ impl Rocket {
         }
     }
     /// `Projectile.setOwner`; the UUID is kept only for an owner `who` can't name.
-    pub fn set_owner(
-        &mut self,
-        who: Option<Who>,
-        uuid: Option<[i32; 4]>,
-        guest: Option<u32>,
-    ) {
+    pub fn set_owner(&mut self, who: Option<Who>, uuid: Option<[i32; 4]>, guest: Option<u32>) {
         (self.owner, self.guest) = (who, guest);
         self.owner_uuid = uuid.filter(|_| who.is_none());
     }

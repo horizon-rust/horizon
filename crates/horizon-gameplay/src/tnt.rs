@@ -78,17 +78,13 @@ impl PrimedTnt {
     }
     /// PowderSnowBlock.getCollisionShape: a top that holds it once it has
     /// fallen more than 2.5 blocks, read with [`Self::collision_context`].
-    pub fn powder_snow_subject(
-        &self,
-    ) -> horizon_client::collisions::PowderSnowSubject<'static> {
+    pub fn powder_snow_subject(&self) -> horizon_client::collisions::PowderSnowSubject<'static> {
         horizon_client::collisions::PowderSnowSubject {
             fall_distance: self.fall_distance,
             ..Default::default()
         }
     }
-    pub fn collision_context(
-        &self,
-    ) -> horizon_world::collision_context::CollisionContext<'static> {
+    pub fn collision_context(&self) -> horizon_world::collision_context::CollisionContext<'static> {
         horizon_world::collision_context::CollisionContext::for_entity(
             horizon_world::collision_context::CollisionEntity {
                 identity: horizon_world::entity_obstruction::EntityIdentity(u64::from(self.id)),
