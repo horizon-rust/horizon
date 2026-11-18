@@ -100,6 +100,18 @@ impl Hub {
         if order.protected.is_empty() {
             return;
         }
+        // A run of entity changes holds no removal; one packet at a time is what is looked at.
+        if packets.iter().any(|b| matches!(b, super::Body::Run(_))) {
+            *packets = packets
+                .drain(..)
+                .flat_map(|b| match b {
+                    super::Body::Run(_) => {
+                        b.packets().into_iter().map(|p| p.to_vec().into()).collect()
+                    }
+                    one => vec![one],
+                })
+                .collect();
+        }
         packets.retain_mut(|body| {
             let mut reader = Reader::new(body);
             if reader.varint().unwrap() != ids::REMOVE_ENTITIES {

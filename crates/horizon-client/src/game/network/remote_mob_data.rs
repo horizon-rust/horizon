@@ -733,7 +733,7 @@ mod tests {
                 |_| Some(100),
             );
             let mut sent = Vec::new();
-            for body in packets {
+            for body in horizon_client::lan::Body::flatten(&packets) {
                 let mut reader = Reader::new(&body);
                 let id = reader.varint().unwrap();
                 if let Ok(Clientbound::SetEntityData(data)) = Clientbound::decode(id, reader.rest())
@@ -897,7 +897,7 @@ mod tests {
                 |_| Some(100),
             );
             let mut sent = Vec::new();
-            for body in packets {
+            for body in horizon_client::lan::Body::flatten(&packets) {
                 let mut reader = Reader::new(&body);
                 let id = reader.varint().unwrap();
                 if let Ok(Clientbound::SetEntityData(data)) = Clientbound::decode(id, reader.rest())

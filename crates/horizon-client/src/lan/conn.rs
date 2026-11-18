@@ -514,7 +514,12 @@ impl PlayerSender {
             self.flush();
             match &self.to {
                 To::Disabled => {}
-                To::Channel(tx) => drop(tx.send(Out::Packet(body.into_vec()))),
+                To::Channel(tx) => drop(tx.send(match &body {
+                    Body::Run(_) => {
+                        Out::Packets(body.packets().into_iter().map(<[u8]>::to_vec).collect())
+                    }
+                    _ => Out::Packet(body.into_vec()),
+                })),
                 To::Pool(outbox, _) => outbox.send(vec![body], None),
             }
         }
@@ -589,7 +594,7 @@ impl PlayerSender {
 
 /// Held bodies as a test's channel gives them: each its own bytes.
 fn unshared(held: Vec<Body>) -> Out {
-    Out::Packets(held.into_iter().map(Body::into_vec).collect())
+    Out::Packets(Body::flatten(&held))
 }
 
 /// A transaction-owned packet. Dropping it cancels its retained-byte reservation.

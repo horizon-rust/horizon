@@ -1016,6 +1016,9 @@ pub struct Entities {
     /// Tests: force the send strategy.
     #[cfg(test)]
     send_apart_always: Option<bool>,
+    /// Tests: one body for each packet, not ranges of one buffer.
+    #[cfg(test)]
+    runs_off: bool,
 }
 
 /// The isolated send benchmark regresses at 120 viewers, but consistently improves
@@ -1518,8 +1521,11 @@ impl Entities {
         let active: Vec<usize> = (0..entities.len())
             .filter(|&index| !self.quiet[index] || self.pairs[index])
             .collect();
-        if self.send_apart(viewers.len(), active.len()) {
-            self.send_on_threads(entities, riding, viewers, &active);
+        let apart = self.send_apart(viewers.len(), active.len());
+        if self.send_runs() {
+            self.send_two_phase(entities, riding, viewers, &active, apart, true);
+        } else if apart {
+            self.send_two_phase(entities, riding, viewers, &active, true, false);
         } else {
             self.send_in_order(entities, riding, viewers, &active);
         }
@@ -1623,117 +1629,13 @@ impl Entities {
             }
         }
     }
-
-    /// [`Self::send_in_order`] in two steps on several threads, the same bytes in the same
-    /// order for each client: each entity's packets made and encoded once (an entity's state
-    /// is its own), then each client's packets, entity by entity (a client's list and tracker
-    /// are its own).
-    fn send_on_threads(
-        &mut self,
-        entities: &[&EntityState],
-        riding: &Riding,
-        viewers: &mut [Viewer],
-        active: &[usize],
-    ) {
-        /// One entity's part of the tick: its changes and its pairing, encoded.
-        struct Made<'s> {
-            index: usize,
-            state: &'s mut ServerEntity,
-            changes: Bodies,
-            pairing: Option<Bodies>,
-            synced: bool,
-        }
-        let Self {
-            states,
-            pairs,
-            is_moved,
-            synced: synced_ranges,
-            flags,
-            ..
-        } = self;
-        let mut made: Vec<Made> = states
-            .of_indices_mut(active)
-            .into_iter()
-            .zip(active)
-            .map(|(state, &index)| Made {
-                index,
-                state,
-                changes: Bodies::default(),
-                pairing: None,
-                synced: false,
-            })
-            .collect();
-        let (pairs, is_moved, synced_ranges) = (&*pairs, &*is_moved, &*synced_ranges);
-        horizon_threads::par_chunks_mut(&mut made, 64, |part| {
-            let mut packets = Vec::new();
-            for m in part {
-                let (s, e) = (&mut *m.state, entities[m.index]);
-                packets.clear();
-                // As in `send_in_order`: paired as it joined, its first changes go out with
-                // the pairing; an idle one sends only its leash.
-                m.synced = s.added
-                    && e.kind != "minecraft:player"
-                    && !s.arrow
-                    && synced_ranges
-                        .iter()
-                        .any(|&(after, through)| e.id > after && e.id <= through);
-                if !s.added || m.synced {
-                    if e.idle && !is_moved[m.index] && !e.needs_sync {
-                        s.send_leash(e, &mut packets);
-                    } else {
-                        s.send_changes(e, riding, &mut packets);
-                    }
-                }
-                s.added = false;
-                m.changes.encode(&packets);
-                if pairs[m.index]
-                    && !e.bare
-                    && let Some(kind) = s.kind
-                {
-                    packets.clear();
-                    s.pairing(e, kind, riding, &mut packets);
-                    m.pairing = Some(Bodies::of(&packets));
-                }
-            }
-        });
-        // Nothing to send and nobody to pair with.
-        made.retain(|m| !m.changes.all.is_empty() || m.pairing.is_some());
-        let made = &made;
-        let mut clients: Vec<(&mut Viewer, &Vec<u8>)> = viewers.iter_mut().zip(&*flags).collect();
-        horizon_threads::par_chunks_mut(&mut clients, 4, |part| {
-            for (v, flags) in part {
-                for m in made {
-                    let f = flags[m.index];
-                    if f & TRACKS != 0 {
-                        v.out.extend(m.changes.to(v).iter().cloned());
-                    } else if f & SEES != 0
-                        && let Some(pairing) = &m.pairing
-                    {
-                        v.out.extend(pairing.to(v).iter().cloned());
-                        if m.synced {
-                            v.out.extend(m.changes.to(v).iter().cloned());
-                        }
-                        let id = entities[m.index].id;
-                        if v.tracker
-                            .seen
-                            .insert(id, Arc::clone(&m.state.tracked))
-                            .is_none()
-                        {
-                            v.tracker.events.push(TrackEvent {
-                                start: true,
-                                entity: id,
-                                tracked: Arc::clone(&m.state.tracked),
-                            });
-                        }
-                    }
-                }
-            }
-        });
-    }
 }
 
 #[cfg(test)]
 mod late_pair_tests;
+mod runs;
+#[cfg(test)]
+mod runs_tests;
 mod slab;
 
 #[cfg(test)]
@@ -2530,7 +2432,7 @@ mod tests {
             ];
             level.tick(entities, &Riding::default(), &mut viewers, |_| Some(100));
             for (out, sent) in self.out.iter_mut().zip(&self.sent) {
-                *out = sent.iter().map(|b| b.to_vec()).collect();
+                *out = super::super::Body::flatten(sent);
             }
         }
     }
@@ -2667,9 +2569,15 @@ mod tests {
     fn clients_share_the_bytes_of_what_they_are_both_sent() {
         let shared = |c: &Clients| {
             assert_eq!(c.sent[0].len(), c.sent[1].len());
-            c.sent[0].iter().zip(&c.sent[1]).all(|pair| {
-                matches!(pair, (super::super::Body::Shared(a), super::super::Body::Shared(b))
-                    if Arc::ptr_eq(a, b))
+            // One copy: the same allocation (a body for a packet), or ranges of the same
+            // buffer, the same packets of it (`Body::Run`).
+            c.sent[0].iter().zip(&c.sent[1]).all(|pair| match pair {
+                (super::super::Body::Shared(a), super::super::Body::Shared(b)) => Arc::ptr_eq(a, b),
+                (super::super::Body::Run(a), super::super::Body::Run(b)) => {
+                    let ((x, from, to), (y, from2, to2)) = (a.parts(), b.parts());
+                    Arc::ptr_eq(x, y) && (from, to) == (from2, to2)
+                }
+                _ => false,
             })
         };
         let mut level = Entities::default();

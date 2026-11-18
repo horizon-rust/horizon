@@ -613,6 +613,17 @@ impl Conn {
     /// if one could not be.
     fn frame(&mut self, now: Instant, bodies: Vec<Queued>, _queued: bool) -> bool {
         for body in &bodies {
+            if let Body::Run(run) = &body.body {
+                // Each packet of the range is framed as a body of its own.
+                let framed = run
+                    .packets()
+                    .try_for_each(|p| super::conn::frame_body(&mut self.writer, p, &mut self.out));
+                if let Err(e) = framed {
+                    self.end(now, e.to_string());
+                    return false;
+                }
+                continue;
+            }
             let result = if body.prepared {
                 self.writer.frame_into(&body.body, &mut self.out);
                 Ok(())
@@ -939,6 +950,149 @@ mod tests {
         assert!(client.recv().unwrap_err().is_end_of_stream());
         assert_eq!(served.next(), Seen::Left("Disconnected".into()));
         assert_eq!(served.next(), Seen::Closed);
+    }
+
+    /// Real packets of every size around the compression threshold and the length's VarInt, some
+    /// past the shared frames' minimum.
+    fn packets(count: usize) -> Vec<Vec<u8>> {
+        use horizon_protocol::entity_data::{Value, serializer};
+        use horizon_protocol::packets::play::{self, Clientbound as C};
+        [
+            0usize, 1, 3, 20, 21, 22, 40, 60, 100, 300, 3000, 20_000, 2, 2, 7,
+        ]
+        .iter()
+        .cycle()
+        .take(count)
+        .enumerate()
+        .map(|(i, &n)| match i % 4 {
+            // A packet every release has, small.
+            3 => C::RotateHead(play::RotateHead {
+                id: i as i32,
+                head_yaw: i as i8,
+            })
+            .encode(),
+            _ => C::SetEntityData(play::SetEntityData {
+                id: i as i32,
+                values: vec![(0, serializer::BYTE, Value::Byte(i as i8)); n],
+            })
+            .encode(),
+        })
+        .collect()
+    }
+
+    /// Everything a connection writes for `queue`, until it closes: the bytes on the wire.
+    fn wire(
+        older: Option<horizon_protocol::adapter::ServerVersion>,
+        compression: Option<i32>,
+        encrypted: bool,
+        queue: impl FnOnce() -> Vec<Body>,
+    ) -> Vec<u8> {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut raw = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        raw.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut server = Connection::from_stream(listener.accept().unwrap().0).unwrap();
+        if let Some(t) = compression {
+            server.set_compression(t);
+        }
+        if encrypted {
+            server.enable_encryption(&[5; 16]);
+        }
+        if let Some(version) = older {
+            server.serve_older(version);
+        }
+        let served = serve(server, quiet, Duration::from_secs(30));
+        let bodies = queue();
+        let len: usize = bodies.iter().map(|b| charge(b.retained())).sum();
+        served.pending.fetch_add(len, Ordering::Relaxed);
+        served.outbox.send(bodies, Some(End::Disconnect));
+        let mut bytes = Vec::new();
+        let _ = raw.read_to_end(&mut bytes);
+        bytes
+    }
+
+    /// A run of packets (`Body::Run`), framed once for every connection of a compression
+    /// threshold, is written as the same bytes as the packets one by one: on the wire (no client
+    /// decoding in between), with and without compression and encryption, for a client of the
+    /// current release (an older one is not reached in a test), among bodies of their own, with some packets that
+    /// must be compressed in the middle of it, and for several connections at once that share
+    /// the buffer.
+    #[test]
+    fn a_run_is_written_as_its_packets_are() {
+        use super::super::body::{Run, RunBuf};
+        use horizon_protocol::adapter::ServerVersion;
+        let packets = packets(90);
+        let mut buf = RunBuf::default();
+        for p in &packets {
+            buf.push(p);
+        }
+        let buf = Arc::new(buf);
+        let n = packets.len() as u32;
+        let own = |i: usize| Body::from(packets[i].clone());
+        // A client of an older release writes nothing here (its session is not in the play
+        // state in a test), so only the current release is run: `frame_run` falls back to one
+        // packet at a time for the others.
+        for older in [None::<ServerVersion>] {
+            for compression in [None, Some(64)] {
+                for encrypted in [false, true] {
+                    let by_bodies = wire(older, compression, encrypted, || {
+                        let mut all: Vec<Body> = packets.iter().cloned().map(Body::from).collect();
+                        all.insert(0, own(5));
+                        all.insert(91, own(6));
+                        all
+                    });
+                    let by_runs = || {
+                        wire(older, compression, encrypted, || {
+                            let mut all = vec![own(5)];
+                            all.push(Run::new(&buf, 0, 3).into_body());
+                            all.push(Run::new(&buf, 3, 40).into_body());
+                            all.push(Run::new(&buf, 40, n).into_body());
+                            all.push(own(6));
+                            all
+                        })
+                    };
+                    let what = format!(
+                        "older {older:?}, compression {compression:?}, encrypted {encrypted}"
+                    );
+                    assert!(
+                        by_bodies.len() > 100,
+                        "{what}: the packets were written ({})",
+                        by_bodies.len()
+                    );
+                    // Four connections at once, one buffer: the same bytes each.
+                    let four: Vec<Vec<u8>> = std::thread::scope(|scope| {
+                        let handles: Vec<_> = (0..4).map(|_| scope.spawn(by_runs)).collect();
+                        handles.into_iter().map(|h| h.join().unwrap()).collect()
+                    });
+                    for bytes in four {
+                        assert!(bytes == by_bodies, "{what}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A run is given to a client of this process (a memory connection) as its packets.
+    #[test]
+    fn a_run_reaches_a_memory_client_as_its_packets() {
+        use super::super::body::{Run, RunBuf};
+        let packets = packets(30);
+        let mut buf = RunBuf::default();
+        for p in &packets {
+            buf.push(p);
+        }
+        let buf = Arc::new(buf);
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(a);
+        let served = serve(Connection::local(b), quiet, Duration::from_secs(30));
+        let queued = vec![Run::new(&buf, 0, 30).into_body()];
+        served
+            .pending
+            .fetch_add(charge(queued[0].retained()), Ordering::Relaxed);
+        served.outbox.send(queued, None);
+        for p in &packets {
+            assert_eq!(client.recv().unwrap(), packet(p));
+        }
     }
 
     #[test]
