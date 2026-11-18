@@ -1131,9 +1131,20 @@ impl Game<'_> {
             && (rest.is_empty() || rest.starts_with(char::is_whitespace))
         {
             let args: Vec<&str> = rest.split_whitespace().collect();
-            self.state_digest_rank_joins();
+            // The owner's level is the one to sync; with no owner in it the call would sync whatever level is in place.
+            let owner = self.serving.as_ref().map(|s| s.owner);
+            let owner_in = self
+                .lan
+                .as_ref()
+                .is_some_and(|h| h.hub.guests.iter().any(|g| Some(g.uuid) == owner));
+            if !owner_in {
+                return vec!["digest-sync: the owner is not in the world yet".to_owned()];
+            }
             return vec![match self.in_owner_level(|g| g.state_digest_sync(&args)) {
-                Ok(()) => "digest-sync done".to_owned(),
+                Ok(()) => {
+                    self.state_digest_rank_joins();
+                    "digest-sync done".to_owned()
+                }
                 Err(e) => format!("digest-sync: {e}"),
             }];
         }

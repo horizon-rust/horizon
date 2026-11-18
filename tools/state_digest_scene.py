@@ -76,6 +76,10 @@ def extended_setup():
     put('pig', 80, 28, '{Tags:["pg"],PersistenceRequired:1b}')
     put('villager', 80, 40, '{Tags:["vl"],PersistenceRequired:1b}')
     put('zombie_villager', 70, 34, '{ConversionTime:100,PersistenceRequired:1b}')
+    # in a walled pool two blocks deep: the conversion stops once the zombie's eyes leave the water
+    c.append(f'fill 73 {y} 33 75 {y + 1} 35 minecraft:stone hollow')
+    c.append(f'setblock 74 {y} 34 minecraft:water')
+    c.append(f'setblock 74 {y + 1} 34 minecraft:water')
     put('zombie', 74, 34, '{DrownedConversionTime:60,PersistenceRequired:1b}')
     put('piglin', 66, 24, '{TimeInOverworld:280,PersistenceRequired:1b}')
     put('hoglin', 86, 24, '{TimeInOverworld:280,PersistenceRequired:1b}')
@@ -103,9 +107,9 @@ def extended_plan():
     """Commands run inside the window, by tick offset. The server is frozen between passes, so each runs between the same two ticks every time."""
     y = Y
     plan = {
-        0: ['data merge entity @e[tag=love] {InLove:600}',
+        0: ['execute as @e[tag=love] run data merge entity @s {InLove:600}',
             'effect give @e[tag=fx] minecraft:speed 30 1', 'effect give @e[tag=fx] minecraft:poison 10 0',
-            'attribute @e[tag=fx] minecraft:movement_speed base set 0.4',
+            'execute as @e[tag=fx] run attribute @s minecraft:movement_speed base set 0.4',
             'item replace entity @e[tag=sk] weapon.offhand with minecraft:shield',
             'item replace entity @e[tag=zb] armor.head with minecraft:iron_helmet',
             f'fill 8 {y} 54 12 {y} 56 minecraft:stone',
@@ -115,8 +119,8 @@ def extended_plan():
         10: ['summon minecraft:lightning_bolt 80.5 -60 28.5', f'setblock 24 {y} 53 minecraft:redstone_block'],
         12: ['summon minecraft:lightning_bolt 80.5 -60 40.5'],
         15: [f'setblock 14 {y} 50 minecraft:water'],
-        20: ['data modify entity @e[tag=fx] Motion set value [0.0d,0.5d,0.0d]',
-             'data modify entity @e[tag=fx] Health set value 8.0f',
+        20: ['execute as @e[tag=fx] run data modify entity @s Motion set value [0.0d,0.5d,0.0d]',
+             'execute as @e[tag=fx] run data modify entity @s Health set value 8.0f',
              'tp @e[tag=tp] 76.5 -60 52.5 90 0',
              'execute as @e[tag=sk] at @s run tp @s ~1 ~ ~1'],
         25: ['execute as @e[tag=fx] at @s run summon minecraft:snowball ~ ~2 ~ {Motion:[0.3d,0.2d,0.1d]}',
@@ -128,7 +132,7 @@ def extended_plan():
         40: [f'fill 8 {y} 54 12 {y} 56 minecraft:air destroy',
              'execute as @e[tag=tp] run damage @s 2 minecraft:generic',
              'effect clear @e[tag=fx] minecraft:speed'],
-        50: [f'setblock 24 {y} 53 minecraft:redstone_block', 'data merge entity @e[tag=fx] {Fire:60s}'],
+        50: [f'setblock 24 {y} 53 minecraft:redstone_block', 'execute as @e[tag=fx] run data merge entity @s {Fire:60s}'],
         60: ['kill @e[type=minecraft:slime]'],
         70: ['kill @e[tag=kill]', 'execute as @e[tag=love] run damage @s 1 minecraft:generic'],
         100: [f'summon minecraft:tnt 84.5 {y} 56.5 {{fuse:40s}}', 'summon minecraft:creeper 50.5 -60 40.5 {ignited:1b,Fuse:20s}'],
@@ -223,6 +227,11 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     binary, resources, template, out = map(Path, args[:4])
     ticks = int(sys.argv[sys.argv.index('--ticks') + 1]) if '--ticks' in sys.argv else 200
+    if '--extended' in sys.argv and '--generate' not in sys.argv:
+        if '--sprint' in sys.argv:
+            raise SystemExit('--extended needs step mode: a sprint cannot stop between the passes')
+        if ticks < 1:
+            raise SystemExit('--extended needs --ticks of at least 1')
     out.mkdir(parents=True, exist_ok=True)
     home = Path(tempfile.mkdtemp(prefix='state-digest-home-'))
     hold_gate()
@@ -236,6 +245,8 @@ def main():
         finally:
             server.stop()
         return
+    for stale in ('commands.log', 'timings.txt'):
+        (out / stale).unlink(missing_ok=True)
     run_dir = out / 'server'
     if run_dir.exists():
         shutil.rmtree(run_dir)
@@ -250,13 +261,17 @@ def main():
         server.run(['forceload query'])
         time.sleep(3)
         extended = '--extended' in sys.argv
-        if extended and '--sprint' in sys.argv:
-            raise SystemExit('--extended needs step mode: a sprint cannot stop between the passes')
         setup = server.run(scene_commands('--random-ticks' in sys.argv, extended))
         before = server.game_time()
         start = time.time()
         if extended:
             log = list(setup)
+            transcript = open(out / 'commands.log', 'w')
+
+            def note(lines):
+                transcript.write(''.join(l + '\n' for l in lines))
+                transcript.flush()
+            note(setup)
             if '--fast-step' in sys.argv:
                 server.run(['tick rate 10000'])
             done = 0
@@ -268,12 +283,14 @@ def main():
                     while server.game_time() < before + at:
                         time.sleep(0.05)
                     done = at
-                log += server.run(commands)
+                got = server.run(commands)
+                log += got
+                note(got)
             server.run([f'tick step {ticks - done}'])
             while server.game_time() < before + ticks:
                 time.sleep(0.05)
-            (out / 'commands.log').write_text('\n'.join(log) + '\n')
-            bad = [l for l in log if any(w in l for w in ('Unknown', 'Expected', 'Incorrect', 'Invalid', 'Unable', 'Could not', 'rror'))]
+            transcript.close()
+            bad = [l for l in log if any(w in l for w in ('Unknown', 'Expected', 'Incorrect', 'Invalid', 'Unable', 'Could not', 'Only one entity', 'rror'))]
             timings['command_errors'] = len(bad)
             for line in bad:
                 print('command problem:', line, file=sys.stderr)
