@@ -170,7 +170,7 @@ if __name__ == "__main__":
 class WaitLoadedTests(unittest.TestCase):
     """wait_loaded on a scripted game with a fake clock: one status per 50 ms poll."""
 
-    def run_script(self, statuses, min_chunks=0):
+    def run_script(self, statuses, min_chunks=0, observe=None):
         import tools.perf_bench as pb
         clock = [0.0]
         it = iter(statuses)
@@ -182,7 +182,7 @@ class WaitLoadedTests(unittest.TestCase):
         pb.time.time = lambda: clock[0]
         pb.time.sleep = lambda s: clock.__setitem__(0, clock[0] + s)
         try:
-            return pb.wait_loaded(control, lambda p: True, 60, min_chunks)
+            return pb.wait_loaded(control, lambda p: True, 60, min_chunks, observe)
         finally:
             pb.time.time, pb.time.sleep = real_time, real_sleep
 
@@ -219,6 +219,20 @@ class WaitLoadedTests(unittest.TestCase):
         # Without one (the old call), the quiet start ends the wait at once.
         self.assertLess(self.run_script(idle + loading + tail), 1.6)
 
+    def test_observer_can_record_first_resident_chunk(self):
+        seen = []
+        idle = [self.status(0, 0, stages=500) for _ in range(20)]
+        loaded = [self.status(3, 100, stages=0) for _ in range(40)]
+
+        def observe(now, status):
+            if status.get("chunks"):
+                seen.append((now, status["chunks"]))
+
+        self.run_script(idle + loaded, observe=observe)
+        first = next(item for item in seen if item[1] > 0)
+        self.assertAlmostEqual(first[0], 1.0, places=6)
+        self.assertEqual(first[1], 3)
+
 
 class PortabilityTests(unittest.TestCase):
     """What the driver needs from the OS also works where it differs (Windows: no ps, no load average,
@@ -236,11 +250,12 @@ class PortabilityTests(unittest.TestCase):
     def test_report_without_a_load_average(self):
         import argparse
         import tools.perf_bench as pb
-        run = {"startup": {"title_s": 1.0, "world_s": 5.0}, "memory": {}, "load_before": None,
+        run = {"startup": {"title_s": 1.0, "world_s": 5.0, "first_chunk_s": 2.5}, "memory": {}, "load_before": None,
                "scenes": {"village": {"load_s": 2.0, "frame_ms": [5.0] * 100, "meshes_load": 10}}}
         args = argparse.Namespace(offscreen=False, settle=2.0, label="x")
         r = pb.report(args, 8, [run], {"name": "horizon-client"})
         self.assertNotIn("load_avg_1m", r["conditions"])
+        self.assertEqual(r["metrics"]["startup.first_chunk_ms"]["mean"], 2500.0)
         self.assertEqual(r["metrics"]["fps.village.avg_fps"]["mean"], 200.0)
         self.assertEqual(pb.report(args, 8, [dict(run, load_before=1.25)], {})["conditions"]["load_avg_1m"], 1.25)
         self.assertTrue(r["hardware"]["os"] and r["hardware"]["cpu_threads"])
