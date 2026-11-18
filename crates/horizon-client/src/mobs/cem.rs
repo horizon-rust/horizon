@@ -10,6 +10,12 @@
 //! humanoid's equipment on: the outer one its helmet, chestplate and boots, the inner one its
 //! leggings.
 //!
+//! Random models: a `.properties` beside the `.jem` (`creeper.properties`) holds OptiFine's
+//! `models.<n>` rules, which pick one of the numbered files beside it for each mob (1 is
+//! `creeper.jem`, 2 `creeper2.jem`), as random textures pick a texture: when the mob is first
+//! seen, from its UUID and surroundings ([`super::random_textures::choose`]). Each variant is a
+//! layer of its own; [`CemModels::layer_of`] draws the one the mob picked.
+//!
 //! Built when the packs load; a mob's draw only swaps the layer's part tree. Without CEM files
 //! or old mob textures ([`LEGACY`]) every model stays vanilla's, and a file no layer uses isn't parsed.
 //!
@@ -27,6 +33,8 @@ use horizon_optifine::cem::{
     files::{atlas_name, jem_files, load_jem},
     model::{Bone, EntityModel, MAX_BYTES},
 };
+use horizon_optifine::properties::Properties;
+use horizon_optifine::random::{MAX_INDEX, Rules};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
@@ -53,6 +61,16 @@ pub struct CemLayer {
     /// stand for without its climate ([`legacy_stem`]): `entity/cow/mooshroom_red`
     /// is drawn as `entity/cow/red_mooshroom`.
     legacy: Vec<(&'static str, &'static str)>,
+    /// The `models.<n>` rules beside the `.jem` and the variants they pick (`creeper2.jem` as
+    /// 2), lowest first; none without such rules.
+    pub variants: Variants,
+}
+
+/// A layer's random models: the rules, and each variant file that loaded.
+#[derive(Default)]
+pub struct Variants {
+    pub rules: Option<Arc<Rules>>,
+    pub layers: Vec<(u32, CemLayer)>,
 }
 
 impl CemLayer {
@@ -155,6 +173,8 @@ impl CemModels {
                 standing_species.push(kind.to_owned());
             }
             let mut layer = CemLayer::build(part, jem, name, &rules);
+            layer.variants =
+                load_variants(root, path, |jem| CemLayer::build(part, jem, name, &rules));
             // A fallback onto another layer (the cat's collar from `cat`) takes the geometry
             // only: the layer keeps its own texture.
             let own_layers = layer_keys(name);
@@ -163,6 +183,9 @@ impl CemModels {
                 .any(|k| layer_suffix(k) == layer_suffix(&key))
             {
                 layer.texture = None;
+                for (_, variant) in &mut layer.variants.layers {
+                    variant.texture = None;
+                }
             } else if key == layer_key(name) {
                 own.insert(key.clone(), (name, path));
             }
@@ -182,6 +205,37 @@ impl CemModels {
 
     pub fn layer(&self, key: &str) -> Option<&CemLayer> {
         self.layers.get(key)
+    }
+
+    /// The layer `key` as `m` draws it: the random model variant it picked, or the file's own.
+    pub fn layer_of(&self, key: &str, m: &Mob) -> Option<&CemLayer> {
+        self.layer_picked(key, m.random_textures.model(key))
+    }
+
+    /// The layer `key`'s random model variant `pick`; the file's own for 1 or a missing one.
+    pub fn layer_picked(&self, key: &str, pick: u32) -> Option<&CemLayer> {
+        let layer = self.layers.get(key)?;
+        Some(
+            layer
+                .variants
+                .layers
+                .iter()
+                .find(|(n, _)| *n == pick)
+                .map_or(layer, |(_, v)| v),
+        )
+    }
+
+    /// The `models.<n>` rules of the layer `key`, when its file has variants to pick from.
+    pub fn model_rules(&self, key: &str) -> Option<&Rules> {
+        let layer = self.layers.get(key)?;
+        (!layer.variants.layers.is_empty())
+            .then_some(layer.variants.rules.as_deref())
+            .flatten()
+    }
+
+    /// Whether any layer has random model variants.
+    pub fn has_variants(&self) -> bool {
+        self.layers.values().any(|l| !l.variants.layers.is_empty())
     }
 }
 
@@ -248,6 +302,43 @@ fn load_rules(root: &ResourceSource, path: &str) -> Vec<Rule> {
         })
         .map(|text| parse_rules(&text))
         .unwrap_or_default()
+}
+
+/// The random models beside the `.jem` at `path`: its `.properties`' `models.<n>` rules, and
+/// each numbered file they name that loads (`creeper2.jem` beside `creeper.jem`), built by
+/// `build`. 1 is the file itself, so it is never loaded again.
+fn load_variants(
+    root: &ResourceSource,
+    path: &str,
+    build: impl Fn(&EntityModel) -> CemLayer,
+) -> Variants {
+    let Some(stem) = path.strip_suffix(".jem") else {
+        return Variants::default();
+    };
+    let Some(text) = root
+        .read_limited(&format!("{stem}.properties"), MAX_BYTES as u64)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+    else {
+        return Variants::default();
+    };
+    let rules = Rules::parse_models(&Properties::parse(&text));
+    let layers = rules
+        .indices()
+        .into_iter()
+        .filter(|&n| (2..=MAX_INDEX).contains(&n))
+        .filter_map(|n| {
+            let file = format!("{stem}{n}.jem");
+            root.contains(&file)
+                .then(|| load_jem(root, &file))
+                .flatten()
+                .map(|jem| (n, build(&jem)))
+        })
+        .collect();
+    Variants {
+        rules: Some(Arc::new(rules)),
+        layers,
+    }
 }
 
 /// Parses one random-model `.properties` into its rules, lowest number first. `models.<n>`
@@ -677,6 +768,7 @@ impl CemLayer {
             texture: jem.texture.as_deref().and_then(atlas_name),
             anchors,
             legacy: Vec::new(),
+            variants: Variants::default(),
         }
     }
 }
@@ -776,6 +868,7 @@ impl Legacy {
                     texture: None,
                     anchors: Vec::new(),
                     legacy: Vec::new(),
+                    variants: Variants::default(),
                 },
             };
             old_layout(Arc::make_mut(&mut layer.model), self.taller);
@@ -1100,6 +1193,77 @@ mod tests {
         let leg = get(&models.layer("cow#main").unwrap().model, "right_hind_leg");
         assert_eq!((leg.polygons.len(), leg.children.len()), (0, 1));
         assert!(models.layer("sheep#main").is_none());
+    }
+
+    #[test]
+    fn random_models_load_the_numbered_files_their_rules_name() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-cem-variants-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let cem = root.join("assets/minecraft/optifine/cem");
+        fs::create_dir_all(&cem).unwrap();
+        let boxes = |n: usize| {
+            let one = r#"{"coordinates": [0, 0, 0, 1, 1, 1], "textureOffset": [0, 0]}"#;
+            vec![one; n].join(",")
+        };
+        let jem = |n: usize, texture: &str| {
+            format!(
+                r#"{{"texture": "{texture}", "models": [{{"part": "head", "boxes": [{}]}}]}}"#,
+                boxes(n)
+            )
+        };
+        fs::write(
+            cem.join("creeper.jem"),
+            jem(1, "textures/entity/creeper/a.png"),
+        )
+        .unwrap();
+        fs::write(
+            cem.join("creeper2.jem"),
+            jem(2, "textures/entity/creeper/b.png"),
+        )
+        .unwrap();
+        // Named by no rule: never loaded. Named but missing (4): the file's own draws.
+        fs::write(
+            cem.join("creeper3.jem"),
+            jem(3, "textures/entity/creeper/c.png"),
+        )
+        .unwrap();
+        fs::write(
+            cem.join("creeper.properties"),
+            "models.1=1 2 4\nbiomes.1=swamp\n",
+        )
+        .unwrap();
+        let creeper = Arc::new(plane("root", vec![plane("head", vec![])]));
+        let vanilla: HashMap<&str, (&Arc<Part>, &str)> =
+            [("creeper#main", (&creeper, "minecraft:creeper"))]
+                .into_iter()
+                .collect();
+        let source = ResourceSource::directory(root.clone());
+        let (models, _) = CemModels::from_files(&source, &jem_files(&source), &vanilla);
+        fs::remove_dir_all(&root).unwrap();
+
+        assert!(models.has_variants());
+        let rules = models.model_rules("creeper#main").expect("the rules");
+        let swamp = horizon_optifine::random::Facts {
+            biome: Some("minecraft:swamp"),
+            ..Default::default()
+        };
+        assert_eq!(rules.select(&swamp, 1), 2, "1 % 3: the second of 1 2 4");
+        let boxes_of = |pick| {
+            let layer = models.layer_picked("creeper#main", pick).unwrap();
+            let head = get(&layer.model, "head");
+            (
+                head.children
+                    .iter()
+                    .map(|c| c.polygons.len())
+                    .sum::<usize>(),
+                layer.texture.clone(),
+            )
+        };
+        assert_eq!(boxes_of(1), (6, Some("entity/creeper/a".into())));
+        assert_eq!(boxes_of(2), (12, Some("entity/creeper/b".into())));
+        assert_eq!(boxes_of(4), boxes_of(1));
+        assert_eq!(boxes_of(3), boxes_of(1));
     }
 
     #[test]
