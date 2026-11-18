@@ -488,13 +488,19 @@ impl Game<'_> {
     }
 
     /// Once per frame, before the frame's input is read: the source's turn.
+    /// A scripted run (`scripted_run`) drives nothing: the source, as the pads, is left unread.
     pub(super) fn input_frame(&mut self) {
+        if self.scripted_run() {
+            return;
+        }
         self.with_input_source(|source, host| source.frame(host));
     }
 
     /// The analog move vector (`[left, forward]`, -1..1) while a device moves the player.
     pub(super) fn input_move(&self) -> Option<[f32; 2]> {
         match &self.input_source {
+            // A scripted run moves the player only as its script says.
+            Some(_) if self.scripted_run() => None,
             Some(source) => source.move_vector(self),
             None => self.pad_move(),
         }
@@ -510,6 +516,10 @@ impl Game<'_> {
 
     /// Turns the view by what the devices give this frame (`Entity.turn`).
     pub(super) fn input_look(&mut self, seconds: f32) {
+        // A scripted run turns the view only as its script says.
+        if self.input_source.is_some() && self.scripted_run() {
+            return;
+        }
         match self.with_input_source(|source, host| source.look(host, seconds)) {
             Some(Some([yaw, pitch])) => self.look_turn(yaw, pitch),
             Some(None) => {}

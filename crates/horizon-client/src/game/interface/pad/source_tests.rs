@@ -22,6 +22,7 @@ struct Script {
     frames: Cell<u32>,
     holds: Cell<&'static [&'static str]>,
     look: Cell<Option<[f64; 2]>>,
+    moves: Cell<Option<[f32; 2]>>,
     stack_drop: Cell<bool>,
 }
 
@@ -30,6 +31,9 @@ struct Probe(Rc<Script>);
 impl InputSource for Probe {
     fn frame(&mut self, _host: &dyn InputHost) {
         self.0.frames.set(self.0.frames.get() + 1);
+    }
+    fn move_vector(&self, _host: &dyn InputHost) -> Option<[f32; 2]> {
+        self.0.moves.get()
     }
     fn holds(&self, mapping: &str) -> bool {
         self.0.holds.get().contains(&mapping)
@@ -129,5 +133,26 @@ fn the_keyboard_letting_go_keeps_the_sneak_a_source_holds() {
         // The window then reports Shift up.
         game.update_modifiers(ModifiersState::empty());
         assert!(game.keys.held(Action::Sneak), "the modifier going up too");
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_scripted_run_leaves_the_source_unread() {
+    playing(|game| {
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+        let script = install(game);
+        script.moves.set(Some([0.0, 1.0]));
+        script.look.set(Some([100.0, 0.0]));
+        game.tick_script.play_empty();
+        assert!(game.scripted_run());
+
+        assert_eq!(game.input_move(), None, "no move from the source");
+        let yaw = game.yaw;
+        game.input_look(0.05);
+        assert_eq!(game.yaw, yaw, "no turn from the source");
+        game.input_frame();
+        assert_eq!(script.frames.get(), 0, "the source isn't driven");
+        assert!(game.input_source.is_some(), "it stays registered");
     });
 }
