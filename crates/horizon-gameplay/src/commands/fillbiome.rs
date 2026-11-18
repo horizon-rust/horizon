@@ -1,5 +1,5 @@
 //! `/fillbiome`.
-use super::host::{CommandHost, R, err};
+use super::host::{CommandHost, R};
 use horizon_client::{
     command::{Arg, Context},
     text::Text,
@@ -59,10 +59,10 @@ pub fn fillbiome(host: &mut dyn FillbiomeHost, ctx: &Context) -> R<i32> {
         i64::from(hi[0] - lo[0] + 1) * i64::from(hi[1] - lo[1] + 1) * i64::from(hi[2] - lo[2] + 1);
     let limit = host.max_block_modifications();
     if volume > i64::from(limit) {
-        return Err(err("commands.fillbiome.toobig", &[&limit, &volume]));
+        return Err(host.error("commands.fillbiome.toobig", &[&limit, &volume]));
     }
     let Some(target) = host.biome_index(&biome) else {
-        return Err(err(
+        return Err(host.error(
             "argument.resource.not_found",
             &[&biome, &"minecraft:worldgen/biome"],
         ));
@@ -74,7 +74,7 @@ pub fn fillbiome(host: &mut dyn FillbiomeHost, ctx: &Context) -> R<i32> {
     for cz in (lo[2] >> 4)..=(hi[2] >> 4) {
         for cx in (lo[0] >> 4)..=(hi[0] >> 4) {
             if !host.column_loaded((cx, cz)) {
-                return Err(err("argument.pos.unloaded", &[]));
+                return Err(host.error("argument.pos.unloaded", &[]));
             }
         }
     }
@@ -102,7 +102,7 @@ pub fn fillbiome(host: &mut dyn FillbiomeHost, ctx: &Context) -> R<i32> {
         }
     }
     if changed == 0 {
-        return Err(err("commands.fillbiome.no_changes", &[]));
+        return Err(host.error("commands.fillbiome.no_changes", &[]));
     }
     let columns: Vec<(i32, i32)> = ((lo[2] >> 4)..=(hi[2] >> 4))
         .flat_map(|cz| ((lo[0] >> 4)..=(hi[0] >> 4)).map(move |cx| (cx, cz)))

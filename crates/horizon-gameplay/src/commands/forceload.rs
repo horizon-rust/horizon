@@ -1,5 +1,5 @@
 //! `/forceload`.
-use super::host::{CommandHost, R, err};
+use super::host::{CommandHost, R};
 use horizon_client::{
     command::Context,
     scoreboard_cmd::{Holder, Tracker},
@@ -80,7 +80,7 @@ pub fn forceload(host: &mut dyn ForceloadHost, id: &str, ctx: &Context) -> R<i32
                 ));
                 Ok(1)
             } else {
-                Err(err(
+                Err(host.error(
                     "commands.forceload.query.failure",
                     &[&chunk_text(key.0, key.1).plain(), &dim.plain()],
                 ))
@@ -106,12 +106,12 @@ pub fn forceload(host: &mut dyn ForceloadHost, id: &str, ctx: &Context) -> R<i32
                 || max_x >= 30_000_000
                 || max_z >= 30_000_000
             {
-                return Err(err("argument.pos.outofworld", &[]));
+                return Err(host.error("argument.pos.outofworld", &[]));
             }
             let (cx0, cx1, cz0, cz1) = (min_x >> 4, max_x >> 4, min_z >> 4, max_z >> 4);
             let count = i64::from(cx1 - cx0 + 1) * i64::from(cz1 - cz0 + 1);
             if count > 256 {
-                return Err(err("commands.forceload.toobig", &[&256, &count]));
+                return Err(host.error("commands.forceload.toobig", &[&256, &count]));
             }
             let mut tracker = Tracker::default();
             for x in cx0..=cx1 {
@@ -124,7 +124,7 @@ pub fn forceload(host: &mut dyn ForceloadHost, id: &str, ctx: &Context) -> R<i32
             let verb = if add { "added" } else { "removed" };
             let (message, total) = tracker.message(
                 false,
-                Some(err(&format!("commands.forceload.{verb}.failure"), &[])),
+                Some(host.error(&format!("commands.forceload.{verb}.failure"), &[])),
                 |h, _| {
                     Text::translate(
                         &format!("commands.forceload.{verb}.single"),

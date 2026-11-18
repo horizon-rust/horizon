@@ -1,5 +1,5 @@
 //! `/worldborder`.
-use super::host::{CommandHost, R, err};
+use super::host::{CommandHost, R};
 use horizon_client::{
     command::{Arg, Context},
     text::Text,
@@ -92,16 +92,15 @@ pub fn worldborder(host: &mut dyn WorldborderHost, id: &str, ctx: &Context) -> R
                 (_, t) => (double, t.unwrap_or(0)),
             };
             if current == distance {
-                return Err(err("commands.worldborder.set.failed.nochange", &[]));
+                return Err(host.error("commands.worldborder.set.failed.nochange", &[]));
             }
             if distance < 1.0 {
-                return Err(err("commands.worldborder.set.failed.small", &[]));
+                return Err(host.error("commands.worldborder.set.failed.small", &[]));
             }
             if distance > MAX_SIZE {
-                return Err(err(
-                    "commands.worldborder.set.failed.big",
-                    &[&size_limit_text()],
-                ));
+                return Err(
+                    host.error("commands.worldborder.set.failed.big", &[&size_limit_text()])
+                );
             }
             let shown = Text::literal(percent_f(distance, 1));
             if ticks > 0 {
@@ -129,13 +128,10 @@ pub fn worldborder(host: &mut dyn WorldborderHost, id: &str, ctx: &Context) -> R
             let p = host.position_arg_or_source(ctx, "pos");
             let (x, z) = (p[0], p[2]);
             if host.border_center() == [x, z] {
-                return Err(err("commands.worldborder.center.failed", &[]));
+                return Err(host.error("commands.worldborder.center.failed", &[]));
             }
             if x.abs() > MAX_CENTER || z.abs() > MAX_CENTER {
-                return Err(err(
-                    "commands.worldborder.set.failed.far",
-                    &[&"2.9999984E7"],
-                ));
+                return Err(host.error("commands.worldborder.set.failed.far", &[&"2.9999984E7"]));
             }
             host.border_set_center([x, z]);
             host.border_center_changed();
@@ -152,7 +148,7 @@ pub fn worldborder(host: &mut dyn WorldborderHost, id: &str, ctx: &Context) -> R
                 _ => 0.0,
             };
             if host.border_damage_slot(amount) == value {
-                return Err(err(
+                return Err(host.error(
                     if amount {
                         "commands.worldborder.damage.amount.failed"
                     } else {
@@ -178,7 +174,7 @@ pub fn worldborder(host: &mut dyn WorldborderHost, id: &str, ctx: &Context) -> R
                 _ => 0,
             };
             if host.border_warning_distance() == d {
-                return Err(err("commands.worldborder.warning.distance.failed", &[]));
+                return Err(host.error("commands.worldborder.warning.distance.failed", &[]));
             }
             host.set_border_warning_distance(d);
             host.feedback(Text::translate(
@@ -193,7 +189,7 @@ pub fn worldborder(host: &mut dyn WorldborderHost, id: &str, ctx: &Context) -> R
                 _ => 0,
             };
             if host.border_warning_time() == ticks {
-                return Err(err("commands.worldborder.warning.time.failed", &[]));
+                return Err(host.error("commands.worldborder.warning.time.failed", &[]));
             }
             host.set_border_warning_time(ticks);
             host.feedback(Text::translate(
