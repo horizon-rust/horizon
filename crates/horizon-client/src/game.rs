@@ -1937,6 +1937,9 @@ struct Game<'a> {
     /// from `lan_acting`: crash teardown keeps their last saved file (`keep_interrupted_players`).
     /// Cleared as each server tick starts: a panic something caught leaves a game that carried on.
     lan_interrupted_turns: Vec<u32>,
+    /// Crash teardown left the integrated server's owner unplaced, or lost the hub: the save keeps
+    /// the owner's player file, stats and advancements as last saved (`save_game_metadata`).
+    keep_owner_files: bool,
     /// Live attachments and original snapshots retained during player replacement.
     player_state: original_player::PlayerState,
     /// The block the acting player is breaking (`break_block`): its destroy
@@ -11152,6 +11155,7 @@ impl<'a> Game<'a> {
             save_after_guest_turn: false,
             lan_guest_swaps: Vec::new(),
             lan_interrupted_turns: Vec::new(),
+            keep_owner_files: false,
             player_state: Default::default(),
             lan_break_pos: None,
             break_collect: None,

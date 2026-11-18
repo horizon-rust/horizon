@@ -1693,3 +1693,23 @@ fn crash_teardown_keeps_the_last_file_of_a_guest_whose_turn_panicked() {
         );
     });
 }
+
+/// A panic inside nested turns that never reach `leave_guest` (a guest's command giving another
+/// guest an effect opens both swaps directly) leaves only the inner one in `lan_acting`. Crash
+/// teardown keeps both players' last saved files: the outer one's record holds another state.
+#[test]
+#[ignore = "daily"]
+fn crash_teardown_keeps_every_player_a_swap_still_displaces() {
+    with_guests(|game| {
+        let outer = game.enter_guest(13).unwrap();
+        let inner = game.enter_guest(12).unwrap();
+        assert!(game.keep_interrupted_players().is_some());
+        let placed = |game: &super::Game<'_>, conn| {
+            game.lan.as_ref().unwrap().hub.guest(conn).unwrap().placed
+        };
+        assert!(!placed(game, 12), "the inner turn's player would be saved");
+        assert!(!placed(game, 13), "the outer turn's player would be saved");
+        game.leave_guest(inner);
+        game.leave_guest(outer);
+    });
+}
