@@ -4490,9 +4490,12 @@ impl Game<'_> {
         }
         self.abort_open_transactions();
         self.update_interaction_ranges();
-        self.tick_client_lead()?;
-        if self.remote.is_some() {
-            return self.with_residency_tick(Self::tick_remote);
+        // A logical server has no window to lead and never follows another server.
+        if !self.is_logical_server() {
+            self.tick_client_lead()?;
+            if self.remote.is_some() {
+                return self.with_residency_tick(Self::tick_remote);
+            }
         }
         self.tick_first_level()
     }
@@ -4668,9 +4671,11 @@ impl Game<'_> {
             });
             // A conduit's hurt teleports an enderman now (`Enderman.hurtServer`).
             span("settle_hurt_teleports", || self.settle_hurt_teleports())?;
-            // Nothing ages a server's particles or pickups: the engine is discarded.
-            self.particles.discard();
+            // A server has no window: its pickups are dropped, and its particle engine
+            // runs only while something is in it, so the fireworks' and drips' sounds
+            // still play and reach the guests as before.
             self.pickups.clear();
+            self.tick_server_particles();
         }
         // ServerLevel.tick's `entityManager.tick()`, frozen or not, after every
         // block entity ticker (the bells, conduits and gateways above too): the

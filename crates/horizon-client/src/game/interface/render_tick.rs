@@ -642,7 +642,10 @@ impl Game<'_> {
         Some((TrackingTarget::Entity(id), mob_tracking_body(mob)))
     }
 
-    #[cfg(test)]
+    /// The window's particle tick. A server's game no longer runs it (its window-only
+    /// spawns are gone; `tick_server_particles` drains what is left), so only the tests
+    /// and mods that target it call it.
+    #[allow(dead_code)]
     pub(super) fn tick_particles(&mut self) {
         // A client mod's `clear_particles`, before this tick adds any.
         self.apply_mod_particle_clear();
@@ -840,6 +843,15 @@ impl Game<'_> {
             );
         }
         laps.lap("tp_rain_campfire");
+    }
+
+    /// A server's game ticks its engine only while it holds particles, fireworks or sounds:
+    /// the ones its code pushed (a rocket's burst, a drip landing) age and play their
+    /// sounds through the audio, which captures them for the guests, as `tick_particles` did.
+    pub(super) fn tick_server_particles(&mut self) {
+        if !self.particles.is_idle() {
+            self.tick_particle_engine();
+        }
     }
 
     /// A server's client's `ParticleEngine.tick`, while the level runs normally: in

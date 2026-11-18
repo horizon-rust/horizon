@@ -1269,9 +1269,11 @@ impl Game<'_> {
                         self.tick_lan(true);
                         Ok(())
                     } else if k == 0 {
-                        self.tick_server_first()
+                        self.tick()
                     } else {
                         let running = running.unwrap_or_else(|| self.clock.world_runs());
+                        // ClientLevel.tick: the sky flash fades in a frozen level too.
+                        self.tick_weather_effects();
                         self.tick_world(running)
                     }
                 },
@@ -1394,17 +1396,6 @@ impl Game<'_> {
         result
     }
 
-    /// `tick` for a server's first level, without the window's lead.
-    pub(super) fn tick_server_first(&mut self) -> Result<()> {
-        self.expire_client_cracks();
-        if self.agent.hold_server {
-            return Ok(());
-        }
-        self.abort_open_transactions();
-        self.update_interaction_ranges();
-        self.tick_first_level()
-    }
-
     /// What `Game::tick` runs for a server's first level, after the window's lead.
     pub(super) fn tick_first_level(&mut self) -> Result<()> {
         // Only a server ticks its own world from here: its players are guests, swapped in for
@@ -1440,6 +1431,8 @@ impl Game<'_> {
             // stepping the world (and its mobs) through the fade.
             self.world.weather.settle_levels();
         }
+        // ClientLevel.tick: the sky flash fades in a frozen level too.
+        self.tick_weather_effects();
         let _ = span("player_autosaves", || self.finish_player_autosaves(false));
         // MinecraftServer.tickServer's countdown, then autoSave: three
         // hundred seconds of ticks at the rate the server runs at now.

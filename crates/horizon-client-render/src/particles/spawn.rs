@@ -70,12 +70,16 @@ impl ParticleEngine {
         }
     }
 
-    /// A server never ages the engine, so it drops everything its code pushed in.
-    pub fn discard(&mut self) {
-        self.clear();
-        self.starters.clear();
-        self.tracked_explosions.clear();
-        self.sounds.clear();
+    /// Whether ticking would do nothing: no particle, queued particle, emitter, starter,
+    /// guardian, tracked explosion or sound.
+    pub fn is_idle(&self) -> bool {
+        self.is_empty()
+            && self.pending.is_empty()
+            && self.emitters.is_empty()
+            && self.starters.is_empty()
+            && self.elder_guardians.is_empty()
+            && self.tracked_explosions.is_empty()
+            && self.sounds.is_empty()
     }
 }
 

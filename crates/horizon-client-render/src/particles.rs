@@ -6217,13 +6217,19 @@ mod tests {
         assert!((lifetime_alpha(a, 40, 40, 0.0) - 0.6).abs() < 1e-6);
     }
     #[test]
-    fn discard_empties_what_only_ticking_drained() {
-        with_empty_particle_level(|level| {
+    fn is_idle_sees_what_only_ticking_drains() {
+        with_empty_particle_level(|_| {
             let mut engine = ParticleEngine::new(
                 &ResourceSource::indexed(Default::default()),
                 &HashMap::new(),
                 &HashSet::new(),
             );
+            assert!(engine.is_idle());
+            engine
+                .sounds
+                .push(("minecraft:test", [0.0; 3], 1.0, 1.0, false));
+            assert!(!engine.is_idle());
+            engine.sounds.clear();
             engine.fireworks(
                 [0.0; 3],
                 [0.0; 3],
@@ -6231,18 +6237,7 @@ mod tests {
                 [0.0; 3],
                 true,
             );
-            engine.tick(level);
-            engine.track_explosion([1.0, 2.0, 3.0], 4.0, 10, &ExplosionParticle::defaults());
-            engine
-                .sounds
-                .push(("minecraft:test", [0.0; 3], 1.0, 1.0, false));
-            assert_eq!(engine.tracked_explosions.len(), 1);
-            assert_eq!(engine.starters.len(), 1);
-            engine.discard();
-            assert!(engine.tracked_explosions.is_empty());
-            assert!(engine.starters.is_empty());
-            assert!(engine.sounds.is_empty());
-            assert_eq!(engine.group_count(), 0);
+            assert!(!engine.is_idle());
         });
     }
     #[test]
