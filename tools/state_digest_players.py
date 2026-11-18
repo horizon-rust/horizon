@@ -214,7 +214,8 @@ def run_integrated(args, home, out, timings):
     shutil.copytree(template / 'world', work / 'game' / 'saves' / 'T')
     (work / 'game' / 'saves' / 'T' / 'session.lock').unlink(missing_ok=True)
     digest = None if '--no-digest' in sys.argv else out / 'digest.txt'
-    env = lab.game_env(base.scratch_env(home, digest, '--detail' in sys.argv), HORIZON_HOME=work / 'home')
+    # The server starts frozen (state-digest feature): ticks before the script's freeze would spawn mobs and differ run to run.
+    env = lab.game_env(base.scratch_env(home, digest, '--detail' in sys.argv), HORIZON_HOME=work / 'home', HORIZON_STATE_DIGEST_FREEZE='1')
     sock = work / 'c.sock'
 
     def run(*words, timeout=600):

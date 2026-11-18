@@ -781,6 +781,12 @@ impl Game<'_> {
         opening: Opening,
     ) -> Result<()> {
         self.integrated_open(&launch, &flags, tasks, ready, opening)?;
+        // Test-only: the dedicated scene queues `tick freeze` before the first tick; here no tick may run
+        // before the script's own freeze, or the world spawns mobs from an unsynced level random.
+        #[cfg(feature = "state-digest")]
+        if std::env::var_os("HORIZON_STATE_DIGEST_FREEZE").is_some_and(|v| v == "1") {
+            self.clock.set_frozen(true);
+        }
         // The server thread's `server_started` site, before the tick loop.
         self.native_lifecycle_world_ready();
         if let (Some(script), Some(output)) = (
