@@ -18,6 +18,8 @@ serde_json = "1.0.151"
 [features]
 # Source retention only, as in horizon-client: the helper-thread profiling hooks.
 upstream-parallel-mobs = []
+# Counters horizon-client's tests read (`boats::TYPE_BUILDS`); never in a game build.
+test-support = []
 
 [lints]
 workspace = true

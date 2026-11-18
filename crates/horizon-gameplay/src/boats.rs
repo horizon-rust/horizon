@@ -15,6 +15,7 @@ use horizon_core::{
 };
 use std::{f32::consts::PI, sync::Arc};
 
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// Counts `Boat::entity_type` calls, for the test that only subscribed blocks build a boat kind.
     #[doc(hidden)]
@@ -363,6 +364,7 @@ impl Boat {
     /// The vanilla entity type id (`oak_boat`, `bamboo_chest_raft`), also
     /// the item it drops.
     pub fn entity_type(&self) -> String {
+        #[cfg(any(test, feature = "test-support"))]
         TYPE_BUILDS.with(|n| n.set(n.get() + 1));
         let chest = if self.chest { "chest_" } else { "" };
         if &*self.wood == "bamboo" {
