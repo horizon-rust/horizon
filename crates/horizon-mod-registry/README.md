@@ -1,15 +1,14 @@
 # horizon-mod-registry
 
-The service behind the registry's submission form (`playhorizon.dev/mods/submit`). A creator signs in with GitHub and
-**lists a project by its GitHub repository and a page** (`repo` plus name, summary, licence...): the service checks that the
-repository is public and opens a pull request adding `mods/<id>.toml` to
-[horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods), where a reviewer reads the repository once.
-**It takes no versions for such a project**: they are the repository's GitHub releases, read and checked by that
-repository's CI with no pull request ("publish a GitHub release in <repo>", a 409). Projects listed before that
-(no `repo`) can still be sent as a file: the service runs the file's own checks
-(`horizon_mod_package::index::inspect`, the signature, the entry's fields), uploads it to the `staging` release as
-`<sha256>.<extension>` and opens a pull request adding or updating the entry. Formats and rules:
-[docs/modding/src/reference/registry-index.md](../../docs/modding/src/reference/registry-index.md).
+The service behind the registry's submission form (`playhorizon.dev/mods/submit`). A creator signs in with GitHub,
+submits a package and its page, and the service opens a reviewed pull request adding a version to `mods/<id>.toml`
+in [horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods).
+The service checks package structure, manifest, content, SHA-256, author signatures and entry fields, then uploads
+the package to `staging` as `<sha256>.<extension>`. It never compiles or executes submitted Rust or wasm.
+`kind = "mod"` includes content and wasm; `native-mod` is a source `.hmod` built by the launcher against the exact
+signed SDK. Native updates always require review, even when ownership is known by numeric GitHub ID.
+New repository-following listings are refused; old linked entries must be pinned manually before file updates.
+Formats and rules: [the registry reference](../../docs/modding/src/reference/registry-index.md).
 
 Signed-in players also rate published projects, 1 to 5 stars: one rating per GitHub account and project, which they can
 change, never their own project's. That is the only data it keeps, in one SQLite file (`REGISTRY_DB`); it only ever
@@ -22,7 +21,7 @@ is used once, to read them, and dropped. The sign-in asks for no scope.
 | `GET /api/mods/auth/callback` | GitHub's redirect: sets the session, back to `/mods/submit` or the `back` page |
 | `POST /api/mods/auth/logout` | Ends it |
 | `GET /api/mods/me` | `{login, csrf}`, or 401 |
-| `POST /api/mods/submit` | Multipart: `entry` (JSON: `id kind name summary description authors license icon key`, and either `repo` (no file: lists the project) or `source signature version game changelog` with the `file` (a project with no `repo`)); `{pull_request}` or `{error}` |
+| `POST /api/mods/submit` | Multipart: `entry` (JSON page and `id kind source signature version game changelog`) and `file`, plus images; `{pull_request}` or `{error}` |
 | `GET /api/mods/ratings` | `{projects: {<id>: {average, count}}}` for every rated project; cached a minute |
 | `GET /api/mods/<id>/rating` | The signed-in account's own `{stars}` (null when it hasn't rated), or 401 |
 | `POST /api/mods/<id>/rating` | JSON `{stars}`, 1 to 5: sets or changes it; `{stars, average, count}` or `{error}` |
@@ -32,6 +31,23 @@ A submission or a rating must come from `REGISTRY_PUBLIC_URL`'s origin with the 
 submissions per account and sixty in all per hour; thirty ratings per account and 600 in all. A project's owners can't
 rate it, and only projects on the registry's `main` can be rated. Only an entry's `owners` publish its updates; a key change, an icon in the repository or anything else
 is a pull request by hand.
+
+## SDK cutover deployment
+
+Deploy this service from the same reviewed engine release as the registry's exact `HORIZON_REV` checker.
+Do not activate the catalogue removal or public submission cutover before the matching signed game/SDK/launcher
+are published and real native and wasm staging, index and install canaries pass. `/healthz` is a liveness check,
+not evidence that a particular package format or SDK has shipped.
+
+Historical `.hnmod` projects and dependent modpacks live in the registry's frozen
+`archive/native-v1/mods/`, with original metadata, release assets and signatures retained. They are explicitly
+incompatible with the SDK runtime, not completed ports. Their IDs cannot be reclaimed through the submission
+form: owners reactivate through a manually reviewed current `.hmod` entry, preserving owners, kind and key and
+using a new version. There is no legacy runtime or package-validator fallback.
+
+The obsolete combined-game native-build request/status endpoints and workflow dispatch client are removed.
+Registry-built native binaries are not used by this launcher; source packages and signed SDK provenance remain
+the existing authorities. No signing key or third-party build credentials belong in this service.
 
 ## Owner updates
 

@@ -537,7 +537,9 @@ mod tests {
         assert_eq!(content.files.len(), 8, "{:?}", content.files);
         let report = check::check(&hmod, check::kind_of(&hmod).unwrap(), None, None).unwrap();
         assert!(
-            report.text().contains("no code: content only"),
+            report
+                .text()
+                .contains("content/wasm package: inspected without executing code"),
             "{}",
             report.text()
         );

@@ -1074,6 +1074,126 @@ async fn a_mod_cannot_turn_native() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn native_sdk_packages_stage_as_hmod_and_always_need_review() {
+    use sha2::Digest;
+    let (mut client, mock) = setup().await;
+    let old_sha = format!("{:x}", sha2::Sha256::digest(hmod("0.0.1")));
+    let old = published_with_ids("alice", false, &[ALICE_ID])
+        .replace("kind = \"mod\"", "kind = \"native-mod\"")
+        .replace(&"0".repeat(64), &old_sha);
+    mock.lock()
+        .unwrap()
+        .main
+        .insert("mods/coords_hud.toml".into(), old);
+    let csrf = client.sign_in().await;
+    client.images.clear();
+    let mut native = form();
+    native["kind"] = json!("native-mod");
+    native["key"] = Value::Null;
+    native["signature"] = Value::Null;
+    let file = hmod("0.1.0");
+    let sha = format!("{:x}", sha2::Sha256::digest(&file));
+    let (status, json) = client.submit(&csrf, &native, &file).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let m = mock.lock().unwrap();
+    assert_eq!(m.assets, [(format!("{sha}.hmod"), file.len())]);
+    assert!(m.labels.is_empty());
+    assert!(
+        !m.pulls[0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("owner-update")
+    );
+    let text = &m.commits[&(
+        "submit/coords_hud-0.1.0".into(),
+        "mods/coords_hud.toml".into(),
+    )]
+        .0;
+    let entry: Entry = toml::from_str(text).unwrap();
+    assert_eq!(
+        entry.kind,
+        horizon_platform::mod_package::index::Kind::NativeMod
+    );
+    assert_eq!(entry.versions[0].file, "coords_hud-0.1.0.hmod");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn archived_project_ids_cannot_be_reclaimed_through_the_form() {
+    let (mut client, mock) = setup().await;
+    mock.lock().unwrap().main.insert(
+        "archive/native-v1/mods/coords_hud.toml".into(),
+        published("alice", false),
+    );
+    let csrf = client.sign_in().await;
+    let mut native = form();
+    native["kind"] = json!("native-mod");
+    native["key"] = Value::Null;
+    native["signature"] = Value::Null;
+    let (status, json) = client.submit(&csrf, &native, &hmod("0.1.0")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{json}");
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("frozen native-v1 archive")
+    );
+    let m = mock.lock().unwrap();
+    assert!(m.assets.is_empty());
+    assert!(m.pulls.is_empty());
+}
+
+/// Test-only shared wasm member with all guest exports; no new catalogue kind.
+fn wasm_hmod(correct_hash: bool) -> Vec<u8> {
+    use sha2::Digest;
+    use std::io::Write;
+    let module = b"\0asm\x01\0\0\0\0\x0f\x08dylink.0\x01\x04\0\0\0\0\x01\x04\x01\x60\0\0\x03\x04\x03\0\0\0\x07\x2e\x03\x0ehorizon_layout\0\0\x0ahorizon_in\0\x01\x0chorizon_hook\0\x02\x0a\x0a\x03\x02\0\x0b\x02\0\x0b\x02\0\x0b";
+    let hashed = if correct_hash {
+        module.as_slice()
+    } else {
+        b"changed"
+    };
+    let hash = format!("{:x}", sha2::Sha512::digest(hashed));
+    let manifest = format!(
+        "id='coords_hud'\nname='Coordinates'\nversion='0.1.0'\napi='0.2'\nside='client'\ncapabilities=['registries']\n[wasm]\nsha512='{hash}'\ntoolchain='1.99.1'\n"
+    );
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("horizon-mod.toml", options).unwrap();
+    zip.write_all(manifest.as_bytes()).unwrap();
+    zip.start_file("mod.wasm", options).unwrap();
+    zip.write_all(module).unwrap();
+    zip.finish().unwrap().into_inner()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wasm_packages_stage_as_mod_and_bad_module_hashes_are_refused() {
+    for correct_hash in [true, false] {
+        let (mut client, mock) = setup().await;
+        let csrf = client.sign_in().await;
+        let mut wasm = form();
+        wasm["key"] = Value::Null;
+        wasm["signature"] = Value::Null;
+        let (status, json) = client.submit(&csrf, &wasm, &wasm_hmod(correct_hash)).await;
+        if correct_hash {
+            assert_eq!(status, StatusCode::OK, "{json}");
+            let m = mock.lock().unwrap();
+            assert!(m.assets[0].0.ends_with(".hmod"));
+            let text = &m.commits[&(
+                "submit/coords_hud-0.1.0".into(),
+                "mods/coords_hud.toml".into(),
+            )]
+                .0;
+            let entry: Entry = toml::from_str(text).unwrap();
+            assert_eq!(entry.kind, horizon_platform::mod_package::index::Kind::Mod);
+        } else {
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+            assert!(json["error"].as_str().unwrap().contains("sha512"));
+            assert!(mock.lock().unwrap().assets.is_empty());
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_registry_follows_no_repository() {
     let (mut client, mock) = setup().await;
     let csrf = client.sign_in().await;

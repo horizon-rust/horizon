@@ -76,9 +76,9 @@ impl LeftOut {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum Kind {
-    /// A `.hmod` of content only.
+    /// A `.hmod` of content and/or sandboxed wasm code.
     Mod,
-    /// A native source bundle, compiled into an isolated game build and published as a `.hmod`.
+    /// A `.hmod` native source package built against its exact game's signed SDK.
     NativeMod,
     /// A `.hpack`: registry mods played together as a profile.
     Modpack,

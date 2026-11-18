@@ -1,6 +1,5 @@
-//! `cargo horizon-mod check <file>`: what the registry checks of a submission,
-//! run anywhere: its kind's own checks (docs/modding/src/reference/registry-index.md), its signature
-//! when given a key, and for a `.hmod` that it is content only.
+//! `cargo horizon-mod check <file>`: the registry's non-executing submission checks:
+//! package structure, manifest, contents and, when given a key, its signature.
 use horizon_mod_package::index::{self, Facts, Kind};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -71,10 +70,10 @@ impl Report {
             out += &format!("  needs {} {} ({})\n", r.id, r.version, &r.sha256[..12]);
         }
         if self.kind == Kind::NativeMod {
-            out += "  native source: unsandboxed; not executed by the registry check. Compile and test against the exact pinned Horizon and Mixins revisions before review.\n";
+            out += "  native source: unsandboxed; not compiled or executed by registry checks. Build and test with the signed SDK for the exact pinned game, target and toolchain before review.\n";
         }
         if self.kind == Kind::Mod {
-            out += "  no code: content only, nothing to run\n";
+            out += "  content/wasm package: inspected without executing code\n";
         }
         out
     }
@@ -152,7 +151,7 @@ mod tests {
         let key = key.lines().last().unwrap();
         let report = check(&hmod, Kind::Mod, Some(key), Some(&sig)).unwrap();
         assert!(report.signed);
-        assert!(report.text().contains("no code: content only"));
+        assert!(report.text().contains("inspected without executing code"));
         let e = check(
             &hmod,
             Kind::Mod,

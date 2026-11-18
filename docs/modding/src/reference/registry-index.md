@@ -1,6 +1,6 @@
 # The registry index and `.hpack`
 
-Use the registry to distribute content and native mods (`.hmod`), modpacks (`.hpack`),
+Use the registry to distribute content, sandboxed wasm and native source mods (`.hmod`), modpacks (`.hpack`),
 resource packs, data packs, shaders-folder packs and Horizon shader packs (`.hshader`).
 Submit your project page and version file through the registry submission form.
 Versions are pinned by SHA-256. The launcher and website read schema 1 of `index.json`.
@@ -39,7 +39,7 @@ entry leaves out.
 | --- | --- |
 | `schema` | 1. A reader refuses a higher number with "update Horizon" rather than misread it. |
 | `projects[].id` | `[a-z0-9_]{1,64}`, unique; a mod's is its manifest's `id`. |
-| `kind` | `mod` (content), `native-mod`, `modpack`, `resourcepack`, `shader` (Horizon `.hshader`), `shaderpack` (a `shaders/`-folder zip), `datapack` (a data-pack zip). Other kinds (worlds, themes) may come without a new schema: a reader keeps a kind it doesn't know and doesn't offer it. |
+| `kind` | `mod` (content and/or sandboxed wasm), `native-mod`, `modpack`, `resourcepack`, `shader` (Horizon `.hshader`), `shaderpack` (a `shaders/`-folder zip), `datapack` (a data-pack zip). Wasm uses the existing `mod` kind. Other kinds (worlds, themes) may come without a new schema: a reader keeps a kind it doesn't know and doesn't offer it. |
 | `summary`, `description` | Required summary of at most 160 characters for lists; Markdown for the project's page, required for a listed project and 50–10,000 characters after trimming. |
 | `owners` | GitHub logins allowed to publish updates. |
 | `license`, `source` | An SPDX expression and an `https://` address of the source code: both required. |
@@ -77,6 +77,21 @@ handle it without selecting another build or architecture. These signatures are
 registry-produced metadata, independent of project package keys. The launcher
 builds native mods locally with its pinned Rust toolchain against the prebuilt
 game; registry-built native binaries are not used.
+
+### Frozen pre-SDK native catalogue
+
+The registry's `archive/native-v1/mods/` keeps historical `.hnmod` entries and dependent modpacks unchanged,
+including author keys, signatures and source/release links. They are not part of `index.json`, do not pass through
+a legacy validator and are incompatible with the `.hmod` SDK runtime. A separate historical catalogue labels
+them non-installable; it is not another runtime index. Unrelated content/wasm and pack listings stay live.
+Published assets and Git history are retained. Current modpacks must refer only to versions in the current index.
+
+Archive activation waits for a published matching signed game, SDK and launcher, plus real native/wasm
+staging/index/install canaries. The registry checker is pinned by an exact reviewed engine commit (`HORIZON_REV`),
+and the submission service must be deployed from that coordinated release. Old project IDs stay reserved;
+reactivation requires an owner-reviewed new `.hmod` version preserving kind, owners and signing key.
+No third-party native build scripts execute in registry validation/publishing jobs and no trusted job restores
+shared Actions caches. The source package and existing signed SDK provenance contract are unchanged.
 
 ## Before a file is installed
 
