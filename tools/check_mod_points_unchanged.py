@@ -44,6 +44,8 @@ MAX_DIFF_LINES = 120
 MAX_LISTED = 40
 ROOT_MARK = "<repository>"
 LIST = "tools/mod_points_removed.txt"
+# Files the generator writes into the output folder that are not output: phase timings (and interfaces-*/, its cache).
+SCRATCH_FILES = {"points-timing.txt"}
 # Files whose difference never passes: the published loops and the exposed internals.
 STRICT_FILES = {"loops.json", "internals.json"}
 # Where a mod, a fixture or a doc may name a point.
@@ -85,8 +87,16 @@ def read_text(path, root_marks):
     return text
 
 
+def is_scratch(relative):
+    """The generator's own scratch in the output folder: its interface cache (keyed by the generator's executable, so
+    two builds never share one) and its phase timings. Older hook_snapshot builds leave them there."""
+    parts = Path(relative).parts
+    return any(part.startswith("interfaces-") for part in parts[:-1]) or parts[-1] in SCRATCH_FILES
+
+
 def snapshot_files(folder):
-    return {path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()} - {POINTS}
+    found = {path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()}
+    return {name for name in found if not is_scratch(name)} - {POINTS}
 
 
 def diff_files(base_dir, head_dir, base_root=None, head_root=None):

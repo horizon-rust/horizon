@@ -236,6 +236,21 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("without --allow-added", text)
 
+    def test_generator_scratch_is_not_compared(self):
+        base = {"interfaces-aaa/1.cache": "x", "points-timing.txt": "a 1.00s\n", "api.rs": "1"}
+        head = {"interfaces-bbb/2.cache": "y", "interfaces-bbb/3.cache": "z", "points-timing.txt": "a 2.00s\n",
+                "api.rs": "1"}
+        status, text = self.run_compare([point("a")], [point("a")], base, head)
+        self.assertEqual(status, 0)
+        self.assertIn("Mod points unchanged", text)
+
+    def test_only_the_cache_folder_and_timing_file_are_scratch(self):
+        status, _ = self.run_compare([point("a")], [point("a")], {"api/points-timing.txt": "1"},
+                                     {"api/points-timing.txt": "2"})
+        self.assertEqual(status, 0)
+        status, _ = self.run_compare([point("a")], [point("a")], {"interfaces.rs": "1"}, {"interfaces.rs": "2"})
+        self.assertEqual(status, 1)
+
     def test_source_folder_paths_do_not_count_as_a_difference(self):
         status, _ = self.run_compare([point("a")], [point("a")], {"hook-notes.md": "see /tmp/base/x"},
                                      {"hook-notes.md": "see /work/head/x"}, base_root="/tmp/base",
