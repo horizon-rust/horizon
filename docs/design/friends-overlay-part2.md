@@ -54,7 +54,13 @@ UI remains an engine overlay, not a generic `Page`/`Row` form.
    overlay. Keep both current icon routes until their respective replacement is ready. Use the
    same page implementation during the transition, not a second form; retire its old icon route
    at the corresponding cutover. Do not change sharing state, commands or tunnel behaviour.
-3. Verify the official build can still host from Pause and join from Multiplayer with full and
+3. Before the title cutover, review non-join `Place::Title` pages too: `title_entry()` can open
+   any page registered there, not just Join a Friend. Maintainers must approve a replacement
+   entry for those pages or explicitly approve and document ending support for that use of
+   `Place::Title`. Keep the current title route until that decision is made and, if retained,
+   a representative non-join page can be opened and closed through the replacement. The
+   proposed Multiplayer entry is for Join a Friend, not an implicit fallback for other pages.
+4. Verify the official build can still host from Pause and join from Multiplayer with full and
    short codes, including Relay, and that Escape returns to the invoking menu. Check the existing
    sharing gates, including splitscreen. With no Horizon extension, neither invite-code entry is
    present, while the account icon follows vanilla's demo/offline and consent gates rather than
