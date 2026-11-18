@@ -32,13 +32,15 @@ pub struct Tile {
 /// `detail` chunks and far terrain out to `distance` chunks, nearest first:
 /// a tile splits while it is nearer than 8 of its sides, or inside the view.
 pub fn plan(camera: [i32; 2], detail: i32, distance: u32) -> Vec<Tile> {
-    let range = distance as i32 * 16;
+    // Roots can extend beyond the wire's i32 coordinates even at a supported distance.
+    let camera = camera.map(i64::from);
+    let range = i64::from(distance) * 16;
     let mut level = 0;
     while (16 << level) < range {
         level += 1;
     }
     let size = 16 << level;
-    let gap = |c: i32, lo: i32, size: i32| (lo - c).max(c - lo - size).max(0) as i64;
+    let gap = |c: i64, lo: i64, size: i64| (lo - c).max(c - lo - size).max(0);
     let mut leaves = Vec::new();
     let mut stack = Vec::new();
     for z in (camera[1] - range).div_euclid(size)..=(camera[1] + range).div_euclid(size) {
@@ -50,24 +52,22 @@ pub fn plan(camera: [i32; 2], detail: i32, distance: u32) -> Vec<Tile> {
         let size = 16 << level;
         let (dx, dz) = (gap(camera[0], x, size), gap(camera[1], z, size));
         let reach = dx * dx + dz * dz;
-        if reach > i64::from(range) * i64::from(range) {
+        if reach > range * range {
             continue;
         }
         let distance = (reach as f64).sqrt() as i64;
-        if level > 0 && (distance < i64::from(detail * 16 + 16) || distance < i64::from(size) * 8) {
+        if level > 0 && (distance < i64::from(detail) * 16 + 16 || distance < size * 8) {
             let half = size / 2;
             for (cx, cz) in [(0, 0), (half, 0), (0, half), (half, half)] {
                 stack.push((x + cx, z + cz, level - 1));
             }
         } else {
-            leaves.push((
-                reach,
-                Tile {
-                    x,
-                    z,
-                    stride: size / 16,
-                },
-            ));
+            let (Ok(x), Ok(z), Ok(stride)) =
+                (i32::try_from(x), i32::try_from(z), i32::try_from(size / 16))
+            else {
+                continue;
+            };
+            leaves.push((reach, Tile { x, z, stride }));
         }
     }
     leaves.sort();
@@ -258,6 +258,35 @@ mod tests {
         let tiles = plan([0, 0], 4, 1024);
         assert!(!tiles.is_empty());
         assert!(tiles.iter().all(|t| t.stride <= 1024));
+    }
+
+    #[test]
+    fn edge_cameras_keep_the_nearest_tile_and_never_wrap_requests() {
+        for (camera, nearest) in [
+            ([i32::MIN, i32::MAX], [i32::MIN, i32::MAX - 15]),
+            ([i32::MAX, i32::MIN], [i32::MAX - 15, i32::MIN]),
+            ([i32::MIN, i32::MIN], [i32::MIN, i32::MIN]),
+            ([i32::MAX, i32::MAX], [i32::MAX - 15, i32::MAX - 15]),
+        ] {
+            let tiles = plan(camera, 4, 1024);
+            assert_eq!(
+                tiles.first(),
+                Some(&Tile {
+                    x: nearest[0],
+                    z: nearest[1],
+                    stride: 1,
+                })
+            );
+            for tile in tiles {
+                let size = i64::from(tile.stride) * 16;
+                // The nearest point of each emitted tile stays within the requested circle.
+                let [x, z] = [tile.x, tile.z].map(i64::from);
+                let [cx, cz] = camera.map(i64::from);
+                let dx = cx - cx.clamp(x, x + size);
+                let dz = cz - cz.clamp(z, z + size);
+                assert!(dx * dx + dz * dz <= 16384_i64.pow(2), "{camera:?} {tile:?}");
+            }
+        }
     }
 
     #[test]
