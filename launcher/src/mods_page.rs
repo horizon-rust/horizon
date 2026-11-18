@@ -479,9 +479,9 @@ impl Launcher {
                 Event::AutoUpdated(lines) => {
                     if !lines.is_empty() {
                         m.message = Some(Ok(lines.join("\n")));
-                        m.reload_installed();
-                        m.installed_list.reset();
                     }
+                    m.reload_installed();
+                    m.installed_list.reset();
                 }
                 Event::TakenDown(lines) => {
                     m.message = Some(Ok(lines.join("\n")));
@@ -629,9 +629,8 @@ impl Launcher {
         let tx = self.mods.tx.clone();
         std::thread::spawn(move || {
             let lines = auto_update(&list, enabled, &|_| {});
-            if !lines.is_empty() {
-                let _ = tx.send(Event::AutoUpdated(lines));
-            }
+            // Even with nothing to say: entries whose file was gone may have left the list.
+            let _ = tx.send(Event::AutoUpdated(lines));
         });
     }
 

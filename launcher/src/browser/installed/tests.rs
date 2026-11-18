@@ -477,3 +477,108 @@ fn data_packs_go_into_a_world_when_something_in_them_runs() {
     assert_eq!(names.len(), 4, "{names:?}");
     fs::remove_dir_all(world.parent().unwrap().parent().unwrap()).unwrap();
 }
+
+/// A registry entry for `id` whose file is `file`.
+fn listed(id: &str, file: &str) -> Entry {
+    serde_json::from_value(serde_json::json!({
+        "source": "horizon", "project": id, "slug": id, "title": id, "kind": "mod",
+        "version": "1", "number": "1", "file": file, "checksum": "", "page": ""
+    }))
+    .unwrap()
+}
+
+/// Entries from before the cutover whose files are gone leave the list; one whose file is
+/// there stays, and no file is touched.
+#[test]
+fn entries_whose_file_is_not_found_are_pruned() {
+    let home = home("prune-missing");
+    fs::create_dir_all(home.join("horizon-mods")).unwrap();
+    fs::create_dir_all(home.join("horizon-native-mods")).unwrap();
+    fs::write(home.join("horizon-mods/kept.hmod"), b"kept").unwrap();
+    fs::write(home.join("horizon-native-mods/other.hnmod"), b"old").unwrap();
+    let kept = listed("kept", "horizon-mods/kept.hmod");
+    let entries = vec![
+        listed("appleskin", "horizon-native-mods/appleskin.hmod"),
+        kept.clone(),
+        listed("freelook", "horizon-mods/freelook.hmod"),
+    ];
+    Installed { entries }.save(&home).unwrap();
+
+    let gone: Vec<String> = prune_missing(&home)
+        .into_iter()
+        .map(|e| e.project)
+        .collect();
+    assert_eq!(gone, ["appleskin", "freelook"]);
+    assert_eq!(Installed::load(&home).entries, [kept]);
+    assert_eq!(
+        fs::read(home.join("horizon-mods/kept.hmod")).unwrap(),
+        b"kept"
+    );
+    assert_eq!(
+        fs::read(home.join("horizon-native-mods/other.hnmod")).unwrap(),
+        b"old"
+    );
+    // Nothing more to drop: the list isn't written again.
+    assert!(prune_missing(&home).is_empty());
+    fs::remove_dir_all(&home).unwrap();
+}
+
+/// An entry whose file gives another error than "not found" stays listed.
+#[test]
+fn an_entry_whose_file_cannot_be_read_is_kept() {
+    let home = home("prune-error");
+    fs::create_dir_all(home.join("horizon-mods")).unwrap();
+    // A name the file system refuses: Windows' invalid `?`, elsewhere one over 255 bytes.
+    let name = if cfg!(windows) {
+        "bad?name.hmod".to_string()
+    } else {
+        format!("{}.hmod", "a".repeat(300))
+    };
+    let file = format!("horizon-mods/{name}");
+    let error = fs::symlink_metadata(home.join(&file)).unwrap_err();
+    assert_ne!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    let entries = vec![listed("odd", &file)];
+    Installed {
+        entries: entries.clone(),
+    }
+    .save(&home)
+    .unwrap();
+
+    assert!(prune_missing(&home).is_empty());
+    assert_eq!(Installed::load(&home).entries, entries);
+    fs::remove_dir_all(&home).unwrap();
+}
+
+/// While an entry's folder can't be read (missing, or a link to a drive that is unplugged),
+/// nothing in it is pruned.
+#[test]
+fn nothing_is_pruned_from_a_folder_that_cannot_be_read() {
+    let home = home("prune-unreadable");
+    let entries = vec![
+        listed("native", "horizon-native-mods/native.hmod"),
+        listed("pack", "resourcepacks/pack.zip"),
+    ];
+    Installed {
+        entries: entries.clone(),
+    }
+    .save(&home)
+    .unwrap();
+    // No horizon-native-mods/ at all; resourcepacks/ a link to a drive that isn't there.
+    let drive = home.join("unplugged");
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&drive, home.join("resourcepacks"));
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(&drive, home.join("resourcepacks"));
+    if let Err(e) = &linked {
+        eprintln!("no link (this account can't make one): {e}");
+    }
+    assert!(fs::read_dir(home.join("resourcepacks")).is_err());
+
+    assert!(prune_missing(&home).is_empty());
+    assert_eq!(Installed::load(&home).entries, entries);
+    // A game folder that isn't there: nothing is read or written.
+    let away = home.join("away");
+    assert!(prune_missing(&away).is_empty());
+    assert!(!away.exists());
+    fs::remove_dir_all(&home).unwrap();
+}
