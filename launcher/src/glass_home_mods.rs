@@ -459,8 +459,14 @@ impl Launcher {
             .route_open
             .as_deref()
             .is_some_and(|o| o.starts_with(&id));
-        let confirming = self.mods.route_open.as_deref() == Some(format!("{id}:remove").as_str());
-        let again = format!("{id}:remove");
+        // The confirmation belongs to the row's state when it started: if a missing file comes
+        // back meanwhile, the row asks again before the ordinary Remove, which deletes the file.
+        let again = if row.missing {
+            format!("{id}:forget")
+        } else {
+            format!("{id}:remove")
+        };
+        let confirming = self.mods.route_open.as_deref() == Some(again.as_str());
         let button = ui::icon_button(
             format!("mod-more-{}", row.file),
             "more-vertical",
