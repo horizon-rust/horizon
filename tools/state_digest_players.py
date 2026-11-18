@@ -255,6 +255,9 @@ def run_integrated(args, home, out, timings):
             command(line)
         host = run('lan', 'status').get('host', 'Player')
         command(f'tp {host} 40.5 {base.Y} 40.5')
+        # The host's player is moved by the window's own ticks, which a frozen server does not pace: a spectator stays put,
+        # so no mob pushes it and what looks at it sees the same place every run.
+        command(f'gamemode spectator {host}')
         command(f'give {host} minecraft:bread 4')
         time.sleep(3)
         before = game_time(command)

@@ -12,7 +12,7 @@ use std::{
     io::Write,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -44,6 +44,25 @@ static JOIN_BASE: AtomicU64 = AtomicU64::new(0);
 
 fn relative(seq: u64) -> u64 {
     seq.wrapping_sub(JOIN_BASE.load(Ordering::Relaxed))
+}
+
+/// Set by `digest-sync` on the integrated server. The join counter is one per process, and the window's own
+/// client world joins entities into it between the server thread's joins, so its numbers are not
+/// reproducible there. The digest then hashes the entity's place in the join-order walk instead, which keeps the order.
+static RANKED_JOINS: AtomicBool = AtomicBool::new(false);
+
+/// What the digest records of a join number: the number relative to the sync, or the entity's rank in the walk.
+fn join_key(seq: u64, rank: u64) -> u64 {
+    if RANKED_JOINS.load(Ordering::Relaxed) {
+        rank
+    } else {
+        relative(seq)
+    }
+}
+
+/// Called by the integrated server's `digest-sync`.
+pub(super) fn rank_joins() {
+    RANKED_JOINS.store(true, Ordering::Relaxed);
 }
 
 fn hasher() -> DefaultHasher {
@@ -156,7 +175,7 @@ impl Game<'_> {
                 std::mem::discriminant(&handle).hash(&mut one);
                 e.native_type().hash(&mut one);
                 e.id().hash(&mut one);
-                relative(seq.get()).hash(&mut one);
+                join_key(seq.get(), count).hash(&mut one);
                 vec3(&mut one, e.position());
                 vec3(&mut one, e.velocity());
                 let [yaw, pitch] = e.rotation();
@@ -181,7 +200,7 @@ impl Game<'_> {
                         count - 1,
                         e.native_type(),
                         e.id(),
-                        relative(seq.get()),
+                        join_key(seq.get(), count - 1),
                         [p.x, p.y, p.z],
                         [v.x, v.y, v.z],
                         e.rotation(),
@@ -225,7 +244,7 @@ impl Game<'_> {
         }
 
         let level_random = random_words(&self.world.random);
-        let next_join = relative(JoinSeq::upcoming().get());
+        let next_join = join_key(JoinSeq::upcoming().get(), count);
         let mut ticks = hasher();
         let block_ticks = sorted_ticks(&self.block_ticks.blocks);
         let fluid_ticks = sorted_ticks(&self.block_ticks.fluids);

@@ -1131,6 +1131,7 @@ impl Game<'_> {
             && (rest.is_empty() || rest.starts_with(char::is_whitespace))
         {
             let args: Vec<&str> = rest.split_whitespace().collect();
+            super::state_digest::rank_joins();
             return vec![match self.in_owner_level(|g| g.state_digest_sync(&args)) {
                 Ok(()) => "digest-sync done".to_owned(),
                 Err(e) => format!("digest-sync: {e}"),
