@@ -548,6 +548,10 @@ struct Launcher {
     found_scanning: bool,
     /// The game starting now plays this pack's profile (its work folder).
     starting_pack: Option<std::path::PathBuf>,
+    /// The folder of the instance a start is preparing, while `starting_client` is set.
+    starting_work: Option<std::path::PathBuf>,
+    /// The pack folder a Port step is rebuilding now.
+    porting: Option<std::path::PathBuf>,
     /// The Mods page: the browser's search, installs and updates (`mods_page.rs`).
     mods: mods_page::Mods,
     github: github_mods_page::Github,

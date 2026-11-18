@@ -269,6 +269,8 @@ impl Launcher {
             found_packs: Vec::new(),
             found_scanning: false,
             starting_pack: None,
+            starting_work: None,
+            porting: None,
             mods: mods_page::Mods::new(cx),
             github: github_mods_page::Github::new(cx),
             instances: instances_page::Instances::default(),

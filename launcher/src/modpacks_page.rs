@@ -5,7 +5,7 @@ use horizon_launcher::browser::horizon::pack as horizon_pack;
 use horizon_launcher::modpacks::{self, Imported};
 use horizon_launcher::other_launchers::Found;
 use horizon_port_pack::report::Status;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The report's filter: every row, or one status.
 pub(super) const FILTERS: [(Option<Status>, &str); 5] = [
@@ -18,6 +18,22 @@ pub(super) const FILTERS: [(Option<Status>, &str); 5] = [
 
 /// Lines of the pipeline's log the page shows while it works.
 const LOG_SHOWN: usize = 6;
+
+/// Why pack folder `work` can't be ported or started now, given the folder a start is preparing
+/// and the one a Port step is rebuilding: Port rebuilds the carried mods a start reads (#18074).
+pub(super) fn folder_busy(
+    work: &Path,
+    starting: Option<&Path>,
+    porting: Option<&Path>,
+) -> Option<&'static str> {
+    if starting == Some(work) {
+        Some("This pack is starting. Port it once the game has started.")
+    } else if porting == Some(work) {
+        Some("This pack is being ported. Play it once the port ends.")
+    } else {
+        None
+    }
+}
 
 /// The imported packs' read on a thread (#18074): only the window's latest read applies, and
 /// only when the window changed no pack since asking for it.
@@ -89,6 +105,7 @@ impl Launcher {
     /// A finished step: the pack's new state, opened.
     pub(super) fn pack_done(&mut self, result: Result<Box<Imported>, String>) {
         self.pack_busy = false;
+        self.porting = None;
         match result {
             Ok(pack) => {
                 self.mods.report_list.reset();
@@ -132,7 +149,10 @@ impl Launcher {
             .filter(|tag| backend::is_prepared(tag))
             .map(|tag| backend::resources(tag));
         if !ask {
-            self.pack_job(move |log| modpacks::port(&work, resources.as_deref(), None, log));
+            let job_work = work.clone();
+            self.port_job(work, move |log| {
+                modpacks::port(&job_work, resources.as_deref(), None, log)
+            });
             return;
         }
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -145,8 +165,9 @@ impl Launcher {
             if let Ok(Ok(Some(mut paths))) = paths.await {
                 if let Some(from) = paths.pop() {
                     let _ = this.update(cx, |this, cx| {
-                        this.pack_job(move |log| {
-                            modpacks::port(&work, resources.as_deref(), Some(&from), log)
+                        let job_work = work.clone();
+                        this.port_job(work, move |log| {
+                            modpacks::port(&job_work, resources.as_deref(), Some(&from), log)
                         });
                         cx.notify();
                     });
@@ -154,6 +175,32 @@ impl Launcher {
             }
         })
         .detach();
+    }
+
+    /// Why pack folder `work` can't be ported or started now ([`folder_busy`]).
+    pub(super) fn pack_folder_busy(&self, work: &Path) -> Option<&'static str> {
+        let starting = self
+            .starting_work
+            .as_deref()
+            .filter(|_| self.starting_client.is_some());
+        folder_busy(work, starting, self.porting.as_deref())
+    }
+
+    /// Ports pack folder `work` with `job`, unless a start of it is preparing.
+    fn port_job(
+        &mut self,
+        work: PathBuf,
+        job: impl FnOnce(&dyn Fn(String)) -> Result<Imported, String> + Send + 'static,
+    ) {
+        if let Some(why) = self.pack_folder_busy(&work) {
+            self.pack_error = Some(tr(why).into());
+            return;
+        }
+        if self.pack_busy {
+            return;
+        }
+        self.porting = Some(work);
+        self.pack_job(job);
     }
 
     fn play_pack(&mut self, work: PathBuf) {
@@ -507,15 +554,7 @@ impl Launcher {
         };
         let mut port = button("pack-port", port_label, Kind::Secondary, &t);
         let mut from = button("pack-from", "Use jars from my instance…", Kind::Ghost, &t);
-        // Port rebuilds the carried mods a start of this pack is reading now.
-        let starting = self.starting_pack.as_ref() == Some(&p.work)
-            || self.starting_instance.as_ref().is_some_and(|id| {
-                self.instances
-                    .list
-                    .iter()
-                    .any(|i| &i.id == id && i.work == p.work)
-            });
-        if self.pack_busy || !p.can_port() || starting {
+        if self.pack_busy || !p.can_port() || self.pack_folder_busy(&p.work).is_some() {
             port = disabled(port);
             from = disabled(from);
         } else {
@@ -709,7 +748,23 @@ fn found_detail(found: &Found, t: &Theme) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::PackReads;
+    use super::{folder_busy, PackReads};
+    use std::path::Path;
+
+    /// A pack folder being started is not ported, and one being ported is not started; other
+    /// folders go on (#18074). Compared by folder, whatever the instance list holds.
+    #[test]
+    fn a_pack_is_never_started_and_ported_at_once() {
+        let (pack, other) = (Path::new("ports/bmc2"), Path::new("ports/other"));
+        assert_eq!(folder_busy(pack, None, None), None);
+        assert!(folder_busy(pack, Some(pack), None)
+            .unwrap()
+            .contains("starting"));
+        assert!(folder_busy(pack, None, Some(pack))
+            .unwrap()
+            .contains("ported"));
+        assert_eq!(folder_busy(pack, Some(other), Some(other)), None);
+    }
 
     /// A read the window changed its packs after (a step ended, a pack was removed) never
     /// replaces what the window has, even when its packs arrive right after the change, in the
