@@ -27,7 +27,7 @@ def main():
     (build / 'rust.json').unlink(missing_ok=True)
     harness.run_logged(
         ['cargo', 'test', '--locked', '-p', 'horizon-client', '--lib',
-         'game::dragon::tests::', '--', '--include-ignored'],
+         'game::dragon::tests::dragon_render_parity_fixture', '--', '--ignored', '--exact'],
         build, 'rust', env=dict(os.environ, HORIZON_DRAGON_RENDER_OUTPUT=str(build / 'rust.json')))
     expected = json.loads((build / 'client.json').read_text())
     actual = json.loads((build / 'rust.json').read_text())

@@ -44,6 +44,9 @@ fn portal_contact_and_waiting_handoff_match_vanilla_counters() {
     )
     .unwrap();
     game.build_registries();
+    // A server has an open world, whose epoch the arrow's handle lookup on departure needs.
+    game.native_lifecycle
+        .begin_open(mod_api::Authority::IntegratedServer);
     game.options.dedicated = Some(Vec::new());
     game.world = horizon_client::world::World::new(game.res.facts().air, 1);
     for z in -2..=2 {
