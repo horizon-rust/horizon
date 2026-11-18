@@ -9,7 +9,6 @@ use horizon_client::{
     gossip::{self, GossipType},
     mobs::{Mob, villager, villager_brain},
 };
-#[cfg(test)]
 use horizon_client::items::ItemStack;
 use horizon_core::geometry::Vec3;
 use horizon_core::position::BlockPos;
