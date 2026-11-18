@@ -17,6 +17,23 @@ fn main() -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     horizon_mod_api_gen::generate(&root, &out, horizon_mod_api_gen::Target::Api)?;
     horizon_mod_api_gen::generate_points(&root, &out)?;
+    // The published loops and the exposed internals, as `loops.json` and `internals.json` have them.
+    fs::write(
+        out.join("loops.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "loops": horizon_mod_api_gen::loops::collect(&root)?
+        }))
+        .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        out.join("internals.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "internals": horizon_mod_api_gen::internals::rule_catalog(&root)?
+        }))
+        .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     fs::write(
         out.join("catalog.json"),
         horizon_mod_api_gen::neoforge_catalog(&root)?,

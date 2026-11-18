@@ -18,5 +18,6 @@ Rules for a coding agent making a Horizon mod. They are short on purpose; each l
    (`game`, `horizon`, `mixins`, optional `mixin`, `loop`, `bridge`, `module`; `state` is refused; see [the native route](../modding/src/concepts/native-route.md)) or `[wasm]`, `[[jar]]`. One of `[native]` or `[wasm]`, never both. Unknown fields are refused
    ([manifest](../modding/src/reference/manifest.md)).
 7. **Freshness errors:** a changed function hash refuses the injection; use `inject update` or reselect it with `inject add`. Never substitute a different function.
+   Points exist for functions in `horizon-client`'s `game/` and for `#[replaceable]` functions in lower crates; moving code out of `game/` removes its points (listed in `tools/mod_points_removed.txt`), so a mod that needs one asks for `#[replaceable]` in an issue.
 8. **Data and assets** are read through a reload hook, once per reload, never on the tick.
 9. **Missing hook?** File a [hook request](../modding/src/concepts/injections.md#ask-for-the-hook) on horizon-rust/horizon.

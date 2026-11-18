@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """Check that a change leaves the mod point catalog and the generated mod API as they were (docs/layers.md#mod-points-stay-put).
 
-Every eligible `&self` or `&mut self` method of `Game` is an injection point: its name, module path and signature are
-part of the mod API. Moving code out of `impl Game` must keep each such method where it is and only delegate from its
-body. This tool builds and runs the `hook_snapshot` example of `horizon-mod-api-gen` on the base and on the working
-tree, then compares what it wrote (points.json, the generated API, catalog.json, hook-notes.md). It fails on:
-- a point that was added, removed or changed (name, target, signature hash or any other field of points.json);
-- a change to any other generated file.
-`--allow-added` accepts a change whose points were only added (a new hook on purpose); the generated files then differ
-too, and are accepted with them.
+Every function under `horizon_client::game::` that the point generator admits is a point (the `&self` and `&mut self`
+methods of `Game`, and its free functions and other types' methods), and so is each `#[horizon_mod_api_macros::replaceable]`
+function in a lower crate. A point's name, target and signature are part of the mod API. This tool builds and runs the
+`hook_snapshot` example of `horizon-mod-api-gen` on the base and on the working tree, then compares what it wrote
+(points.json, the generated API, catalog.json, hook-notes.md, loops.json, internals.json). It prints how many points were
+added, removed (accepted and failing) and changed, and fails on:
+- a removed point unless tools/mod_points_removed.txt lists it (`name | #PR | reason`) and it is not a `Game` method or
+  a published loop, and no fixture (tools/ci/fn-replace-check, the wasm host's), doc or mod manifest names it;
+- a changed point (name kept, target or hash different) unless the same file lists it;
+- an added point, unless --allow-added;
+- a difference in loops.json or internals.json, and a difference in the other generated files that no accepted point
+  change explains (the generated API differs whenever a point does).
+Moving code out of `game/` removes its points: list them in the file. A method of `Game` keeps its name, module path and
+signature, and only its body delegates. A mod that needs a moved function asks for `#[replaceable]` in the lower crate.
 
     python3 tools/check_mod_points_unchanged.py                      # the working tree against the merge base with origin/main
     python3 tools/check_mod_points_unchanged.py --base HEAD^1        # against another ref
-    python3 tools/check_mod_points_unchanged.py --allow-added        # new points are fine, removed or changed ones are not
+    python3 tools/check_mod_points_unchanged.py --allow-added        # new points are fine
     python3 tools/check_mod_points_unchanged.py --target-dir DIR     # the Cargo build folder both runs share (default: target)
     python3 tools/check_mod_points_unchanged.py --compare OLD NEW    # compare two snapshot folders, build nothing
 
@@ -25,6 +31,7 @@ import difflib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -36,6 +43,11 @@ POINTS = "points.json"
 MAX_DIFF_LINES = 120
 MAX_LISTED = 40
 ROOT_MARK = "<repository>"
+LIST = "tools/mod_points_removed.txt"
+# Files whose difference never passes: the published loops and the exposed internals.
+STRICT_FILES = {"loops.json", "internals.json"}
+# Where a mod, a fixture or a doc may name a point.
+REFERENCE_PATHS = ("tools/ci/fn-replace-check", "crates/horizon-mod-wasm/tests/fixture", "docs", "*horizon-mod.toml")
 
 
 def load_points(path):
@@ -97,8 +109,98 @@ def short(value):
     return text if len(text) <= 80 else text[:77] + "..."
 
 
-def summary(added, removed, changed, files_added, files_removed, diffs, base_points, head_points,
-            max_lines=MAX_DIFF_LINES, max_listed=MAX_LISTED):
+def load_accepted(path):
+    """tools/mod_points_removed.txt: point name -> (PR, reason). One `name | #PR | reason` line per point; blank lines
+    and lines starting with `#` are comments. A missing file lists nothing."""
+    accepted = {}
+    path = Path(path)
+    if not path.is_file():
+        return accepted
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = [part.strip() for part in line.split("|", 2)]
+        if len(parts) != 3 or not all(parts):
+            raise ValueError(f"{path}:{number}: write `point name | #PR | reason`")
+        accepted[parts[0]] = (parts[1], parts[2])
+    return accepted
+
+
+def normalized(target):
+    return "".join(target.split())
+
+
+def is_game_method(target):
+    """A method of `Game`: the path has `Game` as the type before the method."""
+    target = normalized(target)
+    return "::Game<'_>::" in target or "::Game::" in target
+
+
+def loop_targets(loops_json):
+    """The entry and generic functions of the published loops in a loops.json, normalized."""
+    if not loops_json.is_file():
+        return set()
+    out = set()
+    for entry in json.loads(loops_json.read_text(encoding="utf-8")).get("loops", []):
+        out.add(normalized(entry["entry"]))
+        owner = entry["entry"].rsplit("::", 1)[0]
+        out.add(normalized(f"{owner}::{entry['generic']}"))
+    return out
+
+
+def references(point, files):
+    """The first checked-in file that names the point (its name as a word, or its target), or None."""
+    word = re.compile(r"(?<![\w:])" + re.escape(point["name"]) + r"(?!\w)")
+    for path in sorted(files):
+        text = files[path]
+        if point["target"] in text or word.search(text):
+            return path
+    return None
+
+
+def repo_texts(root=ROOT):
+    """The checked-in files a mod may name a point in: the fn-replace fixtures, the wasm host's fixture, the docs and
+    every mod manifest, as {path: text}."""
+    listed = subprocess.run(["git", "ls-files", "-z", "--", *REFERENCE_PATHS], cwd=root, capture_output=True, text=True)
+    files = {}
+    for name in filter(None, listed.stdout.split("\0")):
+        try:
+            files[name] = (Path(root) / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+    return files
+
+
+def classify(removed, changed, base_points, accepted, loops, files):
+    """Split the removed and changed points into accepted and failing: {name: reason}. A removal is accepted when it is
+    listed in the removal file and is neither a `Game` method, a loop, nor named by a fixture, doc or mod manifest. A
+    change is accepted when it is listed."""
+    removed_ok, removed_bad, changed_ok, changed_bad = {}, {}, {}, {}
+    for name in removed:
+        point = base_points[name]
+        reasons = []
+        if is_game_method(point["target"]):
+            reasons.append("a `Game` method")
+        if normalized(point["target"]) in loops:
+            reasons.append("a published loop")
+        if (path := references(point, files)) is not None:
+            reasons.append(f"named in {path}")
+        if reasons:
+            removed_bad[name] = ", ".join(reasons)
+        elif name not in accepted:
+            removed_bad[name] = f"not listed in {LIST}"
+        else:
+            removed_ok[name] = accepted[name]
+    for name, _fields in changed:
+        if name in accepted:
+            changed_ok[name] = accepted[name]
+        else:
+            changed_bad[name] = f"not listed in {LIST}"
+    return removed_ok, removed_bad, changed_ok, changed_bad
+
+
+def summary(added, removed_ok, removed_bad, changed, changed_ok, files_added, files_removed, diffs, base_points,
+            head_points, max_lines=MAX_DIFF_LINES, max_listed=MAX_LISTED):
     """The report as a list of lines."""
     out = []
 
@@ -111,16 +213,21 @@ def summary(added, removed, changed, files_added, files_removed, diffs, base_poi
         if len(names) > max_listed:
             out.append(f"  ... and {len(names) - max_listed} more")
 
+    def old(n):
+        return f"{n}  target {base_points[n]['target']}  hash {base_points[n]['signature_hash']}"
+
     listing("Points added", added,
             lambda n: f"{n}  target {head_points[n]['target']}  hash {head_points[n]['signature_hash']}")
-    listing("Points removed", removed,
-            lambda n: f"{n}  target {base_points[n]['target']}  hash {base_points[n]['signature_hash']}")
+    listing("Points removed and listed (accepted)", sorted(removed_ok),
+            lambda n: f"{old(n)}  [{removed_ok[n][0]}: {removed_ok[n][1]}]")
+    listing("Points removed and failing", sorted(removed_bad), lambda n: f"{old(n)}  [{removed_bad[n]}]")
     if changed:
         out.append(f"Points changed ({len(changed)}):")
         for name, fields in changed[:max_listed]:
-            out.append(f"  {name}")
-            for key, (old, new) in fields.items():
-                out.append(f"    {key}: {short(old)} -> {short(new)}")
+            out.append(f"  {name}" + (f"  [accepted, {changed_ok[name][0]}: {changed_ok[name][1]}]"
+                                       if name in changed_ok else ""))
+            for key, (before, after) in fields.items():
+                out.append(f"    {key}: {short(before)} -> {short(after)}")
         if len(changed) > max_listed:
             out.append(f"  ... and {len(changed) - max_listed} more")
     listing("Generated files added", files_added, str)
@@ -139,33 +246,65 @@ def summary(added, removed, changed, files_added, files_removed, diffs, base_poi
     return out
 
 
-def verdict(added, removed, changed, files_added, files_removed, diffs, allow_added=False):
-    """0 when the catalog and the API are as they were, or, with allow_added, when points were only added."""
-    different = bool(added or removed or changed or files_added or files_removed or diffs)
-    if not different:
-        return 0
-    if allow_added and added and not removed and not changed:
-        return 0
-    return 1
+def verdict(added, removed_bad, changed_bad, files_added, files_removed, diffs, explained, allow_added=False):
+    """0 when the catalog and the API are as they were, or differ only in ways accepted: points added (with
+    allow_added), removals and changes the removal file lists. A failing removal or change always fails. The generated
+    API differs whenever a point does, so those diffs pass when `explained` (a point difference was accepted), except
+    loops.json and internals.json, which always have to match."""
+    if removed_bad or changed_bad or (added and not allow_added):
+        return 1
+    if any(name in STRICT_FILES for name, _ in diffs):
+        return 1
+    if (diffs or files_added or files_removed) and not explained:
+        return 1
+    return 0
 
 
-def compare(base_dir, head_dir, allow_added=False, base_root=None, head_root=None):
-    """Compare two snapshot folders, print the report and return the exit status."""
-    base_points, head_points = load_points(Path(base_dir) / POINTS), load_points(Path(head_dir) / POINTS)
+def compare(base_dir, head_dir, allow_added=False, base_root=None, head_root=None, accepted=None, files=None):
+    """Compare two snapshot folders, print the report and return the exit status. `accepted` is the removal file's
+    entries (default: tools/mod_points_removed.txt) and `files` a function giving the checked-in files a point may be
+    named in (default: the repository's)."""
+    base_dir, head_dir = Path(base_dir), Path(head_dir)
+    base_points, head_points = load_points(base_dir / POINTS), load_points(head_dir / POINTS)
     added, removed, changed = diff_points(base_points, head_points)
     files_added, files_removed, diffs = diff_files(base_dir, head_dir, base_root, head_root)
-    status = verdict(added, removed, changed, files_added, files_removed, diffs, allow_added)
-    lines = summary(added, removed, changed, files_added, files_removed, diffs, base_points, head_points)
+    # A strict file only one side wrote (the base's older hook_snapshot does not write it yet) has nothing to compare.
+    skipped = [n for n in files_added + files_removed if n in STRICT_FILES]
+    files_added = [n for n in files_added if n not in STRICT_FILES]
+    files_removed = [n for n in files_removed if n not in STRICT_FILES]
+    for name in skipped:
+        print(f"note: {name} exists on one side only, not compared.")
+    if removed and files is None:
+        files = repo_texts
+    if accepted is None:
+        accepted = load_accepted(ROOT / LIST)
+    removed_ok, removed_bad, changed_ok, changed_bad = classify(
+        removed, changed, base_points, accepted, loop_targets(base_dir / "loops.json"), files() if removed else {})
+    explained = bool((added and allow_added) or removed_ok or changed_ok)
+    status = verdict(added, removed_bad, changed_bad, files_added, files_removed, diffs, explained, allow_added)
+    lines = summary(added, removed_ok, removed_bad, changed, changed_ok, files_added, files_removed, diffs,
+                    base_points, head_points)
+    counts = (f"Mod points: {len(added)} added, {len(removed)} removed ({len(removed_ok)} accepted, "
+              f"{len(removed_bad)} failing), {len(changed)} changed ({len(changed_ok)} accepted, "
+              f"{len(changed_bad)} failing).")
     if not lines:
         print(f"Mod points unchanged: {len(head_points)} points, the generated API is the same.")
+        print(counts)
         return 0
     print("\n".join(lines))
-    if status == 0:
-        print(f"\nMod points: {len(added)} added, none removed or changed (--allow-added).")
-    else:
-        print(f"\nMod point check failed: the mod API changed ({DOC}).")
-        print("A `Game` method keeps its name, module path and signature when its body moves; only the body delegates.")
-        print("If the change is on purpose, a new hook only adds points: run again with --allow-added.")
+    print("\n" + counts)
+    if status:
+        print(f"Mod point check failed: the mod API changed ({DOC}).")
+        if added and not allow_added:
+            print("Added points fail without --allow-added.")
+        if removed_bad or changed_bad:
+            print(f"A removed or changed point passes only when it is listed in {LIST} (name | #PR | reason), is not a "
+                  "`Game` method or a loop, and no fixture, doc or mod manifest names it. A mod that needs one "
+                  "asks for `#[horizon_mod_api_macros::replaceable]` in the lower crate.")
+        if any(name in STRICT_FILES for name, _ in diffs):
+            print("loops.json and internals.json have to match the base exactly.")
+        if not (removed_bad or changed_bad or (added and not allow_added)):
+            print("The generated API differs from the base with no accepted point change.")
     return status
 
 
