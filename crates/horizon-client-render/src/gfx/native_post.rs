@@ -788,6 +788,11 @@ impl NativeFrame {
         }
     }
 
+    /// Group 3's layout entries (`layout`), which a material stage's own layouts start with.
+    pub(in crate::gfx) fn entries(&self) -> &[wgpu::BindGroupLayoutEntry] {
+        &self.entries
+    }
+
     fn regroup(&mut self, device: &wgpu::Device) {
         self.group = Self::group(
             device,
@@ -1672,7 +1677,8 @@ pub fn frame_inputs(
         reset_reasons: 0,
         fog_environment: [fog[0], fog[1]],
         fog_render: [fog[2], fog[3]],
-        padding: [0; 2],
+        moon_phase: frame.sky.moon_phase,
+        padding: [0; 1],
     }
 }
 

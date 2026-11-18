@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The crates a pull request's `cargo test` must cover, for GITHUB_OUTPUT.
+"""The crates a branch's `cargo test` must cover (tools/check_changed.py; CI's verify tests the whole workspace).
 
 Prints `packages=-p a -p b ...`, or `packages=` when the whole workspace must run (main and nightly never call this).
 A package is selected when a changed file is in its directory, when it depends (normal, dev or build) on a selected one,
@@ -34,6 +34,8 @@ HORIZON_CLIENT = [
     "research-lock.json", "tests/fixture_support/item_resource_properties.rs", "tests/fixtures",
     # shader_packs.rs tests load the sample pack.
     "crates/horizon-shader-api/packs/traced_shadows",
+    # The registered slot-source test loads its pack and program.
+    "tools/fixtures/registered_slot_sources",
 ]
 # The generator scans these to write the mod API, the points and the host boundary: its own sources, the vocabulary, the
 # engine crates holding hook targets and their manifests.

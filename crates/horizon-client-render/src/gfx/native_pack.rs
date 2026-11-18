@@ -5,20 +5,17 @@ use horizon_shader_api::check::CheckedStage;
 use horizon_shader_api::{Report, StageKind};
 
 use super::displace::Displacement;
+use super::external::{Capabilities, FrameStart, TimingSetup, WorldPost, WorldTargets};
 use super::native_entity::NativeEntity;
 use super::native_material::{DisplacedShape, MaterialPipelines, NativeMaterial, TerrainShape};
+use super::native_post::kept::StageReads;
 use super::native_post::{NativeFrame, NativePost};
 use super::native_shadow::{NativeShadow, ShadowGrid};
 use super::native_sky::NativeSky;
-use super::output::EffectiveOutput;
 use super::pack_timing::PassTiming;
-use super::surface_setup::ray_query::ray_scene::{RayScene, Traced};
-use super::{Frame, SectionKey};
-use crate::fast_hash::FxHashMap;
+use super::rt::scene::{RayScene, Traced};
 
 pub struct NativePack {
-    /// The manifest's `name`.
-    pub name: String,
     pub frame: NativeFrame,
     pub sky: Option<NativeSky>,
     pub material: Option<NativeMaterial>,
@@ -28,22 +25,40 @@ pub struct NativePack {
     /// With a sky stage, what of Minecraft's sky still draws over it (`[sky]`).
     pub vanilla_clouds: bool,
     pub vanilla_sun: bool,
+    pub vanilla_moon: bool,
     pub vanilla_stars: bool,
     pub weather: Option<wgpu::RenderPipeline>,
     /// The draw of the shadow map the stages read, if the pack asks for one.
     pub shadow: Option<NativeShadow>,
     /// `[displacement]`'s grid, while it is on and the resource packs have height maps.
     pub displacement: Option<Displacement>,
+    /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
+    pub timing: Option<PassTiming>,
+    /// It declares `[ray_tracing]`: the renderer keeps a scene for it (`replace_executor`).
+    pub traces: bool,
+    /// With kept resources, what lets a rebuild keep them (`carry`).
+    kept: Option<super::native_post::kept::Signature>,
+}
+
+/// What the game reads of the running pack's manifest beside its executor
+/// (`Renderer::native_pack_name`, `light_color`, `particle_lights`).
+pub struct Metadata {
+    /// The manifest's `name`.
+    pub name: String,
     /// `[[particle_lights]]`.
     pub particle_lights: Vec<horizon_shader_api::manifest::ParticleLight>,
     /// `[[lights]]`, for the colour of held and dropped items' light.
     pub light_colors: Vec<horizon_shader_api::manifest::LightColor>,
-    /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
-    pub timing: Option<PassTiming>,
-    /// It declares `[ray_tracing]`: the renderer keeps a scene for it (`replace_native`).
-    pub traces: bool,
-    /// With kept resources, what lets a rebuild keep them (`carry`).
-    kept: Option<super::native_post::kept::Signature>,
+}
+
+impl Metadata {
+    pub fn of(report: &Report) -> Self {
+        Self {
+            name: report.manifest.name.clone(),
+            particle_lights: report.manifest.particle_lights.clone(),
+            light_colors: report.manifest.lights.clone(),
+        }
+    }
 }
 
 /// Whether the option `id` (a bool, or a number above 0) is on, or there is none to ask.
@@ -189,17 +204,29 @@ impl NativePack {
     }
 
     /// Joins the frame's group with this frame's `scene` from `camera` for a material stage
-    /// that traces: after the frame's group changed for this frame, before the terrain draws.
+    /// that traces, and with the kept resources it reads: after the frame's group changed for
+    /// this frame and the kept resources' frame started (`before_world`), before the terrain
+    /// draws.
     pub(in crate::gfx) fn bind_scene(
         &mut self,
         device: &wgpu::Device,
         scene: Option<&RayScene>,
         camera: glam::DVec3,
     ) {
-        if let Some(trace) = self.material.as_mut().and_then(|m| m.scene.as_mut()) {
-            let scene = scene.and_then(|s| s.traced(camera));
-            trace.bind(device, &self.frame, scene.as_ref());
+        let scene = scene.and_then(|s| s.traced(camera));
+        self.bind_terrain(device, scene.as_ref());
+    }
+
+    /// `bind_scene` with this frame's `scene` as the camera traces it.
+    pub(in crate::gfx) fn bind_terrain(
+        &mut self,
+        device: &wgpu::Device,
+        scene: Option<&Traced<'_>>,
+    ) {
+        if let Some(m) = &mut self.material {
+            m.bind(device, &self.frame, scene, &self.post);
         }
+        self.bind_kept(device);
     }
 
     /// Whether the pack's rays read the scene's entity layer: its files name `RAY_ENTITY`, and
@@ -209,9 +236,19 @@ impl NativePack {
         self.post.traces_entities() || material.is_some_and(|t| t.traces_entities())
     }
 
+    /// The pack's entity stage and the group 3 it draws with this frame.
+    pub(in crate::gfx) fn entities(&self) -> Option<(&NativeEntity, &wgpu::BindGroup)> {
+        let entity = self.entity.as_ref()?;
+        let kept = entity
+            .kept
+            .as_ref()
+            .and_then(|k| k.group(self.post.parity()));
+        Some((entity, kept.unwrap_or(&self.frame.group)))
+    }
+
     /// The pipelines the pack's terrain draws with this frame, and its group 3.
     pub(in crate::gfx) fn terrain(&self) -> Option<(&MaterialPipelines, &wgpu::BindGroup)> {
-        Some(self.material.as_ref()?.drawn(&self.frame.group))
+        Some((self.material.as_ref()?).drawn(&self.frame.group, self.post.parity()))
     }
 
     /// The pack of the checked stages `report` with the option values `constants`, drawing
@@ -336,6 +373,7 @@ impl NativePack {
         };
         let vanilla_clouds = keeps(|s| s.clouds);
         let vanilla_sun = keeps(|s| s.sun);
+        let vanilla_moon = keeps(|s| s.moon);
         let vanilla_stars = keeps(|s| s.stars);
         let weather = report
             .stages
@@ -368,7 +406,15 @@ impl NativePack {
         let sky = others
             .iter()
             .find(|s| s.kind == StageKind::Sky)
-            .map(|stage| NativeSky::new(device, globals, &frame, stage, constants, format))
+            .map(|stage| {
+                let kept = StageReads::new(
+                    device,
+                    &report.manifest,
+                    report.manifest.sky.as_ref(),
+                    &frame,
+                );
+                NativeSky::new(device, globals, (&frame, kept), stage, constants, format)
+            })
             .transpose()?;
         let mut material = others
             .iter()
@@ -380,6 +426,8 @@ impl NativePack {
                     steps: d.view.steps,
                     layout: &d.draw_layout,
                 });
+                let listed = report.manifest.material.as_ref();
+                let kept = StageReads::new(device, &report.manifest, listed, &frame);
                 NativeMaterial::new(
                     device,
                     terrain,
@@ -390,6 +438,7 @@ impl NativePack {
                     coverage,
                     has_vertex,
                     displaced.as_ref(),
+                    kept,
                 )
             })
             .transpose()?;
@@ -399,6 +448,9 @@ impl NativePack {
             .map(|stage| {
                 let groups = [terrain.entities, terrain.retained_entities];
                 let manifest = &report.manifest;
+                let listed = manifest.entity.as_ref();
+                let kept = StageReads::new(device, manifest, listed, &frame);
+                let stage = (stage, kept);
                 NativeEntity::new(device, format, groups, &frame, stage, constants, manifest)
             })
             .transpose()?;
@@ -419,7 +471,7 @@ impl NativePack {
         let traced = |m: &NativeMaterial| m.scene.is_some();
         let wanted = |s: &horizon_shader_api::check::CheckedStage| s.scene_source.is_some();
         let refused = others.iter().any(wanted)
-            && super::surface_setup::ray_query::on(device)
+            && super::rt::query::on(device)
             && !material.as_ref().is_some_and(traced);
         let computes = post.computes_trace();
         if (!scenes.is_empty() || computes) && !refused {
@@ -443,9 +495,6 @@ impl NativePack {
         labels.extend(weather_label);
         labels.extend(post.labels().into_iter().map(str::to_owned));
         let pack = Self {
-            name: report.manifest.name.clone(),
-            particle_lights: report.manifest.particle_lights.clone(),
-            light_colors: report.manifest.lights.clone(),
             traces: report.manifest.ray_tracing.is_some(),
             kept,
             frame,
@@ -455,6 +504,7 @@ impl NativePack {
             post,
             vanilla_clouds,
             vanilla_sun,
+            vanilla_moon,
             vanilla_stars,
             weather,
             shadow,
@@ -562,9 +612,25 @@ impl NativePack {
         );
     }
 
-    /// Whether the pack's `[tonemap]` takes the place of Horizon's tone curve.
-    pub fn tonemaps(&self) -> bool {
-        self.post.tonemaps()
+    /// What the pack does in the renderer's place, fixed while it runs: the renderer keeps it
+    /// from the pack's install on (`replace_executor`).
+    pub fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            shadow: self.shadow.is_some(),
+            reflection: self.frame.reflects,
+            // GPU culling doesn't list the sections `[displacement]`'s grid takes quads from.
+            displacement: self.displacement.is_some(),
+            material: self.material.is_some(),
+            hides_clouds: !self.vanilla_clouds,
+            // `[sky]`'s sun, moon and stars are left out only where its stage draws its own.
+            hides_sun: self.sky.is_some() && !self.vanilla_sun,
+            hides_moon: self.sky.is_some() && !self.vanilla_moon,
+            hides_stars: self.sky.is_some() && !self.vanilla_stars,
+            tone_curve: self.post.tonemaps(),
+            ray_scene: self.traces,
+            entities: self.entity.is_some(),
+            ray_entities: self.traces_entities(),
+        }
     }
 
     /// Times the pack's passes, or stops, as the renderer's settings say, before its world
@@ -590,63 +656,9 @@ impl NativePack {
     }
 }
 
-/// What the renderer hands the pack's post stage (`NativePack::run_post`).
-pub struct WorldPost<'a> {
-    pub device: &'a wgpu::Device,
-    pub encoder: &'a mut wgpu::CommandEncoder,
-    /// The world's scaled target (colour, depth), of `size`.
-    pub world: (&'a wgpu::TextureView, &'a wgpu::TextureView),
-    /// The window's frame, which the last pass draws.
-    pub screen: &'a wgpu::TextureView,
-    pub size: [u32; 2],
-    /// The ray scene and the camera, when the game traces rays.
-    pub scene: Option<(&'a RayScene, glam::DVec3)>,
-}
-
-/// The renderer's pass timing settings (`NativePack::set_up_timing`).
-pub struct TimingSetup<'a> {
-    pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
-    /// `set_pass_timing`, `set_pass_timing_gap` and `set_keep_timed_frames`.
-    pub on: bool,
-    pub gap: std::time::Duration,
-    pub keep_frames: bool,
-}
-
-/// What the renderer hands the pack before its world passes (`NativePack::start_frame`).
-pub struct FrameStart<'a> {
-    pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
-    pub frame: &'a Frame<'a>,
-    /// The world's size this frame: the scaled target's, else the window's.
-    pub size: [u32; 2],
-    /// This frame's output, whose display values a 0.2 pack reads.
-    pub output: &'a EffectiveOutput,
-    /// The light sources the section meshes list, and their revision (`BlockLight::update`).
-    pub lights: &'a FxHashMap<SectionKey, Vec<([i32; 3], u32)>>,
-    pub light_revision: u64,
-    /// The sky is open this frame.
-    pub sky_visible: bool,
-    /// The ray scene, when the game traces rays (`NativePack::write`).
-    pub scene: Option<&'a RayScene>,
-}
-
-/// What the renderer hands the pack after the water mirror (`NativePack::prepare_world_targets`).
-pub struct WorldTargets<'a> {
-    pub device: &'a wgpu::Device,
-    pub encoder: &'a mut wgpu::CommandEncoder,
-    /// The water mirror's colour, when one was drawn this frame.
-    pub reflection: Option<wgpu::TextureView>,
-    pub title: bool,
-    /// The world's depth, and its colour where it can be copied (the scaled target, not the
-    /// window's own).
-    pub depth: &'a wgpu::Texture,
-    pub color: Option<&'a wgpu::Texture>,
-}
-
 #[cfg(test)]
 pub(in crate::gfx) mod tests {
-    use super::{NativePack, TerrainShape, chosen_shadow, reads_opaque};
+    use super::{Capabilities, NativePack, TerrainShape, chosen_shadow, reads_opaque};
     use horizon_shader_api::manifest::{OptionKind, PackOption, Shadow};
 
     /// The world before translucent terrain is copied only for a pack whose material, or the
@@ -730,6 +742,105 @@ file = \"material.wgsl\"
         assert!(built.is_err(), "the pack should be refused");
     }
 
+    /// What the renderer keeps of a pack from its install on: each answer as its manifest and
+    /// the renderer's resources give it.
+    #[test]
+    fn a_pack_tells_the_renderer_what_it_draws_in_its_place() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .unwrap();
+        let (globals, empty) = terrain_layouts(&device);
+        let does = |stages: &str| {
+            let shape = terrain_shape(&globals, &empty);
+            let built = NativePack::new(
+                &device,
+                &queue,
+                &shape,
+                pack(stages),
+                &[],
+                Default::default(),
+            );
+            built.expect("the pack builds").0.capabilities()
+        };
+        let material = "[material]\nfile = \"material.wgsl\"\n";
+        assert_eq!(does(""), Capabilities::default());
+        let hides = Capabilities {
+            hides_clouds: true,
+            hides_sun: true,
+            hides_moon: true,
+            hides_stars: true,
+            ..Capabilities::default()
+        };
+        let all = "clouds = false\nsun = false\nmoon = false\nstars = false\n";
+        assert_eq!(does(all), hides);
+        let terrain = Capabilities {
+            material: true,
+            ..Capabilities::default()
+        };
+        assert_eq!(does(material), terrain);
+        // No resource pack's height maps here (`TerrainShape::pbr`): nothing to displace.
+        assert_eq!(does(&format!("{material}[displacement]\n")), terrain);
+        let traces = Capabilities {
+            ray_scene: true,
+            ..terrain
+        };
+        assert_eq!(does(&format!("{material}[ray_tracing]\n")), traces);
+        let tonemap = Capabilities {
+            tone_curve: true,
+            ..Capabilities::default()
+        };
+        assert_eq!(does("[tonemap]\nfile = \"tonemap.wgsl\"\n"), tonemap);
+    }
+
+    /// `[sky] moon = false` reaches the renderer as `hides_moon`, and the celestial pass then
+    /// draws the sun's quad without the moon's; the same sky without the key keeps both.
+    #[test]
+    fn a_pack_sky_without_minecraft_s_moon_leaves_it_out_of_the_celestial_pass() {
+        use crate::mesher::{LOW, VERY_BRIGHT, Vertex};
+        let _gpu = crate::gfx::test_gpu::lock();
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .unwrap();
+        let (globals, empty) = terrain_layouts(&device);
+        let quad = |tier: u8| {
+            let mut v: Vertex = bytemuck::Zeroable::zeroed();
+            v.layer = 2 | u32::from(tier) << 16;
+            [v; 4]
+        };
+        let sun_and_moon = [quad(VERY_BRIGHT), quad(LOW)].concat();
+        let drawn = |stages: &str| {
+            let shape = terrain_shape(&globals, &empty);
+            let built = NativePack::new(
+                &device,
+                &queue,
+                &shape,
+                pack(stages),
+                &[],
+                Default::default(),
+            );
+            let c = built.expect("the pack builds").0.capabilities();
+            (
+                c.hides_moon,
+                super::super::celestial::bodies(&sun_and_moon, c.hides_sun, c.hides_moon),
+            )
+        };
+        assert_eq!(drawn("moon = false\n"), (true, 0..6));
+        assert_eq!(drawn(""), (false, 0..12));
+    }
+
     /// A pack with a sky stage and the manifest's `stages` after it.
     fn pack(stages: &str) -> horizon_shader_api::Report {
         use horizon_shader_api::{MANIFEST, Pack, check};
@@ -755,6 +866,12 @@ file = \"material.wgsl\"
         );
         if stages.contains("[material]") {
             files.push(("material.wgsl", &material));
+        }
+        if stages.contains("[tonemap]") {
+            files.push((
+                "tonemap.wgsl",
+                "fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color; }\n",
+            ));
         }
         let files = files
             .into_iter()
