@@ -1712,9 +1712,11 @@ mod tests {
 
     /// Same machine, one process. The scan walks every block entity; the index walks the kind or chunk.
     #[test]
-    #[ignore = "opt-in timing measurement"]
     fn measure_block_entity_indexes_against_a_full_scan() {
         use std::time::Instant;
+        if !std::env::var("HORIZON_MEASURE_BLOCK_ENTITIES").is_ok_and(|value| value == "1") {
+            return;
+        }
         const RUNS: usize = 11;
         let b = many_block_entities();
         let time_scan = || {
