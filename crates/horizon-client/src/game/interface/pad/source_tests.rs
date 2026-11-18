@@ -6,19 +6,21 @@ use super::super::event_loop::EventLoopCtl;
 use super::parity_tests::{pad_press, playing};
 use horizon_client::actions::Action;
 use horizon_client::gamepad::Button;
+use horizon_client::held::Source;
 use horizon_client::input_source::{InputHost, InputSource};
 use horizon_client::motion::PlayerMotion;
 use horizon_core::geometry::Vec3;
 use std::cell::Cell;
 use std::rc::Rc;
 use winit::event_loop::ControlFlow;
+use winit::keyboard::{KeyCode, ModifiersState};
 
 /// What a test sets a source to answer, and what it saw. Shared with the test, since the game
 /// owns the source.
 #[derive(Default)]
 struct Script {
     frames: Cell<u32>,
-    holds_use: Cell<bool>,
+    holds: Cell<&'static [&'static str]>,
     look: Cell<Option<[f64; 2]>>,
     stack_drop: Cell<bool>,
 }
@@ -30,7 +32,7 @@ impl InputSource for Probe {
         self.0.frames.set(self.0.frames.get() + 1);
     }
     fn holds(&self, mapping: &str) -> bool {
-        mapping == "key.use" && self.0.holds_use.get()
+        self.0.holds.get().contains(&mapping)
     }
     fn look(&mut self, _host: &dyn InputHost, _seconds: f32) -> Option<[f64; 2]> {
         self.0.look.get()
@@ -47,7 +49,7 @@ fn install(game: &mut Game) -> Rc<Script> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_registered_source_answers_in_the_pads_place() {
     playing(|game| {
         game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
@@ -59,7 +61,7 @@ fn a_registered_source_answers_in_the_pads_place() {
 
         let script = install(game);
         assert!(!game.input_holds("key.use"), "the source says no");
-        script.holds_use.set(true);
+        script.holds.set(&["key.use"]);
         assert!(game.input_holds("key.use"));
 
         let yaw = game.yaw;
@@ -92,7 +94,7 @@ impl EventLoopCtl for Loop {
 }
 
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_pad_acts_on_nothing_while_a_source_drives() {
     playing(|game| {
         game.pad.inject_button(Button::South, true);
@@ -107,5 +109,25 @@ fn the_pad_acts_on_nothing_while_a_source_drives() {
             !game.keys.held(Action::Jump),
             "the source drives, not the pad"
         );
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn the_keyboard_letting_go_keeps_the_sneak_a_source_holds() {
+    playing(|game| {
+        // Hold mode: Shift's release would end the sneak.
+        game.settings.toggle_crouch = false;
+        let script = install(game);
+        script.holds.set(&["key.sneak"]);
+        let shift = KeyCode::ShiftLeft;
+        game.mapped_key(shift, true, false, shift, Source::Keyboard)
+            .unwrap();
+        game.mapped_key(shift, false, false, shift, Source::Keyboard)
+            .unwrap();
+        assert!(game.keys.held(Action::Sneak), "the source still holds it");
+        // The window then reports Shift up.
+        game.update_modifiers(ModifiersState::empty());
+        assert!(game.keys.held(Action::Sneak), "the modifier going up too");
     });
 }

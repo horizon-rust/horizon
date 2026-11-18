@@ -64,16 +64,15 @@ impl Game<'_> {
         if let Some(title) = &mut self.title {
             title.set_alt_down(state.alt_key());
         }
+        // Whether another device (the pad, or a registered source) still holds sneak or sprint.
+        let elsewhere = [self.input_holds("key.sneak"), self.input_holds("key.sprint")];
         horizon_client_input::modifiers::reconcile(
             self.modifiers,
             &mut self.physical_keys,
             &self.settings.keys,
             &mut self.toggles,
             [self.settings.toggle_crouch, self.settings.toggle_sprint],
-            [
-                self.pad.holds_action("key.sneak"),
-                self.pad.holds_action("key.sprint"),
-            ],
+            elsewhere,
         );
         self.sync_toggle(SNEAK);
         self.sync_toggle(SPRINT);
@@ -149,7 +148,7 @@ impl Game<'_> {
             // A pad's toggle-sneak isn't holding it: it has no release that would end it.
             Source::Keyboard => {
                 !(slot == SNEAK && self.settings.controller.toggle_sneak)
-                    && self.pad.holds_action(["key.sneak", "key.sprint"][slot])
+                    && self.input_holds(["key.sneak", "key.sprint"][slot])
             }
             Source::Pad => self.physical_keys.iter().any(|physical| {
                 self.settings
