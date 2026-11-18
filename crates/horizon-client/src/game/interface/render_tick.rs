@@ -647,6 +647,7 @@ impl Game<'_> {
     /// also spawns what the level shows around the camera.
     pub(super) fn tick_particles(&mut self) {
         if self.is_logical_server() {
+            self.particles.particle_level = self.settings.particles;
             self.pickups.clear();
             self.tick_particle_engine();
             return;

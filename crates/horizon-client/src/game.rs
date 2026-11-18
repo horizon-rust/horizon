@@ -4513,11 +4513,20 @@ impl Game<'_> {
         self.update_chunk_tickets();
         self.score_destroyed_entities();
         horizon_client::spans::time("tick_effects", || self.tick_effects(running));
+        // The window's own ticks: a game that is not a logical server runs them, as it always did.
+        let window = !self.is_logical_server();
+        if window {
+            self.tick_sign_editor();
+        }
         // Player.tick's ItemCooldowns.tick for the window's player (a
         // server's players count theirs down in `tick_guests`).
         self.shield_cooldown = self.shield_cooldown.saturating_sub(1);
         self.cooldowns.tick();
         horizon_client::spans::time("tick_using", || self.tick_using());
+        if window {
+            self.tick_bundle_hover();
+            horizon_client::spans::time("tick_hud", || self.tick_hud());
+        }
         // The player's digging comes in with its packets, before the level
         // ticks; ServerLevel.tick then runs the scheduled and random block
         // ticks before any entity, so what they drop or spawn (dispensed
@@ -4638,6 +4647,9 @@ impl Game<'_> {
             log.extend(held);
         }
         span("tick_friends", || self.tick_friends());
+        if window {
+            horizon_client::spans::time("tick_hand", || self.tick_hand());
+        }
         horizon_client::spans::time("tick_sleep", || self.tick_sleep());
         span("sleep_status", || self.announce_sleep_status());
         span("sleep_status", || self.free_left_beds());
@@ -4665,24 +4677,51 @@ impl Game<'_> {
             horizon_client::spans::time("tick_sculk_blocks", || self.tick_sculk_blocks())?;
         }
         if running {
-            // The bells' and conduits' server tickers (not while paused or frozen).
-            horizon_client::spans::time("tick_block_entity_servers", || {
-                self.tick_block_entity_servers()
-            });
+            if window {
+                // ClientLevel.tickBlockEntities (not while paused or frozen):
+                // chest lids, books, shulker boxes, bells, conduits, heads.
+                horizon_client::spans::time("tick_block_entity_anims", || {
+                    self.tick_block_entity_anims()
+                });
+            } else {
+                // The bells' and conduits' server tickers (not while paused or frozen).
+                horizon_client::spans::time("tick_block_entity_servers", || {
+                    self.tick_block_entity_servers()
+                });
+            }
             // A conduit's hurt teleports an enderman now (`Enderman.hurtServer`).
             span("settle_hurt_teleports", || self.settle_hurt_teleports())?;
             horizon_client::spans::time("tick_particles", || self.tick_particles());
+            if window {
+                span("tick_client_ambient", || self.tick_client_ambient());
+            }
         }
         // ServerLevel.tick's `entityManager.tick()`, frozen or not, after every
         // block entity ticker (the bells, conduits and gateways above too): the
         // chunks loaded before this pass have their entities loaded from the next.
         self.world.entities_pending.clear();
+        if window {
+            span("tick_frame_visuals", || self.tick_frame_visuals(running));
+        }
         if running {
             // MinecraftServer.tickServer: GameTestTicker.SINGLETON.tick().
             span("tick_game_tests", || self.tick_game_tests());
         }
         // ServerBossEvent broadcasts, after this level's entities have ticked.
         span("publish_boss_bars", || self.publish_boss_bars());
+        // Minecraft.handleKeybinds: held use repeats only while no item is in
+        // use (a raised shield or a drawn bow places and uses nothing).
+        if window
+            && self.right
+            && self.use_delay == 0
+            && self.using.is_none()
+            && self.screen == Screen::Playing
+            && !self.dialog_open()
+            && self.sleeping.is_none()
+        {
+            self.use_with_hand()?;
+            self.use_delay = 4;
+        }
         if running {
             horizon_client::spans::time("lan_note_joined", || self.lan_note_joined());
         }
