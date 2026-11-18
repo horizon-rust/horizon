@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 #[path = "friends/screen.rs"]
 mod screen;
+#[path = "friends/tailcat_host.rs"]
 pub(super) mod tailcat_host;
 
 use screen::{self as friends_screen, Action, FriendsView};

@@ -63,16 +63,84 @@ impl TailcatShare {
         }
     }
 
-    fn failed(error: String) -> Self {
+    fn failed(error: String, opened_lan: bool) -> Self {
         Self {
             pending: None,
             running: None,
             invite: None,
             error: Some(error),
-            opened_lan: false,
+            opened_lan,
             copied: None,
         }
     }
+
+    fn active(&self) -> bool {
+        self.pending.is_some() || self.running.is_some() || self.invite.is_some()
+    }
+
+    fn can_retry(&self) -> bool {
+        !self.active() && self.error.is_some()
+    }
+
+    fn poll(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            match pending.try_recv() {
+                Ok(Ok((running, invite))) => {
+                    self.running = Some(running);
+                    self.invite = Some(invite);
+                }
+                Ok(Err(error)) => self.error = Some(error),
+                Err(mpsc::TryRecvError::Empty) => self.pending = Some(pending),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.error = Some(tr(
+                        "horizon.tailcat.failed",
+                        "The Tailcat helper stopped before it was ready.",
+                    ));
+                }
+            }
+        }
+        if let Some(running) = self.running.as_mut()
+            && !running.is_alive()
+            && self.invite.is_some()
+        {
+            self.error = Some(tr(
+                "horizon.tailcat.stopped",
+                "Stopped sharing over Tailcat.",
+            ));
+            self.running = None;
+            self.invite = None;
+        }
+    }
+
+    fn view(&self) -> TailcatView {
+        let status = if let Some(error) = &self.error {
+            error.clone()
+        } else if self.invite.is_some() {
+            tr(
+                "horizon.tailcat.ready",
+                "Friends can join with this invitation. Copy it and send it to them.",
+            )
+        } else {
+            tr(
+                "horizon.tailcat.starting",
+                "Starting Tailcat and looking for a relay…",
+            )
+        };
+        TailcatView {
+            shown: true,
+            sharing: self.active(),
+            invite: self.invite.clone(),
+            status,
+            error: self.error.clone(),
+            copied: self
+                .copied
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(2)),
+        }
+    }
+}
+
+fn start_blocked(share: Option<&TailcatShare>) -> bool {
+    share.is_some_and(TailcatShare::active)
 }
 
 /// What the screen shows.
@@ -119,19 +187,23 @@ impl Game<'_> {
     /// Start sharing the open world over Tailcat, keeping an error in the
     /// screen's state so it can say what went wrong.
     pub(in crate::game) fn tailcat_start(&mut self) -> Result<()> {
-        if self.tailcat_share().is_some() {
+        if start_blocked(self.tailcat_share()) {
             return Ok(());
         }
-        match self.tailcat_begin() {
+        let opened_lan_before = self
+            .tailcat_share()
+            .filter(|share| share.can_retry())
+            .is_some_and(|share| share.opened_lan);
+        match self.tailcat_begin(opened_lan_before) {
             Ok(()) => Ok(()),
             Err(e) => {
-                self.set_tailcat(TailcatShare::failed(e.to_string()));
+                self.set_tailcat(TailcatShare::failed(e.to_string(), opened_lan_before));
                 Err(e)
             }
         }
     }
 
-    fn tailcat_begin(&mut self) -> Result<()> {
+    fn tailcat_begin(&mut self, opened_lan_before: bool) -> Result<()> {
         self.friends_stop();
         if self.title.is_some() || (self.remote.is_some() && self.integrated.is_none()) {
             return Err("open a singleplayer world first".into());
@@ -150,7 +222,7 @@ impl Game<'_> {
         std::thread::spawn(move || {
             let _ = tx.send(horizon_client::tailcat::host(port, &cache));
         });
-        self.set_tailcat(TailcatShare::new(rx, opened_lan));
+        self.set_tailcat(TailcatShare::new(rx, opened_lan || opened_lan_before));
         Ok(())
     }
 
@@ -177,35 +249,8 @@ impl Game<'_> {
 
     /// The helper's answer, and whether it is still running.
     pub(super) fn tick_tailcat(&mut self) {
-        let Some(share) = self.tailcat_share_mut() else {
-            return;
-        };
-        if let Some(pending) = share.pending.take() {
-            match pending.try_recv() {
-                Ok(Ok((running, invite))) => {
-                    share.running = Some(running);
-                    share.invite = Some(invite);
-                }
-                Ok(Err(error)) => share.error = Some(error),
-                Err(mpsc::TryRecvError::Empty) => share.pending = Some(pending),
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    share.error = Some(tr(
-                        "horizon.tailcat.failed",
-                        "The Tailcat helper stopped before it was ready.",
-                    ));
-                }
-            }
-        }
-        if let Some(running) = share.running.as_mut()
-            && !running.is_alive()
-            && share.invite.is_some()
-        {
-            share.error = Some(tr(
-                "horizon.tailcat.stopped",
-                "Stopped sharing over Tailcat.",
-            ));
-            share.running = None;
-            share.invite = None;
+        if let Some(share) = self.tailcat_share_mut() {
+            share.poll();
         }
     }
 
@@ -227,34 +272,12 @@ impl Game<'_> {
 
     pub(super) fn tailcat_view(&self) -> TailcatView {
         let shown = self.remote.is_none() || self.integrated.is_some();
-        let Some(share) = self.tailcat_share() else {
-            return TailcatView {
+        match self.tailcat_share() {
+            Some(share) => share.view(),
+            None => TailcatView {
                 shown,
                 ..TailcatView::default()
-            };
-        };
-        let status = if let Some(error) = &share.error {
-            error.clone()
-        } else if share.invite.is_some() {
-            tr(
-                "horizon.tailcat.ready",
-                "Friends can join with this invitation. Copy it and send it to them.",
-            )
-        } else {
-            tr(
-                "horizon.tailcat.starting",
-                "Starting Tailcat and looking for a relay…",
-            )
-        };
-        TailcatView {
-            shown: true,
-            sharing: share.invite.is_some() || share.pending.is_some() || share.running.is_some(),
-            invite: share.invite.clone(),
-            status,
-            error: share.error.clone(),
-            copied: share
-                .copied
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(2)),
+            },
         }
     }
 
@@ -506,7 +529,10 @@ mod tests {
     use super::*;
 
     fn atlas() -> HudAtlas {
-        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+        HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            (std::path::Path::new("/nonexistent/horizon-test-assets")).to_owned(),
+        ))
+        .unwrap()
     }
 
     #[test]
@@ -560,5 +586,35 @@ mod tests {
         let (_, buttons) = layout(&atlas, (427.0, 240.0), &view);
         let share = buttons.iter().find(|b| b.action == Action::Share).unwrap();
         assert!(!share.active);
+    }
+
+    #[test]
+    fn failed_share_can_retry_and_stop_keeps_lan_ownership() {
+        let failed = TailcatShare::failed("the helper failed".into(), true);
+        assert!(!failed.active());
+        assert!(failed.can_retry());
+        assert!(!start_blocked(Some(&failed)));
+        let view = failed.view();
+        assert!(!view.sharing);
+        assert_eq!(view.error.as_deref(), Some("the helper failed"));
+
+        let (tx, rx) = mpsc::channel();
+        let mut retry = TailcatShare::new(rx, failed.opened_lan);
+        assert!(retry.active());
+        assert!(!retry.can_retry());
+        assert!(start_blocked(Some(&retry)));
+        assert!(retry.view().error.is_none());
+
+        drop(tx);
+        retry.poll();
+        assert!(retry.can_retry());
+        assert!(
+            retry.opened_lan,
+            "stopping after a failed retry still closes the LAN"
+        );
+        assert_eq!(
+            retry.view().error.as_deref(),
+            Some("The Tailcat helper stopped before it was ready.")
+        );
     }
 }

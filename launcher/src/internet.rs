@@ -57,6 +57,20 @@ impl Internet {
         self.busy
     }
 
+    /// A helper that exited is no longer sharing, even if the launcher still holds its invitation.
+    fn tailcat_lost(&mut self) -> bool {
+        let dead = match self.tailcat.as_mut() {
+            Some((running, _)) => !running.is_alive(),
+            None => false,
+        };
+        if dead {
+            self.tailcat = None;
+            self.tailcat_error =
+                Some(tr("Tailcat stopped sharing because the helper exited.").to_string());
+        }
+        dead
+    }
+
     pub(super) fn new() -> Self {
         let (tx, rx) = channel();
         Self {
@@ -102,6 +116,9 @@ impl Launcher {
             self.internet_event(event);
         }
         let i = &mut self.internet;
+        if i.tailcat_lost() {
+            changed = true;
+        }
         if showing && !i.reading && i.read.is_none_or(|at| at.elapsed() >= POLL) {
             self.internet_refresh();
         }
@@ -306,7 +323,11 @@ impl Launcher {
         // helper the game does, shared through the platform's seam. The first call wins.
         tailcat_helper::set_assets(horizon_friends::TAILCAT_HELPER_ASSETS);
         let i = &mut self.internet;
-        if i.tailcat.is_some() || i.tailcat_busy {
+        if i.tailcat_busy {
+            return;
+        }
+        i.tailcat_lost();
+        if i.tailcat.is_some() {
             return;
         }
         i.tailcat_busy = true;

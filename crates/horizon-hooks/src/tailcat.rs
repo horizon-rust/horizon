@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Every invitation starts with this (`tailcat-for-minecraft`'s format).
 pub const INVITE_PREFIX: &str = "mcl1_";
@@ -37,6 +37,10 @@ pub const PORT: u16 = 25565;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(25);
 /// The `tailcat-for-minecraft` commit the helper binary is downloaded from.
 const MCLINK_COMMIT: &str = "c561a896f3e48c98bde36b0a810b29f560b074a5";
+/// The digest marker written beside a published helper, so a cache entry carries its own proof.
+const CHECKSUM_FILE: &str = "checksum.txt";
+/// A checkout in the current directory is trusted only in an explicit development session.
+const DEV_CLONE_VAR: &str = "HORIZON_TAILCAT_DEV_CLONE";
 
 static ASSETS: OnceLock<&'static str> = OnceLock::new();
 
@@ -240,7 +244,7 @@ fn drain_stderr(stderr: ChildStderr) {
 }
 
 /// The helper executable: `HORIZON_TAILCAT_HELPER`, a checked-out
-/// `tailcat-for-minecraft`, the cached copy, then a download.
+/// `tailcat-for-minecraft` when `HORIZON_TAILCAT_DEV_CLONE=1`, the cached copy, then a download.
 pub fn helper_binary(cache_dir: &Path) -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("HORIZON_TAILCAT_HELPER").filter(|p| !p.is_empty()) {
         let path = PathBuf::from(path);
@@ -255,8 +259,8 @@ pub fn helper_binary(cache_dir: &Path) -> Result<PathBuf, String> {
     if let Some(path) = clone_helper() {
         return Ok(path);
     }
-    let cached = cached_helper(cache_dir);
-    if cached.is_file() {
+    let platform = platform()?;
+    if let Some(cached) = verified_cached_helper(cache_dir, platform)? {
         return Ok(cached);
     }
     install(cache_dir)
@@ -283,8 +287,11 @@ fn exe_name() -> &'static str {
     }
 }
 
-/// A `tailcat-for-minecraft` checked out beside the game (development).
+/// A `tailcat-for-minecraft` checked out beside the game (development only).
 fn clone_helper() -> Option<PathBuf> {
+    if std::env::var(DEV_CLONE_VAR).as_deref() != Ok("1") {
+        return None;
+    }
     let platform = platform().ok()?;
     let path = std::env::current_dir()
         .ok()?
@@ -294,12 +301,36 @@ fn clone_helper() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-fn cached_helper(cache_dir: &Path) -> PathBuf {
-    cache_dir.join(exe_name())
+fn cached_dir(cache_dir: &Path, platform: &str) -> PathBuf {
+    cache_dir.join(MCLINK_COMMIT).join(platform)
+}
+
+fn cached_helper(cache_dir: &Path, platform: &str) -> PathBuf {
+    cached_dir(cache_dir, platform).join(exe_name())
+}
+
+/// A cached helper counts only with a marker whose digest matches its bytes. A partial download,
+/// an interrupted publish, or a changed cache entry is ignored and downloaded again.
+fn verified_cached_helper(cache_dir: &Path, platform: &str) -> Result<Option<PathBuf>, String> {
+    let path = cached_helper(cache_dir, platform);
+    let Ok(expected) = std::fs::read_to_string(cached_dir(cache_dir, platform).join(CHECKSUM_FILE))
+    else {
+        return Ok(None);
+    };
+    let expected = expected.trim();
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(None);
+    };
+    if expected.is_empty()
+        || hex(Sha256::digest(&bytes).as_slice()) != expected.to_ascii_lowercase()
+    {
+        return Ok(None);
+    }
+    Ok(Some(path))
 }
 
 /// Download the helper for this platform and check it against the commit's
-/// `checksums.json`.
+/// `checksums.json`, then publish the binary and its digest together.
 fn install(cache_dir: &Path) -> Result<PathBuf, String> {
     let Some(assets) = assets() else {
         return Err("this build has no Tailcat helper download address".into());
@@ -316,19 +347,61 @@ fn install(cache_dir: &Path) -> Result<PathBuf, String> {
             "the downloaded Tailcat helper did not match its checksum (expected {expected}, got {actual})"
         ));
     }
-    let path = cached_helper(cache_dir);
-    if let Some(parent) = path.parent() {
+    let path = publish_cache(cache_dir, platform, &bytes, &expected)?;
+    log::info!("Downloaded the Tailcat helper to {}", path.display());
+    Ok(path)
+}
+
+/// Write the helper and its digest into a staging directory, then rename the directory into its
+/// versioned place. A crash before the rename leaves no usable cache entry.
+fn publish_cache(
+    cache_dir: &Path,
+    platform: &str,
+    bytes: &[u8],
+    expected: &str,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let unique = format!("{MCLINK_COMMIT}-{platform}-{}-{stamp}", std::process::id());
+    let staging = cache_dir.join(format!(".{unique}.tmp"));
+    let old = cache_dir.join(format!(".{unique}.old"));
+    let final_dir = cached_dir(cache_dir, platform);
+    if let Some(parent) = final_dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    let staged_binary = staging.join(exe_name());
+    std::fs::write(&staged_binary, bytes).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(&staged_binary, std::fs::Permissions::from_mode(0o755))
             .map_err(|e| e.to_string())?;
     }
-    log::info!("Downloaded the Tailcat helper to {}", path.display());
-    Ok(path)
+    std::fs::write(
+        staging.join(CHECKSUM_FILE),
+        expected.trim().to_ascii_lowercase(),
+    )
+    .map_err(|e| e.to_string())?;
+    let had_old = final_dir.exists();
+    if had_old {
+        let _ = std::fs::remove_dir_all(&old);
+        std::fs::rename(&final_dir, &old).map_err(|e| e.to_string())?;
+    }
+    if let Err(e) = std::fs::rename(&staging, &final_dir) {
+        if had_old {
+            let _ = std::fs::rename(&old, &final_dir);
+        }
+        return Err(e.to_string());
+    }
+    if had_old {
+        let _ = std::fs::remove_dir_all(&old);
+    }
+    Ok(final_dir.join(exe_name()))
 }
 
 /// One `"<platform>/<exe>": "<sha256>"` entry of `checksums.json`.
@@ -396,5 +469,40 @@ mod tests {
     fn refuses_a_non_invitation_before_running_anything() {
         let error = join("https://example.com", Path::new(".")).err().unwrap();
         assert!(error.contains(INVITE_PREFIX), "{error}");
+    }
+
+    #[test]
+    fn cached_helper_is_versioned_verified_and_atomically_published() {
+        let root = std::env::temp_dir().join(format!("horizon-tailcat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let platform = platform().unwrap();
+        let bytes = b"a helper";
+        let digest = hex(Sha256::digest(bytes).as_slice());
+        assert!(verified_cached_helper(&root, platform).unwrap().is_none());
+
+        let path = publish_cache(&root, platform, bytes, &digest).unwrap();
+        assert_eq!(path, cached_helper(&root, platform));
+        assert!(path.to_string_lossy().contains(MCLINK_COMMIT));
+        assert_eq!(
+            verified_cached_helper(&root, platform).unwrap(),
+            Some(path.clone())
+        );
+
+        std::fs::write(&path, b"corrupted").unwrap();
+        assert!(verified_cached_helper(&root, platform).unwrap().is_none());
+
+        let path = publish_cache(&root, platform, bytes, &digest).unwrap();
+        assert_eq!(
+            verified_cached_helper(&root, platform).unwrap(),
+            Some(path.clone())
+        );
+
+        let _ = std::fs::remove_file(cached_dir(&root, platform).join(CHECKSUM_FILE));
+        assert!(
+            verified_cached_helper(&root, platform).unwrap().is_none(),
+            "an interrupted installation has no marker"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
