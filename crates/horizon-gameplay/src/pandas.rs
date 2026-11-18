@@ -21,8 +21,9 @@ pub fn tick_pandas<L: PandaLevel + ?Sized>(l: &mut L) {
             continue;
         }
         let id = m.id;
-        let wants =
-            |lv: &L, e: &ItemEntity| e.pickup_delay == 0 && lv.panda_eats_from_ground(&e.stack.item);
+        let wants = |lv: &L, e: &ItemEntity| {
+            e.pickup_delay == 0 && lv.panda_eats_from_ground(&e.stack.item)
+        };
         // Mob.aiStep: the items within the box grown by (1, 0, 1).
         let m = &l.mobs()[i];
         if m.can_pick_up_loot()

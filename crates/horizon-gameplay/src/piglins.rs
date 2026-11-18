@@ -95,9 +95,10 @@ pub fn piglin_can_replace<L: PiglinLevel + ?Sized>(
 /// `SimpleContainer.canAddItem` on the piglin's eight slots.
 pub fn piglin_can_add<L: PiglinLevel + ?Sized>(l: &L, m: &Mob, stack: &ItemStack) -> bool {
     m.extra.inventory.len() < 8
-        || m.extra.inventory.iter().any(|s| {
-            s.same_item_same_components(stack) && s.count < piglin_max_stack(l, &s.item)
-        })
+        || m.extra
+            .inventory
+            .iter()
+            .any(|s| s.same_item_same_components(stack) && s.count < piglin_max_stack(l, &s.item))
 }
 pub fn piglin_max_stack<L: PiglinLevel + ?Sized>(l: &L, item: &str) -> u32 {
     l.world_items().get(item).map_or(64, |i| i.max_stack)
