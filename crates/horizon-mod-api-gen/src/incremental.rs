@@ -172,6 +172,20 @@ pub(crate) fn cached<T>(
     encode: impl FnOnce(&T) -> String,
     decode: impl FnOnce(&str) -> Option<T>,
 ) -> Result<T, String> {
+    cached_checked(kind, key, compute, encode, decode, || true)
+}
+
+/// [`cached`], storing the computed value only when `unchanged` says so once `compute` is done.
+/// A step whose key was hashed from files `compute` reads again uses it to see that they did not
+/// change in between: a value computed from other bytes than the key's must not be stored.
+pub(crate) fn cached_checked<T>(
+    kind: &'static str,
+    key: &str,
+    compute: impl FnOnce() -> Result<T, String>,
+    encode: impl FnOnce(&T) -> String,
+    decode: impl FnOnce(&str) -> Option<T>,
+    unchanged: impl FnOnce() -> bool,
+) -> Result<T, String> {
     let path = STATE.with(|slot| {
         slot.borrow_mut().as_mut().map(|state| {
             let name = format!("{kind}-{key}");
@@ -189,7 +203,9 @@ pub(crate) fn cached<T>(
     }
     count(kind, 1);
     let value = compute()?;
-    write(&path, &encode(&value));
+    if unchanged() {
+        write(&path, &encode(&value));
+    }
     Ok(value)
 }
 
@@ -276,11 +292,50 @@ pub(crate) fn report() -> String {
     })
 }
 
-/// The SHA-256 of every source-like file (`rs`, `toml`, `json`, `wit`) under `roots`, by
-/// relative path, skipping `target` folders. A folder that is missing counts as empty and
-/// differs from an empty one. For results that depend on whole crates, never on one file.
+/// Files [`tree_digest`] hashes the content of: sources, manifests, and the Wire trait roles.
+pub(crate) fn hashed_extension(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| {
+        ["rs", "toml", "json", "wit", "import", "export"]
+            .iter()
+            .any(|want| ext == *want)
+    })
+}
+
+static OUTSIDE_READS: AtomicU64 = AtomicU64::new(0);
+
+/// Notes that a step read a file [`tree_digest`] does not cover (a `#[path]` leaving the hashed
+/// folders). See [`outside_reads`].
+pub(crate) fn note_outside_read() {
+    OUTSIDE_READS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// How many uncovered reads were noted so far: a step that sees it change while it ran must not
+/// store its value. The count is process-wide, so a concurrent step can only make this more
+/// cautious, never less.
+pub(crate) fn outside_reads() -> u64 {
+    OUTSIDE_READS.load(Ordering::Relaxed)
+}
+
+/// The SHA-256 of every source-like file ([`hashed_extension`]) under `roots`, by relative path,
+/// plus the name of every other file, skipping `target` folders. A folder that is missing counts
+/// as empty and differs from an empty one. For results that depend on whole crates, never on
+/// one file.
+///
+/// Fails when a file cannot be read or when the walk meets a symlink that leads back into a
+/// folder it is inside. Callers then skip their cache for that step: an error here says only
+/// that the key is unknown.
 pub(crate) fn tree_digest(roots: &[PathBuf]) -> Result<String, String> {
-    fn walk(base: &Path, dir: &Path, hasher: &mut Sha256) -> Result<(), String> {
+    fn walk(
+        base: &Path,
+        dir: &Path,
+        ancestors: &mut Vec<PathBuf>,
+        hasher: &mut Sha256,
+    ) -> Result<(), String> {
+        let real = fs::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        if ancestors.contains(&real) {
+            return Err(format!("{}: a symlink cycle", dir.display()));
+        }
+        ancestors.push(real);
         let mut entries = fs::read_dir(dir)
             .map_err(|e| format!("{}: {e}", dir.display()))?
             .map(|entry| entry.map(|entry| entry.path()))
@@ -292,21 +347,23 @@ pub(crate) fn tree_digest(roots: &[PathBuf]) -> Result<String, String> {
                 if path.file_name().is_some_and(|name| name == "target") {
                     continue;
                 }
-                walk(base, &path, hasher)?;
-            } else if path.extension().is_some_and(|ext| {
-                ["rs", "toml", "json", "wit"]
-                    .iter()
-                    .any(|want| ext == *want)
-            }) {
-                let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                walk(base, &path, ancestors, hasher)?;
+            } else {
                 let relative = path.strip_prefix(base).unwrap_or(&path);
                 let relative = relative.as_os_str().as_encoded_bytes();
                 hasher.update((relative.len() as u64).to_le_bytes());
                 hasher.update(relative);
-                hasher.update((bytes.len() as u64).to_le_bytes());
-                hasher.update(&bytes);
+                if hashed_extension(&path) {
+                    let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                    hasher.update([1]);
+                    hasher.update((bytes.len() as u64).to_le_bytes());
+                    hasher.update(&bytes);
+                } else {
+                    hasher.update([0]);
+                }
             }
         }
+        ancestors.pop();
         Ok(())
     }
     let mut hasher = Sha256::new();
@@ -316,7 +373,7 @@ pub(crate) fn tree_digest(roots: &[PathBuf]) -> Result<String, String> {
         hasher.update(name);
         if root.is_dir() {
             hasher.update([1]);
-            walk(root, root, &mut hasher)?;
+            walk(root, root, &mut Vec::new(), &mut hasher)?;
         } else {
             hasher.update([0]);
         }
@@ -329,11 +386,11 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    fn scratch(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("incremental-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        path
+    fn scratch(name: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("incremental-{name}-"))
+            .tempdir()
+            .unwrap()
     }
 
     fn step(key: &str, computed: &Cell<u32>, value: &str) -> String {
@@ -363,7 +420,8 @@ mod tests {
 
     #[test]
     fn a_step_is_computed_once_per_key_and_only_inside_a_scope() {
-        let out = scratch("once");
+        let guard = scratch("once");
+        let out = guard.path().to_path_buf();
         let computed = Cell::new(0);
         // Outside a scope nothing is stored.
         assert_eq!(step("a", &computed, "one"), "one");
@@ -382,12 +440,12 @@ mod tests {
         }
         assert_eq!(computed.get(), 2, "the second run found both entries");
         assert!(!active());
-        fs::remove_dir_all(out).unwrap();
     }
 
     #[test]
     fn corrupt_entries_are_computed_again() {
-        let out = scratch("corrupt");
+        let guard = scratch("corrupt");
+        let out = guard.path().to_path_buf();
         let computed = Cell::new(0);
         let run = || {
             with_cache(&out, || Ok(step("a", &computed, "value"))).unwrap();
@@ -414,12 +472,12 @@ mod tests {
             )
         });
         assert_eq!(decoded.unwrap(), 1);
-        fs::remove_dir_all(out).unwrap();
     }
 
     #[test]
     fn a_failed_step_stores_nothing_and_the_scope_resets() {
-        let out = scratch("failed");
+        let guard = scratch("failed");
+        let out = guard.path().to_path_buf();
         let failed: Result<(), String> = with_cache(&out, || {
             cached::<String>(
                 "unit",
@@ -433,12 +491,12 @@ mod tests {
         assert_eq!(failed.unwrap_err(), "expected");
         assert!(!active());
         assert!(entries(&out).is_empty());
-        fs::remove_dir_all(out).unwrap();
     }
 
     #[test]
     fn a_successful_run_keeps_only_the_entries_it_used() {
-        let out = scratch("sweep");
+        let guard = scratch("sweep");
+        let out = guard.path().to_path_buf();
         let computed = Cell::new(0);
         with_cache(&out, || {
             step("a", &computed, "one");
@@ -460,7 +518,6 @@ mod tests {
         assert!(!out.join("incremental-other").exists());
         assert!(!out.join("interfaces-old").exists());
         assert!(out.join("unrelated").exists());
-        fs::remove_dir_all(out).unwrap();
     }
 
     #[test]
@@ -472,7 +529,8 @@ mod tests {
 
     #[test]
     fn a_tree_digest_follows_content_names_and_missing_folders() {
-        let out = scratch("tree");
+        let guard = scratch("tree");
+        let out = guard.path().to_path_buf();
         let a = out.join("a");
         fs::create_dir_all(a.join("src")).unwrap();
         fs::create_dir_all(a.join("target")).unwrap();
@@ -490,6 +548,77 @@ mod tests {
         assert_ne!(changed, tree_digest(&roots).unwrap());
         fs::create_dir_all(out.join("missing")).unwrap();
         assert_ne!(first, tree_digest(&roots).unwrap());
-        fs::remove_dir_all(out).unwrap();
+    }
+
+    #[test]
+    fn a_tree_digest_follows_the_trait_role_files() {
+        let out = scratch("roles");
+        let out = out.path().to_path_buf();
+        let traits = out.join("vocab/src/wire/traits");
+        fs::create_dir_all(&traits).unwrap();
+        fs::write(traits.join("A.import"), "").unwrap();
+        let roots = [out.join("vocab")];
+        let first = tree_digest(&roots).unwrap();
+        fs::write(traits.join("Host.export"), "").unwrap();
+        let added = tree_digest(&roots).unwrap();
+        assert_ne!(first, added);
+        fs::rename(traits.join("Host.export"), traits.join("Host.import")).unwrap();
+        let renamed = tree_digest(&roots).unwrap();
+        assert_ne!(added, renamed);
+        // Any other file name counts too: the resolver rejects it.
+        fs::write(traits.join("stray.txt"), "").unwrap();
+        assert_ne!(renamed, tree_digest(&roots).unwrap());
+        fs::remove_file(traits.join("Host.import")).unwrap();
+        fs::remove_file(traits.join("stray.txt")).unwrap();
+        assert_eq!(first, tree_digest(&roots).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tree_that_cannot_be_hashed_is_an_error_not_a_hang() {
+        let guard = scratch("unhashable");
+        let out = guard.path().to_path_buf();
+        let a = out.join("a");
+        fs::create_dir_all(a.join("src")).unwrap();
+        fs::write(a.join("src/lib.rs"), "").unwrap();
+        // A symlink back to an ancestor, twice.
+        std::os::unix::fs::symlink(&a, a.join("src/up")).unwrap();
+        std::os::unix::fs::symlink(&a, a.join("src/again")).unwrap();
+        assert!(tree_digest(&[a.clone()]).unwrap_err().contains("cycle"));
+        fs::remove_file(a.join("src/up")).unwrap();
+        fs::remove_file(a.join("src/again")).unwrap();
+        tree_digest(&[a.clone()]).unwrap();
+        // A link that leads nowhere cannot be read.
+        std::os::unix::fs::symlink(a.join("nowhere.rs"), a.join("src/old.rs")).unwrap();
+        assert!(tree_digest(&[a]).is_err());
+    }
+
+    #[test]
+    fn a_value_is_not_stored_when_its_inputs_changed_while_it_was_computed() {
+        let guard = scratch("changed");
+        let out = guard.path().to_path_buf();
+        let computed = Cell::new(0);
+        let run = |unchanged: bool| {
+            with_cache(&out, || {
+                cached_checked(
+                    "unit",
+                    "a",
+                    || {
+                        computed.set(computed.get() + 1);
+                        Ok("v".to_owned())
+                    },
+                    Clone::clone,
+                    |text| Some(text.to_owned()),
+                    || unchanged,
+                )
+            })
+            .unwrap()
+        };
+        run(false);
+        run(false);
+        assert_eq!(computed.get(), 2, "nothing was stored");
+        run(true);
+        run(true);
+        assert_eq!(computed.get(), 3, "stored once the inputs held still");
     }
 }

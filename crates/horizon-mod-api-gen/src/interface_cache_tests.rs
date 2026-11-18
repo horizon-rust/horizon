@@ -118,9 +118,12 @@ mod per_file {
 
     /// A game module with nested, inline, conditional and `#[path]` files, and a lower crate with
     /// marked functions.
-    fn fixture(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("per-file-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+    fn fixture(name: &str) -> tempfile::TempDir {
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("per-file-{name}-"))
+            .tempdir()
+            .unwrap();
+        let root = guard.path().to_path_buf();
         let src = "crates/horizon-client/src";
         put(&root, "crates/horizon-mod-api-gen/internals.txt", "");
         put(
@@ -199,7 +202,7 @@ mod per_file {
             "crates/horizon-client-render/src/mesher.rs",
             "pub struct Mesher<'a>(&'a u8);\nimpl Mesher<'_> { #[horizon_mod_api_macros::replaceable] pub fn mesh(&mut self, chunk: &Chunk) -> usize { 0 } fn face(&self) {} }\n",
         );
-        root
+        guard
     }
 
     /// Everything the generator emits from the points, and what the catalog lists.
@@ -262,7 +265,8 @@ mod per_file {
 
     #[test]
     fn module_walks_are_the_same_with_and_without_the_cache() {
-        let root = fixture("walks");
+        let guard = fixture("walks");
+        let root = guard.path().to_path_buf();
         let out = root.join("out");
         fs::create_dir_all(&out).unwrap();
         let expected = [walk(&root, true), walk(&root, false)];
@@ -282,12 +286,12 @@ mod per_file {
                 assert_eq!(counts(&report, "layout").1, 0, "{report}");
             }
         }
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn a_cached_generation_equals_a_plain_one_and_reparses_only_what_changed() {
-        let root = fixture("equal");
+        let guard = fixture("equal");
+        let root = guard.path().to_path_buf();
         let out = root.join("out");
         fs::create_dir_all(&out).unwrap();
         let src = "crates/horizon-client/src";
@@ -355,12 +359,12 @@ mod per_file {
         assert_eq!(marked, with_marked(&root, plain(&root)));
         assert_ne!(marked, grown);
         assert_eq!(counts(&report, "points").1, 2, "{report}");
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn corrupt_or_missing_entries_fall_back_to_parsing() {
-        let root = fixture("corrupt");
+        let guard = fixture("corrupt");
+        let root = guard.path().to_path_buf();
         let out = root.join("out");
         fs::create_dir_all(&out).unwrap();
         let expected = with_marked(&root, plain(&root));
@@ -391,12 +395,12 @@ mod per_file {
         let (last, report) = cached(&root, &out);
         assert_eq!(last, expected);
         assert_eq!(counts(&report, "points").1, 0, "{report}");
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn the_tracked_paths_are_the_same_with_the_cache() {
-        let root = fixture("tracked");
+        let guard = fixture("tracked");
+        let root = guard.path().to_path_buf();
         let out = root.join("out");
         fs::create_dir_all(&out).unwrap();
         let paths = |root: &Path| {
@@ -412,6 +416,5 @@ mod per_file {
                     .unwrap();
             assert_eq!(found, expected);
         }
-        fs::remove_dir_all(root).unwrap();
     }
 }

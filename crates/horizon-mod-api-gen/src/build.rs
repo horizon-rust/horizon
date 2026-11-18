@@ -298,19 +298,26 @@ pub(super) fn wire_types_from_sources(
     ];
     // The layouts follow from the generated sources above and from the crates the API's types
     // come from, read whole: a change in either computes them again, one elsewhere does not
-    // (the game's own files reach them only through the generated sources).
-    let key = if crate::incremental::active() {
-        let mut inputs: Vec<_> = super::index::crate_folders(root);
+    // (the game's own files reach them only through the generated sources). The whole crates
+    // include the Wire trait roles (`.import`/`.export` files), which the resolver lists.
+    let inputs: Vec<_> = {
+        let mut inputs = super::index::crate_folders(root);
         inputs.push(root.join("crates/horizon-mod-api-macros"));
-        Some(crate::incremental::digest(&[
+        inputs
+    };
+    let key_for = |tree: &str| {
+        crate::incremental::digest(&[
             included[0].1.as_bytes(),
             included[1].1.as_bytes(),
             included[2].1.as_bytes(),
-            crate::incremental::tree_digest(&inputs)?.as_bytes(),
-        ]))
-    } else {
-        None
+            tree.as_bytes(),
+        ])
     };
+    // A tree that cannot be hashed (an unreadable file, a symlink cycle) is not an error of the
+    // build: the resolver runs without the cache and reports what it needs to read.
+    let tree = crate::incremental::active()
+        .then(|| crate::incremental::tree_digest(&inputs).ok())
+        .flatten();
     let compute = || -> Result<std::collections::BTreeSet<String>, String> {
         // The resolver recurses through the API's types: give it a deep stack.
         std::thread::scope(|scope| {
@@ -322,15 +329,25 @@ pub(super) fn wire_types_from_sources(
                 .map_err(|_| "reading the wire types panicked".to_string())?
         })
     };
-    let Some(key) = key else {
+    let Some(tree) = tree else {
         return compute();
     };
-    crate::incremental::cached(
+    let outside = crate::incremental::outside_reads();
+    // The files are read after they are hashed. Hash them again afterwards and store only when
+    // nothing changed, and nothing outside the hashed folders was read. An edit that goes
+    // A to B to A inside that window is not seen; the value then belongs to B under A's key
+    // until the next successful run drops the entry. That needs two saves within one
+    // resolver run, and the build script reruns on the second one anyway.
+    crate::incremental::cached_checked(
         "wire",
-        &key,
+        &key_for(&tree),
         compute,
         |types| serde_json::to_string(types).unwrap_or_default(),
         |text| serde_json::from_str(text).ok(),
+        || {
+            crate::incremental::outside_reads() == outside
+                && crate::incremental::tree_digest(&inputs).is_ok_and(|after| after == tree)
+        },
     )
 }
 
