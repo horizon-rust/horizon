@@ -3963,6 +3963,58 @@ mod outgoing_budget_tests {
         assert!(s.pending.load(Ordering::Relaxed) <= io_pool::MAX_PENDING);
         assert!(s.held().len() < io_pool::MAX_PENDING / std::mem::size_of::<Vec<u8>>());
     }
+    fn outbox(s: &PlayerSender) -> &Arc<io_pool::Outbox> {
+        let To::Pool(outbox, _) = &s.to else {
+            unreachable!()
+        };
+        outbox
+    }
+    // The integrated server's own player: a reopened world sends its whole first view at once,
+    // more than the network budget, and the player must stay (#12849, #18313).
+    #[test]
+    fn a_memory_connection_stays_open_past_the_budget_on_send() {
+        let s = sender(Framing::Memory);
+        s.send(Vec::with_capacity(io_pool::MAX_PENDING));
+        s.send(vec![1, 2, 3]);
+        assert!(outbox(&s).alive(), "send closed the connection");
+        assert_eq!(outbox(&s).queued(), 2);
+    }
+    #[test]
+    fn a_memory_connection_stays_open_past_the_budget_on_send_many() {
+        let s = sender(Framing::Memory);
+        let half = io_pool::MAX_PENDING / 2;
+        s.send_many([Vec::with_capacity(half), Vec::with_capacity(half)]);
+        assert!(outbox(&s).alive(), "send_many closed the connection");
+        {
+            let _hold = Holding::start();
+            s.send_many([Vec::with_capacity(half), vec![1, 2, 3]]);
+        }
+        s.flush();
+        assert!(outbox(&s).alive(), "a held send_many closed the connection");
+        assert_eq!(outbox(&s).queued(), 4);
+    }
+    #[test]
+    fn a_memory_connection_past_the_budget_still_gets_its_disconnect() {
+        let s = sender(Framing::Memory);
+        // A first view's burst already queued.
+        s.pending.store(io_pool::MAX_PENDING, Ordering::Relaxed);
+        let reason = translatable("disconnect.closed", &[]);
+        s.disconnect(reason.clone());
+        let expected = play::Clientbound::Disconnect(cfg::Disconnect { reason }).encode();
+        assert_eq!(
+            outbox(&s).queued_contents().last(),
+            Some(&expected),
+            "the disconnect was dropped"
+        );
+    }
+    /// A network client that reads slowly keeps the budget: past it, it is closed.
+    #[test]
+    fn a_network_connection_still_closes_past_the_budget() {
+        let s = sender(Framing::Network(None));
+        s.send(Vec::with_capacity(io_pool::MAX_PENDING));
+        assert!(!outbox(&s).alive());
+        assert_eq!(outbox(&s).queued(), 0);
+    }
 }
 
 #[cfg(test)]
