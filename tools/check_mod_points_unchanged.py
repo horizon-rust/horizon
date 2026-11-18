@@ -118,6 +118,24 @@ def diff_files(base_dir, head_dir, base_root=None, head_root=None):
     return sorted(head_files - base_files), sorted(base_files - head_files), diffs
 
 
+def internal_entries(text):
+    """The entries of an internals.json text, each checked to have what the generator always writes (`path`, `kind`,
+    `signature`, `hash`) and the optional `cfg` and `shape_only` with their types. A malformed catalog is a ValueError:
+    a dropped field would otherwise pass as a change."""
+    catalog = json.loads(text)
+    entries = catalog.get("internals") if isinstance(catalog, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError("no `internals` array")
+    for number, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(f"entry {number} is not an object")
+        for field, kind, required in (("path", str, True), ("kind", str, True), ("signature", str, True),
+                                      ("hash", str, True), ("cfg", str, False), ("shape_only", bool, False)):
+            if (required or field in entry) and not isinstance(entry.get(field), kind):
+                raise ValueError(f"entry {number} ({entry.get('path')!r}) has no {kind.__name__} `{field}`")
+    return entries
+
+
 def internals_diff(base_text, head_text):
     """(added, removed, changed) between two internals.json texts, each a sorted list of (path, kind, cfg). `path` is
     not unique (a field and a method share one, and `cfg` alternatives repeat both), so entries are keyed as the
@@ -125,7 +143,7 @@ def internals_diff(base_text, head_text):
     `shape_only` (a native mod cannot resolve a shape-only type), counts as removed."""
     def groups(text):
         out = {}
-        for entry in json.loads(text)["internals"]:
+        for entry in internal_entries(text):
             out.setdefault((entry["path"], entry["kind"], entry.get("cfg") or ""), []).append(entry)
         return {key: sorted(json.dumps(entry, sort_keys=True) for entry in entries) for key, entries in out.items()}
 
@@ -341,7 +359,8 @@ def compare(base_dir, head_dir, allow_added=False, base_root=None, head_root=Non
             unreadable = None
         except (ValueError, KeyError, TypeError) as error:
             unreadable = [f"internals.json differs and does not parse as entries ({type(error).__name__}: {error})"]
-        diffs = [(name, unreadable or lines) for name, lines in diffs if name != INTERNALS or unreadable]
+        diffs = [(name, unreadable if name == INTERNALS else lines) for name, lines in diffs
+                 if name != INTERNALS or unreadable]
     if removed and files is None:
         files = repo_texts
     if accepted is None:

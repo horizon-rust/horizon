@@ -298,7 +298,31 @@ class CompareTests(unittest.TestCase):
             status, text = self.run_compare([point("a")], [point("a")], {"internals.json": "{}"},
                                             {"internals.json": "{ }"}, allow_added=allow_added)
             self.assertEqual(status, 1)
-            self.assertIn("internals.json differs and does not parse as entries (KeyError", text)
+            self.assertIn("internals.json differs and does not parse as entries (ValueError: no `internals` array",
+                          text)
+
+    def test_an_unparsable_internals_keeps_the_other_diffs(self):
+        status, text = self.run_compare([point("a")], [point("a")], {"internals.json": "{}", "loops.json": NO_LOOPS},
+                                        {"internals.json": "{ }", "loops.json": json.dumps({"loops": [], "x": 1})},
+                                        allow_added=True)
+        self.assertEqual(status, 1)
+        self.assertIn("Generated files changed (2): internals.json, loops.json", text)
+        self.assertIn("internals.json differs and does not parse as entries", text)
+        self.assertIn('+{"loops": [], "x": 1}', text)
+
+    def test_a_dropped_hash_fails(self):
+        without_hash = json.loads(internals(A_FN))
+        del without_hash["internals"][0]["hash"]
+        status, text = self.run_compare([point("a")], [point("a")], {"internals.json": internals(A_FN)},
+                                        {"internals.json": json.dumps(without_hash)}, allow_added=True)
+        self.assertEqual(status, 1)
+        self.assertIn("has no str `hash`", text)
+
+    def test_wrongly_typed_optional_fields_fail(self):
+        for extra in ({"cfg": 1}, {"shape_only": "yes"}):
+            status, _ = self.run_compare([point("a")], [point("a")], {"internals.json": internals(A_FN)},
+                                         {"internals.json": internals(A_FN[:3] + (extra,))}, allow_added=True)
+            self.assertEqual(status, 1)
 
     def test_one_of_two_cfg_variants_removed_fails(self):
         on, off = ("game::f", "mod", "01", {"cfg": "feature = \"f\""}), ("game::f", "mod", "01", {"cfg": "not f"})
