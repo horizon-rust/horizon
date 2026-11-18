@@ -1660,15 +1660,12 @@ mod tests {
         assert!(b.listed.iter().all(FxHashSet::is_empty));
     }
 
-    /// Same machine, one process: a map of chests plus a few beacons and campfires.
-    /// The scan walks every block entity. The index walks the kind, or the chunk.
-    #[test]
-    fn the_indexes_match_a_full_scan_and_are_faster() {
-        use std::time::Instant;
-        const CHESTS: i32 = 8000;
-        const RUNS: usize = 11;
+    const HOPPERS: i32 = 8000;
+    const SAMPLE_CHUNKS: [(i32, i32); 5] = [(0, 0), (16, 0), (32, 0), (48, 0), (64, 0)];
+
+    fn many_block_entities() -> BlockEntities {
         let mut b = level();
-        for i in 0..CHESTS {
+        for i in 0..HOPPERS {
             let x = (i % 200) * 16;
             let z = (i / 200) * 16;
             b.insert((x, 64, z), hopper());
@@ -1677,13 +1674,40 @@ mod tests {
             b.insert((i, 70, 1), BlockEntity::Beacon(Box::default()));
             b.insert((i, 71, 2), BlockEntity::Campfire(Box::default()));
         }
-        let scanned = b
+        b
+    }
+
+    #[test]
+    fn the_indexes_match_a_full_scan() {
+        let mut scanned = many_block_entities();
+        let mut indexed = many_block_entities();
+        let mut beacons: Vec<_> = scanned
             .iter()
-            .filter(|(_, e)| matches!(e, BlockEntity::Beacon(_)))
-            .count();
-        let indexed = b.listed(Listed::Beacon).count();
-        assert_eq!(scanned, indexed);
-        assert_eq!(scanned, 8);
+            .filter_map(|(p, e)| matches!(e, BlockEntity::Beacon(_)).then_some(*p))
+            .collect();
+        let mut listed: Vec<_> = indexed.listed(Listed::Beacon).map(|(p, _)| *p).collect();
+        beacons.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(beacons.len(), 8);
+        assert_eq!(beacons, listed);
+
+        scanned.unload(|p| SAMPLE_CHUNKS.contains(&chunk_of(*p)));
+        indexed.unload_chunks(&SAMPLE_CHUNKS);
+        let keys = |ents: &BlockEntities| {
+            let mut positions: Vec<_> = ents.keys().copied().collect();
+            positions.sort_unstable();
+            positions
+        };
+        assert_eq!(keys(&scanned), keys(&indexed));
+    }
+
+    /// Same machine, one process. The scan walks every block entity; the index walks the kind or chunk.
+    #[test]
+    #[ignore = "opt-in timing measurement"]
+    fn measure_block_entity_indexes_against_a_full_scan() {
+        use std::time::Instant;
+        const RUNS: usize = 11;
+        let b = many_block_entities();
         let time_scan = || {
             let start = Instant::now();
             let n = b
@@ -1713,55 +1737,32 @@ mod tests {
         }
         let (scan_m, scan_p, scan_w) = spread(&mut scan);
         let (index_m, index_p, index_w) = spread(&mut index);
-        let unload_chunks = [(0, 0), (16, 0), (32, 0), (48, 0), (64, 0)];
-        let make = || {
-            let mut built = level();
-            for i in 0..CHESTS {
-                let x = (i % 200) * 16;
-                let z = (i / 200) * 16;
-                built.insert((x, 64, z), hopper());
-            }
-            built.insert((0, 70, 0), BlockEntity::Campfire(Box::default()));
-            built.insert((16, 70, 0), BlockEntity::Campfire(Box::default()));
-            built
-        };
         let mut unload_scan = Vec::new();
         let mut unload_index = Vec::new();
         for _ in 0..2 {
-            let mut warm = make();
-            warm.unload(|p| unload_chunks.contains(&chunk_of(*p)));
-            let mut warm = make();
-            warm.unload_chunks(&unload_chunks);
+            let mut warm = many_block_entities();
+            warm.unload(|p| SAMPLE_CHUNKS.contains(&chunk_of(*p)));
+            let mut warm = many_block_entities();
+            warm.unload_chunks(&SAMPLE_CHUNKS);
         }
         for _ in 0..RUNS {
-            let mut left = make();
+            let mut left = many_block_entities();
             let start = Instant::now();
-            left.unload(|p| unload_chunks.contains(&chunk_of(*p)));
+            left.unload(|p| SAMPLE_CHUNKS.contains(&chunk_of(*p)));
             unload_scan.push(start.elapsed().as_nanos());
-            let mut right = make();
+            let mut right = many_block_entities();
             let start = Instant::now();
-            right.unload_chunks(&unload_chunks);
+            right.unload_chunks(&SAMPLE_CHUNKS);
             unload_index.push(start.elapsed().as_nanos());
-            let keys = |ents: &BlockEntities| {
-                let mut v: Vec<Pos> = ents.keys().copied().collect();
-                v.sort();
-                v
-            };
-            assert_eq!(keys(&left), keys(&right));
         }
         let (us_m, us_p, us_w) = spread(&mut unload_scan);
         let (ui_m, ui_p, ui_w) = spread(&mut unload_index);
         let report = format!(
-            "scene chests={CHESTS} beacons=8 campfires=8 runs={RUNS}\n             kind_scan_ns median={scan_m} p95={scan_p} worst={scan_w}\n             kind_index_ns median={index_m} p95={index_p} worst={index_w}\n             unload_scan_ns median={us_m} p95={us_p} worst={us_w}\n             unload_index_ns median={ui_m} p95={ui_p} worst={ui_w}\n"
+            "scene hoppers={HOPPERS} beacons=8 campfires=8 runs={RUNS}\n             kind_scan_ns median={scan_m} p95={scan_p} worst={scan_w}\n             kind_index_ns median={index_m} p95={index_p} worst={index_w}\n             unload_scan_ns median={us_m} p95={us_p} worst={us_w}\n             unload_index_ns median={ui_m} p95={ui_p} worst={ui_w}\n"
         );
         let path = std::env::temp_dir().join("hz-measure-blocks.txt");
         std::fs::write(&path, &report).unwrap();
         println!("{report}");
-        assert!(
-            index_m < scan_m,
-            "kind index median {index_m} vs scan {scan_m}"
-        );
-        assert!(ui_m < us_m, "chunk unload median {ui_m} vs scan {us_m}");
     }
 
     fn spread(samples: &mut [u128]) -> (u128, u128, u128) {
