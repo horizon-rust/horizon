@@ -454,7 +454,7 @@ fn grab_refused(grab: Grab) -> bool {
     if !grab.capture {
         return false;
     }
-    if grab.title_open {
+    if grab.title_open && !grab.internal_grab {
         return true;
     }
     let focused = grab.game_focused && (grab.internal_grab || grab.window_focused);

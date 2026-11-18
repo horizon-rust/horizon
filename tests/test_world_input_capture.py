@@ -198,6 +198,28 @@ fn main() {
         assert_eq!((window.grabs.get(), window.warps.get()), (0, 0));
         assert!(window.visible.get());
     }
+    // The game can still capture logically on the title screen in internal runs.
+    for (offscreen, unclaimed, scripted) in [
+        (true, false, false), (false, true, false), (false, false, true),
+    ] {
+        let mut game = Game::default();
+        game.title = Some(());
+        game.options.offscreen = offscreen;
+        game.unclaimed_window = unclaimed;
+        game.scripted = scripted;
+        game.agent_pointer = true;
+        let window = game.window.as_ref().unwrap();
+        window.focus.set(false);
+        window.visible.set(true);
+        game.capture(true);
+        assert!(game.captured);
+        assert!(game.mouse.ignore_first);
+        assert!(!game.agent_pointer);
+        assert!(game.capture_mode.is_none());
+        let window = game.window.as_ref().unwrap();
+        assert_eq!((window.grabs.get(), window.warps.get()), (0, 0));
+        assert!(window.visible.get());
+    }
     // A window opened in the background has not sent a focus-loss event yet.
     {
         let mut game = Game::default();
