@@ -150,6 +150,10 @@ impl Launcher {
                             .child(progress_bar(Some(self.bar), &t)),
                     )
                     .child(format!("{:.0}%", p * 100.)),
+                // A Stable update never replaces another download: it waits, and says so.
+                None if stable && self.stable_update_waits() => {
+                    line.child(tr("Waiting for another download"))
+                }
                 None => line.child(
                     div()
                         .id("install-update")
@@ -160,7 +164,7 @@ impl Launcher {
                         .child(tr("Install"))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             match offer.clone().filter(|_| stable) {
-                                Some(release) => this.install_for_instance(release),
+                                Some(release) => this.install_stable_update(release),
                                 None => this.install_update(),
                             }
                             cx.notify();

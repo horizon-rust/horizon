@@ -240,12 +240,6 @@ struct Kept {
     body: serde_json::Value,
 }
 
-/// The last answer kept on disk for `url`, without asking anyone: for a start that must not wait
-/// on the network.
-pub(crate) fn kept(url: &str) -> Option<serde_json::Value> {
-    read_kept(&cache_dir().join(cache_name(url)), url).map(|k| k.body)
-}
-
 fn read_kept(file: &Path, url: &str) -> Option<Kept> {
     let kept: Kept = serde_json::from_slice(&fs::read(file).ok()?).ok()?;
     (kept.url == url).then_some(kept)

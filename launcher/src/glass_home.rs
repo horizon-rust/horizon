@@ -435,6 +435,10 @@ impl Launcher {
             match (installing, self.preparing, &self.starting_client) {
                 (Some(p), _, _) => Some((tr("Updating").into(), Some(p))),
                 (_, _, _) if own.is_some() => Some((tr("Installing").into(), own.flatten())),
+                // A Stable update never replaces another download: it waits, and says so.
+                _ if stable && update.is_some() && self.stable_update_waits() => {
+                    Some((tr("Waiting for another download").into(), None))
+                }
                 (_, true, _) => Some((
                     tr("Preparing").into(),
                     horizon_launcher::mojang::progress().map(|(d, n)| d as f32 / n.max(1) as f32),
@@ -657,7 +661,7 @@ impl Launcher {
                         let release = stable_update.clone();
                         main.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             if let Some(release) = release.clone() {
-                                this.install_for_instance(release);
+                                this.install_stable_update(release);
                             }
                             cx.notify();
                         }))

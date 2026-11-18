@@ -167,6 +167,7 @@ impl Launcher {
                     self.installed = backend::installed();
                     let as_update = self.update_install.take().filter(|t| *t == tag);
                     let for_instance = self.instance_install.take_if(|t| *t == tag).is_some();
+                    let stable = self.stable_install.take_if(|t| *t == tag).is_some();
                     if let (Ok(()), Some(started)) = (&result, self.install_started.take()) {
                         let name = if as_update.is_some() {
                             "launcher.update_ms"
@@ -214,7 +215,14 @@ impl Launcher {
                                 });
                             }
                         }
-                        Err(e) => self.install_error = Some((tag, e)),
+                        Err(e) => {
+                            // The Nightly it offered may have moved on (GitHub's `nightly`
+                            // rotates): the list is read again before the next offer.
+                            if stable {
+                                self.fetch_releases();
+                            }
+                            self.install_error = Some((tag, e));
+                        }
                     }
                     if let Some(next) = self.install_next.take() {
                         self.install_for_instance(next);

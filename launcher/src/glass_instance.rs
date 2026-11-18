@@ -299,10 +299,23 @@ impl Launcher {
         }
     }
 
+    /// Whether Home's Stable update has to wait: another download runs or is queued, and the
+    /// update never replaces it.
+    pub(super) fn stable_update_waits(&self) -> bool {
+        self.installing.is_some() || self.install_next.is_some()
+    }
+
+    /// Home's Stable update: installed for the instance, so the version picked on Versions, which
+    /// Nightly instances follow, stays; never while another download runs or is queued.
+    pub(super) fn install_stable_update(&mut self, release: Release) {
+        if !self.stable_update_waits() {
+            self.stable_install = Some(release.tag.clone());
+            self.install_for_instance(release);
+        }
+    }
+
     /// The Stable build Home offers the selected instance (`tag`: what it plays, empty for a
     /// Java instance): the newest one, when the instance is set to Latest on Stable and lacks it.
-    /// Home installs it with [`Launcher::install_for_instance`], so the version picked on
-    /// Versions, which Nightly instances follow, stays.
     pub(super) fn stable_update(&self, tag: &str) -> Option<Release> {
         self.selected_instance()
             .filter(|i| i.channel == Channel::Stable && i.version.is_none() && !tag.is_empty())?;

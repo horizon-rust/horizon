@@ -652,17 +652,10 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 /// Every published release of the repository, both kinds, as GitHub's JSON (kept on disk with its
 /// ETag, and read through Kira's mirror past GitHub's rate limit: [`crate::github`]).
 fn release_list() -> Result<serde_json::Value, String> {
-    Ok(crate::github::json_optional(&release_list_url())?.unwrap_or_else(|| serde_json::json!([])))
-}
-
-fn release_list_url() -> String {
-    format!("https://api.github.com/repos/{REPO}/releases?per_page=100")
-}
-
-/// The game's builds as the release list last read said (kept on disk), without asking GitHub;
-/// empty before any was read.
-pub fn kept_releases() -> Vec<Release> {
-    crate::github::kept(&release_list_url()).map_or_else(Vec::new, |list| game_releases(&list))
+    Ok(crate::github::json_optional(&format!(
+        "https://api.github.com/repos/{REPO}/releases?per_page=100"
+    ))?
+    .unwrap_or_else(|| serde_json::json!([])))
 }
 
 /// The releases in `list` whose tag passes `keep`, newest first, with the asset named `asset`.

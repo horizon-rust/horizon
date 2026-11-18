@@ -119,6 +119,7 @@ impl Launcher {
             update_install: None,
             instance_install: None,
             install_next: None,
+            stable_install: None,
             bar: (0., 0.),
             releases: Load::Loading,
             installed,

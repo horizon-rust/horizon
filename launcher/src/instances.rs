@@ -310,7 +310,8 @@ impl Instance {
     }
 
     /// The installed version this instance plays: its pinned one, else `requested` (the
-    /// command line's `--version`) or the launcher's (`backend::resolve_version`).
+    /// command line's `--version`), else on Stable its channel's ([`crate::nightly::stable_latest`],
+    /// as Home's), else the launcher's (`backend::resolve_version`).
     pub fn resolve_version(&self, requested: Option<&str>) -> Result<String, String> {
         self.horizon()?;
         match (requested, &self.version) {
@@ -321,26 +322,13 @@ impl Instance {
                     self.name, self.name
                 )
             }),
+            (None, None) if self.channel == Channel::Stable => {
+                let selected = backend::Settings::load().selected;
+                crate::nightly::stable_latest(&backend::installed(), selected.as_deref())
+                    .map_or_else(|| backend::resolve_version(None), Ok)
+            }
             _ => backend::resolve_version(requested),
         }
-    }
-
-    /// The installed version a launch plays: as [`Self::resolve_version`], but a Stable instance
-    /// set to Latest plays the newest Stable build installed, as Home does, from the release list
-    /// kept on disk (a shortcut doesn't wait on the network).
-    pub fn play_version(&self, requested: Option<&str>) -> Result<String, String> {
-        if requested.is_none()
-            && self.version.is_none()
-            && self.channel == Channel::Stable
-            && self.java.is_none()
-        {
-            let stable =
-                crate::nightly::stable_installed(&backend::kept_releases(), &backend::installed());
-            if let Some(tag) = stable {
-                return Ok(tag);
-            }
-        }
-        self.resolve_version(requested)
     }
 }
 
