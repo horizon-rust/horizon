@@ -42,6 +42,24 @@ pub(super) struct ModRow {
     pub(super) kind: Option<(ModKind, String)>,
 }
 
+impl ModRow {
+    /// Its mod id when it is a native mod: one that builds, needs the native permission and has
+    /// a build log. A hand-copied `.hmod` in `horizon-mods/` is not one.
+    pub(super) fn native_id(&self) -> Option<&str> {
+        match (&self.kind, &self.native) {
+            (Some((ModKind::Native, id)), _) => Some(id.as_str()),
+            (_, Some(n)) if n.native() => Some(n.id.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Whether it has an on/off switch: a local file has none when switching it could switch
+    /// another mod (`native_status::Installed::switch`).
+    pub(super) fn has_switch(&self) -> bool {
+        self.native.as_ref().is_none_or(|n| n.switch)
+    }
+}
+
 /// Modrinth projects' icon URLs by project id, kept on disk beside the image cache so the icons
 /// show offline too; each id is asked for once a session.
 #[derive(Default)]
@@ -835,8 +853,14 @@ mod tests {
         let home = &scratch.0;
         let folder = home.join(horizon_platform::mod_package::mod_list::DIR);
         std::fs::create_dir_all(&folder).unwrap();
-        // The file name isn't the id: the on/off list is keyed by the manifest's.
-        for (file, id) in [("tracked", "tracked"), ("my-build", "handmade")] {
+        // The file name isn't the id: the on/off list is keyed by the manifest's. Two copies
+        // carry the id of another mod: a tracked one and a native one.
+        for (file, id) in [
+            ("tracked", "tracked"),
+            ("my-build", "handmade"),
+            ("copy-of-tracked", "tracked"),
+            ("copy-of-native", "ruby"),
+        ] {
             let mut zip = zip::ZipWriter::new(
                 std::fs::File::create(folder.join(format!("{file}.hmod"))).unwrap(),
             );
@@ -854,26 +878,61 @@ mod tests {
         }
         .save(home)
         .unwrap();
+        // Unreadable, so its id is only its file name: it keeps its build role, not a switch.
+        let native = home.join(native_mods::INSTALLED);
+        std::fs::create_dir_all(&native).unwrap();
+        std::fs::write(native.join("ruby.hmod"), b"unreadable").unwrap();
         std::fs::write(home.join("horizon-mods.txt"), "mod.handmade:true\n").unwrap();
         let rows = read(home, false);
         let seen: Vec<_> = rows
             .iter()
-            .map(|r| (r.file.as_str(), r.name.as_str(), r.on, r.kind.clone()))
+            .map(|r| {
+                (
+                    r.file.as_str(),
+                    r.on,
+                    r.kind.as_ref().map(|(kind, _)| *kind),
+                    r.native_id(),
+                    r.has_switch(),
+                )
+            })
             .collect();
         assert_eq!(
             seen,
             [
                 (
                     "horizon-mods/my-build.hmod",
-                    "handmade",
                     true,
-                    Some((ModKind::Content, "handmade".into()))
+                    Some(ModKind::Content),
+                    None,
+                    true
+                ),
+                (
+                    "horizon-native-mods/ruby.hmod",
+                    false,
+                    Some(ModKind::Native),
+                    Some("ruby"),
+                    false
+                ),
+                (
+                    "horizon-mods/copy-of-native.hmod",
+                    false,
+                    Some(ModKind::Content),
+                    None,
+                    false
+                ),
+                (
+                    "horizon-mods/copy-of-tracked.hmod",
+                    false,
+                    Some(ModKind::Content),
+                    None,
+                    false
                 ),
                 (
                     "horizon-mods/tracked.hmod",
-                    "Tracked mod",
                     false,
-                    Some((ModKind::Content, "tracked".into()))
+                    Some(ModKind::Content),
+                    None,
+                    true
                 ),
             ]
         );
@@ -883,7 +942,11 @@ mod tests {
             .expect("removable like a local native file");
         assert!(local.origin.is_none());
         assert!(
-            !native_status::asks_for_build(rows.iter().filter_map(|r| r.native.as_ref())),
+            !native_status::asks_for_build(
+                rows.iter()
+                    .filter_map(|r| r.native.as_ref())
+                    .filter(|n| !n.native())
+            ),
             "a content mod needs no native build"
         );
     }

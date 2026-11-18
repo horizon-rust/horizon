@@ -475,7 +475,8 @@ impl Launcher {
         // A wasm or content `.hmod` copied into `horizon-mods/` by hand needs no native consent.
         let native = row.native();
         let flip = switch(format!("native-switch-{id}"), on, &t);
-        right = right.when(!retired, |right| {
+        // A retired file can't be read, so it has no switch either (`Installed::switch`).
+        right = right.when(row.switch, |right| {
             right.child(if named {
                 self.with_reason(disabled(flip), reason)
             } else {
