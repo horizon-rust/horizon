@@ -1,0 +1,2 @@
+# Crash teardown keeps the last saved file of a guest whose turn a panic interrupted (#18117).
+horizon-client game::native_guest_turn_tests::crash_teardown_keeps_the_last_file_of_a_guest_whose_turn_panicked lib daily resources

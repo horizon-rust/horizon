@@ -1672,7 +1672,7 @@ fn run_command_runs_from_the_players_own_place_inside_an_outer_command() {
 /// restores the outer player, so `lan_acting` no longer names them. Crash teardown still keeps
 /// that player's last saved file (#18117), and only theirs.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn crash_teardown_keeps_the_last_file_of_a_guest_whose_turn_panicked() {
     with_guests(|game| {
         let outer = game.lan_acting;
