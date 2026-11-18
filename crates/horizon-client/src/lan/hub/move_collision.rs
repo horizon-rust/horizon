@@ -154,18 +154,24 @@ where
     // already touch.
     let shrink = f64::from(1.0E-5_f32);
     let shrink = Vec3::new(shrink, shrink, shrink);
-    let Ok(old_shape) = VoxelShape::from_box(old.deflate(shrink)) else {
-        return (fail, false, stands);
-    };
+    // The old box's shape is built when a block meets the new box: a walking body meets none.
+    let mut old_shape = None;
     let Ok(scan) = BlockCollisionScan::new(world, context, new.deflate(shrink), false, 1 << 20)
     else {
         return (fail, false, stands);
     };
     for hit in scan {
         let Ok(hit) = hit else { break };
+        if old_shape.is_none() {
+            match VoxelShape::from_box(old.deflate(shrink)) {
+                Ok(shape) => old_shape = Some(shape),
+                Err(_) => return (fail, false, stands),
+            }
+        }
+        let old_shape = old_shape.as_ref().expect("built above");
         if !hit
             .shape
-            .join_is_not_empty(&old_shape, ShapeOp::AND)
+            .join_is_not_empty(old_shape, ShapeOp::AND)
             .unwrap_or(true)
         {
             return (fail, true, stands);

@@ -1,0 +1,2 @@
+# Prepared-resource collision regression test.
+horizon-client-lib lan::hub::tests::move_collision_lazy_tests::the_old_boxs_shape_built_late_changes_no_answer lib daily resources

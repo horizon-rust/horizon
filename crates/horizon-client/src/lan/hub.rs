@@ -5221,6 +5221,7 @@ mod tests {
     #[path = "../far_tests.rs"]
     mod far_tests;
     mod live_player_limit_tests;
+    mod move_collision_lazy_tests;
     mod ordered_inbox_tests;
     mod pending_move_bound_tests;
     mod pending_move_scope_tests;
