@@ -635,6 +635,38 @@ pub fn allocator_commit() -> (usize, usize) {
     (info[5], info[6])
 }
 
+/// Bumped by [`release_everywhere`]: each pool thread compares it with the
+/// value it saw last ([`release_asked`]).
+static RELEASE_ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How often a pool thread with nothing to do looks at [`release_asked`].
+pub const RELEASE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ask every pool thread to give back the memory its heap holds free, and
+/// give back this thread's now. mimalloc returns a page that one thread freed
+/// into another's heap only when the owning thread collects: the chunks a
+/// server unloads were mostly made on the workers, encoded on the chunk
+/// encoders and read on the network threads, which then sleep. Each of them
+/// calls [`release_free_memory`] within [`RELEASE_POLL`].
+pub fn release_everywhere() {
+    RELEASE_ASKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    release_free_memory();
+}
+
+/// [`RELEASE_ASKED`] for a pool thread to start from: a release asked before
+/// it started is not its own.
+pub fn release_seen() -> u64 {
+    RELEASE_ASKED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// For a pool thread between jobs: whether [`release_everywhere`] was asked
+/// since `seen`, which it updates. The thread then calls
+/// [`release_free_memory`].
+pub fn release_asked(seen: &mut u64) -> bool {
+    let now = release_seen();
+    std::mem::replace(seen, now) != now
+}
+
 /// Give back to the OS the memory the allocator holds free, after something
 /// large was dropped: mimalloc's free pages, then the system heap's, which
 /// native libraries still use: glibc keeps freed pages in the arena of the

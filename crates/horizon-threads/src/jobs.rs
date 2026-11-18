@@ -439,6 +439,7 @@ fn work(inner: &Inner, worker: usize) {
     // wait: with jobs queued every few seconds on some worker, a pool of idle
     // workers would otherwise never free anything.
     let mut idle_since = Instant::now();
+    let mut release_seen = crate::release_seen();
     loop {
         let epoch = inner.epoch.load(Ordering::SeqCst);
         if let Some((entry, far)) = choose(inner) {
@@ -471,12 +472,19 @@ fn work(inner: &Inner, worker: usize) {
         inner.sleepers.fetch_add(1, Ordering::SeqCst);
         let still = |_: &mut ()| inner.epoch.load(Ordering::SeqCst) == epoch;
         let timed_out = if released {
-            drop(
-                inner
-                    .wake
-                    .wait_while(sleep, still)
-                    .unwrap_or_else(|e| e.into_inner()),
-            );
+            // Already released: wake only for a job, or to give back what
+            // other threads freed into this worker's heap since
+            // (`release_everywhere`).
+            let (sleep, wait) = inner
+                .wake
+                .wait_timeout_while(sleep, crate::RELEASE_POLL, still)
+                .unwrap_or_else(|e| e.into_inner());
+            drop(sleep);
+            if wait.timed_out() && crate::release_asked(&mut release_seen) {
+                inner.sleepers.fetch_sub(1, Ordering::SeqCst);
+                crate::release_free_memory();
+                continue;
+            }
             false
         } else {
             let left = inner.idle_release.saturating_sub(idle_since.elapsed());
@@ -514,6 +522,7 @@ fn work(inner: &Inner, worker: usize) {
         // The allocator keeps freed pages until memory runs short: hand back
         // what this worker just freed (its own heap), and the shared arenas'
         // once every worker has.
+        crate::release_asked(&mut release_seen);
         crate::release_free_memory();
     }
 }
