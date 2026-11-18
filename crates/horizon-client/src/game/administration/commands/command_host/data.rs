@@ -14,6 +14,9 @@ pub(in crate::game) struct DataTarget<'a, 'g> {
 }
 
 impl CommandHost for DataTarget<'_, '_> {
+    fn error(&self, key: &str, args: &[&dyn std::fmt::Display]) -> horizon_client::command::CommandError {
+        <Game as CommandHost>::error(self.game, key, args)
+    }
     fn feedback(&mut self, message: Text) {
         Game::feedback(self.game, message);
     }
