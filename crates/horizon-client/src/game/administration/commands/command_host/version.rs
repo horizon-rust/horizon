@@ -9,7 +9,7 @@ impl VersionHost for Game<'_> {
     fn chat_system_message(&mut self, text: Text) {
         self.system_message(text);
     }
-    fn protocol_version(&self) -> i32 {
-        horizon_protocol::PROTOCOL_VERSION
+    fn version_lines(&self) -> Vec<Text> {
+        Game::version_lines(self)
     }
 }

@@ -9,8 +9,8 @@ pub trait VersionHost: CommandHost {
     fn source_silent(&self) -> bool;
     /// A system message in the chat of the player.
     fn chat_system_message(&mut self, text: Text);
-    /// The version of the network protocol the game implements.
-    fn protocol_version(&self) -> i32;
+    /// `VersionCommand.dumpVersion`'s lines.
+    fn version_lines(&self) -> Vec<Text>;
 }
 
 fn num(n: impl std::fmt::Display) -> Text {
@@ -60,7 +60,7 @@ pub fn version_lines(protocol: i32) -> Vec<Text> {
 pub fn version(host: &mut dyn VersionHost) -> R<i32> {
     if !host.source_silent() {
         host.chat_system_message(Text::translate("commands.version.header", &[]));
-        for line in version_lines(host.protocol_version()) {
+        for line in host.version_lines() {
             host.chat_system_message(line);
         }
     }
