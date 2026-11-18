@@ -8,7 +8,8 @@ use std::{
     },
 };
 
-use horizon_world::{compression::Compression, nbt::Limits, region::ChunkRecord};
+use horizon_core::nbt::Limits;
+use horizon_world::{compression::Compression, region::ChunkRecord};
 
 use super::Record;
 
@@ -65,9 +66,11 @@ impl CompressionPool {
         });
         for i in 0..workers {
             let worker_weak = Arc::downgrade(&inner);
-            let _ = std::thread::Builder::new()
-                .name(format!("horizon-save-compression-{i}"))
-                .spawn(move || worker_loop(worker_weak));
+            // `Record::tag()` can enter a wasm mod, which needs the guest stack.
+            let _ =
+                horizon_guest_stack::spawn(format!("horizon-save-compression-{i}"), move || {
+                    worker_loop(worker_weak)
+                });
         }
         Self { inner, workers }
     }
@@ -177,6 +180,12 @@ pub fn compress_records_with_pool(
     }
     let compression = Compression::selected();
     let compress = move |record: &Record| {
+        if let Record::Chunk(_, encoding, _) | Record::Proto(_, encoding) = record {
+            encoding
+                .biomes
+                .ensure_saveable()
+                .map_err(io::Error::other)?;
+        }
         record
             .tag()
             .map(|tag| ChunkRecord::from_nbt(&tag, compression, timestamp, Limits::saved()))
