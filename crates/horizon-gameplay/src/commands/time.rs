@@ -49,7 +49,12 @@ pub fn time(host: &mut dyn TimeHost, id: &str, ctx: &Context) -> R<i32> {
         Some(Arg::Resource(c)) => c.clone(),
         _ => match host.default_clock() {
             Some(clock) => clock,
-            None => return Err(err("commands.time.no_default_clock", &[&host.dimension_id()])),
+            None => {
+                return Err(err(
+                    "commands.time.no_default_clock",
+                    &[&host.dimension_id()],
+                ));
+            }
         },
     };
     let total = host.clock_time(&clock);
@@ -147,10 +152,7 @@ pub fn time(host: &mut dyn TimeHost, id: &str, ctx: &Context) -> R<i32> {
             Ok(1)
         }
         "time.query.time" => {
-            host.feedback_unbroadcast(Text::tr(
-                "commands.time.query.absolute",
-                &[&clock, &total],
-            ));
+            host.feedback_unbroadcast(Text::tr("commands.time.query.absolute", &[&clock, &total]));
             Ok((total % i64::from(i32::MAX)) as i32)
         }
         "time.query.timeline" | "time.query.repetition" => {

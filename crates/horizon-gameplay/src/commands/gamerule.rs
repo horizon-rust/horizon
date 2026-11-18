@@ -31,10 +31,7 @@ pub fn gamerule(host: &mut dyn GameRuleHost, ctx: &Context) -> R<i32> {
         Some(Arg::Bool(b)) => Value::Bool(*b),
         Some(Arg::Int(i)) => Value::Int(*i),
         _ => {
-            host.feedback_unbroadcast(Text::tr(
-                "commands.gamerule.query",
-                &[&rule_id, &current],
-            ));
+            host.feedback_unbroadcast(Text::tr("commands.gamerule.query", &[&rule_id, &current]));
             return Ok(match current {
                 Value::Bool(b) => i32::from(b),
                 Value::Int(i) => i,
