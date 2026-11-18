@@ -262,9 +262,8 @@ def main():
         time.sleep(3)
         extended = '--extended' in sys.argv
         setup = server.run(scene_commands('--random-ticks' in sys.argv, extended))
-        before = server.game_time()
-        start = time.time()
         if extended:
+            # Written before anything else can fail, so the setup's console output is never lost.
             log = list(setup)
             transcript = open(out / 'commands.log', 'w')
 
@@ -272,6 +271,9 @@ def main():
                 transcript.write(''.join(l + '\n' for l in lines))
                 transcript.flush()
             note(setup)
+        before = server.game_time()
+        start = time.time()
+        if extended:
             if '--fast-step' in sys.argv:
                 server.run(['tick rate 10000'])
             done = 0

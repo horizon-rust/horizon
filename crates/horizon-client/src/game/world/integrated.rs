@@ -1131,16 +1131,21 @@ impl Game<'_> {
             && (rest.is_empty() || rest.starts_with(char::is_whitespace))
         {
             let args: Vec<&str> = rest.split_whitespace().collect();
-            // The owner's level is the one to sync; with no owner in it the call would sync whatever level is in place.
+            // The owner's level is the one to sync. It must be the level in place: syncing any other one, or
+            // the level in place after a failed switch, would report success for the wrong level.
             let owner = self.serving.as_ref().map(|s| s.owner);
-            let owner_in = self
-                .lan
-                .as_ref()
-                .is_some_and(|h| h.hub.guests.iter().any(|g| Some(g.uuid) == owner));
-            if !owner_in {
+            let owner_dim = self.lan.as_ref().and_then(|h| {
+                h.hub.guests.iter().find(|g| Some(g.uuid) == owner).map(|g| g.dimension.clone())
+            });
+            let Some(owner_dim) = owner_dim else {
                 return vec!["digest-sync: the owner is not in the world yet".to_owned()];
+            };
+            if super::Dim::from_id(&owner_dim) != self.dim {
+                return vec![format!(
+                    "digest-sync: the owner is in {owner_dim}, not the level in place; nothing changed"
+                )];
             }
-            return vec![match self.in_owner_level(|g| g.state_digest_sync(&args)) {
+            return vec![match self.state_digest_sync(&args) {
                 Ok(()) => {
                     self.state_digest_rank_joins();
                     "digest-sync done".to_owned()
