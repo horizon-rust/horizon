@@ -1932,9 +1932,10 @@ struct Game<'a> {
     save_after_guest_turn: bool,
     /// Guests whose records are displaced by nested player swaps, outer first.
     lan_guest_swaps: Vec<u32>,
-    /// Guests whose last turn a panic ended after `as_guest_at` or `leave_guest` had written
-    /// their state back and restored the outer player: crash teardown keeps their last saved
-    /// file (`keep_interrupted_players`). A turn of theirs that ends cleanly clears them.
+    /// Guests whose last turn a panic ended after their state was written back and the outer
+    /// player restored (`as_guest_at`, `as_guest_messaged`, `leave_guest`), which hides the turn
+    /// from `lan_acting`: crash teardown keeps their last saved file (`keep_interrupted_players`).
+    /// A turn of theirs that ends cleanly clears them.
     lan_interrupted_turns: Vec<u32>,
     /// Live attachments and original snapshots retained during player replacement.
     player_state: original_player::PlayerState,

@@ -84,7 +84,11 @@ impl Game<'_> {
         }
         match result {
             Ok(result) => self.lan.is_some().then_some(result),
-            Err(payload) => std::panic::resume_unwind(payload),
+            Err(payload) => {
+                // `as_guest` saw this turn end normally: the panic was caught inside it.
+                self.lan_interrupted_turns.push(conn);
+                std::panic::resume_unwind(payload)
+            }
         }
     }
 
@@ -551,6 +555,9 @@ impl Game<'_> {
             Ok(totem) => (totem, None),
             Err(payload) => (None, Some(payload)),
         };
+        // Crash teardown treats the turn as interrupted until it has been put back without a
+        // panic: the callbacks below run after the restore and can panic too.
+        self.lan_interrupted_turns.push(swap.conn);
         let GuestSwap {
             attachments,
             conn,
@@ -1053,8 +1060,10 @@ impl Game<'_> {
                     .for_turn(actor, None, building_players(host));
         }
         if let Some(payload) = panic {
-            self.lan_interrupted_turns.push(conn);
             std::panic::resume_unwind(payload);
+        }
+        if let Some(i) = self.lan_interrupted_turns.iter().rposition(|&c| c == conn) {
+            self.lan_interrupted_turns.remove(i);
         }
     }
 

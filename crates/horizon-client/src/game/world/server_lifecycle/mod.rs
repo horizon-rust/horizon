@@ -126,8 +126,9 @@ impl Game<'_> {
                 .guests
                 .update_connection(conn, |guest| guest.placed = false);
         }
-        (!interrupted.is_empty())
-            .then_some("The panic interrupted a player's turn: that player keeps the last saved file")
+        (!interrupted.is_empty()).then_some(
+            "The panic interrupted a player's turn: that player keeps the last saved file",
+        )
     }
 
     /// Complete teardown even if freeing beds or the final save fails. A failed

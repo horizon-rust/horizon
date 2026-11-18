@@ -1687,6 +1687,9 @@ fn crash_teardown_keeps_the_last_file_of_a_guest_whose_turn_panicked() {
             game.lan.as_ref().unwrap().hub.guest(conn).unwrap().placed
         };
         assert!(!placed(game, 13), "the interrupted guest would be saved");
-        assert!(placed(game, 12), "a guest the panic did not interrupt is saved");
+        assert!(
+            placed(game, 12),
+            "a guest the panic did not interrupt is saved"
+        );
     });
 }
