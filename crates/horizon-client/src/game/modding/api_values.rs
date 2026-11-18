@@ -1187,6 +1187,7 @@ mod stacked_slot_tests;
 #[cfg(test)]
 mod block_entity_snapshot_tests {
     use super::*;
+    use horizon_gameplay::api_values::block_entity_writeback::apply_block_entity_snapshot;
     #[test]
     fn rejected_writebacks_invalidate_tick() {
         assert_rejected_writeback("block_entity_tick");

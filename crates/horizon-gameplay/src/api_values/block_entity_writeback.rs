@@ -8,7 +8,8 @@ pub enum BlockEntitySnapshotError {
     InvalidStack,
 }
 
-fn apply_block_entity_snapshot(
+#[doc(hidden)]
+pub fn apply_block_entity_snapshot(
     entity: &mut horizon_client::containers::ModBlockEntity,
     snapshot: &mod_api::ModBlockEntity,
     before: mod_api::item::containers::ModRevision,
