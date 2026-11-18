@@ -81,7 +81,7 @@ pub trait OcclusionHost {
         bounds: Option<Aabb>,
     ) -> bool;
     fn entity_hidden_sync_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool;
-    pub fn terrain_sections_occlude(&self, bounds: Aabb) -> bool;
+    fn terrain_sections_occlude(&self, bounds: Aabb) -> bool;
 }
 
 /// The entity culler's state for this frame and what it keeps between frames.
