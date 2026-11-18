@@ -183,15 +183,25 @@ def default_base():
         raise RuntimeError(f"{error}\nNo origin/main to compare with: pass --base REF.")
 
 
-def snapshot(root, out, target_dir):
-    """Run the hook_snapshot example of the tree at `root`, writing into `out`."""
+LOCK_OUT_OF_DATE = "cannot update the lock file"
+TAIL_LINES = 30
+
+
+def snapshot(root, out, target_dir, side):
+    """Run the hook_snapshot example of the tree at `root`, writing into `out`. Cargo's and the example's output is
+    captured: it prints nothing on success, and the end of stderr on failure."""
     env = dict(os.environ, CARGO_TARGET_DIR=str(target_dir))
     command = ["cargo", "run", "--locked", "--quiet", "-p", "horizon-mod-api-gen", "--example", "hook_snapshot",
                "--", str(out), str(root)]
-    print(f"Snapshot of {root}", flush=True)
-    result = subprocess.run(command, cwd=root, env=env)
-    if result.returncode != 0:
-        raise RuntimeError(f"hook_snapshot failed in {root} (exit {result.returncode})")
+    print(f"Snapshot of the {side} ({root})", flush=True)
+    result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, errors="replace")
+    if result.returncode == 0:
+        return
+    stderr = result.stderr.strip()
+    if LOCK_OUT_OF_DATE in stderr:
+        raise RuntimeError(f"the {side}'s Cargo.lock is out of date: run cargo once without --locked, then rerun")
+    tail = "\n".join(stderr.splitlines()[-TAIL_LINES:])
+    raise RuntimeError(f"hook_snapshot failed on the {side} (exit {result.returncode}): {' '.join(command)}\n{tail}")
 
 
 def main(argv=None):
@@ -218,8 +228,8 @@ def main(argv=None):
         print(f"Base {base[:12]}, build folder {target}")
         git("worktree", "add", "--detach", "--quiet", str(worktree), base)
         added_worktree = True
-        snapshot(worktree, scratch / "base-out", target)
-        snapshot(ROOT, scratch / "head-out", target)
+        snapshot(worktree, scratch / "base-out", target, "base")
+        snapshot(ROOT, scratch / "head-out", target, "working tree")
         return compare(scratch / "base-out", scratch / "head-out", args.allow_added, worktree, ROOT)
     except (RuntimeError, OSError, ValueError, KeyError) as error:
         print(f"Mod point check failed: {error}")

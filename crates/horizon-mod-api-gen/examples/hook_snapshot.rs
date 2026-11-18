@@ -2,6 +2,7 @@
 //! Run with a destination directory argument before and after the split, then `diff -r`.
 use std::{fs, path::PathBuf};
 fn main() -> Result<(), String> {
+    horizon_mod_api_gen::generated_on_stdout();
     let root = std::env::args()
         .nth(2)
         .map(PathBuf::from)
