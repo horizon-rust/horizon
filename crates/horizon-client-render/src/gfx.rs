@@ -13663,10 +13663,12 @@ mod block_entity_mark_tests {
         }
     }
 
-    // Run with `cargo test -p horizon-client-render --release --lib -- --ignored measure_section_marks --nocapture`.
+    // Set HORIZON_MEASURE_SECTION_MARKS=1 and run the measure_section_marks test with --nocapture.
     #[test]
-    #[ignore = "wall-clock benchmark"]
     fn measure_section_marks() {
+        if std::env::var("HORIZON_MEASURE_SECTION_MARKS").as_deref() != Ok("1") {
+            return;
+        }
         const RUNS: usize = 11;
         let (marks, revisions, sections) = mark_scene();
         let cache = std::cell::RefCell::new(BlockEntityMarks::default());
