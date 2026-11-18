@@ -1,5 +1,5 @@
 //! `/tag`.
-use super::host::{CommandHost, R, err};
+use super::host::{CommandHost, R};
 use horizon_client::{
     command::{Arg, Context},
     scoreboard_cmd::{Holder, Tracker, format_list},
@@ -71,7 +71,7 @@ pub fn tag(host: &mut dyn TagHost, id: &str, ctx: &Context) -> R<i32> {
     let (message, total) = match id {
         "tag.add" => tracker.message(
             false,
-            Some(err("commands.tag.add.failed", &[])),
+            Some(host.error("commands.tag.add.failed", &[])),
             |h, _| {
                 Text::translate(
                     "commands.tag.add.success.single",
@@ -87,7 +87,7 @@ pub fn tag(host: &mut dyn TagHost, id: &str, ctx: &Context) -> R<i32> {
         ),
         "tag.remove" => tracker.message(
             false,
-            Some(err("commands.tag.remove.failed", &[])),
+            Some(host.error("commands.tag.remove.failed", &[])),
             |h, _| {
                 Text::translate(
                     "commands.tag.remove.success.single",

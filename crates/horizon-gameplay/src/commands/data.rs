@@ -1,5 +1,5 @@
 //! `/data merge`, `get`, `remove` and `modify`, over one data accessor (entity, block or storage).
-use super::host::{CommandHost, R, err};
+use super::host::{CommandHost, R};
 use horizon_client::{
     command::{Arg, Context},
     data_cmd::{self, Op, path_error},
@@ -48,11 +48,11 @@ pub fn data_in(host: &mut dyn DataHost, id: &str, ctx: &Context) -> R<i32> {
             let nbt = horizon_client::command::snbt::parse_fully(nbt)?;
             let old = host.data_of()?;
             if horizon_client::nbt_path::too_deep(&nbt, 0) {
-                return Err(err("arguments.nbtpath.too_deep", &[]));
+                return Err(host.error("arguments.nbtpath.too_deep", &[]));
             }
             let result = data_cmd::merged(&old, &nbt);
             if old == result {
-                return Err(err("commands.data.merge.failed", &[]));
+                return Err(host.error("commands.data.merge.failed", &[]));
             }
             host.set_data_of(result)?;
             let message = host.modified_text();
@@ -84,7 +84,7 @@ pub fn data_in(host: &mut dyn DataHost, id: &str, ctx: &Context) -> R<i32> {
             let mut data = host.data_of()?;
             let count = path.remove(&mut data);
             if count == 0 {
-                return Err(err("commands.data.merge.failed", &[]));
+                return Err(host.error("commands.data.merge.failed", &[]));
             }
             host.set_data_of(data)?;
             let message = host.modified_text();
@@ -92,7 +92,7 @@ pub fn data_in(host: &mut dyn DataHost, id: &str, ctx: &Context) -> R<i32> {
             Ok(count as i32)
         }
         "data.modify" => host.modify_data(ctx),
-        _ => Err(err("command.failed", &[])),
+        _ => Err(host.error("command.failed", &[])),
     }
 }
 
@@ -167,7 +167,7 @@ pub fn data_modify(host: &mut dyn DataHost, ctx: &Context) -> R<i32> {
         // that clears an array, then rejects the value) stays. An entity's
         // or a block's data is a copy.
         host.keep_unsaved_storage(data);
-        return Err(err("commands.data.merge.failed", &[]));
+        return Err(host.error("commands.data.merge.failed", &[]));
     }
     host.set_data_of(data)?;
     let message = host.modified_text();
