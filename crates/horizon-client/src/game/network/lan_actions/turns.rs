@@ -37,10 +37,7 @@ impl Game<'_> {
         // Commit the guest's progress and restore the outer player before propagating a panic.
         self.leave_guest(swap);
         match result {
-            Ok(result) => {
-                self.lan_interrupted_turns.retain(|&c| c != conn);
-                Ok(result)
-            }
+            Ok(result) => Ok(result),
             Err(payload) => {
                 // The record now holds what the turn did before the panic; the restore above
                 // also hid the turn from `lan_acting`, so crash teardown is told here.

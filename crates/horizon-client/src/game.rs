@@ -1935,7 +1935,7 @@ struct Game<'a> {
     /// Guests whose last turn a panic ended after their state was written back and the outer
     /// player restored (`as_guest_at`, `as_guest_messaged`, `leave_guest`), which hides the turn
     /// from `lan_acting`: crash teardown keeps their last saved file (`keep_interrupted_players`).
-    /// A turn of theirs that ends cleanly clears them.
+    /// Cleared as each server tick starts: a panic something caught leaves a game that carried on.
     lan_interrupted_turns: Vec<u32>,
     /// Live attachments and original snapshots retained during player replacement.
     player_state: original_player::PlayerState,
