@@ -5,7 +5,10 @@
 //! here names `Game`, `GameLevel` or a client type.
 #[cfg(test)]
 use horizon_core::nbt::{JavaString, Tag};
-pub(crate) use horizon_gameplay::api_values::*;
+pub(crate) use horizon_gameplay::api_values::{
+    BlockEntitySnapshotError, StackReadError, TryIntoApi, TryIntoEngine,
+    TryIntoEnginePreservingCount, block_metadata_table, finish_block_entity_writeback, stack_value,
+};
 use horizon_items::items::{ItemStack as EngineStack, Items};
 use mod_api::item::item_stack::{ItemStack as ApiStack, StackWriteError};
 #[path = "api_values/aggregates.rs"]
