@@ -19,6 +19,42 @@ pub(super) const FILTERS: [(Option<Status>, &str); 5] = [
 /// Lines of the pipeline's log the page shows while it works.
 const LOG_SHOWN: usize = 6;
 
+/// The imported packs' read on a thread (#18074): only the window's latest read applies, and
+/// only when the window changed no pack since asking for it.
+#[derive(Default)]
+pub(super) struct PackReads {
+    asked: u64,
+    running: Option<u64>,
+}
+
+impl PackReads {
+    /// A new read: its number, which its packs come back with.
+    fn ask(&mut self) -> u64 {
+        self.asked += 1;
+        self.running = Some(self.asked);
+        self.asked
+    }
+
+    fn running(&self) -> bool {
+        self.running.is_some()
+    }
+
+    /// The window changed its packs (a step ended, a pack was removed): a read running began
+    /// before and is out of date. True when one was, so a fresh one is to be asked for.
+    fn changed(&mut self) -> bool {
+        self.running.take().is_some()
+    }
+
+    /// Whether the packs of read `read` apply: the latest, with no change since.
+    fn arrived(&mut self, read: u64) -> bool {
+        let applies = self.running == Some(read);
+        if applies {
+            self.running = None;
+        }
+        applies
+    }
+}
+
 impl Launcher {
     fn open_pack(&self) -> Option<&Imported> {
         let slug = self.pack_open.as_ref()?;
@@ -60,10 +96,7 @@ impl Launcher {
                 self.packs.retain(|p| p.slug != pack.slug);
                 self.packs.push(*pack);
                 self.packs.sort_by_key(|p| p.title().to_ascii_lowercase());
-                // A read still running began before this step ended: read again instead.
-                if self.packs_reading.is_some() {
-                    self.packs_loaded = None;
-                }
+                self.packs_changed();
             }
             Err(e) => self.pack_error = Some(e),
         }
@@ -161,28 +194,32 @@ impl Launcher {
     /// looks again for other launchers' modpacks.
     pub(super) fn load_packs(&mut self) {
         if self.packs_loaded.is_none() {
-            let asked = Instant::now();
             self.scan_found_packs();
             self.registry_packs = horizon_pack::list();
             self.reload_instances();
             // On a thread: a pack's reports and carried mods can be tens of thousands of files,
             // and the sidebar asks for them on the first frame (#18074).
-            self.packs_reading = Some(asked);
+            let read = self.packs_reading.ask();
             let tx = self.tx.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(Msg::ImportedPacks(asked, modpacks::list()));
+                let _ = tx.send(Msg::ImportedPacks(read, modpacks::list()));
             });
-            self.packs_loaded = Some(asked);
+            self.packs_loaded = Some(Instant::now());
         }
     }
 
-    /// The imported packs read for the [`Self::load_packs`] asked at `asked`; an older read,
-    /// overtaken by a later one, is dropped.
-    pub(super) fn packs_read(&mut self, asked: Instant, packs: Vec<Imported>) {
-        if self.packs_reading != Some(asked) {
+    /// The window changed its packs: a read still running is out of date, and is asked again.
+    fn packs_changed(&mut self) {
+        if self.packs_reading.changed() {
+            self.packs_loaded = None;
+        }
+    }
+
+    /// The imported packs of read `read`; one overtaken by a later read or a change is dropped.
+    pub(super) fn packs_read(&mut self, read: u64, packs: Vec<Imported>) {
+        if !self.packs_reading.arrived(read) {
             return;
         }
-        self.packs_reading = None;
         self.mods.report_list.reset();
         self.packs = packs;
         if self.pack_open.is_none() {
@@ -235,7 +272,7 @@ impl Launcher {
             page = page.child(self.registry_pack_rows(cx));
         }
         if self.packs.is_empty()
-            && (!self.registry_packs.is_empty() || self.packs_reading.is_some())
+            && (!self.registry_packs.is_empty() || self.packs_reading.running())
         {
             return page;
         }
@@ -470,7 +507,15 @@ impl Launcher {
         };
         let mut port = button("pack-port", port_label, Kind::Secondary, &t);
         let mut from = button("pack-from", "Use jars from my instance…", Kind::Ghost, &t);
-        if self.pack_busy || !p.can_port() {
+        // Port rebuilds the carried mods a start of this pack is reading now.
+        let starting = self.starting_pack.as_ref() == Some(&p.work)
+            || self.starting_instance.as_ref().is_some_and(|id| {
+                self.instances
+                    .list
+                    .iter()
+                    .any(|i| &i.id == id && i.work == p.work)
+            });
+        if self.pack_busy || !p.can_port() || starting {
             port = disabled(port);
             from = disabled(from);
         } else {
@@ -512,6 +557,7 @@ impl Launcher {
                         this.packs.retain(|p| p.slug != slug);
                         this.pack_open = this.packs.first().map(|p| p.slug.clone());
                         this.mods.report_list.reset();
+                        this.packs_changed();
                     }
                     Err(e) => this.pack_error = Some(e),
                 }
@@ -659,4 +705,33 @@ fn found_detail(found: &Found, t: &Theme) -> Div {
     text(theme::CAPTION)
         .text_color(t.muted)
         .child(modpacks::found_summary(found))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PackReads;
+
+    /// A read the window changed its packs after (a step ended, a pack was removed) never
+    /// replaces what the window has, even when its packs arrive right after the change, in the
+    /// same batch of messages; the fresh read asked then applies. A read with no change since
+    /// applies (#18074).
+    #[test]
+    fn a_read_from_before_a_change_never_applies() {
+        let mut reads = PackReads::default();
+        let first = reads.ask();
+        assert!(reads.changed(), "a fresh read is asked for");
+        assert!(!reads.arrived(first));
+        assert!(!reads.running());
+        let fresh = reads.ask();
+        assert!(!reads.arrived(first));
+        assert!(reads.arrived(fresh));
+        assert!(!reads.arrived(fresh), "applied once");
+
+        // A change with no read running asks for none; an overtaken read is dropped.
+        assert!(!reads.changed());
+        let older = reads.ask();
+        let newer = reads.ask();
+        assert!(!reads.arrived(older));
+        assert!(reads.arrived(newer));
+    }
 }

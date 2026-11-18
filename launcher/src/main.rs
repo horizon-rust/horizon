@@ -535,8 +535,8 @@ struct Launcher {
     /// Modpacks installed from Horizon's registry, each its own profile.
     registry_packs: Vec<horizon_launcher::browser::horizon::pack::Installed>,
     packs_loaded: Option<Instant>,
-    /// When the imported packs now being read on a thread were asked for (`load_packs`).
-    packs_reading: Option<Instant>,
+    /// The imported packs' read on a thread, and whether it may still apply (`load_packs`).
+    packs_reading: modpacks_page::PackReads,
     pack_open: Option<String>,
     pack_filter: Option<horizon_port_pack::report::Status>,
     pack_busy: bool,
