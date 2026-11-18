@@ -458,3 +458,69 @@ fn a_java_edition_launch_starts_when_its_folders_cannot_be_marked() {
     };
     assert!(error.contains(&shown), "{error}");
 }
+
+/// Horizon's game command as the launcher builds it: `--resources` and the session file last.
+fn horizon_game(root: &Path) -> Command {
+    let mut game = Command::new(root.join("game"));
+    game.arg("--resources")
+        .arg(root.join("resources"))
+        .arg("--session-file")
+        .arg(root.join("sessions/session-1.json"))
+        .current_dir(root);
+    mark(&mut game, &root.join("versions/native-fixture"));
+    game
+}
+
+/// `game` run through `wrapper`'s words, as [`crate::launch::wrap`] builds a direct plan.
+fn wrapped(mut game: Command, wrapper: &[&str]) -> Command {
+    snapshot(&mut game);
+    let mut out = Command::new(wrapper[0]);
+    out.args(&wrapper[1..])
+        .arg(game.get_program())
+        .args(game.get_args())
+        .current_dir(game.get_current_dir().unwrap());
+    for (key, value) in game.get_envs() {
+        out.env(key, value.unwrap());
+    }
+    out
+}
+
+#[test]
+fn wrapped_game_holds_its_resources_with_any_number_of_wrapper_words() {
+    let root = tempfile::tempdir().unwrap();
+    for wrapper in [&["gamemoderun"][..], &["env", "A=1"], &["nice", "-n", "5"]] {
+        let paths = argument_paths(&wrapped(horizon_game(root.path()), wrapper))
+            .unwrap_or_else(|error| panic!("{wrapper:?}: {error}"));
+        assert!(
+            paths.contains(&root.path().join("resources")),
+            "{wrapper:?}"
+        );
+    }
+}
+
+#[test]
+fn unwrapped_game_holds_its_resources() {
+    let root = tempfile::tempdir().unwrap();
+    let mut game = horizon_game(root.path());
+    snapshot(&mut game);
+    let paths = argument_paths(&game).unwrap();
+    assert!(paths.contains(&root.path().join("resources")));
+    assert!(paths.contains(&std::path::absolute(root.path()).unwrap()));
+}
+
+#[test]
+fn command_without_snapshot_reads_resources_from_its_own_words() {
+    let root = tempfile::tempdir().unwrap();
+    let mut native = Command::new(root.path().join("client"));
+    native
+        .arg("--resources")
+        .arg(root.path().join("resources"))
+        .current_dir(root.path());
+    assert_eq!(
+        argument_paths(&native).unwrap(),
+        [root.path().join("resources")]
+    );
+    let mut tool = Command::new(root.path().join("tool"));
+    tool.args(["--odd"]).current_dir(root.path());
+    assert!(argument_paths(&tool).unwrap().is_empty());
+}
