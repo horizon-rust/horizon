@@ -73,12 +73,51 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
+// Limit owned string allocations as well as table entries: obsolete, rejected profile
+// payloads must not accumulate a server's worth of maximum-size properties.
+const SKIN_MEMO_BYTES: usize = 4 * 1024 * 1024;
+struct SkinMemo<K, V> {
+    values: std::collections::HashMap<K, (V, usize)>,
+    bytes: usize,
+}
+impl<K, V> Default for SkinMemo<K, V> {
+    fn default() -> Self {
+        Self {
+            values: std::collections::HashMap::new(),
+            bytes: 0,
+        }
+    }
+}
+impl<K: Eq + std::hash::Hash, V> SkinMemo<K, V> {
+    fn get(&self, key: &K) -> Option<&V> {
+        self.values.get(key).map(|(value, _)| value)
+    }
+    fn remember(&mut self, key: K, value: V, bytes: usize) {
+        if bytes > SKIN_MEMO_BYTES {
+            return;
+        }
+        if self.values.len() >= 4096 || bytes > SKIN_MEMO_BYTES.saturating_sub(self.bytes) {
+            self.values.clear();
+            self.bytes = 0;
+        }
+        if let Some((_, previous)) = self.values.insert(key, (value, bytes)) {
+            self.bytes -= previous;
+        }
+        self.bytes += bytes;
+    }
+}
+thread_local! {
+    static UNPACKED: std::cell::RefCell<SkinMemo<(String, u8), Textures>> =
+        std::cell::RefCell::default();
+    static LOCATIONS: std::cell::RefCell<SkinMemo<(String, String), String>> =
+        std::cell::RefCell::default();
+}
+
 /// [`unpack`] with [`texture_uris`], remembered by the payload. A frame resolves every drawn
 /// mannequin's skin, and decoding each one's base64 JSON again was most of that.
 pub fn unpack_known(value: &str, signature: Signature) -> Textures {
-    thread_local! {
-        static UNPACKED: std::cell::RefCell<std::collections::HashMap<(String, u8), Textures>> =
-            std::cell::RefCell::default();
+    if value.len() > SKIN_MEMO_BYTES {
+        return unpack(value, signature, texture_uris());
     }
     let key = (value.to_owned(), signature as u8);
     if let Some(textures) = UNPACKED.with_borrow(|known| known.get(&key).cloned()) {
@@ -86,11 +125,14 @@ pub fn unpack_known(value: &str, signature: Signature) -> Textures {
     }
     let textures = unpack(value, signature, texture_uris());
     UNPACKED.with_borrow_mut(|known| {
-        // A busy server's worth of profiles; past that, from scratch.
-        if known.len() >= 4096 {
-            known.clear();
-        }
-        known.insert(key, textures.clone());
+        let cached = textures.clone();
+        let bytes = key.0.capacity()
+            + [&cached.skin, &cached.cape, &cached.elytra]
+                .into_iter()
+                .flatten()
+                .map(String::capacity)
+                .sum::<usize>();
+        known.remember(key, cached, bytes);
     });
     textures
 }
@@ -725,9 +767,8 @@ pub fn cape_location(hash: &str) -> String {
 fn location(prefix: &str, hash: &str) -> String {
     // Remembered: every frame resolves every drawn player's skin, and the SHA-1 and its hex
     // each time were most of that.
-    thread_local! {
-        static LOCATIONS: std::cell::RefCell<std::collections::HashMap<(String, String), String>> =
-            std::cell::RefCell::default();
+    if hash.len() > SKIN_MEMO_BYTES {
+        return location_of(prefix, hash);
     }
     let key = (prefix.to_owned(), hash.to_owned());
     if let Some(known) = LOCATIONS.with_borrow(|known| known.get(&key).cloned()) {
@@ -735,10 +776,9 @@ fn location(prefix: &str, hash: &str) -> String {
     }
     let out = location_of(prefix, hash);
     LOCATIONS.with_borrow_mut(|known| {
-        if known.len() >= 4096 {
-            known.clear();
-        }
-        known.insert(key, out.clone());
+        let cached = out.clone();
+        let bytes = key.0.capacity() + key.1.capacity() + cached.capacity();
+        known.remember(key, cached, bytes);
     });
     out
 }
@@ -1582,6 +1622,62 @@ mod tests {
             assert_eq!(skin_location(hash), skin);
             assert_eq!(cape_location(hash), cape);
         }
+    }
+
+    #[test]
+    fn cached_skins_bound_obsolete_string_allocations() {
+        use super::{LOCATIONS, SKIN_MEMO_BYTES, Signature, Textures, UNPACKED};
+        UNPACKED.with_borrow_mut(|memo| *memo = Default::default());
+        LOCATIONS.with_borrow_mut(|memo| *memo = Default::default());
+        // Each rejected payload fits Property's 32767 UTF-16-unit network limit.
+        let padding = "\u{0800}".repeat(32759);
+        let mut first = String::new();
+        for i in 0..64 {
+            let value = format!("{i:08}{padding}");
+            if i == 0 {
+                first = value.clone();
+            }
+            assert_eq!(
+                super::unpack_known(&value, Signature::Unsigned),
+                Textures::default()
+            );
+            assert_eq!(
+                super::skin_location(&value),
+                super::location_of("skins/", &value)
+            );
+        }
+        UNPACKED.with_borrow(|memo| {
+            let bytes: usize = memo.values.keys().map(|(value, _)| value.capacity()).sum();
+            assert!(
+                bytes <= SKIN_MEMO_BYTES,
+                "rejected payloads retained {bytes} bytes"
+            );
+            assert!(
+                memo.get(&(first.clone(), Signature::Unsigned as u8))
+                    .is_none()
+            );
+        });
+        LOCATIONS.with_borrow(|memo| {
+            let bytes: usize = memo
+                .values
+                .iter()
+                .map(|((prefix, hash), (location, _))| {
+                    prefix.capacity() + hash.capacity() + location.capacity()
+                })
+                .sum();
+            assert!(bytes <= SKIN_MEMO_BYTES, "locations retained {bytes} bytes");
+            assert!(memo.get(&("skins/".to_owned(), first)).is_none());
+        });
+        // Bypassing retention is not rejecting input or changing its result.
+        let huge = "!".repeat(SKIN_MEMO_BYTES + 1);
+        assert_eq!(
+            super::unpack_known(&huge, Signature::Unsigned),
+            Textures::default()
+        );
+        assert_eq!(
+            super::skin_location(&huge),
+            super::location_of("skins/", &huge)
+        );
     }
 
     // Set HORIZON_MEASURE_SKINS=1 and run this test with --nocapture to print the timings.
