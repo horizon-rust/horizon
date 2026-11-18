@@ -448,13 +448,7 @@ pub fn piglin_throw_items<L: PiglinLevel + ?Sized>(l: &mut L, i: usize, items: V
     // throws, so the barters leave the hand the piglin admires them in.
     l.parts().mobs[i].swing_hand_modified(true, SwingAnimation::DEFAULT);
     let at = l.mobs()[i].position;
-    let players = l.piglin_player_positions();
-    let d = |p: &[f64; 3]| at.distance_squared(Vec3::new(p[0], p[1], p[2]));
-    let target = players
-        .into_iter()
-        .filter(|p| d(p) < 256.0)
-        .min_by(|a, b| d(a).total_cmp(&d(b)))
-        .map(|p| [p[0], p[1] + 1.0, p[2]]);
+    let target = l.piglin_throw_target(at);
     for stack in items {
         let to = target.unwrap_or_else(|| {
             let r = &mut l.parts().world.random;

@@ -8,6 +8,7 @@ use horizon_client::{
         equip::{Facts, Slot},
     },
 };
+use horizon_core::geometry::Vec3;
 
 pub trait PiglinLevel: MobLevel {
     /// The game's own content tables (`Resources.items`): item tags and item data.
@@ -20,7 +21,8 @@ pub trait PiglinLevel: MobLevel {
     /// `PiglinAi.isBarterCurrency` after vanilla's own answer (`currency`): what the
     /// parts of the stack's item and the mods that listen make of it.
     fn piglin_currency_hook(&self, stack: &ItemStack, currency: bool) -> bool;
-    /// The feet of the players `PiglinAi.throwItems` may throw toward: the level's own
-    /// player first, then the guests, those that are alive and not spectators.
-    fn piglin_player_positions(&self) -> Vec<[f64; 3]>;
+    /// Where `PiglinAi.throwItems` throws toward from `at`: one block above the feet of
+    /// the nearest player within 16 blocks, the level's own player ahead of the guests,
+    /// those alive and not spectators. `None` when no player qualifies.
+    fn piglin_throw_target(&self, at: Vec3) -> Option<[f64; 3]>;
 }

@@ -1,7 +1,8 @@
 //! Pandas on the game side: the food they find on the ground and pick up
 //! (`Mob.aiStep`, `Panda.pickUpItem`), the bamboo a player gives them
 //! (`Panda.mobInteract`) and the start a sneeze gives the grown pandas about run on the
-//! game's `PandaLevel` (`horizon_gameplay::pandas`); the crumbs and the sneeze a window
+//! game's `PandaLevel` (`horizon_gameplay::pandas`, implemented below: the food tag is
+//! the private `Game::panda_eats_from_ground`, which a mod can listen to); the crumbs and the sneeze a window
 //! draws stay here.
 use super::Game;
 use horizon_client::{
@@ -13,9 +14,12 @@ use horizon_gameplay::panda_level::PandaLevel;
 
 impl Game<'_> {
     /// `Panda.canPickUpAndEat`'s tag.
-    #[allow(dead_code)]
     fn panda_eats_from_ground(&self, item: &str) -> bool {
-        PandaLevel::panda_eats_from_ground(self, item)
+        self.res
+            .items()
+            .item_tags
+            .get("minecraft:panda_eats_from_ground")
+            .is_some_and(|tag| tag.contains(item))
     }
     /// A panda takes what lies at its feet when its mouth is free, and
     /// looks for food within 6 and 8 blocks for `PandaSitGoal`.
@@ -59,6 +63,34 @@ impl Game<'_> {
         for (at, velocity) in sneezes {
             self.particles.add(&options, at, velocity);
         }
+    }
+}
+
+impl PandaLevel for Game<'_> {
+    fn panda_eats_from_ground(&self, item: &str) -> bool {
+        Game::panda_eats_from_ground(self, item)
+    }
+    fn is_creative(&self) -> bool {
+        self.creative
+    }
+    fn panda_in_love(&mut self, id: u32) {
+        self.love_cause.insert(id, self.lan_acting);
+        let kind = self
+            .mobs
+            .iter()
+            .find(|m| m.id == id)
+            .map(super::native_hooks::mob_kind)
+            .unwrap_or_default();
+        self.native_entity_enter_love_mode(id, &kind, self.lan_acting_uuid);
+        // Animal.setInLove: entity event 18, the love hearts.
+        self.mob_event_particles(id, 18);
+    }
+    fn consume_held(&mut self) {
+        Game::consume_held(self);
+    }
+    fn after_mobs_lifted(&mut self) {
+        #[cfg(test)]
+        super::entity::taken_pass_tests::after_take(self);
     }
 }
 

@@ -7,6 +7,7 @@ use horizon_client::{
         equip::{Facts, Slot},
     },
 };
+use horizon_core::geometry::Vec3;
 use horizon_gameplay::piglin_level::PiglinLevel;
 
 impl PiglinLevel for Game<'_> {
@@ -25,7 +26,7 @@ impl PiglinLevel for Game<'_> {
         }
         currency
     }
-    fn piglin_player_positions(&self) -> Vec<[f64; 3]> {
+    fn piglin_throw_target(&self, at: Vec3) -> Option<[f64; 3]> {
         let host = self
             .player
             .as_ref()
@@ -38,6 +39,11 @@ impl PiglinLevel for Game<'_> {
                 .filter(|g| h.hub.here(g) && g.loaded && !g.dead && !g.spectator())
                 .map(|g| g.position)
         });
-        host.into_iter().chain(guests).collect()
+        let d = |p: &[f64; 3]| at.distance_squared(Vec3::new(p[0], p[1], p[2]));
+        host.into_iter()
+            .chain(guests)
+            .filter(|p| d(p) < 256.0)
+            .min_by(|a, b| d(a).total_cmp(&d(b)))
+            .map(|p| [p[0], p[1] + 1.0, p[2]])
     }
 }
