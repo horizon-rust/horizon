@@ -680,15 +680,20 @@ fn idn_accepts(host: &str) -> bool {
     labels.is_empty() || labels.split('.').all(|l| (1..=63).contains(&l.len()))
 }
 
-/// `java.net.IDN.toASCII` with its default (non-STD3) rules. The transitional
-/// UTS 46 mapping matches Java's IDNA-2003 handling of characters such as ß and
-/// final sigma; ASCII labels stay untouched so their case and permissive
-/// default-rule characters are preserved.
+/// `java.net.IDN.toASCII` with its default (non-STD3) rules. Nameprep's
+/// Unicode 3.2 mapping is applied before the UTS 46 encoder; the latter still
+/// supplies the DNS length and prohibited-character checks. ASCII labels stay
+/// untouched so their case and permissive default-rule characters are
+/// preserved.
 #[allow(deprecated)]
 fn idn_to_ascii(host: &str) -> Option<String> {
     // Java's IDN implementation uses the Unicode 3.2 Nameprep table, while
     // the modern UTS #46 mapper in this crate knows about newer characters.
     if host.chars().any(is_unassigned_unicode_3_2) {
+        return None;
+    }
+    // Nameprep removes these characters, but Java rejects them in a hostname.
+    if host.contains(['\u{200c}', '\u{200d}']) {
         return None;
     }
     if host.is_ascii() {
@@ -710,12 +715,47 @@ fn idn_to_ascii(host: &str) -> Option<String> {
         return None;
     }
     let config = idna::Config::default().transitional_processing(true);
+    let adapter = idna_adapter::Adapter::new();
     let mut ascii = String::with_capacity(mapped.len());
     for label in labels.split('.') {
         let converted = if label.is_ascii() {
             (1..=63).contains(&label.len()).then(|| label.to_owned())?
         } else {
-            config.to_ascii(label).ok()?
+            let mut nameprep = String::with_capacity(label.len());
+            for c in label.chars() {
+                match c {
+                    'ß' | 'ẞ' => nameprep.push_str("ss"),
+                    'ς' => nameprep.push('σ'),
+                    c => nameprep.push(c),
+                }
+            }
+            let nameprep: String = adapter
+                .map_normalize(nameprep.chars())
+                .map(|c| {
+                    // U+04CF was unassigned in Unicode 3.2. Modern UTS 46
+                    // uses it as the lowercase mapping of U+04C0, but
+                    // Nameprep leaves the then-assigned U+04C0 unchanged.
+                    if c == '\u{04cf}' { '\u{04c0}' } else { c }
+                })
+                .collect();
+            if !nameprep_bidi_is_valid(&nameprep, &adapter) {
+                return None;
+            }
+            if nameprep.contains('\u{04c0}') || (nameprep != label && !nameprep.is_ascii()) {
+                config.to_ascii(&format!("a{nameprep}")).ok()?;
+                format!("xn--{}", idna::punycode::encode_str(&nameprep)?)
+            } else {
+                match config.to_ascii(&nameprep) {
+                    Ok(converted) => converted,
+                    Err(_)
+                        if adapter.is_mark(nameprep.chars().next()?)
+                            && config.to_ascii(&format!("a{nameprep}")).is_ok() =>
+                    {
+                        format!("xn--{}", idna::punycode::encode_str(&nameprep)?)
+                    }
+                    Err(_) => return None,
+                }
+            }
         };
         if converted.is_empty() || converted.len() > 63 {
             return None;
@@ -729,6 +769,38 @@ fn idn_to_ascii(host: &str) -> Option<String> {
         ascii.push('.');
     }
     Some(ascii)
+}
+
+fn nameprep_bidi_is_valid(label: &str, adapter: &idna_adapter::Adapter) -> bool {
+    let Some(first) = label.chars().next() else {
+        return false;
+    };
+    let rtl = label.chars().any(|c| {
+        adapter
+            .bidi_class(c)
+            .to_mask()
+            .intersects(idna_adapter::RTL_MASK)
+    });
+    if !rtl {
+        return true;
+    }
+    if !adapter
+        .bidi_class(first)
+        .to_mask()
+        .intersects(idna_adapter::RTL_MASK)
+    {
+        return false;
+    }
+    label
+        .chars()
+        .rev()
+        .find(|c| !adapter.bidi_class(*c).is_nonspacing_mark())
+        .is_some_and(|last| {
+            adapter
+                .bidi_class(last)
+                .to_mask()
+                .intersects(idna_adapter::RTL_MASK)
+        })
 }
 
 /// HostAndPort uses the default for an empty port, refuses a leading plus,
@@ -900,6 +972,9 @@ mod tests {
             ("münchen.de", "xn--mnchen-3ya.de"),
             ("straße.de", "strasse.de"),
             ("ς.example", "xn--4xa.example"),
+            ("\u{04c0}.example", "xn--d5a.example"),
+            ("א1א.example", "xn--1-zhcb.example"),
+            ("\u{0301}.example", "xn--lsa.example"),
             ("EXAMPLE.é", "EXAMPLE.xn--9ca"),
             ("é.EXAMPLE", "xn--9ca.EXAMPLE"),
             ("a。b", "a.b"),
@@ -908,6 +983,7 @@ mod tests {
             assert_eq!(parse_address(input), Some((host.into(), 25565)), "{input}");
         }
         assert!(!is_valid_address("\u{200d}.invalid"));
+        assert!(!is_valid_address("א1.example"));
         assert!(!is_valid_address("\u{1c80}.example"));
         assert!(!is_valid_address("\u{1e9e}.example"));
         let long_unicode_label = "é".repeat(64);

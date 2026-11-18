@@ -10,9 +10,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let results: Vec<_> = addresses
         .iter()
         .map(|text| {
-            is_valid_address(text)
-                .then(|| parse_address(text))
-                .flatten()
+            serde_json::json!({
+                "valid": is_valid_address(text),
+                "parsed": parse_address(text),
+            })
         })
         .collect();
     serde_json::to_writer(File::create(output)?, &results)?;
