@@ -1,5 +1,5 @@
 //! `/time`.
-use super::host::{CommandHost, R, err, int};
+use super::host::{CommandHost, R, int};
 use horizon_client::{
     command::{Arg, Context},
     text::Text,
@@ -50,10 +50,7 @@ pub fn time(host: &mut dyn TimeHost, id: &str, ctx: &Context) -> R<i32> {
         _ => match host.default_clock() {
             Some(clock) => clock,
             None => {
-                return Err(err(
-                    "commands.time.no_default_clock",
-                    &[&host.dimension_id()],
-                ));
+                return Err(host.error("commands.time.no_default_clock", &[&host.dimension_id()]));
             }
         },
     };
@@ -62,7 +59,7 @@ pub fn time(host: &mut dyn TimeHost, id: &str, ctx: &Context) -> R<i32> {
         "time.set" => {
             let t = i64::from(int(ctx, "time").unwrap_or(0));
             if total == t {
-                return Err(err("commands.time.set.already_at_time", &[&clock, &t]));
+                return Err(host.error("commands.time.set.already_at_time", &[&clock, &t]));
             }
             if !host.time_skip_canceled(total, t) {
                 host.set_clock_time(&clock, t);
@@ -79,13 +76,10 @@ pub fn time(host: &mut dyn TimeHost, id: &str, ctx: &Context) -> R<i32> {
                 .then(|| host.time_marker(&marker, total))
                 .flatten()
             else {
-                return Err(err(
-                    "commands.time.no_time_marker_found",
-                    &[&marker, &clock],
-                ));
+                return Err(host.error("commands.time.no_time_marker_found", &[&marker, &clock]));
             };
             if occurring {
-                return Err(err(
+                return Err(host.error(
                     "commands.time.set.already_at_time_marker",
                     &[&clock, &marker],
                 ));
@@ -113,7 +107,7 @@ pub fn time(host: &mut dyn TimeHost, id: &str, ctx: &Context) -> R<i32> {
         "time.pause" | "time.resume" => {
             let pause = id == "time.pause";
             if host.clock_paused(&clock) == pause {
-                return Err(err(
+                return Err(host.error(
                     if pause {
                         "commands.time.pause.already_paused"
                     } else {
@@ -139,7 +133,7 @@ pub fn time(host: &mut dyn TimeHost, id: &str, ctx: &Context) -> R<i32> {
                 _ => 1.0,
             };
             if host.clock_rate(&clock) == rate {
-                return Err(err(
+                return Err(host.error(
                     "commands.time.rate.already_same",
                     &[&clock, &float_to_string(rate)],
                 ));
@@ -163,7 +157,7 @@ pub fn time(host: &mut dyn TimeHost, id: &str, ctx: &Context) -> R<i32> {
                 .then(|| host.timeline_period(&timeline))
                 .flatten()
             else {
-                return Err(err(
+                return Err(host.error(
                     "commands.time.wrong_timeline_for_clock",
                     &[&timeline, &clock],
                 ));

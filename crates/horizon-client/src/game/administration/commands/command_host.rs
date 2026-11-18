@@ -7,10 +7,13 @@ mod time;
 mod weather;
 
 use super::Game;
-use horizon_client::text::Text;
+use horizon_client::{command::CommandError, text::Text};
 use horizon_gameplay::commands::host::CommandHost;
 
 impl CommandHost for Game<'_> {
+    fn error(&self, key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
+        super::err(key, args)
+    }
     fn feedback(&mut self, message: Text) {
         Game::feedback(self, message);
     }

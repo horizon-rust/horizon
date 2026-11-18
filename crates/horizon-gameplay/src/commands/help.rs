@@ -1,5 +1,5 @@
 //! `/help`.
-use super::host::{CommandHost, R, err};
+use super::host::{CommandHost, R};
 use horizon_client::{
     command::{Arg, Context, Dispatcher, Registries},
     text::Text,
@@ -32,7 +32,7 @@ pub fn help(host: &mut dyn HelpHost, ctx: &Context) -> R<i32> {
         Some(Arg::Str(command)) => {
             let parse = d.parse(command, host.registries());
             if parse.context.nodes.is_empty() {
-                return Err(err("commands.help.failed", &[]));
+                return Err(host.error("commands.help.failed", &[]));
             }
             let last = parse.context.nodes.last().map(|n| n.0).unwrap_or(0);
             let usage = d.smart_usage(last, level);

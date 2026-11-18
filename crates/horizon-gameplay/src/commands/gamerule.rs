@@ -1,5 +1,5 @@
 //! `/gamerule`.
-use super::host::{CommandHost, R, err};
+use super::host::{CommandHost, R};
 use horizon_client::{
     command::{Arg, Context},
     gamerules::{Rule, Value},
@@ -39,7 +39,7 @@ pub fn gamerule(host: &mut dyn GameRuleHost, ctx: &Context) -> R<i32> {
         }
     };
     if current == value {
-        return Err(err("commands.gamerule.not_set", &[&rule_id, &value]));
+        return Err(host.error("commands.gamerule.not_set", &[&rule_id, &value]));
     }
     host.set_rule_as_acting_player(&rule, value);
     host.feedback(Text::tr("commands.gamerule.set", &[&rule_id, &value]));
