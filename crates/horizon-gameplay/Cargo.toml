@@ -14,7 +14,7 @@ horizon-command = { path = "../horizon-command" }
 horizon-core = { path = "../horizon-core" }
 horizon-engine-slots = { path = "../horizon-engine-slots" }
 horizon-items = { path = "../horizon-items" }
-horizon-mod-package = { path = "../horizon-mod-package", default-features = false, features = ["index"] }
+horizon-mod-package = { path = "../horizon-mod-package", default-features = false }
 horizon-mod-runtime = { path = "../horizon-mod-runtime" }
 horizon-threads = { path = "../horizon-threads" }
 horizon-world = { path = "../horizon-world" }

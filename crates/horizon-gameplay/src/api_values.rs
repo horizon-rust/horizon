@@ -361,7 +361,7 @@ pub fn stack_value(value: &ApiStack) -> Result<EngineStack, StackWriteError> {
     encode_stack(value, id.into())
 }
 
-pub fn encode_stack(
+fn encode_stack(
     value: &ApiStack,
     item: std::sync::Arc<str>,
 ) -> Result<EngineStack, StackWriteError> {
