@@ -1548,67 +1548,105 @@ mod tests {
     }
 
     #[test]
-    fn unpack_known_matches_unpack_and_a_repeat_is_faster() {
-        use super::{Signature, location, skin_location, unpack, unpack_known};
+    fn cached_skins_keep_payload_signature_and_location() {
+        use super::{
+            Signature, Textures, cape_location, skin_location, texture_uris, unpack_known,
+        };
         use base64::Engine;
-        use std::time::Instant;
-        let json = r#"{"textures":{"SKIN":{"url":"http://textures.minecraft.net/texture/abcdef0123456789","metadata":{"model":"slim"}}}}"#;
-        let value = base64::engine::general_purpose::STANDARD.encode(json);
-        let fresh = unpack(&value, Signature::Unsigned, super::texture_uris());
-        let remembered = unpack_known(&value, Signature::Unsigned);
-        assert_eq!(fresh, remembered);
-        const RUNS: usize = 21;
-        let mut cold = Vec::new();
-        let mut warm = Vec::new();
+        let url = texture_uris()[0].replace("{textureId}", "");
+        let skin_url = format!("{url}skin");
+        let cape_url = format!("{url}cape");
+        let elytra_url = format!("{url}elytra");
+        let json = serde_json::json!({"textures": {
+            "SKIN": {"url": skin_url, "metadata": {"model": "slim"}},
+            "CAPE": {"url": cape_url},
+            "ELYTRA": {"url": elytra_url},
+        }});
+        let value = base64::engine::general_purpose::STANDARD.encode(json.to_string());
+        let mut expected = Textures {
+            skin: Some(skin_url),
+            slim: true,
+            cape: Some(cape_url),
+            elytra: Some(elytra_url),
+            signed: false,
+        };
+        let hash = "abc";
+        let skin = super::location_of("skins/", hash);
+        let cape = super::location_of("capes/", hash);
         for _ in 0..2 {
-            let _ = unpack(&value, Signature::Unsigned, super::texture_uris());
-            let _ = unpack_known(&value, Signature::Unsigned);
+            for signature in [Signature::Unsigned, Signature::Signed, Signature::Invalid] {
+                expected.signed = signature == Signature::Signed;
+                assert_eq!(unpack_known(&value, signature), expected);
+                assert_eq!(unpack_known("not base64!", signature), Textures::default());
+            }
+            assert_eq!(skin_location(hash), skin);
+            assert_eq!(cape_location(hash), cape);
         }
-        for _ in 0..RUNS {
-            let start = Instant::now();
-            let _ = unpack(&value, Signature::Unsigned, super::texture_uris());
-            cold.push(start.elapsed().as_nanos());
-            let start = Instant::now();
-            assert_eq!(unpack_known(&value, Signature::Unsigned), remembered);
-            warm.push(start.elapsed().as_nanos());
+    }
+
+    // Set HORIZON_MEASURE_SKINS=1 and run this test with --nocapture to print the timings.
+    #[test]
+    fn measure_repeated_skin_lookups() {
+        if std::env::var("HORIZON_MEASURE_SKINS").as_deref() != Ok("1") {
+            return;
         }
-        let place = skin_location("abcdef0123456789");
-        assert_eq!(location("skins/", "abcdef0123456789"), place);
-        let mut loc_cold = Vec::new();
-        let mut loc_warm = Vec::new();
-        for _ in 0..RUNS {
-            let hash = format!("abcdef0123456789{RUNS}");
+        use super::{Signature, location_of, skin_location, texture_uris, unpack, unpack_known};
+        use base64::Engine;
+        use std::{hint::black_box, time::Instant};
+
+        const RUNS: usize = 21;
+        const CALLS: usize = 256;
+        fn measure<T>(mut call: impl FnMut() -> T) -> u128 {
             let start = Instant::now();
-            let built = super::location_of("skins/", &hash);
-            loc_cold.push(start.elapsed().as_nanos());
-            let start = Instant::now();
-            let _ = location("skins/", "abcdef0123456789");
-            loc_warm.push(start.elapsed().as_nanos());
-            let _ = built;
+            for _ in 0..CALLS {
+                black_box(call());
+            }
+            start.elapsed().as_nanos() / CALLS as u128
         }
-        cold.sort_unstable();
-        warm.sort_unstable();
-        loc_warm.sort_unstable();
-        let med = |s: &[u128]| s[s.len() / 2];
-        let p95 = |s: &[u128]| s[((s.len() as f64) * 0.95).ceil() as usize - 1];
-        let report = format!(
-            "scene one textures payload and one skin hash, runs={RUNS}\n\
-             unpack_ns median={} p95={} worst={}\n\
-             unpack_known_ns median={} p95={} worst={}\n\
-             location_cached_ns median={} p95={} worst={}\n",
-            med(&cold),
-            p95(&cold),
-            cold[cold.len() - 1],
-            med(&warm),
-            p95(&warm),
-            warm[warm.len() - 1],
-            med(&loc_warm),
-            p95(&loc_warm),
-            loc_warm[loc_warm.len() - 1],
-        );
-        std::fs::write(std::env::temp_dir().join("hz-measure-skins.txt"), &report).unwrap();
-        println!("{report}");
-        assert!(med(&warm) < med(&cold));
+
+        let hash = "abcdef0123456789";
+        let uri = texture_uris()[0].replace("{textureId}", "");
+        let payload = serde_json::json!({"textures":{"SKIN":{
+            "url":format!("{uri}{hash}"), "metadata":{"model":"slim"}
+        }}});
+        let value = base64::engine::general_purpose::STANDARD.encode(payload.to_string());
+        let decode = || measure(|| unpack(black_box(&value), Signature::Unsigned, texture_uris()));
+        let recall = || measure(|| unpack_known(black_box(&value), Signature::Unsigned));
+        let compute = || measure(|| location_of("skins/", black_box(hash)));
+        let lookup = || measure(|| skin_location(black_box(hash)));
+        for _ in 0..2 {
+            (decode(), recall(), compute(), lookup());
+        }
+        let mut samples = [[0; RUNS]; 4];
+        for run in 0..RUNS {
+            let (decode_ns, recall_ns, compute_ns, lookup_ns) = if run % 2 == 0 {
+                (decode(), recall(), compute(), lookup())
+            } else {
+                let (lookup_ns, compute_ns, recall_ns, decode_ns) =
+                    (lookup(), compute(), recall(), decode());
+                (decode_ns, recall_ns, compute_ns, lookup_ns)
+            };
+            for (series, nanos) in samples
+                .iter_mut()
+                .zip([decode_ns, recall_ns, compute_ns, lookup_ns])
+            {
+                series[run] = nanos;
+            }
+        }
+        println!("one textures payload and skin hash, {RUNS} runs of {CALLS} calls");
+        for (name, mut series) in ["unpack", "unpack_cached", "location", "location_cached"]
+            .into_iter()
+            .zip(samples)
+        {
+            series.sort_unstable();
+            let p95 = (RUNS * 95).div_ceil(100) - 1;
+            println!(
+                "{name}_ns median={} p95={} worst={}",
+                series[RUNS / 2],
+                series[p95],
+                series[RUNS - 1]
+            );
+        }
     }
 
     /// `MinecraftServicesDiscoveryService`: another environment's document
