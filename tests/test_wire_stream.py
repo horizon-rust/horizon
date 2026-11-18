@@ -38,6 +38,21 @@ TICK_END = c2s('client_tick_end')
 
 
 class WireStreamTest(unittest.TestCase):
+    def test_varint_rejects_overlong_encodings_as_java_does(self):
+        # Java's VarInt.read allows at most five 7-bit groups; a sixth byte is malformed.
+        self.assertEqual(wire_stream.Reader(b'\x00').varint(), 0)          # canonical zero
+        self.assertEqual(wire_stream.Reader(bytes.fromhex('ffffffff07')).varint(), 2147483647)
+        for overlong in ('808080808000', 'ffffffff8f00', '8080808080808000'):
+            with self.subTest(overlong=overlong):
+                with self.assertRaisesRegex(ValueError, 'VarInt too big'):
+                    wire_stream.Reader(bytes.fromhex(overlong)).varint()
+        # One-to-five-byte encodings still decode to exactly the same values, signed and unsigned.
+        for v in (0, 1, 127, 128, 300, 1 << 28, (1 << 31) - 1, -(1 << 31), -1):
+            with self.subTest(v=v):
+                encoded = varint(v)
+                self.assertLessEqual(len(encoded), 5)
+                self.assertEqual(wire_stream.Reader(encoded).varint(), v)
+
     def test_ticks_end_at_tick_end_and_start_at_the_mark(self):
         entries = [LOGIN, c2s('move_player_rot', struct.pack('>ffB', 1, 2, 1)), TICK_END, mark(),
                    c2s('player_input', b'\x41'), c2s('move_player_pos', struct.pack('>dddB', 0.5, -60, 1.5, 1)),
@@ -99,6 +114,20 @@ class WireStreamTest(unittest.TestCase):
         # So is the script's clock: a packet a tick late anywhere else.
         late = [tick('punch'), tick('punch'), tick('abort', 'punch'), tick(), tick('pos')]
         self.assertEqual([d[0] for d in wire_stream.compare_answered(vanilla, late, 4, 1, 2)], [3, 4])
+
+    def test_a_late_answer_on_the_position_reminder_s_tick_keeps_the_reminder_on_the_script_s_clock(self):
+        tick = lambda *names: {'packets': [(n, {}) for n in names], 'frame': [], 'misplaced': []}  # noqa
+        # #14807: the reminder (sendPosition every 20 ticks) falls in tick 2 for both clients; the answer reaches
+        # vanilla in tick 1 and Horizon in tick 2, the reminder's tick.
+        vanilla = [tick('punch'), tick('abort', 'punch'), tick('move_player_pos'), tick()]
+        horizon = [tick('punch'), tick('punch'), tick('abort', 'punch', 'move_player_pos'), tick()]
+        self.assertEqual(wire_stream.compare_answered(vanilla, horizon, 3, 1, 2), [])
+        # A reminder a tick early is still a difference, in either answer tick.
+        early = [tick('punch'), tick('punch', 'move_player_pos'), tick('abort', 'punch'), tick()]
+        self.assertEqual([d[0] for d in wire_stream.compare_answered(vanilla, early, 3, 1, 2)], [1, 2])
+        # So is a move the answer brings that vanilla's doesn't, outside the reminder's tick.
+        moved = [tick('punch'), tick('punch'), tick('abort', 'punch', 'move_player_pos'), tick('move_player_pos')]
+        self.assertEqual([d[0] for d in wire_stream.compare_answered(vanilla, moved, 3, 1, 2)], [3])
 
     def test_compare_reports_the_first_field_that_differs(self):
         tick = lambda y: {'packets': [('move_player_pos', {'x': 0.5, 'y': y})], 'frame': [], 'misplaced': []}  # noqa
