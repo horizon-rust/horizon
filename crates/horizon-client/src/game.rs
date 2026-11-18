@@ -2041,8 +2041,6 @@ struct Game<'a> {
     wasm_dispatch_failures: std::rc::Rc<std::cell::Cell<u64>>,
 }
 use horizon_gameplay::dim::Dim;
-#[cfg(test)]
-use horizon_gameplay::dim::EXTRA_DIMS;
 /// `Inventory.add` on a player's 36 slots (hotbar first) and off hand,
 /// `max` the stack's own maximum: onto equal stacks first
 /// (`getSlotWithRemainingSpace`: the selected slot, the off hand, then the

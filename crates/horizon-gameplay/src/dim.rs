@@ -2,8 +2,19 @@
 
 /// The open world's dimensions past vanilla's three. One per process, as a window
 /// and its server thread name the same dimensions.
-pub static EXTRA_DIMS: std::sync::RwLock<Vec<mod_api::DimensionKey>> =
+static EXTRA_DIMS: std::sync::RwLock<Vec<mod_api::DimensionKey>> =
     std::sync::RwLock::new(Vec::new());
+
+/// The extra dimensions as they were at [`Dim::snapshot_extras`], for a test to put back.
+/// Opaque, so a crate can't put a key there that a [`Dim`] variant already names.
+#[doc(hidden)]
+pub struct ExtraDimsSnapshot(Vec<mod_api::DimensionKey>);
+
+/// The table of extra dimensions held for writing, for a test that checks a reader doesn't wait on it.
+#[doc(hidden)]
+pub struct ExtraDimsHeld(
+    #[allow(dead_code)] std::sync::RwLockWriteGuard<'static, Vec<mod_api::DimensionKey>>,
+);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dim {
@@ -125,6 +136,21 @@ impl Dim {
         })
     }
     /// Drops the dimension `id` that [`Self::add_extra`] added: its level is closed, or a remote
+    /// For tests: the extra dimensions now, to put back with [`Self::restore_extras`].
+    #[doc(hidden)]
+    pub fn snapshot_extras() -> ExtraDimsSnapshot {
+        ExtraDimsSnapshot(EXTRA_DIMS.read().unwrap().clone())
+    }
+    /// For tests: puts back the extra dimensions [`Self::snapshot_extras`] saw.
+    #[doc(hidden)]
+    pub fn restore_extras(snapshot: ExtraDimsSnapshot) {
+        *EXTRA_DIMS.write().unwrap() = snapshot.0;
+    }
+    /// For tests: holds the table of extra dimensions for writing until the result drops.
+    #[doc(hidden)]
+    pub fn hold_extras() -> ExtraDimsHeld {
+        ExtraDimsHeld(EXTRA_DIMS.write().unwrap())
+    }
     /// server's level that its client left.
     pub fn remove_extra(id: &str) {
         EXTRA_DIMS
