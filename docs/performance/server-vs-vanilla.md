@@ -11,6 +11,9 @@ The bots ran on a separate machine from the server process. The run used Horizon
 Paper 26.3 build 205, and Fabric loader 0.19.5 with Lithium `mc26.3-0.26.2-fabric`. The exact driver invocation,
 with only machine-specific transport values redacted, was:
 
+Paper is included as a separate optimized-server reference, not as a vanilla-compatible implementation: its
+feature-breaking optimizations mean its results are not directly comparable with Horizon, vanilla or Fabric + Lithium.
+
 ```sh
 HORIZON_BENCH_BIN=/path/to/horizon-release-bin \
 python3 tools/server_bench.py --servers horizon,vanilla,paper,fabric --bots 1,10,25,50 --behaviour mixed \
