@@ -323,7 +323,8 @@ pub fn untracked(home: &Path) -> Vec<Installed> {
                 version,
                 internals,
                 origin,
-                switch: package.is_ok(),
+                // A retired `.hnmod` never switches the live mod, even when the archive reads.
+                switch: hmod && package.is_ok(),
                 icon: package.map(|p| p.icon.map(Arc::new)),
             })
         })
@@ -907,6 +908,20 @@ capabilities = ['registries']
             ]
         );
         assert!(asks_for_build(&files));
+
+        // A readable backup of the live mod saved as `.hnmod` still never switches `zoom`.
+        fs::copy(folder.join("zoom.hmod"), folder.join("zoom.hnmod")).unwrap();
+        let switches: Vec<_> = untracked(home.path())
+            .iter()
+            .map(|f| (f.file.clone(), f.switch))
+            .collect();
+        assert_eq!(
+            switches,
+            [
+                ("horizon-native-mods/zoom.hmod".to_owned(), true),
+                ("horizon-native-mods/zoom.hnmod".to_owned(), false)
+            ]
+        );
     }
 
     #[test]
