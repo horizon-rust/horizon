@@ -44,6 +44,7 @@ fn pack() -> Post {
     let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
     let inputs = horizon_shaders::GameInputs {
         terrain: Some(horizon_shaders::GbuffersInputs {
+            parts: None,
             item_id_declared: false,
             far_depth: false,
             paged_maps: false,
@@ -65,6 +66,7 @@ fn pack() -> Post {
 
 #[test]
 fn shadow_pass_draws_terrain_back_faces() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = Fixture::new() else { return };
     const ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0=>Float32x3];
     let layouts = [Some(wgpu::VertexBufferLayout {

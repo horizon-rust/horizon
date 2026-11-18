@@ -40,8 +40,10 @@ use horizon_protocol::{
     },
 };
 use serde_json::json;
+mod far;
 use std::{
     collections::{BTreeMap, HashSet},
+    path::PathBuf,
     sync::{
         Arc, LazyLock, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -55,7 +57,7 @@ horizon-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
 
   --server HOST:PORT     default 127.0.0.1:25565
   --bots N               default 10
-  --behaviour B          idle, walk, explore, fight or mixed (60 % walk, 20 % explore, 20 % idle); default mixed.
+  --behaviour B          idle, hotbar, walk, explore, fight or mixed (60 % walk, 20 % explore, 20 % idle); default mixed.
                          fight needs gamemode=survival, force-gamemode=true and allow-flight=true.
                          stand: stays on the ground where the server puts it (/tp), for a survival test.
                          One abusive client, to test a server's limits (run it beside a normal crowd):
@@ -70,6 +72,8 @@ horizon-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
                          other one 30 000 characters long), flood-book (100 pages of 1024 characters
                          into a writable book), flood-sign (four 384-character lines on the block
                          below), flood-recipe (recipe book placements)
+  --ack-mode MODE        chunk batch feedback: vanilla (default) or 64 (fixed chunks per tick);
+                         one ACK per completed batch; use explore for a controlled pacing test
   --flood N              packets a tick for the flood behaviours; default 100
   --attack NAME          attack the player NAME twice a second, from wherever the bot is (a reach test),
                          swinging after each attack as vanilla's client does. NAME,NAME...: each of them
@@ -89,12 +93,20 @@ horizon-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
   --view-distance N      what the bots ask for; default 10
   --seed N               default 12345
   --explore-speed B      blocks a second an explore bot flies; default 22 (as fast as chunks come)
+  --explore-distance B   stop exploring after B blocks, then hold position; default unlimited
   --pvp B                fight bots also attack each other (true or false); default true
   --crits                fight bots swing at a sword's full strength (every 13 ticks) and jump into every
                          other swing, landing it while falling: a critical hit, then a sweep from the
                          ground (give them swords); for PvP benches (crit and sweep particles)
   --name PREFIX          bot names: PREFIX0, PREFIX1...; default Bot
   --brand B              the client brand sent in configuration (minecraft:brand); default none
+  --far D                ask the server for far terrain out to D chunks, 1024 at most (horizon:lod, needs
+                         --brand horizon and a server with horizon-lod-distance), as a Horizon client with
+                         LOD Distance D does: one pass of its plan, nearest first; the report gives each
+                         bot's tiles, bytes and seconds (src/far.rs), and each second's line how many bots
+                         finished their pass (far_done)
+  --far-after S          start asking S seconds after joining (after a /tp to spread the bots); default 3
+  --far-dump DIR         keep every tile each bot got in DIR/<name>.tiles, to compare servers byte for byte
   --height H             blocks above spawn the bots fly at (walk, explore, idle); default 24
   --ground               claim the ground in every move (with --height 0 on a flat world: walking
                          on it; higher, or over water: a no-fall or jesus cheat, to test an anticheat)
@@ -114,6 +126,7 @@ horizon-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
 enum Behaviour {
     Idle,
     Stand,
+    Hotbar,
     Walk,
     Explore,
     Fight,
@@ -134,6 +147,7 @@ impl Behaviour {
         match self {
             Self::Idle => "idle",
             Self::Stand => "stand",
+            Self::Hotbar => "hotbar",
             Self::Walk => "walk",
             Self::Explore => "explore",
             Self::Fight => "fight",
@@ -161,6 +175,7 @@ struct Options {
     view_distance: i8,
     seed: u64,
     explore_speed: f64,
+    explore_distance: f64,
     pvp: bool,
     /// The players or entity UUIDs to attack, how long after joining to start,
     /// and how many rounds.
@@ -171,6 +186,8 @@ struct Options {
     /// --crits: fight bots alternate jumped critical hits and sweeps at a sword's cooldown.
     crits: bool,
     flood: usize,
+    /// None uses vanilla estimation; --ack-mode 64 requests a fixed rate.
+    ack_rate: Option<f32>,
     no_read: bool,
     no_loaded: bool,
     height: f64,
@@ -189,6 +206,10 @@ struct Options {
     capture: Option<String>,
     /// How many times as fast as vanilla's 20 Hz the bots tick (a timer cheat above 1).
     timer: f64,
+    /// --far: far terrain out to this many chunks (0: none), from this long after joining.
+    far: u32,
+    far_after: f64,
+    far_dump: Option<String>,
 }
 
 fn options() -> Result<Options, String> {
@@ -202,6 +223,7 @@ fn options() -> Result<Options, String> {
         view_distance: 10,
         seed: 12345,
         explore_speed: 22.0,
+        explore_distance: f64::INFINITY,
         pvp: true,
         attack: None,
         attack_after: 5.0,
@@ -209,6 +231,7 @@ fn options() -> Result<Options, String> {
         no_swing: false,
         crits: false,
         flood: 100,
+        ack_rate: None,
         no_read: false,
         no_loaded: false,
         height: 24.0,
@@ -221,6 +244,9 @@ fn options() -> Result<Options, String> {
         capture: None,
         brand: None,
         timer: 1.0,
+        far: 0,
+        far_after: 3.0,
+        far_dump: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -265,7 +291,20 @@ fn options() -> Result<Options, String> {
             "--explore-speed" => {
                 o.explore_speed = value.parse().map_err(|_| number("blocks a second"))?;
             }
+            "--explore-distance" => {
+                o.explore_distance = value.parse().map_err(|_| number("positive blocks"))?;
+                if !o.explore_distance.is_finite() || o.explore_distance <= 0.0 {
+                    return Err(number("positive finite blocks"));
+                }
+            }
             "--pvp" => o.pvp = value.parse().map_err(|_| number("true or false"))?,
+            "--ack-mode" => {
+                o.ack_rate = match value.as_str() {
+                    "vanilla" => None,
+                    "64" => Some(64.0),
+                    _ => return Err(format!("--ack-mode {value}: use vanilla or 64")),
+                };
+            }
             "--flood" => o.flood = value.parse().map_err(|_| number("packets a tick"))?,
             "--attack" => o.attack = Some(value),
             "--attack-after" => o.attack_after = value.parse().map_err(|_| number("seconds"))?,
@@ -274,6 +313,16 @@ fn options() -> Result<Options, String> {
             "--report" => o.report = Some(value),
             "--capture" => o.capture = Some(value),
             "--brand" => o.brand = Some(value),
+            "--far" => {
+                o.far = value.parse().map_err(|_| number("chunks"))?;
+                // A server offers at most this far (`lod_net::MAX_DISTANCE`), and the plan's
+                // coverage loop stays far inside an i32 there.
+                if o.far > FAR_MAX {
+                    return Err(format!("--far {value}: at most {FAR_MAX} chunks"));
+                }
+            }
+            "--far-after" => o.far_after = value.parse().map_err(|_| number("seconds"))?,
+            "--far-dump" => o.far_dump = Some(value),
             "--give" => {
                 for part in value.split(',') {
                     let n: Vec<&str> = part.split(':').collect();
@@ -331,13 +380,14 @@ fn options() -> Result<Options, String> {
             _ => return Err(format!("unknown option {arg}; --help lists them")),
         }
     }
-    const BEHAVIOURS: [&str; 16] = [
+    const BEHAVIOURS: [&str; 17] = [
         "idle",
         "walk",
         "explore",
         "fight",
         "mixed",
         "stand",
+        "hotbar",
         "flood-move",
         "flood-acks",
         "flood-packets",
@@ -361,6 +411,8 @@ fn options() -> Result<Options, String> {
 /// What one bot is doing, shared between its reader and its ticks.
 #[derive(Default)]
 struct Bot {
+    explore_complete: AtomicBool,
+    server_time: Mutex<Option<i64>>,
     online: AtomicBool,
     chunks: AtomicU64,
     /// Chunks received while the bot already held them (no ForgetLevelChunk in between).
@@ -390,6 +442,8 @@ struct Bot {
     target: Mutex<Vec<(u128, Option<i32>)>>,
     /// The last SetHealth.
     health: Mutex<Option<f32>>,
+    /// --far: the far terrain it asks for.
+    far: far::Far,
 }
 
 impl Bot {
@@ -451,6 +505,9 @@ impl Random {
 }
 
 /// Vanilla's bare-hand attack speed is 4 a second: a full-strength swing every 20 / 4 ticks.
+/// The farthest `--far`: what a server offers at most (`horizon-lod-distance`, 1024 chunks).
+const FAR_MAX: u32 = 1024;
+
 const ATTACK_COOLDOWN_TICKS: u32 = 5;
 /// How far, in blocks, a fight bot strikes (the survival entity interaction range is 3).
 const ATTACK_REACH: f64 = 2.5;
@@ -833,6 +890,7 @@ fn join(o: &Options, name: &str) -> Result<Connection, String> {
         let (id, body) = c.recv().map_err(err)?;
         let reply = match id {
             cb::SELECT_KNOWN_PACKS
+            | cb::CUSTOM_PAYLOAD
             | cb::KEEP_ALIVE
             | cb::PING
             | cb::CODE_OF_CONDUCT
@@ -840,6 +898,12 @@ fn join(o: &Options, name: &str) -> Result<Connection, String> {
             | cb::DISCONNECT
             | cb::FINISH_CONFIGURATION => {
                 match configuration::Clientbound::decode(id, &body).map_err(err)? {
+                    configuration::Clientbound::CustomPayload(p) => {
+                        let Some(answer) = raw_protocol_answer(o.brand.as_deref(), &p)? else {
+                            continue;
+                        };
+                        configuration::Serverbound::CustomPayload(answer)
+                    }
                     configuration::Clientbound::SelectKnownPacks(p) => {
                         configuration::Serverbound::SelectKnownPacks(p)
                     }
@@ -871,6 +935,24 @@ fn join(o: &Options, name: &str) -> Result<Connection, String> {
             _ => continue,
         };
         c.send(&reply.encode()).map_err(err)?;
+    }
+}
+
+/// Only a bot claiming Horizon support answers the fork's raw-protocol Query.
+fn raw_protocol_answer(
+    brand: Option<&str>,
+    payload: &configuration::CustomPayload,
+) -> Result<Option<configuration::CustomPayload>, String> {
+    use horizon_protocol::payload_negotiation::{CHANNEL, Control, Manifest};
+    if brand != Some("horizon") || payload.channel != CHANNEL {
+        return Ok(None);
+    }
+    match Control::decode(&payload.data).map_err(err)? {
+        Control::Query => Ok(Some(configuration::CustomPayload {
+            channel: CHANNEL.into(),
+            data: Control::Offer(Manifest::default()).encode().map_err(err)?,
+        })),
+        Control::Offer(_) => Ok(None),
     }
 }
 
@@ -950,6 +1032,7 @@ fn read(
     writer: Arc<Mutex<ConnWriter>>,
     bot: Arc<Bot>,
     track: bool,
+    ack_rate: Option<f32>,
     mut capture: Option<Capture>,
 ) {
     use ids::play::clientbound as cb;
@@ -979,6 +1062,16 @@ fn read(
         }
         let mut r = Reader::new(&body);
         let sent = match id {
+            cb::SET_TIME => {
+                *lock(&bot.server_time) = r.i64().ok();
+                Ok(())
+            }
+            cb::CUSTOM_PAYLOAD => {
+                if r.string(32767).is_ok_and(|channel| channel == far::CHANNEL) {
+                    bot.far.reply(&body[body.len() - r.remaining()..]);
+                }
+                Ok(())
+            }
             cb::KEEP_ALIVE => match r.i64() {
                 Ok(v) => send(raw(sb::KEEP_ALIVE, |w| w.i64(v))),
                 Err(_) => Ok(()),
@@ -1035,7 +1128,8 @@ fn read(
                 batch.finished(r.varint().unwrap_or(0));
                 send(
                     play::Serverbound::ChunkBatchReceived(play::ChunkBatchReceived {
-                        chunks_per_tick: batch.desired_chunks_per_tick(),
+                        chunks_per_tick: ack_rate
+                            .unwrap_or_else(|| batch.desired_chunks_per_tick()),
                     })
                     .encode(),
                 )
@@ -1139,7 +1233,8 @@ fn run_bot(
         let capture = (index == 0)
             .then(|| o.capture.as_deref().and_then(Capture::create))
             .flatten();
-        thread::spawn(move || read(reader, writer, bot, track, capture));
+        let ack_rate = o.ack_rate;
+        thread::spawn(move || read(reader, writer, bot, track, ack_rate, capture));
     }
     use ids::play::serverbound as sb;
     // Wait for the spawn position.
@@ -1204,7 +1299,9 @@ fn run_bot(
     let mut since_attack = ATTACK_COOLDOWN_TICKS;
     let mut crits = Crits::default();
     let heading = random.unit() * std::f64::consts::TAU;
+    let mut explored = 0.0_f64;
     let mut target = pos;
+    let (mut hotbar_deadline, mut hotbar_step) = (None, 0usize);
     let mut next = Instant::now();
     let (joined, mut tick) = (Instant::now(), 0u64);
     loop {
@@ -1217,7 +1314,22 @@ fn run_bot(
         }
         let here = ((pos[0].floor() as i32) >> 4, (pos[2].floor() as i32) >> 4);
         // The abusive client doesn't wait for its chunk, as a real client must.
-        if behaviour == Behaviour::Stand {
+        if behaviour == Behaviour::Hotbar {
+            // Server time packets pace requests even during slow startup ticks.
+            if let Some(time) = *lock(&bot.server_time) {
+                let deadline = hotbar_deadline.get_or_insert(time + 40);
+                if time >= *deadline {
+                    *deadline = time + 20;
+                    if hotbar_step == 3 {
+                        bot.explore_complete.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                    let slot = [3, 7, 3][hotbar_step];
+                    send(play::Serverbound::SetCarriedItem(play::SetCarriedItem { slot }).encode());
+                    hotbar_step += 1;
+                }
+            }
+        } else if behaviour == Behaviour::Stand {
             // Where the server put it, on the ground.
         } else if behaviour == Behaviour::FloodMove {
             // The last of these moves goes out below, with the tick's end.
@@ -1255,7 +1367,7 @@ fn run_bot(
             pos[1] = (pos[1] + 0.5).min(cruise);
         } else {
             match behaviour {
-                Behaviour::Idle | Behaviour::Stand => {}
+                Behaviour::Idle | Behaviour::Stand | Behaviour::Hotbar => {}
                 Behaviour::Walk => walk_step(&mut pos, &mut target, spawn, cruise, &mut random),
                 Behaviour::Fight => {
                     let near = lock(&bot.entities).nearest(pos, o.pvp, &bots);
@@ -1312,9 +1424,12 @@ fn run_bot(
                     }
                     // Flying in creative, by default about 22 blocks a second, which keeps new
                     // chunks coming as fast as the server sends them.
-                    let step = o.explore_speed / 20.0;
+                    let step = (o.explore_speed / 20.0).min(o.explore_distance - explored);
                     pos[0] += heading.cos() * step;
                     pos[2] += heading.sin() * step;
+                    explored += step;
+                    bot.explore_complete
+                        .store(explored >= o.explore_distance, Ordering::Relaxed);
                 }
             }
         }
@@ -1379,6 +1494,20 @@ fn run_bot(
             }
         }
         tick += 1;
+        if o.far > 0 && joined.elapsed().as_secs_f64() >= o.far_after {
+            let dump =
+                (o.far_dump.as_ref()).map(|dir| PathBuf::from(dir).join(format!("{name}.tiles")));
+            bot.far.start(pos, i32::from(o.view_distance), o.far, dump);
+            for data in bot.far.requests() {
+                send(
+                    play::Serverbound::CustomPayload(configuration::CustomPayload {
+                        channel: far::CHANNEL.into(),
+                        data,
+                    })
+                    .encode(),
+                );
+            }
+        }
         let ok = send(
             play::Serverbound::MovePlayerPos(play::MovePlayerPos {
                 x: pos[0],
@@ -1413,6 +1542,7 @@ fn behaviour_of(mode: &str, index: usize) -> Behaviour {
     match mode {
         "idle" => Behaviour::Idle,
         "stand" => Behaviour::Stand,
+        "hotbar" => Behaviour::Hotbar,
         "walk" => Behaviour::Walk,
         "explore" => Behaviour::Explore,
         "fight" => Behaviour::Fight,
@@ -1500,6 +1630,8 @@ fn main() {
                 "pulled_back": total(|b| &b.pulled_back),
                 "waited_ticks": total(|b| &b.waited),
                 "attacks": total(|b| &b.attacks),
+                // Bots whose far plan is done: every tile asked for and answered.
+                "far_done": bots.iter().filter(|b| b.far.is_finished()).count(),
             })
         );
         previous_chunks = chunks;
@@ -1519,6 +1651,7 @@ fn main() {
         "behaviour": o.behaviour,
         "seed": o.seed,
         "explore_speed": o.explore_speed,
+        "ack_mode": o.ack_rate.map_or("vanilla", |_| "64"),
         "pvp": o.pvp,
         "view_distance": o.view_distance,
         "seconds": o.seconds,
@@ -1548,9 +1681,11 @@ fn main() {
             "forgotten": b.forgotten.load(Ordering::Relaxed),
             "pulled_back": b.pulled_back.load(Ordering::Relaxed),
             "waited_ticks": b.waited.load(Ordering::Relaxed),
+            "explore_complete": b.explore_complete.load(Ordering::Relaxed),
             "error": *lock(&b.error),
             "attacks": b.attacks.load(Ordering::Relaxed),
             "health": *lock(&b.health),
+            "far": (o.far > 0).then(|| b.far.report()),
         })).collect::<Vec<_>>(),
     });
     if o.report.as_deref() == Some("-") {
@@ -1583,6 +1718,114 @@ mod tests {
     use play::{
         AddEntity, Clientbound, MoveEntity, MoveEntityPos, RemoveEntities, SetEntityData, VecDelta,
     };
+
+    #[test]
+    fn horizon_bot_answers_only_a_marked_query_with_an_empty_offer() {
+        use horizon_protocol::payload_negotiation::CHANNEL;
+        let mut payload = configuration::CustomPayload {
+            channel: CHANNEL.into(),
+            data: vec![0, 1],
+        };
+        let answer = raw_protocol_answer(Some("horizon"), &payload)
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer.channel, CHANNEL);
+        assert_eq!(answer.data, [1, 1, 0]);
+        for brand in [None, Some("vanilla")] {
+            assert!(raw_protocol_answer(brand, &payload).unwrap().is_none());
+        }
+        payload.data = vec![1, 1, 0];
+        assert!(
+            raw_protocol_answer(Some("horizon"), &payload)
+                .unwrap()
+                .is_none()
+        );
+        payload.data = vec![0, 2];
+        assert!(raw_protocol_answer(Some("horizon"), &payload).is_err());
+        payload.channel = "other:plugin".into();
+        assert!(
+            raw_protocol_answer(Some("horizon"), &payload)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Exercise the production reader over framed connections. Pings are barriers
+    /// so extra ACKs are observable without sleeps or timing guesses.
+    fn check_chunk_acks(ack_rate: Option<f32>) {
+        use horizon_protocol::connection::Pipe;
+        let (client, server) = Pipe::pair();
+        let (reader, writer) = Connection::local(client).split();
+        let mut server = Connection::local(server);
+        server
+            .reader
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let bot = Arc::new(Bot::default());
+        bot.online.store(true, Ordering::SeqCst);
+        let handle = thread::spawn(move || {
+            read(
+                reader,
+                Arc::new(Mutex::new(writer)),
+                bot,
+                false,
+                ack_rate,
+                None,
+            )
+        });
+        for (nonce, size) in [0, 1, 5].into_iter().enumerate() {
+            server
+                .send(&raw(ids::play::clientbound::CHUNK_BATCH_START, |_| {}))
+                .unwrap();
+            server
+                .send(&raw(ids::play::clientbound::PING, |w| w.i32(nonce as i32)))
+                .unwrap();
+            let (id, body) = server.recv().unwrap();
+            assert_eq!(
+                id,
+                ids::play::serverbound::PONG,
+                "batch start must not send an ACK"
+            );
+            assert_eq!(Reader::new(&body).i32().unwrap(), nonce as i32);
+            server
+                .send(&raw(ids::play::clientbound::CHUNK_BATCH_FINISHED, |w| {
+                    w.varint(size)
+                }))
+                .unwrap();
+            server
+                .send(&raw(ids::play::clientbound::PING, |w| w.i32(nonce as i32)))
+                .unwrap();
+            let (id, body) = server.recv().unwrap();
+            assert_eq!(id, ids::play::serverbound::CHUNK_BATCH_RECEIVED);
+            let rate = Reader::new(&body).f32().unwrap();
+            if let Some(fixed) = ack_rate {
+                assert_eq!(rate, fixed);
+            } else if size == 0 {
+                assert_eq!(rate, 3.5, "vanilla initial rate must remain the default");
+            } else {
+                assert!(rate.is_finite() && rate > 0.0);
+            }
+            let (id, body) = server.recv().unwrap();
+            assert_eq!(
+                id,
+                ids::play::serverbound::PONG,
+                "exactly one ACK per finished batch"
+            );
+            assert_eq!(Reader::new(&body).i32().unwrap(), nonce as i32);
+        }
+        server.writer.shutdown();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn fixed_64_ack_is_sent_once_per_finished_batch() {
+        check_chunk_acks(Some(64.0));
+    }
+
+    #[test]
+    fn vanilla_acks_remain_once_per_finished_batch() {
+        check_chunk_acks(None);
+    }
 
     fn feed(entities: &mut Entities, packet: &Clientbound) {
         let bytes = packet.encode();

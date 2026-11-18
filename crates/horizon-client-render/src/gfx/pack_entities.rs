@@ -125,6 +125,7 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             op: ">",
             reference: 0.1,
         }),
+        parts: None,
         item_id_declared: false,
         far_depth: false,
         // Entities, items and block entities read the shared atlas: its own maps (paged_maps.rs).
@@ -192,6 +193,7 @@ pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
             .collect(),
         after: String::new(),
         alpha_test: None,
+        parts: None,
         item_id_declared: false,
         far_depth: false,
         paged_maps: false,
@@ -1283,8 +1285,9 @@ mod gpu_span_tests {
     use super::*;
     use crate::gfx::entity_skin::{SkinFrame, SkinJob};
     #[test]
-    #[ignore = "requires a Vulkan/Metal/DX12 adapter"]
+    #[ignore = "daily"]
     fn native_fluid_stays_native_while_model_uses_pack() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         let (device, queue) =
@@ -1432,6 +1435,7 @@ mod gpu_span_tests {
 
     #[test]
     fn end_portal_faces_reach_the_shadow_pass_with_their_block_entity() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;
@@ -1486,6 +1490,7 @@ mod gpu_span_tests {
     /// no shadow; with no pack program for entities, Horizon draws it with the boat.
     #[test]
     fn a_boats_water_patch_draws_depth_only() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;
@@ -1557,6 +1562,7 @@ mod gpu_span_tests {
 
     #[test]
     fn posed_and_cpu_draws_keep_offsets_uniforms_and_special_fallbacks() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;

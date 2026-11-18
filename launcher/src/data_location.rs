@@ -35,9 +35,25 @@ pub fn bootstrap_path() -> Result<PathBuf> {
     {
         return pointer_path(Path::new(&path));
     }
+    if cfg!(test) {
+        return Ok(test_home().join("location.json"));
+    }
     dirs::config_dir()
         .map(|p| p.join("horizon-launcher-location").join("location.json"))
         .ok_or_else(|| "Cannot locate the platform configuration folder for location.json".into())
+}
+
+/// Where the library's own tests keep the launcher's and the game's data (`launcher`, `game`,
+/// `location.json` inside) unless `HORIZON_LAUNCHER_HOME` or `HORIZON_HOME` name another:
+/// never a player's install. A fixed path, not an environment change, so it holds from the
+/// first call on any thread, and a test that runs its own binary again shares it.
+///
+/// The temporary folder in its real spelling, as [`crate::backend::build_dir`] resolves it:
+/// Windows can name it by its 8.3 short form (`C:\Users\RUNNER~1\…`), so every test path
+/// compares under one spelling.
+pub fn test_home() -> PathBuf {
+    let temp = std::env::temp_dir();
+    crate::backend::plain(temp.canonicalize().unwrap_or(temp)).join("horizon-launcher-lib-tests")
 }
 
 fn overridden(name: &str) -> bool {
@@ -76,6 +92,17 @@ fn remember_startup_error(error: Option<String>) {
 pub fn configured_roots() -> Result<Option<Roots>> {
     if FORCE_DEFAULT.load(Ordering::Acquire) {
         return Ok(None);
+    }
+    // A unit test never reaches the player's real folders: unless it points at a location file
+    // of its own, its roots are this test process's, under the temporary folder.
+    if cfg!(test) && !overridden("HORIZON_LAUNCHER_LOCATION_FILE") {
+        let home =
+            std::env::temp_dir().join(format!("horizon-launcher-test-{}", std::process::id()));
+        return Ok(Some(Roots {
+            launcher: home.join("launcher"),
+            game: home.join("game"),
+            build: home.join("launcher"),
+        }));
     }
     let mut slot = location();
     if slot.is_none() {
@@ -273,7 +300,7 @@ pub fn migrate_current_with_prepare(
     let bootstrap = bootstrap_path()?;
     let deadline = Instant::now() + Duration::from_secs(10);
     let lease = loop {
-        match lock_at(&bootstrap, true) {
+        match MigrationLease::take(&bootstrap) {
             Ok(lease) => break lease,
             Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
             Err(e) => return Err(e),
@@ -301,8 +328,26 @@ pub fn migrate_with_prepare(
     progress: impl FnMut(&str),
     prepare: impl FnOnce(&Roots, &Roots) -> Result<()>,
 ) -> Result<Roots> {
-    let lease = lock_at(bootstrap, true)?;
+    let lease = MigrationLease::take(bootstrap)?;
     migrate_locked(source, target, bootstrap, progress, prepare, &lease)
+}
+
+/// A migration's exclusive lock, released before its file closes. A child process spawned while
+/// it is held, by any thread, has a copy of the descriptor until its exec, and closing ours alone
+/// would leave the lock taken through that copy: the next migration would read "Cannot lock"
+/// (#18138). `horizon_platform::mod_package::locks::Locked` releases its locks the same way.
+struct MigrationLease(File);
+
+impl MigrationLease {
+    fn take(bootstrap: &Path) -> Result<Self> {
+        lock_at(bootstrap, true).map(Self)
+    }
+}
+
+impl Drop for MigrationLease {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 fn migrate_locked(
@@ -311,7 +356,7 @@ fn migrate_locked(
     bootstrap: &Path,
     mut progress: impl FnMut(&str),
     prepare: impl FnOnce(&Roots, &Roots) -> Result<()>,
-    _lease: &File,
+    _lease: &MigrationLease,
 ) -> Result<Roots> {
     let source = validate_roots(source)?;
     if let Some(current) = resolve_at(bootstrap)? {
@@ -454,7 +499,8 @@ fn checked_path(path: &Path) -> Result<PathBuf> {
         ));
     }
     let mut current = PathBuf::new();
-    for part in path.components() {
+    let last = path.components().count().saturating_sub(1);
+    for (i, part) in path.components().enumerate() {
         current.push(part);
         // A Windows drive/UNC prefix alone is not a filesystem root. Inspect it
         // only after RootDir completes it, including canonical verbatim paths.
@@ -463,7 +509,11 @@ fn checked_path(path: &Path) -> Result<PathBuf> {
         }
         match fs::symlink_metadata(&current) {
             Ok(meta) => {
-                reject_link(&current, &meta)?;
+                // Only the root itself may not be a link: the folders above it are never copied
+                // (a ~/.local/share linked to another disk, Fedora Atomic's /home).
+                if i == last {
+                    reject_link(&current, &meta)?;
+                }
                 current = fs::canonicalize(&current).map_err(|e| problem(&current, e))?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -539,10 +589,10 @@ fn tool_safe(path: &Path) -> Result<()> {
             .to_str()
             .is_some_and(|s| s.is_ascii() && !s.bytes().any(|b| b.is_ascii_whitespace()))
     {
-        return Err(
-            "Choose a destination with only ASCII characters and no spaces for Windows build tools"
-                .into(),
-        );
+        return Err(crate::i18n::trf(
+            "Windows build tools cannot use the build folder \"{path}\" because its full path contains spaces, other whitespace, or non-ASCII characters. Choose an empty destination whose full path uses English letters, numbers, underscores or hyphens, for example D:\\Horizon_Data. Check every parent folder too.",
+            &[("path", &path.display().to_string())],
+        ));
     }
     Ok(())
 }

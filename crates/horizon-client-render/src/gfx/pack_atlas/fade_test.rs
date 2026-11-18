@@ -17,6 +17,7 @@ impl Drop for ProbePack {
 
 #[test]
 fn terrain_fade_reaches_pack_pixels_through_real_instances() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let instance = crate::gfx::test_gpu::instance();
     let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
         Ok(adapter) => adapter,
@@ -125,7 +126,7 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
                         terrain: Some(atlas.terrain_inputs(flat)),
                         terrain_geometry: geometry.then(|| horizon_shaders::GeometryInputs {
                             inputs: atlas.terrain_inputs(true),
-                            pull: super::PULL.to_owned(),
+                            pull: String::new(),
                             index: "@".to_owned(),
                         }),
                         ..Default::default()
@@ -188,6 +189,7 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
 /// read by a pack's terrain program, flat or instanced.
 #[test]
 fn terrain_tier_reaches_pack_pixels() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let instance = crate::gfx::test_gpu::instance();
     let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
         Ok(adapter) => adapter,

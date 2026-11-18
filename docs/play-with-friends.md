@@ -53,7 +53,8 @@ router that opened the port, or with a forwarded port, that's it: no server took
 (`horizon_hooks::tunnel`, `horizon_platform::hooks::tunnel` for the Horizon layer): the resolver a hook offers
 reads codes and opens the tunnel, which the join (`net.rs`) then reaches on a loopback port like any server.
 horizon-friends' `game` side offers it, and the official executable (`horizon-official`) registers it;
-horizon-client's own executable has none, so there a `friend:` address is refused. Hosting needs no hook: the
+horizon-client's own executable has none, so there a `friend:` address is refused and the title screen's
+Friends icon, which opens Join a Friend, is inactive (`net::joins_friends`). Hosting needs no hook: the
 host end connects to the world's LAN port over loopback, so tunnelled guests are LAN guests. It still lives in
 horizon-client (`game/friends.rs`, `game/friends/screen.rs`, the `friends` feature, which comes with
 `horizon-extras`) until the pause menu and `horizon-ctl` offer entries to crates above the engine.
@@ -108,8 +109,7 @@ run at once there, and each must finish within 10 seconds however slowly its byt
 - **A relay** (only if one is configured) sees the IP addresses of the host and the guests, the short
   code's first half, when sessions start and end and the size of encrypted frames. It can't see the
   secret, the key or the game (names, chat, the world). It logs counts every five minutes, nothing else.
-- **Horizon** runs no service for it. The game's anonymous "I'm playing" ping says only whether a
-  LAN or friends world is open, never its address, code or name ([telemetry.md](telemetry.md)).
+- **Horizon** runs no service for it, and the game sends nothing about it ([telemetry.md](telemetry.md)).
 
 ## Identity
 
@@ -165,7 +165,9 @@ shows the address the relay sees for you: behind a proxy that hides client addre
 platforms' TCP proxies), set `RELAY_PER_ADDRESS_LIMITS=0`. Run **one** instance per address: codes live
 in its memory.
 
-Settings, all optional:
+Settings, all optional (an empty variable counts as unset; one that is set and does not parse, such as
+`RELAY_PER_ADDRESS_LIMITS=false` (a flag is a number, `0` for off), stops the relay at start with a
+message that names it):
 
 | Variable | Default | |
 | --- | --- | --- |

@@ -1,7 +1,10 @@
 from pathlib import Path
 import json
 import os
+import subprocess
+import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -29,6 +32,16 @@ class ParityRunnerTests(unittest.TestCase):
                          [["bins", "", "fast", ["-p", "horizon-client", "--features", "x"], False]])
         self.assertEqual(parity.artifacts_of(["cargo", "build", "--release", "-p", "horizon-world", "--bin=horizon-world"]),
                          [["bin", "horizon-world", "release", ["-p", "horizon-world"], False]])
+
+    def test_artifacts_keep_combined_short_package_and_feature_flags(self):
+        combined = parity.artifacts_of(["cargo", "run", "-pfoo", "-Ffeat", "--example", "p"])
+        separated = parity.artifacts_of(["cargo", "run", "-p", "foo", "--features", "feat", "--example", "p"])
+        self.assertEqual(combined, [["example", "p", "dev", ["-p", "foo", "--features", "feat"], True]])
+        self.assertEqual(combined, separated)
+        self.assertEqual(
+            parity.prebuild_commands(combined, {("example", "p"): "foo"}),
+            [["cargo", "build", "--locked", "--profile", "dev", "-p", "foo", "--features", "feat", "--example", "p"]],
+        )
 
     def test_prebuild_follows_a_moved_target_without_losing_features(self):
         selection = ["-p", "horizon-client", "--no-default-features", "--features", "horizon-client/rng-trace"]
@@ -153,6 +166,26 @@ class ParityRunnerTests(unittest.TestCase):
             source.write_text("two!")
             self.assertTrue(parity.stale("x", state, hasher, "env"))
 
+    def test_a_group_file_added_after_the_record_counts(self):
+        # tools/command_exec_groups/ modules are found by file name (#16833): one added later is in no record.
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp)),                 mock.patch.object(parity, "SHARED", Path(temp, "shared")):
+            groups = Path(temp, "tools", "command_exec_groups")
+            groups.mkdir(parents=True)
+            (groups / "old.py").write_text("old")
+            found = {name: Path(temp, "tools", f"test_{name}_parity.py") for name in ("command_exec", "food")}
+            records = {"command_exec": {"status": "pass", "dependencies": ["tools/command_exec_groups/old.py"]},
+                       "food": {"status": "pass", "dependencies": ["tools/lab.py"]}}
+            state = {"harnesses": records, "hashes": {}}
+            hasher = parity.Hasher(state["hashes"])
+            for record in records.values():
+                record["key"] = parity.key(record, hasher, "env")
+            self.assertFalse(parity.stale("command_exec", state, hasher, "env"))
+            (groups / "new.py").write_text("new")
+            self.assertTrue(parity.stale("command_exec", state, hasher, "env"))
+            self.assertFalse(parity.stale("food", state, hasher, "env"))
+            self.assertEqual(parity.affected_harnesses(found, records, {"tools/command_exec_groups/new.py"}),
+                             {"command_exec"})
+
     def test_a_change_affects_the_harnesses_that_depend_on_it(self):
         with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp)), \
                 mock.patch.object(parity, "SHARED", Path(temp, "shared")):
@@ -213,6 +246,21 @@ class ParityRunnerTests(unittest.TestCase):
             self.assertEqual(parity.platform_skips(config, "macmini"), {})
             self.assertEqual(parity.platform_skips(config, "elsewhere"), {})
 
+    def test_known_failing_harnesses_report_without_failing_the_run(self):
+        results = {"crafter": {"status": "fail"}, "datafix#1": {"status": "fail"}, "datafix#2": {"status": "pass"},
+                   "sculk": {"status": "pass"}, "mace": {"status": "fail"}, "boat_void": {"status": "pass"}}
+        known = {"crafter": "#1: max_damage", "datafix": "#2: paths", "sculk": "#3: phase"}
+        blocking, again, passed = parity.split_known_failing(results, known)
+        self.assertEqual(blocking, ["mace"])  # not on the list: it fails the run
+        self.assertEqual(again, ["crafter", "datafix#1"])  # a failing shard counts under its harness
+        self.assertEqual(passed, ["sculk"])  # passes now: datafix doesn't, as one of its shards failed
+        self.assertEqual(parity.split_known_failing({"crafter": {"status": "fail"}}, known)[0], [])
+        # A listed shard covers only itself.
+        self.assertEqual(parity.split_known_failing(results, {"datafix#1": "#2: paths"})[:2],
+                         (["crafter", "mace"], ["datafix#1"]))
+        self.assertEqual(parity.split_known_failing(results, {"datafix#2": "#2: paths"})[2], ["datafix#2"])
+        self.assertEqual(parity.known_failing({}), {})
+
     def test_named_only_harnesses_are_listed_from_the_host_config(self):
         self.assertEqual(parity.named_only({"named_only": {"lan_integration": "slow"}}), {"lan_integration": "slow"})
         self.assertEqual(parity.named_only({}), {})
@@ -236,6 +284,30 @@ class ParityRunnerTests(unittest.TestCase):
                     (here / "x.rs").write_text("changed")
                     state = {"harnesses": {}, "hashes": {}}
                     self.assertTrue(parity.stale("x", state, parity.Hasher(state["hashes"]), "env"))
+
+
+class TraceTests(unittest.TestCase):
+    def test_commands_are_recorded_as_argument_lists(self):
+        """On Windows the audit event carries the command line Popen built; the trace splits it back, so a harness's
+        cargo builds reach the probe prebuild and its probes' sources become dependencies there too."""
+        arguments = [sys.executable, "-c", "pass", "build", "-p", "a b", 'say "hi"', "back\\slash\\", ""]
+        with tempfile.TemporaryDirectory() as tmp:
+            script, trace = Path(tmp) / "harness.py", Path(tmp) / "trace.json"
+            script.write_text(f"import subprocess\nsubprocess.run({arguments!r})\n", encoding="utf-8")
+            subprocess.run([sys.executable, str(Path(parity.__file__)), "--trace", str(trace), str(script)], check=True)
+            commands = json.loads(trace.read_text(encoding="utf-8"))["commands"]
+        self.assertIn(arguments, commands)
+
+    @unittest.skipUnless(os.name == "nt", "Windows command lines")
+    def test_a_windows_command_line_splits_into_its_arguments(self):
+        for arguments in (["cargo", "build", "--profile", "fast"],
+                          ["C:\\Program Files\\x.exe", "a b", 'q"uote', "tail\\", ""]):
+            self.assertEqual(parity.command_line_arguments(subprocess.list2cmdline(arguments)), arguments)
+
+    def test_a_windows_probe_binary_finds_its_dep_info(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "client_probe.d").write_text(f"{tmp}/client_probe: crates/a/src/lib.rs\n", encoding="utf-8")
+            self.assertEqual(parity.dep_info(Path(tmp, "client_probe.exe")), ["crates/a/src/lib.rs"])
 
 
 class DependencyPathTests(unittest.TestCase):
@@ -386,6 +458,15 @@ class ShardTests(unittest.TestCase):
             self.assertEqual(parity.SHARDS["x#2"], "2/3")
             self.assertEqual(parity.base_name("x#2"), "x")
 
+    def test_a_manual_proof_script_is_left_out(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp)), \
+                mock.patch.dict(parity.MANUAL, clear=True):
+            (Path(temp) / "tools").mkdir()
+            (Path(temp) / "tools/test_x_parity.py").write_text('import sys\nPARITY_MANUAL = "--side java, then --side native"\n')
+            (Path(temp) / "tools/test_y_parity.py").write_text("")
+            self.assertEqual(sorted(parity.harnesses()), ["y"])
+            self.assertEqual(parity.MANUAL, {"x": "--side java, then --side native"})
+
 
 class OracleArgumentTests(unittest.TestCase):
     def test_an_agent_jar_is_an_input(self):
@@ -421,6 +502,7 @@ class OracleReuseTests(unittest.TestCase):
         python = root / "python"
         python.mkdir()
         (python / "python3").symlink_to(sys.executable)
+        self.python = sys.executable
         self.env = dict(os.environ, PATH=f"{self.shim}:{self.bin}:{python}", PARITY_SHIM_REAL_PATH=str(self.bin),
                         PARITY_SHIM_CACHE=str(root / "cache"))
         self.subprocess = subprocess
@@ -445,6 +527,45 @@ class OracleReuseTests(unittest.TestCase):
         self.output.write_text("tampered")
         self.assertEqual(self.oracle(), 3)
         self.assertEqual(self.output.read_text(), "b")
+
+    def wrapper(self, folder, put_the_shim_back=False):
+        """A `java` that runs the first other `java` on PATH, as JDK selectors and build wrappers do. It stops
+        itself after a few rounds, so a shim that loops fails this test instead of filling the machine."""
+        folder.mkdir()
+        path = f"os.environ['PATH'] = {str(self.shim)!r} + os.pathsep + os.environ['PATH']\n" if put_the_shim_back else ""
+        (folder / "java").write_text(
+            f"#!{self.python}\nimport os, sys, shutil\nfrom pathlib import Path\n"
+            "rounds = int(os.environ.get('WRAPPER_ROUNDS') or 0)\n"
+            "if rounds > 6: sys.exit(97)\n"
+            "os.environ['WRAPPER_ROUNDS'] = str(rounds + 1)\n" + path +
+            "me = Path(__file__).resolve()\n"
+            "other = next(c for d in os.environ['PATH'].split(os.pathsep) if (c := shutil.which('java', path=d))"
+            " and Path(c).resolve() != me)\n"
+            "os.execv(other, [other, *sys.argv[1:]])\n")
+        (folder / "java").chmod(0o755)
+
+    def test_a_wrapper_that_looks_java_up_on_path_reaches_the_real_one(self):
+        wrapper = self.bin.parent / "wrapper"
+        self.wrapper(wrapper)
+        self.env["PATH"] = f"{self.shim}:{wrapper}:{self.bin}:{self.bin.parent / 'python'}"
+        self.env["PARITY_SHIM_REAL_PATH"] = f"{wrapper}:{self.bin}"
+        self.assertEqual(self.oracle(), 1)
+        self.assertEqual(self.oracle(), 1)
+
+    def test_a_wrapper_that_puts_the_shim_back_stops_with_a_reason(self):
+        wrapper = self.bin.parent / "wrapper"
+        self.wrapper(wrapper, put_the_shim_back=True)
+        # The shim's `env python3` must find a python3 on the real PATH.
+        self.env["PARITY_SHIM_REAL_PATH"] = f"{wrapper}:{self.bin}:{self.bin.parent / 'python'}"
+        result = self.subprocess.run(["java", str(self.input), str(self.output)], env=self.env, capture_output=True,
+                                     text=True, stdin=self.subprocess.DEVNULL, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("started inside itself", result.stderr)
+
+    def test_a_real_path_that_holds_the_shim_skips_it(self):
+        from tools import parity_shim
+        with mock.patch.dict(os.environ, PARITY_SHIM_REAL_PATH=f"{self.shim}:{self.bin}"):
+            self.assertEqual(Path(parity_shim.real("java")), self.bin / "java")
 
 
 
@@ -588,6 +709,37 @@ class SoloTests(unittest.TestCase):
         self.assertTrue(solo and set(solo) <= {parity.base_name(name) for name in parity.harnesses()})
 
 
+class ClashTests(unittest.TestCase):
+    """On Windows, harnesses that build one program with different selections don't run at once."""
+    PACKAGES = {("bin", "horizon-client"): "horizon-client", ("bin", "horizon-ctl"): "horizon-client-lib",
+                ("example", "client_probe"): "horizon-client-lib"}
+    SERVER = ["bin", "horizon-client", "fast", ["-p", "horizon-client"], False]
+    BOTH = ["bins", "", "fast", ["-p", "horizon-client", "-p", "horizon-client-lib"], False]
+    PROBE = ["example", "client_probe", "dev", ["-p", "horizon-client-lib"], True]
+
+    def test_a_run_naming_every_bin_builds_those_of_its_packages(self):
+        self.assertEqual(parity.executables([self.BOTH], self.PACKAGES), {
+            ("bin", "horizon-client", "fast"): (("-p", "horizon-client", "-p", "horizon-client-lib"), False),
+            ("bin", "horizon-ctl", "fast"): (("-p", "horizon-client", "-p", "horizon-client-lib"), False)})
+
+    def test_another_selection_of_a_running_harness_program_waits(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(parity, "STATE_DIR", Path(tmp)):
+            local = parity.LocalExecutor(4, 1 << 40, 60)
+        local.builds = {name: parity.executables(built, self.PACKAGES) for name, built in {
+            "server": [self.SERVER], "same": [self.SERVER, self.PROBE], "both": [self.BOTH], "probe": [self.PROBE],
+            "python_only": []}.items()}
+        local.running = {"server": {}}
+        self.assertFalse(local.accepts("both"))  # it would relink horizon-client.exe while "server" runs it
+        self.assertTrue(local.accepts("same"))  # Cargo finds it fresh
+        self.assertTrue(local.accepts("probe"))
+        self.assertTrue(local.accepts("python_only"))
+        self.assertTrue(local.accepts("never_ran"))
+        local.running = {"both~2": {}}
+        self.assertFalse(local.accepts("server"))
+        local.running = {}
+        self.assertTrue(local.accepts("both"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -629,6 +781,14 @@ class WorkspaceManifestTests(unittest.TestCase):
         resolver = {"Cargo.toml": '[workspace]\nmembers = ["a"]\nresolver = "3"\n'}
         self.assertEqual(self.verdict({"Cargo.toml": '[workspace]\nmembers = ["a"]\nresolver = "2"\n'}, resolver), set())
 
+    def test_a_hash_inside_a_quoted_value_is_not_a_comment(self):
+        git = '[dependencies]\nserde_json = {{ git = "https://example.invalid/repo.git#{}" }}\n'
+        self.assertNotEqual(parity.manifest_lines(git.format("rev1")), parity.manifest_lines(git.format("rev2")))
+        self.assertEqual(parity.manifest_lines("[dependencies]\nserde_json = \"1.0\" # note\nx = '#a' # b\n"),
+                         {("[dependencies]", 'serde_json = "1.0"'), ("[dependencies]", "x = '#a'")})
+        path = "crates/foo/Cargo.toml"
+        self.assertEqual(self.verdict({path: git.format("rev1")}, {path: git.format("rev2")}), set())
+
     def test_a_feature_of_a_workspace_crate_counts_through_its_sources(self):
         items = '[package]\nname = "horizon-items"\n\n[features]\ntest-support = []\n'
         client = self.CLIENT + '\n[dev-dependencies]\nhorizon-items = { path = "../horizon-items", features = ["test-support"] }\n'
@@ -663,3 +823,68 @@ class WorkspaceManifestTests(unittest.TestCase):
 
     def test_without_a_base_everything_counts(self):
         self.assertEqual(parity.workspace_only_manifests({"Cargo.lock"}, None), set())
+
+
+# A harness that leaves a child behind: the child locks a file, says so, and sleeps; the harness then exits or hangs.
+# The lock frees once the child is dead, on every platform (flock, or msvcrt's byte lock).
+LEAVING_HARNESS = """
+import subprocess, sys, time
+from pathlib import Path
+held = Path(sys.argv[0]).with_name("held")
+child = subprocess.Popen([sys.executable, "-c", '''
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from tools import file_lock
+handle = open(sys.argv[2], "w")
+file_lock.lock(handle)
+open(sys.argv[2] + ".ready", "w").close()
+time.sleep(120)
+''', str(Path({root!r})), str(held)], stdout=subprocess.DEVNULL)
+while not Path(str(held) + ".ready").exists():
+    time.sleep(0.05)
+if {hang!r}:
+    time.sleep(120)
+"""
+
+
+def child_released(held, seconds=30):
+    """Whether the left child's lock on held frees within seconds (it is dead)."""
+    from tools import file_lock
+    deadline = time.monotonic() + seconds
+    with open(held, "a") as handle:
+        while time.monotonic() < deadline:
+            if file_lock.lock(handle, wait=False):
+                return True
+            time.sleep(0.1)
+    return False
+
+
+class LeftProcessTests(unittest.TestCase):
+    """What a harness starts ends with it, whether it exits, crashes or times out (tools/process_tree.py)."""
+
+    def run_harness(self, hang, timeout):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            script = tmp / "test_leaving_parity.py"
+            script.write_text(LEAVING_HARNESS.format(root=str(parity.ROOT), hang=hang), encoding="utf-8")
+            with mock.patch.object(parity, "STATE_DIR", tmp / "state"), mock.patch.object(parity, "SHARED", tmp / "shared"):
+                local = parity.LocalExecutor(1, 1 << 40, timeout)
+                self.assertTrue(local.start("leaving", script, False, 0))
+                finished, deadline = [], time.monotonic() + 120
+                while not finished and time.monotonic() < deadline:
+                    finished = local.poll()
+                    time.sleep(0.1)
+                local.stop()
+            self.assertEqual([name for name, *_ in finished], ["leaving"])
+            self.assertTrue((tmp / "held.ready").exists())
+            self.assertTrue(child_released(tmp / "held"), "the harness's child outlived it")
+            return finished[0]
+
+    @unittest.skipUnless(os.name == "nt" or hasattr(os, "waitid"), "macOS before Python 3.13 has no os.waitid")
+    def test_a_finished_harness_takes_what_it_left_running(self):
+        _, _, passed, *_ = self.run_harness(hang=False, timeout=120)
+        self.assertTrue(passed)
+
+    def test_a_timed_out_harness_takes_what_it_started(self):
+        _, _, passed, *_ = self.run_harness(hang=True, timeout=5)
+        self.assertFalse(passed)

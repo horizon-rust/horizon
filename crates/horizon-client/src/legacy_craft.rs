@@ -240,8 +240,14 @@ mod tests {
         let root = root()?;
         let none = &horizon_world::loot::PackOverlay::NONE;
         // With the data here, failing to read it is a failure, not a skip.
-        let items = Items::catalog(&root, none).expect("items");
-        let recipes = Recipes::load(&root, &items, none).expect("recipes");
+        let items = Items::catalog(
+            &root,
+            none,
+            &horizon_world::item_defaults::read(&root).expect("item defaults"),
+        )
+        .expect("items");
+        let recipes = Recipes::load(&root, &items, none, &crate::test_resources::server_load())
+            .expect("recipes");
         let mut book = Book::build(&recipes, &items);
         book.set_display_ids(&RecipeIndex::load(&root, none));
         let mut client = ClientBook::default();
@@ -359,13 +365,54 @@ mod tests {
     }
 
     #[test]
+    fn every_banner_colour_is_on_a_crafting_table_tab_and_not_in_the_inventory() {
+        let Some((book, client, creative)) = vanilla() else {
+            return;
+        };
+        let on_tabs = |grid: usize, item: &str| {
+            tabs(&book, &client, &creative.tabs, grid, &HashMap::new())[1..]
+                .iter()
+                .flat_map(entries_of)
+                .any(|e| &*book.entries[e].result.item == item)
+        };
+        for colour in [
+            "white",
+            "orange",
+            "magenta",
+            "light_blue",
+            "yellow",
+            "lime",
+            "pink",
+            "gray",
+            "light_gray",
+            "cyan",
+            "purple",
+            "blue",
+            "brown",
+            "green",
+            "red",
+            "black",
+        ] {
+            let banner = format!("minecraft:{colour}_banner");
+            assert!(on_tabs(3, &banner), "{banner} on no crafting table tab");
+            // Six wool and a stick fill a 3x3 grid.
+            assert!(!on_tabs(2, &banner), "{banner} in the inventory's 2x2");
+        }
+    }
+
+    #[test]
     fn grouped_tiers_put_every_pickaxe_in_one_column_in_creative_order() {
         let Some((book, client, creative)) = vanilla() else {
             return;
         };
         let root = root().unwrap();
         let none = &horizon_world::loot::PackOverlay::NONE;
-        let items = Items::catalog(&root, none).expect("items");
+        let items = Items::catalog(
+            &root,
+            none,
+            &horizon_world::item_defaults::read(&root).expect("item defaults"),
+        )
+        .expect("items");
         let tiers = tiers(&items.item_tag_order);
         assert_eq!(
             tiers.get("minecraft:iron_pickaxe"),

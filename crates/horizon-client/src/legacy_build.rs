@@ -12,6 +12,7 @@ use crate::{
     crafting::{Ingredient, Recipe, Recipes, Special},
     items::ItemStack,
 };
+use horizon_world::native_load_context::LoopContext;
 
 /// The builders: the mode tabs after Crafting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -263,19 +264,22 @@ pub fn templates(recipes: &Recipes) -> Vec<Template> {
                     .collect();
                 (Kind::Copying, result(made, map), cells, true)
             }
-            Special::BannerDuplicate { banner, result } => (
+            Special::BannerDuplicate {
+                banner,
+                result: made,
+            } => (
                 Kind::Banners,
-                ItemStack::new(result, 1),
+                result(made, banner),
                 shapeless(vec![required(banner), required(banner)]),
                 false,
             ),
             Special::ShieldDecoration {
                 banner,
                 target,
-                result,
+                result: made,
             } => (
                 Kind::Banners,
-                ItemStack::new(result, 1),
+                result(made, target),
                 shapeless(vec![required(banner), required(target)]),
                 false,
             ),
@@ -324,7 +328,11 @@ pub fn templates(recipes: &Recipes) -> Vec<Template> {
                 .unwrap_or_default(),
         };
         out.push(Template {
-            recipe: crate::crafting::recipe_id(name),
+            recipe: if name.contains(':') {
+                name.to_string()
+            } else {
+                format!("minecraft:{name}")
+            },
             kind,
             icon,
             cells,
@@ -370,8 +378,12 @@ pub fn held_kinds(
 }
 
 /// The stacks of `inventory` a cell can take (`held_kinds` of its ingredient).
-pub fn candidates(role: &Role, inventory: &[Option<ItemStack>]) -> Vec<ItemStack> {
-    held_kinds(inventory, |s| role.accepts.test(s))
+pub fn candidates(
+    context: &LoopContext,
+    role: &Role,
+    inventory: &[Option<ItemStack>],
+) -> Vec<ItemStack> {
+    held_kinds(inventory, |s| role.accepts.test_in(context, s))
 }
 
 /// The choice after (or before) `now` among `choices`, round the ends; the first when `now` isn't
@@ -422,13 +434,17 @@ pub fn held(stack: &ItemStack, inventory: &[Option<ItemStack>]) -> u32 {
 
 /// A first staging of a template's cells: each required cell takes the first candidate the
 /// inventory still has one of; optional cells stay empty.
-pub fn stage(template: &Template, inventory: &[Option<ItemStack>]) -> Vec<Option<ItemStack>> {
+pub fn stage(
+    context: &LoopContext,
+    template: &Template,
+    inventory: &[Option<ItemStack>],
+) -> Vec<Option<ItemStack>> {
     let mut staged: Vec<Option<ItemStack>> = vec![None; template.cells.len()];
     for (i, (_, role)) in template.cells.iter().enumerate() {
         if role.optional {
             continue;
         }
-        staged[i] = candidates(role, inventory).into_iter().find(|c| {
+        staged[i] = candidates(context, role, inventory).into_iter().find(|c| {
             let used = staged
                 .iter()
                 .flatten()
@@ -445,6 +461,7 @@ pub fn stage(template: &Template, inventory: &[Option<ItemStack>]) -> Vec<Option
 /// empty takes the first candidate held, as `stage` would. A required ingredient that came back
 /// (or was only in hand a moment) fills its cell again.
 pub fn restage(
+    context: &LoopContext,
     template: &Template,
     kept: &[Option<ItemStack>],
     inventory: &[Option<ItemStack>],
@@ -469,7 +486,7 @@ pub fn restage(
         if role.optional || staged[i].is_some() {
             continue;
         }
-        staged[i] = candidates(role, inventory)
+        staged[i] = candidates(context, role, inventory)
             .into_iter()
             .find(|c| room(&staged, c));
     }
@@ -510,6 +527,10 @@ mod tests {
     use crate::items::Items;
     use std::path::{Path, PathBuf};
 
+    fn ctx() -> &'static LoopContext {
+        crate::test_resources::server_loop_context()
+    }
+
     fn recipes() -> Option<Recipes> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
@@ -521,8 +542,16 @@ mod tests {
             return None;
         }
         let none = &horizon_world::loot::PackOverlay::NONE;
-        let items = Items::catalog(&root, none).expect("items");
-        Some(Recipes::load(&root, &items, none).expect("recipes"))
+        let items = Items::catalog(
+            &root,
+            none,
+            &horizon_world::item_defaults::read(&root).expect("item defaults"),
+        )
+        .expect("items");
+        Some(
+            Recipes::load(&root, &items, none, &crate::test_resources::server_load())
+                .expect("recipes"),
+        )
     }
 
     fn stacks(items: &[(&str, u32)]) -> Vec<Option<ItemStack>> {
@@ -624,17 +653,22 @@ mod tests {
             .unwrap();
         // The gunpowder was in hand (a craft moving it): its cell was staged empty.
         let without = stacks(&[("minecraft:paper", 3)]);
-        let staged = stage(rocket, &without);
+        let staged = stage(ctx(), rocket, &without);
         assert_eq!(staged.iter().flatten().count(), 1);
         // Back in the inventory: the cell fills again; the paper choice stays.
         let inventory = stacks(&[("minecraft:paper", 3), ("minecraft:gunpowder", 5)]);
-        let again = restage(rocket, &staged, &inventory);
+        let again = restage(ctx(), rocket, &staged, &inventory);
         let items: Vec<&str> = again.iter().flatten().map(|s| &*s.item).collect();
         assert_eq!(items, ["minecraft:paper", "minecraft:gunpowder"]);
         let grid = layout(rocket, &again, 2).unwrap();
-        assert!(recipes.craft(&grid, 2).is_some());
+        assert!(recipes.craft(ctx(), &grid, 2).is_some());
         // A pick no longer held goes; an optional cell left empty stays empty.
-        let gone = restage(rocket, &again, &stacks(&[("minecraft:gunpowder", 5)]));
+        let gone = restage(
+            ctx(),
+            rocket,
+            &again,
+            &stacks(&[("minecraft:gunpowder", 5)]),
+        );
         assert!(
             gone.iter()
                 .flatten()
@@ -654,12 +688,12 @@ mod tests {
             .find(|t| &*t.icon.item == "minecraft:firework_rocket")
             .unwrap();
         let inventory = stacks(&[("minecraft:paper", 3), ("minecraft:gunpowder", 5)]);
-        let staged = stage(rocket, &inventory);
+        let staged = stage(ctx(), rocket, &inventory);
         assert!(available(&staged, &inventory));
         // Paper and one gunpowder, nothing optional.
         assert_eq!(staged.iter().flatten().count(), 2);
         let grid = layout(rocket, &staged, 2).unwrap();
-        let made = recipes.craft(&grid, 2).expect("a rocket");
+        let made = recipes.craft(ctx(), &grid, 2).expect("a rocket");
         assert_eq!(&*made.item, "minecraft:firework_rocket");
         assert_eq!(made.count, 3);
     }
@@ -676,7 +710,7 @@ mod tests {
             .unwrap();
         // One banner can't fill both cells of a banner copy.
         let inventory = stacks(&[("minecraft:white_banner", 1)]);
-        let staged = stage(copy, &inventory);
+        let staged = stage(ctx(), copy, &inventory);
         assert!(available(&staged, &inventory));
         assert!(staged.iter().flatten().count() < 2);
         let twice = vec![Some(ItemStack::new("minecraft:white_banner", 1)); 2];
@@ -694,7 +728,7 @@ mod tests {
         assert!(layout(pot, &staged, 2).is_none());
         let grid = layout(pot, &staged, 3).unwrap();
         assert!(grid[1].is_some() && grid[4].is_none() && grid[7].is_some());
-        let made = recipes.craft(&grid, 3).expect("a pot");
+        let made = recipes.craft(ctx(), &grid, 3).expect("a pot");
         assert_eq!(&*made.item, "minecraft:decorated_pot");
     }
 }

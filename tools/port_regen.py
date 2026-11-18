@@ -23,6 +23,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 
@@ -269,6 +270,10 @@ GENERATORS = [
 def status(root, outputs):
     """unchanged, or regenerated with {path: [added, removed]} against the candidate's last commit."""
     stat = {}
+    # `git diff` never lists untracked files: mark a first-time output as intent-to-add so it counts.
+    new = git("ls-files", "-z", "--others", "--exclude-standard", "--", *outputs, cwd=root).split("\0")
+    if any(new):
+        git("add", "-N", "--", *filter(None, new), cwd=root)
     for line in git("diff", "--numstat", "HEAD", "--", *outputs, cwd=root).splitlines():
         added, removed, path = line.split("\t")
         stat[path] = [int(added), int(removed)]
@@ -320,3 +325,9 @@ def regen(version, found, store, base, path, names=None):
     results = run_generators(root, version, store, names)
     return {"old": old, "new": version, "candidate": str(root), "commit": commit(root, version, results),
             "generators": results}
+
+
+if __name__ == "__main__":
+    # A module, not a command: say how it is used instead of doing nothing at all.
+    print(__doc__, file=sys.stderr)
+    raise SystemExit(2)

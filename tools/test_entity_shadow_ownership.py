@@ -46,8 +46,9 @@ mod post {
     pub struct PackPost { pub entities: Option<Entities>, pub shadow_targets: Option<()> }
     impl PackPost { __CASTERS__ }
 }
-struct Native { shadow: Option<()> }
-struct Renderer { pack_post: Option<(i32, Option<post::PackPost>)>, native: Option<Native> }
+#[derive(Clone, Copy)]
+struct Capabilities { shadow: bool }
+struct Renderer { pack_post: Option<(i32, Option<post::PackPost>)>, executor: Option<Capabilities> }
 impl Renderer { __NATIVE__ __GETTER__ }
 #[derive(Clone, Copy, PartialEq)]
 enum Dim { Overworld, Nether, End }
@@ -59,6 +60,7 @@ impl Colors { fn entity_shadows(&self) -> bool { self.shadows } }
 struct Pack { polytone_colors: Colors }
 struct Game { dim: Dim, renderer: Option<Renderer>, settings: Settings, gui: Gui, pack: Pack }
 impl Game {
+    fn overworld_skybox(&self) -> bool { self.dim == Dim::Overworld }
     fn selected_blob(&self) -> Option<usize> { __GUARD__ shadow_sprite }
 }
 fn scene(kind: &str, dim: Dim, enabled: bool, sprite: bool) -> Game {
@@ -84,7 +86,7 @@ fn scene(kind: &str, dim: Dim, enabled: bool, sprite: bool) -> Game {
         dim,
         renderer: (kind != "no_renderer").then_some(Renderer {
             pack_post,
-            native: (kind == "native").then_some(Native { shadow: Some(()) }),
+            executor: (kind == "native").then_some(Capabilities { shadow: true }),
         }),
         settings: Settings { entity_shadows: enabled },
         pack: Pack { polytone_colors: Colors { shadows: kind != "pack_hides" } },

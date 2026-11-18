@@ -2,15 +2,15 @@
 //! `VibrationSelector`) shared by sculk sensors, shriekers and wardens, the
 //! sculk block entities and the per-player warden spawn tracker.
 pub use crate::chunk::block_entity::{Data, Info, SculkEntity, SculkKind, Selector};
-use horizon_client_core::who::Who;
+use horizon_client_core::who::{EventSource, Who};
 use horizon_core::{
     geometry::{Direction, Vec3, traverse_blocks},
     position::BlockPos,
 };
-use horizon_world::{level::sculk::SculkSpreader, nbt::Tag};
+use {horizon_core::nbt::Tag, horizon_world::level::sculk::SculkSpreader};
 
 /// Every `GameEvent` with its `VibrationSystem` frequency (0: none).
-const EVENTS: &[(&str, i32)] = &[
+pub const EVENTS: &[(&str, i32)] = &[
     ("minecraft:step", 1),
     ("minecraft:swim", 1),
     ("minecraft:flap", 1),
@@ -152,14 +152,17 @@ pub fn resonance_pitch(frequency: i32) -> f32 {
 /// posted (`GameEvent.Context` plus the entity facts listeners ask for).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Context {
-    pub source: Option<Who>,
+    pub source: Option<EventSource>,
     /// The projectile's owner, when the source is a projectile.
     pub owner: Option<Who>,
     /// The saved UUIDs of `source` and `owner` (`VibrationInfo`'s `uuid` and
     /// `projectileOwnerUuid`), when the game knows them for that entity.
     pub source_uuid: Option<[i32; 4]>,
     pub owner_uuid: Option<[i32; 4]>,
-    /// `affectedState` is in `dampens_vibrations`.
+    /// `GameEvent.Context.affectedState`, the block state the event touched.
+    pub affected_state: Option<horizon_world::registry::BlockStateId>,
+    /// `affected_state` is in `dampens_vibrations`: the tag test, made once where the
+    /// context is built (the registry-free listeners read this, not the tag tables).
     pub dampening_state: bool,
     /// The source is a spectator.
     pub spectator: bool,
@@ -232,6 +235,8 @@ impl Selector {
 pub struct Tick {
     /// A vibration was chosen: its travel time (the particle starts).
     pub started: Option<(Info, i32)>,
+    /// A vibration was reloaded from save: particle resumes from interpolated pos.
+    pub resumed: Option<(Info, i32)>,
     /// A vibration arrived.
     pub received: Option<Info>,
     /// `onDataChanged`.
@@ -261,6 +266,10 @@ impl Data {
             self.selector.start_over();
         }
         if let Some(info) = self.current {
+            if self.reload_particle {
+                self.reload_particle = false;
+                out.resumed = Some((info, self.travel));
+            }
             let mut changed = self.travel > 0;
             self.travel = (self.travel - 1).max(0);
             if self.travel <= 0 {
@@ -293,8 +302,11 @@ impl Data {
         Tag::compound(entries)
     }
     pub fn from_nbt(tag: &Tag) -> Self {
+        let current = tag.get("event").and_then(info_from_nbt);
+        let reload_particle = current.is_some();
         let mut data = Self {
-            current: tag.get("event").and_then(info_from_nbt),
+            current,
+            reload_particle,
             ..Self::default()
         };
         if let Some(Tag::Int(t)) = tag.get("event_delay") {
@@ -774,7 +786,7 @@ mod tests {
 
     fn identified(event: &'static str, distance: f32) -> Info {
         Info {
-            source: Some(Who::Mob(7)),
+            source: Some(Who::Mob(7).into()),
             owner: Some(Who::Mob(8)),
             source_uuid: Some([100, 0, 0, 1]),
             owner_uuid: Some([100, 0, 0, 2]),
@@ -797,7 +809,7 @@ mod tests {
         assert_eq!((back.source, back.owner), (None, None));
         // A live entity with no saved identity writes nothing for it.
         let unnamed = Info {
-            source: Some(Who::Mob(7)),
+            source: Some(Who::Mob(7).into()),
             ..info("minecraft:step", 3.0)
         };
         let tag = info_to_nbt(&unnamed);
@@ -891,7 +903,7 @@ mod tests {
     #[test]
     fn sneaking_ignores_footsteps_but_not_damage() {
         let sneaking = Context {
-            source: Some(Who::Player),
+            source: Some(Who::Player.into()),
             stepping_carefully: true,
             ..Context::default()
         };
@@ -899,7 +911,7 @@ mod tests {
         assert!(!valid_vibration(true, "minecraft:hit_ground", &sneaking));
         assert!(valid_vibration(true, "minecraft:entity_damage", &sneaking));
         let wardenish = Context {
-            source: Some(Who::Mob(1)),
+            source: Some(Who::Mob(1).into()),
             dampens: true,
             ..Context::default()
         };
@@ -978,5 +990,31 @@ mod tests {
         assert_eq!(back.spreader, e.spreader);
         assert_eq!(back.spreader.cursors[0].charge, 1000);
         assert_eq!(back.spreader.cursors[1].charge, 500);
+    }
+
+    #[test]
+    fn vibration_reloads_particle() {
+        let tag = Tag::compound([
+            (
+                "event",
+                Tag::compound([
+                    ("game_event", Tag::String("minecraft:step".into())),
+                    ("distance", Tag::Float(4.0f32.to_bits())),
+                    (
+                        "pos",
+                        Tag::List(vec![
+                            Tag::Double(1.0f64.to_bits()),
+                            Tag::Double(0),
+                            Tag::Double(0),
+                        ]),
+                    ),
+                ]),
+            ),
+            ("event_delay", Tag::Int(3)),
+        ]);
+        let mut d = Data::from_nbt(&tag);
+        assert!(d.reload_particle && d.current.is_some());
+        let tick = d.tick(10, true, true, |dist| dist as i32);
+        assert!(tick.resumed.is_some() && !d.reload_particle);
     }
 }

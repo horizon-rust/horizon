@@ -18,6 +18,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 try:
     from . import class_index, vanilla_map
@@ -52,7 +53,9 @@ def version_sites(facts, root=ROOT):
     """file:line of every place the code states these version facts (not tests)."""
     pattern = ["-e", str(facts["protocol_version"]), "-e", str(facts["world_version"])]
     found = []
-    for command in (["git", "grep", "-n", "-w"] + pattern, ["git", "grep", "-n", "-F", f'"{facts["id"]}"']):
+    for command in (["git", "grep", "-n", "-w"] + pattern,
+                    ["git", "grep", "-n", "-F", f'"{facts["id"]}"'],
+                    ["git", "grep", "-n", "-F", f"'{facts['id']}'"]):
         result = subprocess.run(command + ["--", "crates/*.rs", "launcher/*.rs", "tools/*.py"],
                                 cwd=root, capture_output=True, text=True)
         found += [line.split(":", 2)[0] + ":" + line.split(":", 2)[1] for line in result.stdout.splitlines()]
@@ -145,6 +148,16 @@ def blocking_items(diff, mapping, pinned_facts, root, regen=None):
         items.append(item(1, "report-format", f"blocks.json format: {', '.join(diff['blocks']['format'])}",
                           files=files_containing("blocks.json", root),
                           details={"fields": diff["blocks"]["format"]}))
+    # Block state IDs are the chunk palette and the network protocol: a shift is a blocking change
+    # even when no block was added, removed or given a different property.
+    if diff["blocks"].get("state_ids_shifted"):
+        first = diff["blocks"].get("first_shifted")
+        items.append(item(1, "block-ids",
+                          f"Block state IDs: {diff['blocks']['state_ids_shifted']} blocks shifted"
+                          + (f" (first: {first})" if first else ""),
+                          files=files_containing("blocks.json", root),
+                          details={"shifted": diff["blocks"]["state_ids_shifted"], "first": first,
+                                   "state_count": diff["blocks"].get("state_count")}))
     if regen is None:
         for output, command, stale in GENERATORS:
             if stale(diff):
@@ -279,7 +292,9 @@ def build(diff, mapping, old, new, pinned_facts, results=None, root=ROOT, regen=
         entry["id"] = number
     clean = [kind for kind in ("packets", "commands") if not diff[kind]]
     clean += [kind for kind in ("blocks", "items") if not (diff[kind]["added"] or diff[kind]["removed"]
-                                                            or diff[kind]["changed"])]
+                                                            or diff[kind]["changed"]
+                                                            or diff[kind].get("state_ids_shifted")
+                                                            or diff[kind].get("format"))]
     classes = diff["classes"]
     return {
         "old": old, "new": new,
@@ -374,3 +389,9 @@ def markdown(report, limit=12):
                                               for p, n in list(entry["packages"].items())[:limit]))
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+if __name__ == "__main__":
+    # A module, not a command: say how it is used instead of doing nothing at all.
+    print(__doc__, file=sys.stderr)
+    raise SystemExit(2)

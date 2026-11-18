@@ -7,13 +7,14 @@ use super::{
     ocean_ruin,
     processor::ProcessorList,
     ruined_portal::{self, PortalProps, Vertical},
+    saved_legacy::{flag, int},
     simple::igloo_pivot,
 };
 use crate::{
-    datafix::dynamic::{Number, as_bool_opt, as_float, as_number},
-    nbt::Tag,
+    datafix::dynamic::{as_bool_opt, as_float, as_number},
     worldgen::block_feature::FeatureBlockBindings,
 };
+use horizon_core::nbt::Tag;
 use std::sync::Arc;
 
 fn text(tag: &Tag, key: &str) -> Option<String> {
@@ -22,29 +23,6 @@ fn text(tag: &Tag, key: &str) -> Option<String> {
         _ => None,
     }
 }
-fn int(tag: &Tag, key: &str) -> i32 {
-    // `CompoundTag.getIntOr`: `Mth.floor` of a float or double tag, the low 32 bits of the others.
-    match tag.get(key).and_then(as_number) {
-        Some(Number::Float(v)) => {
-            let i = v as i32;
-            if v < i as f32 { i.wrapping_sub(1) } else { i }
-        }
-        Some(Number::Double(v)) => {
-            let i = v as i32;
-            if v < f64::from(i) {
-                i.wrapping_sub(1)
-            } else {
-                i
-            }
-        }
-        Some(n) => n.int_value(),
-        None => 0,
-    }
-}
-fn flag(tag: &Tag, key: &str) -> bool {
-    int(tag, key) as i8 != 0
-}
-
 fn mirror(tag: &Tag, key: &str) -> Option<Mirror> {
     [Mirror::None, Mirror::LeftRight, Mirror::FrontBack]
         .into_iter()
@@ -207,7 +185,7 @@ mod tests {
 
     #[test]
     fn saved_templates_round_trip_and_whole_start_fallback() {
-        let (mut registry_tag, _) = crate::nbt::parse_snbt(
+        let (mut registry_tag, _) = horizon_core::nbt::parse_snbt(
             r#"{DataVersion:0,states:[
             {id:"minecraft:air"},{id:"minecraft:cave_air"},{id:"minecraft:void_air"},
             {id:"minecraft:structure_block"},{id:"minecraft:sand"},{id:"minecraft:gravel"},
@@ -365,7 +343,7 @@ mod tests {
         let mut original = StructureStart::new(7, &def, chunk, pieces);
         original.references = 3;
         let tag = original.save().unwrap();
-        let read_start = |t: &Tag| read_saved_start(7, &def, chunk, t, &resources, &bindings);
+        let read_start = |t: &Tag| read_saved_start(7, &def, chunk, t, 1234, &resources, &bindings);
         let loaded = read_start(&tag).expect("all seven types decode");
         assert_eq!(loaded.save(), Some(tag.clone()));
         assert_eq!(
@@ -386,7 +364,9 @@ mod tests {
             original.save(),
             "rebuild box and NORTH orientation"
         );
-        for (key, value) in [("id", "minecraft:msroom"), ("Rot", "broken")] {
+        // An id no piece type binds rejects the entire start, and so does a
+        // readable id whose own fields are broken (the shipwreck's rotation).
+        for (key, value) in [("id", "minecraft:unknown_piece"), ("Rot", "broken")] {
             let mut broken = tag.clone();
             let Some(Tag::List(children)) = broken.get_mut("Children") else {
                 unreachable!()

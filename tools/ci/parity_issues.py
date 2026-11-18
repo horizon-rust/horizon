@@ -6,8 +6,10 @@
 Reads tools/parity.py's state (.local/parity-runner/state.json) for the harnesses that finished since --since,
 shards merged into their harness, and compares them with the previous audit (.local/parity-runner/audit.json):
 
-- a harness that fails now and passed in the previous audit gets one open issue labelled parity-regression,
-  titled "Parity regression: <harness>" (an open one is commented on instead of opening another);
+- a harness that fails now and passed in the previous audit, or was in none before (one merged while its pull
+  request's parity job failed or was skipped: nine by 2026-11-10, #15158, which no audit reported), gets one open
+  issue labelled parity-regression, titled "Parity regression: <harness>" (an open one is commented on instead of
+  opening another);
 - a harness with an open issue that still fails gets a comment on it;
 - a harness with an open issue that passes again gets its issue closed.
 
@@ -31,6 +33,7 @@ AUDIT = ROOT / ".local" / "parity-runner" / "audit.json"
 LOGS = ROOT / ".local" / "parity-runner" / "logs"
 LABEL = "parity-regression"
 TITLE = "Parity regression: "
+MASS_TITLE = "Nightly audit: "
 MASS_FAILURE = 20
 
 
@@ -51,7 +54,7 @@ def plan(now, previous, open_issues):
     for harness, status in sorted(now.items()):
         if status == "fail" and harness in open_issues:
             actions.append(("comment", harness))
-        elif status == "fail" and previous.get(harness) == "pass":
+        elif status == "fail" and previous.get(harness, "pass") == "pass":
             actions.append(("open", harness))
         elif status == "pass" and harness in open_issues:
             actions.append(("close", harness))
@@ -62,6 +65,11 @@ def mass_failure(actions):
     """The harnesses to report in one issue instead of one each, or [] when the audit looks normal."""
     opened = [harness for kind, harness in actions if kind == "open"]
     return opened if len(opened) > MASS_FAILURE else []
+
+
+def mass_issue(listed):
+    """The open mass-failure issue to add a night's mass failure to, or None. listed: open issues with the label."""
+    return min((issue["number"] for issue in listed if issue["title"].startswith(MASS_TITLE)), default=None)
 
 
 def first_errors(lines=40):
@@ -109,19 +117,30 @@ def main():
           + (f" ({', '.join(failing)})" if failing else ""))
     if previous is None:
         print("First audit: results recorded, no issues opened.")
-        actions = plan(now, {}, open_issues)
+        actions = plan(now, now, open_issues)
     else:
         actions = plan(now, previous, open_issues)
     mass = mass_failure(actions)
     if mass:
         actions = [action for action in actions if action[0] != "open"]
-        print(f"open: one issue for {len(mass)} harnesses that newly fail at once")
-        gh("issue", "create", "--label", LABEL, "--title", f"Nightly audit: {len(mass)} harnesses newly fail",
-           "--body", f"{len(mass)} harnesses passed in the previous nightly audit and fail in the audit of "
-           f"`{commit[:12]}` ({run}): usually a commit that does not build or a broken runner, so they get this "
-           f"one issue instead of one each.\n\n{', '.join(f'`{harness}`' for harness in mass)}\n\n"
-           f"<details><summary>First compiler error in the logs</summary>\n\n```\n{first_errors()}\n```\n"
-           f"</details>\n", dry_run=args.dry_run)
+        listing = (f"{', '.join(f'`{harness}`' for harness in mass)}\n\n"
+                   f"<details><summary>First compiler error in the logs</summary>\n\n```\n{first_errors()}\n```\n"
+                   f"</details>\n")
+        # Their results aren't recorded (below), so a mass failure that lasts comes back every night: it goes on the
+        # open issue instead of a new one each night (#17343, then #17794 for the same 57).
+        umbrella = mass_issue(listed)
+        if umbrella:
+            print(f"comment: #{umbrella}, {len(mass)} harnesses that newly fail at once")
+            gh("issue", "comment", str(umbrella), "--body", f"The audit of `{commit[:12]}` ({run}) finds "
+               f"{len(mass)} harnesses failing that passed in the last recorded audit, or are new: the same mass "
+               f"failure or another one.\n\n{listing}",
+               dry_run=args.dry_run)
+        else:
+            print(f"open: one issue for {len(mass)} harnesses that newly fail at once")
+            gh("issue", "create", "--label", LABEL, "--title", f"{MASS_TITLE}{len(mass)} harnesses newly fail",
+               "--body", f"{len(mass)} harnesses passed in the previous nightly audit, or are new, and fail in the "
+               f"audit of `{commit[:12]}` ({run}): usually a commit that does not build or a broken runner, so they "
+               f"get this one issue instead of one each.\n\n{listing}", dry_run=args.dry_run)
     for kind, harness in actions:
         details = (f"Nightly audit of `{commit[:12]}` ({run}).\n\n"
                    f"Reproduce: `python3 tools/parity.py {harness}`\n\n<details><summary>End of the log</summary>\n\n"
@@ -129,7 +148,9 @@ def main():
         print(f"{kind}: {harness}")
         if kind == "open":
             gh("issue", "create", "--label", LABEL, "--title", TITLE + harness, "--body",
-               f"`{harness}` passed in the previous nightly audit and fails now.\n\n" + details, dry_run=args.dry_run)
+               (f"`{harness}` passed in the previous nightly audit and fails now.\n\n" if harness in (previous or {})
+                else f"`{harness}` fails, and no earlier nightly audit has a result for it.\n\n") + details,
+               dry_run=args.dry_run)
         elif kind == "comment":
             gh("issue", "comment", str(open_issues[harness]), "--body", "Still failing.\n\n" + details, dry_run=args.dry_run)
         else:

@@ -1,5 +1,6 @@
 //! FallingBlockEntity's impact damage, anvil wear, saved impact settings and
 //! the blocks it moves through (cobwebs, bubble columns).
+use crate::health::DamageLevel;
 use crate::motion::BubbleColumn;
 use crate::{
     mobs::{Damage as MobDamage, DamageKind, Mob},
@@ -9,7 +10,7 @@ use horizon_core::{
     geometry::{Aabb, Axis, Direction, Vec3, sweep_intersected_blocks},
     position::BlockPos,
 };
-use horizon_world::{chunk::BlockState, nbt::Tag};
+use {horizon_core::nbt::Tag, horizon_world::chunk::BlockState};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Damage {
@@ -50,8 +51,9 @@ impl Damage {
     }
     pub fn from_nbt(tag: &Tag, anvil: bool) -> Self {
         Self {
-            hurt_entities: number(tag.get("HurtEntities")).map_or(anvil, |v| v != 0),
-            cancel_drop: number(tag.get("CancelDrop")).is_some_and(|v| v != 0),
+            // getBooleanOr: a number is true when its byte value is not 0.
+            hurt_entities: crate::entity_nbt::flag_or(tag, "HurtEntities", anvil),
+            cancel_drop: crate::entity_nbt::flag(tag, "CancelDrop"),
             per_distance: float(tag.get("FallHurtAmount")).unwrap_or(0.0) as f32,
             max: number(tag.get("FallHurtMax")).unwrap_or(40) as i32,
         }
@@ -150,10 +152,41 @@ pub fn apply_effects_from_blocks(
     velocity: &mut Vec3,
     fall_distance: &mut f64,
     surfaces: &mut Vec<BlockPos>,
+    block: impl FnMut(BlockPos) -> Inside,
+) -> Option<Vec3> {
+    let effects = Effects {
+        bounds,
+        from,
+        to,
+        original,
+    };
+    apply_effects_from_blocks_of(effects, velocity, fall_distance, surfaces, block)
+}
+/// A move [`apply_effects_from_blocks_of`] reads the blocks of: an entity of
+/// `bounds` (its box at a position) from `from` to `to`, `original` as there.
+pub struct Effects<B> {
+    pub bounds: B,
+    pub from: Vec3,
+    pub to: Vec3,
+    pub original: Option<Vec3>,
+}
+/// [`apply_effects_from_blocks`] for an entity of any size.
+pub fn apply_effects_from_blocks_of(
+    move_: Effects<impl Fn(Vec3) -> Aabb + Copy>,
+    velocity: &mut Vec3,
+    fall_distance: &mut f64,
+    surfaces: &mut Vec<BlockPos>,
     mut block: impl FnMut(BlockPos) -> Inside,
 ) -> Option<Vec3> {
+    let Effects {
+        bounds,
+        from,
+        to,
+        original,
+    } = move_;
     let mut stuck = None;
     inside_blocks(
+        bounds,
         from,
         to,
         original,
@@ -203,6 +236,7 @@ pub fn apply_effects_from_blocks(
 /// block's `getEntityInsideCollisionShape`; only a block it was inside is not
 /// visited again.
 fn inside_blocks(
+    bounds: impl Fn(Vec3) -> Aabb,
     from: Vec3,
     to: Vec3,
     original: Option<Vec3>,
@@ -258,11 +292,22 @@ fn inside_blocks(
         check(to, to, 1);
     }
 }
-pub fn hurt_mobs(mobs: &mut [Mob], position: Vec3, amount: f32) {
-    hurt_mobs_with_kind(mobs, position, amount, DamageKind::FallingBlock);
+pub fn hurt_mobs<'a>(
+    level: &mut DamageLevel<'_>,
+    mobs: impl IntoIterator<Item = &'a mut Mob>,
+    position: Vec3,
+    amount: f32,
+) {
+    hurt_mobs_with_kind(level, mobs, position, amount, DamageKind::FallingBlock);
 }
 
-pub fn hurt_mobs_with_kind(mobs: &mut [Mob], position: Vec3, amount: f32, kind: DamageKind) {
+pub fn hurt_mobs_with_kind<'a>(
+    level: &mut DamageLevel<'_>,
+    mobs: impl IntoIterator<Item = &'a mut Mob>,
+    position: Vec3,
+    amount: f32,
+    kind: DamageKind,
+) {
     if amount <= 0.0 {
         return;
     }
@@ -274,16 +319,37 @@ pub fn hurt_mobs_with_kind(mobs: &mut [Mob], position: Vec3, amount: f32, kind: 
         attacker_species: None,
     };
     for mob in mobs
-        .iter_mut()
+        .into_iter()
         .filter(|m| m.alive() && bounds.intersects(m.bounds()))
     {
-        mob.damage(amount, source);
+        mob.damage(level, amount, source);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `FallingBlockEntity.readAdditionalSaveData` reads `HurtEntities` and
+    /// `CancelDrop` with `getBooleanOr`: an int 256 has byte value 0 and is
+    /// false, 257 is true.
+    #[test]
+    fn saved_flags_are_read_as_bytes() {
+        let load = |hurt: i32, cancel: i32| {
+            let tag = Tag::compound([
+                ("HurtEntities", Tag::Int(hurt)),
+                ("CancelDrop", Tag::Int(cancel)),
+            ]);
+            let d = Damage::from_nbt(&tag, true);
+            (d.hurt_entities, d.cancel_drop)
+        };
+        assert_eq!(load(1, 1), (true, true));
+        assert_eq!(load(256, 256), (false, false));
+        assert_eq!(load(257, 257), (true, true));
+        // Absent: an anvil hurts, nothing cancels its drop.
+        let absent = Damage::from_nbt(&Tag::compound([("Time", Tag::Int(1))]), true);
+        assert_eq!((absent.hurt_entities, absent.cancel_drop), (true, false));
+    }
+
     #[test]
     fn only_brushable_blocks_break_where_they_land() {
         assert!(Damage::falling("minecraft:suspicious_gravel").cancel_drop);
@@ -454,8 +520,10 @@ mod tests {
         assert_eq!(step(1.5, 5.5, 5.46, -0.04), (-0.04, 2.0));
     }
     #[test]
-    #[ignore = "requires prepared entity models/data in HORIZON_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn impact_hurts_only_living_intersecting_noninvulnerable_mobs() {
+        let mut test_level = crate::health::TestLevel::new(0);
+        let level = &mut test_level.level();
         use crate::mobs::{Mob, MobTypes};
         use std::{path::Path, sync::Arc};
         let root = std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES");
@@ -468,9 +536,13 @@ mod tests {
             Mob::new(4, cow, Vec3::ZERO, 0.0),
         ];
         mobs[2].invulnerable_flag = true;
-        mobs[3].extra.head = Some("minecraft:carved_pumpkin".into());
+        mobs[3].extra.set_slot_id(
+            horizon_items::equipment::HEAD,
+            Some("minecraft:carved_pumpkin".into()),
+        );
         let initial = mobs.iter().map(|m| m.health).collect::<Vec<_>>();
         hurt_mobs(
+            level,
             &mut mobs,
             Vec3::ZERO,
             Damage::anvil().impact(5.0).unwrap().amount,
