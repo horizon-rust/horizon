@@ -5,7 +5,10 @@ pub trait Hooks {
     /// A server player's client answered a resource pack in play (vanilla's
     /// `ServerboundResourcePackPacket`): `status` is `Action`'s number, 0
     /// successfully loaded, 1 declined, 2 failed download, 3 accepted, 4
-    /// downloaded, 5 invalid URL, 6 failed reload, 7 discarded. Heard when the
+    /// downloaded, 5 invalid URL, 6 failed reload, 7 discarded; `pack` is the id
+    /// of the pack it answers (`ServerboundResourcePackPacket.id`: the id a pack
+    /// pushed by `PlayerRef::push_resource_pack` was given, Paper's
+    /// `PlayerResourcePackStatusEvent.getID`). Heard when the
     /// packet arrives, after the server has handled it; it cannot be stopped.
     /// The player's state is swapped in, so the helpers and `PlayerRef::tell`
     /// work. The pack a dedicated server offers in the configuration

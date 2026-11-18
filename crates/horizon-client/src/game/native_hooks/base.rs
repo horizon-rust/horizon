@@ -1810,7 +1810,9 @@ impl Game<'_> {
     /// A server player's client answered a resource pack in play (vanilla's
     /// `ServerboundResourcePackPacket`): `status` is `Action`'s number, 0
     /// successfully loaded, 1 declined, 2 failed download, 3 accepted, 4
-    /// downloaded, 5 invalid URL, 6 failed reload, 7 discarded. Heard when the
+    /// downloaded, 5 invalid URL, 6 failed reload, 7 discarded; `pack` is the
+    /// id of the pack it answers (`ServerboundResourcePackPacket.id`, the id a
+    /// pack pushed by `player.push_resource_pack` was given). Heard when the
     /// packet arrives, after the server has handled it; it cannot be stopped.
     /// The player's state is swapped in, so the helpers and `native_tell`
     /// work. The pack a dedicated server offers in the configuration
@@ -1822,8 +1824,9 @@ impl Game<'_> {
         player: u128,
         name: &str,
         status: i32,
+        pack: u128,
     ) {
-        self.fire_resource_pack_status(player, name, status);
+        self.fire_resource_pack_status(player, name, status, pack);
     }
     /// A server player places a hanging entity: an item frame
     /// (`minecraft:item_frame`, `minecraft:glow_item_frame`), a painting

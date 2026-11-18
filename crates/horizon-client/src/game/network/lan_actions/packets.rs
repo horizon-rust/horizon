@@ -670,7 +670,7 @@ impl Game<'_> {
                 let guest = &host.hub.guests[gi];
                 let (uuid, name) = (guest.uuid, guest.name.clone());
                 self.as_guest(conn, |g| {
-                    g.native_resource_pack_status(uuid, &name, r.action);
+                    g.native_resource_pack_status(uuid, &name, r.action, r.id);
                 });
             }
             // START_SPRINTING and STOP_SPRINTING: the hub has set the sprint
