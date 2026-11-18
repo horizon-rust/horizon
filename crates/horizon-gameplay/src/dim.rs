@@ -90,9 +90,13 @@ impl Dim {
             .chain(extra.iter().copied().map(Self::Extra))
             .collect()
     }
-    /// The dimensions past vanilla's three of the world being opened.
+    /// The dimensions past vanilla's three of the world being opened. A vanilla id is skipped:
+    /// it already has its own variant, and listing it here would make [`Self::all`] name its level twice.
     pub fn set_extra<'a>(ids: impl Iterator<Item = &'a str>) {
-        *EXTRA_DIMS.write().unwrap() = ids.map(mod_api::__private::dimension_key).collect();
+        *EXTRA_DIMS.write().unwrap() = ids
+            .filter(|id| !Self::is_vanilla(id))
+            .map(mod_api::__private::dimension_key)
+            .collect();
     }
     /// Adds the dimension `id` a remote server sent, which no local world told of, so that
     /// [`Self::from_id`] finds it.
