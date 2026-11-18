@@ -84,17 +84,20 @@ jobs:
         if: startsWith(runner.name, 'blacksmith-')
         with:
           python-version: '3.12'
-      # A pull request or a merge group adds only its own commits to main, so it reads those; main's pushes read every
-      # ref's history.
+      # A pull request, a merge group or a push adds only its own commits to main, so it reads those. The whole history
+      # (over 30 minutes since table fingerprints, #17605) is read only when a push has no previous commit.
       - name: Keep game artifacts out of Git
         if: steps.queued.outputs.tested != 'true'
         env:
           EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
         run: |
           python tools/check_public_tree.py
-          if [ "$EVENT" = pull_request ] || [ "$EVENT" = merge_group ]; then
+          if [ "$EVENT" = pull_request ] || [ "$EVENT" = merge_group ] || {
+            [ "$EVENT" = push ] && [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != 0000000000000000000000000000000000000000 ] &&
+            git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null
+          }; then
             python tools/check_public_tree.py --range "$BASE_SHA..$HEAD_SHA"
           else
             python tools/check_public_tree.py --history
