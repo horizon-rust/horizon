@@ -180,16 +180,28 @@ pub fn take() -> Option<ServerCore> {
     let plan = plan(&cores, &allowed)?;
     // A lazily initialized pool must not size itself from the server's temporary pin.
     let _ = crate::worker_count();
-    // What std says before the pin, a CPU quota (cgroup `cpu.max`) included: the sizes asked
-    // while the reservation holds stay what they were without it.
-    let whole = std::thread::available_parallelism()
-        .map_or(whole_count(&plan), |n| n.get().min(whole_count(&plan)));
-    let state = os::reserve(&plan)?;
-    let keeper = os::Keeper::start(&plan, &state);
-    SERVER.with(|server| server.set(true));
-    WHOLE.store(whole, Ordering::Relaxed);
-    *active = Some(plan.clone());
+    let core = begin(plan)?;
+    *active = Some(core.plan.clone());
     GENERATION.fetch_add(1, Ordering::Relaxed);
+    Some(core)
+}
+
+/// What `available_parallelism()` answers while `plan` holds: what std says before the pin, a
+/// CPU quota (cgroup `cpu.max`) included, so the sizes asked meanwhile stay what they were.
+fn whole(plan: &Plan) -> usize {
+    std::thread::available_parallelism()
+        .map_or(whole_count(plan), |n| n.get().min(whole_count(plan)))
+}
+
+/// Pin this thread to the plan's core, then publish the count of [`whole`], then start the
+/// keeper: a pin that fails publishes nothing, and no thread is moved (each move takes the
+/// keeper's lock, which `Keeper::start` takes first) before the count is there to ask.
+fn begin(plan: Plan) -> Option<ServerCore> {
+    let whole = whole(&plan);
+    let state = os::reserve(&plan)?;
+    WHOLE.store(whole, Ordering::Relaxed);
+    SERVER.with(|server| server.set(true));
+    let keeper = os::Keeper::start(&plan, &state);
     Some(ServerCore {
         plan,
         state,
@@ -418,6 +430,12 @@ mod os {
 
     fn book() -> std::sync::MutexGuard<'static, Book> {
         BOOK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Holds the lock every move takes, so no thread is moved until it is dropped.
+    #[cfg(test)]
+    pub(super) fn hold_moves() -> impl Sized {
+        book()
     }
 
     pub fn pin(cpus: &[usize]) -> bool {
@@ -1206,6 +1224,37 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// The count `available_parallelism()` answers while reserved is there before the keeper
+    /// may move a thread: one moved first would size a pool from its narrowed mask.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_count_is_published_before_any_thread_moves() {
+        use std::time::{Duration, Instant};
+        let _test = RESERVATION_TEST.lock().unwrap();
+        // The count is kept from its first ask: make that before this test narrows any thread.
+        let _ = crate::worker_count();
+        let original = os::affinity(0).unwrap();
+        if original.len() < 2 {
+            return;
+        }
+        let plan = Plan {
+            reserved: vec![original[0]],
+            others: original[1..].to_vec(),
+        };
+        let expected = whole(&plan);
+        let moves = os::hold_moves();
+        let server = std::thread::spawn(move || drop(begin(plan)));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while whole_set().is_none() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let published = whole_set().map(NonZeroUsize::get);
+        drop(moves);
+        server.join().unwrap();
+        assert_eq!(published, Some(expected));
+        assert_eq!(whole_set(), None);
     }
 
     #[cfg(target_os = "linux")]
