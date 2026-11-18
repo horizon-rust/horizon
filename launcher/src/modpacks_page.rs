@@ -60,6 +60,10 @@ impl Launcher {
                 self.packs.retain(|p| p.slug != pack.slug);
                 self.packs.push(*pack);
                 self.packs.sort_by_key(|p| p.title().to_ascii_lowercase());
+                // A read still running began before this step ended: read again instead.
+                if self.packs_reading.is_some() {
+                    self.packs_loaded = None;
+                }
             }
             Err(e) => self.pack_error = Some(e),
         }
@@ -157,15 +161,32 @@ impl Launcher {
     /// looks again for other launchers' modpacks.
     pub(super) fn load_packs(&mut self) {
         if self.packs_loaded.is_none() {
+            let asked = Instant::now();
             self.scan_found_packs();
-            self.mods.report_list.reset();
-            self.packs = modpacks::list();
             self.registry_packs = horizon_pack::list();
             self.reload_instances();
-            if self.pack_open.is_none() {
-                self.pack_open = self.packs.first().map(|p| p.slug.clone());
-            }
-            self.packs_loaded = Some(Instant::now());
+            // On a thread: a pack's reports and carried mods can be tens of thousands of files,
+            // and the sidebar asks for them on the first frame (#18074).
+            self.packs_reading = Some(asked);
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::ImportedPacks(asked, modpacks::list()));
+            });
+            self.packs_loaded = Some(asked);
+        }
+    }
+
+    /// The imported packs read for the [`Self::load_packs`] asked at `asked`; an older read,
+    /// overtaken by a later one, is dropped.
+    pub(super) fn packs_read(&mut self, asked: Instant, packs: Vec<Imported>) {
+        if self.packs_reading != Some(asked) {
+            return;
+        }
+        self.packs_reading = None;
+        self.mods.report_list.reset();
+        self.packs = packs;
+        if self.pack_open.is_none() {
+            self.pack_open = self.packs.first().map(|p| p.slug.clone());
         }
     }
 
@@ -213,7 +234,9 @@ impl Launcher {
         if !self.registry_packs.is_empty() {
             page = page.child(self.registry_pack_rows(cx));
         }
-        if self.packs.is_empty() && !self.registry_packs.is_empty() {
+        if self.packs.is_empty()
+            && (!self.registry_packs.is_empty() || self.packs_reading.is_some())
+        {
             return page;
         }
         if self.packs.is_empty() {

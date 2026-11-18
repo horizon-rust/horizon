@@ -260,6 +260,7 @@ impl Launcher {
             packs: Vec::new(),
             registry_packs: Vec::new(),
             packs_loaded: None,
+            packs_reading: None,
             pack_open: None,
             pack_filter: None,
             pack_busy: false,
