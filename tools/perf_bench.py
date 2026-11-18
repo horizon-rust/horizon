@@ -503,6 +503,17 @@ def wait_loaded(control, near, limit, min_chunks=0, observe=None):
     raise TimeoutError(f"not loaded after {limit} s")
 
 
+def first_resident_chunk_observer():
+    """Return state and an observer that records the first resident chunk monotonically."""
+    first_chunk_at = [None]
+
+    def observe_first_chunk(_now, status):
+        if first_chunk_at[0] is None and (status.get("chunks") or 0) > 0:
+            first_chunk_at[0] = time.monotonic()
+
+    return first_chunk_at, observe_first_chunk
+
+
 BENCH_PLAYER = "Bench"
 
 
@@ -643,17 +654,13 @@ def run_horizon(args, distance):
         title, at = poll(control, lambda s: s.get("screen") == "title" and s.get("renderer"), 300)
         result["renderer"] = title["renderer"]
         result["startup"] = {"title_s": at - started}
-        world_started = time.time()
+        world_started = time.monotonic()
         if args.server:
-            joined = world_started
+            joined = time.time()
             control(f"connect {args.server_address} {BENCH_PLAYER}")
         else:
             control(f"open {WORLD} {SEED} creative")
-        first_chunk_at = [None]
-
-        def observe_first_chunk(now, status):
-            if first_chunk_at[0] is None and (status.get("chunks") or 0) > 0:
-                first_chunk_at[0] = now
+        first_chunk_at, observe_first_chunk = first_resident_chunk_observer()
 
         loaded = wait_loaded(control, lambda p: True, args.timeout, view_chunks(distance), observe_first_chunk)
         result["startup"]["world_s"] = loaded - started

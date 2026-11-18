@@ -178,13 +178,14 @@ class WaitLoadedTests(unittest.TestCase):
         def control(_command, timeout=None):
             return next(it)
 
-        real_time, real_sleep = pb.time.time, pb.time.sleep
+        real_time, real_monotonic, real_sleep = pb.time.time, pb.time.monotonic, pb.time.sleep
         pb.time.time = lambda: clock[0]
+        pb.time.monotonic = lambda: clock[0]
         pb.time.sleep = lambda s: clock.__setitem__(0, clock[0] + s)
         try:
             return pb.wait_loaded(control, lambda p: True, 60, min_chunks, observe)
         finally:
-            pb.time.time, pb.time.sleep = real_time, real_sleep
+            pb.time.time, pb.time.monotonic, pb.time.sleep = real_time, real_monotonic, real_sleep
 
     @staticmethod
     def status(chunks, meshed, stages=None):
@@ -220,18 +221,14 @@ class WaitLoadedTests(unittest.TestCase):
         self.assertLess(self.run_script(idle + loading + tail), 1.6)
 
     def test_observer_can_record_first_resident_chunk(self):
-        seen = []
+        import tools.perf_bench as pb
+
         idle = [self.status(0, 0, stages=500) for _ in range(20)]
+        first_chunk_at, observe = pb.first_resident_chunk_observer()
         loaded = [self.status(3, 100, stages=0) for _ in range(40)]
 
-        def observe(now, status):
-            if status.get("chunks"):
-                seen.append((now, status["chunks"]))
-
         self.run_script(idle + loaded, observe=observe)
-        first = next(item for item in seen if item[1] > 0)
-        self.assertAlmostEqual(first[0], 1.0, places=6)
-        self.assertEqual(first[1], 3)
+        self.assertAlmostEqual(first_chunk_at[0], 1.0, places=6)
 
 
 class PortabilityTests(unittest.TestCase):
