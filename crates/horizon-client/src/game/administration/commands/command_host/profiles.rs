@@ -2,6 +2,7 @@ use crate::game::Game;
 use horizon_client::{
     command::Context,
     server::user_lists::{NameAndId, WhiteEntry},
+    text::Text,
 };
 use horizon_gameplay::commands::{host::R, profiles::ProfilesHost};
 
@@ -36,6 +37,9 @@ impl ProfilesHost for Game<'_> {
         if let Ok(lists) = Game::dedicated_lists(self) {
             Game::set_player_idle_timeout(self, &lists, minutes);
         }
+    }
+    fn reason_message(&self, reason: Option<&str>) -> Text {
+        Game::reason_message(reason)
     }
     fn ban_entries(&self, id: &str) -> Vec<(String, String, Option<String>)> {
         let Ok(lists) = Game::dedicated_lists(self) else {

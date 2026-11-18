@@ -31,6 +31,8 @@ pub trait ProfilesHost: CommandHost {
     /// The bans `/banlist` shows (`banlist`, `banlist.ips` or `banlist.players`): the name or
     /// address, the source and the reason.
     fn ban_entries(&self, id: &str) -> Vec<(String, String, Option<String>)>;
+    /// `BanListEntry.getReasonMessage`.
+    fn reason_message(&self, reason: Option<&str>) -> Text;
     /// `PlayerList.reloadWhiteList`.
     fn reload_whitelist(&mut self);
     /// Whether the whitelist is on.
@@ -115,14 +117,6 @@ pub fn setidle_timeout(host: &mut dyn ProfilesHost, ctx: &Context) -> R<i32> {
     Ok(minutes)
 }
 
-/// `BanListEntry.getReasonMessage`.
-fn reason_message(reason: Option<&str>) -> Text {
-    reason.map_or_else(
-        || Text::translate("multiplayer.disconnect.banned.reason.default", &[]),
-        |r| Text::literal(r.to_owned()),
-    )
-}
-
 /// `BanListCommands.showList`: the players' bans then the addresses'
 /// (`banlist`), or one of them; told to the source only.
 pub fn banlist(host: &mut dyn ProfilesHost, id: &str) -> R<i32> {
@@ -140,7 +134,11 @@ pub fn banlist(host: &mut dyn ProfilesHost, id: &str) -> R<i32> {
     for (name, source, reason) in &entries {
         host.feedback_unbroadcast(Text::translate(
             "commands.banlist.entry",
-            &[lit(name), lit(source), reason_message(reason.as_deref())],
+            &[
+                lit(name),
+                lit(source),
+                host.reason_message(reason.as_deref()),
+            ],
         ));
     }
     Ok(entries.len() as i32)

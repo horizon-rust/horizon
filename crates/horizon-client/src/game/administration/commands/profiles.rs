@@ -314,7 +314,9 @@ impl Game<'_> {
     }
 
     /// `SetPlayerIdleTimeoutCommand.setIdleTimeout`: the minutes of idleness
-    /// after which a player is kicked, 0 for never.
+    /// after which a player is kicked (`multiplayer.disconnect.idling`), 0 for
+    /// never. The reply names the minutes, or says the timeout is off, and the
+    /// command's result is the number of minutes.
     pub(super) fn cmd_setidle_timeout(&mut self, ctx: &Context) -> R<i32> {
         horizon_gameplay::commands::profiles::setidle_timeout(self, ctx)
     }
@@ -382,7 +384,7 @@ impl Game<'_> {
     }
 
     /// `BanListEntry.getReasonMessage`.
-    fn reason_message(reason: Option<&str>) -> Text {
+    pub(super) fn reason_message(reason: Option<&str>) -> Text {
         reason.map_or_else(
             || Text::translate("multiplayer.disconnect.banned.reason.default", &[]),
             |r| Text::literal(r.to_owned()),
