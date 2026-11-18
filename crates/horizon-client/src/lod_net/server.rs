@@ -6,7 +6,7 @@
 use super::{
     Bucket, IN_FLIGHT, MAX_DISTANCE, Offer, PER_SECOND, Request, SIDE,
     cache::{self, TileCache},
-    encode_reply, refusal,
+    encode_tile, refusal, reply,
 };
 use crate::streaming::{LodSampler, LodSource};
 use std::{
@@ -224,7 +224,7 @@ impl Worker {
                     // A sampler that panics is dropped, and the tile refused
                     // (not kept): every job gets a reply, which frees its slot.
                     let mut sampled = false;
-                    let reply = catch_unwind(AssertUnwindSafe(|| {
+                    let tile = catch_unwind(AssertUnwindSafe(|| {
                         let same = samplers
                             .get(&job.level)
                             .is_some_and(|(source, _)| same_source(source, &job.source));
@@ -239,17 +239,19 @@ impl Worker {
                         let columns = sampler.grid(r.x, r.z, r.stride, SIDE);
                         // Not kept when part of it is still on its way.
                         sampled = !sampler.waited();
-                        encode_reply(r.id, Some(&columns), &biome_names)
-                    }))
-                    .unwrap_or_else(|_| {
+                        encode_tile(Some(&columns), &biome_names)
+                    }));
+                    let tile = tile.unwrap_or_else(|_| {
                         log::warn!("Far terrain: sampling {} failed; tile refused", job.level);
                         samplers.remove(&job.level);
-                        refusal(r.id)
+                        encode_tile(None, &[])
                     });
+                    // The tile, not this request's reply: a refusal kept is
+                    // one every request gets (`encode_tile`).
                     if sampled {
-                        lock(&worker.tiles).put(&job.level, &job.source, &r, &reply);
+                        lock(&worker.tiles).put(&job.level, &job.source, &r, &tile);
                     }
-                    lock(&worker.done).push((job.conn, reply));
+                    lock(&worker.done).push((job.conn, reply(r.id, &tile)));
                 }
             })
             .expect("far terrain server thread");
@@ -300,6 +302,7 @@ fn same_source(a: &Arc<dyn LodSource>, b: &Arc<dyn LodSource>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lod_net::encode_reply;
     use std::time::Duration;
 
     fn request(id: u32, x: i32) -> Vec<u8> {
