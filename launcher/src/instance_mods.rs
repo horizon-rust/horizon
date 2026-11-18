@@ -526,6 +526,8 @@ impl Launcher {
             .kind
             .as_ref()
             .filter(|(kind, _)| *kind == ModKind::Native)
+            // Its menu can turn the mod off: not from a row that may not switch that id.
+            .filter(|_| row.has_switch())
             .and_then(|(_, id)| self.route_chip(id, cx));
         let controls = if let Some(native) = &row.native {
             self.native_mod_actions(native, busy, cx)
