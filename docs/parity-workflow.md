@@ -171,6 +171,14 @@ Vanilla seeds every unseeded random (`RandomSource.create()`: each entity's own,
 
 One draw too many or too few shifts every later value, so read the first field that differs. Not covered: randoms on other threads (worldgen and chunk loading: keep scenarios in loaded chunks), the levels other than the player's, randoms created before the step (the server's, the level's sound seeds) except the level's own, `Level.randValue` (random-tick positions) and other `ThreadLocalRandom` or `Math.random` draws, and anything a tick draws from the level's random before what you read (each tick shuffles the chunks near players with it, even with `spawn_mobs` off).
 
+### State digest
+
+A build with `--features state-digest` and `HORIZON_STATE_DIGEST=<file>` appends one line per level tick: hashes of the entities (join order), their own randoms, the block entities (ticker order) and the scheduled ticks, plus the level random, `Level.randValue`, the entity-id counter and the join counter. Off by default and compiled out. `digest-sync U E S` on a dedicated server's console is `sync_randoms` (needs `HORIZON_TEST_SEEDS=1`), and `HORIZON_STATE_DIGEST_DETAIL=1` adds a raw line per entity and block entity.
+
+- `tools/state_digest_scene.py BINARY RESOURCES TEMPLATE OUT` runs a fixed dedicated-server scene (frozen before the first tick, `tick step N`) and writes `OUT/digest.txt`; `--generate` makes the forceloaded flat template once. Random ticks are off unless `--random-ticks`. `HORIZON_SCENE_GATE` names an optional script to wait on before each run.
+- `tools/state_digest_compare.py A/digest.txt B/digest.txt` names the first differing step per group. Compare runs from one toolchain: the hashes are not stable across Rust versions.
+- Keep the measured window free of chunk loading, generation and lighting, and of trial spawners, ominous item spawners and `/item modify` (clock-seeded UUIDs and loot random).
+
 ### Fuzzing scenarios
 
 `tools/parity_fuzz.py` runs small generated scenarios in vanilla and Horizon and reports each divergence once, shrunk, with a reproduction (#12498). A batch of scenarios runs as one command-exec script (`test_command_exec_parity.py --groups-file`). It is a tool to run by hand, not a harness: `parity.py` never selects it.
@@ -239,6 +247,20 @@ scratch, and a pass then counts. `parity.py` prints a `RETRIED` line for it
 in its summary and in the CI job's summary (PR parity and parity-main), so the
 flake stays visible. No other harness gets this retry. Fix the cause, then take
 the harness off the list.
+
+`known_failing` in `tools/parity_hosts.json` lists harnesses, or single shards
+(`datafix#2`), that fail on main until an open issue is fixed, each as `"#issue:
+what differs"`. They still run and report (a `KNOWN FAILING` line in the summary
+and the CI job's summary), but their failure doesn't fail the run, so
+parity-main, and the Nightly it gates, stop only for new failures, and
+parity-main's bisect leaves them out. Without the list, one regression kept
+every later parity-main red: each run rechecked every merge since the last green
+one, and no Nightly could ship (2026-11-15 to 11-17). An entry covers any
+failure of what it names, in pull requests' parity too, a new one included: list
+the failing shard rather than the whole harness, and take the entry off with the
+fix. A listed harness that passes gets a line saying so. Add a harness only with
+its issue and only when the difference doesn't harm players (crashes, saves,
+multiplayer): those block.
 
 The game-binary fixture audit keeps these complementary direct rule tests:
 
