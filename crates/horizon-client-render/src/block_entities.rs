@@ -1579,6 +1579,9 @@ mod tests {
                     b.insert((x, 64, z), entity);
                 }
             }
+            b.insert((15, -80, 15), hopper());
+            b.insert((15, 400, 15), campfire());
+            b.insert((16, 400, 15), campfire());
             b.sleep((5, 64, 9));
             b.sleep((17, 64, -17));
             b.take(&(0, 64, 0)).unwrap()
@@ -1595,7 +1598,9 @@ mod tests {
             v
         };
         assert_eq!(keys(&a), keys(&b));
-        assert!(keys(&a).len() < 24);
+        assert!(!b.contains_key(&(15, -80, 15)));
+        assert!(!b.contains_key(&(15, 400, 15)));
+        assert!(b.contains_key(&(16, 400, 15)));
         for p in keys(&a) {
             assert_eq!(a.is_asleep(&p), b.is_asleep(&p), "{p:?}");
         }
