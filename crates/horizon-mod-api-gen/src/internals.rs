@@ -425,8 +425,8 @@ impl Shapes {
             let manifest_path = package.join("Cargo.toml");
             let text = fs::read_to_string(&manifest_path)
                 .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-            let manifest: toml::Value = toml::from_str(&text)
-                .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+            let manifest: toml::Value =
+                toml::from_str(&text).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
             let name = manifest
                 .get("lib")
                 .and_then(|lib| lib.get("name"))
@@ -1319,8 +1319,8 @@ impl Pass {
             .map(|entry| entry.path.clone())
             .collect();
         let manifest = root.join("crates/horizon-client/Cargo.toml");
-        let text = fs::read_to_string(&manifest)
-            .map_err(|e| format!("{}: {e}", manifest.display()))?;
+        let text =
+            fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
         let manifest: toml::Value =
             toml::from_str(&text).map_err(|e| format!("{}: {e}", manifest.display()))?;
         // The table lives in the game crate. A transitive or optional dependency's name is

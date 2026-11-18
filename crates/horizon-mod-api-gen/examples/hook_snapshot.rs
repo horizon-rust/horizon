@@ -43,7 +43,11 @@ fn main() -> Result<(), String> {
     // The published loops and the exposed internals, as `loops.json` and `internals.json` have them.
     step("loops.json", || {
         let loops = horizon_mod_api_gen::loops::collect(&root)?;
-        write(&out, "loops.json", json(&serde_json::json!({ "loops": loops }))?)
+        write(
+            &out,
+            "loops.json",
+            json(&serde_json::json!({ "loops": loops }))?,
+        )
     })?;
     step("internals.json", || {
         let internals = horizon_mod_api_gen::internals::rule_catalog(&root)?;
@@ -70,7 +74,10 @@ fn main() -> Result<(), String> {
     // The generator's own scratch: a cache keyed by this executable and phase timings.
     for entry in fs::read_dir(&out).map_err(|e| format!("{}: {e}", out.display()))? {
         let path = entry.map_err(|e| format!("{}: {e}", out.display()))?.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
         if name.starts_with("interfaces-") && path.is_dir() {
             fs::remove_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         } else if name == "points-timing.txt" {
