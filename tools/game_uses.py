@@ -57,6 +57,9 @@ get_or_insert_with insert_with set_len split_off rotate_left rotate_right borrow
 fetch_sub swap_with_slice copy_from_slice clone_from advance reserve shrink_to_fit
 """.split())
 
+# Calls that hand back an owned copy: a mutation after one does not touch the field.
+COPIES = frozenset("clone cloned to_vec to_owned to_string collect copied".split())
+
 KEYWORDS = frozenset("""
 as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub
 ref return self Self static struct super trait true type unsafe use where while
@@ -83,7 +86,7 @@ MARKERS = [
 
 # ---------------------------------------------------------------------------------------------------------- text
 
-BLANK_START = re.compile(r"//|/\*|b?r#*\"|b?\"|'")
+BLANK_START = re.compile(r"//|/\*|[bc]?r#*\"|[bc]?\"|'")
 CHAR_LITERAL = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[^}]*\}|.)|[^\\'\n])'")
 RAW_START = re.compile(r'b?r(#*)"')
 
@@ -98,7 +101,7 @@ def blank(text):
         if not m:
             break
         at, token = m.start(), m.group()
-        if at and token[0] in "rb" and (text[at - 1].isalnum() or text[at - 1] == "_"):
+        if at and token[0] in "rbc" and (text[at - 1].isalnum() or text[at - 1] == "_"):
             i = m.end()
             continue
         if token == "//":
@@ -126,7 +129,7 @@ def blank(text):
                 i = c.end()
             else:
                 i = at + 1
-        elif "r" in token:
+        elif "r" in token and token.rstrip("#\"").endswith("r"):
             hashes = token.count("#")
             end = text.find('"' + "#" * hashes, m.end())
             end = n if end < 0 else end
@@ -182,6 +185,21 @@ class Source:
         index = bisect.bisect_right(self._braces[0], offset) - 1
         return self._braces[1][index] if index >= 0 else 0
 
+    def block_span(self, offset):
+        """(open, close) of the smallest `{}` block holding `offset`; the whole file when it is at top level."""
+        if not hasattr(self, "_spans"):
+            self._spans, stack = [], []
+            for m in re.finditer(r"[{}]", self.code):
+                if m.group() == "{":
+                    stack.append(m.start())
+                elif stack:
+                    self._spans.append((stack.pop(), m.start()))
+        best = (0, len(self.code))
+        for a, b in self._spans:
+            if a < offset < b and b - a < best[1] - best[0]:
+                best = (a, b)
+        return best
+
     def match_brace(self, open_at):
         depth = 0
         for m in re.finditer(r"[{}]", self.code[open_at:]):
@@ -230,6 +248,8 @@ def balanced(text, start, open_char="(", close_char=")"):
     """The index just past the group opening at `start`."""
     depth = 0
     for i in range(start, len(text)):
+        if close_char == ">" and text[i] == ">" and text[i - 1:i] == "-":
+            continue  # the arrow of `Fn() -> T`, not a closing bracket
         depth += (text[i] == open_char) - (text[i] == close_char)
         if depth == 0:
             return i + 1
@@ -322,7 +342,7 @@ class Fn:
                 why.append("#[inline(always)]")
         if self.ret == "!":
             why.append("returns !")
-        if self.ret.startswith("impl ") or self.ret.startswith("impl\t"):
+        if re.match(r"impl\b", self.ret):
             why.append("returns impl Trait")
         for p in self.params:
             name, _, ty = p.partition(":") if "::" not in p.split(":")[0] else (p, "", "")
@@ -351,6 +371,7 @@ class Index:
         self.heads = set()
         for path in sorted(src_root.rglob("*.rs")):
             self.sources[path] = Source(path, root)
+        self.by_rel = {src.rel: src for src in self.sources.values()}
         self.collect_gated()
         for src in self.sources.values():
             self.scan(src)
@@ -440,7 +461,7 @@ class Index:
             if fm.start() in game_ats:
                 continue
             owner = None
-            for start, open_at, end, ty, trait in src.impl_spans:
+            for _start, open_at, end, ty, _trait in src.impl_spans:
                 if open_at < fm.start() < end:
                     owner = ty
             try:
@@ -482,6 +503,9 @@ class Index:
             src = self.source(m.group(1))
             first, last = int(m.group(2)), int(m.group(3))
             starts = [0] + [p + 1 for p in src.lines]
+            if not 1 <= first <= last <= len(starts):
+                raise SystemExit(f"game_uses: {src.rel} has {len(starts)} lines; the range {first}-{last} is not "
+                                 "inside it (FIRST must be at least 1 and not after LAST)")
             a = starts[first - 1]
             b = starts[last] if last < len(starts) else len(src.code)
             return [(f"{src.rel}:{first}-{last}", src, a, b, None)]
@@ -490,7 +514,8 @@ class Index:
             src = self.source(file)
             out = []
             for name in names.split(","):
-                found = [f for f in self.methods.get(name, []) if f.src is src and f.has_body] + \
+                found = [f for f in self.methods.get(name, []) + self.trait_methods.get(name, [])
+                         if f.src is src and f.has_body] + \
                     [f for f in self.plain_fns(src, name) if f.has_body]
                 if not found:
                     raise SystemExit(f"game_uses: no fn `{name}` with a body in {src.rel}")
@@ -510,7 +535,8 @@ class Index:
         if path.is_file() and path.resolve() in self.sources:
             return self.sources[path.resolve()]
         wanted = file.replace("\\", "/").lstrip("./")
-        hits = [s for p, s in self.sources.items() if s.rel.endswith("/" + wanted) or s.rel == wanted]
+        hits = [s for s in self.sources.values()
+                if s.rel.replace(os.sep, "/").endswith("/" + wanted) or s.rel.replace(os.sep, "/") == wanted]
         if len(hits) != 1:
             raise SystemExit(f"game_uses: `{file}` matches {len(hits)} files of horizon-client"
                              + "".join("\n  " + s.rel for s in hits[:8]))
@@ -539,11 +565,13 @@ class Uses:
             f["lines"].append(where)
 
     @staticmethod
-    def bump(table, key, where):
+    def bump(table, key, where, site=None):
         row = table.setdefault(key, {"count": 0, "lines": []})
         row["count"] += 1
         if where not in row["lines"]:
             row["lines"].append(where)
+        if site:
+            row.setdefault("sites", []).append(site)
 
 
 ASSIGN = re.compile(r"\s*(?:=(?![=>])|[+\-*/%^|&]=|<<=|>>=)")
@@ -566,7 +594,9 @@ def classify_chain(code, pos):
         if m:
             if m.group(2):
                 first_call = first_call or m.group(1)
-                if m.group(1) in MUTATORS:
+                if m.group(1) in COPIES:
+                    return "read", m.group(1)  # what follows changes a copy, not the field
+                if m.group(1) in MUTATORS or m.group(1).startswith("set_"):
                     return "write", m.group(1)
                 pos = balanced(code, m.end() - 1)
                 continue
@@ -583,11 +613,13 @@ def analyse(index, src, start, end, fn, aliases=()):
     code = src.code
     body = code[start:end]
     base = start
-    names = ("self",) + tuple(aliases)
+    # `self` is the game only in an `impl Game` method (or a line range, where it is assumed to be)
+    own_self = fn is None or fn.owner == "Game"
+    names = (("self",) if own_self else ()) + tuple(aliases)
     alt = "|".join(re.escape(n) for n in names)
-    field_re = re.compile(rf"(?<![\w.])(?:{alt})\s*\.\s*(\w+)\s*(::\s*<[^()]*?>\s*)?(\()?")
+    field_re = re.compile(rf"(?<![\w.])(?:{alt})\s*\.\s*(\w+)\s*(::\s*<[^()]*?>\s*)?(\()?") if names else None
     fields = set(index.fields)
-    for m in field_re.finditer(body):
+    for m in (field_re.finditer(body) if field_re else ()):
         name, call = m.group(1), m.group(3)
         at = base + m.start()
         where = src.at(at)
@@ -606,30 +638,33 @@ def analyse(index, src, start, end, fn, aliases=()):
             Uses.bump(use.unknown_fields, name, where)
     # whole self: `self` not followed by `.` or `::`, not part of `Self`
     signature = re.compile(r"\bfn\s+\w+\s*(?:<[^>]*>)?\s*\(\s*(?:&\s*(?:'\w+\s+)?)?(?:mut\s+)?\Z")
-    for m in re.finditer(r"(?<![\w.])self\b(?!\s*\.)(?!\s*::)", body):
+    for m in re.finditer(r"(?<![\w.])self\b(?!\s*\.)(?!\s*::)" if own_self else r"(?!)", body):
         if signature.search(body[max(0, m.start() - 80):m.start()]):
             continue
         use.whole_self.append(src.at(base + m.start()) + "  " + src.snippet(base + m.start()))
-    for m in re.finditer(r"(?<![\w.])(?:Self|Game)\s*::\s*(\w+)\s*(\()?", body):
-        Uses.bump(use.assoc, m.group(1) + ("()" if m.group(2) else ""), src.at(base + m.start()))
+    # `Self::name(..)` / `Game::name(..)`: a call to a Game method belongs with the methods (and is followed by
+    # --transitive); an associated constant or an unknown name stays in `assoc`
+    path_re = r"(?<![\w.])(?:Self|Game)\s*::\s*(\w+)\s*(\()?" if own_self else r"(?<![\w.])Game\s*::\s*(\w+)\s*(\()?"
+    for m in re.finditer(path_re, body):
+        name, call = m.group(1), m.group(2)
+        where = src.at(base + m.start())
+        if call and (name in index.methods or name in index.trait_methods):
+            Uses.bump(use.methods, name, where)
+        else:
+            Uses.bump(use.assoc, name + ("()" if call else ""), where)
     # `let Self { a, b, .. } = self;`
-    for m in re.finditer(r"\blet\s+(?:&\s*(?:mut\s+)?)?Self\s*\{([^}]*)\}\s*=", body):
+    for m in re.finditer(r"\blet\s+(?:&\s*(?:mut\s+)?)?Self\s*\{([^}]*)\}\s*=" if own_self else r"(?!)", body):
         for part in split_top(m.group(1)):
             fm = re.match(r"(?:ref\s+)?(?:mut\s+)?(\w+)", part)
             if fm and fm.group(1) in fields:
                 use.destructured[fm.group(1)] = src.at(base + m.start())
-    # markers
-    seen = set()
+    # markers: every match, with its offset, so draws repeated on one line stay and the order is the source's
     for category, rx in MARKERS:
         for m in rx.finditer(body):
-            text = re.sub(r"\s+", "", m.group())
-            key = (src.line(base + m.start()), category, text)
-            if key in seen:
-                continue
-            seen.add(key)
-            use.markers.append({"line": key[0], "file": src.rel, "category": category, "match": text,
-                                "code": src.snippet(base + m.start())})
-    use.markers.sort(key=lambda x: (x["line"], x["category"]))
+            at = base + m.start()
+            use.markers.append({"line": src.line(at), "file": src.rel, "offset": at, "category": category,
+                                "match": re.sub(r"\s+", "", m.group()), "code": src.snippet(at)})
+    use.markers.sort(key=lambda x: (x["offset"], x["category"]))
     collect_names(index, src, body, base, fn, use)
     return use
 
@@ -648,9 +683,7 @@ def collect_names(index, src, body, base, fn, use):
         head = segs[0]
         before = body[max(0, m.start() - 8):m.start()]
         if head in KEYWORDS or head in PRELUDE or head in ("self", "Self", "Game", "super"):
-            if not (head in ("super", "Game") and len(segs) > 1):
-                continue
-            if head == "Game":
+            if not (head in ("super", "crate") and len(segs) > 1):
                 continue
         if re.search(r"\b(?:fn|let|mut|ref|struct|enum|trait|type|mod|use)\s*\Z", before) or before.rstrip().endswith("'"):
             continue
@@ -661,9 +694,9 @@ def collect_names(index, src, body, base, fn, use):
                 continue
             if len(head) == 1:
                 continue
-        elif head[0].islower() and head not in index.heads:
+        elif head[0].islower() and head not in index.heads and head not in ("crate", "super"):
             continue
-        Uses.bump(use.names, "::".join(segs), src.at(base + m.start()))
+        Uses.bump(use.names, "::".join(segs), src.at(base + m.start()), (src.rel, base + m.start()))
 
 
 # ------------------------------------------------------------------------------------------------------ resolution
@@ -697,15 +730,17 @@ class Resolver:
             rx = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+|const\s+|async\s+)*"
                             r"(fn|struct|enum|trait|type|const|static|union|mod)\s+(\w+)", re.M)
             for path in sorted((CRATES / crate).glob("src/**/*.rs")):
+                known = self.index.sources.get(path)
                 try:
-                    text = path.read_text(encoding="utf-8", errors="replace")
+                    # comments and strings blanked, so a `fn x()` in a comment is no declaration
+                    code = known.code if known else blank(path.read_text(encoding="utf-8", errors="replace"))
                 except OSError:
                     continue
                 newlines = None
-                for m in rx.finditer(text):
+                for m in rx.finditer(code):
                     if newlines is None:
-                        newlines = [x.start() for x in re.finditer("\n", text)]
-                    table[m.group(2)].append((str(path)[len(str(ROOT)) + 1:], bisect.bisect_left(newlines, m.start()) + 1,
+                        newlines = [x.start() for x in re.finditer("\n", code)]
+                    table[m.group(2)].append((os.path.relpath(path, ROOT), bisect.bisect_left(newlines, m.start()) + 1,
                                               m.group(1)))
         return self.items[crate]
 
@@ -725,21 +760,29 @@ class Resolver:
         return hits
 
     # --- use declarations of a file
-    def uses_of(self, src):
-        if src.path in self.uses_cache:
-            return self.uses_cache[src.path]
+    def uses_of(self, src, at=None):
+        """(binds, globs) of the `use` declarations in scope at offset `at` (None: those at the top of the file).
+        A `use` inside a block holds only in that block, and an inner one replaces an outer one of the same name."""
+        if src.path not in self.uses_cache:
+            found = []
+            for m in re.finditer(r"(?<![\w])use\s+([^;]*);", src.code):
+                span = src.block_span(m.start())
+                for path, alias in expand_use(m.group(1)):
+                    found.append((span, path, alias))
+            self.uses_cache[src.path] = found
         binds, globs = {}, []
-        for m in re.finditer(r"(?<![\w])use\s+([^;]*);", src.code):
-            for path, alias in expand_use(m.group(1)):
-                if path.endswith("::*") or path == "*":
-                    globs.append(path[:-3] if path != "*" else "")
-                else:
+        top = (0, len(src.code))
+        visible = [u for u in self.uses_cache[src.path]
+                   if u[0] == top or (at is not None and u[0][0] < at < u[0][1])]
+        for _, path, alias in sorted(visible, key=lambda u: -(u[0][1] - u[0][0])):
+            if path.endswith("::*") or path == "*":
+                globs.append(path[:-3] if path != "*" else "")
+            else:
+                name = alias or path.split("::")[-1]
+                if path.endswith("::self"):
+                    path = path[:-6]
                     name = alias or path.split("::")[-1]
-                    if path.endswith("::self"):
-                        path = path[:-6]
-                        name = alias or path.split("::")[-1]
-                    binds[name] = path
-        self.uses_cache[src.path] = (binds, globs)
+                binds[name] = path
         return binds, globs
 
     def module_file(self, src, path):
@@ -772,20 +815,24 @@ class Resolver:
                 found = SRC / "lib.rs" if (SRC / "lib.rs").is_file() else SRC / "main.rs"
         return found
 
-    def resolve(self, src, name, depth=0, seen=None):
-        """(origin, detail, how): origin is a crate dir name, 'std', 'external:X' or 'horizon-client'."""
-        key = (src.path, name)
+    def resolve(self, src, name, depth=0, seen=None, at=None):
+        """(origin, detail, how): origin is a crate dir name, 'std', 'external:X' or 'horizon-client'.
+        `at` is the offset of the reference: it picks the `use` declarations in scope there."""
+        binds, globs = self.uses_of(src, at)
+        key = (src.path, name, binds.get(name), tuple(globs))
         if key in self.cache:
             return self.cache[key]
         seen = seen or set()
         if key in seen or depth > 7:
             return None
         seen = seen | {key}
-        out = self._resolve(src, name, depth, seen)
+        out = self._resolve(src, name, depth, seen, binds, globs)
         self.cache[key] = out
         return out
 
-    def classify(self, src, path, depth, seen):
+    def classify(self, src, path, depth, seen, at=None):
+        if depth > 7:
+            return ("unresolved", path, "use")
         segs = path.split("::")
         head = segs[0]
         if head in ("std", "core", "alloc"):
@@ -818,9 +865,9 @@ class Resolver:
             return ("external:" + pkg, path, "use")
         if head in self.crates:
             return (self.crates[head], path, "use")
-        bound = self.uses_of(src)[0].get(head)
+        bound = self.uses_of(src, at)[0].get(head)
         if bound and bound != path:
-            return self.classify(src, bound + ("::" + "::".join(segs[1:]) if len(segs) > 1 else ""), depth + 1, seen)
+            return self.classify(src, bound + ("::" + "::".join(segs[1:]) if len(segs) > 1 else ""), depth + 1, seen, at)
         if head in self.module_heads:
             return ("horizon-client", path, "use (relative)")
         return ("unresolved", path, "use")
@@ -830,8 +877,7 @@ class Resolver:
                       + re.escape(name) + r"\b", src.code, re.M)
         return src.at(m.start()) if m else None
 
-    def _resolve(self, src, name, depth, seen):
-        binds, globs = self.uses_of(src)
+    def _resolve(self, src, name, depth, seen, binds, globs):
         if name in binds:
             return self.classify(src, binds[name], depth, seen)
         local = self.local_item(src, name)
@@ -850,38 +896,36 @@ class Resolver:
             root = glob.split("::")[0]
             origin = self.crates.get(self.deps.get(root, root).replace("-", "_"))
             if origin:
-                for crate, file, line, kind in self.item_names().get(name, []):
-                    if crate == origin:
-                        return (origin, f"{file}:{line}", "glob " + glob + "::*")
+                hits = self.find_items(name, origin, within=glob.split("::")[1:])
+                if hits:
+                    return (origin, f"{hits[0][1]}:{hits[0][2]}", "glob " + glob + "::*")
         return None
 
-    def final_in(self, src, path):
-        """A path whose root is a crate: find its item by name in that crate."""
-        return self.final(src, path)
-
-    def final(self, src, path):
+    def final(self, src, path, at=None):
         """Resolve a used path (a type's path, or a free function's) to (origin, detail, how)."""
         segs = path.split("::")
         head = segs[0]
         if head in ("std", "core", "alloc"):
             return ("std", path, "")
         if head in ("super", "crate", "self"):
-            return self.classify(src, path, 0, set())
+            return self.classify(src, path, 0, set(), at)
         own = head == "horizon_client"
         if own:
             via = self.classify(src, path, 0, set())
             if via[0] != "horizon-client":
-                return self.final_in(src, via[1])
+                return self.final(src, via[1], at)
         pkg = self.deps.get(head, head)
         crate = self.crates.get(pkg.replace("-", "_"))
-        if own or (crate and head not in self.uses_of(src)[0]):
+        if head in self.deps and not crate and head not in self.uses_of(src, at)[0]:
+            return ("external:" + pkg, path, "")
+        if own or (crate and head not in self.uses_of(src, at)[0]):
             crate = "horizon-client" if own else crate
             name = segs[-1]
             hits = self.find_items(name, crate, within=[s_ for s_ in segs[1:-1]])
             if len(hits) >= 1:
                 return (crate, f"{hits[0][1]}:{hits[0][2]}", "" if len(hits) == 1 else f"{len(hits)} items of that name")
             return (crate, path, "item not found by name (re-export?)" if own else "")
-        got = self.resolve(src, head)
+        got = self.resolve(src, head, at=at)
         if got:
             return got
         if len(segs) == 1 and head[0].islower() and not self.find_items(head, "horizon-client"):
@@ -914,6 +958,7 @@ def parent_file(path):
 
 def expand_use(text):
     """Flatten a use tree into [(path, alias)]."""
+    text = re.sub(r"\s+as\s+", "\x00", text)  # keep `as` apart before the other whitespace goes
     text = re.sub(r"\s+", "", text)
 
     def walk(prefix, tree):
@@ -928,9 +973,8 @@ def expand_use(text):
             head = m.group(1)
             return walk(prefix + (head + "::" if head else ""), m.group(3))
         alias = None
-        if "as" in tree and re.search(r"\bas(\w+)\Z", tree):
-            am = re.match(r"(.*?)as(\w+)\Z", tree)
-            tree, alias = am.group(1), am.group(2)
+        if "\x00" in tree:
+            tree, alias = tree.split("\x00", 1)
         return [((prefix + tree).lstrip(":"), alias)]
 
     return walk("", text)
@@ -950,6 +994,8 @@ def merge(a, b):
             into = getattr(a, table).setdefault(key, {"count": 0, "lines": []})
             into["count"] += row["count"]
             into["lines"] += [w for w in row["lines"] if w not in into["lines"]]
+            if "sites" in row:
+                into.setdefault("sites", []).extend(row["sites"])
     a.whole_self += b.whole_self
     a.destructured.update(b.destructured)
     a.markers += b.markers
@@ -1034,25 +1080,29 @@ def target_report(index, resolver, label, src, fn, uses):
         entry["methods"][name] = {"count": row["count"], "lines": row["lines"], **info}
     entry["assoc"] = {k: v for k, v in sorted(uses.assoc.items())}
     entry["whole_self"] = uses.whole_self
-    # members of one type (`MobEvent::Spawn`, `Species::Wither`) are folded into the type
+    # Each use is resolved where it stands (its file and its scope), then equal results are added up, so two
+    # targets importing different crates under one name keep separate rows. Members of one type
+    # (`MobEvent::Spawn`, `Species::Wither`) are folded into the type.
     folded = {}
     for path, row in sorted(uses.names.items()):
         segs = path.split("::")
         cut = next((i for i, seg in enumerate(segs) if seg[0].isupper() and i < len(segs) - 1), None)
         key = "::".join(segs[:cut + 1]) if cut is not None else path
-        into = folded.setdefault(key, {"count": 0, "members": [], "first": row["lines"][0]})
-        into["count"] += row["count"]
-        if cut is not None:
-            into["members"].append("::".join(segs[cut + 1:]))
+        for rel, offset in row["sites"]:
+            owner = index.by_rel[rel]
+            origin, detail, how = resolver.final(owner, key, offset)
+            into = folded.setdefault((origin, key, detail, how), {"count": 0, "members": [], "first": owner.at(offset)})
+            into["count"] += 1
+            if cut is not None:
+                into["members"].append("::".join(segs[cut + 1:]))
     groups = defaultdict(list)
-    for path, row in folded.items():
-        first = row["first"].rsplit(":", 1)[0]
-        owner = index.sources.get(ROOT / first) or src or fn.src
-        origin, detail, how = resolver.final(owner, path)
-        groups[origin].append({"path": path, "count": row["count"], "at": detail, "how": how, "first": row["first"],
+    for (origin, key, detail, how), row in folded.items():
+        groups[origin].append({"path": key, "count": row["count"], "at": detail, "how": how, "first": row["first"],
                                "members": sorted(set(row["members"]))})
+    for rows in groups.values():
+        rows.sort(key=lambda r: r["path"])
     entry["names"] = dict(groups)
-    entry["markers"] = sorted(uses.markers, key=lambda m: (m["file"], m["line"], m["category"]))
+    entry["markers"] = sorted(uses.markers, key=lambda m: (m["file"], m["offset"], m["category"]))
     return entry
 
 
@@ -1152,9 +1202,9 @@ def render(entry):
         for level in tr:
             p(f"\nTransitive level {level['level']}: {len(level['methods'])} methods followed, "
               f"{len(level['fields'])} fields touched, {len(level['new_fields'])} not used directly")
-            for name in level["new_fields"]:
-                f = level["fields"][name]
-                p(f"  {name:<32} read {f['read']:>3}  write {f['write']:>3}  via {short(sorted(set(f['via'])), 3)}")
+            for name, f in level["fields"].items():
+                new = "new" if name in level["new_fields"] else "   "
+                p(f"  {name:<32} {new} read {f['read']:>3}  write {f['write']:>3}  via {short(sorted(set(f['via'])), 3)}")
             unknown = [m["method"] for m in level["methods"] if m["defined"] is None]
             if unknown:
                 p("  no body found for: " + short(unknown, 8))
