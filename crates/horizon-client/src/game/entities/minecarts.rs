@@ -15,7 +15,7 @@ mod section_steps;
 use super::{Game, Hit, InteractTarget, Keys, entity::Entity};
 use horizon_client::actions::Action;
 use horizon_client::entity_rules::EntityRules;
-use horizon_client::mobs::{Mob, seen_grid::SeenGrid};
+use horizon_client::mobs::seen_grid::SeenGrid;
 use horizon_client::{
     blocks::Fluid,
     containers::BlockEntity,
@@ -33,6 +33,7 @@ use horizon_core::{
     random::RandomSource,
 };
 use horizon_world::registry::BlockStateId;
+#[cfg(test)]
 use std::sync::Arc;
 #[path = "minecarts/block_effects.rs"]
 mod block_effects;
