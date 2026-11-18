@@ -974,15 +974,18 @@ enum Stale {
 /// holds, no permission) is none of these: the install inspects it and refuses.
 fn stale_entry(home: &Path, old: &installed::Entry, native: bool) -> Option<Stale> {
     let path = home.join(&old.file);
-    match fs::symlink_metadata(&path) {
+    let plain = match fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(Stale::Missing),
         Err(_) => return None,
-        Ok(_) => {}
-    }
-    let retired = !native
+        Ok(meta) => meta.file_type().is_file(),
+    };
+    // Only a regular file is opened: a pipe could block here, under the instance's lock.
+    let retired = plain
+        && !native
         && Path::new(&old.file).starts_with(crate::native_mods::INSTALLED)
         && fs::File::open(&path)
             .ok()
+            .filter(|f| f.metadata().is_ok_and(|m| m.is_file()))
             .and_then(|f| zip::ZipArchive::new(f).ok())
             .is_some_and(|zip| zip.index_for_name("horizon-native.json").is_some());
     retired.then_some(Stale::Retired)
@@ -1123,14 +1126,13 @@ fn install_version_guarded(
     // install can be tried again.
     if let (Some(Stale::Retired), Some(old)) = (stale, &old) {
         let others = list.entries.iter().filter(|e| !ours(e));
-        remove_retired(home, old, others).inspect_err(|_| {
-            let _ = fs::remove_file(&path);
-        })?;
+        remove_retired(home, old, others).map_err(|e| taken_back(e, &path))?;
     }
     if let Some(dir) = target.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    fs::rename(&path, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+    fs::rename(&path, &target)
+        .map_err(|e| taken_back(format!("{}: {e}", target.display()), &path))?;
     if let Some(old) = old
         .as_ref()
         .filter(|o| stale.is_none() && o.file != relative)
@@ -1157,12 +1159,24 @@ fn install_version_guarded(
     list.entries.retain(|e| !ours(e));
     list.entries.push(entry.clone());
     // A stale entry stays listed: without the file the new one would be in its way on a retry.
-    list.save(home).inspect_err(|_| {
-        if stale.is_some() {
-            let _ = fs::remove_file(&target);
-        }
+    list.save(home).map_err(|e| match stale {
+        Some(_) => taken_back(e, &target),
+        None => e,
     })?;
     Ok(entry)
+}
+
+/// `error`, once the new file at `file` is taken back out: a failure to do that is said too,
+/// never swallowed.
+fn taken_back(error: String, file: &Path) -> String {
+    match fs::remove_file(file) {
+        Ok(()) => error,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => error,
+        Err(e) => format!(
+            "{error}; taking {} back out failed too: {e}",
+            file.display()
+        ),
+    }
 }
 
 /// The mod id of an installed mod (`horizon-mods/<id>`, `horizon-mods/<id>.hmod` or

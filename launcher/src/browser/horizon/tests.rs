@@ -1252,7 +1252,7 @@ fn a_linked_old_native_file_is_left_alone() {
     let list = old_entry(&home, "horizon-native-mods/coords_hud.hmod", "0.0.1");
 
     let e = install_from(&index, true, &p, &home, &|_, _| {}).unwrap_err();
-    assert!(e.contains("wasn't removed"), "{e}");
+    assert!(e.contains("Cannot inspect installed"), "{e}");
     assert_eq!(fs::read(&real).unwrap(), before);
     assert!(fs::symlink_metadata(&link)
         .unwrap()
@@ -1262,5 +1262,25 @@ fn a_linked_old_native_file_is_left_alone() {
     assert!(!home.join("horizon-mods/coords_hud.hmod").exists());
     let downloads = home.join("mod-browser/downloads");
     assert_eq!(fs::read_dir(downloads).map_or(0, |d| d.count()), 0);
+    fs::remove_dir_all(&home).unwrap();
+}
+
+/// An old entry whose path is not a regular file (here a folder; a pipe is never opened) isn't
+/// taken for a retired archive: the install refuses and the folder stays as it was.
+#[test]
+fn an_old_native_path_that_is_not_a_file_is_left_alone() {
+    let index = sample();
+    let p = hud(&index);
+    let home = scratch("stale-native-folder");
+    let old = home.join("horizon-native-mods/coords_hud.hmod");
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join("horizon-native.json"), b"{}").unwrap();
+    let list = old_entry(&home, "horizon-native-mods/coords_hud.hmod", "0.0.1");
+
+    let e = install_from(&index, true, &p, &home, &|_, _| {}).unwrap_err();
+    assert!(e.contains("Cannot inspect installed"), "{e}");
+    assert_eq!(fs::read(old.join("horizon-native.json")).unwrap(), b"{}");
+    assert_eq!(installed::Installed::load(&home).entries, list);
+    assert!(!home.join("horizon-mods/coords_hud.hmod").exists());
     fs::remove_dir_all(&home).unwrap();
 }
