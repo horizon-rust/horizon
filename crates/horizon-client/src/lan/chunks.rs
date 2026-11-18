@@ -537,6 +537,11 @@ fn warm_pool() -> Option<&'static WarmPool> {
                             if let Some(job) = job {
                                 job.run();
                             }
+                            // Asked while jobs keep coming (no gap for the
+                            // timed check above): give it back between two.
+                            if horizon_threads::release_asked(&mut release_seen) {
+                                horizon_threads::release_free_memory();
+                            }
                         }
                     })
                     .is_ok()

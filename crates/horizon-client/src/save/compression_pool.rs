@@ -168,6 +168,11 @@ fn worker_loop(weak_inner: Weak<Inner>) {
                 did_work = true;
                 run_job(&batch, i);
             }
+            // Asked while batches keep coming (no gap for the timed check
+            // above): give it back between two.
+            if horizon_threads::release_asked(&mut release_seen) {
+                horizon_threads::release_free_memory();
+            }
             if !did_work && let Some(inner) = weak_inner.upgrade() {
                 let mut queue = inner.queue.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(front) = queue.front()

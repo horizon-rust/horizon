@@ -466,6 +466,11 @@ fn work(inner: &Inner, worker: usize) {
             }
             idle_since = Instant::now();
             release_quiet_sources(inner);
+            // Asked to give memory back while jobs keep this worker busy (no
+            // gap for the timed checks below): do it between two jobs.
+            if crate::release_asked(&mut release_seen) {
+                crate::release_free_memory();
+            }
             continue;
         }
         let sleep = lock(&inner.sleep);
@@ -728,6 +733,49 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(counter.idle.load(Ordering::Relaxed));
+    }
+
+    /// A server asking for its memory back while a job arrives every 50 ms,
+    /// shorter than any idle wait: the workers still give it back, between
+    /// two jobs.
+    #[test]
+    fn a_busy_worker_still_gives_memory_back_when_asked() {
+        let pool = Pool::with_idle_release(2, "test-busy-release", Duration::from_secs(60));
+        let counter = Arc::new(Counter {
+            left: Mutex::new(0),
+            done: AtomicUsize::new(0),
+            per_worker: PerWorker::new(pool.threads()),
+            idle: AtomicBool::new(false),
+            all_idle: AtomicBool::new(false),
+        });
+        let reg = pool.register(counter.clone());
+        let by_worker = || {
+            crate::RELEASED_BY
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|name| name.starts_with("test-busy-release-"))
+        };
+        // A worker that has run a job has started counting releases; one
+        // started after the request would rightly not see it.
+        *lock(&counter.left) += 1;
+        reg.notify();
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while counter.done.load(Ordering::Relaxed) == 0 {
+            assert!(Instant::now() < deadline, "no worker ran the first job");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        crate::release_everywhere();
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while !by_worker() {
+            assert!(
+                Instant::now() < deadline,
+                "kept busy, no worker gave its memory back"
+            );
+            *lock(&counter.left) += 1;
+            reg.notify();
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// One source idle while another keeps the workers busy (a client meshing

@@ -637,6 +637,10 @@ pub fn allocator_commit() -> (usize, usize) {
 
 /// Bumped by [`release_everywhere`]: each pool thread compares it with the
 /// value it saw last ([`release_asked`]).
+/// The names of the threads that called [`release_free_memory`], for tests.
+#[cfg(test)]
+static RELEASED_BY: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 static RELEASE_ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// How often a pool thread with nothing to do looks at [`release_asked`].
@@ -672,6 +676,11 @@ pub fn release_asked(seen: &mut u64) -> bool {
 /// native libraries still use: glibc keeps freed pages in the arena of the
 /// thread that allocated them, and macOS in its zones until memory runs short.
 pub fn release_free_memory() {
+    #[cfg(test)]
+    RELEASED_BY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(std::thread::current().name().unwrap_or_default().to_owned());
     // SAFETY: frees only pages no allocation uses (this thread's heap, shared arenas).
     unsafe {
         libmimalloc_sys::mi_collect(true);
