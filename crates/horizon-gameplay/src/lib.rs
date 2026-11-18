@@ -24,4 +24,6 @@ pub mod tick_profile;
 pub mod tnt;
 pub mod trident;
 pub mod village_siege;
+pub mod villager_level;
+pub mod villagers;
 pub mod wandering_trader;
