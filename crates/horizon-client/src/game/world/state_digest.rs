@@ -60,10 +60,6 @@ fn join_key(seq: u64, rank: u64) -> u64 {
     }
 }
 
-/// Called by the integrated server's `digest-sync`.
-pub(super) fn rank_joins() {
-    RANKED_JOINS.store(true, Ordering::Relaxed);
-}
 
 fn hasher() -> DefaultHasher {
     DefaultHasher::new()
@@ -282,6 +278,11 @@ impl Game<'_> {
         let _ = sink.out.write_all(details.as_bytes());
         let _ = writeln!(sink.out, "  cost_total_ns={nanos} lines={lines}");
         let _ = sink.out.flush();
+    }
+
+    /// The integrated server's `digest-sync` calls this: see `RANKED_JOINS`.
+    pub(super) fn state_digest_rank_joins(&self) {
+        RANKED_JOINS.store(true, Ordering::Relaxed);
     }
 
     /// `digest-sync U E S`: the command harness's `sync_randoms`, from a dedicated server's console or the integrated server's owner console (`horizon-ctl command`).
