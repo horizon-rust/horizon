@@ -168,7 +168,10 @@ fn never_supported(kind: Kind, minecraft: &str, fetch: Fetch) -> bool {
     let Ok(Value::Array(games)) = serde_json::from_slice::<Value>(&body) else {
         return false;
     };
-    let versions: Option<Vec<&str>> = games.iter().map(|g| g["version"].as_str()).collect();
+    let versions: Option<Vec<&str>> = games
+        .iter()
+        .map(|g| g["version"].as_str().filter(|v| !v.trim().is_empty()))
+        .collect();
     versions.is_some_and(|v| !v.is_empty() && !v.contains(&minecraft))
 }
 

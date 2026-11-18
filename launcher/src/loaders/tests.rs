@@ -86,16 +86,21 @@ fn a_minecraft_version_the_loader_never_supported_says_so() {
     assert!(versions(Kind::Quilt, "1.12.2", &no_list)
         .unwrap_err()
         .ends_with("/versions/loader/1.12.2 answered 404"));
-    // Nor with a list whose entries name no version (an error page in a list).
-    let odd_list = |url: &str| -> Result<Vec<u8>, String> {
-        if url.ends_with("/versions/game") {
-            return Ok(br#"[{"error": "upstream unavailable"}]"#.to_vec());
-        }
-        Err(format!("{url} answered 404"))
-    };
-    assert!(versions(Kind::Quilt, "1.21.4", &odd_list)
-        .unwrap_err()
-        .ends_with("/versions/loader/1.21.4 answered 404"));
+    // Nor with a list whose entries name no version (an error page in a list, a blank one).
+    for list in [
+        &br#"[{"error": "upstream unavailable"}]"#[..],
+        br#"[{"version": " "}]"#,
+    ] {
+        let odd_list = |url: &str| -> Result<Vec<u8>, String> {
+            if url.ends_with("/versions/game") {
+                return Ok(list.to_vec());
+            }
+            Err(format!("{url} answered 404"))
+        };
+        assert!(versions(Kind::Quilt, "1.21.4", &odd_list)
+            .unwrap_err()
+            .ends_with("/versions/loader/1.21.4 answered 404"));
+    }
     let offline = |_: &str| -> Result<Vec<u8>, String> { Err("No connection: refused".into()) };
     assert_eq!(
         versions(Kind::Fabric, "1.21.4", &offline).unwrap_err(),
