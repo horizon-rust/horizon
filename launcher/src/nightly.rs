@@ -463,7 +463,7 @@ mod tests {
         moved.asset = Some(("other.tar.gz".into(), 2));
         assert_eq!(offer(&[], Some(&moved)), Some(target.tag.clone()));
         // Installed: nothing to offer.
-        assert_eq!(offer(&[target.tag.clone()], None), None);
+        assert_eq!(offer(std::slice::from_ref(&target.tag), None), None);
     }
 
     #[test]
