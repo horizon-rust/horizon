@@ -1137,6 +1137,7 @@ fn run(
         cookies,
         resources,
         payloads,
+        true,
     )?;
     let _ = send.send(Event::Joined {
         registries: Arc::new(registries),
@@ -1233,6 +1234,7 @@ fn receive_play(
                     cookies,
                     resources,
                     payloads,
+                    false,
                 )?;
                 let _ = send.send(Event::Reconfigured(Arc::new(registries)));
             }
@@ -1353,6 +1355,8 @@ fn configure(
     cookies: &Cookies,
     resources: &ItemData,
     payloads: &Arc<crate::raw_payloads::Transport>,
+    // The connection's first configuration, not a reconfiguration from play.
+    initial: bool,
 ) -> Result<Dynamic, Reason> {
     let mut registries = Dynamic::default();
     let mut content_verified = false;
@@ -1545,9 +1549,14 @@ fn configure(
             cfg::Clientbound::FinishConfiguration(_) => {
                 // A Horizon server that never sent on horizon:payloads predates the
                 // negotiation: play on with nothing negotiated, as on a vanilla server.
-                let silent = negotiation
-                    .finish_allowing_silent_peer()
-                    .map_err(|error| Reason::plain(error.to_string()))?;
+                // Only on the first configuration: a server that goes silent when it
+                // reconfigures is refused as before.
+                let silent = if initial {
+                    negotiation.finish_allowing_silent_peer()
+                } else {
+                    negotiation.finish_without_offer().map(|()| false)
+                }
+                .map_err(|error| Reason::plain(error.to_string()))?;
                 if silent {
                     log::info!(
                         "The server did not answer horizon:payloads: Horizon's negotiated extensions are off"
@@ -1836,6 +1845,23 @@ mod tests {
         crate::raw_payloads::Endpoint,
         ingress::Producer<Event>,
     ) {
+        let payloads =
+            crate::raw_payloads::Transport::capture(crate::raw_payloads::Side::Client).unwrap();
+        configure_on(name, &payloads, true, negotiation)
+    }
+
+    /// One configuration pass of `payloads`' connection: `initial` for the first, else a
+    /// reconfiguration from play.
+    fn configure_on(
+        name: &str,
+        payloads: &Arc<crate::raw_payloads::Transport>,
+        initial: bool,
+        negotiation: &[Vec<u8>],
+    ) -> (
+        Result<Dynamic, Reason>,
+        crate::raw_payloads::Endpoint,
+        ingress::Producer<Event>,
+    ) {
         let (root, data) = empty_item_data(name);
         let (client, server) = horizon_protocol::connection::Pipe::pair();
         let (mut reader, writer) = Connection::local(client).split();
@@ -1844,8 +1870,7 @@ mod tests {
             .unwrap();
         let writer = Arc::new(Mutex::new(Some(QueuedWriter::new(writer).unwrap())));
         let configuring = Arc::new(AtomicBool::new(true));
-        let payloads =
-            crate::raw_payloads::Transport::capture(crate::raw_payloads::Side::Client).unwrap();
+        let payloads = payloads.clone();
         let (send, _events) = event_channel();
         let thread = std::thread::spawn({
             let (writer, configuring, payloads, send) = (
@@ -1864,6 +1889,7 @@ mod tests {
                     &Cookies::default(),
                     &data,
                     &payloads,
+                    initial,
                 )
             }
         });
@@ -1928,6 +1954,26 @@ mod tests {
         }
     }
 
+    /// The fallback is for the first configuration only: a negotiated connection whose
+    /// server sends the brand again on reconfiguration and then nothing is refused.
+    #[test]
+    fn a_negotiated_connection_that_reconfigures_silently_is_refused() {
+        use horizon_protocol::payload_negotiation::{Control, Manifest};
+        let payloads =
+            crate::raw_payloads::Transport::capture(crate::raw_payloads::Side::Client).unwrap();
+        let (result, ..) = configure_on(
+            "raw-protocol-reconfigure-first",
+            &payloads,
+            true,
+            &[Control::Offer(Manifest::default()).encode().unwrap()],
+        );
+        if let Err(error) = result {
+            panic!("current Horizon server refused: {}", error.text);
+        }
+        let (result, ..) = configure_on("raw-protocol-reconfigure-silent", &payloads, false, &[]);
+        assert!(result.err().unwrap().text.contains("missing response"));
+    }
+
     #[test]
     fn a_horizon_server_that_answers_keeps_every_check() {
         use horizon_protocol::payload_negotiation::{Control, Manifest, RAW_PROTOCOL};
@@ -1987,6 +2033,7 @@ mod tests {
                     &Cookies::default(),
                     &data,
                     &crate::raw_payloads::Transport::empty(),
+                    true,
                 )
             });
             let mut server = Connection::local(server);
@@ -2482,6 +2529,7 @@ mod tests {
                 &Cookies::default(),
                 &data,
                 &crate::raw_payloads::Transport::empty(),
+                true,
             )
         });
         let mut server = Connection::local(server);
@@ -2529,6 +2577,7 @@ mod tests {
                 &Cookies::default(),
                 &data,
                 &crate::raw_payloads::Transport::empty(),
+                true,
             )
         });
         let mut server = Connection::local(server);
@@ -2592,6 +2641,7 @@ mod tests {
                 &Cookies::default(),
                 &data,
                 &crate::raw_payloads::Transport::empty(),
+                true,
             )
         });
         let mut server = Connection::local(server);
