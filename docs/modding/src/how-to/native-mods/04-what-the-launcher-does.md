@@ -33,7 +33,9 @@ that commit's SDK.
 6. For `[[native.mixin]]` rows, download the pinned game source, copy the targeted functions into one patch
    library, apply the rows with horizon-mixins, and compile that library against the SDK. The game
    crates are not compiled. Each checked replacement is installed through its typed installer.
-7. Link the native executable, install it as `native-<commit>-<key>`, and select it for the instance.
+7. Link the build, install it as `native-<commit>-<key>`, and select it for the instance. When every mod
+   uses the mod API alone, the mods are linked into a library placed beside the SDK's prebuilt executable,
+   which is installed unchanged.
    `native-mods.json` records the base, pins, mods and build tools. Client builds share their base's
    prepared resources; server exports include their resources.
    On Windows x64 the launcher also places the two GNU runtime libraries of its managed toolchain

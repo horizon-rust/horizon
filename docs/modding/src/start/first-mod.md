@@ -57,8 +57,10 @@ After a fresh clone, run any `cargo horizon-mod` command once before opening the
 horizon-launcher native-build . --instance "My Instance" --trust-native-code
 ```
 
-The launcher downloads the prebuilt game for the pinned Horizon build, compiles your crate against it, and makes
-that build the one the instance plays. `--trust-native-code` records that you allow native code on this
+The instance's Horizon build must be installed and prepared first: playing it once does that, or run
+`horizon-launcher prepare --version <version>`. The launcher then downloads the SDK for the pinned Horizon build and
+its own Rust toolchain (several hundred MB the first time, reused after), compiles your crate against the prebuilt
+game, and makes that build the one the instance plays. `--trust-native-code` records that you allow native code on this
 install: a native mod runs with your rights, outside any sandbox. Start the instance and join a world; the
 greeting appears in chat.
 
