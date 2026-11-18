@@ -336,7 +336,8 @@ pub mod tests {
             Ok("linger") => std::thread::sleep(Duration::from_secs(20)),
             // Its child inherits its output, as a helper the game started would.
             Ok("leave") => {
-                game("linger").spawn().unwrap();
+                // Never waited for: it outlives this process.
+                std::mem::forget(game("linger").spawn().unwrap());
                 print!("reply");
             }
             Ok(_) => print!("{}", "reply ".repeat(20_000)),
