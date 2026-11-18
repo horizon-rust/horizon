@@ -1439,6 +1439,9 @@ impl Game<'_> {
 }
 
 impl SiegeLevel for Game<'_> {
+    fn is_village(centers: &HashSet<(i32, i32, i32)>, pos: [i32; 3]) -> bool {
+        Game::is_village(centers, pos)
+    }
     fn siege(&mut self) -> &mut VillageSiege {
         &mut self.raiding.siege
     }

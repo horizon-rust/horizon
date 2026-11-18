@@ -22,6 +22,8 @@ pub struct VillageSiege {
 pub trait SiegeLevel: CustomSpawnerLevel {
     /// The level's siege state (`ServerLevel`'s `VillageSiege`).
     fn siege(&mut self) -> &mut VillageSiege;
+    /// `ServerLevel.isVillage` ([`is_village`]).
+    fn is_village(centers: &HashSet<(i32, i32, i32)>, pos: [i32; 3]) -> bool;
     /// `VillageSiege.tryToSetupSiege` ([`try_to_setup`]).
     fn try_to_setup_siege(&mut self) -> bool;
     /// `VillageSiege.trySpawn` ([`try_spawn`]).
@@ -83,7 +85,9 @@ pub fn try_to_setup<L: SiegeLevel + ?Sized>(l: &mut L) -> bool {
             continue;
         }
         let center = block_of(player.position);
-        if !is_village(&centers, center) || l.biome_tag("minecraft:without_zombie_sieges", center) {
+        if !L::is_village(&centers, center)
+            || l.biome_tag("minecraft:without_zombie_sieges", center)
+        {
             continue;
         }
         for _ in 0..10 {
@@ -134,8 +138,8 @@ pub fn is_village(centers: &HashSet<(i32, i32, i32)>, pos: [i32; 3]) -> bool {
 
 /// `VillageSiege.findRandomSpawnPos`: ten tries within 8 blocks of the
 /// spot for a village column where a zombie may spawn.
-pub fn find_spawn_pos(
-    l: &mut impl CustomSpawnerLevel,
+pub fn find_spawn_pos<L: SiegeLevel + ?Sized>(
+    l: &mut L,
     centers: &HashSet<(i32, i32, i32)>,
     spot: [i32; 3],
 ) -> Option<[f64; 3]> {
@@ -147,7 +151,7 @@ pub fn find_spawn_pos(
             continue;
         }
         let y = l.surface_height(x, z);
-        if is_village(centers, [x, y, z])
+        if L::is_village(centers, [x, y, z])
             && l.check_spawn_rules(
                 "minecraft:zombie",
                 Species::Zombie,
