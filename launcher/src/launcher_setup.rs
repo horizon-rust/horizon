@@ -461,11 +461,18 @@ impl Launcher {
         self.account_menu = false;
     }
 
+    /// The periodic check: as at startup, the release list (which Stable reads) is refreshed with
+    /// the updates, but a failed read keeps the list shown.
     pub(crate) fn check_updates(&mut self) {
         self.checked = Some(Instant::now());
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(Msg::Updates(backend::check_updates().map(Box::new)));
+            let updates = backend::releases_and_updates(|releases| {
+                if releases.is_ok() {
+                    let _ = tx.send(Msg::Releases(releases));
+                }
+            });
+            let _ = tx.send(Msg::Updates(updates.map(Box::new)));
         });
     }
 

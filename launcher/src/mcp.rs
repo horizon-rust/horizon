@@ -86,7 +86,7 @@ impl Session {
                     Some(name) => instances::find(name)?,
                     None => instances::selected(),
                 };
-                let tag = instance.resolve_version(arg_str(args, "version"))?;
+                let tag = instance.play_version(arg_str(args, "version"))?;
                 let mut cmd = backend::client(&tag)?;
                 instances::apply(&mut cmd, &instance)?;
                 cmd.args(game_tools::control_args());

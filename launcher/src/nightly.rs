@@ -199,9 +199,153 @@ fn stale(
         .collect()
 }
 
+/// A build on the Stable channel; `week` is the Monday of its week when it stands for one.
+#[derive(Debug, PartialEq, Eq)]
+pub struct StableBuild {
+    pub tag: String,
+    pub week: Option<String>,
+}
+
+/// The last game release before Horizon shipped only Nightlies (docs/release-flow.md, "Nightly
+/// channel"). It and every older tag stay full releases on GitHub, so `releases/latest` keeps
+/// pointing at a game build for servers, but they are too old to be Stable.
+const LAST_BEFORE_NIGHTLIES: &str = "v0.2.97";
+
+/// The Stable channel's builds, newest first: the real (non-Nightly, non-pre-release) releases
+/// after [`LAST_BEFORE_NIGHTLIES`] when any exist; until then the newest Nightly of each Monday to
+/// Sunday week. `releases` is newest first, as GitHub lists them.
+pub fn stable_builds(releases: &[Release]) -> Vec<StableBuild> {
+    let real: Vec<_> = releases
+        .iter()
+        .filter(|r| {
+            r.nightly.is_none()
+                && r.asset.is_some()
+                && !r.prerelease
+                && backend::launcher_version(&r.tag).is_none()
+                && backend::compare_versions(&r.tag, LAST_BEFORE_NIGHTLIES).is_gt()
+        })
+        .map(|r| StableBuild {
+            tag: r.tag.clone(),
+            week: None,
+        })
+        .collect();
+    if !real.is_empty() {
+        return real;
+    }
+    use chrono::Datelike;
+    // (monday, date, tag): the newest date of a week wins; the first listed on a tie.
+    let mut weeks: Vec<(String, String, String)> = Vec::new();
+    for r in releases
+        .iter()
+        .filter(|r| r.nightly.is_some() && r.asset.is_some())
+    {
+        let Some(date) = date_of(&r.tag) else {
+            continue;
+        };
+        let Ok(day) = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
+            continue;
+        };
+        let monday =
+            (day - chrono::Duration::days(day.weekday().num_days_from_monday() as i64)).to_string();
+        match weeks.iter_mut().find(|w| w.0 == monday) {
+            Some(w) if w.1.as_str() < date => *w = (monday, date.into(), r.tag.clone()),
+            Some(_) => {}
+            None => weeks.push((monday, date.into(), r.tag.clone())),
+        }
+    }
+    weeks.sort_by(|a, b| b.0.cmp(&a.0));
+    weeks
+        .into_iter()
+        .map(|(monday, _, tag)| StableBuild {
+            tag,
+            week: Some(monday),
+        })
+        .collect()
+}
+
+/// What a Stable instance set to Latest plays: the newest Stable build installed, or None, where
+/// Home and `play` fall back to the launcher's version.
+pub fn stable_installed(releases: &[Release], installed: &[String]) -> Option<String> {
+    stable_builds(releases)
+        .into_iter()
+        .map(|b| b.tag)
+        .find(|tag| installed.contains(tag))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn build(tag: &str, nightly: bool, asset: bool) -> Release {
+        Release {
+            tag: tag.into(),
+            name: String::new(),
+            body: String::new(),
+            date: String::new(),
+            time: String::new(),
+            asset: asset.then(|| ("horizon.tar.gz".into(), 1)),
+            prerelease: false,
+            nightly: nightly.then(|| "nightly".into()),
+        }
+    }
+
+    #[test]
+    fn stable_is_a_build_a_week_until_real_releases_exist() {
+        // 2026-11-09 is a Monday, 2026-11-08 the Sunday before it.
+        let mut releases = vec![
+            build("nightly-2026-11-13-aaaaaaa", true, true),
+            build("nightly-2026-11-12-bbbbbbb", true, true),
+            build("nightly-2026-11-10-ccccccc", true, true),
+            build("nightly-2026-11-08-ddddddd", true, true),
+            build("nightly-2026-11-03-eeeeeee", true, true),
+            // No build for this platform: not a candidate.
+            build("nightly-2026-11-14-fffffff", true, false),
+            // The releases from before the Nightlies are full releases, but not Stable.
+            build("v0.2.97", false, true),
+            build("v0.2.97.1", false, true),
+            build("v0.2.96", false, true),
+            build("v2026.10.19.15", false, true),
+        ];
+        let weekly = |tag: &str, week: &str| StableBuild {
+            tag: tag.into(),
+            week: Some(week.into()),
+        };
+        assert_eq!(
+            stable_builds(&releases),
+            [
+                weekly("nightly-2026-11-13-aaaaaaa", "2026-11-09"),
+                weekly("nightly-2026-11-08-ddddddd", "2026-11-02"),
+            ]
+        );
+        releases.insert(0, build("v0.3.0", false, true));
+        assert_eq!(
+            stable_builds(&releases),
+            [StableBuild {
+                tag: "v0.3.0".into(),
+                week: None
+            }]
+        );
+    }
+
+    #[test]
+    fn a_stable_instance_plays_the_newest_stable_build_installed_never_v0_2() {
+        let releases = [
+            build("nightly-2026-11-13-aaaaaaa", true, true),
+            build("nightly-2026-11-08-ddddddd", true, true),
+            build("v0.2.97", false, true),
+        ];
+        let installed = |tags: &[&str]| tags.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            stable_installed(
+                &releases,
+                &installed(&["v0.2.97", "nightly-2026-11-08-ddddddd"])
+            )
+            .as_deref(),
+            Some("nightly-2026-11-08-ddddddd")
+        );
+        // Only the old release: none, so the caller's fallback (the launcher's version) plays.
+        assert_eq!(stable_installed(&releases, &installed(&["v0.2.97"])), None);
+    }
 
     fn release(name: &str, date: &str) -> Release {
         Release {

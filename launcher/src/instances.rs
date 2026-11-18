@@ -324,6 +324,24 @@ impl Instance {
             _ => backend::resolve_version(requested),
         }
     }
+
+    /// The installed version a launch plays: as [`Self::resolve_version`], but a Stable instance
+    /// set to Latest plays the newest Stable build installed, as Home does, from the release list
+    /// kept on disk (a shortcut doesn't wait on the network).
+    pub fn play_version(&self, requested: Option<&str>) -> Result<String, String> {
+        if requested.is_none()
+            && self.version.is_none()
+            && self.channel == Channel::Stable
+            && self.java.is_none()
+        {
+            let stable =
+                crate::nightly::stable_installed(&backend::kept_releases(), &backend::installed());
+            if let Some(tag) = stable {
+                return Ok(tag);
+            }
+        }
+        self.resolve_version(requested)
+    }
 }
 
 /// The instances, by the default game home and the launcher's data folder: Horizon first, then

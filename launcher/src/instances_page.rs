@@ -116,11 +116,14 @@ impl Launcher {
             // Latest of its channel: the newest installed Stable build, or the launcher's
             // version (which follows the newest Nightly; also what is left offline).
             None => match instance.channel {
-                instances::Channel::Stable => self
-                    .stable_builds()
-                    .iter()
-                    .find_map(|b| self.installed.iter().find(|t| **t == b.tag))
-                    .or_else(|| self.launcher_version()),
+                instances::Channel::Stable => match &self.releases {
+                    Load::Ready(list) => {
+                        horizon_launcher::nightly::stable_installed(list, &self.installed)
+                            .and_then(|tag| self.installed.iter().find(|t| **t == tag))
+                    }
+                    _ => None,
+                }
+                .or_else(|| self.launcher_version()),
                 instances::Channel::Nightly => self.launcher_version(),
             },
         }
