@@ -4225,7 +4225,7 @@ mod emissive_tests {
             let mut m = silverfish();
             {
                 let textures = data.random_textures.read().unwrap();
-                crate::mobs::random_textures::choose(&mut m, &textures, &data, Some(seen()), 0);
+                crate::mobs::random_textures::choose(&mut m, &textures, &data, Some(seen()), 0, None);
             }
             let v = drawn(&m, &data, &atlas);
             assert!(inside(&v[..4], 0.5), "the variant");
@@ -4348,7 +4348,7 @@ mod random_texture_tests {
                 day_time: 0,
                 weather: horizon_optifine::random::Weather::Clear,
             };
-            crate::mobs::random_textures::choose(&mut m, &textures, &data, Some(seen), 0);
+            crate::mobs::random_textures::choose(&mut m, &textures, &data, Some(seen), 0, None);
         }
         let both = |name: &str| match name {
             "entity/silverfish" => Some([0.0, 0.0, 0.5, 0.5]),

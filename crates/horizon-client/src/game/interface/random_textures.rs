@@ -25,9 +25,10 @@ impl Game<'_> {
                 continue;
             }
             let m = &self.mobs[i];
-            let seed = seed(m, self.persist.uuids.get(&id).copied());
+            let uuid = self.persist.uuids.get(&id).copied();
+            let seed = seed(m, uuid);
             let seen = (!m.random_textures.has_seen()).then(|| self.seen_at(m.position));
-            choose(&mut self.mobs[i], &textures, res.mob_data(), seen, seed);
+            choose(&mut self.mobs[i], &textures, res.mob_data(), seen, seed, uuid);
         }
     }
 
