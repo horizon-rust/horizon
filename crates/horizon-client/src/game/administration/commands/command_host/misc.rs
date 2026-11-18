@@ -12,6 +12,9 @@ impl MiscHost for Game<'_> {
     fn tick_clock(&mut self) -> &mut FixedStep {
         &mut self.clock
     }
+    fn millis(&self, nanos: u64) -> String {
+        super::super::misc::millis(nanos)
+    }
     fn apply_tick_rate(&mut self, rate: f32) {
         Game::apply_tick_rate(self, rate);
     }

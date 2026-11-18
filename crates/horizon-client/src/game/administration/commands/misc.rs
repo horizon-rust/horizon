@@ -5,7 +5,12 @@ use horizon_client::{
     clock::SprintReport,
     text::{self, Text},
 };
+use horizon_core::java_number::format_fixed;
 use horizon_core::random::RandomSource;
+
+pub(super) fn millis(nanos: u64) -> String {
+    format_fixed(f64::from(nanos as f32 / 1_000_000.0), 1)
+}
 
 impl Game<'_> {
     /// `/stopwatch` (StopwatchCommand).

@@ -14,16 +14,14 @@ pub trait MiscHost: CommandHost {
     fn stopwatches(&mut self) -> &mut Stopwatches;
     /// The game clock `/tick` reads and changes.
     fn tick_clock(&mut self) -> &mut FixedStep;
+    /// `TickCommand.nanosToMilisString`: nanoseconds as a one-decimal millisecond string.
+    fn millis(&self, nanos: u64) -> String;
     /// `/tick rate`'s `setTickRate` and `onTickRateChanged` (the hook, and the autosave wait shortened).
     fn apply_tick_rate(&mut self, rate: f32);
     /// The report `/tick sprint` prints when a sprint ends.
     fn sprint_report(&mut self, report: &SprintReport);
     /// `MinecraftServer.onTickRateChanged`.
     fn on_tick_rate_changed(&mut self);
-}
-
-fn millis(nanos: u64) -> String {
-    format_fixed(f64::from(nanos as f32 / 1_000_000.0), 1)
 }
 
 /// `/stopwatch` (StopwatchCommand).
@@ -108,7 +106,8 @@ pub fn tick(host: &mut dyn MiscHost, id: &str, ctx: &Context) -> R<i32> {
         "tick.query" => {
             // TickCommand.tickQuery: every line passes `broadcast` false.
             let rate = host.tick_clock().rate();
-            let busy = millis(host.tick_clock().average_nanos());
+            let average = host.tick_clock().average_nanos();
+            let busy = host.millis(average);
             let rate_text = format_fixed(f64::from(rate), 1);
             if host.tick_clock().sprinting() {
                 host.feedback_unbroadcast(t("commands.tick.status.sprinting", &[]));
@@ -126,9 +125,10 @@ pub fn tick(host: &mut dyn MiscHost, id: &str, ctx: &Context) -> R<i32> {
                     "commands.tick.status.running"
                 };
                 host.feedback_unbroadcast(t(status, &[]));
+                let target_text = host.millis(target);
                 host.feedback_unbroadcast(t(
                     "commands.tick.query.rate.running",
-                    &[lit(rate_text), lit(busy), lit(millis(target))],
+                    &[lit(rate_text), lit(busy), lit(target_text)],
                 ));
             }
             let samples = host.tick_clock().sorted_samples();
@@ -138,14 +138,14 @@ pub fn tick(host: &mut dyn MiscHost, id: &str, ctx: &Context) -> R<i32> {
                     .copied()
                     .unwrap_or(0)
             };
+            let (p50, p95, p99) = (
+                host.millis(at(0.5)),
+                host.millis(at(0.95)),
+                host.millis(at(0.99)),
+            );
             host.feedback_unbroadcast(t(
                 "commands.tick.query.percentiles",
-                &[
-                    lit(millis(at(0.5))),
-                    lit(millis(at(0.95))),
-                    lit(millis(at(0.99))),
-                    lit(samples.len().to_string()),
-                ],
+                &[lit(p50), lit(p95), lit(p99), lit(samples.len().to_string())],
             ));
             Ok(rate as i32)
         }

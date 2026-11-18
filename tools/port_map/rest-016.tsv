@@ -43,7 +43,7 @@ TeleportCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	
 TeleportCommand.teleportToPos	port	crates/horizon-client/src/game/administration/commands/mod.rs::Game::cmd_teleport	location arm
 TeleportCommand.getRelatives	inline	crates/horizon-client/src/game/administration/commands/mod.rs::Game::cmd_teleport	relative coords resolved from the source up front; same end position
 TeleportCommand.performTeleport	port	crates/horizon-client/src/game/administration/commands/mod.rs::Game::teleport_to_in_level	gap: minor: zeroes all velocity and clears on_ground for a player; vanilla keeps horizontal motion, sets on_ground, stops mob navigation, skips Y reset while fall-flying
-TickCommand.nanosToMilisString	port	crates/horizon-gameplay/src/commands/misc.rs::millis	one-decimal millisecond string
+TickCommand.nanosToMilisString	port	crates/horizon-client/src/game/administration/commands/misc.rs::millis	one-decimal millisecond string
 TickCommand.setTickingRate	port	crates/horizon-gameplay/src/commands/misc.rs::tick	tick.rate arm
 TickCommand.step	port	crates/horizon-gameplay/src/commands/misc.rs::tick	tick.step arm
 TickCommand.stopStepping	port	crates/horizon-gameplay/src/commands/misc.rs::tick	tick.step.stop default arm
