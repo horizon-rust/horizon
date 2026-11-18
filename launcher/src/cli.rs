@@ -122,8 +122,8 @@ enum ServersCmd {
 enum AccountCmd {
     /// The signed-in accounts and which one plays
     List,
-    /// Sign in with a Microsoft account in your browser (device code). Play needs one that owns
-    /// Minecraft: Java Edition
+    /// Sign in with a Microsoft account in your browser (device code). Optional: playing works
+    /// without one; an account brings online-mode servers, Realms and Mojang's download
     SignIn {
         /// Sign this account (name or UUID) in again: another Microsoft account is refused and
         /// who plays stays the same
@@ -742,7 +742,7 @@ enum Cmd {
         #[arg(long)]
         version: Option<String>,
     },
-    /// Start the client (needs a signed-in Microsoft account that owns Minecraft: Java Edition)
+    /// Start the client (with no signed-in account the game plays offline, under the Settings' Player name)
     Play {
         /// Allow missing original Java asset/data jars to be downloaded from Modrinth
         #[arg(long)]
@@ -1045,7 +1045,7 @@ pub fn command() -> clap::Command {
 pub const AI_COMMANDS: [&str; 2] = ["mcp", "agent-config"];
 
 /// The keys `settings` sets.
-const SETTING_KEYS: [&str; 14] = [
+const SETTING_KEYS: [&str; 15] = [
     "selected-version",
     "minecraft-dir",
     "server-dir",
@@ -1055,6 +1055,7 @@ const SETTING_KEYS: [&str; 14] = [
     "opening-animation",
     "game-architecture",
     "proxy",
+    "player-name",
     "while-playing",
     "language",
     "accent",
@@ -1155,6 +1156,17 @@ fn set_setting(s: &mut backend::Settings, key: &str, value: &str) -> Result<(), 
                 return Err(why);
             } else {
                 s.proxy = Some(value.trim().to_string());
+            }
+        }
+        "player-name" => {
+            // `default` or empty gives the name back to the game.
+            let name = value.trim();
+            if name == "default" || name.is_empty() {
+                s.player_name = None;
+            } else if let Some(why) = crate::player_name::refuse(name) {
+                return Err(why);
+            } else {
+                s.player_name = Some(name.to_string());
             }
         }
         _ => return Err(format!("No setting {key}.")),
@@ -1967,8 +1979,8 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                 }));
             } else if accounts.accounts.is_empty() {
                 println!(
-                    "No Microsoft account signed in. Play needs one that owns Minecraft: Java \
-                     Edition: horizon-launcher account sign-in"
+                    "No Microsoft account signed in: the game plays offline. {}",
+                    tr(account::NEEDS_OWNER)
                 );
             } else {
                 for a in &accounts.accounts {
@@ -1986,11 +1998,8 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     println!("{mark} {}  {}  {}{why}", a.name, a.uuid, status.label());
                 }
                 if !accounts.has_owner(account::store()) {
-                    println!(
-                        "{} {}",
-                        account::NoOwner::default(),
-                        tr(backend::SIGN_IN_HINT)
-                    );
+                    // Play still starts; an account is only for what needs one.
+                    println!("{} {}", tr(account::NEEDS_OWNER), tr(backend::SIGN_IN_HINT));
                 }
             }
         }

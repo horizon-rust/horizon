@@ -1,16 +1,16 @@
 # Microsoft account sign-in and online-mode play
 
 Horizon signs players in with their Microsoft account in the launcher and joins online-mode
-(authenticated) servers like vanilla 26.3 does. The launcher plays only with an account that owns
-Minecraft: Java Edition ([the owner gate](#the-owner-gate)), as that account, on LAN and
-offline-mode servers too. There are no offline names. This note is the design, the status of each
-part and what Ludovic has to register.
+(authenticated) servers like vanilla 26.3 does. Play needs no account: without one the launcher
+starts the game offline, under the player's own name ([playing without an account](#playing-without-an-account)).
+An account is what brings online-mode servers, Realms, the account's name, skin and cape, and Mojang's
+own download. This note is the design, the status of each part and what Ludovic has to register.
 
 ## What Ludovic registers (needs his accounts)
 
 Nothing below can be done by an agent: the app registrations belong to Ludovic. A build without
-the client ID can't sign in, so its launcher can't start the game ("This build of the launcher has
-no Microsoft sign-in"); release builds have it.
+the client ID can't sign in, so it has no online-mode servers, no Realms and no Mojang download;
+the game still plays offline. Release builds have the ID.
 
 1. **Azure app registration** (https://portal.azure.com → Microsoft Entra ID → App registrations →
    New registration):
@@ -74,44 +74,43 @@ All requests use HTTPS and JSON except the two OAuth calls (form-encoded):
 7. **Profile**: `GET https://api.minecraftservices.com/minecraft/profile`: UUID, name, skins, capes.
    404 = owns the game but has no profile yet ("Create your Minecraft profile on minecraft.net first").
 
-## The owner gate
+## Playing without an account
 
-Decided 2026-10-27 (Ludovic, after a modder's suggestion): like other launchers, Horizon's
-launcher starts the game only while an account in it owns Java Edition. Offline play stays
-possible; the launcher just doesn't offer it on its own.
+Decided 2026-11-17 (Ludovic), reversing the owner gate of 2026-11-09: the launcher starts the
+game with no Microsoft account and no client ID. Sign-in stays as an optional row in Settings and
+brings what only an account brings; nothing else.
 
-- **Play needs an owner.** Every Play (Home, instances and packs, `horizon-launcher play`,
-  `modpack play`, the MCP's `play`) asks `account::launch` first. It asks the Minecraft services
-  again for each account, the selected one first, until one owns the game: the token renewal
-  (below) if due, then entitlements and profile. Without an owner the game doesn't start and Play
-  says "Sign in with a Microsoft account that owns Minecraft: Java Edition to play", with Sign in.
-- **The window says it once.** A player without an owner (one who played offline until now) sees
-  the gate's screen once when the launcher opens: why Horizon needs the account ("like other
-  launchers"), and Sign in, which shows
-  the device code on the same screen. It comes back whenever Play is refused; Not now closes it,
-  and Home keeps a Sign in row (`launcher/src/owner_page.rs`).
+- **Play never refuses.** Every Play (Home, instances and packs, `horizon-launcher play`,
+  `modpack play`, the MCP's `play`) still runs `account::launch`, but only to collect what the
+  accounts can give: the selected account's renewed session for `--session-file`, the other
+  accounts' for splitscreen, and the answer the Minecraft services give (below). Whatever it
+  finds — or finds nothing — the game starts. A session that can't be renewed is said
+  ("Playing offline: …") and the game plays offline.
+- **No account, the game's own name.** With no session file the game takes its name from
+  `--name`/`HORIZON_PLAYER_NAME`, else from `horizon-player.txt` (`Player#####`, made on first
+  run); the offline UUID is the name-derived one (`crypto::offline_uuid`). The launcher's
+  Settings has a Player name field (`settings.json`'s `player_name`, `horizon-launcher settings
+  player-name Steve`) that goes to the game as `HORIZON_PLAYER_NAME` — only when no session
+  comes along, so a signed-in account always plays under its own name.
+- **What still needs an account:** online-mode servers (an offline-mode server takes anyone),
+  Realms, the account's name, skin and cape, and downloading Mojang's files (below); also
+  playing a Java Edition instance, which authenticates with Mojang like real Minecraft
+  (`account::java_player`). Sign-in itself still refuses accounts that don't own the game.
 - **The answer lives with the tokens.** Each account's keychain item keeps the last answer
   (`owns`), so accounts.json can't say yes. Where there is no keychain the answer sits in the
   secrets file with the tokens; a player can edit that file, as they can write keychain items with
   `secret-tool` or Keychain Access. With no network (or a sign-in that can't be renewed) the
-  last answer stands: being offline never blocks a player who passed before, and the game starts
-  without a session, offline. An answer of "doesn't own" (or no profile) blocks at once.
-- **The account that plays owns the game.** The game plays as the selected account (else the
-  first), which must own the game itself: another account's ownership doesn't let it play
-  (`account::launch_for_game`). The project decided on 2026-11-09 that Horizon plays only with a
-  Microsoft account that owns Minecraft: Java Edition: the offline names, their skins and capes,
-  and 0.2.58's hidden developer option are gone. Files from older launchers still load; the next
-  save drops them (`offline`, `offline_selected`, `looks` and `skins/` in accounts.json's folder,
-  `dev_offline` in settings.json).
-- **Who isn't affected:** the game binary itself (`horizon-client`, `horizon-ctl launch`, the
-  harnesses, CI), the dedicated server and `horizon-server`, the website. There is no bypass flag:
-  the launcher's tests use accounts in a memory store (`MemoryStore`, and `HORIZON_NO_KEYCHAIN`
-  for the CLI and MCP tests, which then have no owner).
+  last answer stands: being offline never blocks a player who passed before.
+- **Who isn't affected:** nothing is — the game binary (`horizon-client`, `horizon-ctl launch`,
+  the harnesses, CI), the dedicated server and `horizon-server`, and the website needed no
+  account even under the gate. The launcher's tests use accounts in a memory store
+  (`MemoryStore`, and `HORIZON_NO_KEYCHAIN` for the CLI and MCP tests, which then have no owner).
 
 ## Downloading the game for an owner
 
-Decided 2026-10-27. This is the only exception to "Horizon never downloads the game", and it
-applies only on the player's machine, for an account the owner gate just asked about. The
+Decided 2026-10-27, kept on 2026-11-17. This is the only exception to "Horizon never downloads
+the game", and it applies only on the player's machine, for an account the services said just now
+owns the game. Playing itself needs no download: the player's own Minecraft install is enough. The
 launcher's "Download and prepare" (`horizon-launcher prepare --download`) fetches the pinned
 version straight from Mojang (`launcher/src/mojang.rs`): the version file, the client jar,
 libraries, the asset index and the assets, each checked against the size and sha1 Mojang lists.
@@ -121,7 +120,7 @@ download or keep Mojang's files.
 
 Refresh: the Minecraft token is renewed from the Microsoft refresh token (steps 2-5 with
 `grant_type=refresh_token`) when it has less than an hour left, before every launch; steps 6-7 run
-at every launch (the owner gate). A refused
+at every launch (the ownership answer, for the download and for Java instances). A refused
 refresh token (`invalid_grant`) asks the player to sign in again. Several accounts can be signed in;
 one is selected. "Sign out" deletes the account's secrets from the keychain.
 

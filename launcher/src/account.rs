@@ -24,10 +24,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// The keychain service name every secret is stored under.
 pub const SERVICE: &str = "dev.playhorizon.launcher";
 const SCOPE: &str = "XboxLive.signin offline_access";
-pub const NOT_CONFIGURED: &str = "This build of the launcher has no Microsoft sign-in (HORIZON_MSA_CLIENT_ID), so it can't start the game.";
-/// What every Play says while no account in the launcher owns the game.
+pub const NOT_CONFIGURED: &str = "This build of the launcher has no Microsoft sign-in (HORIZON_MSA_CLIENT_ID): the game plays offline, without online servers.";
+/// What an account is for: what cannot be had without one. Play itself needs no account.
 pub const NEEDS_OWNER: &str =
-    "Sign in with a Microsoft account that owns Minecraft: Java Edition to play";
+    "Online servers and Minecraft: Java Edition need a Microsoft account that owns the game.";
 const DOES_NOT_OWN: &str = "This account doesn't own Minecraft: Java Edition.";
 const NO_PROFILE: &str =
     "This account has no Minecraft profile yet. Create one at minecraft.net, then sign in again.";
@@ -1865,7 +1865,7 @@ impl Accounts {
         Ok(())
     }
     /// Whether an account here owned the game at its last check (the keychain's answer, no
-    /// request): what Play needs.
+    /// request): who the launcher may download Mojang's files for.
     pub fn has_owner(&self, store: &dyn SecretStore) -> bool {
         // The selected account first: it owning the game ends the search after one account's
         // item — every account's item read can ask for the keychain (macOS, #4912).
@@ -1903,39 +1903,7 @@ impl Accounts {
     }
 }
 
-/// No account in the launcher owns Minecraft: Java Edition: the game must not start.
-#[derive(Debug, Default, PartialEq)]
-pub struct NoOwner {
-    /// Why a sign-in couldn't be read, when the keyring didn't give it (#12179), or why the
-    /// account that plays can't: what is said instead of the refusal, which would tell a
-    /// signed-in player to sign in.
-    pub keyring: Option<String>,
-}
-impl std::fmt::Display for NoOwner {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.keyring {
-            Some(why) => write!(f, "{why}"),
-            None => write!(f, "{NEEDS_OWNER}."),
-        }
-    }
-}
-
-impl NoOwner {
-    /// The same refusal for the window, which has Settings rather than a command to name.
-    pub fn in_window(&self) -> String {
-        use crate::i18n::tr;
-        if let Some(why) = &self.keyring {
-            return why.clone();
-        }
-        format!(
-            "{}. {}",
-            tr(NEEDS_OWNER),
-            tr("Open Settings and sign in under Account.")
-        )
-    }
-}
-
-/// The owner gate's pass for one launch.
+/// What one launch found among the accounts.
 #[derive(Debug, Default)]
 pub struct Launch {
     /// The selected account and its renewed session; none when its sign-in couldn't be renewed
@@ -1959,25 +1927,26 @@ pub fn take_unsaved() -> Option<String> {
     UNSAVED.lock().ok()?.take()
 }
 
-/// The owner gate: the game starts only while an account in the launcher owns Minecraft: Java
-/// Edition. The accounts are asked again, the selected one first, until one owns it; each keeps
-/// the answer in the keychain. An account that gets no answer (no network) keeps its last one, so
-/// being offline never blocks a player who passed before, while "doesn't own" blocks at once.
+/// The account pass for one launch: the playing account's session when it owns the game, and an
+/// account the services said owns it (whose game the launcher may download). The accounts are
+/// asked again, the selected one first; each keeps the answer in the keychain, and an account
+/// that gets no answer (no network) keeps its last one. Nothing here decides whether the game
+/// starts: a launch with no account at all is the plain offline start, under the game's own name.
 /// The caller saves `accounts` (renewed names and skins).
 pub fn launch(
     ep: &Endpoints,
     client_id: Option<&str>,
     store: &dyn SecretStore,
     accounts: &mut Accounts,
-) -> Result<Launch, NoOwner> {
+) -> Launch {
     let selected = accounts.selected.clone();
     let mut order = accounts.accounts.clone();
     order.sort_by_key(|a| Some(&a.uuid) != selected.as_ref());
     let mut pass = Launch::default();
-    let mut owned = false;
-    let mut unreadable = None;
     for account in order {
-        if owned {
+        // An account that owns the game ends the search: the only thing another account could
+        // still give is the download answer, which the first owner already gives.
+        if pass.owner.is_some() {
             break;
         }
         let plays = Some(&account.uuid) == selected.as_ref();
@@ -1985,22 +1954,22 @@ pub fn launch(
         let read = match store.get(&account.uuid) {
             Ok(text) => text.and_then(|s| serde_json::from_str::<Secrets>(&s).ok()),
             Err(why) => {
-                // Not "signed out": the keyring didn't say (#12179). With no owner, the refusal
-                // says this instead.
+                // Not "signed out": the keyring didn't say (#12179). The account plays offline
+                // this time, and the player hears why.
                 let said = crate::i18n::trf(
                     "Can't read {name}'s sign-in: {why}",
                     &[("name", &account.name), ("why", &why)],
                 );
                 eprintln!("Horizon: {said}");
                 if plays {
-                    pass.offline = Some(said.clone());
+                    pass.offline = Some(said);
                 }
-                unreadable = Some(said);
                 continue;
             }
         };
         let Some(secrets) = read else {
-            if plays {
+            // Playing offline on purpose (nothing selected), or signed out on this computer.
+            if plays && accounts.selected.is_some() {
                 pass.offline = Some(format!(
                     "{} is no longer signed in on this computer. Sign in again.",
                     account.name
@@ -2025,7 +1994,6 @@ pub fn launch(
             Check::DoesNot(secrets) => (Some(DOES_NOT_OWN.to_string()), secrets),
             Check::NoAnswer(e, secrets) => (Some(e), secrets),
         };
-        owned = secrets.owns;
         if plays {
             pass.offline = said;
         }
@@ -2047,40 +2015,7 @@ pub fn launch(
             }
         }
     }
-    if owned {
-        Ok(pass)
-    } else {
-        Err(NoOwner {
-            keyring: unreadable,
-        })
-    }
-}
-
-/// The owner gate before the game starts: [`launch`], where the account that plays (the selected
-/// one, else the first) must own the game itself, by the services' answer or, when they can't be
-/// asked, its last one. Never another account's ownership for a name of its own.
-pub fn launch_for_game(
-    ep: &Endpoints,
-    client_id: Option<&str>,
-    store: &dyn SecretStore,
-    accounts: &mut Accounts,
-) -> Result<Launch, NoOwner> {
-    if accounts.selected().is_none() {
-        accounts.selected = accounts.accounts.first().map(|a| a.uuid.clone());
-    }
-    let pass = launch(ep, client_id, store, accounts)?;
-    let owns = accounts
-        .selected()
-        .and_then(|a| secrets_in(store, &a.uuid))
-        .is_some_and(|s| s.owns);
-    if owns {
-        Ok(pass)
-    } else {
-        // Why that account can't play (it doesn't own the game, signed out, an unread keyring).
-        Err(NoOwner {
-            keyring: pass.offline,
-        })
-    }
+    pass
 }
 
 /// Write the session for the game, readable by this user only, in a fresh file it deletes
@@ -2315,16 +2250,18 @@ pub struct GameSession {
     pub env: Vec<(&'static str, String)>,
 }
 
-/// The owner gate for the game about to start, then the selected account's session in a file
-/// for it, and the other accounts' for its splitscreen players.
-pub fn session_for_game(game_home: &Path) -> Result<GameSession, NoOwner> {
+/// What the game about to start gets from the accounts: the playing account's session in a file
+/// for it, and the other accounts' for its splitscreen players. Nothing here can stop the game:
+/// with no account selected, or one whose sign-in can't be renewed now, the game starts offline
+/// under its own name and says why.
+pub fn session_for_game(game_home: &Path) -> GameSession {
     let mut accounts = Accounts::load();
-    let pass = launch_for_game(
+    let pass = launch(
         &Endpoints::live(),
         client_id().as_deref(),
         store(),
         &mut accounts,
-    )?;
+    );
     let env = split_sessions(
         game_home,
         &mut accounts,
@@ -2333,13 +2270,14 @@ pub fn session_for_game(game_home: &Path) -> Result<GameSession, NoOwner> {
     if let Err(e) = accounts.save_renewed() {
         eprintln!("Horizon: the accounts are not saved: {e}");
     }
-    Ok(session_file(game_home, pass, env))
+    session_file(game_home, pass, env)
 }
 
 /// [`session_for_game`] for one launch as `who` (`play --account`, a signed-in account): who
 /// plays changes for this launch only, so several games can play as several accounts at once
 /// (#4952). What the services renewed (tokens, names, skins) is still kept; which account
-/// `account select` picked is not touched.
+/// `account select` picked is not touched. An account that isn't signed in is the only `who`
+/// that fails here; anything the services can't answer leaves the game playing offline.
 pub fn session_for_game_as(game_home: &Path, who: &str) -> Result<GameSession, String> {
     let mut accounts = Accounts::load();
     let pass = launch_as(
@@ -2348,11 +2286,10 @@ pub fn session_for_game_as(game_home: &Path, who: &str) -> Result<GameSession, S
         store(),
         &mut accounts,
         who,
-    );
+    )?;
     if let Err(e) = accounts.save_renewed() {
         eprintln!("Horizon: the accounts are not saved: {e}");
     }
-    let pass = pass?;
     let env = split_sessions(
         game_home,
         &mut accounts,
@@ -2364,7 +2301,7 @@ pub fn session_for_game_as(game_home: &Path, who: &str) -> Result<GameSession, S
     Ok(session_file(game_home, pass, env))
 }
 
-/// The owner gate as `who`, on `accounts`, which keeps its choice of player.
+/// [`launch`] as `who`, on `accounts`, which keeps its own choice of player.
 fn launch_as(
     ep: &Endpoints,
     client_id: Option<&str>,
@@ -2375,12 +2312,12 @@ fn launch_as(
     let chosen = accounts.selected.clone();
     let pass = accounts
         .play_as(who)
-        .and_then(|()| launch_for_game(ep, client_id, store, accounts).map_err(|e| e.to_string()));
+        .map(|()| launch(ep, client_id, store, accounts));
     accounts.selected = chosen;
     pass
 }
 
-/// The game's session files for a launch that passed the gate.
+/// The game's session files for one launch: none when no account plays with a session.
 fn session_file(game_home: &Path, pass: Launch, env: Vec<(&'static str, String)>) -> GameSession {
     let mut out = GameSession {
         env,
@@ -2537,10 +2474,11 @@ fn account_sessions_until(
     )]
 }
 
-/// Who plays the real Minecraft: Java Edition (a Java instance), past the owner gate itself
-/// ([`launch`]): the selected account when it owns the game, else one that does. With no answer
-/// from the services, an account that owned it plays with its last token. Mojang's game takes the
-/// token on its command line, as Mojang's launcher gives it; that command is never logged.
+/// Who plays the real Minecraft: Java Edition (a Java instance): the selected account when it
+/// owns the game, else one that does. Mojang's own game authenticates with Mojang, so this needs
+/// a signed-in account that owns it — Horizon's offline play does not. With no answer from the
+/// services, an account that owned it plays with its last token. Mojang's game takes the token on
+/// its command line, as Mojang's launcher gives it; that command is never logged.
 pub fn java_player() -> Result<crate::java_launch::Player, String> {
     let mut accounts = Accounts::load();
     let player = java_player_with(
@@ -2561,7 +2499,7 @@ fn java_player_with(
     store: &dyn SecretStore,
     accounts: &mut Accounts,
 ) -> Result<crate::java_launch::Player, String> {
-    let pass = launch(ep, client_id, store, accounts).map_err(|e| e.to_string())?;
+    let pass = launch(ep, client_id, store, accounts);
     let kept = || {
         let order = accounts.selected().into_iter().chain(&accounts.accounts);
         order
@@ -2572,7 +2510,7 @@ fn java_player_with(
         .session
         .or(pass.owner)
         .or_else(kept)
-        .ok_or_else(|| NoOwner::default().to_string())?;
+        .ok_or_else(|| format!("{NEEDS_OWNER}."))?;
     Ok(crate::java_launch::Player {
         name: account.name,
         uuid: account.uuid,

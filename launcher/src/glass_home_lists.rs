@@ -400,16 +400,9 @@ impl Launcher {
             36.,
             &t,
         );
-        // Signed out, Join signs in first, as Play does; otherwise a dimmed Join says why.
-        let signed_out =
-            self.owner == Some(false) && !horizon_launcher::developer_offline::selected();
-        let join = if signed_out && !offline {
-            join.tooltip(ui::tip(tr("Sign in to join")))
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.sign_in_to_play();
-                    cx.notify();
-                }))
-        } else if self.can_join_selected() && !offline {
+        // Joining needs no account: an online-mode server refuses an unsigned player itself,
+        // and the game says so. A dimmed Join only ever means "not ready yet".
+        let join = if self.can_join_selected() && !offline {
             join.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.quick_play("--server", ip.clone());
                 cx.notify();

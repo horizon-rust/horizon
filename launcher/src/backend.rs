@@ -1221,7 +1221,7 @@ fn asset_installed<'a>(
 }
 
 mod developer_play;
-pub use developer_play::client_as;
+pub use developer_play::{client_as, set_local_name};
 
 /// Downloads `release`'s archive for this platform, checks it against `sha256` (its signed
 /// checksum), and unpacks it as the installed version `tag`.
@@ -1984,7 +1984,7 @@ fn preparer_binary(dir: &Path) -> Option<PathBuf> {
 
 /// Downloads the pinned version from Mojang into `dir` when an account in the launcher owns
 /// Minecraft (asked again now), else says what signing in would do, as the last line of the
-/// not-found error.
+/// not-found error. Playing without an owner needs no download: the player's own install.
 fn download_for_owner(
     pins: &sources::Pins,
     dir: &Path,
@@ -2002,7 +2002,18 @@ fn download_for_owner(
     if let Err(e) = accounts.save_renewed() {
         log(format!("Horizon: the accounts are not saved: {e}"));
     }
-    download_for(pins, dir, pass, !accounts.accounts.is_empty(), fetch, log)
+    // An owner by its last answer, which the services couldn't confirm now, still can't be
+    // downloaded for: Mojang's files go only to an account it just said owns the game.
+    let had_owner = accounts.has_owner(account::store());
+    download_for(
+        pins,
+        dir,
+        pass.owner.map(|(owner, _)| owner),
+        pass.offline,
+        had_owner,
+        fetch,
+        log,
+    )
 }
 
 /// Downloads Minecraft `id` (any version on Mojang's list, its version file's sha1 from it) into
@@ -2123,22 +2134,21 @@ pub fn java_game(
     )
 }
 
-/// What [`download_for_owner`] does with the owner gate's answer: Mojang's files only for its
-/// `owner`, an account the services said owns the game just now.
+/// What [`download_for_owner`] does with the accounts' answer: Mojang's files only for
+/// `owner`, an account the services said owns the game just now. Playing needs no owner and no
+/// download — the player's own install is enough; fetching Mojang's files stays Mojang's rule.
 fn download_for(
     pins: &sources::Pins,
     dir: &Path,
-    pass: Result<account::Launch, account::NoOwner>,
-    signed_in: bool,
+    owner: Option<account::Account>,
+    offline: Option<String>,
+    had_owner: bool,
     fetch: sources::Fetch,
     log: &dyn Fn(String),
 ) -> Result<(), String> {
     let v = &pins.version;
-    match pass {
-        Ok(account::Launch {
-            owner: Some((owner, _)),
-            ..
-        }) => {
+    match owner {
+        Some(owner) => {
             let name = owner.name;
             log(format!(
                 "{name} owns Minecraft: downloading {v} from Mojang"
@@ -2153,16 +2163,12 @@ fn download_for(
             })
         }
         // An owner by its last answer, who can't be asked now.
-        Ok(pass) => Err(format!(
+        None if had_owner => Err(format!(
             "\n  • Downloading {v} from Mojang needs your Microsoft account, which could not be \
              checked: {}",
-            pass.offline.unwrap_or_default()
+            offline.unwrap_or_default()
         )),
-        Err(_) if signed_in => Err(
-            "\n  • No signed-in account owns Minecraft: Java Edition, so Horizon can't download it."
-                .into(),
-        ),
-        Err(_) => Err(format!(
+        None => Err(format!(
             "\n  • Or sign in with the Microsoft account that owns Minecraft: Horizon then \
              downloads {v} from Mojang itself."
         )),
@@ -3084,7 +3090,7 @@ pub fn client(tag: &str) -> Result<Command, String> {
     client_as(tag, None)
 }
 
-/// What the command line adds to a refusal to play for want of an account.
+/// What the command line adds where an account is asked for and none fits (`play --account`).
 pub const SIGN_IN_HINT: &str = "Sign in with `horizon-launcher account sign-in`.";
 
 /// Start the game straight into a friend's world: `--server friend:CODE`.
@@ -4237,10 +4243,6 @@ pub struct Settings {
     /// The player has been through the first-run welcome (theme, accent, effects).
     #[serde(default)]
     pub welcomed: bool,
-    /// The player without an account that owns the game has read, once, why the launcher needs
-    /// one now (the owner gate's screen).
-    #[serde(default)]
-    pub owner_notice_seen: bool,
     /// Seconds a partner banner (the sidebar's card or the Servers page's banner) has been on
     /// screen, over every start, up to `partner::SEEN_BEFORE_HIDE`: only then can the player hide it.
     #[serde(default)]
@@ -4296,6 +4298,11 @@ pub struct Settings {
     /// move even when the system asks for less.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reduce_motion: Option<bool>,
+    /// The name to play under when no Microsoft account plays: empty or unset is the game's own
+    /// kept name (`horizon-player.txt`). A signed-in account always plays with its own name, so
+    /// this only reaches offline starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player_name: Option<String>,
 }
 
 impl Settings {
@@ -4587,8 +4594,8 @@ mod tests {
     }
 
     /// The launcher downloads Mojang's game files (client jar, libraries, assets) only for an
-    /// account the services said owns the game: never without one, and never past the gate by
-    /// the developer option (`Settings::dev_offline`), whose pass has no owner.
+    /// account the services said owns the game just now: never without one, and never on the
+    /// last answer alone when the services can't be asked again.
     #[test]
     fn mojang_downloads_only_for_an_owner() {
         let dir = std::env::temp_dir().join(format!("horizon-owner-only-{}", std::process::id()));
@@ -4605,14 +4612,11 @@ mod tests {
             Err("no network in tests".into())
         };
         let log = |_: String| {};
-        let no_owner = || Ok(account::Launch::default());
-        for (pass, signed_in) in [
-            (Err(account::NoOwner::default()), false),
-            (Err(account::NoOwner::default()), true),
-            (no_owner(), false),
-            (no_owner(), true),
-        ] {
-            assert!(download_for(&pins, &dir, pass, signed_in, &fetch, &log).is_err());
+        for had_owner in [false, true] {
+            assert!(
+                download_for(&pins, &dir, None, None, had_owner, &fetch, &log).is_err(),
+                "no owner must never download"
+            );
         }
         assert!(asked.lock().unwrap().is_empty());
         assert!(!dir.exists());
@@ -4627,11 +4631,23 @@ mod tests {
             r#"{"refresh_token":"r","minecraft_token":"t","minecraft_expires_at":1,"owns":true}"#,
         )
         .unwrap();
-        let pass = Ok(account::Launch {
-            owner: Some((owner, secrets)),
+        let pass = account::Launch {
+            owner: Some((owner.clone(), secrets)),
             ..Default::default()
-        });
-        assert!(download_for(&pins, &dir, pass, true, &fetch, &log).is_err());
+        };
+        assert!(
+            download_for(
+                &pins,
+                &dir,
+                pass.owner.as_ref().map(|(a, _)| a.clone()),
+                None,
+                false,
+                &fetch,
+                &log
+            )
+            .is_err(),
+            "the download itself fails without network"
+        );
         assert!(!asked.lock().unwrap().is_empty());
         let _ = fs::remove_dir_all(&dir);
 
@@ -4643,8 +4659,8 @@ mod tests {
         )
         .unwrap();
         asked.lock().unwrap().clear();
-        for (pass, signed_in) in [(Err(account::NoOwner::default()), true), (no_owner(), true)] {
-            assert!(download_for(&pins, &dir, pass, signed_in, &fetch, &log).is_err());
+        for had_owner in [false, true] {
+            assert!(download_for(&pins, &dir, None, None, had_owner, &fetch, &log).is_err());
         }
         assert!(asked.lock().unwrap().is_empty());
         let _ = fs::remove_dir_all(&dir);
@@ -4683,7 +4699,6 @@ mod tests {
         };
         assert!(body("download_for").contains("mojang::download("));
         assert!(body("download_for_owner").contains("account::launch("));
-        assert!(!body("download_for_owner").contains("launch_for_game("));
         // `download_for` is defined once and called once, by `download_for_owner`.
         assert_eq!(backend.matches("download_for(").count(), 2);
         assert!(body("download_for_owner").contains("download_for("));

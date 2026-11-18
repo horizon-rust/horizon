@@ -45,8 +45,11 @@ impl Launcher {
             ),
             None => (
                 None,
-                tr("Sign in with Microsoft").to_string(),
-                (Tone::Off, tr(account::NEEDS_OWNER)),
+                tr("Playing offline").to_string(),
+                (
+                    Tone::Off,
+                    tr("The game's own name, or the Player name in Settings. Sign in below to play online servers with your own name and skin."),
+                ),
             ),
         };
         let head = div()

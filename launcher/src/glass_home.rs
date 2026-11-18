@@ -310,12 +310,6 @@ impl Launcher {
                         ("when", &last_played(when)),
                     ],
                 ),
-                // Signed out, the button says "Sign in to play": the line says the same.
-                None if self.owner == Some(false)
-                    && !horizon_launcher::developer_offline::selected() =>
-                {
-                    tr("You haven't played this one yet. Sign in to start.").into()
-                }
                 None => tr("You haven't played this one yet. Press Play to start.").into(),
             },
             (None, None) => String::new(),
@@ -533,7 +527,7 @@ impl Launcher {
             .items_center()
             .flex_none()
             // At least the mockup's width, wider when the label needs it ("Prepare & play",
-            // "Sign in to play", a long translation).
+            // a long translation).
             .min_w(px(if self.window_width >= WIDE {
                 200.
             } else {
@@ -611,27 +605,18 @@ impl Launcher {
                         })),
                 ),
             None => {
-                let owner = if horizon_launcher::developer_offline::selected() {
-                    Some(true)
-                } else {
-                    self.owner
-                };
-                // `HORIZON_LAUNCHER_PREVIEW_OWNER=1`: Play as for an owner with the game's files
-                // ready, to drive Build and play in debug builds without a sign-in.
+                // `HORIZON_LAUNCHER_PREVIEW_OWNER=1`: Play as for a version whose game files
+                // aren't ready, to drive Build and play in debug builds without preparing.
                 let preview = cfg!(debug_assertions)
                     && std::env::var_os("HORIZON_LAUNCHER_PREVIEW_OWNER").is_some_and(|v| v == "1");
-                let (ready, owner) = if preview {
-                    (true, Some(true))
-                } else {
-                    (ready, owner)
-                };
-                let press = play_press(ready, owner, false);
+                let ready = ready || preview;
+                let press = play_press(ready, false);
                 let build_first =
                     needs_build && update.is_none() && matches!(press, PlayPress::Play);
                 let (label, icon) = match &update {
                     Some(_) => (tr("Update"), "download-04"),
                     None if build_first => (tr("Build and play"), "hammer"),
-                    None => (tr(play_label(press, owner)), "play"),
+                    None => (tr(play_label(press)), "play"),
                 };
                 let main = crate::track_hover(
                     body(label.into(), icon).id("play").cursor_pointer(),
@@ -681,15 +666,6 @@ impl Launcher {
                                 .cloned()
                                 .zip(this.selected_instance().map(|i| i.id.clone()));
                             this.prepare(backend::MinecraftFrom::Install);
-                            cx.notify();
-                        }))
-                    }
-                    // No account here owns the game: the button says "Sign in to play", so a
-                    // press signs in, as the top bar's Sign in with Microsoft does.
-                    (None, PlayPress::Nothing) if owner == Some(false) => {
-                        main.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.picker.open = false;
-                            this.sign_in_to_play();
                             cx.notify();
                         }))
                     }

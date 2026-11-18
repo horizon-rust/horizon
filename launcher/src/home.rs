@@ -243,15 +243,7 @@ impl Launcher {
             .child(label(
                 tr(if running { "Running" } else { "Play" }).to_string(),
             ));
-        match play_press(
-            ready,
-            if horizon_launcher::developer_offline::selected() {
-                Some(true)
-            } else {
-                self.owner
-            },
-            self.preparing || running,
-        ) {
+        match play_press(ready, self.preparing || running) {
             PlayPress::Nothing => play = disabled(play),
             PlayPress::Play => {
                 play = play.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {

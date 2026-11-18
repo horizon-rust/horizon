@@ -476,10 +476,11 @@ pub(crate) fn segments<T: Copy + PartialEq + 'static>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlayPress {
     Play,
-    /// Not prepared, for an account that owns the game: prepare it (from the player's install,
-    /// else downloaded from Mojang for that account), then play, as the official launcher does.
+    /// Not prepared: get the game's files in place first (the player's own install, or
+    /// downloaded from Mojang for an account that owns the game), then play, as the official
+    /// launcher does.
     PrepareThenPlay,
-    /// Not prepared and no owner (signing in comes first), or busy preparing or playing.
+    /// Busy preparing or playing.
     Nothing,
 }
 
@@ -529,23 +530,22 @@ pub(crate) fn sign_in_change(
     Some(next)
 }
 
-/// `owner`: whether an account here owns the game, by the keychain (`Launcher::owner`).
-pub(crate) fn play_press(prepared: bool, owner: Option<bool>, busy: bool) -> PlayPress {
-    match (prepared, owner) {
-        _ if busy => PlayPress::Nothing,
+/// What Play does with the selected version: a prepared game starts, anything else is prepared
+/// first. Whether an account owns the game only says where the files can come from (the Prepare
+/// row), never whether Play works.
+pub(crate) fn play_press(prepared: bool, busy: bool) -> PlayPress {
+    match (prepared, busy) {
+        (_, true) => PlayPress::Nothing,
         (true, _) => PlayPress::Play,
-        (false, Some(true)) => PlayPress::PrepareThenPlay,
-        (false, _) => PlayPress::Nothing,
+        (false, _) => PlayPress::PrepareThenPlay,
     }
 }
 
 /// What Play's button says for `press`, so its label is what a click does: "Prepare & play"
-/// when it prepares first, "Sign in to play" when no account here owns the game (it does
-/// nothing then), "Play" otherwise (dimmed while the keychain is still being read).
-pub(crate) fn play_label(press: PlayPress, owner: Option<bool>) -> &'static str {
-    match (press, owner) {
-        (PlayPress::PrepareThenPlay, _) => "Prepare & play",
-        (PlayPress::Nothing, Some(false)) => "Sign in to play",
+/// when it prepares first, "Play" otherwise.
+pub(crate) fn play_label(press: PlayPress) -> &'static str {
+    match press {
+        PlayPress::PrepareThenPlay => "Prepare & play",
         _ => "Play",
     }
 }
@@ -554,7 +554,7 @@ pub(crate) fn play_label(press: PlayPress, owner: Option<bool>) -> &'static str 
 /// code, a pack's Play) starts it now: only when Play would play. Never while a preparation runs:
 /// the game would open on half-written files.
 pub(crate) fn starts_now(prepared: bool, preparing: bool, running: bool) -> bool {
-    play_press(prepared, None, preparing || running) == PlayPress::Play
+    play_press(prepared, preparing || running) == PlayPress::Play
 }
 
 /// Whether `tag` can start being deleted now: it is installed, no instance plays it (`used_by`),

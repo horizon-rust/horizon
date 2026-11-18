@@ -116,28 +116,31 @@ impl Launcher {
         let left = self.download_left();
         let steps = self.preparing.then(|| self.steps(&version, left));
 
-        // Not prepared: an owner can have Horizon download Minecraft from Mojang; without an
-        // owner there is nothing to play, so signing in comes first.
-        let first = (!prepared && !self.preparing)
-            .then_some(self.owner)
-            .flatten();
+        // Not prepared: the files come from the player's own Minecraft install, or from Mojang
+        // for an account that owns the game. Which of those is on offer depends on the account;
+        // preparing and playing never depend on one.
+        let owner = self.owner == Some(true);
         // No launcher folder with Minecraft on this computer: an owner needs none.
         let no_install = self.settings.minecraft_dir.is_none();
-        let resources_value = match first {
-            _ if self.preparing => tr("Preparing…").to_string(),
-            Some(true) if no_install => trf(
+        let resources_value = if self.preparing {
+            tr("Preparing…").to_string()
+        } else if prepared {
+            backend::resources_summary(prepared, !silent, &version)
+        } else if owner && no_install {
+            trf(
                 "Not prepared. Play downloads Minecraft {version} from Mojang for your account and prepares it.",
                 &[("version", &version)],
-            ),
-            Some(true) => trf(
+            )
+        } else if owner {
+            trf(
                 "Not prepared. Horizon can download Minecraft {version} from Mojang for your account, or use your own install.",
                 &[("version", &version)],
-            ),
-            Some(false) => trf(
-                "Not prepared. Sign in with the Microsoft account that owns Minecraft {version} first.",
+            )
+        } else {
+            trf(
+                "Not prepared. Prepare needs the Minecraft {version} files: choose your install in Settings, or sign in and Horizon downloads them from Mojang.",
                 &[("version", &version)],
-            ),
-            None => backend::resources_summary(prepared, !silent, &version),
+            )
         };
         let mut prepare = button(
             "prepare",
@@ -157,8 +160,11 @@ impl Launcher {
                 cx.notify();
             }));
         }
-        let prepare = match first {
-            Some(true) if no_install => div().child(
+        let prepare = if !owner && !prepared {
+            // Nothing to download for: only the player's own install.
+            div().child(prepare)
+        } else if owner && no_install {
+            div().child(
                 button(
                     "prepare-download",
                     "Download and prepare",
@@ -169,8 +175,9 @@ impl Launcher {
                     this.prepare(backend::MinecraftFrom::Mojang);
                     cx.notify();
                 })),
-            ),
-            Some(true) => div()
+            )
+        } else {
+            div()
                 .flex()
                 .gap(px(8.))
                 .child(
@@ -192,16 +199,8 @@ impl Launcher {
                         this.prepare(backend::MinecraftFrom::Mojang);
                         cx.notify();
                     })),
-                ),
-            Some(false) => div().child(microsoft::sign_in_button("prepare-sign-in", &t).on_click(
-                cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.sign_in_to_play();
-                    cx.notify();
-                }),
-            )),
-            None => div().child(prepare),
+                )
         };
-        let owner = self.owner == Some(true);
         let minecraft = self.settings.minecraft_dir.as_deref().map_or_else(
             || {
                 div()
@@ -268,10 +267,11 @@ impl Launcher {
             )),
         };
         // The top bar shows who plays; a row only when there is something to do about it: no
-        // account that owns the game (Play needs one), or offline. The glass look's top bar has
-        // Sign in with Microsoft and says Offline itself.
+        // account signed in at all (online servers and the Mojang download need one), or
+        // playing without one. The glass look's top bar has Sign in with Microsoft and says
+        // Offline itself.
         if !t.glass {
-            if self.owner == Some(false) {
+            if self.accounts.accounts.is_empty() && account::client_id().is_some() {
                 rows = rows.child(index_row(
                     5,
                     tr("Microsoft account"),
@@ -283,7 +283,7 @@ impl Launcher {
                     Some(
                         microsoft::sign_in_button("gate-sign-in", &t)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.sign_in_to_play();
+                                this.start_sign_in();
                                 cx.notify();
                             }))
                             .into_any_element(),

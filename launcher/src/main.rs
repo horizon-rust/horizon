@@ -73,12 +73,12 @@ mod native_registry_consent;
 mod nav_strip;
 mod new_instance;
 mod notes_cache;
-mod owner_page;
 mod packs_page;
 mod partner;
 mod perf;
 mod picture_cache;
 mod plate;
+mod player_name;
 mod profile_heads;
 mod screenshots_page;
 mod scrollbar;
@@ -142,8 +142,7 @@ enum Page {
 impl Page {
     /// `HORIZON_LAUNCHER_PAGE=mods` (or `modpacks`, `resourcepacks`, `shaders`, `servers`, `versions`,
     /// `settings`) opens on that page, for screenshots; Home otherwise (`getting-ready`: Home
-    /// preparing, `home::getting_ready_preview`; `sign-in`: the owner gate's sheet with a
-    /// made-up code, `owner_page::sign_in_preview`; `new-instance`: Home with the New instance
+    /// preparing, `home::getting_ready_preview`; `new-instance`: Home with the New instance
     /// dialog open on Modded; `edit-instance`: the selected one's Edit dialog; `worlds`, `packs`...: Home on that tab, `HomeTab::from_env`).
     fn from_env() -> Page {
         let page = match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
@@ -450,8 +449,6 @@ struct Launcher {
     /// Whether an account here owns the game, by the keychain's last answers (the owner gate);
     /// none until the keychain has been read.
     owner: Option<bool>,
-    /// Play was refused (or Home's Sign in pressed): the owner gate's screen is open.
-    owner_screen_open: bool,
     /// The game is waiting for its session (a token renewal), or a Java instance for its files
     /// and Java (`start_java`), before it starts.
     starting_client: Option<String>,
@@ -485,6 +482,11 @@ struct Launcher {
     proxy_input: line_edit::LineEdit,
     proxy_focused: bool,
     proxy_focus: FocusHandle,
+    /// Settings' Player name field, the same way (`player_name`): the name to play under when
+    /// no Microsoft account plays.
+    name_input: line_edit::LineEdit,
+    name_focused: bool,
+    name_focus: FocusHandle,
     /// Opt-in data collection: the player's answer and Settings' section (`collection`).
     collection: collection::Collection,
     /// Settings' "Connect an AI agent" (`agents_page`).
@@ -785,33 +787,25 @@ mod tests {
         );
     }
 
-    /// An owner's Play works on a version not prepared yet: it prepares it (downloading
-    /// Minecraft from Mojang when this computer has no install), then plays. Without an owner
-    /// it stays off: signing in comes first.
+    /// Play works on a version not prepared yet: it gets the game's files in place (from the
+    /// player's install, or from Mojang for an account that owns the game), then plays. No
+    /// account is needed to get that far.
     #[test]
-    fn play_prepares_first_for_an_owner() {
+    fn play_prepares_first_when_not_ready() {
         use super::{play_press, PlayPress};
-        assert_eq!(play_press(true, Some(true), false), PlayPress::Play);
-        assert_eq!(play_press(true, None, false), PlayPress::Play);
-        assert_eq!(
-            play_press(false, Some(true), false),
-            PlayPress::PrepareThenPlay
-        );
-        assert_eq!(play_press(false, Some(false), false), PlayPress::Nothing);
-        assert_eq!(play_press(false, None, false), PlayPress::Nothing);
-        assert_eq!(play_press(false, Some(true), true), PlayPress::Nothing);
-        assert_eq!(play_press(true, Some(true), true), PlayPress::Nothing);
+        assert_eq!(play_press(true, false), PlayPress::Play);
+        assert_eq!(play_press(false, false), PlayPress::PrepareThenPlay);
+        assert_eq!(play_press(false, true), PlayPress::Nothing);
+        assert_eq!(play_press(true, true), PlayPress::Nothing);
     }
 
-    /// Home's one button never says Play over a click that prepares, or that cannot play.
+    /// Home's one button never says Play over a click that prepares.
     #[test]
     fn play_says_what_it_will_do() {
         use super::{play_label, play_press};
-        let say = |prepared, owner| play_label(play_press(prepared, owner, false), owner);
-        assert_eq!(say(true, Some(true)), "Play");
-        assert_eq!(say(false, Some(true)), "Prepare & play");
-        assert_eq!(say(false, Some(false)), "Sign in to play");
-        assert_eq!(say(false, None), "Play");
+        let say = |prepared| play_label(play_press(prepared, false));
+        assert_eq!(say(true), "Play");
+        assert_eq!(say(false), "Prepare & play");
     }
 
     /// A server's Join (and every other shortcut) waits like Play: not while the version's

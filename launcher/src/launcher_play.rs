@@ -332,10 +332,12 @@ impl Launcher {
                 }
             }
             backend::play_step("reading the sign-in");
+            // `None` is the unsigned developer mode's launch; an account-less normal start is a
+            // `GameSession` with no file, which the game plays offline.
             let session = if horizon_launcher::developer_offline::enabled(&tag) {
-                Ok(None)
+                None
             } else {
-                account::session_for_game(&backend::game_home()).map(Some)
+                Some(account::session_for_game(&backend::game_home()))
             };
             backend::play_step("starting the game");
             let _ = tx.send(Msg::Session(session));
