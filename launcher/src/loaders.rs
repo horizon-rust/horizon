@@ -168,7 +168,8 @@ fn never_supported(kind: Kind, minecraft: &str, fetch: Fetch) -> bool {
     let Ok(Value::Array(games)) = serde_json::from_slice::<Value>(&body) else {
         return false;
     };
-    !games.is_empty() && !games.iter().any(|g| g["version"] == minecraft)
+    let versions: Option<Vec<&str>> = games.iter().map(|g| g["version"].as_str()).collect();
+    versions.is_some_and(|v| !v.is_empty() && !v.contains(&minecraft))
 }
 
 /// The loader `kind` names at `version` (none or `latest`: the newest stable one) for
