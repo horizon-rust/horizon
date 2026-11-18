@@ -2,6 +2,8 @@ name: checks
 # verify: every pull request and every push to main, its parts side by side (below). It is the check main
 # requires, so it runs in every run of this workflow, even a cancelled one: a skipped job counts as passed, and every
 # run must report a real verify (a pull request that changes no Rust finishes its Rust parts in seconds instead).
+# native-clippy: Windows and macOS lint the server build and OS-specific crates after Linux lint passes; documentation-only
+# pull requests skip it. Disposable hosted runners keep forks away from the Mac mini's release and parity data.
 # parity: the vanilla harnesses a pull request's changes can affect, on the Mac mini's runner, which holds the
 # maintainer's own Minecraft files (Horizon never downloads the game); .github/workflows/parity.yml. Only for a pull
 # request that changes a harness, oracle, probe or the runner: the rest are checked on main by parity-main. A fork's pull
@@ -135,6 +137,8 @@ jobs:
     if: github.event_name != 'merge_group'
     runs-on: ${{ vars.SELF_HOSTED_CI == 'all' && fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'blacksmith-16vcpu-ubuntu-2404' }}
     timeout-minutes: 45
+    outputs:
+      rust: ${{ steps.rust.outputs.required }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -186,6 +190,41 @@ jobs:
         run: |
           [ "$TESTED" = true ] || cargo +stable fmt --all -- --check
           cargo +stable clippy --workspace --all-targets --locked -- -D warnings
+  # Only after Linux lint passes, so a lint-broken or documentation-only pull request takes no native runner. Main and manual
+  # runs have no rust-step output and still lint. Native SDKs avoid cross-build setup; no tests or release builds here.
+  # verify-lint skips the merge queue, so this dependent job does too; queued pull requests were already linted.
+  native-clippy:
+    name: native clippy (${{ matrix.os }})
+    needs: verify-lint
+    if: needs.verify-lint.outputs.rust != 'false'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: native-clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Lint the server build and platform-specific crates
+        run: >-
+          cargo +stable clippy --all-targets --locked --no-default-features
+          -p horizon-client -p horizon-threads -p horizon-perf-format
+          -p horizon-perf-share -p horizon-server -- -D warnings
   # The server build (released as horizon-engine): the game without sound or controllers. Its libraries and binaries,
   # not the tests and examples verify-lint checks. Every pull request runs it: the merge queue doesn't, so a change that
   # breaks only the server build must stop on its own pull request (a crate below the client can break it without
@@ -403,7 +442,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
   verify:
-    needs: [verify-tree, verify-lint, verify-server, verify-launcher, verify-test]
+    needs: [verify-tree, verify-lint, verify-server, verify-launcher, verify-test, native-clippy]
     if: always()
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
@@ -412,12 +451,13 @@ jobs:
         env:
           TREE: ${{ needs.verify-tree.result }}
           LINT: ${{ needs.verify-lint.result }}
+          NATIVE: ${{ needs.native-clippy.result }}
           SERVER: ${{ needs.verify-server.result }}
           LAUNCHER: ${{ needs.verify-launcher.result }}
           TEST: ${{ needs.verify-test.result }}
         run: |
-          echo "tree and Python tests: $TREE, format and lint: $LINT, server build: $SERVER, launcher: $LAUNCHER, Rust tests: $TEST"
-          for result in "$TREE" "$LINT" "$SERVER" "$LAUNCHER" "$TEST"; do
+          echo "tree and Python tests: $TREE, format and lint: $LINT, native clippy: $NATIVE, server build: $SERVER, launcher: $LAUNCHER, Rust tests: $TEST"
+          for result in "$TREE" "$LINT" "$NATIVE" "$SERVER" "$LAUNCHER" "$TEST"; do
             [ "$result" = success ] || [ "$result" = skipped ] || exit 1
           done
   # Compile and test Windows ARM64 on an actual ARM64 host, and inspect the resulting PE headers. By hand only
