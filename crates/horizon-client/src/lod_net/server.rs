@@ -74,6 +74,7 @@ pub struct Service {
     /// Sampling threads, started with the first tile.
     threads: usize,
     worker: Option<Worker>,
+    spawn: Spawn,
     /// Replies the worker finished, waiting for their connection.
     ready: VecDeque<(u32, Vec<u8>)>,
 }
@@ -100,6 +101,7 @@ impl Service {
                 n => n as usize,
             },
             worker: None,
+            spawn,
             ready: VecDeque::new(),
         }
     }
@@ -159,12 +161,17 @@ impl Service {
     pub fn players(&self) -> usize {
         self.players.len()
     }
-    /// Queue a served tile: the worker starts with the first.
+    /// Queue a served tile: the worker starts with the first. Where no
+    /// sampling thread could start, the tile is refused and the next one
+    /// tries again.
     pub fn push(&mut self, job: Job) {
-        let (names, threads) = (self.biome_names.clone(), self.threads);
-        let worker = self
-            .worker
-            .get_or_insert_with(|| Worker::start(names, threads));
+        if self.worker.is_none() {
+            self.worker = Worker::start(self.biome_names.clone(), self.threads, self.spawn);
+        }
+        let Some(worker) = &self.worker else {
+            self.ready.push_back((job.conn, refusal(job.request.id)));
+            return;
+        };
         let mut queue = lock(&worker.shared.queue);
         let waiting = (Instant::now(), job);
         match queue
@@ -215,11 +222,17 @@ struct WorkerShared {
     wake: Condvar,
     /// Replies sampled, for [`Service::deliver`].
     done: Mutex<Vec<(u32, Vec<u8>)>>,
-    tiles: Mutex<TileCache>,
+    tiles: Mutex<Tiles>,
+    biome_names: Arc<Vec<String>>,
+}
+/// The tiles kept and the ones being sampled, under one lock: a request
+/// either finds the tile kept or joins its sampling, and a tile's changes
+/// are checked as it is kept.
+struct Tiles {
+    kept: TileCache,
     /// The tiles being sampled, with the players who asked for one of them
     /// meanwhile (connection and request id): they get its reply too.
-    sampling: Mutex<HashMap<Sampling, Vec<(u32, u32)>>>,
-    biome_names: Arc<Vec<String>>,
+    sampling: HashMap<Sampling, Vec<(u32, u32)>>,
 }
 /// A tile being sampled: its level, its source's address and the request's
 /// shape.
@@ -230,27 +243,49 @@ struct Queue {
     players: VecDeque<(u32, VecDeque<(Instant, Job)>)>,
     stop: bool,
 }
+/// Starts a sampling thread: [`thread::Builder::spawn`], or a test's.
+type Spawn =
+    fn(thread::Builder, Box<dyn FnOnce() + Send>) -> std::io::Result<thread::JoinHandle<()>>;
+fn spawn(
+    builder: thread::Builder,
+    work: Box<dyn FnOnce() + Send>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    builder.spawn(work)
+}
 impl Worker {
-    fn start(biome_names: Arc<Vec<String>>, threads: usize) -> Self {
+    /// The worker on up to `threads` threads; with fewer where the system
+    /// refuses one, None where it refuses the first.
+    fn start(biome_names: Arc<Vec<String>>, threads: usize, spawn: Spawn) -> Option<Self> {
         let shared = Arc::new(WorkerShared {
             queue: Mutex::default(),
             wake: Condvar::new(),
             done: Mutex::default(),
-            tiles: Mutex::new(TileCache::new(cache::MAX_BYTES)),
-            sampling: Mutex::default(),
+            tiles: Mutex::new(Tiles {
+                kept: TileCache::new(cache::MAX_BYTES),
+                sampling: HashMap::new(),
+            }),
             biome_names,
         });
-        let threads = (0..threads.max(1))
+        let wanted = threads.max(1);
+        let threads: Vec<_> = (0..wanted)
             .map_while(|index| {
                 let worker = shared.clone();
                 // A thread the system refuses leaves the work to the others.
-                thread::Builder::new()
-                    .name("Far terrain server".into())
-                    .spawn(move || worker.work(index > 0))
-                    .ok()
+                let builder = thread::Builder::new().name("Far terrain server".into());
+                spawn(builder, Box::new(move || worker.work(index > 0))).ok()
             })
             .collect();
-        Self { shared, threads }
+        if threads.is_empty() {
+            log::warn!("Far terrain: no sampling thread could start; tiles refused");
+            return None;
+        }
+        if threads.len() < wanted {
+            log::warn!(
+                "Far terrain: {} of {wanted} sampling threads could start",
+                threads.len()
+            );
+        }
+        Some(Self { shared, threads })
     }
 }
 /// The thread count of [`THREADS_PROPERTY`](super::THREADS_PROPERTY)'s
@@ -271,17 +306,6 @@ impl WorkerShared {
             HashMap::new();
         while let Some(job) = self.next(helper) {
             let r = job.request;
-            let kept = {
-                let mut tiles = lock(&self.tiles);
-                if let Some(save) = &job.save {
-                    tiles.follow(&job.level, &job.source, save);
-                }
-                tiles.get(&job.level, &job.source, &r)
-            };
-            if let Some(reply) = kept {
-                lock(&self.done).push((job.conn, reply));
-                continue;
-            }
             let key: Sampling = (
                 job.level.clone(),
                 Arc::as_ptr(&job.source) as *const () as usize,
@@ -290,14 +314,25 @@ impl WorkerShared {
                 r.stride,
                 r.approximate,
             );
-            match lock(&self.sampling).entry(key.clone()) {
-                // Another thread samples it: its reply answers this one too.
-                std::collections::hash_map::Entry::Occupied(mut waiting) => {
-                    waiting.get_mut().push((job.conn, r.id));
+            {
+                let mut tiles = lock(&self.tiles);
+                if let Some(save) = &job.save {
+                    tiles.kept.follow(&job.level, &job.source, save);
+                }
+                if let Some(reply) = tiles.kept.get(&job.level, &job.source, &r) {
+                    drop(tiles);
+                    lock(&self.done).push((job.conn, reply));
                     continue;
                 }
-                std::collections::hash_map::Entry::Vacant(free) => {
-                    free.insert(Vec::new());
+                match tiles.sampling.entry(key.clone()) {
+                    // Another thread samples it: its reply answers this one too.
+                    std::collections::hash_map::Entry::Occupied(mut waiting) => {
+                        waiting.get_mut().push((job.conn, r.id));
+                        continue;
+                    }
+                    std::collections::hash_map::Entry::Vacant(free) => {
+                        free.insert(Vec::new());
+                    }
                 }
             }
             // The save's changes from here: one over the tile while it is
@@ -330,12 +365,18 @@ impl WorkerShared {
                 samplers.remove(&job.level);
                 refusal(r.id)
             });
-            let changed = (job.save.as_ref().zip(start))
-                .is_some_and(|(save, start)| cache::changed_under(save, start, &r));
-            if sampled && !changed {
-                lock(&self.tiles).put(&job.level, &job.source, &r, &reply);
-            }
-            let waiting = lock(&self.sampling).remove(&key).unwrap_or_default();
+            let waiting = {
+                let mut tiles = lock(&self.tiles);
+                // Under the lock `follow` takes: a change it hasn't taken
+                // off the kept tiles is either seen here or comes after the
+                // tile is kept, and the next `follow` takes it off.
+                let changed = (job.save.as_ref().zip(start))
+                    .is_some_and(|(save, start)| cache::changed_under(save, start, &r));
+                if sampled && !changed {
+                    tiles.kept.put(&job.level, &job.source, &r, &reply);
+                }
+                tiles.sampling.remove(&key).unwrap_or_default()
+            };
             let mut done = lock(&self.done);
             for (conn, id) in waiting {
                 done.push((conn, cache::with_id(&reply, r.id, id)));
@@ -674,11 +715,23 @@ mod tests {
         }
     }
 
+    /// Opens its gate when dropped: a failed assertion doesn't leave the
+    /// worker's threads blocked in `Gated` while the service joins them.
+    struct Opens(Arc<Gate>);
+    impl Drop for Opens {
+        fn drop(&mut self) {
+            lock(&self.0.state).0 = true;
+            self.0.changed.notify_all();
+        }
+    }
+
     #[test]
     fn a_second_thread_samples_only_once_a_tile_waited_too_long() {
         let now = Instant::now();
         let mut service = Service::new(64, 2, Vec::new());
         let gate = Arc::new(Gate::default());
+        // Dropped before the service, also as a failed assertion unwinds.
+        let opens = Opens(gate.clone());
         let source: Arc<dyn LodSource> = Arc::new(Gated(gate.clone()));
         let push = |service: &mut Service, id: u32| {
             let Verdict::Serve(request) =
@@ -714,9 +767,36 @@ mod tests {
         // The second thread takes it, but only once it has waited too long.
         assert_eq!(sampling(2), 2);
         assert!(pushed.elapsed() >= BEHIND);
-        lock(&gate.state).0 = true;
-        gate.changed.notify_all();
+        drop(opens);
         assert_eq!(replies(&mut service, 2).len(), 2);
+    }
+
+    #[test]
+    fn a_tile_no_thread_could_start_for_is_refused_and_the_next_one_starts_them() {
+        let now = Instant::now();
+        let mut service = Service::new(64, 2, Vec::new());
+        let source: Arc<dyn LodSource> = Arc::new(Counted(Arc::default()));
+        let push = |service: &mut Service, id: u32| {
+            let Verdict::Serve(request) = service.request(1, &request(id, 0), [0.0; 3], true, now)
+            else {
+                panic!("served");
+            };
+            service.push(Job {
+                conn: 1,
+                level: "minecraft:overworld".into(),
+                source: source.clone(),
+                save: None,
+                request,
+            });
+            replies(service, 1)
+        };
+        service.spawn = |_, _| Err(std::io::Error::other("no threads left"));
+        assert_eq!(push(&mut service, 1), [(1, refusal(1))]);
+        assert_eq!(service.players[&1].in_flight, 0);
+        service.spawn = spawn;
+        let got = push(&mut service, 2);
+        assert_eq!(got.len(), 1);
+        assert_ne!(got[0].1, refusal(2));
     }
 
     #[test]
