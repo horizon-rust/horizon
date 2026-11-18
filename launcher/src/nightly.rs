@@ -263,6 +263,57 @@ pub fn stable_builds(releases: &[Release]) -> Vec<StableBuild> {
         .collect()
 }
 
+/// The build Stable offers in `releases`: the newest of [`stable_builds`].
+pub fn stable_target(releases: &[Release]) -> Option<Release> {
+    let tag = stable_builds(releases).into_iter().next()?.tag;
+    releases.iter().find(|r| r.tag == tag).cloned()
+}
+
+/// Whether `a` and `b` are the same download: one tag, title and file.
+fn same_build(a: &Release, b: &Release) -> bool {
+    a.tag == b.tag && a.name == b.name && a.asset == b.asset
+}
+
+/// What Home offers a Stable instance set to Latest: [`stable_target`] when it isn't installed,
+/// and isn't `failed`, a download that failed and stays left out until the list is read again
+/// from GitHub.
+pub fn stable_offer(
+    releases: &[Release],
+    installed: &[String],
+    failed: Option<&Release>,
+) -> Option<Release> {
+    stable_target(releases)
+        .filter(|next| !installed.contains(&next.tag))
+        .filter(|next| !failed.is_some_and(|f| same_build(f, next)))
+}
+
+/// Installs `target`, Home's Stable update, in one press. GitHub's `nightly` may have moved on
+/// since the offer was read, so the download fails its check: then the list is read again from
+/// the network (`fresh`), given to `read` with the new target, and that one is installed once.
+/// Returns the build tried last and how it went.
+pub fn install_stable(
+    target: Release,
+    fresh: impl FnOnce() -> Result<Vec<Release>, String>,
+    read: impl FnOnce(Vec<Release>, Option<&Release>),
+    install: impl Fn(&Release) -> Result<(), String>,
+) -> (Release, Result<(), String>) {
+    let Err(error) = install(&target) else {
+        return (target, Ok(()));
+    };
+    let Ok(list) = fresh() else {
+        return (target, Err(error));
+    };
+    let next = stable_target(&list).filter(|n| !same_build(n, &target));
+    read(list, next.as_ref());
+    match next {
+        Some(next) => {
+            let result = install(&next);
+            (next, result)
+        }
+        None => (target, Err(error)),
+    }
+}
+
 /// What a Stable instance set to Latest plays, from the installed builds alone (`selected`: the
 /// launcher's version): the newest release after [`LAST_BEFORE_NIGHTLIES`]; else the launcher's
 /// version, unless it is a release from before the Nightlies; else the newest Nightly. None when
@@ -344,6 +395,75 @@ mod tests {
                 week: None
             }]
         );
+    }
+
+    #[test]
+    fn a_stable_install_that_fails_its_check_reads_the_list_again_and_retries_once() {
+        let old = build("nightly-2026-11-13-aaaaaaa", true, true);
+        let new = build("nightly-2026-11-13-bbbbbbb", true, true);
+        let tries = std::cell::RefCell::new(Vec::new());
+        let install = |fails: &'static [&'static str]| {
+            let tries = &tries;
+            move |r: &Release| {
+                tries.borrow_mut().push(r.tag.clone());
+                match fails.contains(&r.tag.as_str()) {
+                    true => Err(format!("{}: checksum mismatch", r.tag)),
+                    false => Ok(()),
+                }
+            }
+        };
+        // `nightly` moved on: the fresh list's target is installed, in the same press.
+        let mut read = None;
+        let (done, result) = install_stable(
+            old.clone(),
+            || Ok(vec![new.clone()]),
+            |_, next| read = next.map(|n| n.tag.clone()),
+            install(&["nightly-2026-11-13-aaaaaaa"]),
+        );
+        assert_eq!((done.tag.as_str(), result), (new.tag.as_str(), Ok(())));
+        assert_eq!(read.as_deref(), Some(new.tag.as_str()));
+        assert_eq!(*tries.borrow(), [old.tag.clone(), new.tag.clone()]);
+        // Only once: the retry failing too is the error shown.
+        tries.borrow_mut().clear();
+        let (done, result) = install_stable(
+            old.clone(),
+            || Ok(vec![new.clone()]),
+            |_, _| {},
+            install(&["nightly-2026-11-13-aaaaaaa", "nightly-2026-11-13-bbbbbbb"]),
+        );
+        assert_eq!(done.tag, new.tag);
+        assert!(result.is_err());
+        assert_eq!(tries.borrow().len(), 2);
+        // The list still offers the same build, or can't be read: no retry.
+        for fresh in [Ok(vec![old.clone()]), Err("offline".to_string())] {
+            tries.borrow_mut().clear();
+            let (done, result) = install_stable(
+                old.clone(),
+                || fresh,
+                |_, _| {},
+                install(&["nightly-2026-11-13-aaaaaaa"]),
+            );
+            assert_eq!(done.tag, old.tag);
+            assert!(result.is_err());
+            assert_eq!(tries.borrow().len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_failed_stable_download_is_not_offered_again() {
+        let target = build("nightly-2026-11-13-aaaaaaa", true, true);
+        let list = [target.clone(), build("v0.2.97", false, true)];
+        let offer = |installed: &[String], failed: Option<&Release>| {
+            stable_offer(&list, installed, failed).map(|r| r.tag)
+        };
+        assert_eq!(offer(&[], None), Some(target.tag.clone()));
+        assert_eq!(offer(&[], Some(&target)), None);
+        // Another build of the same tag (a new title or file) is offered.
+        let mut moved = target.clone();
+        moved.asset = Some(("other.tar.gz".into(), 2));
+        assert_eq!(offer(&[], Some(&moved)), Some(target.tag.clone()));
+        // Installed: nothing to offer.
+        assert_eq!(offer(&[target.tag.clone()], None), None);
     }
 
     #[test]

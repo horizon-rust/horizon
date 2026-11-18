@@ -309,21 +309,23 @@ impl Launcher {
     /// Nightly instances follow, stays; never while another download runs or is queued.
     pub(super) fn install_stable_update(&mut self, release: Release) {
         if !self.stable_update_waits() {
-            self.stable_install = Some(release.tag.clone());
+            self.stable_install = Some(release.clone());
             self.install_for_instance(release);
         }
     }
 
     /// The Stable build Home offers the selected instance (`tag`: what it plays, empty for a
-    /// Java instance): the newest one, when the instance is set to Latest on Stable and lacks it.
+    /// Java instance): the newest one, when the instance is set to Latest on Stable and lacks it,
+    /// and it didn't fail since the list was last read from the network.
     pub(super) fn stable_update(&self, tag: &str) -> Option<Release> {
         self.selected_instance()
             .filter(|i| i.channel == Channel::Stable && i.version.is_none() && !tag.is_empty())?;
-        let next = self.stable_builds().into_iter().next()?.tag;
         match &self.releases {
-            Load::Ready(list) if !self.installed.contains(&next) => {
-                list.iter().find(|r| r.tag == next).cloned()
-            }
+            Load::Ready(list) => horizon_launcher::nightly::stable_offer(
+                list,
+                &self.installed,
+                self.stable_failed.as_ref(),
+            ),
             _ => None,
         }
     }

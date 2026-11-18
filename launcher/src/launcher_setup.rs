@@ -120,6 +120,7 @@ impl Launcher {
             instance_install: None,
             install_next: None,
             stable_install: None,
+            stable_failed: None,
             bar: (0., 0.),
             releases: Load::Loading,
             installed,
@@ -467,7 +468,15 @@ impl Launcher {
     pub(crate) fn check_updates(&mut self) {
         self.checked = Some(Instant::now());
         let tx = self.tx.clone();
+        // A failed Stable download is offered again only after a list read from the network.
+        let failed = self.stable_failed.is_some();
         std::thread::spawn(move || {
+            if let Some(list) = failed
+                .then(backend::releases_from_network)
+                .and_then(Result::ok)
+            {
+                let _ = tx.send(Msg::ReleasesFromNetwork(list));
+            }
             let updates = backend::releases_and_updates(|releases| {
                 if releases.is_ok() {
                     let _ = tx.send(Msg::Releases(releases));

@@ -334,8 +334,8 @@ keep a working build until they update themselves. `.github/release-line.txt` st
   instance stays. Worlds are in the game's folder, never in a version's, so nothing touches them. The "Nightly
   builds" setting is gone. The last week's Nightlies (`nightly-<date>`) and the old releases stay on the Versions
   page. An instance on Stable set to Latest is offered the newest Nightly of each week and plays an installed
-  Nightly, never one of the old releases (up to `v0.2.97`): they stay full releases for `releases/latest`, but
-  Stable skips them. A newer game release, not a pre-release, with a build for the player's platform replaces
+  Nightly, never one of the old releases (up to `v0.2.97`) unless no Nightly is installed yet: they stay full
+  releases for `releases/latest`, but Stable skips them. A newer game release, not a pre-release, with a build for the player's platform replaces
   that weekly Nightly.
 - **Servers** (#3331): `horizon-server update`, `install.sh` and `install.ps1` follow the Nightly the same way.
 - **Kira** posts each Nightly in #releases; the bug template asks for the version the game shows.
