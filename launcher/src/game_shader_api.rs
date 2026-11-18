@@ -201,8 +201,10 @@ fn known() -> std::sync::MutexGuard<'static, Asked> {
 fn keep(game: Game, answer: Option<Vec<String>>) -> Option<Vec<String>> {
     let mut known = known();
     let kept = known.entry(game).or_insert(None);
-    if answer.is_some() {
+    if answer.is_some() && *kept != answer {
         *kept = answer;
+        // What the window judged by the launcher's own line meanwhile is judged again.
+        ANSWERS.fetch_add(1, std::sync::atomic::Ordering::Release);
     }
     kept.clone()
 }
@@ -235,7 +237,11 @@ fn reply(
         .ok()?;
     // Read without waiting, here: a reader that waited for the output to end would wait as long
     // as a process the game started holds it, so nothing reads it once this returns.
-    let mut output = output::Ready::new(child.stdout.take()?);
+    let Ok(mut output) = output::Ready::new(child.stdout.take()?) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
     let deadline = Instant::now() + patience;
     let mut reply = Vec::new();
     let mut ended = None;
@@ -282,20 +288,26 @@ mod output {
 
     impl Ready {
         #[cfg(unix)]
-        pub fn new(output: ChildStdout) -> Self {
+        pub fn new(output: ChildStdout) -> std::io::Result<Self> {
             use std::os::fd::AsRawFd;
             let fd = output.as_raw_fd();
             // SAFETY: `fd` is this pipe's own open read end; only its flags change.
-            unsafe {
+            let set = unsafe {
                 let flags = libc::fcntl(fd, libc::F_GETFL);
-                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+                match flags {
+                    -1 => -1,
+                    _ => libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK),
+                }
+            };
+            match set {
+                -1 => Err(std::io::Error::last_os_error()),
+                _ => Ok(Self(output)),
             }
-            Self(output)
         }
 
         #[cfg(windows)]
-        pub fn new(output: ChildStdout) -> Self {
-            Self(output)
+        pub fn new(output: ChildStdout) -> std::io::Result<Self> {
+            Ok(Self(output))
         }
 
         /// Adds what is there to read to `to`; true once the output has ended.
@@ -460,30 +472,30 @@ pub mod tests {
 
     /// An installed game with no answer is no game's word: a shader pack isn't installed by the
     /// launcher's stand-in line, and the game is asked again. One not installed has nothing to
-    /// say. An answer that comes back while an empty one is kept replaces it.
+    /// say. An answer that comes back while an empty one is kept replaces it. (An installed game
+    /// on disk: `a_shader_pack_goes_by_the_game_of_the_instance_it_is_for`, in its own folders.)
     #[test]
     fn an_installed_game_that_did_not_answer_is_asked_again() {
-        let quiet = "nightly-2026-11-18-quiet";
-        std::fs::create_dir_all(crate::backend::version_dir(quiet)).unwrap();
-        std::fs::write(crate::backend::version_dir(quiet).join(".installed"), "").unwrap();
-        let (lines, unsaid) = of_game(Some(quiet.into()));
-        assert_eq!(lines, [horizon_shader_api::API]);
-        assert_eq!(unsaid, Some(game_of(quiet)));
-        assert_eq!(known().get(&game_of(quiet)), Some(&None));
+        let quiet: Game = ("a quiet game".into(), Some(SystemTime::UNIX_EPOCH));
+        assert_eq!(keep(quiet.clone(), None), None);
         {
-            let _quiet = begin((Some("folder".into()), lines, unsaid));
+            let lines = vec![horizon_shader_api::API.to_owned()];
+            let _quiet = begin((Some("folder".into()), lines, Some(quiet.clone())));
             assert!(said().is_err());
         }
-        assert_eq!(known().get(&game_of(quiet)), None);
+        assert_eq!(known().get(&quiet), None);
         assert_eq!(of_game(Some("nightly-2026-11-18-absent".into())).1, None);
         assert!(with_game(&["0.1"], said).is_ok());
 
-        assert_eq!(keep(game_of(quiet), None), None);
+        assert_eq!(keep(quiet.clone(), None), None);
+        let before = super::answers();
         assert_eq!(
-            keep(game_of(quiet), Some(vec!["0.2".into()])).unwrap(),
+            keep(quiet.clone(), Some(vec!["0.2".into()])).unwrap(),
             ["0.2"]
         );
-        assert_eq!(keep(game_of(quiet), None).unwrap(), ["0.2"]);
+        // The window is told, to judge again what it judged by the launcher's line.
+        assert!(super::answers() > before);
+        assert_eq!(keep(quiet, None).unwrap(), ["0.2"]);
     }
 
     /// A game that hangs is stopped after the wait and gives no answer; one that answers is
