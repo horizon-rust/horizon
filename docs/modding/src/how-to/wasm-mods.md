@@ -102,7 +102,9 @@ symbol interposition: duplicate definitions are refused, rather than overriding 
 Each member records its compiler, target, settings,
 rlib digest and dependency artifact identities in `horizon.build` metadata covered by its module
 hash. Mod crate disambiguators use the mod ID, version and resolved Cargo features rather than
-the temporary workspace path. A shared crate disambiguator alone is not an ABI guarantee:
+the temporary workspace path. Std crate disambiguators use only the pinned toolchain, the crate
+and its features, so a mod built on Windows, macOS or Linux links against the game's one std
+member. A shared crate disambiguator alone is not an ABI guarantee:
 the loader checks the exact dependency build recorded in `[wasm.linked]`, including when the
 library and its consumers were built separately. Changing a library's source, toolchain,
 features or settings requires rebuilding its consumers.
