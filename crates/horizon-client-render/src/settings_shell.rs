@@ -2245,7 +2245,11 @@ impl<S: Screen> Shell<S> {
             .map(|text| if waits { format!("> {text} <") } else { text });
         let label = row.label(value.as_deref());
         let focused = self.shows_focus(Target::Row(row.id));
-        let hint = self.strip_text(row);
+        // The narrator hears the warning as part of the row's hint, as the strip shows it.
+        let hint = match row.warning.as_deref() {
+            Some(warning) => format!("{warning} {}", self.strip_text(row)),
+            None => self.strip_text(row),
+        };
         if let Value::Read(value) = &row.value {
             let view = (label.as_str(), row.name.as_str(), value.as_str());
             read_row(batch, atlas, cols, y, view, (hover, focused));
