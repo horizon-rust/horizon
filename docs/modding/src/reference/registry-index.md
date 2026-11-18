@@ -1,6 +1,6 @@
 # The registry index and `.hpack`
 
-Use the registry to distribute content and native mods (`.hmod`), modpacks (`.hpack`),
+Use the registry to distribute content, WebAssembly and native mods (`.hmod`), modpacks (`.hpack`),
 resource packs, data packs, shaders-folder packs and Horizon shader packs (`.hshader`).
 Submit your project page and version file in a pull request on horizon-mods ([Publishing your mod](../how-to/publish.md)).
 Versions are pinned by SHA-256. The launcher and website read schema 1 of `index.json`.
@@ -39,7 +39,7 @@ entry leaves out.
 | --- | --- |
 | `schema` | 1. A reader refuses a higher number with "update Horizon" rather than misread it. |
 | `projects[].id` | `[a-z0-9_]{1,64}`, unique; a mod's is its manifest's `id`. |
-| `kind` | `mod` (content), `native-mod`, `modpack`, `resourcepack`, `shader` (Horizon `.hshader`), `shaderpack` (a `shaders/`-folder zip), `datapack` (a data-pack zip). Other kinds (worlds, themes) may come without a new schema: a reader keeps a kind it doesn't know and doesn't offer it. |
+| `kind` | `mod` (a `.hmod` without `[native]`: content or WebAssembly), `native-mod` (a `.hmod` with `[native]`), `modpack`, `resourcepack`, `shader` (Horizon `.hshader`), `shaderpack` (a `shaders/`-folder zip), `datapack` (a data-pack zip). Other kinds (worlds, themes) may come without a new schema: a reader keeps a kind it doesn't know and doesn't offer it. |
 | `summary`, `description` | Required summary of at most 160 characters for lists; Markdown for the project's page, required for a listed project and 50–10,000 characters after trimming. |
 | `owners` | GitHub logins allowed to publish updates. |
 | `license`, `source` | An SPDX expression and an `https://` address of the source code: both required. |
