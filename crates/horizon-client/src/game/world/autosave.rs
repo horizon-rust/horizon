@@ -68,7 +68,7 @@ impl Game<'_> {
         if self.keep_owner_files {
             // Crash teardown: `sync_level` filled the player from whatever is in place, not
             // from the owner's last consistent state.
-            self.level.write_without_player(&self.world_root)?;
+            self.level.write_keeping_player(&self.world_root)?;
         } else {
             write_level_for_role(
                 &mut self.level,

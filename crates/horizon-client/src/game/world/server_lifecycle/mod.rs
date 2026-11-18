@@ -172,7 +172,11 @@ impl Game<'_> {
             }
         })) {
             Ok(result) => result,
-            Err(payload) => Err(shutdown_panic(payload.as_ref()).into()),
+            Err(payload) => {
+                // A save listener can panic inside a turn: lan_close saves the leaving players.
+                self.keep_players_after_shutdown_panic();
+                Err(shutdown_panic(payload.as_ref()).into())
+            }
         };
         let saved = match catch_unwind(AssertUnwindSafe(|| {
             if self.world_adopted && self.session_lock.is_some() {
@@ -182,7 +186,11 @@ impl Game<'_> {
             }
         })) {
             Ok(result) => result,
-            Err(payload) => Err(shutdown_panic(payload.as_ref()).into()),
+            Err(payload) => {
+                // A save listener can panic inside a turn: lan_close saves the leaving players.
+                self.keep_players_after_shutdown_panic();
+                Err(shutdown_panic(payload.as_ref()).into())
+            }
         };
         result = result.and(saved);
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| self.lan_close(false))) {

@@ -555,6 +555,12 @@ impl Game<'_> {
         // Crash teardown treats the turn as interrupted until it has been put back without a
         // panic: the callbacks below run after the restore and can panic too.
         self.lan_interrupted_turns.push(swap.conn);
+        // A turn opened inside this one by a raw `enter_guest` that a panic left open: its
+        // player's record is displaced too, and the pop below would forget them.
+        if let Some(at) = self.lan_guest_swaps.iter().rposition(|&c| c == swap.conn) {
+            let above = self.lan_guest_swaps[at + 1..].to_vec();
+            self.lan_interrupted_turns.extend(above);
+        }
         let GuestSwap {
             attachments,
             conn,
