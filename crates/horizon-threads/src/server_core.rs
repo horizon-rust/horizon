@@ -646,8 +646,10 @@ mod os {
 
     /// Logical processor index → CPU set id, for the machine's one processor group.
     static IDS: Mutex<Vec<(usize, u32)>> = Mutex::new(Vec::new());
+    /// The CPU set ids a reservation selected for a thread, sorted. The selection it replaced
+    /// was empty: a thread with a selection of its own is never touched.
     pub struct State {
-        previous: Vec<u32>,
+        given: Vec<u32>,
     }
 
     fn ids(cpus: &[usize]) -> Vec<u32> {
@@ -748,30 +750,50 @@ mod os {
         }
     }
 
+    /// The CPU set ids this thread has selected, sorted (empty: none); `None` if the system
+    /// doesn't say.
     fn selection() -> Option<Vec<u32>> {
+        // SAFETY: this thread's own handle; the buffer holds as many ids as the count passed.
         unsafe {
             let mut count = 0;
-            // A non-empty selection is foreign: leave it untouched.
             if GetThreadSelectedCpuSets(GetCurrentThread(), std::ptr::null_mut(), 0, &mut count)
-                == 0
-                || count != 0
+                != 0
+            {
+                return (count == 0).then(Vec::new);
+            }
+            if count == 0 {
+                return None;
+            }
+            let mut selected = vec![0u32; count as usize];
+            if GetThreadSelectedCpuSets(
+                GetCurrentThread(),
+                selected.as_mut_ptr(),
+                count,
+                &mut count,
+            ) == 0
             {
                 return None;
             }
-            Some(Vec::new())
+            selected.truncate(count as usize);
+            selected.sort_unstable();
+            Some(selected)
         }
     }
 
     fn select(cpus: &[usize]) -> Option<State> {
-        let previous = selection()?;
-        let selected = ids(cpus);
-        if selected.len() != cpus.len() || selected.is_empty() {
+        // A non-empty selection is foreign: leave it untouched.
+        if !selection()?.is_empty() {
             return None;
         }
+        let mut given = ids(cpus);
+        if given.len() != cpus.len() || given.is_empty() {
+            return None;
+        }
+        given.sort_unstable();
+        // SAFETY: this thread's own handle; the ids are live for the call.
         unsafe {
-            (SetThreadSelectedCpuSets(GetCurrentThread(), selected.as_ptr(), selected.len() as u32)
-                != 0)
-                .then_some(State { previous })
+            (SetThreadSelectedCpuSets(GetCurrentThread(), given.as_ptr(), given.len() as u32) != 0)
+                .then_some(State { given })
         }
     }
     fn thread_mask() -> Option<Vec<usize>> {
@@ -813,15 +835,15 @@ mod os {
         pub fn stop(&mut self) {}
     }
 
+    /// Clears the selection `state` made, if the thread still has it: one it selected since
+    /// is its own and stays, as a Linux thread keeps a mask it set after it was moved.
     pub fn restore(state: &State) {
-        // SAFETY: this is the calling thread, and the selection was saved by us.
+        if selection().as_ref() != Some(&state.given) {
+            return;
+        }
+        // SAFETY: this is the calling thread; no ids, which clears its selection.
         unsafe {
-            let ptr = if state.previous.is_empty() {
-                std::ptr::null()
-            } else {
-                state.previous.as_ptr()
-            };
-            SetThreadSelectedCpuSets(GetCurrentThread(), ptr, state.previous.len() as u32);
+            SetThreadSelectedCpuSets(GetCurrentThread(), std::ptr::null(), 0);
         }
     }
 }
