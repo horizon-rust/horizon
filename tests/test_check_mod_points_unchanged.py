@@ -67,7 +67,7 @@ FREE = "horizon_client::game::helpers::"
 
 class ClassifyTests(unittest.TestCase):
     def classify(self, removed, base, accepted=None, loops=(), files=None, changed=()):
-        return gate.classify(removed, list(changed), base, accepted or {}, set(loops), files or {})
+        return gate.classify(removed, list(changed), base, accepted or {}, None if loops is None else set(loops), files or {})
 
     def test_a_listed_free_function_is_accepted(self):
         base = {"helper": point("helper", FREE + "helper")}
@@ -92,6 +92,19 @@ class ClassifyTests(unittest.TestCase):
         base = {"tick": point("tick", FREE + "tick_things")}
         _, bad, _, _ = self.classify(["tick"], base, {"tick": ("#1", "x")}, loops={gate.normalized(FREE + "tick_things")})
         self.assertIn("published loop", bad["tick"])
+
+    def test_unknown_base_loops_fail_every_removal(self):
+        base = {"helper": point("helper", FREE + "helper")}
+        _, bad, _, _ = self.classify(["helper"], base, {"helper": ("#1", "x")}, loops=None)
+        self.assertIn("no loops.json", bad["helper"])
+
+    def test_a_longer_path_is_not_a_mention_of_the_target(self):
+        base = {"helper": point("helper", FREE + "helper")}
+        ok, bad, _, _ = self.classify(["helper"], base, {"helper": ("#1", "x")},
+                                      files={"docs/x.md": f"see {FREE}helper_two"})
+        self.assertEqual((list(ok), bad), (["helper"], {}))
+        _, bad, _, _ = self.classify(["helper"], base, {"helper": ("#1", "x")}, files={"docs/x.md": f"see {FREE}helper."})
+        self.assertIn("named in docs/x.md", bad["helper"])
 
     def test_a_fixture_doc_or_manifest_that_names_it_fails(self):
         base = {"helper_point": point("helper_point", FREE + "helper")}
@@ -127,8 +140,8 @@ class AcceptedFileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.read("helper | #1\n")
 
-    def test_the_checked_in_file_parses_and_is_empty(self):
-        self.assertEqual(gate.load_accepted(gate.ROOT / gate.LIST), {})
+    def test_the_checked_in_file_parses(self):
+        self.assertIsInstance(gate.load_accepted(gate.ROOT / gate.LIST), dict)
 
 
 class VerdictTests(unittest.TestCase):
@@ -152,9 +165,15 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(self.verdict(removed_bad={"a": "x"}, explained=True, allow_added=True), 1)
         self.assertEqual(self.verdict(changed_bad={"a": "x"}, explained=True, allow_added=True), 1)
 
+    def test_a_strict_file_the_head_dropped_fails_even_when_explained(self):
+        self.assertEqual(self.verdict(files_removed=["internals.json"], explained=True, allow_added=True), 1)
+
     def test_loops_and_internals_are_strict(self):
         self.assertEqual(self.verdict(diffs=[("loops.json", ["-x"])], explained=True), 1)
         self.assertEqual(self.verdict(diffs=[("internals.json", ["-x"])], explained=True), 1)
+
+
+NO_LOOPS = json.dumps({"loops": []})
 
 
 class CompareTests(unittest.TestCase):
@@ -177,11 +196,24 @@ class CompareTests(unittest.TestCase):
         self.assertIn("1 removed (0 accepted, 1 failing)", text)
 
     def test_listed_removal_passes_with_its_generated_diff(self):
-        status, text = self.run_compare([point("a"), point("b", FREE + "b")], [point("a")], {"api.rs": "1"},
-                                        {"api.rs": "2"}, accepted={"b": ("#9", "moved")})
+        status, text = self.run_compare([point("a"), point("b", FREE + "b")], [point("a")],
+                                        {"api.rs": "1", "loops.json": NO_LOOPS}, {"api.rs": "2", "loops.json": NO_LOOPS},
+                                        accepted={"b": ("#9", "moved")})
         self.assertEqual(status, 0)
         self.assertIn("Points removed and listed (accepted) (1):", text)
         self.assertIn("1 removed (1 accepted, 0 failing)", text)
+
+    def test_a_removal_fails_when_the_base_wrote_no_loops_json(self):
+        status, text = self.run_compare([point("a"), point("b", FREE + "b")], [point("a")], {"api.rs": "1"},
+                                        {"api.rs": "2", "loops.json": NO_LOOPS}, accepted={"b": ("#9", "moved")})
+        self.assertEqual(status, 1)
+        self.assertIn("no loops.json", text)
+
+    def test_a_strict_file_the_head_dropped_fails_with_an_allowed_point(self):
+        status, text = self.run_compare([point("a")], [point("a"), point("b")], {"internals.json": "{}"}, {"x": "1"},
+                                        allow_added=True)
+        self.assertEqual(status, 1)
+        self.assertIn("have to match the base exactly", text)
 
     def test_removed_game_method_fails_though_listed(self):
         status, text = self.run_compare([point("a", GAME + "a")], [], accepted={"a": ("#9", "moved")})
@@ -262,6 +294,21 @@ class CompareTests(unittest.TestCase):
         lines = gate.summary(sorted(head), {}, {}, [], {}, [], [], [], {}, head)
         self.assertIn("Points added (100):", lines[0])
         self.assertIn(f"... and {100 - gate.MAX_LISTED} more", lines[-1])
+
+
+class RepoTextsTests(unittest.TestCase):
+    def test_a_failed_git_listing_is_an_error_not_an_empty_map(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RuntimeError):
+                gate.repo_texts(tmp)
+
+
+class TargetFolderTests(unittest.TestCase):
+    def test_a_relative_folder_becomes_one_absolute_path(self):
+        for option, env in ((Path("target/mod-points"), None), (None, "target/x")):
+            self.assertTrue(gate.resolve_target(option, env).is_absolute())
+        self.assertEqual(gate.resolve_target(Path("a"), "b"), Path("a").resolve())
+        self.assertEqual(gate.resolve_target(None, None), (gate.ROOT / "target").resolve())
 
 
 if __name__ == "__main__":

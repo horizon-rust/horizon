@@ -622,8 +622,10 @@ prints how many points were added, removed (accepted and failing) and changed. I
 - a point changes (same name, new target or signature hash) and is not listed in that file;
 - the generated API differs with no accepted point change behind it, or `loops.json` or `internals.json` differs at all.
 
-CI runs it, with `--allow-added`, on a pull request that touches `crates/horizon-client/src/game/` or the generator
-crates. A new hook on purpose adds points and passes with that flag.
+CI runs it, with `--allow-added`, on a pull request that can reach the points: a change to `crates/horizon-client/src/game/`
+or `game.rs`, to the generator's crates (`crates/horizon-mod-*`), to the check itself, to a `Cargo.toml` or `Cargo.lock`,
+or to a Rust file under `crates/` that mentions `replaceable` before or after (`needs_mod_points` in
+`tools/ci/rust_changes.py`). A new hook on purpose adds points and passes with that flag.
 
 ### Today's exceptions
 

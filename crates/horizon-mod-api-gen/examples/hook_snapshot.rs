@@ -1,5 +1,5 @@
 //! Capture generated hook artifacts for a byte-for-byte refactor comparison.
-//! Run with a destination directory argument before and after the split, then `diff -r`.
+//! Run with a destination directory argument (empty or new) before and after the split, then `diff -r`.
 //! The generator's interface cache (`interfaces-*`, keyed by this executable) and its phase timings
 //! (`points-timing.txt`) are removed from the destination, so two runs of different builds compare equal.
 //! Every error names the step and the path that failed.
@@ -27,6 +27,17 @@ fn main() -> Result<(), String> {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
     let out = PathBuf::from(std::env::args().nth(1).expect("destination directory"));
     fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    // The cleanup below removes `interfaces-*` folders: only ever ones this run made, in a destination that was empty.
+    let occupied = fs::read_dir(&out)
+        .map_err(|e| format!("{}: {e}", out.display()))?
+        .next()
+        .is_some();
+    if occupied {
+        return Err(format!(
+            "{}: the destination has to be empty or new",
+            out.display()
+        ));
+    }
     step("points.json", || {
         write(
             &out,

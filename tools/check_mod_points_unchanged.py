@@ -147,9 +147,10 @@ def is_game_method(target):
 
 
 def loop_targets(loops_json):
-    """The entry and generic functions of the published loops in a loops.json, normalized."""
+    """The entry and generic functions of the published loops in a loops.json, normalized, or None when there is no
+    such file (a base built by an older hook_snapshot): the loops are then unknown, not absent."""
     if not loops_json.is_file():
-        return set()
+        return None
     out = set()
     for entry in json.loads(loops_json.read_text(encoding="utf-8")).get("loops", []):
         out.add(normalized(entry["entry"]))
@@ -161,9 +162,10 @@ def loop_targets(loops_json):
 def references(point, files):
     """The first checked-in file that names the point (its name as a word, or its target), or None."""
     word = re.compile(r"(?<![\w:])" + re.escape(point["name"]) + r"(?!\w)")
+    target = re.compile(r"(?<![\w:])" + re.escape(point["target"]) + r"(?!\w)")
     for path in sorted(files):
         text = files[path]
-        if point["target"] in text or word.search(text):
+        if target.search(text) or word.search(text):
             return path
     return None
 
@@ -172,6 +174,9 @@ def repo_texts(root=ROOT):
     """The checked-in files a mod may name a point in: the fn-replace fixtures, the wasm host's fixture, the docs and
     every mod manifest, as {path: text}."""
     listed = subprocess.run(["git", "ls-files", "-z", "--", *REFERENCE_PATHS], cwd=root, capture_output=True, text=True)
+    if listed.returncode != 0:
+        # An empty map would let a removal pass that a fixture names.
+        raise RuntimeError(f"git ls-files failed (exit {listed.returncode}): {listed.stderr.strip()}")
     files = {}
     for name in filter(None, listed.stdout.split("\0")):
         try:
@@ -183,15 +188,18 @@ def repo_texts(root=ROOT):
 
 def classify(removed, changed, base_points, accepted, loops, files):
     """Split the removed and changed points into accepted and failing: {name: reason}. A removal is accepted when it is
-    listed in the removal file and is neither a `Game` method, a loop, nor named by a fixture, doc or mod manifest. A
-    change is accepted when it is listed."""
+    listed in the removal file and is neither a `Game` method, a loop (`loops` is None when the base's loops are
+    unknown: then no removal passes), nor named by a fixture, doc or mod manifest. A change is accepted when it is
+    listed."""
     removed_ok, removed_bad, changed_ok, changed_bad = {}, {}, {}, {}
     for name in removed:
         point = base_points[name]
         reasons = []
         if is_game_method(point["target"]):
             reasons.append("a `Game` method")
-        if normalized(point["target"]) in loops:
+        if loops is None:
+            reasons.append("the base has no loops.json, so a published loop cannot be ruled out")
+        elif normalized(point["target"]) in loops:
             reasons.append("a published loop")
         if (path := references(point, files)) is not None:
             reasons.append(f"named in {path}")
@@ -265,6 +273,8 @@ def verdict(added, removed_bad, changed_bad, files_added, files_removed, diffs, 
         return 1
     if any(name in STRICT_FILES for name, _ in diffs):
         return 1
+    if any(name in STRICT_FILES for name in files_removed):
+        return 1
     if (diffs or files_added or files_removed) and not explained:
         return 1
     return 0
@@ -278,10 +288,10 @@ def compare(base_dir, head_dir, allow_added=False, base_root=None, head_root=Non
     base_points, head_points = load_points(base_dir / POINTS), load_points(head_dir / POINTS)
     added, removed, changed = diff_points(base_points, head_points)
     files_added, files_removed, diffs = diff_files(base_dir, head_dir, base_root, head_root)
-    # A strict file only one side wrote (the base's older hook_snapshot does not write it yet) has nothing to compare.
-    skipped = [n for n in files_added + files_removed if n in STRICT_FILES]
+    # A strict file only the head wrote (the base's older hook_snapshot does not write it yet) has nothing to compare.
+    # One the base wrote and the head did not always fails (verdict).
+    skipped = [n for n in files_added if n in STRICT_FILES]
     files_added = [n for n in files_added if n not in STRICT_FILES]
-    files_removed = [n for n in files_removed if n not in STRICT_FILES]
     for name in skipped:
         print(f"note: {name} exists on one side only, not compared.")
     if removed and files is None:
@@ -311,8 +321,8 @@ def compare(base_dir, head_dir, allow_added=False, base_root=None, head_root=Non
             print(f"A removed or changed point passes only when it is listed in {LIST} (name | #PR | reason), is not a "
                   "`Game` method or a loop, and no fixture, doc or mod manifest names it. A mod that needs one "
                   "asks for `#[horizon_mod_api_macros::replaceable]` in the lower crate.")
-        if any(name in STRICT_FILES for name, _ in diffs):
-            print("loops.json and internals.json have to match the base exactly.")
+        if any(name in STRICT_FILES for name, _ in diffs) or any(name in STRICT_FILES for name in files_removed):
+            print("loops.json and internals.json have to match the base exactly, and the head has to write them.")
         if not (removed_bad or changed_bad or (added and not allow_added)):
             print("The generated API differs from the base with no accepted point change.")
     return status
@@ -348,9 +358,17 @@ def snapshot(root, out, target_dir, side):
         return
     stderr = result.stderr.strip()
     if LOCK_OUT_OF_DATE in stderr:
+        if side == "base":
+            raise RuntimeError("the base's Cargo.lock is out of date: pass --base with a revision whose Cargo.lock is current")
         raise RuntimeError(f"the {side}'s Cargo.lock is out of date: run cargo once without --locked, then rerun")
     tail = "\n".join(stderr.splitlines()[-TAIL_LINES:])
     raise RuntimeError(f"hook_snapshot failed on the {side} (exit {result.returncode}): {' '.join(command)}\n{tail}")
+
+
+def resolve_target(option, env_value):
+    """The one absolute Cargo build folder both snapshots share: Cargo reads a relative one against its working
+    directory, and the two runs have different ones."""
+    return Path(option or env_value or ROOT / "target").resolve()
 
 
 def main(argv=None):
@@ -365,10 +383,10 @@ def main(argv=None):
     if args.compare:
         try:
             return compare(args.compare[0], args.compare[1], args.allow_added)
-        except (OSError, ValueError, KeyError) as error:
+        except (OSError, ValueError, KeyError, RuntimeError) as error:
             print(f"Mod point check failed: {error}")
             return 2
-    target = args.target_dir or Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target")
+    target = resolve_target(args.target_dir, os.environ.get("CARGO_TARGET_DIR"))
     scratch = Path(tempfile.mkdtemp(prefix="mod-points-"))
     worktree = scratch / "base"
     added_worktree = False
