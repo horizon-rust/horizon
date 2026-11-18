@@ -182,18 +182,27 @@ mod tests {
 
     #[test]
     fn a_wasm_mod_is_reported_as_code() {
-        let report = Report {
-            kind: Kind::Mod,
-            facts: Facts {
-                id: Some("wasm_hello".into()),
-                version: Some("0.1.0".into()),
-                ..Facts::default()
-            },
-            sha256: "0".repeat(64),
-            size: 1,
-            signed: false,
-            wasm: true,
-        };
+        use horizon_mod_package::{Package, manifest::sha512_of};
+        // A minimal valid shared member: a `dylink.0` section and the three guest exports.
+        let module = wat::parse_str(
+            r#"(module (@custom "dylink.0" "\01\04\00\00\00\00")
+                (func (export "horizon_layout")) (func (export "horizon_in")) (func (export "horizon_hook")))"#,
+        )
+        .unwrap();
+        let manifest = format!(
+            "id = \"wasm_hello\"\nname = \"Wasm hello\"\nversion = \"0.1.0\"\napi = \"0.2\"\n\
+             capabilities = [\"registries\"]\n[wasm]\nsha512 = \"{}\"\ntoolchain = \"1.99.1\"\nbuilt_with = \"test\"\n",
+            sha512_of(&module)
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let hmod = dir.path().join("wasm_hello-0.1.0.hmod");
+        std::fs::write(
+            &hmod,
+            Package::write_files(&manifest, &[("mod.wasm", &module)]).unwrap(),
+        )
+        .unwrap();
+        let report = check(&hmod, kind_of(&hmod).unwrap(), None, None).unwrap();
+        assert!(report.wasm);
         let text = report.text();
         assert!(text.contains("WebAssembly code: runs sandboxed"), "{text}");
         assert!(!text.contains("no code"), "{text}");
