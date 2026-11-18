@@ -2125,7 +2125,8 @@ mod allay_owner_damage_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{look_at, playsound_placement, take_new_reinforcements};
+    use super::{look_at, take_new_reinforcements};
+    use horizon_gameplay::commands::sound::playsound_placement;
     use horizon_client::mobs::{MobEvent, Who};
 
     #[test]

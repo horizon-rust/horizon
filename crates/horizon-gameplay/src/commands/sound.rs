@@ -131,7 +131,8 @@ pub fn stopsound(host: &mut dyn SoundHost, ctx: &Context) -> R<i32> {
 /// zero, and then the point moves two blocks from the target towards the sound
 /// and the volume is `minVolume`; a target exactly at `range` still hears it
 /// (the command's test is `>`, unlike `PlayerList.broadcast`'s `<`).
-fn playsound_placement(
+#[doc(hidden)]
+pub fn playsound_placement(
     pos: [f64; 3],
     target: [f64; 3],
     range: f32,
