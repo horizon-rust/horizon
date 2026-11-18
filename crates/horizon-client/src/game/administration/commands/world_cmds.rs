@@ -8,6 +8,7 @@ use horizon_client::{
     text::Text,
 };
 use horizon_core::nbt::Tag;
+use horizon_core::random::RandomSource;
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use horizon_world::attribute_map::ValueKind;
 use horizon_world::damage_source::Catalog as DamageCatalog;
