@@ -1773,7 +1773,6 @@ name = "horizon-assets"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "horizon-client-core",
  "horizon-core",
  "log",
  "miniz_oxide 0.8.9",

@@ -1647,7 +1647,7 @@ mod tests {
             "minecraft:written_book",
             "minecraft:frog_spawn_egg",
         ] {
-            models.prototypes.insert(
+            Arc::make_mut(&mut models.prototypes).insert(
                 id.into(),
                 BTreeMap::from([("minecraft:item_model".into(), Value::String(id.into()))]),
             );
@@ -1667,7 +1667,7 @@ mod tests {
             model.clone()
         };
 
-        let (name_nbt, _) = horizon_world::nbt::parse_snbt(
+        let (name_nbt, _) = horizon_core::nbt::parse_snbt(
             r#"{text:"",extra:[{text:"Styled Item",strikethrough:0b,obfuscated:0b,bold:0b,italic:1b,underlined:0b,color:"gold"}]}"#,
         )
         .unwrap();

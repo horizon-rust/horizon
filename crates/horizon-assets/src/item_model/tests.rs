@@ -572,7 +572,7 @@ fn component_select_normalizes_text_components_books_and_entity_ids() {
         models
             .definitions
             .insert(item_id.into(), ClientItem::from_json(definition).unwrap());
-        models.prototypes.insert(
+        Arc::make_mut(&mut models.prototypes).insert(
             item_id.into(),
             BTreeMap::from([("minecraft:item_model".into(), json!(item_id))]),
         );

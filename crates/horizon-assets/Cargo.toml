@@ -7,7 +7,6 @@ rust-version.workspace = true
 description = "Horizon version-specific model and resource decoding"
 
 [dependencies]
-horizon-client-core = { path = "../horizon-client-core" }
 horizon-core = { path = "../horizon-core" }
 log = "0.4"
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }

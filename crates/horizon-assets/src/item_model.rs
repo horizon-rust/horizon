@@ -872,10 +872,7 @@ impl SelectProperty {
                 Value::String(s)
             }
             Self::Component(component) => {
-                horizon_client_core::component_codec::canonicalize_component_json(
-                    component,
-                    v.clone(),
-                )
+                crate::component_codec::canonicalize_component_json(component, v.clone())
             }
         })
     }
@@ -1828,12 +1825,9 @@ impl Resolve<'_> {
             SelectProperty::ContextDimension => {
                 self.ctx.level.map(|l| Value::String(l.dimension.clone()))
             }
-            SelectProperty::Component(component) => self.component(component).map(|v| {
-                horizon_client_core::component_codec::canonicalize_component_json(
-                    component,
-                    v.clone(),
-                )
-            }),
+            SelectProperty::Component(component) => self
+                .component(component)
+                .map(|v| crate::component_codec::canonicalize_component_json(component, v.clone())),
         }
     }
     fn numeric(&self, property: &NumericProperty) -> f32 {
