@@ -524,3 +524,42 @@ fn command_without_snapshot_reads_resources_from_its_own_words() {
     tool.args(["--odd"]).current_dir(root.path());
     assert!(argument_paths(&tool).unwrap().is_empty());
 }
+
+#[test]
+fn wrapped_game_starts_and_holds_the_wrappers_resources() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("instance");
+    let source = root.path().join("versions/a");
+    let wrapper_data = root.path().join("versions/b/resources");
+    for folder in [
+        &home,
+        &source,
+        &root.path().join("resources"),
+        &wrapper_data,
+    ] {
+        fs::create_dir_all(folder).unwrap();
+    }
+    let game = || {
+        let mut game = horizon_game(root.path());
+        game.current_dir(&home)
+            .env("HORIZON_HOME", root.path().join("logs"));
+        mark(&mut game, &source);
+        game
+    };
+    // One wrapper word leaves the session file without a value when the whole command is read
+    // as the game's; the second wrapper names version B's data by a path relative to the instance.
+    let odd = wrapped(game(), &["gamemoderun"]);
+    drop(shared(&odd).unwrap());
+    let relative = Path::new("..").join("versions/b/resources");
+    let own = wrapped(
+        game(),
+        &["wrapper", "--resources", relative.to_str().unwrap(), "--"],
+    );
+    let claims = shared(&own).unwrap();
+    let registry = Registry::open().unwrap();
+    assert!(matches!(
+        registry.lock(&directory(&wrapper_data), LockMode::Exclusive),
+        Err(Error::Busy)
+    ));
+    drop(claims);
+}

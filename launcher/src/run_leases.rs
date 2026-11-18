@@ -186,12 +186,24 @@ pub(crate) fn shared(command: &Command) -> Result<Vec<Claim>, Error> {
 /// version, so that tree is held as well as the executable's.
 fn argument_paths(command: &Command) -> std::io::Result<Vec<std::path::PathBuf>> {
     use horizon_platform::mod_package::selection::{Argument, LaunchArguments};
+    let cwd = command.get_current_dir().unwrap_or(Path::new("."));
     let (rest, mut paths) = match game_snapshot(command)? {
         // The words before wrappers: a wrapper's own words shift the parser's option/value
         // pairs, and the game's last argument then has no value (#18328).
         Some(game) => {
             let selection = LaunchArguments::for_command(&game)?;
-            let folders = vec![selection.context.game_dir, selection.context.home];
+            let mut folders = vec![selection.context.game_dir, selection.context.home];
+            // A wrapper can read another version's data (`wrapper --resources <B> -- game…`):
+            // hold every folder its words name too. Only a scan, never fatal: an extra lease is
+            // safe, and a word that names no folder has nothing to hold.
+            let words: Vec<_> = command.get_args().collect();
+            folders.extend(
+                words
+                    .windows(2)
+                    .filter(|pair| pair[0] == "--resources")
+                    .map(|pair| cwd.join(pair[1]))
+                    .filter(|path| path.is_dir()),
+            );
             (selection.rest, folders)
         }
         // prepare_command also runs non-game commands (including hooks and tools), whose
@@ -201,7 +213,6 @@ fn argument_paths(command: &Command) -> std::io::Result<Vec<std::path::PathBuf>>
         }
         None => return Ok(Vec::new()),
     };
-    let cwd = command.get_current_dir().unwrap_or(Path::new("."));
     paths.extend(rest.into_iter().filter_map(|argument| match argument {
         Argument::Value(flag, value) if flag == "--resources" => Some(cwd.join(value)),
         _ => None,
