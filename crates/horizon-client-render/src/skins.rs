@@ -1615,7 +1615,10 @@ mod tests {
         let compute = || measure(|| location_of("skins/", black_box(hash)));
         let lookup = || measure(|| skin_location(black_box(hash)));
         for _ in 0..2 {
-            (decode(), recall(), compute(), lookup());
+            decode();
+            recall();
+            compute();
+            lookup();
         }
         let mut samples = [[0; RUNS]; 4];
         for run in 0..RUNS {
