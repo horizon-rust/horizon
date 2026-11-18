@@ -460,6 +460,19 @@ impl PlayerSender {
             })
             .is_ok()
     }
+    /// [`Self::reserve`] for a body to send, which a failed reservation closes the connection
+    /// for. A memory connection (the integrated server's own player, a splitscreen player) is not
+    /// bounded, as its outbox isn't (`Outbox::new`'s `capped`): it reads what it is sent as it
+    /// comes, and its first view arrives in one burst that can pass MAX_PENDING (a reopened
+    /// world's chunks all load from disk at once). Bounding it closed the connection with no
+    /// reason, "End of stream": #12849, then again #18313. Keep this exemption.
+    fn reserve_body(&self, cost: usize) -> bool {
+        if matches!(self.framing, horizon_protocol::connection::Framing::Memory) {
+            self.pending.fetch_add(cost, Ordering::AcqRel);
+            return true;
+        }
+        self.reserve(cost)
+    }
     /// Prepare a whole encoded packet without publishing it. The channel is diagnostic only;
     /// its wire identifier must already be included in `body`.
     pub fn prepare_payload(
@@ -510,7 +523,7 @@ impl PlayerSender {
         if matches!(self.to, To::Disabled) {
             return;
         }
-        if !self.reserve(io_pool::charge(body.retained())) {
+        if !self.reserve_body(io_pool::charge(body.retained())) {
             self.close();
             return;
         }
@@ -554,7 +567,7 @@ impl PlayerSender {
         let mut held = self.held();
         for body in bodies {
             let body = body.into();
-            if !self.reserve(io_pool::charge(body.retained())) {
+            if !self.reserve_body(io_pool::charge(body.retained())) {
                 self.close();
                 return;
             }
@@ -583,7 +596,7 @@ impl PlayerSender {
             To::Pool(outbox, _) => {
                 let body = play::Clientbound::Disconnect(cfg::Disconnect { reason }).encode();
                 let body = Body::from(body);
-                if !self.reserve(io_pool::charge(body.retained())) {
+                if !self.reserve_body(io_pool::charge(body.retained())) {
                     self.close();
                     return;
                 }
