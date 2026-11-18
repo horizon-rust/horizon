@@ -1862,7 +1862,12 @@ mod tests {
 
     #[test]
     fn configuration_keeps_mod_lists_private_until_the_server_identifies_as_horizon() {
-        for server_brand in ["vanilla", "horizon", "horizon (Velocity)"] {
+        for (server_brand, expected_mods) in [
+            ("vanilla", false),
+            ("vanilla (Velocity)", false),
+            ("horizon", true),
+            ("horizon (Velocity)", true),
+        ] {
             let (root, data) = empty_item_data(&format!("mod-list-{server_brand}"));
             let (client, server) = horizon_protocol::connection::Pipe::pair();
             let (mut reader, writer) = Connection::local(client).split();
@@ -1922,7 +1927,7 @@ mod tests {
                     .encode(),
                 )
                 .unwrap();
-            if horizon_server_brand(server_brand) {
+            if expected_mods {
                 use horizon_protocol::payload_negotiation::{CHANNEL, Control};
                 server
                     .send(
@@ -1972,8 +1977,8 @@ mod tests {
                     _ => {}
                 }
             }
-            assert_eq!(declared_mods, horizon_server_brand(server_brand));
-            assert_eq!(saw_offer, horizon_server_brand(server_brand));
+            assert_eq!(declared_mods, expected_mods, "{server_brand}");
+            assert_eq!(saw_offer, expected_mods, "{server_brand}");
             server
                 .send(&cfg::Clientbound::FinishConfiguration(Empty).encode())
                 .unwrap();
@@ -2108,11 +2113,13 @@ mod tests {
     #[ignore = "daily"]
     fn direct_login_preserves_hostname_and_negotiates_brand() {
         let (root, data) = empty_item_data("brand");
-        for server_brand in [
-            b"\x07vanilla".as_slice(),
-            b"\x07horizon",
-            b"\x05Paper",
-            b"\xff",
+        for (server_brand, expects_offer) in [
+            (b"\x07vanilla".as_slice(), false),
+            (b"\x12vanilla (Velocity)", false),
+            (b"\x07horizon", true),
+            (b"\x12horizon (Velocity)", true),
+            (b"\x05Paper", false),
+            (b"\xff", false),
         ] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -2187,7 +2194,7 @@ mod tests {
                 drop(session);
                 continue;
             }
-            if server_brand == b"\x07horizon" {
+            if expects_offer {
                 use horizon_protocol::payload_negotiation::{CHANNEL, Control};
                 server
                     .send(
@@ -2205,7 +2212,7 @@ mod tests {
                         .encode(),
                 )
                 .unwrap();
-            if server_brand == b"\x07horizon" {
+            if expects_offer {
                 use horizon_protocol::payload_negotiation::{CHANNEL, Control, Manifest};
                 let (id, body) = server.recv().unwrap();
                 assert_eq!(
@@ -2261,7 +2268,7 @@ mod tests {
                     packet => panic!("unexpected configuration reply: {packet:?}"),
                 }
             }
-            assert_eq!(saw_protocol_offer, server_brand == b"\x07horizon");
+            assert_eq!(saw_protocol_offer, expects_offer, "{server_brand:?}");
             drop(server);
             drop(session);
         }
