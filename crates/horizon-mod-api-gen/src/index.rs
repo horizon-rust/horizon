@@ -15,6 +15,14 @@ const CRATES: &[(&str, &str)] = &[
     ("horizon_mod_package", "crates/horizon-mod-package/src"),
 ];
 
+/// The folders of the crates [`CRATES`] names, above their source folders.
+pub(super) fn crate_folders(root: &Path) -> Vec<std::path::PathBuf> {
+    CRATES
+        .iter()
+        .filter_map(|(_, dir)| root.join(dir).parent().map(Path::to_path_buf))
+        .collect()
+}
+
 /// One module: its crate, its path below the crate root, and its items.
 pub(super) struct Module {
     pub(super) krate: &'static str,
