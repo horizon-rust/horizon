@@ -2,7 +2,7 @@
 //! (StopCommand, SaveAllCommand, SaveOffCommand, SaveOnCommand,
 //! SetPlayerIdleTimeoutCommand, BanListCommands, WhitelistCommand): commands of a
 //! dedicated server, run on its lists by an operator in game.
-use super::host::{CommandHost, R, err};
+use super::host::{CommandHost, R};
 use horizon_client::{
     command::{Arg, Context},
     server::user_lists::NameAndId,
@@ -61,7 +61,7 @@ pub fn save_all(host: &mut dyn ProfilesHost) -> R<i32> {
     host.require_dedicated()?;
     host.feedback(Text::translate("commands.save.saving", &[]));
     if !host.entity_save_admitted() {
-        return Err(err("commands.save.failed", &[]));
+        return Err(host.error("commands.save.failed", &[]));
     }
     if host.guest_turn_active() {
         // The acting guest's record holds the game's state until their
@@ -72,7 +72,7 @@ pub fn save_all(host: &mut dyn ProfilesHost) -> R<i32> {
     }
     host.save_game().map_err(|e| {
         log::error!("Horizon: /save-all: {e}");
-        err("commands.save.failed", &[])
+        host.error("commands.save.failed", &[])
     })?;
     host.feedback(Text::translate("commands.save.success", &[]));
     Ok(1)
@@ -87,7 +87,7 @@ pub fn auto_save(host: &mut dyn ProfilesHost, enabled: bool) -> R<i32> {
         } else {
             "commands.save.alreadyOff"
         };
-        return Err(err(already, &[]));
+        return Err(host.error(already, &[]));
     }
     let done = if enabled {
         "commands.save.enabled"
@@ -159,7 +159,7 @@ pub fn whitelist(host: &mut dyn ProfilesHost, id: &str, ctx: &Context) -> R<i32>
         }
         "whitelist.on" => {
             if host.using_whitelist() {
-                return Err(err("commands.whitelist.alreadyOn", &[]));
+                return Err(host.error("commands.whitelist.alreadyOn", &[]));
             }
             host.set_using_whitelist(true);
             host.feedback(Text::translate("commands.whitelist.enabled", &[]));
@@ -168,7 +168,7 @@ pub fn whitelist(host: &mut dyn ProfilesHost, id: &str, ctx: &Context) -> R<i32>
         }
         "whitelist.off" => {
             if !host.using_whitelist() {
-                return Err(err("commands.whitelist.alreadyOff", &[]));
+                return Err(host.error("commands.whitelist.alreadyOff", &[]));
             }
             host.set_using_whitelist(false);
             host.feedback(Text::translate("commands.whitelist.disabled", &[]));
@@ -202,7 +202,7 @@ pub fn whitelist(host: &mut dyn ProfilesHost, id: &str, ctx: &Context) -> R<i32>
                 }
             }
             if count == 0 {
-                return Err(err(
+                return Err(host.error(
                     if add {
                         "commands.whitelist.add.failed"
                     } else {

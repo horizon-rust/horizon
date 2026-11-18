@@ -1,5 +1,5 @@
 //! `/stopwatch` and `/tick`.
-use super::host::{CommandHost, R, err};
+use super::host::{CommandHost, R};
 use horizon_client::{
     clock::{FixedStep, SprintReport},
     command::{Arg, Context},
@@ -30,11 +30,11 @@ pub fn stopwatch(host: &mut dyn MiscHost, id: &str, ctx: &Context) -> R<i32> {
         return Ok(0);
     };
     let arg = || Text::literal(name.clone());
-    let missing = || err("commands.stopwatch.does_not_exist", &[&name]);
+    let missing = |host: &dyn MiscHost| host.error("commands.stopwatch.does_not_exist", &[&name]);
     match id {
         "stopwatch.create" => {
             if !host.stopwatches().create(&name) {
-                return Err(err("commands.stopwatch.already_exists", &[&name]));
+                return Err(host.error("commands.stopwatch.already_exists", &[&name]));
             }
             host.feedback(Text::translate(
                 "commands.stopwatch.create.success",
@@ -47,10 +47,9 @@ pub fn stopwatch(host: &mut dyn MiscHost, id: &str, ctx: &Context) -> R<i32> {
                 Some(Arg::Double(v)) => *v,
                 _ => 1.0,
             };
-            let t = host
-                .stopwatches()
-                .elapsed_seconds(&name)
-                .ok_or_else(missing)?;
+            let Some(t) = host.stopwatches().elapsed_seconds(&name) else {
+                return Err(missing(&*host));
+            };
             host.feedback(Text::translate(
                 "commands.stopwatch.query",
                 &[arg(), Text::literal(format!("{t:?}"))],
@@ -59,7 +58,7 @@ pub fn stopwatch(host: &mut dyn MiscHost, id: &str, ctx: &Context) -> R<i32> {
         }
         "stopwatch.restart" => {
             if !host.stopwatches().restart(&name) {
-                return Err(missing());
+                return Err(missing(&*host));
             }
             host.feedback(Text::translate(
                 "commands.stopwatch.restart.success",
@@ -69,7 +68,7 @@ pub fn stopwatch(host: &mut dyn MiscHost, id: &str, ctx: &Context) -> R<i32> {
         }
         _ => {
             if !host.stopwatches().remove(&name) {
-                return Err(missing());
+                return Err(missing(&*host));
             }
             host.feedback(Text::translate(
                 "commands.stopwatch.remove.success",
@@ -158,7 +157,7 @@ pub fn tick(host: &mut dyn MiscHost, id: &str, ctx: &Context) -> R<i32> {
         }
         "tick.sprint.stop" => {
             let Some(report) = host.tick_clock().stop_sprint() else {
-                return Err(err("commands.tick.sprint.stop.fail", &[]));
+                return Err(host.error("commands.tick.sprint.stop.fail", &[]));
             };
             host.sprint_report(&report);
             host.on_tick_rate_changed();
@@ -187,14 +186,14 @@ pub fn tick(host: &mut dyn MiscHost, id: &str, ctx: &Context) -> R<i32> {
         }
         "tick.step" => {
             if !host.tick_clock().start_step(time as u32) {
-                return Err(err("commands.tick.step.fail", &[]));
+                return Err(host.error("commands.tick.step.fail", &[]));
             }
             host.feedback(t("commands.tick.step.success", &[lit(time.to_string())]));
             Ok(1)
         }
         _ => {
             if !host.tick_clock().stop_step() {
-                return Err(err("commands.tick.step.stop.fail", &[]));
+                return Err(host.error("commands.tick.step.stop.fail", &[]));
             }
             host.feedback(t("commands.tick.step.stop.success", &[]));
             Ok(1)
