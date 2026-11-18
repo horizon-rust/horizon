@@ -147,11 +147,12 @@ impl Game<'_> {
             "drown" => DamageKind::Drown,
             "dry_out" => DamageKind::DryOut,
             "magic" | "indirect_magic" => DamageKind::Magic,
-            // `DRAGON_BREATH` is not `Magic`: its id keeps `dragonBreath`.
+            // `DamageCommand.damage`: keep `dragonBreath` and its `#no_knockback` tag.
             "dragon_breath" => DamageKind::Named(horizon_client::mobs::NamedDamage::new(
                 "minecraft:dragon_breath",
                 horizon_client::mobs::NamedDamage::BYPASSES_ARMOR
-                    | horizon_client::mobs::NamedDamage::PANIC_CAUSES,
+                    | horizon_client::mobs::NamedDamage::PANIC_CAUSES
+                    | horizon_client::mobs::NamedDamage::NO_KNOCKBACK,
             )),
             "sting" => DamageKind::Sting,
             "cactus" => DamageKind::Cactus,
