@@ -1,6 +1,6 @@
 //! `/playsound` and `/stopsound`.
 use super::entity::{EntityHost, EntityRef, holder, num};
-use super::host::{R, err};
+use super::host::R;
 use horizon_client::{
     command::{Arg, Context},
     scoreboard_cmd::Tracker,
@@ -79,7 +79,7 @@ pub fn playsound(host: &mut dyn SoundHost, ctx: &Context) -> R<i32> {
     let name = Text::literal(sound.clone());
     let (message, total) = tracker.message(
         true,
-        Some(err("commands.playsound.failed", &[])),
+        Some(host.error("commands.playsound.failed", &[])),
         |h, _| {
             Text::translate(
                 "commands.playsound.success.single",

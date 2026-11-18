@@ -1,6 +1,6 @@
 //! `/swing`.
 use super::entity::{EntityHost, EntityRef, holder, num};
-use super::host::{R, err};
+use super::host::R;
 use horizon_client::{command::Context, scoreboard_cmd::Tracker, text::Text};
 
 /// What `/swing` needs from the game.
@@ -28,7 +28,7 @@ pub fn swing(host: &mut dyn SwingHost, ctx: &Context) -> R<i32> {
     }
     let (message, total) = tracker.message(
         false,
-        Some(err("commands.swing.failed.notliving", &[])),
+        Some(host.error("commands.swing.failed.notliving", &[])),
         |h, _| {
             Text::translate(
                 "commands.swing.success.single",

@@ -1,6 +1,6 @@
 //! `/recipe`.
 use super::entity::{EntityHost, holder, num};
-use super::host::{R, err};
+use super::host::R;
 use horizon_client::{
     command::{Arg, Context},
     scoreboard_cmd::Tracker,
@@ -28,7 +28,7 @@ pub fn recipe(host: &mut dyn RecipeHost, id: &str, ctx: &Context) -> R<i32> {
     let recipes: Vec<String> = match ctx.get("recipe") {
         Some(Arg::Resource(r)) => {
             if !host.learnable_recipes().contains(r) {
-                return Err(err("recipe.notFound", &[r]));
+                return Err(host.error("recipe.notFound", &[r]));
             }
             vec![r.clone()]
         }
@@ -46,7 +46,7 @@ pub fn recipe(host: &mut dyn RecipeHost, id: &str, ctx: &Context) -> R<i32> {
     let verb = if give { "give" } else { "take" };
     let (message, total) = tracker.message(
         false,
-        Some(err(&format!("commands.recipe.{verb}.failed"), &[])),
+        Some(host.error(&format!("commands.recipe.{verb}.failed"), &[])),
         |h, total| {
             Text::translate(
                 &format!("commands.recipe.{verb}.success.single"),
