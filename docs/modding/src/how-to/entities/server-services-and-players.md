@@ -37,6 +37,12 @@ Read identity through `player.uuid()`, `player.name(host)`,
 connection IP without a port, including the forwarded address behind a Velocity
 proxy. An acting player without a known connection has an empty address.
 
+`player.connect_address(host)` gives the host and port the client typed to connect (`play.example.com`, 25570): the
+name a server with several was reached by, which is not the IP in `address`. It is the handshake's own, cut at its first
+NUL (where a proxy appends its data), and a transfer's is the one the transferring server gave. It is `None` for a
+fake player, the single-player owner and a client that typed nothing. A mod can announce a resource pack URL under it
+that this client can reach.
+
 The online list includes connected players during nested player turns. Name,
 permission and address reads work for connected players whose bodies are displaced
 by another player's turn; stale handles are refused. Entity and living handles
@@ -95,6 +101,12 @@ hook (from `server_tick`, say). It returns `Result<(), RespawnRefusal>`, and eac
 this order: `Client`, `InPlayerHook` (a player's state is swapped in), `Stale` (no player on this server behind the
 handle), `NoConnection` (a fake player, or the world's own player in a single-player world, which respawns through its
 own screen) and `Alive` (health above 0 and the game not won: the case the button ignores; a player who has won the game and is watching the End poem is respawned even alive, on the next server tick, as the button does).
+
+`player.set_velocity(host, [x, y, z])` sets a server player's velocity in blocks a tick and sends it to their client, as
+Paper's `Player.setVelocity` does (`player_set_velocity`, `WorldOnly` access). The value replaces the player's velocity,
+where `entity_push` adds to it, and the client moves by it from its next tick. It returns `false`, with the velocity
+unchanged, for a stale or unavailable player, a displaced outer player or a component that is not finite.
+`entity_set_velocity` refuses players.
 
 ## Player rules and sleep
 
