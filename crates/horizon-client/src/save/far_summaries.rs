@@ -15,8 +15,9 @@
 //! under that timestamp: a chunk saved again, by this game or another
 //! program, makes it stale, and the next read writes it again. The
 //! timestamp is in whole seconds, so a summary is written only of a record
-//! saved before the current second: a later save of the chunk is stamped
-//! with a later second.
+//! saved before the current second, asked before the read checks that the
+//! chunk wasn't saved again: a save after those checks is stamped with a
+//! later second.
 //!
 //! A record holds its columns as bytes (`encode_reduced`): a palette of the
 //! materials (block state, biome, light) its spans use, then each column's
@@ -464,6 +465,82 @@ mod tests {
             assert_eq!(decoded[5 * 16 + 3].surface.unwrap().height, height);
             assert_eq!(coarse(&save), Column::reduced(&decoded, 2, 4, 2));
         }
+        drop(save);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The second the region writer stamps the race's records with.
+    const SAVED: u32 = 1_800_000_000;
+
+    thread_local! {
+        /// What happens on this thread when a read next asks the clock.
+        static ON_CLOCK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = Default::default();
+    }
+
+    /// A second after `SAVED`, once `ON_CLOCK` has run.
+    fn clock_after_saved() -> u64 {
+        if let Some(then) = ON_CLOCK.with(|hook| hook.borrow_mut().take()) {
+            then();
+        }
+        u64::from(SAVED) + 1
+    }
+
+    #[test]
+    fn a_save_within_the_second_of_the_record_read_leaves_no_summary_of_it() {
+        let Some((assets, biomes)) = resources() else {
+            return;
+        };
+        let stone = assets.registry.default_state("minecraft:stone").unwrap();
+        let chunk = |top: i32| {
+            let mut chunk = Chunk::empty(0, 0);
+            for i in 0..256i32 {
+                chunk.set(i & 15, 60, i >> 4, stone.0);
+            }
+            for y in 61..top {
+                chunk.set(3, y, 5, stone.0);
+            }
+            chunk.lit = true;
+            encode(&chunk, assets.registry, &biomes)
+        };
+        let dir =
+            std::env::temp_dir().join(format!("horizon-far-summaries-race-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let save = Arc::new(SaveDir::new(dir.clone(), LevelShape::OVERWORLD));
+        save.regions.lock().unwrap().second = Some(SAVED);
+        let summaries = Arc::new(FarSummaries {
+            clock: clock_after_saved,
+            ..FarSummaries::new(&dir, &assets, &biomes)
+        });
+        assert!(save.outstanding.summaries.set(summaries).is_ok());
+        // The column 2 blocks wide over the tower, as a coarse read has it.
+        let coarse = |save: &SaveDir| match save.lod_saved(0, 0, false, &assets, &biomes) {
+            Some(far_lod::SavedFar::Columns(columns)) => Column::reduced(&columns, 2, 4, 2),
+            Some(far_lod::SavedFar::Reduced(reduced)) => reduced.column(2, 4, 2).unwrap().clone(),
+            None => panic!("the chunk is saved"),
+        };
+        save.write_records("region", vec![((0, 0), Some(chunk(100)))], true)
+            .unwrap();
+        // Saved again, in the same second, while the read of the first save
+        // asks whether its second is over: the clock has moved on by then.
+        let again = (save.clone(), chunk(200));
+        ON_CLOCK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let (save, record) = again;
+                save.write_records("region", vec![((0, 0), Some(record))], true)
+                    .unwrap();
+            }));
+        });
+        let first = coarse(&save);
+        assert!(ON_CLOCK.with(|hook| hook.borrow().is_none()));
+        assert_eq!(save.far_timestamp(0, 0), Some(SAVED));
+        let Some(far_lod::SavedFar::Columns(second)) = save.lod_saved(0, 0, true, &assets, &biomes)
+        else {
+            panic!("a full read decodes the chunk");
+        };
+        assert_eq!(second[5 * 16 + 3].surface.unwrap().height, 200);
+        let second = Column::reduced(&second, 2, 4, 2);
+        assert_ne!(first, second);
+        assert_eq!(coarse(&save), second, "the second save reads as itself");
         drop(save);
         let _ = fs::remove_dir_all(&dir);
     }

@@ -1930,6 +1930,9 @@ struct RegionFiles {
     clock: u64,
     /// Each region's write stamp (`far_regions::writing`).
     written: HashMap<(i32, i32), u64>,
+    /// The second a test has the writer stamp records with.
+    #[cfg(test)]
+    second: Option<u32>,
 }
 impl RegionFiles {
     #[cfg(test)]
@@ -2013,6 +2016,10 @@ fn write_region_records(
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as u32);
+    #[cfg(test)]
+    let timestamp = (cache.lock().ok())
+        .and_then(|cache| cache.second)
+        .unwrap_or(timestamp);
     let compressed = compress_records(records, timestamp);
     let mut by_region: BTreeMap<(i32, i32), Vec<(ChunkPos, Option<ChunkRecord>)>> = BTreeMap::new();
     for (&((x, z), _), record) in records.iter().zip(compressed) {

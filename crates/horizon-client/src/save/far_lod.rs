@@ -363,11 +363,13 @@ impl SaveDir {
             }
             let read = self.far_columns(x, z, assets, biomes);
             // A record that couldn't be read or decoded writes no summary:
-            // the next read tries again.
+            // the next read tries again. The clock first: a save queued
+            // after the checks that follow takes its timestamp later, past
+            // the settled second, so the summary can't pass as its.
             if let Ok(columns) = &read
+                && summaries.settled(timestamp)
                 && self.far_timestamp(x, z) == Some(timestamp)
                 && !self.far_changes().changed_since(before, (x, z))
-                && summaries.settled(timestamp)
             {
                 let reduced = columns.as_deref().map(far_summaries::Reduced::of);
                 summaries.write(x, z, timestamp, reduced.as_ref());
