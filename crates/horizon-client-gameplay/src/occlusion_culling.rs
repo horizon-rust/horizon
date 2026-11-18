@@ -1,11 +1,9 @@
 //! Shared, conservative block-occlusion queries for renderable geometry.
-use super::{Game, Vertex};
 use horizon_client::{
     blocks::{BlockFacts, RenderShape, StateFacts},
     chunk::Chunk,
     gfx::Renderer,
-    graphics::EntityCullingMode,
-    mesher::SectionMesh,
+    mesher::{SectionMesh, Vertex},
     spans,
     streaming::Streaming,
     voxel_occlusion::Culler as OcclusionCuller,
@@ -78,7 +76,7 @@ impl TimingSamples {
 /// should usually avoid model generation; mesh bounds are the conservative
 /// refinement for visible or uncached AABBs.
 #[derive(Clone, Copy)]
-pub(super) enum QuerySource {
+pub enum QuerySource {
     EntityAabb,
     EntityMesh,
 }
@@ -327,7 +325,7 @@ impl FrameProofValidationCache {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct CullKey {
+pub struct CullKey {
     camera: [u64; 3],
     min: [u64; 3],
     max: [u64; 3],
@@ -574,7 +572,7 @@ fn ray_reaches_without_opaque(
 }
 
 #[derive(Clone)]
-pub(super) struct OcclusionProof {
+pub struct OcclusionProof {
     sections: Vec<SectionKey>,
     chunks: Vec<(ChunkKey, Weak<Chunk>)>,
     validated_epoch: Cell<u64>,
@@ -724,7 +722,7 @@ impl PlaneWorkerScratch {
 /// Hidden proofs require the exact camera and quantized bounds, and their
 /// chunks and rendered sections are revalidated. Fail-open visible results
 /// survive camera movement because they can only reduce culling.
-pub(super) struct AsyncOcclusionCuller {
+pub struct AsyncOcclusionCuller {
     jobs: SyncSender<CullJob>,
     _ray_thread: JoinHandle<()>,
     results_rx: Receiver<CullResults>,
@@ -803,7 +801,7 @@ impl AsyncOcclusionCuller {
         })
     }
 
-    pub(super) fn new() -> std::io::Result<Self> {
+    pub fn new() -> std::io::Result<Self> {
         let (job_tx, job_rx) = mpsc::sync_channel::<CullJob>(1);
         let (plane_tx, plane_rx) = mpsc::sync_channel::<CullJob>(1);
         let (result_tx, result_rx) = mpsc::channel::<CullResults>();
@@ -871,7 +869,7 @@ impl AsyncOcclusionCuller {
         })
     }
 
-    pub(super) fn begin_frame(&mut self, camera: glam::DVec3, world: &World) {
+    pub fn begin_frame(&mut self, camera: glam::DVec3, world: &World) {
         let started = self.timing_start();
         self.begin_frame_inner(camera, world);
         self.record_timing(TimingPhase::ResultConsume, started);
@@ -984,11 +982,11 @@ impl AsyncOcclusionCuller {
     }
 
     #[inline]
-    pub(super) fn camera_is_stationary(&self) -> bool {
+    pub fn camera_is_stationary(&self) -> bool {
         self.camera_stationary
     }
 
-    pub(super) fn query(&self, vertices: &[Vertex], start: usize) -> Option<CullKey> {
+    pub fn query(&self, vertices: &[Vertex], start: usize) -> Option<CullKey> {
         let scan_started = self.measure_bounds_timing.get().then(Instant::now);
         let bounds = OcclusionCuller::bounds(self.camera, vertices, start);
         let mut stats = self.stats.borrow_mut();
@@ -1006,7 +1004,7 @@ impl AsyncOcclusionCuller {
         self.query_bounds(min, max)
     }
 
-    pub(super) fn query_entity_bounds(&self, bounds: Aabb) -> Option<CullKey> {
+    pub fn query_entity_bounds(&self, bounds: Aabb) -> Option<CullKey> {
         let (min, max) = OcclusionCuller::aabb_bounds(bounds)?;
         let mut stats = self.stats.borrow_mut();
         stats.entity_queries = stats.entity_queries.saturating_add(1);
@@ -1014,7 +1012,7 @@ impl AsyncOcclusionCuller {
         self.query_bounds(min, max)
     }
 
-    pub(super) fn query_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> Option<CullKey> {
+    pub fn query_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> Option<CullKey> {
         let min_rel = lo.min(hi);
         let max_rel = lo.max(hi);
         let min = [
@@ -1052,7 +1050,7 @@ impl AsyncOcclusionCuller {
         })
     }
 
-    pub(super) fn query_result(
+    pub fn query_result(
         &self,
         key: &CullKey,
         source: QuerySource,
@@ -1139,7 +1137,7 @@ impl AsyncOcclusionCuller {
         result
     }
 
-    pub(super) fn sample_entity_aabb(&self, entity_id: u32, key: &CullKey) {
+    pub fn sample_entity_aabb(&self, entity_id: u32, key: &CullKey) {
         if !self.measure_bounds_timing.get() {
             return;
         }
@@ -1162,7 +1160,7 @@ impl AsyncOcclusionCuller {
         });
     }
 
-    pub(super) fn proof_is_current(
+    pub fn proof_is_current(
         &self,
         world: &World,
         renderer: Option<&Renderer>,
@@ -1385,14 +1383,14 @@ impl AsyncOcclusionCuller {
         self.cache_merge = existing;
     }
 
-    pub(super) fn queue(&self, key: CullKey) {
+    pub fn queue(&self, key: CullKey) {
         let mut stats = self.stats.borrow_mut();
         stats.queued_queries = stats.queued_queries.saturating_add(1);
         drop(stats);
         self.queries.borrow_mut().push(key);
     }
 
-    pub(super) fn finish_frame(&mut self, world: &World, facts: &BlockFacts) {
+    pub fn finish_frame(&mut self, world: &World, facts: &BlockFacts) {
         let started = self.timing_start();
         self.finish_frame_inner(world, facts);
         self.record_timing(TimingPhase::FrameSubmit, started);
@@ -1503,7 +1501,7 @@ impl AsyncOcclusionCuller {
         self.record_timing(TimingPhase::JobSend, send_started);
     }
 
-    pub(super) fn record_entity_vertices_culled(&self, vertices: usize) {
+    pub fn record_entity_vertices_culled(&self, vertices: usize) {
         let mut stats = self.stats.borrow_mut();
         stats.entities_culled = stats.entities_culled.saturating_add(1);
         stats.entity_vertices_culled = stats.entity_vertices_culled.saturating_add(vertices as u64);
@@ -1512,12 +1510,12 @@ impl AsyncOcclusionCuller {
             .saturating_add((vertices.saturating_mul(std::mem::size_of::<Vertex>())) as u64);
     }
 
-    pub(super) fn record_entity_culled(&self) {
+    pub fn record_entity_culled(&self) {
         let mut stats = self.stats.borrow_mut();
         stats.entities_culled = stats.entities_culled.saturating_add(1);
     }
 
-    pub(super) fn stats_value(&self) -> serde_json::Value {
+    pub fn stats_value(&self) -> serde_json::Value {
         let stats = self.stats.borrow();
         let (worker_p50_ns, worker_p95_ns) = stats.worker_job_samples.percentiles_ns();
         let (bounds_p50_ns, bounds_p95_ns) = stats.bounds_scan_samples.percentiles_ns();
@@ -1625,7 +1623,7 @@ impl AsyncOcclusionCuller {
         value
     }
 
-    pub(super) fn reset_stats(&self) {
+    pub fn reset_stats(&self) {
         *self.stats.borrow_mut() = AsyncCullingStats::default();
         self.proof_validation_sample_counter.set(0);
     }
@@ -1862,7 +1860,7 @@ fn cull_job(
     }
 }
 
-pub(super) fn opaque(facts: &StateFacts) -> bool {
+pub fn opaque(facts: &StateFacts) -> bool {
     facts.render_shape == RenderShape::Model
         && facts.can_occlude
         && facts.solid_render
@@ -1962,7 +1960,7 @@ fn proof_is_current(
 /// usually walk adjacent voxels in the same chunk and section, so retaining
 /// the last lookup removes repeated map and streaming queries from the hot
 /// loop without changing the fail-open result.
-pub(super) struct SyncOccluder<'a> {
+pub struct SyncOccluder<'a> {
     world: &'a World,
     facts: &'a BlockFacts,
     renderer: Option<&'a Renderer>,
@@ -1974,7 +1972,7 @@ pub(super) struct SyncOccluder<'a> {
 }
 
 impl<'a> SyncOccluder<'a> {
-    pub(super) fn new(
+    pub fn new(
         world: &'a World,
         facts: &'a BlockFacts,
         renderer: Option<&'a Renderer>,
@@ -1994,7 +1992,7 @@ impl<'a> SyncOccluder<'a> {
     }
 
     #[inline]
-    pub(super) fn ready(&mut self, pos: [i32; 3]) -> bool {
+    pub fn ready(&mut self, pos: [i32; 3]) -> bool {
         let chunk_key = (pos[0] >> 4, pos[2] >> 4);
         let chunk_index = (((chunk_key.0 as usize) & 1) << 1) | ((chunk_key.1 as usize) & 1);
         let chunk = match self.chunk_slots[chunk_index] {
@@ -2027,70 +2025,6 @@ impl<'a> SyncOccluder<'a> {
                 self.section_slots[section_index] = Some((section, ready));
                 ready
             }
-        }
-    }
-}
-
-impl Game<'_> {
-    pub(super) fn prepare_occlusion_culling(&mut self, camera: glam::DVec3) {
-        self.entity_section_camera = None;
-        self.entity_section_visibility_valid = false;
-        let entity_mode = self.settings.horizon.entity_culling;
-        let requested = entity_mode != EntityCullingMode::Off;
-        let eligible = requested
-            // Packs can replace opaque models, so their terrain is not a safe occluder.
-            && self.model_packs_are_vanilla()
-            && self.player.is_some()
-            && !self.spectator();
-        if !eligible {
-            self.sync_occlusion_culler = None;
-            self.async_occlusion_culler = None;
-            self.async_occlusion_culling_failed = false;
-            return;
-        }
-        let at = camera.to_array().map(|v| v.floor() as i32);
-        self.entity_section_camera = at[1]
-            .checked_sub(self.world.bottom_y())
-            .map(|y| (at[0] >> 4, y >> 4, at[2] >> 4));
-        let camera_facts = self.res.facts().get(self.world.block(at[0], at[1], at[2]));
-        if opaque(camera_facts) {
-            self.sync_occlusion_culler = None;
-            self.async_occlusion_culler = None;
-            self.async_occlusion_culling_failed = false;
-            return;
-        }
-        self.entity_section_visibility_valid = self.settings.horizon.cave_culling
-            && !camera_facts.solid_render
-            && self.entity_section_camera.is_some();
-
-        let wants_async = entity_mode == EntityCullingMode::Asynchronous;
-        let wants_sync = entity_mode == EntityCullingMode::Synchronous;
-        if wants_async {
-            if self.async_occlusion_culler.is_none() && !self.async_occlusion_culling_failed {
-                match AsyncOcclusionCuller::new() {
-                    Ok(culler) => self.async_occlusion_culler = Some(Box::new(culler)),
-                    Err(error) => {
-                        log::warn!("Horizon: cannot start world-occlusion-culling worker: {error}");
-                        self.async_occlusion_culling_failed = true;
-                    }
-                }
-            }
-            if let Some(culler) = &mut self.async_occlusion_culler {
-                culler.begin_frame(camera, &self.world);
-            }
-        } else {
-            self.async_occlusion_culler = None;
-            self.async_occlusion_culling_failed = false;
-        }
-
-        let async_unavailable = wants_async && self.async_occlusion_culler.is_none();
-        self.sync_occlusion_culler = (wants_sync || async_unavailable)
-            .then(|| OcclusionCuller::new(camera.to_array(), 8_192));
-    }
-
-    pub(super) fn finish_async_occlusion_culling(&mut self) {
-        if let Some(culler) = &mut self.async_occlusion_culler {
-            culler.finish_frame(&self.world, self.res.facts());
         }
     }
 }

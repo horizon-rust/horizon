@@ -81,6 +81,13 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(tc.parse("/label bug,  good first issue ,bug"), tc.Command("label", labels=("bug", "good first issue")))
         self.assertEqual(tc.parse("/unlabel bug"), tc.Command("unlabel", labels=("bug",)))
 
+    def test_an_agent_comments_prefix_does_not_hide_the_command(self):
+        self.assertEqual(tc.parse("🤖 Agent: /close not planned"), tc.Command("close", "not_planned"))
+        self.assertEqual(tc.parse("🤖 Agent: /reopen"), tc.Command("reopen"))
+        self.assertEqual(tc.parse("🤖 Agent: /label bug, tooling"), tc.Command("label", labels=("bug", "tooling")))
+        self.assertEqual(tc.parse("🤖 Agent: /unlabel bug"), tc.Command("unlabel", labels=("bug",)))
+        self.assertIsNone(tc.parse("🤖 Agent: thanks"))
+
     def test_first_line_only(self):
         self.assertEqual(tc.parse("/close\n/label release-now"), tc.Command("close", "completed"))
         self.assertIsNone(tc.parse("thanks\n/close"))
@@ -240,6 +247,11 @@ class LimitTests(unittest.TestCase):
     def test_counts_case_insensitively(self):
         with self.assertRaises(tc.Refused):
             do("/close", Fake(past=past("kacpherek", 60)), login="Kacpherek")
+
+    def test_prefix_login_is_not_charged(self):
+        api = Fake(past=past("bobby", 60))
+        self.assertEqual(tc.actions_by(api, "bob", NOW), 0)
+        self.assertEqual(tc.actions_by(api, "bobby", NOW), 60)
 
     def test_ludovic_is_unlimited(self):
         do("/close", Fake(past=past("ludovic111", 100)), login="ludovic111")
