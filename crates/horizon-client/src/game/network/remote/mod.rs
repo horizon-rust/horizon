@@ -1779,11 +1779,8 @@ impl Game<'_> {
             log::warn!("Dropping a stack with unnegotiated custom components");
             return None;
         }
-        Some(horizon_client::item_sync::from_network(
-            stack,
-            &r.builtin,
-            &r.registries,
-        ))
+        let decoded = horizon_client::item_sync::from_network(stack, &r.builtin, &r.registries);
+        (decoded.count > 0 && &*decoded.item != "minecraft:air").then_some(decoded)
     }
     /// A stack to the server (`SetCreativeModeSlot`): the same component
     /// patch a Horizon server sends its clients, with the registries' ids, so
@@ -4071,7 +4068,10 @@ impl Game<'_> {
                     .map(|(slot, stack)| {
                         (
                             *slot,
-                            stack.as_ref().map(|s| self.item_name(s.item)),
+                            stack
+                                .as_ref()
+                                .filter(|s| s.count > 0)
+                                .map(|s| self.item_name(s.item)),
                             self.to_stack(stack),
                         )
                     })
@@ -4094,7 +4094,10 @@ impl Game<'_> {
                         m.extra.charged = charged;
                     }
                     for (slot, item, stack) in items {
-                        let stack = stack.or_else(|| item.map(|item| ItemStack::new(&item, 1)));
+                        let stack = stack.or_else(|| {
+                            item.filter(|item| &**item != "minecraft:air")
+                                .map(|item| ItemStack::new(&item, 1))
+                        });
                         m.set_equipment_stack(slot as usize, stack);
                     }
                 }

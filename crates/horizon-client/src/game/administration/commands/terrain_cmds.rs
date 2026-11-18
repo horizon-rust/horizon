@@ -853,7 +853,7 @@ impl Game<'_> {
         };
         let drops: Vec<ItemStack> = drops
             .into_iter()
-            .filter(|d| keep_empty || d.count > 0)
+            .filter(|d| keep_empty || (d.count > 0 && &*d.item != "minecraft:air"))
             .collect();
         // Where they go.
         let mut used: Vec<ItemStack> = Vec::new();
@@ -981,7 +981,7 @@ impl Game<'_> {
                         None => first.first().cloned().filter(|_| i == 0),
                     };
                     let Some(slot) = slot else { continue };
-                    let item = drops.get(i).filter(|drop| drop.count > 0).cloned();
+                    let item = loot_replace_slot_item(&drops, i);
                     if self.slot_accepts(&slot, item.as_ref())
                         && self.slot_set_by_command(&slot, item.clone())
                     {
@@ -1032,8 +1032,30 @@ impl Game<'_> {
     }
 }
 
+fn loot_replace_slot_item(drops: &[ItemStack], index: usize) -> Option<ItemStack> {
+    drops
+        .get(index)
+        .filter(|drop| drop.count > 0 && &*drop.item != "minecraft:air")
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn loot_replace_normalises_air_and_zero_positions_while_preserving_later_items() {
+        let drops = [
+            super::ItemStack::new("minecraft:air", 1),
+            super::ItemStack::new("minecraft:iron_ingot", 0),
+            super::ItemStack::new("minecraft:diamond", 2),
+        ];
+        assert_eq!(super::loot_replace_slot_item(&drops, 0), None);
+        assert_eq!(super::loot_replace_slot_item(&drops, 1), None);
+        assert_eq!(
+            super::loot_replace_slot_item(&drops, 2),
+            Some(super::ItemStack::new("minecraft:diamond", 2))
+        );
+        assert_eq!(super::loot_replace_slot_item(&drops, 3), None);
+    }
     /// `WorldBorderCommand.ERROR_TOO_BIG` is built with the double
     /// `5.9999968E7`, the same value `setSize` compares `distance` against, and
     /// the `%s` substitution of a translatable renders a double with
