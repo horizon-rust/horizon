@@ -13607,7 +13607,9 @@ mod block_entity_mark_tests {
             1
         );
         // The retained table makes mutation copy-on-write even when the caller is its only owner.
+        assert!(Arc::get_mut(&mut marks).is_none());
         Arc::make_mut(&mut marks)[1] = 2;
+        assert!(!Arc::ptr_eq(cache.borrow().table.as_ref().unwrap(), &marks));
         assert_eq!(
             cached_section_mark(&cache, &revisions, 1, &key, &blocks, Some(&marks)),
             2
@@ -13620,29 +13622,59 @@ mod block_entity_mark_tests {
         );
     }
 
-    #[test]
-    fn remembering_a_sections_marks_is_faster_than_folding_them_every_time() {
-        const SECTIONS: usize = 400;
-        const BLOCKS: usize = 64;
-        const RUNS: usize = 11;
-        let marks: Arc<[u8]> = (0..20_000).map(|i| if i == 1500 { 2 } else { 0 }).collect();
+    const SECTIONS: usize = 400;
+    const BLOCKS: usize = 64;
+
+    type SectionBlocks = (SectionKey, Vec<([i32; 3], u32)>);
+
+    fn mark_scene() -> (Arc<[u8]>, FxHashMap<SectionKey, u64>, Vec<SectionBlocks>) {
+        let marks = (0..20_000).map(|i| if i == 1500 { 2 } else { 0 }).collect();
         let mut revisions = FxHashMap::default();
         let mut sections = Vec::with_capacity(SECTIONS);
         for s in 0..SECTIONS {
             let key = (s as i32, 0, 1);
             revisions.insert(key, 1);
-            let blocks: Vec<([i32; 3], u32)> = (0..BLOCKS)
+            let blocks = (0..BLOCKS)
                 .map(|i| ([i as i32, 0, 0], if i == 3 { 1500 } else { i as u32 }))
                 .collect();
             sections.push((key, blocks));
         }
+        (marks, revisions, sections)
+    }
+
+    #[test]
+    fn filled_and_cached_section_marks_match_a_full_scan() {
+        let (marks, revisions, sections) = mark_scene();
+        let cache = std::cell::RefCell::new(BlockEntityMarks::default());
+        for _ in 0..2 {
+            for (key, blocks) in &sections {
+                assert_eq!(
+                    cached_section_mark(
+                        &cache,
+                        &revisions,
+                        sections.len(),
+                        key,
+                        blocks,
+                        Some(&marks)
+                    ),
+                    or_scan(blocks, &marks),
+                );
+            }
+        }
+    }
+
+    // Run with `cargo test -p horizon-client-render --release --lib -- --ignored measure_section_marks --nocapture`.
+    #[test]
+    #[ignore = "wall-clock benchmark"]
+    fn measure_section_marks() {
+        const RUNS: usize = 11;
+        let (marks, revisions, sections) = mark_scene();
         let cache = std::cell::RefCell::new(BlockEntityMarks::default());
         let fold = || {
             let start = Instant::now();
             let mut n = 0u32;
-            for (key, blocks) in &sections {
+            for (_, blocks) in &sections {
                 n += u32::from(or_scan(blocks, &marks));
-                let _ = key;
             }
             (start.elapsed().as_nanos(), n)
         };
@@ -13662,27 +13694,27 @@ mod block_entity_mark_tests {
             (start.elapsed().as_nanos(), n)
         };
         // Fill the cache, then time repeats. The first cached pass is the fill and is not a sample.
-        let (fill_n, _) = {
-            let (dt, n) = cached();
-            let _ = dt;
-            (n, ())
-        };
-        let _ = fill_n;
-        let mut scans = Vec::new();
-        let mut hits = Vec::new();
-        for _ in 0..RUNS {
-            let (dt, n) = fold();
-            assert_eq!(n, fill_n);
-            scans.push(dt);
-            let (dt, n) = cached();
-            assert_eq!(n, fill_n);
-            hits.push(dt);
+        let (_, fill_n) = cached();
+        assert_eq!(fill_n, (SECTIONS * 2) as u32);
+        let mut samples = Vec::with_capacity(RUNS);
+        for run in 0..RUNS {
+            let (order, (fold_ns, fold_n), (cached_ns, cached_n)) = if run % 2 == 0 {
+                ("fold,cached", fold(), cached())
+            } else {
+                let hit = cached();
+                ("cached,fold", fold(), hit)
+            };
+            assert_eq!(fold_n, fill_n);
+            assert_eq!(cached_n, fill_n);
+            samples.push((order, fold_ns, cached_ns));
         }
+        let mut scans: Vec<_> = samples.iter().map(|&(_, fold, _)| fold).collect();
+        let mut hits: Vec<_> = samples.iter().map(|&(_, _, cached)| cached).collect();
         scans.sort_unstable();
         hits.sort_unstable();
         let med = |s: &[u128]| s[s.len() / 2];
         let p95 = |s: &[u128]| s[((s.len() as f64) * 0.95).ceil() as usize - 1];
-        let report = format!(
+        let mut report = format!(
             "scene sections={SECTIONS} blocks_per_section={BLOCKS} states={} runs={RUNS}\n\
              fold_ns median={} p95={} worst={}\n\
              cached_ns median={} p95={} worst={}\n",
@@ -13694,8 +13726,16 @@ mod block_entity_mark_tests {
             p95(&hits),
             hits[hits.len() - 1],
         );
+        use std::fmt::Write as _;
+        for (index, (order, fold_ns, cached_ns)) in samples.into_iter().enumerate() {
+            writeln!(
+                report,
+                "sample={} order={order} fold_ns={fold_ns} cached_ns={cached_ns}",
+                index + 1,
+            )
+            .unwrap();
+        }
         std::fs::write(std::env::temp_dir().join("hz-measure-frustum.txt"), &report).unwrap();
         println!("{report}");
-        assert!(med(&hits) < med(&scans));
     }
 }
