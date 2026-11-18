@@ -178,7 +178,7 @@ pub fn parse_consume_effect(effect: &serde_json::Value) -> Option<ConsumeEffect>
                     .map_or(16.0, |d| d as f32),
                 directional_particles: effect
                     .get("directional_particles")
-                    .and_then(serde_json::Value::as_bool)
+                    .and_then(json_flag)
                     .unwrap_or(true),
             },
         )),
@@ -2987,6 +2987,26 @@ pub(crate) fn prepared_items() -> Option<Items> {
 #[cfg(test)]
 mod consume_effect_tests {
     use super::*;
+
+    #[test]
+    fn teleport_effect_keeps_numeric_particle_flags() {
+        let mut effect = serde_json::json!({"type": "minecraft:teleport_randomly"});
+        let particles = |effect: &Value| {
+            let Some(ConsumeEffect::TeleportRandomly(teleport)) = parse_consume_effect(effect)
+            else {
+                panic!("expected a teleport consume effect");
+            };
+            teleport.directional_particles
+        };
+
+        assert!(particles(&effect));
+        effect["directional_particles"] = serde_json::json!(0);
+        assert!(!particles(&effect));
+        effect["directional_particles"] = serde_json::json!(1);
+        assert!(particles(&effect));
+        effect["directional_particles"] = serde_json::json!(false);
+        assert!(!particles(&effect));
+    }
 
     #[test]
     fn effects_keep_their_ambient_and_particle_flags() {
