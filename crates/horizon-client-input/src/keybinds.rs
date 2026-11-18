@@ -319,6 +319,10 @@ pub fn learn_layout(event: &winit::event::KeyEvent) {
     }
 }
 
+// Android does not expose winit's unmodified key extension.
+#[cfg(target_os = "android")]
+pub fn learn_layout(_event: &winit::event::KeyEvent) {}
+
 /// Vanilla's name for the key the layout produced (`InputEvent.Key.getKeycode`):
 /// `layout` is the event's key without modifiers. A letter or digit names its
 /// own key, so AZERTY's key at QWERTY's W gives `key.keyboard.z`; a named key
