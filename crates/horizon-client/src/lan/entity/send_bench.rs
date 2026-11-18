@@ -12,7 +12,7 @@ struct Scene {
     level: Entities,
     entities: Vec<EntityState>,
     trackers: Vec<Tracker>,
-    out: Vec<Vec<Vec<u8>>>,
+    out: Vec<Vec<super::super::Body>>,
     chunks: crate::fast_hash::FxHashSet<(i32, i32)>,
     active: Vec<usize>,
 }
@@ -71,6 +71,8 @@ impl Scene {
             .enumerate()
             .map(|(i, (tracker, out))| Viewer {
                 entity_id: i as i32 + 1,
+                horizon: true,
+                sources: None,
                 spectator: false,
                 permission: 0,
                 moved: true,
