@@ -54,10 +54,10 @@ pub(super) fn storage_formats_of(
 /// were refused, leaving the frame white (#14889). GLSL's image loads and stores read and write a
 /// `vec4` for either, so the pass runs as written; GL leaves a qualifier that differs from the
 /// image unit's format undefined. An integer qualifier over a float texture (or the reverse),
-/// another channel count, or another width (`rgba16f` over an `RGBA8` texture) stays refused. And
-/// an `R11F_G11F_B10F` image or buffer this device makes
-/// `RGBA16F` (a float stand-in that neither clamps nor drops NaN) takes `layout(r11f_g11f_b10f)`:
-/// Iris 1.11.7 stored into and read back such an image with a probe pack of ours (#10490).
+/// another channel count, or another width (`rgba16f` over an `RGBA8` texture, `rgb10_a2` over
+/// `RGBA8`) stays refused. And an `R11F_G11F_B10F` image or buffer this device makes `RGBA16F` (a
+/// float stand-in that neither clamps nor drops NaN) takes `layout(r11f_g11f_b10f)`: Iris 1.11.7
+/// stored into and read back such an image with a probe pack of ours (#10490).
 pub(super) fn binds_as(declared: wgpu::TextureFormat, actual: wgpu::TextureFormat) -> bool {
     use wgpu::TextureFormat as T;
     let float = |f: T| {
@@ -66,10 +66,14 @@ pub(super) fn binds_as(declared: wgpu::TextureFormat, actual: wgpu::TextureForma
             Some(wgpu::TextureSampleType::Float { .. })
         )
     };
+    // Channels of different widths in one texel: the same texel size isn't the same channels.
+    let packed = |f: T| matches!(f, T::Rgb10a2Unorm | T::Rg11b10Ufloat);
     declared == actual
         || (declared == T::Rg11b10Ufloat && actual == T::Rgba16Float)
         || (declared.components() == actual.components()
             && declared.block_copy_size(None) == actual.block_copy_size(None)
+            && !packed(declared)
+            && !packed(actual)
             && float(declared)
             && float(actual)
             && storage_format(actual).is_some())

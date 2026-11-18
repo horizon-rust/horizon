@@ -19,6 +19,9 @@ fn a_qualifier_binds_another_texture_only_with_its_channels_width_and_value_clas
         // Another width: main's shadowcolor0 case (#16900).
         ("rgba16f", T::Rgba8Unorm, false),
         ("rgba8", T::Rgba16Float, false),
+        // Packed: the same texel size, other channel widths.
+        ("rgb10_a2", T::Rgba8Unorm, false),
+        ("rgba8", T::Rgb10a2Unorm, false),
         // Integer against float.
         ("rgba16i", T::Rgba16Float, false),
         ("rgba16f", T::Rgba16Uint, false),
