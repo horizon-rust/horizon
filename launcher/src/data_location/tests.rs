@@ -483,3 +483,56 @@ fn a_link_above_the_root_is_followed() {
     );
     let _ = fs::remove_dir_all(&base);
 }
+
+/// No unit test reaches the player's real folders: a test's launcher data, build folders and
+/// native build log are all under the temporary folder ([`test_home`]), or under the home a run
+/// names in `HORIZON_LAUNCHER_HOME`, which takes its place (`backend::data_dir`;
+/// `tools/pr_ready.py` names one for the launcher's tests, #16877).
+#[test]
+fn unit_tests_never_resolve_the_real_profile() {
+    let paths = [
+        crate::backend::data_dir(),
+        crate::backend::build_dir(),
+        crate::native_mods::log_path(),
+    ];
+    // The named home as given (the data folder) and as the build folder resolves it.
+    let homes = match std::env::var_os("HORIZON_LAUNCHER_HOME").filter(|h| !h.is_empty()) {
+        Some(home) => {
+            let home = PathBuf::from(home);
+            let real = home.canonicalize().map(crate::backend::plain);
+            vec![real.unwrap_or_else(|_| home.clone()), home]
+        }
+        None => vec![test_home()],
+    };
+    for path in paths {
+        assert!(
+            homes.iter().any(|home| path.starts_with(home)),
+            "{} is outside {}",
+            path.display(),
+            homes[0].display()
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn unsupported_windows_destinations_explain_how_to_retry_without_changing_data() {
+    let f = Fixture::new("build");
+    for name in ["My Games", "Игры"] {
+        let target = f.temp.0.join(name).join("Horizon");
+        let error = f.refuse(&target);
+        assert!(
+            error.contains(&target.join("build").display().to_string()),
+            "{error}"
+        );
+        assert!(error.contains("Windows build tools cannot use the build folder"));
+        assert!(error.contains("spaces, other whitespace, or non-ASCII characters"));
+        assert!(error.contains("English letters, numbers, underscores or hyphens"));
+        assert!(error.contains(r"D:\Horizon_Data"));
+        assert!(error.contains("Check every parent folder too"));
+        assert!(!target.exists(), "rejection must precede copying");
+    }
+    let target = f.temp.0.join("Horizon_Data-2");
+    let roots = migrate(&f.source, &target, &f.bootstrap, |_| {}).unwrap();
+    f.migrated(&roots);
+}
