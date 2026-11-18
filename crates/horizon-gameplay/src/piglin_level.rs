@@ -18,9 +18,27 @@ pub trait PiglinLevel: MobLevel {
     /// The numbers `Mob.compareArmor` and `compareWeapons` read off `stack` in `slot`
     /// for the mob `m`.
     fn stack_facts(&self, m: &Mob, stack: &ItemStack, slot: Slot) -> Facts;
-    /// `PiglinAi.isBarterCurrency` after vanilla's own answer (`currency`): what the
-    /// parts of the stack's item and the mods that listen make of it.
-    fn piglin_currency_hook(&self, stack: &ItemStack, currency: bool) -> bool;
+    // The `Game` methods piglin code calls on itself. Each is the game's own method, so a mod
+    // that listens to one still hears the moved code; the free functions of `piglins` are
+    // what those methods run.
+    fn item_in_tag(&self, tag: &str, item: &str) -> bool;
+    fn piglin_loved(&self, item: &str) -> bool;
+    /// `PiglinAi.isBarterCurrency`.
+    fn piglin_currency(&self, stack: &ItemStack) -> bool;
+    fn item_blocks_attacks(&self, item: &str) -> bool;
+    fn piglin_wanted(&self, m: &Mob, item: &str) -> bool;
+    fn piglin_slot(&self, item: &str) -> usize;
+    fn piglin_can_replace(&self, m: &Mob, stack: &ItemStack, slot: usize) -> bool;
+    fn piglin_can_add(&self, m: &Mob, stack: &ItemStack) -> bool;
+    fn piglin_max_stack(&self, item: &str) -> u32;
+    fn piglin_wants(&self, m: &Mob, stack: &ItemStack) -> bool;
+    fn piglin_equip(&mut self, index: usize, stack: &ItemStack) -> bool;
+    fn piglin_stash(&mut self, index: usize, stack: ItemStack);
+    fn piglin_keep(&mut self, index: usize, stack: ItemStack);
+    fn piglin_throw(&mut self, index: usize, target_pos: [f64; 3], stack: ItemStack);
+    fn admire_seen_item(&mut self, index: usize, nearest: Option<f64>, loved: bool);
+    fn start_admiring(&mut self, index: usize, stack: ItemStack);
+    fn piglin_throw_items(&mut self, i: usize, items: Vec<ItemStack>);
     /// Where `PiglinAi.throwItems` throws toward from `at`: one block above the feet of
     /// the nearest player within 16 blocks, the level's own player ahead of the guests,
     /// those alive and not spectators. `None` when no player qualifies.

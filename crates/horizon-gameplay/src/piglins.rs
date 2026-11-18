@@ -11,7 +11,7 @@ use horizon_client::{
             OFFHAND, SLOT_NAMES, item_stack, set_drop_chance, set_item_stack,
             set_slot_enchantments, stored_drop_chance,
         },
-        piglin::{ADMIRE, BARTERING_ITEM, eat, has_eaten_recently},
+        piglin::{ADMIRE, eat, has_eaten_recently},
     },
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
@@ -24,14 +24,7 @@ pub fn item_in_tag<L: PiglinLevel + ?Sized>(l: &L, tag: &str, item: &str) -> boo
         .is_some_and(|t| t.contains(item))
 }
 pub fn piglin_loved<L: PiglinLevel + ?Sized>(l: &L, item: &str) -> bool {
-    item_in_tag(l, "minecraft:piglin_loved", item)
-}
-/// `PiglinAi.isBarterCurrency`: vanilla's answer (`BARTERING_ITEM`), then the
-/// parts of the stack's item (`ItemPart::is_piglin_currency`). An item with no
-/// part for it costs one table lookup.
-pub fn piglin_currency<L: PiglinLevel + ?Sized>(l: &L, stack: &ItemStack) -> bool {
-    let currency = &*stack.item == BARTERING_ITEM;
-    l.piglin_currency_hook(stack, currency)
+    l.item_in_tag("minecraft:piglin_loved", item)
 }
 /// `ItemStack.has(DataComponents.BLOCKS_ATTACKS)` for an item id.
 pub fn item_blocks_attacks<L: PiglinLevel + ?Sized>(l: &L, item: &str) -> bool {
@@ -41,8 +34,8 @@ pub fn item_blocks_attacks<L: PiglinLevel + ?Sized>(l: &L, item: &str) -> bool {
 }
 /// `PiglinAi.isLovedItem` or a preferred weapon (`Piglin.canReplaceCurrentItem`).
 pub fn piglin_wanted<L: PiglinLevel + ?Sized>(l: &L, m: &Mob, item: &str) -> bool {
-    piglin_loved(l, item)
-        || !m.is_baby() && item_in_tag(l, "minecraft:piglin_preferred_weapons", item)
+    l.piglin_loved(item)
+        || !m.is_baby() && l.item_in_tag("minecraft:piglin_preferred_weapons", item)
 }
 /// The `SLOT_NAMES` index `getEquipmentSlotForItem` picks: the
 /// `equippable` slot (armour, a shield's off hand), else the main hand.
@@ -68,8 +61,8 @@ pub fn piglin_can_replace<L: PiglinLevel + ?Sized>(
     let Some(current) = item_stack(m, slot) else {
         return true;
     };
-    let new_wanted = piglin_wanted(l, m, &stack.item);
-    let current_wanted = piglin_wanted(l, m, &current.item);
+    let new_wanted = l.piglin_wanted(m, &stack.item);
+    let current_wanted = l.piglin_wanted(m, &current.item);
     let slot = [
         Slot::MainHand,
         Slot::OffHand,
@@ -86,8 +79,8 @@ pub fn piglin_can_replace<L: PiglinLevel + ?Sized>(
     // `getPreferredWeaponType` is the preferred-weapons tag for adults.
     let preferred = (!m.is_baby()).then(|| {
         (
-            item_in_tag(l, "minecraft:piglin_preferred_weapons", &stack.item),
-            item_in_tag(l, "minecraft:piglin_preferred_weapons", &current.item),
+            l.item_in_tag("minecraft:piglin_preferred_weapons", &stack.item),
+            l.item_in_tag("minecraft:piglin_preferred_weapons", &current.item),
         )
     });
     piglin_replace(new_wanted, current_wanted, &new, &worn, slot, preferred)
@@ -98,7 +91,7 @@ pub fn piglin_can_add<L: PiglinLevel + ?Sized>(l: &L, m: &Mob, stack: &ItemStack
         || m.extra
             .inventory
             .iter()
-            .any(|s| s.same_item_same_components(stack) && s.count < piglin_max_stack(l, &s.item))
+            .any(|s| s.same_item_same_components(stack) && s.count < l.piglin_max_stack(&s.item))
 }
 pub fn piglin_max_stack<L: PiglinLevel + ?Sized>(l: &L, item: &str) -> u32 {
     l.world_items().get(item).map_or(64, |i| i.max_stack)
@@ -107,27 +100,27 @@ pub fn piglin_max_stack<L: PiglinLevel + ?Sized>(l: &L, item: &str) -> u32 {
 /// pick up currency and other loved items just like adults.
 pub fn piglin_wants<L: PiglinLevel + ?Sized>(l: &L, m: &Mob, stack: &ItemStack) -> bool {
     let item = &*stack.item;
-    if m.is_baby() && item_in_tag(l, "minecraft:ignored_by_piglin_babies", item)
-        || item_in_tag(l, "minecraft:piglin_repellents", item)
+    if m.is_baby() && l.item_in_tag("minecraft:ignored_by_piglin_babies", item)
+        || l.item_in_tag("minecraft:piglin_repellents", item)
     {
         return false;
     }
     if m.extra.piglin.admire_disabled > 0 && m.ai.target.is_some() {
         return false;
     }
-    let holds_loved = m.extra.off_hand_id().is_some_and(|o| piglin_loved(l, o));
-    if piglin_currency(l, stack) {
+    let holds_loved = m.extra.off_hand_id().is_some_and(|o| l.piglin_loved(o));
+    if l.piglin_currency(stack) {
         return !holds_loved;
     }
-    let space = piglin_can_add(l, m, stack);
+    let space = l.piglin_can_add(m, stack);
     if item == "minecraft:gold_nugget" {
         space
-    } else if item_in_tag(l, "minecraft:piglin_food", item) {
+    } else if l.item_in_tag("minecraft:piglin_food", item) {
         !has_eaten_recently(m) && space
-    } else if piglin_loved(l, item) {
+    } else if l.piglin_loved(item) {
         !holds_loved && space
     } else {
-        piglin_can_replace(l, m, stack, piglin_slot(l, item))
+        l.piglin_can_replace(m, stack, l.piglin_slot(item))
     }
 }
 /// `Mob.equipItemIfPossible` for a piglin: put it in its slot when that
@@ -135,9 +128,9 @@ pub fn piglin_wants<L: PiglinLevel + ?Sized>(l: &L, m: &Mob, stack: &ItemStack) 
 /// to an empty main hand), dropping what it replaces by drop chance.
 pub fn piglin_equip<L: PiglinLevel + ?Sized>(l: &mut L, index: usize, stack: &ItemStack) -> bool {
     let item = &*stack.item;
-    let mut slot = piglin_slot(l, item);
+    let mut slot = l.piglin_slot(item);
     let m = &l.mobs()[index];
-    let mut replace = piglin_can_replace(l, m, stack, slot);
+    let mut replace = l.piglin_can_replace(m, stack, slot);
     if slot > 1 && !replace {
         slot = 0;
         replace = m.extra.main_hand_id().is_none();
@@ -170,7 +163,7 @@ pub fn piglin_equip<L: PiglinLevel + ?Sized>(l: &mut L, index: usize, stack: &It
 /// `PiglinAi.putInInventory`: what does not fit is thrown at a random
 /// spot nearby.
 pub fn piglin_stash<L: PiglinLevel + ?Sized>(l: &mut L, index: usize, mut stack: ItemStack) {
-    let max = piglin_max_stack(l, &stack.item);
+    let max = l.piglin_max_stack(&stack.item);
     let p = l.parts();
     let m = &mut p.mobs[index];
     for s in &mut m.extra.inventory {
@@ -197,15 +190,15 @@ pub fn piglin_stash<L: PiglinLevel + ?Sized>(l: &mut L, index: usize, mut stack:
         m.position.y + 1.0,
         m.position.z + f64::from(r.next_float() * 8.0 - 4.0),
     ];
-    piglin_throw(l, index, to, stack);
+    l.piglin_throw(index, to, stack);
 }
 /// `PiglinAi.stopHoldingOffHandItem` for something that is not
 /// bartering currency: wear it if it can, else keep it in the inventory.
 pub fn piglin_keep<L: PiglinLevel + ?Sized>(l: &mut L, index: usize, stack: ItemStack) {
     // Nuggets keep their whole stack in the inventory (a hand slot here
     // holds one item id only).
-    if &*stack.item == "minecraft:gold_nugget" || !piglin_equip(l, index, &stack) {
-        piglin_stash(l, index, stack);
+    if &*stack.item == "minecraft:gold_nugget" || !l.piglin_equip(index, &stack) {
+        l.piglin_stash(index, stack);
     }
 }
 /// `BehaviorUtils.throwItem`: toss a stack from a piglin toward `target_pos`.
@@ -265,7 +258,7 @@ pub fn piglin_pickups<L: PiglinLevel + ?Sized>(l: &mut L) {
             .enumerate()
             .map(|(j, e)| (j, e.position.distance_squared(pos)))
             .filter(|(_, d)| *d < 32.0 * 32.0)
-            .filter(|&(j, _)| piglin_wants(&*l, m, &dropped[j].stack))
+            .filter(|&(j, _)| l.piglin_wants(m, &dropped[j].stack))
             .filter(|&(j, _)| {
                 // ItemEntity's eye height is 0.2125.
                 let e = &dropped[j];
@@ -273,8 +266,8 @@ pub fn piglin_pickups<L: PiglinLevel + ?Sized>(l: &mut L) {
                 w.line_of_sight(eye, at)
             })
             .min_by(|a, b| a.1.total_cmp(&b.1));
-        let loved = nearest.is_some_and(|(j, _)| piglin_loved(&*l, &dropped[j].stack.item));
-        admire_seen_item(l, i, nearest.map(|(_, d)| d), loved);
+        let loved = nearest.is_some_and(|(j, _)| l.piglin_loved(&dropped[j].stack.item));
+        l.admire_seen_item(i, nearest.map(|(_, d)| d), loved);
         let best = nearest.filter(|(_, d)| *d <= 81.0);
         let Some((j, _)) = best else {
             l.parts().mobs[i].extra.point = None;
@@ -309,10 +302,9 @@ pub fn piglin_pickups<L: PiglinLevel + ?Sized>(l: &mut L) {
             }
             one
         };
-        if piglin_loved(&*l, &item) {
-            start_admiring(l, i, stack);
-        } else if item_in_tag(&*l, "minecraft:piglin_food", &item)
-            && !has_eaten_recently(&l.mobs()[i])
+        if l.piglin_loved(&item) {
+            l.start_admiring(i, stack);
+        } else if l.item_in_tag("minecraft:piglin_food", &item) && !has_eaten_recently(&l.mobs()[i])
         {
             // PiglinAi.eat: the food is gone and it will not eat for a while.
             let m = &mut l.parts().mobs[i];
@@ -320,7 +312,7 @@ pub fn piglin_pickups<L: PiglinLevel + ?Sized>(l: &mut L) {
             m.nav_stop();
         } else {
             l.parts().mobs[i].nav_stop();
-            piglin_keep(l, i, stack);
+            l.piglin_keep(i, stack);
         }
     }
 }
@@ -370,12 +362,11 @@ pub fn give_piglin<L: PiglinLevel + ?Sized>(l: &mut L, index: usize, stack: &Ite
         || m.extra.using_item > 0
         || m.extra.piglin.seen_admire > 0
         || m.extra.piglin.admire_disabled > 0
-        || !piglin_currency(l, stack)
+        || !l.piglin_currency(stack)
     {
         return false;
     }
-    start_admiring(
-        l,
+    l.start_admiring(
         index,
         ItemStack {
             count: 1,
@@ -396,7 +387,7 @@ pub fn finish_admiring<L: PiglinLevel + ?Sized>(l: &mut L, mob: u32) {
     };
     let barter = !std::mem::take(&mut l.parts().mobs[i].extra.piglin.hit_stop);
     if let Some(item) = l.mobs()[i].extra.off_hand_id()
-        && item_blocks_attacks(&*l, item)
+        && l.item_blocks_attacks(item)
     {
         return;
     }
@@ -407,12 +398,12 @@ pub fn finish_admiring<L: PiglinLevel + ?Sized>(l: &mut L, mob: u32) {
     m.extra.set_slot_stack(OFFHAND, None);
     set_slot_enchantments(m, OFFHAND, Vec::new());
     if l.mobs()[i].is_baby() {
-        if !piglin_equip(l, i, &stack) {
+        if !l.piglin_equip(i, &stack) {
             if let Some(old) = item_stack(&l.mobs()[i], 0) {
-                if piglin_loved(&*l, &old.item) {
-                    piglin_stash(l, i, old);
+                if l.piglin_loved(&old.item) {
+                    l.piglin_stash(i, old);
                 } else {
-                    piglin_throw_items(l, i, vec![old]);
+                    l.piglin_throw_items(i, vec![old]);
                 }
             }
             let m = &mut l.parts().mobs[i];
@@ -422,8 +413,8 @@ pub fn finish_admiring<L: PiglinLevel + ?Sized>(l: &mut L, mob: u32) {
         }
         return;
     }
-    if !piglin_currency(&*l, &stack) {
-        piglin_keep(l, i, stack);
+    if !l.piglin_currency(&stack) {
+        l.piglin_keep(i, stack);
         return;
     }
     if !barter {
@@ -436,7 +427,7 @@ pub fn finish_admiring<L: PiglinLevel + ?Sized>(l: &mut L, mob: u32) {
         None,
         &mut p.world.random,
     );
-    piglin_throw_items(l, i, items);
+    l.piglin_throw_items(i, items);
 }
 /// `PiglinAi.throwItems`: barters and a baby's unwanted main-hand item
 /// use the same player-directed throw.
@@ -458,7 +449,7 @@ pub fn piglin_throw_items<L: PiglinLevel + ?Sized>(l: &mut L, i: usize, items: V
                 at.z + f64::from(r.next_float() * 8.0 - 4.0),
             ]
         });
-        piglin_throw(l, i, to, stack);
+        l.piglin_throw(i, to, stack);
     }
 }
 
